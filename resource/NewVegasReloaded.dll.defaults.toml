@@ -70,7 +70,7 @@ SlimDepthBuffer = true      # UNOFFICIAL: store the effects' depth buffer as one
 [_Main.Main.ReducedQuality]
 GodRaysLowRes = false       # UNOFFICIAL, CHANGES THE IMAGE: compute god rays at quarter instead of half resolution (4x fewer pixels). Rays get softer; thin shafts through foliage may shimmer when moving. Applies immediately.
 AOLowRes = false            # UNOFFICIAL, CHANGES THE IMAGE: compute ambient occlusion at quarter instead of half resolution (4x fewer pixels). Corner shading gets softer and loses small creases; may look blotchier. Applies immediately.
-FXAAInsteadOfMSAA = false   # UNOFFICIAL, CHANGES THE IMAGE: turn the game's MSAA off (iMultiSample; FalloutPrefs.ini itself is left unchanged) and smooth edges with a lean FXAA pass instead. Much cheaper than MSAA; slightly softer image, weaker on thin distant detail and foliage. The MSAA change needs a game restart; the FXAA pass applies immediately. SMAA (Shaders > SMAA) is separate: turn it off too for the cheapest setup.
+FXAA = false                # UNOFFICIAL, CHANGES THE IMAGE: lean FXAA edge smoothing (about 0.15 ms at 1440p vs about 1 ms for SMAA). Meant to replace SMAA: turn SMAA off (Shaders > SMAA) when using it. Slightly softer than SMAA, weaker on thin distant detail. The game's own MSAA (iMultiSample in FalloutPrefs.ini) is not touched. Applies immediately.
 
 [_Main.Main.Precipitations]
 RemovePrecipitations = false   # Disables vanilla rain and other precipitations.

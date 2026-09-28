@@ -430,7 +430,7 @@ void SettingManager::LoadSettings() {
 	const char* reducedQuality = "Main.Main.ReducedQuality";
 	SettingsMain.Main.GodRaysLowRes = boolSetting(reducedQuality, "GodRaysLowRes", false);
 	SettingsMain.Main.AOLowRes = boolSetting(reducedQuality, "AOLowRes", false);
-	SettingsMain.Main.FXAAInsteadOfMSAA = boolSetting(reducedQuality, "FXAAInsteadOfMSAA", false);
+	SettingsMain.Main.FXAA = boolSetting(reducedQuality, "FXAA", false);
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");

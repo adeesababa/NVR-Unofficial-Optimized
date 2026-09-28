@@ -1,4 +1,4 @@
-// Lean FXAA for NVR UNOFFICIAL ([Main.Main.ReducedQuality] FXAAInsteadOfMSAA).
+// Lean FXAA for NVR UNOFFICIAL ([Main.Main.ReducedQuality] FXAA).
 // Console-style FXAA, after FXAA 3.11 by Timothy Lottes: four half-texel diagonal taps (each a
 // bilinear average of a 2x2 block) measure local contrast and the edge direction. Pixels below
 // the contrast threshold are returned unchanged after five fetches; edge pixels average two or
