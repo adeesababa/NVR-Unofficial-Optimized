@@ -18,6 +18,9 @@
 > (volumetric fog v2, skin and lighting fixes, ImGui menu and more), whose history is preserved in
 > this repository. All original copyright notices are unchanged.
 >
+> This is shared in good faith. If any of the original authors or maintainers feel this release
+> steps on their toes, please open an issue here and it will be taken down.
+>
 > ### What this version changes
 > Performance work on the post-processing and shadow pipelines, plus fixes, on top of the original:
 > - Copy-free effect chain: effects alternate between two buffers instead of copying the whole
