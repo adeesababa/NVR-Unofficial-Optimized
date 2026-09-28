@@ -226,6 +226,7 @@
     <ClInclude Include="..\src\core\FrameRateManager.h" />
     <ClInclude Include="..\src\core\GameEventManager.h" />
     <ClInclude Include="..\src\core\GameMenuManager.h" />
+    <ClInclude Include="..\src\core\GpuProfiler.h" />
     <ClInclude Include="..\src\core\ImGuiManager.h" />
     <ClInclude Include="..\src\core\Hooks\FormsCommon.h" />
     <ClInclude Include="..\src\core\Hooks\GameCommon.h" />

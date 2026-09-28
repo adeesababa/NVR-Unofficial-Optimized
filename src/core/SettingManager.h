@@ -17,6 +17,7 @@ struct SettingsMainStruct {
         bool    SkipFog;
         bool    RenderEffects;
         bool    RenderPreTonemapping;
+        bool    DisableFrameChain; // [Main.Main.Misc] kill switch for the copy-free effect chain
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;

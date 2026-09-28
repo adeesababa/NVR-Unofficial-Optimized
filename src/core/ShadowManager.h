@@ -25,7 +25,7 @@ public:
 	void					RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex);
 	void					RenderShadowMaps();
 	void					ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* ClearColor);
-	void                    BlurShadowAtlas();
+	void                    BlurShadowAtlas(unsigned cascadeMask);
 
 	ShadowRenderPass*				geometryPass;
 	AlphaShadowRenderPass*			alphaPass;

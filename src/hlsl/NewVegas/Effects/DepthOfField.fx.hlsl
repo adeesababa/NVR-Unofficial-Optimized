@@ -208,6 +208,26 @@ float4 Combine(VSOUT IN) : COLOR0
 	return float4(color.rgb, 1);
 }
 
+// The common gameplay configuration keeps autofocus disabled but uses distant blur to hide LOD.
+// Running the bokeh packing and five blur/combine passes for that case wastes most of the cost.
+float4 DistantOnly(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord;
+	float depth = readDepth(uv);
+	float3 cameraVector = toWorld(uv) * depth;
+	float worldHeight = TESR_CameraPosition.z + cameraVector.z;
+	float blur = saturate(invlerps(DistantStart, DistantEnd, depth) * DistantBlur * invlerps(100000, 5000, worldHeight));
+	float2 radius = TESR_ReciprocalResolution.xy * BaseBlurRadius * (1.0 + blur);
+	float4 center = tex2D(TESR_SourceBuffer, uv);
+	float4 blurred =
+		tex2D(TESR_SourceBuffer, uv + radius * float2(-1, -1)) +
+		tex2D(TESR_SourceBuffer, uv + radius * float2( 1, -1)) +
+		tex2D(TESR_SourceBuffer, uv + radius * float2(-1,  1)) +
+		tex2D(TESR_SourceBuffer, uv + radius * float2( 1,  1));
+	blurred *= 0.25;
+	return float4(lerp(center.rgb, blurred.rgb, blur), 1);
+}
+
 
 technique
 { 
@@ -245,5 +265,14 @@ technique
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 Combine();
+	}
+}
+
+technique DistantBlurOnly
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DistantOnly();
 	}
 }

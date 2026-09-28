@@ -55,7 +55,7 @@ float4 TESR_VolumetricFogNightScatter; // x: NoiseStrengthScale, y: WindSpeedSca
 float4 TESR_VolumetricFogNightTint;    // xyz: multiplicative night fog color tint, w: NightAmbientStrength
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D TESR_RenderedBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_RenderedBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_ShadowAtlas : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NormalsBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -395,9 +395,15 @@ float GetFogShadowVisibility(float4 positionWS, float3 normal) {
 }
 
 
-float4 VolumetricFog(VSOUT IN) : COLOR0
+// Every step of the composite below is affine in the scene colour, per channel, so the whole
+// fog reduces to linear(result) = max(linear(scene) * fogMul + fogAdd, 0). The coefficients
+// depend only on depth, the sky mask and constants -- never on scene detail beyond getSky's
+// luma gate -- which lets the dedicated path evaluate them at half resolution and apply them
+// to the full-resolution scene instead of reconstructing the scene itself from half resolution.
+void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut)
 {
-	float4 color = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord));
+	VSOUT IN = (VSOUT)0;
+	IN.UVCoord = uv;
 	float4 pureFogColor = linearize(TESR_FogColor);
 
 	float depth = readDepth(IN.UVCoord);
@@ -562,8 +568,9 @@ float4 VolumetricFog(VSOUT IN) : COLOR0
 	float3 finalExt = max(blendedExt, flatExt * MinDensityFloor);
 	float3 finalIns = max(blendedIns, flatIns * MinDensityFloor);
 
-	float3 fogged = color.rgb * saturate(1 - finalExt) + fogColorFinal.rgb * saturate(finalIns);
-	float4 finalColor = float4(lerp(color.rgb, fogged, skyMaskFactor), 1);
+	// color * mul + add form of: fogged = color * (1 - ext) + fogColor * ins; lerp(color, fogged, skyMaskFactor)
+	fogMul = lerp(1.0, saturate(1 - finalExt), skyMaskFactor);
+	fogAdd = fogColorFinal.rgb * saturate(finalIns) * skyMaskFactor;
 
 	// ---- aerial perspective: mid-to-far distance tint on non-sky terrain ----
 	// Own day-fade curve, wider than isDayTimeFog's: aerial haze is a daylight-scattering
@@ -587,20 +594,73 @@ float4 VolumetricFog(VSOUT IN) : COLOR0
 	// sunrise glow. Clamped and multiplied directly, tinted <= finalColor.rgb per channel always,
 	// so amplification is impossible regardless of lighting or tuning.
 	float3 aerialTintClamped = saturate(aerialTint);
-	finalColor.rgb = lerp(finalColor.rgb, finalColor.rgb * aerialTintClamped, aerialFactor * AerialStrength * skyMaskFactor * aerialDayFade);
+	float3 aerialScale = lerp(1.0, aerialTintClamped, aerialFactor * AerialStrength * skyMaskFactor * aerialDayFade);
+	fogMul *= aerialScale;
+	fogAdd *= aerialScale;
 
 	// ---- distant fog: horizon Z-fighting/sky-seam matte ----
-	finalColor = lerp(finalColor, skyColor, distantFog * saturate(DistantFogBlend) * distantHeightFade * isExterior);
+	float distantBlend = distantFog * saturate(DistantFogBlend) * distantHeightFade * isExterior;
+	fogMul *= 1 - distantBlend;
+	fogAdd = lerp(fogAdd, skyColor.rgb, distantBlend);
 
 	// inverted edge term: getSky's dilated mask specifically feathers the terrain/sky silhouette,
 	// independent of the weather-driven sky mask above since this is an anti-aliasing fix, not a
 	// density effect -- it should keep working in rain/overcast just as much as on clear days.
-	finalColor.rgb = lerp(finalColor.rgb, skyColor.rgb, isSky * EdgeAA * isExterior);
+	float edgeBlend = isSky * EdgeAA * isExterior;
+	fogMul *= 1 - edgeBlend;
+	fogAdd = lerp(fogAdd, skyColor.rgb, edgeBlend);
 
 	float nightAmount = FogAmount * lerp(1.0, NightAmountScale, nightFactor);
-	finalColor = max(lerp(color, finalColor, nightAmount), 0.0f);
+	fogMul = lerp(1.0, fogMul, nightAmount);
+	fogAdd *= nightAmount;
+	nightAmountOut = nightAmount;
+}
 
+float4 VolumetricFog(VSOUT IN) : COLOR0
+{
+	float4 color = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord));
+	float3 fogMul, fogAdd;
+	float nightAmount;
+	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount);
+	float4 finalColor = max(float4(color.rgb * fogMul + fogAdd, lerp(color.a, 1.0, nightAmount)), 0.0f);
 	return delinearize(finalColor);
+}
+
+float4 PackedFogEstimate(VSOUT IN) : COLOR0
+{
+	float4 fog = VolumetricFog(IN);
+	fog.a = saturate(readDepth(IN.UVCoord) / farZ);
+	return fog;
+}
+
+float4 PackedFogCombine(VSOUT IN) : COLOR0
+{
+	float2 texel = TESR_ReciprocalResolution.xy;
+	float2 packedSize = 0.5 / texel;
+	float2 position = IN.UVCoord * packedSize - 0.5;
+	float2 fraction = frac(position);
+	float2 baseUV = (floor(position) + 0.5) * texel;
+	float2 minUV = texel * 0.5;
+	float2 maxUV = 0.5 - minUV;
+
+	float2 uv00 = clamp(baseUV, minUV, maxUV);
+	float2 uv10 = clamp(baseUV + float2(texel.x, 0), minUV, maxUV);
+	float2 uv01 = clamp(baseUV + float2(0, texel.y), minUV, maxUV);
+	float2 uv11 = clamp(baseUV + texel, minUV, maxUV);
+	float4 s00 = tex2D(TESR_RenderedBuffer, uv00);
+	float4 s10 = tex2D(TESR_RenderedBuffer, uv10);
+	float4 s01 = tex2D(TESR_RenderedBuffer, uv01);
+	float4 s11 = tex2D(TESR_RenderedBuffer, uv11);
+
+	float depth = saturate(readDepth(IN.UVCoord) / farZ);
+	float tolerance = max(depth * 0.02, 0.0005);
+	float4 difference = abs(float4(s00.a, s10.a, s01.a, s11.a) - depth) / tolerance;
+	float4 spatial = float4((1 - fraction.x) * (1 - fraction.y), fraction.x * (1 - fraction.y),
+		(1 - fraction.x) * fraction.y, fraction.x * fraction.y);
+	float4 weights = spatial / (1 + difference * difference * 8);
+	float weightSum = max(dot(weights, 1.0), 0.00001);
+	float3 color = (s00.rgb * weights.x + s10.rgb * weights.y + s01.rgb * weights.z + s11.rgb * weights.w) / weightSum;
+	return float4(color, 1);
 }
 
 
@@ -610,5 +670,101 @@ technique
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader  = compile ps_3_0 VolumetricFog();
+	}
+}
+
+technique PackedFog
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 PackedFogEstimate();
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 PackedFogCombine();
+	}
+}
+
+// Dedicated path: the estimate writes the fog coefficients (see FogTerms) at half resolution
+// into two targets at once -- multiply + depth to s5, add to s6 -- and the reconstruct applies
+// a depth-aware upsample of them to the FULL-resolution scene, so scene detail is never lost.
+// The CPU binds TESR_RenderedBuffer (already equal to the render target) to s0 so no
+// full-resolution SourceBuffer copy is needed.
+float4 NVR_FogLayout; // xy: half extent / full extent, zw: 1 / half-resolution dimensions
+sampler2D NVR_FogBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_FogBufferAdd : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+struct FogTermsOut
+{
+	float4 mulDepth : COLOR0;
+	float4 add : COLOR1;
+};
+
+FogTermsOut DedicatedFogEstimate(VSOUT IN)
+{
+	FogTermsOut OUT;
+	float3 fogMul, fogAdd;
+	float nightAmount;
+	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount);
+	OUT.mulDepth = float4(fogMul, saturate(readDepth(IN.UVCoord) / farZ));
+	OUT.add = float4(fogAdd, 1);
+	return OUT;
+}
+
+VSOUT HalfVS(VSIN IN)
+{
+	// Move the shared quad's full-resolution half-texel offset to the half-resolution
+	// texel centre, which is where DedicatedFogCombine assumes each estimate lives.
+	VSOUT OUT = FrameVS(IN);
+	OUT.UVCoord += 0.5 * (NVR_FogLayout.zw - TESR_ReciprocalResolution.xy);
+	return OUT;
+}
+
+float4 DedicatedFogCombine(VSOUT IN) : COLOR0
+{
+	float2 texel = NVR_FogLayout.zw;
+	float2 position = IN.UVCoord / texel - 0.5;
+	float2 fraction = frac(position);
+	float2 baseUV = (floor(position) + 0.5) * texel;
+	float2 minUV = texel * 0.5;
+	float2 maxUV = 1 - minUV;
+
+	float2 uv00 = clamp(baseUV, minUV, maxUV);
+	float2 uv10 = clamp(baseUV + float2(texel.x, 0), minUV, maxUV);
+	float2 uv01 = clamp(baseUV + float2(0, texel.y), minUV, maxUV);
+	float2 uv11 = clamp(baseUV + texel, minUV, maxUV);
+	float4 s00 = tex2D(NVR_FogBuffer, uv00);
+	float4 s10 = tex2D(NVR_FogBuffer, uv10);
+	float4 s01 = tex2D(NVR_FogBuffer, uv01);
+	float4 s11 = tex2D(NVR_FogBuffer, uv11);
+
+	float depth = saturate(readDepth(IN.UVCoord) / farZ);
+	float tolerance = max(depth * 0.02, 0.0005);
+	float4 difference = abs(float4(s00.a, s10.a, s01.a, s11.a) - depth) / tolerance;
+	float4 spatial = float4((1 - fraction.x) * (1 - fraction.y), fraction.x * (1 - fraction.y),
+		(1 - fraction.x) * fraction.y, fraction.x * fraction.y);
+	float4 weights = spatial / (1 + difference * difference * 8);
+	weights /= max(dot(weights, 1.0), 0.00001);
+	float3 fogMul = s00.rgb * weights.x + s10.rgb * weights.y + s01.rgb * weights.z + s11.rgb * weights.w;
+	float3 fogAdd = tex2D(NVR_FogBufferAdd, uv00).rgb * weights.x + tex2D(NVR_FogBufferAdd, uv10).rgb * weights.y +
+		tex2D(NVR_FogBufferAdd, uv01).rgb * weights.z + tex2D(NVR_FogBufferAdd, uv11).rgb * weights.w;
+
+	float4 color = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord));
+	return float4(delinearize(float4(max(color.rgb * fogMul + fogAdd, 0.0f), 1)).rgb, 1);
+}
+
+technique DedicatedFog
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate();
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogCombine();
 	}
 }

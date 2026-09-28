@@ -49,6 +49,43 @@ typedef std::map<std::string, D3DXVECTOR4> CustomConstants;
 
 struct		FrameVS { float x, y, z, u, v; };
 
+/*
+* Copy-free effect chain. Without it every effect renders into the game's target and then copies
+* the whole frame into TESR_RenderedBuffer so the next effect can sample it. With it, effects
+* render into whichever of two chain textures is not the current image and the pair is swapped:
+* TheTextureManager->RenderedTexture/Surface always name the current image, and the game's target
+* is written once, when the chain ends. The pair matches the game target's format, so precision
+* and clamping between effects are unchanged.
+*/
+class FrameChain {
+public:
+	bool					Begin(IDirect3DSurface9* gameTarget); // false: chain unavailable, legacy behaviour
+	void					End();
+	bool					IsActive() const { return Active; }
+	// True when an effect's (RenderTarget, RenderedSurface) pair is the chain's.
+	bool					Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface) const;
+	IDirect3DSurface9*		Output() const { return Pairs[PairIndex].Surface[Current ^ 1]; }
+	void					Commit(); // the Output() surface becomes the current image
+	void					Sync();   // copy the current image into the game target (for legacy paths)
+
+private:
+	struct Pair {
+		D3DFORMAT			Format = D3DFMT_UNKNOWN;
+		UINT				Width = 0, Height = 0;
+		IDirect3DTexture9*	Texture[2] = {};
+		IDirect3DSurface9*	Surface[2] = {};
+	};
+	void					Publish();
+
+	Pair					Pairs[2];
+	int						PairIndex = 0;
+	int						Current = 0;
+	bool					Active = false;
+	IDirect3DSurface9*		GameTarget = nullptr;
+	IDirect3DTexture9*		SavedTexture = nullptr;
+	IDirect3DSurface9*		SavedSurface = nullptr;
+};
+
 __declspec(align(16)) class ShaderManager : public ShaderManagerBase { // Never disposed
 public:
 	static void Initialize();
@@ -73,7 +110,7 @@ public:
 	bool					ShouldRenderShadowMaps();
 	void					RenderEffects(IDirect3DSurface9* RenderTarget);
 	void					RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget);
-	void					RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget);
+	void					RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex = 0);
 	void					SwitchShaderStatus(const char* Name);
 	void					SetCustomConstant(const char* Name, D3DXVECTOR4 Value);
 		
@@ -155,6 +192,7 @@ public:
 	CustomConstants			CustomConst;
 	std::map<std::string, D3DXVECTOR4*>	ConstantsTable;
 	IDirect3DVertexBuffer9*	FrameVertex;
+	FrameChain				Chain;
 	NiD3DVertexShader*		WaterVertexShaders[51];
 	NiD3DPixelShader*		WaterPixelShaders[51];
     TESObjectCELL*          PreviousCell;

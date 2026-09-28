@@ -43,4 +43,16 @@ public:
 	// cached from UpdateSettings (Shaders.ShadowsExteriors.Main/NightMinDarkness), consumed by
 	// UpdateConstants to drive the moon-phase night-ambient ceiling
 	float	nightMinDarkness;
+	bool	packedFogFailed = false;
+	bool	dedicatedFogFailed = false;
+	// [0]: fog multiply + depth, [1]: fog add -- written together as MRTs by the estimate pass
+	IDirect3DTexture9* fogTexture[2] = {};
+	IDirect3DSurface9* fogSurface[2] = {};
+
+	void	RegisterTextures();
+	bool	RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
+		IDirect3DSurface9* RenderedSurface);
+	void Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
+		IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
+		IDirect3DSurface9* SourceBuffer) override;
 };

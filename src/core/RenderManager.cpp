@@ -283,6 +283,7 @@ void RenderManager::Initialize() {
 	device->GetDirect3D(&D3D);
 	D3D->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &currentDisplayMode);
 	RESZ = D3D->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, currentDisplayMode.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE, (D3DFORMAT)MAKEFOURCC('R','E','S','Z')) == D3D_OK;
+	D3D->Release();
 	DXVK = false;
 
 	if (RESZ) {
@@ -347,6 +348,9 @@ void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {
 		
 		if (pCurrTX) pCurrTX->Release();
 		if (pCurrVX) pCurrVX->Release();
+		if (pCurrVS) pCurrVS->Release();
+		if (pCurrPS) pCurrPS->Release();
+		if (pCurrDecl) pCurrDecl->Release();
 	}
 	else {
 		if (!TheTextureManager->DepthSurface) {

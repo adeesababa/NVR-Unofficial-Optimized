@@ -19,6 +19,13 @@ float readDepth(float2 coord)
 	return tex2D(TESR_DepthBuffer, coord).x * farZ;
 }
 
+// Explicit LOD variants are safe behind ps_3_0 dynamic branches. Full-screen effects use
+// level zero, so this is equivalent to tex2D for buffers without mipmaps.
+float readDepthLod(float2 coord)
+{
+	return tex2Dlod(TESR_DepthBuffer, float4(coord, 0.0f, 0.0f)).x * farZ;
+}
+
 float3 reconstructPosition(float2 uv)
 {
     float x = uv.x * 2 - 1;
@@ -72,5 +79,18 @@ float4 reconstructWorldPosition(float2 uv, out float viewDepth){
 	
     float4 worldSpace = mul(viewSpace, TESR_InvViewTransform);
 
+    return float4(worldSpace.xyz, 1.0f);
+}
+
+float4 reconstructWorldPositionLod(float2 uv, out float viewDepth){
+    float x = uv.x * 2 - 1;
+    float y = (1 - uv.y) * 2 - 1;
+    float z = tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).y;
+    float4 viewSpace = mul(float4(x, y, z, 1.0f), TESR_InvProjectionTransform);
+
+    viewSpace /= viewSpace.w;
+    viewDepth = viewSpace.z;
+
+    float4 worldSpace = mul(viewSpace, TESR_InvViewTransform);
     return float4(worldSpace.xyz, 1.0f);
 }
