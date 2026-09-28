@@ -412,19 +412,24 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.RenderEffects = GetSettingI("Main.Main.Misc", "RenderEffects");
 	SettingsMain.Main.RenderPreTonemapping = GetSettingI("Main.Main.Misc", "RenderPreTonemapping");
 	// Settings only resolve when they exist in the defaults file (Configuration::FillNode), so these
-	// live in [_Main.Main.Performance] there and show up as switches in the in-game menu. A key
-	// missing from an older defaults file reads as its default, so a DLL-only update keeps them on.
-	auto performanceSwitch = [this](const char* key, bool fallback = true) {
+	// live in [_Main.Main.Performance] / [_Main.Main.ReducedQuality] there and show up as switches in
+	// the in-game menu. A key missing from an older defaults file reads as its fallback, so a
+	// DLL-only update keeps the lossless ones on and the image-changing ones off.
+	auto boolSetting = [this](const char* section, const char* key, bool fallback) {
 		Configuration::ConfigNode node;
-		return Config.FillNode(&node, "Main.Main.Performance", key) ? node.BoolValue : fallback;
+		return Config.FillNode(&node, section, key) ? node.BoolValue : fallback;
 	};
-	SettingsMain.Main.DisableFrameChain = !performanceSwitch("FrameChain");
-	SettingsMain.Main.DisableCompositeApply = !performanceSwitch("CompositeApply");
-	SettingsMain.Main.DisableChainGameTexture = !performanceSwitch("ChainUsesGameTexture");
+	const char* performance = "Main.Main.Performance";
+	SettingsMain.Main.DisableFrameChain = !boolSetting(performance, "FrameChain", true);
+	SettingsMain.Main.DisableCompositeApply = !boolSetting(performance, "CompositeApply", true);
+	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
 	// Off unless asked for: on native D3D9 (GTX 1070) the driver drops the two-target draw without
 	// an error, leaving depth and normals stale.
-	SettingsMain.Main.DisableMergedNormals = !performanceSwitch("MergedDepthNormals", false);
-	SettingsMain.Main.SlimDepthBuffer = performanceSwitch("SlimDepthBuffer");
+	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
+	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
+	const char* reducedQuality = "Main.Main.ReducedQuality";
+	SettingsMain.Main.GodRaysLowRes = boolSetting(reducedQuality, "GodRaysLowRes", false);
+	SettingsMain.Main.AOLowRes = boolSetting(reducedQuality, "AOLowRes", false);
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");

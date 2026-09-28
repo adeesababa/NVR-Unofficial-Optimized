@@ -177,15 +177,16 @@ void VolumetricFogEffect::RegisterTextures() {
 */
 /*
 * Whether this frame's fog can take over the shadow/AO apply passes: the dedicated path must be
-* usable and the AO targets must match the fog targets' size (the composite AO upsample uses the
-* fog layout). Checked before those passes are skipped, so a later failure is exceptional.
+* usable, and the composite AO upsample must know the AO targets' size -- from NVR_CompositeAOTexel,
+* or, in an older effect file without it, by the AO targets matching the fog targets. Checked before
+* those passes are skipped, so a later failure is exceptional.
 */
 bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] ||
 		TheSettingManager->SettingsMain.Main.DisableCompositeApply ||
 		!Effect->GetTechniqueByName("CompositeFog") || !Effect->GetParameterByName(NULL, "NVR_CompositeFlags"))
 		return false;
-	if (aoSurface) {
+	if (aoSurface && !Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel")) {
 		D3DSURFACE_DESC fog = {}, ao = {};
 		if (FAILED(fogSurface[0]->GetDesc(&fog)) || FAILED(aoSurface->GetDesc(&ao)) ||
 			fog.Width != ao.Width || fog.Height != ao.Height)
@@ -247,6 +248,13 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	if (composite) {
 		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f, 0.0f, 0.0f);
 		Effect->SetVector(flagsHandle, &flags);
+		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
+		D3DXHANDLE aoTexelHandle = Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel");
+		D3DSURFACE_DESC ao = {};
+		if (aoTexelHandle && compositeAO && compositeAOTexture && SUCCEEDED(compositeAOTexture->GetLevelDesc(0, &ao))) {
+			D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
+			Effect->SetVector(aoTexelHandle, &aoTexel);
+		}
 	}
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);

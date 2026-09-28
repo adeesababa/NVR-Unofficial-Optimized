@@ -46,6 +46,11 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 	auto timer = TimeLogger();
 	DWORD oldWriteMask1 = 0xF;
 	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
+	// With the game's depth-stencil still bound, the two-target draw was silently dropped on a
+	// GTX 1070 (native D3D9). The fog MRT pass, which works, unbinds it first; do the same.
+	IDirect3DSurface9* depthStencil = nullptr;
+	Device->GetDepthStencilSurface(&depthStencil);
+	Device->SetDepthStencilSurface(nullptr);
 	HRESULT result = Device->SetRenderTarget(0, Textures.CombinedDepthSurface);
 	if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, NormalsSurface);
 	if (SUCCEEDED(result)) result = Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
@@ -65,6 +70,8 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 	}
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, oldWriteMask1);
+	Device->SetDepthStencilSurface(depthStencil);
+	if (depthStencil) depthStencil->Release();
 	if (FAILED(result)) {
 		mergedNormalsFailed = true;
 		Logger::Log("Merged depth/normals failed (%08lx); using separate passes until restart.", result);

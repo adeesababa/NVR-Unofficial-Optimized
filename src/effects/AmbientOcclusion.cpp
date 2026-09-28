@@ -14,6 +14,15 @@ void AmbientOcclusionEffect::RegisterTextures() {
 	const int height = (TheRenderManager->height + 1) / 2;
 	TheTextureManager->InitTexture("NVR_AOBuffer0", &aoTexture[0], &aoSurface[0], width, height, D3DFMT_G16R16F);
 	TheTextureManager->InitTexture("NVR_AOBuffer1", &aoTexture[1], &aoSurface[1], width, height, D3DFMT_G16R16F);
+	const int lowWidth = (TheRenderManager->width + 3) / 4;
+	const int lowHeight = (TheRenderManager->height + 3) / 4;
+	TheTextureManager->InitTexture("NVR_AOBufferLow0", &aoTextureLow[0], &aoSurfaceLow[0], lowWidth, lowHeight, D3DFMT_G16R16F);
+	TheTextureManager->InitTexture("NVR_AOBufferLow1", &aoTextureLow[1], &aoSurfaceLow[1], lowWidth, lowHeight, D3DFMT_G16R16F);
+}
+
+bool AmbientOcclusionEffect::UseLowRes() const {
+	return TheSettingManager->SettingsMain.Main.AOLowRes &&
+		aoTextureLow[0] && aoTextureLow[1] && aoSurfaceLow[0] && aoSurfaceLow[1];
 }
 
 void AmbientOcclusionEffect::UpdateSettings() {
@@ -38,6 +47,11 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
+	// combineOnly reapplies this frame's deferred estimate, so it keeps that estimate's resolution.
+	if (!combineOnly) lastLowRes = UseLowRes();
+	IDirect3DTexture9* const* textures = lastLowRes ? aoTextureLow : aoTexture;
+	IDirect3DSurface9* const* surfaces = lastLowRes ? aoSurfaceLow : aoSurface;
+	const UINT divisor = lastLowRes ? 4 : 2;
 	D3DXHANDLE technique = Effect->GetTechniqueByName("DedicatedAO");
 	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_AOLayout");
 	D3DXTECHNIQUE_DESC description = {};
@@ -46,14 +60,14 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DSurface9* depthSurface = nullptr;
 	// Older/custom effect files keep the legacy path. Never guess their pass layout.
 	if (packedAOFailed || !technique || !layoutHandle || FAILED(Effect->GetTechniqueDesc(technique, &description)) ||
-		description.Passes != 4 || !RenderedSurface || !SourceBuffer || !aoTexture[0] || !aoTexture[1] ||
-		!aoSurface[0] || !aoSurface[1] ||
+		description.Passes != 4 || !RenderedSurface || !SourceBuffer || !textures[0] || !textures[1] ||
+		!surfaces[0] || !surfaces[1] ||
 		FAILED(Device->GetViewport(&original)) || FAILED(RenderTarget->GetDesc(&target)) ||
-		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(aoSurface[0]->GetDesc(&aoTarget)) ||
+		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(surfaces[0]->GetDesc(&aoTarget)) ||
 		original.X || original.Y ||
 		original.Width != target.Width || original.Height != target.Height ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
-		aoTarget.Width != (target.Width + 1) / 2 || aoTarget.Height != (target.Height + 1) / 2 ||
+		aoTarget.Width != (target.Width + divisor - 1) / divisor || aoTarget.Height != (target.Height + divisor - 1) / divisor ||
 		aoTarget.Format != D3DFMT_G16R16F ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE) {
 		// Let the caller restore deferred shadows before running legacy AO.
@@ -93,15 +107,15 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		for (UINT p = firstPass; p < endPass && SUCCEEDED(result); ++p) {
 			const bool combine = p == passes - 1;
 			Device->SetTexture(5, nullptr);
-			IDirect3DSurface9* destination = combine ? finalTarget : aoSurface[p == 1 ? 1 : 0];
+			IDirect3DSurface9* destination = combine ? finalTarget : surfaces[p == 1 ? 1 : 0];
 			result = Device->SetRenderTarget(0, destination);
 			if (SUCCEEDED(result)) result = Device->SetViewport(combine ? &original : &reduced);
 			if (FAILED(result)) break;
 			result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
-			if (p == 1) Device->SetTexture(5, aoTexture[0]);
-			else if (p == 2) Device->SetTexture(5, aoTexture[1]);
-			else if (combine) Device->SetTexture(5, aoTexture[0]);
+			if (p == 1) Device->SetTexture(5, textures[0]);
+			else if (p == 2) Device->SetTexture(5, textures[1]);
+			else if (combine) Device->SetTexture(5, textures[0]);
 			Device->SetTexture(2, scene); // TESR_SourceBuffer slot
 			// Sub-pass timings (nested inside "Ambient occlusion") to direct further AO work.
 			static GpuTimer passTimers[4] = { GpuTimer("  AO estimate (half)"), GpuTimer("  AO blur X (half)"),
@@ -121,9 +135,17 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
+	static bool reported[2] = {};
+	auto reportActive = [&]() {
+		if (reported[lastLowRes]) return;
+		Logger::Log("UNOFFICIAL dedicated AO active: %ux%u G16R16F ping-pong%s.", reduced.Width, reduced.Height,
+			lastLowRes ? " (AOLowRes)" : "");
+		reported[lastLowRes] = true;
+	};
 	if (SUCCEEDED(result) && deferCombine) {
-		// Nothing was written to the frame; the fog pass applies aoTexture[0].
+		// Nothing was written to the frame; the fog pass applies ResultTexture().
 		deferredReady = true;
+		reportActive();
 		renderTime = timer.LogTime("AmbientOcclusion::Deferred");
 		return;
 	}
@@ -140,10 +162,6 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 		return;
 	}
-	static bool reported = false;
-	if (!reported) {
-		Logger::Log("UNOFFICIAL dedicated AO active: %ux%u G16R16F ping-pong, four passes.", reduced.Width, reduced.Height);
-		reported = true;
-	}
+	reportActive();
 	renderTime = timer.LogTime("AmbientOcclusion::PackedAO");
 }

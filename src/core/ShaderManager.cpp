@@ -869,7 +869,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater);
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
-		Fog->CanComposite(aoApplies ? AO->aoSurface[0] : nullptr);
+		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	AO->deferredReady = false;
 
 	{
@@ -918,7 +918,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
 		Fog->compositeAO = composite && AO->deferredReady;
-		Fog->compositeAOTexture = AO->aoTexture[0];
+		Fog->compositeAOTexture = AO->ResultTexture();
 		Fog->compositeApplied = false;
 		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		const bool applied = Fog->compositeApplied;
@@ -973,7 +973,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P32 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P33 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
 	}
 	if (GpuTimer::Enabled) frameIntervalTimer.Tick();

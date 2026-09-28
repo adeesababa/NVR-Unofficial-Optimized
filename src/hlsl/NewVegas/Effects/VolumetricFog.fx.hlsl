@@ -785,6 +785,7 @@ float4 DedicatedFogCombine(VSOUT IN) : COLOR0
 // the only difference is that intermediate colours stay in registers instead of 16-bit targets.
 // Keep them in step with those files.
 float4 NVR_CompositeFlags; // x: apply exterior sun shadows, y: apply AO (both deferred by the CPU)
+float4 NVR_CompositeAOTexel; // xy: 1 / AO target dimensions (half, or quarter with AOLowRes)
 float4 TESR_ShadowData;    // y: darkness
 float4 TESR_WaterSettings; // x: water height, z: camera underwater
 float4 TESR_AmbientOcclusionAOData; // z: clamp
@@ -820,8 +821,7 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	float depth = readDepthLod(uv);
 	[branch] if (depth >= CompositeAOEndFade) return linearColor;
 
-	// The AO targets have the same half-resolution size as the fog targets (checked on the CPU).
-	float2 texel = NVR_FogLayout.zw;
+	float2 texel = NVR_CompositeAOTexel.xy;
 	float2 position = uv / texel - 0.5;
 	float2 base = floor(position);
 	float2 fraction = frac(position);
