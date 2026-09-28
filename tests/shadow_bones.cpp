@@ -73,7 +73,9 @@ unsigned int Check(const unsigned short* map, unsigned int count) {
 }
 
 void CheckGpuProfiler();
+void CheckCompositeMath();
 int main() {
+	CheckCompositeMath();
 	CheckGpuProfiler();
 	assert(GpuProfileQueriesReady(S_OK, S_OK, S_OK));
 	assert(!GpuProfileQueriesReady(S_FALSE, S_OK, S_OK));

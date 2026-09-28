@@ -779,14 +779,14 @@ float4 TESR_AmbientOcclusionAOData; // z: clamp
 float4 TESR_AmbientOcclusionData;   // y: luma threshold, z: blur drop threshold
 static const float CompositeAOEndFade = 8000;
 
-float3 CompositeSunShadow(float3 color, float2 uv)
+float3 CompositeSunShadow(float3 linearColor, float2 uv)
 {
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float depth = readDepthLod(uv);
 		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * depth;
 		float3 worldNormal = GetWorldNormalLod(uv);
 		if (worldPos.z < (TESR_WaterSettings.x + 2) && worldPos.z > (TESR_WaterSettings.x - 2) && dot(worldNormal, float3(0, 0, -1)) > 0.999)
-			return color;
+			return linearColor;
 	}
 
 	float darkness = max(0.0, 1 - TESR_ShadowData.y);
@@ -797,17 +797,16 @@ float3 CompositeSunShadow(float3 color, float2 uv)
 	shadow.r += shadow.g;
 	shadow.r = saturate(lerp(darkness, 1.0, shadow.r));
 
-	float3 linearColor = pows(color, 2.2);
 	float3 skyColor = pows(TESR_SkyColor.rgb, 2.2);
 	float3 colorShadow = luma(linearColor) * shadow.r * skyColor;
 	colorShadow = lerp(colorShadow, linearColor * shadow.r, saturate(shadow.r + 0.5));
-	return pows(max(0.0, colorShadow), 1.0 / 2.2);
+	return max(0.0, colorShadow);
 }
 
-float3 CompositeAO(float3 source, float2 uv)
+float3 CompositeAO(float3 linearColor, float2 uv)
 {
 	float depth = readDepthLod(uv);
-	[branch] if (depth >= CompositeAOEndFade) return source;
+	[branch] if (depth >= CompositeAOEndFade) return linearColor;
 
 	// The AO targets have the same half-resolution size as the fog targets (checked on the CPU).
 	float2 texel = NVR_FogLayout.zw;
@@ -827,16 +826,19 @@ float3 CompositeAO(float3 source, float2 uv)
 		}
 	}
 	float ao = lerp(TESR_AmbientOcclusionAOData.z, 1, sum / max(weights, 1.0e-6));
-	float3 linearColor = pows(source, 2.2);
 	ao = lerp(ao, 1, saturate((luma(linearColor) - TESR_AmbientOcclusionData.y) * 3));
-	return source * pow(ao, 1.0 / 2.2);
+	return linearColor * ao;
 }
 
 float4 DedicatedFogComposite(VSOUT IN) : COLOR0
 {
 	float3 color = tex2D(TESR_SourceBuffer, IN.UVCoord).rgb;
+	// Shadows and AO both use gamma 2.2: retain their shared linear value until
+	// both finish. FogApply uses the distinct piecewise sRGB transfer function.
+	color = pows(color, 2.2);
 	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
+	color = pows(color, 1.0 / 2.2);
 	return float4(FogApply(color, IN.UVCoord), 1);
 }
 

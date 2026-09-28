@@ -56,6 +56,8 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		aoTarget.Width != (target.Width + 1) / 2 || aoTarget.Height != (target.Height + 1) / 2 ||
 		aoTarget.Format != D3DFMT_G16R16F ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE) {
+		// Let the caller restore deferred shadows before running legacy AO.
+		if (deferCombine) return;
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 		return;
 	}
@@ -134,6 +136,7 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
 		packedAOFailed = true;
 		Logger::Log("Packed AO failed (%08lx); using legacy AO until restart.", result);
+		if (deferCombine) return;
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 		return;
 	}

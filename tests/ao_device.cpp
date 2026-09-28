@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 using Microsoft::WRL::ComPtr;
 static const char* CurrentStage="startup";
@@ -143,7 +144,7 @@ static void Run(IDirect3DDevice9* device, ID3DXEffect* effect, UINT width, UINT 
     std::printf("PASS D3D9 %s %ux%u depth %.0f, max color error %.6f\n",modeName,width,height,depth,largest);
     for(DWORD i=0;i<6;++i) device->SetTexture(i,NULL);
 }
-int main() {
+int main(int argc, char** argv) {
     try {
         CurrentStage="compile SunShadows variants";
         for(int forward=0;forward<2;++forward) for(int reversed=0;reversed<2;++reversed) {
@@ -162,6 +163,17 @@ int main() {
         errors.Reset(); hr=compiler->CompileEffect(0,&bytecode,&errors);
         if(errors) std::puts(static_cast<const char*>(errors->GetBufferPointer())); Check(hr);
         std::puts("PASS D3DX43 effect compilation (runtime compiler)");
+        CurrentStage="compile VolumetricFog variants";
+        for (int reversed=0; reversed<2; ++reversed) {
+            D3DXMACRO defines[]={{reversed?"REVERSED_DEPTH":NULL,""},{NULL,NULL}};
+            ComPtr<ID3DXEffectCompiler> fog; ComPtr<ID3DXBuffer> err,code;
+            HRESULT result=D3DXCreateEffectCompilerFromFileA("VolumetricFog.fx.hlsl",defines,NULL,0,&fog,&err);
+            if(err) std::puts(static_cast<const char*>(err->GetBufferPointer())); Check(result);
+            err.Reset(); result=fog->CompileEffect(0,&code,&err);
+            if(err) std::puts(static_cast<const char*>(err->GetBufferPointer())); Check(result);
+        }
+        std::puts("PASS D3DX43 VolumetricFog: all techniques, reversed depth on/off");
+        if (argc == 2 && std::strcmp(argv[1], "--compile-only") == 0) return 0;
         CurrentStage="create hidden window";
         HWND window=CreateWindowExA(0,"STATIC","NVR hidden AO test",WS_OVERLAPPED,0,0,128,128,NULL,NULL,GetModuleHandle(NULL),NULL);
         if(!window) throw std::runtime_error("Window creation failed");

@@ -861,7 +861,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool aoApplies = wouldRender(AO);
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater);
-	const bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
+	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->aoSurface[0] : nullptr);
 	AO->deferredReady = false;
 
@@ -884,6 +884,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		AO->deferCombine = composite && aoApplies;
 		AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		AO->deferCombine = false;
+		if (composite && aoApplies && !AO->deferredReady) {
+			// Dedicated AO was unavailable or failed. Restore the original order before
+			// its legacy path reads the scene for luminance-dependent AO strength.
+			composite = false;
+			if (shadowApplies)
+				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -909,8 +917,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		const bool applied = Fog->compositeApplied;
 		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
 		if (composite && !applied) {
-			// The fog pass could not take them (exceptional: its dedicated path failed this frame).
-			// Apply the deferred passes now so nothing is lost; only their order relative to fog differs.
+			// Failed composite fog leaves the scene untouched. Restore shadows -> AO -> fog.
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 			if (AO->deferredReady) {
@@ -918,6 +925,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 				AO->combineOnly = false;
 			}
+			Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		AO->deferredReady = false;
 	}
@@ -958,7 +966,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P29 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P30 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
 	}
 	if (GpuTimer::Enabled) frameIntervalTimer.Tick();

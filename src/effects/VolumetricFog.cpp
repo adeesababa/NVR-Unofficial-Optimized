@@ -329,6 +329,9 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		}
 	}
 
+	// The caller must apply deferred shadows/AO before retrying ordinary fog.
+	if (compositeShadow || compositeAO) return;
+
 	D3DXHANDLE technique = Effect->GetTechniqueByName("PackedFog");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};

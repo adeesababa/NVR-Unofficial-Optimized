@@ -1,3 +1,4 @@
+param([switch]$CompileOnly)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -7,6 +8,7 @@ if (!$vs) { throw 'Visual Studio 2019 C++ tools (v142) are required.' }
 if ($LASTEXITCODE -ne 0) { throw 'AO test build failed.' }
 Push-Location "$repo\src\hlsl\NewVegas\Effects"
 try {
-    & "$repo\build\ao-test\ao_device.exe"
+    if ($CompileOnly) { & "$repo\build\ao-test\ao_device.exe" --compile-only }
+    else { & "$repo\build\ao-test\ao_device.exe" }
     if ($LASTEXITCODE -ne 0) { throw 'D3D9 AO test failed (requires GPU access).' }
 } finally { Pop-Location }

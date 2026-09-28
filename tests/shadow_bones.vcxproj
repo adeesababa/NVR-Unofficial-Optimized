@@ -24,6 +24,6 @@
       <Optimization>MaxSpeed</Optimization><UndefinePreprocessorDefinitions>NDEBUG</UndefinePreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="shadow_bones.cpp" /><ClCompile Include="gpu_profiler.cpp" /></ItemGroup>
+  <ItemGroup><ClCompile Include="shadow_bones.cpp" /><ClCompile Include="gpu_profiler.cpp" /><ClCompile Include="composite_math.cpp" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
