@@ -81,6 +81,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<WetWorldEffect>(&TheShaderManager->Effects.WetWorld);
 	TheShaderManager->RegisterEffect<DitherBusterEffect>(&TheShaderManager->Effects.DitherBuster);
 	TheShaderManager->RegisterEffect<SMAAEffect>(&TheShaderManager->Effects.SMAA);
+	TheShaderManager->RegisterEffect<FXAAEffect>(&TheShaderManager->Effects.FXAA);
 
 	TheShaderManager->RegisterShaderCollection<TonemappingShaders>(&TheShaderManager->Shaders.Tonemapping);
 	TheShaderManager->RegisterShaderCollection<POMShaders>(&TheShaderManager->Shaders.POM);
@@ -973,7 +974,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P33 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P34 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
 	}
 	if (GpuTimer::Enabled) frameIntervalTimer.Tick();
@@ -1000,6 +1001,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static GpuTimer lensTimer("Lens overlays");
 	static GpuTimer ditherTimer("Dither buster");
 	static GpuTimer smaaTimer("SMAA");
+	static GpuTimer fxaaTimer("FXAA");
 	static GpuTimer sharpenTimer("Sharpening");
 	static GpuTimer cinemaTimer("Cinema");
 	static GpuTimer imageAdjustTimer("Image adjust + debug");
@@ -1057,6 +1059,10 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	{
 		GpuProfileScope gpu(smaaTimer, Device);
 		Effects.SMAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		GpuProfileScope gpu(fxaaTimer, Device);
+		Effects.FXAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(sharpenTimer, Device);

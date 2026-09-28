@@ -24,6 +24,7 @@ struct SettingsMainStruct {
         bool    SlimDepthBuffer; // [Main.Main.Performance] SlimDepthBuffer (read once at startup)
         bool    GodRaysLowRes; // [Main.Main.ReducedQuality] GodRaysLowRes (quarter instead of half resolution)
         bool    AOLowRes; // [Main.Main.ReducedQuality] AOLowRes (quarter instead of half resolution)
+        bool    FXAAInsteadOfMSAA; // [Main.Main.ReducedQuality] FXAAInsteadOfMSAA (game MSAA off at startup, FXAA pass)
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;

@@ -160,6 +160,7 @@ public:
 		WetWorldEffect*			WetWorld;
 		DitherBusterEffect*		DitherBuster;
 		SMAAEffect*				SMAA;
+		FXAAEffect*				FXAA;
 	};
 
 	struct ShadersStruct{

@@ -17,6 +17,12 @@ bool __fastcall ReadSettingHook(INISettingCollection* This, UInt32 edx, GameSett
 		Setting->pValue = (char*)MainMenuMusic;
 	else if (!strcmp(Setting->Name, "bDoCanopyShadowPass:Display") || !strcmp(Setting->Name, "bDoActorShadows:Display") || !strcmp(Setting->Name, "iActorShadowCountExt:Display") || !strcmp(Setting->Name, "iActorShadowCountInt:Display"))
 		Setting->iValue = 0;
+	else if (!strcmp(Setting->Name, "iMultiSample:Display") && TheSettingManager->SettingsMain.Main.FXAAInsteadOfMSAA) {
+		// Read once at startup to create the game's render targets, so this needs a restart.
+		// WriteSettingHook keeps the 0 out of FalloutPrefs.ini, so turning the switch off restores MSAA.
+		Logger::Log("UNOFFICIAL FXAAInsteadOfMSAA: game MSAA off (iMultiSample %d -> 0), FXAA pass instead.", Setting->iValue);
+		Setting->iValue = 0;
+	}
 	else if (!strcmp(Setting->Name, "iMultiSample:Display") && Setting->iValue < 2 && TheSettingManager->SettingsMain.Main.ForceMSAA)
 		Setting->iValue = 2;
 	else if (!strcmp(Setting->Name, "bDoHighDynamicRange:BlurShaderHDR"))
@@ -42,6 +48,8 @@ bool __fastcall WriteSettingHook(INISettingCollection* This, UInt32 edx, GameSet
 		return true;
 	else if (!strcmp(Setting->Name, "SIntroSequence:General") || !strcmp(Setting->Name, "SMainMenuMovie:General") || !strcmp(Setting->Name, "SMainMenuMusic:General") || !strcmp(Setting->Name, "STitleMusic:Loading"))
 		return true;
+	else if (!strcmp(Setting->Name, "iMultiSample:Display") && TheSettingManager->SettingsMain.Main.FXAAInsteadOfMSAA)
+		return true; // keep the player's own value on disk; ReadSettingHook zeroes it in memory
 	return (*WriteSetting)(This, Setting);
 	
 }

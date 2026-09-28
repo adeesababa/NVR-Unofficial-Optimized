@@ -173,6 +173,15 @@ int main(int argc, char** argv) {
             if(err) std::puts(static_cast<const char*>(err->GetBufferPointer())); Check(result);
         }
         std::puts("PASS D3DX43 VolumetricFog: all techniques, reversed depth on/off");
+        CurrentStage="compile FXAA";
+        {
+            ComPtr<ID3DXEffectCompiler> fxaa; ComPtr<ID3DXBuffer> err,code;
+            HRESULT result=D3DXCreateEffectCompilerFromFileA("FXAA.fx.hlsl",NULL,NULL,0,&fxaa,&err);
+            if(err) std::puts(static_cast<const char*>(err->GetBufferPointer())); Check(result);
+            err.Reset(); result=fxaa->CompileEffect(0,&code,&err);
+            if(err) std::puts(static_cast<const char*>(err->GetBufferPointer())); Check(result);
+        }
+        std::puts("PASS D3DX43 FXAA");
         if (argc == 2 && std::strcmp(argv[1], "--compile-only") == 0) return 0;
         CurrentStage="create hidden window";
         HWND window=CreateWindowExA(0,"STATIC","NVR hidden AO test",WS_OVERLAPPED,0,0,128,128,NULL,NULL,GetModuleHandle(NULL),NULL);
