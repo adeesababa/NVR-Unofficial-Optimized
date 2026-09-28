@@ -1,11 +1,66 @@
+# New Vegas Reloaded - UNOFFICIAL Optimized
+
+**A faster version of New Vegas Reloaded (NVR) that keeps the same look.**
+
+New Vegas Reloaded makes Fallout: New Vegas look much better - shadows, fog, light rays, ambient
+occlusion and more - but those effects cost a lot of frame rate. This build reworks how the effects
+are drawn so they do the same job with much less work, and fixes a few visual bugs along the way.
+
+### What you get
+- **More FPS with NVR's effects on.** On the test PC (GTX 1070 at 2560x1440) the heavy effects
+  all got cheaper - for example ambient occlusion went from about 2.3 ms to 0.5 ms per frame, god
+  rays from about 1.6 ms to 0.5 ms, and SMAA and contact shadows by roughly 40-50%.
+- **The same image.** Almost all of the speed-ups produce the same picture as before.
+- **Bug fixes:** no more horizontal black lines on sun-lit surfaces, and no more flickering dashes
+  on tree branches against the sky.
+- **Optional extra speed** for weaker PCs (see below), each one a simple on/off switch.
+- **A built-in performance meter** (F10) that shows what each effect costs on your PC.
+
+> [!NOTE]
+> **Experimental.** So far this has been tested on only one PC (NVIDIA GTX 1070, Windows 10).
+> AMD/Intel cards, DXVK, interiors and many mod setups have not been tried. Keep a backup of your
+> NVR files. Reports of what works and what breaks are welcome in this repository's issues.
+
+### How to install
+This build replaces files of an existing New Vegas Reloaded install; it is not a standalone mod.
+1. Install New Vegas Reloaded normally first and make sure it runs.
+2. Back up `Data\NVSE\Plugins\NewVegasReloaded.dll`, `NewVegasReloaded.dll.defaults.toml` and the
+   `Data\Shaders\NewVegasReloaded\` folder.
+3. With the game closed, download the latest zip from **Releases** and extract it into your `Data`
+   folder (or your mod manager's NVR folder), overwriting when asked.
+4. Start the game. Your own NVR settings are kept.
+
+To uninstall, put your backed-up files back. If an effect looks wrong after updating, delete the
+`Cache` folders inside `Data\Shaders\NewVegasReloaded\`.
+
+### Settings
+Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
+- **Main > Main > Performance** - the speed-ups that don't change the image. They are on by
+  default; you only need them to switch one off if you suspect it causes a problem.
+  Leave `MergedDepthNormals` off (it doesn't work on some graphics drivers).
+- **Main > Main > ReducedQuality** - extra speed in exchange for a small loss of quality. All
+  off by default, and they take effect immediately, so you can compare while playing:
+  - `FXAA` - a much cheaper edge smoothing than SMAA (about 0.15 ms instead of about 1 ms).
+    Turn SMAA off (Shaders > SMAA) when you use it. Slightly softer image.
+  - `GodRaysLowRes` - lower-resolution light rays. Softer rays.
+  - `AOLowRes` - lower-resolution ambient occlusion. Softer corner shading.
+
+To keep a change for next time, press **Save** at the top of the menu.
+
+Tip: the game's own anti-aliasing (MSAA) is a separate setting. To try without it, set
+`iMultiSample=0` in `Documents\My Games\FalloutNV\FalloutPrefs.ini`, or choose Antialiasing: Off in
+the game's launcher.
+
+**Performance meter:** press **F10** to start or stop it. While it runs, the time each effect takes
+is written to `NewVegasReloaded.log` in the game folder every couple of seconds.
+
+Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIAL-TECHNICAL.md).
+
 > [!IMPORTANT]
-> ## UNOFFICIAL build: "New Vegas Reloaded UNOFFICIAL Optimized"
->
-> This branch is an **unofficial, modified version** of New Vegas Reloaded. It is **not** made,
+> **Unofficial build.** This is a modified version of New Vegas Reloaded. It is **not** made,
 > endorsed or supported by the New Vegas Reloaded / TESReloaded authors or maintainers.
->
-> **Do not use the official New Vegas Reloaded channels (Discord, Nexus, wiki, or the upstream
-> GitHub issue trackers) for help with this version.** Report problems with it here, or not at all.
+> **Please don't ask for help with it in the official NVR channels** (Discord, Nexus, wiki or the
+> upstream GitHub issue trackers) - use this repository's issues instead.
 >
 > It is provided **as is, without support or warranty of any kind**, under the same license as the
 > original project (GPL-3.0 with the additional terms in [License.md](License.md)). You may use,
@@ -20,54 +75,10 @@
 >
 > This is shared in good faith. If any of the original authors or maintainers feel this release
 > steps on their toes, please open an issue here and it will be taken down.
->
-> ### What this version changes
-> Performance work on the post-processing and shadow pipelines, plus fixes, on top of the original:
-> - Copy-free effect chain: effects alternate between two buffers instead of copying the whole
->   frame after every effect (kill switch: `DisableFrameChain = true` under `[Main.Main.Misc]`).
-> - Dedicated half-resolution targets for ambient occlusion, volumetric fog and god rays, with fewer
->   full-resolution copies; effects that never read `TESR_SourceBuffer` no longer refresh it.
-> - Shadow cascades: middle cascade updated every 4 frames and far/LOD every 8, only freshly updated
->   cascades resolved/filtered, cheaper face culling and batched bone uploads.
-> - Cheaper SMAA edge detection, single-pass dither buster, merged point-shadow passes, and other
->   shader-level savings.
-> - Fixes: horizontal black lines on sun-shadowed surfaces (contact shadows), a read/write feedback
->   loop in the contact-shadow passes, volumetric fog reconstructing the whole scene from half
->   resolution, explicit SMAA stencil state, and a few D3D reference leaks.
-> - Overall it should generally run better without compromising visual quality too much.
->   
-> - An F10 GPU/CPU profiler that writes per-effect timings to `NewVegasReloaded.log`.
->
-> **Experimental.** So far this has only been tested on one Windows PC (GTX 1070), and not in every
-> configuration (interiors, underwater, point-light shadows, AMD cards, native D3D9 without DXVK).
-> It needs more testing and feedback. If you try it, reports of what works and what breaks,
-> ideally with your `NewVegasReloaded.log` and an F10 profile, are welcome in this repository's
-> issues. Keep a backup of your previous NVR files.
->
-> ### How to install
-> This build replaces files of an existing New Vegas Reloaded install; it is not a standalone mod.
-> 1. Install New Vegas Reloaded normally first (xNVSE and the rest of its requirements included)
->    and check that it runs.
-> 2. Back up your `Data\NVSE\Plugins\NewVegasReloaded.dll` and `Data\Shaders\NewVegasReloaded\`
->    folder.
-> 3. With the game closed, extract the release zip into your `Data` folder (or your mod manager's
->    NVR mod folder) and overwrite when asked. It contains `NVSE\Plugins\NewVegasReloaded.dll` and
->    the changed shaders under `Shaders\NewVegasReloaded\Effects\`.
-> 4. Start the game. `NewVegasReloaded.log` (in the game folder) should contain lines starting
->    with `UNOFFICIAL`, such as `UNOFFICIAL frame chain`.
->
-> If a shader change does not seem to apply, delete the `Cache` folders under
-> `Data\Shaders\NewVegasReloaded\`. To uninstall, restore your backup.
->
-> ### How to use
-> - Settings work exactly as in normal NVR: press <kbd>O</kbd> in game, or edit
->   `Data\NVSE\Plugins\NewVegasReloaded.dll.toml`.
-> - **F10** starts/stops the built-in profiler. While it runs, average per-effect GPU and CPU times
->   are written to `NewVegasReloaded.log` every 120 frames (`GPU PROFILE ...`, `CPU PROFILE ...`).
->   `Frame interval (CPU)` is your real frame time.
-> - If you see image problems, add `DisableFrameChain = true` under `[_Main.Main.Misc]` in the
->   `.toml` to turn off the copy-free effect chain without reinstalling.
-> - Optional speed-for-quality trade: lower `MaxSearchSteps` under `[_Shaders.SMAA.Main]` (e.g. 16).
+
+---
+
+*Below is the original New Vegas Reloaded readme.*
 
 <div align="center">
     <a href="https://dlpnd.github.io/nvr-wiki/"><img src="https://i.imgur.com/SUr8ORH.png" width="1024" alt="NVR" /></a>
