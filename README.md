@@ -34,6 +34,8 @@
 > - Fixes: horizontal black lines on sun-shadowed surfaces (contact shadows), a read/write feedback
 >   loop in the contact-shadow passes, volumetric fog reconstructing the whole scene from half
 >   resolution, explicit SMAA stencil state, and a few D3D reference leaks.
+> - Overall it should generally run better without compromising visual quality too much.
+> - 
 > - An F10 GPU/CPU profiler that writes per-effect timings to `NewVegasReloaded.log`.
 >
 > **Experimental.** So far this has only been tested on one Windows PC (GTX 1070), and not in every
