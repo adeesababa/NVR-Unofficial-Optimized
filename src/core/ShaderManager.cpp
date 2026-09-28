@@ -850,10 +850,27 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (!Chain.Begin(RenderTarget))
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
+	// Composite apply: the exterior sun-shadow composite and the AO combine are per-pixel
+	// operations on the scene, applied just before fog. When no effect that normally runs between
+	// them would render this frame, the fog reconstruct applies them in the same pass (same maths,
+	// same order), saving two full-resolution read/write passes of the HDR frame.
+	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
+	VolumetricFogEffect* Fog = Effects.VolumetricFog;
+	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
+	const bool aoApplies = wouldRender(AO);
+	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
+		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater);
+	const bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
+		Fog->CanComposite(aoApplies ? AO->aoSurface[0] : nullptr);
+	AO->deferredReady = false;
+
 	{
 		GpuProfileScope gpu(shadowApplyTimer, Device);
-		if (GameState.isExterior)
-			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (GameState.isExterior) {
+			if (!(composite && shadowApplies))
+				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
 		else
 			Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
 	}
@@ -864,7 +881,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(aoTimer, Device);
-		Effects.AmbientOcclusion->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		AO->deferCombine = composite && aoApplies;
+		AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		AO->deferCombine = false;
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -882,7 +901,25 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(fogTimer, Device);
-		Effects.VolumetricFog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Fog->compositeShadow = composite && shadowApplies;
+		Fog->compositeAO = composite && AO->deferredReady;
+		Fog->compositeAOTexture = AO->aoTexture[0];
+		Fog->compositeApplied = false;
+		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		const bool applied = Fog->compositeApplied;
+		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
+		if (composite && !applied) {
+			// The fog pass could not take them (exceptional: its dedicated path failed this frame).
+			// Apply the deferred passes now so nothing is lost; only their order relative to fog differs.
+			if (shadowApplies)
+				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			if (AO->deferredReady) {
+				AO->combineOnly = true;
+				AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				AO->combineOnly = false;
+			}
+		}
+		AO->deferredReady = false;
 	}
 	{
 		GpuProfileScope gpu(godRaysTimer, Device);
@@ -921,7 +958,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P28 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P29 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
 	}
 	if (GpuTimer::Enabled) frameIntervalTimer.Tick();

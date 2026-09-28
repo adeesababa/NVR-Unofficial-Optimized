@@ -7,6 +7,13 @@ public:
 
 	bool bNVAOLoaded = false;
 	bool packedAOFailed = false;
+	// Composite apply (set by ShaderManager around one Render call):
+	// deferCombine -- run estimate and blurs only, leaving the result in aoTexture[0] for the fog
+	//                 pass to apply; deferredReady reports that it did.
+	// combineOnly  -- run just the combine from aoTexture[0] (fallback if the fog pass could not).
+	bool deferCombine = false;
+	bool deferredReady = false;
+	bool combineOnly = false;
 	IDirect3DTexture9* aoTexture[2] = {};
 	IDirect3DSurface9* aoSurface[2] = {};
 

@@ -2,6 +2,16 @@
 
 #include "../../core/GpuProfiler.h"
 
+// Everything from the start of the game's render call up to the world scene: NVR shadow maps,
+// the game's own pre-scene work (water reflection/refraction/depth maps and anything else).
+static GpuTimer PreSceneTimer("Pre-scene (to world scene)");
+static bool PreSceneTimerActive = false;
+static void EndPreSceneTimer() {
+	if (!PreSceneTimerActive) return;
+	PreSceneTimer.End();
+	PreSceneTimerActive = false;
+}
+
 void (__thiscall* Render)(Main*, BSRenderedTexture*, int, int) = (void (__thiscall*)(Main*, BSRenderedTexture*, int, int))Hooks::Render;
 void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
 	
@@ -25,7 +35,9 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	// with the individual buckets shows how much GPU time is not attributed to any of them.
 	static GpuTimer frameTimer("Game frame total");
 	GpuProfileScope gpu(frameTimer, TheRenderManager->device);
+	PreSceneTimerActive = PreSceneTimer.Begin(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
+	EndPreSceneTimer();
 
 }
 
@@ -82,6 +94,7 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
+	EndPreSceneTimer();
 	{
 		// Game geometry drawn with NVR's replacement shaders, including per-object sun shadows.
 		static GpuTimer worldTimer("World scene (game)");
@@ -124,6 +137,15 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 
 void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*) = (void (__thiscall*)(WaterManager*, NiCamera*, ShadowSceneNode*))Hooks::RenderReflections;
 void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* Camera, ShadowSceneNode* SceneNode) {
+	if (!TheSettingManager->SettingsMain.Main.ForceReflections) {
+		// Hooked only for profiling in this mode: the game's reflection pass, unchanged.
+		static GpuTimer reflectionsTimer("Water reflections (game)");
+		static CpuTimer reflectionsCpuTimer("Water reflections (CPU)");
+		CpuProfileScope cpu(reflectionsCpuTimer);
+		GpuProfileScope gpu(reflectionsTimer, TheRenderManager->device);
+		(*RenderReflections)(This, Camera, SceneNode);
+		return;
+	}
 	
 	D3DXVECTOR4* ShadowData = &TheShaderManager->Effects.ShadowsExteriors->Constants.Data;
 	float ShadowDataBackup = ShadowData->x;

@@ -49,6 +49,15 @@ public:
 	IDirect3DTexture9* fogTexture[2] = {};
 	IDirect3DSurface9* fogSurface[2] = {};
 
+	// Composite apply (set by ShaderManager for one Render call): the dedicated reconstruct also
+	// applies the exterior sun-shadow composite and/or the deferred AO combine, saving their own
+	// full-resolution passes. compositeApplied reports whether that happened.
+	bool	compositeShadow = false;
+	bool	compositeAO = false;
+	IDirect3DTexture9* compositeAOTexture = nullptr;
+	bool	compositeApplied = false;
+	bool	CanComposite(IDirect3DSurface9* aoSurface);
+
 	void	RegisterTextures();
 	bool	RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 		IDirect3DSurface9* RenderedSurface);

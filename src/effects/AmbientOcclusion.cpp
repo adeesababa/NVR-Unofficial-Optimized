@@ -86,7 +86,9 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
+		const UINT firstPass = combineOnly && passes ? passes - 1 : 0;
+		const UINT endPass = deferCombine && passes ? passes - 1 : passes;
+		for (UINT p = firstPass; p < endPass && SUCCEEDED(result); ++p) {
 			const bool combine = p == passes - 1;
 			Device->SetTexture(5, nullptr);
 			IDirect3DSurface9* destination = combine ? finalTarget : aoSurface[p == 1 ? 1 : 0];
@@ -117,6 +119,12 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
+	if (SUCCEEDED(result) && deferCombine) {
+		// Nothing was written to the frame; the fog pass applies aoTexture[0].
+		deferredReady = true;
+		renderTime = timer.LogTime("AmbientOcclusion::Deferred");
+		return;
+	}
 	if (SUCCEEDED(result)) {
 		if (chained) chain.Commit();
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);

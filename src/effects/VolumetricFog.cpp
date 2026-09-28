@@ -175,10 +175,32 @@ void VolumetricFogEffect::RegisterTextures() {
 * effect leaves equal to the render target. Returns false without touching the render target
 * if the dedicated path is unavailable.
 */
+/*
+* Whether this frame's fog can take over the shadow/AO apply passes: the dedicated path must be
+* usable and the AO targets must match the fog targets' size (the composite AO upsample uses the
+* fog layout). Checked before those passes are skipped, so a later failure is exceptional.
+*/
+bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
+	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] ||
+		TheSettingManager->SettingsMain.Main.DisableCompositeApply ||
+		!Effect->GetTechniqueByName("CompositeFog") || !Effect->GetParameterByName(NULL, "NVR_CompositeFlags"))
+		return false;
+	if (aoSurface) {
+		D3DSURFACE_DESC fog = {}, ao = {};
+		if (FAILED(fogSurface[0]->GetDesc(&fog)) || FAILED(aoSurface->GetDesc(&ao)) ||
+			fog.Width != ao.Width || fog.Height != ao.Height)
+			return false;
+	}
+	return true;
+}
+
 bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface) {
 	if (dedicatedFogFailed) return false;
-	D3DXHANDLE technique = Effect->GetTechniqueByName("DedicatedFog");
+	const bool composite = compositeShadow || (compositeAO && compositeAOTexture);
+	D3DXHANDLE technique = Effect->GetTechniqueByName(composite ? "CompositeFog" : "DedicatedFog");
+	D3DXHANDLE flagsHandle = composite ? Effect->GetParameterByName(NULL, "NVR_CompositeFlags") : NULL;
+	if (composite && !flagsHandle) return false;
 	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_FogLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};
@@ -222,13 +244,19 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
+	if (composite) {
+		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(flagsHandle, &flags);
+	}
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
 			const bool combine = p == passes - 1;
-			Device->SetTexture(5, nullptr);
+			// s5 is TESR_PointShadowBuffer (bound by SetCT); the fog targets are s6/s7, AO s8.
 			Device->SetTexture(6, nullptr);
+			Device->SetTexture(7, nullptr);
+			Device->SetTexture(8, nullptr);
 			// Unbind the half-resolution MRT before binding the full-resolution target, so the
 			// two differently sized targets are never bound together.
 			if (combine) result = Device->SetRenderTarget(1, nullptr);
@@ -241,8 +269,9 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 			if (FAILED(result)) break;
 			Device->SetTexture(0, scene); // TESR_SourceBuffer slot
 			if (combine) {
-				Device->SetTexture(5, fogTexture[0]);
-				Device->SetTexture(6, fogTexture[1]);
+				Device->SetTexture(6, fogTexture[0]);
+				Device->SetTexture(7, fogTexture[1]);
+				if (composite && compositeAO && compositeAOTexture) Device->SetTexture(8, compositeAOTexture);
 			}
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
@@ -250,8 +279,9 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		}
 		Effect->End();
 	}
-	Device->SetTexture(5, nullptr);
 	Device->SetTexture(6, nullptr);
+	Device->SetTexture(7, nullptr);
+	Device->SetTexture(8, nullptr);
 	Device->SetTexture(0, TheTextureManager->SourceTexture);
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderTarget(0, RenderTarget);
@@ -269,6 +299,13 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		dedicatedFogFailed = true;
 		Logger::Log("Dedicated volumetric fog failed (%08lx); using packed path until restart.", result);
 		return false;
+	}
+	compositeApplied = composite;
+	static bool reportedComposite = false;
+	if (composite && !reportedComposite) {
+		Logger::Log("UNOFFICIAL composite apply active: sun shadows %s, AO %s folded into the fog pass.",
+			compositeShadow ? "yes" : "no", (compositeAO && compositeAOTexture) ? "yes" : "no");
+		reportedComposite = true;
 	}
 	static bool reported = false;
 	if (!reported) {

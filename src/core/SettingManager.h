@@ -18,6 +18,7 @@ struct SettingsMainStruct {
         bool    RenderEffects;
         bool    RenderPreTonemapping;
         bool    DisableFrameChain; // [Main.Main.Misc] kill switch for the copy-free effect chain
+        bool    DisableCompositeApply; // [Main.Main.Misc] kill switch for folding shadow/AO apply into fog
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;
