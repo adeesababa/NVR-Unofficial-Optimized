@@ -34,6 +34,26 @@ static_assert(SunCascadeUpdatePeriod(ShadowManager::MapNear, true, true) == 1 &&
 	SunCascadeUpdatePeriod(ShadowManager::MapFar, true, false) == 1,
 	"Sun cascade update schedule changed unexpectedly");
 
+// Frame offset within each cascade's period, so the infrequent cascades never refresh on the
+// same frame: over the 8-frame cycle, 0 near only, 1/5 middle, 2/6 ortho map, 3 far, 7 LOD.
+// Refresh rates are unchanged; this only removes the frame where all four used to render.
+constexpr unsigned SunCascadeUpdatePhase(int cascade) {
+	if (cascade == ShadowManager::MapMiddle) return 1;
+	if (cascade == ShadowManager::MapFar) return 3;
+	if (cascade == ShadowManager::MapLod) return 7;
+	return 0;
+}
+
+constexpr bool SunCascadeUpdatesOnFrame(int cascade, unsigned frame, unsigned period) {
+	return frame % period == SunCascadeUpdatePhase(cascade) % period;
+}
+
+static_assert(SunCascadeUpdatesOnFrame(ShadowManager::MapNear, 5, 1) &&
+	SunCascadeUpdatesOnFrame(ShadowManager::MapMiddle, 5, 4) && !SunCascadeUpdatesOnFrame(ShadowManager::MapMiddle, 0, 4) &&
+	SunCascadeUpdatesOnFrame(ShadowManager::MapFar, 3, 8) && SunCascadeUpdatesOnFrame(ShadowManager::MapLod, 7, 8) &&
+	SunCascadeUpdatesOnFrame(ShadowManager::MapFar, 0, 1),
+	"Sun cascade stagger changed unexpectedly");
+
 void ShadowManager::Initialize() {
 	
 	Logger::Log("Starting the shadows manager...");
@@ -755,7 +775,7 @@ void ShadowManager::RenderShadowMaps() {
 					Shadows->Settings.ShadowMaps.LimitFrequency,
 					Shadows->ShadowAtlasSurfaceMSAA != nullptr);
 
-				if (!(FrameCounter % updatePeriod)) {
+				if (ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod)) {
 					updatedCascades |= 1u << i;
 					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
 					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
@@ -777,6 +797,7 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			ForceAllCascades = false;
 			}
 
 			// Resolve MSAA.

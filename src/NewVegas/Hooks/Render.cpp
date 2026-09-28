@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../core/GpuProfiler.h"
+
 void (__thiscall* Render)(Main*, BSRenderedTexture*, int, int) = (void (__thiscall*)(Main*, BSRenderedTexture*, int, int))Hooks::Render;
 void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
 	
@@ -19,6 +21,10 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	MaterialPass::BeginFrame(Flashlight->Enabled && Flashlight->spotLightActive);
 
 	//if (SettingsMain->Develop.TraceShaders && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && Global->OnKeyDown(SettingsMain->Develop.TraceShaders) && DWNode::Get() == NULL) DWNode::Create();
+	// Whole game frame on the GPU (scene, reflections, NVR effects, image space). Comparing it
+	// with the individual buckets shows how much GPU time is not attributed to any of them.
+	static GpuTimer frameTimer("Game frame total");
+	GpuProfileScope gpu(frameTimer, TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 
 }
@@ -76,7 +82,12 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
-	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	{
+		// Game geometry drawn with NVR's replacement shaders, including per-object sun shadows.
+		static GpuTimer worldTimer("World scene (game)");
+		GpuProfileScope gpu(worldTimer, TheRenderManager->device);
+		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	}
 
 	// Re-light nearby statics inside the flashlight cone. This has to happen here, before
 	// the viewmodel depth handling below clears the Z buffer: the pass draws with depth
@@ -88,6 +99,8 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	const bool bPipBoyOpen = InterfaceManager->IsPipBoyOpen();
 	const bool bPipBoyLive = (TheGameMenuManager->IsLiveMenu && TheGameMenuManager->IsLiveMenu(Menu::kMenuType_BigFour, false, false) == GameMenuManager::MenuPauseState::MENU_LIVE);
 
+	static GpuTimer depthResolveTimer("Depth resolves");
+	GpuProfileScope gpuResolve(depthResolveTimer, TheRenderManager->device);
 	if (!bPipBoyOpen || bPipBoyLive)
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture); // disable updating the world buffer when pipboy is out
 
@@ -101,6 +114,8 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 void (__thiscall* RenderFirstPerson)(Main*, NiDX9Renderer*, NiGeometry*, Sun*, BSRenderedTexture*) = (void (__thiscall*)(Main*, NiDX9Renderer*, NiGeometry*, Sun*, BSRenderedTexture*))Hooks::RenderFirstPerson;
 void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Renderer, NiGeometry* Geo, Sun* SkySun, BSRenderedTexture* RenderedTexture) {
 	// Clear the depth buffer before rendering first person model to prevent clipping with world objects & other artefacts
+	static GpuTimer firstPersonTimer("First person (game)");
+	GpuProfileScope gpu(firstPersonTimer, TheRenderManager->device);
 	TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
 	//ThisCall(0x00874C10, Global);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
@@ -119,7 +134,14 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 	if (DWNode::Get()) DWNode::AddNode("BEGIN REFLECTIONS RENDERING", NULL, NULL);
 	ShadowData->x = -1.0f; // Disables the shadows rendering for water reflections (the geo is rendered with the same shaders used in the normal scene!)
 	TerrainParallaxData->x = 0;
-	(*RenderReflections)(This, Camera, SceneNode);
+	{
+		// ForceReflections renders the full world again into the water reflection map.
+		static GpuTimer reflectionsTimer("Water reflections (game)");
+		static CpuTimer reflectionsCpuTimer("Water reflections (CPU)");
+		CpuProfileScope cpu(reflectionsCpuTimer);
+		GpuProfileScope gpu(reflectionsTimer, TheRenderManager->device);
+		(*RenderReflections)(This, Camera, SceneNode);
+	}
 	ShadowData->x = ShadowDataBackup;
 	TerrainParallaxData->x = TerrainParallaxBackup;
 	if (DWNode::Get()) DWNode::AddNode("END REFLECTIONS RENDERING", NULL, NULL);
@@ -218,7 +240,11 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	
 	}
 
-	ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
+	{
+		static GpuTimer imageSpaceTimer("Game image space");
+		GpuProfileScope gpu(imageSpaceTimer, Device);
+		ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
+	}
 
 	if (!DestinationTarget && TheRenderManager->currentRTGroup) {
 		OutputSurface = TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface;

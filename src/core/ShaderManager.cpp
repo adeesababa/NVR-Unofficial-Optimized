@@ -771,10 +771,6 @@ void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectReco
 void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget) {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 	if (!Player->parentCell) return;
-	if (!InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
-		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P26 %s (F10)", GpuTimer::Enabled ? "enabled" : "paused");
-	}
 	if (GameState.OverlayIsOn && TESMain::IsMenuBackgroundReady()) return; // disable all effects during terminal/lockpicking sequences
 
 	auto timer = TimeLogger();
@@ -919,14 +915,21 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 * Renders the effect that have been set to enabled.
 */
 void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
+	// F10 profiling toggle and the frame interval run before the RenderEffects check, so an
+	// effects-off run still logs its real frame time for comparison. This is the last NVR call
+	// of the frame, after the pre-tonemap chain, so the toggle takes effect from the next frame.
+	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
+	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
+		GpuTimer::Enabled = !GpuTimer::Enabled;
+		Logger::Log("GPU PROFILE P27 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
+	}
+	if (GpuTimer::Enabled) frameIntervalTimer.Tick();
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 	if (!Player->parentCell) return;
 	if (GameState.OverlayIsOn) return; // disable all effects during terminal/lockpicking sequences because they bleed through the overlay
 
 	auto timer = TimeLogger();
-	// Once per rendered frame: the interval is the true frame time to compare the buckets against.
-	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
-	if (GpuTimer::Enabled) frameIntervalTimer.Tick();
 	static CpuTimer postChainCpuTimer("Post chain (CPU)");
 	CpuProfileScope postChainCpu(postChainCpuTimer);
 

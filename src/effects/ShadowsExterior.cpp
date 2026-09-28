@@ -591,8 +591,10 @@ void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cub
 		TheShaderManager->Effects.WetWorld->ClearSampler("TESR_OrthoMapBuffer", 19);
 	}
 
-	// Reset shadow manager frame counter.
+	// Reset shadow manager frame counter, and refresh every cascade next frame: the staggered
+	// schedule would otherwise leave freshly created cascades uninitialised for several frames.
 	TheShadowManager->FrameCounter = 0;
+	TheShadowManager->ForceAllCascades = true;
 }
 
 

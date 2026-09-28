@@ -53,6 +53,7 @@ public:
 	float					shadowMapsRenderTime;
 	bool					ShadowShadersLoaded;
 	int						FrameCounter;
+	bool					ForceAllCascades = true; // next frame refreshes every cascade (fresh or recreated atlas)
 
 private:
 	bool					CheckShaderFlags(NiGeometry* Geometry);
