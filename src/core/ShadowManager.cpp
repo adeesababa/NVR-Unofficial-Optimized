@@ -18,20 +18,22 @@ static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
 */
 #include "GpuProfiler.h"
 
-constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, bool hasMsaaHistory) {
+// Refresh period per cascade. This used to require MSAA for the middle and far cascades: the
+// atlas blur once ran on every cascade every frame, so without an MSAA surface to re-resolve
+// from, a cached cascade would have been re-blurred each frame. Resolve and blur now run only on
+// cascades updated that frame (BlurShadowAtlas mask), so cached cascades stay untouched either way.
+constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency) {
 	if (!limitFrequency) return 1;
-	if (cascade == ShadowManager::MapLod) return 8;
-	if (!hasMsaaHistory) return 1;
 	if (cascade == ShadowManager::MapMiddle) return 4;
-	if (cascade == ShadowManager::MapFar) return 8;
+	if (cascade == ShadowManager::MapFar || cascade == ShadowManager::MapLod) return 8;
 	return 1;
 }
 
-static_assert(SunCascadeUpdatePeriod(ShadowManager::MapNear, true, true) == 1 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, true) == 4 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapFar, true, true) == 8 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapLod, true, true) == 8 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapFar, true, false) == 1,
+static_assert(SunCascadeUpdatePeriod(ShadowManager::MapNear, true) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true) == 4 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapFar, true) == 8 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapLod, true) == 8 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapFar, false) == 1,
 	"Sun cascade update schedule changed unexpectedly");
 
 // Frame offset within each cascade's period, so the infrequent cascades never refresh on the
@@ -771,9 +773,7 @@ void ShadowManager::RenderShadowMaps() {
 			GpuProfileScope gpu(sunCascadesTimer, Device);
 			for (int i = MapNear; i < MapOrtho; i++) {
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
-				const unsigned updatePeriod = SunCascadeUpdatePeriod(i,
-					Shadows->Settings.ShadowMaps.LimitFrequency,
-					Shadows->ShadowAtlasSurfaceMSAA != nullptr);
+				const unsigned updatePeriod = SunCascadeUpdatePeriod(i, Shadows->Settings.ShadowMaps.LimitFrequency);
 
 				if (ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod)) {
 					updatedCascades |= 1u << i;
@@ -789,8 +789,6 @@ void ShadowManager::RenderShadowMaps() {
 					ShadowMap->ShadowCameraToLight = translationMatrix * ShadowMap->ShadowCameraToLight;
 					ShadowMap->CameraTranslation = newCameraTranslation;
 
-					if (i == MapLod)
-						Shadows->Constants.ShadowBlur.y = Shadows->ShadowAtlasSurfaceMSAA ? 1.0f : 0.0f; // Disable blur for last cascade if MSAA is off.
 				}
 
 				std::string message = "ShadowManager::RenderShadowMap ";

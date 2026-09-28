@@ -42,6 +42,18 @@ float4 DepthBlurKeep(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMa
 	float depth1 = readDepthLod(IN.UVCoord);
 	[branch] if (depth1 > endFade) return center;
 
+	// Fetch the neighbours first. When every tap equals the centre -- fully lit or evenly
+	// shadowed, which is most of the screen -- the depth-weighted average is the centre value
+	// whatever the weights are, so the twelve depth reads can be skipped with identical output.
+	float4 taps[cKernelSize];
+	float4 spread = 0;
+	[unroll]
+	for (int t = 0; t < cKernelSize; t++) {
+		taps[t] = tex2Dlod(buffer, float4(IN.UVCoord + (BlurOffsets[t] * OffsetMask) * blurRadius, 0, 0));
+		spread = max(spread, abs(taps[t] - center));
+	}
+	[branch] if (max(spread.r, spread.g) < 0.0001f) return float4(center.rgb, 1);
+
 	float WeightSum = 0.114725602f;
 	float4 color1 = center * WeightSum;
 	depthDrop *= (depth1 / farZ);
@@ -49,13 +61,11 @@ float4 DepthBlurKeep(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMa
 	[unroll]
     for (int i = 0; i < cKernelSize; i++)
     {
-		float2 uv = IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius;
-		float4 color2 = tex2Dlod(buffer, float4(uv, 0, 0));
-		float depth2 = readDepthLod(uv);
+		float depth2 = readDepthLod(IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius);
 		float diff = abs(float(depth1 - depth2));
 
 		int useForBlur = (diff <= depthDrop);
-		color1 += BlurWeights[i] * color2 * useForBlur;
+		color1 += BlurWeights[i] * taps[i] * useForBlur;
 		WeightSum += BlurWeights[i] * useForBlur;
     }
 	color1 /= WeightSum;
