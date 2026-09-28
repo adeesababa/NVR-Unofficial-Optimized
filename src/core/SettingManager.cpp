@@ -413,15 +413,17 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.RenderPreTonemapping = GetSettingI("Main.Main.Misc", "RenderPreTonemapping");
 	// Settings only resolve when they exist in the defaults file (Configuration::FillNode), so these
 	// live in [_Main.Main.Performance] there and show up as switches in the in-game menu. A key
-	// missing from an older defaults file reads as enabled, so a DLL-only update keeps them on.
-	auto performanceSwitch = [this](const char* key) {
+	// missing from an older defaults file reads as its default, so a DLL-only update keeps them on.
+	auto performanceSwitch = [this](const char* key, bool fallback = true) {
 		Configuration::ConfigNode node;
-		return Config.FillNode(&node, "Main.Main.Performance", key) ? node.BoolValue : true;
+		return Config.FillNode(&node, "Main.Main.Performance", key) ? node.BoolValue : fallback;
 	};
 	SettingsMain.Main.DisableFrameChain = !performanceSwitch("FrameChain");
 	SettingsMain.Main.DisableCompositeApply = !performanceSwitch("CompositeApply");
 	SettingsMain.Main.DisableChainGameTexture = !performanceSwitch("ChainUsesGameTexture");
-	SettingsMain.Main.DisableMergedNormals = !performanceSwitch("MergedDepthNormals");
+	// Off unless asked for: on native D3D9 (GTX 1070) the driver drops the two-target draw without
+	// an error, leaving depth and normals stale.
+	SettingsMain.Main.DisableMergedNormals = !performanceSwitch("MergedDepthNormals", false);
 	SettingsMain.Main.SlimDepthBuffer = performanceSwitch("SlimDepthBuffer");
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");
 
