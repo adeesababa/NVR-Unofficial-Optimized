@@ -33,7 +33,36 @@
 >   resolution, explicit SMAA stencil state, and a few D3D reference leaks.
 > - An F10 GPU/CPU profiler that writes per-effect timings to `NewVegasReloaded.log`.
 >
-> Only tested on one Windows PC (GTX 1070). Keep a backup of your previous NVR files.
+> **Experimental.** So far this has only been tested on one Windows PC (GTX 1070), and not in every
+> configuration (interiors, underwater, point-light shadows, AMD cards, native D3D9 without DXVK).
+> It needs more testing and feedback. If you try it, reports of what works and what breaks,
+> ideally with your `NewVegasReloaded.log` and an F10 profile, are welcome in this repository's
+> issues. Keep a backup of your previous NVR files.
+>
+> ### How to install
+> This build replaces files of an existing New Vegas Reloaded install; it is not a standalone mod.
+> 1. Install New Vegas Reloaded normally first (xNVSE and the rest of its requirements included)
+>    and check that it runs.
+> 2. Back up your `Data\NVSE\Plugins\NewVegasReloaded.dll` and `Data\Shaders\NewVegasReloaded\`
+>    folder.
+> 3. With the game closed, extract the release zip into your `Data` folder (or your mod manager's
+>    NVR mod folder) and overwrite when asked. It contains `NVSE\Plugins\NewVegasReloaded.dll` and
+>    the changed shaders under `Shaders\NewVegasReloaded\Effects\`.
+> 4. Start the game. `NewVegasReloaded.log` (in the game folder) should contain lines starting
+>    with `UNOFFICIAL`, such as `UNOFFICIAL frame chain`.
+>
+> If a shader change does not seem to apply, delete the `Cache` folders under
+> `Data\Shaders\NewVegasReloaded\`. To uninstall, restore your backup.
+>
+> ### How to use
+> - Settings work exactly as in normal NVR: press <kbd>O</kbd> in game, or edit
+>   `Data\NVSE\Plugins\NewVegasReloaded.dll.toml`.
+> - **F10** starts/stops the built-in profiler. While it runs, average per-effect GPU and CPU times
+>   are written to `NewVegasReloaded.log` every 120 frames (`GPU PROFILE ...`, `CPU PROFILE ...`).
+>   `Frame interval (CPU)` is your real frame time.
+> - If you see image problems, add `DisableFrameChain = true` under `[_Main.Main.Misc]` in the
+>   `.toml` to turn off the copy-free effect chain without reinstalling.
+> - Optional speed-for-quality trade: lower `MaxSearchSteps` under `[_Shaders.SMAA.Main]` (e.g. 16).
 
 <div align="center">
     <a href="https://dlpnd.github.io/nvr-wiki/"><img src="https://i.imgur.com/SUr8ORH.png" width="1024" alt="NVR" /></a>
