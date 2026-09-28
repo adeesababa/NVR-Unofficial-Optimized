@@ -145,6 +145,26 @@ static void Run(IDirect3DDevice9* device, ID3DXEffect* effect, UINT width, UINT 
     for(DWORD i=0;i<6;++i) device->SetTexture(i,NULL);
 }
 int main(int argc, char** argv) {
+    // --compile-files A.fx.hlsl B.fx.hlsl ...: compile each effect with the game's runtime compiler
+    // (D3DX9_43), with and without REVERSED_DEPTH, and exit. Run from the Effects folder.
+    if (argc >= 3 && std::strcmp(argv[1], "--compile-files") == 0) {
+        int failures = 0;
+        for (int i = 2; i < argc; ++i) {
+            for (int reversed = 0; reversed < 2; ++reversed) {
+                D3DXMACRO defines[] = {{reversed ? "REVERSED_DEPTH" : NULL, ""}, {NULL, NULL}};
+                ComPtr<ID3DXEffectCompiler> compiler; ComPtr<ID3DXBuffer> err, code;
+                HRESULT result = D3DXCreateEffectCompilerFromFileA(argv[i], defines, NULL, 0, &compiler, &err);
+                if (SUCCEEDED(result)) { err.Reset(); result = compiler->CompileEffect(0, &code, &err); }
+                if (FAILED(result)) {
+                    std::printf("FAIL D3DX43 %s (reversed depth %s)\n", argv[i], reversed ? "on" : "off");
+                    if (err) std::puts(static_cast<const char*>(err->GetBufferPointer()));
+                    ++failures;
+                }
+            }
+            if (!failures) std::printf("PASS D3DX43 %s\n", argv[i]);
+        }
+        return failures ? 1 : 0;
+    }
     try {
         CurrentStage="compile SunShadows variants";
         for(int forward=0;forward<2;++forward) for(int reversed=0;reversed<2;++reversed) {
