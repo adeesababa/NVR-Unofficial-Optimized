@@ -17,8 +17,11 @@ struct SettingsMainStruct {
         bool    SkipFog;
         bool    RenderEffects;
         bool    RenderPreTonemapping;
-        bool    DisableFrameChain; // [Main.Main.Misc] kill switch for the copy-free effect chain
-        bool    DisableCompositeApply; // [Main.Main.Misc] kill switch for folding shadow/AO apply into fog
+        bool    DisableFrameChain; // ![Main.Main.Performance] FrameChain (copy-free effect chain)
+        bool    DisableCompositeApply; // ![Main.Main.Performance] CompositeApply (shadow/AO apply folded into fog)
+        bool    DisableChainGameTexture; // ![Main.Main.Performance] ChainUsesGameTexture
+        bool    DisableMergedNormals; // ![Main.Main.Performance] MergedDepthNormals
+        bool    SlimDepthBuffer; // [Main.Main.Performance] SlimDepthBuffer (read once at startup)
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;

@@ -179,7 +179,7 @@ float4 NormalBlurRChannel(VSOUT IN, uniform float2 OffsetMask, uniform float blu
 	float WeightSum = 0.114725602f;
 	float4 color1 = tex2D(TESR_RenderedBuffer, IN.UVCoord) * WeightSum;
 	float3 normal = GetNormal(IN.UVCoord);
-	float depth = tex2D(TESR_DepthBuffer, IN.UVCoord).y;
+	float depth = projectedDepthFromLinear(tex2D(TESR_DepthBuffer, IN.UVCoord).x);
 	
     if (invertedDepth) {
         depth = 1 - depth;
@@ -326,7 +326,7 @@ float4 PackedBlur(VSOUT IN, uniform float2 axis) : COLOR0
 {
 	float2 center = tex2D(TESR_RenderedBuffer, PackedUV(IN.UVCoord)).rg;
 	if (center.y >= endFade) return float4(1, center.y, 0, 1);
-	float rawDepth = tex2D(TESR_DepthBuffer, IN.UVCoord).y;
+	float rawDepth = projectedDepthFromLinear(tex2D(TESR_DepthBuffer, IN.UVCoord).x);
 	if (invertedDepth) rawDepth = 1 - rawDepth;
 	float depthTolerance = blurDrop * (0.5 + 2 * compress(GetNormal(IN.UVCoord).z));
 	float sum = center.x * 0.114725602f;
@@ -387,7 +387,7 @@ float4 DedicatedBlur(VSOUT IN, uniform float2 axis) : COLOR0
 {
 	float2 center = tex2D(NVR_AOBuffer, DedicatedUV(IN.UVCoord)).rg;
 	if (center.y >= endFade) return float4(1, center.y, 0, 1);
-	float rawDepth = tex2D(TESR_DepthBuffer, IN.UVCoord).y;
+	float rawDepth = projectedDepthFromLinear(tex2D(TESR_DepthBuffer, IN.UVCoord).x);
 	if (invertedDepth) rawDepth = 1 - rawDepth;
 	float depthTolerance = blurDrop * (0.5 + 2 * compress(GetNormal(IN.UVCoord).z));
 	float sum = center.x * 0.114725602f;

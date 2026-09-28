@@ -26,6 +26,14 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Depth.hlsl"
 #include "Includes/Helpers.hlsl"
 
+// (linear depth, post-projection depth) for a texel; the second is recomputed from the first
+// because the depth buffer may be a single channel (see projectedDepthFromLinear).
+float2 DepthPair(float2 uv)
+{
+	float linear01 = tex2D(TESR_DepthBuffer, uv).x;
+	return float2(linear01, projectedDepthFromLinear(linear01));
+}
+
 float3 ReconstructPositionFromDepth(float2 uv, float depth)
 {
 	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
@@ -48,15 +56,15 @@ float4 ComputeNormals(VSOUT IN) :COLOR0
 	// Each sample contains linear depth in x and device depth in y. Reuse the same nine
 	// reads for edge selection and position reconstruction; the old shader fetched the five
 	// reconstruction samples a second time.
-	float2 centerDepth = tex2D(TESR_DepthBuffer, uv).xy;
-	float2 rightDepth1 = tex2D(TESR_DepthBuffer, rightUv.xy).xy;
-	float2 leftDepth1 = tex2D(TESR_DepthBuffer, leftUv.xy).xy;
-	float2 rightDepth2 = tex2D(TESR_DepthBuffer, rightUv.zw).xy;
-	float2 leftDepth2 = tex2D(TESR_DepthBuffer, leftUv.zw).xy;
-	float2 topDepth1 = tex2D(TESR_DepthBuffer, topUv.xy).xy;
-	float2 bottomDepth1 = tex2D(TESR_DepthBuffer, bottomUv.xy).xy;
-	float2 topDepth2 = tex2D(TESR_DepthBuffer, topUv.zw).xy;
-	float2 bottomDepth2 = tex2D(TESR_DepthBuffer, bottomUv.zw).xy;
+	float2 centerDepth = DepthPair(uv);
+	float2 rightDepth1 = DepthPair(rightUv.xy);
+	float2 leftDepth1 = DepthPair(leftUv.xy);
+	float2 rightDepth2 = DepthPair(rightUv.zw);
+	float2 leftDepth2 = DepthPair(leftUv.zw);
+	float2 topDepth1 = DepthPair(topUv.xy);
+	float2 bottomDepth1 = DepthPair(bottomUv.xy);
+	float2 topDepth2 = DepthPair(topUv.zw);
+	float2 bottomDepth2 = DepthPair(bottomUv.zw);
 
 	float depth = centerDepth.x * farZ;
 	float4 H = float4(rightDepth1.x, leftDepth1.x, rightDepth2.x, leftDepth2.x) * farZ;

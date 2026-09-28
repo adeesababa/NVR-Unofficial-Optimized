@@ -54,8 +54,12 @@ struct		FrameVS { float x, y, z, u, v; };
 * the whole frame into TESR_RenderedBuffer so the next effect can sample it. With it, effects
 * render into whichever of two chain textures is not the current image and the pair is swapped:
 * TheTextureManager->RenderedTexture/Surface always name the current image, and the game's target
-* is written once, when the chain ends. The pair matches the game target's format, so precision
-* and clamping between effects are unchanged.
+* holds the final image when the chain ends. The buffers match the game target's format, so
+* precision and clamping between effects are unchanged.
+*
+* When the game target is itself a texture (the usual case), it is one of the two buffers: no
+* seed copy at the start, and a copy at the end only when the last effect wrote the spare.
+* Otherwise both buffers are NVR textures, seeded from and copied back to the game target.
 */
 class FrameChain {
 public:
@@ -64,21 +68,26 @@ public:
 	bool					IsActive() const { return Active; }
 	// True when an effect's (RenderTarget, RenderedSurface) pair is the chain's.
 	bool					Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface) const;
-	IDirect3DSurface9*		Output() const { return Pairs[PairIndex].Surface[Current ^ 1]; }
+	IDirect3DSurface9*		Output() const { return Surf[Current ^ 1]; }
 	void					Commit(); // the Output() surface becomes the current image
-	void					Sync();   // copy the current image into the game target (for legacy paths)
+	// For legacy paths that render into the game target while sampling TESR_RenderedBuffer: the
+	// game target gets the current image, and the current image is moved off the game target.
+	void					Sync();
 
 private:
-	struct Pair {
+	struct Pair { // NVR-owned textures for one target format/size, created on first use
 		D3DFORMAT			Format = D3DFMT_UNKNOWN;
 		UINT				Width = 0, Height = 0;
 		IDirect3DTexture9*	Texture[2] = {};
 		IDirect3DSurface9*	Surface[2] = {};
 	};
+	bool					EnsureTexture(Pair& pair, int slot);
 	void					Publish();
 
 	Pair					Pairs[2];
-	int						PairIndex = 0;
+	IDirect3DTexture9*		Tex[2] = {};	// working buffers for the active chain
+	IDirect3DSurface9*		Surf[2] = {};
+	IDirect3DTexture9*		GameTexture = nullptr; // container of the game target, when used as Tex[0]
 	int						Current = 0;
 	bool					Active = false;
 	IDirect3DSurface9*		GameTarget = nullptr;

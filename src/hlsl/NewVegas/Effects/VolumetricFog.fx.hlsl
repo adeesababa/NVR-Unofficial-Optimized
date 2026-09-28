@@ -227,13 +227,25 @@ float getHeightFog(float distance, float falloff, float3 worldPos, float heightO
 	float3 step = eyeVector / stepnum;
 	float stepDist = length(step);
 
-	float3 pos = TESR_CameraPosition.xyz - float3(0, 0, FOG_GROUND + heightOffset * 1000);
-	float fog = 0;
-	[unroll]
-	for (int i = 0; i < stepnum; i++){
-		pos += step;
-		fog += exp(-falloff * pos.z) * stepDist;
+	// The original loop stepped pos += step and summed exp(-falloff * pos.z) * stepDist over the
+	// stepnum samples z0 + k*dz, k = 1..stepnum. That is a geometric series with ratio
+	// r = exp(-falloff * dz), so it equals exactly
+	//   stepDist * exp(-falloff * (z0 + dz)) * (1 - r^N) / (1 - r).
+	// For tiny exponents (1 - r) loses precision in fp32, so the ratio uses its Taylor series.
+	float z0 = TESR_CameraPosition.z - (FOG_GROUND + heightOffset * 1000);
+	float x = falloff * step.z;
+	const float n = stepnum;
+	float series;
+	[branch] if (abs(x) < 0.01) {
+		float a = n * x;
+		float numerator = 1 - a / 2 + a * a / 6 - a * a * a / 24 + a * a * a * a / 120;
+		float denominator = 1 - x / 2 + x * x / 6 - x * x * x / 24 + x * x * x * x / 120;
+		series = n * numerator / denominator;
 	}
+	else {
+		series = (1 - exp(-n * x)) / (1 - exp(-x));
+	}
+	float fog = stepDist * exp(-falloff * (z0 + step.z)) * series;
 
 	// distance here is fogDepth, the caller's vanilla-weather-warped pseudo-distance (raised to
 	// FogPower, not the real one) -- everywhere else in this shader (getFogFlat, vanillaStrength)

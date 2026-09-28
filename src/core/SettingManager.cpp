@@ -411,8 +411,18 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkipFog = GetSettingI("Main.Main.Misc", "SkipFog");
 	SettingsMain.Main.RenderEffects = GetSettingI("Main.Main.Misc", "RenderEffects");
 	SettingsMain.Main.RenderPreTonemapping = GetSettingI("Main.Main.Misc", "RenderPreTonemapping");
-	SettingsMain.Main.DisableFrameChain = GetSettingI("Main.Main.Misc", "DisableFrameChain");
-	SettingsMain.Main.DisableCompositeApply = GetSettingI("Main.Main.Misc", "DisableCompositeApply");
+	// Settings only resolve when they exist in the defaults file (Configuration::FillNode), so these
+	// live in [_Main.Main.Performance] there and show up as switches in the in-game menu. A key
+	// missing from an older defaults file reads as enabled, so a DLL-only update keeps them on.
+	auto performanceSwitch = [this](const char* key) {
+		Configuration::ConfigNode node;
+		return Config.FillNode(&node, "Main.Main.Performance", key) ? node.BoolValue : true;
+	};
+	SettingsMain.Main.DisableFrameChain = !performanceSwitch("FrameChain");
+	SettingsMain.Main.DisableCompositeApply = !performanceSwitch("CompositeApply");
+	SettingsMain.Main.DisableChainGameTexture = !performanceSwitch("ChainUsesGameTexture");
+	SettingsMain.Main.DisableMergedNormals = !performanceSwitch("MergedDepthNormals");
+	SettingsMain.Main.SlimDepthBuffer = performanceSwitch("SlimDepthBuffer");
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");

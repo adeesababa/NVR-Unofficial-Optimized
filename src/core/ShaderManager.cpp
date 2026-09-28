@@ -798,13 +798,20 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Device->SetFVF(FrameFVF);
 
 	// render post process normals for use by shaders
+	// When the normals pass would run anyway, try producing depth and normals in one draw.
+	bool mergedNormals = false;
 	{
 		GpuProfileScope gpu(depthTimer, Device);
-		RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
+		NormalsEffect* Normals = Effects.Normals;
+		if (Normals->Enabled && Normals->Effect && Normals->ShouldRender())
+			mergedNormals = Effects.CombineDepth->RenderWithNormals(Device, Normals->Textures.NormalsSurface);
+		if (!mergedNormals)
+			RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
 	}
 	{
 		GpuProfileScope gpu(normalsTimer, Device);
-		RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
+		if (!mergedNormals)
+			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 	}
 
 	// render a shadow pass for point lights
@@ -966,7 +973,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P30 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P31 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
 	}
 	if (GpuTimer::Enabled) frameIntervalTimer.Tick();
@@ -1124,8 +1131,20 @@ bool FrameChain::Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* render
 // Point the TESR_RenderedBuffer slot at the current image. Effect samplers follow the slot
 // (TextureRecord::TextureRef), so this is all a swap needs.
 void FrameChain::Publish() {
-	TheTextureManager->RenderedTexture = Pairs[PairIndex].Texture[Current];
-	TheTextureManager->RenderedSurface = Pairs[PairIndex].Surface[Current];
+	TheTextureManager->RenderedTexture = Tex[Current];
+	TheTextureManager->RenderedSurface = Surf[Current];
+}
+
+bool FrameChain::EnsureTexture(Pair& pair, int slot) {
+	if (pair.Texture[slot]) return true;
+	if (FAILED(TheRenderManager->device->CreateTexture(pair.Width, pair.Height, 1, D3DUSAGE_RENDERTARGET, pair.Format,
+		D3DPOOL_DEFAULT, &pair.Texture[slot], NULL)) || FAILED(pair.Texture[slot]->GetSurfaceLevel(0, &pair.Surface[slot]))) {
+		if (pair.Surface[slot]) { pair.Surface[slot]->Release(); pair.Surface[slot] = nullptr; }
+		if (pair.Texture[slot]) { pair.Texture[slot]->Release(); pair.Texture[slot] = nullptr; }
+		Logger::Log("[ERROR] Frame chain: could not create a %ux%u target (format %u); using copies.", pair.Width, pair.Height, pair.Format);
+		return false;
+	}
+	return true;
 }
 
 bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
@@ -1135,36 +1154,52 @@ bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
 	D3DSURFACE_DESC desc = {};
 	if (FAILED(gameTarget->GetDesc(&desc)) || desc.MultiSampleType != D3DMULTISAMPLE_NONE) return false;
 
-	// One pair per target format (pre-tonemap HDR and post-tonemap LDR), created on first use.
+	// One set of NVR textures per target format (pre-tonemap HDR and post-tonemap LDR).
 	int index = -1;
-	for (int i = 0; i < 2; i++) {
-		Pair& pair = Pairs[i];
-		if (pair.Texture[0] && pair.Format == desc.Format && pair.Width == desc.Width && pair.Height == desc.Height) { index = i; break; }
+	for (int i = 0; i < 2 && index < 0; i++) {
+		const Pair& pair = Pairs[i];
+		if (pair.Format == desc.Format && pair.Width == desc.Width && pair.Height == desc.Height) index = i;
 	}
-	if (index < 0) {
-		index = !Pairs[0].Texture[0] ? 0 : !Pairs[1].Texture[0] ? 1 : -1;
-		if (index < 0) return false; // a third format: stay on the legacy path rather than churn
-		Pair& pair = Pairs[index];
-		for (int t = 0; t < 2; t++) {
-			if (FAILED(Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format,
-				D3DPOOL_DEFAULT, &pair.Texture[t], NULL)) || FAILED(pair.Texture[t]->GetSurfaceLevel(0, &pair.Surface[t]))) {
-				for (int r = 0; r < 2; r++) {
-					if (pair.Surface[r]) { pair.Surface[r]->Release(); pair.Surface[r] = nullptr; }
-					if (pair.Texture[r]) { pair.Texture[r]->Release(); pair.Texture[r] = nullptr; }
-				}
-				Logger::Log("[ERROR] Frame chain: could not create %ux%u targets (format %u); using copies.", desc.Width, desc.Height, desc.Format);
-				return false;
-			}
+	for (int i = 0; i < 2 && index < 0; i++) {
+		if (Pairs[i].Format == D3DFMT_UNKNOWN) {
+			Pairs[i].Format = desc.Format;
+			Pairs[i].Width = desc.Width;
+			Pairs[i].Height = desc.Height;
+			index = i;
 		}
-		pair.Format = desc.Format;
-		pair.Width = desc.Width;
-		pair.Height = desc.Height;
-		Logger::Log("UNOFFICIAL frame chain: %ux%u format %u pair created (no per-effect frame copies).", desc.Width, desc.Height, desc.Format);
+	}
+	if (index < 0) return false; // a third format: stay on the legacy path rather than churn
+	Pair& pair = Pairs[index];
+
+	// Use the game target itself as one buffer when it is a texture level (not the back buffer).
+	// Single-level only: NVR's own buffers have no mip chain, and effects that sample the rendered
+	// buffer at reduced size (average luma, bloom downsample) must not pick up stale mip levels.
+	IDirect3DTexture9* gameTexture = nullptr;
+	const bool useGameTexture = !TheSettingManager->SettingsMain.Main.DisableChainGameTexture &&
+		SUCCEEDED(gameTarget->GetContainer(IID_IDirect3DTexture9, (void**)&gameTexture)) && gameTexture &&
+		gameTexture->GetLevelCount() == 1;
+	if (useGameTexture) {
+		if (!EnsureTexture(pair, 0)) { gameTexture->Release(); return false; }
+		Tex[0] = gameTexture;	Surf[0] = gameTarget;
+		Tex[1] = pair.Texture[0]; Surf[1] = pair.Surface[0];
+		GameTexture = gameTexture;
+	}
+	else {
+		if (gameTexture) { gameTexture->Release(); gameTexture = nullptr; }
+		if (!EnsureTexture(pair, 0) || !EnsureTexture(pair, 1)) return false;
+		if (FAILED(Device->StretchRect(gameTarget, NULL, pair.Surface[0], NULL, D3DTEXF_NONE))) return false;
+		Tex[0] = pair.Texture[0]; Surf[0] = pair.Surface[0];
+		Tex[1] = pair.Texture[1]; Surf[1] = pair.Surface[1];
 	}
 
-	PairIndex = index;
+	static bool reported[2][2] = {};
+	if (!reported[index][useGameTexture]) {
+		Logger::Log("UNOFFICIAL frame chain: %ux%u format %u, %s.", desc.Width, desc.Height, desc.Format,
+			useGameTexture ? "game target used as a chain buffer (no seed copy)" : "two NVR buffers (seed copy)");
+		reported[index][useGameTexture] = true;
+	}
+
 	Current = 0;
-	if (FAILED(Device->StretchRect(gameTarget, NULL, Pairs[index].Surface[0], NULL, D3DTEXF_NONE))) return false;
 	SavedTexture = TheTextureManager->RenderedTexture;
 	SavedSurface = TheTextureManager->RenderedSurface;
 	GameTarget = gameTarget;
@@ -1180,16 +1215,30 @@ void FrameChain::Commit() {
 }
 
 void FrameChain::Sync() {
-	if (Active) TheRenderManager->device->StretchRect(Pairs[PairIndex].Surface[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
+	if (!Active) return;
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	if (Surf[Current] == GameTarget) {
+		// The game target already holds the image; move the current image to the other buffer
+		// so the legacy path does not sample the texture it renders into.
+		Device->StretchRect(GameTarget, NULL, Surf[Current ^ 1], NULL, D3DTEXF_NONE);
+		Current ^= 1;
+		Publish();
+	}
+	else
+		Device->StretchRect(Surf[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
 }
 
 void FrameChain::End() {
 	if (!Active) return;
 	IDirect3DDevice9* Device = TheRenderManager->device;
-	Device->StretchRect(Pairs[PairIndex].Surface[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
+	if (Surf[Current] != GameTarget)
+		Device->StretchRect(Surf[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
 	Device->SetRenderTarget(0, GameTarget);
 	TheTextureManager->RenderedTexture = SavedTexture;
 	TheTextureManager->RenderedSurface = SavedSurface;
+	if (GameTexture) { GameTexture->Release(); GameTexture = nullptr; }
+	Tex[0] = Tex[1] = nullptr;
+	Surf[0] = Surf[1] = nullptr;
 	Active = false;
 	GameTarget = nullptr;
 }
