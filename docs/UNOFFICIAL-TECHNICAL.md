@@ -79,10 +79,21 @@ trigger if it recurs.
 ## Profiler
 F10 toggles GPU/CPU timing (a small red dot and "PROF" appear in the top-right corner while it runs). Every 120 frames the averages are written to `NewVegasReloaded.log` as
 `GPU PROFILE ...` and `CPU PROFILE ...` lines; `Frame interval (CPU)` is the real frame time.
-Queries are read asynchronously and never flush the GPU. Indented names are sub-timers nested in the
+Queries are read asynchronously and never flush the GPU. Only the two timestamp queries are required; the
+optional disjoint and frequency queries may be missing or fail (timing continues, assuming a 1 GHz clock), so
+the timers also work under DXVK (checked with DXVK 2.6.1). Failures are logged with their HRESULT. Indented names are sub-timers nested in the
 line above them (contact shadow passes, fog estimate/composite, god-ray passes, exposure/bloom, chain
 end copies, interior shadow blur/apply). With profiling on, `POINT SHADOWS ...` lines report how many
 point-light cubemaps are redrawn per frame.
+
+### Frame-time statistics
+While profiling, every 1200 frames (and when F10 is pressed again, if at least 200 frames were collected) the log
+gets a `FRAME TIMES` line: average, p50 / p95 / p99 / p99.9 / max frame time, the 1% and 0.1% low frame rate (the
+average fps of the slowest 1% / 0.1% of frames) and a spike count. A second line repeats the p99 and lows for
+steady play only, leaving out frames within three seconds of a cell change or loading screen. A frame much slower
+than a typical one is logged as `FRAME SPIKE`, with the NVR CPU timers that were slow in it (at most 60 per
+session). These use only CPU timing, so they work identically on native Direct3D 9 and under DXVK. The startup
+log names the runtime in use: `D3D9 runtime: DXVK (...)` or `system Direct3D 9 ...`.
 
 ## Log markers
 Lines starting with `UNOFFICIAL` report which optimized paths are active, e.g.

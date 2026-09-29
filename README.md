@@ -15,7 +15,8 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   on tree branches against the sky.
 - **Optional extra speed** for weaker PCs (see below), each one a simple on/off switch.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
-  running, a small dim red dot and "PROF" show in the top-right corner of the screen.
+  running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
+  frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
 
 > [!NOTE]
 > **Experimental.** So far this has been tested on only one PC (NVIDIA GTX 1070, Windows 10).

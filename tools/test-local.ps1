@@ -19,3 +19,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Interior shadow math tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Point shadow schedule test build failed.' }
 & "$repo\build\schedule-test\point_shadow_schedule.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Point shadow schedule tests failed.' }
+& "$vs\MSBuild\Current\Bin\MSBuild.exe" "$repo\tests\frame_stats.vcxproj" /p:Configuration=Release /p:Platform=Win32 /nologo /v:minimal
+if ($LASTEXITCODE -ne 0) { throw 'Frame statistics test build failed.' }
+& "$repo\build\frame-test\frame_stats.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Frame statistics tests failed.' }

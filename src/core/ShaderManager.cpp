@@ -984,10 +984,21 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P37 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
-			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
+		Logger::Log("GPU PROFILE P38 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
+		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 	}
-	if (GpuTimer::Enabled) frameIntervalTimer.Tick();
+	if (GpuTimer::Enabled) {
+		// Frames within three seconds of a cell change or loading screen are counted separately: the
+		// hitches there are expected (streaming), the ones in steady play are what hurt the 1% lows.
+		static TESObjectCELL* lastCell = nullptr;
+		static unsigned framesSinceTransition = 1000;
+		TESObjectCELL* cell = Player ? Player->parentCell : nullptr;
+		if (cell != lastCell || InterfaceManager->IsActive(Menu::kMenuType_Loading)) { lastCell = cell; framesSinceTransition = 0; }
+		else framesSinceTransition++;
+		const double interval = frameIntervalTimer.Tick();
+		if (interval > 0.0) TheFrameTimeMonitor().Add(interval, framesSinceTransition < 180);
+	}
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 	if (!Player->parentCell) return;
 	if (GameState.OverlayIsOn) return; // disable all effects during terminal/lockpicking sequences because they bleed through the overlay

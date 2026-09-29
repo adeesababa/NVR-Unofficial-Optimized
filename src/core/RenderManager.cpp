@@ -269,6 +269,19 @@ bool getDXVKPresent() {
 	return false;
 }
 
+// Which Direct3D 9 implementation the game is running on, for the log. The DXVK check is the same one
+// used below (ProductName of the d3d9.dll the process loads); the path shows where that file lives.
+const char* RenderManager::D3D9RuntimeDescription() {
+	static char text[MAX_PATH + 64] = {};
+	if (!text[0]) {
+		char path[MAX_PATH] = {};
+		HMODULE module = GetModuleHandleA("d3d9.dll");
+		if (module) GetModuleFileNameA(module, path, MAX_PATH);
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%s (%s)", getDXVKPresent() ? "DXVK" : "system Direct3D 9 or another wrapper", path[0] ? path : "path unknown");
+	}
+	return text;
+}
+
 void RenderManager::Initialize() {
 
 	IDirect3D9* D3D = NULL;
@@ -295,6 +308,7 @@ void RenderManager::Initialize() {
 		Logger::Log("NVIDIA detected: NVAPI supported.");
 	else
 		Logger::Log("ERROR: Cannot initialize the render manager. Graphics device not supported.");
+	Logger::Log("D3D9 runtime: %s", D3D9RuntimeDescription());
 	if (TheSettingManager->SettingsMain.Main.AnisotropicFilter >= 2) device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, TheSettingManager->SettingsMain.Main.AnisotropicFilter);
 	BackBuffer = CreateHDRRenderTarget();
 }
