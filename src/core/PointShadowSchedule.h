@@ -17,16 +17,40 @@ struct PointShadowSlotState {
 	bool valid = false;             // the slot has been drawn at least once
 };
 
+// Why a slot is redrawn (None = it keeps its cubemap this frame). When several apply, the first listed wins.
+enum class PointShadowRedraw {
+	None,
+	NewSlot,      // the slot was never drawn (first frame, or the light appeared)
+	OtherLight,   // the slot now holds a different light than the one it was drawn for
+	OtherTexture, // the cubemap texture was recreated (device reset)
+	OtherCell,    // the player changed cell
+	Moved,        // the light moved
+	Resized,      // the light's radius changed
+	Scheduled,    // nothing changed: the regular every-N-frames refresh (every frame at interval 1)
+	Count
+};
+
+inline PointShadowRedraw PointShadowRedrawReason(const PointShadowSlotState& last, const PointShadowSlotState& now,
+	unsigned frame, unsigned slot, unsigned interval)
+{
+	if (!last.valid) return PointShadowRedraw::NewSlot;
+	if (last.light != now.light) return PointShadowRedraw::OtherLight;
+	if (last.texture != now.texture) return PointShadowRedraw::OtherTexture;
+	if (last.cell != now.cell) return PointShadowRedraw::OtherCell;
+	if (last.x != now.x || last.y != now.y || last.z != now.z) return PointShadowRedraw::Moved;
+	if (last.radius != now.radius) return PointShadowRedraw::Resized;
+	if (interval <= 1 || (frame + slot) % interval == 0) return PointShadowRedraw::Scheduled;
+	return PointShadowRedraw::None;
+}
+
 inline bool PointShadowSlotChanged(const PointShadowSlotState& last, const PointShadowSlotState& now)
 {
-	return !last.valid || last.light != now.light || last.texture != now.texture || last.cell != now.cell ||
-		last.x != now.x || last.y != now.y || last.z != now.z || last.radius != now.radius;
+	const PointShadowRedraw why = PointShadowRedrawReason(last, now, 0, 0, 0);
+	return why != PointShadowRedraw::Scheduled && why != PointShadowRedraw::None;
 }
 
 inline bool PointShadowNeedsRedraw(const PointShadowSlotState& last, const PointShadowSlotState& now,
 	unsigned frame, unsigned slot, unsigned interval)
 {
-	if (interval <= 1) return true;
-	if (PointShadowSlotChanged(last, now)) return true;
-	return (frame + slot) % interval == 0;
+	return PointShadowRedrawReason(last, now, frame, slot, interval) != PointShadowRedraw::None;
 }

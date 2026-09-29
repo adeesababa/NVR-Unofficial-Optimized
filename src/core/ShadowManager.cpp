@@ -884,10 +884,11 @@ void ShadowManager::RenderShadowMaps() {
 		// PointShadowSchedule.h for when it must be redrawn at once).
 		static PointShadowSlotState slots[ShadowCubeMapsMax];
 		static unsigned scheduleFrame = 0, statFrames = 0, statPresent = 0, statRedrawn = 0;
+		static unsigned statReasons[(int)PointShadowRedraw::Count] = {};
 		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
 
-		// render the cubemaps for each light
-		for (int i = 0; i < ShadowsInteriors->LightPoints; i++) {
+		// render the cubemaps for each light; the last slot's cubemap is never sampled (ShadowCubeMapsSampled), so it is not drawn
+		for (int i = 0; i < ShadowsInteriors->LightPoints && i < ShadowCubeMapsSampled; i++) {
 			ShadowSceneLight* shadowLight = ShadowLights[i];
 			if (!shadowLight) { slots[i].valid = false; continue; } // no light at this index
 
@@ -902,12 +903,13 @@ void ShadowManager::RenderShadowMaps() {
 			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult; // as in RenderShadowCubeMap
 			now.valid = true;
 			if (GpuTimer::Enabled) statPresent++;
-			if (!PointShadowNeedsRedraw(slots[i], now, scheduleFrame, i, interval)) continue;
+			const PointShadowRedraw why = PointShadowRedrawReason(slots[i], now, scheduleFrame, i, interval);
+			if (why == PointShadowRedraw::None) continue;
 
 			// Render targets set in function due to rendering multiple faces.
 			RenderShadowCubeMap(ShadowLights, i);
 			slots[i] = now;
-			if (GpuTimer::Enabled) statRedrawn++;
+			if (GpuTimer::Enabled) { statRedrawn++; statReasons[(int)why]++; }
 
 			std::string message = "ShadowManager::RenderShadowCubeMap ";
 			message += std::to_string(i);
@@ -916,9 +918,16 @@ void ShadowManager::RenderShadowMaps() {
 		scheduleFrame++;
 
 		if (GpuTimer::Enabled && ++statFrames >= 240) { // with the F10 profile: how much work the cubemaps really are
-			Logger::Log("POINT SHADOWS interval %u: %.1f lights present, %.1f cubemaps redrawn per frame (%u frames)",
-				interval, (float)statPresent / statFrames, (float)statRedrawn / statFrames, statFrames);
+			const float perFrame = 1.0f / statFrames;
+			Logger::Log("POINT SHADOWS interval %u: %.1f lights present, %.1f cubemaps redrawn per frame (%u frames); "
+				"redrawn because: scheduled %.2f, new %.2f, other light %.2f, moved %.2f, resized %.2f, cell %.2f, texture %.2f",
+				interval, statPresent * perFrame, statRedrawn * perFrame, statFrames,
+				statReasons[(int)PointShadowRedraw::Scheduled] * perFrame, statReasons[(int)PointShadowRedraw::NewSlot] * perFrame,
+				statReasons[(int)PointShadowRedraw::OtherLight] * perFrame, statReasons[(int)PointShadowRedraw::Moved] * perFrame,
+				statReasons[(int)PointShadowRedraw::Resized] * perFrame, statReasons[(int)PointShadowRedraw::OtherCell] * perFrame,
+				statReasons[(int)PointShadowRedraw::OtherTexture] * perFrame);
 			statFrames = statPresent = statRedrawn = 0;
+			for (unsigned& r : statReasons) r = 0;
 		}
 	}
 

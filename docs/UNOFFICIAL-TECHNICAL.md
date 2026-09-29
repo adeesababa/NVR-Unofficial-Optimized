@@ -30,7 +30,10 @@ native Direct3D 9) using the built-in F10 profiler; other hardware will differ.
   applied to the full-resolution scene (no scene detail lost); closed-form height-fog integral
   instead of a 32-step loop.
 - **God rays:** dedicated half-resolution targets, early exit in the radial march, attenuation
-  at reduced resolution. (About 1.6 ms -> 0.5 ms.)
+  at reduced resolution. (About 1.6 ms -> 0.5 ms.) The sky-mask pass returns black straight away for
+  every pixel that is not sky (its result is multiplied by a sky flag, so it is exactly zero there)
+  instead of fetching the scene and computing the sun glare first; the output is bit-identical
+  (checked on the GPU against the previous shader for sky/world mixes, HDR values and sun positions).
 - **Contact shadows:** ping-pong through scratch targets (removes a read/write feedback loop),
   N.L fade and distance-scaled bias (fixes horizontal black lines), blur skips depth reads when all
   taps are equal.
@@ -42,7 +45,14 @@ native Direct3D 9) using the built-in F10 profiler; other hardware will differ.
   reach a pixel (their contribution is exactly zero beyond the radius). Optional
   `PointShadowInterval` redraws each light's cubemap every N frames (a cubemap stores distance from
   the light, so it is camera independent; it is redrawn at once when its light, position, radius or
-  cell changes).
+  cell changes). Lights keep the same cubemap slot from frame to frame (`PointShadowSlots.h`): the
+  slots used to follow the distance ranking, so two lights of similar distance swapping rank swapped
+  slots and forced both cubemaps to be redrawn at once. The slot order does not change the image, except
+  that the last slot is lit without a shadow lookup (`PointShadows.fx`), so it keeps the farthest of twelve
+  casters as before, and its cubemap, which nothing samples, is no longer drawn. (Measured in one interior
+  with the `POINT SHADOWS` counters: redraws caused by a light changing slot are about 0.05 per frame; the
+  redraws above the every-N-frames schedule, about 1 per frame with 11 lights at interval 2, come from two
+  lights whose position changes every frame, most likely the game's flicker movement.)
 - **SMAA:** cheaper combined edge detection, explicit stencil state. **DitherBuster:** single pass.
   **Point shadows:** merged passes.
 - **Shadow cascades:** staggered refresh (middle every 4 frames, far/LOD every 8, spread over the
@@ -84,7 +94,8 @@ optional disjoint and frequency queries may be missing or fail (timing continues
 the timers also work under DXVK (checked with DXVK 2.6.1). Failures are logged with their HRESULT. Indented names are sub-timers nested in the
 line above them (contact shadow passes, fog estimate/composite, god-ray passes, exposure/bloom, chain
 end copies, interior shadow blur/apply). With profiling on, `POINT SHADOWS ...` lines report how many
-point-light cubemaps are redrawn per frame.
+point-light cubemaps are redrawn per frame and why (scheduled refresh, new light, other light in the
+slot, moved, resized, cell change).
 
 ### Frame-time statistics
 While profiling, every 1200 frames (and when F10 is pressed again, if at least 200 frames were collected) the log
@@ -94,6 +105,17 @@ steady play only, leaving out frames within three seconds of a cell change or lo
 than a typical one is logged as `FRAME SPIKE`, with the NVR CPU timers that were slow in it (at most 60 per
 session). These use only CPU timing, so they work identically on native Direct3D 9 and under DXVK. The startup
 log names the runtime in use: `D3D9 runtime: DXVK (...)` or `system Direct3D 9 ...`.
+
+### Tried and rejected: contact-shadow blur skip mask
+The two contact-shadow blurs already return the centre pixel without their depth reads when the twelve
+taps agree (spread < 1e-4). A per-tile "flat" mask (min/max of the march output per 8x8 pixels, dilated by
+one tile, so the blurs could skip even the tap fetches) was built and checked on the GPU at 2560x1440: the
+output was bit-identical to the plain blurs for every test input, but the whole was slower. With 77% of the
+tiles flat the masked blurs saved only 0.03-0.08 ms of about 0.3 ms, building the mask cost 0.14-0.16 ms, and
+the total came out 0.22-0.27 ms slower; with 32% flat tiles 0.31-0.35 ms slower. That points to these passes
+being limited by memory traffic (source, depth and output, about 12 bytes per pixel) rather than by the tap
+fetches, so skipping fetches barely helps; a fixed cost per pass is not the cause (a dependent 1x1 pass costs
+0.0014 ms). For such passes fewer bytes per pixel or fewer passes is what counts.
 
 ## Log markers
 Lines starting with `UNOFFICIAL` report which optimized paths are active, e.g.

@@ -231,17 +231,33 @@ VSOUT HalfVS(VSIN IN) {
 	return OUT;
 }
 
+// reconstructPosition() for a depth that was already read (same maths, one fewer depth fetch).
+float3 reconstructPositionFromDepth(float2 uv, float linearDepth01)
+{
+	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, projectedDepthFromLinear(linearDepth01), 1.0f), TESR_InvProjectionTransform);
+	viewSpace /= viewSpace.w;
+	return viewSpace.xyz;
+}
+
 float4 DedicatedSkyMask(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
+
+	// The result is (scene + glare) * depth * horizon, and depth is 1 only for sky pixels, so every pixel of the world
+	// (and everything while the sun is below the horizon) is exactly black whatever the glare and scene colour are. Decide
+	// that from the depth first and skip the scene fetch and the glare maths for those pixels. Explicit-LOD fetches are
+	// used because gradient fetches are illegal in ps_3_0 dynamic branches; the buffers have a single level.
+	float rawDepth = tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x;
+	float depth = ((rawDepth * farZ) / farZ) > 0.9;
+	float horizon = smoothstep(0, 0.01, sunHeight);
+	[branch] if (depth * horizon == 0.0f) return float4(0.0f, 0.0f, 0.0f, 1.0f);
 
 	float sunset = pows(sunHeight, 8);
 	float3 sunColor = linearize(TESR_SunColor).rgb + lerp(linearize(TESR_SunsetColor.rgb), 0, sunset);
 	float glarePower = lerp(0.1, 8.0, sunset);
 
-	float depth = (readDepth(uv) / farZ) > 0.9;
-	float3 sunGlare = pows(dot(TESR_ViewSpaceLightDir.xyz, normalize(reconstructPosition(uv))), 180) * glarePower;
-	float3 color = linearize(tex2D(TESR_RenderedBuffer, uv)).rgb;
-	color = (color + sunGlare * sunColor) * depth * smoothstep(0, 0.01, sunHeight);
+	float3 sunGlare = pows(dot(TESR_ViewSpaceLightDir.xyz, normalize(reconstructPositionFromDepth(uv, rawDepth))), 180) * glarePower;
+	float3 color = linearize(tex2Dlod(TESR_RenderedBuffer, float4(uv, 0.0f, 0.0f))).rgb;
+	color = (color + sunGlare * sunColor) * depth * horizon;
 
 	return float4(color, 1.0f);
 }

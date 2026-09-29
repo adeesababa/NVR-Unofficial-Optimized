@@ -1,4 +1,5 @@
 #include "GpuProfiler.h"
+#include "PointShadowSlots.h"
 
 #define RESZ_CODE 0x7FA05000
 
@@ -662,6 +663,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	int ShadowIndex = 0;
 	int LightIndex = 0;
 	TheShadowManager->PointLightsNum = 0;
+	ShadowSceneLight* ShadowCasters[ShadowCubeMapsMax] = { NULL }; // shadow casting lights, nearest first
 
 #if defined(OBLIVION)
 	bool TorchOnBeltEnabled = TheSettingManager->SettingsMain.EquipmentMode.Enabled && TheSettingManager->SettingsMain.EquipmentMode.TorchKey != 255;
@@ -684,13 +686,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	for (int i = 0; i < TrackedLightsMax + ShadowCubeMapsMax; i++) {
 		// set null values if we reached the end of lights in the scene and current index is lower than max amount
 		if (v == SceneLights.end()) {
-			if (ShadowIndex < ShadowCubeMapsMax) {
-				//Logger::Log("clearing shadow casting light at index %i", ShadowIndex);
-				ShadowLightsList[ShadowIndex] = NULL;
-				ShadowsConstants->ShadowLightPosition[ShadowIndex] = Empty;
-				LightColor[ShadowIndex] = Empty;
-				ShadowIndex++;
-			}
+			// (Unused shadow slots stay cleared: they are assigned after this loop.)
 			if (LightIndex < TrackedLightsMax) {
 				//Logger::Log("clearing light at index %i", LightIndex);
 				LightsList[LightIndex] = NULL;
@@ -725,10 +721,8 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			LightPos.w = radius;
 
 			if (CastShadow && ShadowIndex < ShadowLightsMax && radius > 10) {
-				// add found light to list of lights that cast shadows
-				ShadowLightsList[ShadowIndex] = v->second;
-				ShadowsConstants->ShadowLightPosition[ShadowIndex] = LightPos;
-				LightColor[ShadowIndex] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+				// add found light to the ranked list of lights that cast shadows (slots are assigned below)
+				ShadowCasters[ShadowIndex] = v->second;
 
 				ShadowIndex++;
 				TheShadowManager->PointLightsNum++; // Constant to track number of shadow casting lights are present
@@ -744,6 +738,34 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			// Here will go the collecting of the spotlights and setting of constants
 		}
 		v++;
+	}
+
+	// Give every caster a cubemap slot, each light keeping the slot it had last frame (PointShadowSlots.h): a light that
+	// only changed rank no longer forces its cubemap to be redrawn. The slot order does not change the image, except for
+	// the last slot, which PointShadows.fx lights without a shadow lookup: it keeps the farthest caster, as the plain
+	// distance order gave it, and only slots 0..10 take part in the stable assignment.
+	{
+		static const void* previousSlots[ShadowCubeMapsMax] = {};
+		const int casters = TheShadowManager->PointLightsNum;
+		const int sampledSlots = min(ShadowLightsMax, (int)ShadowCubeMapsSampled);
+		const int stableCasters = min(casters, sampledSlots);
+		const void* ranked[ShadowCubeMapsMax] = {};
+		const void* assigned[ShadowCubeMapsMax] = {};
+		for (int r = 0; r < stableCasters; r++) ranked[r] = ShadowCasters[r];
+		AssignStablePointShadowSlots(previousSlots, ranked, stableCasters, sampledSlots, assigned);
+		if (casters > sampledSlots) assigned[ShadowCubeMapsMax - 1] = ShadowCasters[sampledSlots];
+		for (int s = 0; s < ShadowCubeMapsMax; s++) previousSlots[s] = s < sampledSlots ? assigned[s] : nullptr;
+
+		for (int s = 0; s < ShadowCubeMapsMax; s++) {
+			ShadowSceneLight* shadowLight = (ShadowSceneLight*)assigned[s];
+			ShadowLightsList[s] = shadowLight;
+			if (!shadowLight) continue; // position and colour stay cleared
+			NiPointLight* Light = shadowLight->sourceLight;
+			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
+			LightPos.w = Light->Spec.r * Settings->LightRadiusMult;
+			ShadowsConstants->ShadowLightPosition[s] = LightPos;
+			LightColor[s] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+		}
 	}
 
 	timer.LogTime("ShaderManager::GetNearbyLights");
@@ -984,7 +1006,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P38 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P39 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 	}

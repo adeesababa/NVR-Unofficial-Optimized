@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <vector>
 #include "../src/core/PointShadowSchedule.h"
+#include "../src/core/PointShadowSlots.h"
 
 static int failures = 0;
 #define CHECK(cond, ...) do { if (!(cond)) { std::printf("FAIL: "); std::printf(__VA_ARGS__); std::printf("\n"); failures++; } else { std::printf("PASS: "); std::printf(__VA_ARGS__); std::printf("\n"); } } while (0)
@@ -71,6 +72,81 @@ int main()
 		last = now;
 	}
 	CHECK(moving, "a light that moves every frame is redrawn every frame at interval 4");
+
+	// Redraw reasons: what a frame counts as. Each single change is reported as its own reason, a plain refresh as Scheduled.
+	CHECK(PointShadowRedrawReason(PointShadowSlotState(), a, 0, 0, 2) == PointShadowRedraw::NewSlot, "reason: a never-drawn slot is NewSlot");
+	CHECK(PointShadowRedrawReason(a, State(&lightB), 1, 0, 4) == PointShadowRedraw::OtherLight, "reason: a different light is OtherLight");
+	CHECK(PointShadowRedrawReason(a, newTexture, 1, 0, 4) == PointShadowRedraw::OtherTexture, "reason: a new cubemap texture is OtherTexture");
+	CHECK(PointShadowRedrawReason(a, otherCell, 1, 0, 4) == PointShadowRedraw::OtherCell, "reason: a different cell is OtherCell");
+	CHECK(PointShadowRedrawReason(a, State(&lightA, 9), 1, 0, 4) == PointShadowRedraw::Moved, "reason: a moved light is Moved");
+	CHECK(PointShadowRedrawReason(a, State(&lightA, 1, 2, 3, 400), 1, 0, 4) == PointShadowRedraw::Resized, "reason: a changed radius alone is Resized");
+	CHECK(PointShadowRedrawReason(a, a, 4, 0, 4) == PointShadowRedraw::Scheduled, "reason: an unchanged slot on its turn is Scheduled");
+	CHECK(PointShadowRedrawReason(a, a, 1, 0, 4) == PointShadowRedraw::None, "reason: an unchanged slot off its turn is None");
+	CHECK(PointShadowRedrawReason(a, a, 3, 5, 1) == PointShadowRedraw::Scheduled, "reason: interval 1 is Scheduled on every frame");
+	CHECK(!PointShadowSlotChanged(a, a) && PointShadowSlotChanged(a, State(&lightB)) && PointShadowSlotChanged(PointShadowSlotState(), a),
+		"PointShadowSlotChanged ignores the schedule and sees every real change");
+
+	// Stable slot assignment (PointShadowSlots.h).
+	int L[12];
+	auto assign = [&](const void** previous, std::vector<const void*> ranked, int slots, const void** out) {
+		AssignStablePointShadowSlots(previous, ranked.data(), (int)ranked.size(), slots, out);
+	};
+	auto slotOf = [&](const void** out, int slots, const void* light) { for (int s = 0; s < slots; s++) if (out[s] == light) return s; return -1; };
+	{
+		const void* none[11] = {};
+		const void* out[11];
+		assign(none, { &L[0], &L[1], &L[2], &L[3] }, 11, out);
+		CHECK(out[0] == &L[0] && out[1] == &L[1] && out[2] == &L[2] && out[3] == &L[3] && !out[4] && !out[10],
+			"stable slots: with nothing assigned before, rank r takes slot r");
+
+		// The same lights in a different distance order keep their slots.
+		const void* first[11]; for (int s = 0; s < 11; s++) first[s] = out[s];
+		const void* again[11];
+		assign(first, { &L[2], &L[0], &L[3], &L[1] }, 11, again);
+		bool same = true; for (int s = 0; s < 11; s++) same &= again[s] == first[s];
+		CHECK(same, "stable slots: lights that only changed rank keep their slots");
+
+		// A light that leaves frees its slot; the newcomer takes the lowest free one, nobody else moves.
+		const void* left[11];
+		assign(first, { &L[0], &L[2], &L[3], &L[4] }, 11, left); // L[1] left, L[4] arrived
+		CHECK(left[0] == &L[0] && left[2] == &L[2] && left[3] == &L[3] && left[1] == &L[4] && !left[4],
+			"stable slots: a newcomer takes the slot freed by the light that left, the others stay");
+
+		// A hole in the middle is filled before slots at the end, and a second newcomer goes to the next free slot.
+		const void* filled[11];
+		assign(left, { &L[0], &L[2], &L[3], &L[4], &L[5], &L[6] }, 11, filled);
+		CHECK(filled[0] == &L[0] && filled[1] == &L[4] && filled[2] == &L[2] && filled[3] == &L[3] && filled[4] == &L[5] && filled[5] == &L[6],
+			"stable slots: newcomers fill free slots in rank order without moving anyone");
+	}
+	{
+		// Every ranked light gets exactly one slot, and no slot holds two, over a long random walk of the ranking.
+		const void* previous[11] = {};
+		unsigned seed = 12345;
+		auto next = [&]() { seed = seed * 1664525u + 1013904223u; return seed >> 16; };
+		bool valid = true, moved = false;
+		int totalMoves = 0, naiveMoves = 0;
+		const void* naivePrevious[11] = {};
+		for (int frame = 0; frame < 3000; frame++) {
+			std::vector<const void*> ranked;
+			bool present[12] = {};
+			int count = 3 + (int)(next() % 9); // 3..11 lights
+			while ((int)ranked.size() < count) { int l = (int)(next() % 12); if (!present[l]) { present[l] = true; ranked.push_back(&L[l]); } }
+			const void* out[11];
+			assign(previous, ranked, 11, out);
+			for (const void* light : ranked) valid &= slotOf(out, 11, light) >= 0;
+			int used = 0; for (int s = 0; s < 11; s++) used += out[s] != nullptr;
+			valid &= used == count;
+			for (int s = 0; s < 11; s++) for (int t = s + 1; t < 11; t++) valid &= !(out[s] && out[s] == out[t]);
+			for (const void* light : ranked) { int was = slotOf(previous, 11, light); int now = slotOf(out, 11, light); if (was >= 0 && was != now) moved = true; if (was >= 0 && was != now) totalMoves++; }
+			// what plain rank order would have done
+			for (size_t r = 0; r < ranked.size(); r++) { int was = slotOf(naivePrevious, 11, ranked[r]); if (was >= 0 && was != (int)r) naiveMoves++; }
+			for (int s = 0; s < 11; s++) naivePrevious[s] = (size_t)s < ranked.size() ? ranked[s] : nullptr;
+			for (int s = 0; s < 11; s++) previous[s] = out[s];
+		}
+		CHECK(valid, "stable slots: every light gets exactly one slot and no slot holds two (3000 random frames)");
+		CHECK(!moved, "stable slots: a light that was in a slot and is still ranked never changes slot");
+		CHECK(naiveMoves > 0 && totalMoves == 0, "stable slots: plain rank order would have moved lights %d times where stable slots move none", naiveMoves);
+	}
 
 	std::printf(failures ? "\n%d check(s) FAILED\n" : "\nAll point shadow schedule checks passed\n", failures);
 	return failures ? 1 : 0;
