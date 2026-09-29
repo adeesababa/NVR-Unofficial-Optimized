@@ -433,7 +433,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.FXAA = boolSetting(reducedQuality, "FXAA", false);
 	{
 		Configuration::ConfigNode node;
-		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 1;
+		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 2;
 		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
 	}
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");

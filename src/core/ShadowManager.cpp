@@ -901,13 +901,13 @@ void ShadowManager::RenderShadowMaps() {
 			now.z = pointLight->m_worldTransform.pos.z;
 			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult; // as in RenderShadowCubeMap
 			now.valid = true;
-			statPresent++;
+			if (GpuTimer::Enabled) statPresent++;
 			if (!PointShadowNeedsRedraw(slots[i], now, scheduleFrame, i, interval)) continue;
 
 			// Render targets set in function due to rendering multiple faces.
 			RenderShadowCubeMap(ShadowLights, i);
 			slots[i] = now;
-			statRedrawn++;
+			if (GpuTimer::Enabled) statRedrawn++;
 
 			std::string message = "ShadowManager::RenderShadowCubeMap ";
 			message += std::to_string(i);

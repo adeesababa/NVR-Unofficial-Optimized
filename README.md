@@ -39,14 +39,16 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   default; you only need them to switch one off if you suspect it causes a problem.
   Leave `MergedDepthNormals` off (it doesn't work on some graphics drivers).
 - **Main > Main > ReducedQuality** - extra speed in exchange for a small loss of quality. All
-  off by default, and they take effect immediately, so you can compare while playing:
+  off by default except `PointShadowInterval`, and they take effect immediately, so you can compare
+  while playing:
   - `FXAA` - a much cheaper edge smoothing than SMAA (about 0.15 ms instead of about 1 ms).
     Turn SMAA off (Shaders > SMAA) when you use it. Slightly softer image.
   - `GodRaysLowRes` - lower-resolution light rays. Softer rays.
   - `AOLowRes` - lower-resolution ambient occlusion. Softer corner shading.
   - `PointShadowInterval` - in interiors, redraw the shadows of lamps and other lights every 2nd,
-    3rd or 4th frame instead of every frame (1 = every frame, the default). Static rooms look the
-    same; shadows of people and doors moving through the light can lag a frame or two.
+    3rd or 4th frame instead of every frame (1 = every frame, the original behaviour). **This one is
+    on by default, set to 2.** Static rooms look the same; shadows of people and doors moving
+    through the light can lag a frame or two. Set it to 1 if you notice it.
 
 To keep a change for next time, press **Save** at the top of the menu.
 

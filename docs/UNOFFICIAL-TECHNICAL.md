@@ -58,12 +58,12 @@ Settings only exist if they are present in the defaults file, so always install 
 two-render-target draw, leaving depth and normals stale. Only enable it to test, and check that
 the F10 `Depth combine` timer then reads above 0 ms.
 
-`[_Main.Main.ReducedQuality]` - change the image, off by default, apply immediately:
+`[_Main.Main.ReducedQuality]` - change the image, off by default (except `PointShadowInterval`), apply immediately:
 - `FXAA` - lean console-style FXAA (after FXAA 3.11), 5 texture reads per pixel, 9 on edges, after
   SMAA. Measured 0.14-0.16 ms vs SMAA 0.9-1.2 ms; meant to replace SMAA.
 - `GodRaysLowRes` - god rays at quarter instead of half resolution.
 - `AOLowRes` - ambient occlusion at quarter instead of half resolution.
-- `PointShadowInterval` (1-4) - redraw point-light shadow cubemaps every N frames; 1 = every frame.
+- `PointShadowInterval` (1-4, **default 2**) - redraw point-light shadow cubemaps every N frames; 1 = every frame.
 
 ## Profiler
 F10 toggles GPU/CPU timing. Every 120 frames the averages are written to `NewVegasReloaded.log` as
