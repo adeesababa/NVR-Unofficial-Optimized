@@ -421,6 +421,7 @@ void SettingManager::LoadSettings() {
 	};
 	const char* performance = "Main.Main.Performance";
 	SettingsMain.Main.DisableFrameChain = !boolSetting(performance, "FrameChain", true);
+	SettingsMain.Main.DisableWorldSceneGuard = !boolSetting(performance, "WorldSceneGuard", true);
 	SettingsMain.Main.DisableCompositeApply = !boolSetting(performance, "CompositeApply", true);
 	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
 	// Off unless asked for: on native D3D9 (GTX 1070) the driver drops the two-target draw without

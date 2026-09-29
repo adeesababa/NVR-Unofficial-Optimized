@@ -53,7 +53,7 @@ native Direct3D 9) using the built-in F10 profiler; other hardware will differ.
 Settings only exist if they are present in the defaults file, so always install it with the DLL.
 
 `[_Main.Main.Performance]` - same image, on by default:
-`FrameChain`, `CompositeApply`, `ChainUsesGameTexture`, `SlimDepthBuffer` (restart required).
+`FrameChain`, `CompositeApply`, `ChainUsesGameTexture`, `WorldSceneGuard`, `SlimDepthBuffer` (restart required).
 `MergedDepthNormals` is off by default: on a GTX 1070 (native D3D9) the driver silently skipped the
 two-render-target draw, leaving depth and normals stale. Only enable it to test, and check that
 the F10 `Depth combine` timer then reads above 0 ms.
@@ -65,8 +65,19 @@ the F10 `Depth combine` timer then reads above 0 ms.
 - `AOLowRes` - ambient occlusion at quarter instead of half resolution.
 - `PointShadowInterval` (1-4, **default 2**) - redraw point-light shadow cubemaps every N frames; 1 = every frame.
 
+## World scene guard and trace
+NVR refreshes its depth buffers only inside its hook on the game's `RenderWorldSceneGraph`. Once, after
+a save was loaded straight into an interior, the game rendered frames without calling it (the F10 log
+showed no `World scene (game)` / `Depth resolves` samples and `Pre-scene` equal to the whole frame), so
+the effects ran on a stale depth buffer and the image came out almost black until another cell was
+entered. It did not happen again in later tests, and the cause is not known. With `WorldSceneGuard` on,
+NVR's effects are skipped after 10 consecutive frames without a world scene render (never on the main
+menu or a loading screen) and resume as soon as one happens. `WORLD TRACE` lines in the log (at most 80
+per session) record which render calls ran on the first frames after each cell change, to help find the
+trigger if it recurs.
+
 ## Profiler
-F10 toggles GPU/CPU timing. Every 120 frames the averages are written to `NewVegasReloaded.log` as
+F10 toggles GPU/CPU timing (a small red dot and "PROF" appear in the top-right corner while it runs). Every 120 frames the averages are written to `NewVegasReloaded.log` as
 `GPU PROFILE ...` and `CPU PROFILE ...` lines; `Frame interval (CPU)` is the real frame time.
 Queries are read asynchronously and never flush the GPU. Indented names are sub-timers nested in the
 line above them (contact shadow passes, fog estimate/composite, god-ray passes, exposure/bloom, chain

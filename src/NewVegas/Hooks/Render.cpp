@@ -12,6 +12,66 @@ static void EndPreSceneTimer() {
 	PreSceneTimerActive = false;
 }
 
+// ---- Which of the game's render entry points ran this frame ----
+// The depth buffers NVR's effects read are refreshed only inside RenderWorldSceneGraphHook. After a save is
+// loaded straight into an interior the game has been seen to render frames without entering it at all
+// (the F10 log then shows no 'World scene (game)' / 'Depth resolves' samples and 'Pre-scene' equal to the
+// whole frame), and the effects run on a stale depth buffer: the scene comes out almost black. This
+// records what happened on the first frames after each cell change, and lets ProcessImageSpaceShadersHook
+// skip NVR's effects while the world scene keeps going missing (the WorldSceneGuard switch).
+static bool WorldRenderedThisFrame = false;
+static unsigned WorldMissStreak = 0;        // consecutive earlier frames without a world scene render
+static unsigned FrameWorldCalls = 0, FrameFirstPersonCalls = 0, FrameImageSpaceCalls = 0;
+static bool FrameWorldArgsKnown = false;
+static int FrameWorldArgs[3] = {};          // IsFirstPerson, WireFrame, Arg4 of the first call this frame
+static const unsigned WorldGuardFrames = 10;
+
+// The world is not drawn behind the main menu or a loading screen, so those frames say nothing about it.
+static bool WorldRenderExpected() {
+	return Player && Player->parentCell && !InterfaceManager->IsActive(Menu::MenuType::kMenuType_Main) &&
+		!InterfaceManager->IsActive(Menu::MenuType::kMenuType_Loading);
+}
+
+static bool WorldSceneGuardActive() {
+	return !TheSettingManager->SettingsMain.Main.DisableWorldSceneGuard && !WorldRenderedThisFrame &&
+		WorldMissStreak >= WorldGuardFrames && WorldRenderExpected();
+}
+
+static void ReportWorldRender(BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
+	static TESObjectCELL* lastCell = nullptr;
+	static unsigned frame = 0, logged = 0, tracePending = 0;
+	static bool guardLogged = false;
+	frame++;
+
+	TESObjectCELL* cell = Player ? Player->parentCell : nullptr;
+	if (!cell) { WorldMissStreak = 0; lastCell = nullptr; return; } // no cell: nothing to report
+	if (!WorldRenderExpected()) { WorldMissStreak = 0; return; }     // main menu / loading screen
+	if (cell != lastCell) { lastCell = cell; tracePending = 3; }
+
+	const bool missed = !WorldRenderedThisFrame;
+	const bool started = missed && WorldMissStreak == 0;
+	const bool recovered = !missed && WorldMissStreak >= 3;
+	const bool guarded = missed && WorldMissStreak >= WorldGuardFrames;
+
+	if (logged < 80 && (tracePending || started || recovered || (guarded && !guardLogged))) {
+		const char* name = cell->GetEditorName();
+		Logger::Log("WORLD TRACE frame %u: cell %08X '%s' interior=%d behaveLikeExterior=%d | world scene calls %u%s | first person %u, image space %u | "
+			"render args rt=%p %d %d | menuBackgroundReady=%d mainMenu=%d loading=%d | miss streak %u%s%s",
+			frame, cell->refID, name ? name : "?", cell->IsInterior() ? 1 : 0, (cell->flags0 & TESObjectCELL::kFlags0_BehaveLikeExterior) ? 1 : 0,
+			FrameWorldCalls, FrameWorldArgsKnown ? (FrameWorldArgs[0] ? " (first-person pass)" : " (world pass)") : " (none)",
+			FrameFirstPersonCalls, FrameImageSpaceCalls, RenderedTexture, Arg2, Arg3,
+			TESMain::IsMenuBackgroundReady() ? 1 : 0, InterfaceManager->IsActive(Menu::MenuType::kMenuType_Main) ? 1 : 0,
+			InterfaceManager->IsActive(Menu::MenuType::kMenuType_Loading) ? 1 : 0, WorldMissStreak,
+			started ? " [WORLD SCENE NOT RENDERED]" : "", recovered ? " [world scene rendering again]" : "");
+		logged++;
+		if (tracePending) tracePending--;
+		if (guarded) guardLogged = true;
+	}
+	if (recovered) guardLogged = false;
+
+	WorldMissStreak = missed ? WorldMissStreak + 1 : 0;
+}
+
 void (__thiscall* Render)(Main*, BSRenderedTexture*, int, int) = (void (__thiscall*)(Main*, BSRenderedTexture*, int, int))Hooks::Render;
 void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
 	
@@ -36,8 +96,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	static GpuTimer frameTimer("Game frame total");
 	GpuProfileScope gpu(frameTimer, TheRenderManager->device);
 	PreSceneTimerActive = PreSceneTimer.Begin(TheRenderManager->device);
+	WorldRenderedThisFrame = false;
+	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
+	FrameWorldArgsKnown = false;
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	EndPreSceneTimer();
+	ReportWorldRender(RenderedTexture, Arg2, Arg3);
 
 }
 
@@ -95,6 +159,9 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
 	EndPreSceneTimer();
+	WorldRenderedThisFrame = true;
+	if (!FrameWorldArgsKnown) { FrameWorldArgsKnown = true; FrameWorldArgs[0] = IsFirstPerson; FrameWorldArgs[1] = WireFrame; FrameWorldArgs[2] = Arg4; }
+	FrameWorldCalls++;
 	{
 		// Game geometry drawn with NVR's replacement shaders, including per-object sun shadows.
 		static GpuTimer worldTimer("World scene (game)");
@@ -129,6 +196,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	// Clear the depth buffer before rendering first person model to prevent clipping with world objects & other artefacts
 	static GpuTimer firstPersonTimer("First person (game)");
 	GpuProfileScope gpu(firstPersonTimer, TheRenderManager->device);
+	FrameFirstPersonCalls++;
 	TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
 	//ThisCall(0x00874C10, Global);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
@@ -226,6 +294,16 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	}
 	else {
 		bSkippedRender_RenderedMenu = false;
+	}
+
+	FrameImageSpaceCalls++;
+	if (WorldSceneGuardActive()) {
+		// No world scene has been rendered for several frames, so the depth buffers NVR's effects need are
+		// stale and they would darken the image. Let the game's own image space run on its own.
+		static bool announced = false;
+		if (!announced) { Logger::Log("UNOFFICIAL world scene guard: no world scene render for %u frames, NVR effects skipped until it returns.", WorldMissStreak); announced = true; }
+		ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
+		return;
 	}
 
 	IDirect3DDevice9* Device = TheRenderManager->device;

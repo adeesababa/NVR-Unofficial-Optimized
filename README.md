@@ -14,7 +14,8 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 - **Bug fixes:** no more horizontal black lines on sun-lit surfaces, and no more flickering dashes
   on tree branches against the sky.
 - **Optional extra speed** for weaker PCs (see below), each one a simple on/off switch.
-- **A built-in performance meter** (F10) that shows what each effect costs on your PC.
+- **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
+  running, a small dim red dot and "PROF" show in the top-right corner of the screen.
 
 > [!NOTE]
 > **Experimental.** So far this has been tested on only one PC (NVIDIA GTX 1070, Windows 10).
@@ -38,6 +39,9 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
 - **Main > Main > Performance** - the speed-ups that don't change the image. They are on by
   default; you only need them to switch one off if you suspect it causes a problem.
   Leave `MergedDepthNormals` off (it doesn't work on some graphics drivers).
+  `WorldSceneGuard` is a safety net: if the game stops drawing the 3D world for a moment (seen once
+  after loading a save straight into an interior, which left the image almost black), NVR's effects
+  are skipped until it starts again.
 - **Main > Main > ReducedQuality** - extra speed in exchange for a small loss of quality. All
   off by default except `PointShadowInterval`, and they take effect immediately, so you can compare
   while playing:
