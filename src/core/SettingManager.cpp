@@ -437,6 +437,12 @@ void SettingManager::LoadSettings() {
 		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 2;
 		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
 	}
+	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
+	{
+		Configuration::ConfigNode node;
+		const int interval = Config.FillNode(&node, reducedQuality, "NearCascadeInterval") ? node.IntValue : 1;
+		SettingsMain.Main.NearCascadeInterval = max(1, min(interval, 2));
+	}
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");

@@ -15,6 +15,14 @@ static PointShadowSlotState State(const void* light, float x = 1, float y = 2, f
 	return s;
 }
 
+static PointShadowSlotState StaticState(const void* light, unsigned long long hash)
+{
+	PointShadowSlotState s = State(light);
+	s.staticCasters = true;
+	s.casterHash = hash;
+	return s;
+}
+
 int main()
 {
 	int lightA, lightB;
@@ -63,6 +71,21 @@ int main()
 	CHECK(PointShadowNeedsRedraw(a, newTexture, skipFrame, slot, interval), "a recreated cubemap texture (device reset) is redrawn at once");
 	CHECK(PointShadowNeedsRedraw(PointShadowSlotState(), a, skipFrame, slot, interval), "a slot that was never drawn is redrawn at once");
 
+	// A complete static caster set is reusable indefinitely, even at interval 1. Any caster-state
+	// change, or the arrival/removal of dynamic geometry, invalidates it immediately.
+	const PointShadowSlotState staticA = StaticState(&lightA, 0x1234);
+	bool staticReused = true;
+	for (unsigned frame = 0; frame < 100; frame++) staticReused &= !PointShadowNeedsRedraw(staticA, staticA, frame, 0, 1);
+	CHECK(staticReused, "an unchanged all-static cubemap is reused indefinitely at interval 1");
+	PointShadowSlotState changedCasters = staticA; changedCasters.casterHash++;
+	CHECK(PointShadowRedrawReason(staticA, changedCasters, 1, 0, 4) == PointShadowRedraw::CastersChanged,
+		"a static caster transform/material/visibility change redraws at once");
+	PointShadowSlotState becameDynamic = staticA; becameDynamic.staticCasters = false;
+	CHECK(PointShadowRedrawReason(staticA, becameDynamic, 1, 0, 4) == PointShadowRedraw::CastersChanged,
+		"the arrival of dynamic geometry redraws at once");
+	CHECK(PointShadowRedrawReason(becameDynamic, staticA, 1, 0, 4) == PointShadowRedraw::CastersChanged,
+		"a dynamic set becoming fully static redraws and starts a cache");
+
 	// A light that moves every frame (carried torch) is redrawn every frame at any interval.
 	bool moving = true;
 	PointShadowSlotState last = State(&lightA, 0);
@@ -85,6 +108,12 @@ int main()
 	CHECK(PointShadowRedrawReason(a, a, 3, 5, 1) == PointShadowRedraw::Scheduled, "reason: interval 1 is Scheduled on every frame");
 	CHECK(!PointShadowSlotChanged(a, a) && PointShadowSlotChanged(a, State(&lightB)) && PointShadowSlotChanged(PointShadowSlotState(), a),
 		"PointShadowSlotChanged ignores the schedule and sees every real change");
+	const unsigned long long setSeed = 1469598103934665603ULL;
+	const unsigned long long hashAB = PointShadowAddCasterHash(PointShadowAddCasterHash(setSeed, 0x1234), 0x5678);
+	const unsigned long long hashBA = PointShadowAddCasterHash(PointShadowAddCasterHash(setSeed, 0x5678), 0x1234);
+	CHECK(hashAB == hashBA, "caster-set hash ignores geometry-list traversal order");
+	CHECK(hashAB != PointShadowAddCasterHash(PointShadowAddCasterHash(setSeed, 0x1234), 0x5679),
+		"caster-set hash changes when caster state changes");
 
 	// Stable slot assignment (PointShadowSlots.h).
 	int L[12];

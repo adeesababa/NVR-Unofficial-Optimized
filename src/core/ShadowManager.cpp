@@ -14,6 +14,43 @@ static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
 		direction.x, direction.y, direction.z);
 }
 
+// Hash exactly the scene state that can change an otherwise camera-independent point-shadow cubemap.
+// If the game's geometry list is unavailable the caller keeps the existing PointShadowInterval schedule.
+static UInt64 HashPointShadowBytes(UInt64 hash, const void* data, size_t size) {
+	const unsigned char* bytes = static_cast<const unsigned char*>(data);
+	for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ULL; }
+	return hash;
+}
+
+static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& staticCasters) {
+	hash = 1469598103934665603ULL;
+	staticCasters = light && light->kGeometryList.start;
+	if (!staticCasters) return;
+
+	for (auto entry = light->kGeometryList.start; entry; entry = entry->next) {
+		NiGeometry* geo = entry->data;
+		NiShadeProperty* shade = geo ? static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade)) : nullptr;
+		if (geo && (geo->skinInstance || (shade && shade->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf))) {
+			staticCasters = false;
+			continue;
+		}
+		UInt64 casterHash = 1469598103934665603ULL;
+		casterHash = HashPointShadowBytes(casterHash, &geo, sizeof(geo));
+		if (!geo) continue;
+		casterHash = HashPointShadowBytes(casterHash, &geo->m_flags, sizeof(geo->m_flags));
+		casterHash = HashPointShadowBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		if (geo->m_kWorldBound) casterHash = HashPointShadowBytes(casterHash, geo->m_kWorldBound, sizeof(*geo->m_kWorldBound));
+
+		NiMaterialProperty* material = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
+		if (shade) {
+			casterHash = HashPointShadowBytes(casterHash, &shade->m_usFlags, sizeof(shade->m_usFlags));
+			casterHash = HashPointShadowBytes(casterHash, &shade->m_eShaderType, sizeof(shade->m_eShaderType));
+		}
+		if (material) casterHash = HashPointShadowBytes(casterHash, &material->fAlpha, sizeof(material->fAlpha));
+		hash = PointShadowAddCasterHash(hash, casterHash);
+	}
+}
+
 /*
 * Initializes the Shadow Manager by grabbing the relevant settings and shaders, and setting up map sizes.
 */
@@ -23,7 +60,9 @@ static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
 // atlas blur once ran on every cascade every frame, so without an MSAA surface to re-resolve
 // from, a cached cascade would have been re-blurred each frame. Resolve and blur now run only on
 // cascades updated that frame (BlurShadowAtlas mask), so cached cascades stay untouched either way.
-constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency) {
+// nearInterval is the ReducedQuality NearCascadeInterval switch (1 = every frame, the original).
+constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, int nearInterval = 1) {
+	if (cascade == ShadowManager::MapNear) return nearInterval == 2 ? 2 : 1;
 	if (!limitFrequency) return 1;
 	if (cascade == ShadowManager::MapMiddle) return 4;
 	if (cascade == ShadowManager::MapFar || cascade == ShadowManager::MapLod) return 8;
@@ -34,7 +73,9 @@ static_assert(SunCascadeUpdatePeriod(ShadowManager::MapNear, true) == 1 &&
 	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true) == 4 &&
 	SunCascadeUpdatePeriod(ShadowManager::MapFar, true) == 8 &&
 	SunCascadeUpdatePeriod(ShadowManager::MapLod, true) == 8 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapFar, false) == 1,
+	SunCascadeUpdatePeriod(ShadowManager::MapFar, false) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapNear, true, 2) == 2 && SunCascadeUpdatePeriod(ShadowManager::MapNear, false, 2) == 2 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 2) == 4,
 	"Sun cascade update schedule changed unexpectedly");
 
 // Frame offset within each cascade's period, so the infrequent cascades never refresh on the
@@ -56,6 +97,19 @@ static_assert(SunCascadeUpdatesOnFrame(ShadowManager::MapNear, 5, 1) &&
 	SunCascadeUpdatesOnFrame(ShadowManager::MapFar, 3, 8) && SunCascadeUpdatesOnFrame(ShadowManager::MapLod, 7, 8) &&
 	SunCascadeUpdatesOnFrame(ShadowManager::MapFar, 0, 1),
 	"Sun cascade stagger changed unexpectedly");
+
+// With NearCascadeInterval 2 the near cascade takes the even frames and the limited ones keep the odd
+// frames, so every frame of the 8-frame cycle draws exactly one sun cascade.
+constexpr bool OneSunCascadePerFrame() {
+	for (unsigned frame = 0; frame < 8; ++frame) {
+		unsigned drawn = 0;
+		for (int cascade = ShadowManager::MapNear; cascade < ShadowManager::MapOrtho; ++cascade)
+			drawn += SunCascadeUpdatesOnFrame(cascade, frame, SunCascadeUpdatePeriod(cascade, true, 2)) ? 1 : 0;
+		if (drawn != 1) return false;
+	}
+	return true;
+}
+static_assert(OneSunCascadePerFrame(), "NearCascadeInterval 2 should leave one sun cascade per frame");
 
 void ShadowManager::Initialize() {
 	
@@ -80,21 +134,20 @@ void ShadowManager::Initialize() {
 
 	TheShadowManager->ShadowMapClearPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowMapClear.pso", "Shadows\\");
 
-	// Make sure samplers are not reset on SetCT as that causes errors.
-	TheShadowManager->ShadowMapVertex->ClearSamplers = false;
-	TheShadowManager->ShadowMapPixel->ClearSamplers = false;
-	TheShadowManager->ShadowCubeMapVertex->ClearSamplers = false;
-	TheShadowManager->ShadowCubeMapPixel->ClearSamplers = false;
-	TheShadowManager->ShadowMapBlurVertex->ClearSamplers = false;
-	TheShadowManager->ShadowMapBlurPixel->ClearSamplers = false;
-	TheShadowManager->ShadowMapClearPixel->ClearSamplers = false;
-
+	// Make sure samplers are not reset on SetCT as that causes errors. A shader whose file is missing
+	// loads as null: this used to be dereferenced right here, crashing the game at startup on an install
+	// without Shaders\NewVegasReloaded\Shaders\Shadows (seen in a user's log). Shadows are disabled instead.
+	ShaderRecord* shadowShaders[] = { TheShadowManager->ShadowMapVertex, TheShadowManager->ShadowMapPixel,
+		TheShadowManager->ShadowCubeMapVertex, TheShadowManager->ShadowCubeMapPixel, TheShadowManager->ShadowMapBlurVertex,
+		TheShadowManager->ShadowMapBlurPixel, TheShadowManager->ShadowMapClearPixel };
 	TheShadowManager->ShadowShadersLoaded = true;
-    if (TheShadowManager->ShadowMapVertex == nullptr || TheShadowManager->ShadowMapPixel == nullptr  || TheShadowManager->ShadowMapBlurVertex  == nullptr
-        || TheShadowManager->ShadowCubeMapVertex == nullptr || TheShadowManager->ShadowCubeMapPixel == nullptr || TheShadowManager->ShadowMapBlurPixel  == nullptr ){
-		TheShadowManager->ShadowShadersLoaded = false;
-		Logger::Log("[ERROR]: Could not load one or more of the ShadowMap generation shaders. Reinstall the mod.");
-    }
+	for (ShaderRecord* shader : shadowShaders) {
+		if (shader) shader->ClearSamplers = false;
+		else TheShadowManager->ShadowShadersLoaded = false;
+	}
+	if (!TheShadowManager->ShadowShadersLoaded)
+		Logger::Log("[ERROR]: Could not load one or more of the ShadowMap generation shaders (Shaders\\NewVegasReloaded\\Shaders\\Shadows). "
+			"Shadow maps are disabled. Reinstall the mod.");
 
 	UINT ShadowCubeMapSize = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ShadowCubeMapSize;
 	TheShadowManager->ShadowCubeMapViewPort = { 0, 0, ShadowCubeMapSize, ShadowCubeMapSize, 0.0f, 1.0f };
@@ -512,7 +565,6 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 				if (!shaderProp)
 					continue;
-
 				// SpeedTree shaders move vertices beyond their static bounds.
 				if (shaderProp->IsLightingProperty() && !TouchesShadowFace(geo, LightPos, CameraDirection))
 					continue;
@@ -774,7 +826,8 @@ void ShadowManager::RenderShadowMaps() {
 			GpuProfileScope gpu(sunCascadesTimer, Device);
 			for (int i = MapNear; i < MapOrtho; i++) {
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
-				const unsigned updatePeriod = SunCascadeUpdatePeriod(i, Shadows->Settings.ShadowMaps.LimitFrequency);
+				const unsigned updatePeriod = SunCascadeUpdatePeriod(i, Shadows->Settings.ShadowMaps.LimitFrequency,
+					TheSettingManager->SettingsMain.Main.NearCascadeInterval);
 
 				if (ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod)) {
 					updatedCascades |= 1u << i;
@@ -789,6 +842,14 @@ void ShadowManager::RenderShadowMaps() {
 					D3DXMatrixTranslation(&translationMatrix, difference.x, difference.y, difference.z);
 					ShadowMap->ShadowCameraToLight = translationMatrix * ShadowMap->ShadowCameraToLight;
 					ShadowMap->CameraTranslation = newCameraTranslation;
+					// A cached NEAR cascade (NearCascadeInterval 2) also moves its selection sphere with the
+					// camera: the centre is camera-relative, and the near sphere is small enough for a stale
+					// centre to matter. The rarely refreshed cascades keep their original behaviour.
+					if (i == MapNear) {
+						ShadowMap->ShadowMapCascadeCenterRadius.x -= difference.x;
+						ShadowMap->ShadowMapCascadeCenterRadius.y -= difference.y;
+						ShadowMap->ShadowMapCascadeCenterRadius.z -= difference.z;
+					}
 
 				}
 
@@ -883,7 +944,7 @@ void ShadowManager::RenderShadowMaps() {
 		// so with PointShadowInterval > 1 a slot can keep its contents between redraws (see
 		// PointShadowSchedule.h for when it must be redrawn at once).
 		static PointShadowSlotState slots[ShadowCubeMapsMax];
-		static unsigned scheduleFrame = 0, statFrames = 0, statPresent = 0, statRedrawn = 0;
+		static unsigned scheduleFrame = 0, statFrames = 0, statPresent = 0, statRedrawn = 0, statStaticReused = 0;
 		static unsigned statReasons[(int)PointShadowRedraw::Count] = {};
 		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
 
@@ -901,10 +962,14 @@ void ShadowManager::RenderShadowMaps() {
 			now.y = pointLight->m_worldTransform.pos.y;
 			now.z = pointLight->m_worldTransform.pos.z;
 			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult; // as in RenderShadowCubeMap
+			PointShadowCasterState(shadowLight, now.casterHash, now.staticCasters);
 			now.valid = true;
 			if (GpuTimer::Enabled) statPresent++;
 			const PointShadowRedraw why = PointShadowRedrawReason(slots[i], now, scheduleFrame, i, interval);
-			if (why == PointShadowRedraw::None) continue;
+			if (why == PointShadowRedraw::None) {
+				if (GpuTimer::Enabled && now.staticCasters) statStaticReused++;
+				continue;
+			}
 
 			// Render targets set in function due to rendering multiple faces.
 			RenderShadowCubeMap(ShadowLights, i);
@@ -919,14 +984,15 @@ void ShadowManager::RenderShadowMaps() {
 
 		if (GpuTimer::Enabled && ++statFrames >= 240) { // with the F10 profile: how much work the cubemaps really are
 			const float perFrame = 1.0f / statFrames;
-			Logger::Log("POINT SHADOWS interval %u: %.1f lights present, %.1f cubemaps redrawn per frame (%u frames); "
-				"redrawn because: scheduled %.2f, new %.2f, other light %.2f, moved %.2f, resized %.2f, cell %.2f, texture %.2f",
-				interval, statPresent * perFrame, statRedrawn * perFrame, statFrames,
-				statReasons[(int)PointShadowRedraw::Scheduled] * perFrame, statReasons[(int)PointShadowRedraw::NewSlot] * perFrame,
+			Logger::Log("POINT SHADOWS interval %u: %.1f lights present, %.1f cubemaps redrawn, %.1f static cubemaps reused per frame (%u frames); "
+				"redrawn because: scheduled %.2f, casters %.2f, new %.2f, other light %.2f, moved %.2f, resized %.2f, cell %.2f, texture %.2f",
+				interval, statPresent * perFrame, statRedrawn * perFrame, statStaticReused * perFrame, statFrames,
+				statReasons[(int)PointShadowRedraw::Scheduled] * perFrame, statReasons[(int)PointShadowRedraw::CastersChanged] * perFrame,
+				statReasons[(int)PointShadowRedraw::NewSlot] * perFrame,
 				statReasons[(int)PointShadowRedraw::OtherLight] * perFrame, statReasons[(int)PointShadowRedraw::Moved] * perFrame,
 				statReasons[(int)PointShadowRedraw::Resized] * perFrame, statReasons[(int)PointShadowRedraw::OtherCell] * perFrame,
 				statReasons[(int)PointShadowRedraw::OtherTexture] * perFrame);
-			statFrames = statPresent = statRedrawn = 0;
+			statFrames = statPresent = statRedrawn = statStaticReused = 0;
 			for (unsigned& r : statReasons) r = 0;
 		}
 	}

@@ -20,6 +20,7 @@
 #include <random>
 
 #include "../src/effects/LUTIdentity.h"
+#include "../src/effects/LUTFile.h"
 
 static int failures = 0;
 #define CHECK(cond, ...) do { if (!(cond)) { std::printf("FAIL: "); std::printf(__VA_ARGS__); std::printf("\n"); failures++; } else { std::printf("PASS: "); std::printf(__VA_ARGS__); std::printf("\n"); } } while (0)
@@ -176,6 +177,139 @@ int main()
 		}
 		std::printf("      N=%u: worst |out - in| SDR %.5f (1/255 = %.5f), HDR relative to scale %.5f\n", n, worstSdr, 1.0f / 255.0f, worstHdr);
 		CHECK(worstSdr <= 1.0f / 255.0f && worstHdr <= 1.0f / 255.0f, "N=%u identity strip through the LUT maths stays within one 8-bit step", n);
+	}
+
+	// 4. .cube files (src/effects/LUTFile.h): parsed into the strip layout LUT.fx.hlsl reads.
+	auto cubeText = [](unsigned n, auto output, const char* header) {
+		std::string text = std::string("TITLE \"test\"\n# comment\n") + header + "LUT_3D_SIZE " + std::to_string(n) + "\n";
+		char line[96];
+		for (unsigned b = 0; b < n; b++)
+			for (unsigned g = 0; g < n; g++)
+				for (unsigned r = 0; r < n; r++) { // red fastest, as the format defines
+					Rgb o = output(r / (float)(n - 1), g / (float)(n - 1), b / (float)(n - 1));
+					sprintf_s(line, "%.6f %.6f %.6f\n", o.r, o.g, o.b);
+					text += line;
+				}
+		return text;
+	};
+	auto identity = [](float r, float g, float b) { return Rgb{ r, g, b }; };
+	for (unsigned n : { 2u, 17u, 33u }) {
+		std::istringstream in(cubeText(n, identity, ""));
+		CubeLUT cube;
+		std::string error;
+		const bool parsed = ParseCubeLUT(in, cube, error);
+		IDirect3DTexture9* strip = parsed ? CreateStripFromCube(device, cube, error) : nullptr;
+		D3DSURFACE_DESC desc = {};
+		if (strip) strip->GetLevelDesc(0, &desc);
+		CHECK(strip && desc.Width == n * n && desc.Height == n && IsIdentityLUT(strip),
+			"an identity .cube of size %u becomes a %ux%u identity strip (%s)", n, n * n, n, error.c_str());
+		if (strip) strip->Release();
+	}
+	{
+		// A non-trivial LUT: the strip sampled the way LUT.fx.hlsl samples it must reproduce the LUT's own
+		// trilinear interpolation (this is what pins down the axis order: red across a cell, green down,
+		// blue from cell to cell).
+		const unsigned n = 17;
+		auto grade = [](float r, float g, float b) { return Rgb{ 0.1f + 0.8f * g * g, std::sqrt(b) * 0.9f, 1.0f - r * 0.7f }; };
+		std::istringstream in(cubeText(n, grade, "DOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n"));
+		CubeLUT cube;
+		std::string error;
+		CHECK(ParseCubeLUT(in, cube, error), "a graded 17-point .cube with DOMAIN lines parses (%s)", error.c_str());
+		IDirect3DTexture9* strip = CreateStripFromCube(device, cube, error);
+		std::vector<Rgb> tex((size_t)n * n * n);
+		if (strip) {
+			D3DLOCKED_RECT rect;
+			strip->LockRect(0, &rect, NULL, D3DLOCK_READONLY);
+			for (unsigned y = 0; y < n; y++)
+				for (unsigned x = 0; x < n * n; x++) {
+					const BYTE* px = (const BYTE*)rect.pBits + (size_t)y * rect.Pitch + (size_t)x * 4;
+					tex[(size_t)y * n * n + x] = { px[2] / 255.0f, px[1] / 255.0f, px[0] / 255.0f };
+				}
+			strip->UnlockRect(0);
+			strip->Release();
+		}
+		auto entry = [&](unsigned r, unsigned g, unsigned b) {
+			const float* v = &cube.RGB[((size_t)b * n * n + (size_t)g * n + r) * 3];
+			return Rgb{ v[0], v[1], v[2] };
+		};
+		auto trilinear = [&](Rgb c) {
+			const float fr = c.r * (n - 1), fg = c.g * (n - 1), fb = c.b * (n - 1);
+			const unsigned r0 = std::min((unsigned)fr, n - 2), g0 = std::min((unsigned)fg, n - 2), b0 = std::min((unsigned)fb, n - 2);
+			const float dr = fr - r0, dg = fg - g0, db = fb - b0;
+			Rgb sum = { 0, 0, 0 };
+			for (int i = 0; i < 8; i++) {
+				const float w = ((i & 1) ? dr : 1 - dr) * ((i & 2) ? dg : 1 - dg) * ((i & 4) ? db : 1 - db);
+				const Rgb v = entry(r0 + (i & 1), g0 + ((i >> 1) & 1), b0 + ((i >> 2) & 1));
+				sum = { sum.r + w * v.r, sum.g + w * v.g, sum.b + w * v.b };
+			}
+			return sum;
+		};
+		std::mt19937 rng(77);
+		std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+		float worst = 0.0f;
+		for (int i = 0; i < 100000 && strip; i++) {
+			const Rgb c = { unit(rng), unit(rng), unit(rng) };
+			const Rgb shader = SampleLUT(tex, (float)n, c), reference = trilinear(c);
+			worst = std::max(worst, std::max(std::fabs(shader.r - reference.r), std::max(std::fabs(shader.g - reference.g), std::fabs(shader.b - reference.b))));
+		}
+		std::printf("      graded .cube, N=%u: worst |shader model - trilinear .cube| %.5f\n", n, worst);
+		CHECK(strip && worst <= 1.0f / 255.0f, "a graded .cube read through the shader's sampling matches its own trilinear lookup within one 8-bit step");
+	}
+	{
+		auto rejects = [&](const std::string& text, const char* what) {
+			std::istringstream in(text);
+			CubeLUT cube;
+			std::string error;
+			const bool parsed = ParseCubeLUT(in, cube, error);
+			CHECK(!parsed && !error.empty(), "rejected: %s (%s)", what, error.c_str());
+		};
+		std::string complete = cubeText(2, identity, "");
+		rejects("0 0 0\n", "no LUT_3D_SIZE");
+		rejects(complete.substr(0, complete.size() - 10), "an entry missing");
+		rejects("LUT_1D_SIZE 16\n", "a 1D LUT");
+		rejects(cubeText(2, identity, "DOMAIN_MAX 2 2 2\n"), "a domain other than 0..1");
+		rejects(cubeText(2, identity, "LUT_3D_INPUT_RANGE -0.5 1.5\n"), "a Resolve input range other than 0..1");
+		rejects("LUT_3D_SIZE 2\n0 0 zero\n", "an unreadable data line");
+		rejects("LUT_3D_SIZE 1\n", "a size below 2");
+	}
+
+	// 5. Images keep their exact size. A 33-point strip is 1089x33; the old loader turned it into 2048x64.
+	{
+		const unsigned n = 33;
+		std::istringstream in(cubeText(n, identity, ""));
+		CubeLUT cube;
+		std::string error;
+		ParseCubeLUT(in, cube, error);
+		IDirect3DTexture9* strip = CreateStripFromCube(device, cube, error);
+		char path[MAX_PATH], dir[MAX_PATH];
+		GetTempPathA(MAX_PATH, dir);
+		sprintf_s(path, "%snvr_lut_test_%lu.png", dir, GetCurrentProcessId());
+		const bool saved = strip && SUCCEEDED(D3DXSaveTextureToFileA(path, D3DXIFF_PNG, strip, NULL));
+		if (strip) strip->Release();
+		IDirect3DTexture9* old = nullptr;
+		D3DSURFACE_DESC oldDesc = {}, newDesc = {};
+		if (saved && SUCCEEDED(D3DXCreateTextureFromFileA(device, path, &old))) { old->GetLevelDesc(0, &oldDesc); old->Release(); }
+		IDirect3DTexture9* exact = saved ? LoadLUTTexture(device, path, error) : nullptr;
+		if (exact) exact->GetLevelDesc(0, &newDesc);
+		std::printf("      1089x33 PNG strip: old loader %ux%u, new loader %ux%u, %u level(s)\n", oldDesc.Width, oldDesc.Height,
+			newDesc.Width, newDesc.Height, exact ? (unsigned)exact->GetLevelCount() : 0u);
+		CHECK(exact && newDesc.Width == n * n && newDesc.Height == n && exact->GetLevelCount() == 1 && IsIdentityLUT(exact),
+			"a non-power-of-two PNG strip loads at its exact size, one level, texels intact");
+		if (exact) exact->Release();
+		DeleteFileA(path);
+
+		// The same table as a .cube file on disk, through the same entry point LUTEffect uses.
+		sprintf_s(path, "%snvr_lut_test_%lu.cube", dir, GetCurrentProcessId());
+		FILE* file = nullptr;
+		if (fopen_s(&file, path, "wb") == 0 && file) { const std::string text = cubeText(n, identity, ""); fwrite(text.data(), 1, text.size(), file); fclose(file); }
+		IDirect3DTexture9* fromCube = LoadLUTTexture(device, path, error);
+		D3DSURFACE_DESC cubeDesc = {};
+		if (fromCube) fromCube->GetLevelDesc(0, &cubeDesc);
+		CHECK(fromCube && cubeDesc.Width == n * n && cubeDesc.Height == n && IsIdentityLUT(fromCube), "a .cube file on disk loads as a strip (%s)", error.c_str());
+		if (fromCube) fromCube->Release();
+		DeleteFileA(path);
+		std::string missing;
+		CHECK(!LoadLUTTexture(device, "does-not-exist.cube", missing) && !missing.empty(), "a missing .cube reports an error instead of crashing");
 	}
 
 	device->Release();

@@ -24,22 +24,41 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 > NVR files. Reports of what works and what breaks are welcome in this repository's issues.
 
 ### How to install
-This build replaces files of an existing New Vegas Reloaded install; it is not a standalone mod.
-1. Install New Vegas Reloaded normally first and make sure it runs.
-2. Back up `Data\NVSE\Plugins\NewVegasReloaded.dll`, `NewVegasReloaded.dll.defaults.toml` and the
-   `Data\Shaders\NewVegasReloaded\` folder.
-3. With the game closed, download the latest zip from **Releases** and extract it into your `Data`
-   folder (or your mod manager's NVR folder), overwriting when asked.
-4. Start the game. Your own NVR settings are kept.
+Since P45 the zip is a complete New Vegas Reloaded install: the plugin DLL, its settings file, all
+shaders and all of NVR's textures. You need [xNVSE](https://github.com/xNVSE/NVSE); you do not need
+to install New Vegas Reloaded separately first. (The textures are NVR's own, redistributed under the
+same license; they will be removed from the zip if the original authors object.)
+1. If you already have New Vegas Reloaded, back up `Data\NVSE\Plugins\NewVegasReloaded.dll`,
+   `NewVegasReloaded.dll.defaults.toml`, your `NewVegasReloaded.dll.toml` (your own settings) and
+   the `Data\Shaders\NewVegasReloaded\` folder. (The textures in the zip are the same as NVR's own;
+   your custom LUTs in `Data\Textures\NewVegasReloaded\LUTs` are not touched.)
+2. With the game closed, download the latest zip from **Releases** and extract it into your `Data`
+   folder (or install it as a mod with your mod manager), overwriting when asked.
+3. Start the game. Your own NVR settings are kept; without them, they are created from the defaults.
 
 To uninstall, put your backed-up files back. If an effect looks wrong after updating, delete the
-`Cache` folders inside `Data\Shaders\NewVegasReloaded\`.
+`Cache` folders inside `Data\Shaders\NewVegasReloaded\`, and look in `NewVegasReloaded.log` (game
+folder) for lines containing `error X`: they name a shader file that is missing or from another
+version. Extracting a zip cannot remove files, so a shader left over from an older NVR that this
+build no longer has (for example `Shaders\SKIN2012.pso.hlsl`) stays; it is harmless, or delete it.
+Up to P39 the zips held only the changed shader files and missed `Effects\Includes\Normals.hlsl`:
+on installs without our version, sun shadows and volumetric fog failed to load and the shadow
+Darkness slider darkened the whole screen. P40 fixes both.
+
+Custom colour-grading LUTs (Shaders > LUT, files in `Data\Textures\NewVegasReloaded\LUTs`) can be
+horizontal strip images N*N wide and N high (256x16, 1024x32, 1089x33, 4096x64, ...) or, since P45,
+`.cube` files as exported by grading tools. Since P45 images are loaded at their exact size (before,
+a strip whose sides were not powers of two, such as 1089x33, was stretched and came out as
+scrambled, speckled colours), the day, night and interior LUTs may have different sizes, an image of
+any other shape is ignored with an `UNOFFICIAL LUT ... is ignored` line in the log, and a missing LUT
+file no longer turns the picture black.
 
 ### Settings
 Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
 - **Main > Main > Performance** - the speed-ups that don't change the image. They are on by
   default; you only need them to switch one off if you suspect it causes a problem.
-  Leave `MergedDepthNormals` off (it doesn't work on some graphics drivers).
+  Leave `MergedDepthNormals` off (it doesn't work on some graphics drivers; since P40 it checks
+  itself and switches off, with a line in the log, if your driver skips it).
   `WorldSceneGuard` is a safety net: if the game stops drawing the 3D world for a moment (seen once
   after loading a save straight into an interior, which left the image almost black), NVR's effects
   are skipped until it starts again.
@@ -53,7 +72,15 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   - `PointShadowInterval` - in interiors, redraw the shadows of lamps and other lights every 2nd,
     3rd or 4th frame instead of every frame (1 = every frame, the original behaviour). **This one is
     on by default, set to 2.** Static rooms look the same; shadows of people and doors moving
-    through the light can lag a frame or two. Set it to 1 if you notice it.
+    through the light can lag a frame or two. Set it to 1 if you notice it. P44 automatically stops
+    redrawing a light whose complete caster list is static and unchanged; lights containing actors or
+    animated tree leaves keep the selected interval.
+  - `CheapReflections` - draw the reflection in water without sun shadows and without the bumpy
+    terrain detail, like the original game's reflections. Only matters where water is in view.
+  - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows every 2nd frame instead of
+    every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
+    and creatures lag one frame, and right after a very fast turn the edge of the view may show
+    softer shadows for one frame.
 
 To keep a change for next time, press **Save** at the top of the menu.
 

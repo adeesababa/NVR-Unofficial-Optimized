@@ -18,10 +18,15 @@ static BOOL DisjointValue = FALSE;
 static UINT64 FrequencyValue = 1000000;
 static bool CannotCreate[3] = {};           // per query type: CreateQuery fails, as on a layer without it
 static int LiveQueries = 0;
+static std::vector<UINT64> IssueTicks;		// when set, each timestamp Issue records the next value (timeline tests)
+static size_t IssueTickIndex = 0;
 struct IDirect3DQuery9 {
 	int Type;
 	UINT64 Value;
-	HRESULT Issue(DWORD) { return S_OK; }
+	HRESULT Issue(DWORD) {
+		if (Type == D3DQUERYTYPE_TIMESTAMP && IssueTickIndex < IssueTicks.size()) Value = IssueTicks[IssueTickIndex++];
+		return S_OK;
+	}
 	HRESULT GetData(void* data, DWORD, DWORD flags) {
 		assert(flags == 0);
 		HRESULT status = Type == D3DQUERYTYPE_TIMESTAMP ? TimestampStatus :
@@ -46,6 +51,7 @@ struct IDirect3DDevice9 {
 };
 #define NVR_GPU_PROFILER_TEST
 #include "../src/core/GpuProfiler.h"
+#include "../src/core/GpuTimeline.h"
 }
 
 static void ResetMock() {
@@ -55,6 +61,8 @@ static void ResetMock() {
 	FrequencyValue = 1000000;
 	CannotCreate[0] = CannotCreate[1] = CannotCreate[2] = false;
 }
+
+void CheckGpuTimeline();
 
 void CheckGpuProfiler() {
 	using namespace ProfilerTest;
@@ -148,4 +156,141 @@ void CheckGpuProfiler() {
 	assert(LiveQueries == 0);
 	ResetMock();
 	std::puts("PASS: actual GPU collector: pending results, ring saturation/recovery, fatal timestamp failure, optional disjoint/frequency queries (missing, failing, rejected).");
+	CheckGpuTimeline();
+}
+
+// World-scene split (src/core/GpuTimeline.h): one timestamp per key change, intervals charged to the
+// key that was current.
+namespace TimelineCapture {
+static unsigned Reports = 0, Frames = 0;
+static double Avg[ProfilerTest::GpuTimeline::KeyCount], Max[ProfilerTest::GpuTimeline::KeyCount];
+static unsigned Dropped = 0, Rejected = 0, MostMarks = 0;
+static void Capture(const ProfilerTest::GpuTimeline& timeline) {
+	Reports++;
+	Frames = timeline.WindowFrames();
+	for (unsigned k = 0; k < ProfilerTest::GpuTimeline::KeyCount; ++k) { Avg[k] = timeline.AverageMs(k); Max[k] = timeline.MaxMs(k); }
+	Dropped = timeline.DroppedFrames();
+	Rejected = timeline.RejectedFrames();
+	MostMarks = timeline.MostMarks();
+}
+}
+
+static bool Near(double a, double b) { return std::fabs(a - b) < 1e-9; }
+
+void CheckGpuTimeline() {
+	using namespace ProfilerTest;
+	using namespace TimelineCapture;
+	const unsigned char none = GpuTimeline::NoKey;
+
+	// The pure charging rule.
+	{
+		const UINT64 ticks[] = { 100, 150, 400, 1000 };
+		const unsigned char keys[] = { 0, 1, 0, none };
+		double sums[3] = {};
+		assert(ChargeTimelineIntervals(ticks, keys, 4, 0.001, sums, 3, none));
+		assert(Near(sums[0], 0.650) && Near(sums[1], 0.250) && sums[2] == 0.0);
+		const UINT64 backwards[] = { 100, 90, 400 };
+		double untouched[3] = {};
+		assert(!ChargeTimelineIntervals(backwards, keys, 3, 0.001, untouched, 3, none));
+		assert(untouched[0] == 0.0 && untouched[1] == 0.0);
+		double single[3] = {};
+		assert(ChargeTimelineIntervals(ticks, keys, 1, 0.001, single, 3, none) && single[0] == 0.0);
+	}
+
+	IDirect3DDevice9 device;
+	ResetMock();
+	Reports = 0;
+	{
+		// Two frames, window of two, 1 MHz clock (1 tick = 0.001 ms).
+		GpuTimeline timeline("test", 2);
+		timeline.OnReport = &Capture;
+		timeline.Mark(7); // outside a frame: ignored
+		IssueTicks = { 1000, 3000, 4000, 10000, 12000 };
+		IssueTickIndex = 0;
+		assert(timeline.BeginFrame(&device));
+		timeline.Mark(3); timeline.Mark(5); timeline.Mark(none);
+		timeline.EndFrame();
+		assert(timeline.BeginFrame(&device));
+		timeline.Mark(3); timeline.Mark(none);
+		timeline.EndFrame();
+		assert(timeline.BeginFrame(&device)); // collects both frames and reports
+		timeline.EndFrame();
+		assert(Reports == 1 && Frames == 2);
+		assert(Near(Avg[3], 2.0) && Near(Avg[5], 0.5) && Near(Max[3], 2.0) && Near(Max[5], 1.0) && Avg[7] == 0.0);
+		assert(MostMarks == 3 && Dropped == 0 && Rejected == 0);
+		IssueTicks.clear();
+	}
+	assert(LiveQueries == 0);
+
+	// Results not back yet: frames stay pending, the timeline skips frames once all slots are in flight,
+	// then collects everything when the GPU catches up.
+	ResetMock();
+	Reports = 0;
+	{
+		GpuTimeline timeline("pending", 4);
+		timeline.OnReport = &Capture;
+		TimestampStatus = S_FALSE;
+		for (unsigned i = 0; i < GpuTimeline::FramesInFlight; ++i) {
+			assert(timeline.BeginFrame(&device));
+			timeline.Mark(1); timeline.Mark(none);
+			timeline.EndFrame();
+		}
+		assert(timeline.PendingFrames() == GpuTimeline::FramesInFlight);
+		assert(!timeline.BeginFrame(&device));
+		timeline.Mark(1); // not in a frame
+		timeline.EndFrame();
+		TimestampStatus = S_OK;
+		assert(timeline.BeginFrame(&device));
+		timeline.EndFrame();
+		assert(timeline.PendingFrames() == 0 && Reports == 1);
+	}
+	assert(LiveQueries == 0);
+
+	// A frame with more than MaxMarks changes is dropped, and ticks that run backwards are rejected.
+	ResetMock();
+	Reports = 0;
+	{
+		GpuTimeline timeline("overflow", 1);
+		timeline.OnReport = &Capture;
+		assert(timeline.BeginFrame(&device));
+		for (unsigned i = 0; i <= GpuTimeline::MaxMarks; ++i) timeline.Mark((unsigned char)(i & 1));
+		timeline.EndFrame();
+		assert(timeline.PendingFrames() == 0 && timeline.DroppedFrames() == 1);
+
+		IssueTicks = { 500, 400, 900 };
+		IssueTickIndex = 0;
+		assert(timeline.BeginFrame(&device));
+		timeline.Mark(1); timeline.Mark(2); timeline.Mark(none);
+		timeline.EndFrame();
+		assert(timeline.BeginFrame(&device));
+		timeline.EndFrame();
+		assert(Reports == 0 && timeline.RejectedFrames() == 1);
+		IssueTicks.clear();
+	}
+	assert(LiveQueries == 0);
+
+	// A disjoint clock rejects the frame; a failing timestamp GetData switches the timeline off.
+	ResetMock();
+	Reports = 0;
+	DisjointValue = TRUE;
+	{
+		GpuTimeline timeline("disjoint", 1);
+		timeline.OnReport = &Capture;
+		assert(timeline.BeginFrame(&device));
+		timeline.Mark(1); timeline.Mark(none);
+		timeline.EndFrame();
+		assert(timeline.BeginFrame(&device));
+		timeline.EndFrame();
+		assert(Reports == 0 && timeline.RejectedFrames() == 1);
+		DisjointValue = FALSE;
+		assert(timeline.BeginFrame(&device));
+		timeline.Mark(1); timeline.Mark(none);
+		timeline.EndFrame();
+		TimestampStatus = E_FAIL;
+		assert(!timeline.BeginFrame(&device));
+		assert(timeline.IsUnavailable() && LiveQueries == 0);
+	}
+	assert(LiveQueries == 0);
+	ResetMock();
+	std::puts("PASS: GPU timeline split: charging rule, two-frame window, pending frames and slot saturation, overflow drop, backwards/disjoint rejection, fatal GetData.");
 }

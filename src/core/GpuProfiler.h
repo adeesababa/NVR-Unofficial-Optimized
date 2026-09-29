@@ -354,6 +354,10 @@ public:
 		if (All.size() >= WindowFrames) Report();
 	}
 
+	// Optional: appends what else is known about the current frame to each FRAME SPIKE line (set by
+	// Hooks/Render.cpp: shader binds, first uses of a shader, the longest stall between binds).
+	inline static void (*SpikeDetail)(char* buffer, size_t size) = nullptr;
+
 	// Called when profiling is switched off: report what was collected if it is enough to mean something.
 	void Flush() {
 		if (All.size() >= 200) Report();
@@ -379,8 +383,10 @@ private:
 			if (written < 0) break;
 			used += written;
 		}
-		Logger::Log("FRAME SPIKE %.1f ms (typical %.1f ms) %s | NVR CPU timers over 0.75 ms in it: %s",
-			ms, Typical, nearTransition ? "near a cell change or loading" : "during steady play", used ? slow : "none");
+		char detail[512] = {};
+		if (SpikeDetail) SpikeDetail(detail, sizeof(detail));
+		Logger::Log("FRAME SPIKE %.1f ms (typical %.1f ms) %s | NVR CPU timers over 0.75 ms in it: %s%s",
+			ms, Typical, nearTransition ? "near a cell change or loading" : "during steady play", used ? slow : "none", detail);
 #else
 		(void)ms; (void)nearTransition;
 #endif

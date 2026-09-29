@@ -65,8 +65,14 @@ Settings only exist if they are present in the defaults file, so always install 
 `[_Main.Main.Performance]` - same image, on by default:
 `FrameChain`, `CompositeApply`, `ChainUsesGameTexture`, `WorldSceneGuard`, `SlimDepthBuffer` (restart required).
 `MergedDepthNormals` is off by default: on a GTX 1070 (native D3D9) the driver silently skipped the
-two-render-target draw, leaving depth and normals stale. Only enable it to test, and check that
-the F10 `Depth combine` timer then reads above 0 ms.
+two-render-target draw, leaving depth and normals stale. Every call in that path already returned
+success (the retail runtime returns S_OK for a draw the driver rejects), so since P40 the path checks
+itself the first time it runs in a session: it fills the normals target with a marker colour, reads the
+centre pixel back before and after the draw (one 1x1 copy and readback, a one-off stall of a few
+milliseconds) and logs `UNOFFICIAL merged depth/normals check`. If the marker is still there, the draw
+did not run and the path switches itself off until restart (separate passes, correct image). Two
+`UNOFFICIAL merged depth/normals state` lines record the targets' formats and sizes, the game's
+depth-stencil, the MRT capability bits and the render states the draw ran with.
 
 `[_Main.Main.ReducedQuality]` - change the image, off by default (except `PointShadowInterval`), apply immediately:
 - `FXAA` - lean console-style FXAA (after FXAA 3.11), 5 texture reads per pixel, 9 on edges, after
@@ -74,6 +80,93 @@ the F10 `Depth combine` timer then reads above 0 ms.
 - `GodRaysLowRes` - god rays at quarter instead of half resolution.
 - `AOLowRes` - ambient occlusion at quarter instead of half resolution.
 - `PointShadowInterval` (1-4, **default 2**) - redraw point-light shadow cubemaps every N frames; 1 = every frame.
+- `CheapReflections` (P40) - the water reflection map is drawn without the forward sun-shadow lookup
+  (`TESR_ShadowForwardData.x = 1`, the forward path's own off switch) and without terrain parallax
+  (`TESR_TerrainParallaxData.x = 0`). NVR's constants reach a game shader only when
+  `ShaderRecord::SetCT` runs, which happens when the pixel shader changes; so the first bind after the
+  values change (at the start and at the end of the reflection pass) is told that no pixel shader is
+  bound, which makes an NVR shader upload them even if the game keeps the same shader across the
+  boundary. Note: the older `ForceReflections` path sets `TESR_ShadowData.x = -1`, which the current
+  exterior shaders no longer read (they test `TESR_ShadowForwardData.x`), so it never switched sun
+  shadows off in reflections; that path is left as it was.
+- `NearCascadeInterval` (1-2, P40) - at 2 the near sun cascade is redrawn on even frames only. The
+  limited cascades already use odd frames (middle 1 and 5, far 3, LOD 7 of the 8-frame cycle), so every
+  frame then draws exactly one sun cascade (checked by a `static_assert`). Between redraws the cached
+  near cascade is kept locked to the camera translation like the others, and its selection sphere
+  (camera-relative centre) is moved with the camera too.
+- Measured in P40 (GTX 1070, 1440p, Rivet City exterior, same view): `CheapReflections` 1.15 -> 1.01 ms
+  for the reflection pass (-0.14 ms); `NearCascadeInterval 2` -0.14 ms GPU (cascade geometry 0.29 ->
+  0.23, atlas prefilter 0.27 -> 0.19), no measurable CPU change.
+
+## Static point-shadow cubemap reuse (P41, P44)
+
+Each point-light cubemap stores distance from the light divided by its radius, so it is independent of
+the camera. P41 hashes the complete geometry list for each light once per frame: geometry identity,
+world transform, world bound, cull/property flags and material alpha. If the list is complete, contains
+no skinned geometry or wind-animated tree leaves, and the hash is unchanged, its existing cubemap is
+reused indefinitely—even when `PointShadowInterval = 1`. A transform, visibility, alpha, light, radius,
+cell or texture change redraws it immediately. Missing lists and lists containing dynamic geometry keep
+the previous interval schedule unchanged. The F10 `POINT SHADOWS` line reports static reuses and caster
+invalidations. This first, conservative cache does not yet split static and dynamic casters into two
+textures.
+
+P42 adds that split for complete mixed lists. A second R32F cubemap per sampled light holds the static
+casters. Each frame its six faces are copied to the cubemap already sampled by the lighting shader;
+skinned geometry and animated tree leaves are then rendered over it with `D3DBLENDOP_MIN`, which keeps
+the nearer normalised distance. Static geometry changes rebuild the cache. Moving lights, incomplete
+lists, disabled `PointShadowStaticOverlay`, unsupported R32F blending, or a failed copy retain the P41
+full-redraw/interval path. The setting takes effect live, while allocating the roughly 66 MiB cache
+requires a restart. F10 reports static-layer rebuilds and dynamic overlays separately.
+
+The P42/P43 static/live overlay experiment was rejected. The first test rebuilt all five mixed static
+layers each frame; making its hash order-independent still left four to five layers genuinely changing
+and rebuilding. It was 0.79-0.85 ms slower in cubemap GPU time, about 0.43 ms slower on the CPU, used
+roughly 66 MiB more video memory, and produced visibly darker areas. P44 removes the second textures,
+MIN-blend path and setting. It keeps P41's conservative whole-static cache, with the harmless improvement
+that its caster-set hash no longer depends on list traversal order.
+
+## Exterior shadow apply needs SunShadows (P40)
+The exterior shadow apply (`ShadowsExteriors.fx`, or the composite apply in the fog pass) multiplies
+the scene by the red channel of `TESR_PointShadowBuffer`, which `PointShadows` fills with the
+point-light term and `SunShadows` then overwrites with sun visibility. A tester's P37 log showed
+`SunShadows.fx.hlsl` failing to compile (`undeclared identifier 'GetWorldNormalLod'`: our zips had
+never shipped the changed `Effects/Includes/Normals.hlsl`), so outdoors the channel stayed near 0
+and the apply darkened every pixel to `1 - Darkness`, exactly the reported "Darkness slider darkens
+the whole screen unless it is 0". `ShadowsExteriorEffect::ShouldRender` now skips the exterior
+apply while `SunShadows` is not loaded or switched off, with one `UNOFFICIAL exterior shadow apply
+skipped` log line. Since P40 the zips carry the repo's complete shader folders (plus
+`Textures/NewVegasReloaded/LUTs/neutral_lut.png`, the one texture the fork added) instead of only the
+files changed since the fork base, and `tools/check-package.ps1` verifies a package before it is zipped
+(every tracked shader file present and current, no extra files, DLL and defaults current). Since P45
+they also carry all of `resource/Textures` (about 18 MB zipped), so a zip is a complete install without
+NVR underneath.
+
+## Robustness fixes from user logs (P45)
+- **Crash at startup without the shadow shaders.** `ShadowManager::Initialize` set `ClearSamplers` on
+  the seven shadow-map shader records before checking that they had loaded; on an install without
+  `Shaders/NewVegasReloaded/Shaders/Shadows` (a user who installed an overlay zip with no NVR
+  underneath) they were null and the game crashed right after `Starting the shadows manager...`. A
+  missing shader now disables shadow maps with an `[ERROR]` log line. `ShadowMapClear.pso` is now part
+  of that check too.
+- **GPU vendor message.** "AMD/Intel detected" was logged whenever the D3D9 layer offers the RESZ depth
+  format, which DXVK does on every GPU, so an RTX 4070 Ti under DXVK was reported as AMD/Intel. The log
+  now names the adapter (`Graphics adapter: ... (vendor ..., device ...)`) and says which depth resolve
+  is used and why (`Depth resolve: RESZ (DXVK, any GPU brand)`, `RESZ (AMD/Intel driver)` or `NVAPI`).
+- **LUTs.** The shader used the day LUT's cell count for the night and interior LUTs too, so LUTs of
+  different sizes scrambled each other; each slot now has its own (`TESR_LUTData.x/z/w`). A texture
+  that is not an N*N x N strip is not used (log line), and a slot with no usable LUT (missing file,
+  wrong shape) passes colours through: before, a missing `neutral_lut.png` left the samplers empty
+  and the pass would have returned black. Same result as before for any correctly shaped LUTs.
+- **LUT loading** (`src/effects/LUTFile.h`, tested in `tests/lut_identity.cpp`). LUT images used to go
+  through the plain D3DX loader, which rounds each side up to a power of two and resamples: a 33-point
+  strip (1089x33) came out 2048x64 (test output: "old loader 2048x64, new loader 1089x33"), which the
+  shader then reads as a different, scrambled 64-point LUT - the likely cause of a user's speckled,
+  teal/orange screenshot with a custom "Top Gun" LUT. Images now load at their exact size with one
+  level and no filtering (the old loader stays as a fallback for devices without non-power-of-two
+  textures). `.cube` files (Adobe/Resolve text, red fastest) are read directly into the same strip
+  layout, 8-bit, clamped to 0..1; 1D LUTs and input domains other than 0..1 are rejected with a log
+  line. The test checks that a graded .cube sampled through a CPU model of `LUT.fx.hlsl` matches the
+  LUT's own trilinear lookup within one 8-bit step, which pins down the axis order.
 
 ## World scene guard and trace
 NVR refreshes its depth buffers only inside its hook on the game's `RenderWorldSceneGraph`. Once, after
@@ -96,6 +189,29 @@ line above them (contact shadow passes, fog estimate/composite, god-ray passes, 
 end copies, interior shadow blur/apply). With profiling on, `POINT SHADOWS ...` lines report how many
 point-light cubemaps are redrawn per frame and why (scheduled refresh, new light, other light in the
 slot, moved, resized, cell change).
+
+### World scene split by shader family (P40)
+About half of the frame is drawn by the game's own render loop (world scene, water reflection map,
+first-person model), most of it with NVR's replacement pixel shaders. `SetShadersHook` sees every
+geometry pass being set up; while profiling, it issues one GPU timestamp wherever the shader family
+changes inside one of those three passes (`src/core/GpuTimeline.h`: one timestamp per change, not a
+begin/end pair, up to 1024 per frame, six frames in flight, read without flushing). Every 120 frames
+`GPU SPLIT <pass>` lines give the average and maximum GPU time per family, sorted, split into `NVR`
+(NVR's replacement shader was bound) and `vanilla` (the game's own). The family is the terrain template
+(`TERRAIN`, `TERRAIN LOD`, `TERRAIN FADE`) or the leading letters of the game's shader name (`SLS` lit
+objects, `PAR` parallax objects, `SKIN`, `SM3` hair and eyes, `STLEAF` tree leaves, `GRASS`, `SKY`,
+`WATER`, ...); `(pass setup)` is the time from the start of the pass to its first shader bind. The
+timestamps sit in the command stream, so an interval includes any time the GPU waited for the CPU
+inside it: exact for a GPU-bound frame, relative otherwise. The per-pass totals should match the
+`World scene (game)`, `Water reflections (game)` and `First person (game)` timers.
+
+`SHADER BINDS` lines (every 120 frames) give, per pass, the geometry passes set up per frame, how many
+changed the pixel shader, how many of those went to an NVR shader (each such change uploads NVR's
+constants, `ShaderRecord::SetCT`), and the family changes; plus the CPU time spent inside
+`SetShadersHook`. The hook also remembers which Direct3D pixel shader has already drawn in which pass
+(all session, profiling or not), so each `FRAME SPIKE` line now ends with the shaders used for the first
+time in that frame and the longest gap between two binds (the draws of a pass happen between its bind
+and the next one; a driver compiling a shader variant at its first draw would show up there).
 
 ### Frame-time statistics
 While profiling, every 1200 frames (and when F10 is pressed again, if at least 200 frames were collected) the log

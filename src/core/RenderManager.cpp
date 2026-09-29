@@ -296,16 +296,22 @@ void RenderManager::Initialize() {
 	device->GetDirect3D(&D3D);
 	D3D->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &currentDisplayMode);
 	RESZ = D3D->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, currentDisplayMode.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE, (D3DFORMAT)MAKEFOURCC('R','E','S','Z')) == D3D_OK;
+	D3DADAPTER_IDENTIFIER9 adapter = {};
+	if (SUCCEEDED(D3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapter)))
+		Logger::Log("Graphics adapter: %s (vendor %04lX, device %04lX)", adapter.Description, adapter.VendorId, adapter.DeviceId);
 	D3D->Release();
 	DXVK = false;
 
+	// The depth resolve path follows what the D3D9 layer offers, not the GPU brand: AMD and Intel drivers
+	// offer RESZ, and so does DXVK on every GPU, NVIDIA included; NVAPI works only with NVIDIA's own D3D9
+	// driver. (This used to log "AMD/Intel detected" for NVIDIA cards under DXVK, which confused users.)
 	if (RESZ) {
-		Logger::Log("AMD/Intel detected: RESZ supported.");
 		DXVK = getDXVKPresent();
+		Logger::Log("Depth resolve: RESZ (%s).", DXVK ? "DXVK, any GPU brand" : "AMD/Intel driver");
 		if (DXVK) Logger::Log("DXVK found");
 	}
 	else if (NvAPI_Initialize() == NVAPI_OK)
-		Logger::Log("NVIDIA detected: NVAPI supported.");
+		Logger::Log("Depth resolve: NVAPI (NVIDIA driver).");
 	else
 		Logger::Log("ERROR: Cannot initialize the render manager. Graphics device not supported.");
 	Logger::Log("D3D9 runtime: %s", D3D9RuntimeDescription());
