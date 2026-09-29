@@ -99,5 +99,17 @@ void TerrainShaders::UpdateConstants() {
 	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;
 	ParallaxConstants.ExtraData.z = ParallaxSettings.ShadowsIntensity;
+
+	// [Main.Main.ReducedQuality] CheapUnderwaterTerrain: ground below the water surface skips parallax and its shadows
+	// (TerrainTemplate.hlsl). .w is the camera-relative height below which terrain counts as under water: the level of
+	// the water the player is in or looking at, a little lower so the shoreline itself keeps its parallax. Only while
+	// a water plane is loaded nearby (otherwise the cell's default water level could lie above dry ground). -FLT_MAX = off.
+	static const float WaterlineMargin = 10.0f;  // game units, about 14 cm
+	ParallaxConstants.ExtraData.w = -FLT_MAX;
+	if (TheSettingManager->SettingsMain.Main.CheapUnderwaterTerrain && Tes && Tes->waterManager && Tes->waterManager->waterGroups.count) {
+		TESWaterForm* water = nullptr;
+		const float height = Tes->GetWaterHeight(Player, WorldSceneGraph, &water);
+		if (water) ParallaxConstants.ExtraData.w = height - WaterlineMargin - TheRenderManager->CameraPosition.z;
+	}
 };
 

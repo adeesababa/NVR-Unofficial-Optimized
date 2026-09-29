@@ -96,7 +96,7 @@ extern "C" {
 		AttachDeviceHooks();
 #endif
 
-		Logger::Initialize("NewVegasReloaded.log");
+		Logger::InitializeRotating("NVR-Unofficial-Optimized-Logs", "NewVegasReloaded", 25);
 
 		PluginVersion::CreateVersionString();
 		Logger::Log(PluginVersion::VersionString);

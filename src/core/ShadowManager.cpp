@@ -56,30 +56,42 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 */
 #include "GpuProfiler.h"
 
-// Refresh period per cascade. This used to require MSAA for the middle and far cascades: the
-// atlas blur once ran on every cascade every frame, so without an MSAA surface to re-resolve
-// from, a cached cascade would have been re-blurred each frame. Resolve and blur now run only on
-// cascades updated that frame (BlurShadowAtlas mask), so cached cascades stay untouched either way.
+// Refresh period per cascade. By default this is the original schedule: every cascade every frame,
+// except that LimitFrequency redraws the Lod cascade every fourth frame. StaggeredSunShadows
+// (ReducedQuality, off by default) is the P21-P48 schedule: middle every 4th frame, far and Lod every
+// 8th. A cached cascade follows the camera's movement, so still shadows stay put, but anything that
+// moves (people, creatures, doors) keeps its old shadow until the next refresh: with the stagger,
+// people walking a few metres away got shadows that stuttered and flickered (reported under DXVK).
+// Resolve and blur run only on cascades updated that frame (BlurShadowAtlas mask), so cached
+// cascades stay untouched either way.
 // nearInterval is the ReducedQuality NearCascadeInterval switch (1 = every frame, the original).
-constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, int nearInterval = 1) {
+constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, int nearInterval = 1, bool staggered = false) {
 	if (cascade == ShadowManager::MapNear) return nearInterval == 2 ? 2 : 1;
-	if (!limitFrequency) return 1;
-	if (cascade == ShadowManager::MapMiddle) return 4;
-	if (cascade == ShadowManager::MapFar || cascade == ShadowManager::MapLod) return 8;
+	if (staggered) {
+		if (cascade == ShadowManager::MapMiddle) return 4;
+		if (cascade == ShadowManager::MapFar || cascade == ShadowManager::MapLod) return 8;
+		return 1;
+	}
+	if (limitFrequency && cascade == ShadowManager::MapLod) return 4;
 	return 1;
 }
 
 static_assert(SunCascadeUpdatePeriod(ShadowManager::MapNear, true) == 1 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true) == 4 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapFar, true) == 8 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapLod, true) == 8 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapFar, false) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapFar, true) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapLod, true) == 4 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapLod, false) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapNear, true, 1, true) == 1 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 1, true) == 4 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapFar, true, 1, true) == 8 &&
+	SunCascadeUpdatePeriod(ShadowManager::MapLod, false, 1, true) == 8 &&
 	SunCascadeUpdatePeriod(ShadowManager::MapNear, true, 2) == 2 && SunCascadeUpdatePeriod(ShadowManager::MapNear, false, 2) == 2 &&
-	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 2) == 4,
+	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 2) == 1 && SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 2, true) == 4,
 	"Sun cascade update schedule changed unexpectedly");
 
 // Frame offset within each cascade's period, so the infrequent cascades never refresh on the
-// same frame: over the 8-frame cycle, 0 near only, 1/5 middle, 2/6 ortho map, 3 far, 7 LOD.
+// same frame. With StaggeredSunShadows, over the 8-frame cycle: 0 near only, 1/5 middle, 2/6 ortho
+// map, 3 far, 7 LOD. With the default schedule the Lod cascade (every 4th frame) takes frames 3 and 7.
 // Refresh rates are unchanged; this only removes the frame where all four used to render.
 constexpr unsigned SunCascadeUpdatePhase(int cascade) {
 	if (cascade == ShadowManager::MapMiddle) return 1;
@@ -98,18 +110,18 @@ static_assert(SunCascadeUpdatesOnFrame(ShadowManager::MapNear, 5, 1) &&
 	SunCascadeUpdatesOnFrame(ShadowManager::MapFar, 0, 1),
 	"Sun cascade stagger changed unexpectedly");
 
-// With NearCascadeInterval 2 the near cascade takes the even frames and the limited ones keep the odd
-// frames, so every frame of the 8-frame cycle draws exactly one sun cascade.
+// With StaggeredSunShadows and NearCascadeInterval 2 the near cascade takes the even frames and the
+// limited ones keep the odd frames, so every frame of the 8-frame cycle draws exactly one sun cascade.
 constexpr bool OneSunCascadePerFrame() {
 	for (unsigned frame = 0; frame < 8; ++frame) {
 		unsigned drawn = 0;
 		for (int cascade = ShadowManager::MapNear; cascade < ShadowManager::MapOrtho; ++cascade)
-			drawn += SunCascadeUpdatesOnFrame(cascade, frame, SunCascadeUpdatePeriod(cascade, true, 2)) ? 1 : 0;
+			drawn += SunCascadeUpdatesOnFrame(cascade, frame, SunCascadeUpdatePeriod(cascade, true, 2, true)) ? 1 : 0;
 		if (drawn != 1) return false;
 	}
 	return true;
 }
-static_assert(OneSunCascadePerFrame(), "NearCascadeInterval 2 should leave one sun cascade per frame");
+static_assert(OneSunCascadePerFrame(), "StaggeredSunShadows with NearCascadeInterval 2 should leave one sun cascade per frame");
 
 void ShadowManager::Initialize() {
 	
@@ -827,7 +839,7 @@ void ShadowManager::RenderShadowMaps() {
 			for (int i = MapNear; i < MapOrtho; i++) {
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
 				const unsigned updatePeriod = SunCascadeUpdatePeriod(i, Shadows->Settings.ShadowMaps.LimitFrequency,
-					TheSettingManager->SettingsMain.Main.NearCascadeInterval);
+					TheSettingManager->SettingsMain.Main.NearCascadeInterval, TheSettingManager->SettingsMain.Main.StaggeredSunShadows);
 
 				if (ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod)) {
 					updatedCascades |= 1u << i;

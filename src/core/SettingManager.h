@@ -10,6 +10,7 @@ struct SettingsMainStruct {
 		bool	RemoveUnderwater;
 		bool	ForceMSAA;
 		bool	ForceReflections;
+		bool	GameShadersInReflections; // [Main.Main.Water] diagnostic: the reflection pass uses the game's own shaders
 		bool	RemovePrecipitations;
 		bool	MemoryHeapManagement;
 		bool	MemoryTextureManagement;
@@ -28,6 +29,8 @@ struct SettingsMainStruct {
         bool    FXAA; // [Main.Main.ReducedQuality] FXAA (lean FXAA pass after SMAA)
         int     PointShadowInterval; // [Main.Main.ReducedQuality] PointShadowInterval (redraw each point-light shadow cubemap every N frames, 1-4)
         bool    CheapReflections; // [Main.Main.ReducedQuality] CheapReflections (water reflection map drawn without sun shadows and terrain parallax)
+        bool    CheapUnderwaterTerrain; // [Main.Main.ReducedQuality] CheapUnderwaterTerrain (ground below the water surface drawn without parallax)
+        bool    StaggeredSunShadows; // [Main.Main.ReducedQuality] StaggeredSunShadows (middle sun-shadow cascade every 4th frame, far/Lod every 8th)
         int     NearCascadeInterval; // [Main.Main.ReducedQuality] NearCascadeInterval (redraw the near sun-shadow cascade every N frames, 1-2)
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
@@ -355,6 +358,8 @@ public:
 		void			SetValue(ConfigNode* Node);
 		void			CreateWeatherSection(const char* WeatherName, TESWeather* Weather);
 		tomlValue*		FindSection(tomlValue* table, StringList* keys);
+		tomlValue*		UserSection(const char* Section);
+		void			UpdateOldDefaults();
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;

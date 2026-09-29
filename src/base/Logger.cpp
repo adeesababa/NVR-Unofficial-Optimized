@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "LogFiles.h"
 //char	Logger::MessageBuffer[8192];
 FILE*	Logger::LogFile;
 
@@ -34,9 +35,39 @@ float TimeLogger::LogTime(const char* Name) {
 
 stateMap RENDERSTATETYPE;
 
+static void InitializeRenderStateNames();
+
 void Logger::Initialize(const char* FileName) {
 
 	LogFile = _fsopen(FileName, "w", _SH_DENYWR);
+	InitializeRenderStateNames();
+}
+
+void Logger::InitializeRotating(const char* FolderName, const char* BaseName, unsigned Keep) {
+
+	// The game folder is the exe's folder. Its "A" path turns characters outside the ANSI code page into '?', so the
+	// current folder (where the single log always went) is the second choice.
+	char exePath[MAX_PATH] = {};
+	const DWORD length = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+	std::string exeFolder(exePath, length);
+	exeFolder.resize(length && length < MAX_PATH ? exeFolder.find_last_of("\\/") + 1 : 0); // keeps the trailing slash
+
+	SYSTEMTIME now;
+	GetLocalTime(&now);
+	const LogFiles::NewLog log = LogFiles::OpenNewLog({ exeFolder, std::string() }, FolderName, BaseName, Keep, now);
+	if (log.file) {
+		LogFile = log.file;
+		InitializeRenderStateNames();
+		Log("Log started %04u-%02u-%02u %02u:%02u:%02u: %s (this folder keeps the newest %u logs; %u older deleted%s)",
+			now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, log.name.c_str(), Keep, log.deleted,
+			log.adopted ? "; the old single log from the game folder was moved here" : "");
+		return;
+	}
+	Initialize((std::string(BaseName) + ".log").c_str());
+	Log("Could not create a log in the %s folder; logging to %s.log in the game folder instead.", FolderName, BaseName);
+}
+
+static void InitializeRenderStateNames() {
 
 	RENDERSTATETYPE["D3DRS_ZENABLE"] = 7;
 	RENDERSTATETYPE["D3DRS_FILLMODE"] = 8;
@@ -147,9 +178,9 @@ void Logger::Initialize(const char* FileName) {
 std::deque<std::string>	Logger::s_ringBuffer;
 std::mutex					Logger::s_ringBufferMutex;
 
-void Logger::PushRingBuffer(const char* Line) {
+void Logger::PushRingBuffer(const char* Line, size_t Length) {
 	std::lock_guard<std::mutex> lock(s_ringBufferMutex);
-	s_ringBuffer.emplace_back(Line);
+	s_ringBuffer.emplace_back(Line, Length);
 	if (s_ringBuffer.size() > kRingBufferCap)
 		s_ringBuffer.pop_front();
 }
@@ -159,48 +190,41 @@ void Logger::GetRecentLines(std::deque<std::string>& OutLines) {
 	OutLines = s_ringBuffer; // copy out -- caller never renders while holding the lock
 }
 
-void Logger::Log(char* Message, ...) {
+void Logger::Write(bool ToRingBuffer, const char* Message, va_list Args) {
 
-	va_list Args;
+	// Formatted once; lines longer than the stack buffer go to the heap.
+	char stackLine[2048];
+	std::string heapLine;
+	SYSTEMTIME now;
+	GetLocalTime(&now);
+	size_t length, prefix;
+	const char* line = LogFiles::FormatLine(stackLine, sizeof(stackLine), heapLine, now, Message, Args, length, prefix);
 
 	if (LogFile) {
-		va_start(Args, Message);
-		vfprintf_s(LogFile, Message, Args);
-		va_end(Args);
-//		fputs(MessageBuffer, LogFile);
-		fputc('\n', LogFile);
+		fwrite(line, 1, length, LogFile);
 		fflush(LogFile);
 	}
 
 	// Mirror into the in-memory ring buffer for the in-game log window
-	// (docs/preset-manager-design.md § "Debug/authoring tooling") -- a
-	// separate formatting pass, since a va_list can only be consumed once.
-	char formatted[1024];
+	// (docs/preset-manager-design.md § "Debug/authoring tooling"), without the time prefix and the '\n'.
+	if (ToRingBuffer) PushRingBuffer(line + prefix, length - prefix - 1);
+}
+
+void Logger::Log(char* Message, ...) {
+
+	va_list Args;
 	va_start(Args, Message);
-	_vsnprintf_s(formatted, sizeof(formatted), _TRUNCATE, Message, Args);
+	Write(true, Message, Args);
 	va_end(Args);
-	PushRingBuffer(formatted);
 
 }
 
 void Logger::Log(const char* Message, ...) {
 
 	va_list Args;
-
-	if (LogFile) {
-		va_start(Args, Message);
-		vfprintf_s(LogFile, Message, Args);
-		va_end(Args);
-//		fputs(MessageBuffer, LogFile);
-		fputc('\n', LogFile);
-		fflush(LogFile);
-	}
-
-	char formatted[1024];
 	va_start(Args, Message);
-	_vsnprintf_s(formatted, sizeof(formatted), _TRUNCATE, Message, Args);
+	Write(true, Message, Args);
 	va_end(Args);
-	PushRingBuffer(formatted);
 
 }
 
@@ -209,11 +233,8 @@ void Logger::Debug(char* Message, ...) {
 	va_list Args;
 	if (LogFile) {
 		va_start(Args, Message);
-		vfprintf_s(LogFile, Message, Args);
+		Write(false, Message, Args);
 		va_end(Args);
-		//		fputs(MessageBuffer, LogFile);
-		fputc('\n', LogFile);
-		fflush(LogFile);
 	}
 #endif // debugmode
 }
@@ -223,11 +244,8 @@ void Logger::Debug(const char* Message, ...) {
 	va_list Args;
 	if (LogFile) {
 		va_start(Args, Message);
-		vfprintf_s(LogFile, Message, Args);
+		Write(false, Message, Args);
 		va_end(Args);
-		//		fputs(MessageBuffer, LogFile);
-		fputc('\n', LogFile);
-		fflush(LogFile);
 	}
 #endif // debugmode
 }

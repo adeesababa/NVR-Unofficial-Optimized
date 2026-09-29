@@ -18,6 +18,17 @@ Nothing in this document is measured yet unless it quotes a P-number log.
 | P42 | 3A step 2: cache static point-shadow geometry in a second R32F cubemap and composite skinned/animated casters into the sampled cubemap every frame with MIN blending; live kill switch and automatic P41 fallback | rejected as built: the game's caster-list traversal order changes, so the order-sensitive hash rebuilt all five mixed static layers every frame; overlay on vs off: cubemaps 1.86 vs 1.01 ms, Shadow CPU 1.69 vs 1.26 ms, GPU frame 13.79 vs 13.01 ms |
 | P43 | Make the P42 static-caster hash order-independent while retaining per-caster transform/material/visibility invalidation | rejected: 4-5 mixed static layers still genuinely invalidated every frame; overlay on vs off: cubemaps 1.48 vs 0.69 ms, Shadow CPU 1.28 vs 0.85 ms, GPU frame 13.17 vs 12.55 ms; user also saw darker areas |
 | P44 | Retire the failed static/live overlay and its 66 MiB textures/setting; retain P41 whole-static reuse with the safer unordered caster hash | built and unit-tested; returns to the visually clean, faster fallback before continuing 3C |
+| P45 | Fixes from two community logs: no startup crash without the shadow shaders, adapter and depth-resolve log lines, per-slot LUT size, exact-size LUT loading and `.cube` LUTs; zip carries all textures | pushed and released (tag p45); not yet run in game |
+| P46 | Log files: one timestamped log per launch in `NVR-Unofficial-Optimized-Logs\` (25 kept), `[HH:MM:SS.mmm]` on every line, one `fwrite` per line | ran fine in game (user, 2026-09-29) |
+| P47 | 3J step 2: F10 splits `SLS` into variant groups and logs how many lights the 4+ light shaders use per draw. 3C and 2C measured and rejected (see those items). New `tests/game_shaders.cpp` (old vs new game shader: bit-exact pixels on the GPU + timing) | built; waiting for an interior + exterior F10 run |
+| P48 | Not an optimization: opt-in enhanced water style step 1 (animated ocean-wave volume texture, shallow/distance calming, softer Fresnel), classic output byte-identical; missing-texture errors logged once (a tester's log had 53,000 repeats); opt-in `CheapUnderwaterTerrain` (no terrain parallax below the water line: the wading/swimming frame drop was NVR terrain 3.5 -> 5.6-7.4 ms; submerged terrain 51-78% cheaper in the harness, bit-identical when off) | enhanced water looked good in game; underwater terrain switch waiting for a test |
+| P49 | Fix for flickering shadows on moving NPCs (player report, reproduced): the P21 staggered sun-cascade refresh (middle every 4th, far/LOD every 8th frame) is now the opt-in `StaggeredSunShadows` (off; default = upstream schedule, about +0.5 ms GPU outdoors); `PointShadowInterval` default 1 again, with a one-time reset of saved 2s; log names the Windows GPU next to DXVK's disguised one. Same change pushed to PR #76 as commit 6 | built; the user reproduced the flicker, fix not yet run in game |
+| P50 | Not an optimization: exposure flicker on the Strip (user isolated it to Exposure). Adapt speeds 50 -> 0.2 (confirmed in game via the menu); saved old defaults moved once through a hidden `[_Unofficial] SettingsVersion` (replaces P49's marker). Same default change pushed to PR #76 | built, not yet run in game |
+| P51 | Not an optimization: enhanced water step 2, foam (whitecaps from the crest channel, a lacy shore/object band from the water depth, new `nvr_foam.dds` from `make_water_waves.exe --foam`); off with the enhanced style, classic water byte-identical | removed before release (kept on branch experiment/enhanced-water) |
+| P52 | Fix: enhanced water on placed water (WATER001/018) was a flat swaying mirror because `WATER001.vso` does not write the world position; it is now rebuilt from TEXCOORD0 + camera position in every water pixel shader | removed before release (kept on branch experiment/enhanced-water) |
+| P53 | Enhanced water: softer, see-through, drifting foam with fading whitecap trails; new `Clarity` (0.5); real-water reflection curve (Schlick, FresnelPower 5, saved 2.5 moved once) without the classic brighter-sky extra reflection | removed before release (kept on branch experiment/enhanced-water) |
+| P54 | Diagnostic: water reflection probe (screenshot key saves the game's reflection map and logs both passes' cameras, viewports and transforms) to find why reflections squash with camera pitch | ran: reflection camera orientation and projection are the exact mirror; the level-view map looks mirrored about the wrong height |
+| P55 | Reflection probe v2: logs the game's camera position globals in each pass, the first object drawn, and every water plane's height | built, not yet run in game |
 
 ---
 
@@ -194,8 +205,9 @@ Consequences for this list:
 
 ## 3. Phase 0: zero-code measurements (the user runs these; do them first)
 
-Each test: same route, F10 on for 30-60 s, F10 off, quit, copy `NewVegasReloaded.log` before
-relaunching. Compare medians of the named timers and the `FRAME TIMES` line. Live settings can be
+Each test: same route, F10 on for 30-60 s, F10 off, quit. Since P46 each launch writes its own log to
+`NVR-Unofficial-Optimized-Logs\` in the game folder (25 kept, lines timestamped), so nothing needs to be
+copied before relaunching; before P46, copy `NewVegasReloaded.log` first. Compare medians of the named timers and the `FRAME TIMES` line. Live settings can be
 flipped with F10 running (10 s each state); ini and `Status` changes need a restart.
 
 | # | Test | What to read | What it decides |
@@ -272,7 +284,14 @@ and the answers to I2/I3.
   spikes are the game's streaming).
 - **2C. Logger hygiene.** Buffer log lines in memory and flush from `NiDX9Renderer__Do_EndFrame`
   at most once per 100 ms, or on a background thread; after 2A is validated, demote the
-  `Successfully bound` line to a counter. Low value on its own; cheap.
+  `Successfully bound` line to a counter. Low value on its own; cheap. (P46 already writes each line
+  with one `fwrite` and stamps it with the time of day, which shows how long a burst of log lines
+  takes; the `fflush` per line is unchanged.)
+  **Measured in P47 and rejected:** a raw write of one log line to the game drive costs about 2 us
+  (benchmark, one write per line), and the P46 log shows several lines within the same millisecond, so
+  the 36 first-bind lines at a cell change cost well under 0.1 ms; the 11 ms `SetShaders` frame at the
+  hangar load was something else. The F10 report bursts (40-90 lines, 3-13 ms, every 120 frames while
+  F10 runs) are the report's own work, not the writes.
 - **2D. Far/LOD cascade frames.** The 8-frame stagger puts the far cascade on frame 3 and LOD on
   frame 7 (`ShadowManager.cpp`, `SunCascadeUpdatePhase`). Their GPU max (P28: worst cascade
   1.2-1.4 ms) is a periodic +1 ms that lands in p99. If I1 confirms the period in the frame-time
@@ -382,6 +401,18 @@ refinement, shadows at two taps (lossy, honest description). Compile-check with
 `ao_device.exe --compile-files` is not available for `.hlsl` game shaders; use `fxc /T ps_3_0`
 with the template defines from `src/effects/Terrain.cpp` and a visual A/B in game.
 
+**Result (P47): nothing lossless left; rejected.** `tools\test-game-shaders.ps1` compiles the terrain
+shader with the game's own compiler (D3DX43) and disassembles it: the compiler already computes the
+blend-weight powers and `rcp(blendPower)` once, before the `rep` loop, and already makes `weights > 0`
+and the three `quality > ...` tests real branches. The one remaining exact change, skipping the height
+fetch of textures without a height map (`status` is the same for the whole draw), is bit-identical only
+when written as the old `log2`/`mul`/`exp2` (a `pow` rounds differently), and is then 22-37% SLOWER on
+the GTX 1070 (nested branch around the fetch inside the loop). Measured on full-screen terrain at
+2560x1440 (synthetic scene, `TERRAIN_SETTINGS_TIMES=1`): parallax is 45-64% of the terrain shader's
+cost (TEX_COUNT 1: 1.34 -> 0.74 ms off; 7: 6.25 -> 2.26 ms), `HighQuality` off saves only 6-12%,
+parallax shadows off 10-17%, height blend nothing measurable. In game terrain reached 3.8-4.6 ms on open ground
+(P46 log). Only lossy options remain (4F, or the existing settings).
+
 ### 3D. Fold the exposure pass (F6)
 
 Move `Exposure.fx.hlsl`'s per-pixel formula (linearize, divide by `lumaDiff`, lerp by
@@ -451,6 +482,35 @@ extra group of lights), so the cost is PBR lighting times lights times passes.
 3. Then look for exact trims in the per-light code (work repeated per light that does not depend on the
    light, early-outs for lights out of range) with a CPU model or GPU comparison test, before anything
    lossy.
+
+**Step 2 built in P47.** F10 now labels `SLS` by group: `SLS 1-3 lights` (2000-2028), `SLS 4+ lights`
+(2029-2036), `SLS light pass` (2037-2044, the additive passes), `SLS diffuse pt` (2045-2046),
+`SLS specular` (2047-2056), `SLS other`. Earlier logs' `SLS` is the sum of these. Every 120 frames a
+`SLS 4+ LIGHTS in use per draw` line gives, per shader, how many lights its draws used (read back from
+c2.w / c3.w at the next bind in the same pass) and the share of light slots computed for nothing.
+
+**Candidate 3J-a, decided by that line:** the 4+ light shaders compute every light slot and multiply the
+unused ones by 0 (`(1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(...)`). Skipping them with
+`[branch]` on the same conditions was built and measured with `tests/game_shaders.cpp` (full screen,
+2560x1440): 2 of 6 slots used -29% (SLS2029/2030), 2 of 4 -11% (SLS2031-2033), all slots used +2 to +4%
+(branch overhead). Not bit-identical: the compiler fuses the final `* PI` into a multiply-add inside the
+branches, so used lights differ by 1-4 float ulps (at most 5e-7, far below the fp16 scene buffer's
+precision). Ship only if the in-game line shows a real share of wasted slots.
+**P47 in-game result (user logs 2026-09-29 04:51 exterior, 04:54 Rivet City interior view, native):
+3J-a REJECTED.** Interior: about 53 draws per frame use the 4+ light shaders, and only 3-4% of their light
+slots are unused (SLS2034 3 of 3 slots x42/frame, SLS2031 2-4 lights, SLS2029 5-6 lights); outdoors
+there was one such draw per frame. The branch overhead (+2-4% when all slots are used) would exceed that.
+Interior world scene 7.15 ms by group (medians of 32 windows): `SLS specular` NVR 2.82, `SLS diffuse pt`
+NVR 1.16, `SLS other` vanilla 1.15, `SLS light pass` NVR 0.98, `SLS 4+ lights` NVR 0.36, `SLS 1-3 lights`
+NVR 0.35, rest < 0.1 (point cubemaps 0.74 GPU, shadow maps CPU 0.94). Exterior world scene 2.48 ms:
+`SLS 1-3 lights` 0.99, sky 0.34, terrain 0.32 (short view), grass 0.31. So indoors the cost is the
+game's extra lighting passes (specular + diffuse point + light passes = 4.96 ms), not the base passes.
+Next (3J step 3): exact early-out per light where the pixel is outside the light's radius (vanillaAttSq
+is exactly 0 there, so `att * X` adds +0); measure with `tests/game_shaders.cpp` (scene with lights
+partly out of range) and in game against P47 in the same spot. Also find out which vanilla shaders make
+up `SLS other` (names outside 2000-2056). Note: slot 3's condition
+is `2 > lightsUsed`, the same threshold as slot 2 (`1 >= lightsUsed`), so a draw with 2 lights also adds
+slot 3 (probably an upstream off-by-one; kept as is, the vanilla shaders were not checked).
 
 ---
 
@@ -540,7 +600,11 @@ For every item shipped:
 7. Update `HANDOFF.md` (status, measurements, what to ask the user next) and this file (move
    items to "done" with their measured numbers, or to section 9 with the reason).
 
-Suggested order (revised after the P40 logs): the exterior and interior PBR A/Bs are done; the targeted
+Suggested order (revised after P47): 3C and 2C are closed (measured, nothing to gain). Next: the P47
+interior + exterior F10 run decides 3J (which SLS group costs most; 3J-a if the 4+ light draws waste
+slots), then 3J step 3 on the costliest group with `tests/game_shaders.cpp`, then 3D/3E.
+
+Previous suggested order (after the P40 logs): the exterior and interior PBR A/Bs are done; the targeted
 terrain parallax off/on A/B standing still outdoors remains for 3C -> P41: 3A cached
 static cubemaps (still the largest lossless item: 1.32 ms GPU + 1.30 ms CPU in the hangar), 2C logger
 buffering (cell-change hitch), 3J step 2 (SLS split by variant) -> 3J step 3 / 3C depending on the

@@ -67,9 +67,92 @@ namespace ShaderSplit {
 
 	static unsigned char KeyOf(unsigned context, unsigned label, bool nvr) { return (unsigned char)((context * MaxLabels + label) * 2 + (nvr ? 1 : 0)); }
 
-	// Family of a game pixel shader: the terrain templates by name, otherwise the leading letters of the
-	// shader name (SLS = lit objects, PAR = parallax objects, SKIN, SM3 = hair and eyes, STLEAF = tree
-	// leaves, GRASS, SKY, WATER, ...). Worked out once per shader.
+	static void Append(char* buffer, size_t size, size_t& used, const char* format, ...);
+
+	// The lit-object pixel shaders (ObjectTemplate.hlsl, src/effects/PBR.h) split by variant group (P47, roadmap 3J):
+	// 2000-2028 sun + up to 3 lights, 2029-2036 up to 6 lights in one pass, 2037-2044 the additive light passes that
+	// redraw an object for more lights, 2045-2046 diffuse point lights, 2047-2056 the specular passes.
+	static const char* SlsGroup(const char* name) {
+		const int number = atoi(name + 3);
+		if (number >= 2000 && number <= 2028) return "SLS 1-3 lights";
+		if (number >= 2029 && number <= 2036) return "SLS 4+ lights";
+		if (number >= 2037 && number <= 2044) return "SLS light pass";
+		if (number >= 2045 && number <= 2046) return "SLS diffuse pt";
+		if (number >= 2047 && number <= 2056) return "SLS specular";
+		return "SLS other";
+	}
+
+	// Lights in use by the 4+ light shaders (roadmap 3J). They compute every light slot and multiply the unused ones
+	// by 0; how many slots a draw really uses decides whether skipping them pays (tests/game_shaders.cpp: -11 to -29%
+	// of their cost with 2 lights, +2 to +4% with all slots used). The game sets the count (EmittanceColor.a = c2.w,
+	// or PSLightColor[0].a = c3.w in the OPT variants) after binding the shader, so it is read back from the device at
+	// the next bind in the same pass, when that draw is done. Only while F10 runs.
+	struct MultiLightShader { int Number; unsigned Slots; bool Opt; };
+	static const MultiLightShader MultiLights[] = { { 2029, 6, false }, { 2030, 6, false }, { 2031, 4, false }, { 2032, 4, true },
+		{ 2033, 4, false }, { 2034, 3, false }, { 2035, 3, true }, { 2036, 3, false } };
+	static const unsigned MultiLightCount = sizeof(MultiLights) / sizeof(MultiLights[0]);
+	static unsigned LightsInUse[MultiLightCount][8] = {};	// [shader][lights in use; 7 = 7 or more]
+	static unsigned LightsReadFailures = 0;
+	static int PendingMultiLight = -1;
+	static unsigned char PendingMultiLightContext = Outside;
+
+	static int MultiLightIndex(const char* name) {
+		if (!name || strncmp(name, "SLS", 3)) return -1;
+		const int number = atoi(name + 3);
+		for (unsigned i = 0; i < MultiLightCount; ++i) if (MultiLights[i].Number == number) return (int)i;
+		return -1;
+	}
+
+	static void SampleLightsInUse(unsigned char context) {
+		const int pending = PendingMultiLight;
+		PendingMultiLight = -1;
+		if (pending < 0 || context != PendingMultiLightContext) return;
+		float constants[8];
+		if (FAILED(TheRenderManager->device->GetPixelShaderConstantF(2, constants, 2))) { LightsReadFailures++; return; }
+		const float used = MultiLights[pending].Opt ? constants[7] : constants[3];
+		const unsigned bucket = used >= 0.5f && used < 6.5f ? (unsigned)(used + 0.5f) : used >= 6.5f ? 7 : 0;
+		LightsInUse[pending][bucket]++;
+	}
+
+	// Light slots the old code computes for a draw with `used` lights, of which a skipping version would compute
+	// only these: slot 1 always, slot 2 if used > 1, slot 3 if used >= 2 (sic, the shader's own condition), slot 4 if
+	// used >= 3, slot 5 if used >= 4, slot 6 if used >= 5.
+	static unsigned NeededSlots(unsigned slots, unsigned used) {
+		unsigned needed = 1 + (used > 1) + (used >= 2);
+		if (slots > 3) needed += used >= 3;
+		if (slots > 4) needed += (used >= 4) + (used >= 5);
+		return needed < slots ? needed : slots;
+	}
+
+	static void ReportLightsInUse() {
+		char line[1024] = {};
+		size_t used = 0;
+		unsigned draws = 0;
+		double computed = 0.0, needed = 0.0;
+		for (unsigned i = 0; i < MultiLightCount; ++i) {
+			unsigned total = 0;
+			for (unsigned b = 0; b < 8; ++b) total += LightsInUse[i][b];
+			if (!total) continue;
+			draws += total;
+			Append(line, sizeof(line), used, " | SLS%d (%u slots):", MultiLights[i].Number, MultiLights[i].Slots);
+			for (unsigned b = 0; b < 8; ++b) {
+				if (!LightsInUse[i][b]) continue;
+				Append(line, sizeof(line), used, " %u%s x%u", b, b == 7 ? "+" : "", LightsInUse[i][b]);
+				computed += (double)MultiLights[i].Slots * LightsInUse[i][b];
+				needed += (double)NeededSlots(MultiLights[i].Slots, b) * LightsInUse[i][b];
+			}
+		}
+		if (draws)
+			Logger::Log("SLS 4+ LIGHTS in use per draw, %u draws: light slots computed for nothing %.0f%%%s", draws,
+				100.0 * (computed - needed) / computed, line);
+		if (LightsReadFailures) Logger::Log("SLS 4+ LIGHTS: the device did not return shader constants %u times", LightsReadFailures);
+		memset(LightsInUse, 0, sizeof(LightsInUse));
+		LightsReadFailures = 0;
+	}
+
+	// Family of a game pixel shader: the terrain templates by name, the lit-object variant groups (SlsGroup),
+	// otherwise the leading letters of the shader name (PAR = parallax objects, SKIN, SM3 = hair and eyes, STLEAF =
+	// tree leaves, GRASS, SKY, WATER, ...). Worked out once per shader.
 	static unsigned char LabelFor(const NiD3DPixelShader* shader) {
 		auto found = LabelOfShader.find(shader);
 		if (found != LabelOfShader.end()) return found->second;
@@ -78,6 +161,7 @@ namespace ShaderSplit {
 		const char* terrain = source && TheShaderManager->Shaders.Terrain ? TheShaderManager->Shaders.Terrain->GetTemplate(source).Name : nullptr;
 		if (!source) strcpy_s(name, "(no shader)");
 		else if (terrain) strcpy_s(name, !strcmp(terrain, "TerrainLODTemplate") ? "TERRAIN LOD" : !strcmp(terrain, "TerrainFadeTemplate") ? "TERRAIN FADE" : "TERRAIN");
+		else if (!strncmp(source, "SLS", 3) && source[3] >= '0' && source[3] <= '9') strcpy_s(name, SlsGroup(source));
 		else if (!strncmp(source, "SM3", 3)) strcpy_s(name, "SM3");
 		else if (!strncmp(source, "SKY", 3)) strcpy_s(name, "SKY");
 		else if (!strncmp(source, "WATER", 5)) strcpy_s(name, "WATER");
@@ -140,7 +224,7 @@ namespace ShaderSplit {
 			Logger::Log("GPU SPLIT %s, %u frames: %.4f ms per frame by shader family (NVR = NVR's replacement shader, vanilla = the game's own)",
 				ContextNames[c], timeline.WindowFrames(), total);
 			for (unsigned i = 0; i < count; ++i)
-				Logger::Log("GPU SPLIT   %-12s %-13s %-7s avg %.4f ms  max %.4f  (%4.1f%%)", ContextNames[c], LabelNames[rows[i].Label],
+				Logger::Log("GPU SPLIT   %-12s %-14s %-7s avg %.4f ms  max %.4f  (%4.1f%%)", ContextNames[c], LabelNames[rows[i].Label],
 					rows[i].Nvr ? "NVR" : "vanilla", rows[i].Avg, rows[i].Max, 100.0 * rows[i].Avg / total);
 		}
 		Logger::Log("GPU SPLIT   most family changes in one frame %u; frames dropped (over %u changes) %u, rejected (clock) %u",
@@ -158,6 +242,7 @@ namespace ShaderSplit {
 		Logger::Log("%s", line);
 		Logger::Log("SHADER BINDS   CPU inside SetShaders avg %.3f ms max %.3f per frame | first shader uses %u in these frames, %u this session",
 			Window.HookMs / n, WindowMaxHookMs, Window.FirstUses, FirstUsesSession);
+		ReportLightsInUse();
 	}
 
 	static void BeginFrame(IDirect3DDevice9* device) {
@@ -171,6 +256,7 @@ namespace ShaderSplit {
 		CurrentContext = Outside;
 		CurrentKey = GpuTimeline::NoKey;
 		Frame = {};
+		PendingMultiLight = -1;
 		LastBind = { "(frame start)", Outside, false, false };
 		MaxGapBind = {};
 		MaxGapMs = 0.0;
@@ -239,6 +325,11 @@ namespace ShaderSplit {
 		}
 		LastBind = { shader ? shader->Name : "(no pixel shader)", context, nvr, firstUse };
 		if (firstUse && Frame.FirstUses++ < 4) FirstUseBinds[Frame.FirstUses - 1] = LastBind;
+
+		// The previous pass's draw is done: read its lights in use if it was a 4+ light shader, then note this one.
+		SampleLightsInUse(context);
+		const int multiLight = context != Outside ? MultiLightIndex(shader ? shader->Name : nullptr) : -1;
+		if (multiLight >= 0) { PendingMultiLight = multiLight; PendingMultiLightContext = context; }
 
 		if (context == Outside || !Timeline.InFrame()) return;
 		const unsigned char key = KeyOf(context, LabelFor(shader), nvr);
@@ -395,6 +486,238 @@ private:
 	float SavedParallax = 0.0f;
 };
 
+// ReducedQuality CheapUnderwaterTerrain decides per pixel from the camera-relative world position, which the terrain
+// shader reconstructs with the MAIN camera's matrices. In the water reflection pass (mirrored camera) that position
+// is meaningless, so the water line test is switched off (TESR_TerrainParallaxExtraData.w = -FLT_MAX) for the pass.
+class UnderwaterTerrainReflectionScope {
+public:
+	UnderwaterTerrainReflectionScope() {
+		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+		if (!TheSettingManager->SettingsMain.Main.CheapUnderwaterTerrain || !terrain) return;
+		Waterline = &terrain->ParallaxConstants.ExtraData.w;
+		Saved = *Waterline;
+		*Waterline = -FLT_MAX;
+		ForcePixelConstants = true;
+	}
+	~UnderwaterTerrainReflectionScope() {
+		if (!Waterline) return;
+		*Waterline = Saved;
+		ForcePixelConstants = true;
+	}
+
+private:
+	float* Waterline = nullptr;
+	float Saved = 0.0f;
+};
+
+// Water reflection probe (diagnostic, P54). The game draws the water reflection map with its own camera inside
+// RenderReflections, and the water shaders look the map up as if that camera were an exact mirror of the main one.
+// A player saw the reflection squashed when looking level and right when looking down, so the two apparently differ.
+// After an NVR screenshot (ScreenshotKey), the next frame records, at the first shader bind of the world pass and of
+// the reflection pass, the render target, viewport, D3D view and projection transforms and the cameras; the log gets
+// both and the reflection map is saved next to the screenshot as "<name> reflection.png".
+extern char LastScreenshotBase[MAX_PATH];
+extern char LastScreenshotName[80];
+extern bool ScreenshotTakenThisFrame;
+
+namespace ReflectionProbe {
+	struct CameraShot {
+		bool valid = false;
+		NiPoint3 pos = {};
+		float rot[3][3] = {};
+		NiFrustum frustum;
+	};
+	struct PassShot {
+		bool valid = false;
+		D3DVIEWPORT9 viewport = {};
+		D3DSURFACE_DESC target = {};
+		D3DXMATRIX view, proj;
+		HRESULT viewHr = E_FAIL, projHr = E_FAIL;
+		CameraShot scene, hook;
+		NiPoint3 worldTranslate = {}, location = {};  // the game's camera globals the pass renders relative to
+		char geometry[64] = {};
+		NiPoint3 geometryPos = {};
+		DWORD clipEnable = 0, cullMode = 0, zFunc = 0, zEnable = 0;
+		float clip[2][4] = {};
+	};
+	// Every object drawn in the recorded reflection pass (name, position, pixel shader, clip planes at its bind).
+	struct DrawnObject { char name[48]; char shader[24]; NiPoint3 pos; DWORD clipEnable; float clip0[4]; };
+	static DrawnObject Drawn[64];
+	static int DrawnCount = 0, DrawnTotal = 0;
+	static bool DrawnDone = false;  // one reflection pass only: set once the world pass follows a recorded one
+	static PassShot Shots[2];  // 0: world scene, 1: reflections
+	static IDirect3DSurface9* ReflectionTarget = nullptr;
+	static NiCamera* HookCamera = nullptr;  // the camera the game passed to RenderReflections
+	static int ArmedFrames = 0;
+	static char Base[MAX_PATH], Name[80];
+
+	static void Copy(CameraShot& shot, NiCamera* camera) {
+		if (!camera) return;
+		shot.pos = camera->m_worldTransform.pos;
+		memcpy(shot.rot, camera->m_worldTransform.rot.data, sizeof(shot.rot));
+		shot.frustum = camera->Frustum;
+		shot.valid = true;
+	}
+
+	static void OnBind(NiGeometry* geometry, const char* pixelShader) {
+		if (!ArmedFrames) return;
+		const unsigned char context = ShaderSplit::CurrentContext;
+		const int slot = context == ShaderSplit::World ? 0 : context == ShaderSplit::Reflections ? 1 : -1;
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (slot == 0 && Shots[1].valid) DrawnDone = true;
+		if (slot == 1 && !DrawnDone) {
+			DrawnTotal++;
+			if (DrawnCount < 64) {
+				DrawnObject& d = Drawn[DrawnCount++];
+				strncpy_s(d.name, geometry && geometry->m_pcName ? geometry->m_pcName : "(none)", _TRUNCATE);
+				strncpy_s(d.shader, pixelShader ? pixelShader : "(none)", _TRUNCATE);
+				d.pos = geometry ? geometry->m_worldTransform.pos : NiPoint3{};
+				device->GetRenderState(D3DRS_CLIPPLANEENABLE, &d.clipEnable);
+				if (FAILED(device->GetClipPlane(0, d.clip0))) memset(d.clip0, 0, sizeof(d.clip0));
+			}
+		}
+		if (slot < 0 || Shots[slot].valid) return;
+		PassShot& s = Shots[slot];
+		device->GetViewport(&s.viewport);
+		IDirect3DSurface9* target = nullptr;
+		if (SUCCEEDED(device->GetRenderTarget(0, &target)) && target) {
+			target->GetDesc(&s.target);
+			if (slot == 1) { if (ReflectionTarget) ReflectionTarget->Release(); ReflectionTarget = target; }
+			else target->Release();
+		}
+		s.viewHr = device->GetTransform(D3DTS_VIEW, &s.view);
+		s.projHr = device->GetTransform(D3DTS_PROJECTION, &s.proj);
+		Copy(s.scene, WorldSceneGraph ? WorldSceneGraph->camera : nullptr);
+		if (slot == 1) Copy(s.hook, HookCamera);
+		device->GetRenderState(D3DRS_CLIPPLANEENABLE, &s.clipEnable);
+		device->GetRenderState(D3DRS_CULLMODE, &s.cullMode);
+		device->GetRenderState(D3DRS_ZFUNC, &s.zFunc);
+		device->GetRenderState(D3DRS_ZENABLE, &s.zEnable);
+		for (DWORD i = 0; i < 2; i++) if (FAILED(device->GetClipPlane(i, s.clip[i]))) memset(s.clip[i], 0, sizeof(s.clip[i]));
+		s.worldTranslate = *Pointers::Generic::CameraWorldTranslate;
+		s.location = *Pointers::Generic::CameraLocation;
+		if (geometry) {
+			strncpy_s(s.geometry, geometry->m_pcName ? geometry->m_pcName : "(no name)", _TRUNCATE);
+			s.geometryPos = geometry->m_worldTransform.pos;
+		}
+		s.valid = true;
+	}
+
+	static void LogCamera(const char* label, const CameraShot& c) {
+		if (!c.valid) { Logger::Log("UNOFFICIAL reflection probe   %s: none", label); return; }
+		// NVR's convention (RenderManager::SetupSceneCamera): columns 0, 1, 2 are forward, up, right.
+		const float fx = c.rot[0][0], fy = c.rot[1][0], fz = c.rot[2][0];
+		Logger::Log("UNOFFICIAL reflection probe   %s: pos %.1f %.1f %.1f | forward %.4f %.4f %.4f (pitch %.2f deg) | up %.4f %.4f %.4f | right %.4f %.4f %.4f | frustum L %.4f R %.4f T %.4f B %.4f N %.2f F %.0f",
+			label, c.pos.x, c.pos.y, c.pos.z, fx, fy, fz, D3DXToDegree(asinf(max(-1.0f, min(1.0f, fz)))),
+			c.rot[0][1], c.rot[1][1], c.rot[2][1], c.rot[0][2], c.rot[1][2], c.rot[2][2],
+			c.frustum.Left, c.frustum.Right, c.frustum.Top, c.frustum.Bottom, c.frustum.Near, c.frustum.Far);
+	}
+
+	static void LogPass(const char* label, const PassShot& s) {
+		if (!s.valid) { Logger::Log("UNOFFICIAL reflection probe %s: not drawn in the recorded frames", label); return; }
+		Logger::Log("UNOFFICIAL reflection probe %s: target %ux%u format %u, viewport %lu %lu %lux%lu depth %.2f-%.2f",
+			label, s.target.Width, s.target.Height, (unsigned)s.target.Format, s.viewport.X, s.viewport.Y, s.viewport.Width, s.viewport.Height, s.viewport.MinZ, s.viewport.MaxZ);
+		if (SUCCEEDED(s.viewHr)) {
+			const D3DXMATRIX& v = s.view;
+			Logger::Log("UNOFFICIAL reflection probe   D3D view: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.1f %.1f %.1f %.4f",
+				v._11, v._12, v._13, v._14, v._21, v._22, v._23, v._24, v._31, v._32, v._33, v._34, v._41, v._42, v._43, v._44);
+		}
+		else Logger::Log("UNOFFICIAL reflection probe   D3D view: not available (hr %08lX)", (unsigned long)s.viewHr);
+		if (SUCCEEDED(s.projHr)) {
+			const D3DXMATRIX& p = s.proj;
+			Logger::Log("UNOFFICIAL reflection probe   D3D projection: %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f | %.4f %.4f %.6f %.4f | %.4f %.4f %.4f %.4f",
+				p._11, p._12, p._13, p._14, p._21, p._22, p._23, p._24, p._31, p._32, p._33, p._34, p._41, p._42, p._43, p._44);
+		}
+		else Logger::Log("UNOFFICIAL reflection probe   D3D projection: not available (hr %08lX)", (unsigned long)s.projHr);
+		LogCamera("scene camera", s.scene);
+		if (&s == &Shots[1]) LogCamera("camera passed to RenderReflections", s.hook);
+		Logger::Log("UNOFFICIAL reflection probe   game camera globals: world translate %.1f %.1f %.1f, location %.1f %.1f %.1f | first geometry '%s' at %.1f %.1f %.1f",
+			s.worldTranslate.x, s.worldTranslate.y, s.worldTranslate.z, s.location.x, s.location.y, s.location.z,
+			s.geometry, s.geometryPos.x, s.geometryPos.y, s.geometryPos.z);
+		Logger::Log("UNOFFICIAL reflection probe   states: clip planes enabled 0x%lX, plane 0 %.6f %.6f %.6f %.6f, plane 1 %.6f %.6f %.6f %.6f | cull %lu, zfunc %lu, zenable %lu, engine Z clear %.1f",
+			s.clipEnable, s.clip[0][0], s.clip[0][1], s.clip[0][2], s.clip[0][3], s.clip[1][0], s.clip[1][1], s.clip[1][2], s.clip[1][3],
+			s.cullMode, s.zFunc, s.zEnable, NiDX9Renderer::GetSingleton()->m_fZClear);
+	}
+
+	static void LogDrawn() {
+		Logger::Log("UNOFFICIAL reflection probe: %d binds in the recorded reflection pass (first %d listed)", DrawnTotal, DrawnCount);
+		for (int i = 0; i < DrawnCount; i++) {
+			const DrawnObject& d = Drawn[i];
+			Logger::Log("UNOFFICIAL reflection probe   drawn %2d: '%s' (%s) at %.0f %.0f %.0f | clip 0x%lX %.6f %.6f %.6f %.6f",
+				i, d.name, d.shader, d.pos.x, d.pos.y, d.pos.z, d.clipEnable, d.clip0[0], d.clip0[1], d.clip0[2], d.clip0[3]);
+		}
+	}
+
+	// Which water planes the game knows, and their heights: the reflection must be mirrored about the one in view.
+	static void LogWater() {
+		if (!Player || !Player->parentCell) return;
+		TESWaterForm* form = nullptr;
+		const float chosen = (Tes && WorldSceneGraph) ? Tes->GetWaterHeight(Player, WorldSceneGraph, &form) : 0.0f;
+		Logger::Log("UNOFFICIAL reflection probe water: player z %.1f, cell water height %.1f, NVR's GetWaterHeight %.1f",
+			Player->pos.z, Player->parentCell->GetWaterHeight(), chosen);
+		WaterManager* water = Tes ? Tes->waterManager : nullptr;
+		if (!water) return;
+		Logger::Log("UNOFFICIAL reflection probe water manager: groups %u, unk24 %.3f, unk38 %.3f, unk98 %.3f, unk34 %u, unk9C %u",
+			water->waterGroups.count, water->unk24, water->unk38, water->unk98, (unsigned)water->unk34, (unsigned)water->unk9C);
+		DNode<WaterGroup>* node = water->waterGroups.first;
+		for (UInt32 i = 0; node && i < water->waterGroups.count && i < 8; i++, node = node->next) {
+			WaterGroup* group = node->data;
+			if (!group) continue;
+			char planes[256] = "";
+			DNode<TESObjectREFR>* plane = group->waterPlanes.first;
+			for (UInt32 j = 0; plane && j < group->waterPlanes.count && j < 4; j++, plane = plane->next) {
+				NiNode* planeNode = plane->data ? plane->data->GetNode() : nullptr;
+				NiBound* bound = planeNode ? planeNode->GetWorldBound() : nullptr;
+				char entry[64];
+				if (bound) sprintf_s(entry, " [z %.1f r %.0f]", bound->Center.z, bound->Radius);
+				else strcpy_s(entry, " [no node]");
+				strcat_s(planes, entry);
+			}
+			Logger::Log("UNOFFICIAL reflection probe water group %u: vector04 %.3f %.3f %.3f %.1f | vector14 %.3f %.3f %.3f %.1f | %u planes%s | bytes %u %u %u %u %u",
+				i, group->vector04.x, group->vector04.y, group->vector04.z, group->vector04.w,
+				group->vector14.x, group->vector14.y, group->vector14.z, group->vector14.w,
+				group->waterPlanes.count, planes, group->byte5C, group->byte5D, group->byte5E, group->byte5F, group->byte60);
+		}
+	}
+
+	static void Report() {
+		Logger::Log("UNOFFICIAL reflection probe for screenshot %s:", Name);
+		LogPass("world pass", Shots[0]);
+		LogPass("reflection pass", Shots[1]);
+		LogDrawn();
+		LogWater();
+		if (ReflectionTarget) {
+			char file[MAX_PATH];
+			sprintf_s(file, "%s reflection.png", Base);
+			const HRESULT hr = D3DXSaveSurfaceToFileA(file, D3DXIFF_PNG, ReflectionTarget, NULL, NULL);
+			Logger::Log("UNOFFICIAL reflection probe: reflection map %s as \"%s reflection.png\" (hr %08lX)", SUCCEEDED(hr) ? "saved" : "NOT saved", Name, (unsigned long)hr);
+			ReflectionTarget->Release();
+			ReflectionTarget = nullptr;
+		}
+	}
+
+	// Once per frame, after the screenshot check.
+	static void EndFrame() {
+		if (ScreenshotTakenThisFrame) {
+			ScreenshotTakenThisFrame = false;
+			strcpy_s(Base, LastScreenshotBase);
+			strcpy_s(Name, LastScreenshotName);
+			Shots[0] = PassShot();
+			Shots[1] = PassShot();
+			DrawnCount = DrawnTotal = 0;
+			DrawnDone = false;
+			if (ReflectionTarget) { ReflectionTarget->Release(); ReflectionTarget = nullptr; }
+			ArmedFrames = 30;  // the reflection pass only runs while water is in view
+			return;
+		}
+		if (!ArmedFrames) return;
+		if ((Shots[0].valid && Shots[1].valid) || --ArmedFrames == 0) {
+			Report();
+			ArmedFrames = 0;
+		}
+	}
+}
+
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	
@@ -420,7 +743,15 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	// Diagnostic (P57): the water reflection with the game's own shaders. NVR's replacements take constants made for
+	// the main camera; the reflection camera sits mirrored below the water. SetupShader picks the handle the game
+	// binds next, so switching it here keeps the game's state tracking right; the next bind picks NVR's again.
+	if (TheSettingManager->SettingsMain.Main.GameShadersInReflections && ShaderSplit::CurrentContext == ShaderSplit::Reflections) {
+		if (VertexShader && VertexShader->ShaderHandleBackup) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
+		if (PixelShader && PixelShader->ShaderHandleBackup) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
+	}
 	ShaderSplit::OnBind(PixelShader, PixelShader2, bindStart);
+	ReflectionProbe::OnBind(Geometry, PixelShader ? PixelShader->Name : nullptr);
 
 	// trace pipeline active shaders
 	if (TheSettingManager->SettingsMain.Develop.DebugMode && !InterfaceManager->IsActive(Menu::MenuType::kMenuType_Console) && Global->OnKeyDown(TheSettingManager->SettingsMain.Develop.TraceShaders)) {
@@ -504,6 +835,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 
 void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*) = (void (__thiscall*)(WaterManager*, NiCamera*, ShadowSceneNode*))Hooks::RenderReflections;
 void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* Camera, ShadowSceneNode* SceneNode) {
+	ReflectionProbe::HookCamera = Camera;
 	if (!TheSettingManager->SettingsMain.Main.ForceReflections) {
 		// Hooked for profiling in this mode: the game's reflection pass, unchanged unless CheapReflections is on.
 		static GpuTimer reflectionsTimer("Water reflections (game)");
@@ -511,6 +843,7 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 		CpuProfileScope cpu(reflectionsCpuTimer);
 		GpuProfileScope gpu(reflectionsTimer, TheRenderManager->device);
 		CheapReflectionScope cheap;
+		UnderwaterTerrainReflectionScope underwaterTerrain;
 		ShaderSplit::BeginContext(ShaderSplit::Reflections);
 		(*RenderReflections)(This, Camera, SceneNode);
 		ShaderSplit::EndContext();
@@ -533,6 +866,7 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 		CpuProfileScope cpu(reflectionsCpuTimer);
 		GpuProfileScope gpu(reflectionsTimer, TheRenderManager->device);
 		CheapReflectionScope cheap;
+		UnderwaterTerrainReflectionScope underwaterTerrain;
 		ShaderSplit::BeginContext(ShaderSplit::Reflections);
 		(*RenderReflections)(This, Camera, SceneNode);
 		ShaderSplit::EndContext();
@@ -656,6 +990,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
 		TheShaderManager->RenderEffects(OutputSurface);
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
+		ReflectionProbe::EndFrame();
 	}
 
 	if (GameSurface) GameSurface->Release();

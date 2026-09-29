@@ -282,6 +282,29 @@ const char* RenderManager::D3D9RuntimeDescription() {
 	return text;
 }
 
+// DXVK can report another GPU to the game than the one installed: its hideNvidiaGpu option shows an
+// NVIDIA card as "AMD Radeon RX 6700 XT". Nothing in NVR depends on the name, but it confused a player
+// reading the log, so the log also lists the display adapters Windows itself knows (user32, which DXVK
+// does not replace).
+static void LogWindowsDisplayAdapters(const char* reportedName) {
+	std::string names;
+	bool reportedFound = false;
+	DISPLAY_DEVICEA device = {};
+	device.cb = sizeof(device);
+	for (DWORD i = 0; EnumDisplayDevicesA(nullptr, i, &device, 0); ++i, device.cb = sizeof(device)) {
+		if (device.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) continue;
+		const std::string name = device.DeviceString;
+		if (name.empty() || (" " + names + ",").find(" " + name + ",") != std::string::npos) continue;
+		names += names.empty() ? name : ", " + name;
+		if (name == reportedName) reportedFound = true;
+	}
+	if (names.empty()) return;
+	Logger::Log("Windows display adapters: %s", names.c_str());
+	if (!reportedFound)
+		Logger::Log("The game is told about a different GPU than Windows lists. DXVK does this on purpose (its hideNvidiaGpu "
+			"option shows NVIDIA cards as AMD Radeon RX 6700 XT); NVR does not depend on the name.");
+}
+
 void RenderManager::Initialize() {
 
 	IDirect3D9* D3D = NULL;
@@ -298,7 +321,8 @@ void RenderManager::Initialize() {
 	RESZ = D3D->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, currentDisplayMode.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE, (D3DFORMAT)MAKEFOURCC('R','E','S','Z')) == D3D_OK;
 	D3DADAPTER_IDENTIFIER9 adapter = {};
 	if (SUCCEEDED(D3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapter)))
-		Logger::Log("Graphics adapter: %s (vendor %04lX, device %04lX)", adapter.Description, adapter.VendorId, adapter.DeviceId);
+		Logger::Log("Graphics adapter as reported to the game: %s (vendor %04lX, device %04lX)", adapter.Description, adapter.VendorId, adapter.DeviceId);
+	LogWindowsDisplayAdapters(adapter.Description);
 	D3D->Release();
 	DXVK = false;
 
@@ -397,6 +421,12 @@ void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {
 
  
 
+// Set when the NVR screenshot key saved a screenshot this frame (plain globals: the game allocates RenderManager
+// itself, so members it adds are not constructed).
+char LastScreenshotBase[MAX_PATH];
+char LastScreenshotName[80];
+bool ScreenshotTakenThisFrame = false;
+
 void RenderManager::CheckAndTakeScreenShot(IDirect3DSurface9* RenderTarget, bool HDR){
 	if (Global->OnKeyDown(TheSettingManager->SettingsMain.Main.ScreenshotKey)) {
 		char Filename[MAX_PATH];
@@ -408,6 +438,9 @@ void RenderManager::CheckAndTakeScreenShot(IDirect3DSurface9* RenderTarget, bool
 		if (GetFileAttributesA(Filename) == INVALID_FILE_ATTRIBUTES) CreateDirectoryA(Filename, NULL);
 		strftime(Name, 80, "\\%Y%m%d %H.%M.%S", localtime(&CurrentTime));
 		strcat(Filename, Name);
+		strcpy_s(LastScreenshotBase, Filename);  // for the reflection probe (Hooks/Render.cpp)
+		strcpy_s(LastScreenshotName, Name + 1);
+		ScreenshotTakenThisFrame = true;
 		strcat(Filename, HDR?".hdr":".jpg");
 		strcat(Filename, HDR?".hdr":".png");
 		if (HDR)

@@ -271,6 +271,64 @@ void SettingManager::Configuration::FillSettings(SettingList* Nodes, const char*
 /*
 * Add the changes described by the node to the config. Will create the entry in the config if it only exists in defaults
 */
+// The user config's own table for a section such as "Main.Main.ReducedQuality" (nullptr if it has none).
+tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
+	char path[256] = "_";
+	strcat(path, Section);
+	StringList keys;
+	SplitString(path, ".", &keys);
+	return FindSection(&TomlConfig, &keys);
+}
+
+// A saved value that equals a replaced default is moved to the new default once. The menu's Save writes every
+// setting, so most saved configs hold the defaults of the build they were saved with, not the player's
+// choice. The user config records how far it has been updated in [_Unofficial] SettingsVersion; that key is
+// not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
+// it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
+// first call the version is current and it returns at once.
+static const int UnofficialSettingsVersion = 53;  // 53 was an enhanced-water step, since removed
+
+void SettingManager::Configuration::UpdateOldDefaults() {
+	if (!TomlConfig.is_table()) return;
+	int version = 0;
+	if (TomlConfig.contains("_Unofficial")) {
+		const tomlValue& unofficial = TomlConfig.at("_Unofficial");
+		if (unofficial.is_table() && unofficial.contains("SettingsVersion") && unofficial.at("SettingsVersion").is_integer())
+			version = (int)unofficial.at("SettingsVersion").as_integer();
+	}
+	if (version >= UnofficialSettingsVersion) return;
+
+	std::string changed;
+	auto replace = [&](const char* section, const char* key, double oldDefault, double newDefault, bool integer) {
+		tomlValue* saved = UserSection(section);
+		if (!saved || !saved->contains(key)) return;
+		const tomlValue& value = saved->at(key);
+		const bool isOld = value.is_integer() ? (double)value.as_integer() == oldDefault :
+			value.is_floating() && value.as_floating() == oldDefault;
+		if (!isOld) return;
+		if (integer) (*saved)[key] = (int)newDefault;
+		else (*saved)[key] = newDefault;
+		char entry[160];
+		sprintf_s(entry, "%s%s.%s %g -> %g", changed.empty() ? "" : ", ", section, key, oldDefault, newDefault);
+		changed += entry;
+	};
+	// P49: PointShadowInterval 2 made the shadows of people moving near lamps stutter.
+	if (version < 49) replace("Main.Main.ReducedQuality", "PointShadowInterval", 2, 1, true);
+	// P50: adapt speed 50 let the exposure follow every blinking sign within a few frames (flicker on the Strip).
+	if (version < 50) {
+		for (const char* section : { "Shaders.Exposure.Main", "Shaders.Exposure.Night", "Shaders.Exposure.Interiors" }) {
+			replace(section, "DarkAdaptSpeed", 50.0, 0.2, false);
+			replace(section, "LightAdaptSpeed", 50.0, 0.2, false);
+		}
+	}
+	if (!changed.empty())
+		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
+			"Change them in the menu and press Save if you want the old values back.", changed.c_str());
+
+	if (!TomlConfig.contains("_Unofficial") || !TomlConfig.at("_Unofficial").is_table()) TomlConfig["_Unofficial"] = toml::table();
+	TomlConfig["_Unofficial"]["SettingsVersion"] = UnofficialSettingsVersion;
+}
+
 void SettingManager::Configuration::SetValue(ConfigNode* Node) {
 	char path[256] = "_";
 	strcat(path, Node->Section);
@@ -387,6 +445,7 @@ void SettingManager::Initialize() {
 void SettingManager::LoadSettings() {
 
 	auto timer = TimeLogger();
+	Config.UpdateOldDefaults();
 
 	StringList List;
 	StringList InnerList;
@@ -400,6 +459,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.RemoveUnderwater = GetSettingI("Main.Main.Water", "RemoveUnderwater");
 	SettingsMain.Main.RemovePrecipitations = GetSettingI("Main.Main.Precipitations", "RemovePrecipitations");
 	SettingsMain.Main.ForceReflections = GetSettingI("Main.Main.Water", "ForceReflections");
+	SettingsMain.Main.GameShadersInReflections = GetSettingI("Main.Main.Water", "GameShadersInReflections") != 0;
 	SettingsMain.Main.MemoryHeapManagement = GetSettingI("Main.Main.Memory", "HeapManagement");
 	SettingsMain.Main.MemoryTextureManagement = GetSettingI("Main.Main.Memory", "TextureManagement");
 	SettingsMain.Main.AnisotropicFilter = GetSettingI("Main.Main.Misc", "AnisotropicFilter");
@@ -434,10 +494,12 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.FXAA = boolSetting(reducedQuality, "FXAA", false);
 	{
 		Configuration::ConfigNode node;
-		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 2;
+		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 1;
 		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
 	}
 	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
+	SettingsMain.Main.CheapUnderwaterTerrain = boolSetting(reducedQuality, "CheapUnderwaterTerrain", false);
+	SettingsMain.Main.StaggeredSunShadows = boolSetting(reducedQuality, "StaggeredSunShadows", false);
 	{
 		Configuration::ConfigNode node;
 		const int interval = Config.FillNode(&node, reducedQuality, "NearCascadeInterval") ? node.IntValue : 1;

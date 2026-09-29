@@ -142,7 +142,21 @@ PS_OUTPUT main(PS_INPUT IN) {
     float blends[7] = { IN.blend_0.x, IN.blend_0.y, IN.blend_0.z, IN.blend_0.w, IN.blend_1.x, IN.blend_1.y, IN.blend_1.z };
     float spec[7] = { LandSpec[0].x, LandSpec[0].y, LandSpec[0].z, LandSpec[0].w, LandSpec[1].x, LandSpec[1].y, LandSpec[1].z };
     float heightStatus[7] = { LandHeight[0].x, LandHeight[0].y, LandHeight[0].z, LandHeight[0].w, LandHeight[1].x, LandHeight[1].y, LandHeight[1].z };
-    float2 offsetUV = getParallaxCoords(dist, IN.uv.xy, dx, dy, eyeDir, texCount, BaseMap, blends, heightStatus, weights);
+
+    // Camera-relative world position, for the forward sun shadows below and for telling ground under the water.
+    // No extra interpolator needed: projectionPosition is already the clip-space position,
+    // and clip position is affine in object space, so it interpolates exactly.
+    // ddx/ddy must stay at top level, outside dynamic flow control.
+    float3 shadowWorldPos = GetShadowWorldPos(IN.projectionPosition);
+    float3 shadowNormal = GetShadowGeometricNormal(shadowWorldPos);
+
+    // [Main.Main.ReducedQuality] CheapUnderwaterTerrain: ground below TESR_TerrainParallaxExtraData.w (camera-relative
+    // height of the water line; -FLT_MAX when off) skips parallax and its shadows, exactly as with parallax switched off.
+    // It is seen through moving, refracting water. The parallax functions take explicit gradients, so they may branch.
+    bool parallax = shadowWorldPos.z >= TESR_TerrainParallaxExtraData.w;
+    float2 offsetUV = IN.uv.xy;
+    [branch] if (parallax) offsetUV = getParallaxCoords(dist, IN.uv.xy, dx, dy, eyeDir, texCount, BaseMap, blends, heightStatus, weights);
+    else weights = blends;
 
     float gloss = 0.0f;
     float specExponent = 0.0f;
@@ -150,16 +164,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 combinedNormal = blendNormalMaps(offsetUV, texCount, NormalMap, weights, spec, gloss, specExponent);
 
     float3 lightTS = mul(tbn, SunDir.xyz);
-    float parallaxShadowMultiplier = getParallaxShadowMultipler(dist, offsetUV, dx, dy, lightTS, texCount, blends, heightStatus, BaseMap);
+    float parallaxShadowMultiplier = 1.0;
+    [branch] if (parallax) parallaxShadowMultiplier = getParallaxShadowMultipler(dist, offsetUV, dx, dy, lightTS, texCount, blends, heightStatus, BaseMap);
 
     // Forward sun shadows. Folded into parallaxShadowMultiplier, which getSunLighting
     // applies to the sun colour only -- ambient is added afterwards and stays untouched.
-    //
-    // No extra interpolator needed: projectionPosition is already the clip-space position,
-    // and clip position is affine in object space, so it interpolates exactly.
-    // ddx/ddy must stay at top level, outside dynamic flow control.
-    float3 shadowWorldPos = GetShadowWorldPos(IN.projectionPosition);
-    float3 shadowNormal = GetShadowGeometricNormal(shadowWorldPos);
     #if FORWARD_SHADOWS
     parallaxShadowMultiplier *= GetSunShadow(shadowWorldPos, shadowNormal);
     #endif

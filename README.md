@@ -37,8 +37,8 @@ same license; they will be removed from the zip if the original authors object.)
 3. Start the game. Your own NVR settings are kept; without them, they are created from the defaults.
 
 To uninstall, put your backed-up files back. If an effect looks wrong after updating, delete the
-`Cache` folders inside `Data\Shaders\NewVegasReloaded\`, and look in `NewVegasReloaded.log` (game
-folder) for lines containing `error X`: they name a shader file that is missing or from another
+`Cache` folders inside `Data\Shaders\NewVegasReloaded\`, and look in the newest log (see **Logs**
+below) for lines containing `error X`: they name a shader file that is missing or from another
 version. Extracting a zip cannot remove files, so a shader left over from an older NVR that this
 build no longer has (for example `Shaders\SKIN2012.pso.hlsl`) stays; it is harmless, or delete it.
 Up to P39 the zips held only the changed shader files and missed `Effects\Includes\Normals.hlsl`:
@@ -63,24 +63,37 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   after loading a save straight into an interior, which left the image almost black), NVR's effects
   are skipped until it starts again.
 - **Main > Main > ReducedQuality** - extra speed in exchange for a small loss of quality. All
-  off by default except `PointShadowInterval`, and they take effect immediately, so you can compare
-  while playing:
+  off by default (since P49), and they take effect immediately, so you can compare while playing:
   - `FXAA` - a much cheaper edge smoothing than SMAA (about 0.15 ms instead of about 1 ms).
     Turn SMAA off (Shaders > SMAA) when you use it. Slightly softer image.
   - `GodRaysLowRes` - lower-resolution light rays. Softer rays.
   - `AOLowRes` - lower-resolution ambient occlusion. Softer corner shading.
   - `PointShadowInterval` - in interiors, redraw the shadows of lamps and other lights every 2nd,
-    3rd or 4th frame instead of every frame (1 = every frame, the original behaviour). **This one is
-    on by default, set to 2.** Static rooms look the same; shadows of people and doors moving
-    through the light can lag a frame or two. Set it to 1 if you notice it. P44 automatically stops
-    redrawing a light whose complete caster list is static and unchanged; lights containing actors or
-    animated tree leaves keep the selected interval.
+    3rd or 4th frame instead of every frame (1 = every frame, the original behaviour and the default
+    since P49; earlier builds used 2). Static rooms look the same; shadows of people and doors moving
+    through the light lag a frame or more, which can look like stuttering or flickering shadows on
+    people. Lights that only reach still objects are never redrawn needlessly, whatever the setting
+    (since P44). If you pressed Save in an older build, your settings file holds the old default 2:
+    since P49 that is reset once to 1 (the log says so); set it again if you really want it.
+  - `StaggeredSunShadows` (since P49; before P49 always on) - redraw the sun shadows of things
+    more than about 3 m away every 4th frame, and beyond about 9 m every 8th, instead of every frame.
+    Still shadows look the same, but people and creatures walking at that distance get shadows that
+    stutter, and their bodies can flicker. Saves roughly 0.5 ms per frame outdoors on a GTX 1070.
   - `CheapReflections` - draw the reflection in water without sun shadows and without the bumpy
     terrain detail, like the original game's reflections. Only matters where water is in view.
-  - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows every 2nd frame instead of
-    every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
+  - `CheapUnderwaterTerrain` (since P48) - ground under water (lake and river beds, and everything
+    when you swim underwater) is drawn without the terrain's fake 3D bumps (parallax), which you see
+    through moving, murky water anyway. Dry ground keeps them. This removes most of the frame-rate
+    drop when wading or swimming.
+  - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows (up to about 3 m) every 2nd
+    frame instead of every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
     and creatures lag one frame, and right after a very fast turn the edge of the view may show
     softer shadows for one frame.
+
+- **Shaders > Exposure** (since P50) - the automatic brightness adjustment now adapts over a second or
+  two (`DarkAdaptSpeed` and `LightAdaptSpeed` 0.2 instead of 50). At 50 it followed every blinking sign
+  within a few frames, so the whole screen flickered on the Strip. If your settings file still holds
+  the old 50 (from pressing Save in an older build), P50 moves it to 0.2 once and says so in the log.
 
 To keep a change for next time, press **Save** at the top of the menu.
 
@@ -89,7 +102,14 @@ Tip: the game's own anti-aliasing (MSAA) is a separate setting. To try without i
 the game's launcher.
 
 **Performance meter:** press **F10** to start or stop it. While it runs, the time each effect takes
-is written to `NewVegasReloaded.log` in the game folder every couple of seconds.
+is written to the log every couple of seconds.
+
+**Logs:** since P46 every game start writes a new log to the `NVR-Unofficial-Optimized-Logs` folder
+in the game folder (next to `FalloutNV.exe`), named after the date and time it started, for example
+`NewVegasReloaded_2026-09-29_14-05-33.log`. Every line starts with the time of day. The folder keeps
+the 25 newest logs; at each start the oldest ones are deleted. When you report a problem, attach the
+log of that session. (Before P46 there was a single `NewVegasReloaded.log` in the game folder,
+overwritten at every start; P46 moves it into the new folder the first time it runs.)
 
 Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIAL-TECHNICAL.md).
 

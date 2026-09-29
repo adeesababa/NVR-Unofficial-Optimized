@@ -55,9 +55,10 @@ native Direct3D 9) using the built-in F10 profiler; other hardware will differ.
   lights whose position changes every frame, most likely the game's flicker movement.)
 - **SMAA:** cheaper combined edge detection, explicit stencil state. **DitherBuster:** single pass.
   **Point shadows:** merged passes.
-- **Shadow cascades:** staggered refresh (middle every 4 frames, far/LOD every 8, spread over the
-  8-frame cycle), only updated cascades resolved/prefiltered, cheaper face culling, batched bone
-  uploads.
+- **Shadow cascades:** only updated cascades resolved/prefiltered, cheaper face culling, batched bone
+  uploads. P21-P48 also refreshed the cascades on a staggered schedule (middle every 4 frames, far/LOD
+  every 8); that changed the shadows of moving people, so since P49 it is the opt-in
+  `StaggeredSunShadows` (see "Sun-cascade schedule (P49)").
 
 ## In-game switches (defaults file `NewVegasReloaded.dll.defaults.toml`)
 Settings only exist if they are present in the defaults file, so always install it with the DLL.
@@ -90,8 +91,9 @@ depth-stencil, the MRT capability bits and the render states the draw ran with.
   exterior shaders no longer read (they test `TESR_ShadowForwardData.x`), so it never switched sun
   shadows off in reflections; that path is left as it was.
 - `NearCascadeInterval` (1-2, P40) - at 2 the near sun cascade is redrawn on even frames only. The
-  limited cascades already use odd frames (middle 1 and 5, far 3, LOD 7 of the 8-frame cycle), so every
-  frame then draws exactly one sun cascade (checked by a `static_assert`). Between redraws the cached
+  other cascades refresh on odd frames (LOD 3 and 7 by default; with `StaggeredSunShadows` middle 1
+  and 5, far 3, LOD 7 of the 8-frame cycle, so every frame then draws exactly one sun cascade, checked
+  by a `static_assert`). Between redraws the cached
   near cascade is kept locked to the camera translation like the others, and its selection sphere
   (camera-relative centre) is moved with the camera too.
 - Measured in P40 (GTX 1070, 1440p, Rivet City exterior, same view): `CheapReflections` 1.15 -> 1.01 ms
@@ -168,6 +170,103 @@ NVR underneath.
   line. The test checks that a graded .cube sampled through a CPU model of `LUT.fx.hlsl` matches the
   LUT's own trilinear lookup within one 8-bit step, which pins down the axis order.
 
+## Sun-cascade schedule and point-shadow default (P49)
+A player on the Strip (under DXVK) reported flickering shadows on NPCs, and it reproduced on native
+D3D9. Two default-on changes let the shadow of a moving person lag behind the person, so on the stale
+frames the body sits partly inside its own old shadow and flickers:
+- **Sun cascades.** Upstream NVR redraws the near, middle and far cascades every frame, and with
+  `ShadowsExteriors > ShadowMaps > LimitFrequency` only the LOD cascade every 4th frame. P21 made that
+  middle every 4th and far/LOD every 8th (with shadow MSAA, P28 also without). With the default
+  `Distance = 6000` and `CascadeLambda = 0.9`, the near cascade ends at about 225 units (3 m), middle at
+  about 610 (9 m), far at about 1750 (25 m), so most people you see on the Strip are in the middle or far
+  cascade. P49 restores the upstream schedule by default; `[Main.Main.ReducedQuality] StaggeredSunShadows`
+  (off by default) brings back the P21-P48 schedule (it applies whatever `LimitFrequency` says). Only the
+  cascades redrawn that frame are resolved and prefiltered, as before. The P21 measurement of the stagger
+  was about -0.5 ms GPU (cascade geometry 1.02 -> 0.66-0.72, resolve 0.36 -> 0.25-0.27, prefilter
+  0.53 -> 0.38-0.41; GTX 1070, 1440p).
+- **Point shadows.** `PointShadowInterval` defaults to 1 again (earlier builds: 2). The menu's Save writes
+  every setting, so a saved config usually holds the old default; it is reset once to 1 (see "Old saved
+  defaults" under P50). Still lights keep their cubemaps at any interval (P44), so interval 1 costs little
+  in rooms without moving people.
+- **GPU name in the log.** DXVK's `hideNvidiaGpu` option reports an NVIDIA card to the game as
+  "AMD Radeon RX 6700 XT" (vendor 1002, device 73DF), which a player took for a misdetection. The log now
+  says `Graphics adapter as reported to the game: ...`, adds `Windows display adapters: ...` from
+  `EnumDisplayDevicesA` (user32, not replaced by DXVK), and explains when the two differ. Nothing in NVR
+  depends on the name.
+
+## Exposure flicker and old saved defaults (P50)
+The user saw the whole screen flicker slightly darker and brighter on the Strip and isolated it to the
+Exposure effect. `AvgLuma.fx` measures the frame's brightness from 112 single texels, averages it over 8
+frames (`(luma + 7 * old) / 8`, a per-frame filter, so its time constant shrinks as the frame rate rises:
+about 0.25 s at 35 fps, 0.07 s at 113 fps), and then limits the change to `dt * DarkAdaptSpeed` /
+`dt * LightAdaptSpeed` brightness units. The default speeds of 50 allow any change within a frame, so the
+exposure followed blinking neon and bright signs sliding across the sample points. Neither shader nor the
+effect changed in this fork, but its higher frame rate made the flicker about three times faster. P50
+sets all six adapt speeds (Main, Night, Interiors) to 0.2 per second; the user confirmed in game that this
+stops the flicker. The rate limit uses the frame time, so it behaves the same at any frame rate.
+
+**Old saved defaults.** `Configuration::UpdateOldDefaults` (start of every `LoadSettings`) moves a saved
+value that equals a replaced default to the new one, once: `PointShadowInterval` 2 -> 1 (version 49) and
+the six adapt speeds 50 -> 0.2 (version 50). The user config records its version in
+`[_Unofficial] SettingsVersion`; that key is not in the defaults file, so the menu does not list it, and
+Save writes it with the rest of the config. A config without it counts as version 0. The log line
+`UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: ...` lists what
+changed. (P49 briefly used the absence of `StaggeredSunShadows` as the marker; P50 replaces that.)
+
+## Log files (P46)
+Before P46 the plugin wrote one `NewVegasReloaded.log` to the current folder, overwritten at every
+start, so a log was lost as soon as the game was started again. Now `Logger::InitializeRotating`
+(`src/base/Logger.cpp`, rules in `src/base/LogFiles.h`) writes a new
+`NVR-Unofficial-Optimized-Logs\NewVegasReloaded_YYYY-MM-DD_HH-MM-SS.log` (local start time) in the
+folder of the game's exe, falling back to the current folder and then to the old single file if the
+folder or file cannot be created. At each start the oldest logs are deleted so that 25 remain including
+the new one; only files whose names match that pattern exactly are counted or deleted (a second start in
+the same second gets `-2`). A `NewVegasReloaded.log` left in the game folder by an older build is moved
+into the folder once, named after its last write time. Every line starts with `[HH:MM:SS.mmm] ` (local
+time) and is written with a single `fwrite`, so lines from different threads cannot interleave; lines
+longer than 2 KB are formatted on the heap instead of being cut. The first line gives the start date and
+the log's folder and file name (not the full path, which can contain the player's Windows user name).
+The in-game log window shows the lines without the time. `tests/log_files.cpp` checks the names, which
+files may be deleted (other files and folders in the log folder are never touched), 30 launches into a
+fake game folder, the move of the old log and long lines around the buffer size. Writing is cheap: a
+raw write of one line to the game drive takes about 2 us, so buffering the log (roadmap 2C) was
+measured and dropped in P47.
+
+## Enhanced water style (P48-P53, removed)
+An experimental opt-in water style (animated FFT ocean waves, foam, a clarity slider, a real-water reflection curve)
+was built in P48 and P51-P53 and removed again before release: it went beyond this build's goal of the same
+picture, faster. It is kept on the local branch `experiment/enhanced-water`. The classic water shaders are as in
+P45. The water reflection probe (P54-P57) stays: see "Reflection probe" below.
+
+## Water reflection probe (P54-P57, diagnostic)
+A player's clip showed the reflection of far buildings squashed into a thin
+strip when looking level and the right height when looking down: the same water reflects different things depending
+on the camera pitch, which looks like the reflection "scrolling". The game draws the reflection map with its own
+camera inside `RenderReflections`, and the water shaders look it up as if that camera were an exact mirror of the
+main one (`1 - v` of the main camera's projection). To see how the game's reflection camera differs, pressing the NVR
+screenshot key arms `ReflectionProbe` (`NewVegas/Hooks/Render.cpp`): in the next frame the first shader bind of the
+world pass and of the reflection pass record the render target, viewport, D3D view/projection transforms
+(`GetTransform`), the scene camera and the camera passed to `RenderReflections`; the log gets `UNOFFICIAL reflection
+probe` lines and the reflection map is saved next to the screenshot as `<name> reflection.png`. Nothing changes
+otherwise.
+
+## Cheap underwater terrain (P48, ReducedQuality, off by default)
+A player reported the frame rate dropping sharply when wading and swimming, with either water style. The F10 split
+(standing in the Potomac, native, GTX 1070, 1440p) showed the world scene rising from 5.6 to 7.4-9.5 ms, all of it
+in `TERRAIN NVR` (3.5 -> 5.6-7.4 ms); the water surface itself stayed at 0.1-0.6 ms. With the eyes low, the lake bed
+and banks fill the screen at close range, where the terrain parallax works hardest (up to 16 steps plus refinement
+and parallax shadows per pixel), and shores blend many ground textures (the shader's cost grows steeply with the
+count). Switching NVR's terrain shader off at that spot gave 16.9 -> 12.9 ms per frame (game terrain shader 1.8 ms
+instead of 5.6). `CheapUnderwaterTerrain` keeps NVR's terrain lighting but skips parallax and parallax shadows on
+ground below the water line: `Terrain.cpp` puts the camera-relative height of the water the player is in or looking
+at (`TES::GetWaterHeight`, only while a water plane is loaded nearby, 10 units lower so the shoreline keeps its
+parallax) into `TESR_TerrainParallaxExtraData.w` (-FLT_MAX when off), and `TerrainTemplate.hlsl` compares it with the
+pixel's camera-relative height (the same reconstruction the forward sun shadows use, now computed first) and branches
+around the two parallax calls. The water line test is switched off during the water reflection pass (mirrored
+camera, where that reconstruction is meaningless). `tests/game_shaders.cpp`: with the switch off the terrain output is
+bit-identical to before in all five parallax configurations; with everything under water it equals parallax and
+parallax shadows off, and full-screen terrain costs 51-78% less (TEX_COUNT 1: 1.31 -> 0.65 ms, 7: 5.80 -> 1.28 ms).
+
 ## World scene guard and trace
 NVR refreshes its depth buffers only inside its hook on the game's `RenderWorldSceneGraph`. Once, after
 a save was loaded straight into an interior, the game rendered frames without calling it (the F10 log
@@ -180,7 +279,7 @@ per session) record which render calls ran on the first frames after each cell c
 trigger if it recurs.
 
 ## Profiler
-F10 toggles GPU/CPU timing (a small red dot and "PROF" appear in the top-right corner while it runs). Every 120 frames the averages are written to `NewVegasReloaded.log` as
+F10 toggles GPU/CPU timing (a small red dot and "PROF" appear in the top-right corner while it runs). Every 120 frames the averages are written to the log (see Log files) as
 `GPU PROFILE ...` and `CPU PROFILE ...` lines; `Frame interval (CPU)` is the real frame time.
 Queries are read asynchronously and never flush the GPU. Only the two timestamp queries are required; the
 optional disjoint and frequency queries may be missing or fail (timing continues, assuming a 1 GHz clock), so
@@ -212,6 +311,29 @@ constants, `ShaderRecord::SetCT`), and the family changes; plus the CPU time spe
 (all session, profiling or not), so each `FRAME SPIKE` line now ends with the shaders used for the first
 time in that frame and the longest gap between two binds (the draws of a pass happen between its bind
 and the next one; a driver compiling a shader variant at its first draw would show up there).
+
+Since P47 the lit-object family is split by variant group (by shader number, `src/effects/PBR.h`):
+`SLS 1-3 lights` (2000-2028, sun plus up to three lights), `SLS 4+ lights` (2029-2036, up to six lights
+in one pass), `SLS light pass` (2037-2044, the additive passes that redraw an object for further
+lights), `SLS diffuse pt` (2045-2046), `SLS specular` (2047-2056) and `SLS other`; the `SLS` of earlier
+logs is their sum. With the `SHADER BINDS` lines comes a `SLS 4+ LIGHTS in use per draw` line: for each
+of those shaders, how many lights its draws used, read back from the device (`EmittanceColor.a`, c2.w,
+or `PSLightColor[0].a`, c3.w, in the OPT variants) at the next bind in the same pass, once the draw has
+used it; and the share of light slots computed for nothing, since these shaders compute every slot and
+multiply the unused ones by 0. That share decides whether skipping unused slots pays (roadmap 3J-a).
+
+### Game shader A/B test (P47)
+`tools\test-game-shaders.ps1` (`tests/game_shaders.cpp`, needs a D3D9 GPU) extracts the committed game
+shaders from git and compiles them and the working copy's with the game's own compiler (D3DX43
+preprocess plus `D3DXCompileShader`, the same defines as `ShaderRecord::LoadShader`). It draws both over
+varied test scenes into a 32-bit float target and requires every pixel to be bit-identical, checks that
+the scenes have no NaNs and that the feature under test (parallax, parallax shadows, extra lights)
+visibly changes them, and times both on full-screen draws at 2560x1440. It covers the terrain shaders
+(TEX_COUNT 1-7, five parallax settings) and the 4+ light object shaders (0-6 lights in use).
+`--asm-template <file> <profile> <out> NAME=VALUE...` writes the compiled assembly of any game shader
+template. Findings so far (details in the roadmap, items 3C and 3J): the compiler already hoists the
+terrain parallax loop's invariant work, and skipping a terrain texture's height fetch when it has no
+height map is bit-identical but 22-37% slower, so the terrain shader was left unchanged.
 
 ### Frame-time statistics
 While profiling, every 1200 frames (and when F10 is pressed again, if at least 200 frames were collected) the log

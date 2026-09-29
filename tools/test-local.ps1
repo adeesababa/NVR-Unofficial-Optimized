@@ -23,3 +23,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Point shadow schedule tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Frame statistics test build failed.' }
 & "$repo\build\frame-test\frame_stats.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Frame statistics tests failed.' }
+& "$vs\MSBuild\Current\Bin\MSBuild.exe" "$repo\tests\log_files.vcxproj" /p:Configuration=Release /p:Platform=Win32 /nologo /v:minimal
+if ($LASTEXITCODE -ne 0) { throw 'Log file test build failed.' }
+& "$repo\build\log-test\log_files.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Log file tests failed.' }

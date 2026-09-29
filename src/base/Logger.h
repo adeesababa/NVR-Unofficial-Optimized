@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <cstdarg>
 #include <map>
 #include <deque>
 #include <string>
@@ -10,6 +11,9 @@ typedef std::map<const char*, int> stateMap;
 class Logger {
 public:
 	static void Initialize(const char* FileName);
+	// UNOFFICIAL P46: a new "<BaseName>_<date>_<time>.log" per launch in <game folder>\<FolderName>, keeping the newest
+	// Keep logs there. Falls back to Initialize("<BaseName>.log") if the folder or file cannot be created.
+	static void InitializeRotating(const char* FolderName, const char* BaseName, unsigned Keep);
 	static void Log(char* Message, ...);
 	static void Log(const char* Message, ...);
 	static void Debug(char* Message, ...);
@@ -28,7 +32,9 @@ public:
 	static FILE*		LogFile;
 
 private:
-	static void PushRingBuffer(const char* Line);
+	// Writes "[HH:MM:SS.mmm] <message>\n" with a single fwrite, so lines from different threads cannot interleave.
+	static void Write(bool ToRingBuffer, const char* Message, va_list Args);
+	static void PushRingBuffer(const char* Line, size_t Length);
 
 	static constexpr size_t	kRingBufferCap = 500;
 	static std::deque<std::string>	s_ringBuffer;
