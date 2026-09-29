@@ -1,3 +1,5 @@
+#include "../core/GpuProfiler.h"
+
 void SunShadowsEffect::SetCT() {
 	EffectRecord::SetCT();
 
@@ -47,8 +49,13 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 	UINT passes = 0;
 	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
+		// Per-pass GPU timers nested in the caller's "Sun contact shadows": march, horizontal blur,
+		// vertical blur (+ intensity), and the deferred shadow apply of the four-pass technique.
+		static GpuTimer passTimers[4] = { GpuTimer("  Contact march"), GpuTimer("  Contact blur H"),
+			GpuTimer("  Contact blur V"), GpuTimer("  Contact shadow apply") };
 		IDirect3DTexture9* source = shadowTexture;
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
+			GpuProfileScope gpuPass(passTimers[p < 4 ? p : 3], Device);
 			const bool last = p == passes - 1;
 			IDirect3DSurface9* destination = last ? shadowSurface : scratchSurface[p & 1];
 			Device->SetTexture(3, nullptr); // TESR_PointShadowBuffer slot

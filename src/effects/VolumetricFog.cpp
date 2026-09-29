@@ -1,4 +1,5 @@
 #include "VolumetricFog.h"
+#include "../core/GpuProfiler.h"
 
 void VolumetricFogEffect::UpdateConstants() {
 	// live weather-driven sky-filter disable, smoothly animated the same way RainEffect
@@ -259,8 +260,10 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
+		static GpuTimer passTimers[2] = { GpuTimer("  Fog estimate (half)"), GpuTimer("  Fog composite (full)") };
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
 			const bool combine = p == passes - 1;
+			GpuProfileScope gpuPass(passTimers[combine ? 1 : 0], Device);
 			// s5 is TESR_PointShadowBuffer (bound by SetCT); the fog targets are s6/s7, AO s8.
 			Device->SetTexture(6, nullptr);
 			Device->SetTexture(7, nullptr);

@@ -32,6 +32,7 @@ public:
 	void RegisterTextures();
 	void UpdateSettings();
 	void UpdateConstants();
+	bool ShouldRender() override;
 
 	void ScanLUTFolder();
 
@@ -51,4 +52,10 @@ public:
 
 private:
 	float DayCellCount = 16.0f;
+
+	// Set when the slot's texture is verified to be an identity strip. A pass that samples only
+	// identity LUTs returns its input, so ShouldRender skips it (the shipped neutral_lut.png is one).
+	bool DayNeutral      = false;
+	bool NightNeutral    = false;
+	bool InteriorNeutral = false;
 };

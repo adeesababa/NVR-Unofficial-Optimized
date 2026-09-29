@@ -398,9 +398,14 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		SetCT();
 		UINT Passes = 0;
 		if (SUCCEEDED(Effect->Begin(&Passes, NULL))) {
+			const bool prefill = !ClearRenderTarget && needsPrefill;
 			for (UINT p = 0; p < Passes; p++) {
-				IDirect3DSurface9* destination = chain.Output();
-				if (!ClearRenderTarget && needsPrefill)
+				// The last pass of the chain's final effect renders straight into the game target, so
+				// the chain has no copy to make when it ends. Not worth it for a pass that has to be
+				// pre-filled: that is the same copy, just earlier.
+				const bool direct = p == Passes - 1 && !prefill && chain.IsDirectFinal(this);
+				IDirect3DSurface9* destination = direct ? chain.FinalSurface() : chain.Output();
+				if (prefill)
 					Device->StretchRect(TheTextureManager->RenderedSurface, NULL, destination, NULL, D3DTEXF_NONE);
 				Device->SetRenderTarget(0, destination);
 				if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
@@ -408,7 +413,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				RebindSlotTextures(); // the current image moved after the previous pass
 				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
-				chain.Commit();
+				if (direct) chain.CommitFinal();
+				else chain.Commit();
 			}
 			Effect->End();
 		}

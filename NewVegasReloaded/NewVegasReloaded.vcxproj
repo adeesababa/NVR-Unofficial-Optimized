@@ -251,6 +251,7 @@
     <ClInclude Include="..\src\effects\DitherBuster.h" />
     <ClInclude Include="..\src\effects\Coloring.h" />
     <ClInclude Include="..\src\effects\LUT.h" />
+    <ClInclude Include="..\src\effects\LUTIdentity.h" />
     <ClInclude Include="..\src\effects\CombineDepth.h" />
     <ClInclude Include="..\src\effects\Debug.h" />
     <ClInclude Include="..\src\effects\DepthOfField.h" />

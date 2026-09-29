@@ -70,6 +70,7 @@ SlimDepthBuffer = true      # UNOFFICIAL: store the effects' depth buffer as one
 [_Main.Main.ReducedQuality]
 GodRaysLowRes = false       # UNOFFICIAL, CHANGES THE IMAGE: compute god rays at quarter instead of half resolution (4x fewer pixels). Rays get softer; thin shafts through foliage may shimmer when moving. Applies immediately.
 AOLowRes = false            # UNOFFICIAL, CHANGES THE IMAGE: compute ambient occlusion at quarter instead of half resolution (4x fewer pixels). Corner shading gets softer and loses small creases; may look blotchier. Applies immediately.
+PointShadowInterval = 1     # UNOFFICIAL, CHANGES THE IMAGE (only when above 1): redraw each point-light shadow cubemap (interiors, and exteriors with point shadows on) every N frames instead of every frame, 1-4. Each light's cubemap is redrawn at once when its light, position, radius or cell changes; in between, moving objects (people, doors) cast shadows that lag up to N-1 frames. 2 roughly halves the cost of the F10 'Point shadow cubemaps' timer. Applies immediately.
 FXAA = false                # UNOFFICIAL, CHANGES THE IMAGE: lean FXAA edge smoothing (about 0.15 ms at 1440p vs about 1 ms for SMAA). Meant to replace SMAA: turn SMAA off (Shaders > SMAA) when using it. Slightly softer than SMAA, weaker on thin distant detail. The game's own MSAA (iMultiSample in FalloutPrefs.ini) is not touched. Applies immediately.
 
 [_Main.Main.Precipitations]

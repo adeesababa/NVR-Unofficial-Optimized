@@ -25,6 +25,7 @@ struct SettingsMainStruct {
         bool    GodRaysLowRes; // [Main.Main.ReducedQuality] GodRaysLowRes (quarter instead of half resolution)
         bool    AOLowRes; // [Main.Main.ReducedQuality] AOLowRes (quarter instead of half resolution)
         bool    FXAA; // [Main.Main.ReducedQuality] FXAA (lean FXAA pass after SMAA)
+        int     PointShadowInterval; // [Main.Main.ReducedQuality] PointShadowInterval (redraw each point-light shadow cubemap every N frames, 1-4)
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;

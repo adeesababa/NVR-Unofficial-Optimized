@@ -66,15 +66,27 @@ public:
 	bool					Begin(IDirect3DSurface9* gameTarget); // false: chain unavailable, legacy behaviour
 	void					End();
 	bool					IsActive() const { return Active; }
-	// True when an effect's (RenderTarget, RenderedSurface) pair is the chain's.
-	bool					Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface) const;
+	// True when an effect's (RenderTarget, RenderedSurface) pair is the chain's. Every effect that
+	// renders through the chain asks this first, which is also where a pending direct-to-target final
+	// pass (below) is undone if another effect turns out to render after it.
+	bool					Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface);
 	IDirect3DSurface9*		Output() const { return Surf[Current ^ 1]; }
 	void					Commit(); // the Output() surface becomes the current image
 	// For legacy paths that render into the game target while sampling TESR_RenderedBuffer: the
 	// game target gets the current image, and the current image is moved off the game target.
 	void					Sync();
 
+	// A chain on NVR-owned buffers (the game target is not one of them, as with the post-tonemap
+	// back buffer) normally ends by copying the current image into the game target. If the caller
+	// names the effect that renders last, that effect's final pass renders into the game target
+	// itself and End() has nothing to copy.
+	void					SetFinalEffect(const void* effect) { FinalEffect = effect; }
+	bool					IsDirectFinal(const void* effect) const { return Active && !GameTexture && GameTarget && FinalEffect == effect; }
+	IDirect3DSurface9*		FinalSurface() const { return GameTarget; }
+	void					CommitFinal() { FinalWritten = true; } // the game target holds the finished image
+
 private:
+	void					ReclaimFinal();
 	struct Pair { // NVR-owned textures for one target format/size, created on first use
 		D3DFORMAT			Format = D3DFMT_UNKNOWN;
 		UINT				Width = 0, Height = 0;
@@ -93,6 +105,8 @@ private:
 	IDirect3DSurface9*		GameTarget = nullptr;
 	IDirect3DTexture9*		SavedTexture = nullptr;
 	IDirect3DSurface9*		SavedSurface = nullptr;
+	const void*				FinalEffect = nullptr;	// effect expected to render last in this chain
+	bool					FinalWritten = false;	// its last pass already wrote the game target
 };
 
 __declspec(align(16)) class ShaderManager : public ShaderManagerBase { // Never disposed

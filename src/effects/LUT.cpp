@@ -1,5 +1,6 @@
 #include <filesystem>
 #include "LUT.h"
+#include "LUTIdentity.h"
 
 const char* LUTEffect::LUTFolder = "Data/Textures/NewVegasReloaded/LUTs/";
 
@@ -34,6 +35,10 @@ void LUTEffect::AssignLUTSlot(int slot, IDirect3DBaseTexture9* texture, const ch
 
 	*member = (IDirect3DTexture9*)texture;
 	ClearSampler(samplerName, strlen(samplerName));
+
+	const bool neutral = IsIdentityLUT((IDirect3DTexture9*)texture);
+	(slot == 0 ? DayNeutral : slot == 1 ? NightNeutral : InteriorNeutral) = neutral;
+	if (neutral) Logger::Log("UNOFFICIAL LUT %s is an identity LUT; the grading pass is skipped while only identity LUTs are in use.", filename);
 
 	if (slot == 0 && DayTexture) {
 		D3DSURFACE_DESC desc;
@@ -106,6 +111,17 @@ void LUTEffect::UpdateSettings()
 	Settings.Strength        = TheSettingManager->GetSettingF("Shaders.LUT.Main", "Strength");
 	Settings.PreTonemapping  = TheSettingManager->GetSettingI("Shaders.LUT.Main", "PreTonemapping");
 	Settings.HDRCompat       = TheSettingManager->GetSettingI("Shaders.LUT.Main", "HDRCompat");
+}
+
+bool LUTEffect::ShouldRender()
+{
+	// The shader returns lerp(color, graded, strength) with graded built from the LUTs it samples:
+	// exteriors blend day and night, interiors use the interior LUT only (Blend.y). If every LUT
+	// that can contribute is an identity the pass returns its input, so do not run it.
+	if (Settings.Strength <= 0.0f) return false;
+	if (TheShaderManager->GameState.isExterior)
+		return !(DayNeutral && NightNeutral);
+	return !InteriorNeutral;
 }
 
 void LUTEffect::UpdateConstants()

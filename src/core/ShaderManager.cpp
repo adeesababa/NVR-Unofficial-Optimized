@@ -792,6 +792,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	static GpuTimer fogTimer("Volumetric fog");
 	static GpuTimer godRaysTimer("God rays");
 	static GpuTimer hdrTimer("Luma + exposure + bloom");
+	static GpuTimer avgLumaTimer("  Average luma");
+	static GpuTimer exposureTimer("  Exposure");
+	static GpuTimer bloomTimer("  Bloom buffers");
 	static GpuTimer preColorTimer("Pre-tonemap lens + LUT");
 
 	// prepare device for effects
@@ -946,11 +949,18 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(hdrTimer, Device);
 		// calculate average luma for use by shaders
 		if (avglumaRequired) {
+			GpuProfileScope gpuLuma(avgLumaTimer, Device);
 			RenderEffectToRT(Effects.AvgLuma->Textures.AvgLumaSurface, Effects.AvgLuma, NULL);
 			Device->SetRenderTarget(0, RenderTarget); 	// restore device used for effects
 		}
-		Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		Effects.Bloom->RenderBloomBuffer(RenderTarget);
+		{
+			GpuProfileScope gpuExposure(exposureTimer, Device);
+			Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
+		{
+			GpuProfileScope gpuBloom(bloomTimer, Device);
+			Effects.Bloom->RenderBloomBuffer(RenderTarget);
+		}
 	}
 
 	{
@@ -974,7 +984,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P35 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P36 %s (F10), effects %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF");
 	}
 	if (GpuTimer::Enabled) frameIntervalTimer.Tick();
@@ -1020,6 +1030,20 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
 
+	// Name the effect that will render last so its final pass writes the game target directly and
+	// the chain ends without a copy (FrameChain::SetFinalEffect). Same order as the calls below; the
+	// tests are the ones EffectRecord::Render applies. A wrong guess is repaired in FrameChain::Owns.
+	{
+		EffectRecord* const order[] = {
+			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
+			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
+			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Debug };
+		EffectRecord* last = nullptr;
+		for (EffectRecord* effect : order)
+			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
+		Chain.SetFinalEffect(last);
+	}
+
 	{
 		GpuProfileScope gpu(weatherTimer, Device);
 		Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
@@ -1038,7 +1062,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		GpuProfileScope gpu(dofTimer, Device);
 		// Distant blur does not need the six-pass autofocus/bokeh pipeline.
 		const UINT technique = !Effects.DepthOfField->Constants.Enabled && Effects.DepthOfField->Constants.Blur.x ? 1 : 0;
-		Effects.DepthOfField->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, technique, false, SourceSurface);
+		// The distant-only technique reads TESR_RenderedBuffer and never TESR_SourceBuffer, so it
+		// skips the full-resolution copy the full pipeline needs.
+		Effects.DepthOfField->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, technique, false, technique == 1 ? nullptr : SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(motionBlurTimer, Device);
@@ -1130,8 +1156,20 @@ void ShaderManager::SetCustomConstant(const char* Name, D3DXVECTOR4 Value) {
 }
 
 
-bool FrameChain::Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface) const {
-	return Active && renderTarget == GameTarget && renderedSurface == TheTextureManager->RenderedSurface;
+bool FrameChain::Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface) {
+	const bool owns = Active && renderTarget == GameTarget && renderedSurface == TheTextureManager->RenderedSurface;
+	if (owns) ReclaimFinal();
+	return owns;
+}
+
+// The predicted last effect wrote the finished image into the game target, but another effect is
+// about to render after it. Put the image back where the chain expects it (Surf[Current]) so that
+// effect samples the right thing; a wrong prediction costs one copy instead of a wrong image.
+void FrameChain::ReclaimFinal() {
+	if (!FinalWritten) return;
+	TheRenderManager->device->StretchRect(GameTarget, NULL, Surf[Current], NULL, D3DTEXF_NONE);
+	FinalWritten = false;
+	FinalEffect = nullptr;
 }
 
 // Point the TESR_RenderedBuffer slot at the current image. Effect samplers follow the slot
@@ -1155,6 +1193,8 @@ bool FrameChain::EnsureTexture(Pair& pair, int slot) {
 
 bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
 	if (Active) End();
+	FinalEffect = nullptr;
+	FinalWritten = false;
 	if (!gameTarget || TheSettingManager->SettingsMain.Main.DisableFrameChain) return false;
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	D3DSURFACE_DESC desc = {};
@@ -1222,6 +1262,7 @@ void FrameChain::Commit() {
 
 void FrameChain::Sync() {
 	if (!Active) return;
+	ReclaimFinal();
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	if (Surf[Current] == GameTarget) {
 		// The game target already holds the image; move the current image to the other buffer
@@ -1237,8 +1278,17 @@ void FrameChain::Sync() {
 void FrameChain::End() {
 	if (!Active) return;
 	IDirect3DDevice9* Device = TheRenderManager->device;
-	if (Surf[Current] != GameTarget)
-		Device->StretchRect(Surf[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
+	{
+		// Shows whether a chain ends on the wrong buffer (~0 ms when it does not): the HDR chain (game
+		// texture) copies when its pass count is odd, the LDR chain (back buffer) unless its last pass
+		// wrote the game target itself (FinalWritten).
+		static GpuTimer endCopyTimers[2] = { GpuTimer("  Chain end copy (HDR)"), GpuTimer("  Chain end copy (LDR)") };
+		GpuProfileScope gpu(endCopyTimers[GameTexture ? 0 : 1], Device);
+		if (Surf[Current] != GameTarget && !FinalWritten)
+			Device->StretchRect(Surf[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
+	}
+	FinalEffect = nullptr;
+	FinalWritten = false;
 	Device->SetRenderTarget(0, GameTarget);
 	TheTextureManager->RenderedTexture = SavedTexture;
 	TheTextureManager->RenderedSurface = SavedSurface;

@@ -18,7 +18,7 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 
 > [!NOTE]
 > **Experimental.** So far this has been tested on only one PC (NVIDIA GTX 1070, Windows 10).
-> AMD/Intel cards, DXVK, interiors and many mod setups have not been tried. Keep a backup of your
+> AMD/Intel cards, DXVK and many mod setups have not been tried; interiors have only had a short test. Keep a backup of your
 > NVR files. Reports of what works and what breaks are welcome in this repository's issues.
 
 ### How to install
@@ -44,6 +44,9 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
     Turn SMAA off (Shaders > SMAA) when you use it. Slightly softer image.
   - `GodRaysLowRes` - lower-resolution light rays. Softer rays.
   - `AOLowRes` - lower-resolution ambient occlusion. Softer corner shading.
+  - `PointShadowInterval` - in interiors, redraw the shadows of lamps and other lights every 2nd,
+    3rd or 4th frame instead of every frame (1 = every frame, the default). Static rooms look the
+    same; shadows of people and doors moving through the light can lag a frame or two.
 
 To keep a change for next time, press **Save** at the top of the menu.
 

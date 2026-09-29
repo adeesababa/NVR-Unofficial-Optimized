@@ -431,6 +431,11 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.GodRaysLowRes = boolSetting(reducedQuality, "GodRaysLowRes", false);
 	SettingsMain.Main.AOLowRes = boolSetting(reducedQuality, "AOLowRes", false);
 	SettingsMain.Main.FXAA = boolSetting(reducedQuality, "FXAA", false);
+	{
+		Configuration::ConfigNode node;
+		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 1;
+		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
+	}
 	SettingsMain.Main.PresetManagerEnabled = GetSettingI("Main.Main.Misc", "PresetManagerEnabled");
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");

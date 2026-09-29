@@ -1,5 +1,6 @@
 #define ShadowMapFarPlane 32768;
 #include "ShadowFaceCull.h"
+#include "PointShadowSchedule.h"
 
 static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
                               const D3DXVECTOR3& direction) {
@@ -878,15 +879,46 @@ void ShadowManager::RenderShadowMaps() {
 	auto shadowMapTimer = TimeLogger();
 	if ((isExterior && usePointLights) || (!isExterior && InteriorEnabled)) {
 		GpuProfileScope gpu(pointMapsTimer, Device);
+		// Each slot's cubemap stores length(light - point) / radius, which does not depend on the camera,
+		// so with PointShadowInterval > 1 a slot can keep its contents between redraws (see
+		// PointShadowSchedule.h for when it must be redrawn at once).
+		static PointShadowSlotState slots[ShadowCubeMapsMax];
+		static unsigned scheduleFrame = 0, statFrames = 0, statPresent = 0, statRedrawn = 0;
+		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
+
 		// render the cubemaps for each light
 		for (int i = 0; i < ShadowsInteriors->LightPoints; i++) {
+			ShadowSceneLight* shadowLight = ShadowLights[i];
+			if (!shadowLight) { slots[i].valid = false; continue; } // no light at this index
+
+			PointShadowSlotState now;
+			NiPointLight* pointLight = shadowLight->sourceLight;
+			now.light = shadowLight;
+			now.texture = Shadows->Textures.ShadowCubeMapTexture[i];
+			now.cell = currentCell;
+			now.x = pointLight->m_worldTransform.pos.x;
+			now.y = pointLight->m_worldTransform.pos.y;
+			now.z = pointLight->m_worldTransform.pos.z;
+			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult; // as in RenderShadowCubeMap
+			now.valid = true;
+			statPresent++;
+			if (!PointShadowNeedsRedraw(slots[i], now, scheduleFrame, i, interval)) continue;
 
 			// Render targets set in function due to rendering multiple faces.
 			RenderShadowCubeMap(ShadowLights, i);
+			slots[i] = now;
+			statRedrawn++;
 
 			std::string message = "ShadowManager::RenderShadowCubeMap ";
 			message += std::to_string(i);
 			shadowMapTimer.LogTime(message.c_str());
+		}
+		scheduleFrame++;
+
+		if (GpuTimer::Enabled && ++statFrames >= 240) { // with the F10 profile: how much work the cubemaps really are
+			Logger::Log("POINT SHADOWS interval %u: %.1f lights present, %.1f cubemaps redrawn per frame (%u frames)",
+				interval, (float)statPresent / statFrames, (float)statRedrawn / statFrames, statFrames);
+			statFrames = statPresent = statRedrawn = 0;
 		}
 	}
 

@@ -1,4 +1,5 @@
 #include "GodRays.h"
+#include "../core/GpuProfiler.h"
 
 void GodRaysEffect::UpdateConstants() {
 	Constants.Data.z = std::lerp(nightMult, dayMult, TheShaderManager->GameState.transitionCurve);
@@ -103,7 +104,11 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
+		static GpuTimer passTimers[6] = { GpuTimer("  GR sky mask (half)"), GpuTimer("  GR light mask (half)"),
+			GpuTimer("  GR blur 1 (half)"), GpuTimer("  GR blur 2 (half)"), GpuTimer("  GR blur 3 (half)"),
+			GpuTimer("  GR combine (full)") };
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
+			GpuProfileScope gpuPass(passTimers[p < 6 ? p : 5], Device);
 			const bool combine = p == passes - 1;
 			Device->SetTexture(5, nullptr);
 			result = Device->SetRenderTarget(0, combine ? finalTarget : surfaces[p & 1]);
