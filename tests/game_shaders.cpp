@@ -355,6 +355,14 @@ static std::vector<float> Render(Gpu& gpu, IDirect3DPixelShader9* shader, const 
 	return pixels;
 }
 
+// A file in the folder of this exe (build\shader-test), wherever it is run from.
+static std::string NextToExe(const char* name) {
+	char path[MAX_PATH];
+	GetModuleFileNameA(NULL, path, MAX_PATH);
+	std::string folder(path);
+	return folder.substr(0, folder.find_last_of('\\') + 1) + name;
+}
+
 struct Comparison { size_t different = 0, nan = 0; double worst = 0; };
 
 static Comparison Compare(const std::vector<float>& a, const std::vector<float>& b) {
@@ -505,6 +513,48 @@ static int TestTerrain(Gpu& gpu, const std::string& oldFolder, const std::string
 			under = std::min(under, TimeDraws(gpu, shader, scene));
 		}
 		printf("  TEX_COUNT %d: %.3f ms -> %.3f ms under water (%+.0f%%)\n", texCount, normal, under, 100 * (under - normal) / normal);
+	}
+
+	// TerrainParallaxLite (ReducedQuality, lossy by design): the new shader with TESR_TerrainParallaxData.w = 2 against
+	// its own defaults (w = 1) and 8 steps (w = 0). Times alternate like TimeOldNew; the picture difference is reported
+	// and written as PNGs (build\shader-test\parallax-*.png) for a look.
+	std::puts("TERRAIN parallax lite, new shader: GPU time full screen 2560x1440 and difference from the defaults:");
+	const float full[4] = { 1, 1, 1, 1 }, eight[4] = { 1, 1, 1, 0 }, lite[4] = { 1, 1, 1, 2 };
+	for (int texCount = 1; texCount <= 7; texCount += 2) {
+		ComPtr<IDirect3DPixelShader9> holder;
+		IDirect3DPixelShader9* shader = CreatePS(device, Compile(newFile, "ps_3_0", defines(texCount, NULL), 0).Get(), holder);
+		const Scene scene = TerrainScene(texCount);
+		TerrainConstants(full).Apply(device);
+		const std::vector<float> reference = Render(gpu, shader, scene);
+		if (texCount == 7) D3DXSaveSurfaceToFileA(NextToExe("parallax-full.png").c_str(), D3DXIFF_PNG, gpu.target.Get(), NULL, NULL);
+		TerrainConstants(eight).Apply(device);
+		const std::vector<float> eightSteps = Render(gpu, shader, scene);
+		TerrainConstants(lite).Apply(device);
+		const std::vector<float> lighter = Render(gpu, shader, scene);
+		if (texCount == 7) D3DXSaveSurfaceToFileA(NextToExe("parallax-lite.png").c_str(), D3DXIFF_PNG, gpu.target.Get(), NULL, NULL);
+		auto difference = [&](const std::vector<float>& other, double& mean, double& share) {
+			double sum = 0; size_t visible = 0;
+			for (size_t p = 0; p < reference.size(); p += 4) {
+				double d = 0;
+				for (int k = 0; k < 3; k++) d = std::max(d, (double)fabsf(std::min(reference[p + k], 1.0f) - std::min(other[p + k], 1.0f)));
+				sum += d;
+				if (d > 2.0 / 255) visible++;
+			}
+			mean = 255 * sum / (reference.size() / 4); share = 100.0 * visible / (reference.size() / 4);
+		};
+		double eightMean, eightShare, liteMean, liteShare;
+		difference(eightSteps, eightMean, eightShare);
+		difference(lighter, liteMean, liteShare);
+		double fullMs = 1e9, eightMs = 1e9, liteMs = 1e9;
+		TerrainConstants(full).Apply(device); TimeDraws(gpu, shader, scene);
+		for (int round = 0; round < 5; round++) {
+			TerrainConstants(full).Apply(device); fullMs = std::min(fullMs, TimeDraws(gpu, shader, scene));
+			TerrainConstants(eight).Apply(device); eightMs = std::min(eightMs, TimeDraws(gpu, shader, scene));
+			TerrainConstants(lite).Apply(device); liteMs = std::min(liteMs, TimeDraws(gpu, shader, scene));
+		}
+		printf("  TEX_COUNT %d: defaults %.3f ms, 8 steps %.3f ms (%+.0f%%), lite %.3f ms (%+.0f%%); difference from the defaults "
+			"(mean /255, %% of pixels over 2/255): 8 steps %.2f, %.1f%%; lite %.2f, %.1f%%\n", texCount, fullMs, eightMs,
+			100 * (eightMs - fullMs) / fullMs, liteMs, 100 * (liteMs - fullMs) / fullMs, eightMean, eightShare, liteMean, liteShare);
 	}
 	return failures;
 }

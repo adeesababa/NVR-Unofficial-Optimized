@@ -499,6 +499,7 @@ void SettingManager::LoadSettings() {
 	}
 	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
 	SettingsMain.Main.CheapUnderwaterTerrain = boolSetting(reducedQuality, "CheapUnderwaterTerrain", false);
+	SettingsMain.Main.TerrainParallaxLite = boolSetting(reducedQuality, "TerrainParallaxLite", false);
 	SettingsMain.Main.StaggeredSunShadows = boolSetting(reducedQuality, "StaggeredSunShadows", false);
 	SettingsMain.Main.CachedDistantShadows = boolSetting(reducedQuality, "CachedDistantShadows", false);
 	{

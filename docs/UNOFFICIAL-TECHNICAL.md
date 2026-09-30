@@ -202,6 +202,18 @@ frames the body sits partly inside its own old shadow and flickers:
   nodes below a world-space bound radius) left out only 2 nodes per frame at 30 units on the Strip, with no
   timer change: `FormsFar/FormsLod MinRadius = 10` texels already cuts small references, and most clutter is
   geometry inside larger nodes, which the radius test never sees. Larger values would cut cars and crates.
+- **TerrainParallaxLite (P60, ReducedQuality, off).** `TESR_TerrainParallaxData.w = 2` (Terrain.cpp; overrides
+  HighQuality). `Parallax.hlsl`: 8 coarse steps, and on a hit, instead of the contact refinement (a second march of
+  up to `numSteps` through the bracketing step, at least one more batch of four height lookups), `LITE_SECANT_STEPS`
+  (1) secant step: the height where the chord between the bracket's samples meets the ray, keeping the half that
+  still brackets it. Parallax shadows: taps at 1 and 1/2 of the ray, each counted twice. The weights the caller
+  blends with come from the last lookup, which for lite is the secant one at the hit. `tests/game_shaders.cpp`
+  (full-screen terrain, 2560x1440, GTX 1070) times it against the defaults and 8 steps, reports the picture
+  difference and writes `build\shader-test\parallax-full.png` / `-lite.png`: lite -19..-28% (8 steps -7..-13%),
+  mean difference 1.9-2.4/255 (8 steps 0.9-1.7) on its noisy synthetic height maps. Secant steps 0: -23..-37% at
+  3-4x the difference; 2: -16..-22%; 3: no faster than 8 steps. The other settings stay bit-identical.
+  In game (open desert, standing still): GPU SPLIT TERRAIN 3.74 -> 2.59 ms, world scene 6.19 -> 4.96, game frame
+  total 12.26 -> 11.04, ~81 -> 89 fps; the user rated the visual change minimal (a matter of taste in the small shadows).
 - **A/B log lines (P59, F10 only).** `SWITCHES performance: ... | reduced quality: ...` lists every key of those
   two defaults sections when the profile starts and whenever one changes (checked every 30 frames); a change
   also ends the current `FRAME TIMES` window, so no window mixes two settings. `CACHED DISTANT SHADOWS` (every

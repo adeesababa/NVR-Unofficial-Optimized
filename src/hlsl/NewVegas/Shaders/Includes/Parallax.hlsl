@@ -6,6 +6,13 @@ float4 TESR_ParallaxData : register(c35);
 #endif
 
 #ifdef TERRAIN
+// TerrainParallaxLite's secant steps. Measured with tests/game_shaders.cpp on a GTX 1070 (full-screen terrain, 2560x1440),
+// against the defaults: 0 steps -23..-37% time but four times HighQuality-off's picture difference; 1 step -17..-31% at
+// about 1.5 times it; 2 steps -16..-22% at about the same; 3 steps no faster than HighQuality off.
+#ifndef LITE_SECANT_STEPS
+#define LITE_SECANT_STEPS 1
+#endif
+
 // Complex Parallax Materials for Community Shaders
 // https://bartwronski.com/wp-content/uploads/2014/03/ac4_gdc.pdf
 // https://www.artstation.com/blogs/andreariccardi/3VPo/a-new-approach-for-parallax-mapping-presenting-the-contact-refinement-parallax-mapping-technique
@@ -55,9 +62,12 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
             weights = blends;
             return coords;
         }
-    
-        // Variables.
-        static const float maxSteps = (TESR_TerrainParallaxData.w) ? 16.0f : 8.0f;
+
+        // Variables. TESR_TerrainParallaxData.w: 0 = 8 steps, 1 = 16 steps (HighQuality), 2 = lite
+        // (ReducedQuality TerrainParallaxLite): 8 steps, then secant steps instead of the contact
+        // refinement (see below), and two parallax shadow taps instead of four.
+        static const bool lite = TESR_TerrainParallaxData.w > 1.5f;
+        static const float maxSteps = (TESR_TerrainParallaxData.w == 1.0f) ? 16.0f : 8.0f;
         float maxDistance = TESR_TerrainParallaxExtraData.x;
         float height = TESR_TerrainParallaxExtraData.y;
     #else
@@ -157,7 +167,11 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
                     pt2 = float2(prevBound, prevHeight);
                 }
                 
+                #ifdef TERRAIN
+                if (contactRefinement || lite) {
+                #else
                 if (contactRefinement) {
+                #endif
                     done = true;
                 }
                 else {
@@ -176,7 +190,25 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
                 numSteps -= 4;
             }
         }
-        
+
+        #ifdef TERRAIN
+        // Lite: in place of the contact refinement (a second march of up to 16 steps through the bracketing step),
+        // secant steps: evaluate the height where the straight line between the bracket's two samples crosses the
+        // ray, and keep the half that still brackets the hit. One height lookup each instead of four or more.
+        [branch] if (lite && done) {
+            [loop] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
+                float secant2 = pt2.x - pt2.y;
+                float secant1 = pt1.x - pt1.y;
+                float secantDenominator = secant2 - secant1;
+                float bound = secantDenominator == 0.0 ? pt1.x : (pt1.x * secant2 - pt2.x * secant1) / secantDenominator;
+                float2 secantCoords = viewDirTS.xy * ((1.0 - bound) * -maxHeight + minHeight) + coords.xy;
+                float secantHeight = getTerrainHeight(secantCoords, dx, dy, blendFactor, texCount, tex, blends, status, weights);
+                if (secantHeight >= bound) pt1 = float2(bound, secantHeight);
+                else pt2 = float2(bound, secantHeight);
+            }
+        }
+        #endif
+
         float delta2 = pt2.x - pt2.y;
         float delta1 = pt1.x - pt1.y;
 
@@ -223,6 +255,13 @@ float getParallaxShadowMultipler(float distance, float2 coords, float2 dx, float
         float4 multipliers = rcp((float4(1, 2, 3, 4)));
 
         float4 sh = getTerrainHeight(coords + rayDir * multipliers.x, dx, dy, quality, texCount, tex, blends, status, weights);
+        // Lite (TESR_TerrainParallaxData.w = 2): two taps, at 1 and 1/2 of the ray, each counted twice, so the
+        // four-tap sum keeps its scale.
+        [branch] if (TESR_TerrainParallaxData.w > 1.5f) {
+            if (quality > 0.25)
+                sh.yw = getTerrainHeight(coords + rayDir * multipliers.y, dx, dy, quality, texCount, tex, blends, status, weights).xx;
+            return 1.0 - saturate(dot(max(0, sh - sh0), 1.0) * shadowsIntensity) * quality;
+        }
         if (quality > 0.25)
             sh.y = getTerrainHeight(coords + rayDir * multipliers.y, dx, dy, quality, texCount, tex, blends, status, weights);
         if (quality > 0.5)

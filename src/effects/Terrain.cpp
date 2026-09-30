@@ -94,7 +94,9 @@ void TerrainShaders::UpdateConstants() {
 	ParallaxConstants.Data.x = ParallaxSettings.Enabled;
 	ParallaxConstants.Data.y = ParallaxSettings.Shadows;
 	ParallaxConstants.Data.z = ParallaxSettings.HeightBlend;
-	ParallaxConstants.Data.w = ParallaxSettings.HighQuality;
+	// .w: 0 = 8 steps, 1 = 16 (HighQuality), 2 = [Main.Main.ReducedQuality] TerrainParallaxLite (Parallax.hlsl), which
+	// replaces both.
+	ParallaxConstants.Data.w = TheSettingManager->SettingsMain.Main.TerrainParallaxLite ? 2.0f : ParallaxSettings.HighQuality;
 
 	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;

@@ -30,6 +30,7 @@ struct SettingsMainStruct {
         int     PointShadowInterval; // [Main.Main.ReducedQuality] PointShadowInterval (redraw each point-light shadow cubemap every N frames, 1-4)
         bool    CheapReflections; // [Main.Main.ReducedQuality] CheapReflections (water reflection map drawn without sun shadows and terrain parallax)
         bool    CheapUnderwaterTerrain; // [Main.Main.ReducedQuality] CheapUnderwaterTerrain (ground below the water surface drawn without parallax)
+        bool    TerrainParallaxLite; // [Main.Main.ReducedQuality] TerrainParallaxLite (8-step terrain parallax with a secant step, two shadow taps)
         bool    StaggeredSunShadows; // [Main.Main.ReducedQuality] StaggeredSunShadows (middle sun-shadow cascade every 4th frame, far/Lod every 8th)
         bool    CachedDistantShadows; // [Main.Main.ReducedQuality] CachedDistantShadows (the stagger, but cascades with characters in them redraw every frame)
         int     NearCascadeInterval; // [Main.Main.ReducedQuality] NearCascadeInterval (redraw the near sun-shadow cascade every N frames, 1-2)

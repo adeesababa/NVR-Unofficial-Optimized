@@ -91,6 +91,11 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
     when you swim underwater) is drawn without the terrain's fake 3D bumps (parallax), which you see
     through moving, murky water anyway. Dry ground keeps them. This removes most of the frame-rate
     drop when wading or swimming.
+  - `TerrainParallaxLite` (since P60) - a cheaper version of the fake 3D bumps on the ground (terrain
+    parallax): fewer search steps plus one quick correction, and fewer samples for their small
+    shadows. The bumps and their little shadows can sit very slightly differently, mostly when
+    looking along the ground. In the desert on a GTX 1070 at 1440p: terrain 3.7 -> 2.6 ms, about
+    81 -> 89 fps (the existing `HighQuality = false` saves about a third of that).
   - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows (up to about 3 m) every 2nd
     frame instead of every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
     and creatures lag one frame, and right after a very fast turn the edge of the view may show
