@@ -286,7 +286,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 53;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 61;  // 53 was an enhanced-water step, since removed
 
 void SettingManager::Configuration::UpdateOldDefaults() {
 	if (!TomlConfig.is_table()) return;
@@ -319,6 +319,19 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 		for (const char* section : { "Shaders.Exposure.Main", "Shaders.Exposure.Night", "Shaders.Exposure.Interiors" }) {
 			replace(section, "DarkAdaptSpeed", 50.0, 0.2, false);
 			replace(section, "LightAdaptSpeed", 50.0, 0.2, false);
+		}
+	}
+	// P61: P60's TerrainParallaxLite became ParallaxLite (terrain and parallax objects); a saved value carries over.
+	if (version < 61) {
+		tomlValue* saved = UserSection("Main.Main.ReducedQuality");
+		if (saved && saved->is_table() && saved->contains("TerrainParallaxLite")) {
+			const tomlValue old = saved->at("TerrainParallaxLite");
+			saved->as_table().erase("TerrainParallaxLite");
+			if (!saved->contains("ParallaxLite") && old.is_boolean()) {
+				(*saved)["ParallaxLite"] = old.as_boolean();
+				Logger::Log("UNOFFICIAL settings: TerrainParallaxLite = %s carried over to ParallaxLite (it now covers "
+					"parallax objects too).", old.as_boolean() ? "true" : "false");
+			}
 		}
 	}
 	if (!changed.empty())
@@ -499,7 +512,7 @@ void SettingManager::LoadSettings() {
 	}
 	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
 	SettingsMain.Main.CheapUnderwaterTerrain = boolSetting(reducedQuality, "CheapUnderwaterTerrain", false);
-	SettingsMain.Main.TerrainParallaxLite = boolSetting(reducedQuality, "TerrainParallaxLite", false);
+	SettingsMain.Main.ParallaxLite = boolSetting(reducedQuality, "ParallaxLite", false);
 	SettingsMain.Main.StaggeredSunShadows = boolSetting(reducedQuality, "StaggeredSunShadows", false);
 	SettingsMain.Main.CachedDistantShadows = boolSetting(reducedQuality, "CachedDistantShadows", false);
 	{

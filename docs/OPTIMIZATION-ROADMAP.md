@@ -31,6 +31,7 @@ Nothing in this document is measured yet unless it quotes a P-number log.
 | P55 | Reflection probe v2: logs the game's camera position globals in each pass, the first object drawn, and every water plane's height | built, not yet run in game |
 | P59 | Sun-shadow draw count (research profiler: far ~800 and LOD ~450 draws per frame on the Strip). ReducedQuality `CachedDistantShadows`, off by default (middle/far/LOD staggered, but a cascade that can hold a character's shadow is redrawn every frame, so no NPC flicker). A/B log lines (`SWITCHES`, FRAME TIMES window cut at each change). A distant size cut (`DistantShadowMinSize`) was tried and dropped: no effect | ran: ~0.1 ms on the crowded Strip (middle/far forced nearly every frame), up to ~1.2 ms GPU + 0.7 ms CPU with nobody in range |
 | P60 | 4F: ReducedQuality `TerrainParallaxLite`, off by default: 8 steps + one secant step instead of the contact refinement, two parallax shadow taps. Harness: terrain shader -19..-28% (HighQuality off -7..-13%) | ran: desert terrain 3.74 -> 2.59 ms, ~81 -> 89 fps; visual change minimal (user) |
+| P61 | TerrainParallaxLite becomes `ParallaxLite` and also covers parallax objects (rocks, cliffs, walls), in their own function so the default is unchanged (harness -26..-28%, mean difference 0.17/255); a saved TerrainParallaxLite carries over. README tip: MaxDistance 1024 | ran: rocky desert terrain 6.2 -> 4.1 ms with lite (65 -> 73.5 fps), objects 0.63 -> 0.57 ms, MaxDistance 1024 another 0.8 ms (70.4 -> 74.5 fps), no visible difference (user) |
 
 ---
 

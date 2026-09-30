@@ -202,7 +202,7 @@ frames the body sits partly inside its own old shadow and flickers:
   nodes below a world-space bound radius) left out only 2 nodes per frame at 30 units on the Strip, with no
   timer change: `FormsFar/FormsLod MinRadius = 10` texels already cuts small references, and most clutter is
   geometry inside larger nodes, which the radius test never sees. Larger values would cut cars and crates.
-- **TerrainParallaxLite (P60, ReducedQuality, off).** `TESR_TerrainParallaxData.w = 2` (Terrain.cpp; overrides
+- **ParallaxLite, terrain (P60 as TerrainParallaxLite; ReducedQuality, off).** P61 merged it with the objects' lite path below into one switch; `Configuration::UpdateOldDefaults` (settings version 61) carries a saved TerrainParallaxLite over. `TESR_TerrainParallaxData.w = 2` (Terrain.cpp; overrides
   HighQuality). `Parallax.hlsl`: 8 coarse steps, and on a hit, instead of the contact refinement (a second march of
   up to `numSteps` through the bracketing step, at least one more batch of four height lookups), `LITE_SECANT_STEPS`
   (1) secant step: the height where the chord between the bracket's samples meets the ray, keeping the half that
@@ -214,6 +214,21 @@ frames the body sits partly inside its own old shadow and flickers:
   3-4x the difference; 2: -16..-22%; 3: no faster than 8 steps. The other settings stay bit-identical.
   In game (open desert, standing still): GPU SPLIT TERRAIN 3.74 -> 2.59 ms, world scene 6.19 -> 4.96, game frame
   total 12.26 -> 11.04, ~81 -> 89 fps; the user rated the visual change minimal (a matter of taste in the small shadows).
+- **ParallaxLite, terrain distance (P61).** Terrain.cpp caps `TESR_TerrainParallaxExtraData.x` (MaxDistance) at
+  1024 * screen height / 1440 while ParallaxLite is on (a bump's height on screen goes with screen height / distance,
+  so the visible cutoff is the same at any resolution: 768 at 1080p, 1536 at 4K); a lower MaxDistance still applies.
+  In game at 1440p (log 04-37-40, rocky desert, lite on): MaxDistance 2048 -> 1024 terrain 4.53 -> 3.77 ms, 70.4 ->
+  74.5 fps, no visible difference in same-spot screenshots. Harness equivalent (MaxDistance halved): -40..-66% total
+  lite terrain time, but its noisy, mostly distant test ground overstates the picture change.
+- **ParallaxLite, objects (P61; tested as a separate ObjectParallaxLite).** `TESR_ParallaxData.w = 1` (POM.cpp, per frame). ParallaxTemplate's
+  `getParallaxCoords` branches at the top into `getParallaxCoordsObjectLite`: up to 8 steps in batches of four and
+  `LITE_SECANT_STEPS` secant steps, same start, bounds and final interpolation. A separate function because sharing
+  the loop with the lite code made the default 4-9% slower; the parallax shadow taps are left alone for the same
+  reason (one fetch each, the lite branch cost more than it saved). `tests/game_shaders.cpp` "parallax" (PAR2000 and
+  PAR2009 over a scene from head-on/near to grazing/far, smooth height map): off bit-identical, +0.8..3.1% (at the
+  noise level of identical-code runs); lite -26..-28%, mean difference 0.17/255, 2% of pixels over 2/255. In game the
+  desert cells that prompted it (log 2026-09-30 03-53-52) spent 1.2-2.2 ms in PAR shaders and 3.8-4.5 ms in terrain
+  (TEX_COUNT 4-7 variants SLS2116-SLS2146, many blended ground textures).
 - **A/B log lines (P59, F10 only).** `SWITCHES performance: ... | reduced quality: ...` lists every key of those
   two defaults sections when the profile starts and whenever one changes (checked every 30 frames); a change
   also ends the current `FRAME TIMES` window, so no window mixes two settings. `CACHED DISTANT SHADOWS` (every

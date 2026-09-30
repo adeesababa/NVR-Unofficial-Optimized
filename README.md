@@ -91,11 +91,16 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
     when you swim underwater) is drawn without the terrain's fake 3D bumps (parallax), which you see
     through moving, murky water anyway. Dry ground keeps them. This removes most of the frame-rate
     drop when wading or swimming.
-  - `TerrainParallaxLite` (since P60) - a cheaper version of the fake 3D bumps on the ground (terrain
-    parallax): fewer search steps plus one quick correction, and fewer samples for their small
-    shadows. The bumps and their little shadows can sit very slightly differently, mostly when
-    looking along the ground. In the desert on a GTX 1070 at 1440p: terrain 3.7 -> 2.6 ms, about
-    81 -> 89 fps (the existing `HighQuality = false` saves about a third of that).
+  - `ParallaxLite` (since P61; P60 had it as `TerrainParallaxLite` for the ground only, and a saved
+    value carries over) - a cheaper version of the fake 3D bumps (parallax) on the ground and on
+    objects that have them (many rocks, cliffs and walls): fewer search steps plus one quick
+    correction, and on the ground fewer samples for their small shadows. The bumps can sit very
+    slightly differently, mostly when looking along the ground. On a GTX 1070 at 1440p: open desert
+    terrain 3.7 -> 2.6 ms (about 81 -> 89 fps); rocky desert with many blended ground textures
+    6.2 -> 4.1 ms (about 65 -> 73.5 fps). It also stops the ground's bumps sooner, at about 15 m
+    instead of 29 m (scaled to your screen: 1024 units at 1440p, 768 at 1080p, 1536 at 4K), where
+    they are only a few pixels tall; in a rocky desert view that saved another 0.8 ms (about 4 fps)
+    with no visible difference.
   - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows (up to about 3 m) every 2nd
     frame instead of every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
     and creatures lag one frame, and right after a very fast turn the edge of the view may show

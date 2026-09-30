@@ -94,11 +94,18 @@ void TerrainShaders::UpdateConstants() {
 	ParallaxConstants.Data.x = ParallaxSettings.Enabled;
 	ParallaxConstants.Data.y = ParallaxSettings.Shadows;
 	ParallaxConstants.Data.z = ParallaxSettings.HeightBlend;
-	// .w: 0 = 8 steps, 1 = 16 (HighQuality), 2 = [Main.Main.ReducedQuality] TerrainParallaxLite (Parallax.hlsl), which
+	// .w: 0 = 8 steps, 1 = 16 (HighQuality), 2 = [Main.Main.ReducedQuality] ParallaxLite (Parallax.hlsl), which
 	// replaces both.
-	ParallaxConstants.Data.w = TheSettingManager->SettingsMain.Main.TerrainParallaxLite ? 2.0f : ParallaxSettings.HighQuality;
+	ParallaxConstants.Data.w = TheSettingManager->SettingsMain.Main.ParallaxLite ? 2.0f : ParallaxSettings.HighQuality;
 
-	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
+	// ParallaxLite also caps how far the terrain parallax (and its shadows) reaches: 1024 units at 1440p, where the user
+	// saw no difference from 2048 in a rocky desert view and it saved 0.8 ms on top of the lite search. Scaled with the
+	// screen height, since a bump's size on screen is (screen height / distance): 768 at 1080p, 1536 at 4K. A lower
+	// MaxDistance the player chose still applies; everyone without ParallaxLite keeps MaxDistance as it is.
+	float maxDistance = ParallaxSettings.MaxDistance;
+	if (TheSettingManager->SettingsMain.Main.ParallaxLite)
+		maxDistance = min(maxDistance, 1024.0f * TheRenderManager->height / 1440.0f);
+	ParallaxConstants.ExtraData.x = maxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;
 	ParallaxConstants.ExtraData.z = ParallaxSettings.ShadowsIntensity;
 

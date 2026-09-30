@@ -515,7 +515,7 @@ static int TestTerrain(Gpu& gpu, const std::string& oldFolder, const std::string
 		printf("  TEX_COUNT %d: %.3f ms -> %.3f ms under water (%+.0f%%)\n", texCount, normal, under, 100 * (under - normal) / normal);
 	}
 
-	// TerrainParallaxLite (ReducedQuality, lossy by design): the new shader with TESR_TerrainParallaxData.w = 2 against
+	// ParallaxLite on the terrain (ReducedQuality, lossy by design): the new shader with TESR_TerrainParallaxData.w = 2 against
 	// its own defaults (w = 1) and 8 steps (w = 0). Times alternate like TimeOldNew; the picture difference is reported
 	// and written as PNGs (build\shader-test\parallax-*.png) for a look.
 	std::puts("TERRAIN parallax lite, new shader: GPU time full screen 2560x1440 and difference from the defaults:");
@@ -657,6 +657,117 @@ static DWORD Rgb(float r, float g, float b, float a = 1) {
 	return (c(a) << 24) | (c(r) << 16) | (c(g) << 8) | c(b);
 }
 
+// ---- Parallax objects (P61, ParallaxLite) ----
+// ParallaxTemplate's pixel shader (rocks, cliffs, walls with a height map) through the objects' pass-through vertex
+// shader: uv TEXCOORD0, sun direction TEXCOORD1, tangent-space view direction TEXCOORD7 with the distance in .w
+// (grazing and far at the top of the screen, head-on and near at the bottom; parallax fades out at 2048).
+static Scene ParallaxObjectScene() {
+	Scene scene;
+	for (int j = 0; j < Grid; j++)
+		for (int i = 0; i < Grid; i++) {
+			const float sx = i / float(Grid - 1), sy = j / float(Grid - 1);
+			Vertex v = {};
+			float light[3] = { 0.4f + 0.3f * (sx - 0.5f), 0.3f, 0.8f };
+			float view[3] = { (sx - 0.5f) * 0.8f, 0.2f + 0.6f * (1 - sy), 0.15f + 0.85f * sy };
+			for (float* d : { light, view }) {
+				const float length = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+				for (int k = 0; k < 3; k++) d[k] /= length;
+			}
+			Set(v, 0, sx * 2 - 1, 1 - sy * 2, 0.5f, 1);
+			Set(v, 1, sx * 6, sy * 6, 0, 0);                                  // uv
+			Set(v, 2, light[0], light[1], light[2], 1);                        // lightDir
+			Set(v, 8, view[0], view[1], view[2], 2600 - 2500 * sy);            // viewDir, distance
+			Set(v, 9, 0.9f, 0.85f, 0.8f, 1);                                   // vertex colour
+			Set(v, 10, 0.5f, 0.55f, 0.6f, 0);                                  // fog colour, no fog
+			scene.vertices.push_back(v);
+		}
+	GridIndices(scene);
+	return scene;
+}
+
+// Smooth heights in red, as a rock's height map.
+static DWORD HeightTexel(float u, float v) {
+	const float h = 0.5f + 0.3f * sinf(u * 25.1327f) * cosf(v * 31.4159f) + 0.15f * sinf((u + v) * 62.8318f);
+	return Rgb(h, h, h, 1);
+}
+
+static Constants ParallaxObjectConstants(float heightScale, float lite) {
+	Constants k = ObjectConstants(1, false);
+	k.Set(35, heightScale, 1, 0, lite);                                    // TESR_ParallaxData: scale, PBR, -, lite
+	k.Set(134, 0, 1, 1, 1);                                                // TESR_PBRData
+	k.Set(135, 1, 1, 0.5f, 0);                                             // TESR_PBRExtraData
+	return k;
+}
+
+static int TestParallaxObjects(Gpu& gpu, const std::string& oldFolder, const std::string& newFolder) {
+	int failures = 0;
+	const std::string oldFile = oldFolder + "\\ParallaxTemplate.hlsl", newFile = newFolder + "\\ParallaxTemplate.hlsl";
+	IDirect3DDevice9* device = gpu.device.Get();
+	ComPtr<IDirect3DTexture9> heightMap = ProceduralTexture(device, 512, HeightTexel);
+	Check(device->SetVertexShader(gpu.objectVS.Get()), "SetVertexShader");
+	for (int k = 0; k < 14; k++) Check(device->SetTexture(k, nullptr), "SetTexture");
+	Check(device->SetTexture(0, gpu.textures[0].Get()), "SetTexture base");
+	Check(device->SetTexture(1, gpu.textures[7].Get()), "SetTexture normal");
+	Check(device->SetTexture(3, heightMap.Get()), "SetTexture height");
+	struct Variant { const char* name; Defines defines; };
+	const Variant variants[] = {  // src/effects/POM.h
+		{ "PAR2000", { { "PS", "" } } },
+		{ "PAR2009 (SPECULAR)", { { "PS", "" }, { "SPECULAR", "" } } },
+	};
+	const Scene scene = ParallaxObjectScene();
+	std::puts("PARALLAX OBJECTS pixels, 1024x1024 float target: ParallaxLite off must be bit-identical:");
+	for (const Variant& v : variants) {
+		ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
+		IDirect3DPixelShader9* oldShader = CreatePS(device, Compile(oldFile, "ps_3_0", v.defines, 0).Get(), oldHolder);
+		IDirect3DPixelShader9* newShader = CreatePS(device, Compile(newFile, "ps_3_0", v.defines, 0).Get(), newHolder);
+		ParallaxObjectConstants(0.4f, 0).Apply(device);
+		const std::vector<float> reference = Render(gpu, oldShader, scene);
+		const Comparison off = Compare(reference, Render(gpu, newShader, scene));
+		printf("  %-20s lite off: %s", v.name, off.different ? "DIFFERENT" : "identical");
+		if (off.different) { printf(" (%zu pixels, largest difference %.3g)", off.different, off.worst); failures++; }
+		printf("\n");
+		if (off.nan) { printf("FAIL: %zu NaN pixels\n", off.nan); failures++; }
+		ParallaxObjectConstants(0.0f, 0).Apply(device);
+		const double parallax = ChangedShare(reference, Render(gpu, newShader, scene));
+		ParallaxObjectConstants(0.4f, 1).Apply(device);
+		const std::vector<float> lite = Render(gpu, newShader, scene);
+		if (v.defines.size() == 1) {
+			ParallaxObjectConstants(0.4f, 0).Apply(device);
+			Render(gpu, newShader, scene);
+			D3DXSaveSurfaceToFileA(NextToExe("parallax-objects-full.png").c_str(), D3DXIFF_PNG, gpu.target.Get(), NULL, NULL);
+			ParallaxObjectConstants(0.4f, 1).Apply(device);
+			Render(gpu, newShader, scene);
+			D3DXSaveSurfaceToFileA(NextToExe("parallax-objects-lite.png").c_str(), D3DXIFF_PNG, gpu.target.Get(), NULL, NULL);
+		}
+		double sum = 0; size_t visible = 0;
+		for (size_t p = 0; p < reference.size(); p += 4) {
+			double d = 0;
+			for (int k = 0; k < 3; k++) d = std::max(d, (double)fabsf(std::min(reference[p + k], 1.0f) - std::min(lite[p + k], 1.0f)));
+			sum += d;
+			if (d > 2.0 / 255) visible++;
+		}
+		const size_t pixels = reference.size() / 4;
+		printf("  %-20s parallax changes %.0f%% of the pixels; lite vs off: mean difference %.2f/255, %.1f%% of pixels over 2/255\n",
+			v.name, 100 * parallax, 255 * sum / pixels, 100.0 * visible / pixels);
+		if (parallax < 0.25) { std::puts("FAIL: the test scene does not exercise parallax enough"); failures++; }
+	}
+	std::puts("PARALLAX OBJECTS GPU time per full-screen draw at 2560x1440, forward shadows compiled in:");
+	for (const Variant& v : variants) {
+		ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
+		IDirect3DPixelShader9* oldShader = CreatePS(device, Compile(oldFile, "ps_3_0", v.defines, 1).Get(), oldHolder);
+		IDirect3DPixelShader9* newShader = CreatePS(device, Compile(newFile, "ps_3_0", v.defines, 1).Get(), newHolder);
+		ParallaxObjectConstants(0.4f, 0).Apply(device);
+		TimeOldNew(gpu, (std::string(v.name) + ", lite off").c_str(), oldShader, newShader, scene);
+		double offMs = 1e9, liteMs = 1e9;
+		for (int round = 0; round < 5; round++) {
+			ParallaxObjectConstants(0.4f, 0).Apply(device); offMs = std::min(offMs, TimeDraws(gpu, newShader, scene));
+			ParallaxObjectConstants(0.4f, 1).Apply(device); liteMs = std::min(liteMs, TimeDraws(gpu, newShader, scene));
+		}
+		printf("  %-20s new shader: off %.3f ms, lite %.3f ms (%+.0f%%)\n", v.name, offMs, liteMs, 100 * (liteMs - offMs) / offMs);
+	}
+	return failures;
+}
+
 
 int main(int argc, char** argv) {
 	try {
@@ -681,6 +792,7 @@ int main(int argc, char** argv) {
 		int failures = 0;
 		if (which.empty() || which == "terrain") failures += TestTerrain(gpu, argv[1], argv[2]);
 		if (which.empty() || which == "objects") failures += TestObjects(gpu, argv[1], argv[2]);
+		if (which.empty() || which == "parallax") failures += TestParallaxObjects(gpu, argv[1], argv[2]);
 		if (failures) { printf("%d game shader check(s) FAILED\n", failures); return 1; }
 		std::puts("All game shader checks passed.");
 		return 0;
