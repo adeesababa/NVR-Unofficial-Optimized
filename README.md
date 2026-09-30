@@ -79,6 +79,12 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
     more than about 3 m away every 4th frame, and beyond about 9 m every 8th, instead of every frame.
     Still shadows look the same, but people and creatures walking at that distance get shadows that
     stutter, and their bodies can flicker. Saves roughly 0.5 ms per frame outdoors on a GTX 1070.
+  - `CachedDistantShadows` (since P59) - the same slower schedule as `StaggeredSunShadows`, but
+    whenever a person or creature casts a shadow at that distance, those shadows are redrawn every
+    frame, so people don't get the stutter or flicker. Other things that move far away (a door, a
+    knocked-over can) can lag a few frames. Saves the most in quiet places (up to about 1 ms on a
+    GTX 1070); on busy streets like the Strip someone is nearly always in range, so it saves about
+    0.1 ms there. Does nothing while `StaggeredSunShadows` is on.
   - `CheapReflections` - draw the reflection in water without sun shadows and without the bumpy
     terrain detail, like the original game's reflections. Only matters where water is in view.
   - `CheapUnderwaterTerrain` (since P48) - ground under water (lake and river beds, and everything

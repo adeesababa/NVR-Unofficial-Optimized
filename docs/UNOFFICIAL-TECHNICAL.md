@@ -184,6 +184,29 @@ frames the body sits partly inside its own old shadow and flickers:
   cascades redrawn that frame are resolved and prefiltered, as before. The P21 measurement of the stagger
   was about -0.5 ms GPU (cascade geometry 1.02 -> 0.66-0.72, resolve 0.36 -> 0.25-0.27, prefilter
   0.53 -> 0.38-0.41; GTX 1070, 1440p).
+- **CachedDistantShadows (P59, ReducedQuality, off).** The stagger for middle/far/LOD, plus a forced redraw
+  of a cascade while a character's shadow can be sampled from it. `ShadowManager::CollectMovers` gathers
+  the player and the NPC/creature references of the loaded exterior cells (world bound spheres, culled
+  nodes skipped). `MoversInCascade` counts a mover for cascade i when (a) the cascade gathers actors,
+  (b) its view depth plus a shadow reach (`radius * (1 + 2 * horizontal/vertical sun slope, capped at
+  10)` + 64) passes 90% of cascade i-1's end depth (`Constants.ShadowMapRadius`), since nearer on-screen
+  points are shaded by the sharper cascades (spheres enclose their slices; only the outer 10% blends),
+  and (c) its sphere is not outside any active plane of the cascade's last shadow frustum, widened by the
+  camera's movement since that redraw. A cascade that had a mover at its last redraw redraws once more,
+  so a character walking out does not leave a stale shadow. Other dynamic objects are treated as still.
+  Ignored while `StaggeredSunShadows` is on. Measured on the Strip (StripTops, 38 characters tracked):
+  middle and far were redrawn every frame (75% / 88% of frames for characters), so only the LOD cascade was
+  saved: geometry 0.96 -> 0.91 ms, prefilter 0.67 -> 0.60, ~88.5 -> ~89.5 fps. In a moment with nobody in
+  range the earlier run showed geometry 0.92 -> 0.34, prefilter 0.77 -> 0.33, Sun cascades CPU 1.0 -> 0.29.
+- **Tried and dropped in P59: a distant size cut.** A ReducedQuality `DistantShadowMinSize` (far/LOD skip
+  nodes below a world-space bound radius) left out only 2 nodes per frame at 30 units on the Strip, with no
+  timer change: `FormsFar/FormsLod MinRadius = 10` texels already cuts small references, and most clutter is
+  geometry inside larger nodes, which the radius test never sees. Larger values would cut cars and crates.
+- **A/B log lines (P59, F10 only).** `SWITCHES performance: ... | reduced quality: ...` lists every key of those
+  two defaults sections when the profile starts and whenever one changes (checked every 30 frames); a change
+  also ends the current `FRAME TIMES` window, so no window mixes two settings. `CACHED DISTANT SHADOWS` (every
+  240 frames while that switch is on): per cascade the % of frames redrawn on schedule + because of
+  characters, and the characters tracked.
 - **Point shadows.** `PointShadowInterval` defaults to 1 again (earlier builds: 2). The menu's Save writes
   every setting, so a saved config usually holds the old default; it is reset once to 1 (see "Old saved
   defaults" under P50). Still lights keep their cubemaps at any interval (P44), so interval 1 costs little

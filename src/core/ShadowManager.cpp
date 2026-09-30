@@ -707,6 +707,80 @@ void ShadowManager::RecalculateBillboardVectors(D3DXVECTOR3* SunDir) {
 /*
 * Renders the different shadow maps: Near, Far, Ortho.
 */
+// CachedDistantShadows: the characters (and the player) in the loaded cells, as world bound spheres.
+void ShadowManager::CollectMovers(const D3DXVECTOR3& SunDir) {
+	FrameMovers.clear();
+	// How far a shadow reaches sideways per unit of height, for the current sun (capped for a sun near the horizon).
+	MoverShadowStretch = min(sqrtf(SunDir.x * SunDir.x + SunDir.y * SunDir.y) / max(SunDir.z, 0.1f), 10.0f);
+	auto add = [this](NiNode* node) {
+		if (!node || node->m_flags & NiAVObject::APP_CULLED) return;
+		NiBound* bound = node->GetWorldBound();
+		if (bound) FrameMovers.push_back(D3DXVECTOR4(bound->Center.x, bound->Center.y, bound->Center.z, bound->Radius));
+	};
+	add(Player->GetNode());
+	if (!Player->GetWorldSpace() || !Tes || !Tes->gridCellArray) return;
+	GridCellArray* CellArray = Tes->gridCellArray;
+	const UInt32 CellArraySize = CellArray->size * CellArray->size;
+	for (UInt32 c = 0; c < CellArraySize; c++) {
+		TESObjectCELL* Cell = CellArray->GetCell(c);
+		if (!Cell || Cell->IsInterior()) continue;
+		for (TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First; Entry; Entry = Entry->next) {
+			TESObjectREFR* Ref = Entry->item;
+			if (!Ref || !Ref->baseForm) continue;
+			const UInt8 type = Ref->baseForm->formType;
+			if (type == TESForm::FormType::kFormType_NPC || type == TESForm::FormType::kFormType_Creature ||
+				type == TESForm::FormType::kFormType_LeveledCreature)
+				add(Ref->GetNode());
+		}
+	}
+}
+
+// Whether a character's shadow could come from this cascade. The planes are the ones from the cascade's last
+// redraw (world space); the cached picture has moved with the camera since, so the test is widened by that distance.
+// On screen, everything nearer than the previous cascade's end (InnerDepth, view depth) is shaded by the sharper
+// cascades: their selection spheres enclose their slices of the view, and only their outer 10% cross-fades into the
+// next one. So a character whose whole shadow stays nearer than 90% of InnerDepth is never sampled from this cascade
+// and does not count; that keeps the player and anyone close by from forcing a redraw every frame.
+bool ShadowManager::MoversInCascade(int cascade, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, float InnerDepth) {
+	if (!ShadowMap->Forms.Actors || FrameMovers.empty()) return false;
+	const D3DXVECTOR3 camera = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+	const D3DXVECTOR3 forward(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);
+	const D3DXVECTOR3 moved = camera - CascadeRefreshCamera[cascade];
+	const float pad = D3DXVec3Length(&moved) + 64.0f;
+	NiFrustumPlanes* planes = &ShadowMap->ShadowMapFrustumPlanes;
+	for (const D3DXVECTOR4& mover : FrameMovers) {
+		const D3DXVECTOR3 toMover = D3DXVECTOR3(mover.x, mover.y, mover.z) - camera;
+		const float shadowReach = mover.w * (1.0f + 2.0f * MoverShadowStretch) + 64.0f;
+		if (D3DXVec3Dot(&toMover, &forward) + shadowReach < 0.9f * InnerDepth) continue;
+		bool inside = true;
+		for (UInt32 p = 0; p < NiFrustumPlanes::MaxPlanes && inside; p++) {
+			if (!planes->IsPlaneActive(p)) continue;
+			const NiPlane& plane = planes->CullingPlanes[p];
+			const float distance = plane.Normal.x * mover.x + plane.Normal.y * mover.y + plane.Normal.z * mover.z - plane.Constant;
+			if (distance < -(mover.w + pad)) inside = false;
+		}
+		if (inside) return true;
+	}
+	return false;
+}
+
+// With the F10 profile and CachedDistantShadows on: every 240 frames, how often each sun cascade was redrawn on its
+// schedule and how often because of characters.
+void ShadowManager::LogSunShadowStats(bool cachedDistant) {
+	if (!GpuTimer::Enabled || !cachedDistant) { SunStats = {}; return; }
+	SunStats.Characters += (unsigned)FrameMovers.size();
+	if (++SunStats.Frames < 240) return;
+	const float perFrame = 100.0f / SunStats.Frames;
+	Logger::Log("CACHED DISTANT SHADOWS %u frames: redrawn %% of frames (scheduled + for characters): near %.0f, "
+		"middle %.0f + %.0f, far %.0f + %.0f, LOD %.0f + %.0f; characters tracked %.1f",
+		SunStats.Frames, SunStats.Scheduled[MapNear] * perFrame,
+		SunStats.Scheduled[MapMiddle] * perFrame, SunStats.ForCharacters[MapMiddle] * perFrame,
+		SunStats.Scheduled[MapFar] * perFrame, SunStats.ForCharacters[MapFar] * perFrame,
+		SunStats.Scheduled[MapLod] * perFrame, SunStats.ForCharacters[MapLod] * perFrame,
+		SunStats.Characters / (float)SunStats.Frames);
+	SunStats = {};
+}
+
 void ShadowManager::RenderShadowMaps() {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // cancel out if rendering effects is disabled
 
@@ -836,15 +910,32 @@ void ShadowManager::RenderShadowMaps() {
 			static CpuTimer sunCascadesCpuTimer("Sun cascades (CPU)");
 			CpuProfileScope cpu(sunCascadesCpuTimer);
 			GpuProfileScope gpu(sunCascadesTimer, Device);
+			// CachedDistantShadows (ReducedQuality): the staggered schedule for the middle, far and LOD cascades, but a
+			// cascade with a character in it is redrawn every frame, and once more after the last one left, so moving
+			// characters never keep a stale shadow (the flicker the plain stagger caused). Other moving objects (doors,
+			// physics clutter) are treated as still and can lag up to 3 or 7 frames in those cascades.
+			const bool staggered = TheSettingManager->SettingsMain.Main.StaggeredSunShadows;
+			const bool cachedDistant = TheSettingManager->SettingsMain.Main.CachedDistantShadows && !staggered;
+			if (cachedDistant) CollectMovers(SunDir);
 			for (int i = MapNear; i < MapOrtho; i++) {
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
+				const bool cachedCascade = cachedDistant && i != MapNear;
 				const unsigned updatePeriod = SunCascadeUpdatePeriod(i, Shadows->Settings.ShadowMaps.LimitFrequency,
-					TheSettingManager->SettingsMain.Main.NearCascadeInterval, TheSettingManager->SettingsMain.Main.StaggeredSunShadows);
+					TheSettingManager->SettingsMain.Main.NearCascadeInterval, staggered || cachedCascade);
 
-				if (ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod)) {
+				bool update = ForceAllCascades || SunCascadeUpdatesOnFrame(i, FrameCounter, updatePeriod);
+				const float innerDepth = i > MapNear ? ((const float*)Shadows->Constants.ShadowMapRadius)[i - 1] : 0.0f;
+				if (update) SunStats.Scheduled[i]++;
+				else if (cachedCascade && (CascadeHadMover[i] || MoversInCascade(i, ShadowMap, innerDepth))) {
+					update = true;
+					SunStats.ForCharacters[i]++;
+				}
+				if (update) {
 					updatedCascades |= 1u << i;
 					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
 					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+					CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
 				}
 				else {
 					// Keep cached cascades locked to camera translation between geometry refreshes.
@@ -870,6 +961,7 @@ void ShadowManager::RenderShadowMaps() {
 				shadowMapTimer.LogTime(message.c_str());
 			}
 			ForceAllCascades = false;
+			LogSunShadowStats(cachedDistant);
 			}
 
 			// Resolve MSAA.

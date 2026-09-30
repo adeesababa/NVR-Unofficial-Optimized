@@ -996,6 +996,43 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 }
 
 
+// For A/B runs: the Performance and ReducedQuality switches in one log line, written when the F10 profile starts and
+// again whenever one of them changes while it runs, so each stretch of timings can be matched to its settings.
+// Lists whatever the defaults file has in those two sections, so new switches show up without touching this.
+static void LogActiveSwitches(bool force) {
+	static std::string lastLine;
+	static const char* sections[][2] = { { "Main.Main.Performance", "performance" }, { "Main.Main.ReducedQuality", "reduced quality" } };
+	typedef SettingManager::Configuration Config;
+	std::string line;
+	Config::SettingList nodes;
+	for (auto& section : sections) {
+		TheSettingManager->Config.FillSettings(&nodes, section[0]);
+		std::sort(nodes.begin(), nodes.end());
+		if (!line.empty()) line += " |";
+		line += " ";
+		line += section[1];
+		line += ":";
+		for (const Config::ConfigNode& node : nodes) {
+			char value[96];
+			switch (node.Type) {
+			case Config::NodeType::Boolean: strcpy(value, node.BoolValue ? "on" : "off"); break;
+			case Config::NodeType::Integer: sprintf(value, "%d", node.IntValue); break;
+			case Config::NodeType::Float: sprintf(value, "%g", node.FloatValue); break;
+			default: strcpy(value, node.Value); break;
+			}
+			line += " ";
+			line += node.Key;
+			line += "=";
+			line += value;
+		}
+	}
+	if (!force && line == lastLine) return;
+	// Close the frame-time window at the change, so no FRAME TIMES line mixes frames from before and after.
+	if (!force) TheFrameTimeMonitor().Flush();
+	lastLine = line;
+	Logger::Log("SWITCHES%s", line.c_str());
+}
+
 /*
 * Renders the effect that have been set to enabled.
 */
@@ -1006,11 +1043,14 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P58 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P59 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
+		else LogActiveSwitches(true);
 	}
 	if (GpuTimer::Enabled) {
+		static unsigned switchCheckFrame = 0;
+		if (++switchCheckFrame >= 30) { switchCheckFrame = 0; LogActiveSwitches(false); }
 		// Frames within three seconds of a cell change or loading screen are counted separately: the
 		// hitches there are expected (streaming), the ones in steady play are what hurt the 1% lows.
 		static TESObjectCELL* lastCell = nullptr;

@@ -29,6 +29,7 @@ Nothing in this document is measured yet unless it quotes a P-number log.
 | P53 | Enhanced water: softer, see-through, drifting foam with fading whitecap trails; new `Clarity` (0.5); real-water reflection curve (Schlick, FresnelPower 5, saved 2.5 moved once) without the classic brighter-sky extra reflection | removed before release (kept on branch experiment/enhanced-water) |
 | P54 | Diagnostic: water reflection probe (screenshot key saves the game's reflection map and logs both passes' cameras, viewports and transforms) to find why reflections squash with camera pitch | ran: reflection camera orientation and projection are the exact mirror; the level-view map looks mirrored about the wrong height |
 | P55 | Reflection probe v2: logs the game's camera position globals in each pass, the first object drawn, and every water plane's height | built, not yet run in game |
+| P59 | Sun-shadow draw count (research profiler: far ~800 and LOD ~450 draws per frame on the Strip). ReducedQuality `CachedDistantShadows`, off by default (middle/far/LOD staggered, but a cascade that can hold a character's shadow is redrawn every frame, so no NPC flicker). A/B log lines (`SWITCHES`, FRAME TIMES window cut at each change). A distant size cut (`DistantShadowMinSize`) was tried and dropped: no effect | ran: ~0.1 ms on the crowded Strip (middle/far forced nearly every frame), up to ~1.2 ms GPU + 0.7 ms CPU with nobody in range |
 
 ---
 

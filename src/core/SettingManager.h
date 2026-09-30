@@ -31,6 +31,7 @@ struct SettingsMainStruct {
         bool    CheapReflections; // [Main.Main.ReducedQuality] CheapReflections (water reflection map drawn without sun shadows and terrain parallax)
         bool    CheapUnderwaterTerrain; // [Main.Main.ReducedQuality] CheapUnderwaterTerrain (ground below the water surface drawn without parallax)
         bool    StaggeredSunShadows; // [Main.Main.ReducedQuality] StaggeredSunShadows (middle sun-shadow cascade every 4th frame, far/Lod every 8th)
+        bool    CachedDistantShadows; // [Main.Main.ReducedQuality] CachedDistantShadows (the stagger, but cascades with characters in them redraw every frame)
         int     NearCascadeInterval; // [Main.Main.ReducedQuality] NearCascadeInterval (redraw the near sun-shadow cascade every N frames, 1-2)
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;

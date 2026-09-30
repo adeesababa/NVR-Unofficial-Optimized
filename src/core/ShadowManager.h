@@ -54,6 +54,19 @@ public:
 	bool					ShadowShadersLoaded;
 	int						FrameCounter;
 	bool					ForceAllCascades = true; // next frame refreshes every cascade (fresh or recreated atlas)
+	// ReducedQuality CachedDistantShadows: characters near the player this frame (bound centre, radius), and per sun
+	// cascade where the camera was at its last redraw and whether a character was inside it then.
+	std::vector<D3DXVECTOR4>	FrameMovers;
+	D3DXVECTOR3				CascadeRefreshCamera[4] = {};
+	bool					CascadeHadMover[4] = {};
+	float					MoverShadowStretch = 0.0f;
+	// F10 statistics for CachedDistantShadows, logged every 240 frames by LogSunShadowStats.
+	struct {
+		unsigned Frames, Scheduled[4], ForCharacters[4], Characters;
+	}						SunStats = {};
+	void					LogSunShadowStats(bool cachedDistant);
+	void					CollectMovers(const D3DXVECTOR3& SunDir);
+	bool					MoversInCascade(int cascade, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, float InnerDepth);
 
 private:
 	bool					CheckShaderFlags(NiGeometry* Geometry);
