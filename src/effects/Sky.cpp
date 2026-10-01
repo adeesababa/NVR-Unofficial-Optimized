@@ -125,8 +125,17 @@ void SkyShaders::UpdateConstants() {
 	const float basis[9] = { 0.282095f, 0.488603f, 0.488603f, 0.488603f,
 							 1.092548f, 1.092548f, 0.315392f, 1.092548f, 0.546274f };
 
+	// UNOFFICIAL [Shaders.PBR.*] SkylightingSaturation: saturation is linear in the colour (a blend with its own
+	// luminance), so applying it to each coefficient equals applying it to the reconstructed irradiance, at no GPU
+	// cost. 1 leaves the coefficients untouched.
+	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
+	const float saturation = pbr ? max(pbr->SkylightSaturation, 0.0f) : 1.0f;
 	for (int i = 0; i < 9; i++) {
 		D3DXVECTOR3 c = sh[i] * (band[i] * basis[i]);
+		if (saturation != 1.0f) {
+			const float luminance = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+			c = D3DXVECTOR3(luminance, luminance, luminance) + (c - D3DXVECTOR3(luminance, luminance, luminance)) * saturation;
+		}
 		Constants.Irradiance[i] = D3DXVECTOR4(c.x, c.y, c.z, 0.0f);
 	}
 }
@@ -162,4 +171,4 @@ void SkyShaders::UpdateSettings() {
 		Constants.SunsetColor.z = 0;
 	}
 
-}
+}

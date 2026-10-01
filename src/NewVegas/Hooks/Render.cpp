@@ -750,6 +750,25 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		if (VertexShader && VertexShader->ShaderHandleBackup) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
 		if (PixelShader && PixelShader->ShaderHandleBackup) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
 	}
+	// UNOFFICIAL lit particles (Shaders.Particles): the NOLIGHT replacements are shader model 3, and D3D9 cannot pair a
+	// 3.0 shader with the game's 2.x one. Where only one side of a NOLIGHT draw has a replacement -- NOLIGHTTEXVC.pso
+	// behind the game's glow/muzzle-flash vertex shaders, or NOLIGHT016/017.vso in front of the flame/spark pixel
+	// shader -- the draw gets the game's own pair. Skipped entirely while the collection is off.
+	if (VertexShader && PixelShader && TheShaderManager->Shaders.Particles && TheShaderManager->Shaders.Particles->Enabled) {
+		const bool nvrVertex = VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
+		const bool nvrPixel = PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
+		auto particleFamily = [](const char* name) { return name && (!strncmp(name, "NOLIGHT", 7) || !strncmp(name, "GDECAL", 6)); };
+		const bool family = particleFamily(VertexShader->Name) || particleFamily(PixelShader->Name);
+		// The first-person pass (the player's own muzzle flash, Pip-Boy glow) always gets the game's pair.
+		if (family && ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) {
+			if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
+			if (nvrPixel) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
+		}
+		else if (nvrVertex != nvrPixel && family) {
+			if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
+			else PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
+		}
+	}
 	ShaderSplit::OnBind(PixelShader, PixelShader2, bindStart);
 	ReflectionProbe::OnBind(Geometry, PixelShader ? PixelShader->Name : nullptr);
 

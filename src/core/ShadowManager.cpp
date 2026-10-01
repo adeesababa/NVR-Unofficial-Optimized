@@ -161,6 +161,11 @@ void ShadowManager::Initialize() {
 		Logger::Log("[ERROR]: Could not load one or more of the ShadowMap generation shaders (Shaders\\NewVegasReloaded\\Shaders\\Shadows). "
 			"Shadow maps are disabled. Reinstall the mod.");
 
+	// UNOFFICIAL contact hardening: registered before the game's shaders load, so every shader that includes
+	// Shadow.hlsl finds it by name. Whether the shaders have it is decided now, at startup (CONTACT_HARDENING).
+	TheShaderManager->RegisterConstant("TESR_ContactHardeningData", &TheShadowManager->ContactHardeningData);
+	TheShadowManager->ContactHardeningCompiled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
+
 	UINT ShadowCubeMapSize = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ShadowCubeMapSize;
 	TheShadowManager->ShadowCubeMapViewPort = { 0, 0, ShadowCubeMapSize, ShadowCubeMapSize, 0.0f, 1.0f };
 
@@ -891,6 +896,27 @@ void ShadowManager::RenderShadowMaps() {
 		terrainLODPass->VertexShader = ShadowMapVertex;
 		terrainLODPass->PixelShader = ShadowMapPixel;
 
+		// UNOFFICIAL contact hardening. The sun's disc is about 0.53 degrees wide, so a shadow edge blurs by about
+		// 0.0093 world units per unit between the thing casting it and the ground; SunSize scales that.
+		if (ContactHardeningCompiled) {
+			const char* section = "Shaders.ContactHardening.Main"; // section names must stay under 40 characters (ConfigNode)
+			const bool on = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
+			ContactHardeningData.x = on ? 0.00925f * max(TheSettingManager->GetSettingF(section, "SunSize"), 0.0f) : 0.0f;
+			ContactHardeningData.y = max(min(TheSettingManager->GetSettingF(section, "MaxSoftness"), 32.0f), 1.0f);
+			static float logged = -1.0f;
+			if (ContactHardeningData.x != logged) {
+				Logger::Log("UNOFFICIAL contact hardening %s (penumbra %.4f per unit of distance, max %.0f texels)",
+					on ? "ON" : "OFF", ContactHardeningData.x, ContactHardeningData.y);
+				logged = ContactHardeningData.x;
+			}
+		}
+		else {
+			static bool hinted = false;
+			if (!hinted && TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled")) {
+				Logger::Log("UNOFFICIAL contact hardening was turned on after startup: restart the game once to apply it.");
+				hinted = true;
+			}
+		}
 		if (ExteriorEnabled && SunDir.z > 0.0f) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);

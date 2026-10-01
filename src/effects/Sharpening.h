@@ -9,9 +9,11 @@ public:
 		D3DXVECTOR4		Data;
 	};
 	SharpeningStruct	Constants;
+	D3DXVECTOR4			Exterior = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f); // x: strength, y: clamp, z: offset
+	D3DXVECTOR4			Interior = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
 
-};
+};

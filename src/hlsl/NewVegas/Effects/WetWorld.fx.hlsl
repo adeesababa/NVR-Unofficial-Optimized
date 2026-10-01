@@ -270,9 +270,12 @@ float4 Wet( VSOUT IN ) : COLOR0
 	float3 Ks = FresnelShlick(0.02, halfwayDir, TESR_SunDirection.xyz);
 
 	float3 puddleNormal = normalize(lerp(normal, combinedNormals, specularMask));
-	float roughness = lerp(TESR_DebugVar.x, TESR_DebugVar.y, puddlemask);
-	// float roughness = lerp(0.00015, 0.00007, puddlemask);
-	float3 specular = modifiedBRDF(lerp(TESR_DebugVar.x * 0.00015, TESR_DebugVar.y * 0.0001, puddlemask), shades(puddleNormal, sunDir), shades(puddleNormal, eyeDirection), shades(puddleNormal, halfwayDir), Ks);
+	// UNOFFICIAL fix: upstream c2c38f8b ("sync shaders to H2O testing version") left these on the developer debug
+	// values TESR_DebugVar.x/.y, which are 0 in every normal install. Roughness 0 makes GGX exactly 0, so puddles never
+	// reflected the sun or any lamp. It also passed sunDir (a float: eye-to-sun alignment, declared above) where the
+	// sun's direction belongs. Both are back to their values before that commit.
+	float roughness = lerp(0.00015, 0.00007, puddlemask);
+	float3 specular = modifiedBRDF(roughness, shades(puddleNormal, TESR_SunDirection.xyz), shades(puddleNormal, eyeDirection), shades(puddleNormal, halfwayDir), Ks);
 	// float3 specular = PBR(0, 0.0002, fresnelColor, puddleNormal, eyeDirection, TESR_SunDirection.xyz, sunColor.rgb * 5);
 
 	for (int i=0; i < 12; i++){

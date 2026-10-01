@@ -119,6 +119,7 @@ public:
 		float Saturation;
 		float SkylightingScale;
 		float SkylightingDirectionality;
+		float SkylightingSaturation; // UNOFFICIAL, applied to the sky irradiance on the CPU (Sky.cpp)
 	};
 	struct PBRSettingsStruct {
 		PBRSettings Default;
@@ -134,8 +135,11 @@ public:
 		D3DXVECTOR4		ExtraData;
 	};
 	PBRStruct	Constants;
+	// UNOFFICIAL: the current SkylightingSaturation (day/night/interior and rain blended like the other values);
+	// SkyShaders::UpdateConstants applies it to the skylight's spherical-harmonic coefficients.
+	float		SkylightSaturation = 1.0f;
 
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
-};
+};

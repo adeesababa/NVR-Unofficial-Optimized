@@ -60,6 +60,11 @@ public:
 	D3DXVECTOR3				CascadeRefreshCamera[4] = {};
 	bool					CascadeHadMover[4] = {};
 	float					MoverShadowStretch = 0.0f;
+	// UNOFFICIAL optional contact-hardening sun shadows (Shaders/Includes/Shadow.hlsl, SampleShadowAtlasContact; compiled
+	// in only when on at startup). [Shaders.ContactHardening.Main/.Status]. x: penumbra width per world unit between
+	// caster and receiver (0 = off), y: widest penumbra radius in atlas texels.
+	D3DXVECTOR4				ContactHardeningData = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	bool					ContactHardeningCompiled = false;
 	// F10 statistics for CachedDistantShadows, logged every 240 frames by LogSunShadowStats.
 	struct {
 		unsigned Frames, Scheduled[4], ForCharacters[4], Characters;

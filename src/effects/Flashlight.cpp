@@ -22,18 +22,22 @@ void FlashlightEffect::UpdateSettings() {
 		TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "OffsetZ")
 	);
 
-	Settings.Color = NiColor(
-		TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "ColorR"),
-		TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "ColorG"),
-		TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "ColorB")
-	);
-	Settings.Dimmer = TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "Dimmer");
-	Settings.ConeAngle = TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "Angle");
-	Settings.Distance = TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "Distance");
-
-	Settings.NearFade = TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "NearFade");
-	Settings.HotspotLimit = TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "HotspotLimit");
-	Settings.CookieStrength = TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "CookieStrength");
+	// UNOFFICIAL: the look comes in an outdoor (Main) and an indoor (Interiors) version; ApplyLook picks one.
+	const char* lookSections[2] = { "Shaders.Flashlight.Main", "Shaders.Flashlight.Interiors" };
+	for (int i = 0; i < 2; i++) {
+		FlashlightLook& look = Looks[i];
+		look.Color = NiColor(
+			TheSettingManager->GetSettingF(lookSections[i], "ColorR"),
+			TheSettingManager->GetSettingF(lookSections[i], "ColorG"),
+			TheSettingManager->GetSettingF(lookSections[i], "ColorB")
+		);
+		look.Dimmer = TheSettingManager->GetSettingF(lookSections[i], "Dimmer");
+		look.ConeAngle = TheSettingManager->GetSettingF(lookSections[i], "Angle");
+		look.Distance = TheSettingManager->GetSettingF(lookSections[i], "Distance");
+		look.NearFade = TheSettingManager->GetSettingF(lookSections[i], "NearFade");
+		look.HotspotLimit = TheSettingManager->GetSettingF(lookSections[i], "HotspotLimit");
+		look.CookieStrength = TheSettingManager->GetSettingF(lookSections[i], "CookieStrength");
+	}
 	Settings.softEdges = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "SoftEdges");
 
 	Settings.MaterialLight.Enabled = TheSettingManager->GetSettingI("Shaders.Flashlight.MaterialLight", "Enabled");
@@ -50,15 +54,30 @@ void FlashlightEffect::UpdateSettings() {
 
 	// These come purely from settings, so they are published here rather than in
 	// UpdateConstants, which only runs while the effect is enabled
-	Constants.Tuning = D3DXVECTOR4(Settings.NearFade, Settings.softEdges ? 1.0f : 0.0f, Settings.HotspotLimit, Settings.CookieStrength);
+	ApplyLook(TheShaderManager->GameState.isExterior);
 	Constants.Composite = D3DXVECTOR4(sourceIsLinear, 0.0f, 0.0f, 0.0f);
 
 	if (!SpotLight)
 		SpotLight = NiSpotLight::CreateObject();
 };
 
+// UNOFFICIAL: the outdoor or indoor look into Settings, and the constants that come purely from it.
+void FlashlightEffect::ApplyLook(bool exterior) {
+	const FlashlightLook& look = Looks[exterior ? 0 : 1];
+	Settings.Color = look.Color;
+	Settings.Dimmer = look.Dimmer;
+	Settings.ConeAngle = look.ConeAngle;
+	Settings.Distance = look.Distance;
+	Settings.NearFade = look.NearFade;
+	Settings.HotspotLimit = look.HotspotLimit;
+	Settings.CookieStrength = look.CookieStrength;
+	Constants.Tuning = D3DXVECTOR4(Settings.NearFade, Settings.softEdges ? 1.0f : 0.0f, Settings.HotspotLimit, Settings.CookieStrength);
+}
+
 void FlashlightEffect::UpdateConstants() {
-	
+
+	ApplyLook(TheShaderManager->GameState.isExterior);
+
 	if (!SpotLight) return;
 
 	// based on JIP https://github.com/jazzisparis/JIP-LN-NVSE/blob/5a30ac4356ea0e93b9ff357b5031b1e420240a4d/functions_jip/jip_fn_ui.h#L1469
@@ -246,4 +265,4 @@ void FlashlightEffect::GetFlashlightViewProj() {
 	D3DXMatrixLookAtRH(&View, &Eye, &At, &Up);
 
 	Constants.FlashlightViewProj = View * Proj;
-}
+}

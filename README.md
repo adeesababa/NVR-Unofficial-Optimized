@@ -14,6 +14,8 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 - **Bug fixes:** no more horizontal black lines on sun-lit surfaces, and no more flickering dashes
   on tree branches against the sky.
 - **Optional extra speed** for weaker PCs (see below), each one a simple on/off switch.
+- **Optional visual extras** (since P64): lit particles and blood, bounce light and contact-hardening
+  shadows, all off by default (see below).
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -110,6 +112,33 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   two (`DarkAdaptSpeed` and `LightAdaptSpeed` 0.2 instead of 50). At 50 it followed every blinking sign
   within a few frames, so the whole screen flickered on the Strip. If your settings file still holds
   the old 50 (from pressing Save in an older build), P50 moves it to 0.2 once and says so in the log.
+- **Shaders > ShadowsExteriors > SunSmoothing** (since P64) - the sun moves in steps of about one in-game
+  hour (to keep shadow edges from crawling), and in the original every step made all sun shadows jump at
+  once. Now each step slides over `GlideSeconds` (3, 0 = the original jump); waiting, sleeping and loading
+  still jump. `CrossFade` (off, needs a restart, uses about 72 MB more video memory) fades from the old
+  shadows to the new ones instead of sliding them, for anyone who sees shadow edges crawl while they slide.
+- **Shaders > PBR > SkylightingSaturation** (since P64) - colour strength of the sky light (1 = as before,
+  0 = grey, above 1 = more colourful). Costs nothing.
+- **Shaders > Sharpening > Interiors** and **Shaders > Flashlight > Interiors** (since P64) - separate
+  settings indoors (Main is now outdoors). Your saved values are copied to the new indoor section once.
+- **Water puddles** (fixed in P64) - puddles in the rain never showed the sun or lamps reflected in them
+  (their shine was left on a developer test value). If you have rain weathers, set Shaders > WetWorld >
+  Main `Amount` 1.0, `Increase` 0.3 and `Decrease` 1.2 to get the darker puddle patches back too (the
+  upstream defaults switch them off).
+
+**Optional visual extras** (since P64). These change the look, so they are **off by default** and cost
+nothing while off. Turn them on in the menu to try them:
+- **Shaders > Particles** - blood, smoke, dust and debris, and the blood sprays and blood on characters,
+  are lit by the scene (ambient light, the sun through the shadows, nearby lamps) instead of keeping full
+  brightness in the shade, at night and indoors. Muzzle flashes, fire, sparks and glows are unchanged.
+  `Strength` 0..1 blends from the game's look; `Brightness` if they look too dark or bright. About 0.3 ms
+  during a firefight on a GTX 1070.
+- **Shaders > BounceLight** - light bouncing off lit surfaces onto nearby ones (colour bleeding), from
+  what is on screen. About 1.2 ms at 1440p on a GTX 1070.
+- **Shaders > ContactHardening** - sun shadows sharp where an object meets the ground and softer the
+  further they fall from it, as under the real sun. Needs a restart the first time it is turned on; after
+  that the switch works live. `SunSize` 1 and `MaxSoftness` 4 are the tested defaults (higher values can
+  show aliasing).
 
 To keep a change for next time, press **Save** at the top of the menu.
 

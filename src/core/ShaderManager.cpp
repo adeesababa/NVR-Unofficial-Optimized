@@ -68,6 +68,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<NormalsEffect>(&TheShaderManager->Effects.Normals);
 	TheShaderManager->RegisterEffect<RainEffect>(&TheShaderManager->Effects.Rain);
 	TheShaderManager->RegisterEffect<SharpeningEffect>(&TheShaderManager->Effects.Sharpening);
+	TheShaderManager->RegisterEffect<BounceLightEffect>(&TheShaderManager->Effects.BounceLight);
 	TheShaderManager->RegisterEffect<ShadowsExteriorEffect>(&TheShaderManager->Effects.ShadowsExteriors);
 	TheShaderManager->RegisterEffect<ShadowsInteriorsEffect>(&TheShaderManager->Effects.ShadowsInteriors);
 	TheShaderManager->RegisterEffect<PointShadowsEffect>(&TheShaderManager->Effects.PointShadows);
@@ -91,6 +92,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterShaderCollection<SkyShaders>(&TheShaderManager->Shaders.Sky);
 	TheShaderManager->RegisterShaderCollection<SkinShaders>(&TheShaderManager->Shaders.Skin);
 	TheShaderManager->RegisterShaderCollection<GrassShaders>(&TheShaderManager->Shaders.Grass);
+	TheShaderManager->RegisterShaderCollection<ParticleShaders>(&TheShaderManager->Shaders.Particles);
 	TheShaderManager->RegisterShaderCollection<TerrainShaders>(&TheShaderManager->Shaders.Terrain);
 	
 	//setup map of constant names
@@ -516,6 +518,9 @@ ShaderCollection* ShaderManager::GetShaderCollection(const char* Name) {
 	// a ps_3_0 replacement too: D3D9 rejects a 2.x VS paired with a 3.0 PS.
 	if (!memcmp(Name, "STLEAF", 6)) return Shaders.PBR;
 	if (!memcmp(Name, "SKY", 3)) return Shaders.Sky;
+	// UNOFFICIAL lit particles and blood decals: only NOLIGHT016/017.vso, NOLIGHTTEXVC.pso and GDECAL(S) have
+	// replacements on disk; the rest of the NOLIGHT family resolves to no file and stays the game's.
+	if (!memcmp(Name, "NOLIGHT", 7) || !memcmp(Name, "GDECAL", 6)) return Shaders.Particles;
 	if (strstr(BloodShaders, Name)) return Shaders.Blood;
 
 	if (Shaders.PBR->GetTemplate(Name).Name != NULL) return Shaders.PBR;
@@ -893,7 +898,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
 	const bool aoApplies = wouldRender(AO);
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
-		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater);
+		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
+		wouldRender(Effects.BounceLight); // must see the scene with its shadows and AO applied
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	AO->deferredReady = false;
@@ -925,6 +931,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
+	}
+	if (Effects.BounceLight->Enabled) {
+		// UNOFFICIAL, optional: one bounce of screen-space indirect light, on the shadowed and AO'd scene.
+		static GpuTimer bounceLightTimer("Bounce light");
+		GpuProfileScope gpu(bounceLightTimer, Device);
+		Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -1002,7 +1014,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 static void LogActiveSwitches(bool force) {
 	static std::string lastLine;
 	static const char* sections[][2] = { { "Main.Main.Performance", "performance" }, { "Main.Main.ReducedQuality", "reduced quality" },
-		{ "Shaders.Terrain.Parallax", "terrain parallax" } };
+		{ "Shaders.Terrain.Parallax", "terrain parallax" }, { "Shaders.ShadowsExteriors.SunSmoothing", "sun smoothing" },
+		{ "Shaders.BounceLight.Status", "bounce light" }, { "Shaders.BounceLight.Main", "bounce light" },
+		{ "Shaders.ContactHardening.Status", "contact hardening" }, { "Shaders.ContactHardening.Main", "contact hardening" },
+		{ "Shaders.Particles.Status", "lit particles" }, { "Shaders.Particles.Main", "lit particles" } };
 	typedef SettingManager::Configuration Config;
 	std::string line;
 	Config::SettingList nodes;
@@ -1044,7 +1059,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P61 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P64 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 		else LogActiveSwitches(true);
@@ -1222,6 +1237,11 @@ void ShaderManager::SwitchShaderStatus(const char* Name) {
 		IsMenuSwitch = false;
 		return;
 	}
+
+	// UNOFFICIAL: a menu entry with only settings (Shaders.<Name>.Status Enabled, e.g. ContactHardening, which
+	// ShadowManager reads each frame) just flips its setting.
+	TheSettingManager->SetMenuShaderEnabled(Name, !TheSettingManager->GetMenuShaderEnabled(Name));
+	IsMenuSwitch = false;
 }
 
 void ShaderManager::SetCustomConstant(const char* Name, D3DXVECTOR4 Value) {

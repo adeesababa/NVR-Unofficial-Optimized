@@ -317,6 +317,46 @@ camera, where that reconstruction is meaningless). `tests/game_shaders.cpp`: wit
 bit-identical to before in all five parallax configurations; with everything under water it equals parallax and
 parallax shadows off, and full-screen terrain costs 51-78% less (TEX_COUNT 1: 1.31 -> 0.65 ms, 7: 5.80 -> 1.28 ms).
 
+## Sun step glide and cross-fade (P62-P64, SunSmoothing)
+Upstream's `QuantizeSun` snaps the sun direction to 15-degree steps (about one in-game hour) against shadow-edge
+crawl, and `SmoothSun` only interpolates changes below `MaxJumpAngle` (5 degrees), so every step was an instant jump.
+`ShadowsExteriorEffect::CalculateSmoothedSunDir` now slides a step of under 1.5 step sizes (measured from the previous
+target) over `GlideSeconds` of real time (smoothstep-eased normalized lerp, `GetTickCount64`); bigger changes (wait,
+sleep, load) snap. `CrossFade` (compiled in with `SUN_CROSSFADE` only when on at startup, forward shadows only): at a
+step `StartSunCrossFade` copies the atlas (`TESR_ShadowAtlasOld`, same size and format) with the matrices, centres
+and camera translations of its cascades, forces every cascade to redraw for the new direction, and `Shadow.hlsl`
+blends `GetOldSunShadow` (the same cascade choice on the kept data, re-translated each frame by the camera movement,
+c146-c166, s10/s15) into the new shadow over `GlideSeconds`. Off, the game shaders are bit-identical to before.
+
+## Optional visual extras (P64, all off by default)
+- **Lit particles and blood** (`Shaders.Particles`, a shader collection). The game draws blood, smoke, dust and debris
+  particle systems (`BSSM_NOLIGHTING_PSYS`, `_SUBTEX_OFFSET`: NOLIGHT016/017.vso), blood spray cards
+  (`_TexVC_FALLOFF`: NOLIGHT006.vso) with the unlit NOLIGHTTEXVC.pso, and geometry decals (blood on characters,
+  GDECAL/GDECALS) with an unlit decal shader. The replacements are the game's shaders ported to shader model 3 (from
+  their disassembly) plus lighting: ambient (the sky's outdoors, the cell's indoors) and the 24 tracked point lights
+  per vertex (`Includes/ParticleLight.hlsl`), the sun through the forward sun shadow per pixel. Falloff cards are lit
+  only when normally blended (the additive ones -- muzzle and impact flashes, sparks -- use the game's fade-to-black
+  fog mode). Flames and sparks use NOLIGHTTEXVCPMA.pso, not replaced. `SetShadersHook` gives a NOLIGHT/GDECAL draw the
+  game's own pair when only one side has a replacement (a 3.0 shader cannot pair with a 2.x one) and always in the
+  first-person pass. Off, the collection uses the game's shaders.
+- **Bounce light** (`Shaders.BounceLight`, an effect after ambient occlusion): one bounce of screen-space indirect
+  light at quarter (or half) resolution -- a prepare pass packs depth, octahedral normal and colour per low-resolution
+  pixel into one A32B32G32R32F texel, an 8-sample gather on a disc capped at 6% of the screen width, depth-aware blur
+  and upsample. Buffers are created on first use.
+- **Contact-hardening sun shadows** (`Shaders.ContactHardening`, compiled in with `CONTACT_HARDENING` only when on at
+  startup): Near and Middle cascades, EVSM4. A blocker search on the positive-exponent moments estimates the caster's
+  depth (variance soft shadow mapping), the penumbra is the caster distance times the sun's size, and the moments are
+  averaged over a 12-tap disc that wide before the Chebyshev test.
+
+## Fixes (P63-P64)
+- **WetWorld puddles** never reflected the sun or lamps: upstream left their roughness on the developer
+  `TESR_DebugVar` values (0 in every install, so GGX was 0) and passed a float as the sun direction; both restored to
+  the values before that change. Upstream also set the puddle `Amount`/`Increase`/`Decrease` defaults to 0 (unchanged).
+- **Settings migration** now runs right after the settings file is read (it ran a moment before that, so the
+  first pass skipped it), and copies saved Sharpening and Flashlight values into their new `Interiors` sections.
+- **Section names of 40 characters or more** overflow `ConfigNode::Section[40]` and lose every menu change; the new
+  sections stay shorter.
+
 ## World scene guard and trace
 NVR refreshes its depth buffers only inside its hook on the game's `RenderWorldSceneGraph`. Once, after
 a save was loaded straight into an interior, the game rendered frames without calling it (the F10 log

@@ -60,6 +60,11 @@ void SettingManager::Configuration::Init() {
 
 	configLoaded = true;
 	Logger::Log("Loading configs finished");
+
+	// Before anything reads a setting: the effects read theirs while they register, which is before the first
+	// LoadSettings, and a read of a section the user config lacks writes the defaults into it -- so a migration that
+	// fills a new section from the user's old one (P63's Interiors) would find it already there and skip it.
+	UpdateOldDefaults();
 }
 
 
@@ -286,7 +291,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 61;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 63;  // 53 was an enhanced-water step, since removed
 
 void SettingManager::Configuration::UpdateOldDefaults() {
 	if (!TomlConfig.is_table()) return;
@@ -333,6 +338,26 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 					"parallax objects too).", old.as_boolean() ? "true" : "false");
 			}
 		}
+	}
+	// P63: Sharpening and the flashlight's look got separate interior settings. Someone who tuned the old single set
+	// keeps it indoors too: their saved values are copied once into the new Interiors section.
+	if (version < 63) {
+		auto copyToInteriors = [&](const char* parent, const char* from, std::initializer_list<const char*> keys) {
+			std::string fromPath = std::string(parent) + "." + from;
+			tomlValue* saved = UserSection(fromPath.c_str());
+			tomlValue* parentTable = UserSection(parent);
+			if (!saved || !saved->is_table() || !parentTable || !parentTable->is_table() || parentTable->contains("Interiors")) return;
+			tomlValue::table_type interiors;
+			for (const char* key : keys)
+				if (saved->contains(key)) interiors[key] = saved->at(key);
+			if (interiors.empty()) return;
+			(*parentTable)["Interiors"] = interiors;
+			Logger::Log("UNOFFICIAL settings: %s now has separate interior settings; your saved %s values were copied to %s.Interiors.",
+				parent, fromPath.c_str(), parent);
+		};
+		copyToInteriors("Shaders.Sharpening", "Main", { "Strength", "Clamp", "Offset" });
+		copyToInteriors("Shaders.Flashlight", "Main", { "ColorR", "ColorG", "ColorB", "Dimmer", "Angle", "Distance",
+			"NearFade", "HotspotLimit", "CookieStrength" });
 	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "

@@ -350,6 +350,17 @@ HotspotLimit = 0.0                     # Rolls off the brightest part of the lit
 CookieStrength = 0.0                   # Procedural rings and mottling in the beam, for structure on flat surfaces. 0 disables
 SoftEdges = false                      # Wrap lighting instead of clamped diffuse. Removes the speckle the reconstructed normals produce on grass and foliage, at the cost of a flatter beam. Does not change overall brightness
 
+[_Shaders.Flashlight.Interiors]
+ColorR = 2.0                           # UNOFFICIAL: the flashlight's look indoors (Main is outdoors). R channel of the color
+ColorG = 2.0                           # G channel of the color
+ColorB = 1.0                           # B channel of the color
+Dimmer = 1.0                           # Dimmer for the color of the flashlight
+Angle = 30.0                           # Angle for the flashlight cone
+Distance = 1000                        # Distance radius for the light
+NearFade = 0.0                         # Fades the light out on surfaces closer than this many units. 0 disables
+HotspotLimit = 0.0                     # Rolls off the brightest part of the lit pool. 0 disables
+CookieStrength = 0.0                   # Procedural rings and mottling in the beam. 0 disables
+
 [_Shaders.Flashlight.MaterialLight]
 Enabled = false                        # Re-light nearby static geometry with its own normals, normal map and specular settings, instead of relying on normals reconstructed from depth
 Intensity = 0.015                      # Strength of the re-lit contribution
@@ -575,6 +586,14 @@ GaussianWeight = 6.0
 [_Shaders.MotionBlur.Status]
 Enabled = false                      # Blur in direction of the camera when turning. 
 
+[_Shaders.Particles.Main]
+Strength = 1.0                       # UNOFFICIAL, optional: how much blood, smoke, dust and debris particles follow the lighting (0 = as the game draws them, unlit; 1 = fully lit).
+Brightness = 1.0                     # Overall brightness of lit particles. Raise if they look too dark next to the scene, lower if too bright.
+SunShare = 0.6                       # How much of the sun a particle catches outdoors (they are thin and see the sun from all sides). Shaded particles get only the ambient and lamps.
+
+[_Shaders.Particles.Status]
+Enabled = false                      # UNOFFICIAL, optional: lights blood, smoke, dust and debris particles and the blood decals on characters by the ambient, the sun (through the sun shadows) and nearby lamps, so they no longer glow in the shade, at night or indoors. Muzzle flashes, fire, sparks and glows stay as the game draws them. Off = exactly the game's own particle shaders.
+
 [_Shaders.PBR.Main]
 Roughness = 1.0                      # Roughness scale.
 Metallicness = 0.0                   # Metalicness scale - unused, no metalic maps yet.
@@ -582,6 +601,7 @@ AmbientScale = 0.5                   # Ambient lighting scale.
 SkylightingScale = 0.5               # Sky-colour ambient boost. 0 disables it.
 SkylightingMode = 0                  # 0 spherical harmonics, 1 directional sample. Recompiles shaders.
 SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 along the normal.
+SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 0.725                # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
 
@@ -591,6 +611,7 @@ Metallicness = 0.0                   # Metalicness scale - unused, no metalic ma
 AmbientScale = 0.5                   # Ambient lighting scale.
 SkylightingScale = 0.5               # Sky-colour ambient boost. 0 disables it.
 SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 along the normal.
+SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
 
@@ -600,6 +621,7 @@ Metallicness = 0.0                   # Metalicness scale - unused, no metalic ma
 AmbientScale = 0.5                   # Ambient lighting scale.
 SkylightingScale = 0.5               # Sky-colour ambient boost. 0 disables it.
 SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 along the normal.
+SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
 
@@ -609,6 +631,7 @@ Metallicness = 0.0                   # Metalicness scale - unused, no metalic ma
 AmbientScale = 0.5                   # Ambient lighting scale.
 SkylightingScale = 0.5               # Sky-colour ambient boost. 0 disables it.
 SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 along the normal.
+SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
 
@@ -618,6 +641,7 @@ Metallicness = 0.0                   # Metalicness scale - unused, no metalic ma
 AmbientScale = 0.5                   # Ambient lighting scale.
 SkylightingScale = 0.0               # Sky-colour ambient boost. Off indoors: the coefficients describe the exterior sky.
 SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 along the normal.
+SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
 
@@ -665,6 +689,8 @@ SmoothingFactor = 0.174			 # [0.0-1.0] Lower number means slower smoothing betwe
 YawStepSize = 15.0					 # [0.0-15.0] Step size for changes in the horizontal rotation of the sun, angle in degrees.
 PitchStepSize = 15.0				 # [0.0-15.0] Step size for changes in the vertical rotation of the sun, angle in degrees.
 MaxJumpAngle = 5.0					 # [5.0-30.0] A maximum angle difference for which smoothing works, if higher the jump is instaneous. Required for time jumps / waiting.
+GlideSeconds = 3.0                   # [0.0-10.0] UNOFFICIAL: real seconds each step of the sun slides over, instead of all sun shadows jumping at once about every in-game hour. Bigger jumps (waiting, sleeping, loading) stay instant. 0 = the original behaviour.
+CrossFade = false                    # UNOFFICIAL, needs a game restart: instead of turning the shadows over GlideSeconds, fade from the old shadows to the new ones over that time, so shadow edges never crawl while the sun moves. Costs a second copy of the shadow maps in video memory (about 72 MB at the default CascadeResolution) and a little GPU time during each fade only. Needs ForwardShadows (the default).
 
 [_Shaders.ShadowsExteriors.FormsNear]
 Activators = true                    # Whether to include objects with "Activator" flag when rendering shadowmaps.
@@ -802,8 +828,30 @@ PlayerShadowFirstPerson = false      # Enable shadows for Player Model in first 
 [_Shaders.ShadowsInteriors.Status]
 Enabled = true                      # Post process pointlights shadows in exteriors.
 
+[_Shaders.BounceLight.Main]
+Strength = 1.5                      # UNOFFICIAL, optional: how much light bounces from lit surfaces onto nearby ones (0 = none).
+Radius = 150.0                      # How far the bounce reaches, in world units (about 70 = 1 m).
+DrawDistance = 6000.0               # Distance from the camera where the effect has faded out.
+BlurRadius = 1.5                    # Smoothing of the bounce's grain, in pixels (x6 each way).
+QuarterResolution = true            # Works the bounce out on a quarter of the pixels instead of half (about 1.2 instead of 1.9 ms at 1440p on a GTX 1070, no visible difference). Off = half resolution.
+
+[_Shaders.BounceLight.Status]
+Enabled = false                     # UNOFFICIAL, optional: one bounce of indirect light from what is on screen (colour bleeding, more natural shading). About 1 ms GPU at 1440p when on (F10 'Bounce light'); nothing when off.
+
+[_Shaders.ContactHardening.Main]
+SunSize = 1.0                        # UNOFFICIAL, optional: how soft far shadow edges get, as a multiple of the real sun's size (1 = realistic). Higher values can show aliasing.
+MaxSoftness = 4.0                    # Cap on the blur, in shadow map texels (1-32). Higher allows softer edges under tall objects but costs more and can show aliasing.
+
+[_Shaders.ContactHardening.Status]
+Enabled = false                      # UNOFFICIAL, optional: sun shadows sharp where an object meets the ground and softer the further they fall from it. Needs a game RESTART the first time it is turned on (compiled into the shaders only then, so off costs nothing); after that the switch works live. Needs ForwardShadows.
+
 [_Shaders.Sharpening.Main]
 Clamp = 0.1
+Offset = 2.0
+Strength = 0.75
+
+[_Shaders.Sharpening.Interiors]
+Clamp = 0.1                         # UNOFFICIAL: the same settings for interiors (Main is outdoors).
 Offset = 2.0
 Strength = 0.75
 

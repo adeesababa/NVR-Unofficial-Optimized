@@ -160,6 +160,7 @@ public:
 		NormalsEffect*			Normals;
 		RainEffect*				Rain;
 		SharpeningEffect*		Sharpening;
+		BounceLightEffect*		BounceLight; // UNOFFICIAL, optional, off by default
 		SpecularEffect*			Specular;
 		SnowEffect*				Snow;
 		SnowAccumulationEffect*	SnowAccumulation;
@@ -186,6 +187,7 @@ public:
 		SkyShaders*				Sky;
 		SkinShaders*			Skin;
 		GrassShaders*			Grass;
+		ParticleShaders*		Particles; // UNOFFICIAL, optional, off by default
 		TerrainShaders*			Terrain;
 	};
 
