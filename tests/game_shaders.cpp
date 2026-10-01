@@ -108,6 +108,10 @@ static void GridIndices(Scene& scene) {
 		}
 }
 
+// A reversed-depth perspective projection like RenderManager's (row vectors, unit x/y scale): clip = (x, y, A*z + B, z).
+static const float TestNear = 10.0f, TestFar = 300000.0f;
+static const float TestProjectionA = -(TestNear / (TestFar - TestNear)), TestProjectionB = TestNear * TestFar / (TestFar - TestNear);
+
 static void Set(Vertex& v, int k, float x, float y, float z, float w) { v.v[k][0] = x; v.v[k][1] = y; v.v[k][2] = z; v.v[k][3] = w; }
 
 // Terrain: ground from 150 to about 2600 units away (parallax fades out at 2048), random blend weights (some exactly 0),
@@ -135,7 +139,9 @@ static Scene TerrainScene(int texCount) {
 			for (int t = 0; t < texCount; t++) blends[t] /= total;
 			Set(v, 7, blends[0], blends[1], blends[2], blends[3]);
 			Set(v, 8, blends[4], blends[5], blends[6], 0);
-			Set(v, 9, (sx * 2 - 1) * dist, (1 - sy * 2) * dist, dist * 0.999f, dist);
+			// Clip position of the view-space point (x, y, dist) under TestProjection (see CommonConstants), so the
+			// inverse projection there takes it back exactly, as in the game.
+			Set(v, 9, (sx * 2 - 1) * dist, (1 - sy * 2) * dist, TestProjectionA * dist + TestProjectionB, dist);
 			Set(v, 10, eye[0], eye[1], eye[2], 1);
 			scene.vertices.push_back(v);
 		}
@@ -218,10 +224,13 @@ struct Constants {
 };
 
 static void CommonConstants(Constants& k) {
-	for (int r = 0; r < 4; r++) {  // identity inverse projection and view (Shadow.hlsl)
-		k.Set(100 + r, 0, 0, 0, 0); k.c[(100 + r) * 4 + r] = 1;
-		k.Set(104 + r, 0, 0, 0, 0); k.c[(104 + r) * 4 + r] = 1;
-	}
+	// Shadow.hlsl: inverse of TestProjection (clip (X, Y, Z, W) -> view (X, Y, W, (Z - A*W) / B)), identity inverse view.
+	// A real camera, so GetShadowWorldPos gets back the scene's view-space points as it does in the game.
+	k.Set(100, 1, 0, 0, 0);
+	k.Set(101, 0, 1, 0, 0);
+	k.Set(102, 0, 0, 0, 1.0f / TestProjectionB);
+	k.Set(103, 0, 0, 1, -TestProjectionA / TestProjectionB);
+	for (int r = 0; r < 4; r++) { k.Set(104 + r, 0, 0, 0, 0); k.c[(104 + r) * 4 + r] = 1; }
 	for (int i = 0; i < 9; i++) k.Set(137 + i, 0.3f / (i + 1), 0.25f / (i + 1), 0.35f / (i + 1), 0);  // sky irradiance
 }
 
@@ -483,10 +492,13 @@ static int TestTerrain(Gpu& gpu, const std::string& oldFolder, const std::string
 		// CheapUnderwaterTerrain with the whole scene under water must equal parallax and parallax shadows switched off.
 		const float off[4] = { 0, 0, 1, 1 }, on[4] = { 1, 1, 1, 1 };
 		TerrainConstants(off).Apply(device);
-		const std::vector<float> flat = Render(gpu, oldShader, scene);
+		// Both renders with the new shader: the switch is checked against the same code, not against old-vs-new changes.
+		const std::vector<float> flat = Render(gpu, newShader, scene);
 		TerrainConstants(on, 1e30f).Apply(device);
 		const Comparison under = Compare(flat, Render(gpu, newShader, scene));
-		printf("  TEX_COUNT %d, all under water (CheapUnderwaterTerrain) = parallax off: %s\n", texCount, under.different ? "DIFFERENT" : "identical");
+		printf("  TEX_COUNT %d, all under water (CheapUnderwaterTerrain) = parallax off: %s", texCount, under.different ? "DIFFERENT" : "identical");
+		if (under.different) printf(" (%zu pixels, largest difference %.3g)", under.different, under.worst);
+		printf("\n");
 		if (under.different) failures++;
 	}
 	std::puts("TERRAIN GPU time per full-screen draw at 2560x1440 (A16B16G16R16F), game defaults:");

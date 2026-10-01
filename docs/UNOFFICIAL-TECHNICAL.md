@@ -348,7 +348,14 @@ c146-c166, s10/s15) into the new shadow over `GlideSeconds`. Off, the game shade
   depth (variance soft shadow mapping), the penumbra is the caster distance times the sun's size, and the moments are
   averaged over a 12-tap disc that wide before the Chebyshev test.
 
-## Fixes (P63-P64)
+## Fixes (P63-P65)
+- **Actors going light or dark as the player crossed a sun-shadow edge** (forward shadows, P65): the vertex
+  shaders rebuild each point's camera-relative world position for the forward sun shadow from clip space through
+  NVR's inverse projection, which is made once per frame from the camera's near and far planes. Actors drawn with
+  other planes came back with their depth squashed towards the camera, so the whole actor read the shadow at the
+  player's position. `GetShadowWorldPos` (Includes/Shadow.hlsl) now scales the point to view depth `clip.w` along its
+  ray: exact for any perspective near/far, and the same point as before when they match. Covers every user of it
+  (objects, skin, hair, terrain, grass, trees, lit particles and blood decals).
 - **WetWorld puddles** never reflected the sun or lamps: upstream left their roughness on the developer
   `TESR_DebugVar` values (0 in every install, so GGX was 0) and passed a float as the sun direction; both restored to
   the values before that change. Upstream also set the puddle `Amount`/`Increase`/`Decrease` defaults to 0 (unchanged).

@@ -411,6 +411,12 @@ float SampleShadowCascade(float3 position, float4x4 lightTransform, float2 quadr
 float3 GetShadowWorldPos(float4 clipPos) {
     float4 viewPos = mul(clipPos, TESR_InvProjectionTransform);
     viewPos /= viewPos.w;
+    // UNOFFICIAL: put the point at view depth clipPos.w along its view ray. The inverse projection is built from the
+    // camera's near/far planes once per frame; a draw projected with other planes (actors, seen with JohnnyGuitar's
+    // dynamic near clip) came back with its depth squashed towards the camera, so a whole actor read the sun shadow
+    // at the player's position and flipped light/dark as the player crossed a shadow edge. clip.w is the view depth
+    // for any perspective projection, whatever its near and far; x and y only fix the direction of the ray.
+    viewPos.xyz *= clipPos.w / (abs(viewPos.z) > 1e-6f ? viewPos.z : 1e-6f);
     return mul(viewPos, TESR_InvViewTransform).xyz;
 }
 
