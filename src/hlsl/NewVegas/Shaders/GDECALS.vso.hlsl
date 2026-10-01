@@ -3,6 +3,10 @@
 // skinning, the decal's texture coordinates and fade carried in NORMAL -- plus the camera-relative world position and
 // the vertex light for the lit GDECAL.pso. Registers as in the game's shader: the engine sets them by number.
 
+// Camera matrices out of c100-c107: the game's bone upload reaches past Bones[54] and overwrote them (see
+// ObjectTemplate.hlsl). c240+ is taken by ParticleLight here, so c180-c187.
+#define SHADOW_INVPROJ_REG c180
+#define SHADOW_INVVIEW_REG c184
 #include "includes/Shadow.hlsl"
 #define PARTICLE_VS
 #include "includes/ParticleLight.hlsl"

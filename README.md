@@ -125,9 +125,10 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   (their shine was left on a developer test value). If you have rain weathers, set Shaders > WetWorld >
   Main `Amount` 1.0, `Increase` 0.3 and `Decrease` 1.2 to get the darker puddle patches back too (the
   upstream defaults switch them off).
-- **Characters going light or dark** (fixed in P65) - with `ForwardShadows` on, people and creatures
-  turned brighter or darker all at once whenever *you* stepped into or out of a shadow, because their
-  shadow was checked at your position instead of their own. They now get their own shadows.
+- **Characters' sun shadows** (fixed in P66) - with `ForwardShadows` on, people and creatures turned
+  brighter or darker all at once whenever *you* stepped into or out of a shadow, because their shadow was
+  checked in the wrong place (the game's skeleton data overwrote the camera values their shaders use).
+  They now get their own, correct shadows.
 
 **Optional visual extras** (since P64). These change the look, so they are **off by default** and cost
 nothing while off. Turn them on in the menu to try them:

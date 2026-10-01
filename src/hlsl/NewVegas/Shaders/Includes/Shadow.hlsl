@@ -23,6 +23,11 @@
 //
 // The VS matrices are relocatable: GRASS23x00*.vso indexes InstanceData from c20 well past
 // c100.
+//
+// UNOFFICIAL (P66): not clear in SKINNED vertex shaders after all. The game's bone upload reaches past Bones[54]'s c97
+// and overwrote c100-c107, so every actor rebuilt its world position from bone data and read the sun shadow at the
+// wrong place (all at the player's position before P65, a pattern turning with the camera after). Skinned vertex
+// shaders define SHADOW_INVPROJ_REG/SHADOW_INVVIEW_REG c240/c244 (GDECALS: c180/c184) before including this file.
 // ---------------------------------------------------------------------------
 #ifndef SHADOW_INVPROJ_REG
     #define SHADOW_INVPROJ_REG c100
@@ -411,11 +416,10 @@ float SampleShadowCascade(float3 position, float4x4 lightTransform, float2 quadr
 float3 GetShadowWorldPos(float4 clipPos) {
     float4 viewPos = mul(clipPos, TESR_InvProjectionTransform);
     viewPos /= viewPos.w;
-    // UNOFFICIAL: put the point at view depth clipPos.w along its view ray. The inverse projection is built from the
-    // camera's near/far planes once per frame; a draw projected with other planes (actors, seen with JohnnyGuitar's
-    // dynamic near clip) came back with its depth squashed towards the camera, so a whole actor read the sun shadow
-    // at the player's position and flipped light/dark as the player crossed a shadow edge. clip.w is the view depth
-    // for any perspective projection, whatever its near and far; x and y only fix the direction of the ray.
+    // UNOFFICIAL (P65): put the point at view depth clipPos.w along its view ray. clip.w is the view depth for any
+    // perspective projection, so a draw projected with other near/far planes than the camera's still lands on the
+    // right point; with matching planes it is the same point (to rounding). Added for the actor shadow bug, whose
+    // real cause turned out to be the register overwrite described at the top of this file (fixed in P66).
     viewPos.xyz *= clipPos.w / (abs(viewPos.z) > 1e-6f ? viewPos.z : 1e-6f);
     return mul(viewPos, TESR_InvViewTransform).xyz;
 }
