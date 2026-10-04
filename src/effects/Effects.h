@@ -48,3 +48,5 @@
 #include "Terrain.h"
 #include "Grass.h"
 #include "Particles.h"
+
+#include "BarrelHaze.h"

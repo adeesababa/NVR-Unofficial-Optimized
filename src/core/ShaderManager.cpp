@@ -81,6 +81,8 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<VolumetricFogEffect>(&TheShaderManager->Effects.VolumetricFog);
 	TheShaderManager->RegisterEffect<WaterLensEffect>(&TheShaderManager->Effects.WaterLens);
 	TheShaderManager->RegisterEffect<WetWorldEffect>(&TheShaderManager->Effects.WetWorld);
+	TheShaderManager->RegisterEffect<BarrelHazeEffect>(&TheShaderManager->Effects.BarrelHaze);
+	TheShaderManager->Effects.BarrelHaze->Enabled = TheShaderManager->Effects.BarrelHaze->Effect != nullptr;
 	TheShaderManager->RegisterEffect<DitherBusterEffect>(&TheShaderManager->Effects.DitherBuster);
 	TheShaderManager->RegisterEffect<SMAAEffect>(&TheShaderManager->Effects.SMAA);
 	TheShaderManager->RegisterEffect<FXAAEffect>(&TheShaderManager->Effects.FXAA);
@@ -1059,7 +1061,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P66 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P67 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 		else LogActiveSwitches(true);
@@ -1124,7 +1126,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// tests are the ones EffectRecord::Render applies. A wrong guess is repaired in FrameChain::Owns.
 	{
 		EffectRecord* const order[] = {
-			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
+			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
 			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
 			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Debug };
 		EffectRecord* last = nullptr;
@@ -1139,6 +1141,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+
+	Effects.BarrelHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, nullptr);
 
 	// screenspace coloring/blurring effects get rendered last
 	{

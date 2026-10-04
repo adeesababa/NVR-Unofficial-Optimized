@@ -16,6 +16,9 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 - **Optional extra speed** for weaker PCs (see below), each one a simple on/off switch.
 - **Optional visual extras** (since P64): lit particles and blood, bounce light and contact-hardening
   shadows, all off by default (see below).
+- **Experimental Gun FX** (since P67): muzzle puffs, heat smoke from a hot barrel, ejection-port smoke,
+  barrel glow, heat haze and a muzzle-blast shimmer, each with its own switch under **Main > GunFX**,
+  all off by default. Guide: [docs/GUNFX.md](docs/GUNFX.md).
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -129,6 +132,11 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   brighter or darker all at once whenever *you* stepped into or out of a shadow, because their shadow was
   checked in the wrong place (the game's skeleton data overwrote the camera values their shaders use).
   They now get their own, correct shadows.
+
+**Experimental Gun FX** (since P67). The zip includes the `GunFX.dll` plugin. In the NVR menu, **Main > GunFX**
+has one switch per effect (muzzle puff, heat smoke, ejection smoke, barrel glow, heat haze, muzzle blast), all off
+by default. Fine-tuning is in `Data\NVSE\Plugins\GunFX.ini`, and every gun also gets its own settings file the
+first time you equip it. See [docs/GUNFX.md](docs/GUNFX.md) for how to configure it.
 
 **Optional visual extras** (since P64). These change the look, so they are **off by default** and cost
 nothing while off. Turn them on in the menu to try them:

@@ -718,9 +718,219 @@ namespace ReflectionProbe {
 	}
 }
 
+// GunFX master switches (menu Main > GunFX, all off by default): sent to GunFX.dll, which runs the effects, about five
+// times a second. Bits: 0 puff, 1 heat smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast.
+namespace GunFXSwitches {
+	static void Update() {
+		static ULONGLONG last = 0;
+		const ULONGLONG now = GetTickCount64();
+		if (now - last < 200) return;
+		last = now;
+		typedef void (__cdecl* SetFn)(UInt32);
+		static SetFn set = nullptr;
+		if (!set) {
+			HMODULE gunfx = GetModuleHandleA("GunFX.dll");
+			if (gunfx) set = (SetFn)GetProcAddress(gunfx, "GunFX_SetSwitches");
+			if (!set) return;
+		}
+		static const char* const keys[] = { "Puff", "HeatSmoke", "EjectionSmoke", "BarrelGlow", "HeatHaze", "MuzzleBlast" };
+		UInt32 bits = 0;
+		for (UInt32 i = 0; i < 6; ++i)
+			if (TheSettingManager->GetSettingI("Main.GunFX.Main", keys[i])) bits |= 1u << i;
+		set(bits);
+	}
+}
+
+namespace BarrelHeat {
+	typedef bool (__cdecl* GetHeatFn)(float out[10], const void* weaponNode);
+	static GetHeatFn GetHeat = nullptr;
+	static bool Active = false;
+	static bool ProbeFrame = false;
+	static float ProbeHeat[10] = {};
+	static bool ProbeBridge = false;
+	static unsigned ProbeDraws = 0, ProbeUploads = 0, ProbeSamples = 0;
+	static ULONGLONG LastProbe = 0, LastProbeHeat = 0;
+
+	static void Clear() {
+		if (!Active) return;
+		const float off[12] = {};
+		TheRenderManager->device->SetVertexShaderConstantF(171, off, 3);
+		TheRenderManager->device->SetPixelShaderConstantF(171, off, 3);
+		Active = false;
+	}
+
+	static bool ToGunLocal(NiGeometry* geometry, float state[10], const char*& failure) {
+		// Rigid weapon vertices are in this geometry's local space in ObjectTemplate.
+		// Put the live muzzle there too, without consulting either camera projection.
+		if (geometry->skinInstance || fabsf(geometry->m_worldTransform.scale) < 0.001f) { failure = "skin or scale"; return false; }
+		const NiTransform& transform = geometry->m_worldTransform;
+		auto toLocal = [&](const D3DXVECTOR3& point) {
+			const float dx = point.x - transform.pos.x, dy = point.y - transform.pos.y, dz = point.z - transform.pos.z;
+			const float inverseScale = 1.0f / transform.scale;
+			return D3DXVECTOR3(
+				(transform.rot.data[0][0] * dx + transform.rot.data[1][0] * dy + transform.rot.data[2][0] * dz) * inverseScale,
+				(transform.rot.data[0][1] * dx + transform.rot.data[1][1] * dy + transform.rot.data[2][1] * dz) * inverseScale,
+				(transform.rot.data[0][2] * dx + transform.rot.data[1][2] * dy + transform.rot.data[2][2] * dz) * inverseScale);
+		};
+		const D3DXVECTOR3 muzzle = toLocal(D3DXVECTOR3(state[0], state[1], state[2]));
+		const D3DXVECTOR3 back = toLocal(D3DXVECTOR3(state[0] + state[4] * state[7], state[1] + state[5] * state[7],
+			state[2] + state[6] * state[7]));
+		D3DXVECTOR3 axis = back - muzzle;
+		const float length = D3DXVec3Length(&axis);
+		if (!std::isfinite(muzzle.x) || !std::isfinite(muzzle.y) || !std::isfinite(muzzle.z) ||
+			!std::isfinite(length) || length < 1.0f || length > 100.0f) { failure = "local transform"; return false; }
+		state[0] = muzzle.x; state[1] = muzzle.y; state[2] = muzzle.z;
+		state[4] = axis.x / length; state[5] = axis.y / length; state[6] = axis.z / length;
+		state[7] = length;
+		return true;
+	}
+
+	// Temporary v40 diagnostics: sample one third-person frame per second.
+	static void BeginWorldProbe() {
+		ProbeFrame = false;
+		if (!Player || !Player->isThirdPerson || ProbeSamples >= 120) return;
+		const ULONGLONG now = GetTickCount64();
+		if (now - LastProbe < 1000) return;
+		LastProbe = now;
+		if (!GetHeat) {
+			HMODULE smoke = GetModuleHandleA("GunFX.dll");
+			if (smoke) GetHeat = (GetHeatFn)GetProcAddress(smoke, "GunFX_GetHeatV3");
+		}
+		NiNode* weapon = Player->ActorSkinInfo ? Player->ActorSkinInfo->WeaponNode : nullptr;
+		memset(ProbeHeat, 0, sizeof(ProbeHeat));
+		ProbeBridge = weapon && GetHeat && GetHeat(ProbeHeat, weapon);
+		if (ProbeBridge && ProbeHeat[3] > 0.01f) LastProbeHeat = now;
+		if (!LastProbeHeat || now - LastProbeHeat > 15000) return;
+		ProbeFrame = true;
+		ProbeDraws = ProbeUploads = 0;
+		Logger::Log("BarrelHeat probe BEGIN %u: bridge %s, heat %.3f, weapon %p", ++ProbeSamples,
+			ProbeBridge ? "yes" : "no", ProbeHeat[3], weapon);
+	}
+
+	static void ProbeDraw(NiGeometry* geometry, NiD3DVertexShaderEx* vs, NiD3DPixelShaderEx* ps) {
+		if (!ProbeFrame || !geometry || !Player->ActorSkinInfo) return;
+		NiNode* weapon = Player->ActorSkinInfo->WeaponNode;
+		NiAVObject* node = geometry;
+		for (int depth = 0; node && node != weapon && depth < 32; ++depth) node = node->m_parent;
+		if (!weapon || node != weapon) return;
+		if (++ProbeDraws > 64) return;
+		float local[10];
+		memcpy(local, ProbeHeat, sizeof(local));
+		const char* failure = ProbeBridge ? "none" : "no bridge";
+		const bool aligned = ProbeBridge && ToGunLocal(geometry, local, failure);
+		NiBound bound = {};
+		if (geometry->geomData) bound = geometry->geomData->m_kBound;
+		float ambient[4] = {};
+		DWORD blending = 0, source = 0, destination = 0;
+		auto device = TheRenderManager->device;
+		device->GetPixelShaderConstantF(1, ambient, 1);
+		device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blending);
+		device->GetRenderState(D3DRS_SRCBLEND, &source);
+		device->GetRenderState(D3DRS_DESTBLEND, &destination);
+		IDirect3DVertexShader9* boundVS = nullptr;
+		IDirect3DPixelShader9* boundPS = nullptr;
+		device->GetVertexShader(&boundVS);
+		device->GetPixelShader(&boundPS);
+		Logger::Log("BarrelHeat probe surface %.48s: VS %s NVR=%d bound=%d, PS %s NVR=%d bound=%d; local=%s (%s) muzzle (%.2f %.2f %.2f) axis (%.3f %.3f %.3f) bound (%.2f %.2f %.2f r%.2f) scale %.3f alpha %.3f blend %u/%u/%u",
+			geometry->m_pcName ? geometry->m_pcName : "(unnamed)", vs && vs->Name ? vs->Name : "none",
+			vs && vs->ShaderHandleBackup && vs->ShaderHandle != vs->ShaderHandleBackup, vs && boundVS == vs->ShaderHandle,
+			ps && ps->Name ? ps->Name : "none", ps && ps->ShaderHandleBackup && ps->ShaderHandle != ps->ShaderHandleBackup,
+			ps && boundPS == ps->ShaderHandle, aligned ? "yes" : "no", failure,
+			local[0], local[1], local[2], local[4], local[5], local[6], bound.Center.x, bound.Center.y, bound.Center.z,
+			bound.Radius, geometry->m_worldTransform.scale, ambient[3], blending, source, destination);
+		if (boundVS) boundVS->Release();
+		if (boundPS) boundPS->Release();
+	}
+
+	static void EndWorldProbe() {
+		if (ProbeFrame) Logger::Log("BarrelHeat probe END: gun draws %u, heat uploads %u", ProbeDraws, ProbeUploads);
+		ProbeFrame = false;
+	}
+
+	static void SetForDraw(NiGeometry* geometry, NiD3DVertexShaderEx* vertexShader, NiD3DPixelShaderEx* pixelShader) {
+		const bool firstPerson = ShaderSplit::CurrentContext == ShaderSplit::FirstPerson;
+		if (!firstPerson && ShaderSplit::CurrentContext != ShaderSplit::World) return;
+		if (!firstPerson) ProbeDraw(geometry, vertexShader, pixelShader);
+		if (!pixelShader || !pixelShader->Name || !pixelShader->ShaderHandleBackup ||
+			pixelShader->ShaderHandle == pixelShader->ShaderHandleBackup) return;
+		const char* name = pixelShader->Name;
+		if (strncmp(name, "SLS20", 5) || strlen(name) != 11 || strcmp(name + 7, ".pso") ||
+			(name[5] - '0') * 10 + name[6] - '0' > 56) return;
+		// Indoor lighting can use SLS2037-2044 for the only opaque draw.
+		// Check the actual blend state instead of guessing the pass from its shader name.
+		// Blended light/specular redraws must not apply the glow again.
+		if (!firstPerson) {
+			DWORD alphaBlend = FALSE;
+			if (FAILED(TheRenderManager->device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend)) || alphaBlend) return;
+		}
+		// The local coordinates used by the heat pixel shader come from its matching
+		// ObjectTemplate vertex shader. Shadow's interpolated sentinel is unrelated.
+		const char* vertexName = vertexShader ? vertexShader->Name : nullptr;
+		const bool paired = vertexName && vertexShader->ShaderHandleBackup &&
+			vertexShader->ShaderHandle != vertexShader->ShaderHandleBackup &&
+			!strncmp(vertexName, "SLS20", 5) && strlen(vertexName) == 11 && !strcmp(vertexName + 7, ".vso") &&
+			(vertexName[5] - '0') * 10 + vertexName[6] - '0' <= 56;
+
+		float state[12] = {};
+		NiNode* weaponNode = nullptr;
+		if (Player) {
+			SkinInfo* skin = firstPerson ? Player->firstPersonSkinInfo : Player->ActorSkinInfo;
+			if (skin) weaponNode = skin->WeaponNode;
+		}
+		if (geometry && weaponNode && paired) {
+			NiAVObject* node = geometry;
+			for (int depth = 0; node && depth < 32; ++depth, node = node->m_parent) {
+				if (node == weaponNode) {
+					if (!GetHeat) {
+						HMODULE smoke = GetModuleHandleA("GunFX.dll");
+						if (smoke) GetHeat = (GetHeatFn)GetProcAddress(smoke, "GunFX_GetHeatV3");
+					}
+					if (GetHeat && GetHeat(state, weaponNode)) {
+						BarrelHaze::CaptureWorld(state, firstPerson, weaponNode);
+						const char* failure = "none";
+						const bool aligned = ToGunLocal(geometry, state, failure);
+						if (!aligned) state[3] = 0.0f;
+						else {
+							const float scale = fabsf(geometry->m_worldTransform.scale);
+							state[8] /= scale;
+							state[9] /= scale;
+							static unsigned hazeLogged[2] = {};
+							static ULONGLONG hazeLoggedAt[2] = {};
+							const unsigned hazeView = firstPerson ? 0 : 1;
+							const ULONGLONG hazeNow = GetTickCount64();
+							if (BarrelHaze::Captured == hazeNow && hazeLogged[hazeView] < 8 && hazeNow - hazeLoggedAt[hazeView] > 1000) {
+								hazeLogged[hazeView]++;
+								hazeLoggedAt[hazeView] = hazeNow;
+								Logger::Log("BarrelHaze %s: UV (%.3f %.3f) -> (%.3f %.3f), view depth %.1f, heat %.2f, push %.2f px, plume %.0fx%.0f px%s",
+									firstPerson ? "first-person" : "third-person", BarrelHaze::Line.x, BarrelHaze::Line.y,
+									BarrelHaze::Line.z, BarrelHaze::Line.w, BarrelHaze::Animation.w, BarrelHaze::Data.x,
+									BarrelHaze::Data.y, BarrelHaze::Data.z, BarrelHaze::Data.w,
+									firstPerson ? " (first-person field of view)" : "");
+							}
+						}
+						static bool logged[2] = {};
+						const unsigned context = ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 0 : 1;
+						if (!logged[context] && (state[3] > 0.25f || !aligned)) {
+							logged[context] = true;
+							Logger::Log("BarrelHeat: %s weapon surface %s, heat %.2f, local alignment %s (%s), skinned %s", context ? "third-person" : "first-person",
+								geometry->m_pcName ? geometry->m_pcName : "(unnamed)", state[3], aligned ? "yes" : "fallback", failure, geometry->skinInstance ? "yes" : "no");
+						}
+					}
+					break;
+				}
+			}
+		}
+		if (state[3] <= 0.0f) return;
+		TheRenderManager->device->SetVertexShaderConstantF(171, state, 3);
+		TheRenderManager->device->SetPixelShaderConstantF(171, state, 3);
+		Active = true;
+		if (!firstPerson && ProbeFrame) ++ProbeUploads;
+	}
+}
+
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
-	
+	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
 	const double bindStart = profiling ? CpuTimer::NowMs() : 0.0;
 	NiGeometry* Geometry = *(NiGeometry**)(*(void**)0x011F91E0);
@@ -783,6 +993,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
 	if (profiling) ShaderSplit::EndBind(bindStart);
 
 }
@@ -812,7 +1023,12 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		static GpuTimer worldTimer("World scene (game)");
 		GpuProfileScope gpu(worldTimer, TheRenderManager->device);
 		ShaderSplit::BeginContext(ShaderSplit::World);
+		GunFXSwitches::Update();
+		BarrelHaze::Reset();
+		BarrelHeat::BeginWorldProbe();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		BarrelHeat::EndWorldProbe();
+		BarrelHeat::Clear();
 		ShaderSplit::EndContext();
 	}
 
@@ -848,6 +1064,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	//ThisCall(0x00874C10, Global);
 	ShaderSplit::BeginContext(ShaderSplit::FirstPerson);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	BarrelHeat::Clear();
 	ShaderSplit::EndContext();
 	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
 }

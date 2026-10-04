@@ -1,0 +1,143 @@
+; GunFX settings (experimental). Saved changes are picked up while the game runs (within a second).
+; Turn each effect on or off in the NVR menu (O key): Main > GunFX. This file fine-tunes them.
+; Per-gun settings: each gun also gets its own file in Data\NVSE\Plugins\GunFX\Weapons\ the first time you equip it.
+; Full guide: GunFX-README.txt (in the download) or docs/GUNFX.md on GitHub.
+; The smoke's look (colour, opacity, how it grows and rises) is built into the effect files in Data\Meshes\GunFX.
+
+[Puff]
+; A small puff of smoke at the muzzle on every shot.
+bEnabled=1
+; Effect file (inside Data\Meshes).
+sModel=GunFX\barrelpuff.nif
+; Seconds the effect lives.
+fLifetime=0.9
+; Size of the puff.
+fScale=1.0
+; Seconds the puff blows smoke (longer = a bigger puff).
+fBurstSeconds=0.12
+; Automatic guns: smallest gap between two puffs in seconds (0.05 = practically every shot; more = a lighter haze).
+; Other guns make a puff on every shot.
+fMinInterval=0.05
+; 1 = only your own shots, 0 = everyone's.
+bPlayerOnly=1
+; Where the puff starts: a node of the gun's model (blank = ProjectileNode, the barrel tip), moved by the offsets
+; (in game units, along the gun's own axes: Y = forward along the barrel, X = sideways, Z = up).
+sNode=
+fOffsetX=1
+fOffsetY=2
+fOffsetZ=0
+
+[Wisp]
+; Heat smoke: a thin strand of smoke rising from the barrel, driven by barrel heat. A few shots give nothing,
+; sustained fire builds a steady strand (also while you keep firing), and it tapers off as the barrel cools.
+bEnabled=1
+; Effect file: GunFX\barrelstrand.nif (thin strand) or GunFX\barrelwisp.nif (looser stream of bigger puffs).
+sModel=GunFX\barrelstrand.nif
+; Size of the strand.
+fScale=2.7
+; Barrel heat: each shot adds fHeatPerShot; the barrel cools by fCoolPerSecond each second, starting fCoolDelay
+; seconds after the last shot (so slower guns build heat too). Heat never goes above fMaxHeat.
+fHeatPerShot=0.5
+fCoolPerSecond=3.0
+fCoolDelay=1.5
+fMaxHeat=15
+; No smoke below fHeatStart; full smoke from fHeatFull on (rising smoothly in between).
+fHeatStart=3
+fHeatFull=12
+; Smoke rate at full heat in puffs per second (strand: up to about 180; more = a smoother, denser strand).
+fMaxRate=150
+; Slow sideways sway of the smoke's source, so the strand snakes as it rises (0 = straight up), and its speed.
+fSway=1
+fSwaySpeed=0.1
+; Where the strand starts (as in [Puff]).
+sNode=
+fOffsetX=0
+fOffsetY=0
+fOffsetZ=0
+; Internal: seconds each strand effect lives before a new one takes over seamlessly, and the overlap.
+fEffectSeconds=30
+fTailSeconds=3.5
+; Internal: the rate the barrelwisp file was built with (the strand ignores it).
+fFileRate=20
+
+[Ejection]
+; A burst of smoke from the ejection port every time the game throws out a casing (automatic guns at the shot,
+; others when the animation ejects).
+bEnabled=1
+; The gun's node for the port (ShellCasingNode or ##ShellCasingNode on almost every gun). No node = no smoke.
+sNode=ShellCasingNode
+sModel=GunFX\barrelport.nif
+; Size on a cold gun, and the size at full barrel heat relative to that (a hot gun vents more smoke; 1 = always the same).
+fScale=0.5
+fHotScale=1.8
+; Seconds the port blows smoke per casing (longer = a bigger spurt), and seconds the effect lives.
+fBurstSeconds=0.06
+fLifetime=1.5
+; Smallest gap between two bursts in seconds (0 = one for every casing).
+fMinInterval=0
+; Move the burst from the port node (as in [Puff]).
+fOffsetX=0
+fOffsetY=0
+fOffsetZ=0
+
+[Glow]
+; The barrel glows after sustained fire and cools down slowly (drawn by NVR's shaders).
+bEnabled=1
+; Fitting mode: fire once, then the full glow stays visible while the gun is drawn. Set back to 0 afterwards.
+bPreview=0
+; Width of the glowing part around the barrel. Larger values catch more nearby weapon parts.
+fRadius=6.5
+; Reach ahead of the muzzle node, useful for muzzle brakes.
+fForwardLength=9
+; Glowing length back along the barrel: starts at fMinLength and grows toward fLength as shots accumulate.
+fMinLength=2.5
+fLength=14
+; Approximate sustained shots needed to reach the full length, and seconds for it to shrink back after firing stops
+; (shrinking begins after five idle seconds).
+fSpreadShots=1000
+fSpreadCoolSeconds=900
+; Move the glow relative to the muzzle node (directions depend on the weapon model; change one axis at a time).
+; Also moves the heat haze and the muzzle blast.
+fOffsetX=0
+fOffsetY=0
+fOffsetZ=0
+; Heat where the glow begins, extra heat needed for full brightness, and seconds to fade in.
+fStartHeat=1.0
+fHeatSpan=12.0
+fRiseSeconds=2.8
+; Size of the older glow-mesh fallback (does not affect the shader glow).
+fScale=1.3
+
+[Haze]
+; Heat shimmer around a hot barrel (NVR screen effect).
+bEnabled=1
+; Testing: bPreview=1 = full haze after one shot; bShowMask=1 = paint the haze area red (the muzzle blast in blue).
+bPreview=0
+bShowMask=0
+; Heat where the haze begins and where it is full, and seconds to fade in and out.
+fStartHeat=3
+fFullHeat=12
+fRiseSeconds=1.5
+; Strength (how far the image is pushed, in screen pixels), plume height and width (pixels), wobble speed.
+fStrengthPixels=3
+fHeightPixels=90
+fWidthPixels=20
+fSpeed=1
+; Length of barrel the shimmer wraps around, in game units back from the muzzle.
+fLength=8
+
+[Blast]
+; Muzzle blast: a quick, wide ripple of heat shimmer at the muzzle on every shot, whatever the barrel heat.
+bEnabled=1
+; Strongest push in screen pixels, size of the ripple (pixels), and how fast it fades in seconds (gone after about
+; three times this).
+fStrengthPixels=7
+fRadiusPixels=320
+fSeconds=0.06
+
+[Main]
+; Spawn flags for the effects (3).
+iFlags=3
+; How many puffs/strands to note in GunFX.log, and whether to list each gun's node names there (for sNode).
+iLogEvents=20
+bLogWeaponNodes=1

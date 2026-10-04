@@ -50,12 +50,12 @@ foreach ($entry in $folders.GetEnumerator()) {
 }
 
 # 3. Only what players need at the top level (no working notes).
-$allowed = 'COPYING.txt', 'License.md', 'README.md', 'NVSE', 'Shaders', 'Textures'
+$allowed = 'COPYING.txt', 'License.md', 'README.md', 'NVSE', 'Shaders', 'Textures', 'Meshes', 'GunFX-README.txt'
 foreach ($item in Get-ChildItem $pkg) {
 	if ($allowed -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 }
 foreach ($item in Get-ChildItem (Join-Path $pkg 'NVSE\Plugins')) {
-	if ('NewVegasReloaded.dll', 'NewVegasReloaded.pdb', 'NewVegasReloaded.dll.defaults.toml' -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
+	if ('NewVegasReloaded.dll', 'NewVegasReloaded.pdb', 'NewVegasReloaded.dll.defaults.toml', 'GunFX.dll', 'GunFX.pdb', 'GunFX.ini.defaults' -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 }
 foreach ($file in 'COPYING.txt', 'License.md', 'README.md') {
 	if (!(Test-Path (Join-Path $pkg $file))) { Write-Host "MISSING  $file"; $problems++ }
@@ -70,6 +70,22 @@ if ((Get-FileHash (Join-Path $plugins 'NewVegasReloaded.dll')).Hash -ne (Get-Fil
 if ((Text (Join-Path $plugins 'NewVegasReloaded.dll.defaults.toml')) -ne (Text (Join-Path $repo 'resource\NewVegasReloaded.dll.defaults.toml'))) {
 	Write-Host "STALE    NVSE\Plugins\NewVegasReloaded.dll.defaults.toml"; $problems++
 }
+
+# 5. GunFX (since P67): the plugin is the latest local build; its defaults, effect meshes and guide are the repo's.
+# Never an active GunFX.ini (it would overwrite players' settings).
+if ((Get-FileHash (Join-Path $plugins 'GunFX.dll')).Hash -ne (Get-FileHash (Join-Path $repo 'GunFX\build\GunFX.dll')).Hash) {
+	Write-Host "STALE    NVSE\Plugins\GunFX.dll (not GunFX\build's)"; $problems++
+}
+if ((Text (Join-Path $plugins 'GunFX.ini.defaults')) -ne (Text (Join-Path $repo 'GunFX\config\GunFX.ini.defaults'))) { Write-Host "STALE    GunFX.ini.defaults"; $problems++ }
+if (Test-Path (Join-Path $plugins 'GunFX.ini')) { Write-Host "EXTRA    NVSE\Plugins\GunFX.ini (players' settings must not be shipped)"; $problems++ }
+if ((Text (Join-Path $pkg 'GunFX-README.txt')) -ne (Text (Join-Path $repo 'docs\GUNFX.md'))) { Write-Host "STALE    GunFX-README.txt"; $problems++ }
+$meshes = & git -C $repo -c safe.directory=* ls-files -- 'GunFX/assets/Meshes/'
+foreach ($file in $meshes) {
+	$target = Join-Path $pkg ('Meshes\' + $file.Substring('GunFX/assets/Meshes/'.Length).Replace('/', '\'))
+	if (!(Test-Path $target)) { Write-Host "MISSING  $file"; $problems++ }
+	elseif ((Get-FileHash $target).Hash -ne (Get-FileHash (Join-Path $repo $file)).Hash) { Write-Host "STALE    $file"; $problems++ }
+}
+if ((Get-ChildItem (Join-Path $pkg 'Meshes') -Recurse -File).Count -ne @($meshes).Count) { Write-Host "EXTRA    files in Meshes"; $problems++ }
 
 if ($problems) { throw "$problems package problem(s) in $pkg" }
 Write-Host "Package OK: $pkg ($checked shader/texture files, DLL and defaults current)"

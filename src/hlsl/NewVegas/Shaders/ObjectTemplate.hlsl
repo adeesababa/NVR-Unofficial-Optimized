@@ -159,6 +159,48 @@
 #endif
 #include "includes/Shadow.hlsl"
 
+// GunFX barrel glow (P67). Heat bridge from GunFX.dll. Coordinates are local to the drawn gun mesh, so
+// viewmodel projection and camera motion cannot move the mask off the barrel.
+float4 BarrelHeatMuzzle : register(c171); // local xyz, strength
+float4 BarrelHeatAxis : register(c172);   // local unit vector toward the breech, length
+float4 BarrelHeatShape : register(c173);  // local radius, forward reach
+
+float BarrelHeatMask(float3 localPos) {
+    float3 offset = localPos - BarrelHeatMuzzle.xyz;
+    float along = dot(offset, BarrelHeatAxis.xyz);
+    float radial = length(offset - BarrelHeatAxis.xyz * along);
+    float span = max(BarrelHeatAxis.w, 1.0f);
+    float radius = max(BarrelHeatShape.x, 1.0f);
+    float forward = max(BarrelHeatShape.y, 1.0f);
+    // Keep the muzzle hottest and taper continuously toward the breech.
+    float rearFade = saturate(1.0f - max(along, 0.0f) / span);
+    return smoothstep(-forward, -forward * 0.15f, along)
+         * rearFade
+         * (1.0f - smoothstep(radius * 0.375f, radius, radial))
+         * BarrelHeatMuzzle.w;
+}
+
+#ifdef PS
+#if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+float3 ApplyBarrelHeat(float3 color, float mask, float3 materialFactor) {
+#else
+float3 ApplyBarrelHeat(float3 color, float mask) {
+#endif
+    if (BarrelHeatMuzzle.w <= 0.0f) return color;
+    float heat = saturate(mask);
+    float orange = smoothstep(0.5f, 1.0f, heat);
+    float3 ember = lerp(float3(0.68f, 0.055f, 0.015f),
+                        float3(1.25f, 0.23f, 0.035f), orange);
+#if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+    // Lighting-only passes are later modulated by the material texture.
+    // Undo that modulation for the emissive term, keeping ordinary lighting intact.
+    return lerp(color, ember / materialFactor, heat * heat * 0.75f);
+#else
+    return lerp(color, ember, heat * heat * 0.75f);
+#endif
+}
+#endif
+
 // Forward sun shadows. Enabled at COMPILE TIME via FORWARD_SHADOWS in Includes/Shadow.hlsl,
 // deliberately not via a runtime constant -- see the note there.
 
@@ -197,7 +239,7 @@ struct VS_OUTPUT {
     float4 fogColor : COLOR1;
 #endif
     float4 sPosition : POSITION;
-    float2 uv : TEXCOORD0;
+    float4 uv : TEXCOORD0; // .zw = local barrel position xy
     float4 lightDir : TEXCOORD1;
 
 #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
@@ -208,7 +250,7 @@ struct VS_OUTPUT {
     float4 light3Dir : TEXCOORD3;
 #endif
     
-    float3 viewDir : TEXCOORD6;
+    float4 viewDir : TEXCOORD6; // .w = local barrel position z
 
     // Object-space squared distances for point-light attenuation (vanillaAttSq), bypassing
     // lightDir/light2Dir/light3Dir above -- those are tangent-space (TBN-transformed) and their
@@ -256,7 +298,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // read by the PS either (same macro guards on both sides).
     OUT.lightDistSq = 0;
 
-    OUT.uv = IN.uv.xy;
+    OUT.uv.xy = IN.uv.xy;
     
     float4 position = IN.position.xyzw;
     
@@ -275,6 +317,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif
+    OUT.uv.zw = position.xy;
     
     #if defined(DIFFUSE) || defined(POINT)
         float3 light = LightData[0].xyz - position.xyz;
@@ -287,6 +330,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.lightDir.xyz = mul(tbn, light);
 
     OUT.viewDir.xyz = mul(tbn, EyePosition.xyz - position.xyz);
+    OUT.viewDir.w = position.z;
 
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         light = LightData[1].xyz - position.xyz;
@@ -504,7 +548,7 @@ struct PS_INPUT {
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
 #endif
-    float2 uv : TEXCOORD0;
+    float4 uv : TEXCOORD0;
     float4 lightDir : TEXCOORD1_centroid;
 #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
     float4 light2Dir : TEXCOORD2_centroid;
@@ -512,7 +556,7 @@ struct PS_INPUT {
 #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
     float4 light3Dir : TEXCOORD3_centroid;
 #endif
-    float3 viewDir : TEXCOORD6_centroid;
+    float4 viewDir : TEXCOORD6_centroid;
     float3 lightDistSq : TEXCOORD5;
     float4 shadowWorldPos : TEXCOORD4;
 #ifdef PROJ_SHADOW
@@ -567,10 +611,16 @@ float4 PSLightColor[10] : register(c3);
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
     
+#if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+    float3 heatMaterialFactor = 1.0f;
+#endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         float4 baseColor = tex2D(BaseMap, IN.uv.xy);
     
         #if defined(ONLY_LIGHT)
+            // Keep the sampled albedo before the lighting-only path discards it.
+            // Bound the reciprocal on black texels to avoid extreme HDR values.
+            heatMaterialFactor = max(baseColor.rgb, 0.03f);
             baseColor.rgb = 1;
         #endif
     #else
@@ -692,7 +742,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     finalColor.rgb = float3(1.0f, 0.0f, 1.0f);   // unconditional: proves this shader ran
 #endif
 
-    OUT.color.rgb = finalColor.rgb;
+#if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+    OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)), heatMaterialFactor);
+#else
+    OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)));
+#endif
     
     #if defined(DIFFUSE)
         OUT.color.a = 1;
@@ -881,7 +935,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     finalColor.rgb = float3(1.0f, 0.0f, 1.0f);   // unconditional: proves this shader ran
 #endif
 
-    OUT.color.rgb = finalColor.rgb;
+    OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(IN.lPosition.xyz));
     OUT.color.a = baseColor.a * AmbientColor.a;
 
     return OUT;
