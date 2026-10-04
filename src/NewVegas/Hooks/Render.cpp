@@ -720,7 +720,7 @@ namespace ReflectionProbe {
 
 // GunFX master switches (menu Main > GunFX, all off by default): sent to GunFX.dll, which runs the effects, about five
 // times a second. Bits: 0 puff, 1 heat smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast,
-// 6 energy weapons too (off = no GunFX on lasers, plasma, ...).
+// 6 energy weapons too (off = no GunFX on lasers, plasma, ...), 7 after-fire trail.
 namespace GunFXSwitches {
 	static void Update() {
 		static ULONGLONG last = 0;
@@ -734,9 +734,9 @@ namespace GunFXSwitches {
 			if (gunfx) set = (SetFn)GetProcAddress(gunfx, "GunFX_SetSwitches");
 			if (!set) return;
 		}
-		static const char* const keys[] = { "Puff", "HeatSmoke", "EjectionSmoke", "BarrelGlow", "HeatHaze", "MuzzleBlast", "EnergyWeapons" };
+		static const char* const keys[] = { "Puff", "HeatSmoke", "EjectionSmoke", "BarrelGlow", "HeatHaze", "MuzzleBlast", "EnergyWeapons", "AfterFireTrail" };
 		UInt32 bits = 0;
-		for (UInt32 i = 0; i < 7; ++i)
+		for (UInt32 i = 0; i < 8; ++i)
 			if (TheSettingManager->GetSettingI("Main.GunFX.Main", keys[i])) bits |= 1u << i;
 		set(bits);
 	}

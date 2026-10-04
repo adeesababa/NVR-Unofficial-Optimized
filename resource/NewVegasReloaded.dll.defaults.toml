@@ -39,6 +39,7 @@ StepValue = 1.0
 [_Main.GunFX.Main]
 Puff = false                            # GunFX (experimental, needs GunFX.dll): a small puff of smoke at the muzzle on every shot. Fine-tune everything in Data\NVSE\Plugins\GunFX.ini.
 HeatSmoke = false                       # GunFX: a thin strand of smoke rising from the barrel once it is hot from sustained fire; it tapers off as the gun cools.
+AfterFireTrail = false                  # GunFX: a thin, wispy trail rising from the barrel only after you stop firing (like a cigarette); fades as the barrel cools, stops when you fire again.
 EjectionSmoke = false                   # GunFX: a burst of smoke from the ejection port with every casing, bigger when the barrel is hot.
 BarrelGlow = false                      # GunFX: the barrel glows after sustained fire and cools down slowly.
 HeatHaze = false                        # GunFX: heat shimmer around a hot barrel (screen effect).

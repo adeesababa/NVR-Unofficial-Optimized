@@ -68,7 +68,11 @@ static struct {
 	char trailModel[MAX_PATH];
 	float trailScale, heatPerShot, coolPerSecond, maxHeat, heatStart, heatFull, maxRate, fileRate, effectSeconds, tailSeconds;
 	int trailFlags, trailSmokeOnly, trailFollow;
-	float constantRate, sway, swaySpeed, coolDelay;
+	float constantRate, sway, swaySpeed, coolDelay, wispStopDelay;
+	// After-fire trail ([Trail]): a thin wisp that rises only once you stop firing.
+	int after;
+	char afterModel[MAX_PATH];
+	float afterScale, afterDelay, afterMinHeat, afterFullHeat, afterMaxRate, afterSway, afterSwaySpeed;
 	int glow, glowPreview;
 	float glowScale, glowLength, glowStart, glowHeatSpan, glowRiseSeconds;
 	float glowRadius, glowForwardLength, glowMinLength, glowSpreadShots, glowSpreadCoolSeconds;
@@ -78,7 +82,7 @@ static struct {
 	int eject, haze, hazePreview, hazeMask, logWeaponNodes, blast;
 	float blastPixels, blastRadius, blastSeconds;
 	float ejectScale, ejectLifetime, ejectInterval, ejectHotScale, ejectBurst, puffBurst;
-	float hazeStart, hazeFull, hazeRise, hazePixels, hazeHeight, hazeWidth, hazeSpeed, hazeLength;
+	float hazeStart, hazeFull, hazeRise, hazePixels, hazeHeight, hazeWidth, hazeSpeed, hazeLength, hazeMinSize;
 	int flags, logEvents;
 } Settings;
 
@@ -91,7 +95,7 @@ static void LogLine(const char* format, ...) {
 static bool LogEvent() { if (Settings.logEvents <= 0) return false; Settings.logEvents--; return true; }
 
 // Master switches from NVR's menu (Main > GunFX), set every frame through GunFX_SetSwitches: bit 0 puff, 1 heat
-// smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast, 6 energy weapons too. All on until NVR says otherwise, so
+// smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast, 6 energy weapons too, 7 after-fire trail. All on until NVR says otherwise, so
 // GunFX also works on its own (then only the INI decides).
 static volatile LONG NvrSwitches = -1;
 static bool Switch(int bit) { return (NvrSwitches >> bit) & 1; }
@@ -383,6 +387,12 @@ static float* RateValue = nullptr;     // its emitter's smoke rate, when found
 static UInt8* RateController = nullptr; // its emitter controller (kept switched on while it is ours)
 static Look FollowLook;                // the look written into the running wisp
 static bool FollowHeld = false;        // the game held its own reference to the running wisp when it was spawned
+// The after-fire trail: a second following effect, like the wisp, that only smokes after the last shot.
+static UInt8* AfterEffect = nullptr;
+static ULONGLONG AfterUntil = 0;
+static float* AfterRate = nullptr;
+static UInt8* AfterController = nullptr;
+static bool AfterHeld = false;
 static const int GlowPoints = 4;
 static NiPoint3 GlowBack = { 0.0f, -1.0f, 0.0f };
 static bool GlowUnavailable = false;   // fail closed if the glow mesh is missing
@@ -554,6 +564,17 @@ static void ReleaseWisp(const char* why) {
 	RateController = nullptr;
 }
 
+// Lets the after-fire trail go (its smoke in the air keeps rising and fading).
+static void ReleaseAfter(const char* why) {
+	if (!AfterEffect) return;
+	if (AfterRate) *AfterRate = 0.0f;
+	if (why) LogLine("after-fire trail released: %s (heat %.1f)", why, Heat);
+	NodeRelease(AfterEffect);
+	AfterEffect = nullptr;
+	AfterRate = nullptr;
+	AfterController = nullptr;
+}
+
 static NiPoint3 GlowDirection(UInt8* node) {
 	if (!node) return GlowBack;
 	const NiPoint3 muzzle = *(NiPoint3*)(node + 0x8C);
@@ -618,10 +639,13 @@ static void PublishHeat(bool muzzleAlive, float strength) {
 	HeatOffsetZ = Settings.glowOffsetZ;
 	HazePublished[0] = next ? haze : 0.0f;
 	HazePublished[1] = Settings.hazePixels;
-	HazePublished[2] = Settings.hazeHeight;
-	HazePublished[3] = Settings.hazeWidth;
+	// Size grows with the heat too: fMinSize of full size when the haze first shows, full size at full heat (the
+	// strength already follows the heat in the shader).
+	const float hazeSize = Settings.hazeMinSize + (1.0f - Settings.hazeMinSize) * (haze < 0.0f ? 0.0f : haze > 1.0f ? 1.0f : haze);
+	HazePublished[2] = Settings.hazeHeight * hazeSize;
+	HazePublished[3] = Settings.hazeWidth * hazeSize;
 	HazePublished[4] = Settings.hazeSpeed;
-	HazePublished[5] = Settings.hazeLength;
+	HazePublished[5] = Settings.hazeLength * hazeSize;
 	HazePublished[6] = (float)Settings.hazeMask;
 	HazeBlast[0] = next ? Settings.blastPixels * pulse : 0.0f;
 	HazeBlast[1] = Settings.blastRadius;
@@ -681,6 +705,25 @@ static bool SpawnWisp(ULONGLONG now, const NiPoint3& position) {
 		Settings.trailModel, position.x, position.y, position.z, Settings.effectSeconds, Heat, FollowHeld ? "yes" : "no",
 		RateValue ? "under control" : "NOT found (on/off only; check fFileRate matches the file)", startRate,
 		(startFlags & 0x8) ? "on" : "OFF", RateController, RateValue);
+	return true;
+}
+
+// Spawns the after-fire trail at the barrel (same source node and offsets as the wisp); its rate starts at 0.
+static bool SpawnAfter(ULONGLONG now, const NiPoint3& position) {
+	void* cell = TrailActor ? *(void**)((UInt8*)TrailActor + 0x40) : nullptr;
+	if (!cell) return false;
+	void* effect = SpawnEffect(cell, Settings.effectSeconds, Settings.afterModel, NiPoint3{ 0.0f, 0.0f, 1.0f }, position,
+		Settings.afterScale, (UInt32)Settings.trailFlags, nullptr);
+	if (!effect) { LogLine("after-fire trail %s NOT created", Settings.afterModel); return false; }
+	UInt8* root = *(UInt8**)((UInt8*)effect + 0x18);
+	AfterEffect = (UInt8*)effect;
+	NodeAddRef(AfterEffect);
+	AfterHeld = *(volatile LONG*)(AfterEffect + 4) > 1;
+	AfterUntil = now + (ULONGLONG)(Settings.effectSeconds * 1000.0f) - 150;
+	AfterController = nullptr;
+	AfterRate = root ? FindRate(root, 0, OwnModel(Settings.afterModel), &AfterController) : nullptr;
+	if (AfterRate) { *AfterRate = 0.0f; *(unsigned short*)(AfterController + 0x08) |= 0x8; }
+	LogLine("after-fire trail %s, heat %.1f; smoke rate %s", Settings.afterModel, Heat, AfterRate ? "under control" : "NOT found");
 	return true;
 }
 
@@ -784,7 +827,7 @@ static void HandleShots(ULONGLONG now);   // below, with the hooks
 typedef void* (__thiscall* GetCurrentWeaponFn)(void* actor);
 static const GetCurrentWeaponFn GetEquippedWeapon = (GetCurrentWeaponFn)0x008A1710;
 static void* SettingsWeapon = nullptr;
-static const char* const GunSections[] = { "Puff", "Wisp", "Glow", "Haze", "Blast", "Ejection" };
+static const char* const GunSections[] = { "Muzzle", "Puff", "Wisp", "Trail", "Glow", "Haze", "Blast", "Ejection" };
 static bool SkippedGunKey(const char* key) {   // test switches, not meant per gun
 	return !_stricmp(key, "iRibbonReports") || !_stricmp(key, "bFollowMuzzle") || !_stricmp(key, "fConstantRate") ||
 		!_stricmp(key, "iFlags") || !_stricmp(key, "fFileRate");
@@ -879,6 +922,13 @@ static void MainLoop() {
 	t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
 	float rate = Settings.maxRate * t * t * (3.0f - 2.0f * t);   // smooth start and finish
 	if (Settings.constantRate > 0.0f) rate = Settings.constantRate;  // test switch: fixed rate, no heat
+	// The heat smoke only runs while you fire: fStopDelay seconds after the last shot it stops (the smoke already in
+	// the air drifts off) and the after-fire trail takes over. fStopDelay 0 = it keeps going until the barrel cools.
+	const bool firing = Settings.wispStopDelay <= 0.0f || (LastShot && now - LastShot < (ULONGLONG)(Settings.wispStopDelay * 1000.0f));
+	if (!firing && Settings.constantRate <= 0.0f) {
+		rate = 0.0f;
+		if (FollowEffect) ReleaseWisp("stopped firing");
+	}
 	// The shader rises over a sustained burst, independently of the smoke's heatFull.
 	float glowT = (Heat - Settings.glowStart) / Settings.glowHeatSpan;
 	glowT = glowT < 0.0f ? 0.0f : glowT > 1.0f ? 1.0f : glowT;
@@ -929,6 +979,37 @@ static void MainLoop() {
 		if (RateValue) { *RateValue = rate; *(unsigned short*)(RateController + 0x08) |= 0x8; }
 		if (root) ReportRibbon(root, now);
 		else if (rate <= 0.01f) ReleaseWisp("cooled down (no rate control)");
+	}
+	// After-fire trail: from fStartDelay seconds after the last shot, while the barrel is still warm. Its rate follows
+	// the heat that is left (full at fFullHeat, none below fMinHeat), so it thins out as the gun cools; firing again
+	// stops it at once (the smoke already in the air drifts away).
+	{
+		const bool resting = LastShot && now - LastShot >= (ULONGLONG)(Settings.afterDelay * 1000.0f);
+		const float afterSpan = Settings.afterFullHeat - Settings.afterMinHeat > 0.01f ? Settings.afterFullHeat - Settings.afterMinHeat : 0.01f;
+		float a = (Heat - Settings.afterMinHeat) / afterSpan;
+		a = a < 0.0f ? 0.0f : a > 1.0f ? 1.0f : a;
+		const float afterRate = resting ? Settings.afterMaxRate * a * a * (3.0f - 2.0f * a) : 0.0f;
+		const bool afterOn = Settings.after && Switch(7) && muzzleAlive && GunAllowed(CurrentWeapon);
+		const bool afterDropped = AfterEffect && AfterHeld && *(volatile LONG*)(AfterEffect + 4) <= 1;
+		if (AfterEffect && (!afterOn || afterDropped || now > AfterUntil || !resting))
+			ReleaseAfter(!afterOn ? nullptr : afterDropped ? "the game removed it" : !resting ? "firing again" : "its time is up");
+		if (afterOn && afterRate > 0.01f) {
+			if (AfterEffect && now + (ULONGLONG)(Settings.tailSeconds * 1000.0f) > AfterUntil) ReleaseAfter("handing over to a new one");
+			if (!AfterEffect) SpawnAfter(now, NodePosition(SmokeAnchor(Settings.wispNode, TrailNode), Settings.wispOffset));
+		}
+		if (AfterEffect) {
+			UInt8* afterRoot = *(UInt8**)(AfterEffect + 0x18);
+			if (afterRoot && TrailNode) {
+				NiPoint3 at = NodePosition(SmokeAnchor(Settings.wispNode, TrailNode), Settings.wispOffset);
+				if (Settings.afterSway > 0.0f) {
+					const float w = (float)(now % 3600000) / 1000.0f * Settings.afterSwaySpeed * 6.2831853f;
+					at.x += Settings.afterSway * (sinf(w * 1.1f + 0.7f) + 0.5f * sinf(w * 2.7f)) / 1.5f;
+					at.y += Settings.afterSway * (sinf(w * 0.9f + 1.3f) + 0.5f * sinf(w * 2.1f + 0.4f)) / 1.5f;
+				}
+				*(NiPoint3*)(afterRoot + 0x58) = at;
+			}
+			if (AfterRate) { *AfterRate = afterRate; *(unsigned short*)(AfterController + 0x08) |= 0x8; }
+		}
 	}
 	if (now - LastShot >= (ULONGLONG)(Settings.coolDelay * 1000.0f)) Heat -= dt * Settings.coolPerSecond;
 	if (Heat < 0.0f) Heat = 0.0f;
@@ -1350,6 +1431,7 @@ static void LoadSettings() {
 	Settings.heatPerShot = IniFloat("Wisp", "fHeatPerShot", "0.5");
 	Settings.coolPerSecond = IniFloat("Wisp", "fCoolPerSecond", "3.0");
 	Settings.coolDelay = IniFloat("Wisp", "fCoolDelay", "1.5");
+	Settings.wispStopDelay = IniFloat("Wisp", "fStopDelay", "0.5");
 	Settings.maxHeat = IniFloat("Wisp", "fMaxHeat", "15");
 	Settings.heatStart = IniFloat("Wisp", "fHeatStart", "3");
 	Settings.heatFull = IniFloat("Wisp", "fHeatFull", "12");
@@ -1412,7 +1494,8 @@ static void LoadSettings() {
 		if (!std::isfinite(v.z) || fabsf(v.z)>100) v.z=0;
 		return v;
 	};
-	Settings.puffOffset=offset("Puff"); Settings.wispOffset=offset("Wisp"); Settings.ejectOffset=offset("Ejection");
+	// One offset for everything at the barrel tip (puff, heat smoke, after-fire trail), so they always line up.
+	Settings.puffOffset=offset("Muzzle"); Settings.wispOffset=Settings.puffOffset; Settings.ejectOffset=offset("Ejection");
 	auto bounded = [](const char* section, const char* key, const char* fallback, float low, float high) {
 		float v=IniFloat(section,key,fallback);
 		return std::isfinite(v) && v>=low && v<=high ? v : (float)atof(fallback);
@@ -1420,9 +1503,26 @@ static void LoadSettings() {
 	Settings.logWeaponNodes=LayerInt("Main","bLogWeaponNodes",1,IniPath);
 	Settings.eject = LayerInt("Ejection","bEnabled",1,IniPath);
 	IniModel("Ejection","sModel","GunFX/barrelport.nif",Settings.ejectModel);
+	Settings.after = LayerInt("Trail", "bEnabled", 1, IniPath);
+	IniModel("Trail", "sModel", "GunFX/barreltrail.nif", Settings.afterModel);
+	Settings.afterScale = IniFloat("Trail", "fScale", "2.0");
+	Settings.afterDelay = IniFloat("Trail", "fStartDelay", "0.5");
+	Settings.afterMinHeat = IniFloat("Trail", "fMinHeat", "2");
+	Settings.afterFullHeat = IniFloat("Trail", "fFullHeat", "10");
+	Settings.afterMaxRate = IniFloat("Trail", "fMaxRate", "60");
+	Settings.afterSway = IniFloat("Trail", "fSway", "1.5");
+	Settings.afterSwaySpeed = IniFloat("Trail", "fSwaySpeed", "0.15");
+	BakeLook("Trail", Settings.afterModel);
 	BakeLook("Puff", Settings.puffModel);
 	BakeLook("Wisp", Settings.trailModel);
 	BakeLook("Ejection", Settings.ejectModel);
+	// A changed look applies at once: the running heat smoke / trail hands over to a new effect with it (the smoke
+	// already in the air drifts off). Each keeps its own look; they never share settings.
+	static char lastWisp[MAX_PATH] = "", lastAfter[MAX_PATH] = "";
+	if (lastWisp[0] && _stricmp(lastWisp, Settings.trailModel)) ReleaseWisp("its look changed");
+	if (lastAfter[0] && _stricmp(lastAfter, Settings.afterModel)) ReleaseAfter("its look changed");
+	strcpy_s(lastWisp, Settings.trailModel);
+	strcpy_s(lastAfter, Settings.afterModel);
 	Settings.ejectScale=bounded("Ejection","fScale","1.0",0.01f,10);
 	Settings.ejectLifetime=bounded("Ejection","fLifetime","1.5",0.1f,5);
 	Settings.ejectHotScale=bounded("Ejection","fHotScale","1.8",0.1f,10);
@@ -1445,6 +1545,7 @@ static void LoadSettings() {
 	Settings.hazeWidth=bounded("Haze","fWidthPixels","20",1,100);
 	Settings.hazeSpeed=bounded("Haze","fSpeed","1",0.01f,10);
 	Settings.hazeLength=bounded("Haze","fLength","8",0.1f,40);
+	Settings.hazeMinSize=bounded("Haze","fMinSize","0.35",0,1);
 	LogLine("haze %s: %.2f pixels; ejection %s: node %s; smoke anchors puff '%s', wisp '%s'", Settings.haze?"on":"off",
 		Settings.hazePixels,Settings.eject?"on":"off",Settings.ejectNode,Settings.puffNode,Settings.wispNode);
 	Settings.flags = LayerInt("Main", "iFlags", 3, IniPath);
@@ -1543,22 +1644,22 @@ __declspec(dllexport) bool __cdecl GunFX_GetHazeV3(float out[16], const void* we
 __declspec(dllexport) void __cdecl GunFX_SetSwitches(UInt32 bits) {
 	if ((LONG)bits != NvrSwitches) {
 		InterlockedExchange(&NvrSwitches, (LONG)bits);
-		LogLine("NVR menu switches: puff %d, heat smoke %d, ejection smoke %d, glow %d, haze %d, muzzle blast %d, energy weapons %d",
-			bits & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1, (bits >> 5) & 1, (bits >> 6) & 1);
+		LogLine("NVR menu switches: puff %d, heat smoke %d, ejection smoke %d, glow %d, haze %d, muzzle blast %d, energy weapons %d, after-fire trail %d",
+			bits & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1, (bits >> 5) & 1, (bits >> 6) & 1, (bits >> 7) & 1);
 	}
 }
 
 __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* nvse, PluginInfo* info) {
 	info->infoVersion = 1;
 	info->name = "GunFX";
-	info->version = 53;
+	info->version = 54;
 	return !nvse->isEditor && nvse->runtimeVersion == 0x040020D0; // 1.4.0.525
 }
 
 __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* nvse) {
 	if (nvse->isEditor) return true;
 	Log = _fsopen("GunFX.log", "w", _SH_DENYWR); // readable while the game runs
-	LogLine("GunFX 1.1 (smoke look from the INI, energy weapon switch)");
+	LogLine("GunFX 1.4 (one [Muzzle] offset for the puff, heat smoke and trail; new defaults)");
 	LoadSettings();
 	if (GetModuleHandleA("BarrelSmoke.dll")) {
 		LogLine("BarrelSmoke.dll is also installed: GunFX replaces it. Remove BarrelSmoke.dll from Data\\NVSE\\Plugins; GunFX stays off until then.");

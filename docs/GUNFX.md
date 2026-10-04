@@ -6,10 +6,11 @@ works together with this build of New Vegas Reloaded.
 | Effect | What you see | Menu switch |
 |---|---|---|
 | Muzzle puff | A small puff of smoke at the muzzle on every shot. | `Puff` |
-| Heat smoke | A thin strand of smoke rising from the barrel after sustained fire. It keeps coming while you keep firing and tapers off as the gun cools. | `HeatSmoke` |
+| Heat smoke | A thin strand of smoke rising from the barrel during sustained fire. It stops when you stop firing, and the after-fire trail takes over. | `HeatSmoke` |
+| After-fire trail | A thin, wispy trail rising from the barrel only once you stop firing, like a cigarette. It fades as the barrel cools and stops when you fire again. | `AfterFireTrail` |
 | Ejection smoke | A burst of smoke from the ejection port with every casing, bigger when the barrel is hot. Bolt-action, lever and pump guns puff when the casing comes out. | `EjectionSmoke` |
 | Barrel glow | The barrel glows after sustained fire and cools down slowly. | `BarrelGlow` |
-| Heat haze | Heat shimmer around a hot barrel. | `HeatHaze` |
+| Heat haze | Heat shimmer around a hot barrel. It grows stronger and larger as the barrel heats up. | `HeatHaze` |
 | Muzzle blast | A quick, wide ripple of heat shimmer at the muzzle on every shot, whatever the barrel heat. | `MuzzleBlast` |
 
 Each gun builds its own heat. Switching guns does not carry heat over, and putting a gun away stops its smoke.
@@ -41,7 +42,7 @@ installed, GunFX stays off and says so in its log. GunFX takes over the per-gun 
 Open the NVR menu in game with the **O** key, then go to **Main > GunFX**. There is one switch per effect. They
 apply immediately, so you can compare while firing.
 
-A seventh switch, **EnergyWeapons**, decides whether energy weapons get GunFX at all. It is off by default, because
+One more switch, **EnergyWeapons**, decides whether energy weapons get GunFX at all. It is off by default, because
 smoke and casing puffs can look out of place on lasers and plasma guns. GunFX recognises an energy weapon from the
 weapon's own data: it uses the Energy Weapons skill, or it is an energy pistol or rifle. Modded weapons are
 covered too.
@@ -53,15 +54,19 @@ change applies within a second. A few you are most likely to want:
 
 - `[Wisp] fHeatPerShot`, `fCoolPerSecond`, `fHeatStart`, `fHeatFull`: how quickly heat smoke appears and how long
   it lasts. More heat per shot or a lower `fHeatStart` means smoke sooner. Faster cooling means it stops sooner.
-- `[Wisp] fScale`, `fMaxRate`: thickness and density of the heat smoke.
+- `[Wisp] fScale`, `fMaxRate`, `fOpacity`: thickness, density and visibility of the heat smoke. `fStopDelay` is the
+  seconds after your last shot that still count as firing (0 = the heat smoke keeps going until the barrel cools).
+- `[Trail] fStartDelay`, `fMinHeat`, `fFullHeat`, `fMaxRate`: when the after-fire trail starts after your last shot,
+  how warm the barrel must be, and how dense it gets. It uses the same barrel heat as the heat smoke.
 - `[Puff] fScale`, `fBurstSeconds`: size of the muzzle puff.
 - `[Ejection] fScale`, `fHotScale`, `fBurstSeconds`: size of the port burst, cold and hot.
 - `[Glow] fStartHeat`, `fHeatSpan`, `fRadius`, `fLength`: when the glow starts, how many shots until it is full,
   and how much of the barrel glows.
-- `[Haze] fStrengthPixels`, `fHeightPixels`, `fWidthPixels`: strength and size of the shimmer.
+- `[Haze] fStrengthPixels`, `fHeightPixels`, `fWidthPixels`: strength and size of the shimmer at full heat. Both
+  grow with the barrel heat; `fMinSize` sets how small it starts (0.35 = a third of full size).
 - `[Blast] fStrengthPixels`, `fRadiusPixels`, `fSeconds`: strength, size and length of the muzzle blast.
 
-The look of each kind of smoke (`[Puff]`, `[Wisp]` and `[Ejection]`) is under "Look of the smoke" in its section:
+The look of each kind of smoke (`[Puff]`, `[Wisp]`, `[Trail]` and `[Ejection]`) is under "Look of the smoke" in its section:
 
 - `fSize`, `fSizeVariation`: how big each bit of smoke grows.
 - `fSmokeLife`, `fSmokeLifeVariation`: how long it lives.
@@ -76,11 +81,19 @@ values into `Data\Meshes\GunFX\Generated\` and uses that copy. Saved changes app
 combination of values gets its own small file. You can delete that folder at any time; GunFX recreates what it
 needs.
 
-To move an effect along the gun, use `fOffsetX`, `fOffsetY` and `fOffsetZ` in its section. They are game units
-along the gun's own axes, so they turn with the gun: Y is forward along the barrel, X is sideways, Z is up. The
-glow offsets also move the haze and the muzzle blast. `sNode` can attach the puff or the heat smoke to another node
-of the gun's model, for example `ShellCasingNode`. Blank means the barrel tip (`ProjectileNode`). `GunFX.log` lists
-each gun's node names the first time you fire it.
+To move the smoke at the barrel tip, use `fOffsetX`, `fOffsetY` and `fOffsetZ` in `[Muzzle]`. The muzzle puff, the
+heat smoke and the after-fire trail all use this one offset, so they always line up. The values are game units along
+the gun's own axes, so they turn with the gun: Y is forward along the barrel, X is sideways, Z is up.
+
+Other placement settings:
+
+- `[Ejection]` has its own offsets for the port burst.
+- `[Glow]`'s offsets move the glow, the haze and the muzzle blast.
+- `sNode` in `[Puff]` or `[Wisp]` can attach that smoke to another node of the gun's model, for example
+  `ShellCasingNode`. Blank means the barrel tip (`ProjectileNode`).
+
+`GunFX.log` lists each gun's node names the first time you fire it. A gun that needs a different spot can get its
+own `[Muzzle]` values in its per-gun file.
 
 Testing aids: `[Glow] bPreview=1` keeps the full glow on after one shot, and `[Haze] bPreview=1` does the same for
 the haze. `[Haze] bShowMask=1` paints the haze area red and the muzzle blast blue. Set them back to 0 afterwards.
@@ -120,7 +133,7 @@ settings and the baked effect meshes. It talks to NVR through a few exported C f
   space from the game loop (out[8..13]; the first-person model is in another space during NVR's render pass), and
   the muzzle blast (out[14..15]).
 - `GunFX_SetSwitches(UInt32 bits)`: the menu switches. Bits: 0 puff, 1 heat smoke, 2 ejection smoke, 3 glow,
-  4 haze, 5 blast, 6 energy weapons too. Without calls, everything is on and only `GunFX.ini` decides.
+  4 haze, 5 blast, 6 energy weapons too, 7 after-fire trail. Without calls, everything is on and only `GunFX.ini` decides.
 
 Smoke looks: `BakeLook` in `GunFX.cpp` writes a copy of the effect NIF with the INI's emitter, grow/fade, gravity
 and colour values into `Meshes\GunFX\Generated\` and spawns that copy. Writing live particle modifiers crashed the
