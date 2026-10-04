@@ -19,6 +19,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <cctype>
+#include <string>
+#include <vector>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -88,10 +91,19 @@ static void LogLine(const char* format, ...) {
 static bool LogEvent() { if (Settings.logEvents <= 0) return false; Settings.logEvents--; return true; }
 
 // Master switches from NVR's menu (Main > GunFX), set every frame through GunFX_SetSwitches: bit 0 puff, 1 heat
-// smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast. All on until NVR says otherwise, so
+// smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast, 6 energy weapons too. All on until NVR says otherwise, so
 // GunFX also works on its own (then only the INI decides).
 static volatile LONG NvrSwitches = -1;
 static bool Switch(int bit) { return (NvrSwitches >> bit) & 1; }
+// Energy weapons (lasers, plasma, ...) get no GunFX unless the menu switch EnergyWeapons (bit 6) is on. Decided from
+// the weapon's own data, so modded weapons count too: it uses the Energy Weapons skill (TESObjectWEAP actor value at
+// +0x15C, 34) or its type is energy pistol/rifle (+0xF4: 4, 7).
+static bool IsEnergyWeapon(void* weapon) {
+	if (!weapon) return false;
+	const UInt8 type = *((UInt8*)weapon + 0xF4);
+	return *(UInt32*)((UInt8*)weapon + 0x15C) == 34 || type == 4 || type == 7;
+}
+static bool GunAllowed(void* weapon) { return !IsEnergyWeapon(weapon) || Switch(6); }
 
 typedef void* (__cdecl* SpawnFn)(void* cell, float lifetime, const char* model, NiPoint3 up, NiPoint3 position,
 	float scale, UInt32 flags, void* parent);
@@ -810,6 +822,7 @@ static void UpdateGunSettings() {
 	void* weapon = player ? GetEquippedWeapon(player) : nullptr;
 	if (weapon == SettingsWeapon) return;
 	SettingsWeapon = weapon;
+	if (weapon && *((UInt8*)weapon + 0xF4) >= 3 && *((UInt8*)weapon + 0xF4) <= 9) SwitchGun(weapon, GetTickCount64());
 	WeaponIniPath[0] = 0;
 	WeaponIniWritten = FILETIME{};
 	const UInt8 type = weapon ? *((UInt8*)weapon + 0xF4) : 0;
@@ -993,6 +1006,7 @@ static bool InFirstPersonModel(UInt8* node) {
 static void OnShot(UInt8* actor, void* weapon, ULONGLONG now) {
 	const UInt8 type = *((UInt8*)weapon + 0xF4);
 	if (Settings.puffPlayerOnly && actor != Player()) return;
+	if (!GunAllowed(weapon)) return;   // energy weapon with the EnergyWeapons switch off: no smoke, no heat
 	if (type < 3 || type > 9) {
 		static void* loggedSkipped[16] = {};
 		static int skipped = 0;
@@ -1044,7 +1058,7 @@ static const GetObjectByNameFn GetObjectByName = (GetObjectByNameFn)0x004AAE30;
 typedef UInt8* (__thiscall* GetCurrentNodeFn)(void* player);
 static const GetCurrentNodeFn GetCurrentNode = (GetCurrentNodeFn)0x00950BE0;
 static void OnEject(UInt8* actor, void* weapon, ULONGLONG now) {
-	if (!Settings.eject || !Switch(2) || actor != Player()) return;
+	if (!Settings.eject || !Switch(2) || actor != Player() || !GunAllowed(weapon)) return;
 	const UInt8 type = *((UInt8*)weapon + 0xF4);
 	if (type < 3 || type > 9) return;
 	static ULONGLONG lastEject = 0;
@@ -1166,6 +1180,153 @@ static void ReadLook(const char* section, const Look& file, Look& look) {
 	look.percents[5] = get("fFadeEnd", file.percents[5]);      // ...and is fully gone
 }
 
+// ---- Smoke look from the INI, baked into a copy of the effect file ------------------------------------------------
+// Writing into live particle modifiers crashed the game, so the look is never changed at run time. Instead, when the
+// settings load, the effect file is copied to Data\Meshes\GunFX\Generated\<name>_<hash>.nif with the INI's look values
+// written into it, and that copy is spawned. The hash covers every value, so each look gets its own file and the
+// game's model cache never hands back an older one. Keys that are missing keep the file's own values; when nothing
+// differs, the original file is used. NIF 20.2.0.7 layout (as in tools\niftweak.py): emitter radius/variation/life/
+// variation at +53/+57/+61/+65 of the block; grow/fade modifier grow +13, fade +19; gravity strength +33, turbulence
+// +41, turbulence scale +45; simple colour modifier six shares of life at +13, middle colour's alpha at +65.
+struct SmokeLook { float size, sizeVar, life, lifeVar, grow, shrink, rise, curl, curlScale, opacity, fadeIn, fadeStart, fadeEnd; };
+static bool ReadWholeFile(const char* path, std::vector<UInt8>& out) {
+	FILE* f = nullptr;
+	if (fopen_s(&f, path, "rb") || !f) return false;
+	fseek(f, 0, SEEK_END);
+	const long size = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	out.resize(size > 0 ? size : 0);
+	const bool ok = size > 0 && fread(out.data(), 1, size, f) == (size_t)size;
+	fclose(f);
+	return ok;
+}
+// Block offsets and type names of a NIF file. False when the layout is not the expected one.
+static bool NifBlocks(const std::vector<UInt8>& d, std::vector<std::string>& types, std::vector<size_t>& at, std::vector<UInt32>& sizes) {
+	size_t p = 0;
+	while (p < d.size() && d[p] != '\n') p++;
+	p++;
+	auto need = [&](size_t n) { return p + n <= d.size(); };
+	if (!need(4 + 1 + 4 + 4 + 4)) return false;
+	p += 4 + 1;
+	p += 4;                                   // user version
+	const UInt32 blocks = *(const UInt32*)&d[p]; p += 4;
+	p += 4;                                   // user version 2
+	for (int i = 0; i < 3; i++) { if (!need(1)) return false; p += 1 + d[p]; }
+	if (!need(2)) return false;
+	const unsigned short typeCount = *(const unsigned short*)&d[p]; p += 2;
+	std::vector<std::string> names;
+	for (unsigned short i = 0; i < typeCount; i++) {
+		if (!need(4)) return false;
+		const UInt32 n = *(const UInt32*)&d[p]; p += 4;
+		if (!need(n)) return false;
+		names.emplace_back((const char*)&d[p], n); p += n;
+	}
+	if (blocks > 4096 || !need(blocks * 6)) return false;
+	std::vector<unsigned short> index(blocks);
+	for (UInt32 i = 0; i < blocks; i++) { index[i] = *(const unsigned short*)&d[p]; p += 2; }
+	sizes.resize(blocks);
+	for (UInt32 i = 0; i < blocks; i++) { sizes[i] = *(const UInt32*)&d[p]; p += 4; }
+	if (!need(8)) return false;
+	const UInt32 strings = *(const UInt32*)&d[p]; p += 8;
+	for (UInt32 i = 0; i < strings; i++) {
+		if (!need(4)) return false;
+		const UInt32 n = *(const UInt32*)&d[p]; p += 4 + n;
+	}
+	if (!need(4)) return false;
+	const UInt32 groups = *(const UInt32*)&d[p]; p += 4 + 4 * groups;
+	types.clear(); at.clear();
+	for (UInt32 i = 0; i < blocks; i++) {
+		if (index[i] >= names.size() || p + sizes[i] > d.size()) return false;
+		types.push_back(names[index[i]]);
+		at.push_back(p);
+		p += sizes[i];
+	}
+	return true;
+}
+static float& NifFloat(std::vector<UInt8>& d, size_t at) { return *(float*)&d[at]; }
+// Reads (get=true) or writes the look of every particle system in the file. Returns how many parts were found.
+static int NifLook(std::vector<UInt8>& d, SmokeLook& look, bool get) {
+	std::vector<std::string> types; std::vector<size_t> at; std::vector<UInt32> sizes;
+	if (!NifBlocks(d, types, at, sizes)) return 0;
+	int parts = 0;
+	auto field = [&](size_t offset, float& value) { if (get) value = NifFloat(d, offset); else NifFloat(d, offset) = value; };
+	for (size_t i = 0; i < types.size(); i++) {
+		const std::string& t = types[i];
+		const size_t q = at[i];
+		if ((t == "NiPSysCylinderEmitter" || t == "NiPSysSphereEmitter" || t == "NiPSysBoxEmitter") && sizes[i] >= 69) {
+			field(q + 53, look.size); field(q + 57, look.sizeVar); field(q + 61, look.life); field(q + 65, look.lifeVar); parts++;
+		}
+		else if (t == "NiPSysGrowFadeModifier" && sizes[i] >= 23) { field(q + 13, look.grow); field(q + 19, look.shrink); parts++; }
+		else if (t == "NiPSysGravityModifier" && sizes[i] >= 49) {
+			float strength = -look.rise;
+			field(q + 33, strength);
+			if (get) look.rise = -strength;
+			field(q + 41, look.curl); field(q + 45, look.curlScale); parts++;
+		}
+		else if (t == "BSPSysSimpleColorModifier" && sizes[i] >= 85) {
+			float shares[6];
+			for (int k = 0; k < 6; k++) shares[k] = NifFloat(d, q + 13 + 4 * k);
+			if (get) { look.fadeIn = shares[3]; look.fadeStart = shares[4]; look.fadeEnd = shares[5]; look.opacity = NifFloat(d, q + 65); }
+			else {
+				NifFloat(d, q + 13 + 4 * 3) = look.fadeIn;
+				if (shares[2] > look.fadeIn) NifFloat(d, q + 13 + 4 * 2) = look.fadeIn;   // colour 1 must end before colour 2 starts
+				NifFloat(d, q + 13 + 4 * 4) = look.fadeStart;
+				NifFloat(d, q + 13 + 4 * 5) = look.fadeEnd;
+				NifFloat(d, q + 65) = look.opacity;
+			}
+			parts++;
+		}
+	}
+	return parts;
+}
+// The model for a section: the file itself, or a generated copy with the INI's look. `model` is updated in place.
+static void BakeLook(const char* section, char* model) {
+	char data[MAX_PATH];                                       // ...\Data\ from ...\Data\NVSE\Plugins\GunFX.ini
+	strcpy_s(data, IniPath);
+	for (int up = 0; up < 3; up++) { char* cut = strrchr(data, 0x5C); if (cut) *cut = 0; }
+	char source[MAX_PATH];
+	sprintf_s(source, "%s\\Meshes\\%s", data, model);
+	std::vector<UInt8> file;
+	if (!ReadWholeFile(source, file)) { LogLine("%s look: %s is not a loose file, its own look is used", section, model); return; }
+	SmokeLook built = {};
+	if (NifLook(file, built, true) < 4) { LogLine("%s look: %s has an unexpected layout, its own look is used", section, model); return; }
+	SmokeLook look = built;
+	char fallback[32];
+	auto get = [&](const char* key, float value) { sprintf_s(fallback, "%g", value); return IniFloat(section, key, fallback); };
+	look.size = get("fSize", built.size);              look.sizeVar = get("fSizeVariation", built.sizeVar);
+	look.life = get("fSmokeLife", built.life);         look.lifeVar = get("fSmokeLifeVariation", built.lifeVar);
+	look.grow = get("fGrowSeconds", built.grow);       look.shrink = get("fShrinkSeconds", built.shrink);
+	look.rise = get("fRise", built.rise);              look.curl = get("fCurl", built.curl);
+	look.curlScale = get("fCurlScale", built.curlScale);
+	look.opacity = get("fOpacity", built.opacity);     look.fadeIn = get("fFadeIn", built.fadeIn);
+	look.fadeStart = get("fFadeStart", built.fadeStart); look.fadeEnd = get("fFadeEnd", built.fadeEnd);
+	const float* a = (const float*)&built; const float* b = (const float*)&look;
+	int changed = 0;
+	for (size_t k = 0; k < sizeof(SmokeLook) / sizeof(float); k++) changed += fabsf(a[k] - b[k]) > 1e-5f;
+	if (!changed) { LogLine("%s look: %s as built", section, model); return; }
+	UInt32 hash = 2166136261u;                                 // FNV-1a over the model name and the values
+	for (const char* c = model; *c; c++) hash = (hash ^ (UInt8)tolower(*c)) * 16777619u;
+	for (size_t k = 0; k < sizeof(SmokeLook); k++) hash = (hash ^ ((const UInt8*)&look)[k]) * 16777619u;
+	char base[MAX_PATH];
+	const char* slash = strrchr(model, 0x5C);
+	strcpy_s(base, slash ? slash + 1 : model);
+	if (char* dot = strrchr(base, '.')) *dot = 0;
+	char generated[MAX_PATH], folder[MAX_PATH], target[MAX_PATH];
+	sprintf_s(generated, "GunFX\\Generated\\%s_%08x.nif", base, hash);
+	sprintf_s(folder, "%s\\Meshes\\GunFX\\Generated", data);
+	sprintf_s(target, "%s\\Meshes\\%s", data, generated);
+	if (GetFileAttributesA(target) == INVALID_FILE_ATTRIBUTES) {
+		NifLook(file, look, false);
+		CreateDirectoryA(folder, NULL);
+		FILE* f = nullptr;
+		if (fopen_s(&f, target, "wb") || !f) { LogLine("%s look: could not write %s, its own look is used", section, generated); return; }
+		fwrite(file.data(), 1, file.size(), f);
+		fclose(f);
+	}
+	LogLine("%s look: %d value(s) from the settings -> %s", section, changed, generated);
+	strcpy_s(model, MAX_PATH, generated);
+}
+
 static void LoadSettings() {
 	GetModuleFileNameA((HMODULE)&__ImageBase, IniPath, MAX_PATH);
 	char* slash = strrchr(IniPath, 0x5C);
@@ -1259,6 +1420,9 @@ static void LoadSettings() {
 	Settings.logWeaponNodes=LayerInt("Main","bLogWeaponNodes",1,IniPath);
 	Settings.eject = LayerInt("Ejection","bEnabled",1,IniPath);
 	IniModel("Ejection","sModel","GunFX/barrelport.nif",Settings.ejectModel);
+	BakeLook("Puff", Settings.puffModel);
+	BakeLook("Wisp", Settings.trailModel);
+	BakeLook("Ejection", Settings.ejectModel);
 	Settings.ejectScale=bounded("Ejection","fScale","1.0",0.01f,10);
 	Settings.ejectLifetime=bounded("Ejection","fLifetime","1.5",0.1f,5);
 	Settings.ejectHotScale=bounded("Ejection","fHotScale","1.8",0.1f,10);
@@ -1379,22 +1543,22 @@ __declspec(dllexport) bool __cdecl GunFX_GetHazeV3(float out[16], const void* we
 __declspec(dllexport) void __cdecl GunFX_SetSwitches(UInt32 bits) {
 	if ((LONG)bits != NvrSwitches) {
 		InterlockedExchange(&NvrSwitches, (LONG)bits);
-		LogLine("NVR menu switches: puff %d, heat smoke %d, ejection smoke %d, glow %d, haze %d, muzzle blast %d",
-			bits & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1, (bits >> 5) & 1);
+		LogLine("NVR menu switches: puff %d, heat smoke %d, ejection smoke %d, glow %d, haze %d, muzzle blast %d, energy weapons %d",
+			bits & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1, (bits >> 5) & 1, (bits >> 6) & 1);
 	}
 }
 
 __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* nvse, PluginInfo* info) {
 	info->infoVersion = 1;
 	info->name = "GunFX";
-	info->version = 52;
+	info->version = 53;
 	return !nvse->isEditor && nvse->runtimeVersion == 0x040020D0; // 1.4.0.525
 }
 
 __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* nvse) {
 	if (nvse->isEditor) return true;
 	Log = _fsopen("GunFX.log", "w", _SH_DENYWR); // readable while the game runs
-	LogLine("GunFX 1.0 (P67; formerly BarrelSmoke 51)");
+	LogLine("GunFX 1.1 (smoke look from the INI, energy weapon switch)");
 	LoadSettings();
 	if (GetModuleHandleA("BarrelSmoke.dll")) {
 		LogLine("BarrelSmoke.dll is also installed: GunFX replaces it. Remove BarrelSmoke.dll from Data\\NVSE\\Plugins; GunFX stays off until then.");

@@ -41,6 +41,11 @@ installed, GunFX stays off and says so in its log. GunFX takes over the per-gun 
 Open the NVR menu in game with the **O** key, then go to **Main > GunFX**. There is one switch per effect. They
 apply immediately, so you can compare while firing.
 
+A seventh switch, **EnergyWeapons**, decides whether energy weapons get GunFX at all. It is off by default, because
+smoke and casing puffs can look out of place on lasers and plasma guns. GunFX recognises an energy weapon from the
+weapon's own data: it uses the Energy Weapons skill, or it is an energy pistol or rifle. Modded weapons are
+covered too.
+
 ## Fine-tuning: `Data\NVSE\Plugins\GunFX.ini`
 
 Open it with Notepad. Every setting has a comment above it. Save the file while the game is running and the
@@ -55,6 +60,21 @@ change applies within a second. A few you are most likely to want:
   and how much of the barrel glows.
 - `[Haze] fStrengthPixels`, `fHeightPixels`, `fWidthPixels`: strength and size of the shimmer.
 - `[Blast] fStrengthPixels`, `fRadiusPixels`, `fSeconds`: strength, size and length of the muzzle blast.
+
+The look of each kind of smoke (`[Puff]`, `[Wisp]` and `[Ejection]`) is under "Look of the smoke" in its section:
+
+- `fSize`, `fSizeVariation`: how big each bit of smoke grows.
+- `fSmokeLife`, `fSmokeLifeVariation`: how long it lives.
+- `fGrowSeconds`, `fShrinkSeconds`: how long it swells, and whether it shrinks at the end.
+- `fRise`: how fast it rises.
+- `fCurl`, `fCurlScale`: how much it swirls.
+- `fOpacity`: how thick it is.
+- `fFadeIn`, `fFadeStart`, `fFadeEnd`: when it appears and fades, as shares of its life.
+
+The game can only use a look that is stored in an effect file. So GunFX writes a copy of the effect file with your
+values into `Data\Meshes\GunFX\Generated\` and uses that copy. Saved changes apply to the next smoke. Every
+combination of values gets its own small file. You can delete that folder at any time; GunFX recreates what it
+needs.
 
 To move an effect along the gun, use `fOffsetX`, `fOffsetY` and `fOffsetZ` in its section. They are game units
 along the gun's own axes, so they turn with the gun: Y is forward along the barrel, X is sideways, Z is up. The
@@ -100,9 +120,13 @@ settings and the baked effect meshes. It talks to NVR through a few exported C f
   space from the game loop (out[8..13]; the first-person model is in another space during NVR's render pass), and
   the muzzle blast (out[14..15]).
 - `GunFX_SetSwitches(UInt32 bits)`: the menu switches. Bits: 0 puff, 1 heat smoke, 2 ejection smoke, 3 glow,
-  4 haze, 5 blast. Without calls, everything is on and only `GunFX.ini` decides.
+  4 haze, 5 blast, 6 energy weapons too. Without calls, everything is on and only `GunFX.ini` decides.
 
-On the NVR side, the parts to copy are in the P67 commit:
+Smoke looks: `BakeLook` in `GunFX.cpp` writes a copy of the effect NIF with the INI's emitter, grow/fade, gravity
+and colour values into `Meshes\GunFX\Generated\` and spawns that copy. Writing live particle modifiers crashed the
+game.
+
+On the NVR side, the parts to copy are in the P67 and P68 commits:
 
 - `src/NewVegas/Hooks/Render.cpp`: the `GunFXSwitches` and `BarrelHeat` namespaces, plus the short calls into
   them added to `SetShadersHook`, `RenderWorldSceneGraphHook` and `RenderFirstPersonHook`.

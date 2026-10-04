@@ -43,6 +43,7 @@ EjectionSmoke = false                   # GunFX: a burst of smoke from the eject
 BarrelGlow = false                      # GunFX: the barrel glows after sustained fire and cools down slowly.
 HeatHaze = false                        # GunFX: heat shimmer around a hot barrel (screen effect).
 MuzzleBlast = false                     # GunFX: a quick, wide ripple of heat shimmer at the muzzle on every shot, whatever the barrel heat.
+EnergyWeapons = false                   # GunFX on energy weapons too (lasers, plasma and the like, including modded ones: decided by the weapon's Energy Weapons skill). Off = no GunFX effects on them.
 
 [_Main.FrameRate.SmartControl]
 FlowControl = -0.5

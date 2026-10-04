@@ -135,7 +135,8 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
 
 **Experimental Gun FX** (since P67). The zip includes the `GunFX.dll` plugin. In the NVR menu, **Main > GunFX**
 has one switch per effect (muzzle puff, heat smoke, ejection smoke, barrel glow, heat haze, muzzle blast), all off
-by default. Fine-tuning is in `Data\NVSE\Plugins\GunFX.ini`, and every gun also gets its own settings file the
+by default, plus `EnergyWeapons` (since P68; off = no GunFX on lasers, plasma and other energy weapons, modded ones
+included). Since P68 the smoke's look (size, opacity, rise, swirl, fading) is set in `GunFX.ini` too. Fine-tuning is in `Data\NVSE\Plugins\GunFX.ini`, and every gun also gets its own settings file the
 first time you equip it. See [docs/GUNFX.md](docs/GUNFX.md) for how to configure it.
 
 **Optional visual extras** (since P64). These change the look, so they are **off by default** and cost

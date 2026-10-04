@@ -2,7 +2,7 @@
 ; Turn each effect on or off in the NVR menu (O key): Main > GunFX. This file fine-tunes them.
 ; Per-gun settings: each gun also gets its own file in Data\NVSE\Plugins\GunFX\Weapons\ the first time you equip it.
 ; Full guide: GunFX-README.txt (in the download) or docs/GUNFX.md on GitHub.
-; The smoke's look (colour, opacity, how it grows and rises) is built into the effect files in Data\Meshes\GunFX.
+; The smoke's look (size, opacity, how it grows, rises and fades) is set per effect in [Puff], [Wisp] and [Ejection].
 
 [Puff]
 ; A small puff of smoke at the muzzle on every shot.
@@ -26,6 +26,30 @@ sNode=
 fOffsetX=1
 fOffsetY=2
 fOffsetZ=0
+; ---- Look of the smoke (the values below are the ones the effect file was built with). GunFX writes a copy of the
+; effect file with these values into Data\Meshes\GunFX\Generated\ and uses that; saved changes apply to the next
+; smoke.
+; Size each puff of smoke grows to, and how much that varies.
+fSize=3
+fSizeVariation=1
+; Seconds each puff of smoke lives, and how much that varies.
+fSmokeLife=1.3
+fSmokeLifeVariation=0.3
+; Seconds it grows for after leaving the gun (about its life = it keeps swelling as it rises), and seconds it
+; shrinks at the very end (0 = it only fades).
+fGrowSeconds=1.2
+fShrinkSeconds=0
+; Upward push (higher = rises faster; negative sinks), and curl: random swirl (0 = straight; above about 0.05 it
+; scatters) with fCurlScale the size of the swirls.
+fRise=6
+fCurl=0.035
+fCurlScale=5
+; Opacity at its thickest (0 = invisible, 1 = solid).
+fOpacity=0.35
+; When it is fully visible, starts fading and is gone, as shares of its life (0 to 1).
+fFadeIn=0.06
+fFadeStart=0.51
+fFadeEnd=0.8
 
 [Wisp]
 ; Heat smoke: a thin strand of smoke rising from the barrel, driven by barrel heat. A few shots give nothing,
@@ -59,6 +83,33 @@ fEffectSeconds=30
 fTailSeconds=3.5
 ; Internal: the rate the barrelwisp file was built with (the strand ignores it).
 fFileRate=20
+; ---- Look of the smoke (the values below are the ones the effect file was built with). GunFX writes a copy of the
+; effect file with these values into Data\Meshes\GunFX\Generated\ and uses that; saved changes apply to the next
+; smoke.
+; For the strand fOpacity is per puff of smoke and they overlap, so small numbers add up. barrelwisp.nif was built
+; with: fSize 5, fSizeVariation 1.5, fSmokeLife 2.5, fSmokeLifeVariation 0.6, fGrowSeconds 2.2, fRise 20, fCurl 0.03,
+; fOpacity 0.35, fFadeIn 0.5, fFadeStart 0.51, fFadeEnd 0.8.
+; Size each puff of smoke grows to, and how much that varies.
+fSize=3
+fSizeVariation=0.7
+; Seconds each puff of smoke lives, and how much that varies.
+fSmokeLife=2.6
+fSmokeLifeVariation=0.3
+; Seconds it grows for after leaving the gun (about its life = it keeps swelling as it rises), and seconds it
+; shrinks at the very end (0 = it only fades).
+fGrowSeconds=2.6
+fShrinkSeconds=0
+; Upward push (higher = rises faster; negative sinks), and curl: random swirl (0 = straight; above about 0.05 it
+; scatters) with fCurlScale the size of the swirls.
+fRise=9
+fCurl=0.02
+fCurlScale=5
+; Opacity at its thickest (0 = invisible, 1 = solid).
+fOpacity=0.15
+; When it is fully visible, starts fading and is gone, as shares of its life (0 to 1).
+fFadeIn=0.12
+fFadeStart=0.45
+fFadeEnd=0.92
 
 [Ejection]
 ; A burst of smoke from the ejection port every time the game throws out a casing (automatic guns at the shot,
@@ -79,6 +130,30 @@ fMinInterval=0
 fOffsetX=0
 fOffsetY=0
 fOffsetZ=0
+; ---- Look of the smoke (the values below are the ones the effect file was built with). GunFX writes a copy of the
+; effect file with these values into Data\Meshes\GunFX\Generated\ and uses that; saved changes apply to the next
+; smoke.
+; Size each puff of smoke grows to, and how much that varies.
+fSize=2.2
+fSizeVariation=0.8
+; Seconds each puff of smoke lives, and how much that varies.
+fSmokeLife=0.9
+fSmokeLifeVariation=0.25
+; Seconds it grows for after leaving the gun (about its life = it keeps swelling as it rises), and seconds it
+; shrinks at the very end (0 = it only fades).
+fGrowSeconds=0.7
+fShrinkSeconds=0
+; Upward push (higher = rises faster; negative sinks), and curl: random swirl (0 = straight; above about 0.05 it
+; scatters) with fCurlScale the size of the swirls.
+fRise=10
+fCurl=0.04
+fCurlScale=5
+; Opacity at its thickest (0 = invisible, 1 = solid).
+fOpacity=0.45
+; When it is fully visible, starts fading and is gone, as shares of its life (0 to 1).
+fFadeIn=0.04
+fFadeStart=0.35
+fFadeEnd=0.8
 
 [Glow]
 ; The barrel glows after sustained fire and cools down slowly (drawn by NVR's shaders).
