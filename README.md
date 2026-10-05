@@ -129,6 +129,17 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   brighter or darker all at once whenever *you* stepped into or out of a shadow, because their shadow was
   checked in the wrong place (the game's skeleton data overwrote the camera values their shaders use).
   They now get their own, correct shadows.
+- **Shimmer around thin objects** (fixed in P72) - trees, power lines and pylons against the sky had a flickering
+  edge with volumetric fog and depth of field on. The fog is worked out at half resolution, and where a thin object
+  crossed a block of pixels it used a blend of the object's and the sky's distance, so the object got the wrong fog
+  and it changed as you moved (dark specks along pine trees in fog); now each block uses its nearest pixel exactly,
+  and any pixel none of the nearby blocks matches (a gap in foliage, the edge of a pole) gets its fog worked out on
+  its own. No measurable extra cost. The distant blur also mixed the sky
+  with the objects in front of it (a dark halo); it now only blends neighbours at about the same distance.
+- **Shaders > Specular** (faster in P72; off by default) - same look at well under half the cost: 3.4 -> 1.4 ms on
+  a GTX 1070 at 1440p. It copied the whole screen before each of its four steps for nothing (its blur code
+  included an instruction that can leave pixels unwritten, which it never uses), and its last two steps are
+  now one.
 
 **Optional visual extras** (since P64). These change the look, so they are **off by default** and cost
 nothing while off. Turn them on in the menu to try them:

@@ -35,6 +35,10 @@ static const float2 BlurOffsets[cKernelSize] =
 };
 
 
+// The helpers below clip() pixels. An effect that does not use them can define BLUR_FULL_WRITE_ONLY before the include
+// to leave them out: EffectRecord scans the preprocessed source for clip/discard and, when it finds any, makes the frame
+// chain copy the whole frame into every pass's destination first.
+#ifndef BLUR_FULL_WRITE_ONLY
 // downsample/upsample a part of the screen given by the scaleFactor
 float4 Scale(VSOUT IN, uniform sampler2D buffer, uniform float scaleFactor) : COLOR0
 {
@@ -78,3 +82,4 @@ float4 Blur(VSOUT IN, uniform sampler2D buffer,  uniform float2 OffsetMask, unif
 	color /= WeightSum;
     return float4(color.rgb, 1);
 }
+#endif // BLUR_FULL_WRITE_ONLY

@@ -51,6 +51,9 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
+// Every pass here writes every pixel. Leave out the blur helpers that clip(): with any clip() in the effect's source the
+// frame chain copies the whole frame into each pass's destination first (EffectRecord::CreateCT), four copies a frame.
+#define BLUR_FULL_WRITE_ONLY
 #include "Includes/BlurDepth.hlsl"
 #include "Includes/Blending.hlsl"
 
@@ -92,12 +95,11 @@ float4 specularHighlight( VSOUT IN) : COLOR0
 
 #define screen(base, blend)  (base + blend - base*blend)
 
-float4 CombineSpecular(VSOUT IN) :COLOR0
+float4 CombineSpecularWith(VSOUT IN, float4 light)
 {
 	// float4 color = float(0).xxxx;
-	float depth = smoothstep(0, farZ / 4, readDepth(IN.UVCoord));
-	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
-	float4 light = tex2D(TESR_RenderedBuffer, IN.UVCoord);
+	float depth = smoothstep(0, farZ / 4, readDepthLod(IN.UVCoord));
+	float4 color = tex2Dlod(TESR_SourceBuffer, float4(IN.UVCoord, 0, 0));
     color.rgb = pows(color.rgb, 2.2); // linearise
 
 	float4 result = color;
@@ -111,7 +113,7 @@ float4 CombineSpecular(VSOUT IN) :COLOR0
 	float invLuma = saturate(1 - sunLuma);
 	float sunSetFade = 1 - TESR_ShadowFade.x;
 
-	float shadows = tex2D(TESR_PointShadowBuffer, IN.UVCoord); // fade shadows to light when sun is low
+	float shadows = tex2Dlod(TESR_PointShadowBuffer, float4(IN.UVCoord, 0, 0)); // fade shadows to light when sun is low
 	shadows = lerp(TESR_ShadowFade.x, 1.0f, shadows); // fade shadows to light when sun is low
 
 	// skylight
@@ -130,6 +132,13 @@ float4 CombineSpecular(VSOUT IN) :COLOR0
     result.rgb = pows(result.rgb, 1.0/2.2); // delinearise
 	return float4 (result.rgb, 1.0f);
 }
+
+// The vertical blur and the combine in one pass: the combine used to read back, at the same pixel, the value the
+// vertical blur pass had just written.
+float4 BlurCombineSpecular(VSOUT IN) : COLOR0
+{
+	return CombineSpecularWith(IN, DepthBlurFullValue(IN.UVCoord, TESR_RenderedBuffer, OffsetMaskV, BlurRadius, 1, 1000000));
+}
  
 
 technique
@@ -143,14 +152,9 @@ technique
 	pass
 	{ 
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 DepthBlur(TESR_RenderedBuffer, OffsetMaskH, BlurRadius, 1, 1000000);
+		PixelShader = compile ps_3_0 DepthBlurFull(TESR_RenderedBuffer, OffsetMaskH, BlurRadius, 1, 1000000);
 	}
 	
-	pass
-	{ 
-		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 DepthBlur(TESR_RenderedBuffer, OffsetMaskV, BlurRadius, 1, 1000000);
-	}
 
 	// pass
 	// { 
@@ -161,6 +165,6 @@ technique
 	pass
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 CombineSpecular();
+		PixelShader = compile ps_3_0 BlurCombineSpecular();
 	}
 }

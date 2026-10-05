@@ -225,13 +225,20 @@ float4 DistantOnly(VSOUT IN) : COLOR0
 	// mip level and the taps are 1-2 texels apart, so LOD 0 is what tex2D selected anyway.
 	[branch] if (blur <= 0.0)
 		return float4(center.rgb, 1);
+	// Only neighbours at about the same distance are mixed in (full weight within ~7% of this pixel's depth, none beyond
+	// ~22%): blurring the sky with a thin pole, branch or wire in front of it drew a dark halo round them that flickered
+	// as they moved. Where the four are at the same distance this is the plain average it always was.
 	float2 radius = TESR_ReciprocalResolution.xy * BaseBlurRadius * (1.0 + blur);
-	float4 blurred =
-		tex2Dlod(TESR_RenderedBuffer, float4(uv + radius * float2(-1, -1), 0, 0)) +
-		tex2Dlod(TESR_RenderedBuffer, float4(uv + radius * float2( 1, -1), 0, 0)) +
-		tex2Dlod(TESR_RenderedBuffer, float4(uv + radius * float2(-1,  1), 0, 0)) +
-		tex2Dlod(TESR_RenderedBuffer, float4(uv + radius * float2( 1,  1), 0, 0));
-	blurred *= 0.25;
+	const float2 corners[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
+	float4 blurred = 0;
+	float weights = 0;
+	[unroll] for (int k = 0; k < 4; k++) {
+		float2 tapUV = uv + radius * corners[k];
+		float weight = saturate(1.5 - abs(readDepthLod(tapUV) - depth) / (0.15 * depth));
+		blurred += tex2Dlod(TESR_RenderedBuffer, float4(tapUV, 0, 0)) * weight;
+		weights += weight;
+	}
+	blurred = weights > 0.0001 ? blurred / weights : center;
 	return float4(lerp(center.rgb, blurred.rgb, blur), 1);
 }
 
