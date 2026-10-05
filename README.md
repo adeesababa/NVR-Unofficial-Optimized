@@ -140,6 +140,10 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   a GTX 1070 at 1440p. It copied the whole screen before each of its four steps for nothing (its blur code
   included an instruction that can leave pixels unwritten, which it never uses), and its last two steps are
   now one.
+- **Rain, wet ground and water are faster** (P73) - the same pointless copying hit other effects: while it rains or
+  the ground is wet, the wet-ground effect (WetWorld) copied the whole screen four times a frame for nothing (about
+  1.5 ms at 1440p on a GTX 1070); the underwater/wading effect twice, and snow twice. NVR now checks each step of an
+  effect and copies only before the steps that really need it. The picture is exactly the same.
 
 **Optional visual extras** (since P64). These change the look, so they are **off by default** and cost
 nothing while off. Turn them on in the menu to try them:
