@@ -50,3 +50,4 @@
 #include "Particles.h"
 
 #include "BarrelHaze.h"
+#include "VolumetricSmoke.h"

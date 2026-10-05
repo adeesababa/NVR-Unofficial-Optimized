@@ -174,6 +174,7 @@ public:
 		WaterLensEffect*		WaterLens;
 		WetWorldEffect*			WetWorld;
 		BarrelHazeEffect*		BarrelHaze;
+		VolumetricSmokeEffect*	VolumetricSmoke;
 		DitherBusterEffect*		DitherBuster;
 		SMAAEffect*				SMAA;
 		FXAAEffect*				FXAA;

@@ -178,6 +178,7 @@
     <ClCompile Include="..\src\effects\Tonemapping.cpp" />
     <ClCompile Include="..\src\effects\Underwater.cpp" />
     <ClCompile Include="..\src\effects\VolumetricFog.cpp" />
+    <ClCompile Include="..\src\effects\VolumetricSmoke.cpp" />
     <ClCompile Include="..\src\effects\Water.cpp" />
     <ClCompile Include="..\src\effects\WaterLens.cpp" />
     <ClCompile Include="..\src\effects\WetWorld.cpp" />

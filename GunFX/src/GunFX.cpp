@@ -22,6 +22,7 @@
 #include <cctype>
 #include <string>
 #include <vector>
+#include "GunShape.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -57,6 +58,10 @@ struct MuzzleFlash {
 	UInt8* sourceActor;   // TESObjectREFR; parent cell at +0x40
 };
 
+// Look of one volumetric smoke chain (read from [Wisp] / [Trail], the same keys as the sprite smoke).
+struct VolLook { float size, sizeVar, life, lifeVar, speed, speedVar, startSize, grow, opacity, fadeIn, fadeStart, fadeEnd, rise, curl, spread; };
+// The volumetric smoke's chains: heat smoke, after-fire trail, muzzle puff, ejection smoke.
+enum { ChainHeat, ChainTrail, ChainPuff, ChainEject, ChainCount };
 static struct {
 	// Puff on each shot.
 	int puff;
@@ -69,6 +74,32 @@ static struct {
 	float trailScale, heatPerShot, coolPerSecond, maxHeat, heatStart, heatFull, maxRate, fileRate, effectSeconds, tailSeconds;
 	int trailFlags, trailSmokeOnly, trailFollow;
 	float constantRate, sway, swaySpeed, coolDelay, wispStopDelay;
+	int wispEmitters, afterEmitters;   // copies of the heat smoke / trail spread along the barrel's path (1-4)
+	// Volumetric smoke (prototype, [Volume]).
+	int volume;
+	float volumeSize, volumeDensity, volumeRise, volumeCurl, volumeDrag, volumeSpacing, volumeNoise, volumeBrightness, volumeShade;
+	int volumeDebug;
+	int volumeKinds[ChainCount];          // which smoke is drawn volumetric ([Volume] bHeatSmoke, bTrail, bPuff, bEjection)
+	float volumeBurstDrag, volumePuffForward, volumeBurstSize;
+	int volumeBurstPoints;
+	int volumeGunInFront;                 // the first-person gun is always drawn in front of the smoke
+	float volumeExpand, volumeThinning;   // how big the smoke ends up; how much it thins out as it widens
+	float volumeFlash, volumeFlashRadius, volumeFlashSeconds;   // the muzzle flash's light on the smoke
+	float volumeWind, volumeWindPickup, volumeWindOffset;        // drift with the weather's wind
+	int volumePlayer;                                            // your body pushes and thins the smoke
+	float volumePlayerRadius, volumePlayerPush, volumeStir, volumePlayerHeight;
+	float volumeDiffuse;                                         // stirred smoke spreads out, thins and frays
+	float volumeTint;                                            // colour by thickness and age
+	float volumeSmooth;                                          // how quickly kinks in a strand even out
+	float volumeDepth;                                           // shading for a sense of depth (0 = flat)
+	float volumeDriftRight, volumeDriftAway;                     // heat smoke / trail drift (units per second)
+	int volumeWrapGun;                                           // smoke flows around the gun
+	int volumeGunShape;                                          // ... around its real shape (from its model), not a tube
+	float volumeGunLength, volumeGunRadius, volumeBarrelSpread, volumeGunSwirl, volumeBodySwirl, volumeSwirlLife;
+	float volumeTendrils, volumeTendrilAngle, volumeTendrilSize, volumeTendrilSpeed;   // child strands
+	int volumeUnzip;                                             // the heat smoke and trail split around you as you walk in
+	float volumeFanSpeed;
+	VolLook volLook[ChainCount];
 	// After-fire trail ([Trail]): a thin wisp that rises only once you stop firing.
 	int after;
 	char afterModel[MAX_PATH];
@@ -81,7 +112,7 @@ static struct {
 	NiPoint3 puffOffset, wispOffset, ejectOffset;
 	int eject, haze, hazePreview, hazeMask, logWeaponNodes, blast;
 	float blastPixels, blastRadius, blastSeconds;
-	float ejectScale, ejectLifetime, ejectInterval, ejectHotScale, ejectBurst, puffBurst;
+	float ejectScale, ejectLifetime, ejectInterval, ejectHotScale, ejectBurst, puffBurst, ejectBurstRate, puffBurstRate;
 	float hazeStart, hazeFull, hazeRise, hazePixels, hazeHeight, hazeWidth, hazeSpeed, hazeLength, hazeMinSize;
 	int flags, logEvents;
 } Settings;
@@ -95,7 +126,8 @@ static void LogLine(const char* format, ...) {
 static bool LogEvent() { if (Settings.logEvents <= 0) return false; Settings.logEvents--; return true; }
 
 // Master switches from NVR's menu (Main > GunFX), set every frame through GunFX_SetSwitches: bit 0 puff, 1 heat
-// smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast, 6 energy weapons too, 7 after-fire trail. All on until NVR says otherwise, so
+// smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast, 6 energy weapons too, 7 after-fire trail,
+// 8 volumetric heat smoke / trail. All on until NVR says otherwise, so
 // GunFX also works on its own (then only the INI decides).
 static volatile LONG NvrSwitches = -1;
 static bool Switch(int bit) { return (NvrSwitches >> bit) & 1; }
@@ -332,7 +364,10 @@ static void ReadLook(const char* section, const Look& file, Look& look);
 // ---- Puff on each shot -----------------------------------------------------------------------------------------
 static struct { void* actor; ULONGLONG tick; } LastPuff[16] = {};
 
-static void* SpawnBurst(void* cell, float lifetime, const char* model, NiPoint3 at, float scale, float seconds, ULONGLONG now);
+static void* SpawnBurst(void* cell, float lifetime, const char* model, NiPoint3 at, float scale, float seconds, float rate, ULONGLONG now,
+	UInt8* follow, NiPoint3 offset);
+static bool VolumeWanted(int chain);
+static void StartVolumeBurst(int chain, UInt8* node, const NiPoint3& offset, float seconds, float size);
 static void Puff(MuzzleFlash* flash, ULONGLONG now) {
 	if (!Settings.puff || !Switch(0)) return;
 	if (Settings.puffPlayerOnly && flash->sourceActor != Player()) return;
@@ -351,7 +386,13 @@ static void Puff(MuzzleFlash* flash, ULONGLONG now) {
 	LastPuff[slot].actor = flash->sourceActor;
 	LastPuff[slot].tick = now;
 	const NiPoint3 position = NodePosition(flash->node, Settings.puffOffset);
-	void* effect = SpawnBurst(cell, Settings.puffLifetime, Settings.puffModel, position, Settings.puffScale, Settings.puffBurst, now);
+	if (flash->sourceActor == Player() && VolumeWanted(ChainPuff)) {
+		StartVolumeBurst(ChainPuff, flash->node, Settings.puffOffset, Settings.puffBurst, 1.0f);
+		if (LogEvent()) LogLine("puff at (%.1f, %.1f, %.1f) -> volumetric", position.x, position.y, position.z);
+		return;
+	}
+	void* effect = SpawnBurst(cell, Settings.puffLifetime, Settings.puffModel, position, Settings.puffScale, Settings.puffBurst, Settings.puffBurstRate, now,
+		flash->sourceActor == Player() ? flash->node : nullptr, Settings.puffOffset);
 	// v24: the NIF already contains this look. Avoid heuristic writes into a live particle object.
 	if (LogEvent()) LogLine("puff at (%.1f, %.1f, %.1f) -> %s (NIF look)", position.x, position.y, position.z,
 		effect ? "created" : "NOT created");
@@ -514,7 +555,10 @@ static float* FindRate(UInt8* object, int depth, bool ownModel, UInt8** controll
 // cycle on the game clock, not the spawn, so most bursts stayed silent and then several emitted together when the
 // window came round. These effects keep the switch always on (as the strand does), and the plugin sets the emitter's
 // rate at the spawn and to 0 after fBurstSeconds, the same rate control the wisp uses.
-struct Burst { UInt8* effect; float* rate; UInt8* controller; ULONGLONG offAt; };
+// While a burst emits, it follows its node (the muzzle or the ejection port), so a moving gun leaves a short soft smear
+// along its path instead of a dense blob at the spot where the shot happened.
+struct Burst { UInt8* effect; float* rate; UInt8* controller; ULONGLONG offAt; UInt8* follow; NiPoint3 offset; };
+static NiPoint3 WorldPoint(UInt8* node, NiPoint3 at);
 static Burst Bursts[64] = {};
 static float BurstRate(const char* model) {
 	char lower[MAX_PATH];
@@ -526,17 +570,19 @@ static float BurstRate(const char* model) {
 }
 static void EndBurst(Burst& b) {
 	if (b.rate) *b.rate = 0.0f;
+	NodeRelease(b.follow);
 	NodeRelease(b.effect);
 	b = Burst{};
 }
-static void* SpawnBurst(void* cell, float lifetime, const char* model, NiPoint3 at, float scale, float seconds, ULONGLONG now) {
+static void* SpawnBurst(void* cell, float lifetime, const char* model, NiPoint3 at, float scale, float seconds, float burstRate, ULONGLONG now,
+	UInt8* follow, NiPoint3 offset) {
 	void* effect = SpawnEffect(cell, lifetime, model, NiPoint3{ 0.0f, 0.0f, 1.0f }, at, scale, (UInt32)Settings.flags, nullptr);
 	if (!effect) return nullptr;
 	UInt8* root = *(UInt8**)((UInt8*)effect + 0x18);
 	UInt8* controller = nullptr;
 	float* rate = root ? FindRate(root, 0, OwnModel(model), &controller) : nullptr;
 	if (!rate || !controller) return effect;   // not ours: the file decides
-	*rate = BurstRate(model);
+	*rate = burstRate > 0.0f ? burstRate : BurstRate(model);   // puffs of smoke per second while the burst lasts
 	*(unsigned short*)(controller + 0x08) |= 0x8;
 	int slot = 0;
 	for (int i = 0; i < 64; i++) {
@@ -545,16 +591,74 @@ static void* SpawnBurst(void* cell, float lifetime, const char* model, NiPoint3 
 	}
 	if (Bursts[slot].effect) EndBurst(Bursts[slot]);
 	NodeAddRef((UInt8*)effect);
-	Bursts[slot] = Burst{ (UInt8*)effect, rate, controller, now + (ULONGLONG)(seconds * 1000.0f) };
+	NodeAddRef(follow);
+	Bursts[slot] = Burst{ (UInt8*)effect, rate, controller, now + (ULONGLONG)(seconds * 1000.0f), follow, offset };
 	return effect;
 }
 static void UpdateBursts(ULONGLONG now) {
-	for (int i = 0; i < 64; i++) if (Bursts[i].effect && now >= Bursts[i].offAt) EndBurst(Bursts[i]);
+	for (int i = 0; i < 64; i++) {
+		Burst& b = Bursts[i];
+		if (!b.effect) continue;
+		if (now >= b.offAt) { EndBurst(b); continue; }
+		// Still emitting: move it to where its node is now (only while the node is still in the scene).
+		UInt8* root = *(UInt8**)(b.effect + 0x18);
+		if (root && b.follow && *(volatile LONG*)(b.follow + 4) > 1)
+			*(NiPoint3*)(root + 0x58) = WorldPoint(b.follow, NodePosition(b.follow, b.offset));
+	}
+}
+
+// ---- Emitter copies along the barrel's path ------------------------------------------------------------------------
+// An emitter moves once per frame, so every puff born during a frame starts at the same spot. A moving gun therefore
+// leaves a dotted line of separate blobs, spaced by how far the barrel travelled that frame. The heat smoke and the
+// trail run several copies instead (iEmitters): each frame the copies are spread evenly along the line from last
+// frame's source position to this frame's, and the smoke rate is split between them, so the strand stays continuous
+// while moving. Standing still they all sit at the same spot and look like one emitter.
+struct Copies { UInt8* effect[3]; float* rate[3]; UInt8* ctrl[3]; int count; NiPoint3 last; bool hasLast; };
+static Copies WispCopies = {}, AfterCopies = {};
+static void SpawnCopies(Copies& c, int total, void* cell, float lifetime, const char* model, float scale, const NiPoint3& at) {
+	c = Copies{};
+	for (int k = 0; k < total - 1 && k < 3; k++) {
+		void* effect = SpawnEffect(cell, lifetime, model, NiPoint3{ 0.0f, 0.0f, 1.0f }, at, scale, (UInt32)Settings.trailFlags, nullptr);
+		if (!effect) break;
+		UInt8* root = *(UInt8**)((UInt8*)effect + 0x18);
+		UInt8* ctrl = nullptr;
+		float* rate = root ? FindRate(root, 0, OwnModel(model), &ctrl) : nullptr;
+		if (rate) { *rate = 0.0f; *(unsigned short*)(ctrl + 0x08) |= 0x8; }
+		NodeAddRef((UInt8*)effect);
+		c.effect[c.count] = (UInt8*)effect; c.rate[c.count] = rate; c.ctrl[c.count] = ctrl; c.count++;
+	}
+}
+static void ReleaseCopies(Copies& c) {
+	for (int k = 0; k < c.count; k++) {
+		if (c.rate[k]) *c.rate[k] = 0.0f;
+		NodeRelease(c.effect[k]);
+	}
+	c = Copies{};
+}
+static void PlaceCopies(Copies& c, UInt8* root, float* rate, UInt8* ctrl, const NiPoint3& at, float smoke) {
+	NiPoint3 from = c.hasLast ? c.last : at;
+	const float dx = at.x - from.x, dy = at.y - from.y, dz = at.z - from.z;
+	if (dx * dx + dy * dy + dz * dz > 200.0f * 200.0f) from = at;   // a jump (teleport, load): no path to fill
+	const int total = c.count + 1;
+	for (int k = 0; k < c.count; k++) {
+		const float f = (float)(k + 1) / total;
+		UInt8* copyRoot = *(UInt8**)(c.effect[k] + 0x18);
+		if (copyRoot) {
+			NiPoint3& p = *(NiPoint3*)(copyRoot + 0x58);
+			p.x = from.x + (at.x - from.x) * f; p.y = from.y + (at.y - from.y) * f; p.z = from.z + (at.z - from.z) * f;
+		}
+		if (c.rate[k]) { *c.rate[k] = smoke / total; *(unsigned short*)(c.ctrl[k] + 0x08) |= 0x8; }
+	}
+	if (root) *(NiPoint3*)(root + 0x58) = at;
+	if (rate) { *rate = smoke / total; *(unsigned short*)(ctrl + 0x08) |= 0x8; }
+	c.last = at;
+	c.hasLast = true;
 }
 
 // Lets the running wisp go: its emitter is switched off and the smoke in the air rises and fades where it is.
 static void ReleaseWisp(const char* why) {
 	if (!FollowEffect) return;
+	ReleaseCopies(WispCopies);
 	UInt8* root = *(UInt8**)(FollowEffect + 0x18);
 	if (root && FollowUntil > GetTickCount64()) StopEmitters(root, 0);
 	if (why) LogLine("wisp released: %s (heat %.1f)", why, Heat);
@@ -567,6 +671,7 @@ static void ReleaseWisp(const char* why) {
 // Lets the after-fire trail go (its smoke in the air keeps rising and fading).
 static void ReleaseAfter(const char* why) {
 	if (!AfterEffect) return;
+	ReleaseCopies(AfterCopies);
 	if (AfterRate) *AfterRate = 0.0f;
 	if (why) LogLine("after-fire trail released: %s (heat %.1f)", why, Heat);
 	NodeRelease(AfterEffect);
@@ -589,6 +694,274 @@ static NiPoint3 GlowDirection(UInt8* node) {
 		length = sqrtf(back.x * back.x + back.y * back.y + back.z * back.z);
 	}
 	return length > 0.01f ? NiPoint3{ back.x / length, back.y / length, back.z / length } : GlowBack;
+}
+
+// The barrel's rearward direction for the volumetric smoke: the muzzle node's own forward axis (a weapon model points
+// along its +Y), which lies along the barrel itself. GlowDirection's line to the node's parent is used only when that
+// axis is far off it (over 45 degrees: a model whose muzzle node is turned); on some models the parent sits off the
+// barrel line (by the sights or the grip), which tilted the barrel the smoke flows around toward it. `offDegrees`: how
+// far apart the two are (for the log).
+static NiPoint3 BarrelBack(UInt8* node, float* offDegrees = nullptr) {
+	const NiPoint3 toParent = GlowDirection(node);
+	if (!node) return toParent;
+	const float* rot = (const float*)(node + 0x68);
+	NiPoint3 axis = { -rot[1], -rot[4], -rot[7] };
+	const float length = sqrtf(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+	if (!(length > 0.5f && length < 2.0f)) return toParent;   // not a sane rotation
+	axis = NiPoint3{ axis.x / length, axis.y / length, axis.z / length };
+	float c = axis.x * toParent.x + axis.y * toParent.y + axis.z * toParent.z;
+	c = c < -1.0f ? -1.0f : c > 1.0f ? 1.0f : c;
+	if (offDegrees) *offDegrees = acosf(c) * 57.29578f;
+	return c > 0.7071f ? axis : toParent;
+}
+
+// ---- Gun shape probe (test) ---------------------------------------------------------------------------------------
+// Whether the game keeps a gun model's mesh (vertex positions and triangles) in memory once it is loaded, so the smoke
+// could flow around the gun's real shape instead of a tube. Logged once per gun (first person): each mesh part with its
+// vertices and triangles, and the whole gun's extent along its own axes. NiObject vtable 8 IsTriStrips, 9 IsTriShape,
+// 3 IsNiNode; NiGeometry model data at +0xB8, skin at +0xBC; NiGeometryData vertex count +0x08, positions +0x20, keep
+// flags +0x38; NiTriBasedGeomData triangles +0x40; NiTriShapeData index list +0x48; NiTriStripsData strip indices +0x4C.
+struct ShapeProbe { int parts, readable, skinned, vertices, triangles, lines; NiPoint3 lo, hi; };
+static NiPoint3 IntoNode(UInt8* node, const NiPoint3& w) {      // a world point in a node's own space
+	const float* R = (const float*)(node + 0x68);
+	const NiPoint3 T = *(NiPoint3*)(node + 0x8C);
+	const float S = *(float*)(node + 0x98) > 0.0001f ? *(float*)(node + 0x98) : 1.0f;
+	const NiPoint3 d = { w.x - T.x, w.y - T.y, w.z - T.z };
+	return NiPoint3{ (R[0] * d.x + R[3] * d.y + R[6] * d.z) / S, (R[1] * d.x + R[4] * d.y + R[7] * d.z) / S, (R[2] * d.x + R[5] * d.y + R[8] * d.z) / S };
+}
+static void ProbeShapes(UInt8* object, UInt8* root, ShapeProbe& p, int depth) {
+	if (!object || depth > 24) return;
+	void** vtable = *(void***)object;
+	typedef void* (__thiscall* IsFn)(void*);
+	const bool strips = ((IsFn)vtable[8])(object) != nullptr, shape = ((IsFn)vtable[9])(object) != nullptr;
+	if (strips || shape) {
+		p.parts++;
+		UInt8* data = *(UInt8**)(object + 0xB8);
+		const bool skinned = *(UInt8**)(object + 0xBC) != nullptr;
+		p.skinned += skinned ? 1 : 0;
+		const unsigned short verts = data ? *(unsigned short*)(data + 0x08) : 0;
+		const NiPoint3* pos = data ? *(NiPoint3**)(data + 0x20) : nullptr;
+		const unsigned short tris = data ? *(unsigned short*)(data + 0x40) : 0;
+		const void* index = data ? *(void**)(data + (strips ? 0x4C : 0x48)) : nullptr;
+		const UInt8 keep = data ? *(data + 0x38) : 0;
+		const char* name = *(const char**)(object + 8);
+		if (p.lines++ < 48)
+			LogLine("gun shape probe: %s '%s': %u vertices%s, %u triangles%s, keep flags 0x%02X%s", RttiName(object), name ? name : "",
+				verts, pos ? "" : " (positions not kept)", tris, index ? "" : " (indices not kept)", keep, skinned ? ", skinned" : "");
+		if (!pos || !verts) return;
+		p.readable++;
+		p.vertices += verts;
+		p.triangles += tris;
+		if (skinned) return;                                       // skinned positions are not in the part's own space
+		const float* r = (const float*)(object + 0x68);
+		const NiPoint3 t = *(NiPoint3*)(object + 0x8C);
+		const float s = *(float*)(object + 0x98);
+		for (unsigned short v = 0; v < verts; v++) {
+			const NiPoint3& q = pos[v];
+			const NiPoint3 w = { t.x + s * (r[0] * q.x + r[1] * q.y + r[2] * q.z), t.y + s * (r[3] * q.x + r[4] * q.y + r[5] * q.z),
+				t.z + s * (r[6] * q.x + r[7] * q.y + r[8] * q.z) };
+			const NiPoint3 l = IntoNode(root, w);
+			p.lo = NiPoint3{ l.x < p.lo.x ? l.x : p.lo.x, l.y < p.lo.y ? l.y : p.lo.y, l.z < p.lo.z ? l.z : p.lo.z };
+			p.hi = NiPoint3{ l.x > p.hi.x ? l.x : p.hi.x, l.y > p.hi.y ? l.y : p.hi.y, l.z > p.hi.z ? l.z : p.hi.z };
+		}
+		return;
+	}
+	if (!((IsFn)vtable[3])(object)) return;
+	UInt8** children = *(UInt8***)(object + 0xA0);
+	const unsigned short count = *(unsigned short*)(object + 0xA6);
+	for (unsigned short i = 0; children && i < count; ++i) ProbeShapes(children[i], root, p, depth + 1);
+}
+static void ProbeGunShape(UInt8* root, UInt8* muzzle) {
+	ShapeProbe p = {};
+	p.lo = NiPoint3{ 1e9f, 1e9f, 1e9f };
+	p.hi = NiPoint3{ -1e9f, -1e9f, -1e9f };
+	__try { ProbeShapes(root, root, p, 0); }
+	__except (EXCEPTION_EXECUTE_HANDLER) { LogLine("gun shape probe: stopped by a fault after %d part(s)", p.parts); }
+	const NiPoint3 m = IntoNode(root, *(NiPoint3*)(muzzle + 0x8C));
+	LogLine("gun shape probe: %d mesh part(s), %d with readable positions (%d skinned): %d vertices, %d triangles", p.parts, p.readable,
+		p.skinned, p.vertices, p.triangles);
+	if (p.lo.x <= p.hi.x)
+		LogLine("gun shape probe: extent in the gun's own space x %.1f..%.1f, y %.1f..%.1f, z %.1f..%.1f; muzzle at (%.1f, %.1f, %.1f)",
+			p.lo.x, p.hi.x, p.lo.y, p.hi.y, p.lo.z, p.hi.z, m.x, m.y, m.z);
+}
+
+// ---- The gun's real shape ------------------------------------------------------------------------------------------
+// The volumetric smoke flows round the gun you hold as it really is (its sights, magazine, scope, bipod), not a tube:
+// when a gun is first seen, its mesh parts' triangles are read from the game (on the game's thread, a few milliseconds)
+// and turned into a distance map (GunShape.h) on a background thread, a fraction of a second; the tube stands in until it
+// is ready. Parts the game hides and bending (skinned) parts are left out. [Volume] bGunShape (0 = always the tube).
+// NiAVObject flags +0x30 (bit 0 hidden); NiGeometry model data +0xB8, skin +0xBC; NiGeometryData vertex count +0x08,
+// positions +0x20; NiTriBasedGeomData triangles +0x40; NiTriShapeData index count +0x44, indices +0x48; NiTriStripsData
+// strips +0x44, strip lengths +0x48, strip indices +0x4C.
+struct ShapeJob { std::vector<float> tris; UInt8* root; void* weapon; GunShape* result; int parts, skipped, triangles; double ms; };
+static const size_t ShapeMaxTriangles = 600000;
+static GunShape* Shape = nullptr;                  // the shape of the gun you hold (game thread only)
+static UInt8* ShapeRoot = nullptr;                 // the gun model it is built (or being built) for
+static void* ShapeWeapon = nullptr;
+static bool ShapeBuilding = false;
+static ShapeJob* volatile ShapeDone = nullptr;     // a finished build, handed over by the background thread
+static NiPoint3 ShapeMuzzle = {};                  // the muzzle in the gun's own space (when its build started)
+static bool ShapeAlongX = false;                   // the barrel lies along the gun's own X axis (the muzzle at its far end)
+// This frame: whether the smoke uses the shape, and the gun model's world transform.
+static bool ShapeOn = false;
+static float ShapeRot[9] = {}, ShapeScale = 1.0f;
+static NiPoint3 ShapePos = {};
+
+static void CollectShape(UInt8* object, UInt8* root, ShapeJob& job, int depth) {
+	if (!object || depth > 24) return;
+	if (*(UInt32*)(object + 0x30) & 1) return;                       // hidden, with everything under it
+	void** vtable = *(void***)object;
+	typedef void* (__thiscall* IsFn)(void*);
+	const bool strips = ((IsFn)vtable[8])(object) != nullptr, shape = ((IsFn)vtable[9])(object) != nullptr;
+	if (strips || shape) {
+		UInt8* data = *(UInt8**)(object + 0xB8);
+		const unsigned short nv = data ? *(unsigned short*)(data + 0x08) : 0;
+		const NiPoint3* pos = data ? *(NiPoint3**)(data + 0x20) : nullptr;
+		if (!pos || !nv || *(UInt8**)(object + 0xBC)) { job.skipped++; return; }   // no positions kept, or it bends (skinned)
+		// From the part's own space to the gun's, through the world (both as they are now): M = R^T r s / S.
+		const float* r = (const float*)(object + 0x68);
+		const NiPoint3 t = *(NiPoint3*)(object + 0x8C);
+		const float s = *(float*)(object + 0x98);
+		const float* R = (const float*)(root + 0x68);
+		const NiPoint3 T = *(NiPoint3*)(root + 0x8C);
+		const float S = *(float*)(root + 0x98) > 0.0001f ? *(float*)(root + 0x98) : 1.0f;
+		float M[9];
+		for (int i = 0; i < 3; i++)
+			for (int j = 0; j < 3; j++) M[i * 3 + j] = (R[i] * r[j] + R[3 + i] * r[3 + j] + R[6 + i] * r[6 + j]) * s / S;
+		const NiPoint3 dt = { t.x - T.x, t.y - T.y, t.z - T.z };
+		const float o[3] = { (R[0] * dt.x + R[3] * dt.y + R[6] * dt.z) / S, (R[1] * dt.x + R[4] * dt.y + R[7] * dt.z) / S,
+			(R[2] * dt.x + R[5] * dt.y + R[8] * dt.z) / S };
+		auto put = [&](unsigned short a) {
+			const NiPoint3& q = pos[a];
+			job.tris.push_back(M[0] * q.x + M[1] * q.y + M[2] * q.z + o[0]);
+			job.tris.push_back(M[3] * q.x + M[4] * q.y + M[5] * q.z + o[1]);
+			job.tris.push_back(M[6] * q.x + M[7] * q.y + M[8] * q.z + o[2]);
+		};
+		if (shape) {
+			const unsigned short count = *(unsigned short*)(data + 0x40);
+			const UInt32 len = *(UInt32*)(data + 0x44);
+			const unsigned short* idx = *(unsigned short**)(data + 0x48);
+			if (!idx || len != 3u * count || job.tris.size() / 9 + count > ShapeMaxTriangles) { job.skipped++; return; }
+			for (UInt32 k = 0; k < len; k++) if (idx[k] >= nv) { job.skipped++; return; }
+			for (UInt32 k = 0; k < len; k++) put(idx[k]);
+		}
+		else {
+			const unsigned short ns = *(unsigned short*)(data + 0x44);
+			const unsigned short* lens = *(unsigned short**)(data + 0x48);
+			const unsigned short* idx = *(unsigned short**)(data + 0x4C);
+			if (!lens || !idx) { job.skipped++; return; }
+			UInt32 total = 0;
+			for (unsigned short k = 0; k < ns; k++) total += lens[k];
+			if (job.tris.size() / 9 + total > ShapeMaxTriangles) { job.skipped++; return; }
+			for (UInt32 k = 0; k < total; k++) if (idx[k] >= nv) { job.skipped++; return; }
+			const unsigned short* q = idx;
+			for (unsigned short k = 0; k < ns; k++) {
+				const int L = lens[k];
+				for (int j = 0; j + 2 < L; j++) {
+					const unsigned short a = q[j], b = q[j + 1], c = q[j + 2];
+					if (a == b || b == c || a == c) continue;                // a strip's joining (empty) triangle
+					put(a); put(b); put(c);
+				}
+				q += L;
+			}
+		}
+		job.parts++;
+		return;
+	}
+	if (!((IsFn)vtable[3])(object)) return;
+	UInt8** children = *(UInt8***)(object + 0xA0);
+	const unsigned short count = *(unsigned short*)(object + 0xA6);
+	for (unsigned short i = 0; children && i < count; ++i) CollectShape(children[i], root, job, depth + 1);
+}
+static bool CollectShapeSafe(UInt8* root, ShapeJob& job) {
+	__try { CollectShape(root, root, job, 0); return true; }
+	__except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// The background build: a map 0.5 units fine around the gun, 5 units beyond it, its skin 0.3 units out from the
+// drawn surface; at most 2 million grid points (coarser for a huge gun).
+static DWORD WINAPI ShapeWorker(LPVOID arg) {
+	ShapeJob* job = (ShapeJob*)arg;
+	LARGE_INTEGER f, a, b;
+	QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&a);
+	try {
+		GunShape* shape = new GunShape();
+		if (shape->Build(job->tris.data(), job->triangles, 0.5f, 5.0f, 0.3f, 2000000)) job->result = shape;
+		else delete shape;
+	}
+	catch (...) { job->result = nullptr; }
+	QueryPerformanceCounter(&b);
+	job->ms = (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)f.QuadPart;
+	std::vector<float>().swap(job->tris);
+	InterlockedExchangePointer((PVOID volatile*)&ShapeDone, job);
+	return 0;
+}
+
+// Once a frame with the gun you hold (its model's root node, and its muzzle node): takes a finished build, and starts
+// one for a gun that has none yet (one at a time).
+static void UpdateGunShape(UInt8* root, UInt8* muzzleNode) {
+	if (ShapeJob* done = (ShapeJob*)InterlockedExchangePointer((PVOID volatile*)&ShapeDone, nullptr)) {
+		ShapeBuilding = false;
+		if (done->result && done->root == root && done->root == ShapeRoot && done->weapon == CurrentWeapon) {
+			delete Shape;
+			Shape = done->result;
+			done->result = nullptr;
+			LogLine("gun shape: ready - %d part(s) (%d left out), %d triangles -> map %d x %d x %d at %.2f units (%.1f MB) in %.0f ms; "
+				"barrel along the gun's own axis: %s", done->parts, done->skipped, done->triangles, Shape->nx, Shape->ny, Shape->nz,
+				Shape->voxel, Shape->d.size() * 4.0 / 1048576.0, done->ms, ShapeAlongX ? "yes" : "no");
+		}
+		else if (!done->result) LogLine("gun shape: no map could be built from the gun's model; the tube stands in");
+		delete done->result;
+		delete done;
+	}
+	if (!root || !Settings.volume || !Settings.volumeWrapGun || !Settings.volumeGunShape || ShapeBuilding) return;
+	// A gun whose model could not be read is tried again after 3 s, up to 3 times.
+	static int tries = 0;
+	static ULONGLONG triedAt = 0;
+	const ULONGLONG now = GetTickCount64();
+	if (root == ShapeRoot && CurrentWeapon == ShapeWeapon) {
+		if (Shape || tries >= 3 || now - triedAt < 3000) return;
+	}
+	else tries = 0;
+	tries++;
+	triedAt = now;
+	delete Shape;                                                       // the tube stands in until the new map is ready
+	Shape = nullptr;
+	ShapeRoot = root;
+	ShapeWeapon = CurrentWeapon;
+	ShapeJob* job = new ShapeJob();
+	job->root = root; job->weapon = CurrentWeapon; job->result = nullptr; job->parts = job->skipped = 0; job->ms = 0.0;
+	const bool read = CollectShapeSafe(root, *job);
+	job->triangles = (int)(job->tris.size() / 9);
+	if (!read || !job->triangles) {
+		LogLine("gun shape: %s; the tube stands in", read ? "the gun's model has no readable mesh" : "reading the gun's model stopped by a fault");
+		delete job;
+		return;
+	}
+	// Where the muzzle is in the gun's own space, and whether the barrel lies along its X axis (the muzzle near its far end).
+	ShapeMuzzle = IntoNode(root, *(NiPoint3*)(muzzleNode + 0x8C));
+	float far_x = -1e9f;
+	for (size_t i = 0; i < job->tris.size(); i += 3) far_x = job->tris[i] > far_x ? job->tris[i] : far_x;
+	ShapeAlongX = ShapeMuzzle.x > 0.0f && ShapeMuzzle.x > 0.85f * far_x && fabsf(ShapeMuzzle.y) < 0.3f * ShapeMuzzle.x &&
+		fabsf(ShapeMuzzle.z) < 0.3f * ShapeMuzzle.x;
+	ShapeBuilding = true;
+	HANDLE thread = CreateThread(nullptr, 0, ShapeWorker, job, 0, nullptr);
+	if (thread) CloseHandle(thread);
+	else { ShapeBuilding = false; delete job; }
+}
+
+// The distance (world units) from a point to the surface of the gun you hold (negative inside it), and the outward
+// direction there. Only while ShapeOn.
+static float GunSurface(const NiPoint3& p, NiPoint3* n) {
+	const float* R = ShapeRot;
+	const NiPoint3 d = { p.x - ShapePos.x, p.y - ShapePos.y, p.z - ShapePos.z };
+	const float l[3] = { (R[0] * d.x + R[3] * d.y + R[6] * d.z) / ShapeScale, (R[1] * d.x + R[4] * d.y + R[7] * d.z) / ShapeScale,
+		(R[2] * d.x + R[5] * d.y + R[8] * d.z) / ShapeScale };
+	float ln[3];
+	const float dist = Shape->Sample(l, ln);
+	*n = NiPoint3{ R[0] * ln[0] + R[1] * ln[1] + R[2] * ln[2], R[3] * ln[0] + R[4] * ln[1] + R[5] * ln[2], R[6] * ln[0] + R[7] * ln[1] + R[8] * ln[2] };
+	return dist * ShapeScale;
 }
 
 static NiPoint3 GlowAt(int index, int count) {
@@ -701,6 +1074,7 @@ static bool SpawnWisp(ULONGLONG now, const NiPoint3& position) {
 	const float startRate = RateValue ? *RateValue : -1.0f;
 	const unsigned short startFlags = RateController ? *(unsigned short*)(RateController + 0x08) : 0;
 	if (RateValue) { *RateValue = 0.0f; *(unsigned short*)(RateController + 0x08) |= 0x8; }
+	SpawnCopies(WispCopies, Settings.wispEmitters, cell, Settings.effectSeconds, Settings.trailModel, Settings.trailScale, position);
 	LogLine("wisp %s at (%.1f, %.1f, %.1f) for up to %.0f s, heat %.1f (game reference %s); smoke rate %s (started at %.1f, emitter %s; controller %p, rate %p)",
 		Settings.trailModel, position.x, position.y, position.z, Settings.effectSeconds, Heat, FollowHeld ? "yes" : "no",
 		RateValue ? "under control" : "NOT found (on/off only; check fFileRate matches the file)", startRate,
@@ -723,7 +1097,9 @@ static bool SpawnAfter(ULONGLONG now, const NiPoint3& position) {
 	AfterController = nullptr;
 	AfterRate = root ? FindRate(root, 0, OwnModel(Settings.afterModel), &AfterController) : nullptr;
 	if (AfterRate) { *AfterRate = 0.0f; *(unsigned short*)(AfterController + 0x08) |= 0x8; }
-	LogLine("after-fire trail %s, heat %.1f; smoke rate %s", Settings.afterModel, Heat, AfterRate ? "under control" : "NOT found");
+	SpawnCopies(AfterCopies, Settings.afterEmitters, cell, Settings.effectSeconds, Settings.afterModel, Settings.afterScale, position);
+	LogLine("after-fire trail %s, heat %.1f, %d emitter(s); smoke rate %s", Settings.afterModel, Heat, AfterCopies.count + 1,
+		AfterRate ? "under control" : "NOT found");
 	return true;
 }
 
@@ -827,7 +1203,7 @@ static void HandleShots(ULONGLONG now);   // below, with the hooks
 typedef void* (__thiscall* GetCurrentWeaponFn)(void* actor);
 static const GetCurrentWeaponFn GetEquippedWeapon = (GetCurrentWeaponFn)0x008A1710;
 static void* SettingsWeapon = nullptr;
-static const char* const GunSections[] = { "Muzzle", "Puff", "Wisp", "Trail", "Glow", "Haze", "Blast", "Ejection" };
+static const char* const GunSections[] = { "Muzzle", "Puff", "Wisp", "Trail", "Volume", "Glow", "Haze", "Blast", "Ejection" };
 static bool SkippedGunKey(const char* key) {   // test switches, not meant per gun
 	return !_stricmp(key, "iRibbonReports") || !_stricmp(key, "bFollowMuzzle") || !_stricmp(key, "fConstantRate") ||
 		!_stricmp(key, "iFlags") || !_stricmp(key, "fFileRate");
@@ -907,12 +1283,1326 @@ static void UpdateGunSettings() {
 	LoadSettings();
 }
 
+// ---- Volumetric smoke (prototype) ---------------------------------------------------------------------------------
+// Instead of the game's particles, GunFX's smoke can be kept here as chains of points: the heat smoke and the
+// after-fire trail (the path the barrel left behind), and bursts for the muzzle puff and the ejection smoke. Each point
+// rises, curls, slows down, grows and fades with age; NVR draws every pair of neighbouring points as a soft tube of smoke
+// (VolumetricSmoke.fx), so the smoke is continuous however fast the gun moves. Menu switch Main > GunFX >
+// VolumetricSmoke; settings in [Volume] (which smoke turns volumetric, and how); the look of each comes from its own
+// section ([Wisp], [Trail], [Puff], [Ejection]). The sprite version of a smoke is not spawned while its volumetric
+// version is on. Points are in world space (game-loop positions). Player only.
+// side: which side of you it went to when your body pushed it (-1 left, 1 right, 0 not yet); frayed: it has had its
+// chance to fray into a tendril (once), or is part of one.
+// unzipped: you walked into it and it split into two halves (this one and a twin in a second strand), each keeping its side.
+// gunDir: the direction (across the barrel) it went round the barrel when the gun swept into it (zero: not yet). Kept as
+// a direction, so it stays on that side even when the swing reverses.
+// clear: it has been outside your body since it was made (smoke you walk into, not smoke made within your reach).
+// stir: how stirred up it is now (0 calm .. about 1), by your body, the gun and the whirlpools; spread: how much wider it has
+// become from being stirred (1 = not at all), see Diffuse.
+struct SmokePoint { NiPoint3 pos, vel, gunDir; float born, life, r0, r1, grow, strength, opacity, fadeIn, fadeStart, fadeEnd, seed, tex, side, stir, spread; bool link, frayed, unzipped, clear; };
+static const int ChainMax = 96;
+static const char* const ChainNames[ChainCount] = { "heat smoke", "trail", "puff", "ejection" };
+struct SmokeChain { SmokePoint p[ChainMax]; int count; float lastEmit; bool emitting; };
+static SmokeChain Chains[ChainCount] = {};
+// Where a chain emits this frame, and how.
+struct SmokeSource {
+	bool on;           // emitting
+	NiPoint3 at;       // from here (world)
+	float strength;    // density factor (the heat smoke and trail follow the barrel heat)
+	float size;        // size factor: [Volume] fSizeScale (strands) or fBurstSizeScale (bursts; the ejection smoke also grows with the heat)
+	NiPoint3 push;     // added to each new point's speed (the puff blows forward out of the barrel)
+	NiPoint3 carry;    // each new point starts with this speed too: the gun's own movement (gas leaving a moving gun)
+	NiPoint3 bore;     // the source is inside the barrel: new points slide out along this (to the muzzle) over their first 0.1 s
+	float points;      // points over the smoke's life: strands 30, bursts 62 (closer together for short bursts)
+	float drag;        // air drag per second
+	int cluster;       // points to emit at once now (each puff / ejection burst starts with a cluster of them)
+	bool drift;        // drifts toward the right of where you aim and away from you (the heat smoke and trail)
+	bool frays;        // frays into tendrils where your body splits it (not the tendrils themselves)
+	int zip;           // unzips into two arms as you walk into it: 1 the heat smoke, 2 the trail (their twin strands), 0 not
+};
+// A muzzle puff or ejection burst: emits until the clock passes `until` (at least one frame), from `node` plus
+// `offset` (the node's own axes), following the node while it lasts.
+struct SmokeBurst { float until; UInt8* node; NiPoint3 offset; float size; bool fresh; int pending; };
+static SmokeBurst VolumeBursts[ChainCount] = {};   // used for ChainPuff and ChainEject
+static float SmokeClock = 0.0f;
+static UInt32 SmokeRandom = 12345u;
+static float Random01() { SmokeRandom = SmokeRandom * 1664525u + 1013904223u; return (SmokeRandom >> 8) * (1.0f / 16777216.0f); }
+// What NVR reads: one record of 16 floats per tube segment between neighbouring points (or per lone point): end A
+// (x, y, z, radius), end B (x, y, z, radius), (density at A, density at B, age 0..1, how much of each rounded end is drawn
+// (A 0..15 + 16 * B 0..15, see EndWeight) + 256 * seed), (noise coordinate at A and at B, age 0..1 at A and at B).
+static const int RecordFloats = 16;
+static float VolumePublished[((ChainCount + 2) * ChainMax + 8 * 4) * RecordFloats] = {};   // the chains, 2 twin arms, 8 tendrils of 4 points
+// The muzzle flash of the player's last shot (world position, time), for the light it throws on the smoke.
+static NiPoint3 FlashWorld = {};
+static ULONGLONG FlashAt = 0;
+static int VolumePublishedCount = 0;
+static float VolumeParams[8] = {};
+static float VolAfterRate = 0.0f;           // the after-fire trail's rate this frame (for the volumetric trail)
+
+// The air the smoke drifts in (the weather's wind outdoors, still air indoors) and your body, which pushes smoke aside,
+// drags it along as you move and thins it where it is stirred. Worked out once a frame by UpdateAirAndPlayer.
+static NiPoint3 VolumeWind = {};          // game units per second
+// The gun as the smoke sees it: a capsule from the muzzle back along the barrel ([Volume] fGunLength, fGunRadius), and
+// the direction you aim (flat) with its right-hand side, for the heat smoke and trail's drift. Set by the main loop.
+static bool VolumeGunOn = false;
+static NiPoint3 VolumeGunMuzzle = {}, VolumeGunBack = {}, VolumeAimForward = {}, VolumeAimRight = {};
+// How far inside the barrel (behind the muzzle node) the heat smoke and trail start, so they flow out of its end.
+static float VolumeMuzzleDepth = 0.0f;
+// How the gun moves, smoothed over about 0.3 s: firing kicks the gun model back and up and springs it forward several
+// times a second; those kicks cancel out here, so the smoke does not flick from side to side on every shot, while a
+// real swing of the gun or your walking still shows.
+static NiPoint3 VolumeGunVel = {};
+static float VolumeWindKeep = 1.0f;       // this frame's share of horizontal motion not yet turned into the wind's
+static bool VolumePlayerOn = false;
+static NiPoint3 VolumePlayerFeet = {}, VolumePlayerVel = {};
+
+// The smoke point's radius now (as UpdateVolumeSmoke draws it).
+static float PointRadius(const SmokePoint& s, float age) {
+	float g = s.grow > 0.01f ? age / s.grow : 1.0f;
+	g = g < 0.0f ? 0.0f : g > 1.0f ? 1.0f : g;
+	g = 1.0f - (1.0f - g) * (1.0f - g);
+	return (s.r0 + (s.r1 - s.r0) * g) * s.spread;
+}
+
+static void UpdateAirAndPlayer(float dt) {
+	UInt8* player = (UInt8*)Player();
+	UInt8* cell = player ? *(UInt8**)(player + 0x40) : nullptr;
+	// Interiors (TESObjectCELL flags at +0x24: 1 interior, 0x80 behaves like an exterior) have no wind.
+	const bool indoors = cell && (cell[0x24] & 0x01) && !(cell[0x24] & 0x80);
+	UInt8* sky = *(UInt8**)0x011DEA20;                    // Sky: wind speed 0..1 at +0xCC, direction at +0xD0
+	float speed = 0.0f, raw = 0.0f;
+	if (sky && !indoors && Settings.volumeWind > 0.0f) {
+		speed = *(float*)(sky + 0xCC);
+		raw = *(float*)(sky + 0xD0);
+		if (!(speed >= 0.0f && speed <= 4.0f)) speed = 0.0f;   // not a sane value
+		if (!(raw > -1000.0f && raw < 1000.0f)) raw = 0.0f;
+	}
+	// The direction may be in degrees or radians: above a full turn in radians it is taken as degrees. The heading the
+	// wind blows toward, 0 = north (+Y), clockwise; [Volume] fWindDirectionOffset turns it (180 = the other way).
+	const float radians = (fabsf(raw) > 6.3f ? raw * 0.01745329f : raw) + Settings.volumeWindOffset * 0.01745329f;
+	VolumeWind = NiPoint3{ sinf(radians) * speed * Settings.volumeWind, cosf(radians) * speed * Settings.volumeWind, 0.0f };
+	const float fadeIn = speed * 4.0f < 1.0f ? speed * 4.0f : 1.0f;
+	VolumeWindKeep = expf(-Settings.volumeWindPickup * fadeIn * dt);
+	static int logged = 0;
+	static float loggedSpeed = -1.0f, loggedRaw = 0.0f;
+	static bool loggedIndoors = false;
+	if (logged < 10 && (fabsf(speed - loggedSpeed) > 0.1f || fabsf(raw - loggedRaw) > 0.5f || indoors != loggedIndoors)) {
+		logged++;
+		loggedSpeed = speed; loggedRaw = raw; loggedIndoors = indoors;
+		LogLine("volumetric smoke wind: %s, speed %.2f, direction %.2f (raw) -> drift (%.1f, %.1f) units/s", indoors ? "indoors (none)" : "outdoors",
+			speed, raw, VolumeWind.x, VolumeWind.y);
+	}
+	// Your body: where you stand and how fast you move (smoothed; a jump of over 25 units per frame is a teleport).
+	VolumePlayerOn = false;
+	static NiPoint3 last = {};
+	static bool haveLast = false;
+	if (!player || !Settings.volumePlayer) { haveLast = false; return; }
+	const NiPoint3 feet = *(NiPoint3*)(player + 0x30);
+	if (haveLast && dt > 0.0001f) {
+		NiPoint3 v = { (feet.x - last.x) / dt, (feet.y - last.y) / dt, (feet.z - last.z) / dt };
+		if (v.x * v.x + v.y * v.y + v.z * v.z > 1500.0f * 1500.0f) v = NiPoint3{};
+		const float k = 1.0f - expf(-10.0f * dt);
+		VolumePlayerVel.x += (v.x - VolumePlayerVel.x) * k;
+		VolumePlayerVel.y += (v.y - VolumePlayerVel.y) * k;
+		VolumePlayerVel.z += (v.z - VolumePlayerVel.z) * k;
+	}
+	last = feet;
+	haveLast = true;
+	VolumePlayerFeet = feet;
+	VolumePlayerOn = true;
+}
+
+// ---- Whirlpools behind the gun and your body ---------------------------------------------------------------------
+// A pole moved through air leaves a pair of small whirlpools behind it, spinning opposite ways, that keep stirring for a
+// moment after it has passed. While the gun sweeps across smoke (faster than 40 units per second across the barrel) it
+// sheds such a pair every 0.08 s just behind the barrel's middle ([Volume] fGunSwirl); while you walk through smoke your
+// body sheds upright ones every 0.12 s behind you ([Volume] fBodySwirl, lasting fSwirlLife). Each whirls the smoke around
+// it (a line vortex along the barrel or your body, softened in its core) and fades out; they also carry each other
+// along, so a wake rolls up into eddies by itself. At most 24 at once.
+struct Vortex { NiPoint3 pos, axis; float strength, born, life, core, half; };
+static const int VortexMax = 24;
+static Vortex Vortices[VortexMax] = {};
+static int VortexCount = 0;
+static float LastShed = -10.0f, LastBodyShed = -10.0f;
+
+// The swirl the whirlpools give a point (game units per second); `skip`: a whirlpool to leave out (its own).
+static NiPoint3 VortexFlow(const NiPoint3& p, int skip = -1) {
+	NiPoint3 v = {};
+	for (int i = 0; i < VortexCount; i++) {
+		if (i == skip) continue;
+		const Vortex& w = Vortices[i];
+		float fade = 1.0f - (SmokeClock - w.born) / w.life;
+		if (fade <= 0.0f) continue;
+		fade = fade * fade * (3.0f - 2.0f * fade);                                // eases out
+		const NiPoint3 r = { p.x - w.pos.x, p.y - w.pos.y, p.z - w.pos.z };
+		const float ra = r.x * w.axis.x + r.y * w.axis.y + r.z * w.axis.z;
+		const float half = w.half, endFade = 0.5f * w.core + 4.0f;
+		if (fabsf(ra) > half + endFade) continue;                                 // beside its length only
+		const NiPoint3 rp = { r.x - w.axis.x * ra, r.y - w.axis.y * ra, r.z - w.axis.z * ra };
+		const float core = w.core;
+		const float d2 = rp.x * rp.x + rp.y * rp.y + rp.z * rp.z;
+		if (d2 > 36.0f * core * core) continue;                                   // six core radii around it
+		const float ends = fabsf(ra) > half ? 1.0f - (fabsf(ra) - half) / endFade : 1.0f;
+		const float k = w.strength * fade * ends / (6.2831853f * (d2 + core * core));
+		v.x += (w.axis.y * rp.z - w.axis.z * rp.y) * k;                             // axis x r: around the axis
+		v.y += (w.axis.z * rp.x - w.axis.x * rp.z) * k;
+		v.z += (w.axis.x * rp.y - w.axis.y * rp.x) * k;
+	}
+	return v;
+}
+
+// Sheds pairs behind the gun and your body when they move through smoke; moves every whirlpool with the wind and the
+// others' swirl, and drops faded ones.
+static bool SmokeNearGun();
+static bool SmokeNearBody();
+static void ShedBodyVortices();
+static void ShedVortices(float dt) {
+	static NiPoint3 moves[VortexMax];
+	for (int i = 0; i < VortexCount; i++) moves[i] = VortexFlow(Vortices[i].pos, i);   // carried by the others
+	int keep = 0;
+	for (int i = 0; i < VortexCount; i++) {
+		Vortex w = Vortices[i];
+		if (SmokeClock - w.born >= w.life) continue;
+		w.pos.x += (VolumeWind.x + moves[i].x) * dt; w.pos.y += (VolumeWind.y + moves[i].y) * dt; w.pos.z += moves[i].z * dt;
+		Vortices[keep++] = w;
+	}
+	VortexCount = keep;
+	ShedBodyVortices();
+	if (!VolumeGunOn || !Settings.volumeWrapGun || Settings.volumeGunSwirl <= 0.0f) return;
+	const NiPoint3& b = VolumeGunBack;
+	NiPoint3 U = { VolumeWind.x - VolumeGunVel.x, VolumeWind.y - VolumeGunVel.y, -VolumeGunVel.z };   // the air past the gun
+	const float ub = U.x * b.x + U.y * b.y + U.z * b.z;
+	U = NiPoint3{ U.x - b.x * ub, U.y - b.y * ub, U.z - b.z * ub };                                    // across the barrel
+	const float u = sqrtf(U.x * U.x + U.y * U.y + U.z * U.z);
+	if (u < 40.0f || SmokeClock - LastShed < 0.08f || VortexCount + 2 > VortexMax || !SmokeNearGun()) return;
+	LastShed = SmokeClock;
+	const NiPoint3 uh = { U.x / u, U.y / u, U.z / u };
+	NiPoint3 side = { b.y * uh.z - b.z * uh.y, b.z * uh.x - b.x * uh.z, b.x * uh.y - b.y * uh.x };      // across both
+	const float Rg = Settings.volumeGunRadius, half = 0.5f * Settings.volumeGunLength;
+	const NiPoint3 behind = { VolumeGunMuzzle.x + b.x * half + uh.x * Rg * 2.0f, VolumeGunMuzzle.y + b.y * half + uh.y * Rg * 2.0f,
+		VolumeGunMuzzle.z + b.z * half + uh.z * Rg * 2.0f };
+	// Spinning so that between them the air follows the gun (as the wake behind a moving pole does).
+	const float strength = Settings.volumeGunSwirl * u * Rg * 2.0f;
+	for (int e = -1; e <= 1; e += 2) {
+		Vortex& w = Vortices[VortexCount++];
+		w.pos = NiPoint3{ behind.x + side.x * Rg * 1.2f * e, behind.y + side.y * Rg * 1.2f * e, behind.z + side.z * Rg * 1.2f * e };
+		w.axis = b;
+		w.strength = -strength * e;
+		w.born = SmokeClock;
+		w.life = 0.9f;
+		w.core = Rg * 1.5f;
+		w.half = half;
+	}
+}
+
+// Your body: as you walk through smoke (faster than 40 units per second), a pair of upright whirlpools behind you every
+// 0.12 s, spinning so that between them the air follows you; your wake rolls up into eddies as they carry each other.
+static void ShedBodyVortices() {
+	if (!VolumePlayerOn || Settings.volumeBodySwirl <= 0.0f) return;
+	const NiPoint3 U = { VolumeWind.x - VolumePlayerVel.x, VolumeWind.y - VolumePlayerVel.y, 0.0f };   // the air past you
+	const float u = sqrtf(U.x * U.x + U.y * U.y);
+	if (u < 40.0f || SmokeClock - LastBodyShed < 0.12f || VortexCount + 2 > VortexMax || !SmokeNearBody()) return;
+	LastBodyShed = SmokeClock;
+	const NiPoint3 uh = { U.x / u, U.y / u, 0.0f };
+	const NiPoint3 side = { -uh.y, uh.x, 0.0f };                                                  // up x uh
+	const float R = Settings.volumePlayerRadius, H = Settings.volumePlayerHeight;
+	const NiPoint3 behind = { VolumePlayerFeet.x + uh.x * R * 1.1f, VolumePlayerFeet.y + uh.y * R * 1.1f, VolumePlayerFeet.z + 0.5f * H };
+	const float strength = Settings.volumeBodySwirl * u * R;
+	for (int e = -1; e <= 1; e += 2) {
+		Vortex& w = Vortices[VortexCount++];
+		w.pos = NiPoint3{ behind.x + side.x * R * 0.8f * e, behind.y + side.y * R * 0.8f * e, behind.z };
+		w.axis = NiPoint3{ 0.0f, 0.0f, 1.0f };
+		w.strength = -strength * e;
+		w.born = SmokeClock;
+		w.life = Settings.volumeSwirlLife;
+		w.core = R * 0.5f;
+		w.half = 0.5f * H;
+	}
+}
+
+// Whether a smoke is drawn volumetric now: [Volume] bEnabled, the menu switch and that smoke's own [Volume] switch.
+static bool VolumeWanted(int chain) { return Settings.volume && Switch(8) && Settings.volumeKinds[chain]; }
+
+// Starts (or extends) the volumetric puff / ejection burst from a node.
+static void StartVolumeBurst(int chain, UInt8* node, const NiPoint3& offset, float seconds, float size) {
+	SmokeBurst& b = VolumeBursts[chain];
+	if (b.node != node) { NodeAddRef(node); NodeRelease(b.node); b.node = node; }
+	b.offset = offset;
+	b.size = size;
+	const float until = SmokeClock + seconds;
+	if (until > b.until) b.until = until;
+	b.fresh = true;
+	b.pending += Settings.volumeBurstPoints;   // every shot / casing adds its own cluster
+}
+
+static void EmitSmoke(SmokeChain& c, const SmokeSource& src, const VolLook& v) {
+	if (c.count == ChainMax) {                 // full: drop the oldest point
+		memmove(&c.p[0], &c.p[1], sizeof(SmokePoint) * (ChainMax - 1));
+		c.count--;
+		c.p[0].link = false;
+	}
+	SmokePoint& s = c.p[c.count];
+	const float size = v.size * src.size;
+	const float life = v.life + v.lifeVar * (Random01() * 2.0f - 1.0f);
+	const float speed = v.speed + v.speedVar * (Random01() * 2.0f - 1.0f);
+	// Upwards, within fSpread (radians) of straight up, like the sprite emitters.
+	const float tilt = v.spread * sqrtf(Random01()), turn = 6.2831853f * Random01();
+	s.pos = src.at;
+	s.vel = NiPoint3{ speed * sinf(tilt) * cosf(turn) + src.carry.x, speed * sinf(tilt) * sinf(turn) + src.carry.y, speed * cosf(tilt) + src.carry.z };
+	// Plus the source's push (the puff's jet out of the barrel): within fSpread of its direction, each point at its own
+	// share of its speed, so the jet spreads into an uneven cone instead of one round ball.
+	const float pushSpeed = sqrtf(src.push.x * src.push.x + src.push.y * src.push.y + src.push.z * src.push.z);
+	if (pushSpeed > 0.01f) {
+		const NiPoint3 d = { src.push.x / pushSpeed, src.push.y / pushSpeed, src.push.z / pushSpeed };
+		NiPoint3 u = fabsf(d.z) < 0.9f ? NiPoint3{ -d.y, d.x, 0.0f } : NiPoint3{ 0.0f, -d.z, d.y };   // across the jet
+		const float ul = sqrtf(u.x * u.x + u.y * u.y + u.z * u.z);
+		u = NiPoint3{ u.x / ul, u.y / ul, u.z / ul };
+		const NiPoint3 w = { d.y * u.z - d.z * u.y, d.z * u.x - d.x * u.z, d.x * u.y - d.y * u.x };
+		const float jt = v.spread * sqrtf(Random01()), jr = 6.2831853f * Random01();
+		const float share = pushSpeed * (0.35f + 0.8f * Random01());
+		const float c = cosf(jt), sn = sinf(jt) * cosf(jr), sw = sinf(jt) * sinf(jr);
+		s.vel.x += share * (c * d.x + sn * u.x + sw * w.x);
+		s.vel.y += share * (c * d.y + sn * u.y + sw * w.y);
+		s.vel.z += share * (c * d.z + sn * u.z + sw * w.z);
+	}
+	s.born = SmokeClock;
+	s.life = life > 0.2f ? life : 0.2f;
+	s.r0 = size * v.startSize;
+	s.r1 = size * Settings.volumeExpand * (1.0f + v.sizeVar * (Random01() - 0.5f) * 0.5f);   // [Volume] fExpand: how big it ends up
+	s.grow = v.grow;
+	s.strength = src.strength;
+	s.opacity = v.opacity * Settings.volumeDensity;
+	s.fadeIn = v.fadeIn;
+	s.fadeStart = v.fadeStart;
+	s.fadeEnd = v.fadeEnd;
+	s.seed = Random01() * 100.0f;
+	// The point's noise coordinate along the smoke: by birth time, so neighbours are close and the detail flows along
+	// a strand, plus a little of its own, so a burst's points differ.
+	s.tex = SmokeClock * 1.5f + (s.seed - floorf(s.seed)) * 0.5f;
+	s.link = c.emitting && c.count > 0;
+	s.side = 0.0f;
+	s.gunDir = NiPoint3{};
+	s.frayed = false;
+	s.unzipped = false;
+	s.clear = false;
+	s.stir = 0.0f;
+	s.spread = 1.0f;
+	c.count++;
+	c.lastEmit = SmokeClock;
+}
+
+// ---- Tendrils: thin, short-lived child strands --------------------------------------------------------------------
+// Where a strand bends sharply (a quick change of direction of the gun), the smoke at the bend keeps going a little
+// (momentum) while the strand turns, so a thin filament peels off outward; where your body splits a strand, its torn ends
+// fray the same way. A tendril is 4 points leaving the parent point at spreading speeds (a thin line growing out of it),
+// a share of its thickness ([Volume] fTendrilSize), fainter, about half as long-lived and curling more. Each strand point
+// has one chance ([Volume] fTendrils) and at most 8 tendrils exist at once, so the cost stays tiny. They drift, flow
+// around you and the gun, and are drawn like the rest of the smoke.
+static const int TendrilMax = 8, TendrilPoints = 4;
+static SmokeChain Tendrils[TendrilMax] = {};
+static VolLook TendrilLook[TendrilMax] = {};
+static bool TendrilDrift[TendrilMax] = {};
+static void SpawnTendril(const SmokePoint& parent, float parentRadius, NiPoint3 dir, const VolLook& look, bool drift) {
+	if (Settings.volumeTendrils <= 0.0f) return;
+	int slot = -1;
+	for (int t = 0; t < TendrilMax && slot < 0; t++) if (!Tendrils[t].count) slot = t;
+	if (slot < 0) return;                                 // all busy: skip rather than cut one short
+	const float dl = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+	if (dl < 0.001f) return;
+	dir = NiPoint3{ dir.x / dl, dir.y / dl, dir.z / dl };
+	SmokeChain& c = Tendrils[slot];
+	c.count = 0;
+	c.emitting = false;
+	c.lastEmit = SmokeClock;
+	VolLook& v = TendrilLook[slot];
+	v = look;
+	v.curl *= 2.0f;
+	v.life *= 0.45f;
+	v.lifeVar *= 0.45f;
+	TendrilDrift[slot] = drift;
+	const float speed = Settings.volumeTendrilSpeed;
+	const float r0 = parentRadius * Settings.volumeTendrilSize;
+	for (int k = 0; k < TendrilPoints; k++) {
+		SmokePoint& s = c.p[c.count++];
+		s = parent;
+		// Each point a little further out (so they do not pile up into a bright dot) and leaving at its own speed and a
+		// slightly different angle (so the tendril curls instead of shooting out straight).
+		s.pos.x += dir.x * r0 * 0.6f * k; s.pos.y += dir.y * r0 * 0.6f * k; s.pos.z += dir.z * r0 * 0.6f * k;
+		const float share = speed * (0.3f + 0.35f * k);
+		const float jx = (Random01() - 0.5f) * 0.9f, jy = (Random01() - 0.5f) * 0.9f, jz = (Random01() - 0.3f) * 0.9f;
+		s.vel.x = parent.vel.x + (dir.x + jx) * share;
+		s.vel.y = parent.vel.y + (dir.y + jy) * share;
+		s.vel.z = parent.vel.z + (dir.z + jz) * share;
+		s.born = SmokeClock;
+		s.life = v.life * (0.8f + 0.4f * Random01());
+		if (s.life < 0.3f) s.life = 0.3f;
+		s.r0 = r0 * (k ? 0.85f : 1.0f);
+		s.r1 = s.r0 * 2.5f;                                // widens as it goes, dissolving
+		s.grow = s.life;
+		s.opacity = parent.opacity * 0.35f;                 // thin and faint, not a solid line
+		s.stir = parent.stir * 0.5f;
+		s.spread = 1.0f;
+		s.fadeIn = 0.15f; s.fadeStart = 0.2f; s.fadeEnd = 0.9f;   // eases in, then fades
+		s.seed = Random01() * 100.0f;
+		s.tex = parent.tex + 0.3f * k;
+		s.side = 0.0f;
+		s.gunDir = NiPoint3{};
+		s.link = k > 0;
+		s.frayed = true;                                  // tendrils do not fray again
+		s.unzipped = false;
+	}
+}
+
+// Your body as a hard rule, after everything else has moved: no smoke point stays inside it (an upright capsule from
+// your feet to fPlayerHeight, fPlayerRadius wide, plus a little of the smoke's own radius): a point inside moves straight
+// out (the air flowing round you has already carried smoke ahead of you to your sides, so it is not shoved ahead and
+// carried along). A strand whose piece between two points would pass through you is split there, as walking through smoke splits
+// it, so no smoke tube runs through you. Smoke younger than 0.1 s is left alone, and the rule grows in until 0.6 s,
+// easing points out, so it still leaves the barrel and the ejection port cleanly.
+// ---- Unzipping: the heat smoke and trail split around you as you walk into them --------------------------------------
+// Walking along your own trail, it lies straight along your path; pushed aside bit by bit, its points would land on
+// either side of you in turn (a zigzag, chopped up). Instead it unzips like a bow wave: just ahead of you each point splits
+// into two halves of half the opacity, this one and a twin in a second strand. The original goes to one side of you (your
+// gun's, unless the strand is clearly on the other side already), the twins to the other, and each keeps its side, so the
+// trail opens into two arms that pass either side of you and trail behind in a V. The split happens where the air ahead
+// of you starts to part (three times your reach ahead), before the air carries the strand aside, so each half goes its
+// own way round you. [Volume] bUnzip turns it off.
+static SmokeChain Twins[2] = {};                  // the second arms of the heat smoke and the trail
+static float ZipSide[2] = { 1.0f, 1.0f };         // the side the original strand goes to in this walk-through
+static float ZipLast[2] = { -10.0f, -10.0f };     // when a point last unzipped (a new walk-through after 0.5 s)
+static float TwinParent[2] = { -1.0f, -1.0f };    // birth time of the last twin's original (to link the next twin to it)
+
+static void Unzip(SmokeChain& c, int i, int zip, float across, float here, float rightX, float rightY, float rightZ = 0.0f) {
+	SmokePoint& s = c.p[i];
+	const int z = zip - 1;
+	if (SmokeClock - ZipLast[z] > 0.5f) ZipSide[z] = fabsf(across) > 0.3f * here ? (across > 0.0f ? 1.0f : -1.0f) : 1.0f;
+	ZipLast[z] = SmokeClock;
+	s.unzipped = true;
+	s.side = ZipSide[z];
+	s.opacity *= 0.5f;
+	if (s.stir < 0.5f) s.stir = 0.5f;                  // splitting stirs it up (the twin copies this)
+	// The two halves fan out at once, each toward its side ([Volume] fFanSpeed), so the arms open right where it splits
+	// instead of lying on top of each other until you reach them.
+	const float fan = Settings.volumeFanSpeed * ZipSide[z];
+	s.vel.x += rightX * fan;
+	s.vel.y += rightY * fan;
+	s.vel.z += rightZ * fan;
+	SmokeChain& t = Twins[z];
+	if (t.count == ChainMax) {                    // full: drop the oldest twin
+		memmove(&t.p[0], &t.p[1], sizeof(SmokePoint) * (ChainMax - 1));
+		t.count--;
+		t.p[0].link = false;
+	}
+	SmokePoint& w = t.p[t.count];
+	w = s;
+	w.side = -ZipSide[z];
+	w.vel.x -= rightX * fan * 2.0f;                  // the twin fans out the other way (it copied this one's push)
+	w.vel.y -= rightY * fan * 2.0f;
+	w.vel.z -= rightZ * fan * 2.0f;
+	// Linked to the previous twin when that one's original is this point's neighbour in the strand (and linked to it).
+	const bool afterOlder = i > 0 && s.link && c.p[i - 1].born == TwinParent[z];
+	const bool afterNewer = i + 1 < c.count && c.p[i + 1].link && c.p[i + 1].born == TwinParent[z];
+	w.link = t.count > 0 && (afterOlder || afterNewer);
+	t.count++;
+	TwinParent[z] = s.born;
+}
+
+// The side of you a point goes to: the side it is clearly on (`clear`); near your middle, the side it chose before, or
+// else the side its neighbours in the strand chose (so a strand goes round one way together instead of its points
+// scattering left and right, which drew pieces straight across your view), or else the side it leans to.
+static float ChooseSide(const SmokeChain& c, int i, float across, bool clear) {
+	const SmokePoint& s = c.p[i];
+	if (clear) return across > 0.0f ? 1.0f : -1.0f;
+	if (s.side != 0.0f) return s.side;
+	if (i > 0 && s.link && c.p[i - 1].side != 0.0f) return c.p[i - 1].side;
+	if (i + 1 < c.count && c.p[i + 1].link && c.p[i + 1].side != 0.0f) return c.p[i + 1].side;
+	return across < 0.0f ? -1.0f : 1.0f;
+}
+
+static void SpawnTendril(const SmokePoint& parent, float parentRadius, NiPoint3 dir, const VolLook& look, bool drift);
+static void KeepOutOfBody(SmokeChain& c, const VolLook* frayLook, bool drift, int zip, float dt) {
+	if (!VolumePlayerOn) return;
+	const NiPoint3& feet = VolumePlayerFeet;
+	const float R = Settings.volumePlayerRadius;
+	const float bottom = feet.z, top = feet.z + Settings.volumePlayerHeight;
+	// Straight out while you stand, sliding aside while you walk: gradually between 20 and 80 units per second (no
+	// switch to flip back and forth on), and each point keeps the side of you it first went to.
+	const float speed = sqrtf(VolumePlayerVel.x * VolumePlayerVel.x + VolumePlayerVel.y * VolumePlayerVel.y);
+	const float flow = speed < 20.0f ? 0.0f : speed > 80.0f ? 1.0f : (speed - 20.0f) / 60.0f;
+	const float hx = speed > 1.0f ? VolumePlayerVel.x / speed : 0.0f, hy = speed > 1.0f ? VolumePlayerVel.y / speed : 0.0f;   // heading
+	const float rx = hy, ry = -hx;                                                                                          // its right
+	// Smoke born inside you (the ejection port sits within your reach) grows into the rule over 0.5 s and, while you stand,
+	// eases out over a few frames, so it drifts clear instead of shooting out (walking, the air flowing round you carries
+	// it aside).
+	const float span = 0.5f;
+	const float easeTime = 0.05f * (1.0f - flow);
+	const float ease = easeTime > 0.001f ? 1.0f - expf(-dt / easeTime) : 1.0f;
+	for (int i = 0; i < c.count; i++) {
+		SmokePoint& s = c.p[i];
+		const float age = SmokeClock - s.born;
+		const float full = R + 0.7f * PointRadius(s, age);
+		// Below the feet or above the head the capsule rounds off.
+		const float dz = s.pos.z < bottom ? bottom - s.pos.z : s.pos.z > top ? s.pos.z - top : 0.0f;
+		if (dz >= full) { s.clear = true; continue; }
+		const float ox = s.pos.x - feet.x, oy = s.pos.y - feet.y;
+		const float dist = sqrtf(ox * ox + oy * oy);
+		const float hereFull = sqrtf(full * full - dz * dz);
+		if (dist >= hereFull) s.clear = true;                           // it has been outside you
+		// Only smoke made inside your reach grows into the rule; smoke you walk into meets all of it at once.
+		if (!s.clear && age <= 0.1f) continue;
+		float grown = s.clear ? 1.0f : (age - 0.1f) / span;
+		grown = grown > 1.0f ? 1.0f : grown;
+		const float reach = full * grown;
+		const float ahead = ox * hx + oy * hy;
+		const float across = ox * rx + oy * ry;
+		// Walking into it: unzip where the air ahead of you starts to part (three times your reach ahead).
+		if (zip && Settings.volumeUnzip && age > 0.1f && flow > 0.5f && !s.unzipped && ahead > 0.0f && dist < hereFull * 3.0f)
+			Unzip(c, i, zip, across, hereFull, rx, ry);
+		if (dz >= reach) continue;
+		const float here = sqrtf(reach * reach - dz * dz);   // the body's radius at this height
+		if (dist >= here) continue;
+		if (!s.unzipped) s.side = ChooseSide(c, i, across, fabsf(across) > 0.25f * here);
+		// Straight out (right on your middle, to its side): the shortest way, so a point only just inside moves only a
+		// little. Sliding aside as you walk is the air's job (PoleFlow, before the smoke reaches you); a sideways shove here
+		// threw smoke that had just touched you 10 to 20 units in one frame.
+		float nx, ny;
+		if (dist > 0.01f) { nx = feet.x + ox / dist * here; ny = feet.y + oy / dist * here; }
+		else { nx = feet.x + (speed > 1.0f ? rx : 1.0f) * s.side * here; ny = feet.y + (speed > 1.0f ? ry : 0.0f) * s.side * here; }
+		s.pos.x += (nx - s.pos.x) * ease;
+		s.pos.y += (ny - s.pos.y) * ease;
+	}
+	// Split the strand where a piece would pass through you (its closest point to your axis, seen from above, within
+	// fPlayerRadius at a height you occupy).
+	for (int i = 1; i < c.count; i++) {
+		if (!c.p[i].link) continue;
+		if (c.p[i].unzipped && c.p[i - 1].unzipped && c.p[i].side == c.p[i - 1].side) continue;   // an arm on one side of you
+		if ((!c.p[i].clear && SmokeClock - c.p[i].born < 0.1f + span) || (!c.p[i - 1].clear && SmokeClock - c.p[i - 1].born < 0.1f + span))
+			continue;                                                    // made within your reach, still leaving the gun or the port
+		const NiPoint3& a = c.p[i - 1].pos;
+		const NiPoint3& b = c.p[i].pos;
+		const float ex = b.x - a.x, ey = b.y - a.y;
+		const float len2 = ex * ex + ey * ey;
+		float u = len2 > 0.0001f ? ((feet.x - a.x) * ex + (feet.y - a.y) * ey) / len2 : 0.0f;
+		u = u < 0.0f ? 0.0f : u > 1.0f ? 1.0f : u;
+		const float px = a.x + ex * u - feet.x, py = a.y + ey * u - feet.y, pz = a.z + (b.z - a.z) * u;
+		if (px * px + py * py < R * R && pz > bottom - R && pz < top + R) {
+			c.p[i].link = false;
+			// The torn ends fray into tendrils, away from you.
+			if (frayLook) for (int e = i - 1; e <= i; e++) {
+				SmokePoint& t = c.p[e];
+				if (t.frayed) continue;
+				t.frayed = true;
+				if (Random01() > Settings.volumeTendrils) continue;
+				SpawnTendril(t, PointRadius(t, SmokeClock - t.born), NiPoint3{ t.pos.x - feet.x, t.pos.y - feet.y, 0.0f }, *frayLook, drift);
+			}
+		}
+	}
+}
+
+// The gun as a hard rule, after everything else has moved: no smoke point stays inside the barrel (a capsule from the
+// muzzle back fGunLength, fGunRadius thick plus a little of the smoke's own radius). Moving into the heat smoke or trail
+// (walking forward, or swinging the gun through it), the gun unzips it like your body does: one arm along each side of
+// the barrel, and they keep those sides when they reach you. A point is pushed straight out from the barrel; near its
+// middle it leans toward its own way out (the way it went round before, its side, or over the top), smoothly, so the
+// points of a strand all go the same way instead of scattering at random angles. A strand whose piece would pass through
+// the barrel is split there (unless both ends went the same way), its torn ends fraying. Smoke younger than 0.1 s at the
+// muzzle's tip is left alone, so it still leaves the muzzle cleanly.
+// While the gun is (nearly) still, the rule is gentle: young smoke grows into it over its first half second and is not
+// split, and points ease out over a few frames. Firing kicks the gun model back, up and forward into the smoke it has just
+// made, and smoke rising off a barrel pointed down runs up along it; pushed out at once, those points flicked out at
+// random angles (and frayed into tendrils). Moving the gun (faster than 25 units per second across the barrel or walking
+// forward, fully at 50) makes it firm again, so a swing or a walk never passes through smoke: everything the gun has
+// moved past is pushed out fully, at once while it sweeps across, eased over a few frames while you walk forward (the
+// barrel then slides along its own length, and a one-frame shove snapped fresh smoke sideways).
+static float SegmentDistance2(const NiPoint3& p0, const NiPoint3& p1, const NiPoint3& q0, const NiPoint3& q1) {
+	const NiPoint3 d1 = { p1.x - p0.x, p1.y - p0.y, p1.z - p0.z }, d2 = { q1.x - q0.x, q1.y - q0.y, q1.z - q0.z };
+	const NiPoint3 r = { p0.x - q0.x, p0.y - q0.y, p0.z - q0.z };
+	const float a = d1.x * d1.x + d1.y * d1.y + d1.z * d1.z, e = d2.x * d2.x + d2.y * d2.y + d2.z * d2.z;
+	const float f = d2.x * r.x + d2.y * r.y + d2.z * r.z;
+	float sp = 0.0f, tq = 0.0f;
+	if (a <= 0.0001f && e <= 0.0001f) { sp = tq = 0.0f; }
+	else if (a <= 0.0001f) { tq = f / e; tq = tq < 0.0f ? 0.0f : tq > 1.0f ? 1.0f : tq; }
+	else {
+		const float c = d1.x * r.x + d1.y * r.y + d1.z * r.z;
+		if (e <= 0.0001f) { sp = -c / a; sp = sp < 0.0f ? 0.0f : sp > 1.0f ? 1.0f : sp; }
+		else {
+			const float bb = d1.x * d2.x + d1.y * d2.y + d1.z * d2.z, den = a * e - bb * bb;
+			sp = den > 0.0001f ? (bb * f - c * e) / den : 0.0f;
+			sp = sp < 0.0f ? 0.0f : sp > 1.0f ? 1.0f : sp;
+			tq = (bb * sp + f) / e;
+			if (tq < 0.0f) { tq = 0.0f; sp = -c / a; sp = sp < 0.0f ? 0.0f : sp > 1.0f ? 1.0f : sp; }
+			else if (tq > 1.0f) { tq = 1.0f; sp = (bb - c) / a; sp = sp < 0.0f ? 0.0f : sp > 1.0f ? 1.0f : sp; }
+		}
+	}
+	const NiPoint3 cp = { p0.x + d1.x * sp - (q0.x + d2.x * tq), p0.y + d1.y * sp - (q0.y + d2.y * tq), p0.z + d1.z * sp - (q0.z + d2.z * tq) };
+	return cp.x * cp.x + cp.y * cp.y + cp.z * cp.z;
+}
+
+// How fast the gun really moves into the smoke (game units per second): across the barrel (swinging it, strafing) or
+// forward along it (walking forward); both smoothed, so firing's kicks back and forth along the barrel do not count.
+// `moving`: 0 while it is (nearly) still, 1 from 50 units per second, gradually from 25; `sweeping`: the same for the
+// movement across the barrel only.
+static float GunSpeed(float* moving, float* sweeping = nullptr) {
+	*moving = 0.0f;
+	if (sweeping) *sweeping = 0.0f;
+	if (!VolumeGunOn) return 0.0f;
+	const NiPoint3& b = VolumeGunBack;
+	const float gb = VolumeGunVel.x * b.x + VolumeGunVel.y * b.y + VolumeGunVel.z * b.z;
+	const NiPoint3 gunCross = { VolumeGunVel.x - b.x * gb, VolumeGunVel.y - b.y * gb, VolumeGunVel.z - b.z * gb };
+	const float crossSpeed = sqrtf(gunCross.x * gunCross.x + gunCross.y * gunCross.y + gunCross.z * gunCross.z);
+	const float forward = VolumePlayerOn ? -(VolumePlayerVel.x * b.x + VolumePlayerVel.y * b.y + VolumePlayerVel.z * b.z) : 0.0f;
+	const float speed = crossSpeed > forward ? crossSpeed : forward;
+	const float m = (speed - 25.0f) / 25.0f, s = (crossSpeed - 25.0f) / 25.0f;
+	*moving = m < 0.0f ? 0.0f : m > 1.0f ? 1.0f : m;
+	if (sweeping) *sweeping = s < 0.0f ? 0.0f : s > 1.0f ? 1.0f : s;
+	return speed;
+}
+
+static bool HasWay(const NiPoint3& g);
+static NiPoint3 WayRound(SmokeChain& c, int i, const NiPoint3& b, const NiPoint3& side, float across);
+static void KeepOutOfGun(SmokeChain& c, const VolLook* frayLook, bool drift, int zip, float dt) {
+	if (!VolumeGunOn || !Settings.volumeWrapGun) return;
+	const NiPoint3& m = VolumeGunMuzzle;
+	const NiPoint3& b = VolumeGunBack;
+	const float L = Settings.volumeGunLength, Rg = Settings.volumeGunRadius;
+	float moving, sweeping;
+	const float gunSpeed = GunSpeed(&moving, &sweeping);
+	// Points ease out over a few frames unless the barrel sweeps across them (then at once, or it would pass through);
+	// walking forward, the barrel slides along its own length over smoke, so easing it out loses nothing.
+	const float easeTime = 0.04f * (1.0f - sweeping);
+	const float ease = easeTime > 0.001f ? 1.0f - expf(-dt / easeTime) : 1.0f;
+	// "Its side" across the barrel: your aim's right, made square to the barrel; over the top: up, square to it.
+	const float rb = VolumeAimRight.x * b.x + VolumeAimRight.y * b.y + VolumeAimRight.z * b.z;
+	NiPoint3 right = { VolumeAimRight.x - b.x * rb, VolumeAimRight.y - b.y * rb, VolumeAimRight.z - b.z * rb };
+	const float rl = sqrtf(right.x * right.x + right.y * right.y + right.z * right.z);
+	right = rl > 0.01f ? NiPoint3{ right.x / rl, right.y / rl, right.z / rl } : NiPoint3{ 1.0f, 0.0f, 0.0f };
+	NiPoint3 up = { -b.x * b.z, -b.y * b.z, 1.0f - b.z * b.z };
+	const float ul = sqrtf(up.x * up.x + up.y * up.y + up.z * up.z);
+	up = ul > 0.01f ? NiPoint3{ up.x / ul, up.y / ul, up.z / ul } : NiPoint3{ 0.0f, 0.0f, 1.0f };
+	const NiPoint3 back = { m.x + b.x * L, m.y + b.y * L, m.z + b.z * L };
+	// The sweep: the gun's movement through the air, across the barrel (its direction, and the direction across both).
+	NiPoint3 sweepDir = { VolumeGunVel.x - VolumeWind.x, VolumeGunVel.y - VolumeWind.y, VolumeGunVel.z };
+	const float sb = sweepDir.x * b.x + sweepDir.y * b.y + sweepDir.z * b.z;
+	sweepDir = NiPoint3{ sweepDir.x - b.x * sb, sweepDir.y - b.y * sb, sweepDir.z - b.z * sb };
+	const float sweep = sqrtf(sweepDir.x * sweepDir.x + sweepDir.y * sweepDir.y + sweepDir.z * sweepDir.z);
+	if (sweep > 0.01f) sweepDir = NiPoint3{ sweepDir.x / sweep, sweepDir.y / sweep, sweepDir.z / sweep };
+	const NiPoint3 sweepSide = { b.y * sweepDir.z - b.z * sweepDir.y, b.z * sweepDir.x - b.x * sweepDir.z, b.x * sweepDir.y - b.y * sweepDir.x };
+	for (int i = 0; i < c.count; i++) {
+		SmokePoint& s = c.p[i];
+		const float age = SmokeClock - s.born;
+		if (ShapeOn) {
+			// The gun's real shape: a point closer to its surface than 0.6 of its own radius moves out along the way out
+			// there; the same growing in, easing and leaning as with the tube.
+			const float r = PointRadius(s, age);
+			const NiPoint3 fm = { s.pos.x - m.x, s.pos.y - m.y, s.pos.z - m.z };
+			// Just leaving the muzzle, or still inside the barrel's bore (the heat smoke and trail start in it).
+			const float fb = fm.x * b.x + fm.y * b.y + fm.z * b.z;
+			const NiPoint3 fr = { fm.x - b.x * fb, fm.y - b.y * fb, fm.z - b.z * fb };
+			const bool inBore = fb > 0.0f && fb < VolumeMuzzleDepth + 0.5f && fr.x * fr.x + fr.y * fr.y + fr.z * fr.z < 2.25f;
+			const bool tip = inBore || fm.x * fm.x + fm.y * fm.y + fm.z * fm.z < (2.0f + r) * (2.0f + r);
+			if (tip && age <= 0.1f) continue;
+			NiPoint3 n;
+			const float sd = GunSurface(s.pos, &n);
+			const float keep = 0.6f * r;
+			if (zip && Settings.volumeUnzip && gunSpeed > 40.0f && !s.unzipped && sd < 1.3f * keep + 1.0f)
+				Unzip(c, i, zip, fm.x * right.x + fm.y * right.y + fm.z * right.z, keep + 1.0f, right.x, right.y, right.z);
+			if (sd >= keep || (n.x == 0.0f && n.y == 0.0f && n.z == 0.0f)) continue;
+			float grown = (age - 0.1f) / 0.4f;
+			if (!tip && grown < moving) grown = moving;
+			grown = grown < 0.0f ? 0.0f : grown > 1.0f ? 1.0f : grown;
+			// Young smoke by a still gun may stay up to 3 units inside it while it grows into the rule.
+			const float allowed = keep - (1.0f - grown) * (keep + 3.0f);
+			if (sd >= allowed) continue;
+			// Deep inside, the way out leans toward the point's own way (the way it went round before, its side, or up),
+			// so the points of a strand leave together.
+			NiPoint3 dir = n;
+			if (sd < 0.0f) {
+				NiPoint3 own = up;
+				if (HasWay(s.gunDir)) {
+					const float gb2 = s.gunDir.x * b.x + s.gunDir.y * b.y + s.gunDir.z * b.z;
+					const NiPoint3 g = { s.gunDir.x - b.x * gb2, s.gunDir.y - b.y * gb2, s.gunDir.z - b.z * gb2 };
+					const float gl = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
+					if (gl > 0.05f) own = NiPoint3{ g.x / gl, g.y / gl, g.z / gl };
+				}
+				else if (s.side != 0.0f) own = NiPoint3{ right.x * s.side, right.y * s.side, right.z * s.side };
+				const float lean = -sd < 2.0f ? -sd * 0.25f : 0.5f;
+				dir = NiPoint3{ n.x + own.x * lean, n.y + own.y * lean, n.z + own.z * lean };
+				const float dl = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+				dir = dl > 0.001f ? NiPoint3{ dir.x / dl, dir.y / dl, dir.z / dl } : n;
+			}
+			const float step = (allowed - sd) * ease;
+			s.pos.x += dir.x * step; s.pos.y += dir.y * step; s.pos.z += dir.z * step;
+			continue;
+		}
+		const float alongRaw = (s.pos.x - m.x) * b.x + (s.pos.y - m.y) * b.y + (s.pos.z - m.z) * b.z;
+		// At the muzzle, or still inside the barrel's bore (the heat smoke and trail start in it).
+		const NiPoint3 tr = { s.pos.x - m.x - b.x * alongRaw, s.pos.y - m.y - b.y * alongRaw, s.pos.z - m.z - b.z * alongRaw };
+		const bool atTip = alongRaw < 0.5f || (alongRaw < 0.5f + VolumeMuzzleDepth && tr.x * tr.x + tr.y * tr.y + tr.z * tr.z < 2.25f);
+		if (atTip && age <= 0.1f) continue;
+		const float along = alongRaw < 0.0f ? 0.0f : alongRaw > L ? L : alongRaw;
+		const NiPoint3 axisPoint = { m.x + b.x * along, m.y + b.y * along, m.z + b.z * along };
+		NiPoint3 o = { s.pos.x - axisPoint.x, s.pos.y - axisPoint.y, s.pos.z - axisPoint.z };
+		const float d = sqrtf(o.x * o.x + o.y * o.y + o.z * o.z);
+		const float full = Rg + 0.6f * PointRadius(s, age);
+		// Moving into it: the gun unzips the heat smoke and trail (one arm to each side of the barrel).
+		if (zip && Settings.volumeUnzip && gunSpeed > 40.0f && !s.unzipped && d < full * 1.3f) {
+			const float across = o.x * right.x + o.y * right.y + o.z * right.z;
+			Unzip(c, i, zip, across, full, right.x, right.y, right.z);
+		}
+		if (d >= full) continue;
+		// Young smoke grows into the rule from 0.1 s to 0.5 s old while the gun is still (it is then pushed out bit by bit,
+		// each point along its own way out); smoke the moving gun has moved past is pushed out at once, young or not
+		// (walking forward, the gun overtakes the smoke it has just made). At the tip, always by age.
+		float grown = (age - 0.1f) / 0.4f;
+		if (!atTip && grown < moving) grown = moving;
+		grown = grown < 0.0f ? 0.0f : grown > 1.0f ? 1.0f : grown;
+		const float reach = full * grown;
+		if (d >= reach) continue;
+		// Out from the barrel, leaning near its middle toward the point's own way out: the way it went round before, its
+		// side, or over the top. Gradual (none from 0.35 of the reach out), so there is no sudden switch of direction.
+		NiPoint3 own = up;
+		if (HasWay(s.gunDir)) {
+			const float gb2 = s.gunDir.x * b.x + s.gunDir.y * b.y + s.gunDir.z * b.z;
+			const NiPoint3 g = { s.gunDir.x - b.x * gb2, s.gunDir.y - b.y * gb2, s.gunDir.z - b.z * gb2 };
+			const float gl = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
+			if (gl > 0.05f) own = NiPoint3{ g.x / gl, g.y / gl, g.z / gl };
+		}
+		else if (s.side != 0.0f) own = NiPoint3{ right.x * s.side, right.y * s.side, right.z * s.side };
+		const float lean = 0.35f * reach - d;
+		NiPoint3 dir = o;
+		if (lean > 0.0f) { dir.x += own.x * lean; dir.y += own.y * lean; dir.z += own.z * lean; }
+		const float dl = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+		dir = dl > 0.001f ? NiPoint3{ dir.x / dl, dir.y / dl, dir.z / dl } : own;
+		NiPoint3 to = { axisPoint.x + dir.x * reach, axisPoint.y + dir.y * reach, axisPoint.z + dir.z * reach };
+		// In front of the barrel as it sweeps across (faster than 20 units per second across it): round it to the side
+		// the point is on instead (shoved straight ahead it would ride along with the gun).
+		if (sweep > 40.0f && d > 0.01f) {
+			const float ahead = (o.x * -sweepDir.x + o.y * -sweepDir.y + o.z * -sweepDir.z) / d;   // 1 right in front
+			if (ahead > 0.0f) {
+				const float across = (o.x * sweepSide.x + o.y * sweepSide.y + o.z * sweepSide.z) / d;
+				const NiPoint3 g = WayRound(c, i, b, sweepSide, across);
+				const float w = ahead * (sweep < 80.0f ? (sweep - 40.0f) / 40.0f : 1.0f);
+				const NiPoint3 round = { axisPoint.x + g.x * reach, axisPoint.y + g.y * reach, axisPoint.z + g.z * reach };
+				to.x += (round.x - to.x) * w; to.y += (round.y - to.y) * w; to.z += (round.z - to.z) * w;
+				// A blend of two places on the barrel's edge can fall just inside it: out to the edge again.
+				NiPoint3 e = { to.x - axisPoint.x, to.y - axisPoint.y, to.z - axisPoint.z };
+				const float el = sqrtf(e.x * e.x + e.y * e.y + e.z * e.z);
+				if (el > 0.01f && el < reach) { to.x = axisPoint.x + e.x / el * reach; to.y = axisPoint.y + e.y / el * reach; to.z = axisPoint.z + e.z / el * reach; }
+			}
+		}
+		s.pos.x += (to.x - s.pos.x) * ease; s.pos.y += (to.y - s.pos.y) * ease; s.pos.z += (to.z - s.pos.z) * ease;
+	}
+	// A piece passing through the barrel is split (unless both ends went the same way, or it is just leaving the muzzle,
+	// or it is young smoke by a still gun).
+	for (int i = 1; i < c.count; i++) {
+		if (!c.p[i].link) continue;
+		if (c.p[i].unzipped && c.p[i - 1].unzipped && c.p[i].side == c.p[i - 1].side) continue;
+		if (SmokeClock - c.p[i].born < 0.1f || SmokeClock - c.p[i - 1].born < 0.1f) continue;
+		if (moving < 1.0f && (SmokeClock - c.p[i].born < 0.5f || SmokeClock - c.p[i - 1].born < 0.5f)) continue;
+		{   // both went the same way round
+			const NiPoint3& g0 = c.p[i - 1].gunDir;
+			const NiPoint3& g1 = c.p[i].gunDir;
+			if (g0.x * g1.x + g0.y * g1.y + g0.z * g1.z > 0.5f) continue;
+		}
+		if (ShapeOn) {                                                 // the real shape: inside it a quarter, half or three quarters along
+			const NiPoint3& p0 = c.p[i - 1].pos;
+			const NiPoint3& p1 = c.p[i].pos;
+			bool through = false;
+			for (int k = 1; k <= 3 && !through; k++) {
+				const float w = 0.25f * k;
+				NiPoint3 nn;
+				through = GunSurface(NiPoint3{ p0.x + (p1.x - p0.x) * w, p0.y + (p1.y - p0.y) * w, p0.z + (p1.z - p0.z) * w }, &nn) < 0.0f;
+			}
+			if (!through) continue;
+		}
+		else if (SegmentDistance2(c.p[i - 1].pos, c.p[i].pos, m, back) >= Rg * Rg) continue;
+		c.p[i].link = false;
+		if (frayLook) for (int e = i - 1; e <= i; e++) {
+			SmokePoint& t = c.p[e];
+			if (t.frayed) continue;
+			t.frayed = true;
+			if (Random01() > Settings.volumeTendrils) continue;
+			NiPoint3 out;                                                   // away from the gun
+			if (ShapeOn) GunSurface(t.pos, &out);
+			else {
+				float al = (t.pos.x - m.x) * b.x + (t.pos.y - m.y) * b.y + (t.pos.z - m.z) * b.z;
+				al = al < 0.0f ? 0.0f : al > L ? L : al;
+				out = NiPoint3{ t.pos.x - (m.x + b.x * al), t.pos.y - (m.y + b.y * al), t.pos.z - (m.z + b.z * al) };
+			}
+			SpawnTendril(t, PointRadius(t, SmokeClock - t.born), out, *frayLook, drift);
+		}
+	}
+}
+
+// The way round the barrel a point goes (across the barrel, unit length): the direction it chose before, made square to
+// the barrel as it is now; or, the first time, the side of the sweep it is clearly on (across, along `side`); right in
+// front of the barrel, the way its neighbours in the strand went (so the strand goes round together), or else the side it
+// leans to.
+static bool HasWay(const NiPoint3& g) { return g.x != 0.0f || g.y != 0.0f || g.z != 0.0f; }
+static NiPoint3 WayRound(SmokeChain& c, int i, const NiPoint3& b, const NiPoint3& side, float across) {
+	SmokePoint& s = c.p[i];
+	if (!HasWay(s.gunDir)) {
+		const bool clear = fabsf(across) > 0.3f;
+		if (!clear && i > 0 && s.link && HasWay(c.p[i - 1].gunDir)) s.gunDir = c.p[i - 1].gunDir;
+		else if (!clear && i + 1 < c.count && c.p[i + 1].link && HasWay(c.p[i + 1].gunDir)) s.gunDir = c.p[i + 1].gunDir;
+		else {
+			const float sign = across < 0.0f ? -1.0f : 1.0f;
+			s.gunDir = NiPoint3{ side.x * sign, side.y * sign, side.z * sign };
+		}
+	}
+	const float gb = s.gunDir.x * b.x + s.gunDir.y * b.y + s.gunDir.z * b.z;
+	NiPoint3 g = { s.gunDir.x - b.x * gb, s.gunDir.y - b.y * gb, s.gunDir.z - b.z * gb };
+	const float gl = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
+	return gl > 0.05f ? NiPoint3{ g.x / gl, g.y / gl, g.z / gl } : side;
+}
+
+// For the log: a rule that moves a smoke point more than 4 units in one frame, and more than half again what the gun or
+// you (pace, units per second) moved that frame, makes a visible jump (less is smoke carried along at the speed of what
+// pushes it); the first 40 of the session are written down (which smoke, how old, how far, by which rule, how fast the gun
+// and you were moving, and the frame's length).
+static int JumpsLogged = 0;
+static void NoteJumps(const SmokeChain& c, const NiPoint3* before, const char* rule, float pace, float dt) {
+	if (JumpsLogged >= 40) return;
+	const float carried = 1.5f * pace * dt + 1.0f;
+	const float limit = carried > 4.0f ? carried : 4.0f;
+	for (int i = 0; i < c.count; i++) {
+		const NiPoint3& p = c.p[i].pos;
+		const float dx = p.x - before[i].x, dy = p.y - before[i].y, dz = p.z - before[i].z;
+		const float moved2 = dx * dx + dy * dy + dz * dz;
+		if (moved2 <= limit * limit) continue;
+		const char* name = "tendril";
+		for (int k = 0; k < ChainCount; k++) if (&c == &Chains[k]) name = ChainNames[k];
+		if (&c == &Twins[0] || &c == &Twins[1]) name = "twin arm";
+		JumpsLogged++;
+		LogLine("volumetric smoke jump: %s point %.2f s old moved %.1f units in one frame by %s (gun moving %.0f units/s, you %.0f; frame %.0f ms)",
+			name, SmokeClock - c.p[i].born, sqrtf(moved2), rule,
+			sqrtf(VolumeGunVel.x * VolumeGunVel.x + VolumeGunVel.y * VolumeGunVel.y + VolumeGunVel.z * VolumeGunVel.z),
+			sqrtf(VolumePlayerVel.x * VolumePlayerVel.x + VolumePlayerVel.y * VolumePlayerVel.y), dt * 1000.0f);
+		return;
+	}
+}
+
+// ---- Air flowing round a pole (the gun's barrel, your body) --------------------------------------------------------
+// The air streaming past a solid pole parts in front of it, speeds up past its sides and closes in behind it. For smoke
+// at `o` from the pole's axis (square to it, length d) where the pole reaches out to a, with the air streaming past the
+// pole at U (square to its axis, speed u): how much the air there moves differently from the free stream,
+// (a/d)^2 (U - 2 (U.er) er), so none goes into the pole; plus, in front of it (where that air would stop dead against the
+// pole and ride along with it), a turn round it the way the smoke goes (`way`, unit, square to the axis), so it slides
+// past instead of being pushed ahead. Added to the smoke's movement (not its own speed): it acts at once, starts well
+// before the pole arrives and stops when the pole has passed. Fades out between 3 and 4 times the reach; inside the reach
+// only the sliding round is left (no air into or out of the pole there).
+static NiPoint3 PoleFlow(const NiPoint3& o, float d, float a, const NiPoint3& U, float u, const NiPoint3& way) {
+	if (d < 0.01f || d >= 4.0f * a || u < 1.0f) return NiPoint3{};
+	const NiPoint3 er = { o.x / d, o.y / d, o.z / d };
+	const float q = d > a ? a * a / (d * d) : 1.0f, ue = U.x * er.x + U.y * er.y + U.z * er.z;
+	NiPoint3 v = { q * (U.x - 2.0f * ue * er.x), q * (U.y - 2.0f * ue * er.y), q * (U.z - 2.0f * ue * er.z) };
+	if (ue < 0.0f) {
+		const float across = er.x * way.x + er.y * way.y + er.z * way.z;
+		const float turn = u * (-ue / u) * (1.0f - fabsf(across)) * (d > a ? a / d : 1.0f);   // 1 right in front, 0 at the sides
+		v.x += way.x * turn; v.y += way.y * turn; v.z += way.z * turn;
+	}
+	if (d > 3.0f * a) {
+		const float f = 1.0f - (d - 3.0f * a) / a;
+		const float s = f * f * (3.0f - 2.0f * f);
+		v.x *= s; v.y *= s; v.z *= s;
+	}
+	return v;
+}
+
+// ---- Stirred smoke spreads out ------------------------------------------------------------------------------------
+// Real smoke that is stirred up (walked into, cut by the gun, caught in a whirlpool) mixes with the air round it: it
+// billows out wider and thinner (the same smoke over more air), its points wander apart so a strand frays into a loose
+// cloud, and its edges break up into wisps. Each point's stir follows how hard the air round it is being moved: the flow
+// round your body and the gun, the whirlpools, being inside your reach, the pushes that keep it out of you and the gun
+// (80 units per second counts as fully stirred; splitting in two stirs it too). It rises quickly and settles over about a
+// second. While stirred a point widens (up to 3 times as wide) and thins faster still, curls and wanders more (UpdateChain),
+// is drawn wispier (counted as older for the edge detail), and when strongly stirred may peel off a tendril along the way
+// it is pushed. [Volume] fDiffuse: how much (0 = none, 1 = normal, higher = more).
+
+// The keep-out rules' pushes this frame stir the points they moved (`before`: the positions before the rule).
+static void NotePushes(const SmokeChain& c, const NiPoint3* before, float* stirIn, NiPoint3* stirDir, float dt) {
+	if (dt <= 0.0001f) return;
+	for (int i = 0; i < c.count; i++) {
+		const NiPoint3 m = { (c.p[i].pos.x - before[i].x) / dt, (c.p[i].pos.y - before[i].y) / dt, (c.p[i].pos.z - before[i].z) / dt };
+		const float speed = sqrtf(m.x * m.x + m.y * m.y + m.z * m.z);
+		if (speed < 1.0f) continue;
+		stirIn[i] += speed / 80.0f;
+		stirDir[i] = NiPoint3{ stirDir[i].x + m.x, stirDir[i].y + m.y, stirDir[i].z + m.z };
+	}
+}
+
+static void Diffuse(SmokeChain& c, const float* stirIn, const NiPoint3* stirDir, float dt, const VolLook* frayLook, bool drift) {
+	const float k = Settings.volumeDiffuse;
+	if (k <= 0.0f) return;
+	const float rise = 1.0f - expf(-dt / 0.08f), settle = expf(-dt / 0.8f);
+	for (int i = 0; i < c.count; i++) {
+		SmokePoint& s = c.p[i];
+		const float in = stirIn[i] < 1.5f ? stirIn[i] : 1.5f;
+		s.stir = in > s.stir ? s.stir + (in - s.stir) * rise : s.stir * settle;
+		if (s.stir < 0.01f) continue;
+		// Wider (up to 3 times as wide), and thinner than the widening alone (it mixes into the air it spreads through, so it
+		// fades into a ragged veil rather than swelling into a puff).
+		float f = expf(1.2f * k * s.stir * dt);
+		if (s.spread * f > 3.0f) f = 3.0f / s.spread;
+		if (f > 1.0f) { s.spread *= f; s.opacity /= powf(f, 1.6f); }
+		// Strongly stirred: a wisp may peel off, the way it is being pushed.
+		if (frayLook && !s.frayed && s.stir > 0.7f && Random01() < Settings.volumeTendrils * s.stir * k * dt * 1.5f) {
+			s.frayed = true;
+			SpawnTendril(s, PointRadius(s, SmokeClock - s.born), stirDir[i], *frayLook, drift);
+		}
+	}
+}
+
+// Moves and ages one chain; emits a new point while its source is on.
+static void UpdateChain(SmokeChain& c, const SmokeSource& src, float dt, const VolLook& v) {
+	const float rise = v.rise * Settings.volumeRise;
+	const float curl = v.curl * Settings.volumeCurl;
+	const float keep = expf(-src.drag * dt);
+	// How hard the air round each point is being moved this frame (see Diffuse), and which way.
+	static float stirIn[ChainMax];
+	static NiPoint3 stirDir[ChainMax];
+	for (int i = 0; i < c.count; i++) {
+		SmokePoint& s = c.p[i];
+		const float age = SmokeClock - s.born;
+		stirIn[i] = 0.0f;
+		stirDir[i] = NiPoint3{};
+		// Slowly changing sideways push, stronger with age (the strand bends gently low and drifts more higher up), and
+		// stronger and up and down too where the smoke is stirred, so its points wander apart (it frays and spreads).
+		const float w = s.seed + SmokeClock * 0.6f;
+		const float stirred = Settings.volumeDiffuse * s.stir;
+		const float push = curl * (0.3f + age) * (1.0f + 3.0f * stirred);
+		s.vel.x += (sinf(w + s.pos.z * 0.05f) + 0.5f * sinf(w * 2.3f + s.pos.z * 0.11f)) * push * dt;
+		s.vel.y += (cosf(w * 0.8f + s.pos.z * 0.06f) + 0.5f * sinf(w * 1.7f + 1.3f)) * push * dt;
+		s.vel.z += rise * dt + (sinf(w * 1.3f + 2.1f) + 0.5f * sinf(w * 2.9f + s.pos.x * 0.07f)) * push * stirred * 0.6f * dt;
+		// Drag toward the moving air: horizontally the smoke takes on the wind (still air: it just slows down).
+		const float windKeep = keep * VolumeWindKeep;
+		s.vel.x = VolumeWind.x + (s.vel.x - VolumeWind.x) * windKeep;
+		s.vel.y = VolumeWind.y + (s.vel.y - VolumeWind.y) * windKeep;
+		s.vel.z *= keep;
+		// Your body (an upright capsule from your feet to the top of your head): smoke inside it is pushed out, and
+		// thins where it is stirred, so it never cuts through you. While you move it flows around you, as air does:
+		// smoke ahead of you slides aside (rather than being shoved ahead and carried along), smoke behind you is pulled
+		// into your wake. Smoke made within your reach is left alone until 0.1 s old (and the push grows in until 0.4 s), so it still leaves
+		// the barrel and the port cleanly.
+		if (VolumePlayerOn && (s.clear || age > 0.1f)) {
+			const float R = Settings.volumePlayerRadius;
+			float cz = s.pos.z;
+			const float lo = VolumePlayerFeet.z + R, hi = VolumePlayerFeet.z + Settings.volumePlayerHeight - R;
+			cz = cz < lo ? lo : cz > hi ? hi : cz;
+			const float dx = s.pos.x - VolumePlayerFeet.x, dy = s.pos.y - VolumePlayerFeet.y, dz = s.pos.z - cz;
+			const float reach = R + 0.7f * PointRadius(s, age);
+			const float d2 = dx * dx + dy * dy + dz * dz;
+			if (d2 < reach * reach) {
+				const float d = sqrtf(d2);
+				float overlap = 1.0f - d / reach;
+				if (!s.clear && age < 0.4f) overlap *= (age - 0.1f) / 0.3f;
+				const NiPoint3 out = d > 0.01f ? NiPoint3{ dx / d, dy / d, dz / d } : NiPoint3{ 1.0f, 0.0f, 0.0f };
+				const float shove = Settings.volumePlayerPush * overlap;
+				NiPoint3 target = { out.x * shove, out.y * shove, out.z * shove };
+				// From pushed straight out (standing) to flowing around you (walking), gradually between 20 and 80 units
+				// per second, so a shuffle or a still stance does not flip it back and forth.
+				const float speed = sqrtf(VolumePlayerVel.x * VolumePlayerVel.x + VolumePlayerVel.y * VolumePlayerVel.y);
+				const float flow = speed < 20.0f ? 0.0f : speed > 80.0f ? 1.0f : (speed - 20.0f) / 60.0f;
+				if (flow > 0.0f) {
+					const float fx = VolumePlayerVel.x / speed, fy = VolumePlayerVel.y / speed;   // your heading
+					const float rx = fy, ry = -fx;                                                // its right
+					const float ahead = out.x * fx + out.y * fy;
+					const float across = out.x * rx + out.y * ry;
+					if (!s.unzipped) s.side = ChooseSide(c, i, across, fabsf(across) > 0.25f);   // the side it is on
+					const float aside = shove + speed * 0.5f;
+					NiPoint3 flowing = { rx * s.side * aside, ry * s.side * aside, target.z };
+					if (ahead < 0.0f) { flowing.x += fx * speed * 0.5f; flowing.y += fy * speed * 0.5f; }   // the wake
+					target.x += (flowing.x - target.x) * flow;
+					target.y += (flowing.y - target.y) * flow;
+				}
+				const float k = 1.0f - expf(-10.0f * overlap * dt);
+				s.vel.x += (target.x - s.vel.x) * k;
+				s.vel.y += (target.y - s.vel.y) * k;
+				s.vel.z += (target.z - s.vel.z) * k;
+				s.opacity *= expf(-Settings.volumeStir * overlap * dt);
+				stirIn[i] += overlap;                                  // inside your reach: stirred
+			}
+		}
+		// Drift: the heat smoke and trail lean toward the right of where you aim and a little away from you, so they
+		// keep out of the middle of your view (and away from your body as you walk); it grows in over the first 0.6 s,
+		// so the smoke still leaves the barrel straight. Only adds speed that way, relative to the wind.
+		if (src.drift && VolumeGunOn) {
+			float grown = age / 0.6f;
+			grown = grown < 0.0f ? 0.0f : grown > 1.0f ? 1.0f : grown;
+			const float k = 1.0f - expf(-1.5f * grown * dt);
+			const float rx = s.vel.x - VolumeWind.x, ry = s.vel.y - VolumeWind.y;
+			const float right = rx * VolumeAimRight.x + ry * VolumeAimRight.y;
+			if (right < Settings.volumeDriftRight) {
+				s.vel.x += VolumeAimRight.x * (Settings.volumeDriftRight - right) * k;
+				s.vel.y += VolumeAimRight.y * (Settings.volumeDriftRight - right) * k;
+			}
+			const float away = rx * VolumeAimForward.x + ry * VolumeAimForward.y;
+			if (away < Settings.volumeDriftAway) {
+				s.vel.x += VolumeAimForward.x * (Settings.volumeDriftAway - away) * k;
+				s.vel.y += VolumeAimForward.y * (Settings.volumeDriftAway - away) * k;
+			}
+		}
+		// The air flowing round the gun and your body as they move (PoleFlow): the smoke near them is carried round them
+		// the way air is, starting before they arrive, so it parts in front of them and slides past their sides instead of
+		// being shoved aside at the last moment (KeepOutOfGun and KeepOutOfBody stay as the last guard). Smoke younger
+		// than 0.1 s is left alone, so it still leaves the muzzle and the port cleanly. Swirls behind them are the
+		// whirlpools of ShedVortices.
+		NiPoint3 around = {};
+		if (ShapeOn && VolumeGunOn && Settings.volumeWrapGun && age > 0.1f) {
+			// The gun's real shape: air meeting its surface stops going into it and turns along it (nearer the surface,
+			// more; out to about four times fGunRadius), and in front of a sweep it goes round the way the smoke goes
+			// (WayRound), so smoke parts round the barrel, the sights and the magazine before they reach it.
+			NiPoint3 n;
+			const float dist = GunSurface(s.pos, &n);
+			const float L = Settings.volumeGunRadius > 0.5f ? Settings.volumeGunRadius : 0.5f;
+			if (dist < 4.0f * L && (n.x != 0.0f || n.y != 0.0f || n.z != 0.0f)) {
+				const NiPoint3 U = { VolumeWind.x - VolumeGunVel.x, VolumeWind.y - VolumeGunVel.y, -VolumeGunVel.z };   // the air past the gun
+				const float u = sqrtf(U.x * U.x + U.y * U.y + U.z * U.z);
+				const float un = U.x * n.x + U.y * n.y + U.z * n.z;
+				if (u > 15.0f && un < 0.0f) {
+					const float close = L / (L + (dist > 0.0f ? dist : 0.0f));
+					NiPoint3 f = { -un * n.x * close * close, -un * n.y * close * close, -un * n.z * close * close };
+					if (u > 40.0f) {
+						const NiPoint3& b = VolumeGunBack;
+						const float ub = U.x * b.x + U.y * b.y + U.z * b.z;
+						const NiPoint3 Uc = { U.x - b.x * ub, U.y - b.y * ub, U.z - b.z * ub };          // across the barrel
+						const float uc = sqrtf(Uc.x * Uc.x + Uc.y * Uc.y + Uc.z * Uc.z);
+						if (uc > 1.0f) {
+							const NiPoint3 S = { (b.y * Uc.z - b.z * Uc.y) / uc, (b.z * Uc.x - b.x * Uc.z) / uc, (b.x * Uc.y - b.y * Uc.x) / uc };
+							const float across = n.x * S.x + n.y * S.y + n.z * S.z;
+							NiPoint3 g = WayRound(c, i, b, S, across);
+							const float gn = g.x * n.x + g.y * n.y + g.z * n.z;
+							g = NiPoint3{ g.x - n.x * gn, g.y - n.y * gn, g.z - n.z * gn };              // along the surface
+							const float gl = sqrtf(g.x * g.x + g.y * g.y + g.z * g.z);
+							if (gl > 0.05f) {
+								const float turn = (-un) * (1.0f - fabsf(across)) * close / gl;
+								f.x += g.x * turn; f.y += g.y * turn; f.z += g.z * turn;
+							}
+						}
+					}
+					float k = u < 30.0f ? (u - 15.0f) / 15.0f : 1.0f;
+					if (dist > 3.0f * L) { const float e = 1.0f - (dist - 3.0f * L) / L; k *= e * e * (3.0f - 2.0f * e); }
+					around.x += f.x * k; around.y += f.y * k; around.z += f.z * k;
+				}
+			}
+		}
+		else if (VolumeGunOn && Settings.volumeWrapGun && age > 0.1f) {
+			// The gun as a tube (until its real shape is ready, or with [Volume] bGunShape 0): across the barrel only (air
+			// along it just slides along it), within its length.
+			const NiPoint3& m = VolumeGunMuzzle;
+			const NiPoint3& b = VolumeGunBack;
+			const float along = (s.pos.x - m.x) * b.x + (s.pos.y - m.y) * b.y + (s.pos.z - m.z) * b.z;
+			if (along > 0.0f && along < Settings.volumeGunLength) {
+				const NiPoint3 o = { s.pos.x - (m.x + b.x * along), s.pos.y - (m.y + b.y * along), s.pos.z - (m.z + b.z * along) };
+				const float d = sqrtf(o.x * o.x + o.y * o.y + o.z * o.z);
+				const float a = Settings.volumeGunRadius + 0.6f * PointRadius(s, age);
+				NiPoint3 U = { VolumeWind.x - VolumeGunVel.x, VolumeWind.y - VolumeGunVel.y, -VolumeGunVel.z };
+				const float ub = U.x * b.x + U.y * b.y + U.z * b.z;
+				U = NiPoint3{ U.x - b.x * ub, U.y - b.y * ub, U.z - b.z * ub };
+				const float u = sqrtf(U.x * U.x + U.y * U.y + U.z * U.z);
+				if (u > 15.0f && d > 0.01f && d < 4.0f * a) {
+					// The way round: across the sweep, to the side the smoke is on (remembered, see WayRound); only for a
+					// real sweep (faster than 40), not the gun's small drift.
+					NiPoint3 way = {};
+					const NiPoint3 uh = { U.x / u, U.y / u, U.z / u };
+					if (u > 40.0f) {
+						const NiPoint3 S = { b.y * uh.z - b.z * uh.y, b.z * uh.x - b.x * uh.z, b.x * uh.y - b.y * uh.x };
+						way = WayRound(c, i, b, S, (o.x * S.x + o.y * S.y + o.z * S.z) / d);
+					}
+					const float ramp = u < 30.0f ? (u - 15.0f) / 15.0f : 1.0f;   // eases in from 15 to 30 units per second
+					const NiPoint3 f = PoleFlow(o, d, a, U, u, way);
+					around.x += f.x * ramp; around.y += f.y * ramp; around.z += f.z * ramp;
+				}
+			}
+		}
+		if (VolumePlayerOn && Settings.volumePlayerPush > 0.0f && (s.clear || age > 0.1f)) {
+			// Your body: an upright pole (rounding off above your head and below your feet), the air streaming past it
+			// as you walk; smoke made within your reach (the ejection port's) takes it in gradually until 0.4 s old.
+			const float R = Settings.volumePlayerRadius;
+			const float bottom = VolumePlayerFeet.z, top = VolumePlayerFeet.z + Settings.volumePlayerHeight;
+			const float a = R + 0.7f * PointRadius(s, age);
+			const float dz = s.pos.z < bottom ? bottom - s.pos.z : s.pos.z > top ? s.pos.z - top : 0.0f;
+			const NiPoint3 U = { VolumeWind.x - VolumePlayerVel.x, VolumeWind.y - VolumePlayerVel.y, 0.0f };
+			const float u = sqrtf(U.x * U.x + U.y * U.y);
+			const NiPoint3 o = { s.pos.x - VolumePlayerFeet.x, s.pos.y - VolumePlayerFeet.y, 0.0f };
+			const float d = sqrtf(o.x * o.x + o.y * o.y);
+			if (u > 15.0f && dz < a && d > 0.01f && d < 4.0f * a) {
+				const NiPoint3 S = { -U.y / u, U.x / u, 0.0f };                       // the right of where you walk
+				const float across = (o.x * S.x + o.y * S.y) / d;
+				if (!s.unzipped) s.side = ChooseSide(c, i, across, fabsf(across) > 0.25f);
+				const NiPoint3 way = { S.x * s.side, S.y * s.side, 0.0f };
+				float k = u < 30.0f ? (u - 15.0f) / 15.0f : 1.0f;
+				k *= 1.0f - dz / a;
+				if (!s.clear && age < 0.4f) k *= (age - 0.1f) / 0.3f;   // made within your reach: takes it in gradually
+				const NiPoint3 f = PoleFlow(o, d, a, U, u, way);
+				around.x += f.x * k; around.y += f.y * k;
+			}
+		}
+		const NiPoint3 swirl = VortexCount ? VortexFlow(s.pos) : NiPoint3{};
+		{   // the air moved round it (by your body, the gun and the whirlpools) stirs it
+			const NiPoint3 m = { around.x + swirl.x, around.y + swirl.y, around.z + swirl.z };
+			stirIn[i] += sqrtf(m.x * m.x + m.y * m.y + m.z * m.z) / 80.0f;
+			stirDir[i] = NiPoint3{ stirDir[i].x + m.x, stirDir[i].y + m.y, stirDir[i].z + m.z };
+		}
+		s.pos.x += (s.vel.x + swirl.x + around.x) * dt; s.pos.y += (s.vel.y + swirl.y + around.y) * dt; s.pos.z += (s.vel.z + swirl.z + around.z) * dt;
+	}
+	// Smoothing: each point inside a strand drifts toward the middle of its neighbours, so the sharp kinks a quick or
+	// jittery gun movement leaves in the strand even out within a fraction of a second, as turbulence does to real smoke.
+	// It grows in over the first 0.4 s, so the smoke still leaves the barrel straight; the newest point stays on the
+	// barrel and a strand's ends stay put. [Volume] fSmooth: how quickly (per second; 0 = off).
+	if (Settings.volumeSmooth > 0.0f && c.count > 2) {
+		static NiPoint3 mid[ChainMax];
+		for (int i = 1; i + 1 < c.count; i++) {
+			const NiPoint3& p0 = c.p[i - 1].pos;
+			const NiPoint3& p2 = c.p[i + 1].pos;
+			mid[i] = NiPoint3{ (p0.x + p2.x) * 0.5f, (p0.y + p2.y) * 0.5f, (p0.z + p2.z) * 0.5f };
+		}
+		for (int i = 1; i + 1 < c.count; i++) {
+			if (!c.p[i].link || !c.p[i + 1].link) continue;           // only between two neighbours of the same strand
+			float grown = (SmokeClock - c.p[i].born) / 0.4f;
+			grown = grown < 0.0f ? 0.0f : grown > 1.0f ? 1.0f : grown;
+			const float k = 1.0f - expf(-Settings.volumeSmooth * grown * dt);
+			SmokePoint& s = c.p[i];
+			s.pos.x += (mid[i].x - s.pos.x) * k;
+			s.pos.y += (mid[i].y - s.pos.y) * k;
+			s.pos.z += (mid[i].z - s.pos.z) * k;
+		}
+	}
+	static NiPoint3 before[ChainMax];
+	for (int i = 0; i < c.count; i++) before[i] = c.p[i].pos;
+	KeepOutOfBody(c, src.frays ? &v : nullptr, src.drift, src.zip, dt);
+	NoteJumps(c, before, "your body's rule", sqrtf(VolumePlayerVel.x * VolumePlayerVel.x + VolumePlayerVel.y * VolumePlayerVel.y), dt);
+	NotePushes(c, before, stirIn, stirDir, dt);
+	for (int i = 0; i < c.count; i++) before[i] = c.p[i].pos;
+	KeepOutOfGun(c, src.frays ? &v : nullptr, src.drift, src.zip, dt);
+	NoteJumps(c, before, "the gun's rule", sqrtf(VolumeGunVel.x * VolumeGunVel.x + VolumeGunVel.y * VolumeGunVel.y + VolumeGunVel.z * VolumeGunVel.z), dt);
+	NotePushes(c, before, stirIn, stirDir, dt);
+	Diffuse(c, stirIn, stirDir, dt, src.frays ? &v : nullptr, src.drift);
+	while (c.count && SmokeClock - c.p[0].born > c.p[0].life) {   // expired at the old end
+		memmove(&c.p[0], &c.p[1], sizeof(SmokePoint) * (c.count - 1));
+		c.count--;
+		if (c.count) c.p[0].link = false;
+	}
+	if (src.on) {
+		float spacing = (v.life + v.lifeVar) / (src.points > 2.0f ? src.points : 2.0f);
+		if (spacing < Settings.volumeSpacing) spacing = Settings.volumeSpacing;
+		const bool jumped = c.count && c.emitting && [&]() {
+			const NiPoint3& q = c.p[c.count - 1].pos;
+			const float dx = src.at.x - q.x, dy = src.at.y - q.y, dz = src.at.z - q.z;
+			return dx * dx + dy * dy + dz * dz > 200.0f * 200.0f;
+		}();
+		if (jumped) c.emitting = false;           // a jump (teleport, load): start a new strand
+		// A burst's cluster: points leaving the same spot at different speeds and angles, linked one after the other,
+		// so they open up into one irregular cloud; otherwise one point every `spacing` seconds.
+		int emit = src.cluster;
+		if ((!c.emitting || SmokeClock - c.lastEmit >= spacing) && emit < 1) emit = 1;
+		for (int e = 0; e < emit; e++) { EmitSmoke(c, src, v); c.emitting = true; }
+		// Points that have just left a source inside the barrel slide out along it over their first 0.1 s (following the gun),
+		// so the strand starts hidden in the barrel and fresh smoke flows out of its end; then they are on their own.
+		if (src.bore.x != 0.0f || src.bore.y != 0.0f || src.bore.z != 0.0f)
+			for (int i = 0; i < c.count; i++) {
+				const float age = SmokeClock - c.p[i].born;
+				if (age >= 0.1f) continue;
+				const float k = age / 0.1f;
+				c.p[i].pos = NiPoint3{ src.at.x + src.bore.x * k, src.at.y + src.bore.y * k, src.at.z + src.bore.z * k };
+			}
+		// Keep the newest point on the source, so the strand stays attached to the barrel between emissions.
+		if (c.count) c.p[c.count - 1].pos = src.at;
+	}
+	c.emitting = src.on;
+}
+
+// How much of a segment's rounded end is drawn past a joint (0..1). A strand's free end is fully rounded; at a joint the
+// neighbouring segment's body already covers the straight continuation, so only the wedge on the outside of a bend needs
+// filling (more the sharper the bend). A neighbour shorter than the tube's radius covers little, so the end stays round;
+// a segment shorter than its radius lies inside its neighbour, so its end adds nothing.
+// old -> nw is the segment; other is the neighbour's far point (past nw, or before old when atOld).
+static float EndWeight(const NiPoint3& old, const NiPoint3& nw, const NiPoint3& other, float r, bool atOld = false) {
+	const NiPoint3 self = { nw.x - old.x, nw.y - old.y, nw.z - old.z };
+	const NiPoint3 next = atOld ? NiPoint3{ old.x - other.x, old.y - other.y, old.z - other.z }
+	                            : NiPoint3{ other.x - nw.x, other.y - nw.y, other.z - nw.z };
+	const float ls = sqrtf(self.x * self.x + self.y * self.y + self.z * self.z);
+	const float ln = sqrtf(next.x * next.x + next.y * next.y + next.z * next.z);
+	r = r > 0.05f ? r : 0.05f;
+	const float cover = ln / r < 1.0f ? ln / r : 1.0f;
+	const float inside = ls / r < 1.0f ? ls / r : 1.0f;
+	float fill = 0.0f;
+	if (ls > 0.001f && ln > 0.001f) fill = 0.5f * (1.0f - (self.x * next.x + self.y * next.y + self.z * next.z) / (ls * ln));
+	return 1.0f - cover * (1.0f - fill * inside);
+}
+
+// Whether any smoke is near your body (within 40 units of its edge, at a height you occupy, give or take 20).
+static bool SmokeNearBody() {
+	const NiPoint3& f = VolumePlayerFeet;
+	const float reach = Settings.volumePlayerRadius + 40.0f;
+	for (int k = 0; k < ChainCount + 2; k++) {
+		const SmokeChain& c = k < ChainCount ? Chains[k] : Twins[k - ChainCount];
+		for (int i = 0; i < c.count; i++) {
+			const NiPoint3& p = c.p[i].pos;
+			if (p.z < f.z - 20.0f || p.z > f.z + Settings.volumePlayerHeight + 20.0f) continue;
+			const float dx = p.x - f.x, dy = p.y - f.y;
+			if (dx * dx + dy * dy < reach * reach) return true;
+		}
+	}
+	return false;
+}
+
+// Whether any smoke is within 15 units of the barrel (whirlpools are only shed into smoke).
+static bool SmokeNearGun() {
+	const NiPoint3& m = VolumeGunMuzzle;
+	const NiPoint3& b = VolumeGunBack;
+	const float L = Settings.volumeGunLength;
+	for (int k = 0; k < ChainCount + 2; k++) {
+		const SmokeChain& c = k < ChainCount ? Chains[k] : Twins[k - ChainCount];
+		for (int i = 0; i < c.count; i++) {
+			const NiPoint3& p = c.p[i].pos;
+			float al = (p.x - m.x) * b.x + (p.y - m.y) * b.y + (p.z - m.z) * b.z;
+			al = al < 0.0f ? 0.0f : al > L ? L : al;
+			const float dx = p.x - (m.x + b.x * al), dy = p.y - (m.y + b.y * al), dz = p.z - (m.z + b.z * al);
+			if (dx * dx + dy * dy + dz * dz < 225.0f) return true;
+		}
+	}
+	return false;
+}
+
+static void UpdateVolumeSmoke(float dt, const SmokeSource sources[ChainCount]) {
+	SmokeClock += dt;
+	UpdateAirAndPlayer(dt);
+	ShedVortices(dt);
+	for (int k = 0; k < ChainCount; k++) UpdateChain(Chains[k], sources[k], dt, Settings.volLook[k]);
+	for (int z = 0; z < 2; z++) {                 // the second arms move like their strands
+		if (!Twins[z].count) continue;
+		SmokeSource ts = {};
+		ts.strength = 1.0f; ts.size = 1.0f; ts.points = 30.0f; ts.drag = Settings.volumeDrag; ts.drift = sources[z].drift; ts.frays = true;
+		UpdateChain(Twins[z], ts, dt, Settings.volLook[z]);
+	}
+	for (int t = 0; t < TendrilMax; t++) {
+		if (!Tendrils[t].count) continue;
+		SmokeSource ts = {};
+		ts.strength = 1.0f; ts.size = 1.0f; ts.points = 30.0f; ts.drag = 1.5f; ts.drift = TendrilDrift[t];
+		UpdateChain(Tendrils[t], ts, dt, TendrilLook[t]);
+	}
+	// Sharp bends in the heat smoke and trail fray into tendrils (each point once, while young enough to look fresh), while
+	// the gun really moves (a swing, a turn, walking): firing in place, its kicks lay the strand in a small zigzag that
+	// would otherwise throw tendrils out at random angles. Only bends longer on both sides than the smoke is thick count
+	// (a smaller kink does not show in the drawn tube).
+	float gunMoving;
+	GunSpeed(&gunMoving);
+	if (Settings.volumeTendrils > 0.0f && gunMoving > 0.5f) {
+		const float cosLimit = cosf(Settings.volumeTendrilAngle * 0.01745329f);
+		for (int k = 0; k <= ChainTrail; k++) {
+			SmokeChain& c = Chains[k];
+			for (int i = 1; i + 1 < c.count; i++) {
+				SmokePoint& s = c.p[i];
+				if (s.frayed || !s.link || !c.p[i + 1].link) continue;
+				const float age = SmokeClock - s.born;
+				if (age < 0.15f || age > 0.6f * s.life) continue;
+				const NiPoint3& p0 = c.p[i - 1].pos;
+				const NiPoint3& p2 = c.p[i + 1].pos;
+				const NiPoint3 a = { s.pos.x - p0.x, s.pos.y - p0.y, s.pos.z - p0.z };
+				const NiPoint3 b = { p2.x - s.pos.x, p2.y - s.pos.y, p2.z - s.pos.z };
+				const float la = sqrtf(a.x * a.x + a.y * a.y + a.z * a.z), lb = sqrtf(b.x * b.x + b.y * b.y + b.z * b.z);
+				const float thick = PointRadius(s, age) > 0.5f ? PointRadius(s, age) : 0.5f;
+				if (la < thick || lb < thick) continue;
+				if ((a.x * b.x + a.y * b.y + a.z * b.z) / (la * lb) > cosLimit) continue;
+				s.frayed = true;
+				if (Random01() > Settings.volumeTendrils) continue;
+				// Out of the bend: the old direction minus the new one.
+				SpawnTendril(s, PointRadius(s, age), NiPoint3{ a.x / la - b.x / lb, a.y / la - b.y / lb, a.z / la - b.z / lb },
+					Settings.volLook[k], sources[k].drift);
+			}
+		}
+	}
+	// Current radius and density of every point, then one record per segment (or lone point).
+	static float out[((ChainCount + 2) * ChainMax + TendrilMax * TendrilPoints) * RecordFloats];
+	int n = 0;
+	for (int k = 0; k < ChainCount + 2 + TendrilMax; k++) {
+		const SmokeChain& c = k < ChainCount ? Chains[k] : k < ChainCount + 2 ? Twins[k - ChainCount] : Tendrils[k - ChainCount - 2];
+		float radius[ChainMax], density[ChainMax], age01[ChainMax];
+		for (int i = 0; i < c.count; i++) {
+			const SmokePoint& s = c.p[i];
+			const float age = SmokeClock - s.born;
+			const float a = age / s.life;
+			float g = s.grow > 0.01f ? age / s.grow : 1.0f;
+			g = g < 0.0f ? 0.0f : g > 1.0f ? 1.0f : g;
+			g = 1.0f - (1.0f - g) * (1.0f - g);           // grows fast at first and slower later, like a puff billowing out
+			float fade = 1.0f;
+			if (a < s.fadeIn && s.fadeIn > 0.001f) fade = a / s.fadeIn;
+			else if (a > s.fadeStart) fade = 1.0f - (a - s.fadeStart) / (s.fadeEnd - s.fadeStart > 0.001f ? s.fadeEnd - s.fadeStart : 0.001f);
+			fade = fade < 0.0f ? 0.0f : fade > 1.0f ? 1.0f : fade;
+			fade = fade * fade * (3.0f - 2.0f * fade);   // smooth in and out
+			const float grown = s.r0 + (s.r1 - s.r0) * g;     // as it grows by itself
+			const float r = grown * s.spread;                  // and wider where it was stirred (its opacity thinned to match, see Diffuse)
+			radius[i] = r;
+			// fOpacity x fDensityScale is about how much of the background the strand covers looking straight across
+			// it where it starts (optical depth). As it widens it keeps that opacity, like the sprites, or thins out by
+			// [Volume] fThinning (0 = not at all, 1 = the same smoke spread wider). The shader multiplies the density by
+			// the path length through the tube (~1.77 r).
+			const float spread = s.r0 > 0.01f && grown > s.r0 ? powf(s.r0 / grown, Settings.volumeThinning) : 1.0f;
+			density[i] = s.opacity * s.strength * fade * spread / (1.7725f * (r > 0.05f ? r : 0.05f));
+			// For the look, stirred and spread smoke counts as older: the shader eats into its edges more (wispier).
+			const float look = a + 0.5f * (s.spread - 1.0f) + 0.4f * s.stir;
+			age01[i] = look < 1.0f ? look : 1.0f;
+		}
+		for (int i = 0; i < c.count; i++) {
+			const bool linked = c.p[i].link && i > 0;
+			const bool followed = i + 1 < c.count && c.p[i + 1].link;
+			if (!linked && followed) continue;            // the old end of the next segment
+			const int j = linked ? i - 1 : i;
+			const bool capB = linked && c.p[j].link && j > 0;
+			float* o = out + n * RecordFloats;
+			o[0] = c.p[i].pos.x; o[1] = c.p[i].pos.y; o[2] = c.p[i].pos.z; o[3] = radius[i];
+			o[4] = c.p[j].pos.x; o[5] = c.p[j].pos.y; o[6] = c.p[j].pos.z; o[7] = radius[j];
+			o[8] = density[i]; o[9] = density[j]; o[10] = 0.5f * (age01[i] + age01[j]);
+			const float wA = followed ? EndWeight(c.p[j].pos, c.p[i].pos, c.p[i + 1].pos, radius[i]) : 1.0f;
+			const float wB = capB ? EndWeight(c.p[j].pos, c.p[i].pos, c.p[j - 1].pos, radius[j], true) : 1.0f;
+			o[11] = floorf(wA * 15.0f + 0.5f) + 16.0f * floorf(wB * 15.0f + 0.5f) + 256.0f * floorf(c.p[i].seed);
+			o[12] = c.p[i].tex; o[13] = c.p[j].tex; o[14] = age01[i]; o[15] = age01[j];
+			n++;
+		}
+	}
+	EnterCriticalSection(&HeatLock);
+	memcpy(VolumePublished, out, n * RecordFloats * sizeof(float));
+	VolumePublishedCount = n;
+	VolumeParams[0] = Settings.volumeNoise;
+	VolumeParams[1] = Settings.volumeBrightness;
+	VolumeParams[2] = Settings.volumeShade;
+	VolumeParams[3] = SmokeClock;
+	VolumeParams[4] = Settings.volumeDebug ? 1.0f : 0.0f;
+	VolumeParams[5] = Settings.volumeGunInFront ? 1.0f : 0.0f;
+	VolumeParams[6] = Settings.volumeTint;
+	VolumeParams[7] = Settings.volumeDepth;
+	LeaveCriticalSection(&HeatLock);
+	// Where the smoke is (every 2 s while there is any, 20 times per session), to compare with NVR's log.
+	static float loggedAt = -10.0f;
+	static int logged = 0;
+	if (n && Player() && logged < 20 && SmokeClock - loggedAt >= 2.0f) {
+		loggedAt = SmokeClock;
+		logged++;
+		const float* player = (const float*)((UInt8*)Player() + 0x30);
+		char counts[200] = "";
+		for (int k = 0; k < ChainCount; k++) {
+			char one[48];
+			sprintf_s(one, "%s%s %d%s", k ? ", " : "", ChainNames[k], Chains[k].count, sources[k].on ? " (smoking)" : "");
+			strcat_s(counts, one);
+		}
+		int tendrils = 0;
+		for (int t = 0; t < TendrilMax; t++) tendrils += Tendrils[t].count ? 1 : 0;
+		char one[64];
+		sprintf_s(one, ", twin arms %d + %d, tendrils %d", Twins[0].count, Twins[1].count, tendrils);
+		strcat_s(counts, one);
+		LogLine("volumetric smoke: %d segment(s); points: %s; first segment end (%.1f, %.1f, %.1f) radius %.2f, density %.4f; "
+			"player at (%.1f, %.1f, %.1f)", n, counts, out[0], out[1], out[2], out[3], out[8], player[0], player[1], player[2]);
+	}
+}
+
 static void MainLoop() {
 	const ULONGLONG now = GetTickCount64();
 	ReloadIniIfChanged(now);
 	UpdateGunSettings();
 	HandleShots(now);
 	UpdateBursts(now);
+	const bool heatVolume = VolumeWanted(ChainHeat), trailVolume = VolumeWanted(ChainTrail);   // instead of sprites
 	const float dt = LastLoop ? (now - LastLoop) / 1000.0f : 0.0f;
 	LastLoop = now;
 	if (!Settings.trail || !Switch(1)) ReleaseWisp(nullptr);
@@ -957,7 +2647,8 @@ static void MainLoop() {
 		TrailNode = nullptr;
 		TrailActor = nullptr;
 	}
-	if (Settings.trail && Switch(1) && rate > 0.01f && muzzleAlive) {
+	if (heatVolume && FollowEffect) ReleaseWisp("volumetric smoke is on");
+	if (Settings.trail && Switch(1) && rate > 0.01f && muzzleAlive && !heatVolume) {
 		// A wisp close to its end hands over to a new one, so the smoke never stops mid-stream.
 		if (FollowEffect && now + (ULONGLONG)(Settings.tailSeconds * 1000.0f) > FollowUntil) ReleaseWisp("handing over to a new one");
 		if (!FollowEffect) SpawnWisp(now, NodePosition(SmokeAnchor(Settings.wispNode, TrailNode), Settings.wispOffset));
@@ -974,9 +2665,9 @@ static void MainLoop() {
 				at.x += Settings.sway * (sinf(t) + 0.5f * sinf(t * 2.3f + 1.0f)) / 1.5f;
 				at.y += Settings.sway * (sinf(t * 0.8f + 2.0f) + 0.5f * sinf(t * 1.9f)) / 1.5f;
 			}
-			*(NiPoint3*)(root + 0x58) = at;
+			PlaceCopies(WispCopies, root, RateValue, RateController, at, rate);
 		}
-		if (RateValue) { *RateValue = rate; *(unsigned short*)(RateController + 0x08) |= 0x8; }
+		else if (RateValue) { *RateValue = rate; *(unsigned short*)(RateController + 0x08) |= 0x8; }
 		if (root) ReportRibbon(root, now);
 		else if (rate <= 0.01f) ReleaseWisp("cooled down (no rate control)");
 	}
@@ -989,7 +2680,9 @@ static void MainLoop() {
 		float a = (Heat - Settings.afterMinHeat) / afterSpan;
 		a = a < 0.0f ? 0.0f : a > 1.0f ? 1.0f : a;
 		const float afterRate = resting ? Settings.afterMaxRate * a * a * (3.0f - 2.0f * a) : 0.0f;
-		const bool afterOn = Settings.after && Switch(7) && muzzleAlive && GunAllowed(CurrentWeapon);
+		const bool afterWanted = Settings.after && Switch(7) && muzzleAlive && GunAllowed(CurrentWeapon);
+		const bool afterOn = afterWanted && !trailVolume;
+		VolAfterRate = afterWanted ? afterRate : 0.0f;
 		const bool afterDropped = AfterEffect && AfterHeld && *(volatile LONG*)(AfterEffect + 4) <= 1;
 		if (AfterEffect && (!afterOn || afterDropped || now > AfterUntil || !resting))
 			ReleaseAfter(!afterOn ? nullptr : afterDropped ? "the game removed it" : !resting ? "firing again" : "its time is up");
@@ -1006,10 +2699,192 @@ static void MainLoop() {
 					at.x += Settings.afterSway * (sinf(w * 1.1f + 0.7f) + 0.5f * sinf(w * 2.7f)) / 1.5f;
 					at.y += Settings.afterSway * (sinf(w * 0.9f + 1.3f) + 0.5f * sinf(w * 2.1f + 0.4f)) / 1.5f;
 				}
-				*(NiPoint3*)(afterRoot + 0x58) = at;
+				PlaceCopies(AfterCopies, afterRoot, AfterRate, AfterController, at, afterRate);
 			}
-			if (AfterRate) { *AfterRate = afterRate; *(unsigned short*)(AfterController + 0x08) |= 0x8; }
+			else if (AfterRate) { *AfterRate = afterRate; *(unsigned short*)(AfterController + 0x08) |= 0x8; }
 		}
+	}
+	// Volumetric smoke: the same decisions as the sprite smoke, drawn by NVR as continuous tubes.
+	{
+		SmokeSource sources[ChainCount] = {};
+		VolumeGunOn = false;
+		ShapeOn = false;
+		VolumeMuzzleDepth = 0.0f;
+		if (muzzleAlive && TrailNode) {
+			UInt8* anchor = SmokeAnchor(Settings.wispNode, TrailNode);
+			const NiPoint3 muzzle = WorldPoint(anchor, NodePosition(anchor, Settings.wispOffset));
+			// How the gun moves (a jump of over 25 units in a frame is a teleport or a view change: no speed from it).
+			static NiPoint3 lastMuzzle = {};
+			static bool haveMuzzle = false;
+			if (haveMuzzle && dt > 0.0001f) {
+				NiPoint3 v = { (muzzle.x - lastMuzzle.x) / dt, (muzzle.y - lastMuzzle.y) / dt, (muzzle.z - lastMuzzle.z) / dt };
+				if (v.x * v.x + v.y * v.y + v.z * v.z > 1500.0f * 1500.0f) v = NiPoint3{};
+				const float kv = 1.0f - expf(-dt / 0.3f);
+				VolumeGunVel.x += (v.x - VolumeGunVel.x) * kv; VolumeGunVel.y += (v.y - VolumeGunVel.y) * kv; VolumeGunVel.z += (v.z - VolumeGunVel.z) * kv;
+			}
+			lastMuzzle = muzzle;
+			haveMuzzle = true;
+			VolumeGunMuzzle = muzzle;
+			float off = 0.0f;
+			VolumeGunBack = BarrelBack(TrailNode, &off);                     // toward the stock (unit length)
+			static void* loggedGun = nullptr;
+			if (CurrentWeapon != loggedGun) {
+				loggedGun = CurrentWeapon;
+				LogLine("volumetric smoke: the barrel's direction from %s (the muzzle node's own axis and the line to its parent are %.0f degrees apart)",
+					off <= 45.0f ? "the muzzle node's own axis" : "the line to the muzzle node's parent", off);
+			}
+			// The gun shape probe, once per gun, on the gun model GunFX follows (the one you see), naming which it is.
+			static void* probedGun = nullptr;
+			if (CurrentWeapon != probedGun) {
+				probedGun = CurrentWeapon;
+				UInt8* player = (UInt8*)Player();
+				LogLine("gun shape probe: the %s model's gun (the game's own third-person switch: %d)",
+					InFirstPersonModel(TrailNode) ? "first-person" : "third-person", player ? (int)*(player + 0x64C) : -1);
+				if (UInt8* gunRoot = *(UInt8**)(TrailNode + 0x18)) ProbeGunShape(gunRoot, TrailNode);
+			}
+			// The gun's real shape (built in the background when a gun is first seen), and where its model is this frame.
+			UInt8* gunRoot = *(UInt8**)(TrailNode + 0x18);
+			UpdateGunShape(gunRoot, TrailNode);
+			ShapeOn = Shape && gunRoot && gunRoot == ShapeRoot;
+			if (gunRoot && gunRoot == ShapeRoot) {
+				memcpy(ShapeRot, gunRoot + 0x68, sizeof(ShapeRot));
+				ShapePos = WorldPoint(TrailNode, *(NiPoint3*)(gunRoot + 0x8C));
+				ShapeScale = *(float*)(gunRoot + 0x98) > 0.0001f ? *(float*)(gunRoot + 0x98) : 1.0f;
+				// With the model read, its own long axis is the barrel's direction (every gun model tested lies along its
+				// X axis, the muzzle at the far end; the muzzle node itself can be turned).
+				if (ShapeAlongX) VolumeGunBack = NiPoint3{ -ShapeRot[0], -ShapeRot[3], -ShapeRot[6] };
+			}
+			// Where you aim, flat; looking (nearly) straight up or down it has no clear heading, so the last one is kept.
+			static bool haveAim = false;
+			const float fx = -VolumeGunBack.x, fy = -VolumeGunBack.y, fl = sqrtf(fx * fx + fy * fy);
+			if (fl > 0.05f) {
+				VolumeAimForward = NiPoint3{ fx / fl, fy / fl, 0.0f };
+				VolumeAimRight = NiPoint3{ fy / fl, -fx / fl, 0.0f };        // 90 degrees clockwise seen from above
+				haveAim = true;
+			}
+			VolumeGunOn = haveAim && (Settings.volumeWrapGun || Settings.volumeDriftRight != 0.0f || Settings.volumeDriftAway != 0.0f);
+		}
+		for (int k = 0; k < ChainCount; k++) {
+			sources[k].drift = k <= ChainTrail && (Settings.volumeDriftRight != 0.0f || Settings.volumeDriftAway != 0.0f);
+			sources[k].frays = true;
+			sources[k].zip = k == ChainHeat ? 1 : k == ChainTrail ? 2 : 0;
+			sources[k].strength = 1.0f;
+			sources[k].size = k <= ChainTrail ? Settings.volumeSize : Settings.volumeBurstSize;
+			sources[k].points = k <= ChainTrail ? 30.0f : 62.0f;
+			sources[k].drag = k <= ChainTrail ? Settings.volumeDrag : Settings.volumeBurstDrag;
+		}
+		if ((heatVolume || trailVolume) && muzzleAlive && TrailNode) {
+			UInt8* anchor = SmokeAnchor(Settings.wispNode, TrailNode);
+			const NiPoint3 base = WorldPoint(anchor, NodePosition(anchor, Settings.wispOffset));
+			NiPoint3 wispAt = base, trailAt = base;
+			// From inside the barrel: the heat smoke and trail start a little way back inside it and slide out (UpdateChain),
+			// so they flow out of the barrel's end instead of appearing in front of it (the muzzle node often sits a little
+			// ahead of the barrel). With the gun's real shape, the end is found by feeling back along the barrel until points
+			// 0.8 units off its axis are inside the gun (its wall), then 1.5 units further in; otherwise 1.5 units in.
+			NiPoint3 boreOut = {};
+			float atMuzzle = 1.0f;                                       // how much of the heat smoke still starts at the muzzle
+			if (VolumeGunOn) {
+				const NiPoint3& b = VolumeGunBack;
+				float depth = 1.5f;
+				if (ShapeOn) {
+					NiPoint3 up = { -b.x * b.z, -b.y * b.z, 1.0f - b.z * b.z };
+					const float ul = sqrtf(up.x * up.x + up.y * up.y + up.z * up.z);
+					up = ul > 0.01f ? NiPoint3{ up.x / ul, up.y / ul, up.z / ul } : NiPoint3{ 1.0f, 0.0f, 0.0f };
+					const NiPoint3 side = { b.y * up.z - b.z * up.y, b.z * up.x - b.x * up.z, b.x * up.y - b.y * up.x };
+					for (float s = 0.0f; s <= 6.0f; s += 0.25f) {
+						bool wall = false;
+						for (int k = 0; k < 4 && !wall; k++) {
+							const float u = k == 0 ? 0.8f : k == 1 ? -0.8f : 0.0f, w = k == 2 ? 0.8f : k == 3 ? -0.8f : 0.0f;
+							NiPoint3 nn;
+							wall = GunSurface(NiPoint3{ base.x + b.x * s + up.x * u + side.x * w, base.y + b.y * s + up.y * u + side.y * w,
+								base.z + b.z * s + up.z * u + side.z * w }, &nn) < 0.0f;
+						}
+						if (wall) { depth = s + 1.5f; break; }
+					}
+				}
+				VolumeMuzzleDepth = depth;
+				boreOut = NiPoint3{ -b.x * depth, -b.y * depth, -b.z * depth };
+				wispAt = trailAt = NiPoint3{ base.x + b.x * depth, base.y + b.y * depth, base.z + b.z * depth };
+			}
+			// The heat smoke also rises off the hot barrel: its source wanders slowly a share of the way back along it
+			// ([Volume] fBarrelSpread of fGunLength; 0 = the muzzle only).
+			if (VolumeGunOn && Settings.volumeBarrelSpread > 0.0f) {
+				const float tb = (float)(now % 3600000) / 1000.0f;
+				const float wander = 0.5f + 0.5f * (0.6f * sinf(tb * 1.3f) + 0.4f * sinf(tb * 2.9f + 1.0f));
+				const float back = Settings.volumeBarrelSpread * Settings.volumeGunLength * wander;
+				wispAt.x += VolumeGunBack.x * back; wispAt.y += VolumeGunBack.y * back; wispAt.z += VolumeGunBack.z * back;
+				// Off the barrel's top, not from inside it (where the gun's rule would shove it out as soon as the gun
+				// moves): lifted to the edge of the gun's shape, gradually over the first 3 units back from the muzzle.
+				if (Settings.volumeWrapGun) {
+					const NiPoint3& b = VolumeGunBack;
+					NiPoint3 up = { -b.x * b.z, -b.y * b.z, 1.0f - b.z * b.z };
+					const float ul = sqrtf(up.x * up.x + up.y * up.y + up.z * up.z);
+					if (ul > 0.01f) {
+						const VolLook& hv = Settings.volLook[ChainHeat];
+						const float r0 = hv.size * Settings.volumeSize * hv.startSize;
+						float g = back / 3.0f;
+						g = g > 1.0f ? 1.0f : g;
+						float lift = Settings.volumeGunRadius + 0.6f * r0;
+						if (ShapeOn) {
+							// The real barrel's top: from the tube's edge down to the gun's surface (or up, where something
+							// stands taller), in steps of 0.2 units.
+							const float target = 0.6f * r0 + 0.1f;
+							auto clear = [&](float h) {
+								NiPoint3 nn;
+								const float k = h / ul;
+								return GunSurface(NiPoint3{ wispAt.x + up.x * k, wispAt.y + up.y * k, wispAt.z + up.z * k }, &nn) >= target;
+							};
+							if (clear(lift)) { while (lift > 0.2f && clear(lift - 0.2f)) lift -= 0.2f; }
+							else for (int k = 0; k < 30 && !clear(lift); k++) lift += 0.2f;
+						}
+						atMuzzle = 1.0f - g * g * (3.0f - 2.0f * g);
+						lift *= (1.0f - atMuzzle) / ul;
+						wispAt.x += up.x * lift; wispAt.y += up.y * lift; wispAt.z += up.z * lift;
+					}
+				}
+			}
+			// The sprite smoke's sway of its source; not while it flows out of the barrel (it would come out through the wall).
+			const float swayHeat = boreOut.x != 0.0f || boreOut.y != 0.0f || boreOut.z != 0.0f ? 1.0f - atMuzzle : 1.0f;
+			const float swayTrail = boreOut.x != 0.0f || boreOut.y != 0.0f || boreOut.z != 0.0f ? 0.0f : 1.0f;
+			const float t1 = (float)(now % 3600000) / 1000.0f * Settings.swaySpeed * 6.2831853f;
+			wispAt.x += swayHeat * Settings.sway * (sinf(t1) + 0.5f * sinf(t1 * 2.3f + 1.0f)) / 1.5f;
+			wispAt.y += swayHeat * Settings.sway * (sinf(t1 * 0.8f + 2.0f) + 0.5f * sinf(t1 * 1.9f)) / 1.5f;
+			const float t2 = (float)(now % 3600000) / 1000.0f * Settings.afterSwaySpeed * 6.2831853f;
+			trailAt.x += swayTrail * Settings.afterSway * (sinf(t2 * 1.1f + 0.7f) + 0.5f * sinf(t2 * 2.7f)) / 1.5f;
+			trailAt.y += swayTrail * Settings.afterSway * (sinf(t2 * 0.9f + 1.3f) + 0.5f * sinf(t2 * 2.1f + 0.4f)) / 1.5f;
+			sources[ChainHeat].on = heatVolume && Settings.trail && Switch(1) && rate > 0.01f;
+			sources[ChainHeat].at = wispAt;
+			sources[ChainHeat].bore = NiPoint3{ boreOut.x * atMuzzle, boreOut.y * atMuzzle, boreOut.z * atMuzzle };
+			sources[ChainHeat].strength = Settings.maxRate > 0.01f ? rate / Settings.maxRate : 0.0f;
+			sources[ChainTrail].on = trailVolume && VolAfterRate > 0.01f;
+			sources[ChainTrail].at = trailAt;
+			sources[ChainTrail].bore = boreOut;
+			sources[ChainTrail].strength = Settings.afterMaxRate > 0.01f ? VolAfterRate / Settings.afterMaxRate : 0.0f;
+		}
+		// Puff and ejection bursts: from their node while they last (at least one frame), following it.
+		for (int k = ChainPuff; k <= ChainEject; k++) {
+			SmokeBurst& b = VolumeBursts[k];
+			if (!b.node) continue;
+			if (VolumeWanted(k) && (b.fresh || SmokeClock < b.until)) {
+				sources[k].on = true;
+				sources[k].at = WorldPoint(b.node, NodePosition(b.node, b.offset));
+				sources[k].size = Settings.volumeBurstSize * b.size;
+				sources[k].cluster = b.pending < ChainMax / 2 ? b.pending : ChainMax / 2;
+				b.pending = 0;
+				// The gas leaves with the gun's own movement (smoothed, so firing's kicks do not fling it) and then slows
+				// in the air, so a gun you walk or run with does not run straight into its own fresh puff.
+				if (VolumeGunOn) sources[k].carry = VolumeGunVel;
+				if (k == ChainPuff) {   // forward out of the barrel (GlowDirection gives the rearward axis)
+					const bool alongModel = ShapeAlongX && TrailNode && b.node == TrailNode && *(UInt8**)(TrailNode + 0x18) == ShapeRoot;
+					const NiPoint3 back = alongModel ? VolumeGunBack : BarrelBack(b.node);
+					const float f = Settings.volumePuffForward;
+					sources[k].push = NiPoint3{ -back.x * f, -back.y * f, -back.z * f };
+				}
+				b.fresh = false;
+			}
+			else { NodeRelease(b.node); b.node = nullptr; b.pending = 0; }
+		}
+		UpdateVolumeSmoke(dt < 0.1f ? dt : 0.1f, sources);   // one step of at most 0.1 s (after a menu or a hitch)
 	}
 	if (now - LastShot >= (ULONGLONG)(Settings.coolDelay * 1000.0f)) Heat -= dt * Settings.coolPerSecond;
 	if (Heat < 0.0f) Heat = 0.0f;
@@ -1123,6 +2998,13 @@ static void OnShot(UInt8* actor, void* weapon, ULONGLONG now) {
 		OnPlayerShot(&shot, now);
 		MuzzleFlash smoke = shot;
 		smoke.node = SmokeAnchor(Settings.puffNode, node);
+		{   // its muzzle flash lights the volumetric smoke for a moment
+			const NiPoint3 at = WorldPoint(smoke.node, NodePosition(smoke.node, Settings.puffOffset));
+			EnterCriticalSection(&HeatLock);
+			FlashWorld = at;
+			FlashAt = now;
+			LeaveCriticalSection(&HeatLock);
+		}
 		// Puff() handles the configured local offset.
 		Puff(&smoke, now);
 	} else Puff(&shot, now);
@@ -1167,16 +3049,19 @@ static void OnEject(UInt8* actor, void* weapon, ULONGLONG now) {
 	float hot = Heat / (Settings.heatFull > 0.01f ? Settings.heatFull : 0.01f);
 	hot = hot < 0.0f ? 0.0f : hot > 1.0f ? 1.0f : hot;
 	const float scale = Settings.ejectScale * (1.0f + (Settings.ejectHotScale - 1.0f) * hot);
-	void* effect = cell ? SpawnBurst(cell, Settings.ejectLifetime, Settings.ejectModel, at, scale, Settings.ejectBurst, now) : nullptr;
+	const bool volume = VolumeWanted(ChainEject);
+	if (volume) StartVolumeBurst(ChainEject, port, Settings.ejectOffset, Settings.ejectBurst, 1.0f + (Settings.ejectHotScale - 1.0f) * hot);
+	void* effect = !volume && cell ? SpawnBurst(cell, Settings.ejectLifetime, Settings.ejectModel, at, scale, Settings.ejectBurst, Settings.ejectBurstRate, now,
+		port, Settings.ejectOffset) : nullptr;
 	const int view = InFirstPersonModel(port) ? 0 : 1;
-	if (LoggedEjectsView[view] < 8 || !effect) {
+	if (LoggedEjectsView[view] < 8 || (!effect && !volume)) {
 		LoggedEjectsView[view]++;
 		UInt8* muzzle = root ? GetFireNode(weapon, root) : nullptr;
 		const NiPoint3 m = muzzle ? *(NiPoint3*)(muzzle + 0x8C) : NiPoint3{};
 		LogLine("ejection smoke at (%.1f, %.1f, %.1f) on the %s model, %.1f units from the muzzle; %s, scale %.2f, %.1f s -> %s",
 			at.x, at.y, at.z, InFirstPersonModel(port) ? "first-person" : "third-person",
 			muzzle ? sqrtf((at.x - m.x) * (at.x - m.x) + (at.y - m.y) * (at.y - m.y) + (at.z - m.z) * (at.z - m.z)) : -1.0f,
-			Settings.ejectModel, scale, Settings.ejectLifetime, effect ? "created" : (cell ? "NOT created" : "no cell"));
+			Settings.ejectModel, scale, Settings.ejectLifetime, volume ? "volumetric" : effect ? "created" : (cell ? "NOT created" : "no cell"));
 	}
 }
 static void HandleShots(ULONGLONG now) {
@@ -1267,9 +3152,11 @@ static void ReadLook(const char* section, const Look& file, Look& look) {
 // written into it, and that copy is spawned. The hash covers every value, so each look gets its own file and the
 // game's model cache never hands back an older one. Keys that are missing keep the file's own values; when nothing
 // differs, the original file is used. NIF 20.2.0.7 layout (as in tools\niftweak.py): emitter radius/variation/life/
-// variation at +53/+57/+61/+65 of the block; grow/fade modifier grow +13, fade +19; gravity strength +33, turbulence
+// variation at +53/+57/+61/+65, speed/variation +13/+17, declination variation +25; grow/fade modifier grow +13,
+// fade +19, base (start) scale +25; gravity strength +33, turbulence
 // +41, turbulence scale +45; simple colour modifier six shares of life at +13, middle colour's alpha at +65.
-struct SmokeLook { float size, sizeVar, life, lifeVar, grow, shrink, rise, curl, curlScale, opacity, fadeIn, fadeStart, fadeEnd; };
+struct SmokeLook { float size, sizeVar, life, lifeVar, grow, shrink, rise, curl, curlScale, opacity, fadeIn, fadeStart, fadeEnd,
+	startSize, speed, speedVar, spread; };   // grow/fade base scale; emitter speed, its variation, declination variation
 static bool ReadWholeFile(const char* path, std::vector<UInt8>& out) {
 	FILE* f = nullptr;
 	if (fopen_s(&f, path, "rb") || !f) return false;
@@ -1335,9 +3222,10 @@ static int NifLook(std::vector<UInt8>& d, SmokeLook& look, bool get) {
 		const std::string& t = types[i];
 		const size_t q = at[i];
 		if ((t == "NiPSysCylinderEmitter" || t == "NiPSysSphereEmitter" || t == "NiPSysBoxEmitter") && sizes[i] >= 69) {
-			field(q + 53, look.size); field(q + 57, look.sizeVar); field(q + 61, look.life); field(q + 65, look.lifeVar); parts++;
+			field(q + 53, look.size); field(q + 57, look.sizeVar); field(q + 61, look.life); field(q + 65, look.lifeVar);
+			field(q + 13, look.speed); field(q + 17, look.speedVar); field(q + 25, look.spread); parts++;
 		}
-		else if (t == "NiPSysGrowFadeModifier" && sizes[i] >= 23) { field(q + 13, look.grow); field(q + 19, look.shrink); parts++; }
+		else if (t == "NiPSysGrowFadeModifier" && sizes[i] >= 29) { field(q + 13, look.grow); field(q + 19, look.shrink); field(q + 25, look.startSize); parts++; }
 		else if (t == "NiPSysGravityModifier" && sizes[i] >= 49) {
 			float strength = -look.rise;
 			field(q + 33, strength);
@@ -1381,6 +3269,9 @@ static void BakeLook(const char* section, char* model) {
 	look.curlScale = get("fCurlScale", built.curlScale);
 	look.opacity = get("fOpacity", built.opacity);     look.fadeIn = get("fFadeIn", built.fadeIn);
 	look.fadeStart = get("fFadeStart", built.fadeStart); look.fadeEnd = get("fFadeEnd", built.fadeEnd);
+	look.startSize = get("fStartSize", built.startSize);
+	look.speed = get("fSpeed", built.speed);           look.speedVar = get("fSpeedVariation", built.speedVar);
+	look.spread = get("fSpread", built.spread);
 	const float* a = (const float*)&built; const float* b = (const float*)&look;
 	int changed = 0;
 	for (size_t k = 0; k < sizeof(SmokeLook) / sizeof(float); k++) changed += fabsf(a[k] - b[k]) > 1e-5f;
@@ -1432,6 +3323,8 @@ static void LoadSettings() {
 	Settings.coolPerSecond = IniFloat("Wisp", "fCoolPerSecond", "3.0");
 	Settings.coolDelay = IniFloat("Wisp", "fCoolDelay", "1.5");
 	Settings.wispStopDelay = IniFloat("Wisp", "fStopDelay", "0.5");
+	Settings.wispEmitters = (int)LayerInt("Wisp", "iEmitters", 4, IniPath);
+	Settings.wispEmitters = Settings.wispEmitters < 1 ? 1 : Settings.wispEmitters > 4 ? 4 : Settings.wispEmitters;
 	Settings.maxHeat = IniFloat("Wisp", "fMaxHeat", "15");
 	Settings.heatStart = IniFloat("Wisp", "fHeatStart", "3");
 	Settings.heatFull = IniFloat("Wisp", "fHeatFull", "12");
@@ -1507,20 +3400,103 @@ static void LoadSettings() {
 	IniModel("Trail", "sModel", "GunFX/barreltrail.nif", Settings.afterModel);
 	Settings.afterScale = IniFloat("Trail", "fScale", "2.0");
 	Settings.afterDelay = IniFloat("Trail", "fStartDelay", "0.5");
+	Settings.afterEmitters = (int)LayerInt("Trail", "iEmitters", 4, IniPath);
+	Settings.afterEmitters = Settings.afterEmitters < 1 ? 1 : Settings.afterEmitters > 4 ? 4 : Settings.afterEmitters;
 	Settings.afterMinHeat = IniFloat("Trail", "fMinHeat", "2");
 	Settings.afterFullHeat = IniFloat("Trail", "fFullHeat", "10");
 	Settings.afterMaxRate = IniFloat("Trail", "fMaxRate", "60");
 	Settings.afterSway = IniFloat("Trail", "fSway", "1.5");
 	Settings.afterSwaySpeed = IniFloat("Trail", "fSwaySpeed", "0.15");
 	BakeLook("Trail", Settings.afterModel);
+	Settings.volume = LayerInt("Volume", "bEnabled", 1, IniPath);
+	Settings.volumeSize = IniFloat("Volume", "fSizeScale", "0.25");
+	Settings.volumeDensity = IniFloat("Volume", "fDensityScale", "4.0");
+	Settings.volumeRise = IniFloat("Volume", "fRiseScale", "1.0");
+	Settings.volumeCurl = IniFloat("Volume", "fCurlScale", "400");
+	Settings.volumeDrag = IniFloat("Volume", "fDrag", "0.4");
+	Settings.volumeSpacing = IniFloat("Volume", "fSpacing", "0.04");
+	Settings.volumeNoise = IniFloat("Volume", "fNoise", "0.6");
+	Settings.volumeBrightness = IniFloat("Volume", "fBrightness", "1.0");
+	Settings.volumeShade = IniFloat("Volume", "fSelfShadow", "0.5");
+	Settings.volumeDebug = LayerInt("Volume", "bDebug", 0, IniPath);
+	Settings.volumeKinds[ChainHeat] = LayerInt("Volume", "bHeatSmoke", 1, IniPath);
+	Settings.volumeKinds[ChainTrail] = LayerInt("Volume", "bTrail", 1, IniPath);
+	Settings.volumeKinds[ChainPuff] = LayerInt("Volume", "bPuff", 1, IniPath);
+	Settings.volumeKinds[ChainEject] = LayerInt("Volume", "bEjection", 1, IniPath);
+	Settings.volumeBurstDrag = IniFloat("Volume", "fBurstDrag", "3.0");
+	Settings.volumeBurstSize = IniFloat("Volume", "fBurstSizeScale", "1.0");
+	Settings.volumeGunInFront = LayerInt("Volume", "bGunInFront", 1, IniPath);
+	Settings.volumeExpand = IniFloat("Volume", "fExpand", "1.6");
+	Settings.volumeFlash = IniFloat("Volume", "fFlash", "1.0");
+	Settings.volumeFlashRadius = IniFloat("Volume", "fFlashRadius", "15");
+	Settings.volumeFlashSeconds = IniFloat("Volume", "fFlashSeconds", "0.05");
+	Settings.volumeWind = IniFloat("Volume", "fWind", "40");
+	Settings.volumeWindPickup = IniFloat("Volume", "fWindPickup", "0.8");
+	Settings.volumeWindOffset = IniFloat("Volume", "fWindDirectionOffset", "0");
+	Settings.volumePlayer = LayerInt("Volume", "bPlayerPush", 1, IniPath);
+	Settings.volumePlayerRadius = IniFloat("Volume", "fPlayerRadius", "30");
+	Settings.volumePlayerHeight = IniFloat("Volume", "fPlayerHeight", "140");
+	Settings.volumePlayerPush = IniFloat("Volume", "fPlayerPush", "40");
+	Settings.volumeStir = IniFloat("Volume", "fStir", "1.5");
+	Settings.volumeDiffuse = IniFloat("Volume", "fDiffuse", "1.0");
+	Settings.volumeTint = IniFloat("Volume", "fTint", "1.0");
+	Settings.volumeSmooth = IniFloat("Volume", "fSmooth", "3.0");
+	Settings.volumeDepth = IniFloat("Volume", "fDepth", "1.0");
+	Settings.volumeDriftRight = IniFloat("Volume", "fDriftRight", "8");
+	Settings.volumeDriftAway = IniFloat("Volume", "fDriftAway", "3");
+	Settings.volumeWrapGun = LayerInt("Volume", "bWrapGun", 1, IniPath);
+	Settings.volumeGunShape = LayerInt("Volume", "bGunShape", 1, IniPath);
+	Settings.volumeGunLength = IniFloat("Volume", "fGunLength", "30");
+	Settings.volumeGunRadius = IniFloat("Volume", "fGunRadius", "3.5");
+	Settings.volumeGunSwirl = IniFloat("Volume", "fGunSwirl", "0.6");
+	Settings.volumeBodySwirl = IniFloat("Volume", "fBodySwirl", "0.5");
+	Settings.volumeSwirlLife = IniFloat("Volume", "fSwirlLife", "1.2");
+	if (Settings.volumeSwirlLife < 0.2f) Settings.volumeSwirlLife = 0.2f;
+	Settings.volumeBarrelSpread = IniFloat("Volume", "fBarrelSpread", "0.3");
+	Settings.volumeTendrils = IniFloat("Volume", "fTendrils", "0.6");
+	Settings.volumeTendrilAngle = IniFloat("Volume", "fTendrilAngle", "40");
+	Settings.volumeTendrilSize = IniFloat("Volume", "fTendrilSize", "0.35");
+	Settings.volumeTendrilSpeed = IniFloat("Volume", "fTendrilSpeed", "12");
+	Settings.volumeUnzip = LayerInt("Volume", "bUnzip", 1, IniPath);
+	Settings.volumeFanSpeed = IniFloat("Volume", "fFanSpeed", "30");
+	if (Settings.volumeBarrelSpread < 0.0f) Settings.volumeBarrelSpread = 0.0f;
+	if (Settings.volumeBarrelSpread > 1.0f) Settings.volumeBarrelSpread = 1.0f;
+	Settings.volumeThinning = IniFloat("Volume", "fThinning", "0.2");
+	if (Settings.volumeThinning < 0.0f) Settings.volumeThinning = 0.0f;
+	if (Settings.volumeThinning > 1.0f) Settings.volumeThinning = 1.0f;
+	Settings.volumeBurstPoints = (int)LayerInt("Volume", "iBurstPoints", 4, IniPath);
+	if (Settings.volumeBurstPoints < 1) Settings.volumeBurstPoints = 1;
+	if (Settings.volumeBurstPoints > 12) Settings.volumeBurstPoints = 12;
+	Settings.volumePuffForward = IniFloat("Volume", "fPuffForward", "15");
+	{
+		const char* sections[ChainCount] = { "Wisp", "Trail", "Puff", "Ejection" };
+		for (int k = 0; k < ChainCount; k++) {
+			VolLook& v = Settings.volLook[k];
+			const char* sec = sections[k];
+			v.size = IniFloat(sec, "fSize", "3");            v.sizeVar = IniFloat(sec, "fSizeVariation", "0.5");
+			v.life = IniFloat(sec, "fSmokeLife", "2.6");     v.lifeVar = IniFloat(sec, "fSmokeLifeVariation", "0.3");
+			v.speed = IniFloat(sec, "fSpeed", "10");         v.speedVar = IniFloat(sec, "fSpeedVariation", "1");
+			v.startSize = IniFloat(sec, "fStartSize", "0.3"); v.grow = IniFloat(sec, "fGrowSeconds", "2.6");
+			v.opacity = IniFloat(sec, "fOpacity", "0.1");    v.fadeIn = IniFloat(sec, "fFadeIn", "0.05");
+			v.fadeStart = IniFloat(sec, "fFadeStart", "0.2"); v.fadeEnd = IniFloat(sec, "fFadeEnd", "0.95");
+			v.rise = IniFloat(sec, "fRise", "7");            v.curl = IniFloat(sec, "fCurl", "0.012");
+			v.spread = IniFloat(sec, "fSpread", k < 2 ? "0.03" : "0.8");
+			v.size *= k == ChainHeat ? Settings.trailScale : k == ChainTrail ? Settings.afterScale : IniFloat(sec, "fScale", "1.0");   // the effects' fScale
+		}
+	}
 	BakeLook("Puff", Settings.puffModel);
 	BakeLook("Wisp", Settings.trailModel);
 	BakeLook("Ejection", Settings.ejectModel);
 	// A changed look applies at once: the running heat smoke / trail hands over to a new effect with it (the smoke
 	// already in the air drifts off). Each keeps its own look; they never share settings.
 	static char lastWisp[MAX_PATH] = "", lastAfter[MAX_PATH] = "";
-	if (lastWisp[0] && _stricmp(lastWisp, Settings.trailModel)) ReleaseWisp("its look changed");
-	if (lastAfter[0] && _stricmp(lastAfter, Settings.afterModel)) ReleaseAfter("its look changed");
+	static int lastWispCount = 0, lastAfterCount = 0;
+	if ((lastWisp[0] && _stricmp(lastWisp, Settings.trailModel)) || (lastWispCount && lastWispCount != Settings.wispEmitters))
+		ReleaseWisp("its look changed");
+	if ((lastAfter[0] && _stricmp(lastAfter, Settings.afterModel)) || (lastAfterCount && lastAfterCount != Settings.afterEmitters))
+		ReleaseAfter("its look changed");
+	lastWispCount = Settings.wispEmitters;
+	lastAfterCount = Settings.afterEmitters;
 	strcpy_s(lastWisp, Settings.trailModel);
 	strcpy_s(lastAfter, Settings.afterModel);
 	Settings.ejectScale=bounded("Ejection","fScale","1.0",0.01f,10);
@@ -1528,6 +3504,8 @@ static void LoadSettings() {
 	Settings.ejectHotScale=bounded("Ejection","fHotScale","1.8",0.1f,10);
 	Settings.ejectBurst=bounded("Ejection","fBurstSeconds","0.06",0.01f,2);
 	Settings.puffBurst=bounded("Puff","fBurstSeconds","0.12",0.01f,2);
+	Settings.puffBurstRate=bounded("Puff","fBurstRate","60",1,600);
+	Settings.ejectBurstRate=bounded("Ejection","fBurstRate","160",1,600);
 	Settings.ejectInterval=bounded("Ejection","fMinInterval","0",0,2);
 	Settings.haze=LayerInt("Haze","bEnabled",1,IniPath);
 	Settings.hazePreview=LayerInt("Haze","bPreview",0,IniPath);
@@ -1644,9 +3622,49 @@ __declspec(dllexport) bool __cdecl GunFX_GetHazeV3(float out[16], const void* we
 __declspec(dllexport) void __cdecl GunFX_SetSwitches(UInt32 bits) {
 	if ((LONG)bits != NvrSwitches) {
 		InterlockedExchange(&NvrSwitches, (LONG)bits);
-		LogLine("NVR menu switches: puff %d, heat smoke %d, ejection smoke %d, glow %d, haze %d, muzzle blast %d, energy weapons %d, after-fire trail %d",
-			bits & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1, (bits >> 5) & 1, (bits >> 6) & 1, (bits >> 7) & 1);
+		LogLine("NVR menu switches: puff %d, heat smoke %d, ejection smoke %d, glow %d, haze %d, muzzle blast %d, energy weapons %d, after-fire trail %d, volumetric %d",
+			bits & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1, (bits >> 5) & 1, (bits >> 6) & 1, (bits >> 7) & 1, (bits >> 8) & 1);
 	}
+}
+
+// Volumetric smoke for NVR: up to maxRecords records of 12 floats (see VolumePublished) and params[8] (noise,
+// brightness, self-shadow, clock, debug view, gun in front, colour, depth shading). Returns the number of records.
+__declspec(dllexport) int __cdecl GunFX_GetVolumeSmoke(float* out, int maxRecords, float* params) {
+	if (!out || !params || !HeatLockReady) return 0;
+	EnterCriticalSection(&HeatLock);
+	const int n = VolumePublishedCount < maxRecords ? VolumePublishedCount : maxRecords;
+	for (int i = 0; i < n; i++) memcpy(out + i * 12, VolumePublished + i * RecordFloats, 12 * sizeof(float));   // the first 12 floats
+	memcpy(params, VolumeParams, sizeof(VolumeParams));
+	LeaveCriticalSection(&HeatLock);
+	return n;
+}
+// The same with records of 16 floats (see VolumePublished): NVR P70 and newer.
+__declspec(dllexport) int __cdecl GunFX_GetVolumeSmoke2(float* out, int maxRecords, float* params) {
+	if (!out || !params || !HeatLockReady) return 0;
+	EnterCriticalSection(&HeatLock);
+	const int n = VolumePublishedCount < maxRecords ? VolumePublishedCount : maxRecords;
+	memcpy(out, VolumePublished, n * RecordFloats * sizeof(float));
+	memcpy(params, VolumeParams, sizeof(VolumeParams));
+	LeaveCriticalSection(&HeatLock);
+	return n;
+}
+// The light the player's last muzzle flash throws on the volumetric smoke: out[8] = x, y, z (world), light (0 = none;
+// [Volume] fFlash at the shot, gone after about fFlashSeconds x 4), colour r, g, b, reach (fFlashRadius).
+__declspec(dllexport) void __cdecl GunFX_GetSmokeFlash(float* out) {
+	if (!out) return;
+	memset(out, 0, 8 * sizeof(float));
+	if (!HeatLockReady) return;
+	EnterCriticalSection(&HeatLock);
+	const NiPoint3 at = FlashWorld;
+	const ULONGLONG shot = FlashAt;
+	LeaveCriticalSection(&HeatLock);
+	const float seconds = Settings.volumeFlashSeconds > 0.005f ? Settings.volumeFlashSeconds : 0.005f;
+	const float since = shot ? (GetTickCount64() - shot) / 1000.0f : 1e9f;
+	if (since > seconds * 4.0f || Settings.volumeFlash <= 0.0f) return;
+	out[0] = at.x; out[1] = at.y; out[2] = at.z;
+	out[3] = Settings.volumeFlash * expf(-since / seconds);
+	out[4] = 1.0f; out[5] = 0.55f; out[6] = 0.25f;   // warm orange
+	out[7] = Settings.volumeFlashRadius;
 }
 
 __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* nvse, PluginInfo* info) {
@@ -1659,7 +3677,7 @@ __declspec(dllexport) bool NVSEPlugin_Query(const NVSEInterface* nvse, PluginInf
 __declspec(dllexport) bool NVSEPlugin_Load(const NVSEInterface* nvse) {
 	if (nvse->isEditor) return true;
 	Log = _fsopen("GunFX.log", "w", _SH_DENYWR); // readable while the game runs
-	LogLine("GunFX 1.4 (one [Muzzle] offset for the puff, heat smoke and trail; new defaults)");
+	LogLine("GunFX 1.28 (volumetric smoke prototype: heat smoke, trail, puff and ejection smoke; edge detail, sun and muzzle flash light, colour, wind, pushed by your body, smoothed strands, depth shading, drift aside, flows around the gun, tendrils, unzips and fans out around you and the gun, swirls behind the barrel and your body, recoil smoothed out, barrel direction from the muzzle node, no random flicks, gun shape probe, puff carried with the gun, smoke eased out of the gun and your body, air flows round your body and the gun, the gun's real shape, smoke you run into parts at once, stirred smoke spreads out and frays, heat smoke and trail flow out of the barrel)");
 	LoadSettings();
 	if (GetModuleHandleA("BarrelSmoke.dll")) {
 		LogLine("BarrelSmoke.dll is also installed: GunFX replaces it. Remove BarrelSmoke.dll from Data\\NVSE\\Plugins; GunFX stays off until then.");
