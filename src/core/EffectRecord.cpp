@@ -149,7 +149,8 @@ bool EffectRecord::LoadEffect() {
 				FileBinary.close();
 
 				std::ofstream FilePreprocess(EffectPreprocessedPath, std::ios::out | std::ios::binary);
-				FilePreprocess.write((const char*)EffectSource->GetBufferPointer(), EffectSource->GetBufferSize());
+				const std::string Portable = ShaderProgram::PortableSource(EffectSource);
+				FilePreprocess.write(Portable.data(), Portable.size());
 				FilePreprocess.flush();
 				FilePreprocess.close();
 

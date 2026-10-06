@@ -130,6 +130,10 @@ bool AddSpecular(float2 uv, float depth, inout float3 lin) {
 	bool weapon = TESR_DepthConstants.z == 0.0 ? viewmodelDepth < 0.9 : viewmodelDepth > 0.01;
 	[branch] if (depth >= DrawDistance || depth >= farZ * 0.98 || weapon) return false;
 
+	float3 pixelPos = TESR_CameraPosition.xyz + toWorld(uv) * depth;
+	float3 pixelNormal = ViewToWorld(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0, 0)).xyz * 2.0 - 1.0);
+	[branch] if (normalize(pixelNormal).z > 0.7 && abs(pixelPos.z - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return false;
+
 	float2 px = TESR_ReciprocalResolution.xy, lowPx = px * LowScale;
 	float2 p = uv / lowPx - 0.5;
 	float2 f = frac(p);

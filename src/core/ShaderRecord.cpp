@@ -71,39 +71,28 @@ bool ShaderProgram::FileExists(const char* path) {
 * Check if cached preprocessed source exists and matches the current result.
 */
 bool ShaderProgram::CheckPreprocessResult(const char* CachedPreprocessPath, ID3DXBuffer* ShaderSource) {
-	void* CurrentContent = ShaderSource->GetBufferPointer();
-	
-	ID3DXBuffer* CachedSource = nullptr;
-	void* CachedContent = nullptr;
-	
-	std::ifstream File(CachedPreprocessPath, std::ios::in | std::ios::ate);
-	if (File.is_open()) {
-		std::streamoff Size = File.tellg();
-		if (Size > 0 && SUCCEEDED(D3DXCreateBuffer(Size, &CachedSource))) {
-			File.seekg(0, std::ios::beg);
-			CachedContent = CachedSource->GetBufferPointer();
-			File.read((char*)CachedContent, Size);
-			File.close();
-		}
-		else {
-			File.close();
-			return false;
-		}
-	}
-	else {
-		return false;
-	}
+	std::ifstream File(CachedPreprocessPath, std::ios::in | std::ios::binary);
+	if (!File.is_open()) return false;
+	const std::string Cached((std::istreambuf_iterator<char>(File)), std::istreambuf_iterator<char>());
+	return !Cached.empty() && Cached == PortableSource(ShaderSource);
+}
 
-	bool match = false;
-
-	if (CachedContent && CachedSource) {
-		if (ShaderSource->GetBufferSize() == CachedSource->GetBufferSize()) {
-			match = !memcmp(CurrentContent, CachedContent, ShaderSource->GetBufferSize());
+std::string ShaderProgram::PortableSource(ID3DXBuffer* Source) {
+	std::string Text((const char*)Source->GetBufferPointer(), Source->GetBufferSize());
+	size_t At = 0;
+	while ((At = Text.find("#line ", At)) != std::string::npos) {
+		const size_t LineEnd = Text.find('\n', At);
+		const size_t Open = Text.find('"', At);
+		const size_t Close = Open == std::string::npos ? std::string::npos : Text.find('"', Open + 1);
+		if (Open != std::string::npos && Close != std::string::npos && (LineEnd == std::string::npos || Close < LineEnd)) {
+			std::string Path = Text.substr(Open + 1, Close - Open - 1);
+			for (char& c : Path) c = (char)tolower((unsigned char)c);
+			const size_t Data = Path.rfind("\\\\data\\\\");
+			if (Data != std::string::npos) Text.erase(Open + 1, Data + 2);
 		}
+		At += 6;
 	}
-
-	if (CachedSource) CachedSource->Release();
-	return match;
+	return Text;
 }
 
 /*
@@ -289,7 +278,8 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				FileBinary.close();
 
 				std::ofstream FilePreprocess(ShaderPreprocessedPath, std::ios::out | std::ios::binary);
-				FilePreprocess.write((const char*)ShaderSource->GetBufferPointer(), ShaderSource->GetBufferSize());
+				const std::string Portable = PortableSource(ShaderSource);
+				FilePreprocess.write(Portable.data(), Portable.size());
 				FilePreprocess.flush();
 				FilePreprocess.close();
 
