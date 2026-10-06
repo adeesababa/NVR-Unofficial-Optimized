@@ -201,9 +201,6 @@ float4 DX9_SMAALumaDepthEdgeDetectionPS(float4 position : SV_POSITION,
     float2 lumaEdges = step(float2(SMAA_THRESHOLD, SMAA_THRESHOLD), delta);
     float2 depthEdges = SMAADepthEdges(texcoord, offset);
 
-    // Local contrast cannot turn a rejected luma edge back on. Most pixels
-    // stop here, avoiding the four distant color reads below while retaining
-    // depth-only edges exactly as before.
     if (dot(lumaEdges, float2(1.0, 1.0)) == 0.0) {
         if (dot(depthEdges, float2(1.0, 1.0)) == 0.0)
             discard;
@@ -248,7 +245,7 @@ technique LumaEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
+        StencilFunc = ALWAYS;
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -266,7 +263,7 @@ technique ColorEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
+        StencilFunc = ALWAYS;
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -284,7 +281,7 @@ technique DepthEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
+        StencilFunc = ALWAYS;
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;
@@ -302,7 +299,7 @@ technique LumaDepthEdgeDetection {
 
         // We will be creating the stencil buffer for later usage.
         StencilEnable = true;
-        StencilFunc = ALWAYS; // explicit: do not inherit whatever compare the game left bound
+        StencilFunc = ALWAYS;
         StencilPass = REPLACE;
         StencilRef = 1;
         StencilWriteMask = 0xFFFFFFFF;

@@ -31,11 +31,8 @@ float4 DepthBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, 
 	color1 /= WeightSum;
     return float4(color1.rgb, 1);
 }
-#endif // BLUR_FULL_WRITE_ONLY
+#endif
 
-// DepthBlur's result for every pixel, without clip(): beyond endFade it returns its input, which is what clip() left
-// there when the frame chain had pre-filled the destination with that input. With no clip() in the effect the chain
-// skips those whole-frame copies (one per pass). Same maths in the same order otherwise.
 float4 DepthBlurFullValue(float2 uv, uniform sampler2D buffer, uniform float2 OffsetMask, uniform float blurRadius, uniform float depthDrop, uniform float endFade)
 {
 	float4 center = tex2Dlod(buffer, float4(uv, 0, 0));
@@ -67,20 +64,12 @@ float4 DepthBlurFull(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMa
 	return DepthBlurFullValue(IN.UVCoord, buffer, OffsetMask, blurRadius, depthDrop, endFade);
 }
 
-// Same blur for a pass whose destination is NOT the texture it samples (ping-pong). Pixels
-// beyond endFade are passed through instead of clip()ped: clip leaves the destination holding
-// whatever it had before, which equals the input only when rendering in place -- otherwise it is
-// stale or uninitialised data that the filtered taps of neighbouring pixels bleed into thin
-// geometry against the sky.
 float4 DepthBlurKeep(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, uniform float blurRadius,uniform float depthDrop,uniform float endFade) : COLOR0
 {
 	float4 center = tex2Dlod(buffer, float4(IN.UVCoord, 0, 0));
 	float depth1 = readDepthLod(IN.UVCoord);
 	[branch] if (depth1 > endFade) return center;
 
-	// Fetch the neighbours first. When every tap equals the centre -- fully lit or evenly
-	// shadowed, which is most of the screen -- the depth-weighted average is the centre value
-	// whatever the weights are, so the twelve depth reads can be skipped with identical output.
 	float4 taps[cKernelSize];
 	float4 spread = 0;
 	[unroll]

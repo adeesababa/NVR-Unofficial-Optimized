@@ -168,8 +168,6 @@ float GetLightAmount(float4 positionWS, float3 normal)
 
 	// Each cascade is offset in its OWN texel scale -- one shared samplePos cannot suit all
 	// four when their texels differ by more than an order of magnitude.
-    // Evaluate only the selected cascade(s), as the forward path already does.
-    // Sampling uses explicit LOD, so it is legal inside ps_3_0 dynamic branches.
 #define TAP_NEAR GetLightAmountValue(TESR_ShadowCameraToLightTransformNear, float4(positionWS.xyz + offsetDistance.x * normal, 1), 0, 0, bias, 0.1f)
 #define TAP_MIDDLE GetLightAmountValue(TESR_ShadowCameraToLightTransformMiddle, float4(positionWS.xyz + offsetDistance.y * normal, 1), 0.5, 0, bias, 0.2f)
 #define TAP_FAR GetLightAmountValue(TESR_ShadowCameraToLightTransformFar, float4(positionWS.xyz + offsetDistance.z * normal, 1), 0, 0.5, bias, 0.6f)
@@ -236,13 +234,6 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 
 	if (pos.z > SSS_MAXDEPTH) return float4(1.0, color.g, 0, 1); // early out for pixels further away than the max render distance
 
-	// Surfaces facing away from the sun receive no direct sun, so a contact shadow there can
-	// only darken ambient light -- and it is exactly where the march runs INTO the receiving
-	// surface. Bilinear linear-depth reads along that ray are slightly off the true plane, and
-	// the error cycles with the sub-pixel sample phase, so a fixed tiny bias flips the test on
-	// and off in bands perpendicular to the ray (horizontal lines under a high sun). Fade the
-	// term out as the surface turns away from the light, and scale the self-intersection bias
-	// with distance so grazing lit faces do not band either.
 	float NdotL = dot(GetNormal(uv), normalize(TESR_ViewSpaceLightDir.xyz));
 	float facing = saturate(NdotL * 8.0f);
 	if (facing <= 0.0f) return float4(1.0, color.g, 0, 1);
@@ -317,9 +308,6 @@ float4 Shadow(VSOUT IN) : COLOR0
 	// mid-session hands the cascades back here in the same frame -- game shaders cannot be
 	// recompiled at runtime, so a macro alone would leave neither path drawing shadows.
 #if FORWARD_SHADOWS
-	// Forward mode already evaluated the cascades per object. This coherent early return avoids
-	// reconstructing world position and reading normals for the entire screen. Explicit-LOD
-	// helpers keep the deferred fallback legal inside ps_3_0 dynamic flow control.
 	[branch] if (!TESR_ShadowForwardData.x) return Shadow;
 #else
 	// Forward was compiled out entirely, so the cascades are always ours.
@@ -337,8 +325,6 @@ float4 FinalContactBlur(VSOUT IN) : COLOR0
 {
 	float4 shadow = DepthBlurKeep(IN, TESR_PointShadowBuffer, OffsetMaskV,
 		TESR_ShadowScreenSpaceData.y, 3500, SSS_MAXDEPTH);
-	// Beyond the contact-shadow range DepthBlur passes its input through; the in-place path
-	// used to leave those texels untouched, so do not apply the intensity curve to them either.
 	if (readDepthLod(IN.UVCoord) > SSS_MAXDEPTH) return shadow;
 	return pow(shadow, TESR_ShadowScreenSpaceData.w);
 }
@@ -368,9 +354,6 @@ technique {
 
 }
 
-// With forward cascades enabled, Shadow() only samples the vertical blur result and raises it
-// to the configured intensity. Do that in the vertical pass and avoid a fourth full-screen draw
-// and copy. The DLL selects this technique only for the forward path.
 technique ForwardContactShadows {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();

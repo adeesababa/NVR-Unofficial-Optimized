@@ -1,13 +1,3 @@
-// Game shader A/B (UNOFFICIAL P47). Compiles game shader templates from two Shaders folders the way the game does
-// (ShaderRecord::LoadShader: D3DX43 preprocess, then D3DXCompileShader with flags 0), draws old and new over varied test
-// scenes into a 32-bit float target on the GPU and requires every pixel to be bit-identical, checks that the scene has
-// no NaNs and that the feature under test visibly changes it (so "identical" means something), then times both at
-// 2560x1440 on full-screen draws.
-//  - terrain: TerrainTemplate.hlsl, TEX_COUNT 1-7, several parallax settings (roadmap 3C).
-//  - objects: ObjectTemplate.hlsl's multi-light pixel shaders SLS2029-2036 with 0-6 lights in use (roadmap 3J).
-// Usage: build\shader-test\game_shaders.exe <old Shaders folder> <new Shaders folder> [terrain|objects]
-//        game_shaders.exe --asm-template <template file> <ps_3_0|vs_3_0> <output file> [NAME=VALUE ...]
-// tools\test-game-shaders.ps1 extracts the old folder from git HEAD and runs it.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -32,8 +22,6 @@ static float Random() { seed = seed * 1664525u + 1013904223u; return (seed >> 8)
 
 typedef std::vector<std::pair<std::string, std::string>> Defines;
 
-// Same fixed defines as ShaderRecord::LoadShader. FORWARD_SHADOWS 0 for the pixel tests (no shadow atlas here); the
-// code under test does not depend on it.
 static ComPtr<ID3DXBuffer> Compile(const std::string& file, const char* profile, const Defines& defines, int forwardShadows,
 	unsigned* slots = nullptr, std::string* disassembly = nullptr) {
 	std::vector<D3DXMACRO> macros;
@@ -63,9 +51,8 @@ static ComPtr<ID3DXBuffer> Compile(const std::string& file, const char* profile,
 	return code;
 }
 
-struct Vertex { float v[11][4]; };  // POSITION0, then TEXCOORD0-9 as declared in the vertex shaders below
+struct Vertex { float v[11][4]; };
 
-// Terrain: TerrainTemplate's PS_INPUT.
 static const char* TerrainVertexShader = R"(
 struct VIn { float4 pos : POSITION0; float4 uv : TEXCOORD0; float4 color : TEXCOORD1; float4 lpos : TEXCOORD2; float4 t : TEXCOORD3;
              float4 b : TEXCOORD4; float4 n : TEXCOORD5; float4 b0 : TEXCOORD6; float4 b1 : TEXCOORD7; float4 proj : TEXCOORD8;
@@ -81,7 +68,6 @@ VOut main(VIn IN) {
     return OUT;
 })";
 
-// Objects: COLOR0/1 and TEXCOORD0-7 passed straight through; each variant reads the ones it declares.
 static const char* ObjectVertexShader = R"(
 struct VIn { float4 pos : POSITION0; float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2; float4 t3 : TEXCOORD3;
              float4 t4 : TEXCOORD4; float4 t5 : TEXCOORD5; float4 t6 : TEXCOORD6; float4 t7 : TEXCOORD7; float4 c0 : TEXCOORD8;
@@ -108,14 +94,11 @@ static void GridIndices(Scene& scene) {
 		}
 }
 
-// A reversed-depth perspective projection like RenderManager's (row vectors, unit x/y scale): clip = (x, y, A*z + B, z).
 static const float TestNear = 10.0f, TestFar = 300000.0f;
 static const float TestProjectionA = -(TestNear / (TestFar - TestNear)), TestProjectionB = TestNear * TestFar / (TestFar - TestNear);
 
 static void Set(Vertex& v, int k, float x, float y, float z, float w) { v.v[k][0] = x; v.v[k][1] = y; v.v[k][2] = z; v.v[k][3] = w; }
 
-// Terrain: ground from 150 to about 2600 units away (parallax fades out at 2048), random blend weights (some exactly 0),
-// gently bent normals.
 static Scene TerrainScene(int texCount) {
 	Scene scene;
 	const float eye[3] = { 0, -100, 150 };
@@ -139,8 +122,6 @@ static Scene TerrainScene(int texCount) {
 			for (int t = 0; t < texCount; t++) blends[t] /= total;
 			Set(v, 7, blends[0], blends[1], blends[2], blends[3]);
 			Set(v, 8, blends[4], blends[5], blends[6], 0);
-			// Clip position of the view-space point (x, y, dist) under TestProjection (see CommonConstants), so the
-			// inverse projection there takes it back exactly, as in the game.
 			Set(v, 9, (sx * 2 - 1) * dist, (1 - sy * 2) * dist, TestProjectionA * dist + TestProjectionB, dist);
 			Set(v, 10, eye[0], eye[1], eye[2], 1);
 			scene.vertices.push_back(v);
@@ -155,9 +136,6 @@ static void RandomDirection(float out[3], float minLength, float maxLength) {
 	out[0] = x * scale; out[1] = y * scale; out[2] = z * scale;
 }
 
-// Objects (ObjectTemplate's LIGHTS >= 4 pixel shader): tangent-space light and view directions, object-space positions for
-// the per-pixel attenuation, and the camera-relative world position in the interpolator the variant uses for it
-// (TEXCOORD5 at MAX_LIGHTS 3, TEXCOORD6 at 4, the .w of TEXCOORD5-7 at 6), with the "present" sentinel 1.0.
 static Scene ObjectScene(int maxLights) {
 	Scene scene;
 	for (int j = 0; j < Grid; j++)
@@ -169,31 +147,29 @@ static Scene ObjectScene(int maxLights) {
 			RandomDirection(view, 1.0f, 1.0f);
 			const float world[3] = { (sx - 0.5f) * 400, 150 + 200 * sy + 20 * Random(), (0.5f - sy) * 150 + 10 * Random() };
 			Set(v, 0, sx * 2 - 1, 1 - sy * 2, 0.5f, 1);
-			Set(v, 1, sx * 5, sy * 5, 0, 0);                                                            // uv
-			Set(v, 2, (sx - 0.5f) * 300, (sy - 0.5f) * 300, 30 * Random(), 1.0f);                       // lPosition (.w sentinel at MAX 6)
-			Set(v, 3, dir[0][0], dir[0][1], dir[0][2], view[0]);                                        // lightDir, view.x
-			Set(v, 4, dir[1][0], dir[1][1], dir[1][2], view[1]);                                        // light2, view.y
-			Set(v, 5, dir[2][0], dir[2][1], dir[2][2], view[2]);                                        // light3, view.z
+			Set(v, 1, sx * 5, sy * 5, 0, 0);
+			Set(v, 2, (sx - 0.5f) * 300, (sy - 0.5f) * 300, 30 * Random(), 1.0f);
+			Set(v, 3, dir[0][0], dir[0][1], dir[0][2], view[0]);
+			Set(v, 4, dir[1][0], dir[1][1], dir[1][2], view[1]);
+			Set(v, 5, dir[2][0], dir[2][1], dir[2][2], view[2]);
 			if (maxLights == 3) {
-				Set(v, 6, world[0], world[1], world[2], 1.0f);                                          // shadowWorldPos
+				Set(v, 6, world[0], world[1], world[2], 1.0f);
 			} else if (maxLights == 4) {
-				Set(v, 6, dir[3][0], dir[3][1], dir[3][2], 0.5f);                                       // light4
-				Set(v, 7, world[0], world[1], world[2], 1.0f);                                          // shadowWorldPos
+				Set(v, 6, dir[3][0], dir[3][1], dir[3][2], 0.5f);
+				Set(v, 7, world[0], world[1], world[2], 1.0f);
 			} else {
-				Set(v, 6, dir[3][0], dir[3][1], dir[3][2], world[0]);                                   // light4, world.x
-				Set(v, 7, dir[4][0], dir[4][1], dir[4][2], world[1]);                                   // light5, world.y
-				Set(v, 8, dir[5][0], dir[5][1], dir[5][2], world[2]);                                   // light6, world.z
+				Set(v, 6, dir[3][0], dir[3][1], dir[3][2], world[0]);
+				Set(v, 7, dir[4][0], dir[4][1], dir[4][2], world[1]);
+				Set(v, 8, dir[5][0], dir[5][1], dir[5][2], world[2]);
 			}
-			Set(v, 9, 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 1);    // vertex colour
-			Set(v, 10, 0.5f, 0.55f, 0.6f, 0.1f + 0.3f * Random());                                     // fog colour, amount
+			Set(v, 9, 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 1);
+			Set(v, 10, 0.5f, 0.55f, 0.6f, 0.1f + 0.3f * Random());
 			scene.vertices.push_back(v);
 		}
 	GridIndices(scene);
 	return scene;
 }
 
-// 512x512 maps with a full mip chain. Colour maps: random colour, smooth heights in alpha. Normal maps: bent normals,
-// random gloss in alpha.
 static ComPtr<IDirect3DTexture9> MakeTexture(IDirect3DDevice9* device, int index, bool normalMap) {
 	const UINT size = 512;
 	ComPtr<IDirect3DTexture9> texture;
@@ -224,51 +200,46 @@ struct Constants {
 };
 
 static void CommonConstants(Constants& k) {
-	// Shadow.hlsl: inverse of TestProjection (clip (X, Y, Z, W) -> view (X, Y, W, (Z - A*W) / B)), identity inverse view.
-	// A real camera, so GetShadowWorldPos gets back the scene's view-space points as it does in the game.
 	k.Set(100, 1, 0, 0, 0);
 	k.Set(101, 0, 1, 0, 0);
 	k.Set(102, 0, 0, 0, 1.0f / TestProjectionB);
 	k.Set(103, 0, 0, 1, -TestProjectionA / TestProjectionB);
 	for (int r = 0; r < 4; r++) { k.Set(104 + r, 0, 0, 0, 0); k.c[(104 + r) * 4 + r] = 1; }
-	for (int i = 0; i < 9; i++) k.Set(137 + i, 0.3f / (i + 1), 0.25f / (i + 1), 0.35f / (i + 1), 0);  // sky irradiance
+	for (int i = 0; i < 9; i++) k.Set(137 + i, 0.3f / (i + 1), 0.25f / (i + 1), 0.35f / (i + 1), 0);
 }
 
-// waterline: TESR_TerrainParallaxExtraData.w, the camera-relative height below which CheapUnderwaterTerrain treats the
-// ground as under water (0 here = none of the test scene, whose camera-relative height is about +1).
 static Constants TerrainConstants(const float parallax[4], float waterline = 0) {
 	Constants k;
 	CommonConstants(k);
-	k.Set(1, 0.2f, 0.2f, 0.25f, 1);                        // AmbientColor
-	k.Set(3, 1.0f, 0.9f, 0.8f, 1);                         // SunColor
-	k.Set(18, 0.39f, 0.52f, 0.76f, 0);                     // SunDir
-	k.Set(32, 1, 0, 2, 0.5f); k.Set(33, 0, 1, 3, 0);       // LandSpec
-	k.Set(34, 1, 1, 0, 1); k.Set(35, 1, 0, 1, 0);          // LandHeight: some textures without height maps
-	k.Set(36, 6000, 5000, 1, 0); k.Set(37, 0.5f, 0.6f, 0.7f, 1);  // fog
-	k.Set(89, 0.2f, 0.8f, 1, 1);                           // TESR_TerrainData: metal, rough, light scale, ambient scale
-	k.Set(90, 1, 1, 0.7f, 2.7f);                           // TESR_TerrainExtraData: PBR on (parallax shadows only matter with PBR)
-	k.Set(91, parallax[0], parallax[1], parallax[2], parallax[3]);  // TESR_TerrainParallaxData
-	k.Set(92, 2048, 0.1f, 2.0f, waterline);                // TESR_TerrainParallaxExtraData: max distance, height, shadow intensity, waterline
-	k.Set(135, 1.0f, 0.5f, 0, 0);                          // TESR_TerrainSkyData
+	k.Set(1, 0.2f, 0.2f, 0.25f, 1);
+	k.Set(3, 1.0f, 0.9f, 0.8f, 1);
+	k.Set(18, 0.39f, 0.52f, 0.76f, 0);
+	k.Set(32, 1, 0, 2, 0.5f); k.Set(33, 0, 1, 3, 0);
+	k.Set(34, 1, 1, 0, 1); k.Set(35, 1, 0, 1, 0);
+	k.Set(36, 6000, 5000, 1, 0); k.Set(37, 0.5f, 0.6f, 0.7f, 1);
+	k.Set(89, 0.2f, 0.8f, 1, 1);
+	k.Set(90, 1, 1, 0.7f, 2.7f);
+	k.Set(91, parallax[0], parallax[1], parallax[2], parallax[3]);
+	k.Set(92, 2048, 0.1f, 2.0f, waterline);
+	k.Set(135, 1.0f, 0.5f, 0, 0);
 	return k;
 }
 
-// lightsUsed goes where the variant reads it: EmittanceColor.a (c2) without OPT, PSLightColor[0].a (c3) with OPT.
 static Constants ObjectConstants(float lightsUsed, bool opt) {
 	Constants k;
 	CommonConstants(k);
 	unsigned saved = seed;
-	seed = 777;  // the same lights for every call
-	k.Set(1, 0.15f, 0.15f, 0.18f, 1);                      // AmbientColor (.a 1: no alpha test)
-	k.Set(2, 0.2f, 0.1f, 0.05f, opt ? 3.0f : lightsUsed);  // EmittanceColor
-	for (int i = 0; i < 10; i++) k.Set(3 + i, 0.3f + 0.7f * Random(), 0.3f + 0.7f * Random(), 0.3f + 0.7f * Random(), 0);  // PSLightColor
+	seed = 777;
+	k.Set(1, 0.15f, 0.15f, 0.18f, 1);
+	k.Set(2, 0.2f, 0.1f, 0.05f, opt ? 3.0f : lightsUsed);
+	for (int i = 0; i < 10; i++) k.Set(3 + i, 0.3f + 0.7f * Random(), 0.3f + 0.7f * Random(), 0.3f + 0.7f * Random(), 0);
 	if (opt) k.c[3 * 4 + 3] = lightsUsed;
-	k.c[4 * 4 + 3] = 20;                                   // PSLightColor[1].w: gloss power with OPT
-	for (int i = 0; i < 8; i++)                            // PSLightPosition: object space, radius
+	k.c[4 * 4 + 3] = 20;
+	for (int i = 0; i < 8; i++)
 		k.Set(19 + i, (Random() - 0.5f) * 400, (Random() - 0.5f) * 400, 40 + 60 * Random(), 150 + 300 * Random());
-	k.Set(27, 1, 1, 20, 0.5f);                             // Toggles: vertex colour, fog, gloss power, alpha ref
-	k.Set(32, 0, 1, 1, 1);                                 // TESR_PBRData: -, roughness scale, light scale, ambient scale
-	k.Set(33, 1, 1, 0.5f, 0);                              // TESR_PBRExtraData: saturation, skylight scale, directionality
+	k.Set(27, 1, 1, 20, 0.5f);
+	k.Set(32, 0, 1, 1, 1);
+	k.Set(33, 1, 1, 0.5f, 0);
 	seed = saved;
 	return k;
 }
@@ -327,7 +298,6 @@ static void CreateGpu(Gpu& gpu) {
 	Check(device->CreateRenderTarget(2560, 1440, D3DFMT_A16B16G16R16F, D3DMULTISAMPLE_NONE, 0, FALSE, &gpu.big, NULL), "timing target");
 }
 
-// Terrain: colour maps s0-s6, normal maps s7-s13. Objects: colour map s0, normal map s1.
 static void BindTextures(Gpu& gpu, bool terrain) {
 	for (int k = 0; k < 14; k++) {
 		IDirect3DTexture9* texture = terrain ? gpu.textures[k].Get() : k == 0 ? gpu.textures[0].Get() : k == 1 ? gpu.textures[7].Get() : nullptr;
@@ -364,7 +334,6 @@ static std::vector<float> Render(Gpu& gpu, IDirect3DPixelShader9* shader, const 
 	return pixels;
 }
 
-// A file in the folder of this exe (build\shader-test), wherever it is run from.
 static std::string NextToExe(const char* name) {
 	char path[MAX_PATH];
 	GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -425,8 +394,6 @@ static double TimeDraws(Gpu& gpu, IDirect3DPixelShader9* shader, const Scene& sc
 	return samples[samples.size() / 2];
 }
 
-// Old and new alternated five times after a warm-up, so GPU clock changes hit both alike. Each round is already a
-// median; the fastest round is the least disturbed one, so that is what is compared (with the slowest for spread).
 static void TimeOldNew(Gpu& gpu, const char* label, IDirect3DPixelShader9* oldShader, IDirect3DPixelShader9* newShader, const Scene& scene) {
 	TimeDraws(gpu, oldShader, scene);
 	TimeDraws(gpu, newShader, scene);
@@ -454,7 +421,7 @@ static int TestTerrain(Gpu& gpu, const std::string& oldFolder, const std::string
 		unsigned oldSlots, newSlots;
 		Compile(oldFile, "ps_3_0", defines(texCount, NULL), 1, &oldSlots);
 		Compile(newFile, "ps_3_0", defines(texCount, NULL), 1, &newSlots);
-		Compile(newFile, "ps_3_0", defines(texCount, "24"), 1);  // the point-light variants must compile too
+		Compile(newFile, "ps_3_0", defines(texCount, "24"), 1);
 		printf("  TEX_COUNT %d: old %u, new %u\n", texCount, oldSlots, newSlots);
 	}
 	struct Setting { const char* name; float parallax[4]; };
@@ -489,10 +456,8 @@ static int TestTerrain(Gpu& gpu, const std::string& oldFolder, const std::string
 		printf("  TEX_COUNT %d: parallax changes %.0f%% of the pixels, parallax shadows %.0f%%\n", texCount, 100 * parallax, 100 * shadows);
 		if (parallax < 0.25 || shadows < 0.1) { std::puts("FAIL: the test scene does not exercise parallax enough"); failures++; }
 
-		// CheapUnderwaterTerrain with the whole scene under water must equal parallax and parallax shadows switched off.
 		const float off[4] = { 0, 0, 1, 1 }, on[4] = { 1, 1, 1, 1 };
 		TerrainConstants(off).Apply(device);
-		// Both renders with the new shader: the switch is checked against the same code, not against old-vs-new changes.
 		const std::vector<float> flat = Render(gpu, newShader, scene);
 		TerrainConstants(on, 1e30f).Apply(device);
 		const Comparison under = Compare(flat, Render(gpu, newShader, scene));
@@ -527,9 +492,6 @@ static int TestTerrain(Gpu& gpu, const std::string& oldFolder, const std::string
 		printf("  TEX_COUNT %d: %.3f ms -> %.3f ms under water (%+.0f%%)\n", texCount, normal, under, 100 * (under - normal) / normal);
 	}
 
-	// ParallaxLite on the terrain (ReducedQuality, lossy by design): the new shader with TESR_TerrainParallaxData.w = 2 against
-	// its own defaults (w = 1) and 8 steps (w = 0). Times alternate like TimeOldNew; the picture difference is reported
-	// and written as PNGs (build\shader-test\parallax-*.png) for a look.
 	std::puts("TERRAIN parallax lite, new shader: GPU time full screen 2560x1440 and difference from the defaults:");
 	const float full[4] = { 1, 1, 1, 1 }, eight[4] = { 1, 1, 1, 0 }, lite[4] = { 1, 1, 1, 2 };
 	for (int texCount = 1; texCount <= 7; texCount += 2) {
@@ -575,7 +537,7 @@ static int TestObjects(Gpu& gpu, const std::string& oldFolder, const std::string
 	int failures = 0;
 	const std::string oldFile = oldFolder + "\\ObjectTemplate.hlsl", newFile = newFolder + "\\ObjectTemplate.hlsl";
 	struct Variant { const char* name; Defines defines; int maxLights; bool opt; };
-	const Variant variants[] = {  // src/effects/PBR.h; MAX_LIGHTS as in ObjectTemplate.hlsl
+	const Variant variants[] = {
 		{ "SLS2029 (LIGHTS 9)", { { "PS", "" }, { "LIGHTS", "9" } }, 6, false },
 		{ "SLS2030 (LIGHTS 9, SI)", { { "PS", "" }, { "LIGHTS", "9" }, { "SI", "" } }, 6, false },
 		{ "SLS2031 (LIGHTS 4)", { { "PS", "" }, { "LIGHTS", "4" } }, 4, false },
@@ -635,10 +597,6 @@ static int TestObjects(Gpu& gpu, const std::string& oldFolder, const std::string
 	return failures;
 }
 
-// ---- Water preview (P48) ----
-// Renders WATER000.pso (outdoor water, close range) over a test lake seen from 250 units above the surface: a sky to
-// reflect, a sandy bottom to refract, the water getting deeper from left to right. Three pictures stacked in one BMP:
-// the classic style, the enhanced style, and the enhanced style a quarter second later (to see the waves move).
 static const char* WaterVertexShader = R"(
 struct VIn { float4 pos : POSITION0; float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2; float4 t3 : TEXCOORD3;
              float4 t4 : TEXCOORD4; float4 t5 : TEXCOORD5; float4 t6 : TEXCOORD6; float4 t7 : TEXCOORD7; float4 t8 : TEXCOORD8; };
@@ -669,10 +627,6 @@ static DWORD Rgb(float r, float g, float b, float a = 1) {
 	return (c(a) << 24) | (c(r) << 16) | (c(g) << 8) | c(b);
 }
 
-// ---- Parallax objects (P61, ParallaxLite) ----
-// ParallaxTemplate's pixel shader (rocks, cliffs, walls with a height map) through the objects' pass-through vertex
-// shader: uv TEXCOORD0, sun direction TEXCOORD1, tangent-space view direction TEXCOORD7 with the distance in .w
-// (grazing and far at the top of the screen, head-on and near at the bottom; parallax fades out at 2048).
 static Scene ParallaxObjectScene() {
 	Scene scene;
 	for (int j = 0; j < Grid; j++)
@@ -686,18 +640,17 @@ static Scene ParallaxObjectScene() {
 				for (int k = 0; k < 3; k++) d[k] /= length;
 			}
 			Set(v, 0, sx * 2 - 1, 1 - sy * 2, 0.5f, 1);
-			Set(v, 1, sx * 6, sy * 6, 0, 0);                                  // uv
-			Set(v, 2, light[0], light[1], light[2], 1);                        // lightDir
-			Set(v, 8, view[0], view[1], view[2], 2600 - 2500 * sy);            // viewDir, distance
-			Set(v, 9, 0.9f, 0.85f, 0.8f, 1);                                   // vertex colour
-			Set(v, 10, 0.5f, 0.55f, 0.6f, 0);                                  // fog colour, no fog
+			Set(v, 1, sx * 6, sy * 6, 0, 0);
+			Set(v, 2, light[0], light[1], light[2], 1);
+			Set(v, 8, view[0], view[1], view[2], 2600 - 2500 * sy);
+			Set(v, 9, 0.9f, 0.85f, 0.8f, 1);
+			Set(v, 10, 0.5f, 0.55f, 0.6f, 0);
 			scene.vertices.push_back(v);
 		}
 	GridIndices(scene);
 	return scene;
 }
 
-// Smooth heights in red, as a rock's height map.
 static DWORD HeightTexel(float u, float v) {
 	const float h = 0.5f + 0.3f * sinf(u * 25.1327f) * cosf(v * 31.4159f) + 0.15f * sinf((u + v) * 62.8318f);
 	return Rgb(h, h, h, 1);
@@ -705,9 +658,9 @@ static DWORD HeightTexel(float u, float v) {
 
 static Constants ParallaxObjectConstants(float heightScale, float lite) {
 	Constants k = ObjectConstants(1, false);
-	k.Set(35, heightScale, 1, 0, lite);                                    // TESR_ParallaxData: scale, PBR, -, lite
-	k.Set(134, 0, 1, 1, 1);                                                // TESR_PBRData
-	k.Set(135, 1, 1, 0.5f, 0);                                             // TESR_PBRExtraData
+	k.Set(35, heightScale, 1, 0, lite);
+	k.Set(134, 0, 1, 1, 1);
+	k.Set(135, 1, 1, 0.5f, 0);
 	return k;
 }
 
@@ -722,7 +675,7 @@ static int TestParallaxObjects(Gpu& gpu, const std::string& oldFolder, const std
 	Check(device->SetTexture(1, gpu.textures[7].Get()), "SetTexture normal");
 	Check(device->SetTexture(3, heightMap.Get()), "SetTexture height");
 	struct Variant { const char* name; Defines defines; };
-	const Variant variants[] = {  // src/effects/POM.h
+	const Variant variants[] = {
 		{ "PAR2000", { { "PS", "" } } },
 		{ "PAR2009 (SPECULAR)", { { "PS", "" }, { "SPECULAR", "" } } },
 	};

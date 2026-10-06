@@ -3,8 +3,6 @@
 #include "LUTIdentity.h"
 #include "LUTFile.h"
 
-// LUT files go through LUTFile.h instead of the generic texture loader: images keep their exact size
-// (no power-of-two resampling) and .cube files are read directly. Cached with the other file textures.
 static IDirect3DBaseTexture9* GetLUTTexture(std::string path)
 {
 	if (IDirect3DBaseTexture9* cached = TheTextureManager->GetCachedTexture(path)) return cached;
@@ -55,9 +53,6 @@ void LUTEffect::AssignLUTSlot(int slot, IDirect3DBaseTexture9* texture, const ch
 	*member = (IDirect3DTexture9*)texture;
 	ClearSampler(samplerName, strlen(samplerName));
 
-	// Each slot keeps its own cell count (16 for 256x16, 32 for 1024x32, 64 for 4096x64). The day LUT's
-	// count used to be applied to all three, which scrambled a night or interior LUT of another size.
-	// A texture that is not an N*N x N strip cannot be sampled as one, so it is not used at all.
 	D3DSURFACE_DESC desc = {};
 	const bool strip = SUCCEEDED((*member)->GetLevelDesc(0, &desc)) && desc.Height >= 2 && desc.Width == desc.Height * desc.Height;
 	CellCount[slot] = strip ? (float)desc.Height : 0.0f;
@@ -138,9 +133,6 @@ void LUTEffect::UpdateSettings()
 
 bool LUTEffect::ShouldRender()
 {
-	// The shader returns lerp(color, graded, strength) with graded built from the LUTs it samples:
-	// exteriors blend day and night, interiors use the interior LUT only (Blend.y). If every LUT
-	// that can contribute is an identity the pass returns its input, so do not run it.
 	if (Settings.Strength <= 0.0f) return false;
 	if (TheShaderManager->GameState.isExterior)
 		return !(DayNeutral && NightNeutral);

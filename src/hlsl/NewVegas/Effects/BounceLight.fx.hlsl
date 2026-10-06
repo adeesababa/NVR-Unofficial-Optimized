@@ -1,23 +1,6 @@
-// UNOFFICIAL, optional (off by default): one bounce of indirect light, gathered from the screen.
-// Written from scratch for this build, after the general idea of screen-space indirect lighting.
-//
-// Passes 1-4 run at half (QuarterResolution: quarter) resolution into the effect's own buffers (BounceLight.cpp).
-// Pass 1 (Prepare): depth, normal and colour of each low-resolution pixel packed into one texel (see Prepare).
-// Pass 2 (Gather, rgb = bounced light, a = view depth of the pixel it belongs to): for each pixel, 8 points on a disc around it in its tangent plane (lifted slightly off the
-// surface), each projected to the screen. The surface found there sends the light it shows on screen back toward
-// the pixel, weighted by how much each faces the other and by how close it is to the point aimed at. Rotated per
-// pixel by blue noise. The disc is kept within a small part of the screen: close up, a full-size disc would read
-// pixels scattered over the whole screen, which is very slow (texture cache misses) and pulls in unrelated colour.
-// Passes 3-4: depth-aware blur, horizontal then vertical, to smooth out the noise.
-// Pass 5 (Combine, full resolution): depth-aware upsample, then the bounced light added to the scene, tinted by
-// the receiving surface's own hue (there is no albedo buffer, so the hue of the pixel stands in for it).
-//
-// Screen-space limits: only light from things visible on screen bounces, and it fades at the screen edges.
-// The first-person weapon and anything touching the camera neither receive nor send bounce light.
-
-float4 TESR_BounceLightData; // x: strength, y: radius (world units), z: draw distance, w: blur radius (pixels)
+float4 TESR_BounceLightData;
 float4 TESR_ReciprocalResolution;
-float4 NVR_BounceLayout; // zw: 1 / half-resolution buffer size
+float4 NVR_BounceLayout;
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -32,8 +15,8 @@ static const float Radius = max(TESR_BounceLightData.y, 1.0f);
 static const float DrawDistance = TESR_BounceLightData.z;
 static const float BlurRadius = TESR_BounceLightData.w;
 static const int SAMPLES = 8;
-static const float NearFade = 40.0f;      // view depth (world units) below which nothing bounces: the weapon, the camera's own body
-static const float MaxScreenRadius = 0.06f; // largest disc on screen, as a fraction of the screen width
+static const float NearFade = 40.0f;
+static const float MaxScreenRadius = 0.06f;
 
 struct VSOUT
 {
@@ -55,8 +38,6 @@ VSOUT FrameVS(VSIN IN)
 	return OUT;
 }
 
-// Low-resolution passes: the CPU sets a half- or quarter-size viewport over a target of that size; move the texture
-// coordinate to the centre of the low-resolution texel.
 VSOUT HalfVS(VSIN IN)
 {
 	VSOUT OUT = FrameVS(IN);
@@ -73,7 +54,6 @@ float3 NormalLod(float2 uv)
 	return normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
 }
 
-// View-space position from a screen position and CombineDepth's linear depth (view z / far z).
 float3 PositionFromLinear(float2 uv, float linear01)
 {
 	float z = projectedDepthFromLinear(linear01);
@@ -81,7 +61,6 @@ float3 PositionFromLinear(float2 uv, float linear01)
 	return viewSpace.xyz / viewSpace.w;
 }
 
-// Two values in [0, 1] as 12-bit integers in one 32-bit float (exact: the result stays below 2^24).
 float Pack2(float2 v)
 {
 	v = floor(saturate(v) * 4095.0f + 0.5f);
@@ -94,7 +73,6 @@ float2 Unpack2(float p)
 	return float2(high, p - high * 4096.0f) / 4095.0f;
 }
 
-// A unit vector folded onto an octahedron and unfolded into a square: two numbers in [0, 1].
 float2 OctEncode(float3 n)
 {
 	n /= abs(n.x) + abs(n.y) + abs(n.z);
@@ -112,16 +90,11 @@ float3 OctDecode(float2 e)
 	return normalize(n);
 }
 
-// Pass 1 (Prepare): everything the gather needs about one low-resolution pixel, packed into a single texel:
-// x = linear depth, y = normal, z = colour red and green (square-root encoded), w = colour blue. The gather then
-// reads one small, compact buffer per sample instead of three full-resolution ones (depth, normals, scene), which
-// is what made it slow: its samples land far apart, so nearly every read was a texture cache miss.
 float4 Prepare(VSOUT IN) : COLOR0
 {
 	float2 uv = IN.UVCoord;
 	float linear01 = tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x;
 	float3 normal = NormalLod(uv);
-	// Capped so small bright glints (specular highlights, lamps) do not spray light around.
 	float3 light = min(linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb), 1.0f);
 	return float4(linear01, Pack2(OctEncode(normal)), Pack2(sqrt(light.rg)), light.b);
 }
@@ -139,7 +112,6 @@ float4 Gather(VSOUT IN) : COLOR0
 	float3 up = abs(normal.z) < 0.99f ? float3(0.0f, 0.0f, 1.0f) : float3(1.0f, 0.0f, 0.0f);
 	float3 tangent = normalize(cross(up, normal));
 	float3 bitangent = cross(normal, tangent);
-	// A disc of r world units at depth z spans r * P11 / (2 z) of the screen width.
 	float radius = min(Radius, MaxScreenRadius * 2.0f * origin.z / TESR_ProjectionTransform[0][0]);
 
 	float3 indirect = 0.0f;
@@ -150,7 +122,6 @@ float4 Gather(VSOUT IN) : COLOR0
 		float3 p = origin + (tangent * cos(angle) + bitangent * sin(angle)) * r + normal * (r * 0.25f);
 		float2 sampleUV = projectPosition(p).xy;
 		float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, 1.0f) * step(0.0f, sampleUV.y) * step(sampleUV.y, 1.0f);
-		// Snapped to the centre of the low-resolution pixel whose depth, normal and colour are read.
 		sampleUV = (floor(saturate(sampleUV) / NVR_BounceLayout.zw) + 0.5f) * NVR_BounceLayout.zw;
 
 		float4 texel = tex2Dlod(NVR_BouncePrep, float4(sampleUV, 0.0f, 0.0f));
@@ -158,8 +129,6 @@ float4 Gather(VSOUT IN) : COLOR0
 		float3 toSample = s - origin;
 		float dist = length(toSample) + 0.001f;
 		float3 dir = toSample / dist;
-		// The surface found must lie near the point aimed at. Something far in front of it (a pole, the weapon)
-		// is another object that does not face this pixel, and would otherwise leave a coloured halo around it.
 		float nearAim = saturate(1.0f - length(s - p) / radius);
 		float weight = saturate(dot(normal, dir)) * saturate(dot(OctDecode(Unpack2(texel.y)), -dir)) * nearAim * onScreen * step(NearFade, s.z);
 		float2 rg = Unpack2(texel.z);
@@ -176,7 +145,6 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0
 	float weights = 0.114725602f;
 	[unroll]
 	for (int i = 0; i < cKernelSize; i++) {
-		// BlurOffsets are in full-resolution pixels; this buffer is half or quarter resolution.
 		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * BlurRadius * (NVR_BounceLayout.zw / TESR_ReciprocalResolution.xy);
 		float4 tap = tex2Dlod(NVR_BounceBuffer, float4(uv, 0.0f, 0.0f));
 		float weight = BlurWeights[i] * (abs(tap.a - center.a) <= tolerance);
@@ -192,8 +160,6 @@ float4 Combine(VSOUT IN) : COLOR0
 	float depth = readDepth(IN.UVCoord);
 	[branch] if (depth < NearFade || depth > DrawDistance) return color;
 
-	// Depth-aware bilinear upsample: the four nearest half-resolution texels, the ones at another depth
-	// (across an object's edge) counted less, so the bounce does not bleed across silhouettes.
 	float2 position = IN.UVCoord / NVR_BounceLayout.zw - 0.5f;
 	float2 base = floor(position);
 	float2 fraction = position - base;

@@ -8,14 +8,6 @@ inline bool GpuProfileQueriesReady(HRESULT start, HRESULT end, HRESULT frequency
 	return start == S_OK && end == S_OK && frequency == S_OK;
 }
 
-// Asynchronous D3D9 GPU timestamps. GetData is deliberately never called with
-// D3DGETDATA_FLUSH: profiling must not serialize the CPU and GPU or change the
-// workload we are trying to measure.
-//
-// Compatibility (DXVK and other D3D9 layers): only the two timestamp queries are required. The
-// TIMESTAMPDISJOINT and TIMESTAMPFREQ queries are optional -- if a layer lacks them, or their
-// GetData starts failing, the timer keeps going (no disjoint check; a 1 GHz clock, which is what
-// DXVK reports on NVIDIA) instead of switching itself off. Every failure is logged with its HRESULT.
 class GpuTimer {
 public:
 	explicit GpuTimer(const char* name, unsigned reportSamples = 120)
@@ -26,8 +18,6 @@ public:
 	bool Begin(IDirect3DDevice9* device) {
 		if (!device) return false;
 #ifndef NVR_GPU_PROFILER_TEST
-		// The diagnostic is armed explicitly after loading. F10 toggles it from
-		// ShaderManager; no query objects are created during initial loading.
 		if (!Enabled || InterfaceManager->IsActive(Menu::kMenuType_Loading)) return false;
 #endif
 		if (Active) return false;
@@ -39,7 +29,6 @@ public:
 		if (Unavailable || (!QueriesCreated && !CreateQueries())) return false;
 
 		CollectCompleted();
-		// Collection can release the entire ring after a device/query error.
 		if (Unavailable) return false;
 		WarnIfNothingCompletes();
 		for (auto& slot : Slots) {
@@ -53,7 +42,7 @@ public:
 			Active = &slot;
 			return true;
 		}
-		return false; // GPU is more than the query-ring depth behind; skip a sample.
+		return false;
 	}
 
 	void End() {
@@ -83,35 +72,33 @@ private:
 	struct Slot {
 		IDirect3DQuery9* Start = nullptr;
 		IDirect3DQuery9* End = nullptr;
-		IDirect3DQuery9* Frequency = nullptr; // optional
-		IDirect3DQuery9* Disjoint = nullptr;  // optional
+		IDirect3DQuery9* Frequency = nullptr;
+		IDirect3DQuery9* Disjoint = nullptr;
 		bool Pending = false;
 	};
 
 	static constexpr unsigned RingSize = 12;
-	static constexpr UINT64 FallbackFrequency = 1000000000ull; // DXVK reports timestamps in nanoseconds
+	static constexpr UINT64 FallbackFrequency = 1000000000ull;
 	Slot Slots[RingSize];
-	IDirect3DDevice9* Device = nullptr; // weak: owned by the renderer
+	IDirect3DDevice9* Device = nullptr;
 	Slot* Active = nullptr;
 	const char* Name;
 	unsigned ReportSamples;
 	unsigned WindowSamples = 0;
 	unsigned TotalSamples = 0;
 	unsigned ZeroTickSamples = 0;
-	unsigned Issued = 0;      // timestamp pairs handed to the device
-	unsigned Rejected = 0;    // completed pairs discarded (disjoint, zero frequency, end before start)
+	unsigned Issued = 0;
+	unsigned Rejected = 0;
 	double SumMs = 0.0;
 	double MinMs = DBL_MAX;
 	double MaxMs = 0.0;
 	bool Unavailable = false;
 	bool QueriesCreated = false;
-	bool DisjointBroken = false;   // GetData on the disjoint query failed: stop consulting it
-	bool FrequencyBroken = false;  // GetData on the frequency query failed / missing: use FallbackFrequency
+	bool DisjointBroken = false;
+	bool FrequencyBroken = false;
 	bool WarnedNothing = false;
 	bool WarnedRejected = false;
 
-	// Failure reports are written to the log unless building the unit test, and never more than a
-	// handful per session: a broken layer would otherwise flood the log once per timer per frame.
 	void Report(const char* what, HRESULT hr) {
 #ifndef NVR_GPU_PROFILER_TEST
 		static unsigned reported = 0;
@@ -155,7 +142,6 @@ private:
 				Disable(nullptr, hr);
 				return false;
 			}
-			// Optional: without them the timer still works (see the class comment).
 			if (FAILED(Device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &slot.Frequency))) { slot.Frequency = nullptr; FrequencyBroken = true; }
 			if (FAILED(Device->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &slot.Disjoint))) { slot.Disjoint = nullptr; DisjointBroken = true; }
 		}
@@ -173,8 +159,6 @@ private:
 		Unavailable = true;
 	}
 
-	// If a long run of timestamp pairs never produces a single result, say so once: results that stay
-	// pending forever are otherwise indistinguishable from "profiling is off".
 	void WarnIfNothingCompletes() {
 		if (WarnedNothing || Issued < 480 || TotalSamples || Rejected) return;
 		WarnedNothing = true;
@@ -190,7 +174,6 @@ private:
 				const HRESULT disjointReady = slot.Disjoint->GetData(&disjoint, sizeof(disjoint), 0);
 				if (disjointReady == S_FALSE) continue;
 				if (disjointReady != S_OK) {
-					// Keep timing without it rather than losing the whole profile.
 					DisjointBroken = true;
 					disjoint = FALSE;
 					Report("TIMESTAMPDISJOINT GetData failed; timing without a disjoint check from now on", disjointReady);
@@ -265,21 +248,17 @@ private:
 	bool Active;
 };
 
-// CPU wall-clock counterpart, reported in the same log format and toggled by the same F10
-// switch. Comparing CPU submit time and the frame interval against the GPU buckets shows
-// whether a scene is CPU- or GPU-bound, which decides which kind of optimisation can help.
 class CpuTimer {
 public:
 	explicit CpuTimer(const char* name, unsigned reportSamples = 120)
 		: Name(name), ReportSamples(reportSamples) { Registry().push_back(this); }
 
-	// Every timer, so a frame-time spike can list which of them were slow in that frame.
 	static std::vector<CpuTimer*>& Registry() { static std::vector<CpuTimer*> timers; return timers; }
 	static unsigned& FrameStamp() { static unsigned stamp = 0; return stamp; }
 
 	const char* GetName() const { return Name; }
 	double LastMs() const { return Last; }
-	bool RanRecently() const { return LastStamp + 1 >= FrameStamp(); } // this frame or the one before
+	bool RanRecently() const { return LastStamp + 1 >= FrameStamp(); }
 
 	void Add(double ms) {
 		Last = ms;
@@ -306,9 +285,6 @@ public:
 		return (double)now.QuadPart * 1000.0 / (double)frequency.QuadPart;
 	}
 
-	// Interval between successive calls, e.g. once per frame. Gaps longer than a second (loading,
-	// menus, profiling just enabled) are dropped rather than skewing the average. Returns the
-	// interval that was recorded, or 0 when it was dropped.
 	double Tick() {
 		const double now = NowMs();
 		double interval = 0.0;
@@ -329,15 +305,6 @@ private:
 	unsigned LastStamp = 0;
 };
 
-// Frame-time percentiles and spike attribution for the F10 profiler. Fed one frame interval per
-// frame (from the "Frame interval (CPU)" tick); needs no GPU queries, so it works the same on native
-// D3D9 and under DXVK, which makes it the yardstick for comparing the two.
-//
-// Every 1200 frames (and when profiling is switched off, if at least 200 were collected) it logs
-//   FRAME TIMES ... avg / p50 / p95 / p99 / p99.9 / max, 1% low and 0.1% low fps, spike count
-// and, when some frames fell within three seconds of a cell change or loading screen, a second line
-// for the steady frames only. A frame much slower than a typical one gets a FRAME SPIKE line naming
-// the CPU timers that were slow in it (at most 60 per session).
 class FrameTimeMonitor {
 public:
 	static constexpr unsigned WindowFrames = 1200;
@@ -347,18 +314,14 @@ public:
 		if (!nearTransition) Steady.push_back(ms);
 
 		if (Typical > 0.0 && ms > FrameSpikeThresholdMs(Typical)) ReportSpike(ms, nearTransition);
-		// Track the typical frame time without letting spikes drag it up.
 		const double sample = Typical > 0.0 && ms > Typical * 2.0 ? Typical * 2.0 : ms;
 		Typical = Typical > 0.0 ? Typical * 0.98 + sample * 0.02 : ms;
 
 		if (All.size() >= WindowFrames) Report();
 	}
 
-	// Optional: appends what else is known about the current frame to each FRAME SPIKE line (set by
-	// Hooks/Render.cpp: shader binds, first uses of a shader, the longest stall between binds).
 	inline static void (*SpikeDetail)(char* buffer, size_t size) = nullptr;
 
-	// Called when profiling is switched off: report what was collected if it is enough to mean something.
 	void Flush() {
 		if (All.size() >= 200) Report();
 		All.clear();

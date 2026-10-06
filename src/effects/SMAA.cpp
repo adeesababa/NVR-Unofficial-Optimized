@@ -77,8 +77,6 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 
 	SetCT();
 
-	// Under the frame chain the final pass writes the chain's spare texture, which then becomes
-	// the current image, instead of writing the render target and copying it back.
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
 

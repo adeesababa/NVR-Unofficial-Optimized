@@ -26,7 +26,6 @@ public:
 	bool dedicatedRenderFailed = false;
 	IDirect3DTexture9* raysTexture[2] = {};
 	IDirect3DSurface9* raysSurface[2] = {};
-	// Quarter-resolution pair, used instead when [Main.Main.ReducedQuality] GodRaysLowRes is on.
 	IDirect3DTexture9* raysTextureLow[2] = {};
 	IDirect3DSurface9* raysSurfaceLow[2] = {};
 

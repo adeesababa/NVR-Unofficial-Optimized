@@ -518,8 +518,6 @@ ShaderCollection* ShaderManager::GetShaderCollection(const char* Name) {
 	// a ps_3_0 replacement too: D3D9 rejects a 2.x VS paired with a 3.0 PS.
 	if (!memcmp(Name, "STLEAF", 6)) return Shaders.PBR;
 	if (!memcmp(Name, "SKY", 3)) return Shaders.Sky;
-	// UNOFFICIAL lit particles and blood decals: only NOLIGHT016/017.vso, NOLIGHTTEXVC.pso and GDECAL(S) have
-	// replacements on disk; the rest of the NOLIGHT family resolves to no file and stays the game's.
 	if (!memcmp(Name, "NOLIGHT", 7) || !memcmp(Name, "GDECAL", 6)) return Shaders.Particles;
 	if (strstr(BloodShaders, Name)) return Shaders.Blood;
 
@@ -668,7 +666,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	int ShadowIndex = 0;
 	int LightIndex = 0;
 	TheShadowManager->PointLightsNum = 0;
-	ShadowSceneLight* ShadowCasters[ShadowCubeMapsMax] = { NULL }; // shadow casting lights, nearest first
+	ShadowSceneLight* ShadowCasters[ShadowCubeMapsMax] = { NULL };
 
 #if defined(OBLIVION)
 	bool TorchOnBeltEnabled = TheSettingManager->SettingsMain.EquipmentMode.Enabled && TheSettingManager->SettingsMain.EquipmentMode.TorchKey != 255;
@@ -691,7 +689,6 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	for (int i = 0; i < TrackedLightsMax + ShadowCubeMapsMax; i++) {
 		// set null values if we reached the end of lights in the scene and current index is lower than max amount
 		if (v == SceneLights.end()) {
-			// (Unused shadow slots stay cleared: they are assigned after this loop.)
 			if (LightIndex < TrackedLightsMax) {
 				//Logger::Log("clearing light at index %i", LightIndex);
 				LightsList[LightIndex] = NULL;
@@ -726,7 +723,6 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			LightPos.w = radius;
 
 			if (CastShadow && ShadowIndex < ShadowLightsMax && radius > 10) {
-				// add found light to the ranked list of lights that cast shadows (slots are assigned below)
 				ShadowCasters[ShadowIndex] = v->second;
 
 				ShadowIndex++;
@@ -745,10 +741,6 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		v++;
 	}
 
-	// Give every caster a cubemap slot, each light keeping the slot it had last frame (PointShadowSlots.h): a light that
-	// only changed rank no longer forces its cubemap to be redrawn. The slot order does not change the image, except for
-	// the last slot, which PointShadows.fx lights without a shadow lookup: it keeps the farthest caster, as the plain
-	// distance order gave it, and only slots 0..10 take part in the stable assignment.
 	{
 		static const void* previousSlots[ShadowCubeMapsMax] = {};
 		const int casters = TheShadowManager->PointLightsNum;
@@ -764,7 +756,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		for (int s = 0; s < ShadowCubeMapsMax; s++) {
 			ShadowSceneLight* shadowLight = (ShadowSceneLight*)assigned[s];
 			ShadowLightsList[s] = shadowLight;
-			if (!shadowLight) continue; // position and colour stay cleared
+			if (!shadowLight) continue;
 			NiPointLight* Light = shadowLight->sourceLight;
 			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
 			LightPos.w = Light->Spec.r * Settings->LightRadiusMult;
@@ -829,7 +821,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Device->SetFVF(FrameFVF);
 
 	// render post process normals for use by shaders
-	// When the normals pass would run anyway, try producing depth and normals in one draw.
 	bool mergedNormals = false;
 	{
 		GpuProfileScope gpu(depthTimer, Device);
@@ -850,8 +841,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		{
 			GpuProfileScope gpu(pointShadowTimer, Device);
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
-			// The stock/custom shader remains compatible: it has no named merged
-			// technique, so lights 6-11 still take the original second pass.
 			const bool mergedPointShadows = Effects.PointShadows->Effect &&
 				Effects.PointShadows->Effect->GetTechniqueByName("MergedPointShadows") != NULL;
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
@@ -880,18 +869,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 
 	Device->SetRenderTarget(0, RenderTarget);
 
-	// Start the copy-free chain (FrameChain), or seed the rendered texture for the legacy path in
-	// which every effect keeps it equal to the render target. TESR_SourceBuffer is refreshed by
-	// each effect that actually samples it (EffectRecord::usesSourceBuffer). Effects are handed
-	// TheTextureManager->RenderedSurface at call time because the chain swaps it.
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
 	if (!Chain.Begin(RenderTarget))
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
-	// Composite apply: the exterior sun-shadow composite and the AO combine are per-pixel
-	// operations on the scene, applied just before fog. When no effect that normally runs between
-	// them would render this frame, the fog reconstruct applies them in the same pass (same maths,
-	// same order), saving two full-resolution read/write passes of the HDR frame.
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
@@ -899,7 +880,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool aoApplies = wouldRender(AO);
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
-		wouldRender(Effects.BounceLight); // must see the scene with its shadows and AO applied
+		wouldRender(Effects.BounceLight);
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	AO->deferredReady = false;
@@ -924,8 +905,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		AO->deferCombine = false;
 		if (composite && aoApplies && !AO->deferredReady) {
-			// Dedicated AO was unavailable or failed. Restore the original order before
-			// its legacy path reads the scene for luminance-dependent AO strength.
 			composite = false;
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
@@ -933,7 +912,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 	}
 	if (Effects.BounceLight->Enabled) {
-		// UNOFFICIAL, optional: one bounce of screen-space indirect light, on the shadowed and AO'd scene.
 		static GpuTimer bounceLightTimer("Bounce light");
 		GpuProfileScope gpu(bounceLightTimer, Device);
 		Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
@@ -962,7 +940,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		const bool applied = Fog->compositeApplied;
 		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
 		if (composite && !applied) {
-			// Failed composite fog leaves the scene untouched. Restore shadows -> AO -> fog.
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 			if (AO->deferredReady) {
@@ -1008,9 +985,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 }
 
 
-// For A/B runs: the Performance and ReducedQuality switches in one log line, written when the F10 profile starts and
-// again whenever one of them changes while it runs, so each stretch of timings can be matched to its settings.
-// Lists whatever the defaults file has in those two sections, so new switches show up without touching this.
 static void LogActiveSwitches(bool force) {
 	static std::string lastLine;
 	static const char* sections[][2] = { { "Main.Main.Performance", "performance" }, { "Main.Main.ReducedQuality", "reduced quality" },
@@ -1043,7 +1017,6 @@ static void LogActiveSwitches(bool force) {
 		}
 	}
 	if (!force && line == lastLine) return;
-	// Close the frame-time window at the change, so no FRAME TIMES line mixes frames from before and after.
 	if (!force) TheFrameTimeMonitor().Flush();
 	lastLine = line;
 	Logger::Log("SWITCHES%s", line.c_str());
@@ -1053,22 +1026,17 @@ static void LogActiveSwitches(bool force) {
 * Renders the effect that have been set to enabled.
 */
 void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
-	// F10 profiling toggle and the frame interval run before the RenderEffects check, so an
-	// effects-off run still logs its real frame time for comparison. This is the last NVR call
-	// of the frame, after the pre-tonemap chain, so the toggle takes effect from the next frame.
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
 		Logger::Log("GPU PROFILE P73 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
-		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
+		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush();
 		else LogActiveSwitches(true);
 	}
 	if (GpuTimer::Enabled) {
 		static unsigned switchCheckFrame = 0;
 		if (++switchCheckFrame >= 30) { switchCheckFrame = 0; LogActiveSwitches(false); }
-		// Frames within three seconds of a cell change or loading screen are counted separately: the
-		// hitches there are expected (streaming), the ones in steady play are what hurt the 1% lows.
 		static TESObjectCELL* lastCell = nullptr;
 		static unsigned framesSinceTransition = 1000;
 		TESObjectCELL* cell = Player ? Player->parentCell : nullptr;
@@ -1119,9 +1087,6 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
 
-	// Name the effect that will render last so its final pass writes the game target directly and
-	// the chain ends without a copy (FrameChain::SetFinalEffect). Same order as the calls below; the
-	// tests are the ones EffectRecord::Render applies. A wrong guess is repaired in FrameChain::Owns.
 	{
 		EffectRecord* const order[] = {
 			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
@@ -1149,10 +1114,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	{
 		GpuProfileScope gpu(dofTimer, Device);
-		// Distant blur does not need the six-pass autofocus/bokeh pipeline.
 		const UINT technique = !Effects.DepthOfField->Constants.Enabled && Effects.DepthOfField->Constants.Blur.x ? 1 : 0;
-		// The distant-only technique reads TESR_RenderedBuffer and never TESR_SourceBuffer, so it
-		// skips the full-resolution copy the full pipeline needs.
 		Effects.DepthOfField->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, technique, false, technique == 1 ? nullptr : SourceSurface);
 	}
 	{
@@ -1238,8 +1200,6 @@ void ShaderManager::SwitchShaderStatus(const char* Name) {
 		return;
 	}
 
-	// UNOFFICIAL: a menu entry with only settings (Shaders.<Name>.Status Enabled, e.g. ContactHardening, which
-	// ShadowManager reads each frame) just flips its setting.
 	TheSettingManager->SetMenuShaderEnabled(Name, !TheSettingManager->GetMenuShaderEnabled(Name));
 	IsMenuSwitch = false;
 }
@@ -1256,9 +1216,6 @@ bool FrameChain::Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* render
 	return owns;
 }
 
-// The predicted last effect wrote the finished image into the game target, but another effect is
-// about to render after it. Put the image back where the chain expects it (Surf[Current]) so that
-// effect samples the right thing; a wrong prediction costs one copy instead of a wrong image.
 void FrameChain::ReclaimFinal() {
 	if (!FinalWritten) return;
 	TheRenderManager->device->StretchRect(GameTarget, NULL, Surf[Current], NULL, D3DTEXF_NONE);
@@ -1266,8 +1223,6 @@ void FrameChain::ReclaimFinal() {
 	FinalEffect = nullptr;
 }
 
-// Point the TESR_RenderedBuffer slot at the current image. Effect samplers follow the slot
-// (TextureRecord::TextureRef), so this is all a swap needs.
 void FrameChain::Publish() {
 	TheTextureManager->RenderedTexture = Tex[Current];
 	TheTextureManager->RenderedSurface = Surf[Current];
@@ -1294,7 +1249,6 @@ bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
 	D3DSURFACE_DESC desc = {};
 	if (FAILED(gameTarget->GetDesc(&desc)) || desc.MultiSampleType != D3DMULTISAMPLE_NONE) return false;
 
-	// One set of NVR textures per target format (pre-tonemap HDR and post-tonemap LDR).
 	int index = -1;
 	for (int i = 0; i < 2 && index < 0; i++) {
 		const Pair& pair = Pairs[i];
@@ -1308,12 +1262,9 @@ bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
 			index = i;
 		}
 	}
-	if (index < 0) return false; // a third format: stay on the legacy path rather than churn
+	if (index < 0) return false;
 	Pair& pair = Pairs[index];
 
-	// Use the game target itself as one buffer when it is a texture level (not the back buffer).
-	// Single-level only: NVR's own buffers have no mip chain, and effects that sample the rendered
-	// buffer at reduced size (average luma, bloom downsample) must not pick up stale mip levels.
 	IDirect3DTexture9* gameTexture = nullptr;
 	const bool useGameTexture = !TheSettingManager->SettingsMain.Main.DisableChainGameTexture &&
 		SUCCEEDED(gameTarget->GetContainer(IID_IDirect3DTexture9, (void**)&gameTexture)) && gameTexture &&
@@ -1359,8 +1310,6 @@ void FrameChain::Sync() {
 	ReclaimFinal();
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	if (Surf[Current] == GameTarget) {
-		// The game target already holds the image; move the current image to the other buffer
-		// so the legacy path does not sample the texture it renders into.
 		Device->StretchRect(GameTarget, NULL, Surf[Current ^ 1], NULL, D3DTEXF_NONE);
 		Current ^= 1;
 		Publish();
@@ -1373,9 +1322,6 @@ void FrameChain::End() {
 	if (!Active) return;
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	{
-		// Shows whether a chain ends on the wrong buffer (~0 ms when it does not): the HDR chain (game
-		// texture) copies when its pass count is odd, the LDR chain (back buffer) unless its last pass
-		// wrote the game target itself (FinalWritten).
 		static GpuTimer endCopyTimers[2] = { GpuTimer("  Chain end copy (HDR)"), GpuTimer("  Chain end copy (LDR)") };
 		GpuProfileScope gpu(endCopyTimers[GameTexture ? 0 : 1], Device);
 		if (Surf[Current] != GameTarget && !FinalWritten)

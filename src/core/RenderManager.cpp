@@ -269,8 +269,6 @@ bool getDXVKPresent() {
 	return false;
 }
 
-// Which Direct3D 9 implementation the game is running on, for the log. The DXVK check is the same one
-// used below (ProductName of the d3d9.dll the process loads); the path shows where that file lives.
 const char* RenderManager::D3D9RuntimeDescription() {
 	static char text[MAX_PATH + 64] = {};
 	if (!text[0]) {
@@ -282,10 +280,6 @@ const char* RenderManager::D3D9RuntimeDescription() {
 	return text;
 }
 
-// DXVK can report another GPU to the game than the one installed: its hideNvidiaGpu option shows an
-// NVIDIA card as "AMD Radeon RX 6700 XT". Nothing in NVR depends on the name, but it confused a player
-// reading the log, so the log also lists the display adapters Windows itself knows (user32, which DXVK
-// does not replace).
 static void LogWindowsDisplayAdapters(const char* reportedName) {
 	std::string names;
 	bool reportedFound = false;
@@ -326,9 +320,6 @@ void RenderManager::Initialize() {
 	D3D->Release();
 	DXVK = false;
 
-	// The depth resolve path follows what the D3D9 layer offers, not the GPU brand: AMD and Intel drivers
-	// offer RESZ, and so does DXVK on every GPU, NVIDIA included; NVAPI works only with NVIDIA's own D3D9
-	// driver. (This used to log "AMD/Intel detected" for NVIDIA cards under DXVK, which confused users.)
 	if (RESZ) {
 		DXVK = getDXVKPresent();
 		Logger::Log("Depth resolve: RESZ (%s).", DXVK ? "DXVK, any GPU brand" : "AMD/Intel driver");
@@ -421,8 +412,6 @@ void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {
 
  
 
-// Set when the NVR screenshot key saved a screenshot this frame (plain globals: the game allocates RenderManager
-// itself, so members it adds are not constructed).
 char LastScreenshotBase[MAX_PATH];
 char LastScreenshotName[80];
 bool ScreenshotTakenThisFrame = false;
@@ -438,7 +427,7 @@ void RenderManager::CheckAndTakeScreenShot(IDirect3DSurface9* RenderTarget, bool
 		if (GetFileAttributesA(Filename) == INVALID_FILE_ATTRIBUTES) CreateDirectoryA(Filename, NULL);
 		strftime(Name, 80, "\\%Y%m%d %H.%M.%S", localtime(&CurrentTime));
 		strcat(Filename, Name);
-		strcpy_s(LastScreenshotBase, Filename);  // for the reflection probe (Hooks/Render.cpp)
+		strcpy_s(LastScreenshotBase, Filename);
 		strcpy_s(LastScreenshotName, Name + 1);
 		ScreenshotTakenThisFrame = true;
 		strcat(Filename, HDR?".hdr":".jpg");

@@ -397,13 +397,6 @@ void ShadowsExteriorEffect::UpdateSettings() {
 }
 
 
-/*
-* The exterior apply multiplies the scene by the sun-shadow term that SunShadows writes into the red
-* channel of TESR_PointShadowBuffer. When SunShadows is not running (its effect file failed to compile --
-* seen on a tester's install with an outdated Effects/Includes/Normals.hlsl -- or it was switched off),
-* that channel holds only the point-light term, about 0 outdoors, and the apply darkened the WHOLE image
-* by the Darkness setting. Skip the apply instead (this also skips the composite apply in the fog pass).
-*/
 bool ShadowsExteriorEffect::ShouldRender() {
 	SunShadowsEffect* sun = TheShaderManager->Effects.SunShadows;
 	if (!TheShaderManager->GameState.isExterior || (sun && sun->Enabled && sun->Effect)) return true;
@@ -473,10 +466,6 @@ void ShadowsExteriorEffect::RegisterTextures() {
 	if (Settings.ShadowMaps.Prefilter)
 		TheTextureManager->InitTexture("TESR_ShadowAtlasBlur", &ShadowAtlasBlurTexture, &ShadowAtlasBlurSurface, ShadowAtlasSize, ShadowAtlasSize, Settings.ShadowMaps.Format, false);
 
-	// SunSmoothing CrossFade: the copy of the atlas from before a sun step. Only when the setting is on at startup,
-	// which is also when the shaders get the fade compiled in (SUN_CROSSFADE in ShaderRecord/EffectRecord).
-	// Forward shadows only (the default): the deferred lookup in SunShadows.fx has no fade, so without forward
-	// shadows the steps keep gliding.
 	if (Settings.SunSmoothing.CrossFade && Settings.Exteriors.ForwardShadows) {
 		TheTextureManager->InitTexture("TESR_ShadowAtlasOld", &ShadowAtlasOldTexture, &ShadowAtlasOldSurface, ShadowAtlasSize, ShadowAtlasSize, Settings.ShadowMaps.Format, false);
 		SunCrossFadeReady = ShadowAtlasOldTexture && ShadowAtlasOldSurface;
@@ -580,7 +569,6 @@ void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cub
 		if (Settings.ShadowMaps.Prefilter)
 			TheTextureManager->InitTexture("TESR_ShadowAtlasBlur", &ShadowAtlasBlurTexture, &ShadowAtlasBlurSurface, ShadowAtlasSize, ShadowAtlasSize, Settings.ShadowMaps.Format, false);
 
-		// The cross-fade copy follows the atlas' size and format; a fade in progress ends (its copy is gone).
 		if (SunCrossFadeReady) {
 			if (ShadowAtlasOldSurface) ShadowAtlasOldSurface->Release();
 			if (ShadowAtlasOldTexture) ShadowAtlasOldTexture->Release();
@@ -647,8 +635,6 @@ void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cub
 		TheShaderManager->Effects.WetWorld->ClearSampler("TESR_OrthoMapBuffer", 19);
 	}
 
-	// Reset shadow manager frame counter, and refresh every cascade next frame: the staggered
-	// schedule would otherwise leave freshly created cascades uninitialised for several frames.
 	TheShadowManager->FrameCounter = 0;
 	TheShadowManager->ForceAllCascades = true;
 }
@@ -683,13 +669,6 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 
 	D3DXVECTOR3 SmoothedSunDir(Constants.SmoothedSunDir);
 
-	// UNOFFICIAL: with quantizing on, the sun only moves in steps (15 degrees, about one in-game hour, by default),
-	// and a step is always bigger than MaxJumpAngle, so the smoothing below never ran and every step was an instant
-	// jump of all sun shadows. Instead slide each step over GlideSeconds of real time, eased at both ends. Anything
-	// bigger than one step (waiting, sleeping, fast travel, loading) still jumps instantly.
-	// CrossFade (opt-in, needs a restart): the sun jumps to the new step at once and the shaders fade from the shadows
-	// drawn before the step to the new ones, so no shadow map turns while it is on screen (a turning one makes
-	// shadow edges crawl). See StartSunCrossFade.
 	if (quantizeSun && smoothSun && Settings.SunSmoothing.GlideSeconds > 0.0f) {
 		const ULONGLONG now = GetTickCount64();
 		const bool crossFade = SunCrossFadeReady && Settings.SunSmoothing.CrossFade && Settings.Exteriors.ForwardShadows;
@@ -699,7 +678,6 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 			SunCrossFading = false;
 		}
 		else if (D3DXVec3Dot(&SunDir, &SunGlideTo) < 0.99999f) {
-			// A new step. Measured from the previous step's target, so a step that arrives mid-glide is still one step.
 			const float stepAngle = acosf(std::clamp(D3DXVec3Dot(&SunDir, &SunGlideTo), -1.0f, 1.0f));
 			const bool oneStep = stepAngle < 1.5f * max(yawStepSize, pitchStepSize);
 			SunCrossFading = oneStep && crossFade && StartSunCrossFade();
@@ -751,11 +729,6 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 	return SmoothedSunDir;
 }
 
-/*
-* UNOFFICIAL SunSmoothing CrossFade, at a sun step (called before this frame's shadow maps are drawn): keep the atlas
-* as the last frame left it -- the shadows of the previous sun direction -- with the matrices and centres its
-* cascades were drawn with, and have every cascade redrawn this frame for the new direction.
-*/
 bool ShadowsExteriorEffect::StartSunCrossFade() {
 	HRESULT copied = TheRenderManager->device->StretchRect(ShadowAtlasSurface, NULL, ShadowAtlasOldSurface, NULL, D3DTEXF_NONE);
 	if (FAILED(copied)) {
@@ -773,10 +746,6 @@ bool ShadowsExteriorEffect::StartSunCrossFade() {
 	return true;
 }
 
-/*
-* The kept cascades for this frame: their matrices and centres are relative to the camera position they were drawn
-* from, so move them by how far the camera has moved since (as ShadowManager does for cascades it does not redraw).
-*/
 void ShadowsExteriorEffect::UpdateSunCrossFade(float oldWeight) {
 	const NiPoint3& position = WorldSceneGraph->camera->m_worldTransform.pos;
 	const D3DXVECTOR3 camera(position.x, position.y, position.z);

@@ -18,13 +18,6 @@ void SunShadowsEffect::RegisterTextures() {
 		TheRenderManager->width, TheRenderManager->height, D3DFMT_G16R16);
 }
 
-/*
-* The stock path renders every pass into TESR_PointShadowBuffer while the same passes sample it
-* (the contact-shadow blurs read neighbouring texels), a read/write feedback loop with undefined
-* results. Route the passes through two scratch targets instead -- buffer -> A -> B -> ... ->
-* buffer -- so each pass reads a texture that is not bound for writing, and the last pass still
-* lands in TESR_PointShadowBuffer without an extra copy.
-*/
 void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
@@ -49,8 +42,6 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 	UINT passes = 0;
 	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		// Per-pass GPU timers nested in the caller's "Sun contact shadows": march, horizontal blur,
-		// vertical blur (+ intensity), and the deferred shadow apply of the four-pass technique.
 		static GpuTimer passTimers[4] = { GpuTimer("  Contact march"), GpuTimer("  Contact blur H"),
 			GpuTimer("  Contact blur V"), GpuTimer("  Contact shadow apply") };
 		IDirect3DTexture9* source = shadowTexture;
@@ -58,7 +49,7 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 			GpuProfileScope gpuPass(passTimers[p < 4 ? p : 3], Device);
 			const bool last = p == passes - 1;
 			IDirect3DSurface9* destination = last ? shadowSurface : scratchSurface[p & 1];
-			Device->SetTexture(3, nullptr); // TESR_PointShadowBuffer slot
+			Device->SetTexture(3, nullptr);
 			result = Device->SetRenderTarget(0, destination);
 			if (FAILED(result)) break;
 			if (ClearRenderTarget) Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0);

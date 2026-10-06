@@ -61,9 +61,6 @@ void SettingManager::Configuration::Init() {
 	configLoaded = true;
 	Logger::Log("Loading configs finished");
 
-	// Before anything reads a setting: the effects read theirs while they register, which is before the first
-	// LoadSettings, and a read of a section the user config lacks writes the defaults into it -- so a migration that
-	// fills a new section from the user's old one (P63's Interiors) would find it already there and skip it.
 	UpdateOldDefaults();
 }
 
@@ -276,7 +273,6 @@ void SettingManager::Configuration::FillSettings(SettingList* Nodes, const char*
 /*
 * Add the changes described by the node to the config. Will create the entry in the config if it only exists in defaults
 */
-// The user config's own table for a section such as "Main.Main.ReducedQuality" (nullptr if it has none).
 tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	char path[256] = "_";
 	strcat(path, Section);
@@ -285,13 +281,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	return FindSection(&TomlConfig, &keys);
 }
 
-// A saved value that equals a replaced default is moved to the new default once. The menu's Save writes every
-// setting, so most saved configs hold the defaults of the build they were saved with, not the player's
-// choice. The user config records how far it has been updated in [_Unofficial] SettingsVersion; that key is
-// not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
-// it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
-// first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 63;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 63;
 
 void SettingManager::Configuration::UpdateOldDefaults() {
 	if (!TomlConfig.is_table()) return;
@@ -317,16 +307,13 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 		sprintf_s(entry, "%s%s.%s %g -> %g", changed.empty() ? "" : ", ", section, key, oldDefault, newDefault);
 		changed += entry;
 	};
-	// P49: PointShadowInterval 2 made the shadows of people moving near lamps stutter.
 	if (version < 49) replace("Main.Main.ReducedQuality", "PointShadowInterval", 2, 1, true);
-	// P50: adapt speed 50 let the exposure follow every blinking sign within a few frames (flicker on the Strip).
 	if (version < 50) {
 		for (const char* section : { "Shaders.Exposure.Main", "Shaders.Exposure.Night", "Shaders.Exposure.Interiors" }) {
 			replace(section, "DarkAdaptSpeed", 50.0, 0.2, false);
 			replace(section, "LightAdaptSpeed", 50.0, 0.2, false);
 		}
 	}
-	// P61: P60's TerrainParallaxLite became ParallaxLite (terrain and parallax objects); a saved value carries over.
 	if (version < 61) {
 		tomlValue* saved = UserSection("Main.Main.ReducedQuality");
 		if (saved && saved->is_table() && saved->contains("TerrainParallaxLite")) {
@@ -339,8 +326,6 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 			}
 		}
 	}
-	// P63: Sharpening and the flashlight's look got separate interior settings. Someone who tuned the old single set
-	// keeps it indoors too: their saved values are copied once into the new Interiors section.
 	if (version < 63) {
 		auto copyToInteriors = [&](const char* parent, const char* from, std::initializer_list<const char*> keys) {
 			std::string fromPath = std::string(parent) + "." + from;
@@ -509,10 +494,6 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkipFog = GetSettingI("Main.Main.Misc", "SkipFog");
 	SettingsMain.Main.RenderEffects = GetSettingI("Main.Main.Misc", "RenderEffects");
 	SettingsMain.Main.RenderPreTonemapping = GetSettingI("Main.Main.Misc", "RenderPreTonemapping");
-	// Settings only resolve when they exist in the defaults file (Configuration::FillNode), so these
-	// live in [_Main.Main.Performance] / [_Main.Main.ReducedQuality] there and show up as switches in
-	// the in-game menu. A key missing from an older defaults file reads as its fallback, so a
-	// DLL-only update keeps the lossless ones on and the image-changing ones off.
 	auto boolSetting = [this](const char* section, const char* key, bool fallback) {
 		Configuration::ConfigNode node;
 		return Config.FillNode(&node, section, key) ? node.BoolValue : fallback;
@@ -522,8 +503,6 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.DisableWorldSceneGuard = !boolSetting(performance, "WorldSceneGuard", true);
 	SettingsMain.Main.DisableCompositeApply = !boolSetting(performance, "CompositeApply", true);
 	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
-	// Off unless asked for: on native D3D9 (GTX 1070) the driver drops the two-target draw without
-	// an error, leaving depth and normals stale.
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
 	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
 	const char* reducedQuality = "Main.Main.ReducedQuality";

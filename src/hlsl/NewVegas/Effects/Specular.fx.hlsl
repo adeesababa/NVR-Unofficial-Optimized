@@ -51,8 +51,6 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
-// Every pass here writes every pixel. Leave out the blur helpers that clip(): with any clip() in the effect's source the
-// frame chain copies the whole frame into each pass's destination first (EffectRecord::CreateCT), four copies a frame.
 #define BLUR_FULL_WRITE_ONLY
 #include "Includes/BlurDepth.hlsl"
 #include "Includes/Blending.hlsl"
@@ -133,8 +131,6 @@ float4 CombineSpecularWith(VSOUT IN, float4 light)
 	return float4 (result.rgb, 1.0f);
 }
 
-// The vertical blur and the combine in one pass: the combine used to read back, at the same pixel, the value the
-// vertical blur pass had just written.
 float4 BlurCombineSpecular(VSOUT IN) : COLOR0
 {
 	return CombineSpecularWith(IN, DepthBlurFullValue(IN.UVCoord, TESR_RenderedBuffer, OffsetMaskV, BlurRadius, 1, 1000000));

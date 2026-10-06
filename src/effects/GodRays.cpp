@@ -45,14 +45,6 @@ bool GodRaysEffect::ShouldRender() {
 	return TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater && TheShaderManager->GameState.dayLight > 0.5;
 }
 
-/*
-* Five half-resolution (or, with GodRaysLowRes, quarter-resolution) passes ping-pong between two
-* dedicated targets, then a single full-resolution combine. The shaders work in [0, 1] UVs and take
-* the target size from NVR_GodRaysLayout, so both sizes use the same technique. Relies on
-* RenderedSurface already holding the current scene, which every preceding effect guarantees by
-* copying its result there. Returns false without touching the render target if the dedicated
-* path is unavailable.
-*/
 bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface) {
 	if (dedicatedRenderFailed) return false;
@@ -97,7 +89,6 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		return false;
 	}
 
-	// pass -> destination: 0 SkyMask->A, 1 LightMask->B, 2 Blur1->A, 3 Blur2->B, 4 Blur3->A, 5 Combine->RT
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
@@ -135,7 +126,6 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	if (FAILED(result)) {
-		// RenderedSurface is only written by the final copy, so it still holds the input.
 		Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
 		dedicatedRenderFailed = true;
 		Logger::Log("Dedicated god rays failed (%08lx); using packed path until restart.", result);
@@ -179,7 +169,7 @@ void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	}
 
 	auto timer = TimeLogger();
-	TheShaderManager->Chain.Sync(); // the packed path reads the render target itself
+	TheShaderManager->Chain.Sync();
 	RECT packed = {0, 0, (LONG)(target.Width / 2), (LONG)(target.Height / 2)};
 	D3DRECT packedClear = {packed.left, packed.top, packed.right, packed.bottom};
 	HRESULT result = Device->StretchRect(RenderTarget, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);

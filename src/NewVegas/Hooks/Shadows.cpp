@@ -4,7 +4,6 @@
 
 void __fastcall RenderShadowMapHook(void* apThis) {
 	TheShadowManager->RenderShadowMaps();
-	// The game's own call this hook replaced; timed so its share of the frame is visible.
 	static GpuTimer gameShadowTimer("Game call 0x871A50");
 	GpuProfileScope gpu(gameShadowTimer, TheRenderManager->device);
 	CdeclCall(0x871A50);

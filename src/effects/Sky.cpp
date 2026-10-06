@@ -125,9 +125,6 @@ void SkyShaders::UpdateConstants() {
 	const float basis[9] = { 0.282095f, 0.488603f, 0.488603f, 0.488603f,
 							 1.092548f, 1.092548f, 0.315392f, 1.092548f, 0.546274f };
 
-	// UNOFFICIAL [Shaders.PBR.*] SkylightingSaturation: saturation is linear in the colour (a blend with its own
-	// luminance), so applying it to each coefficient equals applying it to the reconstructed irradiance, at no GPU
-	// cost. 1 leaves the coefficients untouched.
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	const float saturation = pbr ? max(pbr->SkylightSaturation, 0.0f) : 1.0f;
 	for (int i = 0; i < 9; i++) {

@@ -4,7 +4,6 @@
 
 static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
                               const D3DXVECTOR3& direction) {
-	// Animated/deformed geometry may exceed the engine's current CPU bound.
 	NiGeometry* geometry = object->IsGeometry() ? static_cast<NiGeometry*>(object) : nullptr;
 	if (geometry && geometry->skinInstance) return true;
 	NiBound* bound = object->m_kWorldBound;
@@ -14,8 +13,6 @@ static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
 		direction.x, direction.y, direction.z);
 }
 
-// Hash exactly the scene state that can change an otherwise camera-independent point-shadow cubemap.
-// If the game's geometry list is unavailable the caller keeps the existing PointShadowInterval schedule.
 static UInt64 HashPointShadowBytes(UInt64 hash, const void* data, size_t size) {
 	const unsigned char* bytes = static_cast<const unsigned char*>(data);
 	for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ULL; }
@@ -56,15 +53,6 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 */
 #include "GpuProfiler.h"
 
-// Refresh period per cascade. By default this is the original schedule: every cascade every frame,
-// except that LimitFrequency redraws the Lod cascade every fourth frame. StaggeredSunShadows
-// (ReducedQuality, off by default) is the P21-P48 schedule: middle every 4th frame, far and Lod every
-// 8th. A cached cascade follows the camera's movement, so still shadows stay put, but anything that
-// moves (people, creatures, doors) keeps its old shadow until the next refresh: with the stagger,
-// people walking a few metres away got shadows that stuttered and flickered (reported under DXVK).
-// Resolve and blur run only on cascades updated that frame (BlurShadowAtlas mask), so cached
-// cascades stay untouched either way.
-// nearInterval is the ReducedQuality NearCascadeInterval switch (1 = every frame, the original).
 constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, int nearInterval = 1, bool staggered = false) {
 	if (cascade == ShadowManager::MapNear) return nearInterval == 2 ? 2 : 1;
 	if (staggered) {
@@ -89,10 +77,6 @@ static_assert(SunCascadeUpdatePeriod(ShadowManager::MapNear, true) == 1 &&
 	SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 2) == 1 && SunCascadeUpdatePeriod(ShadowManager::MapMiddle, true, 2, true) == 4,
 	"Sun cascade update schedule changed unexpectedly");
 
-// Frame offset within each cascade's period, so the infrequent cascades never refresh on the
-// same frame. With StaggeredSunShadows, over the 8-frame cycle: 0 near only, 1/5 middle, 2/6 ortho
-// map, 3 far, 7 LOD. With the default schedule the Lod cascade (every 4th frame) takes frames 3 and 7.
-// Refresh rates are unchanged; this only removes the frame where all four used to render.
 constexpr unsigned SunCascadeUpdatePhase(int cascade) {
 	if (cascade == ShadowManager::MapMiddle) return 1;
 	if (cascade == ShadowManager::MapFar) return 3;
@@ -110,8 +94,6 @@ static_assert(SunCascadeUpdatesOnFrame(ShadowManager::MapNear, 5, 1) &&
 	SunCascadeUpdatesOnFrame(ShadowManager::MapFar, 0, 1),
 	"Sun cascade stagger changed unexpectedly");
 
-// With StaggeredSunShadows and NearCascadeInterval 2 the near cascade takes the even frames and the
-// limited ones keep the odd frames, so every frame of the 8-frame cycle draws exactly one sun cascade.
 constexpr bool OneSunCascadePerFrame() {
 	for (unsigned frame = 0; frame < 8; ++frame) {
 		unsigned drawn = 0;
@@ -146,9 +128,6 @@ void ShadowManager::Initialize() {
 
 	TheShadowManager->ShadowMapClearPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowMapClear.pso", "Shadows\\");
 
-	// Make sure samplers are not reset on SetCT as that causes errors. A shader whose file is missing
-	// loads as null: this used to be dereferenced right here, crashing the game at startup on an install
-	// without Shaders\NewVegasReloaded\Shaders\Shadows (seen in a user's log). Shadows are disabled instead.
 	ShaderRecord* shadowShaders[] = { TheShadowManager->ShadowMapVertex, TheShadowManager->ShadowMapPixel,
 		TheShadowManager->ShadowCubeMapVertex, TheShadowManager->ShadowCubeMapPixel, TheShadowManager->ShadowMapBlurVertex,
 		TheShadowManager->ShadowMapBlurPixel, TheShadowManager->ShadowMapClearPixel };
@@ -161,8 +140,6 @@ void ShadowManager::Initialize() {
 		Logger::Log("[ERROR]: Could not load one or more of the ShadowMap generation shaders (Shaders\\NewVegasReloaded\\Shaders\\Shadows). "
 			"Shadow maps are disabled. Reinstall the mod.");
 
-	// UNOFFICIAL contact hardening: registered before the game's shaders load, so every shader that includes
-	// Shadow.hlsl finds it by name. Whether the shaders have it is decided now, at startup (CONTACT_HARDENING).
 	TheShaderManager->RegisterConstant("TESR_ContactHardeningData", &TheShadowManager->ContactHardeningData);
 	TheShadowManager->ContactHardeningCompiled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 
@@ -582,7 +559,6 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 				if (!shaderProp)
 					continue;
-				// SpeedTree shaders move vertices beyond their static bounds.
 				if (shaderProp->IsLightingProperty() && !TouchesShadowFace(geo, LightPos, CameraDirection))
 					continue;
 
@@ -712,10 +688,8 @@ void ShadowManager::RecalculateBillboardVectors(D3DXVECTOR3* SunDir) {
 /*
 * Renders the different shadow maps: Near, Far, Ortho.
 */
-// CachedDistantShadows: the characters (and the player) in the loaded cells, as world bound spheres.
 void ShadowManager::CollectMovers(const D3DXVECTOR3& SunDir) {
 	FrameMovers.clear();
-	// How far a shadow reaches sideways per unit of height, for the current sun (capped for a sun near the horizon).
 	MoverShadowStretch = min(sqrtf(SunDir.x * SunDir.x + SunDir.y * SunDir.y) / max(SunDir.z, 0.1f), 10.0f);
 	auto add = [this](NiNode* node) {
 		if (!node || node->m_flags & NiAVObject::APP_CULLED) return;
@@ -740,12 +714,6 @@ void ShadowManager::CollectMovers(const D3DXVECTOR3& SunDir) {
 	}
 }
 
-// Whether a character's shadow could come from this cascade. The planes are the ones from the cascade's last
-// redraw (world space); the cached picture has moved with the camera since, so the test is widened by that distance.
-// On screen, everything nearer than the previous cascade's end (InnerDepth, view depth) is shaded by the sharper
-// cascades: their selection spheres enclose their slices of the view, and only their outer 10% cross-fades into the
-// next one. So a character whose whole shadow stays nearer than 90% of InnerDepth is never sampled from this cascade
-// and does not count; that keeps the player and anyone close by from forcing a redraw every frame.
 bool ShadowManager::MoversInCascade(int cascade, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, float InnerDepth) {
 	if (!ShadowMap->Forms.Actors || FrameMovers.empty()) return false;
 	const D3DXVECTOR3 camera = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
@@ -769,8 +737,6 @@ bool ShadowManager::MoversInCascade(int cascade, ShadowsExteriorEffect::ShadowMa
 	return false;
 }
 
-// With the F10 profile and CachedDistantShadows on: every 240 frames, how often each sun cascade was redrawn on its
-// schedule and how often because of characters.
 void ShadowManager::LogSunShadowStats(bool cachedDistant) {
 	if (!GpuTimer::Enabled || !cachedDistant) { SunStats = {}; return; }
 	SunStats.Characters += (unsigned)FrameMovers.size();
@@ -896,10 +862,8 @@ void ShadowManager::RenderShadowMaps() {
 		terrainLODPass->VertexShader = ShadowMapVertex;
 		terrainLODPass->PixelShader = ShadowMapPixel;
 
-		// UNOFFICIAL contact hardening. The sun's disc is about 0.53 degrees wide, so a shadow edge blurs by about
-		// 0.0093 world units per unit between the thing casting it and the ground; SunSize scales that.
 		if (ContactHardeningCompiled) {
-			const char* section = "Shaders.ContactHardening.Main"; // section names must stay under 40 characters (ConfigNode)
+			const char* section = "Shaders.ContactHardening.Main";
 			const bool on = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 			ContactHardeningData.x = on ? 0.00925f * max(TheSettingManager->GetSettingF(section, "SunSize"), 0.0f) : 0.0f;
 			ContactHardeningData.y = max(min(TheSettingManager->GetSettingF(section, "MaxSoftness"), 32.0f), 1.0f);
@@ -936,10 +900,6 @@ void ShadowManager::RenderShadowMaps() {
 			static CpuTimer sunCascadesCpuTimer("Sun cascades (CPU)");
 			CpuProfileScope cpu(sunCascadesCpuTimer);
 			GpuProfileScope gpu(sunCascadesTimer, Device);
-			// CachedDistantShadows (ReducedQuality): the staggered schedule for the middle, far and LOD cascades, but a
-			// cascade with a character in it is redrawn every frame, and once more after the last one left, so moving
-			// characters never keep a stale shadow (the flicker the plain stagger caused). Other moving objects (doors,
-			// physics clutter) are treated as still and can lag up to 3 or 7 frames in those cascades.
 			const bool staggered = TheSettingManager->SettingsMain.Main.StaggeredSunShadows;
 			const bool cachedDistant = TheSettingManager->SettingsMain.Main.CachedDistantShadows && !staggered;
 			if (cachedDistant) CollectMovers(SunDir);
@@ -964,16 +924,12 @@ void ShadowManager::RenderShadowMaps() {
 					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
 				}
 				else {
-					// Keep cached cascades locked to camera translation between geometry refreshes.
 					D3DXVECTOR3 newCameraTranslation = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
 					D3DXVECTOR3 difference = newCameraTranslation - ShadowMap->CameraTranslation;
 					D3DXMATRIX translationMatrix;
 					D3DXMatrixTranslation(&translationMatrix, difference.x, difference.y, difference.z);
 					ShadowMap->ShadowCameraToLight = translationMatrix * ShadowMap->ShadowCameraToLight;
 					ShadowMap->CameraTranslation = newCameraTranslation;
-					// A cached NEAR cascade (NearCascadeInterval 2) also moves its selection sphere with the
-					// camera: the centre is camera-relative, and the near sphere is small enough for a stale
-					// centre to matter. The rarely refreshed cascades keep their original behaviour.
 					if (i == MapNear) {
 						ShadowMap->ShadowMapCascadeCenterRadius.x -= difference.x;
 						ShadowMap->ShadowMapCascadeCenterRadius.y -= difference.y;
@@ -1070,18 +1026,14 @@ void ShadowManager::RenderShadowMaps() {
 	auto shadowMapTimer = TimeLogger();
 	if ((isExterior && usePointLights) || (!isExterior && InteriorEnabled)) {
 		GpuProfileScope gpu(pointMapsTimer, Device);
-		// Each slot's cubemap stores length(light - point) / radius, which does not depend on the camera,
-		// so with PointShadowInterval > 1 a slot can keep its contents between redraws (see
-		// PointShadowSchedule.h for when it must be redrawn at once).
 		static PointShadowSlotState slots[ShadowCubeMapsMax];
 		static unsigned scheduleFrame = 0, statFrames = 0, statPresent = 0, statRedrawn = 0, statStaticReused = 0;
 		static unsigned statReasons[(int)PointShadowRedraw::Count] = {};
 		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
 
-		// render the cubemaps for each light; the last slot's cubemap is never sampled (ShadowCubeMapsSampled), so it is not drawn
 		for (int i = 0; i < ShadowsInteriors->LightPoints && i < ShadowCubeMapsSampled; i++) {
 			ShadowSceneLight* shadowLight = ShadowLights[i];
-			if (!shadowLight) { slots[i].valid = false; continue; } // no light at this index
+			if (!shadowLight) { slots[i].valid = false; continue; }
 
 			PointShadowSlotState now;
 			NiPointLight* pointLight = shadowLight->sourceLight;
@@ -1091,7 +1043,7 @@ void ShadowManager::RenderShadowMaps() {
 			now.x = pointLight->m_worldTransform.pos.x;
 			now.y = pointLight->m_worldTransform.pos.y;
 			now.z = pointLight->m_worldTransform.pos.z;
-			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult; // as in RenderShadowCubeMap
+			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult;
 			PointShadowCasterState(shadowLight, now.casterHash, now.staticCasters);
 			now.valid = true;
 			if (GpuTimer::Enabled) statPresent++;
@@ -1112,7 +1064,7 @@ void ShadowManager::RenderShadowMaps() {
 		}
 		scheduleFrame++;
 
-		if (GpuTimer::Enabled && ++statFrames >= 240) { // with the F10 profile: how much work the cubemaps really are
+		if (GpuTimer::Enabled && ++statFrames >= 240) {
 			const float perFrame = 1.0f / statFrames;
 			Logger::Log("POINT SHADOWS interval %u: %.1f lights present, %.1f cubemaps redrawn, %.1f static cubemaps reused per frame (%u frames); "
 				"redrawn because: scheduled %.2f, casters %.2f, new %.2f, other light %.2f, moved %.2f, resized %.2f, cell %.2f, texture %.2f",

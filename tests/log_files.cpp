@@ -1,5 +1,3 @@
-// Tests for src/base/LogFiles.h (UNOFFICIAL P46): log names, which files may be deleted, the oldest-first
-// clean-up against a real temporary folder, the move of the old single log, and the timestamped line format.
 #include <cstdio>
 #include <set>
 #include <string>
@@ -61,7 +59,6 @@ static void RemoveTree(const std::string& folder) {
 int main() {
 	const char* base = "NewVegasReloaded";
 
-	// 1. Names.
 	CHECK(LogFiles::FileName(base, Time(2026, 9, 29, 14, 5, 3)) == "NewVegasReloaded_2026-09-29_14-05-03.log", "file name format");
 	CHECK(LogFiles::FileName(base, Time(2026, 9, 29, 14, 5, 3), 2) == "NewVegasReloaded_2026-09-29_14-05-03-2.log", "same-second suffix");
 	CHECK(LogFiles::IsLogName("NewVegasReloaded_2026-09-29_14-05-03.log", base), "accepts a log name");
@@ -78,7 +75,6 @@ int main() {
 		if (LogFiles::IsLogName(name, base)) { printf("FAIL: accepted %s\n", name); failures++; }
 	}
 
-	// 2. Which logs go: the oldest, so that 25 remain once the new one exists; year boundaries sort correctly.
 	std::vector<std::string> names;
 	for (unsigned i = 0; i < 30; i++) names.push_back(LogFiles::FileName(base, Time(2026, 12, 1 + i, 23, 0, 0)));
 	names.push_back(LogFiles::FileName(base, Time(2027, 1, 1, 0, 0, 0)));
@@ -91,7 +87,6 @@ int main() {
 	CHECK(LogFiles::OldestToRemove(std::vector<std::string>(names.begin(), names.begin() + 25), 25, strlen(base)).size() == 1, "25 logs: the oldest goes");
 	CHECK(LogFiles::OldestToRemove(names, 0, strlen(base)).empty(), "keep 0 never deletes");
 
-	// 3. Lines: time prefix, long lines, the exact stack-buffer boundary.
 	char stack[64];
 	std::string heap;
 	size_t length = 0, prefix = 0;
@@ -108,7 +103,6 @@ int main() {
 		}
 	}
 
-	// 4. A real folder: clean-up, same-second names, and the old single log.
 	char temp[MAX_PATH];
 	GetTempPathA(MAX_PATH, temp);
 	const std::string root = std::string(temp) + "nvr_log_files_test";
@@ -116,11 +110,11 @@ int main() {
 	CreateDirectoryA(root.c_str(), NULL);
 	const std::string folder = root + "\\NVR-Unofficial-Optimized-Logs";
 	CreateDirectoryA(folder.c_str(), NULL);
-	for (const std::string& name : names) Touch(folder + "\\" + name); // 31 logs
+	for (const std::string& name : names) Touch(folder + "\\" + name);
 	const char* others[] = { "notes.txt", "NewVegasReloaded.log.bak", "OblivionReloaded_2020-01-01_00-00-00.log",
 		"NewVegasReloaded_backup.log", "NewVegasReloaded_2000-01-01_00-00-00.log.txt" };
 	for (const char* name : others) Touch(folder + "\\" + name);
-	CreateDirectoryA((folder + "\\NewVegasReloaded_1999-01-01_00-00-00.log").c_str(), NULL); // a folder with a log's name
+	CreateDirectoryA((folder + "\\NewVegasReloaded_1999-01-01_00-00-00.log").c_str(), NULL);
 	CHECK(LogFiles::PruneOldLogs(folder, base, 25) == 7, "7 deleted from a real folder");
 	std::set<std::string> left = List(folder);
 	for (size_t i = 0; i < names.size(); i++)
@@ -142,12 +136,11 @@ int main() {
 	CHECK(!LogFiles::AdoptOldLog(oldLog, folder, base), "nothing to move the second time");
 	RemoveTree(root);
 
-	// 5. Thirty game launches into a fake game folder whose first choice cannot be used, as the game does it.
 	const std::string game = std::string(temp) + "nvr_log_files_game\\";
 	RemoveTree(game.substr(0, game.size() - 1));
 	CreateDirectoryA(game.c_str(), NULL);
 	Touch(game + "NewVegasReloaded.log");
-	SetWriteTime(game + "NewVegasReloaded.log", Time(2026, 9, 1, 12, 0, 0)); // older than every launch below
+	SetWriteTime(game + "NewVegasReloaded.log", Time(2026, 9, 1, 12, 0, 0));
 	const std::vector<std::string> gameFolders = { game + "bad?name\\", game };
 	std::vector<std::string> opened;
 	for (unsigned launch = 0; launch < 30; launch++) {
@@ -155,7 +148,7 @@ int main() {
 		CHECK(log.file != nullptr, "each launch opens a log");
 		if (!log.file) break;
 		CHECK(log.adopted == (launch == 0), "the old single log is moved on the first launch only");
-		CHECK(log.deleted == (launch >= 24 ? 1u : 0u), "one old log deleted per launch once 25 exist"); // 24 + the adopted one
+		CHECK(log.deleted == (launch >= 24 ? 1u : 0u), "one old log deleted per launch once 25 exist");
 		CHECK(log.name.find(temp) == std::string::npos && log.name.rfind("NVR-Unofficial-Optimized-Logs\\", 0) == 0, "logged name has no game path");
 		fputs("written\n", log.file);
 		fclose(log.file);
@@ -168,7 +161,6 @@ int main() {
 	CHECK(GetFileAttributesA((game + "NewVegasReloaded.log").c_str()) == INVALID_FILE_ATTRIBUTES, "no single log left in the game folder");
 	RemoveTree(game.substr(0, game.size() - 1));
 
-	// 6. The prefix really is 15 characters for every time of day.
 	char prefixText[32];
 	CHECK(LogFiles::LinePrefix(prefixText, sizeof(prefixText), Time(2026, 1, 1, 23, 59, 59, 999)) == 15 && std::string(prefixText) == "[23:59:59.999] ", "late prefix");
 

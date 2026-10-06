@@ -27,8 +27,6 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
 
 	DetourAttach(&(PVOID&)GetWaterHeightLOD, &GetWaterHeightLODHook);
-	// Always hooked so the reflection pass can be profiled; it only changes rendering when
-	// ForceReflections is enabled (see RenderReflectionsHook).
 	DetourAttach(&(PVOID&)RenderReflections, &RenderReflectionsHook);
 
 	DetourAttach(&(PVOID&)RenderPipboy, &RenderPipboyHook);

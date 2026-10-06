@@ -24,7 +24,7 @@
 // BaseMap[7] holds s0-s6 and NormalMap[7] holds s7-s13, so the atlas cannot use the s9
 // default. s14/s15 are the only free sampler slots in ps_3_0 here.
 #define SHADOW_ATLAS_SAMPLER_REG s14
-#define SHADOW_OLD_ATLAS_SAMPLER_REG s15 // the sun cross-fade's kept atlas (SUN_CROSSFADE only)
+#define SHADOW_OLD_ATLAS_SAMPLER_REG s15
 #include "includes/Shadow.hlsl"
 
 
@@ -144,16 +144,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     float spec[7] = { LandSpec[0].x, LandSpec[0].y, LandSpec[0].z, LandSpec[0].w, LandSpec[1].x, LandSpec[1].y, LandSpec[1].z };
     float heightStatus[7] = { LandHeight[0].x, LandHeight[0].y, LandHeight[0].z, LandHeight[0].w, LandHeight[1].x, LandHeight[1].y, LandHeight[1].z };
 
-    // Camera-relative world position, for the forward sun shadows below and for telling ground under the water.
     // No extra interpolator needed: projectionPosition is already the clip-space position,
     // and clip position is affine in object space, so it interpolates exactly.
     // ddx/ddy must stay at top level, outside dynamic flow control.
     float3 shadowWorldPos = GetShadowWorldPos(IN.projectionPosition);
     float3 shadowNormal = GetShadowGeometricNormal(shadowWorldPos);
 
-    // [Main.Main.ReducedQuality] CheapUnderwaterTerrain: ground below TESR_TerrainParallaxExtraData.w (camera-relative
-    // height of the water line; -FLT_MAX when off) skips parallax and its shadows, exactly as with parallax switched off.
-    // It is seen through moving, refracting water. The parallax functions take explicit gradients, so they may branch.
     bool parallax = shadowWorldPos.z >= TESR_TerrainParallaxExtraData.w;
     float2 offsetUV = IN.uv.xy;
     [branch] if (parallax) offsetUV = getParallaxCoords(dist, IN.uv.xy, dx, dy, eyeDir, texCount, BaseMap, blends, heightStatus, weights);

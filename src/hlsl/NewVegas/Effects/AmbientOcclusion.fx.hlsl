@@ -3,9 +3,8 @@
 #define viewao 0
 #define halfres 0
 #define kernelSize 5
-// Set to 0 to restore the legacy technique with the new DLL (A/B testing).
 #define NVR_PACKED_AO 1
-float4 NVR_AOLayout; // packed extent xy, inverse low-resolution dimensions zw
+float4 NVR_AOLayout;
 
 float4 TESR_AmbientOcclusionAOData;
 float4 TESR_AmbientOcclusionData;
@@ -166,9 +165,6 @@ float4 Combine(VSOUT IN) : COLOR0
 		return float4(ao, ao, ao, 1.0f);
 	#endif
 
-	// (source^2.2 * ao)^(1/2.2) == source * ao^(1/2.2). Keep the
-	// luminance test in linear space, but do the inverse gamma once for AO
-	// instead of once per color channel.
 	return float4(source * pow(ao, 1.0 / 2.2), 1.0f);
 }
  
@@ -252,8 +248,6 @@ technique
 }
 
 #if NVR_PACKED_AO
-// The CPU sets a half-size viewport, and copies only that rectangle after
-// each intermediate pass. No additional render-target allocations are needed.
 VSOUT PackedVS(VSIN IN)
 {
 	VSOUT OUT = FrameVS(IN);
@@ -263,7 +257,6 @@ VSOUT PackedVS(VSIN IN)
 
 float2 PackedUV(float2 uv)
 {
-	// Keep depth and AO paired at a low-resolution texel, including near edges.
 	uv = (floor(uv / NVR_AOLayout.zw) + 0.5) * TESR_ReciprocalResolution.xy;
 	return clamp(uv, 0.5 * TESR_ReciprocalResolution.xy,
 		NVR_AOLayout.xy - 0.5 * TESR_ReciprocalResolution.xy);
@@ -285,8 +278,6 @@ float2 PackedSSAOValues(float2 uv)
 	float2 occlusion = 0;
 
 	[unroll] for (int i = 0; i < kernelSize; ++i) {
-		// The horizontal and vertical kernels use the same random vectors. Evaluate both
-		// together so each pair shares its two blue-noise reads and all basis setup.
 		float3 rand = random(uv + i * TESR_ReciprocalResolution.x);
 		float3 raw = float3(expand(rand.xy), rand.z);
 		float3 sampleX = mul(normalize(raw * float3(1, 0, 1)), tbn);
@@ -316,7 +307,6 @@ float2 PackedSSAOValues(float2 uv)
 
 float4 PackedEstimate(VSOUT IN) : COLOR0
 {
-	// Same two five-sample kernels, evaluated together without duplicate setup/noise reads.
 	float2 values = PackedSSAOValues(IN.UVCoord);
 	float ao = values.x * values.y;
 	return float4(ao, min(readDepth(IN.UVCoord), (float)endFade), 0, 1);
@@ -332,7 +322,6 @@ float4 PackedBlur(VSOUT IN, uniform float2 axis) : COLOR0
 	float sum = center.x * 0.114725602f;
 	float weights = 0.114725602f;
 	[unroll] for (int i = 0; i < cKernelSize; ++i) {
-		// Preserve the original screen-space blur radius, not twice its width.
 		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6);
 		float2 sample = tex2D(TESR_RenderedBuffer, PackedUV(uv)).rg;
 		float weight = BlurWeights[i] * (abs(center.y - sample.y) <= depthTolerance);

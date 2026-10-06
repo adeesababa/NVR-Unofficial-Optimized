@@ -169,19 +169,6 @@ void VolumetricFogEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("NVR_FogBuffer1", &fogTexture[1], &fogSurface[1], width, height, D3DFMT_A16B16G16R16F);
 }
 
-/*
-* Half-resolution estimate of the fog coefficients (multiply + depth, add) into two dedicated
-* targets in a single MRT draw, then a depth-aware full-resolution reconstruct that applies them
-* to the full-resolution scene. The scene is read from RenderedSurface, which every preceding
-* effect leaves equal to the render target. Returns false without touching the render target
-* if the dedicated path is unavailable.
-*/
-/*
-* Whether this frame's fog can take over the shadow/AO apply passes: the dedicated path must be
-* usable, and the composite AO upsample must know the AO targets' size -- from NVR_CompositeAOTexel,
-* or, in an older effect file without it, by the AO targets matching the fog targets. Checked before
-* those passes are skipped, so a later failure is exceptional.
-*/
 bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] ||
 		TheSettingManager->SettingsMain.Main.DisableCompositeApply ||
@@ -249,7 +236,6 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	if (composite) {
 		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f, 0.0f, 0.0f);
 		Effect->SetVector(flagsHandle, &flags);
-		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
 		D3DXHANDLE aoTexelHandle = Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel");
 		D3DSURFACE_DESC ao = {};
 		if (aoTexelHandle && compositeAO && compositeAOTexture && SUCCEEDED(compositeAOTexture->GetLevelDesc(0, &ao))) {
@@ -264,12 +250,9 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
 			const bool combine = p == passes - 1;
 			GpuProfileScope gpuPass(passTimers[combine ? 1 : 0], Device);
-			// s5 is TESR_PointShadowBuffer (bound by SetCT); the fog targets are s6/s7, AO s8.
 			Device->SetTexture(6, nullptr);
 			Device->SetTexture(7, nullptr);
 			Device->SetTexture(8, nullptr);
-			// Unbind the half-resolution MRT before binding the full-resolution target, so the
-			// two differently sized targets are never bound together.
 			if (combine) result = Device->SetRenderTarget(1, nullptr);
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(0, combine ? finalTarget : fogSurface[0]);
 			if (SUCCEEDED(result) && !combine) result = Device->SetRenderTarget(1, fogSurface[1]);
@@ -278,7 +261,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 			if (FAILED(result)) break;
 			result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
-			Device->SetTexture(0, scene); // TESR_SourceBuffer slot
+			Device->SetTexture(0, scene);
 			if (combine) {
 				Device->SetTexture(6, fogTexture[0]);
 				Device->SetTexture(7, fogTexture[1]);
@@ -305,7 +288,6 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	if (FAILED(result)) {
-		// RenderedSurface is only written by the final copy, so it still holds the input.
 		Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
 		dedicatedFogFailed = true;
 		Logger::Log("Dedicated volumetric fog failed (%08lx); using packed path until restart.", result);
@@ -340,7 +322,6 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		}
 	}
 
-	// The caller must apply deferred shadows/AO before retrying ordinary fog.
 	if (compositeShadow || compositeAO) return;
 
 	D3DXHANDLE technique = Effect->GetTechniqueByName("PackedFog");
@@ -359,7 +340,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	}
 
 	auto timer = TimeLogger();
-	TheShaderManager->Chain.Sync(); // the packed path reads the render target itself
+	TheShaderManager->Chain.Sync();
 	D3DVIEWPORT9 reduced = original;
 	reduced.Width /= 2;
 	reduced.Height /= 2;

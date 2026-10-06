@@ -2650,8 +2650,6 @@ static void RenderMainMenuToast() {
 		msg.c_str());
 }
 
-// A small dim marker in the top-right corner while the F10 GPU/CPU profiler is running, so it is not
-// left on by accident. Drawn on the foreground list, so it needs no window and shows with the menu closed.
 static void RenderProfilerIndicator() {
 	if (!GpuTimer::Enabled) return;
 

@@ -13,8 +13,6 @@ void ParticleShaders::UpdateSettings() {
 	Settings.SunShare = max(TheSettingManager->GetSettingF("Shaders.Particles.Main", "SunShare"), 0.0f);
 }
 
-// Outdoors: the weather's ambient and, in the shader, its sun colour through the sun shadow. Indoors: the cell's own
-// ambient (lighting template or cell lighting); no sun. Point lights are added in the shader either way.
 void ParticleShaders::UpdateConstants() {
 	const bool exterior = TheShaderManager->GameState.isExterior;
 	D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient;

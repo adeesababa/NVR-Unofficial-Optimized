@@ -17,7 +17,7 @@ void CheckShadowFaces() {
     unsigned int count = 0;
     for (const auto& d : directions)
         count += ShadowSphereTouchesFace(100, 0, 0, 1, d[0], d[1], d[2]);
-    assert(count == 1); // six submissions reduced to one for this small caster
+    assert(count == 1);
     assert(ShadowSphereTouchesFace(100, 100, 0, 1, 1, 0, 0));
     assert(ShadowSphereTouchesFace(100, 100, 0, 1, 0, 1, 0));
     assert(ShadowSphereTouchesFace(-100, 0, 0, 0, 1, 0, 0));
@@ -29,8 +29,6 @@ void CheckShadowFaces() {
         const float r = radius(rng);
         for (const auto& d : directions) {
             const bool accepted = ShadowSphereTouchesFace(center[0], center[1], center[2], r, d[0], d[1], d[2]);
-            // Independent point-in-face oracle: every visible sampled point in
-            // the sphere requires that its enclosing sphere be accepted.
             for (int sample = 0; sample < 8; ++sample) {
                 float v[3] = {unit(rng), unit(rng), unit(rng)};
                 if (v[0]*v[0] + v[1]*v[1] + v[2]*v[2] > 1) continue;
@@ -66,7 +64,6 @@ unsigned int Check(const unsigned short* map, unsigned int count) {
         reference.SetVertexShaderConstantF(9 + i * 3, matrices.data() + index * 12, 3);
     }
     UploadShadowBones(&batched, matrices.data(), map, count);
-    // Includes untouched registers before/after the palette, not only bone data.
     assert(reference.registers == batched.registers);
     assert(batched.calls <= reference.calls);
     return batched.calls;

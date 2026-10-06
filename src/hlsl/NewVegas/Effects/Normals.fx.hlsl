@@ -26,8 +26,6 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Depth.hlsl"
 #include "Includes/Helpers.hlsl"
 
-// (linear depth, post-projection depth) for a texel; the second is recomputed from the first
-// because the depth buffer may be a single channel (see projectedDepthFromLinear).
 float2 DepthPair(float2 uv)
 {
 	float linear01 = tex2D(TESR_DepthBuffer, uv).x;
@@ -53,9 +51,6 @@ float4 ComputeNormals(VSOUT IN) :COLOR0
 	float4 bottomUv = uv.xyxy + float4(0.0, 1.0, 0.0, 2.0) * TESR_ReciprocalResolution.xyxy; 
 	float4 topUv =uv.xyxy + float4(0.0, -1.0, 0.0, -2.0) * TESR_ReciprocalResolution.xyxy; 
 
-	// Each sample contains linear depth in x and device depth in y. Reuse the same nine
-	// reads for edge selection and position reconstruction; the old shader fetched the five
-	// reconstruction samples a second time.
 	float2 centerDepth = DepthPair(uv);
 	float2 rightDepth1 = DepthPair(rightUv.xy);
 	float2 leftDepth1 = DepthPair(leftUv.xy);

@@ -208,8 +208,6 @@ float4 Combine(VSOUT IN) : COLOR0
 	return float4(color.rgb, 1);
 }
 
-// The common gameplay configuration keeps autofocus disabled but uses distant blur to hide LOD.
-// Running the bokeh packing and five blur/combine passes for that case wastes most of the cost.
 float4 DistantOnly(VSOUT IN) : COLOR0
 {
 	float2 uv = IN.UVCoord;
@@ -217,17 +215,9 @@ float4 DistantOnly(VSOUT IN) : COLOR0
 	float3 cameraVector = toWorld(uv) * depth;
 	float worldHeight = TESR_CameraPosition.z + cameraVector.z;
 	float blur = saturate(invlerps(DistantStart, DistantEnd, depth) * DistantBlur * invlerps(100000, 5000, worldHeight));
-	// Reads the current image (TESR_RenderedBuffer), not TESR_SourceBuffer: this pass never writes to
-	// the texture it reads, and it lets the caller skip the full-resolution SourceBuffer copy.
 	float4 center = tex2D(TESR_RenderedBuffer, uv);
-	// Pixels nearer than the blur start (most of the screen) are returned unchanged. The taps use an
-	// explicit LOD because gradient sampling is illegal inside a dynamic branch; the buffer has one
-	// mip level and the taps are 1-2 texels apart, so LOD 0 is what tex2D selected anyway.
 	[branch] if (blur <= 0.0)
 		return float4(center.rgb, 1);
-	// Only neighbours at about the same distance are mixed in (full weight within ~7% of this pixel's depth, none beyond
-	// ~22%): blurring the sky with a thin pole, branch or wire in front of it drew a dark halo round them that flickered
-	// as they moved. Where the four are at the same distance this is the plain average it always was.
 	float2 radius = TESR_ReciprocalResolution.xy * BaseBlurRadius * (1.0 + blur);
 	const float2 corners[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
 	float4 blurred = 0;

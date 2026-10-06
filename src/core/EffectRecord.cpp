@@ -224,8 +224,6 @@ void EffectRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 	Effect->GetDesc(&ConstantTableDesc);
 	usesSourceBuffer = false;
 
-	// Scan the preprocessed source (includes expanded) for anything that makes a pass leave
-	// pixels unwritten or read the destination. Unknown source stays conservative.
 	needsPrefill = true;
 	bool partialStates = true;
 	if (ShaderSource && ShaderSource->GetBufferPointer()) {
@@ -241,10 +239,6 @@ void EffectRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 		needsPrefill = std::regex_search(source, partialWrite);
 		partialStates = needsPrefill && std::regex_search(source, partialState);
 	}
-	// Only clip/discard matched: the source match can be in code no pass uses (Includes/Blur.hlsl's
-	// helpers made WetWorld copy the whole frame four times a frame for nothing), so decide per pass
-	// from the compiled pixel shader, which keeps a kill instruction only where it can skip pixels.
-	// A pass whose shader cannot be read stays pre-filled.
 	passPrefill.clear();
 	std::string passMap;
 	if (needsPrefill && !partialStates) {
@@ -334,8 +328,6 @@ void EffectRecord::SetCT() {
 	ShaderTextureValue* Sampler;
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
 		Sampler = &TextureShaderValues[c];
-		// Follow the TextureManager slot rather than the pointer cached at first bind, so the
-		// frame chain's swapped rendered buffer is picked up.
 		if (Sampler->Texture->TextureRef) Sampler->Texture->Texture = *Sampler->Texture->TextureRef;
 		if (!Sampler->Texture->Texture) {
 			Sampler->Texture->BindTexture(Sampler->Name);
@@ -405,10 +397,6 @@ bool EffectRecord::PassNeedsPrefill(UINT techniqueIndex, UINT pass) const {
 	return true;
 }
 
-/*
-* Re-binds samplers that follow a TextureManager slot, for use after BeginPass when a slot's
-* texture changed since SetCT (the frame chain swaps TESR_RenderedBuffer between passes).
-*/
 void EffectRecord::RebindSlotTextures() {
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
 		ShaderTextureValue* Sampler = &TextureShaderValues[c];
@@ -433,8 +421,6 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 
 	FrameChain& chain = TheShaderManager->Chain;
 	if (chain.Owns(RenderTarget, RenderedSurface)) {
-		// Copy-free path: each pass renders into the chain's spare texture, which then becomes the
-		// current image (and so TESR_RenderedBuffer) for the next pass and the next effect.
 		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
 			Device->StretchRect(TheTextureManager->RenderedSurface, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
 		D3DXHANDLE technique = Effect->GetTechnique(techniqueIndex);
@@ -444,9 +430,6 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		if (SUCCEEDED(Effect->Begin(&Passes, NULL))) {
 			for (UINT p = 0; p < Passes; p++) {
 				const bool prefill = !ClearRenderTarget && PassNeedsPrefill(techniqueIndex, p);
-				// The last pass of the chain's final effect renders straight into the game target, so
-				// the chain has no copy to make when it ends. Not worth it for a pass that has to be
-				// pre-filled: that is the same copy, just earlier.
 				const bool direct = p == Passes - 1 && !prefill && chain.IsDirectFinal(this);
 				IDirect3DSurface9* destination = direct ? chain.FinalSurface() : chain.Output();
 				if (prefill)
@@ -454,7 +437,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				Device->SetRenderTarget(0, destination);
 				if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 				Effect->BeginPass(p);
-				RebindSlotTextures(); // the current image moved after the previous pass
+				RebindSlotTextures();
 				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
@@ -468,8 +451,6 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		return;
 	}
 
-	// Effects that never sample TESR_SourceBuffer do not need the full-resolution copy. Every
-	// effect that does sample it declares the sampler and so still refreshes it here itself.
 	if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
 		Device->StretchRect(RenderTarget, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
 

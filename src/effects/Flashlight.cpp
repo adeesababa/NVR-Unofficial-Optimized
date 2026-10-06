@@ -22,7 +22,6 @@ void FlashlightEffect::UpdateSettings() {
 		TheSettingManager->GetSettingF("Shaders.Flashlight.Main", "OffsetZ")
 	);
 
-	// UNOFFICIAL: the look comes in an outdoor (Main) and an indoor (Interiors) version; ApplyLook picks one.
 	const char* lookSections[2] = { "Shaders.Flashlight.Main", "Shaders.Flashlight.Interiors" };
 	for (int i = 0; i < 2; i++) {
 		FlashlightLook& look = Looks[i];
@@ -61,7 +60,6 @@ void FlashlightEffect::UpdateSettings() {
 		SpotLight = NiSpotLight::CreateObject();
 };
 
-// UNOFFICIAL: the outdoor or indoor look into Settings, and the constants that come purely from it.
 void FlashlightEffect::ApplyLook(bool exterior) {
 	const FlashlightLook& look = Looks[exterior ? 0 : 1];
 	Settings.Color = look.Color;

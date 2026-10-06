@@ -21,15 +21,8 @@ public:
 
 	bool 					IsLoaded();
 	bool					Enabled;
-	bool					usesSourceBuffer = true; // false when the effect declares no TESR_SourceBuffer sampler
-	// True when a pass can leave destination pixels unwritten or depends on their contents
-	// (clip/discard, blending, stencil, colour write masks). Under the frame chain such passes
-	// get their destination pre-filled with the current image, matching the old in-place result.
+	bool					usesSourceBuffer = true;
 	bool					needsPrefill = true;
-	// Per technique and pass, filled when only clip/discard set needsPrefill: whether that pass's
-	// compiled pixel shader can kill pixels (texkill). A pass that cannot writes every pixel, so a
-	// pre-filled destination would be overwritten entirely (the match was in code no pass of it
-	// uses, such as a shared include's helpers). Empty: every pass follows needsPrefill.
 	std::vector<std::vector<bool>> passPrefill;
 	bool					PassNeedsPrefill(UINT techniqueIndex, UINT pass) const;
 	void					RebindSlotTextures();

@@ -1,5 +1,3 @@
-// Shader to compute the complete point-light shadow pass in one screen draw.
-
 float4 TESR_ShadowLightPosition[12];
 float4 TESR_LightPosition[12];
 float4 TESR_LightColor[24];
@@ -69,14 +67,6 @@ float GetSpotLightAmount(float4 worldPos, float4 spotLightPosition, float4 spotL
 }
 
 
-// One shadow-casting light: GetPointLightAmount() * weight, with the cubemap read behind an exact test.
-// GetPointLightAtten() is exactly 0 once the normalised distance reaches 1 (s = 1 -> (1 - s)^2 = 0), and
-// GetPointLightAmount() is 0 for a light without a radius (distance is then INF or NaN, which
-// !(distance < 1) also catches), so in those cases the shadow lookup cannot change the result and is
-// skipped. The test depends on the pixel, so it is a dynamic branch: a test on constants alone would
-// use one of ps_3_0's 16 boolean registers per light and run out. The branch needs an explicit-LOD
-// read (gradients are illegal in dynamic flow control); the cubemaps have a single level, so it
-// returns what texCUBE did.
 float PointLightAmountValueLod(samplerCUBE cube, float3 lightDir, float distance) {
 	if (TESR_ShadowFade.z == 0) return 1;
 
@@ -87,7 +77,7 @@ float PointLightAmountValueLod(samplerCUBE cube, float3 lightDir, float distance
 
 float ShadowedLight(samplerCUBE cube, float4 worldPos, float4 lightPos, float4 normal, float weight) {
 	float3 lightDir = lightPos.xyz - worldPos.xyz;
-	float distance = length(lightDir) / lightPos.w; // normalize distance over light range
+	float distance = length(lightDir) / lightPos.w;
 	[branch] if (!(distance < 1.0) || weight == 0) return 0;
 
 	float amount = PointLightAmountValueLod(cube, lightDir * float3(-1, -1, 1), distance) * GetPointLightAtten(lightDir, distance, normal);

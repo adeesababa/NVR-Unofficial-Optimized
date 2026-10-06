@@ -16,8 +16,6 @@ void BounceLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BounceLightData", &Constants.Data);
 }
 
-// Nothing at startup: the buffers (about 37 MB at 1440p for both resolutions) are made the first time the effect
-// renders at a resolution (EnsureBuffers), so an install that never turns it on pays no video memory.
 void BounceLightEffect::RegisterTextures() {
 }
 
@@ -40,14 +38,12 @@ void BounceLightEffect::EnsureBuffers(bool quarter) {
 	}
 }
 
-// Prepare, gather, blur X and blur Y at half or quarter resolution, then the combine at full resolution into the
-// frame, the same way the dedicated ambient occlusion runs.
 void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
 	EnsureBuffers(quarterResolution);
-	if (quarterResolution && !quarterTexture[0]) EnsureBuffers(false); // quarter failed: half resolution instead
+	if (quarterResolution && !quarterTexture[0]) EnsureBuffers(false);
 	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_BounceLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
@@ -84,7 +80,6 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	Effect->SetTechnique(Effect->GetTechnique(0));
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
-	// Separate timers per resolution, so the log tells the two apart.
 	static GpuTimer halfTimers[5] = { GpuTimer("  Bounce prepare (half)"), GpuTimer("  Bounce gather (half)"),
 		GpuTimer("  Bounce blur X (half)"), GpuTimer("  Bounce blur Y (half)"), GpuTimer("  Bounce combine (full)") };
 	static GpuTimer quarterTimers[5] = { GpuTimer("  Bounce prepare (quarter)"), GpuTimer("  Bounce gather (quarter)"),
@@ -95,8 +90,6 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	if (SUCCEEDED(result)) {
 		for (UINT p = 0; p < 5 && SUCCEEDED(result); ++p) {
 			const bool combine = p == 4;
-			// Prepare writes the packed buffer; the gather reads it and writes 0, blur X reads 0 and writes 1,
-			// blur Y reads 1 and writes 0, the combine reads 0.
 			IDirect3DSurface9* destination = combine ? finalTarget : p == 0 ? prepSurface : lowSurface[p == 2 ? 1 : 0];
 			Device->SetTexture(5, nullptr);
 			Device->SetTexture(6, nullptr);
@@ -107,7 +100,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			if (p == 1) Device->SetTexture(6, prepTexture);
 			else if (p == 2 || p == 4) Device->SetTexture(5, lowTexture[0]);
 			else if (p == 3) Device->SetTexture(5, lowTexture[1]);
-			Device->SetTexture(2, scene); // TESR_SourceBuffer slot: the current image
+			Device->SetTexture(2, scene);
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);

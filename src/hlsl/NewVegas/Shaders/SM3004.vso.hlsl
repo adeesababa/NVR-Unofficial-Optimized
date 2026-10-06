@@ -11,9 +11,6 @@
 // the pixel shader receives them in OBJECT space and EyePosition is object-space to match.
 // That is why the skylight cannot weight off the interpolated normal and derives a world
 // normal from shadowWorldPos instead.
-// UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
-// shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow
-// at the wrong place. c240-c247 is beyond any bone write.
 #define SHADOW_INVPROJ_REG c240
 #define SHADOW_INVVIEW_REG c244
 #include "includes/Shadow.hlsl"

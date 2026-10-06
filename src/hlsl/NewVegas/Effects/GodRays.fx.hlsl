@@ -132,9 +132,6 @@ float4 RadialBlur(VSOUT IN, uniform float step, uniform float storeAttenuation) 
 		float sampleDistance = stepSize * i;
 		samplePos = uv + (dir * sampleDistance / float2(1, raspect));
 
-		// The old shader fetched all ten samples and multiplied rejected ones by zero.
-		// Explicit LOD makes the fetch legal inside dynamic flow control, so rays that
-		// reach the sun or leave the screen stop consuming texture bandwidth.
 		[branch] if (sampleDistance <= distance && samplePos.x > 0 && samplePos.y > 0 && samplePos.x < 1 && samplePos.y < 1) {
 			color += tex2Dlod(TESR_RenderedBuffer, float4(samplePos * scale, 0, 0));
 			total += 1;
@@ -142,9 +139,6 @@ float4 RadialBlur(VSOUT IN, uniform float step, uniform float storeAttenuation) 
 	}
 	color /= total;
 
-	// Attenuation is a smooth radial field. Calculate it with the final ray pass
-	// at quarter pixel count, then bilinearly upsample it with the rays instead
-	// of reconstructing view position for every full-resolution pixel.
 	return float4(color.rgb, lerp(1.0, RayAttenuation(uv), storeAttenuation));
 }
 
@@ -216,22 +210,15 @@ technique
 	}
 }
 
-// Dedicated path: intermediates ping-pong between two true half-resolution targets
-// bound to s5 by the CPU, so no pass needs clipping, clearing or a StretchRect copy.
-// The scene is read from TESR_RenderedBuffer, which already matches the render target
-// when this effect starts, so the full-resolution SourceBuffer copy is skipped too.
-float4 NVR_GodRaysLayout; // xy: half extent / full extent, zw: 1 / half-resolution dimensions
+float4 NVR_GodRaysLayout;
 sampler2D NVR_GodRaysBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 VSOUT HalfVS(VSIN IN) {
-	// The shared quad carries a full-resolution half-texel offset; move it to the
-	// half-resolution texel centre so UVs match the old packed uv / scale exactly.
 	VSOUT OUT = FrameVS(IN);
 	OUT.UVCoord += 0.5 * (NVR_GodRaysLayout.zw - TESR_ReciprocalResolution.xy);
 	return OUT;
 }
 
-// reconstructPosition() for a depth that was already read (same maths, one fewer depth fetch).
 float3 reconstructPositionFromDepth(float2 uv, float linearDepth01)
 {
 	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, projectedDepthFromLinear(linearDepth01), 1.0f), TESR_InvProjectionTransform);
@@ -242,10 +229,6 @@ float3 reconstructPositionFromDepth(float2 uv, float linearDepth01)
 float4 DedicatedSkyMask(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 
-	// The result is (scene + glare) * depth * horizon, and depth is 1 only for sky pixels, so every pixel of the world
-	// (and everything while the sun is below the horizon) is exactly black whatever the glare and scene colour are. Decide
-	// that from the depth first and skip the scene fetch and the glare maths for those pixels. Explicit-LOD fetches are
-	// used because gradient fetches are illegal in ps_3_0 dynamic branches; the buffers have a single level.
 	float rawDepth = tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x;
 	float depth = ((rawDepth * farZ) / farZ) > 0.9;
 	float horizon = smoothstep(0, 0.01, sunHeight);
@@ -263,7 +246,6 @@ float4 DedicatedSkyMask(VSOUT IN) : COLOR0 {
 }
 
 float4 DedicatedLightMask(VSOUT IN) : COLOR0 {
-	// Same five texel-centred taps as LightMask: one half-resolution texel diagonally.
 	float2 uv = IN.UVCoord;
 	float2 texel = NVR_GodRaysLayout.zw;
 	float3 color = tex2D(NVR_GodRaysBuffer, uv).rgb;

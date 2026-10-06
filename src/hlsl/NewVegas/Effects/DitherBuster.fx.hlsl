@@ -118,8 +118,6 @@ half4 SubPixTest(VSOUT IN) : COLOR
 
 half4 AFAA(VSOUT IN) : COLOR0
 {
-    // These five samples feed edge detection and every early-out path. Keep
-    // them once instead of re-reading the same texels as many as three times.
     half3 center = tex2D(TESR_RenderedBuffer, IN.UVCoord).rgb;
     half3 colorW = GetBufferOffset(TESR_RenderedBuffer, half2(-1.0f, 0.0f)).rgb;
     half3 colorE = GetBufferOffset(TESR_RenderedBuffer, half2(1.0f, 0.0f)).rgb;
@@ -251,9 +249,6 @@ half4 AFAA(VSOUT IN) : COLOR0
     return half4(color, 1.0f);
 }
 
-// SMAA runs immediately after this effect and already handles ordinary edges.
-// Keep only the part SMAA cannot solve: isolated/checkerboard alpha-test dither.
-// This replaces the old SubPix + directional AFAA pair with one five-tap pass.
 half4 DitherOnly(VSOUT IN) : COLOR0
 {
     half3 center = tex2D(TESR_RenderedBuffer, IN.UVCoord).rgb;

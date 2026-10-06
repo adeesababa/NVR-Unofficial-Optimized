@@ -9,8 +9,6 @@ public:
 		aimingHoldUntil = 0.0;
 	};
 
-	// UNOFFICIAL: the light's look, outdoors ([Shaders.Flashlight.Main]) and indoors ([Shaders.Flashlight.Interiors]);
-	// ApplyLook copies the one for the current cell into Settings every frame.
 	struct FlashlightLook {
 		NiColor		Color;
 		float		Dimmer;
@@ -20,7 +18,7 @@ public:
 		float		HotspotLimit;
 		float		CookieStrength;
 	};
-	FlashlightLook	Looks[2]; // 0: outdoors, 1: interiors
+	FlashlightLook	Looks[2];
 	void			ApplyLook(bool exterior);
 
 	struct FlashlightSettingsStruct {

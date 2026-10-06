@@ -54,9 +54,6 @@ float4 Shadow(VSOUT IN) : COLOR0
 	float4 color = tex2D(TESR_RenderedBuffer, IN.UVCoord);
 	float2 uv = IN.UVCoord;
 
-	// World position and normals are only needed for the underwater water-plane exception.
-	// Keeping them behind this coherent branch removes two texture reads and two matrix/vector
-	// reconstructions from every ordinary exterior pixel.
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float depth = readDepthLod(uv);
 		float3 camera_vector = toWorld(uv) * depth;
