@@ -174,6 +174,13 @@ bool AddSpecular(float2 uv, float depth, inout float3 lin) {
 	bool weapon = TESR_DepthConstants.z == 0.0 ? viewmodelDepth < 0.9 : viewmodelDepth > 0.01;
 	[branch] if (depth >= DrawDistance || depth >= farZ * 0.98 || weapon) return false;
 
+	// Water has its own reflections: tested again here with this pixel's own depth and normal. SpecularLowPS tests a 4 x 4
+	// block's depth, which on water seen at a low angle missed the water's height on some rows of blocks and not on others,
+	// and drew horizontal lines of highlight across the water.
+	float3 pixelPos = TESR_CameraPosition.xyz + toWorld(uv) * depth;
+	float3 pixelNormal = ViewToWorld(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0, 0)).xyz * 2.0 - 1.0);
+	[branch] if (normalize(pixelNormal).z > 0.7 && abs(pixelPos.z - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return false;
+
 	// The four quarter-resolution pixels round this one, bilinearly, each counted by how near its depth (the depth at its
 	// block's centre, read again here) is to this pixel's: so the light neither bleeds across the edges of things nor
 	// steps along them.

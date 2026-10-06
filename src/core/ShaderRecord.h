@@ -65,6 +65,7 @@ public:
 	static void				ReportError(HRESULT result);
 	static bool				FileExists(const char* path);
 	static bool				CheckPreprocessResult(const char* CachedPreprocessPath, ID3DXBuffer* ShaderSource);
+	static std::string		PortableSource(ID3DXBuffer* Source);
 
 	// Drops the cached IDirect3DTexture9* for a named sampler so that SetCT re-resolves it
 	// on the next draw. MUST be called on every consumer of a texture that is released and
