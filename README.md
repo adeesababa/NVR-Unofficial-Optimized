@@ -43,6 +43,8 @@ same license; they will be removed from the zip if the original authors object.)
 2. With the game closed, download the latest zip from **Releases** and extract it into your `Data`
    folder (or install it as a mod with your mod manager), overwriting when asked.
 3. Start the game. Your own NVR settings are kept; without them, they are created from the defaults.
+   Since the P75 update the zip also holds a ready-made shader cache, so the first start no longer
+   spends minutes compiling shaders (settings that change the shaders rebuild only those, by themselves).
 
 To uninstall, put your backed-up files back. If an effect looks wrong after updating, delete the
 `Cache` folders inside `Data\Shaders\NewVegasReloaded\`, and look in the newest log (see **Logs**
