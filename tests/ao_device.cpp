@@ -1,4 +1,3 @@
-// Real D3D9/D3DX43 smoke test. Run from src/hlsl/NewVegas/Effects.
 #include <windows.h>
 #include <d3d9.h>
 #include <d3dx9.h>
@@ -52,7 +51,6 @@ static void Run(IDirect3DDevice9* device, ID3DXEffect* effect, UINT width, UINT 
     Check(device->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE));
     Check(device->Clear(0,NULL,D3DCLEAR_TARGET,D3DCOLOR_XRGB(64,128,192),1,0));
     Check(device->StretchRect(rt.Get(),NULL,ss.Get(),NULL,D3DTEXF_NONE));
-    // Poison unused scratch space. Edge clamping must prevent these values leaking in.
     Check(device->SetRenderTarget(0,rs.Get()));
     Check(device->Clear(0,NULL,D3DCLEAR_TARGET,D3DCOLOR_XRGB(0,255,255),1,0));
     Check(device->SetRenderTarget(0,rt.Get()));
@@ -145,8 +143,6 @@ static void Run(IDirect3DDevice9* device, ID3DXEffect* effect, UINT width, UINT 
     for(DWORD i=0;i<6;++i) device->SetTexture(i,NULL);
 }
 int main(int argc, char** argv) {
-    // --compile-files A.fx.hlsl B.fx.hlsl ...: compile each effect with the game's runtime compiler
-    // (D3DX9_43), with and without REVERSED_DEPTH, and exit. Run from the Effects folder.
     if (argc >= 3 && std::strcmp(argv[1], "--compile-files") == 0) {
         int failures = 0;
         for (int i = 2; i < argc; ++i) {

@@ -1,7 +1,6 @@
 #include "Specular.h"
 
 void SpecularEffect::UpdateConstants() {
-	// Dry and rain settings, blended by how much it rains.
 	const float rain = TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue();
 	const LookStruct& dry = Settings.Exterior;
 	const LookStruct& wet = Settings.Rain;
@@ -48,10 +47,6 @@ bool SpecularEffect::CanTakeBounce() {
 		Effect->GetParameterByName(NULL, "NVR_BounceLayout");
 }
 
-/*
-* BounceLight's combine and this effect's in one full-resolution pass (technique SpecularBounce), into the frame chain's
-* next image (only through the chain).
-*/
 bool SpecularEffect::RenderWithBounce(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	IDirect3DTexture9* bounce, const D3DXVECTOR4& data, const D3DXVECTOR4& layout) {
 	if (!Enabled || !Effect || !ShouldRender() || !bounce) return false;
@@ -72,7 +67,7 @@ bool SpecularEffect::RenderWithBounce(IDirect3DDevice9* Device, IDirect3DSurface
 		result = Effect->BeginPass(0);
 		if (SUCCEEDED(result)) {
 			RebindSlotTextures();
-			Device->SetTexture(8, bounce); // NVR_BounceBuffer
+			Device->SetTexture(8, bounce);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}

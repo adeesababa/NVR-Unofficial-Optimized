@@ -2,7 +2,6 @@
 #include <windows.h>
 #include <cstring>
 
-// Copy a fresh configuration, or add only missing keys to an existing one.
 inline int MergeIniDefaults(const char* defaults, const char* active) {
     if (GetFileAttributesA(defaults) == INVALID_FILE_ATTRIBUTES) return 0;
     if (CopyFileA(defaults, active, TRUE)) return 1;

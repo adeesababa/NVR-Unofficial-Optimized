@@ -3,61 +3,43 @@
 #include "VolumetricSmokeQuads.h"
 #include "../core/GpuProfiler.h"
 
-// GunFX volumetric smoke (prototype). GunFX.dll keeps its smoke as chains of points and hands over one record per tube
-// segment (GunFX_GetVolumeSmoke). Step 1 draws every segment that can be on screen as a quad over the area it reaches,
-// adding its optical depth into TESR_SmokeBuffer; step 2 (the effect chain's pass) lights the total and lays it over
-// the image, only inside the area the smoke covers (scissor). The cost follows the smoke's size on screen.
-// The gun-smoke haze (GunFX_GetSmokeHaze: up to 40 big, soft blobs) is drawn by a pass of its own, every blob at once at
-// quarter resolution (TESR_SmokeHaze), and step 2 adds it in over the whole screen.
 namespace VolumetricSmoke {
-    inline const int FetchMax = 720;      // what GunFX sends at most (four chains and two twin arms of 96 points, tendrils)
-    inline const float NearFade = 6.0f;   // the shader hides smoke closer to the camera than this (game units)
+    inline const int FetchMax = 720;
+    inline const float NearFade = 6.0f;
     inline VolumetricSmokeQuads::Vertex Vertices[FetchMax * 6];
-    // Segments whose quad covers more than BigArea of the screen (big and close: soft on screen, and in thick smoke each one
-    // a large or nearly full-screen pass) are drawn into a buffer at an eighth of the resolution instead (TESR_SmokeBufferLow).
-    // 1 % (was 4 %), and an eighth (was a quarter): walking into thick smoke on the bench (smoke_bench BIG_AREA, LOW_DIV)
-    // 3.4 ms (4 %, quarter) -> 2.7 (1 %, quarter) -> 0.8 ms (1 %, eighth) at 2560x1440, with no visible change (no pixel
-    // off by more than 4 of 255; the same smoke over the gun's edge): smoke that big on screen is all smooth blobs.
     inline const float BigArea = 0.01f;
     inline VolumetricSmokeQuads::Vertex VerticesBig[FetchMax * 6];
     inline int CountBig = 0;
-    inline float Shaded = 0.0f;           // screens' worth of pixels step 1 shades this frame (before the resolution cut)
+    inline float Shaded = 0.0f;
     inline D3DXVECTOR4 Info = {}, Params = {}, Flash = {}, FlashColor = {}, Look = {};
-    inline int Count = 0;                 // segments drawn this frame
-    // The frame (ShaderManager::RenderEffects counts them): the smoke is fetched once a frame. (It was once a millisecond
-    // tick, GetTickCount64, which only moves every 15.6 ms: at 95 frames a second every third frame drew the last frame's
-    // smoke, built for the last frame's camera, so it jumped and the haze flickered.)
+    inline int Count = 0;
     inline unsigned FrameNumber = 0, FetchedFrame = ~0u;
-    inline LARGE_INTEGER EnvAt = {};      // when the room light was last worked out (it eases to the new value)
+    inline LARGE_INTEGER EnvAt = {};
     inline RECT Scissor = {};
-    inline IDirect3DTexture9* Texture = nullptr;      // the buffer used this frame (TESR_SmokeBuffer follows it)
+    inline IDirect3DTexture9* Texture = nullptr;
     inline IDirect3DSurface9* Surface = nullptr;
-    inline IDirect3DTexture9* FullTexture = nullptr;  // full resolution
+    inline IDirect3DTexture9* FullTexture = nullptr;
     inline IDirect3DSurface9* FullSurface = nullptr;
-    inline IDirect3DTexture9* HalfTexture = nullptr;  // half resolution (Main > GunFX > VolumetricSmokeHalfRes)
+    inline IDirect3DTexture9* HalfTexture = nullptr;
     inline IDirect3DSurface9* HalfSurface = nullptr;
-    inline IDirect3DTexture9* LowTexture = nullptr;   // an eighth of the resolution, for the big segments (TESR_SmokeBufferLow)
+    inline IDirect3DTexture9* LowTexture = nullptr;
     inline IDirect3DSurface9* LowSurface = nullptr;
-    inline IDirect3DTexture9* HazeTexture = nullptr;  // quarter resolution, the haze (TESR_SmokeHaze)
-    inline IDirect3DTexture9* CutTexture = nullptr;   // quarter resolution, the bullets' cut of the segment smoke (TESR_SmokeCut), written with the haze
+    inline IDirect3DTexture9* HazeTexture = nullptr;
+    inline IDirect3DTexture9* CutTexture = nullptr;
     inline IDirect3DSurface9* CutSurface = nullptr;
     inline IDirect3DSurface9* HazeSurface = nullptr;
-    inline IDirect3DTexture9* EnvTexture = nullptr;   // one pixel, the room light (TESR_SmokeEnv)
+    inline IDirect3DTexture9* EnvTexture = nullptr;
     inline IDirect3DSurface9* EnvSurface = nullptr;
     inline const int HazeMax = 40;
-    inline D3DXVECTOR4 HazeShape[HazeMax] = {}, HazeLook[HazeMax] = {};   // centre (NVR's space) and radius; optical depth
+    inline D3DXVECTOR4 HazeShape[HazeMax] = {}, HazeLook[HazeMax] = {};
     inline int HazeCount = 0;
-    inline const int BulletMax = 16;      // recent bullets, for the tunnels they clear through the haze and the other smoke (GunFX_GetBullets)
-    inline D3DXVECTOR4 BulletFrom[BulletMax] = {}, BulletWay[BulletMax] = {};   // fired from (NVR's space), seconds since; way, how hard
+    inline const int BulletMax = 16;
+    inline D3DXVECTOR4 BulletFrom[BulletMax] = {}, BulletWay[BulletMax] = {};
     inline int BulletCount = 0;
-    inline D3DXVECTOR2 BulletLook(0.0f, 0.0f);   // seconds a bullet's hole takes to open, and to fill in again (GunFX_GetBulletLook; 0 = the shader's own)
-    inline float BulletMoving = 0.0f;            // how much you are moving, 0..1 (GunFX_GetMoving; 0 with an older GunFX)
+    inline D3DXVECTOR2 BulletLook(0.0f, 0.0f);
+    inline float BulletMoving = 0.0f;
     inline IDirect3DVertexDeclaration9* Declaration = nullptr;
 
-    // What each smoke buffer holds, so a frame only clears the ones with something in them. Step 2 reads every buffer, so each
-    // must read as empty wherever nothing is drawn into it; but a buffer nothing was drawn into since its last clear already
-    // is. Dirty: drawn into since the last clear, or never cleared. Known: the surface the flag is about; a surface that was
-    // created again is not it, so it counts as dirty and is cleared once. (Unsure: clear.)
     struct BufferState {
         IDirect3DSurface9* Known = nullptr;
         bool Dirty = true;
@@ -66,13 +48,8 @@ namespace VolumetricSmoke {
         void Drawn(IDirect3DSurface9* surface) { Known = surface; Dirty = true; }
         void Forget() { Known = nullptr; Dirty = true; }
     };
-    inline BufferState FullState, HalfState, LowState, HazeState;   // one per buffer: it can switch between full and half a frame
+    inline BufferState FullState, HalfState, LowState, HazeState;
 
-    // The effect's technique and parameter handles, looked up by name once per effect object instead of a dozen times a
-    // frame. The effect is built again when it reloads (EffectRecord::LoadEffect, e.g. after its .hlsl changed), and its
-    // handles can differ then, so the cache holds a reference to the effect it belongs to: while that object is alive no
-    // new effect can take its address, so a different pointer is always a different (reloaded) effect. A name the effect
-    // does not have stays a NULL handle, and D3DX ignores set calls on NULL handles, as before.
     struct EffectHandles {
         ID3DXEffect* Owner = nullptr;
         D3DXHANDLE SegmentsTechnique = NULL, HazeTechnique = NULL, EnvTechnique = NULL;
@@ -105,24 +82,18 @@ namespace VolumetricSmoke {
         return CachedHandles;
     }
 
-    // Clears one of the buffers (the render target is changed to it).
     inline void ClearBuffer(IDirect3DDevice9* device, IDirect3DSurface9* surface, BufferState& state) {
         device->SetRenderTarget(0, surface);
         device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
         state.Cleared(surface);
     }
 
-    // Segments and haze for this frame (fetched once; ShouldRender and Render both ask). Returns how much there is to draw.
     inline int Fetch() {
         if (FetchedFrame == FrameNumber) return Count + CountBig + HazeCount;
         FetchedFrame = FrameNumber;
-        // CPU time of the frame's one real fetch (the repeat calls return above at once): GunFX's data, the move into NVR's
-        // space and the quads. Does nothing unless F10 profiling is on.
         static CpuTimer fetchCpuTimer("Smoke fetch (CPU)");
         CpuProfileScope fetchCpu(fetchCpuTimer);
         const ULONGLONG now = GetTickCount64();
-        // GunFX_GetVolumeSmoke2 gives 16 floats per record (with the smoke's own noise coordinate and the age at both
-        // ends); an older GunFX only has GunFX_GetVolumeSmoke (12). GunFX_GetSmokeFlash: the muzzle flash's light.
         typedef int (__cdecl* GetFn)(float*, int, float*);
         typedef void (__cdecl* FlashFn)(float*);
         typedef int (__cdecl* HazeFn)(float*, int);
@@ -150,12 +121,10 @@ namespace VolumetricSmoke {
                 getHaze = (HazeFn)GetProcAddress(gunfx, "GunFX_GetSmokeHaze");
                 setView = (ViewFn)GetProcAddress(gunfx, "GunFX_SetView");
                 getBullets = (BulletsFn)GetProcAddress(gunfx, "GunFX_GetBullets");
-                getBulletLook = (BulletLookFn)GetProcAddress(gunfx, "GunFX_GetBulletLook");   // GunFX 1.38 and newer
-                getMoving = (MovingFn)GetProcAddress(gunfx, "GunFX_GetMoving");                // GunFX 1.39 and newer
+                getBulletLook = (BulletLookFn)GetProcAddress(gunfx, "GunFX_GetBulletLook");
+                getMoving = (MovingFn)GetProcAddress(gunfx, "GunFX_GetMoving");
             }
         }
-        // The camera, for GunFX's bullets (they fly to where you aim): the eye in world space (NVR's space is centred on
-        // it, so it is CameraPosition) and the way it looks (the inverse view's third row).
         if (setView) {
             const D3DXMATRIX& view = TheRenderManager->InvViewMatrix;
             const D3DXVECTOR4& eye = TheRenderManager->CameraPosition;
@@ -171,16 +140,12 @@ namespace VolumetricSmoke {
         float params[8] = {};
         int total = get(records, FetchMax, params);
         if (total < 0 || total > FetchMax) total = 0;
-        // The haze: 8 floats a blob (centre x, y, z absolute, radius, optical depth through the middle, 3 spare).
         static float haze[HazeMax * 8];
-        // Menu switches (Main > GunFX) for the two most expensive parts: off, they are not fetched, so their passes are skipped.
         const bool hazeOn = TheSettingManager->GetSettingI("Main.GunFX.Main", "SmokeHaze") != 0;
         const bool tunnelsOn = TheSettingManager->GetSettingI("Main.GunFX.Main", "BulletTunnels") != 0;
         int hazeTotal = hazeOn && getHaze && HazeSurface && EnvSurface ? getHaze(haze, HazeMax) : 0;
         if (hazeTotal < 0 || hazeTotal > HazeMax) hazeTotal = 0;
         if (!total && !hazeTotal) return 0;
-        // GunFX's points are absolute world positions; NVR's world space is centred on the camera (objects are drawn at
-        // their position minus CameraPosition, and the eye sits at the inverse view's origin). Convert every end into it.
         const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
         const D3DXMATRIX& inv = TheRenderManager->InvViewMatrix;
         for (int i = 0; i < total; i++) {
@@ -206,7 +171,6 @@ namespace VolumetricSmoke {
             HazeLook[HazeCount] = D3DXVECTOR4(b[4], 0.0f, 0.0f, 0.0f);
             HazeCount++;
         }
-        // The bullets matter wherever there is something to cut: haze (its own pass) or the other smoke (the composite).
         if ((Count || CountBig || HazeCount) && getBullets && tunnelsOn) {
             static float bullets[BulletMax * 8];
             int n = getBullets(bullets, BulletMax);
@@ -219,10 +183,8 @@ namespace VolumetricSmoke {
                 BulletCount++;
             }
         }
-        // How much you are moving: while you do, the shader leaves your own smoke close to you uncut.
         BulletMoving = getMoving ? getMoving() : 0.0f;
         if (!(BulletMoving >= 0.0f && BulletMoving <= 1.0f)) BulletMoving = 0.0f;
-        // The muzzle flash (x, y, z absolute, light, r, g, b, reach), into NVR's space like the smoke.
         float flash[8] = {};
         if (getFlash) getFlash(flash);
         Flash = D3DXVECTOR4(flash[0] + inv._41 - camera.x, flash[1] + inv._42 - camera.y, flash[2] + inv._43 - camera.z, flash[3] > 0.0f ? flash[3] : 0.0f);
@@ -231,7 +193,7 @@ namespace VolumetricSmoke {
         const bool outdoors = cell && (!cell->IsInterior() || (cell->flags0 & TESObjectCELL::kFlags0_BehaveLikeExterior));
         Info = D3DXVECTOR4((float)Count, params[4] > 0.5f ? 1.0f : 0.0f, outdoors ? 1.0f : 0.0f, params[5] > 0.5f ? 1.0f : 0.0f);
         Params = D3DXVECTOR4(params[0], params[1], params[2], params[3]);
-        Look = D3DXVECTOR4(params[6], params[7], 1.0f, 0.0f);   // colour by thickness and age (older GunFX: 0, plain grey); z: buffer scale (Render)
+        Look = D3DXVECTOR4(params[6], params[7], 1.0f, 0.0f);
         const float w = (float)TheRenderManager->width, h = (float)TheRenderManager->height;
         if (Count || CountBig) {
             Scissor.left = (LONG)(bounds[0] * w > 2.0f ? floorf(bounds[0] * w) - 2.0f : 0.0f);
@@ -240,15 +202,12 @@ namespace VolumetricSmoke {
             Scissor.bottom = (LONG)(bounds[3] * h + 2.0f < h ? ceilf(bounds[3] * h) + 2.0f : h);
             if (Scissor.right <= Scissor.left || Scissor.bottom <= Scissor.top) Count = CountBig = 0;
         }
-        if (HazeCount) Scissor = { 0, 0, (LONG)w, (LONG)h };   // the haze is all around you: step 2 covers the screen
-        // Where the smoke is and what it costs (once a second, 60 times per session): for checking positions in the log.
+        if (HazeCount) Scissor = { 0, 0, (LONG)w, (LONG)h };
         static ULONGLONG loggedAt = 0;
         static int logged = 0;
         if (logged < 60 && now - loggedAt >= 1000) {
             loggedAt = now;
             logged++;
-            // (A segment in the band where it fades from the full-resolution list to the quarter-resolution one is drawn in
-            // both, so the draws can come to more than the segments.)
             D3DXVECTOR4 clip;
             const D3DXVECTOR4 p(records[0], records[1], records[2], 1.0f);
             D3DXVec4Transform(&clip, &p, &TheRenderManager->ViewProjMatrix);
@@ -265,23 +224,17 @@ namespace VolumetricSmoke {
 class VolumetricSmokeEffect : public EffectRecord {
 public:
     VolumetricSmokeEffect() : EffectRecord("VolumetricSmoke") {}
-    void RegisterTextures() override;   // VolumetricSmoke.cpp (needs the texture manager)
+    void RegisterTextures() override;
     bool ShouldRender() override { return VolumetricSmoke::Fetch() > 0; }
     void Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
         UINT technique, bool clear, IDirect3DSurface9* source) override {
-        // GunFX.ini holds the tuning; the switch is Main > GunFX > VolumetricSmoke.
         Enabled = Effect != nullptr;
         if (!Enabled || !ShouldRender()) { renderTime = 0; return; }
         using namespace VolumetricSmoke;
-        // CPU timers (F10 profiling; they do nothing when it is off), to tell which call the CPU time goes to: the whole
-        // step, the clears, the segment and big-segment draws, the haze, the room light and the composite. What the whole
-        // step has beyond the others is state saving and setting constants (and the fetch, if this is the first call of the frame).
         static CpuTimer renderCpuTimer("Smoke render (CPU)"), clearsCpuTimer("Smoke clears (CPU)"),
             segmentsCpuTimer("Smoke seg draw (CPU)"), lowCpuTimer("Smoke low draw (CPU)"), hazeCpuTimer("Smoke haze (CPU)"),
             envCpuTimer("Smoke env (CPU)"), compositeCpuTimer("Smoke composite (CPU)");
         CpuProfileScope renderCpu(renderCpuTimer);
-        // Test modes (Main > GunFX > VolumetricSmokeTest), for finding what the smoke changes in the image: 1 the smoke in
-        // plain green, 2 no muzzle flash light on it, 3 worked out but not drawn (step 1 only), 4 nothing on the GPU.
         const int test = TheSettingManager->GetSettingI("Main.GunFX.Main", "VolumetricSmokeTest");
         if (test == 4) { renderTime = 0; return; }
         const EffectHandles& fx = ResolveHandles(Effect);
@@ -297,28 +250,22 @@ public:
                 D3DDECL_END() };
             if (FAILED(device->CreateVertexDeclaration(elements, &Declaration))) { Declaration = nullptr; return; }
         }
-        // Half resolution (a quarter of the pixels; step 2 blends it up smoothly), or full.
         const bool half = HalfSurface && TheSettingManager->GetSettingI("Main.GunFX.Main", "VolumetricSmokeHalfRes");
         Texture = half ? HalfTexture : FullTexture;
         Surface = half ? HalfSurface : FullSurface;
-        Look.z = half ? 2.0f : 1.0f;                          // the shader's pixel size in step 1
-        Look.w = (half || CountBig) ? 1.0f : 0.0f;            // step 2: hide smoke behind each pixel's surface (low resolution only)
+        Look.z = half ? 2.0f : 1.0f;
+        Look.w = (half || CountBig) ? 1.0f : 0.0f;
         static GpuTimer segmentsTimer("Volumetric smoke: segments"), compositeTimer("Volumetric smoke: composite"),
             hazeTimer("Volumetric smoke: haze");
         D3DXVECTOR4 info = Info, flash = Flash;
-        info.x = test == 1 ? -1.0f : 0.0f;                    // x: the shader's test colour (it has no other use for x)
+        info.x = test == 1 ? -1.0f : 0.0f;
         if (test == 2) flash.w = 0.0f;
         Effect->SetVector(fx.SmokeInfo, &info);
         Effect->SetVector(fx.SmokeParams, &Params);
         Effect->SetVector(fx.SmokeFlash, &flash);
         Effect->SetVector(fx.SmokeFlashColor, &FlashColor);
         Effect->SetVector(fx.SmokeLook, &Look);
-        // Bullets cut holes through the haze (the haze pass) and through the other smoke (the composite), so HazeInfo (how
-        // many blobs, how many bullets) and the bullets are set on every frame that draws, also when there is smoke but no haze
-        // (no blobs then and the haze pass does not run, but the composite still reads the bullets). The effect keeps its
-        // constants from frame to frame, so the counts are set every time (a stale count would cut with last frame's
-        // bullets); the arrays only when there are bullets (the counts say how many entries the shader reads).
-        const D3DXVECTOR4 hazeInfo((float)HazeCount, (float)BulletCount, BulletLook.x, BulletLook.y);   // z, w: the holes' timing
+        const D3DXVECTOR4 hazeInfo((float)HazeCount, (float)BulletCount, BulletLook.x, BulletLook.y);
         Effect->SetVector(fx.HazeInfo, &hazeInfo);
         if (fx.BulletMove) { const D3DXVECTOR4 move(BulletMoving, 0.0f, 0.0f, 0.0f); Effect->SetVector(fx.BulletMove, &move); }
         if (BulletCount) {
@@ -326,8 +273,6 @@ public:
             Effect->SetVectorArray(fx.BulletWay, BulletWay, BulletMax);
         }
 
-        // Step 1: the segments' optical depth into TESR_SmokeBuffer. Everything changed here is put back afterwards
-        // (the effect's Begin/End restores the render states it sets).
         IDirect3DSurface9* previousTarget = nullptr;
         IDirect3DVertexDeclaration9* previousDeclaration = nullptr;
         IDirect3DVertexBuffer9* previousStream = nullptr;
@@ -337,10 +282,6 @@ public:
         device->GetStreamSource(0, &previousStream, &previousOffset, &previousStride);
         device->SetRenderTarget(0, Surface);
         device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-        // Step 2 always reads all the buffers, so each must be empty wherever nothing is drawn into it this frame; one is
-        // cleared only if it holds something (BufferState: drawn into since its last clear, or new), not every frame. The
-        // haze pass writes every pixel of its buffer (a full-screen quad, no scissor, no blending, no discard), so on a frame
-        // it runs, its buffer needs no clear first; if it turns out not to draw, it is cleared there instead.
         BufferState& mainState = half ? HalfState : FullState;
         const bool hazeOverwrites = HazeCount && previousStream && HazeSurface;
         {
@@ -356,15 +297,15 @@ public:
         }
         Effect->SetTechnique(segments);
         SetCT();
-        device->SetTexture(2, nullptr);   // TESR_SmokeBuffer, TESR_SmokeBufferLow, TESR_SmokeHaze and TESR_SmokeEnv are the
-        device->SetTexture(4, nullptr);   // targets here
+        device->SetTexture(2, nullptr);
+        device->SetTexture(4, nullptr);
         device->SetTexture(5, nullptr);
         device->SetTexture(6, nullptr);
         UINT passes = 0;
         {
             GpuProfileScope segmentsScope(segmentsTimer, device);
             if (Count) {
-                CpuProfileScope segmentsCpu(segmentsCpuTimer);   // Begin to End: the draw's own copy and any wait for the GPU show here
+                CpuProfileScope segmentsCpu(segmentsCpuTimer);
                 mainState.Drawn(Surface);
                 if (SUCCEEDED(Effect->Begin(&passes, 0))) {
                     Effect->BeginPass(0);
@@ -374,7 +315,6 @@ public:
                     Effect->End();
                 }
             }
-            // The big segments, at an eighth of the resolution (the shader's pixel size follows Look.z).
             if (CountBig && LowSurface) {
                 CpuProfileScope lowCpu(lowCpuTimer);
                 LowState.Drawn(LowSurface);
@@ -393,10 +333,7 @@ public:
         }
         if (previousDeclaration) device->SetVertexDeclaration(previousDeclaration);
         device->SetStreamSource(0, previousStream, previousOffset, previousStride);
-        // The haze (every blob at once, at quarter resolution) and the room light step 2 lights the smoke with (one pixel):
-        // full-screen passes over the effect chain's frame quad (bound when the effects started, put back just above).
         if (previousStream) {
-            // Returns whether it drew.
             auto fullScreen = [&](D3DXHANDLE pass, IDirect3DSurface9* into) -> bool {
                 if (!pass || !into) return false;
                 device->SetRenderTarget(0, into);
@@ -408,8 +345,6 @@ public:
                 Effect->End();
                 return true;
             };
-            // It also works out the bullets' cut of the segment smoke (its second target, TESR_SmokeCut, read by step 2), so
-            // it runs whenever there are bullets and segment smoke, haze or not.
             const bool cutNeeded = BulletCount && (Count || CountBig) && CutSurface;
             if (HazeCount || cutNeeded) {
                 GpuProfileScope hazeScope(hazeTimer, device);
@@ -419,7 +354,6 @@ public:
                 Effect->SetVectorArray(fx.HazeLook, HazeLook, HazeMax);
                 Effect->SetVector(fx.SmokeLook, &hazeLook);
                 if (HazeSurface) HazeState.Drawn(HazeSurface);
-                // The cut reads the segment smoke just drawn; TESR_SmokeCut is a target here.
                 device->SetTexture(2, Texture);
                 device->SetTexture(4, LowSurface ? LowTexture : nullptr);
                 device->SetTexture(7, nullptr);
@@ -429,7 +363,6 @@ public:
                     device->SetRenderTarget(1, CutSurface);
                     device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
                 }
-                // It was left uncleared because this pass overwrites it (hazeOverwrites above); if it did not draw, clear it now.
                 const bool drew = fullScreen(fx.HazeTechnique, HazeSurface);
                 if (CutSurface) {
                     device->SetRenderTarget(1, nullptr);
@@ -440,7 +373,7 @@ public:
                 if (!drew && HazeSurface) ClearBuffer(device, HazeSurface, HazeState);
                 Effect->SetVector(fx.SmokeLook, &Look);
             }
-            {   // the room light eases to this frame's value over about a third of a second (at once after a pause)
+            {
                 CpuProfileScope envCpu(envCpuTimer);
                 LARGE_INTEGER now, frequency;
                 QueryPerformanceCounter(&now);
@@ -449,7 +382,7 @@ public:
                 EnvAt = now;
                 const D3DXVECTOR4 envInfo(dt > 0.0 && dt < 1.0 ? 1.0f - expf(-(float)dt / 0.3f) : 1.0f, 0.0f, 0.0f, 0.0f);
                 Effect->SetVector(fx.EnvInfo, &envInfo);
-                if (envInfo.x >= 1.0f && EnvSurface) {        // starting over: a clean buffer to blend into (never undefined)
+                if (envInfo.x >= 1.0f && EnvSurface) {
                     device->SetRenderTarget(0, EnvSurface);
                     device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
                 }
@@ -461,11 +394,6 @@ public:
         if (previousDeclaration) previousDeclaration->Release();
         if (previousStream) previousStream->Release();
 
-        // Step 2: light the total and lay it over the image, inside the smoke's area. When that area is most of the screen
-        // (always with haze), the whole screen instead, without the scissor: the composite writes every pixel it draws (no
-        // discard, no blending), so the frame chain need not first copy the whole frame into its target for the pixels the
-        // scissor would leave alone -- a full-screen copy (about 0.3 ms at 2560x1440) that costs about as much as drawing
-        // the rest of the screen.
         const long long screen = (long long)TheRenderManager->width * TheRenderManager->height;
         const bool whole = 2LL * (Scissor.right - Scissor.left) * (Scissor.bottom - Scissor.top) >= screen;
         if (!whole) {

@@ -8,11 +8,10 @@ void DebugEffect::UpdateSettings() {
 	Constants.DebugVar.z = TheSettingManager->GetSettingF("Main.Develop.Main", "DebugVar3");
 	Constants.DebugVar.w = TheSettingManager->GetSettingF("Main.Develop.Main", "DebugVar4");
 
-	// UNOFFICIAL: clipping view, 0 off, 1 finished picture, 2 tonemapper output, 3 both compared
 	ClipViewMode = TheSettingManager->GetSettingI("Shaders.Debug.Main", "ClipView");
 	if (ClipViewMode < 0 || ClipViewMode > 3) ClipViewMode = 0;
 	Constants.ClipView = D3DXVECTOR4((float)ClipViewMode, 0.0f, 0.0f, 0.0f);
-	if (ClipViewMode < 2) ReleaseClipStart(); // only modes 2 and 3 need the copy
+	if (ClipViewMode < 2) ReleaseClipStart();
 }
 
 void DebugEffect::RegisterConstants() {
@@ -20,8 +19,6 @@ void DebugEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ClipView", &Constants.ClipView);
 }
 
-// UNOFFICIAL: the slot is registered empty; the texture is created on first use by CaptureClipStart (samplers follow
-// the slot, TextureRecord::TextureRef), so nothing is allocated unless the clipping view needs it.
 void DebugEffect::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_ClipStartBuffer", (IDirect3DBaseTexture9**)&ClipStartTexture);
 }
@@ -47,7 +44,6 @@ void DebugEffect::ReleaseClipStart() {
 	if (ClipStartTexture) { ClipStartTexture->Release(); ClipStartTexture = nullptr; }
 }
 
-// Called at the start of the post chain, while the game target still holds the picture the tonemapper produced.
 void DebugEffect::CaptureClipStart(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
 	if (ClipViewMode < 2 || !RenderTarget || ClipTechnique() < 0) return;
 	D3DSURFACE_DESC desc = {};
@@ -69,8 +65,6 @@ void DebugEffect::CaptureClipStart(IDirect3DDevice9* Device, IDirect3DSurface9* 
 	if (FAILED(Device->StretchRect(RenderTarget, NULL, ClipStartSurface, NULL, D3DTEXF_NONE))) ReleaseClipStart();
 }
 
-// Called after every other post effect. Renders like any effect (frame chain included); the Debug effect's own
-// switch is overridden for this one call so the view does not need the debug overlays turned on.
 void DebugEffect::RenderClipView(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
 	if (!ClipViewActive()) return;
 	const bool wasEnabled = Enabled;

@@ -45,12 +45,10 @@ void Logger::Initialize(const char* FileName) {
 
 void Logger::InitializeRotating(const char* FolderName, const char* BaseName, unsigned Keep) {
 
-	// The game folder is the exe's folder. Its "A" path turns characters outside the ANSI code page into '?', so the
-	// current folder (where the single log always went) is the second choice.
 	char exePath[MAX_PATH] = {};
 	const DWORD length = GetModuleFileNameA(NULL, exePath, MAX_PATH);
 	std::string exeFolder(exePath, length);
-	exeFolder.resize(length && length < MAX_PATH ? exeFolder.find_last_of("\\/") + 1 : 0); // keeps the trailing slash
+	exeFolder.resize(length && length < MAX_PATH ? exeFolder.find_last_of("\\/") + 1 : 0);
 
 	SYSTEMTIME now;
 	GetLocalTime(&now);
@@ -192,7 +190,6 @@ void Logger::GetRecentLines(std::deque<std::string>& OutLines) {
 
 void Logger::Write(bool ToRingBuffer, const char* Message, va_list Args) {
 
-	// Formatted once; lines longer than the stack buffer go to the heap.
 	char stackLine[2048];
 	std::string heapLine;
 	SYSTEMTIME now;
@@ -206,7 +203,6 @@ void Logger::Write(bool ToRingBuffer, const char* Message, va_list Args) {
 	}
 
 	// Mirror into the in-memory ring buffer for the in-game log window
-	// (docs/preset-manager-design.md § "Debug/authoring tooling"), without the time prefix and the '\n'.
 	if (ToRingBuffer) PushRingBuffer(line + prefix, length - prefix - 1);
 }
 

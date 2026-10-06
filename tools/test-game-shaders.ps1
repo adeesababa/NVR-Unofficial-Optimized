@@ -1,6 +1,3 @@
-# Game shader A/B (tests/game_shaders.cpp): the committed game shaders (git HEAD, or -Base <commit>) against the working
-# copy. Compiles both with the game's D3DX43 compiler, requires bit-identical pixels on the GPU and times both.
-# -Only terrain|objects runs one part. Needs a D3D9 GPU.
 param([string]$Base = 'HEAD', [string]$Only = '')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path

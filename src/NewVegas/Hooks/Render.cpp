@@ -7,8 +7,6 @@
 #include "../../core/PointShadowForward.h"
 #include "../../core/ConstantFilter.h"
 
-// Everything from the start of the game's render call up to the world scene: NVR shadow maps,
-// the game's own pre-scene work (water reflection/refraction/depth maps and anything else).
 static GpuTimer PreSceneTimer("Pre-scene (to world scene)");
 static bool PreSceneTimerActive = false;
 static void EndPreSceneTimer() {
@@ -17,19 +15,10 @@ static void EndPreSceneTimer() {
 	PreSceneTimerActive = false;
 }
 
-// ---- F10: the game's own draws split by shader family; first shader uses; shader-bind cost ----
-// The world scene, the water reflection map and the first-person model are drawn by the game's render
-// loop, most families with NVR's replacement pixel shaders. SetShadersHook sees every geometry pass being
-// set up. While F10 profiling is on it puts a GPU timestamp wherever the shader family changes inside one
-// of those three passes, and the GpuTimeline adds up the GPU time per family ("GPU SPLIT" lines). It also
-// counts binds per frame ("SHADER BINDS" lines) and remembers which D3D pixel shaders have already drawn in
-// which pass, so a FRAME SPIKE line can name a shader used for the first time in that frame and the
-// longest stall between two binds (the draws of a pass happen between its bind and the next one, so a
-// driver compiling a shader at its first draw shows up there).
 namespace ShaderSplit {
 	enum Context : unsigned char { World, Reflections, FirstPerson, ContextCount, Outside = ContextCount };
 	static const char* const ContextNames[ContextCount + 1] = { "world scene", "reflections", "first person", "other" };
-	static const unsigned MaxLabels = 32; // label 0: from the start of the pass to its first shader bind
+	static const unsigned MaxLabels = 32;
 	static_assert(ContextCount * MaxLabels * 2 <= GpuTimeline::KeyCount, "split keys do not fit the timeline");
 
 	static char LabelNames[MaxLabels][16] = { "(pass setup)" };
@@ -42,26 +31,24 @@ namespace ShaderSplit {
 	static unsigned char SavedContext[8], SavedKey[8];
 	static unsigned Depth = 0;
 
-	// First use of a D3D pixel shader in a pass. Tracked all session, F10 or not, so "first" means first.
 	static std::unordered_set<UInt64> Seen;
 	static const void* LastHandle = nullptr;
 	static unsigned char LastHandleContext = Outside;
 	static unsigned FirstUsesSession = 0;
 
 	struct Counters {
-		unsigned Binds[ContextCount + 1];			// SetShaders calls (one per geometry pass)
-		unsigned PixelChanges[ContextCount + 1];	// ... that changed the pixel shader
-		unsigned NvrUploads[ContextCount + 1];		// ... to an NVR shader, so ShaderRecord::SetCT ran
-		unsigned FamilyChanges[ContextCount + 1];	// timeline marks
+		unsigned Binds[ContextCount + 1];
+		unsigned PixelChanges[ContextCount + 1];
+		unsigned NvrUploads[ContextCount + 1];
+		unsigned FamilyChanges[ContextCount + 1];
 		unsigned FirstUses;
-		double HookMs;								// CPU time inside SetShadersHook
+		double HookMs;
 	};
 	static Counters Frame = {}, Window = {};
 	static unsigned WindowFrames = 0;
 	static double WindowMaxHookMs = 0.0;
 	static bool FrameProfiled = false;
 
-	// This frame's first uses and its longest gap between two binds, for FRAME SPIKE lines.
 	struct BindInfo { const char* Shader; unsigned char Context; bool Nvr; bool FirstUse; };
 	static BindInfo FirstUseBinds[4];
 	static BindInfo LastBind = {}, MaxGapBind = {};
@@ -71,9 +58,6 @@ namespace ShaderSplit {
 
 	static void Append(char* buffer, size_t size, size_t& used, const char* format, ...);
 
-	// The lit-object pixel shaders (ObjectTemplate.hlsl, src/effects/PBR.h) split by variant group (P47, roadmap 3J):
-	// 2000-2028 sun + up to 3 lights, 2029-2036 up to 6 lights in one pass, 2037-2044 the additive light passes that
-	// redraw an object for more lights, 2045-2046 diffuse point lights, 2047-2056 the specular passes.
 	static const char* SlsGroup(const char* name) {
 		const int number = atoi(name + 3);
 		if (number >= 2000 && number <= 2028) return "SLS 1-3 lights";
@@ -84,16 +68,11 @@ namespace ShaderSplit {
 		return "SLS other";
 	}
 
-	// Lights in use by the 4+ light shaders (roadmap 3J). They compute every light slot and multiply the unused ones
-	// by 0; how many slots a draw really uses decides whether skipping them pays (tests/game_shaders.cpp: -11 to -29%
-	// of their cost with 2 lights, +2 to +4% with all slots used). The game sets the count (EmittanceColor.a = c2.w,
-	// or PSLightColor[0].a = c3.w in the OPT variants) after binding the shader, so it is read back from the device at
-	// the next bind in the same pass, when that draw is done. Only while F10 runs.
 	struct MultiLightShader { int Number; unsigned Slots; bool Opt; };
 	static const MultiLightShader MultiLights[] = { { 2029, 6, false }, { 2030, 6, false }, { 2031, 4, false }, { 2032, 4, true },
 		{ 2033, 4, false }, { 2034, 3, false }, { 2035, 3, true }, { 2036, 3, false } };
 	static const unsigned MultiLightCount = sizeof(MultiLights) / sizeof(MultiLights[0]);
-	static unsigned LightsInUse[MultiLightCount][8] = {};	// [shader][lights in use; 7 = 7 or more]
+	static unsigned LightsInUse[MultiLightCount][8] = {};
 	static unsigned LightsReadFailures = 0;
 	static int PendingMultiLight = -1;
 	static unsigned char PendingMultiLightContext = Outside;
@@ -116,9 +95,6 @@ namespace ShaderSplit {
 		LightsInUse[pending][bucket]++;
 	}
 
-	// Light slots the old code computes for a draw with `used` lights, of which a skipping version would compute
-	// only these: slot 1 always, slot 2 if used > 1, slot 3 if used >= 2 (sic, the shader's own condition), slot 4 if
-	// used >= 3, slot 5 if used >= 4, slot 6 if used >= 5.
 	static unsigned NeededSlots(unsigned slots, unsigned used) {
 		unsigned needed = 1 + (used > 1) + (used >= 2);
 		if (slots > 3) needed += used >= 3;
@@ -152,9 +128,6 @@ namespace ShaderSplit {
 		LightsReadFailures = 0;
 	}
 
-	// Family of a game pixel shader: the terrain templates by name, the lit-object variant groups (SlsGroup),
-	// otherwise the leading letters of the shader name (PAR = parallax objects, SKIN, SM3 = hair and eyes, STLEAF =
-	// tree leaves, GRASS, SKY, WATER, ...). Worked out once per shader.
 	static unsigned char LabelFor(const NiD3DPixelShader* shader) {
 		auto found = LabelOfShader.find(shader);
 		if (found != LabelOfShader.end()) return found->second;
@@ -287,7 +260,6 @@ namespace ShaderSplit {
 		}
 	}
 
-	// The game pass being drawn (nests: the stack restores the outer pass and its current family).
 	static void BeginContext(Context context) {
 		if (Depth < 8) { SavedContext[Depth] = CurrentContext; SavedKey[Depth] = CurrentKey; }
 		Depth++;
@@ -304,7 +276,6 @@ namespace ShaderSplit {
 		Timeline.Mark(CurrentKey);
 	}
 
-	// Called from SetShadersHook once the pixel shader for the pass is chosen. Start: when the hook began.
 	static void OnBind(const NiD3DPixelShader* shader, const IDirect3DPixelShader9* previous, double start) {
 		const unsigned char context = CurrentContext;
 		const IDirect3DPixelShader9* handle = shader ? shader->ShaderHandle : nullptr;
@@ -318,7 +289,6 @@ namespace ShaderSplit {
 		}
 		if (!FrameProfiled) return;
 
-		// The previous pass drew between the end of its bind and the start of this one.
 		if (LastBindEnd > 0.0 && start - LastBindEnd > MaxGapMs) { MaxGapMs = start - LastBindEnd; MaxGapBind = LastBind; }
 		Frame.Binds[context]++;
 		if (handle != previous) {
@@ -328,7 +298,6 @@ namespace ShaderSplit {
 		LastBind = { shader ? shader->Name : "(no pixel shader)", context, nvr, firstUse };
 		if (firstUse && Frame.FirstUses++ < 4) FirstUseBinds[Frame.FirstUses - 1] = LastBind;
 
-		// The previous pass's draw is done: read its lights in use if it was a 4+ light shader, then note this one.
 		SampleLightsInUse(context);
 		const int multiLight = context != Outside ? MultiLightIndex(shader ? shader->Name : nullptr) : -1;
 		if (multiLight >= 0) { PendingMultiLight = multiLight; PendingMultiLightContext = context; }
@@ -349,21 +318,13 @@ namespace ShaderSplit {
 	}
 }
 
-// ---- Which of the game's render entry points ran this frame ----
-// The depth buffers NVR's effects read are refreshed only inside RenderWorldSceneGraphHook. After a save is
-// loaded straight into an interior the game has been seen to render frames without entering it at all
-// (the F10 log then shows no 'World scene (game)' / 'Depth resolves' samples and 'Pre-scene' equal to the
-// whole frame), and the effects run on a stale depth buffer: the scene comes out almost black. This
-// records what happened on the first frames after each cell change, and lets ProcessImageSpaceShadersHook
-// skip NVR's effects while the world scene keeps going missing (the WorldSceneGuard switch).
 static bool WorldRenderedThisFrame = false;
-static unsigned WorldMissStreak = 0;        // consecutive earlier frames without a world scene render
+static unsigned WorldMissStreak = 0;
 static unsigned FrameWorldCalls = 0, FrameFirstPersonCalls = 0, FrameImageSpaceCalls = 0;
 static bool FrameWorldArgsKnown = false;
-static int FrameWorldArgs[3] = {};          // IsFirstPerson, WireFrame, Arg4 of the first call this frame
+static int FrameWorldArgs[3] = {};
 static const unsigned WorldGuardFrames = 10;
 
-// The world is not drawn behind the main menu or a loading screen, so those frames say nothing about it.
 static bool WorldRenderExpected() {
 	return Player && Player->parentCell && !InterfaceManager->IsActive(Menu::MenuType::kMenuType_Main) &&
 		!InterfaceManager->IsActive(Menu::MenuType::kMenuType_Loading);
@@ -381,8 +342,8 @@ static void ReportWorldRender(BSRenderedTexture* RenderedTexture, int Arg2, int 
 	frame++;
 
 	TESObjectCELL* cell = Player ? Player->parentCell : nullptr;
-	if (!cell) { WorldMissStreak = 0; lastCell = nullptr; return; } // no cell: nothing to report
-	if (!WorldRenderExpected()) { WorldMissStreak = 0; return; }     // main menu / loading screen
+	if (!cell) { WorldMissStreak = 0; lastCell = nullptr; return; }
+	if (!WorldRenderExpected()) { WorldMissStreak = 0; return; }
 	if (cell != lastCell) { lastCell = cell; tracePending = 3; }
 
 	const bool missed = !WorldRenderedThisFrame;
@@ -409,11 +370,6 @@ static void ReportWorldRender(BSRenderedTexture* RenderedTexture, int Arg2, int 
 	WorldMissStreak = missed ? WorldMissStreak + 1 : 0;
 }
 
-// Diagnostic (F10 profiling only): where a long frame goes outside NVR's other timers. "Game render (CPU)" is this whole
-// hook (the game's render call, NVR's work included), "Present (CPU)" the time the driver keeps the game in Present (a
-// wait for the graphics card to catch up shows there), and "Game update (CPU)" the rest between two renders: the game's
-// own update (AI, physics, scripts, xNVSE plugins such as GunFX). FRAME SPIKE lines name them when over 0.75 ms.
-// Present is hooked in the device's function table the first time profiling is switched on, so a normal run is untouched.
 namespace FrameSplit {
 	typedef HRESULT (__stdcall* PresentFn)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
 	static PresentFn OriginalPresent = nullptr;
@@ -471,15 +427,13 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	MaterialPass::BeginFrame(Flashlight->Enabled && Flashlight->spotLightActive);
 
 	//if (SettingsMain->Develop.TraceShaders && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && Global->OnKeyDown(SettingsMain->Develop.TraceShaders) && DWNode::Get() == NULL) DWNode::Create();
-	// Whole game frame on the GPU (scene, reflections, NVR effects, image space). Comparing it
-	// with the individual buckets shows how much GPU time is not attributed to any of them.
 	static GpuTimer frameTimer("Game frame total");
 	GpuProfileScope gpu(frameTimer, TheRenderManager->device);
 	PreSceneTimerActive = PreSceneTimer.Begin(TheRenderManager->device);
 	WorldRenderedThisFrame = false;
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
 	FrameWorldArgsKnown = false;
-	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
+	ConstantFilter::BeginFrame(TheRenderManager->device);
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -491,16 +445,8 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 
 }
 
-// Set when NVR changes, mid-frame, a TESR_ constant that game shaders read (CheapReflections). Constants
-// reach a game shader only in ShaderRecord::SetCT, which runs when the pixel shader CHANGES, so the next
-// bind is told that no pixel shader is bound: an NVR shader then uploads even if the game keeps the one
-// already bound. Nothing else changes (the game still sets the device shader itself).
 static bool ForcePixelConstants = false;
 
-// ReducedQuality CheapReflections: the water reflection map is drawn without the forward sun-shadow
-// lookup (TESR_ShadowForwardData.x = 1, the forward path's own off switch) and without terrain parallax
-// (TESR_TerrainParallaxData.x = 0), like the game's own reflections. Both are restored, and uploaded
-// again on the next bind, when the pass ends.
 class CheapReflectionScope {
 public:
 	CheapReflectionScope() {
@@ -535,9 +481,6 @@ private:
 	float SavedParallax = 0.0f;
 };
 
-// ReducedQuality CheapUnderwaterTerrain decides per pixel from the camera-relative world position, which the terrain
-// shader reconstructs with the MAIN camera's matrices. In the water reflection pass (mirrored camera) that position
-// is meaningless, so the water line test is switched off (TESR_TerrainParallaxExtraData.w = -FLT_MAX) for the pass.
 class UnderwaterTerrainReflectionScope {
 public:
 	UnderwaterTerrainReflectionScope() {
@@ -559,12 +502,6 @@ private:
 	float Saved = 0.0f;
 };
 
-// Water reflection probe (diagnostic, P54). The game draws the water reflection map with its own camera inside
-// RenderReflections, and the water shaders look the map up as if that camera were an exact mirror of the main one.
-// A player saw the reflection squashed when looking level and right when looking down, so the two apparently differ.
-// After an NVR screenshot (ScreenshotKey), the next frame records, at the first shader bind of the world pass and of
-// the reflection pass, the render target, viewport, D3D view and projection transforms and the cameras; the log gets
-// both and the reflection map is saved next to the screenshot as "<name> reflection.png".
 extern char LastScreenshotBase[MAX_PATH];
 extern char LastScreenshotName[80];
 extern bool ScreenshotTakenThisFrame;
@@ -583,20 +520,19 @@ namespace ReflectionProbe {
 		D3DXMATRIX view, proj;
 		HRESULT viewHr = E_FAIL, projHr = E_FAIL;
 		CameraShot scene, hook;
-		NiPoint3 worldTranslate = {}, location = {};  // the game's camera globals the pass renders relative to
+		NiPoint3 worldTranslate = {}, location = {};
 		char geometry[64] = {};
 		NiPoint3 geometryPos = {};
 		DWORD clipEnable = 0, cullMode = 0, zFunc = 0, zEnable = 0;
 		float clip[2][4] = {};
 	};
-	// Every object drawn in the recorded reflection pass (name, position, pixel shader, clip planes at its bind).
 	struct DrawnObject { char name[48]; char shader[24]; NiPoint3 pos; DWORD clipEnable; float clip0[4]; };
 	static DrawnObject Drawn[64];
 	static int DrawnCount = 0, DrawnTotal = 0;
-	static bool DrawnDone = false;  // one reflection pass only: set once the world pass follows a recorded one
-	static PassShot Shots[2];  // 0: world scene, 1: reflections
+	static bool DrawnDone = false;
+	static PassShot Shots[2];
 	static IDirect3DSurface9* ReflectionTarget = nullptr;
-	static NiCamera* HookCamera = nullptr;  // the camera the game passed to RenderReflections
+	static NiCamera* HookCamera = nullptr;
 	static int ArmedFrames = 0;
 	static char Base[MAX_PATH], Name[80];
 
@@ -654,7 +590,6 @@ namespace ReflectionProbe {
 
 	static void LogCamera(const char* label, const CameraShot& c) {
 		if (!c.valid) { Logger::Log("UNOFFICIAL reflection probe   %s: none", label); return; }
-		// NVR's convention (RenderManager::SetupSceneCamera): columns 0, 1, 2 are forward, up, right.
 		const float fx = c.rot[0][0], fy = c.rot[1][0], fz = c.rot[2][0];
 		Logger::Log("UNOFFICIAL reflection probe   %s: pos %.1f %.1f %.1f | forward %.4f %.4f %.4f (pitch %.2f deg) | up %.4f %.4f %.4f | right %.4f %.4f %.4f | frustum L %.4f R %.4f T %.4f B %.4f N %.2f F %.0f",
 			label, c.pos.x, c.pos.y, c.pos.z, fx, fy, fz, D3DXToDegree(asinf(max(-1.0f, min(1.0f, fz)))),
@@ -697,7 +632,6 @@ namespace ReflectionProbe {
 		}
 	}
 
-	// Which water planes the game knows, and their heights: the reflection must be mirrored about the one in view.
 	static void LogWater() {
 		if (!Player || !Player->parentCell) return;
 		TESWaterForm* form = nullptr;
@@ -745,7 +679,6 @@ namespace ReflectionProbe {
 		}
 	}
 
-	// Once per frame, after the screenshot check.
 	static void EndFrame() {
 		if (ScreenshotTakenThisFrame) {
 			ScreenshotTakenThisFrame = false;
@@ -756,7 +689,7 @@ namespace ReflectionProbe {
 			DrawnCount = DrawnTotal = 0;
 			DrawnDone = false;
 			if (ReflectionTarget) { ReflectionTarget->Release(); ReflectionTarget = nullptr; }
-			ArmedFrames = 30;  // the reflection pass only runs while water is in view
+			ArmedFrames = 30;
 			return;
 		}
 		if (!ArmedFrames) return;
@@ -767,9 +700,6 @@ namespace ReflectionProbe {
 	}
 }
 
-// GunFX master switches (menu Main > GunFX, all off by default): sent to GunFX.dll, which runs the effects, about five
-// times a second. Bits: 0 puff, 1 heat smoke strand, 2 ejection smoke, 3 barrel glow, 4 heat haze, 5 muzzle blast,
-// 6 energy weapons too (off = no GunFX on lasers, plasma, ...), 7 after-fire trail, 8 volumetric heat smoke/trail.
 namespace GunFXSwitches {
 	static void Update() {
 		static ULONGLONG last = 0;
@@ -810,8 +740,6 @@ namespace BarrelHeat {
 	}
 
 	static bool ToGunLocal(NiGeometry* geometry, float state[10], const char*& failure) {
-		// Rigid weapon vertices are in this geometry's local space in ObjectTemplate.
-		// Put the live muzzle there too, without consulting either camera projection.
 		if (geometry->skinInstance || fabsf(geometry->m_worldTransform.scale) < 0.001f) { failure = "skin or scale"; return false; }
 		const NiTransform& transform = geometry->m_worldTransform;
 		auto toLocal = [&](const D3DXVECTOR3& point) {
@@ -835,7 +763,6 @@ namespace BarrelHeat {
 		return true;
 	}
 
-	// Temporary v40 diagnostics: sample one third-person frame per second.
 	static void BeginWorldProbe() {
 		ProbeFrame = false;
 		if (!Player || !Player->isThirdPerson || ProbeSamples >= 120) return;
@@ -906,15 +833,10 @@ namespace BarrelHeat {
 		const char* name = pixelShader->Name;
 		if (strncmp(name, "SLS20", 5) || strlen(name) != 11 || strcmp(name + 7, ".pso") ||
 			(name[5] - '0') * 10 + name[6] - '0' > 56) return;
-		// Indoor lighting can use SLS2037-2044 for the only opaque draw.
-		// Check the actual blend state instead of guessing the pass from its shader name.
-		// Blended light/specular redraws must not apply the glow again.
 		if (!firstPerson) {
 			DWORD alphaBlend = FALSE;
 			if (FAILED(TheRenderManager->device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend)) || alphaBlend) return;
 		}
-		// The local coordinates used by the heat pixel shader come from its matching
-		// ObjectTemplate vertex shader. Shadow's interpolated sentinel is unrelated.
 		const char* vertexName = vertexShader ? vertexShader->Name : nullptr;
 		const bool paired = vertexName && vertexShader->ShaderHandleBackup &&
 			vertexShader->ShaderHandle != vertexShader->ShaderHandleBackup &&
@@ -1005,23 +927,15 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
-	// Diagnostic (P57): the water reflection with the game's own shaders. NVR's replacements take constants made for
-	// the main camera; the reflection camera sits mirrored below the water. SetupShader picks the handle the game
-	// binds next, so switching it here keeps the game's state tracking right; the next bind picks NVR's again.
 	if (TheSettingManager->SettingsMain.Main.GameShadersInReflections && ShaderSplit::CurrentContext == ShaderSplit::Reflections) {
 		if (VertexShader && VertexShader->ShaderHandleBackup) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
 		if (PixelShader && PixelShader->ShaderHandleBackup) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
 	}
-	// UNOFFICIAL lit particles (Shaders.Particles): the NOLIGHT replacements are shader model 3, and D3D9 cannot pair a
-	// 3.0 shader with the game's 2.x one. Where only one side of a NOLIGHT draw has a replacement -- NOLIGHTTEXVC.pso
-	// behind the game's glow/muzzle-flash vertex shaders, or NOLIGHT016/017.vso in front of the flame/spark pixel
-	// shader -- the draw gets the game's own pair. Skipped entirely while the collection is off.
 	if (VertexShader && PixelShader && TheShaderManager->Shaders.Particles && TheShaderManager->Shaders.Particles->Enabled) {
 		const bool nvrVertex = VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
 		const bool nvrPixel = PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
 		auto particleFamily = [](const char* name) { return name && (!strncmp(name, "NOLIGHT", 7) || !strncmp(name, "GDECAL", 6)); };
 		const bool family = particleFamily(VertexShader->Name) || particleFamily(PixelShader->Name);
-		// The first-person pass (the player's own muzzle flash, Pip-Boy glow) always gets the game's pair.
 		if (family && ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) {
 			if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
 			if (nvrPixel) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
@@ -1046,30 +960,19 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	}
 	(*SetShaders)(This, PassIndex);
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
-	// UNOFFICIAL interior forward point-light shadows: the draw's lamps and their cube maps (PointShadowForward.h).
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
-	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
+	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);
 	if (profiling) ShaderSplit::EndBind(bindStart);
 
 }
 
-// UNOFFICIAL interior forward shadows: called once per object, only from BSBatchRenderer::RenderPassImmediately, after it
-// bound the shaders (when the pass type or shader changed). Each object gets its own lamps (PointShadowForward.h).
-// Hooked only while [Shaders.ShadowsInteriors.Forward] Enabled was on at startup (Hooks.cpp).
 void(__cdecl* RenderPassStandard)(void*, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32))Hooks::RenderPassStandard;
 void(__cdecl* RenderPassSkinned)(void*, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32))Hooks::RenderPassSkinned;
 
-// UNOFFICIAL ScopeFix outdoors ([Shaders.ShadowsInteriors.Forward] ScopeFix): the object and terrain shaders' sun shadows
-// (GetSunShadow) rebuild positions with the main camera's matrices, so B42 Optics' lens and its scope picture (the world
-// drawn by another camera into a small square texture, JIP's ProjectExtraCamera, outside the game's passes) got the main
-// view's shadow pattern laid over them. For those draws the forward path's own off switch, TESR_ShadowForwardData.x (c133,
-// pinned in Shadow.hlsl, which only NVR's shaders read: the game's use nothing above c97), is written straight to the
-// device; the next other draw gets the real value back. The picture is recognised by its size (not the screen's, not the
-// water reflection), and only while a B42 lens was drawn in the last two frames: without B42 Optics nothing changes.
 namespace ScopeSunShadows {
 	static bool Overridden = false;
-	static unsigned LensFrame = 0;		// PointShadowForward::Frame when a B42 lens was last drawn
+	static unsigned LensFrame = 0;
 	static bool Announced = false;
 
 	static void ForDraw(const PointShadowForward::RenderPassView* pass) {
@@ -1144,7 +1047,6 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	if (!FrameWorldArgsKnown) { FrameWorldArgsKnown = true; FrameWorldArgs[0] = IsFirstPerson; FrameWorldArgs[1] = WireFrame; FrameWorldArgs[2] = Arg4; }
 	FrameWorldCalls++;
 	{
-		// Game geometry drawn with NVR's replacement shaders, including per-object sun shadows.
 		static GpuTimer worldTimer("World scene (game)");
 		GpuProfileScope gpu(worldTimer, TheRenderManager->device);
 		ShaderSplit::BeginContext(ShaderSplit::World);
@@ -1188,7 +1090,6 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
 	//ThisCall(0x00874C10, Global);
 	ShaderSplit::BeginContext(ShaderSplit::FirstPerson);
-	// UNOFFICIAL: the first-person model's metal strength ([Shaders.PBR.Metal] FirstPerson) for this pass only.
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
@@ -1202,7 +1103,6 @@ void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*)
 void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* Camera, ShadowSceneNode* SceneNode) {
 	ReflectionProbe::HookCamera = Camera;
 	if (!TheSettingManager->SettingsMain.Main.ForceReflections) {
-		// Hooked for profiling in this mode: the game's reflection pass, unchanged unless CheapReflections is on.
 		static GpuTimer reflectionsTimer("Water reflections (game)");
 		static CpuTimer reflectionsCpuTimer("Water reflections (CPU)");
 		CpuProfileScope cpu(reflectionsCpuTimer);
@@ -1225,7 +1125,6 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 	ShadowData->x = -1.0f; // Disables the shadows rendering for water reflections (the geo is rendered with the same shaders used in the normal scene!)
 	TerrainParallaxData->x = 0;
 	{
-		// ForceReflections renders the full world again into the water reflection map.
 		static GpuTimer reflectionsTimer("Water reflections (game)");
 		static CpuTimer reflectionsCpuTimer("Water reflections (CPU)");
 		CpuProfileScope cpu(reflectionsCpuTimer);
@@ -1302,8 +1201,6 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 
 	FrameImageSpaceCalls++;
 	if (WorldSceneGuardActive()) {
-		// No world scene has been rendered for several frames, so the depth buffers NVR's effects need are
-		// stale and they would darken the image. Let the game's own image space run on its own.
 		static bool announced = false;
 		if (!announced) { Logger::Log("UNOFFICIAL world scene guard: no world scene render for %u frames, NVR effects skipped until it returns.", WorldMissStreak); announced = true; }
 		ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);

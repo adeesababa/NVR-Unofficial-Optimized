@@ -1,8 +1,7 @@
 // LUT color grading effect for New Vegas Reloaded
 // Supports 256x16 (N=16), 1024x32 (N=32), and 4096x64 (N=64) strip LUT textures.
-// N is the cell size/count of each slot's LUT, passed per slot at runtime (the three may differ).
 
-float4 TESR_LUTData;   // x=day N, y=strength, z=night N, w=interior N (N = cell size = cell count; 0 = no usable LUT, colours pass through)
+float4 TESR_LUTData;
 float4 TESR_LUTBlend;  // x=dayNightLerp (0=night, 1=day), y=isInterior (0 or 1)
 
 sampler2D TESR_RenderedBuffer    : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
@@ -33,10 +32,9 @@ VSOUT FrameVS(VSIN IN)
 // Sample a horizontal-strip LUT texture.
 // N = cell count = cell size (e.g. 16 for 256x16, 32 for 1024x32, 64 for 4096x64).
 // Texture layout: N cells wide, each cell N pixels square, blue axis left-to-right.
-// N below 2 means the slot has no usable LUT (missing file or not a strip): the colour passes through.
 float3 SampleLUT(sampler2D lut, float3 color, float slotN)
 {
-	float N      = max(slotN, 2.0); // keeps the unused path finite; the result is discarded below
+	float N      = max(slotN, 2.0);
 	float b      = color.b * (N - 1.0);
 	float bCell  = floor(b);
 	float bFrac  = frac(b);

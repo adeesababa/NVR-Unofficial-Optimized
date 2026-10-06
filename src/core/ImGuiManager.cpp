@@ -2415,7 +2415,6 @@ static void RenderContent() {
 			ImGui::PushStyleColor(ImGuiCol_Button, enabled
 				? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
 				: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
-			// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: say so.
 			const std::string label = shaderName + " (all): " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
 			if (ImGui::SmallButton(label.c_str())) {
 				TheShaderManager->SwitchShaderStatus(shaderName.c_str());
@@ -2659,8 +2658,6 @@ static void RenderMainMenuToast() {
 		msg.c_str());
 }
 
-// A small dim marker in the top-right corner while the F10 GPU/CPU profiler is running, so it is not
-// left on by accident. Drawn on the foreground list, so it needs no window and shows with the menu closed.
 static void RenderProfilerIndicator() {
 	if (!GpuTimer::Enabled) return;
 

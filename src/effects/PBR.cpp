@@ -8,8 +8,6 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 }
 
-// The first-person model's metal strength for its pass. Shaders upload their constants when bound, so the one still bound
-// from the world pass gets it directly (c34: TESR_PBRMetal in Object.hlsl).
 void PBRShaders::BeginFirstPerson(IDirect3DDevice9* Device) {
 	Constants.Metal.x = MetalSettings.FirstPerson;
 	if (Device) Device->SetPixelShaderConstantF(34, (const float*)&Constants.Metal, 1);
@@ -22,8 +20,6 @@ void PBRShaders::EndFirstPerson(IDirect3DDevice9* Device) {
 
 
 void PBRShaders::UpdateSettings() {
-	// UNOFFICIAL metal (Object.hlsl): strengths per pass, the guess and the finish.
-	// MetalOn: the metal's own switch (the panel's Enabled button switches all of the PBR shaders).
 	const bool metalOn = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "MetalOn") != 0;
 	MetalSettings.FirstPerson = metalOn ? std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "FirstPerson"), 0.0f, 1.0f) : 0.0f;
 	MetalSettings.World = metalOn ? std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "World"), 0.0f, 1.0f) : 0.0f;
@@ -35,7 +31,6 @@ void PBRShaders::UpdateSettings() {
 	Constants.MetalLook.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "PolishedRoughness"), 0.05f, 1.0f);
 	Constants.MetalLook.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "Reflections"), 0.0f, 4.0f);
 	Constants.MetalLook.w = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "DebugView") ? 1.0f : 0.0f;
-	// UNOFFICIAL environment maps by the light (EnvTemplate.hlsl).
 	Constants.Env.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Lighting"), 0.0f, 1.0f);
 	Constants.Env.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Strength"), 0.0f, 8.0f);
 	Constants.Env.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "WithMetal"), 0.0f, 1.0f);
@@ -98,7 +93,6 @@ void PBRShaders::UpdateConstants() {
 	Constants.ExtraData.y = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.SkylightingScale, Settings.Night.SkylightingScale, Settings.Interiors.SkylightingScale),
 		TheShaderManager->GetTransitionValue(Settings.Rain.SkylightingScale, Settings.NightRain.SkylightingScale, Settings.Interiors.SkylightingScale), rainFactor);
 
-	// UNOFFICIAL: no shader constant; Sky.cpp folds it into the sky irradiance coefficients.
 	SkylightSaturation = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.SkylightingSaturation, Settings.Night.SkylightingSaturation, Settings.Interiors.SkylightingSaturation),
 		TheShaderManager->GetTransitionValue(Settings.Rain.SkylightingSaturation, Settings.NightRain.SkylightingSaturation, Settings.Interiors.SkylightingSaturation), rainFactor);
 

@@ -1,11 +1,7 @@
 #pragma once
 
-// Conservative sphere test against the four side planes of a 90-degree cube
-// face. Coordinates are relative to the light; direction is an axis unit vector.
-// No near/far rejection: a sphere crossing a seam must reach every touched face.
 inline bool ShadowSphereTouchesFace(float x, float y, float z, float radius,
                                    float dx, float dy, float dz) {
-    // Unknown/degenerate bounds fail open, including NaNs and infinities.
     if (!(radius > 0.0f && radius < 1.0e20f) ||
         !(x > -1.0e20f && x < 1.0e20f) ||
         !(y > -1.0e20f && y < 1.0e20f) ||

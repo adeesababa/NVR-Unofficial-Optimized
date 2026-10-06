@@ -10,7 +10,7 @@ struct SettingsMainStruct {
 		bool	RemoveUnderwater;
 		bool	ForceMSAA;
 		bool	ForceReflections;
-		bool	GameShadersInReflections; // [Main.Main.Water] diagnostic: the reflection pass uses the game's own shaders
+		bool	GameShadersInReflections;
 		bool	RemovePrecipitations;
 		bool	MemoryHeapManagement;
 		bool	MemoryTextureManagement;
@@ -18,22 +18,22 @@ struct SettingsMainStruct {
         bool    SkipFog;
         bool    RenderEffects;
         bool    RenderPreTonemapping;
-        bool    DisableFrameChain; // ![Main.Main.Performance] FrameChain (copy-free effect chain)
-        bool    DisableWorldSceneGuard; // ![Main.Main.Performance] WorldSceneGuard (skip NVR effects while the game renders no world scene)
-        bool    DisableCompositeApply; // ![Main.Main.Performance] CompositeApply (shadow/AO apply folded into fog)
-        bool    DisableChainGameTexture; // ![Main.Main.Performance] ChainUsesGameTexture
-        bool    DisableMergedNormals; // ![Main.Main.Performance] MergedDepthNormals
-        bool    SlimDepthBuffer; // [Main.Main.Performance] SlimDepthBuffer (read once at startup)
-        bool    GodRaysLowRes; // [Main.Main.ReducedQuality] GodRaysLowRes (quarter instead of half resolution)
-        bool    AOLowRes; // [Main.Main.ReducedQuality] AOLowRes (quarter instead of half resolution)
-        bool    FXAA; // [Main.Main.ReducedQuality] FXAA (lean FXAA pass after SMAA)
-        int     PointShadowInterval; // [Main.Main.ReducedQuality] PointShadowInterval (redraw each point-light shadow cubemap every N frames, 1-4)
-        bool    CheapReflections; // [Main.Main.ReducedQuality] CheapReflections (water reflection map drawn without sun shadows and terrain parallax)
-        bool    CheapUnderwaterTerrain; // [Main.Main.ReducedQuality] CheapUnderwaterTerrain (ground below the water surface drawn without parallax)
-        bool    ParallaxLite; // [Main.Main.ReducedQuality] ParallaxLite (8-step parallax with a secant step for terrain and parallax objects; terrain also two shadow taps). P60's TerrainParallaxLite.
-        bool    StaggeredSunShadows; // [Main.Main.ReducedQuality] StaggeredSunShadows (middle sun-shadow cascade every 4th frame, far/Lod every 8th)
-        bool    CachedDistantShadows; // [Main.Main.ReducedQuality] CachedDistantShadows (the stagger, but cascades with characters in them redraw every frame)
-        int     NearCascadeInterval; // [Main.Main.ReducedQuality] NearCascadeInterval (redraw the near sun-shadow cascade every N frames, 1-2)
+        bool    DisableFrameChain;
+        bool    DisableWorldSceneGuard;
+        bool    DisableCompositeApply;
+        bool    DisableChainGameTexture;
+        bool    DisableMergedNormals;
+        bool    SlimDepthBuffer;
+        bool    GodRaysLowRes;
+        bool    AOLowRes;
+        bool    FXAA;
+        int     PointShadowInterval;
+        bool    CheapReflections;
+        bool    CheapUnderwaterTerrain;
+        bool    ParallaxLite;
+        bool    StaggeredSunShadows;
+        bool    CachedDistantShadows;
+        int     NearCascadeInterval;
         bool    PresetManagerEnabled; // master on/off for automatic per-location preset resolution -- docs/preset-manager-design.md
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;

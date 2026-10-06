@@ -53,7 +53,7 @@ struct VS_OUTPUT {
 
 // Code:
 #include "Includes/Skin.hlsl"
-#include "Includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
+#include "Includes/PointShadowForward.hlsl"
 
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
@@ -127,7 +127,6 @@ VS_OUTPUT main(VS_INPUT IN) {
 #endif
 
 #if INTERIOR_SHADOWS
-    // UNOFFICIAL forward point-light shadows: light 1 of the draw is PointLight1Color (c4), light 2 PointLight2Color (c5).
     float3 ptWorldPos = IN.shadowWorldPos.xyz;
     float3 ptNormal = shadowNormal;
     float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
@@ -139,8 +138,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     r1.yzw = (saturate((1 - att3.x) - att4.x) * q40.xyz * ptShadow1) + sunTerm;			// partial precision
     r6.xyz = ((r2.w * ((q19.x * r4.yzw) + r0.yzw) * ptShadow2) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);			// partial precision
 #else
-    r1.yzw = (saturate((1 - att3.x) - att4.x) * q40.xyz) + sunTerm;			// partial precision
-    r6.xyz = ((r2.w * ((q19.x * r4.yzw) + r0.yzw)) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);			// partial precision
+    r1.yzw = (saturate((1 - att3.x) - att4.x) * q40.xyz) + sunTerm;
+    r6.xyz = ((r2.w * ((q19.x * r4.yzw) + r0.yzw)) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
 #endif
 
     // Was a debug override: selectColor(TESR_DebugVar.x, ...) emitted a flat light colour

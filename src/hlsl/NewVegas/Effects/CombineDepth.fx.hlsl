@@ -65,11 +65,6 @@ technique
 	}
 }
 
-// ---- Merged depth + normals (two render targets) ----
-// Normals.fx reconstructs normals from this pass's output at the pixel and its +-1/+-2 neighbours.
-// Every combined-depth texel is a pure function of the raw depth texels at the same position, so
-// the same normals can be computed here from the raw buffers (point sampled, same texel centres),
-// saving the separate full-screen normals pass. The maths below matches Normals.fx exactly.
 float4 TESR_ReciprocalResolution;
 
 float2 CombinedDepthAt(float2 uv)

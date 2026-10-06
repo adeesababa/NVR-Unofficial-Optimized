@@ -1,28 +1,18 @@
-// The gun's real shape for GunFX's volumetric smoke: a map of how far every point around the gun is from its surface
-// (a signed distance field), built once from the gun model's own triangles, in the model's own space. The smoke looks
-// itself up in it to flow round the actual gun (its sights, magazine, scope, bipod) instead of a plain tube.
-// Standalone (no game code), so the same code is tested offline (work\gunshape_test.cpp).
 #pragma once
 #include <vector>
 #include <cmath>
 #include <cstdint>
 
 struct GunShape {
-	float lo[3] = {};          // the grid's corner (model space)
-	float voxel = 0.5f;        // grid spacing (model units)
+	float lo[3] = {};
+	float voxel = 0.5f;
 	int nx = 0, ny = 0, nz = 0;
-	std::vector<float> d;      // signed distance to the gun's surface at each grid point (negative inside)
+	std::vector<float> d;
 
 	bool Ready() const { return !d.empty(); }
 
-	// Builds the map from `count` triangles (9 floats each: three corners). The grid covers the triangles plus `margin`
-	// on every side, `voxelSize` apart (coarser if it would exceed `maxPoints` grid points). `shell`: how far out from the
-	// drawn surface counts as solid. Cracks narrower than about one grid step are sealed (models are rarely closed), so
-	// smoke treats a gun's enclosed body as solid. Returns false if there is nothing to build.
 	bool Build(const float* tris, int count, float voxelSize, float margin, float shell, int maxPoints);
 
-	// The signed distance at a point (model space) and the outward direction there (unit length; zero where unknown).
-	// Beyond the grid, the distance grows on with the distance to the grid, pointing away from it.
 	float Sample(const float* p, float* normal) const;
 };
 
@@ -32,7 +22,6 @@ namespace GunShapeDetail {
 	inline void Mad(const float* a, const float* b, float k, float* o) { o[0] = a[0] + b[0] * k; o[1] = a[1] + b[1] * k; o[2] = a[2] + b[2] * k; }
 	inline void Copy(const float* a, float* o) { o[0] = a[0]; o[1] = a[1]; o[2] = a[2]; }
 
-	// The point of triangle abc closest to p (Ericson, Real-Time Collision Detection 5.1.5). The triangle must have area.
 	inline void ClosestOnTriangle(const float* p, const float* a, const float* b, const float* c, float* out) {
 		float ab[3], ac[3], ap[3], bp[3], cp[3];
 		Sub(b, a, ab); Sub(c, a, ac); Sub(p, a, ap);
@@ -72,7 +61,7 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 	for (int i = 0; i < count * 3; i++)
 		for (int k = 0; k < 3; k++) {
 			const float v = tris[i * 3 + k];
-			if (!(v > -1e6f && v < 1e6f)) return false;              // not a sane model
+			if (!(v > -1e6f && v < 1e6f)) return false;
 			mn[k] = v < mn[k] ? v : mn[k];
 			mx[k] = v > mx[k] ? v : mx[k];
 		}
@@ -88,11 +77,10 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 	for (int k = 0; k < 3; k++) lo[k] = mn[k] - margin;
 	const int sx = 1, sy = nx, sz = nx * ny;
 	const size_t N = (size_t)nx * ny * nz;
-	std::vector<float> dist2(N, 1e30f);          // squared distance to the nearest surface point found so far
-	std::vector<float> near3(N * 3, 0.0f);       // that point
+	std::vector<float> dist2(N, 1e30f);
+	std::vector<float> near3(N * 3, 0.0f);
 	const float inv = 1.0f / voxel;
 
-	// 1. Exactly, within one and a half grid steps of each triangle.
 	const float band = 1.5f * voxel;
 	for (int t = 0; t < count; t++) {
 		const float* a = tris + t * 9;
@@ -102,7 +90,7 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 		Sub(b, a, ab); Sub(c, a, ac);
 		nrm[0] = ab[1] * ac[2] - ab[2] * ac[1]; nrm[1] = ab[2] * ac[0] - ab[0] * ac[2]; nrm[2] = ab[0] * ac[1] - ab[1] * ac[0];
 		const float area2 = sqrtf(Dot(nrm, nrm));
-		if (area2 < 1e-8f) continue;                                // no area
+		if (area2 < 1e-8f) continue;
 		nrm[0] /= area2; nrm[1] /= area2; nrm[2] /= area2;
 		int i0[3], i1[3];
 		for (int k = 0; k < 3; k++) {
@@ -117,7 +105,7 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 					const float p[3] = { lo[0] + x * voxel, lo[1] + y * voxel, lo[2] + z * voxel };
 					float ap[3]; Sub(p, a, ap);
 					const float plane = Dot(ap, nrm);
-					if (plane > band || plane < -band) continue;          // too far from the triangle's plane
+					if (plane > band || plane < -band) continue;
 					float q[3]; ClosestOnTriangle(p, a, b, c, q);
 					float e[3]; Sub(p, q, e);
 					const float dd = Dot(e, e);
@@ -126,8 +114,6 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 				}
 	}
 
-	// 2. Outward: each grid point takes a neighbour's nearest surface point when that is nearer to it (raster passes
-	// forward and backward over the 13 neighbours already visited in that order; twice).
 	int offs[13][3], m = 0;
 	for (int dz = -1; dz <= 1; dz++)
 		for (int dy = -1; dy <= 1; dy++)
@@ -158,8 +144,6 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 		}
 	near3.clear(); near3.shrink_to_fit();
 
-	// 3. Inside or outside: flood in from the grid's edges through every point that is not up against the surface;
-	// what the flood cannot reach is enclosed by the gun (inside).
 	const float wall = fmaxf(shell, 0.75f * voxel);
 	const float wall2 = wall * wall;
 	std::vector<uint8_t> outside(N, 0);
@@ -184,7 +168,6 @@ inline bool GunShape::Build(const float* tris, int count, float voxelSize, float
 		if (z < nz - 1) seed(x, y, z + 1);
 	}
 
-	// 4. The signed distance to the solid's skin (`shell` out from the drawn surface).
 	d.resize(N);
 	for (size_t v = 0; v < N; v++) {
 		const float r = dist2[v] < 1e29f ? sqrtf(dist2[v]) : 1e3f;
@@ -203,7 +186,7 @@ inline float GunShape::Sample(const float* p, float* normal) const {
 		g[k] = (p[k] - lo[k]) / voxel;
 		const float top = (float)(n[k] - 1) - 0.0001f;
 		const float gc = g[k] < 0.0f ? 0.0f : g[k] > top ? top : g[k];
-		ext[k] = (g[k] - gc) * voxel;                                   // how far beyond the grid (model units)
+		ext[k] = (g[k] - gc) * voxel;
 		i[k] = (int)gc;
 		f[k] = gc - (float)i[k];
 	}
@@ -223,7 +206,7 @@ inline float GunShape::Sample(const float* p, float* normal) const {
 	const float out = sqrtf(ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]);
 	if (out > 0.0f) {
 		value += out;
-		const float k = out > voxel ? 1.0f : out / voxel;                // away from the grid, more so the farther out
+		const float k = out > voxel ? 1.0f : out / voxel;
 		const float gl = sqrtf(gr[0] * gr[0] + gr[1] * gr[1] + gr[2] * gr[2]);
 		for (int a = 0; a < 3; a++) gr[a] = (gl > 1e-6f ? gr[a] / gl : 0.0f) * (1.0f - k) + ext[a] / out * k;
 	}

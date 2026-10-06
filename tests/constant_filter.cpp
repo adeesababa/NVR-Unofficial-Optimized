@@ -1,8 +1,3 @@
-// UNOFFICIAL: device test for src/core/ConstantFilter.h (SkipRedundantConstants). Real D3D9 device, the filter's own
-// body detours. After every operation the device's float constants (read back) must equal what the program last set,
-// including after D3DX effects restore their saved state at End (IDirect3DStateBlock9::Apply), state block recording and
-// explicit state block Apply; and redundant calls must actually be skipped.
-// Usage: build\constant-filter-test\constant_filter.exe
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -15,7 +10,6 @@
 #include <thread>
 #include "../lib/Detours/detours.h"
 
-// Stand-ins for what the header takes from NVR.
 struct GpuTimer { static inline bool Enabled = true; };
 struct Logger { static void Log(const char* format, ...) { va_list a; va_start(a, format); vprintf(format, a); va_end(a); std::puts(""); } };
 struct SettingStub { int GetSettingI(const char*, const char*) { return getenv("FILTER") && !strcmp(getenv("FILTER"), "0") ? 0 : 1; } };
@@ -24,7 +18,7 @@ static SettingStub* TheSettingManager = &settingStub;
 #include "../src/core/ConstantFilter.h"
 
 static unsigned seed = 7;
-static float Rnd() { seed = seed * 1664525u + 1013904223u; return (float)((seed >> 9) % 8) * 0.25f; }   // few distinct values: many repeats
+static float Rnd() { seed = seed * 1664525u + 1013904223u; return (float)((seed >> 9) % 8) * 0.25f; }
 
 static const char* EffectSource = R"(
 float4 A : register(c10);
@@ -54,7 +48,7 @@ int main() {
 		float actual[224][4];
 		device->GetPixelShaderConstantF(0, &actual[0][0], 224);
 		checks++;
-		for (int r = 0; r < 100; r++)   // the registers this test sets (D3DX keeps its own at c128+)
+		for (int r = 0; r < 100; r++)
 			if (memcmp(actual[r], expected[r], 16)) { printf("FAIL after %s: c%d is (%g %g %g %g), expected (%g %g %g %g)\n", what, r,
 				actual[r][0], actual[r][1], actual[r][2], actual[r][3], expected[r][0], expected[r][1], expected[r][2], expected[r][3]); failures++; return; }
 	};
@@ -69,19 +63,16 @@ int main() {
 		const int op = round % 7;
 		if (op <= 2) { set((UINT)(Rnd() * 40), 1 + (UINT)(Rnd() * 4)); check("a set"); }
 		else if (op == 3) {
-			// An effect sets c10 and c20-23 between Begin and End; End restores them (its saved state block).
 			UINT passes = 0;
 			const D3DXVECTOR4 value(Rnd(), Rnd(), Rnd(), Rnd());
 			effect->SetVector("A", &value);
 			effect->Begin(&passes, 0); effect->BeginPass(0); effect->EndPass(); effect->End();
 			check("an effect's End");
-			// Now set what the effect had set: must reach the device (the copy was wiped by Apply).
 			D3DXVECTOR4 a; effect->GetVector("A", &a);
 			device->SetPixelShaderConstantF(10, (float*)&a, 1); memcpy(expected[10], &a, 16);
 			check("setting the effect's value after End");
 		}
 		else if (op == 4) {
-			// Recorded, not applied; then applied later by Apply.
 			device->BeginStateBlock();
 			float v[4] = { Rnd(), Rnd(), Rnd(), 9.0f };
 			device->SetPixelShaderConstantF(5, v, 1);
@@ -92,7 +83,6 @@ int main() {
 			check("applying a recorded state block");
 		}
 		else if (op == 5) {
-			// Capture now, change, apply the capture: the device goes back without our calls.
 			IDirect3DStateBlock9* block = nullptr;
 			device->CreateStateBlock(D3DSBT_PIXELSTATE, &block);
 			float saved[4]; memcpy(saved, expected[7], 16);
@@ -100,8 +90,6 @@ int main() {
 			if (block) { block->Apply(); memcpy(expected[7], saved, 16); block->Release(); }
 			check("applying a captured state block");
 			device->SetPixelShaderConstantF(7, expected[7], 1); check("re-setting after Apply");
-			// The sharp case: set a value, let a state block put the old one back behind the filter's back, then set the
-			// same value again. A stale copy would think the device still holds it and drop the call.
 			IDirect3DStateBlock9* undo = nullptr;
 			device->CreateStateBlock(D3DSBT_PIXELSTATE, &undo);
 			float fresh[4] = { Rnd(), Rnd(), Rnd(), 5.0f };
@@ -112,8 +100,6 @@ int main() {
 		}
 		else { set(0, 1); set(0, 1); check("repeated sets"); }
 		if (round % 97 == 50) {
-			// Another thread (the game's loading screen) changes a register behind the frame thread's back; setting the old
-			// value again must reach the device, and filtering must come back after 30 quiet frames.
 			float before[4]; memcpy(before, expected[9], 16);
 			device->SetPixelShaderConstantF(9, before, 1);
 			float other[4] = { 7.0f, 7.0f, 7.0f, (float)round };

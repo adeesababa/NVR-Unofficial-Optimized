@@ -14,9 +14,6 @@ static const float nearZ = TESR_CameraData.x;
 static const float farZ = TESR_CameraData.y;
 static const float Q = farZ/(farZ - nearZ);
 
-// CombineDepth stores linear depth (viewZ / farZ) in the first channel. The post-projection depth
-// it used to store as a second channel is an exact function of it (CombineDepth's ToPS), so it is
-// recomputed here and the buffer can be a single R32F channel -- half the bytes per depth read.
 float projectedDepthFromLinear(float linear01)
 {
 	float viewZ = max(linear01 * farZ, 1.0e-6);
@@ -28,8 +25,6 @@ float readDepth(float2 coord)
 	return tex2D(TESR_DepthBuffer, coord).x * farZ;
 }
 
-// Explicit LOD variants are safe behind ps_3_0 dynamic branches. Full-screen effects use
-// level zero, so this is equivalent to tex2D for buffers without mipmaps.
 float readDepthLod(float2 coord)
 {
 	return tex2Dlod(TESR_DepthBuffer, float4(coord, 0.0f, 0.0f)).x * farZ;

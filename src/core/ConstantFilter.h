@@ -1,23 +1,5 @@
 #pragma once
 
-// UNOFFICIAL redundant shader-constant filter ([Main.Main.Performance] SkipRedundantConstants).
-//
-// The draw-stats measuring build (HANDOFF "MEASURING BUILD RESULT", 2026-10-06) found the game CPU-bound indoors by its
-// own draw submission (RCHangar: 10 ms submitting about 5500 draws), with 24.6K SetPixelShaderConstantF calls per frame of
-// which 88% set exactly the values the device already held (98% of the registers), and 35% of the vertex ones. Each call
-// still costs a trip through the D3D9 runtime and driver. Here every upload is compared with a copy of what the device
-// holds and dropped when nothing changes, so the device ends up in the same state: the picture cannot change.
-//
-// The copy is only trusted while every write to the device's float constants comes through these two calls:
-//  - IDirect3DStateBlock9::Apply (D3DX effects restore the state they saved at End) and IDirect3DDevice9::Reset wipe it;
-//  - between BeginStateBlock and EndStateBlock the calls are recorded, not applied: passed through, copy untouched;
-//  - a call from another thread than the one that draws the frames (the loading screen's) never touches the copy: it
-//    only counts itself, and the frame thread then passes every call through and forgets what it sets until no such
-//    call has come for 30 frames; then the copy starts again from empty. (The copy has no lock: only the frame thread
-//    reads or writes it.) Until 2026-10-06 the first such call turned the filter off until restart, so it never ran
-//    after the first loading screen.
-// Hooked on the function bodies (Detours), not in the device's vtable: the native D3D9 runtime rewrites the vtable
-// every frame (measuring build's lesson).
 namespace ConstantFilter {
 
 	typedef HRESULT(STDMETHODCALLTYPE* SetConstantsFn)(IDirect3DDevice9*, UINT, const float*, UINT);
@@ -33,13 +15,13 @@ namespace ConstantFilter {
 	};
 
 	inline bool Installed = false;
-	inline bool Enabled = false;		// the setting, read each frame
-	inline bool Broken = false;			// the detours failed: off for good
-	inline bool Recording = false;		// between BeginStateBlock and EndStateBlock
-	inline DWORD Thread = 0;			// the thread that draws the frames (BeginFrame's)
-	inline volatile LONG ForeignTick = 0;	// counts calls from another thread
-	inline LONG SeenForeignTick = 0;	// the last ForeignTick the frame thread has seen
-	inline bool Foreign = false;		// another thread called lately: pass through, forget, until 30 quiet frames
+	inline bool Enabled = false;
+	inline bool Broken = false;
+	inline bool Recording = false;
+	inline DWORD Thread = 0;
+	inline volatile LONG ForeignTick = 0;
+	inline LONG SeenForeignTick = 0;
+	inline bool Foreign = false;
 	inline unsigned QuietFrames = 0;
 	inline Copy Vertex = {}, Pixel = {};
 	inline SetConstantsFn OrigVertex = nullptr, OrigPixel = nullptr;
@@ -49,7 +31,7 @@ namespace ConstantFilter {
 	inline ApplyFn OrigApply = nullptr;
 	inline unsigned StatFrames = 0;
 	inline double StatVertexCalls = 0, StatVertexSkipped = 0, StatPixelCalls = 0, StatPixelSkipped = 0, StatWipes = 0;
-	inline unsigned StatPauses = 0;		// times another thread paused it (since start)
+	inline unsigned StatPauses = 0;
 
 	inline void Wipe() {
 		memset(Vertex.known, 0, sizeof(Vertex.known));
@@ -57,10 +39,8 @@ namespace ConstantFilter {
 		StatWipes += 1;
 	}
 
-	// True when the call can be dropped; otherwise the copy is updated to what the call sets.
 	inline bool Redundant(Copy& copy, UINT start, const float* data, UINT count) {
 		if (!data || start >= Registers || start + count > Registers) {
-			// Out of the copy's range: let it through and forget what it covers.
 			for (UINT i = start; i < Registers && i < start + count; i++) copy.known[i] = false;
 			return false;
 		}
@@ -74,7 +54,6 @@ namespace ConstantFilter {
 		return false;
 	}
 
-	// 1: filter the call; 0: pass it through and forget the registers it sets; -1: pass it through, copy untouched.
 	inline int Use() {
 		if (Recording) return -1;
 		const DWORD thread = GetCurrentThreadId();
@@ -124,18 +103,17 @@ namespace ConstantFilter {
 
 	inline HRESULT STDMETHODCALLTYPE HookEndStateBlock(IDirect3DDevice9* self, IDirect3DStateBlock9** block) {
 		Recording = false;
-		if (GetCurrentThreadId() == Thread) Wipe();	// in case the runtime applied what it recorded
+		if (GetCurrentThreadId() == Thread) Wipe();
 		else InterlockedIncrement(&ForeignTick);
 		return OrigEndStateBlock(self, block);
 	}
 
 	inline HRESULT STDMETHODCALLTYPE HookApply(IDirect3DStateBlock9* self) {
-		if (GetCurrentThreadId() == Thread) Wipe();	// it may set any constant without going through the calls above
+		if (GetCurrentThreadId() == Thread) Wipe();
 		else InterlockedIncrement(&ForeignTick);
 		return OrigApply(self);
 	}
 
-	// Once, with the device (Render.cpp, at the start of a frame). Detours the bodies the device's vtable points at now.
 	inline void Install(IDirect3DDevice9* device) {
 		if (Installed || !device) return;
 		Installed = true;
@@ -173,15 +151,12 @@ namespace ConstantFilter {
 			TheSettingManager->GetSettingI("Main.Main.Performance", "SkipRedundantConstants") ? "on" : "off");
 	}
 
-	// Each frame: the setting (live; turning it on starts from an empty copy), and the F10 line.
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
 		const bool enabled = TheSettingManager->GetSettingI("Main.Main.Performance", "SkipRedundantConstants") != 0;
 		if (enabled && !Enabled) Wipe();
 		Enabled = enabled;
-		// Another thread (the loading screen) set constants: pause until it has been quiet for 30 frames, then start again
-		// from an empty copy.
 		const LONG foreignTick = ForeignTick;
 		if (foreignTick != SeenForeignTick) {
 			if (!Foreign) StatPauses++;

@@ -1,4 +1,3 @@
-// Checks the frame-time statistics used by the F10 profiler (src/core/FrameTimeStats.h).
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -10,7 +9,6 @@ static bool Near(double a, double b, double eps = 1e-9) { return std::fabs(a - b
 
 int main()
 {
-	// 1000 frames of exactly 10 ms: every statistic is 10 ms / 100 fps.
 	{
 		std::vector<double> ms(1000, 10.0);
 		FrameTimeSummary s = SummarizeFrameTimes(ms);
@@ -19,7 +17,6 @@ int main()
 		CHECK(CountFrameSpikes(ms, s.p50Ms) == 0, "a steady stream has no spikes");
 	}
 
-	// 990 frames of 10 ms plus 10 frames of 60 ms (exactly 1%): 1% low is the mean of those 10 = 60 ms.
 	{
 		std::vector<double> ms(990, 10.0);
 		for (int i = 0; i < 10; i++) ms.push_back(60.0);
@@ -33,7 +30,6 @@ int main()
 		CHECK(CountFrameSpikes(ms, s.p50Ms) == 10, "the ten 60 ms frames are spikes (threshold %.1f ms)", FrameSpikeThresholdMs(10));
 	}
 
-	// One slow frame in 1000: 0.1% low is that frame; the 1% low averages it with nine 10 ms frames.
 	{
 		std::vector<double> ms(999, 10.0);
 		ms.push_back(110.0);
@@ -42,7 +38,6 @@ int main()
 		CHECK(Near(s.low1Fps, 1000.0 / ((9 * 10.0 + 110.0) / 10.0), 1e-6), "1%% low averages the worst 10 frames (%.3f fps)", s.low1Fps);
 	}
 
-	// Order does not matter; a shuffled ramp gives the same summary as the sorted one.
 	{
 		std::vector<double> a, b;
 		for (int i = 1; i <= 200; i++) a.push_back(i * 0.1);
@@ -52,7 +47,6 @@ int main()
 		CHECK(Near(sa.p50Ms, 10.0), "p50 of a 0.1..20.0 ms ramp is 10.0 ms (nearest rank)");
 	}
 
-	// Edge cases.
 	{
 		std::vector<double> empty;
 		FrameTimeSummary s = SummarizeFrameTimes(empty);
@@ -62,7 +56,6 @@ int main()
 		CHECK(s.frames == 1 && Near(s.p99Ms, 8) && Near(s.low1Fps, 125), "a single frame is its own percentile and low");
 	}
 
-	// The spike threshold behaves sensibly at both ends of the frame-rate range.
 	{
 		CHECK(Near(FrameSpikeThresholdMs(6.0), 15.0), "at 6 ms a spike needs 15 ms (2.5x)");
 		CHECK(Near(FrameSpikeThresholdMs(30.0), 75.0), "at 30 ms a spike needs 75 ms");

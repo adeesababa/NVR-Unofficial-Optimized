@@ -41,16 +41,13 @@
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/SkinVPS.hlsl"
-// UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
-// shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow
-// at the wrong place. c240-c247 is beyond any bone write.
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
 #include "Includes/Shadow.hlsl"
 #ifdef PS
-    #include "Includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
+    #include "Includes/PointShadowForward.hlsl"
 #endif
 
 // Toggles.
@@ -330,7 +327,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if INTERIOR_SHADOWS
-        // UNOFFICIAL forward point-light shadows (Includes/PointShadowForward.hlsl): light k of the draw is PSLightColor[k].
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
         float3 ptNormal = 0.0f;
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
@@ -467,7 +463,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if INTERIOR_SHADOWS
-        // UNOFFICIAL forward point-light shadows: lights 1..MAX_LIGHTS-1 of the draw, PSLightColor[i].
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
         float3 ptNormal = 0.0f;
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;

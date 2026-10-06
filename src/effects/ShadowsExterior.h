@@ -57,8 +57,6 @@ public:
 		// opposite polarity would turn a dropped constant into silently missing shadows,
 		// which is exactly the failure that made this a compile-time macro in the first place.
 		D3DXVECTOR4		ForwardData;
-		// UNOFFICIAL SunSmoothing CrossFade: the cascades from before the last sun step, kept in camera-relative
-		// space like the live ones, and x = how much of them to show (1 at the step, 0 once the fade is over).
 		D3DXMATRIX		OldCameraToLight[4];
 		D3DXVECTOR4		OldCenter[4];
 		D3DXVECTOR4		CrossFade;
@@ -157,8 +155,8 @@ public:
 		float				YawStepSize;
 		float				PitchStepSize;
 		float				MaxJumpAngle;
-		float				GlideSeconds; // UNOFFICIAL: real seconds one quantized step takes to slide over (0 = old behaviour)
-		bool				CrossFade;    // UNOFFICIAL: fade from the old shadows to the new instead of sliding (restart)
+		float				GlideSeconds;
+		bool				CrossFade;
 	};
 
 	struct SettingsShadowStruct {
@@ -214,17 +212,12 @@ public:
 	void		RecreateTextures(bool cascades, bool ortho, bool cubemaps);
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();
-	// UNOFFICIAL sun glide (SunSmoothing GlideSeconds): the quantized step being slid over.
 	D3DXVECTOR3	SunGlideFrom = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
 	D3DXVECTOR3	SunGlideTo = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
 	ULONGLONG	SunGlideStart = 0;
 	bool		SunGlideValid = false;
-	// UNOFFICIAL SunSmoothing CrossFade. The game shaders get the fade compiled in only when the setting was on at
-	// startup (SUN_CROSSFADE), so the switch takes effect after a restart; SunCrossFadeReady says this session's
-	// shaders and the copy of the atlas exist. The copy holds the atlas from the frame before the step; the matrices
-	// and centres are those it was drawn with, relative to the camera position each cascade was drawn from.
 	bool		SunCrossFadeReady = false;
-	bool		SunCrossFading = false; // the current step fades instead of gliding
+	bool		SunCrossFading = false;
 	IDirect3DTexture9* ShadowAtlasOldTexture = nullptr;
 	IDirect3DSurface9* ShadowAtlasOldSurface = nullptr;
 	D3DXMATRIX	SunFadeMatrix[4];

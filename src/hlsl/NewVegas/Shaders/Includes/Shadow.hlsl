@@ -24,10 +24,6 @@
 // The VS matrices are relocatable: GRASS23x00*.vso indexes InstanceData from c20 well past
 // c100.
 //
-// UNOFFICIAL (P66): not clear in SKINNED vertex shaders after all. The game's bone upload reaches past Bones[54]'s c97
-// and overwrote c100-c107, so every actor rebuilt its world position from bone data and read the sun shadow at the
-// wrong place (all at the player's position before P65, a pattern turning with the camera after). Skinned vertex
-// shaders define SHADOW_INVPROJ_REG/SHADOW_INVVIEW_REG c240/c244 (GDECALS: c180/c184) before including this file.
 // ---------------------------------------------------------------------------
 #ifndef SHADOW_INVPROJ_REG
     #define SHADOW_INVPROJ_REG c100
@@ -67,11 +63,6 @@ float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is
 // back to TextureRecord's POINT/WRAP defaults. Game shaders only; Effects parse their own.
 sampler2D TESR_ShadowAtlas : register(SHADOW_ATLAS_SAMPLER_REG) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
-// UNOFFICIAL sun shadow cross-fade ([Shaders.ShadowsExteriors.SunSmoothing] CrossFade, with ForwardShadows): at a
-// sun step the DLL keeps the atlas from before the step and fades from it to the new one (GetOldSunShadow), so no
-// shadow map turns while it is on screen. Compiled in only when on (SUN_CROSSFADE from ShaderRecord::LoadShader):
-// otherwise these shaders are exactly what they were. c146-c166 sit above SkyAmbient's TESR_SkyIrradiance[9]
-// (c137-c145). The kept atlas takes the sampler after the live one: s10 by default, TerrainTemplate sets s15.
 #ifndef SUN_CROSSFADE
     #define SUN_CROSSFADE 0
 #endif
@@ -84,11 +75,10 @@ float4 TESR_ShadowOldNearCenter   : register(c162);
 float4 TESR_ShadowOldMiddleCenter : register(c163);
 float4 TESR_ShadowOldFarCenter    : register(c164);
 float4 TESR_ShadowOldLodCenter    : register(c165);
-float4 TESR_ShadowCrossFade       : register(c166); // x: share of the old shadows (1 at the step, 0 when done)
+float4 TESR_ShadowCrossFade       : register(c166);
 #ifndef SHADOW_OLD_ATLAS_SAMPLER_REG
     #define SHADOW_OLD_ATLAS_SAMPLER_REG s10
 #endif
-// One line, like TESR_ShadowAtlas above.
 sampler2D TESR_ShadowAtlasOld : register(SHADOW_OLD_ATLAS_SAMPLER_REG) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 #endif
 
@@ -235,9 +225,6 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
 }
 
 #if SUN_CROSSFADE
-// SampleShadowAtlas on the kept atlas. Kept separate (not a sampler parameter on the function above) so that
-// builds without the cross-fade compile exactly as before. One tap whatever SHADOW_FILTER_TAPS says: it only shows
-// during the few seconds of a fade.
 float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias, float bleedReduction) {
     lightSpace.xyz /= lightSpace.w;
     lightSpace.x = lightSpace.x * 0.5f + 0.5f;
@@ -264,8 +251,6 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
 #endif
 }
 
-// The shadow from before the last sun step: GetSunShadow's cascade choice on the kept cascades. covered is 0 where
-// none of them reaches (the camera has moved on since the step); the new shadow is shown there alone.
 float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, float bias, out float covered) {
     float4 radii = float4(TESR_ShadowOldNearCenter.w, TESR_ShadowOldMiddleCenter.w,
                           TESR_ShadowOldFarCenter.w,  TESR_ShadowOldLodCenter.w);
@@ -324,25 +309,13 @@ float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, fl
 #endif
 #if CONTACT_HARDENING
 // ---------------------------------------------------------------------------
-// UNOFFICIAL, optional contact-hardening sun shadows ([Shaders.ContactHardening], off by default). Written for this
-// build after the published ideas of percentage-closer soft shadows (Fernando 2005) and variance soft shadow mapping (Yang
-// et al. 2010): a shadow edge is sharp where the caster touches the ground and blurs with the distance between them,
-// as under the real sun's disc. Near and Middle cascades, EVSM4 (the default mode) only; settings
-// [Shaders.ContactHardening.Main and .Status] through ShadowManager::ContactHardeningData.
-//   1. Blocker search: the moments averaged over the widest penumbra say what share of that area is lit and, if
-//      the unlit part is taken to be one surface, how far toward the sun it is (solving the mean for it).
-//   2. Penumbra: that distance times the sun's apparent size, in atlas texels, capped at MaxSoftness.
-//   3. Filter: the moments averaged over a disc that wide, then the usual Chebyshev test once -- moments filter
-//      linearly, which is the point of variance shadow maps. Under a texel wide, the plain one-tap lookup.
-// Compiled in only when the setting is on at startup (CONTACT_HARDENING from ShaderRecord::LoadShader), so that off the
-// shaders are exactly what they were. c167: after the sun cross-fade's c146-c166.
 // ---------------------------------------------------------------------------
-float4 TESR_ContactHardeningData : register(c167); // x: penumbra width per world unit of caster distance (0 = off), y: widest penumbra radius (atlas texels)
+float4 TESR_ContactHardeningData : register(c167);
 
 static const float2 ContactDisc[12] = {
     float2(0.2041f, 0.0000f), float2(-0.2607f, 0.2388f), float2(0.0399f, -0.4547f), float2(0.3286f, 0.4286f),
     float2(-0.6030f, -0.1067f), float2(0.5712f, -0.3634f), float2(-0.1911f, 0.7107f), float2(-0.3644f, -0.7016f),
-    float2(0.7906f, 0.2887f), float2(-0.8224f, 0.3395f), float2(0.3965f, -0.8472f), float2(0.2930f, 0.9341f) };  // golden-angle spiral
+    float2(0.7906f, 0.2887f), float2(-0.8224f, 0.3395f), float2(0.3965f, -0.8472f), float2(0.2930f, 0.9341f) };
 
 float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 quadrantOffset, float bias, float bleedReduction) {
     float4 lightSpace = mul(float4(position, 1.0f), lightTransform);
@@ -353,8 +326,6 @@ float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 
     float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f) * 0.5f + quadrantOffset;
     float depth = lightSpace.z;
 
-    // The cascades are orthographic, so world units per light-space depth and atlas UV per world unit are constant:
-    // the lengths of the matrix columns that make light-space z and x.
     float worldPerDepth = 1.0f / length(float3(lightTransform[0][2], lightTransform[1][2], lightTransform[2][2]));
     float uvPerWorld = 0.25f * length(float3(lightTransform[0][0], lightTransform[1][0], lightTransform[2][0]));
     float texel = TESR_ShadowBlur.x;
@@ -367,7 +338,6 @@ float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 
     float2 depthScale = bias * exponents * warped;
     float2 minVariance = depthScale * depthScale;
 
-    // 1. Blocker search on the positive-exponent moments (x, z) over the widest penumbra.
     float2 search = tex2Dlod(TESR_ShadowAtlas, float4(uv, 0.0f, 0.0f)).xz;
     search += tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + maxRadius * float2( 0.7f,  0.7f), lo, hi), 0.0f, 0.0f)).xz;
     search += tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + maxRadius * float2(-0.7f,  0.7f), lo, hi), 0.0f, 0.0f)).xz;
@@ -377,17 +347,14 @@ float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 
     float variance = max(search.y - search.x * search.x, minVariance.x);
     float difference = warped.x - search.x;
     float lit = warped.x <= search.x ? 1.0f : variance / (variance + difference * difference);
-    [branch] if (lit > 0.99f) return 1.0f;  // nothing within reach casts a shadow here
+    [branch] if (lit > 0.99f) return 1.0f;
 
-    // Mean = lit * receiver + (1 - lit) * caster, solved for the caster, then unwarped to light-space depth.
     float casterWarped = max((search.x - lit * warped.x) / (1.0f - lit), 1.0e-6f);
     float casterDepth = (log(casterWarped) / exponents.x + 1.0f) * 0.5f;
     float distance = max(depth - casterDepth, 0.0f) * worldPerDepth;
 
-    // 2. Penumbra radius (half the width) in atlas UV.
     float radius = min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
 
-    // 3. Filter the moments over it; under a texel the prefiltered single tap is already that soft.
     float4 moments = tex2Dlod(TESR_ShadowAtlas, float4(uv, 0.0f, 0.0f));
     [branch] if (radius > texel) {
         [unroll] for (int i = 0; i < 12; i++)
@@ -400,8 +367,6 @@ float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 
 #endif
 }
 
-// One Near or Middle tap: contact hardening when on, the plain lookup otherwise. A real branch, not ?: (which would
-// run both).
 float SampleShadowCascade(float3 position, float4x4 lightTransform, float2 quadrantOffset, float bias, float bleedReduction) {
     [branch] if (TESR_ContactHardeningData.x > 0.0f)
         return SampleShadowAtlasContact(position, lightTransform, quadrantOffset, bias, bleedReduction);
@@ -416,10 +381,6 @@ float SampleShadowCascade(float3 position, float4x4 lightTransform, float2 quadr
 float3 GetShadowWorldPos(float4 clipPos) {
     float4 viewPos = mul(clipPos, TESR_InvProjectionTransform);
     viewPos /= viewPos.w;
-    // UNOFFICIAL (P65): put the point at view depth clipPos.w along its view ray. clip.w is the view depth for any
-    // perspective projection, so a draw projected with other near/far planes than the camera's still lands on the
-    // right point; with matching planes it is the same point (to rounding). Added for the actor shadow bug, whose
-    // real cause turned out to be the register overwrite described at the top of this file (fixed in P66).
     viewPos.xyz *= clipPos.w / (abs(viewPos.z) > 1e-6f ? viewPos.z : 1e-6f);
     return mul(viewPos, TESR_InvViewTransform).xyz;
 }
@@ -439,9 +400,7 @@ float3 GetShadowGeometricNormal(float3 worldPos) {
     return n * sign(dot(n, -worldPos));
 }
 
-// ---------------------------------------------------------------------------
 // 1.0 in full light, towards 0 in shadow. Multiply the SUN term by it, before ambient.
-// ---------------------------------------------------------------------------
 float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // Nonzero SUPPRESSES the forward path; SunShadows.fx reads the same constant and takes
     // over deferred. A missing constant reads zero and leaves forward running.
@@ -499,7 +458,6 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // Sample inside the branch, not before it. A pixel needs one cascade, or two in the outer
     // 10% where they cross-fade; sampling all four up front cost four atlas fetches and four
     // matrix transforms on every shadowed pixel, and the forward path pays that per object.
-    //
     // Legal here only because SampleShadowAtlas uses tex2Dlod -- a gradient instruction under
     // dynamic flow control is X3528 in ps_3_0. The atlas has no mipmaps, so LOD 0 is exact.
 #if CONTACT_HARDENING
@@ -544,7 +502,6 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     shadow = saturate(shadow);
 
 #if SUN_CROSSFADE
-    // During a sun step's cross-fade, part old shadow, part new. Outside a fade this is one skipped branch.
     [branch] if (TESR_ShadowCrossFade.x > 0.0f) {
         float covered;
         float oldShadow = GetOldSunShadow(worldPos, worldNormal, offsetScale, bias, covered);

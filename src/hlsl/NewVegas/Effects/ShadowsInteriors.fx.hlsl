@@ -37,7 +37,6 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/BlurDepth.hlsl"
 
 
-// Applies the blurred shadow term to the scene colour. Shared by both techniques below.
 float4 ApplyInteriorShadow(float2 uv, float4 color, float shadowSample) {
     color.rgb = pows(color.rgb, 2.2); // linearise
 	float depth = readDepth(uv);
@@ -90,19 +89,8 @@ technique {
 }
 
 
-// ---- Dedicated path (ShadowsInteriorsEffect::Render) ----
-// The blur passes above run on the full-resolution HDR frame through the frame chain: a copy of the
-// frame for TESR_SourceBuffer, a clear of an 8 byte per pixel target before each pass, and two blurs
-// of what is a single-channel mask. Here the two blurs ping-pong between the two G16R16 scratch
-// targets (4 bytes per pixel, no frame copy), and only the last pass touches the HDR frame: it reads
-// the untouched scene from TESR_RenderedBuffer and the blurred mask from s4, which the CPU binds.
 sampler2D NVR_InteriorShadowIn : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
-// The depth-aware blur of DepthBlur(), with two differences that do not change the result:
-//  * pixels beyond endFade return black -- what clip() left in the cleared destination of the original
-//    passes (the shadow is faded out to fully lit by that distance in ApplyInteriorShadow anyway);
-//  * the twelve depth reads are skipped when every tap equals the centre, since the weighted average
-//    of equal values is that value whatever the weights are.
 float4 InteriorShadowBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, uniform float blurRadius, uniform float depthDrop, uniform float endFade) : COLOR0
 {
 	float4 center = tex2Dlod(buffer, float4(IN.UVCoord, 0, 0));

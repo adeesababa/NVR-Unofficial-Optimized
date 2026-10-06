@@ -22,8 +22,7 @@ sampler2D TESR_PointShadowBuffer : register(s5) = sampler_state { ADDRESSU = CLA
 sampler2D TESR_BloomBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = NONE; MINFILTER = NONE; MIPFILTER = NONE; };
 sampler2D TESR_SMAA_Edges : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_SMAA_Blend : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-// UNOFFICIAL clipping view. TESR_ samplers bind by declaration order, so this one must stay last.
-float4 TESR_ClipView; // x mode: 1 finished picture, 2 tonemapper output, 3 both compared
+float4 TESR_ClipView;
 float4 TESR_ReciprocalResolution;
 sampler2D TESR_ClipStartBuffer : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
@@ -148,11 +147,6 @@ technique
 	}
 }
 
-// ---- UNOFFICIAL: clipping view ([Shaders.Debug.Main] ClipView) ----
-// The post chain's buffers have the game target's format (8 bits per channel), so a channel at 255 there is a
-// channel that was clipped: whatever was brighter is lost, and if only one or two channels hit the top the colour
-// shifts (orange turns yellow, skin turns orange). Marked pixels get diagonal stripes so the marks read even where
-// the tint is close to the picture's own colour; everything else is shown dimmed and nearly grey.
 static const float ClipLevel = 254.5 / 255.0;
 
 float ClippedChannels(float3 c)
@@ -173,17 +167,14 @@ float4 ClipViewShader(VSOUT IN) : COLOR0
 	float startClipped = (mode > 1.5) ? ClippedChannels(tex2D(TESR_ClipStartBuffer, IN.UVCoord).rgb) : 0.0;
 
 	if (mode < 1.5) {
-		// 1: the finished picture. Magenta: colour distorted (one or two channels clipped). Cyan: burnt out to white.
 		if (finalClipped > 2.5) return float4(cyan.rgb * stripe, 1);
 		if (finalClipped > 0.5) return float4(magenta.rgb * stripe, 1);
 	}
 	else if (mode < 2.5) {
-		// 2: the same marks for the picture as it came out of the tonemapper
 		if (startClipped > 2.5) return float4(cyan.rgb * stripe, 1);
 		if (startClipped > 0.5) return float4(magenta.rgb * stripe, 1);
 	}
 	else {
-		// 3: red = already clipped out of the tonemapper, yellow = clipped only by the colour effects after it
 		if (startClipped > 0.5) return float4(red.rgb * stripe, 1);
 		if (finalClipped > 0.5) return float4(yellow.rgb * stripe, 1);
 	}

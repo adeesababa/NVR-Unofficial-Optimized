@@ -135,7 +135,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	if (SubPath) strcat(BaseDirectory, SubPath);
 	if (CacheSubPath) {
 		strcat(CacheDirectory, CacheSubPath);
-		CreateDirectoryA(CacheDirectory, NULL);	// nothing else writes there
+		CreateDirectoryA(CacheDirectory, NULL);
 	}
 	else if (SubPath) strcat(CacheDirectory, SubPath);
 
@@ -165,7 +165,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
 		while (i < 28 && Template.Defines[i].Name != NULL) {
-			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
+			if (!strcmp(Template.Defines[i].Name, Name)) return;
 			i++;
 		}
 		if (i >= 28) return;  // out of room; silently skip rather than overrun
@@ -173,7 +173,6 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 		Template.Defines[i + 1] = { NULL, NULL };
 	};
 
-	// UNOFFICIAL: overrides first, so the global defines below with the same name are skipped.
 	if (Overrides)
 		for (const D3DXMACRO* o = Overrides; o->Name; o++) AppendDefine(o->Name, o->Definition);
 
@@ -190,9 +189,6 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	AppendDefine("FORWARD_SHADOWS",
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
 
-	// UNOFFICIAL sun shadow cross-fade (SunSmoothing CrossFade): compiled in only when on, so that otherwise the
-	// shaders are exactly what they were. Read here for the same reason as FORWARD_SHADOWS; takes effect on restart.
-	// UNOFFICIAL optional contact-hardening sun shadows: compiled in only when on at startup, like SUN_CROSSFADE.
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
 
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&

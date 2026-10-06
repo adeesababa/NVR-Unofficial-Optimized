@@ -8,7 +8,7 @@ float4 TESR_SunDirection;
 float4 TESR_DebugVar;
 float4 TESR_ReciprocalResolution;
 float4 TESR_FlashLightTuning;		// x near fade, y soft edges, z hotspot limit, w cookie strength
-float4 TESR_FlashLightComposite;	// x source buffer is already linear; UNOFFICIAL (EdgeFix): y 1 = also the beam's shaft, zw 1 / beam buffer size
+float4 TESR_FlashLightComposite;
 float4 TESR_VolumetricControl;		// x beam strength, 0 when the FlashlightBeam effect is off
 
 #define FL_NEARFADE			TESR_FlashLightTuning.x
@@ -216,28 +216,8 @@ float4 BoxBlurAvg (VSOUT IN, uniform sampler2D buffer, uniform float scaleFactor
 }
 
 
-// ---- UNOFFICIAL: depth-aware edges ([Shaders.Flashlight.Main] EdgeFix) ----
-// The light is worked out from one depth sample per pixel: with MSAA the depth buffer keeps one of the
-// pixel's samples (the depth resolve copies one, it does not average), while the colour is the average of
-// all of them, so at the edge of a leaf the colour is part leaf and part whatever is behind it. Combine
-// scales that whole blend by the light of whichever side the depth sample landed on, so the background part
-// of the pixel gets the leaf's light (a bright rim in the background's colour, worst against a bright sky)
-// or the leaf part gets none (a dark notch), and the choice flips from pixel to pixel along the edge: the
-// light brings back the jaggies MSAA removed. At a depth edge, FindEdgeSplit splits the pixel's colour into
-// a near and a far part, with a neighbour from each side as the reference; SplitLight then lights each part
-// with its own side's light. With EdgeFix 2 the beam's light shaft gets the same treatment (BeamAt): its
-// half resolution buffer is upsampled by depth instead of bilinearly, which spread the shaft seen past a
-// leaf over the leaf's edge, and at an edge each side's shaft counts in proportion to the side's share of
-// the pixel. Off edges nothing changes. (Making the two blur passes depth-aware as well was tried on the
-// bench: it removed a little more of the rim but left dark outlines and speckle on grass, so they are kept.)
-
-// Edges are breaks in the surface, not steep surfaces: on any flat surface 1 / depth is linear across
-// the screen, so for two opposite neighbours a and b, dc / a + dc / b - 2 is zero however steeply the
-// surface is seen (ground at a grazing angle), and it is large where one of them is on something
-// else. That measure counts as an edge from 2%, fully from 5%.
 static const float EdgeDepthStart = 0.02;
 static const float EdgeDepthRamp = 0.03;
-// The cheap test that comes first (DepthBreakAround) sees a 2% break next to the pixel as 0.5%.
 static const float EdgeGate = 0.005;
 
 float DepthBreak(float dc, float a, float b)
@@ -245,10 +225,6 @@ float DepthBreak(float dc, float a, float b)
 	return abs(dc / max(a, 1.0) + dc / max(b, 1.0) - 2.0);
 }
 
-// The same measure on two bilinear reads at opposite corners of the pixel. Each is the average of a
-// 2x2 block of depths that includes this pixel, so two fetches see seven of the nine pixels of the 3x3
-// neighbourhood (all but the top-right and bottom-left ones), and a break among them moves the pair.
-// Measured on dense grass, also reading the other two corners found nothing more worth its cost.
 float DepthBreakAround(float2 uv, float dc)
 {
 	float2 h = 0.5 * TESR_ReciprocalResolution.xy;
@@ -258,11 +234,11 @@ float DepthBreakAround(float2 uv, float dc)
 
 struct EdgeSplit
 {
-	float weight;           // how much of the split result to use: 0 off edges, and where both sides look alike
-	float coverage;         // share of the pixel taken by the near side
-	float2 uvNear, uvFar;   // the reference neighbours of the two sides
+	float weight;
+	float coverage;
+	float2 uvNear, uvFar;
 	float3 nearColor, farColor;
-	float3 nearPart, farPart;   // this pixel's colour, split between the two sides
+	float3 nearPart, farPart;
 };
 
 float3 SourceColorLod(float2 uv, bool sourceIsLinear)
@@ -271,7 +247,6 @@ float3 SourceColorLod(float2 uv, bool sourceIsLinear)
 	return sourceIsLinear ? c.rgb : linearize(c.rgb);
 }
 
-// Combine's own modulation of the light by the surface colour (dimmer on already bright surfaces)
 float3 ModulatedLight(float3 part, float3 surface, float3 light)
 {
 	return part * max(0.0, luma(exp(-surface * 3.5)) * light);
@@ -291,16 +266,11 @@ EdgeSplit FindEdgeSplit(float2 uv, float dc, float3 C, bool sourceIsLinear)
 		dNear = min(dNear, depths[i]);
 		if (depths[i] > dFar) { dFar = depths[i]; uvFar = uv + offsets[i]; }
 	}
-	// Opposite pairs: left/right, up/down and the two diagonals
 	float breakSize = max(max(DepthBreak(dc, depths[0], depths[1]), DepthBreak(dc, depths[2], depths[3])),
 		max(DepthBreak(dc, depths[4], depths[7]), DepthBreak(dc, depths[5], depths[6])));
 	float edge = saturate((breakSize - EdgeDepthStart) / EdgeDepthRamp);
 	[branch] if (edge <= 0.0) return e;
 
-	// The far side's reference is the farthest neighbour. For the near side, thin things such as
-	// grass blades rarely have a neighbour that is all leaf, and a part-background reference makes
-	// the background part look like leaf; so of the four direct neighbours on the near side, the one
-	// whose colour is least like the far side's is taken as the purest. (None: weight 0 below.)
 	float3 Cf = SourceColorLod(uvFar, sourceIsLinear);
 	float3 Cn = Cf;
 	float2 uvNear = uvFar;
@@ -316,17 +286,13 @@ EdgeSplit FindEdgeSplit(float2 uv, float dc, float3 C, bool sourceIsLinear)
 		}
 	}
 
-	// Coverage of the near side: where this pixel's colour sits between the two references
 	float3 dC = Cn - Cf;
 	float dd = dot(dC, dC);
 	float a = saturate(dot(C - Cf, dC) / max(dd, 1e-10));
 
-	// Split the pixel's own colour, so its texture detail is kept: the near part is a * C plus
-	// the share of the difference the near side accounts for, the far part is the rest.
 	e.nearPart = max(a * C + a * (1.0 - a) * dC, 0.0);
 	e.farPart = max(C - e.nearPart, 0.0);
 
-	// Two sides of nearly the same colour say nothing about coverage: keep the old result there
 	float contrast = dd / max(max(dot(Cn, Cn), dot(Cf, Cf)), 1e-8);
 	e.weight = edge * saturate((contrast - 0.0025) / 0.0075);
 	e.coverage = a;
@@ -344,13 +310,6 @@ float3 SplitLight(EdgeSplit e)
 	return ModulatedLight(e.nearPart, e.nearColor, Ln) + ModulatedLight(e.farPart, e.farColor, Lf);
 }
 
-// Depth-aware upsample of the half resolution beam buffer for the pixel at uv (EdgeFix 2). Texel t of
-// that buffer marched the view ray of full resolution texel t * size ratio (the frame quad carries the
-// full resolution half pixel offset into the half resolution pass), so that is the depth it stands
-// for, and the pixel sits between texels at those positions - all of them inside its 3x3
-// neighbourhood. Where those texels share the pixel's depth (flat, or the four depths agree) this
-// is one bilinear read; otherwise each is weighted by distance and by how close its depth is to the
-// pixel's, and when none is close the closest one is used.
 float3 BeamUpsampled(float2 uv, float dc, bool flat)
 {
 	float2 px = TESR_ReciprocalResolution.xy;
@@ -367,9 +326,6 @@ float3 BeamUpsampled(float2 uv, float dc, bool flat)
 	[branch] if (max(max(rel.x, rel.y), max(rel.z, rel.w)) < 0.04)
 		return tex2Dlod(TESR_VolumetricBuffer, float4((pos + 0.5) * halfPx, 0, 0)).rgb;
 
-	// Tolerant of the few percent a steep but continuous surface (ground seen at a grazing angle)
-	// changes over two pixels - weighting those down shows the march's dither as speckle - while a
-	// leaf against what is behind it (tens of percent) is weighted down 15 to 150 times.
 	float3 sum = 0;
 	float wsum = 0;
 	float3 closest = 0;
@@ -386,7 +342,6 @@ float3 BeamUpsampled(float2 uv, float dc, bool flat)
 	return wsum > 1e-4 ? sum / wsum : closest;
 }
 
-// The shaft in front of the pixel at uv, with the same yield and soft ceiling Combine applies
 float3 BeamAt(float2 uv, float depth, bool flat)
 {
 	float3 vol = BeamUpsampled(uv, depth, flat);
@@ -403,8 +358,6 @@ float3 BeamAt(float2 uv, float depth, bool flat)
 	return vol / (1.0 + luma(vol) * 2.5);
 }
 
-// UNOFFICIAL: edgeFix is a compile-time switch. The original techniques compile Combine(false), which is the
-// unchanged composite; the EdgeFix techniques compile Combine(true).
 float4 Combine (VSOUT IN, uniform bool edgeFix) : COLOR0
 {
 	// With RenderPreTonemapping, which is the default, this pass draws onto the game's HDR
@@ -420,15 +373,11 @@ float4 Combine (VSOUT IN, uniform bool edgeFix) : COLOR0
 
 	float3 addLight = color.rgb * max(0.0, luma(exp(-color.rgb * 3.5)) * light.rgb); // modulate light with base color brightness to compensate for the post process aspect
 
-	// UNOFFICIAL: depth-aware edges, see FindEdgeSplit
 	EdgeSplit edge = (EdgeSplit)0;
 	float depthHere = 0.0;
 	bool flat = true;
 	bool edgeBeam = edgeFix && FL_EDGEBEAM > 0.5 && TESR_VolumetricControl.x > 0.0;
 	if (edgeFix) {
-		// Nothing to fix where neither the pool nor (EdgeFix 2) the shaft reaches: there the blurred
-		// light is 0 across the pixel's whole 3x3 neighbourhood, and the bilinear beam read is 0 on every
-		// half resolution texel the depth-aware upsample would use. Most of the screen ends here.
 		float3 shaftHere = edgeBeam ? tex2Dlod(TESR_VolumetricBuffer, float4(IN.UVCoord, 0, 0)).rgb : 0.0;
 		[branch] if (luma(light.rgb) > 0.0 || luma(shaftHere) > 0.0) {
 			depthHere = readDepthLod(IN.UVCoord);
@@ -465,9 +414,6 @@ float4 Combine (VSOUT IN, uniform bool edgeFix) : COLOR0
 		// Soft ceiling: a ray looking straight down the beam integrates the whole lit
 		// column and would otherwise fill the screen. Dim shafts pass nearly unchanged.
 		vol /= 1.0 + luma(vol) * 2.5;
-		// UNOFFICIAL (EdgeFix 2): depth-aware upsample, and at an edge each side's own shaft by its share
-		// of the pixel, see BeamAt. A side's shaft is one bilinear read at its reference neighbour: measured
-		// against a depth-aware read there it looked the same and cost a third of EdgeFix's time.
 		if (edgeBeam) {
 			vol = BeamAt(IN.UVCoord, depthHere, flat);
 			[branch] if (edge.weight > 0.0) {
@@ -557,8 +503,6 @@ technique {
 
 }
 
-// UNOFFICIAL: the two techniques above with depth-aware edges ([Shaders.Flashlight.Main] EdgeFix). Kept as
-// techniques of their own so that with EdgeFix off the original ones run exactly as before.
 technique EdgeFix {
 
 	pass {

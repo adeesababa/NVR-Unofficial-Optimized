@@ -1,14 +1,10 @@
 #pragma once
 
-// Captured from the gun's actual MVP, including the first-person projection.
 namespace BarrelHaze {
     inline D3DXVECTOR4 Line = {}, Data = {}, Animation = {}, Blast = {};
     inline ULONGLONG Captured = 0;
     inline void Reset() { Captured = 0; Data.x = 0; Blast.x = 0; }
 
-    // World position -> screen UV and view depth, with the scene camera. The first-person gun is drawn with the same
-    // camera but the first-person field of view (Main::RenderFirstPerson 0x875110 calls BSSceneGraph::SetCameraFOV
-    // with PlayerCharacter::Get1stPersonFOV), which is already in the camera's frustum during that pass.
     inline bool ProjectWorld(const D3DXVECTOR3& p, bool firstPerson, float& u, float& v, float& depth) {
         NiCamera* camera = WorldSceneGraph ? WorldSceneGraph->camera : nullptr;
         if (!camera) return false;
@@ -19,7 +15,6 @@ namespace BarrelHaze {
         const float up = r.data[0][1] * dx + r.data[1][1] * dy + r.data[2][1] * dz;
         const float right = r.data[0][2] * dx + r.data[1][2] * dy + r.data[2][2] * dz;
         if (!std::isfinite(forward) || forward <= 0.5f) return false;
-        // The camera's own frustum: in the first-person pass the game has already set it to the first-person FOV.
         const float left = camera->Frustum.Left, rightEdge = camera->Frustum.Right;
         const float top = camera->Frustum.Top, bottom = camera->Frustum.Bottom;
         if (rightEdge - left <= 1e-4f || top - bottom <= 1e-4f) return false;
@@ -31,7 +26,6 @@ namespace BarrelHaze {
         return std::isfinite(u) && std::isfinite(v);
     }
 
-    // Why a capture did not happen (logged at most once a second, 12 times per view).
     inline void LogMiss(bool firstPerson, const char* why, const D3DXVECTOR3& p) {
         static unsigned count[2] = {};
         static ULONGLONG at[2] = {};
@@ -47,12 +41,8 @@ namespace BarrelHaze {
             Player ? Player->firstPersonFoV : -1.0f, camera ? camera->Frustum.Right - camera->Frustum.Left : -1.0f);
     }
 
-    // state: the plugin's heat data in world space (muzzle xyz, heat, rearward axis xyz, ...).
     inline void CaptureWorld(const float* state, bool firstPerson, const void* weaponNode) {
-        // V2 also gives the muzzle in world space from the game loop: while the first-person model is drawn, its
-        // nodes are in another space (the muzzle read about (61, 59, 121) with the camera at (2818, 1914, 7543)).
         typedef bool (__cdecl* GetHazeFn)(float* out, const void*);
-        // V3 adds the muzzle blast (out[14] pixels now, out[15] radius).
         static GetHazeFn get = nullptr;
         static bool v2 = false, v3 = false;
         if (!get) {
@@ -135,8 +125,6 @@ public:
     }
     void Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
         UINT technique, bool clear, IDirect3DSurface9* source) override {
-        // GunFX.ini holds the tuning; the on/off switches are in the NVR menu (Main > GunFX) and reach GunFX.dll
-        // through GunFX_SetSwitches, which then publishes no haze/blast when they are off.
         Enabled = Effect != nullptr;
         if (!Enabled || !ShouldRender()) { renderTime = 0; return; }
         Effect->SetVector(Effect->GetParameterByName(NULL, "HazeLine"), &BarrelHaze::Line);

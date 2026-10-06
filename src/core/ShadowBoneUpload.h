@@ -1,8 +1,5 @@
 #pragma once
 
-// Each shadow bone occupies three float4 registers, starting at register 9.
-// Merge consecutive source bones without copying or changing palette order.
-// Device is templated so the exact upload path can also run against a test sink.
 template <class DeviceType>
 void UploadShadowBones(DeviceType* Device, const float* Matrices,
                        const unsigned short* BoneMap, unsigned int BoneCount) {

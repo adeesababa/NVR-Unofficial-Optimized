@@ -1,4 +1,3 @@
-// CPU check of the gamma-2.2 fusion identity; GPU parity still needs an in-game test.
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -20,7 +19,6 @@ void CheckCompositeMath() {
         const double shadow = unit(random), blend = std::min(shadow + 0.5, 1.0);
         double sceneLuma = 0;
         for (int c = 0; c < 3; ++c) {
-            // Signed HDR values and zero, including values around fog's sRGB knee.
             scene[c] = trial % 17 == 0 ? 0 : std::pow(10.0, unit(random) * 5 - 3) * (trial % 11 == 0 ? -1 : 1);
             linear[c] = power(scene[c], 2.2);
             sceneLuma += linear[c] * luma[c];

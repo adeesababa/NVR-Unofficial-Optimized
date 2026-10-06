@@ -16,7 +16,7 @@
 #include "includes/Shadow.hlsl"
 #include "includes/Helpers.hlsl"
 #include "includes/PBRScale.hlsl"
-#include "includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
+#include "includes/PointShadowForward.hlsl"
 
 float4 AmbientColor    : register(c0);
 float4 EyePosition     : register(c1);
@@ -99,8 +99,6 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     bool hasSun = ToggleNumLights.x > 0.0f;
 #if INTERIOR_SHADOWS
-    // UNOFFICIAL forward point-light shadows (Includes/PointShadowForward.hlsl). Light i of the draw is LightData pair i;
-    // the DLL leaves a directional light 0 without a shadow. Attenuation as in the loop below.
     float3 ptWorldPos = IN.shadowWorldPos.xyz;
     float3 ptNormal = 0.0f;
     float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
@@ -126,7 +124,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 
         float3 lightColor = PBRLight(LightData[i * 2].rgb);
 #if INTERIOR_SHADOWS
-        lightColor *= ptShadow[i];   // all of this light's terms
+        lightColor *= ptShadow[i];
 #endif
         float4 lightVec   = LightData[i * 2 + 1];
 

@@ -13,11 +13,8 @@ public:
 	void	RegisterConstants();
 	void	UpdateSettings();
 
-	// UNOFFICIAL: the dedicated path's apply pass alone, on the unblurred mask (interior forward shadows' darkening).
 	bool	skipBlur = false;
 
-	// Blurs the shadow term on the two G16R16 scratch targets and touches the HDR frame only in the
-	// final pass (see the DedicatedInteriorShadows technique); falls back to the generic path.
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 

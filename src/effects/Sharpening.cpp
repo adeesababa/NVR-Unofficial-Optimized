@@ -1,7 +1,5 @@
 #include "Sharpening.h"
 
-// UNOFFICIAL: outdoors ([Shaders.Sharpening.Main]) and indoors ([Shaders.Sharpening.Interiors]) each have their own
-// values; the one for the current cell is published every frame.
 void SharpeningEffect::UpdateConstants() {
 	Constants.Data = TheShaderManager->GameState.isExterior ? Exterior : Interior;
 }

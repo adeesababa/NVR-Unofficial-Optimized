@@ -9,8 +9,6 @@ public:
 		aimingHoldUntil = 0.0;
 	};
 
-	// UNOFFICIAL: the light's look, outdoors ([Shaders.Flashlight.Main]) and indoors ([Shaders.Flashlight.Interiors]);
-	// ApplyLook copies the one for the current cell into Settings every frame.
 	struct FlashlightLook {
 		NiColor		Color;
 		float		Dimmer;
@@ -20,7 +18,7 @@ public:
 		float		HotspotLimit;
 		float		CookieStrength;
 	};
-	FlashlightLook	Looks[2]; // 0: outdoors, 1: interiors
+	FlashlightLook	Looks[2];
 	void			ApplyLook(bool exterior);
 
 	struct FlashlightSettingsStruct {
@@ -35,7 +33,7 @@ public:
 		float		HotspotLimit;
 		float		CookieStrength;
 		bool		softEdges;
-		int			edgeFix;	// UNOFFICIAL: depth-aware edges, 0 off, 1 the lit surfaces, 2 also the beam's shaft ([Shaders.Flashlight.Main] EdgeFix)
+		int			edgeFix;
 
 		// Forward re-light of nearby static geometry, drawn by MaterialPass
 		struct MaterialLightStruct {
@@ -56,7 +54,7 @@ public:
 		D3DXVECTOR4	Direction;
 		D3DXVECTOR4	Color;
 		D3DXVECTOR4	Tuning;		// x near fade, y soft edges, z hotspot limit, w cookie strength
-		D3DXVECTOR4	Composite;	// x source buffer is already linear; UNOFFICIAL (EdgeFix): y 1 = also the beam's shaft, zw 1 / beam buffer size
+		D3DXVECTOR4	Composite;
 	};
 	FlashlightStruct	Constants;
 
@@ -72,5 +70,5 @@ public:
 
 	void	GetFlashlightViewProj();
 	void	PublishLightConstants(bool abActive);
-	int		TechniqueIndex(const char* name);	// UNOFFICIAL: -1 when the loaded effect has no technique of that name
+	int		TechniqueIndex(const char* name);
 };

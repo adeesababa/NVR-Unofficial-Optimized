@@ -5,10 +5,6 @@ float4 TESR_TerrainParallaxExtraData : register(c92);
 float4 TESR_ParallaxData : register(c35);
 #endif
 
-// ParallaxLite's secant steps (terrain and objects). Measured with tests/game_shaders.cpp on a GTX 1070
-// (full-screen terrain, 2560x1440), against the defaults: 0 steps -23..-37% time but four times HighQuality-off's
-// picture difference; 1 step -17..-31% at about 1.5 times it; 2 steps -16..-22% at about the same; 3 steps no faster
-// than HighQuality off.
 #ifndef LITE_SECANT_STEPS
 #define LITE_SECANT_STEPS 1
 #endif
@@ -42,9 +38,6 @@ float getTerrainHeight(float2 coords, float2 dx, float2 dy, float blendFactor, i
 #endif
 
 #ifndef TERRAIN
-// ReducedQuality ParallaxLite on objects (TESR_ParallaxData.w = 1): getParallaxCoords' search for objects with a height map,
-// cut down as ParallaxLite cuts the terrain's: up to 8 steps in batches of four, then LITE_SECANT_STEPS secant
-// steps in place of the contact refinement. Same start offset, bounds and final interpolation as getParallaxCoords.
 float2 getParallaxCoordsObjectLite(float distance, float2 coords, float2 dx, float2 dy, float3 viewDirTS, sampler2D heightMap) {
     float distanceBlend = saturate(distance / 2048.0f);
     if (distanceBlend >= 1.0) return coords;
@@ -107,8 +100,6 @@ float2 getParallaxCoordsObjectLite(float distance, float2 coords, float2 dx, flo
     float denominator = delta2 - delta1;
     float parallaxAmount = denominator == 0.0 ? 0.0 : (pt1.x * delta2 - pt2.x * delta1) / denominator;
     float offset = (1.0 - parallaxAmount) * -maxHeight + minHeight;
-    // UNOFFICIAL: the bumps fade as before (1 - d^2) up to 3/4 of the distance, then ease out to nothing with no slope left
-    // at the end: the old fade dropped fastest right at the cut-off, a line you could see sliding along as you walked.
     const float keep = (1.0 - distanceBlend * distanceBlend) * (1.0 - smoothstep(0.75, 1.0, distanceBlend));
     return lerp(coords, viewDirTS.xy * offset + coords.xy, keep);
 }
@@ -137,16 +128,11 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
             return coords;
         }
 
-        // Variables. TESR_TerrainParallaxData.w: 0 = 8 steps, 1 = 16 steps (HighQuality), 2 = lite
-        // (ReducedQuality ParallaxLite): 8 steps, then secant steps instead of the contact
-        // refinement (see below), and two parallax shadow taps instead of four.
         static const bool lite = TESR_TerrainParallaxData.w > 1.5f;
         static const float maxSteps = (TESR_TerrainParallaxData.w == 1.0f) ? 16.0f : 8.0f;
         float maxDistance = TESR_TerrainParallaxExtraData.x;
         float height = TESR_TerrainParallaxExtraData.y;
     #else
-        // ReducedQuality ParallaxLite: a separate function, so that this path compiles exactly as before
-        // (sharing the loop with the lite code cost the default 4-9% in tests/game_shaders.cpp).
         [branch] if (TESR_ParallaxData.w > 0.5f) return getParallaxCoordsObjectLite(distance, coords, dx, dy, viewDirTS, heightMap);
 
         static const float maxSteps = 16.0f;
@@ -270,9 +256,6 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
         }
 
         #ifdef TERRAIN
-        // Lite: in place of the contact refinement (a second march of up to 16 steps through the bracketing step),
-        // secant steps: evaluate the height where the straight line between the bracket's two samples crosses the
-        // ray, and keep the half that still brackets the hit. One height lookup each instead of four or more.
         [branch] if (lite && done) {
             [loop] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
                 float secant2 = pt2.x - pt2.y;
@@ -304,7 +287,6 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
         
         float offset = (1.0 - parallaxAmount) * -maxHeight + minHeight;
         #ifdef TERRAIN
-        // UNOFFICIAL, lite: the same ease-out at the cut-off as the objects' lite path (see getParallaxCoordsObjectLite).
         [branch] if (lite) {
             const float keep = (1.0 - distanceBlend * distanceBlend) * (1.0 - smoothstep(0.75, 1.0, distanceBlend));
             return lerp(coords, viewDirTS.xy * offset + coords.xy, keep);
@@ -340,12 +322,7 @@ float getParallaxShadowMultipler(float distance, float2 coords, float2 dx, float
         float4 multipliers = rcp((float4(1, 2, 3, 4)));
 
         float4 sh = getTerrainHeight(coords + rayDir * multipliers.x, dx, dy, quality, texCount, tex, blends, status, weights);
-        // Lite (TESR_TerrainParallaxData.w = 2): two taps, at 1 and 1/2 of the ray, each counted twice, so the
-        // four-tap sum keeps its scale.
         [branch] if (TESR_TerrainParallaxData.w > 1.5f) {
-            // UNOFFICIAL: the second tap fades in between quality 0.15 and 0.35 instead of switching on at 0.25, and the last
-            // quarter of the distance eases out: the two rings on the ground (where the tap came in, and where the shadows
-            // ended) moved along with you as you walked.
             if (quality > 0.15) {
                 const float tap2 = getTerrainHeight(coords + rayDir * multipliers.y, dx, dy, quality, texCount, tex, blends, status, weights);
                 sh.yw = lerp(sh.xx, tap2.xx, saturate((quality - 0.15) / 0.2));
@@ -378,8 +355,6 @@ float getParallaxShadowMultipler(float distance, float2 coords, float2 dx, float
         const float2 rayDir = lightTS.xy * 0.04;
         float4 multipliers = rcp((float4(1, 2, 3, 4)));
 
-        // (ParallaxLite leaves these taps alone: one fetch each here, and a lite branch cost the default
-        // more than it saved.)
         float4 sh = tex2Dgrad(heightMap, coords + rayDir * multipliers.x, dx, dy).r;
         if (quality > 0.25)
             sh.y = tex2Dgrad(heightMap, coords + rayDir * multipliers.y, dx, dy).r;

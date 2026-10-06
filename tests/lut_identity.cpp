@@ -1,13 +1,3 @@
-// Regression test for LUTEffect's identity-LUT skip (src/effects/LUTIdentity.h).
-//
-//  1. The shipped neutral_lut.png, loaded by the real D3DX loader exactly as
-//     TextureManager::GetFileTexture does, is recognised as an identity.
-//  2. Synthetic identity strips (N = 16/32/64) are recognised; a texel off by more than one 8-bit
-//     step, a different size, or an unsupported format is not.
-//  3. Numerically: sampling an identity strip the way LUT.fx.hlsl does (two bilinear reads blended
-//     on blue, HDR-compat scaling) returns the input, so skipping the pass changes nothing.
-//
-// Uses a NULLREF device (no GPU needed); falls back to REF/HAL if the runtime lacks it.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -42,7 +32,6 @@ static IDirect3DDevice9* CreateTestDevice(IDirect3D9* d3d)
 	return nullptr;
 }
 
-// Identity strip: texel (x = b*N + r, y = g) holds (r, g, b) / (N - 1). Memory order B, G, R, A.
 static IDirect3DTexture9* MakeStrip(IDirect3DDevice9* device, UINT n, D3DFORMAT format = D3DFMT_A8R8G8B8, UINT width = 0)
 {
 	IDirect3DTexture9* texture = nullptr;
@@ -55,7 +44,7 @@ static IDirect3DTexture9* MakeStrip(IDirect3DDevice9* device, UINT n, D3DFORMAT 
 			BYTE* row = (BYTE*)rect.pBits + (size_t)g * rect.Pitch;
 			for (UINT b = 0; b < n; b++)
 				for (UINT r = 0; r < n; r++) {
-					if (b * n + r >= texWidth) continue; // a deliberately narrow texture
+					if (b * n + r >= texWidth) continue;
 					BYTE* px = row + (size_t)(b * n + r) * 4;
 					px[0] = (BYTE)(b * 255.0f / (n - 1) + 0.5f);
 					px[1] = (BYTE)(g * 255.0f / (n - 1) + 0.5f);
@@ -77,7 +66,6 @@ static void SetChannel(IDirect3DTexture9* texture, UINT x, UINT y, int channel, 
 	texture->UnlockRect(0);
 }
 
-// CPU model of SampleLUT() in LUT.fx.hlsl on a texture whose texels come from `texel(x, y)` (0..1).
 struct Rgb { float r, g, b; };
 static Rgb Bilinear(const std::vector<Rgb>& tex, UINT width, UINT height, float u, float v)
 {
@@ -108,7 +96,6 @@ int main()
 	IDirect3DDevice9* device = d3d ? CreateTestDevice(d3d) : nullptr;
 	if (!device) { std::printf("SKIP: no D3D9 device (NULLREF/REF/HAL) could be created here.\n"); return 0; }
 
-	// 1. The shipped file through the real loader.
 	IDirect3DTexture9* shipped = nullptr;
 	HRESULT hr = D3DXCreateTextureFromFileA(device, "resource/Textures/NewVegasReloaded/LUTs/neutral_lut.png", &shipped);
 	CHECK(SUCCEEDED(hr) && shipped, "D3DX loads neutral_lut.png (hr=%08lx)", (unsigned long)hr);
@@ -120,7 +107,6 @@ int main()
 		shipped->Release();
 	}
 
-	// 2. Synthetic strips and rejections.
 	for (UINT n : { 16u, 32u, 64u }) {
 		IDirect3DTexture9* strip = MakeStrip(device, n);
 		CHECK(strip && IsIdentityLUT(strip), "synthetic %ux%ux%u identity strip is recognised", n, n, n);
@@ -130,13 +116,13 @@ int main()
 		IDirect3DTexture9* strip = MakeStrip(device, 16);
 		SetChannel(strip, 100, 7, 2, 1);
 		CHECK(IsIdentityLUT(strip), "a texel one 8-bit step off is still an identity (rounding)");
-		SetChannel(strip, 100, 7, 2, 2); // now 3 steps off
+		SetChannel(strip, 100, 7, 2, 2);
 		CHECK(!IsIdentityLUT(strip), "a texel three steps off is not an identity");
 		strip->Release();
 	}
 	{
 		IDirect3DTexture9* strip = MakeStrip(device, 16);
-		SetChannel(strip, 255, 15, 0, -40); // last texel, blue channel
+		SetChannel(strip, 255, 15, 0, -40);
 		CHECK(!IsIdentityLUT(strip), "a change in the last texel is found");
 		strip->Release();
 	}
@@ -152,13 +138,12 @@ int main()
 	}
 	CHECK(!IsIdentityLUT(nullptr), "a null texture is not an identity");
 
-	// 3. The shader's own maths on an identity strip returns its input (worst case over many colours).
 	for (UINT n : { 16u, 32u, 64u }) {
 		std::vector<Rgb> tex((size_t)n * n * n);
 		for (UINT g = 0; g < n; g++)
 			for (UINT b = 0; b < n; b++)
 				for (UINT r = 0; r < n; r++) {
-					auto q = [&](UINT v) { return (float)(int)(v * 255.0f / (n - 1) + 0.5f) / 255.0f; }; // 8-bit texels
+					auto q = [&](UINT v) { return (float)(int)(v * 255.0f / (n - 1) + 0.5f) / 255.0f; };
 					tex[(size_t)g * (n * n) + b * n + r] = { q(r), q(g), q(b) };
 				}
 		std::mt19937 rng(1234 + n);
@@ -168,7 +153,6 @@ int main()
 			Rgb c = { unit(rng), unit(rng), unit(rng) };
 			Rgb o = SampleLUT(tex, (float)n, c);
 			worstSdr = std::max(worstSdr, std::max(std::fabs(o.r - c.r), std::max(std::fabs(o.g - c.g), std::fabs(o.b - c.b))));
-			// HDR compat: normalise by the brightest channel (>= 1), sample, scale back.
 			Rgb h = { hdr(rng), hdr(rng), hdr(rng) };
 			const float scale = std::max(std::max(h.r, h.g), std::max(h.b, 1.0f));
 			Rgb oh = SampleLUT(tex, (float)n, { h.r / scale, h.g / scale, h.b / scale });
@@ -179,13 +163,12 @@ int main()
 		CHECK(worstSdr <= 1.0f / 255.0f && worstHdr <= 1.0f / 255.0f, "N=%u identity strip through the LUT maths stays within one 8-bit step", n);
 	}
 
-	// 4. .cube files (src/effects/LUTFile.h): parsed into the strip layout LUT.fx.hlsl reads.
 	auto cubeText = [](unsigned n, auto output, const char* header) {
 		std::string text = std::string("TITLE \"test\"\n# comment\n") + header + "LUT_3D_SIZE " + std::to_string(n) + "\n";
 		char line[96];
 		for (unsigned b = 0; b < n; b++)
 			for (unsigned g = 0; g < n; g++)
-				for (unsigned r = 0; r < n; r++) { // red fastest, as the format defines
+				for (unsigned r = 0; r < n; r++) {
 					Rgb o = output(r / (float)(n - 1), g / (float)(n - 1), b / (float)(n - 1));
 					sprintf_s(line, "%.6f %.6f %.6f\n", o.r, o.g, o.b);
 					text += line;
@@ -206,9 +189,6 @@ int main()
 		if (strip) strip->Release();
 	}
 	{
-		// A non-trivial LUT: the strip sampled the way LUT.fx.hlsl samples it must reproduce the LUT's own
-		// trilinear interpolation (this is what pins down the axis order: red across a cell, green down,
-		// blue from cell to cell).
 		const unsigned n = 17;
 		auto grade = [](float r, float g, float b) { return Rgb{ 0.1f + 0.8f * g * g, std::sqrt(b) * 0.9f, 1.0f - r * 0.7f }; };
 		std::istringstream in(cubeText(n, grade, "DOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n"));
@@ -273,7 +253,6 @@ int main()
 		rejects("LUT_3D_SIZE 1\n", "a size below 2");
 	}
 
-	// 5. Images keep their exact size. A 33-point strip is 1089x33; the old loader turned it into 2048x64.
 	{
 		const unsigned n = 33;
 		std::istringstream in(cubeText(n, identity, ""));
@@ -298,7 +277,6 @@ int main()
 		if (exact) exact->Release();
 		DeleteFileA(path);
 
-		// The same table as a .cube file on disk, through the same entry point LUTEffect uses.
 		sprintf_s(path, "%snvr_lut_test_%lu.cube", dir, GetCurrentProcessId());
 		FILE* file = nullptr;
 		if (fopen_s(&file, path, "wb") == 0 && file) { const std::string text = cubeText(n, identity, ""); fwrite(text.data(), 1, text.size(), file); fclose(file); }

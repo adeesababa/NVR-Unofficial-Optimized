@@ -147,10 +147,6 @@
     #define NO_FOG
     #define NO_VERTEX_COLOR
 #else
-    // UNOFFICIAL: metal (Object.hlsl getDerivedMetallic) in the passes that light an object fully at once (colour, the
-    // lights and the ambient) with a highlight: METAL_UP, the vertex shaders send world up for its reflection; METAL,
-    // the pixel shaders use it. Not on objects without specular (metal without a highlight is only darker), nor hair
-    // (grey hair is no metal); the lighting-only and specular-only passes stay as they were.
     #define METAL_UP
     #if defined(SPECULAR) && !defined(HAIR)
         #define METAL
@@ -159,26 +155,18 @@
 
 #include "includes/Helpers.hlsl"
 #include "includes/Object.hlsl"
-// UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
-// shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow
-// at the wrong place. c240-c247 is beyond any bone write.
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
 #include "includes/Shadow.hlsl"
 #ifdef PS
-    // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS): SHADOWED(colour, k, att) gives light k of the draw
-    // its own cube-map shadow (looked up once per pixel near the top of main); without INTERIOR_SHADOWS it is just the
-    // colour.
     #include "includes/PointShadowForward.hlsl"
 #endif
 
-// GunFX barrel glow (P67). Heat bridge from GunFX.dll. Coordinates are local to the drawn gun mesh, so
-// viewmodel projection and camera motion cannot move the mask off the barrel.
-float4 BarrelHeatMuzzle : register(c171); // local xyz, strength
-float4 BarrelHeatAxis : register(c172);   // local unit vector toward the breech, length
-float4 BarrelHeatShape : register(c173);  // local radius, forward reach
+float4 BarrelHeatMuzzle : register(c171);
+float4 BarrelHeatAxis : register(c172);
+float4 BarrelHeatShape : register(c173);
 
 float BarrelHeatMask(float3 localPos) {
     float3 offset = localPos - BarrelHeatMuzzle.xyz;
@@ -187,7 +175,6 @@ float BarrelHeatMask(float3 localPos) {
     float span = max(BarrelHeatAxis.w, 1.0f);
     float radius = max(BarrelHeatShape.x, 1.0f);
     float forward = max(BarrelHeatShape.y, 1.0f);
-    // Keep the muzzle hottest and taper continuously toward the breech.
     float rearFade = saturate(1.0f - max(along, 0.0f) / span);
     return smoothstep(-forward, -forward * 0.15f, along)
          * rearFade
@@ -207,8 +194,6 @@ float3 ApplyBarrelHeat(float3 color, float mask) {
     float3 ember = lerp(float3(0.68f, 0.055f, 0.015f),
                         float3(1.25f, 0.23f, 0.035f), orange);
 #if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-    // Lighting-only passes are later modulated by the material texture.
-    // Undo that modulation for the emissive term, keeping ordinary lighting intact.
     return lerp(color, ember / materialFactor, heat * heat * 0.75f);
 #else
     return lerp(color, ember, heat * heat * 0.75f);
@@ -254,7 +239,7 @@ struct VS_OUTPUT {
     float4 fogColor : COLOR1;
 #endif
     float4 sPosition : POSITION;
-    float4 uv : TEXCOORD0; // .zw = local barrel position xy
+    float4 uv : TEXCOORD0;
     float4 lightDir : TEXCOORD1;
 
 #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
@@ -265,13 +250,12 @@ struct VS_OUTPUT {
     float4 light3Dir : TEXCOORD3;
 #endif
     
-    float4 viewDir : TEXCOORD6; // .w = local barrel position z
+    float4 viewDir : TEXCOORD6;
 
     // Object-space squared distances for point-light attenuation (vanillaAttSq), bypassing
     // lightDir/light2Dir/light3Dir above -- those are tangent-space (TBN-transformed) and their
     // length is only correct if the TBN basis is orthonormal. .x = light0 (DIFFUSE/POINT only,
     // where light0 is itself a point light rather than the sun), .y = light2, .z = light3.
-    // METAL_UP: .w = x of world up in tangent space (with lightDir.w and vertexColor.a, see main).
     float4 lightDistSq : TEXCOORD5;
 
     // TEXCOORD4 is free at LIGHTS < 4. .w carries SHADOW_VS_SENTINEL.
@@ -393,12 +377,6 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
 
     #ifdef METAL_UP
-        // UNOFFICIAL: which way is world up in this vertex's tangent space, so the pixel shader can tell how far a
-        // reflected view points at the sky (Object.hlsl getMetalAmbient). The world z of an object-space direction d is
-        // d . objUp, objUp = upView x ModelViewProj, with upView the camera's inverse projection times the up column of
-        // its inverse view (GetShadowWorldPos's matrices; exact for the world, a little off for the first-person model
-        // when its field of view differs). The spare channels carry it: lightDir.w (read only by the DIFFUSE and POINT
-        // passes), lightDistSq.w and vertexColor.a (unused by the pixel shader; COLOR0 is clamped, so encoded).
         float4 upView = mul(TESR_InvProjectionTransform, float4(TESR_InvViewTransform[0][2], TESR_InvViewTransform[1][2], TESR_InvViewTransform[2][2], 0.0f));
         #ifndef SKIN
             float3 objUp = mul(upView, ModelViewProj).xyz;
@@ -578,7 +556,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 
 struct PS_INPUT {
 #ifndef NO_VERTEX_COLOR
-    float4 vertexColor : COLOR0;    // METAL: .a = world up's z in tangent space, encoded (see the VS)
+    float4 vertexColor : COLOR0;
 #endif
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
@@ -592,7 +570,7 @@ struct PS_INPUT {
     float4 light3Dir : TEXCOORD3_centroid;
 #endif
     float4 viewDir : TEXCOORD6_centroid;
-    float4 lightDistSq : TEXCOORD5;    // METAL: .w = world up's x in tangent space
+    float4 lightDistSq : TEXCOORD5;
     float4 shadowWorldPos : TEXCOORD4;
 #ifdef PROJ_SHADOW
     float4 shadowUVs : TEXCOORD7;
@@ -653,8 +631,6 @@ PS_OUTPUT main(PS_INPUT IN) {
         float4 baseColor = tex2D(BaseMap, IN.uv.xy);
     
         #if defined(ONLY_LIGHT)
-            // Keep the sampled albedo before the lighting-only path discards it.
-            // Bound the reciprocal on black texels to avoid extreme HDR values.
             heatMaterialFactor = max(baseColor.rgb, 0.03f);
             baseColor.rgb = 1;
         #endif
@@ -697,8 +673,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #ifdef METAL
-        // UNOFFICIAL: metal (Object.hlsl), only while [Shaders.PBR.Metal] is on for this pass; see the lighting below.
-        // Its finish, specular-anti-aliased here at top level (ddx/ddy).
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
         float metallic = 0.0f;
     #endif
@@ -735,10 +709,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if INTERIOR_SHADOWS
-        // UNOFFICIAL forward point-light shadows (Includes/PointShadowForward.hlsl). The normal offset uses the sun's
-        // geometric normal where the shader has one. The point-light-only passes (DIFFUSE, POINT) have none and do not
-        // get one: its ddx/ddy would cost more than these short passes' own work, so they rely on the depth bias alone,
-        // as the screen-space pass always did.
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
         #if !defined(DIFFUSE) && !defined(POINT)
             float3 ptNormal = shadowGeometricNormal;
@@ -748,7 +718,6 @@ PS_OUTPUT main(PS_INPUT IN) {
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
         float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
-            // Light k of the draw is PSLightColor[k]; light 0 is a point light only in the DIFFUSE and POINT passes.
             #if defined(DIFFUSE) || defined(POINT)
                 ptShadow0 = POINT_SHADOW_LOOKUP(0, vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w));
             #endif
@@ -759,14 +728,10 @@ PS_OUTPUT main(PS_INPUT IN) {
                 ptShadow2 = POINT_SHADOW_LOOKUP(2, vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w));
             #endif
         }
-        float pointWeight = 0.0f;   // ONLY_SPECULAR POINT: this pass's blend weight without the point shadows (see the alpha)
+        float pointWeight = 0.0f;
     #endif
 
     #if defined(METAL)
-        // UNOFFICIAL metal (Object.hlsl). TESR_PBRMetal.x is the same for every pixel of a draw, so this is one cheap
-        // branch: off ([Shaders.PBR.Metal] 0 for this pass) runs the old lighting below exactly. On: how much of the pixel
-        // is metal; the metal share has a tinted highlight (F0 = its colour) and no diffuse light, and reflects its
-        // surroundings instead of the diffuse ambient (the sky along the reflected view, by world up from the VS).
         #ifdef SI
             float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
         #endif
@@ -870,12 +835,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
     #endif
 
-    #endif // METAL
+    #endif
 
     float3 finalColor = lighting.rgb;
 
     #ifdef METAL
-        // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image.
         [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
     #endif
     
@@ -916,7 +880,6 @@ PS_OUTPUT main(PS_INPUT IN) {
             // fixed at 1.0.
             OUT.color.a = weight(finalColor.rgb) / max(sunShadow, 0.05f);
         #elif INTERIOR_SHADOWS
-            // The same for the point lights' shadows: the weight is what the lights would give unshadowed.
             OUT.color.a = pointWeight;
         #else
             OUT.color.a = weight(finalColor.rgb);
@@ -1034,13 +997,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     float att;
 
     #if INTERIOR_SHADOWS
-        // UNOFFICIAL forward point-light shadows -- see the LIGHTS < 4 variant. One geometric normal (ddx/ddy) serves the
-        // sun, the point lights and the ambient.
         float3 ptWorldPos = SHADOW_WP_LOAD(IN);
         float3 ptNormal = GetShadowGeometricNormal(ptWorldPos);
         float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
-        // Light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT); the attenuations below are the
-        // ones the lighting further down computes, so the compiler shares them.
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
         float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
@@ -1082,7 +1041,6 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att, SHADOWED(PSLightColor[0].rgb, 0, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #endif
 
-    // UNOFFICIAL: SHADOWED(colour, k, att) -- light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT).
     att = vanillaAtt(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 0].w);
     lighting += (1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light2.xyz, att, SHADOWED(PSLightColor[1].rgb, 1, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
 

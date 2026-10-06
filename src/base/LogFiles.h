@@ -1,8 +1,4 @@
 #pragma once
-// UNOFFICIAL P46: one log file per game launch, kept in its own folder next to the game's exe.
-// Names are "<base>_YYYY-MM-DD_HH-MM-SS.log" (local time); a launch deletes the oldest logs so that `keep`
-// remain including its own. Only files whose names match that pattern exactly are ever deleted or counted.
-// Unit-tested in tests/log_files.cpp, including against a real folder.
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
@@ -15,7 +11,6 @@
 
 namespace LogFiles {
 
-	// "<base>_YYYY-MM-DD_HH-MM-SS.log"; n >= 2 gives "..._HH-MM-SS-<n>.log" for a second log started in the same second.
 	inline std::string FileName(const char* base, const SYSTEMTIME& t, unsigned n = 1) {
 		char name[160];
 		if (n < 2)
@@ -25,10 +20,9 @@ namespace LogFiles {
 		return name;
 	}
 
-	// True only for names FileName() can produce for this base (letters compared case-insensitively, like Windows does).
 	inline bool IsLogName(const std::string& name, const char* base) {
 		const size_t baseLength = strlen(base);
-		static const char stamp[] = "_0000-00-00_00-00-00"; // '0' = any digit, other characters must match
+		static const char stamp[] = "_0000-00-00_00-00-00";
 		const size_t stampLength = sizeof(stamp) - 1;
 		if (name.size() < baseLength + stampLength + 4) return false;
 		for (size_t i = 0; i < baseLength; i++)
@@ -46,8 +40,6 @@ namespace LogFiles {
 		return name.size() - pos == 4 && _stricmp(name.c_str() + pos, ".log") == 0;
 	}
 
-	// The oldest of these log names that must go so that `keep` logs remain once one more is created.
-	// The date-time stamp sorts in time order, so the names are compared from the stamp on.
 	inline std::vector<std::string> OldestToRemove(std::vector<std::string> names, size_t keep, size_t baseLength) {
 		std::vector<std::string> remove;
 		if (keep == 0 || names.size() < keep) return remove;
@@ -58,17 +50,14 @@ namespace LogFiles {
 		return remove;
 	}
 
-	// "[HH:MM:SS.mmm] " at the start of every line; returns its length (15).
 	inline int LinePrefix(char* out, size_t size, const SYSTEMTIME& t) {
 		return snprintf(out, size, "[%02u:%02u:%02u.%03u] ", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
 	}
 
-	// Formats "[HH:MM:SS.mmm] <message>\n" (no terminating zero) into `stack`, or into `heap` when it does not fit.
-	// Returns the start of the line; `length` gets its length including the '\n', `prefix` the length of the time prefix.
 	inline char* FormatLine(char* stack, size_t stackSize, std::string& heap, const SYSTEMTIME& t, const char* message, va_list args,
 		size_t& length, size_t& prefix) {
 		prefix = (size_t)LinePrefix(stack, stackSize, t);
-		const size_t room = stackSize - prefix; // for the message and its zero, which becomes the '\n'
+		const size_t room = stackSize - prefix;
 		va_list copy;
 		va_copy(copy, args);
 		int written = vsnprintf(stack + prefix, room, message, copy);
@@ -78,7 +67,7 @@ namespace LogFiles {
 		if (messageLength >= room) {
 			heap.assign(stack, prefix);
 			heap.resize(prefix + messageLength + 1);
-			vsnprintf(&heap[prefix], messageLength + 1, message, args); // its zero lands on the last byte, which becomes the '\n'
+			vsnprintf(&heap[prefix], messageLength + 1, message, args);
 			line = &heap[0];
 		}
 		line[prefix + messageLength] = '\n';
@@ -90,15 +79,12 @@ namespace LogFiles {
 		return GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 	}
 
-	// A path in `folder` for a new log started at `now` that does not exist yet.
 	inline std::string NewLogPath(const std::string& folder, const char* base, const SYSTEMTIME& now) {
 		std::string path = folder + "\\" + FileName(base, now);
 		for (unsigned n = 2; Exists(path) && n < 100; n++) path = folder + "\\" + FileName(base, now, n);
 		return path;
 	}
 
-	// Moves the single log written by builds before P46 (`oldPath`) into `folder`, named after its last write time,
-	// so it is neither lost nor mistaken for the current log. Returns true if it was moved.
 	inline bool AdoptOldLog(const std::string& oldPath, const std::string& folder, const char* base) {
 		WIN32_FILE_ATTRIBUTE_DATA data;
 		if (!GetFileAttributesExA(oldPath.c_str(), GetFileExInfoStandard, &data) || (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
@@ -107,7 +93,6 @@ namespace LogFiles {
 		return MoveFileExA(oldPath.c_str(), NewLogPath(folder, base, local).c_str(), MOVEFILE_COPY_ALLOWED) != 0;
 	}
 
-	// Deletes the oldest logs in `folder` so that `keep` remain once one more is created. Returns how many were deleted.
 	inline unsigned PruneOldLogs(const std::string& folder, const char* base, size_t keep) {
 		std::vector<std::string> names;
 		WIN32_FIND_DATAA found;
@@ -120,20 +105,17 @@ namespace LogFiles {
 		}
 		unsigned deleted = 0;
 		for (const std::string& name : OldestToRemove(names, keep, strlen(base)))
-			if (DeleteFileA((folder + "\\" + name).c_str())) deleted++; // a log still open by another running game stays
+			if (DeleteFileA((folder + "\\" + name).c_str())) deleted++;
 		return deleted;
 	}
 
 	struct NewLog {
 		FILE* file = nullptr;
-		std::string name;      // "<folderName>\<file name>", without the game folder (it can hold the player's user name)
-		bool adopted = false;  // the old single log was moved into the folder
-		unsigned deleted = 0;  // old logs deleted to make room
+		std::string name;
+		bool adopted = false;
+		unsigned deleted = 0;
 	};
 
-	// Tries each game folder in turn (ending in a slash; "" = the current folder): creates <game folder><folderName>,
-	// moves the old single <game folder><base>.log into it, deletes the oldest logs and opens a new one.
-	// NewLog::file is null if no game folder worked.
 	inline NewLog OpenNewLog(const std::vector<std::string>& gameFolders, const char* folderName, const char* base, size_t keep, const SYSTEMTIME& now) {
 		NewLog log;
 		for (const std::string& gameFolder : gameFolders) {

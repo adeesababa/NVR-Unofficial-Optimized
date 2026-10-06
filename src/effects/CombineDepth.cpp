@@ -15,20 +15,11 @@ void CombineDepthEffect::UpdateConstants() {
 }
 
 void CombineDepthEffect::RegisterTextures() {
-	// Effects recompute the post-projection depth from the linear channel (Depth.hlsl
-	// projectedDepthFromLinear), so a single 32-bit channel carries everything they read.
 	const D3DFORMAT format = TheSettingManager->SettingsMain.Main.SlimDepthBuffer ? D3DFMT_R32F : D3DFMT_G32R32F;
 	TheTextureManager->InitTexture("TESR_DepthBuffer", &Textures.CombinedDepthTexture, &Textures.CombinedDepthSurface, TheRenderManager->width, TheRenderManager->height, format);
 	Logger::Log("UNOFFICIAL depth buffer: %s.", format == D3DFMT_R32F ? "R32F (single channel)" : "G32R32F");
 }
 
-// ---- One-off check of the merged draw (roadmap I3) ----
-// Every call in the merged path returns success, yet on a GTX 1070 (native D3D9) its targets stayed stale:
-// the retail runtime returns S_OK even for a draw the driver rejects. So the first time the merged path
-// runs in a session, the normals target is filled with a marker colour, and its centre pixel is read back
-// before and after the draw (a one-off stall of a few milliseconds). Marker still there afterwards = the
-// draw never ran; the merged path then switches itself off (separate passes until restart). The render
-// states the draw ran with are logged too, to show which D3D9 rule it may have broken.
 static const char* SurfaceFormatName(D3DFORMAT format) {
 	switch (format) {
 	case D3DFMT_R32F: return "R32F";
@@ -45,7 +36,6 @@ static const char* SurfaceFormatName(D3DFORMAT format) {
 	}
 }
 
-// Centre pixel of an A16B16G16R16F render target, through a 1x1 copy (the GPU finishes the frame so far).
 static bool ReadCentreTexel(IDirect3DDevice9* Device, IDirect3DSurface9* surface, const D3DSURFACE_DESC& desc, float texel[4]) {
 	if (desc.Format != D3DFMT_A16B16G16R16F) return false;
 	IDirect3DSurface9* probe = nullptr;
@@ -69,7 +59,6 @@ static bool ReadCentreTexel(IDirect3DDevice9* Device, IDirect3DSurface9* surface
 }
 
 static bool IsMarker(const float texel[4]) {
-	// D3DCOLOR_ARGB(0x40, 0x20, 0x10, 0x08) converted to floats; the half-float rounding is far below 0.002.
 	const float marker[4] = { 0x20 / 255.0f, 0x10 / 255.0f, 0x08 / 255.0f, 0x40 / 255.0f };
 	for (int i = 0; i < 4; ++i)
 		if (fabsf(texel[i] - marker[i]) > 0.002f) return false;
@@ -111,7 +100,6 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 		mergedNormalsFailed = true;
 		return false;
 	}
-	// R32F depth is 32 bits per pixel, the normals are 64: mixing sizes needs this cap.
 	const bool sameBitDepth = (depthDesc.Format == D3DFMT_G32R32F) == (normalsDesc.Format == D3DFMT_A16B16G16R16F);
 	if (!sameBitDepth && !(caps.PrimitiveMiscCaps & D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)) {
 		mergedNormalsFailed = true;
@@ -130,8 +118,6 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 
 	DWORD oldWriteMask1 = 0xF;
 	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
-	// With the game's depth-stencil still bound, the two-target draw was silently dropped on a
-	// GTX 1070 (native D3D9). The fog MRT pass, which works, unbinds it first; do the same.
 	IDirect3DSurface9* depthStencil = nullptr;
 	Device->GetDepthStencilSurface(&depthStencil);
 	Device->SetDepthStencilSurface(nullptr);
@@ -175,7 +161,7 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 				ran ? "the two-target draw RAN." : "the two-target draw was DROPPED by the driver; using separate passes until restart.");
 			if (!ran) {
 				mergedNormalsFailed = true;
-				return false; // the caller renders depth and normals the usual way this frame
+				return false;
 			}
 		}
 	}

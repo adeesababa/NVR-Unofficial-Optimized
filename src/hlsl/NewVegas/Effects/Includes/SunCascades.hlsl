@@ -1,18 +1,11 @@
-// The sun's shadow at a world point, from NVR's cascaded shadow maps (TESR_ShadowAtlas): the same lookup as
-// SunShadows.fx.hlsl's GetLightAmount (single tap per cascade, the cascade blend, the per-cascade normal offset), for
-// effects that need the sun's visibility themselves -- with ForwardShadows on (the default) the game shaders apply the
-// sun's shadow to the sun's light only, and TESR_PointShadowBuffer holds the contact shadows alone.
-// The including effect declares sampler2D TESR_ShadowAtlas (in its sampler order) before including this, and includes
-// Includes/Shadows.hlsl (the VSM / EVSM evaluation) first.
-
 float4x4 TESR_ShadowCameraToLightTransformNear;
 float4x4 TESR_ShadowCameraToLightTransformMiddle;
 float4x4 TESR_ShadowCameraToLightTransformFar;
 float4x4 TESR_ShadowCameraToLightTransformLod;
 float4 TESR_SmoothedSunDir;
-float4 TESR_ShadowFormatData;   // x: mode (0 VSM, 1 EVSM2, 2 EVSM4), y: format bits
-float4 TESR_ShadowBlur;         // x: 1 / atlas resolution
-float4 TESR_ShadowNearCenter;   // xyz: centre (camera-relative world), w: radius
+float4 TESR_ShadowFormatData;
+float4 TESR_ShadowBlur;
+float4 TESR_ShadowNearCenter;
 float4 TESR_ShadowMiddleCenter;
 float4 TESR_ShadowFarCenter;
 float4 TESR_ShadowLodCenter;
@@ -26,7 +19,7 @@ float4 SunCascadeTexCoord(float4 coord) {
 
 float SunCascadeValue(float4x4 lightTransform, float4 coord, float offsetX, float offsetY, float bias, float bleedReduction) {
 	float4 lightSpace = SunCascadeTexCoord(mul(coord, lightTransform));
-	lightSpace.xy = lightSpace.xy * 0.5 + float2(offsetX, offsetY);   // the cascade's quadrant of the atlas
+	lightSpace.xy = lightSpace.xy * 0.5 + float2(offsetX, offsetY);
 	float4 moments = tex2Dlod(TESR_ShadowAtlas, float4(lightSpace.xy, 0.0f, 0.0f));
 	float shadow;
 	[branch] if (TESR_ShadowFormatData.x == 0.0f)
@@ -38,7 +31,6 @@ float SunCascadeValue(float4x4 lightTransform, float4 coord, float offsetX, floa
 	return shadow;
 }
 
-// 1 lit .. 0 in the sun's shadow (camera-relative world position, world normal).
 float GetSunCascadeLight(float3 positionWS, float3 normal) {
 	float offsetScale = saturate(1.0f - dot(normal, TESR_SmoothedSunDir.xyz));
 	float4 radii = float4(TESR_ShadowNearCenter.w, TESR_ShadowMiddleCenter.w, TESR_ShadowFarCenter.w, TESR_ShadowLodCenter.w);

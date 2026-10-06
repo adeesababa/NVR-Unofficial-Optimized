@@ -10,7 +10,6 @@ public:
 	};
 	SunShadowStruct	Constants;
 
-	// Scratch targets so no pass samples TESR_PointShadowBuffer while also rendering into it.
 	IDirect3DTexture9* scratchTexture[2] = {};
 	IDirect3DSurface9* scratchSurface[2] = {};
 	bool pingPongFailed = false;

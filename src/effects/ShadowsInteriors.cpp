@@ -6,14 +6,6 @@ void ShadowsInteriorsEffect::UpdateSettings() {}
 void ShadowsInteriorsEffect::RegisterConstants() {}
 
 
-/*
-* The generic path runs the technique's three passes through the frame chain: a full-resolution copy
-* of the HDR frame for TESR_SourceBuffer, a clear of a full-resolution HDR target before each pass, and
-* both blurs of the (one channel) shadow term on HDR targets. The DedicatedInteriorShadows technique
-* blurs it on the two G16R16 scratch targets SunShadowsEffect already owns -- shadow buffer -> A -> B --
-* and only its last pass writes the HDR frame, reading the untouched scene from TESR_RenderedBuffer
-* and the blurred term from sampler s4. TESR_PointShadowBuffer is not modified, as before.
-*/
 void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
@@ -46,16 +38,14 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		for (UINT p = skipBlur ? 2 : 0; p < 3 && SUCCEEDED(result); ++p) {
 			GpuProfileScope gpuPass(passTimers[p], Device);
 			const bool combine = p == 2;
-			Device->SetTexture(4, nullptr); // s4 must not still hold the texture this pass renders into
+			Device->SetTexture(4, nullptr);
 			result = Device->SetRenderTarget(0, combine ? chain.Output() : scratch->scratchSurface[p]);
 			if (FAILED(result)) break;
-			// The blur passes skip pixels beyond the draw distance and rely on a black destination, as
-			// the original passes did; the last pass writes every pixel.
 			if (!combine) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 			result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
-			RebindSlotTextures(); // TESR_RenderedBuffer is the current scene image
-			Device->SetTexture(4, source); // NVR_InteriorShadowIn
+			RebindSlotTextures();
+			Device->SetTexture(4, source);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
@@ -66,7 +56,6 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Device->SetTexture(4, nullptr);
 	Device->SetRenderTarget(0, RenderTarget);
 	if (FAILED(result)) {
-		// Nothing was committed to the chain, so the generic path can still do this frame.
 		dedicatedFailed = true;
 		Logger::Log("Dedicated interior shadows failed (%08lx); using the generic path until restart.", result);
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);

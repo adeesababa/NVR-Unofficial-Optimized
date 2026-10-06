@@ -13,7 +13,6 @@ void TonemappingShaders::RegisterConstants() {
 void TonemappingShaders::UpdateConstants() {
 	bool isExterior = TheShaderManager->GameState.isExterior;
 	float transitionCurve = TheShaderManager->GameState.transitionCurve;
-	// UNOFFICIAL HueSafeClip (ISHDRBLENDINSHADERCIN.pso.hlsl), live.
 	Constants.Clip.x = TheSettingManager->GetSettingI("Shaders.Tonemapping.Main", "HueSafeClip") ? 1.0f : 0.0f;
 
 	if (TheSettingManager->SettingsChanged || TheShaderManager->GameState.isDayTimeChanged) {

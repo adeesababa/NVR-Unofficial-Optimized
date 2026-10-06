@@ -72,8 +72,6 @@ float4 Cinema(VSOUT IN) : COLOR0
 	//--------------------------------------------------
     // Height as a ratio between wanted letterbox aspect ratio and actual aspect ratio
 	// cancel out if aspect ratio is set to 0 for some reason, to avoid division by 0
-	// UpdateConstants uses 1 as the native/full-frame sentinel. Most gameplay is not in the
-	// configured cinematic context, so do not read and linearize depth for every pixel then.
 	[branch] if (aspectRatio != 1.0f) {
 		float letterboxHeight = (1 - TESR_ReciprocalResolution.z / aspectRatio) / 2;
 		float depth = readDepth(IN.UVCoord);

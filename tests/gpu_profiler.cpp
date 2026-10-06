@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <vector>
 
-// Exercise the real collector against deterministic asynchronous query results.
 namespace ProfilerTest {
 enum { D3DQUERYTYPE_TIMESTAMP, D3DQUERYTYPE_TIMESTAMPFREQ, D3DQUERYTYPE_TIMESTAMPDISJOINT };
 enum { D3DISSUE_BEGIN = 2, D3DISSUE_END = 1 };
@@ -16,9 +15,9 @@ static HRESULT DisjointStatus = S_OK;
 static HRESULT FrequencyStatus = S_OK;
 static BOOL DisjointValue = FALSE;
 static UINT64 FrequencyValue = 1000000;
-static bool CannotCreate[3] = {};           // per query type: CreateQuery fails, as on a layer without it
+static bool CannotCreate[3] = {};
 static int LiveQueries = 0;
-static std::vector<UINT64> IssueTicks;		// when set, each timestamp Issue records the next value (timeline tests)
+static std::vector<UINT64> IssueTicks;
 static size_t IssueTickIndex = 0;
 struct IDirect3DQuery9 {
 	int Type;
@@ -43,7 +42,7 @@ struct IDirect3DDevice9 {
 	UINT64 Tick = 100;
 	HRESULT CreateQuery(int type, IDirect3DQuery9** query) {
 		*query = nullptr;
-		if (CannotCreate[type]) return E_FAIL; // D3DERR_NOTAVAILABLE on a real device
+		if (CannotCreate[type]) return E_FAIL;
 		*query = new IDirect3DQuery9{type, Tick++};
 		++LiveQueries;
 		return S_OK;
@@ -77,8 +76,6 @@ void CheckGpuProfiler() {
 		TimestampStatus = S_OK;
 		assert(timer.Begin(&device)); timer.End();
 		assert(timer.GetSampleCount() == 2);
-		// A failing DISJOINT query no longer kills the timer (a D3D9 layer may not implement it):
-		// timing continues without it. It used to switch the whole timer off.
 		DisjointStatus = E_FAIL;
 		assert(timer.Begin(&device)); timer.End();
 		assert(timer.Begin(&device)); timer.End();
@@ -96,13 +93,12 @@ void CheckGpuProfiler() {
 		TimestampStatus = S_OK;
 		assert(timer.Begin(&device)); timer.End();
 		assert(timer.GetSampleCount() == 12);
-		TimestampStatus = E_FAIL; // a failing TIMESTAMP query is fatal for the timer, and frees its queries
+		TimestampStatus = E_FAIL;
 		assert(!timer.Begin(&device));
 		assert(LiveQueries == 0);
 		assert(!timer.Begin(&device));
 	}
 
-	// A layer with no TIMESTAMPFREQ / TIMESTAMPDISJOINT queries at all still gets timings.
 	ResetMock();
 	CannotCreate[D3DQUERYTYPE_TIMESTAMPFREQ] = CannotCreate[D3DQUERYTYPE_TIMESTAMPDISJOINT] = true;
 	{
@@ -114,7 +110,6 @@ void CheckGpuProfiler() {
 	}
 	assert(LiveQueries == 0);
 
-	// The two timestamp queries are mandatory: without them the timer is unavailable and holds nothing.
 	ResetMock();
 	CannotCreate[D3DQUERYTYPE_TIMESTAMP] = true;
 	{
@@ -124,7 +119,6 @@ void CheckGpuProfiler() {
 	}
 	assert(LiveQueries == 0);
 
-	// A frequency query that starts failing switches to the 1 GHz fallback instead of dropping samples.
 	ResetMock();
 	{
 		GpuTimer timer("frequency fails");
@@ -136,7 +130,6 @@ void CheckGpuProfiler() {
 	}
 	assert(LiveQueries == 0);
 
-	// A disjoint result of TRUE, or a zero frequency, discards the sample and counts it as rejected.
 	ResetMock();
 	DisjointValue = TRUE;
 	{
@@ -159,8 +152,6 @@ void CheckGpuProfiler() {
 	CheckGpuTimeline();
 }
 
-// World-scene split (src/core/GpuTimeline.h): one timestamp per key change, intervals charged to the
-// key that was current.
 namespace TimelineCapture {
 static unsigned Reports = 0, Frames = 0;
 static double Avg[ProfilerTest::GpuTimeline::KeyCount], Max[ProfilerTest::GpuTimeline::KeyCount];
@@ -182,7 +173,6 @@ void CheckGpuTimeline() {
 	using namespace TimelineCapture;
 	const unsigned char none = GpuTimeline::NoKey;
 
-	// The pure charging rule.
 	{
 		const UINT64 ticks[] = { 100, 150, 400, 1000 };
 		const unsigned char keys[] = { 0, 1, 0, none };
@@ -201,10 +191,9 @@ void CheckGpuTimeline() {
 	ResetMock();
 	Reports = 0;
 	{
-		// Two frames, window of two, 1 MHz clock (1 tick = 0.001 ms).
 		GpuTimeline timeline("test", 2);
 		timeline.OnReport = &Capture;
-		timeline.Mark(7); // outside a frame: ignored
+		timeline.Mark(7);
 		IssueTicks = { 1000, 3000, 4000, 10000, 12000 };
 		IssueTickIndex = 0;
 		assert(timeline.BeginFrame(&device));
@@ -213,7 +202,7 @@ void CheckGpuTimeline() {
 		assert(timeline.BeginFrame(&device));
 		timeline.Mark(3); timeline.Mark(none);
 		timeline.EndFrame();
-		assert(timeline.BeginFrame(&device)); // collects both frames and reports
+		assert(timeline.BeginFrame(&device));
 		timeline.EndFrame();
 		assert(Reports == 1 && Frames == 2);
 		assert(Near(Avg[3], 2.0) && Near(Avg[5], 0.5) && Near(Max[3], 2.0) && Near(Max[5], 1.0) && Avg[7] == 0.0);
@@ -222,8 +211,6 @@ void CheckGpuTimeline() {
 	}
 	assert(LiveQueries == 0);
 
-	// Results not back yet: frames stay pending, the timeline skips frames once all slots are in flight,
-	// then collects everything when the GPU catches up.
 	ResetMock();
 	Reports = 0;
 	{
@@ -237,7 +224,7 @@ void CheckGpuTimeline() {
 		}
 		assert(timeline.PendingFrames() == GpuTimeline::FramesInFlight);
 		assert(!timeline.BeginFrame(&device));
-		timeline.Mark(1); // not in a frame
+		timeline.Mark(1);
 		timeline.EndFrame();
 		TimestampStatus = S_OK;
 		assert(timeline.BeginFrame(&device));
@@ -246,7 +233,6 @@ void CheckGpuTimeline() {
 	}
 	assert(LiveQueries == 0);
 
-	// A frame with more than MaxMarks changes is dropped, and ticks that run backwards are rejected.
 	ResetMock();
 	Reports = 0;
 	{
@@ -269,7 +255,6 @@ void CheckGpuTimeline() {
 	}
 	assert(LiveQueries == 0);
 
-	// A disjoint clock rejects the frame; a failing timestamp GetData switches the timeline off.
 	ResetMock();
 	Reports = 0;
 	DisjointValue = TRUE;

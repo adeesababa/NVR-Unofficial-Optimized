@@ -72,19 +72,12 @@ IDirect3DBaseTexture9* TextureManager::GetCachedTexture(std::string& pathS) {
 }
 
 
-/*
-* A sampler whose texture file failed to load asks for it by name again at every bind, so the error is reported once
-* per name: a tester's log had 53,000 identical lines (four per frame), each written and flushed on the render thread.
-*/
 static void ReportMissingTexture(const std::string& Name) {
 	static std::unordered_set<std::string> reported;
 	if (reported.insert(Name).second)
 		Logger::Log("[ERROR] Texture %s not found (reported once; the shaders using it run without it).", Name.c_str());
 }
 
-/*
-* Gets the slot holding a game dynamic texture, so callers can follow a slot whose texture changes.
-*/
 IDirect3DBaseTexture9** TextureManager::GetTextureSlotByName(std::string& Name) {
 	TexturePointersList::iterator t = TextureNames.find(Name);
 	if (t == TextureNames.end()) {
@@ -131,8 +124,6 @@ IDirect3DBaseTexture9* TextureManager::GetFileTexture(std::string TexturePath, T
 
 	if (!Texture) {
 		Logger::Log("[ERROR] : Couldn't load texture file %s", TexturePath.c_str());
-		// NVR's own textures (Effects, Water, Precipitations) ship with the mod; when they are missing, effects still
-		// run but read black instead (ambient occlusion loses its noise pattern and bands, SMAA stops smoothing).
 		static bool hinted = false;
 		if (!hinted) {
 			hinted = true;

@@ -38,7 +38,7 @@ public:
 		D3DXVECTOR4		SkyData;
 		D3DXVECTOR4		HDRData;
 		D3DXVECTOR4		LotteData;
-		D3DXVECTOR4		Clip;			// UNOFFICIAL TESR_ToneMappingClip: x HueSafeClip
+		D3DXVECTOR4		Clip;
 		float			PointLightMult;
 	};
 	TonemappingStruct Constants;

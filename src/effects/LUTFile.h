@@ -6,21 +6,11 @@
 #include <string>
 #include <vector>
 
-// Loading of colour-grading LUT files for LUTEffect. Needs only D3D9 and D3DX, so
-// tests/lut_identity.cpp checks it on a NULLREF device.
-//
-// LUT.fx.hlsl reads an N x N x N LUT from a horizontal strip texture N*N wide and N high: texel
-// (x = b*N + r, y = g) holds the output for input (r, g, b) / (N - 1).
-
-// A 3D LUT in the Adobe/Resolve ".cube" text format: N^3 lines of "r g b", red changing fastest, then
-// green, then blue (the same order as the strip above, cell by cell).
 struct CubeLUT {
 	unsigned N = 0;
-	std::vector<float> RGB;		// 3 * N^3 values, in file order
+	std::vector<float> RGB;
 };
 
-// Parses a .cube file. Returns false with a reason for anything LUT.fx.hlsl cannot use as is: a 1D LUT,
-// an input domain other than 0..1, a missing or wrong entry count, or an unreadable line.
 inline bool ParseCubeLUT(std::istream& in, CubeLUT& cube, std::string& error)
 {
 	cube = CubeLUT();
@@ -33,7 +23,7 @@ inline bool ParseCubeLUT(std::istream& in, CubeLUT& cube, std::string& error)
 		if (hash != std::string::npos) line.resize(hash);
 		std::istringstream fields(line);
 		std::string first;
-		if (!(fields >> first)) continue; // blank or comment-only line
+		if (!(fields >> first)) continue;
 
 		if (first == "TITLE") continue;
 		if (first == "LUT_1D_SIZE") { error = "1D LUTs are not supported (a 3D LUT is needed)"; return false; }
@@ -49,17 +39,15 @@ inline bool ParseCubeLUT(std::istream& in, CubeLUT& cube, std::string& error)
 			if (!(fields >> domain[0] >> domain[1] >> domain[2])) { error = first + " needs three values"; return false; }
 			continue;
 		}
-		if (first == "LUT_3D_INPUT_RANGE") { // Resolve's form of the domain
+		if (first == "LUT_3D_INPUT_RANGE") {
 			float low = 0.0f, high = 1.0f;
 			if (!(fields >> low >> high)) { error = "LUT_3D_INPUT_RANGE needs two values"; return false; }
 			for (int c = 0; c < 3; c++) { domainMin[c] = low; domainMax[c] = high; }
 			continue;
 		}
 
-		// Other keywords some tools write (none change how the table is read): skip them.
 		if ((first[0] >= 'A' && first[0] <= 'Z') || (first[0] >= 'a' && first[0] <= 'z')) continue;
 
-		// A data line: three numbers.
 		char* end = nullptr;
 		const float r = std::strtof(first.c_str(), &end);
 		float g = 0.0f, b = 0.0f;
@@ -84,8 +72,6 @@ inline bool ParseCubeLUT(std::istream& in, CubeLUT& cube, std::string& error)
 	return true;
 }
 
-// Builds the strip texture for a parsed .cube (A8R8G8B8, values clamped to 0..1 and rounded to 8 bits,
-// like a PNG strip exported from it would be).
 inline IDirect3DTexture9* CreateStripFromCube(IDirect3DDevice9* device, const CubeLUT& cube, std::string& error)
 {
 	const unsigned n = cube.N;
@@ -99,7 +85,7 @@ inline IDirect3DTexture9* CreateStripFromCube(IDirect3DDevice9* device, const Cu
 		for (unsigned g = 0; g < n; g++)
 			for (unsigned r = 0; r < n; r++) {
 				const float* v = &cube.RGB[((size_t)b * n * n + (size_t)g * n + r) * 3];
-				BYTE* px = (BYTE*)rect.pBits + (size_t)g * rect.Pitch + ((size_t)b * n + r) * 4; // memory order B, G, R, A
+				BYTE* px = (BYTE*)rect.pBits + (size_t)g * rect.Pitch + ((size_t)b * n + r) * 4;
 				px[0] = byte(v[2]);
 				px[1] = byte(v[1]);
 				px[2] = byte(v[0]);
@@ -109,10 +95,6 @@ inline IDirect3DTexture9* CreateStripFromCube(IDirect3DDevice9* device, const Cu
 	return texture;
 }
 
-// Loads a LUT file: a .cube file, or an image (PNG/DDS/BMP) at its EXACT size. The plain D3DX loader
-// used before rounded every side up to a power of two and resampled the image (a 1089x33 strip exported
-// from a 33-point LUT came out 2048x64, which the shader then reads as a different, scrambled LUT) and
-// added mip levels the shader never samples.
 inline IDirect3DTexture9* LoadLUTTexture(IDirect3DDevice9* device, const char* path, std::string& error)
 {
 	const char* dot = std::strrchr(path, '.');
@@ -134,8 +116,6 @@ inline IDirect3DTexture9* LoadLUTTexture(IDirect3DDevice9* device, const char* p
 	HRESULT hr = D3DXCreateTextureFromFileExA(device, path, D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT_NONPOW2, 1, 0, D3DFMT_UNKNOWN,
 		D3DPOOL_MANAGED, D3DX_FILTER_NONE, D3DX_FILTER_NONE, 0, NULL, NULL, &texture);
 	if (FAILED(hr)) {
-		// A device without non-power-of-two textures: the old loader is still better than nothing, and a
-		// strip it has resampled is then rejected by LUTEffect's shape check.
 		texture = nullptr;
 		hr = D3DXCreateTextureFromFileA(device, path, &texture);
 	}

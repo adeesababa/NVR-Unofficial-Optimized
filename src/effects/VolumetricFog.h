@@ -45,20 +45,14 @@ public:
 	float	nightMinDarkness;
 	bool	packedFogFailed = false;
 	bool	dedicatedFogFailed = false;
-	// [0]: fog multiply + depth, [1]: fog add -- written together as MRTs by the estimate pass
 	IDirect3DTexture9* fogTexture[2] = {};
 	IDirect3DSurface9* fogSurface[2] = {};
 
-	// Composite apply (set by ShaderManager for one Render call): the dedicated reconstruct also
-	// applies the exterior sun-shadow composite and/or the deferred AO combine, saving their own
-	// full-resolution passes. compositeApplied reports whether that happened.
 	bool	compositeShadow = false;
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
 	bool	compositeApplied = false;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
-	// The shadow and AO applies in one pass of their own (technique ApplyShadowAO), for frames where effects between them
-	// and the fog keep them out of the fog pass. Returns false, leaving the scene untouched, if it could not.
 	bool	CanApplyShadowAO();
 	bool	RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		bool shadow, IDirect3DTexture9* aoTexture);

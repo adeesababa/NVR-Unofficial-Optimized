@@ -90,7 +90,6 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
     #endif
 }
 
-// UNOFFICIAL: metallic, the share of the pixel that is metal (getDerivedMetallic below; 0 everywhere else).
 float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
     lightColor = lightColor * TESR_PBRData.z;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
@@ -153,16 +152,8 @@ float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, flo
     return (flatAmbient + skyTerm * worldNormalValid) * albedo;
 }
 
-// ---- Metal (UNOFFICIAL) ----------------------------------------------------------------------------------------------
-// New Vegas has no metalness map, so every object was lit as a dielectric: a white 4 % highlight over full diffuse. Bare
-// metal -- guns above all -- read as plastic: white highlights in the sun, matte in the shade, where nothing reflected
-// its surroundings. The normal map's alpha is a highlight-STRENGTH mask, not a gloss map: a gun's body is mostly near 0
-// (the 10mm pistol's median is 0.06) with its edges and worn spots painted high, so it cannot find the metal alone.
-// Metal is guessed per pixel instead: grey (unsaturated) colour counts as metal, partly, and the mask makes it fully
-// metal and polished. [Shaders.PBR.Metal] sets the strength separately for the first-person model and for the world
-// (PBRShaders swaps them round the first-person pass; World 0 leaves the world as it was). docs/derived-metallicness.md.
-float4 TESR_PBRMetal     : register(c34); // x: strength this pass (0 off), y: metal share of grey parts the mask leaves bare, z/w: colour saturation where metal starts/stops being ruled out
-float4 TESR_PBRMetalLook : register(c36); // x: roughness of bare metal, y: of fully masked (polished) metal, z: sky reflection strength, w: 1 debug view
+float4 TESR_PBRMetal     : register(c34);
+float4 TESR_PBRMetalLook : register(c36);
 
 float getMetalMask(float specMask) {
     return smoothstep(0.05f, 0.45f, specMask);
@@ -175,13 +166,10 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
 }
 
-// Metal's roughness: satin where the mask is bare, polished where it is painted (the mask is no gloss map, see above).
 float getMetalRoughness(float specMask) {
     return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
 }
 
-// The split-sum environment response (scale and bias on F0) for a roughness and N.V: Karis, "Physically Based Shading on
-// Mobile" (2014).
 float3 EnvBRDFApprox(float3 f0, float roughness, float NdotV) {
     const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
     const float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
@@ -191,9 +179,6 @@ float3 EnvBRDFApprox(float3 f0, float roughness, float NdotV) {
     return f0 * ab.x + ab.y;
 }
 
-// The sky's light along a direction of world up component z, averaged round the horizon (the object shaders know which
-// way is up per pixel, not the compass bearing): SkyAmbientRadiance's scale and encoding. Mode 0: the spherical harmonic
-// terms that do not depend on the bearing.
 float3 SkyAmbientElevation(float z) {
     #if SKYLIGHTING_MODE == 1
         return SkyAmbientRadiance(float3(sqrt(saturate(1.0f - z * z)), 0.0f, z), TESR_PBRExtraData.z);
@@ -203,9 +188,6 @@ float3 SkyAmbientElevation(float z) {
     #endif
 }
 
-// What metal reflects in place of the diffuse light it lacks: the weather ambient and the sky along the reflected view
-// (upReflect: that view's world up component; skyValid 0 when it is unknown), weighted by the split-sum response for
-// the metal's colour (F0) and roughness. getAmbientLighting's terms, with the reflection for the normal.
 float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid) {
     float3 env = ambient * TESR_PBRData.w + SkyAmbientElevation(upReflect) * SKY_AMBIENT_STRENGTH * skyValid;
     return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z;
