@@ -19,6 +19,9 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 - **Experimental Gun FX** (since P67): muzzle puffs, heat smoke from a hot barrel, ejection-port smoke,
   barrel glow, heat haze and a muzzle-blast shimmer, each with its own switch under **Main > GunFX**,
   all off by default. Guide: [docs/GUNFX.md](docs/GUNFX.md).
+- **New in P75, off by default:** lamp-by-lamp shadows indoors, a metal look for guns, lit "chrome"
+  reflections, and a better bounce light (see below). **Fixed in P75:** the flashlight's bright rim
+  around grass, bright colours changing hue, and shadows over B42 Optics scopes.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -132,12 +135,29 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
   brighter or darker all at once whenever *you* stepped into or out of a shadow, because their shadow was
   checked in the wrong place (the game's skeleton data overwrote the camera values their shaders use).
   They now get their own, correct shadows.
+- **Flashlight around grass** (fixed in P75, `Shaders > Flashlight > Main > EdgeFix`, on) - with MSAA the
+  flashlight lit the edges of grass, leaves and characters as if they were the background behind them: a
+  bright rim and jagged edges. Edge pixels are now lit in two parts. About 0.1 ms with grass filling the beam.
+- **Bright colours keep their hue** (fixed in P75, `Shaders > Tonemapping > Main > HueSafeClip`, on) - a
+  colour too bright for the screen had its brightest channel cut, so lit orange turned yellow (very visible
+  under the flashlight). It now loses a little saturation instead. Colours that fit on screen are unchanged.
+  `Shaders > Debug > Main > ClipView` (off) marks the pixels that still clip.
+- **B42 Optics scopes** (fixed in P75, `Shaders > ShadowsInteriors > Forward > ScopeFix`, on) - the scope's
+  lens and picture-in-picture view got the main view's shadows laid over them (they are drawn from another
+  camera). Only active while a B42 Optics lens is on screen; without that mod nothing changes.
+- **ParallaxLite edge** (fixed in P75) - with `ParallaxLite` on, the ground's bumps stopped along a line that
+  slid along as you walked, and their small shadows had two rings. They now fade out smoothly. Same cost.
+- **Fewer driver calls** (P75, `Main > Main > Performance > SkipRedundantConstants`, on) - shader-constant
+  uploads that set exactly what the graphics card already holds are skipped (about 9 in 10 indoors, where the
+  game's own draw calls limit the frame rate). Same picture.
 
 **Experimental Gun FX** (since P67). The zip includes the `GunFX.dll` plugin. In the NVR menu, **Main > GunFX**
 has one switch per effect (muzzle puff, heat smoke, after-fire trail (since P69), ejection smoke, barrel glow, heat
 haze, muzzle blast), all off
 by default, plus `EnergyWeapons` (since P68; off = no GunFX on lasers, plasma and other energy weapons, modded ones
-included). Since P68 the smoke's look (size, opacity, rise, swirl, fading) is set in `GunFX.ini` too. Fine-tuning is in `Data\NVSE\Plugins\GunFX.ini`, and every gun also gets its own settings file the
+included). Since P68 the smoke's look (size, opacity, rise, swirl, fading) is set in `GunFX.ini` too. Since P75
+the volumetric smoke fills a room with a lingering gun-smoke haze and bullets cut tunnels through it; these two
+are the most expensive parts, with their own switches `SmokeHaze` and `BulletTunnels`. Fine-tuning is in `Data\NVSE\Plugins\GunFX.ini`, and every gun also gets its own settings file the
 first time you equip it. See [docs/GUNFX.md](docs/GUNFX.md) for how to configure it.
 
 **Optional visual extras** (since P64). These change the look, so they are **off by default** and cost
@@ -148,7 +168,17 @@ nothing while off. Turn them on in the menu to try them:
   `Strength` 0..1 blends from the game's look; `Brightness` if they look too dark or bright. About 0.3 ms
   during a firefight on a GTX 1070.
 - **Shaders > BounceLight** - light bouncing off lit surfaces onto nearby ones (colour bleeding), from
-  what is on screen. About 1.2 ms at 1440p on a GTX 1070.
+  what is on screen. Since P75 it also guesses light from just off screen (`OffScreenLight`), bounces more
+  than once (`MultiBounce`) and reuses the last frame (`Temporal`: less grain; a moving character's glow on
+  the floor trails by about 0.15 s, set it off if that bothers you). About 0.5 ms at 1440p on a GTX 1070.
+- **Shaders > ShadowsInteriors > Forward** (since P75, needs a restart) - indoor lamp shadows drawn on each
+  object, lamp by lamp, instead of one dark mask over the finished picture: a lamp's shadow takes away only
+  that lamp's light, so lamp glow and the room's ambient light stay bright and two lamps each cast their own
+  shadow. Needs `Shaders > PBR` on. `DebugView` 1 shows each lamp's shadows in its own colour.
+- **Shaders > PBR > Metal > MetalOn** (since P75) - guns read as metal instead of plastic: reflections of the
+  surroundings, colour on coloured metals, polished edges (your own weapon only by default).
+- **Shaders > PBR > EnvMaps > Lighting** (since P75) - the game's "chrome" reflections on guns, glass and
+  metal follow the light around them instead of gleaming the same in a dark cave as at noon (0 = the game's).
 - **Shaders > ContactHardening** - sun shadows sharp where an object meets the ground and softer the
   further they fall from it, as under the real sun. Needs a restart the first time it is turned on; after
   that the switch works live. `SunSize` 1 and `MaxSoftness` 4 are the tested defaults (higher values can
