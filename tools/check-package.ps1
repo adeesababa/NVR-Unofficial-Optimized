@@ -29,7 +29,17 @@ foreach ($entry in $folders.GetEnumerator()) {
 	$known = @{}
 	foreach ($file in $tracked) { $known[$file.Substring($entry.Key.Length).Replace('/', '\').ToLowerInvariant()] = $true }
 	foreach ($item in Get-ChildItem $dir -Recurse -File) {
-		if (!$known.ContainsKey($item.FullName.Substring($dir.Length).ToLowerInvariant())) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
+		$relative = $item.FullName.Substring($dir.Length)
+		if ($relative.ToLowerInvariant().StartsWith('cache\')) { continue }
+		if (!$known.ContainsKey($relative.ToLowerInvariant())) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
+	}
+	$cache = Join-Path $dir 'Cache'
+	if (Test-Path $cache) {
+		foreach ($item in Get-ChildItem $cache -Recurse -File -Filter '*.hlsl') {
+			$compiled = $item.FullName.Substring(0, $item.FullName.Length - 5)
+			if (!(Test-Path $compiled)) { Write-Host "CACHE    no compiled file for $($item.FullName)"; $problems++ }
+			if (Select-String -Path $item.FullName -Pattern '#line \d+ "[A-Za-z]:' -Quiet) { Write-Host "CACHE    install path in $($item.FullName)"; $problems++ }
+		}
 	}
 }
 
