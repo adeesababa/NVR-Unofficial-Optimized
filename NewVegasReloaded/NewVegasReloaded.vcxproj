@@ -281,6 +281,7 @@
     <ClInclude Include="..\src\effects\ShadowsInteriors.h" />
     <ClInclude Include="..\src\effects\Sharpening.h" />
     <ClInclude Include="..\src\effects\BounceLight.h" />
+    <ClInclude Include="..\src\effects\BounceLightMath.h" />
     <ClInclude Include="..\src\effects\Skin.h" />
     <ClInclude Include="..\src\effects\Sky.h" />
     <ClInclude Include="..\src\effects\Snow.h" />

@@ -304,17 +304,19 @@ void getFlatFogTerms(float distance, float3 extinctionColor, float3 inscattering
 
 
 float getSky(float2 uv) {
-	float4 color = linearize(tex2D(TESR_SourceBuffer, uv));
+	// Explicit-LOD reads throughout (FogTerms can run inside a dynamic branch, see FogApply); these buffers have one
+	// mip level, so they read exactly what tex2D did.
+	float4 color = linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0, 0)));
 
 	float distance = 0.5 * TESR_ReciprocalResolution.xy;
 	distance *= 1;
 
 	float3 coeffs = float3(float2(1, -1) * distance, 0.9961);
-	float depth = readDepth(uv) / farZ >= coeffs.z;
-	float depth1 = readDepth(uv + coeffs.xx) / farZ >= coeffs.z;
-	float depth2 = readDepth(uv + coeffs.xy) / farZ >= coeffs.z;
-	float depth3 = readDepth(uv + coeffs.yx) / farZ >= coeffs.z;
-	float depth4 = readDepth(uv + coeffs.yy) / farZ >= coeffs.z;
+	float depth = readDepthLod(uv) / farZ >= coeffs.z;
+	float depth1 = readDepthLod(uv + coeffs.xx) / farZ >= coeffs.z;
+	float depth2 = readDepthLod(uv + coeffs.xy) / farZ >= coeffs.z;
+	float depth3 = readDepthLod(uv + coeffs.yx) / farZ >= coeffs.z;
+	float depth4 = readDepthLod(uv + coeffs.yy) / farZ >= coeffs.z;
 
 	float total = (depth || depth1 || depth2 || depth3 || depth4) * luma(color); // we scale the result with the point luma since sky tends to be brighter
 
@@ -418,7 +420,7 @@ void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAm
 	IN.UVCoord = uv;
 	float4 pureFogColor = linearize(TESR_FogColor);
 
-	float depth = readDepth(IN.UVCoord);
+	float depth = readDepthLod(IN.UVCoord);   // explicit LOD: see getSky
 	float isDayTime = smoothstep(0.4, 0.8, TESR_SunAmount.x);
 	float isDayTimeFog = smoothstep(0.1, 0.6, TESR_SunAmount.x);
 	// 0 for interiors (no consistent day/night concept) or full daylight; ramps toward 1 through
@@ -490,7 +492,7 @@ void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAm
 	float strength = max(0, nvrDensity + WeatherImpact * vanillaStrength);
 
 	// ---- shadow-coupled sun in-scattering, sampled once per pixel at the fog's terminating point ----
-	float3 worldNormal = GetWorldNormal(IN.UVCoord);
+	float3 worldNormal = GetWorldNormalLod(IN.UVCoord);
 	float shadowVisibility = 1.0;
 	[branch]
 	if (isExterior > 0.5 && ShadowStrength > 0.0 && TESR_ShadowFade.y > 0.5) {
@@ -719,13 +721,30 @@ struct FogTermsOut
 	float4 add : COLOR1;
 };
 
+// Each half-resolution texel stands for a 2x2 block of screen pixels, and its centre (IN.UVCoord, see HalfVS) is the
+// corner the four share. The fog is worked out at the block's NEAREST pixel, at that pixel's own centre, and stored with
+// that pixel's exact depth. (It used to be worked out at the shared corner, where the depth buffer's linear filter blends
+// the four: where a thin pole, branch or wire crossed the block, that was a distance nothing is at, which matched neither
+// the object nor the sky in FogApply. Thin objects then took the sky's fog, or none, and it flickered as they moved.)
+// The nearest pixel wins so thin things in front, which may cover only one pixel of a block, always get a sample of their
+// own; the sky or ground behind them is covered by the neighbouring blocks or, where none of those is at their distance
+// either (a gap in foliage), by FogApply working the fog out for that pixel itself.
 FogTermsOut DedicatedFogEstimate(VSOUT IN)
 {
 	FogTermsOut OUT;
+	float2 h = 0.5 * TESR_ReciprocalResolution.xy;
+	float2 best = IN.UVCoord - h;
+	float bestDepth = readDepthLod(best);
+	const float2 others[3] = { float2(h.x, -h.y), float2(-h.x, h.y), float2(h.x, h.y) };
+	[unroll] for (int i = 0; i < 3; i++) {
+		float2 candidate = IN.UVCoord + others[i];
+		float candidateDepth = readDepthLod(candidate);
+		if (candidateDepth < bestDepth) { best = candidate; bestDepth = candidateDepth; }
+	}
 	float3 fogMul, fogAdd;
 	float nightAmount;
-	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount);
-	OUT.mulDepth = float4(fogMul, saturate(readDepth(IN.UVCoord) / farZ));
+	FogTerms(best, fogMul, fogAdd, nightAmount);
+	OUT.mulDepth = float4(fogMul, saturate(bestDepth / farZ));
 	OUT.add = float4(fogAdd, 1);
 	return OUT;
 }
@@ -768,6 +787,15 @@ float3 FogApply(float3 gammaColor, float2 uv)
 	float3 fogMul = s00.rgb * weights.x + s10.rgb * weights.y + s01.rgb * weights.z + s11.rgb * weights.w;
 	float3 fogAdd = tex2Dlod(NVR_FogBufferAdd, float4(uv00, 0, 0)).rgb * weights.x + tex2Dlod(NVR_FogBufferAdd, float4(uv10, 0, 0)).rgb * weights.y +
 		tex2Dlod(NVR_FogBufferAdd, float4(uv01, 0, 0)).rgb * weights.z + tex2Dlod(NVR_FogBufferAdd, float4(uv11, 0, 0)).rgb * weights.w;
+	// None of the four estimates is at this pixel's distance (within about 6%): the edge of a thin object, or a gap in
+	// foliage through to the sky. Blending them gave it the fog of something else (dark specks in pine trees, poles
+	// with no fog, flickering as they moved), so the fog is worked out for this pixel itself. It is rare (edges and
+	// gaps only), so the half-resolution saving stays.
+	float bestDifference = min(min(difference.x, difference.y), min(difference.z, difference.w));
+	[branch] if (bestDifference > 3.0) {
+		float nightAmount;
+		FogTerms(uv, fogMul, fogAdd, nightAmount);
+	}
 
 	float3 color = linearize(gammaColor);
 	return delinearize(max(color * fogMul + fogAdd, 0.0f));
@@ -879,5 +907,27 @@ technique CompositeFog
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 DedicatedFogComposite();
+	}
+}
+
+// ---- Shadow + AO apply, merged (UNOFFICIAL) ----
+// When effects run between the shadow/AO apply and the fog (bounce light, specular, the flashlight...), the composite
+// cannot go into the fog pass, and the two applies were two full-resolution passes. This one pass does both with the
+// same functions in the same order (shadows, then AO), keeping the colour in registers in between: one read and write
+// of the frame instead of two. (VolumetricFogEffect::RenderShadowAO; NVR_CompositeFlags x shadows, y AO.)
+float4 ShadowAOApply(VSOUT IN) : COLOR0
+{
+	float3 color = pows(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, 2.2);
+	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
+	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
+	return float4(pows(color, 1.0 / 2.2), 1);
+}
+
+technique ApplyShadowAO
+{
+	pass Apply
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 ShadowAOApply();
 	}
 }

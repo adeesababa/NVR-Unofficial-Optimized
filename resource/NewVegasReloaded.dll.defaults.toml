@@ -41,6 +41,11 @@ Puff = false                            # GunFX (experimental, needs GunFX.dll):
 HeatSmoke = false                       # GunFX: a thin strand of smoke rising from the barrel once it is hot from sustained fire; it tapers off as the gun cools.
 AfterFireTrail = false                  # GunFX: a thin, wispy trail rising from the barrel only after you stop firing (like a cigarette); fades as the barrel cools, stops when you fire again.
 VolumetricSmoke = false                 # GunFX (prototype): draw the smoke (heat smoke, after-fire trail, muzzle puff, ejection smoke) as continuous volumetric smoke (lit, soft, unbroken while moving) instead of particles. Each smoke's own switch still applies; tuning in [Volume] in GunFX.ini.
+VolumetricSmokeHalfRes = true           # GunFX: draw the volumetric smoke at half resolution (a quarter of the pixels; much cheaper, the smoke is soft). Off = full resolution.
+VolumetricSmokeLowRes = true# GunFX: draw big, close volumetric smoke (pieces covering more than 1% of the screen, as when you walk into smoke) at an eighth of the resolution. Much cheaper in thick smoke; looks the same.
+SmokeHaze = true                       # GunFX: the gun-smoke haze that slowly fills a room as you keep firing (with VolumetricSmoke). The most expensive part of GunFX: off skips its whole-screen pass. Applies immediately.
+BulletTunnels = true                   # GunFX: bullets punch tunnels through the smoke and haze in front of you, which then fill back in. Off skips the pass that cuts them. Applies immediately.
+VolumetricSmokeTest = 0                 # GunFX, for finding faults: 0 normal; 1 the volumetric smoke in plain green (shows exactly where it is drawn); 2 no muzzle flash light on it; 3 smoke worked out but not drawn; 4 nothing drawn at all. Leave on 0.
 EjectionSmoke = false                   # GunFX: a burst of smoke from the ejection port with every casing, bigger when the barrel is hot.
 BarrelGlow = false                      # GunFX: the barrel glows after sustained fire and cools down slowly.
 HeatHaze = false                        # GunFX: heat shimmer around a hot barrel (screen effect).
@@ -72,6 +77,7 @@ HDRScreenshot = false       # Save screenshots in fbx (use with DXVK HDR)
 PresetManagerEnabled = false # Master toggle for automatic per-location Preset Manager resolution. Off = your own settings are authoritative; Save/Load/Delete in the Preset Manager panel still work. Defaults off: it silently wins the location-based settings that third-party tools like Cartographer -- which this feature supersedes -- also try to control, so turn it on deliberately once you're not running one of those alongside it.
 
 [_Main.Main.Performance]
+SkipRedundantConstants = true # UNOFFICIAL: skip shader-constant uploads that set exactly what the graphics device already holds (measured indoors: about 9 in 10 of them). Same picture; less work for the CPU, which indoors is what limits the frame rate. Live: F10 logs a CONSTANT FILTER line. Turn off if anything ever renders wrong.
 FrameChain = true           # UNOFFICIAL: effects alternate between two buffers instead of copying the whole frame after every effect. Faster, identical image. Applies immediately.
 CompositeApply = true       # UNOFFICIAL: apply exterior sun shadows and ambient occlusion inside the fog pass instead of in their own full-screen passes. Faster, same result. Applies immediately.
 ChainUsesGameTexture = true # UNOFFICIAL: use the game's own frame as one of the effect chain's two buffers, avoiding whole-frame copies at the start and end of each chain. Needs FrameChain. Applies immediately.
@@ -281,6 +287,9 @@ HDRCompat       = true                 # Normalize HDR input to LUT range using 
 [_Shaders.LUT.Status]
 Enabled = true                         # Applies a color lookup table. Ships with a neutral LUT so the default is a no-op until you swap in your own.
 
+[_Shaders.Debug.Main]
+ClipView = 0                           # UNOFFICIAL, for finding faults: marks the pixels that are clipped (a colour channel at full brightness, so detail and colour are lost there). Works without switching the Debug effect on; the rest of the picture is shown dimmed and grey. 1: the finished picture (magenta = colour distorted because one or two channels are clipped, cyan = burnt out to plain white). 2: the same for the picture as it comes out of the tonemapper (its white point), before NVR's colour effects (Coloring, LUT, Cinema, Image Adjust, Sharpening). 3: who clipped it: red = already clipped coming out of the tonemapper (too much light: flashlight, sun, exposure or tonemapper settings), yellow = clipped only by NVR's colour effects afterwards. 0 off. Applies immediately
+
 [_Shaders.Debug.Status]
 Enabled = false                        # Displays debug information: depth, normal and shadow buffers, colors of the weather/fog and lights positions.
 
@@ -360,6 +369,7 @@ NearFade = 0.0                         # Fades the light out on surfaces closer 
 HotspotLimit = 0.0                     # Rolls off the brightest part of the lit pool without dimming the falloff around it. 0 disables
 CookieStrength = 0.0                   # Procedural rings and mottling in the beam, for structure on flat surfaces. 0 disables
 SoftEdges = false                      # Wrap lighting instead of clamped diffuse. Removes the speckle the reconstructed normals produce on grass and foliage, at the cost of a flatter beam. Does not change overall brightness
+EdgeFix = 1                            # UNOFFICIAL: cleans up the flashlight at the edges of grass, leaves and characters, worst with MSAA: the bright rim in the colour of what is behind them (sky, a lit wall) and the jagged edge that flickers as you move. 1: the lit surfaces - at an edge, the part of the pixel that is leaf gets the leaf's light and the part that is background gets the background's. 2: also the beam's light shaft in the air, which then no longer spills over the edges of what stands in front of it (sharper, but it can speckle on grass in third person). Only pixels at edges change. Costs about 0.1 ms at 2560x1440 (GTX 1070) with grass filling the beam, less with less. 0 off. Applies immediately
 
 [_Shaders.Flashlight.Interiors]
 ColorR = 2.0                           # UNOFFICIAL: the flashlight's look indoors (Main is outdoors). R channel of the color
@@ -430,6 +440,7 @@ Enabled = true                        # Screenspace godrays/volumetric rays.
 
 
 [_Shaders.Tonemapping.Main]
+HueSafeClip = true                    # UNOFFICIAL: a colour too bright for the screen keeps its hue, losing a little saturation instead of having its brightest channel cut (bright lit orange used to turn yellow, red pink, e.g. under the flashlight). Colours that fit on screen are not touched. Off = the old cut. Applies everywhere, live.
 TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX, 10:DICE (default, most neutral/accurate)
 Exposure = 1.5                        # Scales the engine lighting strength/brightness range before tonemap, useful for HDR rendering
 Gamma = 2.2                           # Gamma modifier to be applied after tonemapping, delinearises output. If placed at 1.0, outputs at linear space for HDR (UI unaffected)
@@ -656,6 +667,23 @@ SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky l
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
 
+[_Shaders.PBR.Metal]
+MetalOn = false                      # UNOFFICIAL: switches the metal look below on and off (the Enabled button at the top of the panel switches ALL of the PBR shaders, not just this).
+FirstPerson = 1.0                    # UNOFFICIAL: metal on your first-person weapon (0 = off, 1 = full). New Vegas has no metal maps, so every surface was lit like plastic: white highlights in the sun, flat and matte in the shade. Metal is guessed from the textures (grey colour, and the shininess mask the artists painted) and then has no flat diffuse light: it shows tinted highlights and reflects the sky and its surroundings. DebugView shows what counts as metal.
+World = 0.0                          # The same for everything else in the world (0 = exactly as before). Grey concrete or cloth can be taken for metal, so it starts off.
+GreyMetal = 0.6                      # [0.0-1.0] How metal a grey part is where the shininess mask is bare (most of a gun's body). The painted mask always makes it fully metal.
+ColourStart = 0.25                   # [0.0-1.0] Colour saturation from which a part starts to count as painted or plastic instead of metal...
+ColourEnd = 0.55                     # [0.0-1.0] ...and from which it never counts as metal (wood, coloured paint, brass is in between).
+Roughness = 0.5                      # [0.05-1.0] Finish of bare metal: 0.05 mirror, 0.5 satin, 1 rough cast.
+PolishedRoughness = 0.25             # [0.05-1.0] Finish where the shininess mask is painted fully (edges, worn spots).
+Reflections = 1.0                    # [0.0-4.0] Strength of what metal reflects from its surroundings (the sky and the ambient light).
+DebugView = 0                        # 1: metal shown in orange (brighter = more metal) over a dim grey image.
+
+[_Shaders.PBR.EnvMaps]
+Lighting = 0.0                       # UNOFFICIAL: the "chrome" reflections the game draws on guns, glass and metal props follow the light round them (1), or keep the game's fixed brightness (0), which gleams the same in a dark cave as at noon.
+Strength = 1.5                       # [0.0-8.0] Brightness of those reflections in the light: about the game's at 1.5 in daylight, dimmer in shade and at night, faint in the dark.
+WithMetal = 0.5                      # [0.0-1.0] Where the metal look ([Shaders.PBR.Metal]) is on, it already reflects the surroundings, so these reflections are scaled by this (1 = both in full).
+
 [_Shaders.PBR.Status]
 Enabled = true                       # Adds PBR specular formula to object shaders
 
@@ -836,6 +864,22 @@ DrawDistance = 4000                  # Max distance for point light shadow rende
 PlayerShadowThirdPerson = true       # Enable shadows for Player Model in third person in pointlights shadows
 PlayerShadowFirstPerson = false      # Enable shadows for Player Model in first person in pointlights shadows
 
+[_Shaders.ShadowsInteriors.Forward]
+Enabled = false                      # UNOFFICIAL: indoor lamp shadows drawn on each object, lamp by lamp, instead of one dark mask over the finished picture: a lamp's shadow takes away only that lamp's light, so lamp glow, lit windows and the room's ambient light stay bright and two lamps on a wall each cast their own shadow. Needs a restart (the indoor shaders are compiled once, then cached).
+Strength = 1.0                       # [0.0-1.0] How dark a lamp's shadow is (1 = none of its light). 0 = the old screen-space shadows again, live, to compare.
+Softness = 0.0                       # [0.0-2.0] 0 = sharp shadow edges (cheapest). About 0.75 = softer edges, about 1-2 ms slower in busy rooms.
+Bias = 0.018                         # [0.0-0.1] Keeps surfaces from shadowing themselves (speckles). Raise a little if lit walls show dark speckles.
+NormalOffset = 0.0                   # [0.0-4.0] Another cure for speckles, pushing the lookup off the surface. 0 = off.
+FirstPerson = true                   # Shadows on your weapon and arms too.
+KeepDarkening = true                 # Keep the old darkening of what no tracked lamp reaches (rooms keep their mood). Off = brighter unlit corners, and about 0.8 ms saved.
+DarkeningBlur = false                # Blur that darkening as the old pass did (about 0.9 ms more).
+LampSwitchMargin = 0.2               # [0.0-0.9] Only so many lamps can cast shadows at once (LightPoints); they are picked by distance. A lamp that already has a shadow keeps it until another is this much nearer (0.2 = 20%), and while it is a little behind you, so shadows stop popping on and off as you walk and turn. 0 = pick purely by distance, as before.
+FadeIn = 0.3                         # [0.0-2.0] Seconds a lamp's shadow takes to fade in when the lamp gets one, instead of popping in. 0 = at once, as before.
+LampRanking = 1                      # 1: lamps get shadows by how much of the scene they light (brightness x reach / distance), so a big room lamp is not pushed out by small bulbs near you as you move. 0 = the nearest lamps, as before.
+LogLamps = false                     # DIAGNOSTIC, for finding faults: write to the log every lamp that gains or loses its shadow, and why.
+ScopeFix = true                      # B42 Optics (picture-in-picture scopes): no lamp shadows (indoors) or sun shadows (outdoors) on the scope's lens or in the scope's picture, where they would land in the wrong places (it is drawn from another camera). Off = as before.
+DebugView = 0                        # 1: the light a shadow takes away is drawn in the lamp's own colour instead. 2: each lamp that casts shadows tints what it lights in its colour. 0 off.
+
 [_Shaders.ShadowsInteriors.Status]
 Enabled = true                      # Post process pointlights shadows in exteriors.
 
@@ -845,6 +889,10 @@ Radius = 150.0                      # How far the bounce reaches, in world units
 DrawDistance = 6000.0               # Distance from the camera where the effect has faded out.
 BlurRadius = 1.5                    # Smoothing of the bounce's grain, in pixels (x6 each way).
 QuarterResolution = true            # Works the bounce out on a quarter of the pixels instead of half (about 1.2 instead of 1.9 ms at 1440p on a GTX 1070, no visible difference). Off = half resolution.
+OffScreenLight = 1.0                # UNOFFICIAL: light for bounce samples that land off the screen (or behind your weapon), guessed from the ambient light and what is seen nearby, so the bounce no longer fades out toward the screen edges. 0 = off (they add nothing, as before).
+MultiBounce = 1.0                   # UNOFFICIAL: more than one bounce: the bounce light each surface shows is passed on again the next frame (1 = all of it, up to 2). Subtle, mostly in corners. 0 = one bounce, as before.
+Temporal = true                     # UNOFFICIAL: reuses last frame's bounce (moved with the view, dropped where something moved in front): less grain, steadier, light from things just turned away from fades out instead of vanishing. Off = as before.
+HalfSamples = false                 # UNOFFICIAL: with Temporal, half the samples each frame: about 0.03 ms cheaper at 1440p, a little more shimmer while turning.
 
 [_Shaders.BounceLight.Status]
 Enabled = false                     # UNOFFICIAL, optional: one bounce of indirect light from what is on screen (colour bleeding, more natural shading). About 1 ms GPU at 1440p when on (F10 'Bounce light'); nothing when off.
@@ -925,27 +973,23 @@ SnowColorB = 0.8                    # Blue chanel for the color of snow coverage
 Enabled = false                      # Snow accumulation on the floor during snowstorms.
 
 [_Shaders.Specular.Exterior]
-BlurMultiplier = 1.0                # Blur strength for detail smoothing.
-DistanceFade = 30000                # Max distance at which the effects will be displayed. Doesn't apply to sky tint.
-FresnelStrength = 1.0               # Strength for the grazing surface lighting boost called fresnel.
-Glossiness = 16                     # Higher value will make the specular effect affect more intensely a smaller region.
-SkyTintSaturation = 1.0             # Saturation of the sky lighting effect. Sky lighting is based on sky color. 
-SkyTintStrength = 0.5               # Strength for the sky lighting effect. This mostly affects horizontal, dark areas outside.
-SpecLumaTreshold = 0.25              # Treshold for the luma of areas affected by the specular boost.
-SpecularStrength = 0.2              # Strength of the effect for specular boost.
+SunStrength = 0.6                   # [0-4] The sun's highlight on every surface outdoors (1: as much as real non-metal surfaces reflect). Strongest looking toward the sun; none in the sun's shadow.
+Roughness = 0.8                     # [0.05-1] How rough surfaces are: lower is a smaller, brighter highlight and a clearer reflection, higher a broad, faint sheen. Dry ground and walls are rough.
+SkyReflections = 0.3                # [0-4] The sky's reflection, mostly seen on surfaces at a glancing angle (1: as much as real surfaces reflect).
+DistanceFade = 30000                # [500-300000] Fades out toward this distance (game units, about 70 to a metre).
+SpecularAA = 1.0                    # [0-1] Softens the highlight where the surface's shape varies within a few pixels (far away, sharp corners), so it does not crawl or blotch. 0: off.
+Reflectance = 0.04                  # [0-0.2] How much a surface reflects head on (0.04: most non-metals; water 0.02).
 
 [_Shaders.Specular.Rain]
-BlurMultiplier = 3.0                # Blur strength for detail smoothing during rainy weathers.
-DistanceFade = 30000                # Max distance at which the effects will be displayed during rainy weathers. Doesn't apply to sky tint.
-FresnelStrength = 1.0               # Strength for the grazing surface lighting boost called fresnel during rainy weathers.
-Glossiness = 7                      # Higher value will make the specular effect affect more intensely a smaller region during rainy weathers.
-SkyTintSaturation = 1.0             # Saturation of the sky lighting effect. Sky lighting is based on sky color during rainy weathers. 
-SkyTintStrength = 0.1               # Strength for the sky lighting effect during rainy weathers. This mostly affects horizontal, dark areas outside.
-SpecLumaTreshold = 0.25              # Treshold for the luma of areas affected by the specular boost during rainy weathers.
-SpecularStrength = 1.0              # Strength of the effect for specular boost during rainy weathers.
+SunStrength = 0.6                   # [0-4] As in Exterior, while it rains (blended in with the rain).
+Roughness = 0.55                    # [0.05-1] Wet surfaces are smoother: a smaller, brighter highlight and a clearer reflection.
+SkyReflections = 0.4                # [0-4] As in Exterior, while it rains.
+DistanceFade = 30000                # [500-300000] As in Exterior, while it rains.
+SpecularAA = 1.0                    # [0-1] As in Exterior, while it rains.
+Reflectance = 0.04                  # [0-0.2] As in Exterior, while it rains.
 
 [_Shaders.Specular.Status]
-Enabled = false                      # Shader that boosts a few lighting effects: specular boost, sky lighting and fresnel boost.
+Enabled = false                      # The sun's highlight and the sky's reflection on every surface outdoors (UNOFFICIAL: modern GGX specular, about 0.4 ms at 1440p).
 
 [_Shaders.Terrain.Main]
 UsePBR = true                       # Use PBR lighting, disable to use vanilla.

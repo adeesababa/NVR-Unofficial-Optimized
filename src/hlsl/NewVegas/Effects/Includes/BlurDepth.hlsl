@@ -4,6 +4,7 @@
 * A depth aware blur that requires the Depthbuffer and related functions from Depth.hlsl
 */
 
+#ifndef BLUR_FULL_WRITE_ONLY
 // perform depth aware 12 taps blur along the direction of the offsetmask
 float4 DepthBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, uniform float blurRadius,uniform float depthDrop,uniform float endFade) : COLOR0
 {
@@ -29,6 +30,41 @@ float4 DepthBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, 
     }
 	color1 /= WeightSum;
     return float4(color1.rgb, 1);
+}
+#endif // BLUR_FULL_WRITE_ONLY
+
+// DepthBlur's result for every pixel, without clip(): beyond endFade it returns its input, which is what clip() left
+// there when the frame chain had pre-filled the destination with that input. With no clip() in the effect the chain
+// skips those whole-frame copies (one per pass). Same maths in the same order otherwise.
+float4 DepthBlurFullValue(float2 uv, uniform sampler2D buffer, uniform float2 OffsetMask, uniform float blurRadius, uniform float depthDrop, uniform float endFade)
+{
+	float4 center = tex2Dlod(buffer, float4(uv, 0, 0));
+	float depth1 = readDepthLod(uv);
+	[branch] if (depth1 > endFade) return center;
+
+	float WeightSum = 0.114725602f;
+	float4 color1 = center * WeightSum;
+	depthDrop *= (depth1 / farZ);
+
+	[unroll]
+    for (int i = 0; i < cKernelSize; i++)
+    {
+		float2 tapUV = uv + (BlurOffsets[i] * OffsetMask) * blurRadius;
+		float4 color2 = tex2Dlod(buffer, float4(tapUV, 0, 0));
+		float depth2 = readDepthLod(tapUV);
+		float diff = abs(float(depth1 - depth2));
+
+		int useForBlur = (diff <= depthDrop);
+		color1 += BlurWeights[i] * color2 * useForBlur;
+		WeightSum += BlurWeights[i] * useForBlur;
+    }
+	color1 /= WeightSum;
+    return float4(color1.rgb, 1);
+}
+
+float4 DepthBlurFull(VSOUT IN, uniform sampler2D buffer, uniform float2 OffsetMask, uniform float blurRadius, uniform float depthDrop, uniform float endFade) : COLOR0
+{
+	return DepthBlurFullValue(IN.UVCoord, buffer, OffsetMask, blurRadius, depthDrop, endFade);
 }
 
 // Same blur for a pass whose destination is NOT the texture it samples (ping-pong). Pixels

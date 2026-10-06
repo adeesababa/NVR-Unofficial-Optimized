@@ -4,6 +4,8 @@
 #include <unordered_set>
 #include "../../core/GpuProfiler.h"
 #include "../../core/GpuTimeline.h"
+#include "../../core/PointShadowForward.h"
+#include "../../core/ConstantFilter.h"
 
 // Everything from the start of the game's render call up to the world scene: NVR shadow maps,
 // the game's own pre-scene work (water reflection/refraction/depth maps and anything else).
@@ -407,8 +409,51 @@ static void ReportWorldRender(BSRenderedTexture* RenderedTexture, int Arg2, int 
 	WorldMissStreak = missed ? WorldMissStreak + 1 : 0;
 }
 
+// Diagnostic (F10 profiling only): where a long frame goes outside NVR's other timers. "Game render (CPU)" is this whole
+// hook (the game's render call, NVR's work included), "Present (CPU)" the time the driver keeps the game in Present (a
+// wait for the graphics card to catch up shows there), and "Game update (CPU)" the rest between two renders: the game's
+// own update (AI, physics, scripts, xNVSE plugins such as GunFX). FRAME SPIKE lines name them when over 0.75 ms.
+// Present is hooked in the device's function table the first time profiling is switched on, so a normal run is untouched.
+namespace FrameSplit {
+	typedef HRESULT (__stdcall* PresentFn)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
+	static PresentFn OriginalPresent = nullptr;
+	static double RenderEnd = 0.0, PresentMs = 0.0;
+	static HRESULT __stdcall PresentHook(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window, const RGNDATA* dirty) {
+		const double start = CpuTimer::NowMs();
+		const HRESULT result = OriginalPresent(device, source, dest, window, dirty);
+		PresentMs += CpuTimer::NowMs() - start;
+		return result;
+	}
+	static void Install(IDirect3DDevice9* device) {
+		static bool tried = false;
+		if (tried || !device) return;
+		tried = true;
+		void** table = *(void***)device;
+		DWORD old = 0;
+		if (!VirtualProtect(&table[17], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+			Logger::Log("FRAME SPLIT: could not hook Present; Present and Game update times are not available");
+			return;
+		}
+		OriginalPresent = (PresentFn)table[17];
+		table[17] = (void*)&PresentHook;
+		VirtualProtect(&table[17], sizeof(void*), old, &old);
+		Logger::Log("FRAME SPLIT: Present hooked (diagnostic: Present, Game update and Game render CPU times while F10 profiling is on)");
+	}
+}
+
 void (__thiscall* Render)(Main*, BSRenderedTexture*, int, int) = (void (__thiscall*)(Main*, BSRenderedTexture*, int, int))Hooks::Render;
 void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
+	static CpuTimer gameRenderCpuTimer("Game render (CPU)"), presentCpuTimer("Present (CPU)"), gameUpdateCpuTimer("Game update (CPU)");
+	const double renderStart = CpuTimer::NowMs();
+	if (GpuTimer::Enabled) {
+		FrameSplit::Install(TheRenderManager->device);
+		if (FrameSplit::RenderEnd > 0.0 && FrameSplit::OriginalPresent) {
+			const double between = renderStart - FrameSplit::RenderEnd;
+			presentCpuTimer.Add(FrameSplit::PresentMs);
+			gameUpdateCpuTimer.Add(between > FrameSplit::PresentMs ? between - FrameSplit::PresentMs : 0.0);
+		}
+	}
+	FrameSplit::PresentMs = 0.0;
 	
 	SettingsMainStruct* SettingsMain = &TheSettingManager->SettingsMain;
 
@@ -434,11 +479,15 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	WorldRenderedThisFrame = false;
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
 	FrameWorldArgsKnown = false;
+	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
 	EndPreSceneTimer();
 	ReportWorldRender(RenderedTexture, Arg2, Arg3);
+	const double renderEnd = CpuTimer::NowMs();
+	FrameSplit::RenderEnd = GpuTimer::Enabled ? renderEnd : 0.0;
+	if (GpuTimer::Enabled) gameRenderCpuTimer.Add(renderEnd - renderStart);
 
 }
 
@@ -930,6 +979,8 @@ namespace BarrelHeat {
 }
 
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
+namespace ScopeSunShadows { static void ForDraw(const PointShadowForward::RenderPassView* pass); }
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -995,8 +1046,81 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	}
 	(*SetShaders)(This, PassIndex);
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
+	// UNOFFICIAL interior forward point-light shadows: the draw's lamps and their cube maps (PointShadowForward.h).
+	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
+		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
+	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
 	if (profiling) ShaderSplit::EndBind(bindStart);
 
+}
+
+// UNOFFICIAL interior forward shadows: called once per object, only from BSBatchRenderer::RenderPassImmediately, after it
+// bound the shaders (when the pass type or shader changed). Each object gets its own lamps (PointShadowForward.h).
+// Hooked only while [Shaders.ShadowsInteriors.Forward] Enabled was on at startup (Hooks.cpp).
+void(__cdecl* RenderPassStandard)(void*, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32))Hooks::RenderPassStandard;
+void(__cdecl* RenderPassSkinned)(void*, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32))Hooks::RenderPassSkinned;
+
+// UNOFFICIAL ScopeFix outdoors ([Shaders.ShadowsInteriors.Forward] ScopeFix): the object and terrain shaders' sun shadows
+// (GetSunShadow) rebuild positions with the main camera's matrices, so B42 Optics' lens and its scope picture (the world
+// drawn by another camera into a small square texture, JIP's ProjectExtraCamera, outside the game's passes) got the main
+// view's shadow pattern laid over them. For those draws the forward path's own off switch, TESR_ShadowForwardData.x (c133,
+// pinned in Shadow.hlsl, which only NVR's shaders read: the game's use nothing above c97), is written straight to the
+// device; the next other draw gets the real value back. The picture is recognised by its size (not the screen's, not the
+// water reflection), and only while a B42 lens was drawn in the last two frames: without B42 Optics nothing changes.
+namespace ScopeSunShadows {
+	static bool Overridden = false;
+	static unsigned LensFrame = 0;		// PointShadowForward::Frame when a B42 lens was last drawn
+	static bool Announced = false;
+
+	static void ForDraw(const PointShadowForward::RenderPassView* pass) {
+		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
+		if (!shadows) return;
+		bool suppress = false;
+		if (PointShadowForward::ScopeFix && TheShaderManager->GameState.isExterior) {
+			const unsigned char context = ShaderSplit::CurrentContext;
+			if (context == ShaderSplit::FirstPerson) {
+				suppress = PointShadowForward::IsLens(pass);
+				if (suppress) LensFrame = PointShadowForward::Frame;
+			}
+			else if (context != ShaderSplit::Reflections && LensFrame && PointShadowForward::Frame - LensFrame <= 2) {
+				const D3DVIEWPORT9& port = TheRenderManager->m_kD3DPort;
+				if (port.Width != TheRenderManager->width || port.Height != TheRenderManager->height) {
+					suppress = true;
+					if (!Announced) {
+						Announced = true;
+						Logger::Log("UNOFFICIAL ScopeFix: the B42 Optics scope picture (%ux%u) is drawn without sun shadows.",
+							(unsigned)port.Width, (unsigned)port.Height);
+					}
+				}
+			}
+		}
+		if (suppress) {
+			D3DXVECTOR4 value = shadows->Constants.ForwardData;
+			value.x = 1.0f;
+			TheRenderManager->device->SetPixelShaderConstantF(133, (const float*)&value, 1);
+			Overridden = true;
+		}
+		else if (Overridden) {
+			TheRenderManager->device->SetPixelShaderConstantF(133, (const float*)&shadows->Constants.ForwardData, 1);
+			Overridden = false;
+		}
+	}
+}
+
+static void ForwardShadowsForPass(void* Pass) {
+	PointShadowForward::OnRenderPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World,
+		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
+	ScopeSunShadows::ForDraw((const PointShadowForward::RenderPassView*)Pass);
+}
+
+void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	ForwardShadowsForPass(Pass);
+	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+}
+
+void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	ForwardShadowsForPass(Pass);
+	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
 }
 
 HRESULT (__thiscall* SetSamplerState)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8) = (HRESULT (__thiscall*)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8))Hooks::SetSamplerState;
@@ -1064,7 +1188,11 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
 	//ThisCall(0x00874C10, Global);
 	ShaderSplit::BeginContext(ShaderSplit::FirstPerson);
+	// UNOFFICIAL: the first-person model's metal strength ([Shaders.PBR.Metal] FirstPerson) for this pass only.
+	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
+	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::Clear();
 	ShaderSplit::EndContext();
 	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);

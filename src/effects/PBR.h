@@ -107,7 +107,13 @@ public:
 			{ "SLS2053.pso", ShaderTemplate{ "ObjectTemplate", {{"PS", ""}, {"ONLY_SPECULAR", ""}, {"POINT", ""}, {"NUM_PT_LIGHTS", "2"}} } },
 			{ "SLS2054.pso", ShaderTemplate{ "ObjectTemplate", {{"PS", ""}, {"ONLY_SPECULAR", ""}, {"POINT", ""}, {"NUM_PT_LIGHTS", "2"}, {"HAIR", ""}} } },
 			{ "SLS2055.pso", ShaderTemplate{ "ObjectTemplate", {{"PS", ""}, {"ONLY_SPECULAR", ""}, {"POINT", ""}, {"NUM_PT_LIGHTS", "3"}} } },
-			{ "SLS2056.pso", ShaderTemplate{ "ObjectTemplate", {{"PS", ""}, {"ONLY_SPECULAR", ""}, {"POINT", ""}, {"NUM_PT_LIGHTS", "3"}, {"HAIR", ""}} } }
+			{ "SLS2056.pso", ShaderTemplate{ "ObjectTemplate", {{"PS", ""}, {"ONLY_SPECULAR", ""}, {"POINT", ""}, {"NUM_PT_LIGHTS", "3"}, {"HAIR", ""}} } },
+			// UNOFFICIAL: the environment-map ("chrome") pass, by the light (EnvTemplate.hlsl). All four together: D3D9 does
+			// not pair a 2.x shader with a 3.0 one, and SLS2050/2051 are the only game vertex shaders feeding SLS2057/2058.
+			{ "SLS2050.vso", ShaderTemplate{ "EnvTemplate", {{"VS", ""}} } },
+			{ "SLS2051.vso", ShaderTemplate{ "EnvTemplate", {{"VS", ""}, {"SKIN", ""}} } },
+			{ "SLS2057.pso", ShaderTemplate{ "EnvTemplate", {{"PS", ""}} } },
+			{ "SLS2058.pso", ShaderTemplate{ "EnvTemplate", {{"PS", ""}, {"NEGATE_VIEW", ""}} } }
 		};
 	};
 
@@ -133,8 +139,21 @@ public:
 	struct PBRStruct {
 		D3DXVECTOR4		Data;
 		D3DXVECTOR4		ExtraData;
+		D3DXVECTOR4		Metal;		// UNOFFICIAL TESR_PBRMetal: x strength this pass, y grey parts' metal, zw saturation ruling metal out
+		D3DXVECTOR4		MetalLook;	// UNOFFICIAL TESR_PBRMetalLook: x bare metal roughness, y polished, z sky reflections, w debug view
+		D3DXVECTOR4		Env;		// UNOFFICIAL TESR_PBREnv (EnvTemplate.hlsl): x Lighting, y Strength, z WithMetal
 	};
 	PBRStruct	Constants;
+
+	// UNOFFICIAL [Shaders.PBR.Metal] (Object.hlsl getDerivedMetallic): metal guessed from the textures, with its own strength
+	// for the first-person model (BeginFirstPerson / EndFirstPerson round that pass) and for the world.
+	struct MetalSettingsStruct {
+		float FirstPerson = 0.0f;
+		float World = 0.0f;
+	};
+	MetalSettingsStruct	MetalSettings;
+	void	BeginFirstPerson(IDirect3DDevice9* Device);
+	void	EndFirstPerson(IDirect3DDevice9* Device);
 	// UNOFFICIAL: the current SkylightingSaturation (day/night/interior and rain blended like the other values);
 	// SkyShaders::UpdateConstants applies it to the skylight's spherical-harmonic coefficients.
 	float		SkylightSaturation = 1.0f;

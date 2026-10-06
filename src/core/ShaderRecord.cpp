@@ -110,7 +110,8 @@ bool ShaderProgram::CheckPreprocessResult(const char* CachedPreprocessPath, ID3D
 Loads the shader by name from a given subfolder (optionally). Shader will be compiled if needed.
 @returns the ShaderRecord for this shader.
 */
-ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template) {
+ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template, const char* CacheSubPath,
+	const D3DXMACRO* Overrides) {
 	auto timer = TimeLogger();
 
 	ShaderRecord* ShaderProg = NULL;
@@ -132,7 +133,11 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	strcpy(CacheDirectory, BaseDirectory);
 	strcat(CacheDirectory, "Cache\\");
 	if (SubPath) strcat(BaseDirectory, SubPath);
-	if (SubPath) strcat(CacheDirectory, SubPath);
+	if (CacheSubPath) {
+		strcat(CacheDirectory, CacheSubPath);
+		CreateDirectoryA(CacheDirectory, NULL);	// nothing else writes there
+	}
+	else if (SubPath) strcat(CacheDirectory, SubPath);
 
 	strcpy(ShaderSourcePath, BaseDirectory);
 	if (Template.Name != NULL) {
@@ -159,11 +164,18 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 28 && Template.Defines[i].Name != NULL) i++;
+		while (i < 28 && Template.Defines[i].Name != NULL) {
+			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
+			i++;
+		}
 		if (i >= 28) return;  // out of room; silently skip rather than overrun
 		Template.Defines[i] = { Name, Definition };
 		Template.Defines[i + 1] = { NULL, NULL };
 	};
+
+	// UNOFFICIAL: overrides first, so the global defines below with the same name are skipped.
+	if (Overrides)
+		for (const D3DXMACRO* o = Overrides; o->Name; o++) AppendDefine(o->Name, o->Definition);
 
 	if (TheRenderManager->IsReversedDepth())
 		AppendDefine("REVERSED_DEPTH", "");

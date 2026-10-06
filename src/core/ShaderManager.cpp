@@ -1,5 +1,6 @@
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
+#include "PointShadowForward.h"
 
 #define RESZ_CODE 0x7FA05000
 
@@ -603,6 +604,22 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 	PixelShader->ShaderProg[ShaderRecordType::Default]  = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template);
 	PixelShader->ShaderProg[ShaderRecordType::Exterior] = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, "Exteriors\\", Template);
 	PixelShader->ShaderProg[ShaderRecordType::Interior] = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, "Interiors\\", Template);
+	// UNOFFICIAL interior forward point-light shadows (PointShadowForward.h): the lit pixel shaders get an Interior record
+	// from their own source with INTERIOR_SHADOWS, the sun's code compiled out (it never runs indoors). Only with the
+	// setting on at startup; exteriors keep their records.
+	if (!PixelShader->ShaderProg[ShaderRecordType::Interior] && PixelShader->ShaderProg[ShaderRecordType::Default] &&
+		PointShadowForward::Eligible(PixelShader->Name, Template) &&
+		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled")) {
+		static const D3DXMACRO overrides[] = { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" },
+			{ "CONTACT_HARDENING", "0" }, { NULL, NULL } };
+		ShaderRecordPixel* record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template, "Interiors\\", overrides);
+		if (record) {
+			record->PointShadowForward = true;
+			PixelShader->ShaderProg[ShaderRecordType::Interior] = record;
+			PointShadowForward::CompiledIn = true;
+			PointShadowForward::CompiledCount++;
+		}
+	}
 	PixelShader->Enabled = enabled;
 
 	if (PixelShader->ShaderProg[ShaderRecordType::Default] != nullptr || PixelShader->ShaderProg[ShaderRecordType::Exterior] != nullptr || PixelShader->ShaderProg[ShaderRecordType::Interior] != nullptr) {
@@ -620,11 +637,58 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	auto timer = TimeLogger();
 
 	// create a map of all nearby valid lights and sort them per distance to player
-	std::map<int, ShadowSceneLight*> SceneLights;
+	std::multimap<float, ShadowSceneLight*> SceneLights;	// UNOFFICIAL: a multimap (two lamps with the same key used to drop one)
 	NiTList<ShadowSceneLight>::Entry* Entry = SceneNode->lights.start;
 
 	ShadowsExteriorEffect::InteriorsStruct* Settings = &Effects.ShadowsExteriors->Settings.Interiors;
 	ShadowsExteriorEffect::ShadowStruct* ShadowsConstants = &Effects.ShadowsExteriors->Constants;
+
+	// The lights given cube-map slots last frame (filled at the end). UNOFFICIAL, with forward shadows on
+	// ([Shaders.ShadowsInteriors.Forward] LampSwitchMargin): such a lamp keeps its shadow unless another is clearly nearer,
+	// and stays while somewhat behind you. Lamps at the edge of the LightPoints cap or of the "in front" test otherwise
+	// switch in and out as you move and turn, and their shadows pop on and off.
+	static const void* previousSlots[ShadowCubeMapsMax] = {};
+	const float switchMargin = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ?
+		(std::max)(0.0f, (std::min)(0.9f, TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampSwitchMargin"))) : 0.0f;
+	auto wasCaster = [&](const ShadowSceneLight* light) {
+		if (!(switchMargin > 0.0f)) return false;
+		for (int s = 0; s < ShadowCubeMapsMax; s++) if (previousSlots[s] == light) return true;
+		return false;
+	};
+
+	// UNOFFICIAL, with forward shadows on: a lamp counts when its light reaches what the camera sees -- its sphere against
+	// the view frustum's four sides and the plane through the eye (not the far plane), from the camera. The old test, "in
+	// front of the player", changed as you turned and dropped lamps beside or behind you whose light (and shadows) fell
+	// on what you look at: their shadows came and went with the view angle.
+	const bool viewTest = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") != 0;
+	const D3DXMATRIX& camera = TheRenderManager->InvViewMatrix;
+	const D3DXVECTOR3 camRight(camera._11, camera._12, camera._13), camUp(camera._21, camera._22, camera._23), camForward(camera._31, camera._32, camera._33);
+	const float tanX = fabsf(TheRenderManager->InvProjMatrix._11), tanY = fabsf(TheRenderManager->InvProjMatrix._22);
+	const float normX = 1.0f / sqrtf(1.0f + tanX * tanX), normY = 1.0f / sqrtf(1.0f + tanY * tanY);
+	// UNOFFICIAL LampRanking 1 (with forward shadows on): lamps ranked by what they light of the scene -- brightness x how far
+	// their light reaches / distance -- instead of nearest first. Many small bulbs near you used to push a big room lamp
+	// out of the LightPoints cap as you strafed, and its shadows vanished.
+	const int lampRanking = viewTest ? TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "LampRanking") : 0;
+	// UNOFFICIAL LogLamps: every lamp that gains or loses its shadow is logged with the reason (diagnostic).
+	const bool logLamps = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "LogLamps") != 0;
+	struct LampNote { const ShadowSceneLight* light; int reason; float distance, key, radius; D3DXVECTOR4 position, colour; };
+	static LampNote notes[128];
+	int noteCount = 0;
+	auto note = [&](const ShadowSceneLight* light, int reason, float distance, float key, NiPointLight* source) {
+		if (!logLamps || noteCount >= 128 || !source) return;
+		notes[noteCount++] = { light, reason, distance, key, source->Spec.r, source->m_worldTransform.pos.toD3DXVEC4(),
+			D3DXVECTOR4(source->Diff.r, source->Diff.g, source->Diff.b, source->Dimmer) };
+	};
+
+	auto reachesView = [&](const D3DXVECTOR4& lightPosition, float reach) {
+		const D3DXVECTOR3 v(lightPosition.x - TheRenderManager->CameraPosition.x, lightPosition.y - TheRenderManager->CameraPosition.y,
+			lightPosition.z - TheRenderManager->CameraPosition.z);
+		const float x = D3DXVec3Dot(&v, &camRight), y = D3DXVec3Dot(&v, &camUp), z = D3DXVec3Dot(&v, &camForward);
+		if (z < -reach) return false;
+		if ((tanX * z - x) * normX < -reach || (tanX * z + x) * normX < -reach) return false;
+		if ((tanY * z - y) * normY < -reach || (tanY * z + y) * normY < -reach) return false;
+		return true;
+	};
 
 	// Creating list of lights in order of distance to the player
 	while (Entry) {
@@ -634,13 +698,17 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		bool lightCulled = Light->m_flags & NiAVObject::NiFlags::APP_CULLED;
 		bool lightOn = (Light->Diff.r + Light->Diff.g + Light->Diff.b) * Light->Dimmer > 5.0 / 255.0; // Check for low values in case of human error
 		if (lightCulled || !lightOn) {
+			note(Entry->data, lightCulled ? 1 : 2, Light->GetDistance(&Player->pos), 0.0f, Light);
 			Entry = Entry->next;
 			continue;
 		}
 
 		D3DXVECTOR4 LightVector = LightPosition - PlayerPosition;
 		D3DXVec4Normalize(&LightVector, &LightVector);
-		bool inFront = D3DXVec4Dot(&LightVector, &TheRenderManager->CameraForward) > 0;
+		const bool incumbent = wasCaster(Entry->data);
+		// (A lamp that had a shadow last frame keeps counting a little beyond the edge of the view: LampSwitchMargin.)
+		bool inFront = viewTest ? reachesView(LightPosition, Light->Spec.r * Settings->LightRadiusMult * (incumbent ? 1.0f + switchMargin : 1.0f))
+			: D3DXVec4Dot(&LightVector, &TheRenderManager->CameraForward) > (incumbent ? -0.5f : 0.0f);
 		float Distance = Light->GetDistance(&Player->pos);
 		float radius = Light->Spec.r * Settings->LightRadiusMult;
 
@@ -648,8 +716,15 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		// TODO: handle using frustum check
 		float drawDistance = 8000;//TheShaderManager->GameState.isExterior ? TheSettingManager->SettingsShadows.Exteriors.ShadowMapRadius[TheShadowManager->ShadowMapTypeEnum::MapLod] : TheSettingManager->SettingsShadows.Interiors.DrawDistance;
 		if ((inFront || Distance < radius) && (Distance + radius) < drawDistance) {
-			SceneLights[(int)(Distance * 10000)] = Entry->data; // multiplying distance (used as key) before conversion to avoid overwriting in case of similar values
+			float key = Distance * (incumbent ? 1.0f - switchMargin : 1.0f);
+			if (lampRanking) {
+				const float brightness = (std::max)(0.0f, (Light->Diff.r + Light->Diff.g + Light->Diff.b) / 3.0f * Light->Dimmer);
+				key = -brightness * Light->Spec.r / (std::max)(Distance, 0.25f * Light->Spec.r + 1.0f) * (incumbent ? 1.0f + switchMargin : 1.0f);
+			}
+			SceneLights.insert({ key, Entry->data });
+			note(Entry->data, 0, Distance, key, Light);
 		}
+		else note(Entry->data, inFront ? 4 : 3, Distance, 0.0f, Light);
 
 		Entry = Entry->next;
 	}
@@ -691,7 +766,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		SpotLightList[0] = nullptr;
 	}
 
-	std::map<int, ShadowSceneLight*>::iterator v = SceneLights.begin();
+	auto v = SceneLights.begin();
 	for (int i = 0; i < TrackedLightsMax + ShadowCubeMapsMax; i++) {
 		// set null values if we reached the end of lights in the scene and current index is lower than max amount
 		if (v == SceneLights.end()) {
@@ -754,7 +829,6 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// the last slot, which PointShadows.fx lights without a shadow lookup: it keeps the farthest caster, as the plain
 	// distance order gave it, and only slots 0..10 take part in the stable assignment.
 	{
-		static const void* previousSlots[ShadowCubeMapsMax] = {};
 		const int casters = TheShadowManager->PointLightsNum;
 		const int sampledSlots = min(ShadowLightsMax, (int)ShadowCubeMapsSampled);
 		const int stableCasters = min(casters, sampledSlots);
@@ -762,6 +836,35 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		const void* assigned[ShadowCubeMapsMax] = {};
 		for (int r = 0; r < stableCasters; r++) ranked[r] = ShadowCasters[r];
 		AssignStablePointShadowSlots(previousSlots, ranked, stableCasters, sampledSlots, assigned);
+		// LogLamps: the lamps that gained or lost their shadow since last frame, and why. Only lamps in this frame's notes are
+		// read (a lamp gone from the game's list may be freed: only its address is printed).
+		static unsigned lampLogLines = 0;
+		if (logLamps && lampLogLines < 600) {
+			auto inSet = [](const void* const* set, int count, const void* light) { for (int s = 0; s < count; s++) if (set[s] == light) return true; return false; };
+			auto find = [&](const void* light) -> const LampNote* { for (int n = 0; n < noteCount; n++) if (notes[n].light == light) return &notes[n]; return nullptr; };
+			auto rankOf = [&](const void* light) { int r = 1; for (const auto& entry : SceneLights) { if (entry.second == light) return r; r++; } return 0; };
+			static const char* const why[] = { "outranked", "culled by the game", "off or too dim", "its light does not reach the view", "too far (8000)" };
+			for (int s = 0; s < sampledSlots && lampLogLines < 600; s++) {
+				const void* lost = previousSlots[s];
+				if (lost && !inSet(assigned, sampledSlots, lost)) {
+					lampLogLines++;
+					const LampNote* n = find(lost);
+					if (!n) Logger::Log("LAMP %p lost its shadow: no longer in the game's light list.", lost);
+					else Logger::Log("LAMP %p lost its shadow: %s (rank %d of %d, %d get shadows) | at %.0f %.0f %.0f radius %.0f, %.0f away, colour %.2f %.2f %.2f x %.2f, key %.3f",
+						lost, why[n->reason], n->reason ? 0 : rankOf(lost), (int)SceneLights.size(), sampledSlots, n->position.x, n->position.y, n->position.z,
+						n->radius, n->distance, n->colour.x, n->colour.y, n->colour.z, n->colour.w, n->key);
+				}
+				const void* gained = assigned[s];
+				if (gained && !inSet(previousSlots, sampledSlots, gained) && lampLogLines < 600) {
+					lampLogLines++;
+					const LampNote* n = find(gained);
+					if (n) Logger::Log("LAMP %p got a shadow (slot %d, rank %d of %d) | at %.0f %.0f %.0f radius %.0f, %.0f away, colour %.2f %.2f %.2f x %.2f, key %.3f",
+						gained, s, rankOf(gained), (int)SceneLights.size(), n->position.x, n->position.y, n->position.z, n->radius, n->distance,
+						n->colour.x, n->colour.y, n->colour.z, n->colour.w, n->key);
+				}
+			}
+			if (lampLogLines >= 600) Logger::Log("LAMP log: 600 lines, stopping until restart.");
+		}
 		if (casters > sampledSlots) assigned[ShadowCubeMapsMax - 1] = ShadowCasters[sampledSlots];
 		for (int s = 0; s < ShadowCubeMapsMax; s++) previousSlots[s] = s < sampledSlots ? assigned[s] : nullptr;
 
@@ -849,10 +952,26 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 	}
 
+	// UNOFFICIAL interior forward point-light shadows (PointShadowForward.h): the object shaders shadow each lamp this
+	// frame, so the screen-space shadows are not applied again. KeepDarkening keeps their darkening of what no tracked lamp
+	// reaches: the mask is drawn without its cube-map lookups (TESR_ShadowFade.z 0 makes PointShadows.fx count every lamp
+	// as unblocked) and applied in one pass (no blur unless DarkeningBlur). Without it, neither runs; the buffer is then
+	// cleared to "no shadow" for the effects that read it (indoors only Underwater).
+	// (Only while the PBR object shaders, which draw the forward shadows, are on and were drawing this frame: with PBR off
+	// the old screen-space shadows run instead of none at all.)
+	const bool forwardInterior = !GameState.isExterior && Effects.ShadowsInteriors->Enabled && PointShadowForward::Active &&
+		PointShadowForward::BoundThisFrame && Shaders.PBR && Shaders.PBR->Enabled;
+	const bool keepDarkening = !forwardInterior || TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "KeepDarkening");
+
 	// render a shadow pass for point lights
-	if ((GameState.isExterior && Effects.ShadowsExteriors->Enabled) || (!GameState.isExterior && Effects.ShadowsInteriors->Enabled)) {
+	if (forwardInterior && !keepDarkening) {
+		Effects.ShadowsExteriors->clearShadowsBuffer();
+	}
+	else if ((GameState.isExterior && Effects.ShadowsExteriors->Enabled) || (!GameState.isExterior && Effects.ShadowsInteriors->Enabled)) {
 		{
 			GpuProfileScope gpu(pointShadowTimer, Device);
+			const float pointShadowsWere = Effects.ShadowsExteriors->Constants.ShadowFade.z;
+			if (forwardInterior) Effects.ShadowsExteriors->Constants.ShadowFade.z = 0.0f;
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
 			// The stock/custom shader remains compatible: it has no named merged
 			// technique, so lights 6-11 still take the original second pass.
@@ -860,6 +979,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				Effects.PointShadows->Effect->GetTechniqueByName("MergedPointShadows") != NULL;
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
+			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;
 		}
 		if (GameState.isExterior) {
 			GpuProfileScope gpu(sunContactTimer, Device);
@@ -906,16 +1026,25 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		wouldRender(Effects.BounceLight); // must see the scene with its shadows and AO applied
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
+	// UNOFFICIAL: when effects between keep the composite out of the fog pass, the shadow and AO applies still run
+	// together, in one pass right after the AO (nothing reads the scene between them unless snow accumulates).
+	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
+		Fog->CanApplyShadowAO();
 	AO->deferredReady = false;
 
 	{
 		GpuProfileScope gpu(shadowApplyTimer, Device);
 		if (GameState.isExterior) {
-			if (!(composite && shadowApplies))
+			if (!(composite && shadowApplies) && !pairApply)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
-		else
+		else if (keepDarkening) {
+			// With forward shadows on, the darkening alone: unblurred unless DarkeningBlur.
+			Effects.ShadowsInteriors->skipBlur = forwardInterior &&
+				!TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "DarkeningBlur");
 			Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
+			Effects.ShadowsInteriors->skipBlur = false;
+		}
 	}
 
 	{
@@ -924,9 +1053,28 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(aoTimer, Device);
-		AO->deferCombine = composite && aoApplies;
+		AO->deferCombine = (composite || pairApply) && aoApplies;
 		AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		AO->deferCombine = false;
+		if (pairApply) {
+			static GpuTimer mergedApplyTimer("  Shadow + AO apply (merged)");
+			bool merged = false;
+			if (AO->deferredReady) {
+				GpuProfileScope gpuMerged(mergedApplyTimer, Device);
+				merged = Fog->RenderShadowAO(Device, RenderTarget, TheTextureManager->RenderedSurface, true, AO->ResultTexture());
+			}
+			if (!merged) {
+				// The two passes as before, in their order: shadows, then the AO (its combine alone if it was deferred).
+				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				if (AO->deferredReady) {
+					AO->combineOnly = true;
+					AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+					AO->combineOnly = false;
+				}
+				else AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			}
+			AO->deferredReady = false;
+		}
 		if (composite && aoApplies && !AO->deferredReady) {
 			// Dedicated AO was unavailable or failed. Restore the original order before
 			// its legacy path reads the scene for luminance-dependent AO strength.
@@ -936,11 +1084,19 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 	}
+	// UNOFFICIAL: the bounce light's full-resolution combine goes into the specular's, one pass for both, when nothing renders
+	// between them (the wet world and the flashlight read and change the image there).
+	const bool specularRenders = wouldRender(Effects.Specular) && Effects.Specular->Textures.LightSurface;
+	const bool bounceIntoSpecular = specularRenders && wouldRender(Effects.BounceLight) && !wouldRender(Effects.WetWorld) &&
+		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce();
+	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		// UNOFFICIAL, optional: one bounce of screen-space indirect light, on the shadowed and AO'd scene.
 		static GpuTimer bounceLightTimer("Bounce light");
 		GpuProfileScope gpu(bounceLightTimer, Device);
+		Effects.BounceLight->deferCombine = bounceIntoSpecular;
 		Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.BounceLight->deferCombine = false;
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -953,7 +1109,30 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 		Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface);
-		Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		// Specular's two quarter-resolution steps (the blocks' normals, then the light they reflect) into its own buffers,
+		// then its main technique adds that to the image in the chain.
+		if (specularRenders) {
+			RenderEffectToRT(Effects.Specular->Textures.NormalsSurface, Effects.Specular, false, 1);
+			RenderEffectToRT(Effects.Specular->Textures.LightSurface, Effects.Specular, false, 2);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
+		bool specularDone = false;
+		if (Effects.BounceLight->deferredReady) {
+			static GpuTimer mergedCombineTimer("  Bounce + specular combine (merged)");
+			{
+				GpuProfileScope gpuMerged(mergedCombineTimer, Device);
+				specularDone = Effects.Specular->RenderWithBounce(Device, RenderTarget, TheTextureManager->RenderedSurface,
+					Effects.BounceLight->deferredTexture, Effects.BounceLight->Constants.Data, Effects.BounceLight->deferredLayout);
+			}
+			if (!specularDone) {
+				// The two as before, in their order: the bounce light's combine (alone, from its result), then the specular.
+				Effects.BounceLight->combineOnly = true;
+				Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+				Effects.BounceLight->combineOnly = false;
+			}
+			Effects.BounceLight->deferredReady = false;
+		}
+		if (!specularDone) Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
@@ -1057,13 +1236,14 @@ static void LogActiveSwitches(bool force) {
 * Renders the effect that have been set to enabled.
 */
 void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
+	VolumetricSmoke::FrameNumber++;   // the smoke is fetched once a frame (VolumetricSmoke::Fetch)
 	// F10 profiling toggle and the frame interval run before the RenderEffects check, so an
 	// effects-off run still logs its real frame time for comparison. This is the last NVR call
 	// of the frame, after the pre-tonemap chain, so the toggle takes effect from the next frame.
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P70 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P75 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 		else LogActiveSwitches(true);
@@ -1122,6 +1302,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 			Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
+	// UNOFFICIAL: the clipping view's modes 2 and 3 compare with the picture as it arrives here, straight out of the tonemapper.
+	Effects.Debug->CaptureClipStart(Device, RenderTarget);
 
 	// Name the effect that will render last so its final pass writes the game target directly and
 	// the chain ends without a copy (FrameChain::SetFinalEffect). Same order as the calls below; the
@@ -1134,6 +1316,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
 			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
+		if (Effects.Debug->ClipViewActive()) last = Effects.Debug; // UNOFFICIAL: the clipping view draws after everything
 		Chain.SetFinalEffect(last);
 	}
 
@@ -1199,6 +1382,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.Debug->RenderClipView(Device, RenderTarget); // UNOFFICIAL: [Shaders.Debug.Main] ClipView
 	}
 
 	timer.LogTime("ShaderManager::RenderEffects");

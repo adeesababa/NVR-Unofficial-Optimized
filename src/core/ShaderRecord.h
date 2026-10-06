@@ -87,12 +87,16 @@ public:
 	virtual void			CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* ConstantTable);
 	virtual void			SetShaderConstantF(UInt32 RegisterIndex, D3DXVECTOR4* Value, UInt32 RegisterCount) = 0;
 
-	static ShaderRecord*	LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template = ShaderTemplate{});
+	// CacheSubPath: the cache subfolder when it is not SubPath (an Interior record compiled from the main source);
+	// Overrides: defines that win over the global ones ShaderRecord adds (NULL-terminated).
+	static ShaderRecord*	LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template = ShaderTemplate{},
+		const char* CacheSubPath = nullptr, const D3DXMACRO* Overrides = nullptr);
 
 	const char* Name;
 	bool					HasRenderedBuffer;
 	bool					HasDepthBuffer;
 	bool					ClearSamplers;
+	bool					PointShadowForward = false;	// UNOFFICIAL: compiled with INTERIOR_SHADOWS (PointShadowForward.h)
 };
 
 class ShaderRecordVertex : public ShaderRecord {

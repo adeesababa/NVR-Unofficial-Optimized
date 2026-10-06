@@ -146,6 +146,15 @@
 #ifdef ONLY_LIGHT
     #define NO_FOG
     #define NO_VERTEX_COLOR
+#else
+    // UNOFFICIAL: metal (Object.hlsl getDerivedMetallic) in the passes that light an object fully at once (colour, the
+    // lights and the ambient) with a highlight: METAL_UP, the vertex shaders send world up for its reflection; METAL,
+    // the pixel shaders use it. Not on objects without specular (metal without a highlight is only darker), nor hair
+    // (grey hair is no metal); the lighting-only and specular-only passes stay as they were.
+    #define METAL_UP
+    #if defined(SPECULAR) && !defined(HAIR)
+        #define METAL
+    #endif
 #endif
 
 #include "includes/Helpers.hlsl"
@@ -158,6 +167,12 @@
     #define SHADOW_INVVIEW_REG c244
 #endif
 #include "includes/Shadow.hlsl"
+#ifdef PS
+    // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS): SHADOWED(colour, k, att) gives light k of the draw
+    // its own cube-map shadow (looked up once per pixel near the top of main); without INTERIOR_SHADOWS it is just the
+    // colour.
+    #include "includes/PointShadowForward.hlsl"
+#endif
 
 // GunFX barrel glow (P67). Heat bridge from GunFX.dll. Coordinates are local to the drawn gun mesh, so
 // viewmodel projection and camera motion cannot move the mask off the barrel.
@@ -256,7 +271,8 @@ struct VS_OUTPUT {
     // lightDir/light2Dir/light3Dir above -- those are tangent-space (TBN-transformed) and their
     // length is only correct if the TBN basis is orthonormal. .x = light0 (DIFFUSE/POINT only,
     // where light0 is itself a point light rather than the sun), .y = light2, .z = light3.
-    float3 lightDistSq : TEXCOORD5;
+    // METAL_UP: .w = x of world up in tangent space (with lightDir.w and vertexColor.a, see main).
+    float4 lightDistSq : TEXCOORD5;
 
     // TEXCOORD4 is free at LIGHTS < 4. .w carries SHADOW_VS_SENTINEL.
     float4 shadowWorldPos : TEXCOORD4;
@@ -375,6 +391,25 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Model-space shaders: recover a camera-relative world position from the clip position.
     // Written unconditionally, or the interpolator is left undefined.
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
+
+    #ifdef METAL_UP
+        // UNOFFICIAL: which way is world up in this vertex's tangent space, so the pixel shader can tell how far a
+        // reflected view points at the sky (Object.hlsl getMetalAmbient). The world z of an object-space direction d is
+        // d . objUp, objUp = upView x ModelViewProj, with upView the camera's inverse projection times the up column of
+        // its inverse view (GetShadowWorldPos's matrices; exact for the world, a little off for the first-person model
+        // when its field of view differs). The spare channels carry it: lightDir.w (read only by the DIFFUSE and POINT
+        // passes), lightDistSq.w and vertexColor.a (unused by the pixel shader; COLOR0 is clamped, so encoded).
+        float4 upView = mul(TESR_InvProjectionTransform, float4(TESR_InvViewTransform[0][2], TESR_InvViewTransform[1][2], TESR_InvViewTransform[2][2], 0.0f));
+        #ifndef SKIN
+            float3 objUp = mul(upView, ModelViewProj).xyz;
+        #else
+            float3 objUp = mul(upView, SkinModelViewProj).xyz;
+        #endif
+        float3 upTangent = normalize(mul(tbn, objUp));
+        OUT.lightDistSq.w = upTangent.x;
+        OUT.lightDir.w = upTangent.y;
+        OUT.vertexColor.a = upTangent.z * 0.5f + 0.5f;
+    #endif
 
     return OUT;
 };
@@ -543,7 +578,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 
 struct PS_INPUT {
 #ifndef NO_VERTEX_COLOR
-    float3 vertexColor : COLOR0;
+    float4 vertexColor : COLOR0;    // METAL: .a = world up's z in tangent space, encoded (see the VS)
 #endif
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
@@ -557,7 +592,7 @@ struct PS_INPUT {
     float4 light3Dir : TEXCOORD3_centroid;
 #endif
     float4 viewDir : TEXCOORD6_centroid;
-    float3 lightDistSq : TEXCOORD5;
+    float4 lightDistSq : TEXCOORD5;    // METAL: .w = world up's x in tangent space
     float4 shadowWorldPos : TEXCOORD4;
 #ifdef PROJ_SHADOW
     float4 shadowUVs : TEXCOORD7;
@@ -660,7 +695,14 @@ PS_OUTPUT main(PS_INPUT IN) {
             baseColor.rgb = baseColor.rgb * IN.vertexColor.rgb;
         #endif
     #endif
-    
+
+    #ifdef METAL
+        // UNOFFICIAL: metal (Object.hlsl), only while [Shaders.PBR.Metal] is on for this pass; see the lighting below.
+        // Its finish, specular-anti-aliased here at top level (ddx/ddy).
+        float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
+        float metallic = 0.0f;
+    #endif
+
     // Vanilla shadows.
     float3 shadowMultiplier = 1.0;
     #if defined(STBB)
@@ -692,6 +734,90 @@ PS_OUTPUT main(PS_INPUT IN) {
         shadowMultiplier *= sunShadow;
     #endif
 
+    #if INTERIOR_SHADOWS
+        // UNOFFICIAL forward point-light shadows (Includes/PointShadowForward.hlsl). The normal offset uses the sun's
+        // geometric normal where the shader has one. The point-light-only passes (DIFFUSE, POINT) have none and do not
+        // get one: its ddx/ddy would cost more than these short passes' own work, so they rely on the depth bias alone,
+        // as the screen-space pass always did.
+        float3 ptWorldPos = IN.shadowWorldPos.xyz;
+        #if !defined(DIFFUSE) && !defined(POINT)
+            float3 ptNormal = shadowGeometricNormal;
+        #else
+            float3 ptNormal = 0.0f;
+        #endif
+        float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
+        [branch] if (NVR_PointShadowParams.x > 0.0f) {
+            // Light k of the draw is PSLightColor[k]; light 0 is a point light only in the DIFFUSE and POINT passes.
+            #if defined(DIFFUSE) || defined(POINT)
+                ptShadow0 = POINT_SHADOW_LOOKUP(0, vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w));
+            #endif
+            #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+                ptShadow1 = POINT_SHADOW_LOOKUP(1, vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w));
+            #endif
+            #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+                ptShadow2 = POINT_SHADOW_LOOKUP(2, vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w));
+            #endif
+        }
+        float pointWeight = 0.0f;   // ONLY_SPECULAR POINT: this pass's blend weight without the point shadows (see the alpha)
+    #endif
+
+    #if defined(METAL)
+        // UNOFFICIAL metal (Object.hlsl). TESR_PBRMetal.x is the same for every pixel of a draw, so this is one cheap
+        // branch: off ([Shaders.PBR.Metal] 0 for this pass) runs the old lighting below exactly. On: how much of the pixel
+        // is metal; the metal share has a tinted highlight (F0 = its colour) and no diffuse light, and reflects its
+        // surroundings instead of the diffuse ambient (the sky along the reflected view, by world up from the VS).
+        #ifdef SI
+            float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
+        #endif
+        float skyValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+        #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+            float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            float3 light2Color = SHADOWED(PSLightColor[1].rgb, 1, att2);
+        #endif
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            float3 light3Color = SHADOWED(PSLightColor[2].rgb, 2, att3);
+        #endif
+        float3 lighting;
+        [branch] if (TESR_PBRMetal.x > 0.0f) {
+            metallic = getDerivedMetallic(normal.a, baseColor.rgb);
+            metalRoughness = lerp(roughness, metalRoughness, metallic);
+            lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+            #ifdef SI
+                lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+            #endif
+            lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), shadowGeometricNormal, skyValid);
+            [branch] if (metallic > 0.0f) {
+                float3 metalView = normalize(IN.viewDir.xyz);
+                float3 upTangent = float3(IN.lightDistSq.w, IN.lightDir.w, IN.vertexColor.a * 2.0f - 1.0f);
+                float upLength = length(upTangent);
+                bool upKnown = upLength > 0.5f && skyValid > 0.0f;
+                float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
+                lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
+                                                       upReflect, upKnown ? 1.0f : 0.0f);
+            }
+            #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+            #endif
+            #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+            #endif
+        }
+        else {
+            lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            #ifdef SI
+                lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+            #endif
+            lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, shadowGeometricNormal, skyValid);
+            #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            #endif
+            #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            #endif
+        }
+    #else
     #if !defined(DIFFUSE) && !defined(POINT)
         float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #else
@@ -699,7 +825,13 @@ PS_OUTPUT main(PS_INPUT IN) {
         // not length(IN.lightDir.xyz) -- that vector is tangent-space (TBN-transformed) and its
         // length is only correct if the TBN basis is orthonormal.
         float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
-        float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        #if INTERIOR_SHADOWS && defined(POINT)
+            float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            pointWeight += weight(lighting);
+            lighting *= POINT_SHADOW(0, att0);
+        #else
+            float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        #endif
     #endif
     
     // Self emmitance.
@@ -718,15 +850,34 @@ PS_OUTPUT main(PS_INPUT IN) {
     // Other light sources. Same object-space attenuation fix as light0 above.
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
-        lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        #if INTERIOR_SHADOWS && defined(POINT)
+            float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            pointWeight += weight(light2Term);
+            lighting += light2Term * POINT_SHADOW(1, att2);
+        #else
+            lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, SHADOWED(PSLightColor[1].rgb, 1, att2), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        #endif
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
         float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
-        lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        #if INTERIOR_SHADOWS && defined(POINT)
+            float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            pointWeight += weight(light3Term);
+            lighting += light3Term * POINT_SHADOW(2, att3);
+        #else
+            lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        #endif
     #endif
-    
+
+    #endif // METAL
+
     float3 finalColor = lighting.rgb;
+
+    #ifdef METAL
+        // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image.
+        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
+    #endif
     
     // Fog.
     #ifndef NO_FOG
@@ -764,6 +915,9 @@ PS_OUTPUT main(PS_INPUT IN) {
             // exact when Forward Shadows is compiled out, since sunShadow is then
             // fixed at 1.0.
             OUT.color.a = weight(finalColor.rgb) / max(sunShadow, 0.05f);
+        #elif INTERIOR_SHADOWS
+            // The same for the point lights' shadows: the weight is what the lights would give unshadowed.
+            OUT.color.a = pointWeight;
         #else
             OUT.color.a = weight(finalColor.rgb);
         #endif
@@ -878,12 +1032,43 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 viewDir = { IN.lightDir.w, IN.light2.w, IN.light3.w };
     
     float att;
-    
+
+    #if INTERIOR_SHADOWS
+        // UNOFFICIAL forward point-light shadows -- see the LIGHTS < 4 variant. One geometric normal (ddx/ddy) serves the
+        // sun, the point lights and the ambient.
+        float3 ptWorldPos = SHADOW_WP_LOAD(IN);
+        float3 ptNormal = GetShadowGeometricNormal(ptWorldPos);
+        float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
+        // Light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT); the attenuations below are the
+        // ones the lighting further down computes, so the compiler shares them.
+        #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
+        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
+        [branch] if (NVR_PointShadowParams.x > 0.0f) {
+            #ifdef OPT
+                ptShadow0 = POINT_SHADOW_LOOKUP(0, PT_ATT(0));
+            #endif
+            ptShadow1 = POINT_SHADOW_LOOKUP(1, PT_ATT(lightOffset + 0));
+            ptShadow2 = POINT_SHADOW_LOOKUP(2, PT_ATT(lightOffset + 1));
+            #if MAX_LIGHTS > 3
+                ptShadow3 = POINT_SHADOW_LOOKUP(3, PT_ATT(lightOffset + 2));
+            #endif
+            #if MAX_LIGHTS > 4
+                ptShadow4 = POINT_SHADOW_LOOKUP(4, PT_ATT(3));
+                ptShadow5 = POINT_SHADOW_LOOKUP(5, PT_ATT(4));
+            #endif
+        }
+        #undef PT_ATT
+    #endif
+
     // Forward sun shadows -- see the LIGHTS < 4 variant. Only the OPT-off path has a sun
     // term; with OPT the first slot is a point light and must not be shadowed by the sun.
     #ifndef OPT
         float3 sunShadowWorldPos = SHADOW_WP_LOAD(IN);
-        float3 sunShadowNormal = GetShadowGeometricNormal(sunShadowWorldPos);
+        #if INTERIOR_SHADOWS
+            float3 sunShadowNormal = ptNormal;
+        #else
+            float3 sunShadowNormal = GetShadowGeometricNormal(sunShadowWorldPos);
+        #endif
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
@@ -894,30 +1079,35 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * sunShadow, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #else
         att = vanillaAtt(PSLightPosition[0].xyz - IN.lPosition.xyz, PSLightPosition[0].w);
-        float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att, PSLightColor[0].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att, SHADOWED(PSLightColor[0].rgb, 0, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #endif
-    
+
+    // UNOFFICIAL: SHADOWED(colour, k, att) -- light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT).
     att = vanillaAtt(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 0].w);
-    lighting += (1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light2.xyz, att, PSLightColor[1].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-    
+    lighting += (1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light2.xyz, att, SHADOWED(PSLightColor[1].rgb, 1, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+
     att = vanillaAtt(PSLightPosition[lightOffset + 1].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 1].w);
-    lighting += (2 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light3.xyz, att, PSLightColor[2].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-    
+    lighting += (2 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light3.xyz, att, SHADOWED(PSLightColor[2].rgb, 2, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+
     #if MAX_LIGHTS > 3
         att = vanillaAtt(PSLightPosition[lightOffset + 2].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 2].w);
-        lighting += (3 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light4.xyz, att, PSLightColor[3].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        lighting += (3 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light4.xyz, att, SHADOWED(PSLightColor[3].rgb, 3, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #endif
-    
+
     #if MAX_LIGHTS > 4
         att = vanillaAtt(PSLightPosition[3].xyz - IN.lPosition.xyz, PSLightPosition[3].w);
-        lighting += (4 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light5.xyz, att, PSLightColor[4].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-    
+        lighting += (4 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light5.xyz, att, SHADOWED(PSLightColor[4].rgb, 4, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+
         att = vanillaAtt(PSLightPosition[4].xyz - IN.lPosition.xyz, PSLightPosition[4].w);
-        lighting += (5 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light6.xyz, att, PSLightColor[5].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        lighting += (5 > lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light6.xyz, att, SHADOWED(PSLightColor[5].rgb, 5, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #endif
-    
+
     // ddx/ddy must stay at pixel-shader top level.
-    float3 ambNormal = GetShadowGeometricNormal(SHADOW_WP_LOAD(IN));
+    #if INTERIOR_SHADOWS
+        float3 ambNormal = ptNormal;
+    #else
+        float3 ambNormal = GetShadowGeometricNormal(SHADOW_WP_LOAD(IN));
+    #endif
     lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambNormal,
                                    SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
 

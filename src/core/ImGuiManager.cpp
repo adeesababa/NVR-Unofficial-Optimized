@@ -2191,6 +2191,9 @@ static const char* kShadowOrthoResolutionNames[] = {
 static const char* kEdgeDetectionNames[] = {
 	"0 - Luma", "1 - Color", "2 - Depth", "3 - Luma + Depth",
 };
+static const char* kSmokeTestNames[] = {
+	"0 - Normal", "1 - Smoke in green", "2 - No muzzle flash light", "3 - Smoke not drawn", "4 - Nothing drawn at all",
+};
 
 #define ENUM_OPT(names) EnumOptions{ names, (int)(sizeof(names) / sizeof(names[0])) }
 
@@ -2208,6 +2211,7 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.ShadowsExteriors.ShadowMaps.CascadeResolution", ENUM_OPT(kShadowCascadeResolutionNames) },
 	{ "Shaders.ShadowsExteriors.Ortho.Resolution",             ENUM_OPT(kShadowOrthoResolutionNames) },
 	{ "Shaders.SMAA.Main.EdgeDetection",                       ENUM_OPT(kEdgeDetectionNames) },
+	{ "Main.GunFX.Main.VolumetricSmokeTest",                   ENUM_OPT(kSmokeTestNames) },
 };
 
 #undef ENUM_OPT
@@ -2411,10 +2415,15 @@ static void RenderContent() {
 			ImGui::PushStyleColor(ImGuiCol_Button, enabled
 				? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
 				: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
-			if (ImGui::SmallButton(enabled ? "Enabled [Ins]" : "Disabled [Ins]")) {
+			// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: say so.
+			const std::string label = shaderName + " (all): " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
+			if (ImGui::SmallButton(label.c_str())) {
 				TheShaderManager->SwitchShaderStatus(shaderName.c_str());
 				TheSettingManager->LoadSettings();
 			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Turns all of %s on or off (every %s section), not just this section.\nThis section's own switches are in the list below.",
+					shaderName.c_str(), shaderName.c_str());
 			ImGui::PopStyleColor();
 			ImGui::EndDisabled();
 		}

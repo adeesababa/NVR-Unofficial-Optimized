@@ -57,6 +57,11 @@ public:
 	IDirect3DTexture9* compositeAOTexture = nullptr;
 	bool	compositeApplied = false;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
+	// The shadow and AO applies in one pass of their own (technique ApplyShadowAO), for frames where effects between them
+	// and the fog keep them out of the fog pass. Returns false, leaving the scene untouched, if it could not.
+	bool	CanApplyShadowAO();
+	bool	RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+		bool shadow, IDirect3DTexture9* aoTexture);
 
 	void	RegisterTextures();
 	bool	RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,

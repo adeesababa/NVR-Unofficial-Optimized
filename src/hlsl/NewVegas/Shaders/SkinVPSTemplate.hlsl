@@ -49,6 +49,9 @@
     #define SHADOW_INVVIEW_REG c244
 #endif
 #include "Includes/Shadow.hlsl"
+#ifdef PS
+    #include "Includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
+#endif
 
 // Toggles.
 #ifndef OPT
@@ -326,6 +329,25 @@ PS_OUTPUT main(PS_INPUT IN) {
         float sunShadow = 1.0f;
     #endif
 
+    #if INTERIOR_SHADOWS
+        // UNOFFICIAL forward point-light shadows (Includes/PointShadowForward.hlsl): light k of the draw is PSLightColor[k].
+        float3 ptWorldPos = IN.shadowWorldPos.xyz;
+        float3 ptNormal = 0.0f;
+        float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
+        [branch] if (NVR_PointShadowParams.x > 0.0f) {
+            #if defined(DIFFUSE)
+                ptShadow0 = POINT_SHADOW_LOOKUP(0, VanillaAttenuation(LightData[0].xyz - IN.lPosition.xyz, LightData[0].w));
+            #endif
+            #if LIGHTS > 1
+                ptShadow1 = POINT_SHADOW_LOOKUP(1, VanillaAttenuation(LightData[1].xyz - IN.lPosition.xyz, LightData[1].w));
+            #endif
+            #if LIGHTS > 2
+                ptShadow2 = POINT_SHADOW_LOOKUP(2, VanillaAttenuation(LightData[2].xyz - IN.lPosition.xyz, LightData[2].w));
+            #endif
+        }
+    #endif
+
     #if !defined(DIFFUSE)
         float3 lightDir = LightData[0].xyz;
         float3 lighting = CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
@@ -333,7 +355,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #else
         // Pointlights only.
         float3 lightDir = LightData[0].xyz - IN.lPosition.xyz;
-        float3 lighting = CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, PSLightColor[0].rgb, IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
+        float3 lighting = CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, SHADOWED(PSLightColor[0].rgb, 0, 0), IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
         lighting *= VanillaAttenuation(lightDir, LightData[0].w);
     #endif
 
@@ -345,13 +367,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if LIGHTS > 1
         lightDir = LightData[1].xyz - IN.lPosition.xyz;
         float att = VanillaAttenuation(lightDir, LightData[1].w);
-        lighting += att * CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, PSLightColor[1].rgb * shadowMultiplier, IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
+        lighting += att * CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, SHADOWED(PSLightColor[1].rgb, 1, 0) * shadowMultiplier, IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
     #endif
 
     #if LIGHTS > 2
         lightDir = LightData[2].xyz - IN.lPosition.xyz;
         att = VanillaAttenuation(lightDir, LightData[2].w);
-        lighting += att * CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, PSLightColor[2].rgb * shadowMultiplier, IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
+        lighting += att * CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, SHADOWED(PSLightColor[2].rgb, 2, 0) * shadowMultiplier, IN.curvatureTensor.xyz, vertexTangent, vertexBinormal, normal.a, glossPower);
     #endif
 
     float3 finalColor = lighting.rgb;
@@ -444,6 +466,24 @@ PS_OUTPUT main(PS_INPUT IN) {
         float sunShadow = 1.0f;
     #endif
 
+    #if INTERIOR_SHADOWS
+        // UNOFFICIAL forward point-light shadows: lights 1..MAX_LIGHTS-1 of the draw, PSLightColor[i].
+        float3 ptWorldPos = IN.shadowWorldPos.xyz;
+        float3 ptNormal = 0.0f;
+        float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+        float3 ptShadow[5] = { (float3)1.0f, (float3)1.0f, (float3)1.0f, (float3)1.0f, (float3)1.0f };
+        [branch] if (NVR_PointShadowParams.x > 0.0f) {
+            ptShadow[1] = POINT_SHADOW_LOOKUP(1, VanillaAttenuation(LightData[1].xyz - IN.lPosition.xyz, LightData[1].w));
+            #if MAX_LIGHTS > 2
+                ptShadow[2] = POINT_SHADOW_LOOKUP(2, VanillaAttenuation(LightData[2].xyz - IN.lPosition.xyz, LightData[2].w));
+                ptShadow[3] = POINT_SHADOW_LOOKUP(3, VanillaAttenuation(LightData[3].xyz - IN.lPosition.xyz, LightData[3].w));
+            #endif
+            #if MAX_LIGHTS > 4
+                ptShadow[4] = POINT_SHADOW_LOOKUP(4, VanillaAttenuation(LightData[4].xyz - IN.lPosition.xyz, LightData[4].w));
+            #endif
+        }
+    #endif
+
     float3 lighting = CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, LightData[0].xyz, PSLightColor[0].rgb, IN.curvatureTensor.xyz, IN.tangent, IN.binormal, normal.a * LightData[0].w, glossPower);
     lighting *= sunShadow;
 
@@ -455,6 +495,9 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 contribution = CalculateLighting(GlowMap, baseColor.rgb, normal.xyz, normalSoft.xyz, viewDir.xyz, lightDir.xyz, PSLightColor[i].rgb, IN.curvatureTensor.xyz, IN.tangent, IN.binormal, normal.a * LightData[0].w, glossPower);
         contribution *= VanillaAttenuation(lightDir, LightData[i].w);
         contribution *= (i >= EmittanceColor.w ? 0.0 : 1.0);
+        #if INTERIOR_SHADOWS
+            contribution *= ptShadow[i];
+        #endif
         lighting += contribution;
     }
 

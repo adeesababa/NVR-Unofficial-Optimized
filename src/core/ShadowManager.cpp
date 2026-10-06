@@ -1,6 +1,7 @@
 #define ShadowMapFarPlane 32768;
 #include "ShadowFaceCull.h"
 #include "PointShadowSchedule.h"
+#include "PointShadowForward.h"
 
 static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
                               const D3DXVECTOR3& direction) {
@@ -787,6 +788,7 @@ void ShadowManager::LogSunShadowStats(bool cachedDistant) {
 }
 
 void ShadowManager::RenderShadowMaps() {
+	PointShadowForward::Begin();	// UNOFFICIAL: idle unless the cube maps below are published
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // cancel out if rendering effects is disabled
 
 	// track point lights for interiors and exteriors
@@ -1111,6 +1113,12 @@ void ShadowManager::RenderShadowMaps() {
 			shadowMapTimer.LogTime(message.c_str());
 		}
 		scheduleFrame++;
+		// UNOFFICIAL interior forward point-light shadows: the lights whose cube map is theirs this frame.
+		if (!isExterior) {
+			const int sampled = (std::min)(ShadowsInteriors->LightPoints, (int)ShadowCubeMapsSampled);
+			PointShadowForward::Publish(slots, ShadowLights, sampled, Shadows->Textures.ShadowCubeMapTexture);
+			PointShadowForward::FrameStats();
+		}
 
 		if (GpuTimer::Enabled && ++statFrames >= 240) { // with the F10 profile: how much work the cubemaps really are
 			const float perFrame = 1.0f / statFrames;

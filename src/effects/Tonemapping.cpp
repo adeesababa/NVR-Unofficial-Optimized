@@ -6,12 +6,15 @@ void TonemappingShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_HDRData", &Constants.HDRData);
 	TheShaderManager->RegisterConstant("TESR_LotteData", &Constants.LotteData);
 	TheShaderManager->RegisterConstant("TESR_ToneMapping", &Constants.ToneMapping);
+	TheShaderManager->RegisterConstant("TESR_ToneMappingClip", &Constants.Clip);
 }
 
 
 void TonemappingShaders::UpdateConstants() {
 	bool isExterior = TheShaderManager->GameState.isExterior;
 	float transitionCurve = TheShaderManager->GameState.transitionCurve;
+	// UNOFFICIAL HueSafeClip (ISHDRBLENDINSHADERCIN.pso.hlsl), live.
+	Constants.Clip.x = TheSettingManager->GetSettingI("Shaders.Tonemapping.Main", "HueSafeClip") ? 1.0f : 0.0f;
 
 	if (TheSettingManager->SettingsChanged || TheShaderManager->GameState.isDayTimeChanged) {
 		// Point light multiplier disabled for now

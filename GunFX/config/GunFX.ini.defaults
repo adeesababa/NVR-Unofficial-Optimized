@@ -200,9 +200,6 @@ bEjection=1
 ; 1 = your own gun (first person) is always drawn in front of the smoke, so smoke never shows inside it.
 ; 0 = smoke and gun are sorted by distance (smoke can pass in front of the gun, but may cut into it).
 bGunInFront=1
-; 1 = your own gun (first person) is always drawn in front of the smoke, so smoke never shows inside it.
-; 0 = smoke and gun are sorted by distance (smoke can pass in front of the gun, but may cut into it).
-bGunInFront=1
 ; Width of the smoke compared with the sprite size (fSize times fScale): a sprite's soft edges are mostly transparent,
 ; so the visible smoke is about a quarter of it.
 fSizeScale=0.25
@@ -284,8 +281,8 @@ fSelfShadow=0.5
 fFlash=1.0
 fFlashRadius=15
 fFlashSeconds=0.05
-; Colour: fresh smoke is whiter and greys as it ages, thin smoke has a cool, bluish tint, and the scene seen through
-; smoke warms slightly. 0 = plain grey, 1 = normal.
+; Colour: thin smoke has a cool, bluish tint, and the scene seen through smoke warms slightly. 0 = plain grey,
+; 1 = normal.
 fTint=0.7
 ; Depth: the smoke is shaded as if round and lumpy (its side and top toward the light brighter, the far side darker,
 ; lumps catching light on one side), for a sense of depth. 0 = flat, 1 = normal.
@@ -309,6 +306,29 @@ fStir=1.5
 ; Stirred smoke spreads out: smoke your body or the gun disturbs (or a whirlpool catches) billows wider, thins into a
 ; ragged veil and frays into wisps, as real smoke mixes into the air. 0 = off, 1 = normal, higher = more.
 fDiffuse=0.5
+; Bursts: running or swinging the gun through smoke throws it outward in a quick puff that billows and rises, then
+; settles (the air you shove keeps going). 0 = off, 0.5 = normal, higher = more.
+fBurst=0.5
+; Gun-smoke haze: every shot leaves a big, thin blob of smoke that rises slowly and lingers,
+; so a room fills with smoke as you keep firing. fHaze = how much each shot leaves (0 = off), fHazeLife = how long it
+; hangs indoors (seconds; outdoors under half), fHazeSize = a blob's radius when grown (game units).
+fHaze=3
+fHazeLife=45
+fHazeSize=90
+; Bullets: every shot punches a tunnel through the smoke in front of you (not the haze): smoke near the bullet's path
+; is thrown outward and a little along it, billows and fills in again. fBullet = how hard (0 = off), fBulletReach = how
+; far from the path it reaches (game units; big puffs a little farther).
+fBullet=2
+fBulletReach=8
+; How a bullet's hole through the smoke runs: fBulletOpen = seconds it takes to open (it fades in as it widens),
+; fBulletSeconds = seconds until the smoke has flowed back in and filled it (from its edge inward).
+fBulletOpen=0.12
+fBulletSeconds=1.4
+; Texture (costs nothing extra): fPillows = how billowy the muzzle puff and ejection smoke are (round lobes and creases,
+; like CS2's smoke), fStreaks = how fibrous the heat smoke and trail are (fine streaks along the flow, like real gun
+; smoke). 0 = smooth (the look before), 1 = full.
+fPillows=1
+fStreaks=0
 ; Unzip: as you walk into the heat smoke or trail it splits around you like a bow wave, into two arms that fan out
 ; either side of you and trail behind (instead of bits of it bouncing from side to side). It splits where the air ahead of
 ; you starts to part. fFanSpeed = how fast the two arms spread apart once it splits (game units per second; 0 = only when you reach them).

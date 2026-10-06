@@ -17,6 +17,7 @@
 #include "includes/Helpers.hlsl"
 #include "includes/PBR.hlsl"
 #include "includes/PBRScale.hlsl"
+#include "includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
 
 float4 AmbientColor    : register(c0);
 float4 HairTint        : register(c2);
@@ -84,6 +85,23 @@ VS_OUTPUT main(VS_INPUT IN) {
     float sunShadow = 1.0f;
 #endif
 
+#if INTERIOR_SHADOWS
+    // UNOFFICIAL forward point-light shadows (Includes/PointShadowForward.hlsl). Light i of the draw is LightData pair i;
+    // the DLL leaves a directional light 0 without a shadow. Attenuation as in the loop below.
+    float3 ptWorldPos = IN.shadowWorldPos.xyz;
+    float3 ptNormal = 0.0f;
+    float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+    #define SM3_POINT_ATT(i) saturate(1.0f - sqr(saturate(length(LightData[(i) * 2 + 1].xyz - IN.objPos) / max(LightData[(i) * 2 + 1].w, 0.0001f))))
+    float3 ptShadow[4] = { (float3)1.0f, (float3)1.0f, (float3)1.0f, (float3)1.0f };
+    [branch] if (NVR_PointShadowParams.x > 0.0f) {
+        ptShadow[0] = POINT_SHADOW_LOOKUP(0, SM3_POINT_ATT(0));
+        ptShadow[1] = POINT_SHADOW_LOOKUP(1, SM3_POINT_ATT(1));
+        ptShadow[2] = POINT_SHADOW_LOOKUP(2, SM3_POINT_ATT(2));
+        ptShadow[3] = POINT_SHADOW_LOOKUP(3, SM3_POINT_ATT(3));
+    }
+    #undef SM3_POINT_ATT
+#endif
+
     int numLights = (int)min(ToggleNumLights.x + ToggleNumLights.y, 4.0f);
 
     float3 diffuse = 0.0f;
@@ -94,6 +112,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     [unroll]
     for (int i = 0; i < 4; i++) {
         float3 lightColor = PBRLight(LightData[i * 2].rgb);
+#if INTERIOR_SHADOWS
+        lightColor *= ptShadow[i];   // all of this light's terms
+#endif
         float4 lightVec   = LightData[i * 2 + 1];
 
         bool isDirectional = (i == 0) && hasSun;

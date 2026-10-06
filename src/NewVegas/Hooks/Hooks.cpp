@@ -25,6 +25,13 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
+	// UNOFFICIAL interior forward shadows: each object's own lamps (PointShadowForward.h).
+	// (Also for ScopeFix outdoors, which works on the same per-object call.)
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ||
+		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix")) {
+		DetourAttach(&(PVOID&)RenderPassStandard, &RenderPassStandardHook);
+		DetourAttach(&(PVOID&)RenderPassSkinned, &RenderPassSkinnedHook);
+	}
 
 	DetourAttach(&(PVOID&)GetWaterHeightLOD, &GetWaterHeightLODHook);
 	// Always hooked so the reflection pass can be profiled; it only changes rendering when

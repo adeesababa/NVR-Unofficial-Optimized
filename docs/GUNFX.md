@@ -114,7 +114,7 @@ as short bursts (the puff blows forward out of the barrel, slows down and rises;
 join into one stream). Each point rises, curls, slows down, grows (fast at first) and fades. NVR draws the chains as
 soft volumes of smoke: with a lumpy outline and wispy edges that travel with the smoke, lit by the sun (the side away
 from it darker; glowing when you look toward the sun) and the light around them, lit orange for a moment by each
-muzzle flash, whiter when fresh and cool grey when thin, drifting with the wind outdoors, parting around you as you
+muzzle flash, a cool, bluish grey where it is thin, drifting with the wind outdoors, parting around you as you
 walk through it, hidden behind walls, faded out close to the camera, and always behind your own first-person gun. The sprite version of a smoke is not
 spawned while its volumetric version is on. Each smoke's own switch still applies (`HeatSmoke`, `AfterFireTrail`,
 `Puff`, `EjectionSmoke`). Your own gun only; other characters' puffs stay sprites.
@@ -128,8 +128,6 @@ them for the volumetric version:
   (1 by default; 0 sorts smoke and gun by distance).
 - `fExpand`, `fThinning`: how big the smoke ends up (it grows fast at first, then slower) and how much it thins
   out as it widens (0 keeps its opacity like the sprites).
-- `bGunInFront`: your own first-person gun is always drawn in front of the smoke, so smoke never shows inside it
-  (1 by default; 0 sorts smoke and gun by distance).
 - `fSizeScale`: width of the heat smoke and trail compared with the sprite size (`fSize` times `fScale`; 0.25 by
   default, since a sprite's soft edges are mostly transparent). `fBurstSizeScale` does the same for the puff and
   the ejection smoke (1.0 by default).
@@ -162,7 +160,7 @@ them for the volumetric version:
 - `fBrightness`, `fSelfShadow`: how bright it is, and how much darker its side away from the sun (indoors: its
   underside) and its thick inside are.
 - `fFlash`, `fFlashRadius`, `fFlashSeconds`: the muzzle flash's orange light on the smoke (strength, reach, fade).
-- `fTint`: colour by thickness and age (fresh smoke whiter, thin smoke cool grey; 0 = plain grey).
+- `fTint`: colour by thickness (thin smoke a cool, bluish grey; 0 = plain grey).
 - `fDepth`: shading for a sense of depth, as if the smoke were round and lumpy (0 = flat).
 - `fWind`, `fWindPickup`, `fWindDirectionOffset`: drift with the weather's wind outdoors (speed at full wind, how
   quickly smoke takes it on, a turn in degrees if it drifts the wrong way). `GunFX.log` lists the wind it reads.
@@ -172,6 +170,26 @@ them for the volumetric version:
 - `fDiffuse`: stirred smoke spreads out like real smoke mixing into the air: smoke your body or the gun disturbs (or a
   whirlpool catches) billows wider, thins into a ragged veil, its points wander apart and strongly stirred spots peel
   off wisps (0 = off, 1 = normal, higher = more).
+- `fBurst`: running or swinging the gun through smoke throws it outward in a quick puff that billows and rises,
+  then settles, as the air you shove keeps going (0 = off, 0.5 = normal, higher = more).
+- `fHaze`, `fHazeLife`, `fHazeSize`: gun-smoke haze. Every shot leaves a big, thin blob of smoke that grows, rises
+  slowly and lingers, so a room fills with smoke as you keep firing (indoors it gathers under the ceiling and hangs
+  `fHazeLife` seconds; outdoors the wind clears it in under half that). Firing from one spot keeps stacking haze there.
+  `fHaze`: how much each shot leaves (0 = off, 1 = light, 3 = the default, higher = thicker); `fHazeSize`: a blob's
+  radius when grown (game units, 90 by default). NVR draws all of it in one pass at quarter resolution (about 0.2 ms with a room full).
+- `fBullet`, `fBulletReach`: every shot's bullet punches a tunnel through the smoke in front of you: smoke near its
+  path (from the muzzle to where you aim) is thrown outward and a little along it, billows and fills in again. The
+  shot's own puff is left alone, so the next shot cuts through it. `fBullet`: how hard (0 = off, 1 = gentle,
+  2 = the default); `fBulletReach`: how far from the path it reaches (game units; big puffs a little farther). Through
+  the haze, NVR clears a tunnel along each recent bullet's path (wider with a higher `fBullet`): it opens at once, with
+  a ragged edge, and closes again from that edge inward as the haze flows back, over about a second.
+  `fBulletOpen`: seconds a hole takes to open (0.12 by default; it fades in as it widens); `fBulletSeconds`: seconds
+  until the smoke has filled it again (1.4 by default). While you walk or run, the bullets leave your own puff and trail
+  close to you alone (within about 60 units, fully cut again from 150): they stream past the tunnels, which stay where the
+  bullets were fired, and cutting them there only flickered in your face.
+- `fPillows`, `fStreaks`: the smoke's texture, at no extra cost. `fPillows`: how billowy the muzzle puff and ejection
+  smoke are (round lobes meeting in creases); `fStreaks`: how fibrous the heat smoke and trail are (fine streaks along
+  the flow). 0 = smooth, 1 = full. The defaults are `fPillows` 1, `fStreaks` 0.
 - `bUnzip`, `fFanSpeed`: walking into the heat smoke or trail splits it around you into two arms that fan out, like a bow
   wave (it splits where the air ahead of you starts to part; `fFanSpeed`: how fast the arms spread). `bUnzip` is on (1)
   or off (0).
@@ -223,7 +241,13 @@ settings and the baked effect meshes. It talks to NVR through a few exported C f
   weights and seed). Returns the record count (at most 384). NVR's world space is centred on the camera, so the
   positions are converted before use. `GunFX_GetVolumeSmoke2` gives 16 floats per record (adding the smoke's own
   noise coordinate and the age at both ends); `GunFX_GetSmokeFlash(float out[8])` the muzzle flash's position, light,
-  colour and reach. `src/effects/VolumetricSmoke.h` (+ `.cpp`, `VolumetricSmokeQuads.h`) and
+  colour and reach; `GunFX_GetSmokeHaze(float* out, int maxBlobs)` the haze (8 floats a blob: centre, radius, optical
+  depth through the middle, 3 spare; at most 40), drawn by a pass of its own into `TESR_SmokeHaze`.
+  NVR calls `GunFX_SetView(const float v[6])` every frame with the camera (eye in world space, the way it looks), so
+  bullets fly to where you aim; `GunFX_GetBullets(float* out, int maxBullets)` gives the bullets of the last 1.2 s
+  (8 floats each: from, seconds since, way, strength) for the haze tunnels, `GunFX_GetMoving()` how much you are
+  moving (0..1, eased). Each record's float 11 carries the texture
+  above the end weights: 256 * (pillows 0..15 * 16 + streaks 0..15). `src/effects/VolumetricSmoke.h` (+ `.cpp`, `VolumetricSmokeQuads.h`) and
   `src/hlsl/NewVegas/Effects/VolumetricSmoke.fx.hlsl` draw it in two steps: one quad per segment adds its optical
   depth, the share the light reaches and the flash's light into `TESR_SmokeBuffer`, then one pass lights the total
   and lays it over the image.

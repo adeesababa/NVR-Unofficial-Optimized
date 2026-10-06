@@ -43,7 +43,7 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		static GpuTimer passTimers[3] = { GpuTimer("  Interior shadow blur H"), GpuTimer("  Interior shadow blur V"),
 			GpuTimer("  Interior shadow apply") };
 		IDirect3DBaseTexture9* source = shadowTexture;
-		for (UINT p = 0; p < 3 && SUCCEEDED(result); ++p) {
+		for (UINT p = skipBlur ? 2 : 0; p < 3 && SUCCEEDED(result); ++p) {
 			GpuProfileScope gpuPass(passTimers[p], Device);
 			const bool combine = p == 2;
 			Device->SetTexture(4, nullptr); // s4 must not still hold the texture this pass renders into

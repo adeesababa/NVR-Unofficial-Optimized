@@ -635,6 +635,335 @@ static int TestObjects(Gpu& gpu, const std::string& oldFolder, const std::string
 	return failures;
 }
 
+// ---- Metal (UNOFFICIAL): ObjectTemplate's LIGHTS < 4 pixel shaders, SLS2000-2027 ----
+// Their PS_INPUT: TEXCOORD0 uv (zw barrel), 1-3 the lights (.w radius; lightDir.w world up's y for the metal), 4 the
+// camera-relative world position (.w sentinel), 5 squared light distances (.w up's x), 6 the view (.w barrel), 7 projected
+// shadow, COLOR0 vertex colour (.a up's z, encoded), COLOR1 fog.
+static Scene SmallObjectScene() {
+	Scene scene;
+	for (int j = 0; j < Grid; j++)
+		for (int i = 0; i < Grid; i++) {
+			const float sx = i / float(Grid - 1), sy = j / float(Grid - 1);
+			Vertex v = {};
+			float dir[3][3], view[3], up[3];
+			for (int k = 0; k < 3; k++) RandomDirection(dir[k], 0.7f, 1.3f);
+			RandomDirection(view, 1.0f, 1.0f);
+			RandomDirection(up, 1.0f, 1.0f);
+			if (Random() < 0.4f) up[2] = -up[2];      // some surfaces face down
+			const float world[3] = { (sx - 0.5f) * 400, 150 + 200 * sy + 20 * Random(), (0.5f - sy) * 150 + 10 * Random() };
+			Set(v, 0, sx * 2 - 1, 1 - sy * 2, 0.5f, 1);
+			Set(v, 1, sx * 5, sy * 5, (sx - 0.5f) * 30, (sy - 0.5f) * 30);                           // uv, barrel local xy
+			Set(v, 2, dir[0][0], dir[0][1], dir[0][2], up[1]);                                      // sun, up.y
+			Set(v, 3, dir[1][0] * 100, dir[1][1] * 100, dir[1][2] * 100, 300);                      // light 2, radius
+			Set(v, 4, dir[2][0] * 100, dir[2][1] * 100, dir[2][2] * 100, 300);                      // light 3, radius
+			Set(v, 5, world[0], world[1], world[2], 1.0f);                                          // shadowWorldPos
+			Set(v, 6, 10000 * Random(), 20000 * Random(), 20000 * Random(), up[0]);                 // lightDistSq, up.x
+			Set(v, 7, view[0] * 200, view[1] * 200, view[2] * 200, 5);                              // viewDir, barrel z
+			Set(v, 8, 0.5f, 0.5f, 0.5f, 0.5f);                                                       // shadowUVs
+			Set(v, 9, 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), up[2] * 0.5f + 0.5f);  // vertex colour, up.z
+			Set(v, 10, 0.5f, 0.55f, 0.6f, 0.1f + 0.3f * Random());                                  // fog colour, amount
+			scene.vertices.push_back(v);
+		}
+	GridIndices(scene);
+	return scene;
+}
+
+static int TestMetal(Gpu& gpu, const std::string& oldFolder, const std::string& newFolder) {
+	int failures = 0;
+	const std::string oldFile = oldFolder + "\\ObjectTemplate.hlsl", newFile = newFolder + "\\ObjectTemplate.hlsl";
+	struct Variant { const char* name; Defines defines; bool opt, metal; };   // metal: has the metal code (SPECULAR, not HAIR)
+	const Variant variants[] = {
+		{ "SLS2017 (SPECULAR)", { { "PS", "" }, { "SPECULAR", "" } }, false, true },
+		{ "SLS2018 (SPECULAR, SI)", { { "PS", "" }, { "SPECULAR", "" }, { "SI", "" } }, false, true },
+		{ "SLS2020 (SPECULAR, PROJ_SHADOW)", { { "PS", "" }, { "SPECULAR", "" }, { "PROJ_SHADOW", "" } }, false, true },
+		{ "SLS2023 (SPECULAR, LIGHTS 2)", { { "PS", "" }, { "SPECULAR", "" }, { "LIGHTS", "2" } }, false, true },
+		{ "SLS2000 (no specular)", { { "PS", "" } }, false, false },
+		{ "SLS2001 (OPT)", { { "PS", "" }, { "OPT", "" } }, true, false },
+		{ "SLS2019 (SPECULAR, HAIR)", { { "PS", "" }, { "SPECULAR", "" }, { "HAIR", "" } }, false, false },
+	};
+	IDirect3DDevice9* device = gpu.device.Get();
+	Check(device->SetVertexShader(gpu.objectVS.Get()), "SetVertexShader");
+	BindTextures(gpu, false);
+	const Scene scene = SmallObjectScene();
+	std::puts("METAL (ObjectTemplate LIGHTS < 4): metal off must be bit-identical to the old shader; metal on must change the scene, no NaNs:");
+	for (const Variant& v : variants) {
+		ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
+		IDirect3DPixelShader9* oldShader = CreatePS(device, Compile(oldFile, "ps_3_0", v.defines, 0).Get(), oldHolder);
+		IDirect3DPixelShader9* newShader = CreatePS(device, Compile(newFile, "ps_3_0", v.defines, 0).Get(), newHolder);
+		Constants k = ObjectConstants(1, v.opt);
+		k.Set(34, 0, 0.6f, 0.25f, 0.55f);       // TESR_PBRMetal: off
+		k.Set(36, 0.5f, 0.25f, 1, 0);           // TESR_PBRMetalLook
+		k.Apply(device);
+		const std::vector<float> a = Render(gpu, oldShader, scene), off = Render(gpu, newShader, scene);
+		const Comparison same = Compare(a, off);
+		k.Set(34, 1, 0.6f, 0.25f, 0.55f);       // on
+		k.Apply(device);
+		const std::vector<float> on = Render(gpu, newShader, scene);
+		const Comparison changed = Compare(a, on);
+		double before = 0, after = 0; size_t n = 0;
+		for (size_t p = 0; p < a.size(); p += 4)
+			if (fabsf(a[p] - on[p]) + fabsf(a[p + 1] - on[p + 1]) + fabsf(a[p + 2] - on[p + 2]) > 1e-3f) {
+				before += a[p] + a[p + 1] + a[p + 2]; after += on[p] + on[p + 1] + on[p + 2]; n++;
+			}
+		printf("  %-30s off: %s (%zu pixels differ, worst %.3g) | on: %.0f%% of pixels change, their brightness %.3f -> %.3f, NaN %zu\n",
+			v.name, same.different ? "DIFFERENT" : "identical", same.different, same.worst, 100.0 * ChangedShare(a, on),
+			n ? before / (3 * n) : 0.0, n ? after / (3 * n) : 0.0, changed.nan);
+		if (same.different) failures++;
+		if (same.nan || changed.nan) { printf("FAIL: NaN pixels\n"); failures++; }
+		if (v.metal && ChangedShare(a, on) < 0.05) { printf("FAIL: metal on barely changes the test scene\n"); failures++; }
+		if (!v.metal && changed.different) { printf("FAIL: metal on changes a variant without the metal code\n"); failures++; }
+		k.Set(34, 0, 0.6f, 0.25f, 0.55f);
+		k.Apply(device);
+		const std::string labelOff = std::string(v.name) + ", metal off";
+		TimeOldNew(gpu, labelOff.c_str(), oldShader, newShader, scene);
+		k.Set(34, 1, 0.6f, 0.25f, 0.55f);
+		k.Apply(device);
+		const std::string labelOn = std::string(v.name) + ", metal on";
+		TimeOldNew(gpu, labelOn.c_str(), oldShader, newShader, scene);
+	}
+	return failures;
+}
+
+// ---- Environment maps (UNOFFICIAL): EnvTemplate.hlsl against the game's own shaders ----
+// The game's SLS2050/2051 (VS) and SLS2057/2058 (PS) bytecode, from its shader package, against ours: the pixel shaders
+// with the light scaling off must give the game's picture (to rounding: the game's run at partial precision); the vertex
+// shaders must give the same outputs, read back one at a time by a probe pixel shader.
+static std::vector<DWORD> LoadBytecode(const std::string& path) {
+	FILE* f = nullptr;
+	if (fopen_s(&f, path.c_str(), "rb") || !f) throw std::runtime_error("cannot open " + path);
+	fseek(f, 0, SEEK_END); const long size = ftell(f); fseek(f, 0, SEEK_SET);
+	std::vector<DWORD> code((size + 3) / 4);
+	fread(code.data(), 1, size, f); fclose(f);
+	return code;
+}
+
+static ComPtr<ID3DXBuffer> CompileSource(const std::string& file, const char* profile, const Defines& defines) {
+	std::vector<D3DXMACRO> macros;
+	for (const auto& d : defines) macros.push_back({ d.first.c_str(), d.second.c_str() });
+	macros.push_back({ "SKYLIGHTING_MODE", "0" });
+	macros.push_back({ NULL, NULL });
+	ComPtr<ID3DXBuffer> source, errors, code;
+	if (FAILED(D3DXPreprocessShaderFromFileA(file.c_str(), macros.data(), NULL, &source, &errors)))
+		throw std::runtime_error("preprocess " + file + ": " + (errors ? (const char*)errors->GetBufferPointer() : ""));
+	errors.Reset();
+	if (FAILED(D3DXCompileShader((const char*)source->GetBufferPointer(), source->GetBufferSize(), NULL, NULL, "main", profile, 0, &code, &errors, NULL)))
+		throw std::runtime_error("compile " + file + ": " + (errors ? (const char*)errors->GetBufferPointer() : ""));
+	return code;
+}
+
+static ComPtr<ID3DXBuffer> CompileText(const char* source, const char* profile) {
+	ComPtr<ID3DXBuffer> code, errors;
+	if (FAILED(D3DXCompileShader(source, (UINT)strlen(source), NULL, NULL, "main", profile, 0, &code, &errors, NULL)))
+		throw std::runtime_error(std::string("compile probe: ") + (errors ? (const char*)errors->GetBufferPointer() : ""));
+	return code;
+}
+
+static void Normalize3(float v[3]) { const float l = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); for (int k = 0; k < 3; k++) v[k] /= l; }
+static void Cross3(const float a[3], const float b[3], float out[3]) { out[0] = a[1] * b[2] - a[2] * b[1]; out[1] = a[2] * b[0] - a[0] * b[2]; out[2] = a[0] * b[1] - a[1] * b[0]; }
+
+// What the game's VS hands the env PS: uv, the cube-space frame (tangent and binormal x0.1, normal) with the view in .w,
+// the fog's visibility, the vertex colour.
+static Scene EnvPixelScene() {
+	Scene scene;
+	for (int j = 0; j < Grid; j++)
+		for (int i = 0; i < Grid; i++) {
+			const float sx = i / float(Grid - 1), sy = j / float(Grid - 1);
+			Vertex v = {};
+			float n[3], a[3], tng[3], bin[3], view[3];
+			RandomDirection(n, 1, 1); if (Random() < 0.5f) n[2] = -n[2];
+			RandomDirection(a, 1, 1);
+			Cross3(n, a, tng); Normalize3(tng); Cross3(n, tng, bin);
+			RandomDirection(view, 1, 1);
+			Set(v, 0, sx * 2 - 1, 1 - sy * 2, 0.5f, 1);
+			Set(v, 1, sx * 4, sy * 4, 0, 0);
+			Set(v, 2, tng[0] * 0.1f, bin[0] * 0.1f, n[0], view[0]);
+			Set(v, 3, tng[1] * 0.1f, bin[1] * 0.1f, n[1], view[1]);
+			Set(v, 4, tng[2] * 0.1f, bin[2] * 0.1f, n[2], view[2]);
+			Set(v, 5, 0.6f + 0.4f * Random(), 0, 0, 0);
+			Set(v, 9, 0.5f + 0.5f * Random(), 0.5f + 0.5f * Random(), 0.5f + 0.5f * Random(), 1);
+			scene.vertices.push_back(v);
+		}
+	GridIndices(scene);
+	return scene;
+}
+
+// A mesh for the vertex shaders: object-space positions on screen, random frames, bone weights and indices (0-17, so
+// every bone's three rows fit in Bones[54]), as the game's vertex layout (slots below).
+static Scene EnvVertexScene() {
+	Scene scene;
+	for (int j = 0; j < Grid; j++)
+		for (int i = 0; i < Grid; i++) {
+			const float sx = i / float(Grid - 1), sy = j / float(Grid - 1);
+			Vertex v = {};
+			float n[3], a[3], tng[3], bin[3];
+			RandomDirection(n, 1, 1);
+			RandomDirection(a, 1, 1);
+			Cross3(n, a, tng); Normalize3(tng); Cross3(n, tng, bin);
+			const float w0 = 0.5f * Random(), w1 = 0.3f * Random(), w2 = 0.2f * Random();
+			Set(v, 0, (sx * 2 - 1) * 0.8f, (1 - sy * 2) * 0.8f, 0.3f * Random(), 1);    // POSITION
+			Set(v, 1, sx * 4, sy * 4, 0, 0);                                               // TEXCOORD0
+			Set(v, 2, n[0], n[1], n[2], 0);                                                // NORMAL
+			Set(v, 3, tng[0], tng[1], tng[2], 0);                                          // TANGENT
+			Set(v, 4, bin[0], bin[1], bin[2], 0);                                          // BINORMAL
+			Set(v, 5, Random(), Random(), Random(), 1);                                    // COLOR0
+			Set(v, 6, w0, w1, w2, 0);                                                      // BLENDWEIGHT
+			Set(v, 7, (float)(rand() % 18) / 255, (float)(rand() % 18) / 255, (float)(rand() % 18) / 255, (float)(rand() % 18) / 255);  // BLENDINDICES
+			scene.vertices.push_back(v);
+		}
+	GridIndices(scene);
+	return scene;
+}
+
+static const char* PassThroughVS = R"(
+struct VIn { float4 pos : POSITION0; float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2; float4 t3 : TEXCOORD3;
+             float4 t4 : TEXCOORD4; float4 c0 : TEXCOORD8; };
+struct VOut { float4 pos : POSITION; float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2; float4 t3 : TEXCOORD3;
+              float4 t4 : TEXCOORD4; float4 c0 : COLOR0; };
+VOut main(VIn IN) { VOut OUT; OUT.pos = IN.pos; OUT.t0 = IN.t0; OUT.t1 = IN.t1; OUT.t2 = IN.t2; OUT.t3 = IN.t3; OUT.t4 = IN.t4; OUT.c0 = IN.c0; return OUT; })";
+
+static double MeanLuma(const std::vector<float>& a) {
+	double s = 0; for (size_t p = 0; p < a.size(); p += 4) s += 0.2126 * a[p] + 0.7152 * a[p + 1] + 0.0722 * a[p + 2];
+	return s / (a.size() / 4);
+}
+
+static int TestEnv(Gpu& gpu, const std::string& newFolder, const std::string& vanillaFolder) {
+	int failures = 0;
+	IDirect3DDevice9* device = gpu.device.Get();
+	const std::string file = newFolder + "\\EnvTemplate.hlsl";
+	// The cube map: a bright sky, dark ground, coloured sides.
+	ComPtr<IDirect3DCubeTexture9> cube;
+	Check(device->CreateCubeTexture(64, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube, NULL), "CreateCubeTexture");
+	for (int face = 0; face < 6; face++) {
+		D3DLOCKED_RECT lock;
+		Check(cube->LockRect((D3DCUBEMAP_FACES)face, 0, &lock, NULL, 0), "lock cube");
+		for (int y = 0; y < 64; y++)
+			for (int x = 0; x < 64; x++) {
+				const int r = 40 + face * 35 + x, g = 60 + y * 2, b = 200 - face * 25;
+				((DWORD*)((BYTE*)lock.pBits + y * lock.Pitch))[x] = D3DCOLOR_ARGB(255, r & 255, g & 255, b & 255);
+			}
+		cube->UnlockRect((D3DCUBEMAP_FACES)face, 0);
+	}
+	Check(D3DXFilterTexture(cube.Get(), NULL, 0, D3DX_FILTER_BOX), "filter cube");
+	for (int k = 0; k < 16; k++) device->SetTexture(k, nullptr);
+	device->SetTexture(0, gpu.textures[7].Get());   // NormalMap (alpha: the mask)
+	device->SetTexture(1, cube.Get());              // EnvironmentCubeMap
+	device->SetTexture(3, gpu.textures[1].Get());   // CustomEnvMask
+
+	// ---- pixel shaders ----
+	ComPtr<IDirect3DVertexShader9> vs2, vs3;
+	auto vs2code = CompileText(PassThroughVS, "vs_2_0"), vs3code = CompileText(PassThroughVS, "vs_3_0");
+	Check(device->CreateVertexShader((const DWORD*)vs2code->GetBufferPointer(), &vs2), "vs2");
+	Check(device->CreateVertexShader((const DWORD*)vs3code->GetBufferPointer(), &vs3), "vs3");
+	const Scene pixelScene = EnvPixelScene();
+	std::puts("ENV MAPS pixel shaders (EnvTemplate.hlsl vs the game's), 1024x1024 float target:");
+	struct PsVariant { const char* name; const char* game; Defines defines; };
+	const PsVariant psVariants[] = { { "SLS2057", "SLS2057.pso", { { "PS", "" } } }, { "SLS2058", "SLS2058.pso", { { "PS", "" }, { "NEGATE_VIEW", "" } } } };
+	for (const PsVariant& v : psVariants) {
+		ComPtr<IDirect3DPixelShader9> game, ours;
+		const std::vector<DWORD> gameCode = LoadBytecode(vanillaFolder + "\\" + v.game);
+		Check(device->CreatePixelShader(gameCode.data(), &game), "game PS");
+		Check(device->CreatePixelShader((const DWORD*)CompileSource(file, "ps_3_0", v.defines)->GetBufferPointer(), &ours), "our PS");
+		Constants k;
+		CommonConstants(k);
+		k.Set(1, 0.30f, 0.32f, 0.36f, 0.9f);     // AmbientColor
+		k.Set(27, 1, 0, 1.5f, 0.35f);            // EnvToggles: vertex colour, -, strength, custom mask share
+		k.Set(32, 0, 1, 1, 0.5f);                // TESR_PBRData: ambient scale
+		k.Set(33, 1, 0.5f, 0.5f, 0);             // TESR_PBRExtraData: skylight scale
+		k.Set(34, 0, 0.6f, 0.25f, 0.55f);        // TESR_PBRMetal: off
+		k.Set(35, 0, 1.5f, 0.5f, 0);             // TESR_PBREnv: Lighting 0
+		k.Apply(device);
+		Check(device->SetVertexShader(vs2.Get()), "set vs2");
+		const std::vector<float> a = Render(gpu, game.Get(), pixelScene);
+		Check(device->SetVertexShader(vs3.Get()), "set vs3");
+		const std::vector<float> b = Render(gpu, ours.Get(), pixelScene);
+		const Comparison off = Compare(a, b);
+		k.Set(35, 1, 1.5f, 0.5f, 0); k.Apply(device);
+		const std::vector<float> lit = Render(gpu, ours.Get(), pixelScene);
+		k.Set(34, 1, 0.6f, 0.25f, 0.55f); k.Apply(device);
+		const std::vector<float> metal = Render(gpu, ours.Get(), pixelScene);
+		printf("  %s: Lighting 0 vs the game's: %zu pixels differ, worst %.4g (mean %.4f vs %.4f) | Lighting 1: mean %.4f | metal on: mean %.4f (x%.2f) | NaN %zu\n",
+			v.name, off.different, off.worst, MeanLuma(a), MeanLuma(b), MeanLuma(lit), MeanLuma(metal), MeanLuma(metal) / std::max(MeanLuma(lit), 1e-9),
+			Compare(a, lit).nan + Compare(a, metal).nan);
+		if (off.worst > 0.01) { printf("FAIL: %s differs from the game's with the light scaling off\n", v.name); failures++; }
+		if (MeanLuma(a) < 0.01) { printf("FAIL: the test scene shows no reflection\n"); failures++; }
+		if (Compare(a, lit).nan || Compare(a, metal).nan || off.nan) { printf("FAIL: NaN pixels\n"); failures++; }
+	}
+
+	// ---- vertex shaders ----
+	std::vector<D3DVERTEXELEMENT9> elements = {
+		{ 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 16, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 48, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT, 0 },
+		{ 0, 64, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BINORMAL, 0 },
+		{ 0, 80, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0 },
+		{ 0, 96, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		{ 0, 112, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		D3DDECL_END() };
+	ComPtr<IDirect3DVertexDeclaration9> gameLayout, harnessLayout;
+	Check(device->GetVertexDeclaration(&harnessLayout), "get declaration");
+	Check(device->CreateVertexDeclaration(elements.data(), &gameLayout), "game declaration");
+	Check(device->SetVertexDeclaration(gameLayout.Get()), "set game declaration");
+	const Scene vertexScene = EnvVertexScene();
+	// Constants: projection-free on-screen transform, cube space a rotation plus a shift, fog, bones near identity.
+	std::vector<float> vc(256 * 4, 0.0f);
+	auto setv = [&](int r, float x, float y, float z, float w) { vc[r * 4] = x; vc[r * 4 + 1] = y; vc[r * 4 + 2] = z; vc[r * 4 + 3] = w; };
+	const float rot[3][4] = { { 0.8f, -0.6f, 0.0f, 30.0f }, { 0.6f, 0.8f, 0.0f, -20.0f }, { 0.0f, 0.0f, 1.0f, 50.0f } };
+	auto setTransforms = [&](int mvp, int cubeSpace) {
+		setv(mvp + 0, 1, 0, 0, 0); setv(mvp + 1, 0, 1, 0, 0); setv(mvp + 2, 0, 0, 0.5f, 0.25f); setv(mvp + 3, 0, 0, 0, 1);
+		for (int r = 0; r < 3; r++) setv(cubeSpace + r, rot[r][0], rot[r][1], rot[r][2], rot[r][3]);
+	};
+	setv(14, 1.2f, 2.0f, 1.5f, 0);   // FogParam: start, range, power (screen-space lengths here)
+	for (int bone = 0; bone < 18; bone++) {
+		const float a = 0.05f * bone, c = cosf(a), s = sinf(a);
+		setv(44 + bone * 3 + 0, c, -s, 0, 0.01f * bone);
+		setv(44 + bone * 3 + 1, s, c, 0, -0.01f * bone);
+		setv(44 + bone * 3 + 2, 0, 0, 1, 0.02f);
+	}
+	const char* probe = R"(
+struct PIn { float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2; float4 t3 : TEXCOORD3; float4 t4 : TEXCOORD4; float4 c0 : COLOR0; };
+float4 Which : register(c0);
+float4 main(PIn IN) : COLOR0 {
+    return Which.x > 4.5 ? float4(IN.c0.rgb, 0) : Which.x > 3.5 ? float4(IN.t0.xy, IN.t4.x, 0) : Which.x > 2.5 ? IN.t3 : Which.x > 1.5 ? IN.t2 : IN.t1;
+})";
+	ComPtr<IDirect3DPixelShader9> probe2, probe3;
+	Check(device->CreatePixelShader((const DWORD*)CompileText(probe, "ps_2_0")->GetBufferPointer(), &probe2), "probe2");
+	Check(device->CreatePixelShader((const DWORD*)CompileText(probe, "ps_3_0")->GetBufferPointer(), &probe3), "probe3");
+	const char* outputs[5] = { "frame x / view x", "frame y / view y", "frame z / view z", "uv, fog", "vertex colour" };
+	std::puts("ENV MAPS vertex shaders (EnvTemplate.hlsl vs the game's), outputs read back through a probe:");
+	struct VsVariant { const char* name; const char* game; Defines defines; bool skin; };
+	const VsVariant vsVariants[] = { { "SLS2050", "SLS2050.vso", { { "VS", "" } }, false }, { "SLS2051 (skin)", "SLS2051.vso", { { "VS", "" }, { "SKIN", "" } }, true } };
+	for (const VsVariant& v : vsVariants) {
+		ComPtr<IDirect3DVertexShader9> game, ours;
+		const std::vector<DWORD> gameCode = LoadBytecode(vanillaFolder + "\\" + v.game);
+		Check(device->CreateVertexShader(gameCode.data(), &game), "game VS");
+		Check(device->CreateVertexShader((const DWORD*)CompileSource(file, "vs_3_0", v.defines)->GetBufferPointer(), &ours), "our VS");
+		std::fill(vc.begin(), vc.begin() + 44 * 4, 0.0f);
+		setv(14, 1.2f, 2.0f, 1.5f, 0);
+		if (v.skin) setTransforms(1, 9); else setTransforms(0, 8);
+		Check(device->SetVertexShaderConstantF(0, vc.data(), 256), "VS constants");
+		std::string line;
+		double worstAll = 0;
+		for (int o = 0; o < 5; o++) {
+			const float which[4] = { (float)o + 1, 0, 0, 0 };
+			Check(device->SetPixelShaderConstantF(0, which, 1), "which");
+			Check(device->SetVertexShader(game.Get()), "game VS");
+			const std::vector<float> a = Render(gpu, probe2.Get(), vertexScene);
+			Check(device->SetVertexShader(ours.Get()), "our VS");
+			const std::vector<float> b = Render(gpu, probe3.Get(), vertexScene);
+			const Comparison c = Compare(a, b);
+			char part[160]; sprintf_s(part, " | %s: worst %.3g", outputs[o], c.worst);
+			line += part;
+			worstAll = std::max(worstAll, c.worst);
+			if (o == 3 && MeanLuma(a) == 0) { printf("FAIL: %s drew nothing\n", v.name); failures++; }
+		}
+		printf("  %s%s\n", v.name, line.c_str());
+		if (worstAll > 0.01) { printf("FAIL: %s outputs differ from the game's\n", v.name); failures++; }
+	}
+	Check(device->SetVertexDeclaration(harnessLayout.Get()), "restore declaration");
+	return failures;
+}
+
 // ---- Water preview (P48) ----
 // Renders WATER000.pso (outdoor water, close range) over a test lake seen from 250 units above the surface: a sky to
 // reflect, a sandy bottom to refract, the water getting deeper from left to right. Three pictures stacked in one BMP:
@@ -797,6 +1126,14 @@ int main(int argc, char** argv) {
 			fclose(out);
 			return 0;
 		}
+		if (argc == 5 && strcmp(argv[3], "env") == 0) {   // game_shaders <old> <new> env <folder with the game's SLS2050/2051.vso, SLS2057/2058.pso>
+			Gpu gpu;
+			CreateGpu(gpu);
+			const int failures = TestEnv(gpu, argv[2], argv[4]);
+			if (failures) { printf("%d game shader check(s) FAILED\n", failures); return 1; }
+			std::puts("All game shader checks passed.");
+			return 0;
+		}
 		if (argc != 3 && argc != 4) { std::puts("usage: game_shaders <old Shaders folder> <new Shaders folder> [terrain|objects]"); return 2; }
 		const std::string which = argc == 4 ? argv[3] : "";
 		Gpu gpu;
@@ -805,6 +1142,7 @@ int main(int argc, char** argv) {
 		if (which.empty() || which == "terrain") failures += TestTerrain(gpu, argv[1], argv[2]);
 		if (which.empty() || which == "objects") failures += TestObjects(gpu, argv[1], argv[2]);
 		if (which.empty() || which == "parallax") failures += TestParallaxObjects(gpu, argv[1], argv[2]);
+		if (which.empty() || which == "metal") failures += TestMetal(gpu, argv[1], argv[2]);
 		if (failures) { printf("%d game shader check(s) FAILED\n", failures); return 1; }
 		std::puts("All game shader checks passed.");
 		return 0;

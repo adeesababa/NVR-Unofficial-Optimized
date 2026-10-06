@@ -196,6 +196,71 @@ bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	return true;
 }
 
+bool VolumetricFogEffect::CanApplyShadowAO() {
+	return Enabled && Effect && !TheSettingManager->SettingsMain.Main.DisableCompositeApply &&
+		Effect->GetTechniqueByName("ApplyShadowAO") && Effect->GetParameterByName(NULL, "NVR_CompositeFlags") &&
+		Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel");
+}
+
+/*
+* The exterior sun-shadow apply and the AO combine in one full-resolution pass (technique ApplyShadowAO: the composite's
+* functions without the fog), into the frame chain's next image. The AO is the deferred result (AO->deferCombine).
+*/
+bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
+	IDirect3DSurface9* RenderedSurface, bool shadow, IDirect3DTexture9* aoTexture) {
+	D3DXHANDLE technique = Effect ? Effect->GetTechniqueByName("ApplyShadowAO") : NULL;
+	D3DXHANDLE flagsHandle = Effect ? Effect->GetParameterByName(NULL, "NVR_CompositeFlags") : NULL;
+	D3DXHANDLE aoTexelHandle = Effect ? Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel") : NULL;
+	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
+	D3DSURFACE_DESC ao = {};
+	if (!technique || !flagsHandle || !aoTexelHandle || !scene || !RenderedSurface || (!shadow && !aoTexture) ||
+		(aoTexture && FAILED(aoTexture->GetLevelDesc(0, &ao))))
+		return false;
+
+	FrameChain& chain = TheShaderManager->Chain;
+	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
+	Effect->SetTechnique(technique);
+	SetCT();
+	D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, aoTexture ? 1.0f : 0.0f, 0.0f, 0.0f);
+	Effect->SetVector(flagsHandle, &flags);
+	if (aoTexture) {
+		D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
+		Effect->SetVector(aoTexelHandle, &aoTexel);
+	}
+	UINT passes = 0;
+	HRESULT result = Device->SetRenderTarget(0, chained ? chain.Output() : RenderTarget);
+	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
+	if (SUCCEEDED(result)) {
+		result = Effect->BeginPass(0);
+		if (SUCCEEDED(result)) {
+			Device->SetTexture(0, scene); // TESR_SourceBuffer slot
+			Device->SetTexture(6, nullptr);
+			Device->SetTexture(7, nullptr);
+			Device->SetTexture(8, aoTexture);
+			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Effect->EndPass();
+		}
+		Effect->End();
+	}
+	Device->SetTexture(8, nullptr);
+	Device->SetTexture(0, TheTextureManager->SourceTexture);
+	Device->SetRenderTarget(0, RenderTarget);
+	if (FAILED(result)) {
+		// Chained: nothing was committed, the scene is as it was. Otherwise put the input back.
+		if (!chained) Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
+		return false;
+	}
+	if (chained) chain.Commit();
+	else Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
+	static bool reported = false;
+	if (!reported) {
+		Logger::Log("UNOFFICIAL merged apply active: sun shadows %s and AO %s in one pass (effects between them and the fog).",
+			shadow ? "yes" : "no", aoTexture ? "yes" : "no");
+		reported = true;
+	}
+	return true;
+}
+
 bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface) {
 	if (dedicatedFogFailed) return false;

@@ -227,15 +227,53 @@ void EffectRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 	// Scan the preprocessed source (includes expanded) for anything that makes a pass leave
 	// pixels unwritten or read the destination. Unknown source stays conservative.
 	needsPrefill = true;
+	bool partialStates = true;
 	if (ShaderSource && ShaderSource->GetBufferPointer()) {
 		static const std::regex partialWrite(
 			R"(\bclip\s*\(|\bdiscard\b|AlphaBlendEnable\s*=\s*(true|1)|StencilEnable\s*=\s*(true|1)|)"
 			R"(ColorWriteEnable|SeparateAlphaBlendEnable\s*=\s*(true|1)|AlphaTestEnable\s*=\s*(true|1))",
 			std::regex::icase | std::regex::optimize);
+		static const std::regex partialState(
+			R"(AlphaBlendEnable\s*=\s*(true|1)|StencilEnable\s*=\s*(true|1)|)"
+			R"(ColorWriteEnable|SeparateAlphaBlendEnable\s*=\s*(true|1)|AlphaTestEnable\s*=\s*(true|1))",
+			std::regex::icase | std::regex::optimize);
 		std::string source((const char*)ShaderSource->GetBufferPointer(), ShaderSource->GetBufferSize());
 		needsPrefill = std::regex_search(source, partialWrite);
+		partialStates = needsPrefill && std::regex_search(source, partialState);
 	}
-	if (needsPrefill) Logger::Log("%s: partial-write passes, frame chain pre-fills its destination.", Name);
+	// Only clip/discard matched: the source match can be in code no pass uses (Includes/Blur.hlsl's
+	// helpers made WetWorld copy the whole frame four times a frame for nothing), so decide per pass
+	// from the compiled pixel shader, which keeps a kill instruction only where it can skip pixels.
+	// A pass whose shader cannot be read stays pre-filled.
+	passPrefill.clear();
+	std::string passMap;
+	if (needsPrefill && !partialStates) {
+		for (UINT t = 0; t < ConstantTableDesc.Techniques; t++) {
+			std::vector<bool> passes;
+			D3DXHANDLE technique = Effect->GetTechnique(t);
+			D3DXTECHNIQUE_DESC techniqueDesc;
+			if (technique && SUCCEEDED(Effect->GetTechniqueDesc(technique, &techniqueDesc))) {
+				passMap += (t ? " " : "") + std::to_string(t) + ":";
+				for (UINT p = 0; p < techniqueDesc.Passes; p++) {
+					bool kills = true;
+					D3DXPASS_DESC passDesc;
+					ID3DXBuffer* disassembly = nullptr;
+					if (SUCCEEDED(Effect->GetPassDesc(Effect->GetPass(technique, p), &passDesc)) && passDesc.pPixelShaderFunction &&
+						SUCCEEDED(D3DXDisassembleShader(passDesc.pPixelShaderFunction, FALSE, NULL, &disassembly)) && disassembly) {
+						std::string text((const char*)disassembly->GetBufferPointer(), disassembly->GetBufferSize());
+						kills = text.find("texkill") != std::string::npos;
+					}
+					if (disassembly) disassembly->Release();
+					passes.push_back(kills);
+					passMap += kills ? "K" : "-";
+				}
+			}
+			passPrefill.push_back(passes);
+		}
+	}
+	if (!passPrefill.empty())
+		Logger::Log("UNOFFICIAL %s: frame chain pre-fills only passes that can skip pixels (K), per technique: %s", Name, passMap.c_str());
+	else if (needsPrefill) Logger::Log("%s: partial-write passes, frame chain pre-fills its destination.", Name);
 	for (UINT c = 0; c < ConstantTableDesc.Parameters; c++) {
 		Handle = Effect->GetParameter(NULL, c);
 		Effect->GetParameterDesc(Handle, &ConstantDesc);
@@ -361,6 +399,12 @@ bool EffectRecord::SwitchEffect() {
 }
 
 
+bool EffectRecord::PassNeedsPrefill(UINT techniqueIndex, UINT pass) const {
+	if (!needsPrefill) return false;
+	if (techniqueIndex < passPrefill.size() && pass < passPrefill[techniqueIndex].size()) return passPrefill[techniqueIndex][pass];
+	return true;
+}
+
 /*
 * Re-binds samplers that follow a TextureManager slot, for use after BeginPass when a slot's
 * texture changed since SetCT (the frame chain swaps TESR_RenderedBuffer between passes).
@@ -398,8 +442,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		SetCT();
 		UINT Passes = 0;
 		if (SUCCEEDED(Effect->Begin(&Passes, NULL))) {
-			const bool prefill = !ClearRenderTarget && needsPrefill;
 			for (UINT p = 0; p < Passes; p++) {
+				const bool prefill = !ClearRenderTarget && !writesWholeTarget && PassNeedsPrefill(techniqueIndex, p);
 				// The last pass of the chain's final effect renders straight into the game target, so
 				// the chain has no copy to make when it ends. Not worth it for a pass that has to be
 				// pre-filled: that is the same copy, just earlier.

@@ -39,6 +39,8 @@ void FlashlightEffect::UpdateSettings() {
 		look.CookieStrength = TheSettingManager->GetSettingF(lookSections[i], "CookieStrength");
 	}
 	Settings.softEdges = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "SoftEdges");
+	// UNOFFICIAL: depth-aware edges, 0 off, 1 the lit surfaces, 2 also the beam's shaft
+	Settings.edgeFix = (std::max)(0, (std::min)(2, (int)TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "EdgeFix")));
 
 	Settings.MaterialLight.Enabled = TheSettingManager->GetSettingI("Shaders.Flashlight.MaterialLight", "Enabled");
 	Settings.MaterialLight.Intensity = TheSettingManager->GetSettingF("Shaders.Flashlight.MaterialLight", "Intensity");
@@ -55,7 +57,11 @@ void FlashlightEffect::UpdateSettings() {
 	// These come purely from settings, so they are published here rather than in
 	// UpdateConstants, which only runs while the effect is enabled
 	ApplyLook(TheShaderManager->GameState.isExterior);
-	Constants.Composite = D3DXVECTOR4(sourceIsLinear, 0.0f, 0.0f, 0.0f);
+	// UNOFFICIAL: y 1 = EdgeFix also on the beam's shaft (EdgeFix 2); zw one texel of the half resolution beam buffer
+	// (FlashlightBeamEffect::RegisterTextures), which EdgeFix's depth-aware beam upsample addresses directly.
+	const float beamWidth = (float)(std::max)(1, (int)TheRenderManager->width / 2);
+	const float beamHeight = (float)(std::max)(1, (int)TheRenderManager->height / 2);
+	Constants.Composite = D3DXVECTOR4(sourceIsLinear, Settings.edgeFix >= 2 ? 1.0f : 0.0f, 1.0f / beamWidth, 1.0f / beamHeight);
 
 	if (!SpotLight)
 		SpotLight = NiSpotLight::CreateObject();
@@ -74,9 +80,28 @@ void FlashlightEffect::ApplyLook(bool exterior) {
 	Constants.Tuning = D3DXVECTOR4(Settings.NearFade, Settings.softEdges ? 1.0f : 0.0f, Settings.HotspotLimit, Settings.CookieStrength);
 }
 
+// UNOFFICIAL: index of a technique by name, -1 when the loaded Flashlight.fx has none of that name.
+int FlashlightEffect::TechniqueIndex(const char* name) {
+	if (!Effect) return -1;
+	D3DXHANDLE wanted = Effect->GetTechniqueByName(name);
+	D3DXEFFECT_DESC desc = {};
+	if (!wanted || FAILED(Effect->GetDesc(&desc))) return -1;
+	for (UINT i = 0; i < desc.Techniques; i++)
+		if (Effect->GetTechnique(i) == wanted) return (int)i;
+	return -1;
+}
+
 void FlashlightEffect::UpdateConstants() {
 
 	ApplyLook(TheShaderManager->GameState.isExterior);
+
+	// UNOFFICIAL: EdgeFix runs the same passes from techniques of their own, so with it off the original
+	// techniques (0 without shadows, 1 with) run untouched. A Flashlight.fx without them keeps the original.
+	selectedPass = Settings.renderShadows ? 1 : 0;
+	if (Settings.edgeFix > 0) {
+		const int edgeTechnique = TechniqueIndex(Settings.renderShadows ? "EdgeFixShadows" : "EdgeFix");
+		if (edgeTechnique >= 0) selectedPass = edgeTechnique;
+	}
 
 	if (!SpotLight) return;
 

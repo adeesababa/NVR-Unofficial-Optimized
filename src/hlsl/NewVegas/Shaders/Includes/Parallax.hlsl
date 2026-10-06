@@ -107,7 +107,10 @@ float2 getParallaxCoordsObjectLite(float distance, float2 coords, float2 dx, flo
     float denominator = delta2 - delta1;
     float parallaxAmount = denominator == 0.0 ? 0.0 : (pt1.x * delta2 - pt2.x * delta1) / denominator;
     float offset = (1.0 - parallaxAmount) * -maxHeight + minHeight;
-    return lerp(viewDirTS.xy * offset + coords.xy, coords, distanceBlend * distanceBlend);
+    // UNOFFICIAL: the bumps fade as before (1 - d^2) up to 3/4 of the distance, then ease out to nothing with no slope left
+    // at the end: the old fade dropped fastest right at the cut-off, a line you could see sliding along as you walked.
+    const float keep = (1.0 - distanceBlend * distanceBlend) * (1.0 - smoothstep(0.75, 1.0, distanceBlend));
+    return lerp(coords, viewDirTS.xy * offset + coords.xy, keep);
 }
 #endif
 
@@ -299,9 +302,16 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
             parallaxAmount = (pt1.x * delta2 - pt2.x * delta1) / denominator;
         }
         
-        distanceBlend *= distanceBlend;
-        
         float offset = (1.0 - parallaxAmount) * -maxHeight + minHeight;
+        #ifdef TERRAIN
+        // UNOFFICIAL, lite: the same ease-out at the cut-off as the objects' lite path (see getParallaxCoordsObjectLite).
+        [branch] if (lite) {
+            const float keep = (1.0 - distanceBlend * distanceBlend) * (1.0 - smoothstep(0.75, 1.0, distanceBlend));
+            return lerp(coords, viewDirTS.xy * offset + coords.xy, keep);
+        }
+        #endif
+
+        distanceBlend *= distanceBlend;
         return lerp(viewDirTS.xy * offset + coords.xy, coords, distanceBlend);
     }
     
@@ -333,9 +343,14 @@ float getParallaxShadowMultipler(float distance, float2 coords, float2 dx, float
         // Lite (TESR_TerrainParallaxData.w = 2): two taps, at 1 and 1/2 of the ray, each counted twice, so the
         // four-tap sum keeps its scale.
         [branch] if (TESR_TerrainParallaxData.w > 1.5f) {
-            if (quality > 0.25)
-                sh.yw = getTerrainHeight(coords + rayDir * multipliers.y, dx, dy, quality, texCount, tex, blends, status, weights).xx;
-            return 1.0 - saturate(dot(max(0, sh - sh0), 1.0) * shadowsIntensity) * quality;
+            // UNOFFICIAL: the second tap fades in between quality 0.15 and 0.35 instead of switching on at 0.25, and the last
+            // quarter of the distance eases out: the two rings on the ground (where the tap came in, and where the shadows
+            // ended) moved along with you as you walked.
+            if (quality > 0.15) {
+                const float tap2 = getTerrainHeight(coords + rayDir * multipliers.y, dx, dy, quality, texCount, tex, blends, status, weights);
+                sh.yw = lerp(sh.xx, tap2.xx, saturate((quality - 0.15) / 0.2));
+            }
+            return 1.0 - saturate(dot(max(0, sh - sh0), 1.0) * shadowsIntensity) * quality * smoothstep(0.0, 0.25, quality);
         }
         if (quality > 0.25)
             sh.y = getTerrainHeight(coords + rayDir * multipliers.y, dx, dy, quality, texCount, tex, blends, status, weights);

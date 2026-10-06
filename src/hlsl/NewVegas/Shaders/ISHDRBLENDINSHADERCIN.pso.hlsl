@@ -16,6 +16,7 @@ float4 TESR_LotteData : register(c28); //
 float4 TESR_ToneMapping : register(c29); //
 float4 TESR_ReciprocalResolution : register(c30); //
 float4 TESR_BloomExtraData : register(c31); // .x - NVR bloom on/off.
+float4 TESR_ToneMappingClip : register(c32); // UNOFFICIAL .x: 1 = HueSafeClip (see hueSafeClip below)
 
 sampler2D Src0 : register(s0);
 sampler2D DestBlend : register(s1);    // base non tonemapped image
@@ -126,7 +127,18 @@ VS_OUTPUT main(VS_INPUT IN) {
     
     final.rgb = lerp(final.rgb, final.rgb * Cinematic.w, cinematicScalar); // apply brightness from Cinematic
     final.rgb = tonemap(final.rgb * TESR_HDRData.y); // exposure & tonemap using provided tonemapper
-    
+    // UNOFFICIAL HueSafeClip: the tonemappers (DICE, the default, among them) bring the brightness into range but can leave
+    // one channel above what the 8-bit target holds; it was cut there, which shifts the hue (lit orange turned yellow,
+    // red turned pink). Such a colour now loses saturation toward its own brightness, just enough for its brightest
+    // channel to fit, keeping hue and brightness. Colours that fit are not touched.
+    [branch] if (TESR_ToneMappingClip.x > 0.5f) {
+        const float peak = max(final.r, max(final.g, final.b));
+        [branch] if (peak > 1.0f) {
+            const float brightness = saturate(luma(final.rgb));
+            final.rgb = brightness + (final.rgb - brightness) * saturate((1.0f - brightness) / max(peak - brightness, 1e-4f));
+        }
+    }
+
     if (gammaSpacePostProcess){
         final.rgb = delinearize(final.rgb);
     }

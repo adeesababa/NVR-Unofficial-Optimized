@@ -5,6 +5,11 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 extern void(__thiscall* SetShaders)(BSShader*, UInt32);
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex);
 
+extern void(__cdecl* RenderPassStandard)(void*, UInt32, UInt32, UInt32);
+void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4);
+extern void(__cdecl* RenderPassSkinned)(void*, UInt32, UInt32, UInt32);
+void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4);
+
 extern HRESULT(__thiscall* SetSamplerState)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8);
 HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt32 Sampler, D3DSAMPLERSTATETYPE Type, UInt32 Value, UInt8 Save);
 

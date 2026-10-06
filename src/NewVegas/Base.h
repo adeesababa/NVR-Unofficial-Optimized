@@ -17,7 +17,9 @@ public:
 	static const UInt32 SetShaderPackage			= 0x00B4F710;
 	static const UInt32 Render						= 0x008706B0;
 	static const UInt32 SetShaders					= 0x00BE1F90;
-	static const UInt32 SetSamplerState				= 0x00E910A0;
+	static const UInt32 RenderPassStandard			= 0x00B98E80;	// BSBatchRenderer::RenderPassImmediately_Standard (cdecl)
+	static const UInt32 RenderPassSkinned			= 0x00B99110;	// BSBatchRenderer::RenderPassImmediately_Skinned (cdecl)
+static const UInt32 SetSamplerState				= 0x00E910A0;
 	static const UInt32 ProcessImageSpaceShaders	= 0x00B55AC0;
 	static const UInt32 RenderWorldSceneGraph		= 0x00873200;
 	static const UInt32 RenderFirstPerson			= 0x00875110;

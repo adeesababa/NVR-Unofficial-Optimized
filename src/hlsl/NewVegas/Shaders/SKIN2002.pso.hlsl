@@ -57,6 +57,7 @@ struct VS_OUTPUT {
 // Code:
 
 #include "Includes/Skin.hlsl"
+#include "Includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
 
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
@@ -91,6 +92,18 @@ VS_OUTPUT main(VS_INPUT IN) {
                     : 1.0f;
     lighting *= sunShadow;
     spec     *= sunShadow;
+#endif
+
+#if INTERIOR_SHADOWS
+    // UNOFFICIAL forward point-light shadow of the point light (light 1 of the draw: this file's PSLightColor[2] is c4,
+    // the array being unpinned at c2). Its attenuation is getPointLight's.
+    float3 ptWorldPos = IN.shadowWorldPos.xyz;
+    float3 ptNormal = shadowNormal;
+    float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+    float3 ptShadow1 = 1.0f;
+    [branch] if (NVR_PointShadowParams.x > 0.0f)
+        ptShadow1 = POINT_SHADOW_LOOKUP(1, saturate((1 - atten1) - atten2));
+    pointLightLighting *= ptShadow1;
 #endif
 
     lighting += spec + pointLightLighting + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
