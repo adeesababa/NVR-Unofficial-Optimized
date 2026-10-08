@@ -98,6 +98,7 @@ public:
 	bool					HasDepthBuffer;
 	bool					ClearSamplers;
 	bool					PointShadowForward = false;	// UNOFFICIAL: compiled with INTERIOR_SHADOWS (PointShadowForward.h)
+	bool					UsedOnce = false;			// UNOFFICIAL: SetCT ran once this session (ShaderWarmUp.h)
 };
 
 class ShaderRecordVertex : public ShaderRecord {

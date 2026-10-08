@@ -26,4 +26,5 @@ public:
 	// without rendering, when unavailable; the caller then runs the two passes separately.
 	bool	RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface);
 	bool	mergedNormalsFailed = false;
+	CachedHandle techDepthNormals;	// UNOFFICIAL: looked up once per loaded effect
 };

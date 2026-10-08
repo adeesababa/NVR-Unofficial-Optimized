@@ -38,6 +38,7 @@ public:
 		IDirect3DSurface9* LightSurface = nullptr;
 	};
 	TexturesStruct	Textures;
+	CachedHandle techBounce, paramBounceData, paramBounceLayout;	// UNOFFICIAL: looked up once per loaded effect
 
 	void	UpdateConstants();
 	void	RegisterConstants();

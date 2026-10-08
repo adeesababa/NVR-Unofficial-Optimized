@@ -27,6 +27,7 @@ void PBRShaders::UpdateSettings() {
 	const bool metalOn = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "MetalOn") != 0;
 	MetalSettings.FirstPerson = metalOn ? std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "FirstPerson"), 0.0f, 1.0f) : 0.0f;
 	MetalSettings.World = metalOn ? std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "World"), 0.0f, 1.0f) : 0.0f;
+	MetalSettings.FadeDistance = (std::max)(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "FadeDistance"), 0.0f);
 	Constants.Metal.x = MetalSettings.World;
 	Constants.Metal.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "GreyMetal"), 0.0f, 1.0f);
 	Constants.Metal.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "ColourStart"), 0.0f, 1.0f);
@@ -102,6 +103,15 @@ void PBRShaders::UpdateConstants() {
 	SkylightSaturation = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.SkylightingSaturation, Settings.Night.SkylightingSaturation, Settings.Interiors.SkylightingSaturation),
 		TheShaderManager->GetTransitionValue(Settings.Rain.SkylightingSaturation, Settings.NightRain.SkylightingSaturation, Settings.Interiors.SkylightingSaturation), rainFactor);
 
+
+	// UNOFFICIAL: where the metal has faded out with distance (Object.hlsl getMetalFade). Never past the point where the
+	// game starts fading objects' highlights out: beyond its end it draws them without, and metal still on vanished at
+	// once. Read every frame, as the game may change it.
+	float metalFade = MetalSettings.FadeDistance;
+	const float highlightsFade = *BSShaderManager::fSpecularLODStartFade;
+	if (*BSShaderManager::fSpecularLODEnd > 0.0f && highlightsFade > 0.0f && (metalFade <= 0.0f || metalFade > highlightsFade))
+		metalFade = highlightsFade;
+	Constants.ExtraData.w = metalFade;
 
 	// Used only when SKYLIGHTING_MODE is 1; the SH path has no direction to lean.
 	Constants.ExtraData.z = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.SkylightingDirectionality, Settings.Night.SkylightingDirectionality, Settings.Interiors.SkylightingDirectionality),

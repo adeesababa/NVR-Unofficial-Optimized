@@ -32,6 +32,7 @@ void EffectRecord::DisposeEffect() {
 	TextureShaderValues = nullptr;
 	TextureShaderValuesCount = 0;
 
+	LoadGeneration++;
 	Enabled = false;
 }
 
@@ -181,6 +182,7 @@ bool EffectRecord::LoadEffect() {
 
 	if (Effect) {
 		this->Effect = Effect;
+		LoadGeneration++;
 		CreateCT(EffectSource, NULL); //Create the object which will associate a register index to a float pointer for constants updates;
 		Logger::Log("Effect loaded: %s", EffectCompiledPath);
 	}
@@ -347,6 +349,7 @@ void EffectRecord::SetCT() {
 
 		if (Sampler->Texture->Texture != nullptr) {
 			TheRenderManager->device->SetTexture(Sampler->RegisterIndex, Sampler->Texture->Texture);
+			TheRenderManager->renderState->NoteDeviceTexture(Sampler->RegisterIndex, Sampler->Texture->Texture);	// UNOFFICIAL: keep the game's texture cache truthful
 			for (int i = 1; i < SamplerStatesMax; i++) {
 				TheRenderManager->SetSamplerState(Sampler->RegisterIndex, (D3DSAMPLERSTATETYPE)i, Sampler->Texture->SamplerStates[i]);
 			}
@@ -417,6 +420,7 @@ void EffectRecord::RebindSlotTextures() {
 		if (Sampler->Texture->Texture == *Sampler->Texture->TextureRef) continue;
 		Sampler->Texture->Texture = *Sampler->Texture->TextureRef;
 		TheRenderManager->device->SetTexture(Sampler->RegisterIndex, Sampler->Texture->Texture);
+		TheRenderManager->renderState->NoteDeviceTexture(Sampler->RegisterIndex, Sampler->Texture->Texture);
 	}
 }
 
@@ -495,4 +499,21 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 
 	std::string name = "EffectRecord::Render " + std::string(Name);
 	renderTime = timer.LogTime(name.c_str());
+}
+
+// UNOFFICIAL: see CachedHandle in EffectRecord.h.
+D3DXHANDLE EffectRecord::TechniqueHandle(CachedHandle& cache, const char* name) {
+	if (cache.Generation != LoadGeneration) {
+		cache.Generation = LoadGeneration;
+		cache.Handle = Effect ? Effect->GetTechniqueByName(name) : NULL;
+	}
+	return cache.Handle;
+}
+
+D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) {
+	if (cache.Generation != LoadGeneration) {
+		cache.Generation = LoadGeneration;
+		cache.Handle = Effect ? Effect->GetParameterByName(NULL, name) : NULL;
+	}
+	return cache.Handle;
 }

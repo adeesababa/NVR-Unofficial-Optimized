@@ -175,6 +175,12 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
 }
 
+// The metal fades out with distance, from 60% of TESR_PBRExtraData.w to all of it (w 0: never). PBRShaders keeps w short of
+// where the game starts dropping objects' highlights: beyond it the game draws them without, and the metal went at once.
+float getMetalFade(float3 cameraRelativePos) {
+    return TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, length(cameraRelativePos)) : 1.0f;
+}
+
 // Metal's roughness: satin where the mask is bare, polished where it is painted (the mask is no gloss map, see above).
 float getMetalRoughness(float specMask) {
     return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));

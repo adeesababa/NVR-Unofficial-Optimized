@@ -10,10 +10,15 @@
 #define BloodShaders ""
 
 #define SamplerStatesMax 12
-#define ShadowCubeMapsMax 12
+// UNOFFICIAL (2026-10-08): cube-map slots. The screen-space passes know ShadowCubeMapsScreen of them (PointShadows.fx:
+// TESR_ShadowLightPosition[12], TESR_LightColor[24] = 12 shadow lamps then 12 tracked ones); interior forward shadows
+// ([Shaders.ShadowsInteriors.Forward]) bind each object's own lamps and can use up to ShadowCubeMapsMax
+// ([Shaders.ShadowsInteriors.Main] LightPoints). Slots past ShadowCubeMapsScreen get their cube maps when first used.
+#define ShadowCubeMapsScreen 12
+#define ShadowCubeMapsMax 32
 // PointShadows.fx / PointShadows2.fx sample the cubemaps of slots 0..10 only; the last slot's light is lit without a
 // shadow lookup, so its cubemap is never read and is not drawn.
-#define ShadowCubeMapsSampled (ShadowCubeMapsMax - 1)
+#define ShadowCubeMapsSampled (ShadowCubeMapsScreen - 1)
 #define TrackedLightsMax 12
 #define SpotLightsMax 1
 

@@ -2216,6 +2216,15 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 
 #undef ENUM_OPT
 
+// UNOFFICIAL: float settings too large for the drag step every other float uses (0.001 a pixel), such as distances in game
+// units, render as a slider over a fixed range instead. Keyed by "Section.Key" like kEnumSettings.
+struct FloatRange { float Min; float Max; const char* Format; };
+static const std::unordered_map<std::string, FloatRange> kFloatSliders = {
+	{ "Shaders.PBR.Metal.FadeDistance", { 0.0f, 4000.0f, "%.0f" } },
+	{ "Shaders.ShadowsInteriors.Main.NearFade", { 0.0f, 128.0f, "%.0f" } },
+	{ "Shaders.ShadowsInteriors.Main.PlayerLampMargin", { 0.0f, 64.0f, "%.0f" } },
+};
+
 static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool isShader = false) {
 	using NodeType = SettingManager::Configuration::NodeType;
 
@@ -2266,7 +2275,11 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	}
 	case NodeType::Float: {
 		float val = (float)atof(node.Value);
-		if (ImGui::DragFloat(node.Key, &val, 0.001f, 0.0f, 0.0f, "%.4f")) {
+		auto sliderIt = kFloatSliders.find(std::string(node.Section) + "." + node.Key);
+		bool edited = sliderIt != kFloatSliders.end()
+			? ImGui::SliderFloat(node.Key, &val, sliderIt->second.Min, sliderIt->second.Max, sliderIt->second.Format)
+			: ImGui::DragFloat(node.Key, &val, 0.001f, 0.0f, 0.0f, "%.4f");
+		if (edited) {
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			TheSettingManager->LoadSettings();
 		}
@@ -2415,8 +2428,8 @@ static void RenderContent() {
 			ImGui::PushStyleColor(ImGuiCol_Button, enabled
 				? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
 				: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
-			// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: say so.
-			const std::string label = shaderName + " (all): " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
+			// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: the tooltip says so.
+			const std::string label = shaderName + ": " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
 			if (ImGui::SmallButton(label.c_str())) {
 				TheShaderManager->SwitchShaderStatus(shaderName.c_str());
 				TheSettingManager->LoadSettings();

@@ -22,4 +22,5 @@ public:
 		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 
 	bool	dedicatedFailed = false;
+	CachedHandle techDedicated;	// UNOFFICIAL: looked up once per loaded effect
 };

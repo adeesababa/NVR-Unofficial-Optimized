@@ -33,7 +33,8 @@ float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked 
                                                   // spread (cube direction units per unit of the major axis; 0 = 1 tap)
 
 float4 NVR_PointShadowDebug     : register(c181); // x: debug view (0 off, 1 a lamp's blocked light in that lamp's colour, 2 the lit
-                                                  // area of every lamp that has a shadow tinted in its colour)
+                                                  // area of every lamp that has a shadow tinted in its colour); y: NearFade
+                                                  // (world units; 0 off), see PointShadowNear
 float4 NVR_PointShadowTint[6]   : register(c182); // rgb: debug colour of light k's lamp (one per cube-map slot; white = no shadow);
                                                   // w: how far light k's shadow has faded in, 0..1 (a lamp that just got one)
 
@@ -43,6 +44,14 @@ samplerCUBE NVR_PointShadowCube2 : register(s12);
 samplerCUBE NVR_PointShadowCube3 : register(s13);
 samplerCUBE NVR_PointShadowCube4 : register(s14);
 samplerCUBE NVR_PointShadowCube5 : register(s15);
+
+// How much a blocker at the stored distance (distance / radius) shadows: [Shaders.ShadowsInteriors.Main] NearFade, less
+// within that many world units of the lamp, nothing at the lamp itself. A real lamp is no point: a blocker that close to
+// it casts a shadow too blurred to see, where a point casts it sharp, as large as the room, and on every side when the
+// point is inside the blocker (a lamp at the player's head). lightW: 1 / the radius.
+float4 PointShadowNear(float4 stored, float lightW) {
+    return NVR_PointShadowDebug.y > 0.0f ? smoothstep(0.0f, NVR_PointShadowDebug.y * lightW, stored) : 1.0f;
+}
 
 // 1 lit, 0 fully shadowed (before strength). worldPos: camera-relative (GetShadowWorldPos in the VS). normal: the
 // camera-facing geometric normal where the shader has one (GetShadowGeometricNormal), else 0. att: this light's
@@ -65,7 +74,8 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
     float3 dir = p * float3(1.0f, 1.0f, -1.0f);
 
     // Lit where something nearer than the point was not drawn. A texel nothing was drawn into holds 1, above any
-    // threshold here (d < 1); 0 (a caster exactly at the light) counts as no data, as in PointShadows.fx.
+    // threshold here (d < 1); 0 (a caster exactly at the light) counts as no data, as in PointShadows.fx. A blocker
+    // near the lamp shadows less (PointShadowNear).
     float lit;
     [branch] if (NVR_PointShadowParams.w > 0.0f) {
         // Four taps on a rotated 2x2 grid: these four offsets give one on each diagonal of whichever face the
@@ -76,11 +86,12 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
-        lit = dot(saturate((float4)(stored > threshold) + (float4)(stored <= 0.0f)), 0.25f);
+        float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+        lit = 1.0f - dot(blocked, 0.25f);
     }
     else {
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;
-        lit = saturate((float)(stored > threshold) + (float)(stored <= 0.0f));
+        lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
     }
     return lerp(1.0f, lit, NVR_PointShadowParams.x * fade);
 }

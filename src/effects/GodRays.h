@@ -24,6 +24,7 @@ public:
 	float rayVisibility;
 	bool packedRenderFailed = false;
 	bool dedicatedRenderFailed = false;
+	CachedHandle techDedicated, paramLayout;	// UNOFFICIAL: looked up once per loaded effect
 	IDirect3DTexture9* raysTexture[2] = {};
 	IDirect3DSurface9* raysSurface[2] = {};
 	// Quarter-resolution pair, used instead when [Main.Main.ReducedQuality] GodRaysLowRes is on.

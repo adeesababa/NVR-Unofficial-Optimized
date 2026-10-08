@@ -21,7 +21,7 @@ struct PS_OUTPUT {
     float4 color : COLOR0;
 };
 
-PS_OUTPUT main(PS_INPUT IN) {
+PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     PS_OUTPUT OUT;
 
     float3 sun = IN.sun.xyz;
@@ -43,7 +43,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 litColor = lighting * albedo.rgb;
 
     OUT.color.rgb = lerp(litColor, IN.fog.rgb, IN.fog.w);
-    OUT.color.a = saturate(albedo.a * 1.75f) * IN.sun.w;
+    // UNOFFICIAL grass fade: the game fades grass by scaling its alpha with distance (TEXCOORD5.w from the VS,
+    // fGrassStartFadeDistance / fGrassFadeRange), but grass is alpha-TESTED, so a tuft keeps its full cut-out until
+    // the scaled alpha crosses the test threshold and then vanishes in one step: the pop at the fade distance.
+    // Dissolve with a screen-space dither instead: the share of pixels that survive follows the fade, so a tuft
+    // thins out across the whole fade range. The cut-out alpha itself is unchanged.
+    float dither = frac(52.9829189f * frac(dot(vPos, float2(0.06711056f, 0.00583715f))));
+    clip(IN.sun.w - dither);
+    OUT.color.a = saturate(albedo.a * 1.75f);
 
     return OUT;
 };

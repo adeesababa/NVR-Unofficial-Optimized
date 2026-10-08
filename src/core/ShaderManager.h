@@ -234,7 +234,7 @@ public:
 	D3DXVECTOR4				VolumetricData;		// xyz march light position, w first person strength floor
 	D3DXMATRIX				SpotLightWorldToLightMatrix[SpotLightsMax];
 	D3DXVECTOR4				LightPosition[TrackedLightsMax];
-	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsMax];
+	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsScreen];	// PointShadows.fx TESR_LightColor[24]: 12 shadow lamps, then the tracked ones
 	D3DXVECTOR4				LightAttenuation[TrackedLightsMax];
 };
 

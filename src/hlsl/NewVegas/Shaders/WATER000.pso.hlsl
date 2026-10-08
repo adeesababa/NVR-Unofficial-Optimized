@@ -68,9 +68,13 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float exteriorDepthModifier = 1;			// reduce depth value for fog because of the way interior depth is encoded
 
     float3 surfaceNormal = getWaveTexture(IN, distance, TESR_WaveParams).xyz;
-    surfaceNormal = getRipples(IN, TESR_RippleSampler, surfaceNormal, distance, TESR_WetWorldData.x);
+    // UNOFFICIAL LOD seam: past the fade the surface must shade exactly like the LOD water (WATER033), which has no rain
+    // ripples, no depth-weighted reflection and no depth-weighted distortion; each of those is faded out with LODfade.
+    float3 rippledNormal = getRipples(IN, TESR_RippleSampler, surfaceNormal, distance, TESR_WetWorldData.x);
+    surfaceNormal = normalize(lerp(rippledNormal, surfaceNormal, LODfade));
 
-    float refractionCoeff = (waterDepth.y * depthFog) * ((saturate(distance * 0.002) * (-4 + VarAmounts.w)) + 4);
+    float lodRefractionCoeff = (saturate(distance * 0.002) * (-4 + VarAmounts.w)) + 4;
+    float refractionCoeff = lerp((waterDepth.y * depthFog) * lodRefractionCoeff, lodRefractionCoeff, LODfade);
     float4 reflectionPos = getReflectionSamplePosition(IN, surfaceNormal, refractionCoeff * exteriorRefractionModifier);
     float4 reflection = linearize(tex2Dproj(ReflectionMap, reflectionPos));
     float4 refractionPos = reflectionPos;
@@ -85,7 +89,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, color);
     color = lerp(getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color), linearize(TESR_WaterLODColor) * sunLuma, LODfade); // fade to full fog to hide LOD seam
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color);
-    color = lerp(color, getFresnel(surfaceNormal, eyeDirection, reflection, TESR_WaveParams.w, color), smoothstep(0, 0.2, refractedDepth.x)); // reduce fresnel in low depths
+    color = lerp(color, getFresnel(surfaceNormal, eyeDirection, reflection, TESR_WaveParams.w, color), lerp(smoothstep(0, 0.2, refractedDepth.x), 1, LODfade)); // reduce fresnel in low depths (not past the LOD fade)
     color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);
     color = lerp(getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color), color, LODfade);
 
@@ -95,7 +99,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float fogStrength = pow(1 - saturate((FogParam.x - depth) / FogParam.y), FresnelRI.y);
     
     OUT.color_0.rgb = fogStrength * (FogColor.rgb - color.rgb) + color.rgb;
-    OUT.color_0.a = color.a;
+    OUT.color_0.a = lerp(color.a, 1, LODfade); // UNOFFICIAL LOD seam: the LOD water is opaque (the fade colour carried LODColor.a * sunLuma)
     
     return OUT;
 };

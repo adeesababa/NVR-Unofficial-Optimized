@@ -39,6 +39,14 @@ public:
 	float					renderTime;
 	float					constantUpdateTime;
 
+	// UNOFFICIAL: D3DX finds a technique or parameter by name with a string scan on every call, and the chain did about
+	// 25 of those a frame. A handle is fixed for the life of the ID3DXEffect, so each is looked up once per loaded effect
+	// (LoadGeneration changes whenever the effect is loaded or disposed) and kept in a CachedHandle the caller owns.
+	struct CachedHandle { unsigned Generation = 0; D3DXHANDLE Handle = NULL; };
+	unsigned				LoadGeneration = 1;
+	D3DXHANDLE				TechniqueHandle(CachedHandle& cache, const char* name);
+	D3DXHANDLE				ParameterHandle(CachedHandle& cache, const char* name);
+
 	ID3DXEffect* Effect;
 	const char* Name;
 };

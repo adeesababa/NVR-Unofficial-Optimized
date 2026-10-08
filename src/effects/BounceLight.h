@@ -54,6 +54,8 @@ public:
 	void	EnsureBuffers(bool quarter);
 	bool	halfTried = false;
 	bool	quarterTried = false;
+	// UNOFFICIAL: handles looked up once per loaded effect (EffectRecord::CachedHandle).
+	CachedHandle paramLayout, paramTemporal, paramAmbient, paramReproject, techTemporalHalf, techTemporal, techPlus;
 	// With deferCombine, Render runs the low-resolution passes only and leaves their result for
 	// SpecularEffect::RenderWithBounce (deferredReady, deferredTexture, deferredLayout); with combineOnly, the combine
 	// alone, from that result (if the merged pass could not run). Set by ShaderManager.

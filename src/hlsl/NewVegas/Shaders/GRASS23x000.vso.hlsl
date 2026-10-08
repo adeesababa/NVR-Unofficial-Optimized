@@ -48,7 +48,15 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // Both distances measure (x, y, w - z), not xyz.
     float4 instClip = mul(ModelViewProj, float4(inst.xyz, 1.0f));
+    // UNOFFICIAL: the vanilla fade metric length(x, y, w - z, w) assumes a standard depth buffer, where w - z is only the
+    // near plane; with the reversed depth buffer this game runs, w - z is about w again, so distances came out 1.41x too
+    // large and the INI fade (fGrassStartFadeDistance / fGrassFadeRange) happened at 70% of its distance over 70% of its
+    // range. Measure what vanilla effectively measured.
+#ifdef REVERSED_DEPTH
+    float instDist = length(float3(instClip.xy, instClip.w));
+#else
     float instDist = length(float4(instClip.xy, instClip.w - instClip.z, instClip.w));
+#endif
     OUT.sun.w = 1.0f - saturate((instDist - AlphaParam.z) / AlphaParam.w);
 
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;

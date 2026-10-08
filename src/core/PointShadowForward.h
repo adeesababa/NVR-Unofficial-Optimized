@@ -49,6 +49,7 @@ namespace PointShadowForward {
 	inline int SlotCount = 0;
 	inline float Params[4] = {};				// c180: strength, bias, normal offset, PCF spread
 	inline float DebugView = 0.0f;			// c181.x
+	inline float NearFade = 0.0f;			// c181.y: [Shaders.ShadowsInteriors.Main] NearFade (PointShadowForward.hlsl PointShadowNear)
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };	// NVR_PointShadowCube0-5
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -99,11 +100,22 @@ namespace PointShadowForward {
 	}
 
 	inline bool BoundThisFrame = false;		// a forward-shadow shader was bound this frame (the PBR shaders are drawing)
+
+	// UNOFFICIAL (2026-10-08): how many lamps get a cube map this frame. Indoors with forward shadows compiled in and on,
+	// [Shaders.ShadowsInteriors.Main] LightPoints up to ShadowCubeMapsMax (each object binds only its own lamps); otherwise
+	// the screen-space passes read them: LightPoints up to ShadowCubeMapsScreen (11 with a shadow, the 12th lit without).
+	inline bool UsesAllSlots(bool exterior) {
+		return CompiledIn && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
+	}
+	inline int ShadowedSlots(bool exterior) {
+		const int points = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.LightPoints;
+		return UsesAllSlots(exterior) ? (std::min)(points, (int)ShadowCubeMapsMax) : (std::min)(points, (int)ShadowCubeMapsSampled);
+	}
 	inline unsigned Frame = 0;				// counts frames (Begin), for ScopeFix outdoors (Render.cpp)
 	inline void Begin() {
 		Frame++;
 		Active = false; SlotCount = 0; BoundThisFrame = false;
-		ScopeFix = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") != 0;
+		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 	}
 
 	// After the cube-map loop, indoors. A slot counts only if its cube map is that light's: slots[i] holds what the cube
@@ -116,28 +128,33 @@ namespace PointShadowForward {
 		Active = false;
 		SlotCount = 0;
 		if (!CompiledIn) { lastCount = 0; return; }
-		const float strength = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "Strength");
-		if (!(strength > 0.0f)) { lastCount = 0; return; }
+		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
+		const float strength = forward.Strength;
+		// UNOFFICIAL (2026-10-08): Enabled switched off in the menu stops the forward shadows at once (the shaders stay
+		// compiled in until a restart; idle = every draw gets c180.x 0 and the old screen-space pass runs). It used to be
+		// read only at startup, so turning it off in play only changed the lamp choice (no view test, no margin).
+		if (!forward.Enabled || !(strength > 0.0f)) { lastCount = 0; return; }
 		LARGE_INTEGER frequency, counter;
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&counter);
 		const double now = (double)counter.QuadPart / (double)frequency.QuadPart;
-		const float fadeIn = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "FadeIn");
+		const float fadeIn = forward.FadeIn;
 		double start[ShadowCubeMapsMax] = {};
 		const float face = (float)(std::max)(TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ShadowCubeMapSize, 1);
 		Params[0] = (std::min)(strength, 1.0f);
-		Params[1] = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "Bias");
-		Params[2] = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "NormalOffset") * 2.0f / face;
-		Params[3] = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "Softness") * 2.0f / face;
-		DebugView = (float)TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "DebugView");
-		ScopeFix = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") != 0;
+		Params[1] = forward.Bias;
+		Params[2] = forward.NormalOffset * 2.0f / face;
+		Params[3] = forward.Softness * 2.0f / face;
+		DebugView = (float)forward.DebugView;
+		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
+		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 		if (ScopeInView != ScopeWasInView && ScopeLogs < 20) {
 			ScopeLogs++;
 			Logger::Log("UNOFFICIAL forward shadows: B42 Optics lens %s (no lamp shadows on it).", ScopeInView ? "in view" : "gone");
 		}
 		ScopeWasInView = ScopeInView;
 		ScopeInView = false;
-		FirstPerson = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "FirstPerson") != 0;
+		FirstPerson = forward.FirstPerson;
 		static unsigned rejectedLast = 0, rejectLogs = 0;
 		unsigned rejected = 0;
 		for (int i = 0; i < count && i < ShadowCubeMapsMax; i++) {
@@ -146,8 +163,7 @@ namespace PointShadowForward {
 				// LogLamps: a lamp with a slot whose cube map is not its own this frame gets no shadow.
 				if (lights[i]) {
 					rejected |= 1u << i;
-					if (!(rejectedLast & (1u << i)) && rejectLogs < 200 &&
-						TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "LogLamps")) {
+					if (!(rejectedLast & (1u << i)) && rejectLogs < 200 && forward.LogLamps) {
 						rejectLogs++;
 						Logger::Log("LAMP %p in slot %d gets no shadow: its cube map is not drawn for it (drawn %d, same lamp %d, same texture %d, radius %.0f)",
 							lights[i], i, (int)slots[i].valid, (int)(slots[i].light == lights[i]), (int)(slots[i].texture == cubes[i]), slots[i].radius);
@@ -184,8 +200,14 @@ namespace PointShadowForward {
 	// Linear like the screen-space pass (PointShadows.fx). Through the game's render state cache, as ShaderRecord::SetCT binds
 	// textures: the game then knows the stage changed
 	// and rebinds its own texture there when a later shader needs one.
-	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture) {
+	// UNOFFICIAL (2026-10-08) device: also bind on the device itself. The cache skips the call when it already shows this
+	// texture, and the post effects bind their samplers on the device directly (PointShadows.fx puts slots 6/9/10's cube
+	// maps on s8/s11/s12, ours): the next frame's objects then sampled ANOTHER lamp's cube map until something else was
+	// bound there -- a per-object shadow that came and went with the draw order (the TOPSCasino floor flicker). Done on
+	// every shader bind; between objects the cache is right again.
+	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture, bool device = false) {
 		TheRenderManager->renderState->SetTexture(stage, texture);
+		if (device) TheRenderManager->device->SetTexture(stage, texture);
 		static const DWORD states[][2] = { { D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP }, { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP },
 			{ D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP }, { D3DSAMP_MAGFILTER, D3DTEXF_LINEAR }, { D3DSAMP_MINFILTER, D3DTEXF_LINEAR },
 			{ D3DSAMP_MIPFILTER, D3DTEXF_NONE }, { D3DSAMP_SRGBTEXTURE, FALSE } };
@@ -201,7 +223,7 @@ namespace PointShadowForward {
 	// pass with FirstPerson on (never the water reflection). force: just after a shader bind, write everything.
 	inline void SetForPass(const RenderPassView* pass, bool world, bool firstPerson, bool force) {
 		float constants[14][4] = {};// c174-c179 per light of the draw; c180 params (x 0: the shader skips it all);
-										// c181 debug view; c182-c187 per light of the draw: rgb debug colour (white = no shadow), w how far its shadow has faded in (FadeIn)
+										// c181 debug view, near fade; c182-c187 per light of the draw: rgb debug colour (white = no shadow), w how far its shadow has faded in (FadeIn)
 		for (int k = 0; k < 6; k++) constants[8 + k][0] = constants[8 + k][1] = constants[8 + k][2] = 1.0f;
 		IDirect3DBaseTexture9* bound[6];
 		IDirect3DCubeTexture9* neutral = NeutralCube();
@@ -232,10 +254,11 @@ namespace PointShadowForward {
 		}
 		if (matched) memcpy(constants[6], Params, sizeof(Params));
 		constants[7][0] = matched ? DebugView : 0.0f;
+		constants[7][1] = matched ? NearFade : 0.0f;
 		// Every declared cube stage gets a cube texture, matched or not: a 2D texture left there by another shader would be
 		// the wrong type for the sampler. Between objects only what changed (the game's texture cache tells).
 		for (int k = 0; k < 6; k++)
-			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k]);
+			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
 			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 14);
 			memcpy(Uploaded, constants, sizeof(constants));

@@ -4,6 +4,7 @@ float4 TESR_ShadowLightPosition[12];
 float4 TESR_LightPosition[12];
 float4 TESR_LightColor[24];
 float4 TESR_ShadowFade;
+float4 TESR_PointShadowNear; // UNOFFICIAL x: NearFade, world units (0 off); y: EdgeFade (0 off); z: LampReachMask, 1 / LightRadiusMult (0 off)
 float4 TESR_SpotLightPosition;
 float4 TESR_SpotLightDirection;
 float4 TESR_SpotLightColor;
@@ -77,12 +78,40 @@ float GetSpotLightAmount(float4 worldPos, float4 spotLightPosition, float4 spotL
 // use one of ps_3_0's 16 boolean registers per light and run out. The branch needs an explicit-LOD
 // read (gradients are illegal in dynamic flow control); the cubemaps have a single level, so it
 // returns what texCUBE did.
-float PointLightAmountValueLod(samplerCUBE cube, float3 lightDir, float distance) {
+// UNOFFICIAL near: NearFade / the light's radius. A blocker within NearFade of the lamp shadows less, none at the lamp
+// itself: a real lamp is no point, and a blocker that close casts a shadow too blurred to see, where a point casts it
+// sharp, as large as the room, and on every side when the point is inside the blocker (a lamp at the player's head).
+// Shaders\Includes\PointShadowForward.hlsl PointShadowNear does the same for the forward shadows.
+float PointLightAmountValueLod(samplerCUBE cube, float3 lightDir, float distance, float near) {
 	if (TESR_ShadowFade.z == 0) return 1;
 
 	float lightDepth = texCUBElod(cube, float4(lightDir, 0)).r;
 	float Shadow = lightDepth + BIAS * distance > distance;
-	return lerp(1, Shadow, lightDepth > 0.0f && lightDepth < 1.0f);
+	float blocker = near > 0.0f ? smoothstep(0.0f, near, lightDepth) : 1.0f;
+	return lerp(1, Shadow, (lightDepth > 0.0f && lightDepth < 1.0f) * blocker);
+}
+
+// UNOFFICIAL EdgeFade (TESR_PointShadowNear.y, a fraction of the lamp's radius): a lamp's light amount is attenuation
+// times colour luma times intensity, clamped to 1; a bright lamp keeps that at 1 across most of its radius and drops only
+// in the last few percent, so the un-darkened disc round it, and every shadow inside it, ended on a hard circle. Each
+// lamp's amount is windowed to 0 over the outer EdgeFade of its radius instead.
+float EdgeWindow(float distance) {
+	return TESR_PointShadowNear.y > 0.0f ? 1.0f - smoothstep(1.0f - TESR_PointShadowNear.y, 1.0f, distance) : 1.0f;
+}
+
+// UNOFFICIAL LampReachMask ([Shaders.ShadowsInteriors.Main]; TESR_PointShadowNear.z = 1 / LightRadiusMult, 0 = off). With
+// forward shadows on, this pass's sum is only the room darkening, applied on top of the game's own lamp lighting, which
+// already fades with distance and angle; applying a falloff here as well darkened the floor a second time, so a shadow
+// on it seemed to stop at the circle where the lamp's clamped amount began to drop. With the switch on a lamp counts in
+// full out to its game radius and fades over the rest of the cube map's radius: the game's lighting does the falloff,
+// and the lamp's shadows (forward, or this pass's own with forward off) show in full.
+float LampReach(float distance) {
+	return 1.0f - smoothstep(TESR_PointShadowNear.z, 1.0f, distance);
+}
+
+// The light amount this pass gives a lamp at a normalised distance: the old attenuation, or LampReach with the switch.
+float LampAmount(float3 lightDir, float distance, float4 normal) {
+	return TESR_PointShadowNear.z > 0.0f ? LampReach(distance) : GetPointLightAtten(lightDir, distance, normal);
 }
 
 float ShadowedLight(samplerCUBE cube, float4 worldPos, float4 lightPos, float4 normal, float weight) {
@@ -90,8 +119,8 @@ float ShadowedLight(samplerCUBE cube, float4 worldPos, float4 lightPos, float4 n
 	float distance = length(lightDir) / lightPos.w; // normalize distance over light range
 	[branch] if (!(distance < 1.0) || weight == 0) return 0;
 
-	float amount = PointLightAmountValueLod(cube, lightDir * float3(-1, -1, 1), distance) * GetPointLightAtten(lightDir, distance, normal);
-	return saturate(amount) * weight;
+	float amount = PointLightAmountValueLod(cube, lightDir * float3(-1, -1, 1), distance, TESR_PointShadowNear.x / lightPos.w) * LampAmount(lightDir, distance, normal);
+	return saturate(saturate(amount) * weight) * EdgeWindow(distance);
 }
 
 
@@ -114,15 +143,19 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer8, world_pos, TESR_ShadowLightPosition[8], normal, luma(TESR_LightColor[8].rgb) * TESR_LightColor[8].w);
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer9, world_pos, TESR_ShadowLightPosition[9], normal, luma(TESR_LightColor[9].rgb) * TESR_LightColor[9].w);
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer10, world_pos, TESR_ShadowLightPosition[10], normal, luma(TESR_LightColor[10].rgb) * TESR_LightColor[10].w);
-	[branch] if (TESR_ShadowLightPosition[11].w)
-		Shadow += GetPointLightContribution(world_pos, TESR_ShadowLightPosition[11], normal);
+	[branch] if (TESR_ShadowLightPosition[11].w) {
+		float4 light11 = GetPointLightDistance(world_pos, TESR_ShadowLightPosition[11]);
+		Shadow += saturate(LampAmount(light11.xyz, light11.w, normal)) * EdgeWindow(light11.w);
+	}
 
 	[branch] if (TESR_SpotLightPosition.w)
 		Shadow += GetSpotLightAmount(world_pos, TESR_SpotLightPosition, TESR_SpotLightDirection, normal) * luma(TESR_SpotLightColor.rgb) * TESR_SpotLightColor.w;
 	
 	for (int i = 0; i< 12; i++){
-		[branch] if (TESR_LightPosition[i].w)
-			Shadow += GetPointLightContribution(world_pos, TESR_LightPosition[i], normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w;
+		[branch] if (TESR_LightPosition[i].w) {
+			float4 light = GetPointLightDistance(world_pos, TESR_LightPosition[i]);
+			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
+		}
 	}
 
 	Shadow = saturate(Shadow);

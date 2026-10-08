@@ -52,8 +52,8 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DTexture9* const* textures = lastLowRes ? aoTextureLow : aoTexture;
 	IDirect3DSurface9* const* surfaces = lastLowRes ? aoSurfaceLow : aoSurface;
 	const UINT divisor = lastLowRes ? 4 : 2;
-	D3DXHANDLE technique = Effect->GetTechniqueByName("DedicatedAO");
-	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_AOLayout");
+	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedAO");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_AOLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {}, aoTarget = {};
@@ -113,10 +113,12 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 			if (FAILED(result)) break;
 			result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
-			if (p == 1) Device->SetTexture(5, textures[0]);
-			else if (p == 2) Device->SetTexture(5, textures[1]);
-			else if (combine) Device->SetTexture(5, textures[0]);
+			IDirect3DBaseTexture9* stage5 = p == 1 ? textures[0] : p == 2 ? textures[1] : combine ? textures[0] : nullptr;
+			if (stage5) Device->SetTexture(5, stage5);
 			Device->SetTexture(2, scene); // TESR_SourceBuffer slot
+			// UNOFFICIAL: keep the game's texture cache truthful (NiDX9RenderState::NoteDeviceTexture)
+			TheRenderManager->renderState->NoteDeviceTexture(5, stage5);
+			TheRenderManager->renderState->NoteDeviceTexture(2, scene);
 			// Sub-pass timings (nested inside "Ambient occlusion") to direct further AO work.
 			static GpuTimer passTimers[4] = { GpuTimer("  AO estimate (half)"), GpuTimer("  AO blur X (half)"),
 				GpuTimer("  AO blur Y (half)"), GpuTimer("  AO combine (full)") };

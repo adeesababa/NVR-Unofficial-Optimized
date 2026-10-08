@@ -2534,7 +2534,14 @@ public:
 	D3DCAPS9						Caps;							// 1118
 
 	void SetCullMode(NiStencilProperty::DrawMode aeMode);
+
+	// UNOFFICIAL (2026-10-08): unk10A0[0..15] is the game's texture cache, one entry per pixel sampler stage.
+	// NiD3DRenderState::SetTexture (vtable 0x37, 0x00E88A20) skips the device call when the cache already holds the texture,
+	// so code that binds on the device directly must note it here, or the next game/NVR bind of the texture the cache still
+	// shows is skipped and the stage keeps ours (forward lamp shadows sampled another lamp's cube map after the post effects).
+	void NoteDeviceTexture(UInt32 stage, IDirect3DBaseTexture9* texture) { if (stage < 16) unk10A0[stage] = (UInt32)texture; }
 };
+assert(offsetof(NiDX9RenderState, unk10A0) == 0x10A0);
 assert(offsetof(NiDX9RenderState, Device) == 0x10F8);
 assert(sizeof(NiDX9RenderState) == 0x1248);
 
@@ -2995,6 +3002,10 @@ public:
 	static float* const fLODLandDrop;
 	static NiPoint3* const kCameraPos;
 	static NiPoint4* const kLoadedRange;
+	// UNOFFICIAL: where objects' highlights start fading out and are gone (BSShaderPPLightingProperty::GetSpecularLODFade
+	// 0xB66B80; end <= 0: never).
+	static float* const fSpecularLODStartFade;
+	static float* const fSpecularLODEnd;
 
 	static BSShader** pspShaders;
 

@@ -40,7 +40,7 @@ struct VS_OUTPUT {
     float4 frameX : TEXCOORD1;   // cube-space x of tangent * 0.1, binormal * 0.1, normal; w: view x
     float4 frameY : TEXCOORD2;   // ... y
     float4 frameZ : TEXCOORD3;   // ... z
-    float fog : TEXCOORD4;       // 1 - fog
+    float2 fog : TEXCOORD4;      // x: 1 - fog, y: distance to the camera (the metal's fade, below)
     float3 vertexColor : COLOR0;
 };
 
@@ -77,7 +77,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.frameY.xyz = float3(dot(tangent, ObjToCubeSpace[1].xyz), dot(binormal, ObjToCubeSpace[1].xyz), dot(normal, ObjToCubeSpace[1].xyz));
     OUT.frameZ.xyz = float3(dot(tangent, ObjToCubeSpace[2].xyz), dot(binormal, ObjToCubeSpace[2].xyz), dot(normal, ObjToCubeSpace[2].xyz));
     // The view: from the vertex to the camera, which sits at cube space's origin.
-    float3 view = normalize(-float3(dot(ObjToCubeSpace[0], position), dot(ObjToCubeSpace[1], position), dot(ObjToCubeSpace[2], position)));
+    float3 toVertex = float3(dot(ObjToCubeSpace[0], position), dot(ObjToCubeSpace[1], position), dot(ObjToCubeSpace[2], position));
+    float3 view = normalize(-toVertex);
     OUT.frameX.w = view.x;
     OUT.frameY.w = view.y;
     OUT.frameZ.w = view.z;
@@ -87,7 +88,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifdef REVERSED_DEPTH
         fogPos.z = OUT.sPosition.w - fogPos.z;
     #endif
-    OUT.fog = 1 - pow(1 - saturate((FogParam.x - length(fogPos)) / FogParam.y), FogParam.z);
+    OUT.fog.x = 1 - pow(1 - saturate((FogParam.x - length(fogPos)) / FogParam.y), FogParam.z);
+    OUT.fog.y = length(toVertex);
     OUT.uv = IN.uv;
     OUT.vertexColor = IN.vertexColor.rgb;
     return OUT;
@@ -102,7 +104,7 @@ struct PS_INPUT {
     float4 frameX : TEXCOORD1_centroid;
     float4 frameY : TEXCOORD2_centroid;
     float4 frameZ : TEXCOORD3_centroid;
-    float fog : TEXCOORD4;
+    float2 fog : TEXCOORD4;
     float3 vertexColor : COLOR0;
 };
 
@@ -113,7 +115,7 @@ float4 AmbientColor : register(c1);      // rgb: the ambient light, a: the mater
 float4 EnvToggles : register(c27);       // x: tint by the vertex colour, z: reflection strength, w: 1 = custom mask, 0 = normal map alpha
 
 float4 TESR_PBRData : register(c32);     // w: AmbientScale
-float4 TESR_PBRExtraData : register(c33); // y: SkylightingScale, z: SkylightingDirectionality
+float4 TESR_PBRExtraData : register(c33); // y: SkylightingScale, z: SkylightingDirectionality, w: where the metal has faded out
 float4 TESR_PBRMetal : register(c34);    // x: the metal look's strength for this pass (Object.hlsl)
 float4 TESR_PBREnv : register(c35);      // x: Lighting (0 the game's fixed brightness, 1 by the light), y: Strength, z: WithMetal
 
@@ -136,9 +138,11 @@ float4 main(PS_INPUT IN) : COLOR0 {
     // world-aligned), scaled as the object shaders scale them.
     float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z) * TESR_PBRExtraData.y;
     color *= lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x);
-    // Less where the metal look already reflects the surroundings (the first-person model).
-    color *= lerp(1.0f, TESR_PBREnv.z, saturate(TESR_PBRMetal.x));
-    return float4(color * IN.fog, 1.0f);
+    // Less where the metal look already reflects the surroundings, and back in full where it has faded out with distance
+    // (Object.hlsl getMetalFade, by TESR_PBRExtraData.w).
+    float metalFade = TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, IN.fog.y) : 1.0f;
+    color *= lerp(1.0f, TESR_PBREnv.z, saturate(TESR_PBRMetal.x) * metalFade);
+    return float4(color * IN.fog.x, 1.0f);
 }
 
 #endif

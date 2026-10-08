@@ -138,7 +138,7 @@ public:
 
 	struct PBRStruct {
 		D3DXVECTOR4		Data;
-		D3DXVECTOR4		ExtraData;
+		D3DXVECTOR4		ExtraData;	// UNOFFICIAL w: where the metal has faded out with distance (Object.hlsl getMetalFade)
 		D3DXVECTOR4		Metal;		// UNOFFICIAL TESR_PBRMetal: x strength this pass, y grey parts' metal, zw saturation ruling metal out
 		D3DXVECTOR4		MetalLook;	// UNOFFICIAL TESR_PBRMetalLook: x bare metal roughness, y polished, z sky reflections, w debug view
 		D3DXVECTOR4		Env;		// UNOFFICIAL TESR_PBREnv (EnvTemplate.hlsl): x Lighting, y Strength, z WithMetal
@@ -150,6 +150,7 @@ public:
 	struct MetalSettingsStruct {
 		float FirstPerson = 0.0f;
 		float World = 0.0f;
+		float FadeDistance = 0.0f;	// FadeDistance; 0: where the game starts dropping highlights
 	};
 	MetalSettingsStruct	MetalSettings;
 	void	BeginFirstPerson(IDirect3DDevice9* Device);

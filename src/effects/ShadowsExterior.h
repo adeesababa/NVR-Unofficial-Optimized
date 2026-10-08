@@ -47,7 +47,7 @@ public:
 		D3DXMATRIX		ShadowViewProj;
 		D3DXMATRIX		ShadowSpotlightCameraToLight[SpotLightsMax];
 		D3DXVECTOR4		ShadowCubeMapLightPosition;
-		D3DXVECTOR4		ShadowLightPosition[ShadowCubeMapsMax];
+		D3DXVECTOR4		ShadowLightPosition[ShadowCubeMapsScreen];	// the screen-space passes' TESR_ShadowLightPosition[12]
 		D3DXVECTOR4		ShadowMapRadius;
 		D3DXVECTOR4		ShadowBlur;
 		// Forward sun shadows, runtime side. x: 1 when the forward path is SUPPRESSED.
@@ -62,6 +62,8 @@ public:
 		D3DXMATRIX		OldCameraToLight[4];
 		D3DXVECTOR4		OldCenter[4];
 		D3DXVECTOR4		CrossFade;
+		// UNOFFICIAL TESR_PointShadowNear (PointShadows.fx): x = [Shaders.ShadowsInteriors.Main] NearFade, world units; y = EdgeFade, fraction of a lamp's radius.
+		D3DXVECTOR4		PointShadowNear;
 	};
 
 	// Settings
@@ -142,6 +144,22 @@ public:
 		bool				UseCastShadowFlag;
 		bool				PlayerShadowThirdPerson;
 		bool				PlayerShadowFirstPerson;
+		// UNOFFICIAL (2026-10-07 review): read on each settings change instead of by name every frame.
+		bool				PlayerInsideLamp;	// [Shaders.ShadowsInteriors.Main] PlayerInsideLamp
+		float				PlayerLampMargin;	// [Shaders.ShadowsInteriors.Main] PlayerLampMargin (at least 1)
+		struct ForwardStruct {	// [Shaders.ShadowsInteriors.Forward]
+			bool Enabled, KeepDarkening, DarkeningBlur, FirstPerson, ScopeFix, LogLamps;
+			bool CameraIndependent;		// UNOFFICIAL (2026-10-08): lamps get shadows by where you are, not where you look
+			int LampRanking, DebugView;
+			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;	// LampSwitchMargin clamped to 0..0.9
+			float FillLightRadius;		// UNOFFICIAL (2026-10-08): lamps reaching farther than this cast no shadow (0 = off)
+		} Forward;
+	};
+
+	struct ContactHardeningStruct {	// UNOFFICIAL [Shaders.ContactHardening.Status/.Main], read on change (ShadowManager uses it every frame)
+		bool				Enabled;
+		float				SunSize;		// at least 0
+		float				MaxSoftness;	// 1..32
 	};
 
 	struct ScreenSpaceStruct {
@@ -168,6 +186,7 @@ public:
 		ExteriorsStruct		Exteriors;
 		InteriorsStruct		Interiors;
 		SunSmoothingStruct  SunSmoothing;
+		ContactHardeningStruct ContactHardening;
 	};
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
@@ -212,6 +231,10 @@ public:
 	void		RegisterConstants();
 	void		RegisterTextures();
 	void		RecreateTextures(bool cascades, bool ortho, bool cubemaps);
+	// UNOFFICIAL (2026-10-08): slots past ShadowCubeMapsScreen get their cube map on first use (forward shadows with
+	// LightPoints above 12), at the size the others were made at (the shared depth surface's). false: no cube map.
+	bool		EnsureCubeMap(int slot);
+	UINT		CubeMapSizeCreated = 0;
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();
 	// UNOFFICIAL sun glide (SunSmoothing GlideSeconds): the quantized step being slid over.

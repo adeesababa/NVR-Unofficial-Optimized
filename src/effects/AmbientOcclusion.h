@@ -21,6 +21,7 @@ public:
 	IDirect3DSurface9* aoSurfaceLow[2] = {};
 	// Which pair the last estimate wrote; combineOnly and the fog composite must read the same one.
 	bool lastLowRes = false;
+	CachedHandle techDedicated, paramLayout;	// UNOFFICIAL: looked up once per loaded effect
 
 	bool	UseLowRes() const;
 	IDirect3DSurface9* NextResultSurface() const { return UseLowRes() ? aoSurfaceLow[0] : aoSurface[0]; }

@@ -12,6 +12,7 @@ public:
     float               GetObjectDistance(NiBound* Bound);
 	bool				IsReversedDepth();
 	const char*			D3D9RuntimeDescription(); // e.g. "DXVK (<path to d3d9.dll>)"; for the log
+	const D3DCAPS9*		DeviceCaps(); // UNOFFICIAL: the device caps, fetched once (null if the device will not say); two effects used to ask every frame
 	D3DXMATRIX			WorldViewProjMatrix;
 	D3DXMATRIX			ViewProjMatrix;
 	D3DXMATRIX			InvViewProjMatrix;

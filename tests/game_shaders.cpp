@@ -712,6 +712,22 @@ static int TestMetal(Gpu& gpu, const std::string& oldFolder, const std::string& 
 		if (same.nan || changed.nan) { printf("FAIL: NaN pixels\n"); failures++; }
 		if (v.metal && ChangedShare(a, on) < 0.05) { printf("FAIL: metal on barely changes the test scene\n"); failures++; }
 		if (!v.metal && changed.different) { printf("FAIL: metal on changes a variant without the metal code\n"); failures++; }
+		if (v.metal) {
+			// The distance fade (TESR_PBRExtraData.w, Object.hlsl getMetalFade; the scene is 150-450 units away): wholly short
+			// of it, metal on as without the fade; wholly beyond it, metal off (to rounding: the metal code with no metal
+			// rounds a little differently from the code without it, about 1e-4, a fortieth of an 8-bit step); in between,
+			// part of the way.
+			k.Set(33, 1, 1, 0.5f, 10000); k.Apply(device);
+			const Comparison notYet = Compare(on, Render(gpu, newShader, scene));
+			k.Set(33, 1, 1, 0.5f, 100); k.Apply(device);
+			const Comparison fadedOut = Compare(off, Render(gpu, newShader, scene));
+			k.Set(33, 1, 1, 0.5f, 500); k.Apply(device);
+			const std::vector<float> partway = Render(gpu, newShader, scene);
+			k.Set(33, 1, 1, 0.5f, 0); k.Apply(device);
+			printf("  %-30s fade: short of it worst %.3g vs no fade | beyond it worst %.3g vs metal off | part way %.0f%% of pixels change\n",
+				v.name, notYet.worst, fadedOut.worst, 100.0 * ChangedShare(a, partway));
+			if (notYet.worst > 1e-4f || fadedOut.worst > 1e-3f || notYet.nan || fadedOut.nan) { printf("FAIL: the metal's distance fade\n"); failures++; }
+		}
 		k.Set(34, 0, 0.6f, 0.25f, 0.55f);
 		k.Apply(device);
 		const std::string labelOff = std::string(v.name) + ", metal off";
@@ -779,7 +795,7 @@ static Scene EnvPixelScene() {
 			Set(v, 2, tng[0] * 0.1f, bin[0] * 0.1f, n[0], view[0]);
 			Set(v, 3, tng[1] * 0.1f, bin[1] * 0.1f, n[1], view[1]);
 			Set(v, 4, tng[2] * 0.1f, bin[2] * 0.1f, n[2], view[2]);
-			Set(v, 5, 0.6f + 0.4f * Random(), 0, 0, 0);
+			Set(v, 5, 0.6f + 0.4f * Random(), 300, 0, 0);                                   // fog, distance to the camera
 			Set(v, 9, 0.5f + 0.5f * Random(), 0.5f + 0.5f * Random(), 0.5f + 0.5f * Random(), 1);
 			scene.vertices.push_back(v);
 		}
@@ -887,6 +903,14 @@ static int TestEnv(Gpu& gpu, const std::string& newFolder, const std::string& va
 		if (off.worst > 0.01) { printf("FAIL: %s differs from the game's with the light scaling off\n", v.name); failures++; }
 		if (MeanLuma(a) < 0.01) { printf("FAIL: the test scene shows no reflection\n"); failures++; }
 		if (Compare(a, lit).nan || Compare(a, metal).nan || off.nan) { printf("FAIL: NaN pixels\n"); failures++; }
+		// The metal's distance fade (TESR_PBRExtraData.w; the scene is 300 units away): faded out, the reflection is as
+		// without metal; well short of it, as with metal and no fade.
+		k.Set(33, 1, 0.5f, 0.5f, 100); k.Apply(device);
+		const Comparison fadedOut = Compare(lit, Render(gpu, ours.Get(), pixelScene));
+		k.Set(33, 1, 0.5f, 0.5f, 10000); k.Apply(device);
+		const Comparison notYet = Compare(metal, Render(gpu, ours.Get(), pixelScene));
+		printf("  %s metal fade: beyond it worst %.3g vs no metal | short of it worst %.3g vs no fade\n", v.name, fadedOut.worst, notYet.worst);
+		if (fadedOut.worst > 1e-4f || notYet.worst > 1e-4f) { printf("FAIL: the metal's distance fade\n"); failures++; }
 	}
 
 	// ---- vertex shaders ----

@@ -73,4 +73,8 @@ public:
 	void	GetFlashlightViewProj();
 	void	PublishLightConstants(bool abActive);
 	int		TechniqueIndex(const char* name);	// UNOFFICIAL: -1 when the loaded effect has no technique of that name
+	// UNOFFICIAL: the EdgeFix technique indices, found once per loaded effect instead of by a name scan every frame.
+	void	RefreshTechniqueIndices();
+	unsigned techniqueGeneration = 0;
+	int		edgeFixIndex = -1, edgeFixShadowsIndex = -1;
 };

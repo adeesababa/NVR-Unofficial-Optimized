@@ -648,8 +648,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// and stays while somewhat behind you. Lamps at the edge of the LightPoints cap or of the "in front" test otherwise
 	// switch in and out as you move and turn, and their shadows pop on and off.
 	static const void* previousSlots[ShadowCubeMapsMax] = {};
-	const float switchMargin = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ?
-		(std::max)(0.0f, (std::min)(0.9f, TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampSwitchMargin"))) : 0.0f;
+	const float switchMargin = Settings->Forward.Enabled ? Settings->Forward.LampSwitchMargin : 0.0f;	// (read on change, see ShadowsExteriorEffect::UpdateSettings)
 	auto wasCaster = [&](const ShadowSceneLight* light) {
 		if (!(switchMargin > 0.0f)) return false;
 		for (int s = 0; s < ShadowCubeMapsMax; s++) if (previousSlots[s] == light) return true;
@@ -660,7 +659,18 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// the view frustum's four sides and the plane through the eye (not the far plane), from the camera. The old test, "in
 	// front of the player", changed as you turned and dropped lamps beside or behind you whose light (and shadows) fell
 	// on what you look at: their shadows came and went with the view angle.
-	const bool viewTest = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") != 0;
+	const bool viewTest = Settings->Forward.Enabled;
+	// UNOFFICIAL CameraIndependent (2026-10-08, with forward shadows on): no view test at all -- every lamp in range competes
+	// by its rank round the player. A busy room has far more lamps than cube maps (the Tops: 50-70 for 11; LogLamps showed
+	// most swaps were 'its light does not reach the view'), so with the view test turning the camera swapped lamps in and
+	// out constantly and their shadows popped at the edges of the screen. Now only walking changes them (LampSwitchMargin).
+	const bool cameraIndependent = viewTest && Settings->Forward.CameraIndependent;
+	// UNOFFICIAL FillLightRadius (2026-10-08, with forward shadows on): a lamp reaching farther than this is a level's big fill
+	// light (the Tops: reach 500-980 against 180-420 for its real lamps, often dimmer x 1.25-1.9), hidden up in the ceiling to
+	// brighten a whole area. Its cube map saw the ceiling round it, so with a shadow all its light was taken off every floor
+	// piece it lights (dark rectangles along the floor's mesh pieces); it also took cube maps from real lamps (its rank is
+	// high). It still lights as before, without a shadow, and still counts as a tracked lamp for the darkening.
+	const float fillLightRadius = viewTest ? Settings->Forward.FillLightRadius : 0.0f;
 	const D3DXMATRIX& camera = TheRenderManager->InvViewMatrix;
 	const D3DXVECTOR3 camRight(camera._11, camera._12, camera._13), camUp(camera._21, camera._22, camera._23), camForward(camera._31, camera._32, camera._33);
 	const float tanX = fabsf(TheRenderManager->InvProjMatrix._11), tanY = fabsf(TheRenderManager->InvProjMatrix._22);
@@ -668,16 +678,16 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// UNOFFICIAL LampRanking 1 (with forward shadows on): lamps ranked by what they light of the scene -- brightness x how far
 	// their light reaches / distance -- instead of nearest first. Many small bulbs near you used to push a big room lamp
 	// out of the LightPoints cap as you strafed, and its shadows vanished.
-	const int lampRanking = viewTest ? TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "LampRanking") : 0;
+	const int lampRanking = viewTest ? Settings->Forward.LampRanking : 0;
 	// UNOFFICIAL LogLamps: every lamp that gains or loses its shadow is logged with the reason (diagnostic).
-	const bool logLamps = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "LogLamps") != 0;
-	struct LampNote { const ShadowSceneLight* light; int reason; float distance, key, radius; D3DXVECTOR4 position, colour; };
+	const bool logLamps = Settings->Forward.LogLamps;
+	struct LampNote { const ShadowSceneLight* light; int reason; float distance, key, radius; D3DXVECTOR4 position, colour; int carry; };
 	static LampNote notes[128];
 	int noteCount = 0;
 	auto note = [&](const ShadowSceneLight* light, int reason, float distance, float key, NiPointLight* source) {
 		if (!logLamps || noteCount >= 128 || !source) return;
 		notes[noteCount++] = { light, reason, distance, key, source->Spec.r, source->m_worldTransform.pos.toD3DXVEC4(),
-			D3DXVECTOR4(source->Diff.r, source->Diff.g, source->Diff.b, source->Dimmer) };
+			D3DXVECTOR4(source->Diff.r, source->Diff.g, source->Diff.b, source->Dimmer), (int)source->CanCarry };
 	};
 
 	auto reachesView = [&](const D3DXVECTOR4& lightPosition, float reach) {
@@ -707,8 +717,9 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		D3DXVec4Normalize(&LightVector, &LightVector);
 		const bool incumbent = wasCaster(Entry->data);
 		// (A lamp that had a shadow last frame keeps counting a little beyond the edge of the view: LampSwitchMargin.)
-		bool inFront = viewTest ? reachesView(LightPosition, Light->Spec.r * Settings->LightRadiusMult * (incumbent ? 1.0f + switchMargin : 1.0f))
-			: D3DXVec4Dot(&LightVector, &TheRenderManager->CameraForward) > (incumbent ? -0.5f : 0.0f);
+		bool inFront = cameraIndependent ||
+			(viewTest ? reachesView(LightPosition, Light->Spec.r * Settings->LightRadiusMult * (incumbent ? 1.0f + switchMargin : 1.0f))
+			: D3DXVec4Dot(&LightVector, &TheRenderManager->CameraForward) > (incumbent ? -0.5f : 0.0f));
 		float Distance = Light->GetDistance(&Player->pos);
 		float radius = Light->Spec.r * Settings->LightRadiusMult;
 
@@ -734,14 +745,16 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// Must be cleared. The fill loop below only zeroes trailing slots once it runs out of scene
 	// lights; with more lights than slots it never reaches that branch, and a slot left holding
 	// last frame's position keeps GetPointLightAmount sampling a cubemap nobody redraws.
-	memset(&ShadowsConstants->ShadowLightPosition, 0, ShadowCubeMapsMax * sizeof(D3DXVECTOR4));
-	memset(&TheShaderManager->LightColor, 0, (TrackedLightsMax + ShadowCubeMapsMax) * sizeof(D3DXVECTOR4)); // clear previous lights from array
+	memset(&ShadowsConstants->ShadowLightPosition, 0, ShadowCubeMapsScreen * sizeof(D3DXVECTOR4));
+	memset(&TheShaderManager->LightColor, 0, (TrackedLightsMax + ShadowCubeMapsScreen) * sizeof(D3DXVECTOR4)); // clear previous lights from array
 
 	// ShadowManager::RenderShadowMaps only renders cubemaps for the first LightPoints slots.
 	// Filling past that gives the shader a live position and colour for a face that is never
 	// redrawn, so it samples whatever that cubemap last held -- a shadow frozen from an earlier
 	// frame or cell. Lights beyond the cap fall through to the non-shadowing tracked list.
-	const int ShadowLightsMax = min(Settings->LightPoints, (int)ShadowCubeMapsMax);
+	// (UNOFFICIAL: with forward shadows indoors, up to ShadowCubeMapsMax -- PointShadowForward::ShadowedSlots)
+	const bool allSlots = PointShadowForward::UsesAllSlots(TheShaderManager->GameState.isExterior);
+	const int ShadowLightsMax = min(Settings->LightPoints, allSlots ? (int)ShadowCubeMapsMax : (int)ShadowCubeMapsScreen);
 
 	// get the data for all tracked lights
 	int ShadowIndex = 0;
@@ -775,7 +788,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 				//Logger::Log("clearing light at index %i", LightIndex);
 				LightsList[LightIndex] = NULL;
 				LightPosition[LightIndex] = Empty;
-				LightColor[ShadowCubeMapsMax + LightIndex] = Empty;
+				LightColor[ShadowCubeMapsScreen + LightIndex] = Empty;
 				LightIndex++;
 			}
 
@@ -792,6 +805,21 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			// determin if light is a shadow caster
 			//bool CastShadow = Settings->UseCastShadowFlag ? Light->CastShadows : true; // Flag is broken by JIP
 			bool CastShadow = true;
+			if (fillLightRadius > 0.0f && Light->Spec.r > fillLightRadius) {	// UNOFFICIAL FillLightRadius, see above
+				CastShadow = false;
+				static const void* loggedFill[64] = {};
+				static int loggedFillCount = 0;
+				if (logLamps && loggedFillCount < 64) {
+					bool seen = false;
+					for (int f = 0; f < loggedFillCount; f++) if (loggedFill[f] == v->second) seen = true;
+					if (!seen) {
+						loggedFill[loggedFillCount++] = v->second;
+						const D3DXVECTOR4 at = Light->m_worldTransform.pos.toD3DXVEC4();
+						Logger::Log("LAMP %p is a fill light (reach %.0f > FillLightRadius %.0f): it lights as before, without a shadow | at %.0f %.0f %.0f, colour %.2f %.2f %.2f x %.2f",
+							v->second, Light->Spec.r, fillLightRadius, at.x, at.y, at.z, Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+					}
+				}
+			}
 
 #if defined(OBLIVION)
 			// Oblivion exception for carried torch lights 
@@ -814,7 +842,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			else if (LightIndex < TrackedLightsMax) {
 				LightsList[LightIndex] = Light;
 				LightPosition[LightIndex] = LightPos;
-				LightColor[ShadowCubeMapsMax + LightIndex] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+				LightColor[ShadowCubeMapsScreen + LightIndex] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
 				LightIndex++;
 			};
 		}
@@ -830,7 +858,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// distance order gave it, and only slots 0..10 take part in the stable assignment.
 	{
 		const int casters = TheShadowManager->PointLightsNum;
-		const int sampledSlots = min(ShadowLightsMax, (int)ShadowCubeMapsSampled);
+		const int sampledSlots = allSlots ? ShadowLightsMax : min(ShadowLightsMax, (int)ShadowCubeMapsSampled);
 		const int stableCasters = min(casters, sampledSlots);
 		const void* ranked[ShadowCubeMapsMax] = {};
 		const void* assigned[ShadowCubeMapsMax] = {};
@@ -858,14 +886,14 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 				if (gained && !inSet(previousSlots, sampledSlots, gained) && lampLogLines < 600) {
 					lampLogLines++;
 					const LampNote* n = find(gained);
-					if (n) Logger::Log("LAMP %p got a shadow (slot %d, rank %d of %d) | at %.0f %.0f %.0f radius %.0f, %.0f away, colour %.2f %.2f %.2f x %.2f, key %.3f",
+					if (n) Logger::Log("LAMP %p got a shadow (slot %d, rank %d of %d) | at %.0f %.0f %.0f radius %.0f, %.0f away, colour %.2f %.2f %.2f x %.2f, key %.3f, carry flag %d, cube radius %.0f",
 						gained, s, rankOf(gained), (int)SceneLights.size(), n->position.x, n->position.y, n->position.z, n->radius, n->distance,
-						n->colour.x, n->colour.y, n->colour.z, n->colour.w, n->key);
+						n->colour.x, n->colour.y, n->colour.z, n->colour.w, n->key, n->carry, n->radius * Settings->LightRadiusMult);
 				}
 			}
 			if (lampLogLines >= 600) Logger::Log("LAMP log: 600 lines, stopping until restart.");
 		}
-		if (casters > sampledSlots) assigned[ShadowCubeMapsMax - 1] = ShadowCasters[sampledSlots];
+		if (!allSlots && casters > sampledSlots) assigned[ShadowCubeMapsScreen - 1] = ShadowCasters[sampledSlots];
 		for (int s = 0; s < ShadowCubeMapsMax; s++) previousSlots[s] = s < sampledSlots ? assigned[s] : nullptr;
 
 		for (int s = 0; s < ShadowCubeMapsMax; s++) {
@@ -875,8 +903,39 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			NiPointLight* Light = shadowLight->sourceLight;
 			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
 			LightPos.w = Light->Spec.r * Settings->LightRadiusMult;
+			if (s >= ShadowCubeMapsScreen) continue;	// (the screen-space passes' arrays end at 12; see below)
 			ShadowsConstants->ShadowLightPosition[s] = LightPos;
 			LightColor[s] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+		}
+		// UNOFFICIAL (2026-10-08): the darkening mask (KeepDarkening, PointShadows.fx) knows 12 shadow lamps and 12 tracked
+		// ones. Lamps in the forward slots past 12 go to the front of the tracked list, so what they light is not darkened as
+		// unlit (the mask then knows the 24 best-ranked lamps, as before).
+		if (allSlots && sampledSlots > ShadowCubeMapsScreen) {
+			NiPointLight* keepLight[TrackedLightsMax] = {};
+			D3DXVECTOR4 keepPos[TrackedLightsMax], keepColour[TrackedLightsMax];
+			int kept = 0;
+			for (int s = ShadowCubeMapsScreen; s < sampledSlots && kept < TrackedLightsMax; s++) {
+				ShadowSceneLight* shadowLight = (ShadowSceneLight*)assigned[s];
+				if (!shadowLight || !shadowLight->sourceLight) continue;
+				NiPointLight* Light = shadowLight->sourceLight;
+				keepLight[kept] = Light;
+				keepPos[kept] = Light->m_worldTransform.pos.toD3DXVEC4();
+				keepPos[kept].w = Light->Spec.r * Settings->LightRadiusMult;
+				keepColour[kept] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+				kept++;
+			}
+			for (int t = 0; t < LightIndex && kept < TrackedLightsMax; t++) {
+				if (!LightsList[t]) continue;
+				keepLight[kept] = LightsList[t];
+				keepPos[kept] = LightPosition[t];
+				keepColour[kept] = LightColor[ShadowCubeMapsScreen + t];
+				kept++;
+			}
+			for (int t = 0; t < TrackedLightsMax; t++) {
+				LightsList[t] = t < kept ? keepLight[t] : nullptr;
+				LightPosition[t] = t < kept ? keepPos[t] : Empty;
+				LightColor[ShadowCubeMapsScreen + t] = t < kept ? keepColour[t] : Empty;
+			}
 		}
 	}
 
@@ -961,13 +1020,17 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// the old screen-space shadows run instead of none at all.)
 	const bool forwardInterior = !GameState.isExterior && Effects.ShadowsInteriors->Enabled && PointShadowForward::Active &&
 		PointShadowForward::BoundThisFrame && Shaders.PBR && Shaders.PBR->Enabled;
-	const bool keepDarkening = !forwardInterior || TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "KeepDarkening");
+	const bool keepDarkening = !forwardInterior || Effects.ShadowsExteriors->Settings.Interiors.Forward.KeepDarkening;
 
+	// UNOFFICIAL (2026-10-07 review): the "no shadow" clear of the buffer is done once, not on every frame that draws no
+	// shadow pass (a full-screen clear and two target switches for a buffer that already held the clear value).
+	static bool shadowBufferClear = false;
 	// render a shadow pass for point lights
 	if (forwardInterior && !keepDarkening) {
-		Effects.ShadowsExteriors->clearShadowsBuffer();
+		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
 	}
 	else if ((GameState.isExterior && Effects.ShadowsExteriors->Enabled) || (!GameState.isExterior && Effects.ShadowsInteriors->Enabled)) {
+		shadowBufferClear = false;	// the passes below write it
 		{
 			GpuProfileScope gpu(pointShadowTimer, Device);
 			const float pointShadowsWere = Effects.ShadowsExteriors->Constants.ShadowFade.z;
@@ -975,16 +1038,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
 			// The stock/custom shader remains compatible: it has no named merged
 			// technique, so lights 6-11 still take the original second pass.
-			const bool mergedPointShadows = Effects.PointShadows->Effect &&
-				Effects.PointShadows->Effect->GetTechniqueByName("MergedPointShadows") != NULL;
+			static EffectRecord::CachedHandle mergedTechnique;	// UNOFFICIAL: looked up once per loaded effect
+			const bool mergedPointShadows = Effects.PointShadows->TechniqueHandle(mergedTechnique, "MergedPointShadows") != NULL;
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
 			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;
 		}
 		if (GameState.isExterior) {
 			GpuProfileScope gpu(sunContactTimer, Device);
-			D3DXHANDLE fusedTechnique = Effects.SunShadows->Effect ?
-				Effects.SunShadows->Effect->GetTechniqueByName("ForwardContactShadows") : NULL;
+			static EffectRecord::CachedHandle fusedCache;	// UNOFFICIAL: looked up once per loaded effect
+			D3DXHANDLE fusedTechnique = Effects.SunShadows->TechniqueHandle(fusedCache, "ForwardContactShadows");
 			const bool fusedForwardContact = Effects.ShadowsExteriors->Settings.Exteriors.ForwardShadows &&
 				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique;
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface,
@@ -999,7 +1062,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// unconditionally by other independently-enabled effects (Specular and
 		// others), so reset it to the neutral "no shadow" value rather than leaving
 		// stale exterior data for them to read.
-		Effects.ShadowsExteriors->clearShadowsBuffer();
+		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
 	}
 
 	Device->SetRenderTarget(0, RenderTarget);
@@ -1040,8 +1103,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 		else if (keepDarkening) {
 			// With forward shadows on, the darkening alone: unblurred unless DarkeningBlur.
-			Effects.ShadowsInteriors->skipBlur = forwardInterior &&
-				!TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "DarkeningBlur");
+			Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
 			Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
 			Effects.ShadowsInteriors->skipBlur = false;
 		}
@@ -1243,7 +1305,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P75 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P76 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 		else LogActiveSwitches(true);

@@ -177,7 +177,7 @@ namespace ConstantFilter {
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
-		const bool enabled = TheSettingManager->GetSettingI("Main.Main.Performance", "SkipRedundantConstants") != 0;
+		const bool enabled = TheSettingManager->SettingsMain.Main.SkipRedundantConstants;	// read by SettingManager::LoadSettings, not by name each frame
 		if (enabled && !Enabled) Wipe();
 		Enabled = enabled;
 		// Another thread (the loading screen) set constants: pause until it has been quiet for 30 frames, then start again

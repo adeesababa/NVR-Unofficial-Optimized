@@ -185,9 +185,9 @@ void VolumetricFogEffect::RegisterTextures() {
 bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] ||
 		TheSettingManager->SettingsMain.Main.DisableCompositeApply ||
-		!Effect->GetTechniqueByName("CompositeFog") || !Effect->GetParameterByName(NULL, "NVR_CompositeFlags"))
+		!TechniqueHandle(techCompositeFog, "CompositeFog") || !ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags"))
 		return false;
-	if (aoSurface && !Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel")) {
+	if (aoSurface && !ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel")) {
 		D3DSURFACE_DESC fog = {}, ao = {};
 		if (FAILED(fogSurface[0]->GetDesc(&fog)) || FAILED(aoSurface->GetDesc(&ao)) ||
 			fog.Width != ao.Width || fog.Height != ao.Height)
@@ -198,8 +198,8 @@ bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 
 bool VolumetricFogEffect::CanApplyShadowAO() {
 	return Enabled && Effect && !TheSettingManager->SettingsMain.Main.DisableCompositeApply &&
-		Effect->GetTechniqueByName("ApplyShadowAO") && Effect->GetParameterByName(NULL, "NVR_CompositeFlags") &&
-		Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel");
+		TechniqueHandle(techApplyShadowAO, "ApplyShadowAO") && ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") &&
+		ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
 }
 
 /*
@@ -208,9 +208,9 @@ bool VolumetricFogEffect::CanApplyShadowAO() {
 */
 bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, bool shadow, IDirect3DTexture9* aoTexture) {
-	D3DXHANDLE technique = Effect ? Effect->GetTechniqueByName("ApplyShadowAO") : NULL;
-	D3DXHANDLE flagsHandle = Effect ? Effect->GetParameterByName(NULL, "NVR_CompositeFlags") : NULL;
-	D3DXHANDLE aoTexelHandle = Effect ? Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel") : NULL;
+	D3DXHANDLE technique = TechniqueHandle(techApplyShadowAO, "ApplyShadowAO");
+	D3DXHANDLE flagsHandle = ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags");
+	D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	D3DSURFACE_DESC ao = {};
 	if (!technique || !flagsHandle || !aoTexelHandle || !scene || !RenderedSurface || (!shadow && !aoTexture) ||
@@ -265,19 +265,19 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	IDirect3DSurface9* RenderedSurface) {
 	if (dedicatedFogFailed) return false;
 	const bool composite = compositeShadow || (compositeAO && compositeAOTexture);
-	D3DXHANDLE technique = Effect->GetTechniqueByName(composite ? "CompositeFog" : "DedicatedFog");
-	D3DXHANDLE flagsHandle = composite ? Effect->GetParameterByName(NULL, "NVR_CompositeFlags") : NULL;
+	D3DXHANDLE technique = composite ? TechniqueHandle(techCompositeFog, "CompositeFog") : TechniqueHandle(techDedicatedFog, "DedicatedFog");
+	D3DXHANDLE flagsHandle = composite ? ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") : NULL;
 	if (composite && !flagsHandle) return false;
-	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_FogLayout");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramFogLayout, "NVR_FogLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {}, fog = {}, fogAdd = {};
-	D3DCAPS9 caps = {};
+	const D3DCAPS9* caps = TheRenderManager->DeviceCaps();	// UNOFFICIAL: fetched once, not per frame
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	if (!technique || !layoutHandle || FAILED(Effect->GetTechniqueDesc(technique, &description)) ||
 		description.Passes != 2 || !RenderedSurface || !scene ||
 		!fogTexture[0] || !fogTexture[1] || !fogSurface[0] || !fogSurface[1] ||
-		FAILED(Device->GetDeviceCaps(&caps)) || caps.NumSimultaneousRTs < 2 ||
+		!caps || caps->NumSimultaneousRTs < 2 ||
 		FAILED(Device->GetViewport(&original)) || FAILED(RenderTarget->GetDesc(&target)) ||
 		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(fogSurface[0]->GetDesc(&fog)) ||
 		FAILED(fogSurface[1]->GetDesc(&fogAdd)) ||
@@ -315,7 +315,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f, 0.0f, 0.0f);
 		Effect->SetVector(flagsHandle, &flags);
 		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
-		D3DXHANDLE aoTexelHandle = Effect->GetParameterByName(NULL, "NVR_CompositeAOTexel");
+		D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
 		D3DSURFACE_DESC ao = {};
 		if (aoTexelHandle && compositeAO && compositeAOTexture && SUCCEEDED(compositeAOTexture->GetLevelDesc(0, &ao))) {
 			D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
@@ -408,7 +408,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	// The caller must apply deferred shadows/AO before retrying ordinary fog.
 	if (compositeShadow || compositeAO) return;
 
-	D3DXHANDLE technique = Effect->GetTechniqueByName("PackedFog");
+	D3DXHANDLE technique = TechniqueHandle(techPackedFog, "PackedFog");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {};

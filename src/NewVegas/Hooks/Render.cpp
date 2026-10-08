@@ -5,6 +5,7 @@
 #include "../../core/GpuProfiler.h"
 #include "../../core/GpuTimeline.h"
 #include "../../core/PointShadowForward.h"
+#include "../../core/ShaderWarmUp.h"
 #include "../../core/ConstantFilter.h"
 
 // Everything from the start of the game's render call up to the world scene: NVR shadow maps,
@@ -501,30 +502,36 @@ static bool ForcePixelConstants = false;
 // lookup (TESR_ShadowForwardData.x = 1, the forward path's own off switch) and without terrain parallax
 // (TESR_TerrainParallaxData.x = 0), like the game's own reflections. Both are restored, and uploaded
 // again on the next bind, when the pass ends.
+// UNOFFICIAL: forward sun shadows are always OFF inside the water reflection pass. NVR's object and terrain shaders
+// rebuild each pixel's world position from the MAIN camera's inverse matrices (Shadow.hlsl GetShadowWorldPos); the
+// reflection is drawn with the mirrored camera, so that position is wrong there and the shadow lookup paints dark
+// patches with ragged edges on the reflected carrier, shore and buildings that change with the view (2026-10-07,
+// user's clip). Vanilla reflections carry no shadows either. Parallax stays unless CheapReflections is on.
 class CheapReflectionScope {
 public:
 	CheapReflectionScope() {
-		if (!TheSettingManager->SettingsMain.Main.CheapReflections) return;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
 		if (!shadows || !terrain) return;
 		Forward = &shadows->Constants.ForwardData.x;
-		Parallax = &terrain->ParallaxConstants.Data.x;
 		SavedForward = *Forward;
-		SavedParallax = *Parallax;
 		*Forward = 1.0f;
-		*Parallax = 0.0f;
-		ForcePixelConstants = true;
-		static bool announced = false;
-		if (!announced) {
-			Logger::Log("UNOFFICIAL cheap reflections: water reflection map drawn without sun shadows and terrain parallax.");
-			announced = true;
+		if (TheSettingManager->SettingsMain.Main.CheapReflections) {
+			Parallax = &terrain->ParallaxConstants.Data.x;
+			SavedParallax = *Parallax;
+			*Parallax = 0.0f;
+			static bool announced = false;
+			if (!announced) {
+				Logger::Log("UNOFFICIAL cheap reflections: water reflection map drawn without terrain parallax (forward sun shadows are always off there).");
+				announced = true;
+			}
 		}
+		ForcePixelConstants = true;
 	}
 	~CheapReflectionScope() {
 		if (!Forward) return;
 		*Forward = SavedForward;
-		*Parallax = SavedParallax;
+		if (Parallax) *Parallax = SavedParallax;
 		ForcePixelConstants = true;
 	}
 
@@ -559,17 +566,35 @@ private:
 	float Saved = 0.0f;
 };
 
-// Water reflection probe (diagnostic, P54). The game draws the water reflection map with its own camera inside
-// RenderReflections, and the water shaders look the map up as if that camera were an exact mirror of the main one.
-// A player saw the reflection squashed when looking level and right when looking down, so the two apparently differ.
-// After an NVR screenshot (ScreenshotKey), the next frame records, at the first shader bind of the world pass and of
-// the reflection pass, the render target, viewport, D3D view and projection transforms and the cameras; the log gets
-// both and the reflection map is saved next to the screenshot as "<name> reflection.png".
+// Water reflection probe v5, the "reflection lab" (diagnostic, P54 -> v4 2026-10-06 -> v5 2026-10-07). The game draws the
+// water reflection map with its own camera inside RenderReflections, and the water shaders look the map up as if that
+// camera were an exact mirror of the main one. Looking level or up, the far LOD buildings drop out of the map and
+// terrain that lies below the water (the LOD push-down walls) is drawn, so the water-height clip plane is not doing
+// what it should for those draws. After an NVR screenshot (ScreenshotKey) the next three reflection passes are recorded,
+// one per mode: m0 as the game draws it, m1 with the user clip plane forced OFF at every bind, m2 with the clip plane
+// rebuilt by NVR at every bind from the device's own view/projection and the camera-translate global (the game's
+// SetClipPlane formula). Each mode saves the final map ("<shot> reflection mK.png"), the map before every bind into it
+// ("<shot> reflection mK stage NN <shader>.png") and, for m0, the water depth map. The log gets, per bind: shaders,
+// object transform, render target, clip plane and enable, depth/stencil/blend state, c0-c19, the camera globals, the
+// plane rebuilt by NVR against the game's, how far c0-c3 is from (object world * view' * projection), and the number of
+// draw calls and primitives the run issued. Every SetClipPlane call and every change of D3DRS_CLIPPLANEENABLE in the
+// recorded frames is logged with the camera globals and the device view translation at that moment.
+//
+// RESULT (2026-10-07 05:53, TTW shore, level view): m0 draws the LOD objects (8 calls, 30k triangles) and every pixel of
+// them is clipped; m1 shows them all; m2 shows the correct reflection (buildings, far shore, no below-water walls) with a
+// plane that differs from the game's by 3e-5. The game's plane value is right at every draw; it is SET once at the start
+// of the pass (TESWaterSystem::SetClipPlane, before the pass binds any vertex shader) and the driver misapplies it to the
+// later programmable draws. Re-issuing the same plane 0 once the pass's shaders are bound makes it take. That is the fix:
+// [Main.Main.Water] ReflectionClipFix (default true) re-sets clip plane 0, unchanged, at every bind of the reflection
+// context where it is enabled (before and after the game binds the pass's shaders). m2 now does the same.
 extern char LastScreenshotBase[MAX_PATH];
 extern char LastScreenshotName[80];
 extern bool ScreenshotTakenThisFrame;
 
 namespace ReflectionProbe {
+	enum { ModeAsIs = 0, ModeNoClip = 1, ModeReplane = 2, ModeCount = 3 };
+	static const int MaxDrawn = 96, MaxStages = 16, MaxPlaneEvents = 48;
+
 	struct CameraShot {
 		bool valid = false;
 		NiPoint3 pos = {};
@@ -589,16 +614,183 @@ namespace ReflectionProbe {
 		DWORD clipEnable = 0, cullMode = 0, zFunc = 0, zEnable = 0;
 		float clip[2][4] = {};
 	};
-	// Every object drawn in the recorded reflection pass (name, position, pixel shader, clip planes at its bind).
-	struct DrawnObject { char name[48]; char shader[24]; NiPoint3 pos; DWORD clipEnable; float clip0[4]; };
-	static DrawnObject Drawn[64];
-	static int DrawnCount = 0, DrawnTotal = 0;
+	// Every bind in the recorded reflection context.
+	struct DrawnObject {
+		char name[48]; char shader[24]; char vshader[24];
+		NiPoint3 pos; float rot[3][3]; float scale; float radius;
+		bool intoMap;
+		DWORD clipEnable; float clip0[4], clip1[4];
+		DWORD stencil, zEnable, zFunc, zWrite, blend, cull, colorWrite;
+		float vs[20][4];                 // vertex constants c0-c19 (c0-c3 ModelViewProj, c8-c11 ObjToCubeSpace, c12 HighDetailRange, c19 GeomorphParams)
+		NiPoint3 worldTranslate, location;
+		float viewRow4[3];               // the device view's translation row at the bind
+		bool viewChanged, projChanged;   // against the pass's first bind
+		unsigned long draws, prims;      // draw counters at the bind (the run's own count is the next bind's minus this)
+		int stage;
+		float rebuilt[4]; float rebuiltDiff; bool replaned, unclipped;
+		float mvpDiff, mvpScale;         // c0-c3 against transpose(world * view' * proj): max abs difference, max abs entry
+	};
+	struct PlaneEvent {                  // a SetClipPlane call or a D3DRS_CLIPPLANEENABLE change in the recorded frames
+		bool enableChange; DWORD index; DWORD value; float plane[4];
+		NiPoint3 worldTranslate, location; float viewRow4[3]; float proj43; int bindsSoFar; unsigned char context;
+	};
+	static DrawnObject Drawn[MaxDrawn];
+	static PlaneEvent Events[MaxPlaneEvents];
+	static int DrawnCount = 0, DrawnTotal = 0, StageCount = 0, EventCount = 0, EventTotal = 0;
+	// Every object drawn in the recorded reflection context (RenderPassStandard/Skinned hooks): count, skinned count,
+	// and the first names tagged with the bind they were drawn under ("name@bind", "*" = skinned).
+	static int ObjTotal = 0, ObjSkinnedTotal = 0, ObjListed = 0;
+	static char ObjList[6144];
+	static unsigned long EndDraws = 0, EndPrims = 0;
 	static bool DrawnDone = false;  // one reflection pass only: set once the world pass follows a recorded one
 	static PassShot Shots[2];  // 0: world scene, 1: reflections
 	static IDirect3DSurface9* ReflectionTarget = nullptr;
 	static NiCamera* HookCamera = nullptr;  // the camera the game passed to RenderReflections
-	static int ArmedFrames = 0;
-	static char Base[MAX_PATH], Name[80];
+	static int ArmedFrames = 0, Mode = 0;
+	static char Base[MAX_PATH], Name[80], Suffix[16];
+	static const UInt32 WorldReflectionMapPtr = 0x011C7AD4;  // PlaceableWaterGroup::spWorldReflectionMap
+	static const UInt32 DepthMapPtr = 0x011C7B68;            // PlaceableWaterGroup::spDepthMap
+
+	// ---- device vtable hooks: draw counters (always, cheap), SetClipPlane and clip-enable events (recorded frames) ----
+	typedef HRESULT (STDMETHODCALLTYPE* DrawIndexedFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
+	typedef HRESULT (STDMETHODCALLTYPE* DrawPrimFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, UINT, UINT);
+	typedef HRESULT (STDMETHODCALLTYPE* SetClipPlaneFn)(IDirect3DDevice9*, DWORD, CONST float*);
+	typedef HRESULT (STDMETHODCALLTYPE* SetRenderStateFn)(IDirect3DDevice9*, D3DRENDERSTATETYPE, DWORD);
+	static DrawIndexedFn OrigDrawIndexed = nullptr;
+	static DrawPrimFn OrigDrawPrim = nullptr;
+	static SetClipPlaneFn OrigSetClipPlane = nullptr;
+	static SetRenderStateFn OrigSetRenderState = nullptr;
+	static unsigned long DrawCalls = 0, DrawPrims = 0;
+	static bool InsideOwnCall = false;
+
+	static void NoteEvent(IDirect3DDevice9* device, bool enableChange, DWORD index, DWORD value, const float* plane) {
+		EventTotal++;
+		if (EventCount >= MaxPlaneEvents) return;
+		PlaneEvent& e = Events[EventCount++];
+		e.enableChange = enableChange; e.index = index; e.value = value;
+		if (plane) memcpy(e.plane, plane, sizeof(e.plane)); else memset(e.plane, 0, sizeof(e.plane));
+		e.worldTranslate = *Pointers::Generic::CameraWorldTranslate;
+		e.location = *Pointers::Generic::CameraLocation;
+		D3DXMATRIX view, proj;
+		if (SUCCEEDED(device->GetTransform(D3DTS_VIEW, &view))) { e.viewRow4[0] = view._41; e.viewRow4[1] = view._42; e.viewRow4[2] = view._43; }
+		else e.viewRow4[0] = e.viewRow4[1] = e.viewRow4[2] = 0.0f;
+		e.proj43 = SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &proj)) ? proj._43 : 0.0f;
+		e.bindsSoFar = DrawnTotal;
+		e.context = ShaderSplit::CurrentContext;
+	}
+	static HRESULT STDMETHODCALLTYPE MyDrawIndexed(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, INT b, UINT mn, UINT nv, UINT si, UINT pc) {
+		DrawCalls++; DrawPrims += pc;
+		return OrigDrawIndexed(d, t, b, mn, nv, si, pc);
+	}
+	static HRESULT STDMETHODCALLTYPE MyDrawPrim(IDirect3DDevice9* d, D3DPRIMITIVETYPE t, UINT sv, UINT pc) {
+		DrawCalls++; DrawPrims += pc;
+		return OrigDrawPrim(d, t, sv, pc);
+	}
+	static HRESULT STDMETHODCALLTYPE MySetClipPlane(IDirect3DDevice9* d, DWORD index, CONST float* plane) {
+		if (ArmedFrames && !InsideOwnCall) NoteEvent(d, false, index, 0, plane);
+		return OrigSetClipPlane(d, index, plane);
+	}
+	static HRESULT STDMETHODCALLTYPE MySetRenderState(IDirect3DDevice9* d, D3DRENDERSTATETYPE state, DWORD value) {
+		if (state == D3DRS_CLIPPLANEENABLE && ArmedFrames && !InsideOwnCall) NoteEvent(d, true, 0, value, nullptr);
+		return OrigSetRenderState(d, state, value);
+	}
+	static void InstallDeviceHooks(IDirect3DDevice9* device) {
+		if (OrigDrawIndexed || !device) return;
+		void** vtable = *(void***)device;
+		DWORD old;
+		if (!VirtualProtect(&vtable[55], 28 * sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+			Logger::Log("UNOFFICIAL reflection probe: device vtable not writable, no draw counts or plane events");
+			return;
+		}
+		OrigSetClipPlane = (SetClipPlaneFn)vtable[55];
+		OrigSetRenderState = (SetRenderStateFn)vtable[57];
+		OrigDrawPrim = (DrawPrimFn)vtable[81];
+		OrigDrawIndexed = (DrawIndexedFn)vtable[82];
+		vtable[55] = (void*)&MySetClipPlane;
+		vtable[57] = (void*)&MySetRenderState;
+		vtable[81] = (void*)&MyDrawPrim;
+		vtable[82] = (void*)&MyDrawIndexed;
+		VirtualProtect(&vtable[55], 28 * sizeof(void*), old, &old);
+		Logger::Log("UNOFFICIAL reflection probe: device hooks installed (draw counters, clip plane events)");
+	}
+
+	// ---- the game's clip plane maths (TESWaterSystem::SetClipPlane 0x4ECEF0) ----
+	// World -> clip as the game builds it: the device view (rotation only; the engine renders relative to the camera)
+	// with its translation row rebuilt from the camera-translate global, times the device projection.
+	static bool WorldToClip(IDirect3DDevice9* device, D3DXMATRIX& out, D3DXMATRIX* viewOut = nullptr, D3DXMATRIX* projOut = nullptr) {
+		D3DXMATRIX view, proj;
+		if (FAILED(device->GetTransform(D3DTS_VIEW, &view)) || FAILED(device->GetTransform(D3DTS_PROJECTION, &proj))) return false;
+		const NiPoint3 t = *Pointers::Generic::CameraWorldTranslate;
+		view._41 = -(view._11 * t.x + view._21 * t.y + view._31 * t.z);
+		view._42 = -(view._12 * t.x + view._22 * t.y + view._32 * t.z);
+		view._43 = -(view._13 * t.x + view._23 * t.y + view._33 * t.z);
+		out = view * proj;
+		if (viewOut) *viewOut = view;
+		if (projOut) *projOut = proj;
+		return true;
+	}
+	// plane_clip = normalize(plane_world) * transpose(inverse(worldToClip))   (D3DXPlaneTransform: out = p * M)
+	static void PlaneToClip(const D3DXPLANE& world, const D3DXMATRIX& worldToClip, D3DXPLANE& clip) {
+		D3DXMATRIX inv, m;
+		D3DXMatrixInverse(&inv, NULL, &worldToClip);
+		D3DXMatrixTranspose(&m, &inv);
+		D3DXPLANE n;
+		D3DXPlaneNormalize(&n, &world);
+		D3DXPlaneTransform(&clip, &n, &m);
+	}
+	// the inverse: plane_world = plane_clip * transpose(worldToClip)
+	static void PlaneToWorld(const D3DXPLANE& clip, const D3DXMATRIX& worldToClip, D3DXPLANE& world) {
+		D3DXMATRIX tr;
+		D3DXMatrixTranspose(&tr, &worldToClip);
+		D3DXPlaneTransform(&world, &clip, &tr);
+		D3DXPlaneNormalize(&world, &world);
+	}
+	static float PlaneDiff(const float* a, const float* b) {
+		float d = 0.0f;
+		for (int i = 0; i < 4; i++) d = max(d, fabsf(a[i] - b[i]));
+		return d;
+	}
+
+	// The world plane behind the game's current clip plane 0, re-derived whenever the game sets a new plane
+	// (world reflection, sky reflection and the depth pass each set their own).
+	static float LastGamePlane[4] = {};
+	static D3DXPLANE PassWorldPlane;
+	static bool PassWorldPlaneValid = false;
+	static int PassWorldPlaneDerivations = 0;
+
+	// For the log only: the game's clip plane 0 as a world plane (derived when the game sets a new plane) and the same
+	// plane rebuilt with the device's current transforms, against the game's. Only while plane 0 is enabled, so the
+	// image-space binds (other transforms) never feed the derivation.
+	static void Rebuild(IDirect3DDevice9* device, DWORD clipEnable, float* rebuilt, float* diff) {
+		memset(rebuilt, 0, 4 * sizeof(float)); *diff = -1.0f;
+		if (!(clipEnable & 1)) return;
+		float gamePlane[4];
+		if (FAILED(device->GetClipPlane(0, gamePlane))) return;
+		D3DXMATRIX worldToClip;
+		if (!WorldToClip(device, worldToClip)) return;
+		if (!PassWorldPlaneValid || memcmp(gamePlane, LastGamePlane, sizeof(gamePlane)) != 0) {
+			PlaneToWorld(*(const D3DXPLANE*)gamePlane, worldToClip, PassWorldPlane);
+			memcpy(LastGamePlane, gamePlane, sizeof(gamePlane));
+			PassWorldPlaneValid = true;
+			PassWorldPlaneDerivations++;
+		}
+		D3DXPLANE clip;
+		PlaneToClip(PassWorldPlane, worldToClip, clip);
+		memcpy(rebuilt, &clip, sizeof(D3DXPLANE));
+		*diff = PlaneDiff((const float*)&clip, gamePlane);
+	}
+
+	// THE FIX: re-issue clip plane 0, unchanged, while the pass's shaders are bound. Returns true when it was re-set.
+	static bool TouchPlane(IDirect3DDevice9* device) {
+		DWORD clipEnable = 0;
+		if (FAILED(device->GetRenderState(D3DRS_CLIPPLANEENABLE, &clipEnable)) || !(clipEnable & 1)) return false;
+		float plane[4];
+		if (FAILED(device->GetClipPlane(0, plane))) return false;
+		InsideOwnCall = true;
+		const bool ok = SUCCEEDED(device->SetClipPlane(0, plane));
+		InsideOwnCall = false;
+		return ok;
+	}
 
 	static void Copy(CameraShot& shot, NiCamera* camera) {
 		if (!camera) return;
@@ -608,48 +800,151 @@ namespace ReflectionProbe {
 		shot.valid = true;
 	}
 
-	static void OnBind(NiGeometry* geometry, const char* pixelShader) {
-		if (!ArmedFrames) return;
-		const unsigned char context = ShaderSplit::CurrentContext;
-		const int slot = context == ShaderSplit::World ? 0 : context == ShaderSplit::Reflections ? 1 : -1;
-		IDirect3DDevice9* device = TheRenderManager->device;
-		if (slot == 0 && Shots[1].valid) DrawnDone = true;
-		if (slot == 1 && !DrawnDone) {
-			DrawnTotal++;
-			if (DrawnCount < 64) {
-				DrawnObject& d = Drawn[DrawnCount++];
-				strncpy_s(d.name, geometry && geometry->m_pcName ? geometry->m_pcName : "(none)", _TRUNCATE);
-				strncpy_s(d.shader, pixelShader ? pixelShader : "(none)", _TRUNCATE);
-				d.pos = geometry ? geometry->m_worldTransform.pos : NiPoint3{};
-				device->GetRenderState(D3DRS_CLIPPLANEENABLE, &d.clipEnable);
-				if (FAILED(device->GetClipPlane(0, d.clip0))) memset(d.clip0, 0, sizeof(d.clip0));
-			}
+	static void SafeName(char* out, size_t size, const char* in) {
+		size_t i = 0;
+		for (; in && in[i] && i + 1 < size; i++) out[i] = (isalnum((unsigned char)in[i]) || in[i] == '.' || in[i] == '_') ? in[i] : '_';
+		out[i] = 0;
+	}
+
+	// c0-c3 against transpose(objectWorld * view' * proj), where view' carries the translation from the global.
+	static void CheckModelViewProj(DrawnObject& d, IDirect3DDevice9* device, NiGeometry* geometry) {
+		d.mvpDiff = d.mvpScale = -1.0f;
+		if (!geometry) return;
+		D3DXMATRIX worldToClip;
+		if (!WorldToClip(device, worldToClip)) return;
+		const NiTransform& w = geometry->m_worldTransform;
+		D3DXMATRIX model;
+		D3DXMatrixIdentity(&model);
+		for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) model.m[i][j] = w.scale * w.rot.data[j][i];
+		model._41 = w.pos.x; model._42 = w.pos.y; model._43 = w.pos.z;
+		const D3DXMATRIX mvp = model * worldToClip;
+		float diff = 0.0f, scale = 0.0f;
+		for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
+			const float expected = mvp.m[c][r];  // the game uploads the transpose (row_major float4x4, mul(M, v))
+			diff = max(diff, fabsf(d.vs[r][c] - expected));
+			scale = max(scale, fabsf(expected));
 		}
-		if (slot < 0 || Shots[slot].valid) return;
-		PassShot& s = Shots[slot];
-		device->GetViewport(&s.viewport);
+		d.mvpDiff = diff; d.mvpScale = scale;
+	}
+
+	static bool FixOn() { return TheSettingManager->SettingsMain.Main.ReflectionClipFix; }
+
+	// One object about to be drawn (BSBatchRenderer::RenderPassImmediately, through NVR's RenderPassStandard/Skinned hooks).
+	static void OnObject(const void* pass, bool skinned) {
+		if (!ArmedFrames || DrawnDone || !pass || ShaderSplit::CurrentContext != ShaderSplit::Reflections) return;
+		ObjTotal++;
+		if (skinned) ObjSkinnedTotal++;
+		if (ObjListed >= 120) return;
+		const NiGeometry* geometry = *(NiGeometry* const*)pass;
+		const char* name = geometry && geometry->m_pcName ? geometry->m_pcName : "(none)";
+		const size_t used = strlen(ObjList);
+		if (used + strlen(name) + 16 >= sizeof(ObjList)) return;
+		sprintf_s(ObjList + used, sizeof(ObjList) - used, "%s%s%s@%d", used ? ", " : "", skinned ? "*" : "", name, DrawnTotal - 1);
+		ObjListed++;
+	}
+
+	// After the game bound the pass's shaders (SetShadersHook, after the original SetShaders): the fix's second touch.
+	static void AfterBind() {
+		if (ShaderSplit::CurrentContext != ShaderSplit::Reflections) return;
+		if (!FixOn() && !(ArmedFrames && Mode == ModeReplane)) return;
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (device) TouchPlane(device);
+	}
+
+	static void OnBind(NiGeometry* geometry, const char* pixelShader, const char* vertexShader) {
+		const unsigned char context = ShaderSplit::CurrentContext;
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (context != ShaderSplit::Reflections) PassWorldPlaneValid = false;
+		if (!ArmedFrames) {
+			if (context == ShaderSplit::Reflections && FixOn() && device) TouchPlane(device);
+			return;
+		}
+		const int slot = context == ShaderSplit::World ? 0 : context == ShaderSplit::Reflections ? 1 : -1;
+		if (slot == 0 && Shots[1].valid && !DrawnDone) { DrawnDone = true; EndDraws = DrawCalls; EndPrims = DrawPrims; }
+		if (slot < 0) return;
+		if (!Shots[slot].valid) {
+			PassShot& s = Shots[slot];
+			device->GetViewport(&s.viewport);
+			IDirect3DSurface9* target = nullptr;
+			if (SUCCEEDED(device->GetRenderTarget(0, &target)) && target) {
+				target->GetDesc(&s.target);
+				if (slot == 1) { if (ReflectionTarget) ReflectionTarget->Release(); ReflectionTarget = target; }
+				else target->Release();
+			}
+			s.viewHr = device->GetTransform(D3DTS_VIEW, &s.view);
+			s.projHr = device->GetTransform(D3DTS_PROJECTION, &s.proj);
+			Copy(s.scene, WorldSceneGraph ? WorldSceneGraph->camera : nullptr);
+			if (slot == 1) Copy(s.hook, HookCamera);
+			device->GetRenderState(D3DRS_CLIPPLANEENABLE, &s.clipEnable);
+			device->GetRenderState(D3DRS_CULLMODE, &s.cullMode);
+			device->GetRenderState(D3DRS_ZFUNC, &s.zFunc);
+			device->GetRenderState(D3DRS_ZENABLE, &s.zEnable);
+			for (DWORD i = 0; i < 2; i++) if (FAILED(device->GetClipPlane(i, s.clip[i]))) memset(s.clip[i], 0, sizeof(s.clip[i]));
+			s.worldTranslate = *Pointers::Generic::CameraWorldTranslate;
+			s.location = *Pointers::Generic::CameraLocation;
+			if (geometry) {
+				strncpy_s(s.geometry, geometry->m_pcName ? geometry->m_pcName : "(no name)", _TRUNCATE);
+				s.geometryPos = geometry->m_worldTransform.pos;
+			}
+			s.valid = true;
+		}
+		if (slot != 1 || DrawnDone) return;
+		DrawnTotal++;
+		if (DrawnCount >= MaxDrawn) return;
+		DrawnObject& d = Drawn[DrawnCount++];
+		memset(&d, 0, sizeof(d));
+		strncpy_s(d.name, geometry && geometry->m_pcName ? geometry->m_pcName : "(none)", _TRUNCATE);
+		strncpy_s(d.shader, pixelShader ? pixelShader : "(none)", _TRUNCATE);
+		strncpy_s(d.vshader, vertexShader ? vertexShader : "(none)", _TRUNCATE);
+		if (geometry) {
+			d.pos = geometry->m_worldTransform.pos;
+			memcpy(d.rot, geometry->m_worldTransform.rot.data, sizeof(d.rot));
+			d.scale = geometry->m_worldTransform.scale;
+			NiBound* bound = geometry->GetWorldBound();
+			d.radius = bound ? bound->Radius : 0.0f;
+		}
+		device->GetRenderState(D3DRS_CLIPPLANEENABLE, &d.clipEnable);
+		if (FAILED(device->GetClipPlane(0, d.clip0))) memset(d.clip0, 0, sizeof(d.clip0));
+		if (FAILED(device->GetClipPlane(1, d.clip1))) memset(d.clip1, 0, sizeof(d.clip1));
+		device->GetRenderState(D3DRS_STENCILENABLE, &d.stencil);
+		device->GetRenderState(D3DRS_ZENABLE, &d.zEnable);
+		device->GetRenderState(D3DRS_ZFUNC, &d.zFunc);
+		device->GetRenderState(D3DRS_ZWRITEENABLE, &d.zWrite);
+		device->GetRenderState(D3DRS_ALPHABLENDENABLE, &d.blend);
+		device->GetRenderState(D3DRS_CULLMODE, &d.cull);
+		device->GetRenderState(D3DRS_COLORWRITEENABLE, &d.colorWrite);
+		if (FAILED(device->GetVertexShaderConstantF(0, &d.vs[0][0], 20))) memset(d.vs, 0, sizeof(d.vs));
+		d.worldTranslate = *Pointers::Generic::CameraWorldTranslate;
+		d.location = *Pointers::Generic::CameraLocation;
+		D3DXMATRIX view, proj;
+		if (SUCCEEDED(device->GetTransform(D3DTS_VIEW, &view))) {
+			d.viewRow4[0] = view._41; d.viewRow4[1] = view._42; d.viewRow4[2] = view._43;
+			d.viewChanged = memcmp(&view, &Shots[1].view, sizeof(view)) != 0;
+		}
+		if (SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &proj))) d.projChanged = memcmp(&proj, &Shots[1].proj, sizeof(proj)) != 0;
+		d.draws = DrawCalls; d.prims = DrawPrims;
+		d.stage = -1;
 		IDirect3DSurface9* target = nullptr;
 		if (SUCCEEDED(device->GetRenderTarget(0, &target)) && target) {
-			target->GetDesc(&s.target);
-			if (slot == 1) { if (ReflectionTarget) ReflectionTarget->Release(); ReflectionTarget = target; }
-			else target->Release();
+			d.intoMap = target == ReflectionTarget;
+			target->Release();
 		}
-		s.viewHr = device->GetTransform(D3DTS_VIEW, &s.view);
-		s.projHr = device->GetTransform(D3DTS_PROJECTION, &s.proj);
-		Copy(s.scene, WorldSceneGraph ? WorldSceneGraph->camera : nullptr);
-		if (slot == 1) Copy(s.hook, HookCamera);
-		device->GetRenderState(D3DRS_CLIPPLANEENABLE, &s.clipEnable);
-		device->GetRenderState(D3DRS_CULLMODE, &s.cullMode);
-		device->GetRenderState(D3DRS_ZFUNC, &s.zFunc);
-		device->GetRenderState(D3DRS_ZENABLE, &s.zEnable);
-		for (DWORD i = 0; i < 2; i++) if (FAILED(device->GetClipPlane(i, s.clip[i]))) memset(s.clip[i], 0, sizeof(s.clip[i]));
-		s.worldTranslate = *Pointers::Generic::CameraWorldTranslate;
-		s.location = *Pointers::Generic::CameraLocation;
-		if (geometry) {
-			strncpy_s(s.geometry, geometry->m_pcName ? geometry->m_pcName : "(no name)", _TRUNCATE);
-			s.geometryPos = geometry->m_worldTransform.pos;
+		CheckModelViewProj(d, device, geometry);
+		Rebuild(device, d.clipEnable, d.rebuilt, &d.rebuiltDiff);  // for the log only
+		if (Mode == ModeReplane || FixOn()) d.replaned = TouchPlane(device);
+		if (Mode == ModeNoClip && (d.clipEnable & 1)) {
+			InsideOwnCall = true;
+			d.unclipped = SUCCEEDED(device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0));
+			InsideOwnCall = false;
 		}
-		s.valid = true;
+		// What the reflection map holds before this bind's draws (stage 0: just cleared).
+		if (d.intoMap && StageCount < MaxStages && ReflectionTarget) {
+			char shader[24], file[MAX_PATH];
+			SafeName(shader, sizeof(shader), d.shader);
+			sprintf_s(file, "%s reflection%s stage %02d %s.png", Base, Suffix, StageCount, shader);
+			if (SUCCEEDED(D3DXSaveSurfaceToFileA(file, D3DXIFF_PNG, ReflectionTarget, NULL, NULL))) d.stage = StageCount;
+			StageCount++;
+		}
 	}
 
 	static void LogCamera(const char* label, const CameraShot& c) {
@@ -689,11 +984,42 @@ namespace ReflectionProbe {
 	}
 
 	static void LogDrawn() {
-		Logger::Log("UNOFFICIAL reflection probe: %d binds in the recorded reflection pass (first %d listed)", DrawnTotal, DrawnCount);
+		Logger::Log("UNOFFICIAL reflection probe: %d binds in the recorded reflection context (first %d listed; 'map' = draws into the reflection map; draws/prims = this run's; mvp diff = c0-c3 against transpose(object world * view' * projection), scale = largest entry)",
+			DrawnTotal, DrawnCount);
 		for (int i = 0; i < DrawnCount; i++) {
 			const DrawnObject& d = Drawn[i];
-			Logger::Log("UNOFFICIAL reflection probe   drawn %2d: '%s' (%s) at %.0f %.0f %.0f | clip 0x%lX %.6f %.6f %.6f %.6f",
-				i, d.name, d.shader, d.pos.x, d.pos.y, d.pos.z, d.clipEnable, d.clip0[0], d.clip0[1], d.clip0[2], d.clip0[3]);
+			const unsigned long nextDraws = i + 1 < DrawnCount ? Drawn[i + 1].draws : EndDraws;
+			const unsigned long nextPrims = i + 1 < DrawnCount ? Drawn[i + 1].prims : EndPrims;
+			Logger::Log("UNOFFICIAL reflection probe   drawn %2d: '%s' (ps %s, vs %s) at %.1f %.1f %.1f scale %.3f r %.0f | %s | clip 0x%lX plane0 %.6f %.6f %.6f %.6f%s%s | rebuilt %.6f %.6f %.6f %.6f (diff %.6f)%s | z en %lu func %lu write %lu, stencil %lu, blend %lu, cull %lu, cw 0x%lX | draws %lu prims %lu | stage %d | mvp diff %.4g of %.4g",
+				i, d.name, d.shader, d.vshader, d.pos.x, d.pos.y, d.pos.z, d.scale, d.radius, d.intoMap ? "map" : "other target",
+				d.clipEnable, d.clip0[0], d.clip0[1], d.clip0[2], d.clip0[3], d.unclipped ? " [FORCED OFF]" : "", d.replaned ? " [RE-SET]" : "",
+				d.rebuilt[0], d.rebuilt[1], d.rebuilt[2], d.rebuilt[3], d.rebuiltDiff, (d.clip1[0] != 0.0f || d.clip1[1] != 0.0f || d.clip1[2] != 0.0f) ? " (plane1 set)" : "",
+				d.zEnable, d.zFunc, d.zWrite, d.stencil, d.blend, d.cull, d.colorWrite,
+				nextDraws >= d.draws ? nextDraws - d.draws : 0UL, nextPrims >= d.prims ? nextPrims - d.prims : 0UL, d.stage, d.mvpDiff, d.mvpScale);
+			Logger::Log("UNOFFICIAL reflection probe              globals wt %.1f %.1f %.1f loc %.1f %.1f %.1f | view row4 %.1f %.1f %.1f%s%s | c0-c3 %.5g %.5g %.5g %.5g | %.5g %.5g %.5g %.5g | %.5g %.5g %.5g %.5g | %.5g %.5g %.5g %.5g",
+				d.worldTranslate.x, d.worldTranslate.y, d.worldTranslate.z, d.location.x, d.location.y, d.location.z,
+				d.viewRow4[0], d.viewRow4[1], d.viewRow4[2], d.viewChanged ? " VIEW CHANGED" : "", d.projChanged ? " PROJ CHANGED" : "",
+				d.vs[0][0], d.vs[0][1], d.vs[0][2], d.vs[0][3], d.vs[1][0], d.vs[1][1], d.vs[1][2], d.vs[1][3],
+				d.vs[2][0], d.vs[2][1], d.vs[2][2], d.vs[2][3], d.vs[3][0], d.vs[3][1], d.vs[3][2], d.vs[3][3]);
+			if (!strncmp(d.shader, "SLS", 3) || !strncmp(d.vshader, "SLS", 3))
+				Logger::Log("UNOFFICIAL reflection probe              c8-c11 %.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g | c12 %.4g %.4g %.4g %.4g | c14 %.4g %.4g %.4g %.4g | c16 %.4g %.4g %.4g %.4g | c19 %.4g %.4g %.4g %.4g",
+					d.vs[8][0], d.vs[8][1], d.vs[8][2], d.vs[8][3], d.vs[9][0], d.vs[9][1], d.vs[9][2], d.vs[9][3], d.vs[10][0], d.vs[10][1], d.vs[10][2], d.vs[10][3], d.vs[11][0], d.vs[11][1], d.vs[11][2], d.vs[11][3],
+					d.vs[12][0], d.vs[12][1], d.vs[12][2], d.vs[12][3], d.vs[14][0], d.vs[14][1], d.vs[14][2], d.vs[14][3], d.vs[16][0], d.vs[16][1], d.vs[16][2], d.vs[16][3], d.vs[19][0], d.vs[19][1], d.vs[19][2], d.vs[19][3]);
+		}
+		Logger::Log("UNOFFICIAL reflection probe: world plane derived from the game's clip plane: %.6f %.6f %.6f %.3f (height %.2f if horizontal; %d derivations in this capture)",
+			PassWorldPlane.a, PassWorldPlane.b, PassWorldPlane.c, PassWorldPlane.d, PassWorldPlane.c != 0.0f ? -PassWorldPlane.d / PassWorldPlane.c : 0.0f, PassWorldPlaneDerivations);
+	}
+
+	static void LogEvents() {
+		Logger::Log("UNOFFICIAL reflection probe: %d clip plane events in the recorded frames (first %d listed; 'after N binds' counts binds of the reflection context)", EventTotal, EventCount);
+		for (int i = 0; i < EventCount; i++) {
+			const PlaneEvent& e = Events[i];
+			if (e.enableChange)
+				Logger::Log("UNOFFICIAL reflection probe   event %2d: CLIPPLANEENABLE = 0x%lX | context %u after %d binds | globals wt %.1f %.1f %.1f loc %.1f %.1f %.1f | view row4 %.1f %.1f %.1f | proj _43 %.4f",
+					i, e.value, (unsigned)e.context, e.bindsSoFar, e.worldTranslate.x, e.worldTranslate.y, e.worldTranslate.z, e.location.x, e.location.y, e.location.z, e.viewRow4[0], e.viewRow4[1], e.viewRow4[2], e.proj43);
+			else
+				Logger::Log("UNOFFICIAL reflection probe   event %2d: SetClipPlane(%lu) %.6f %.6f %.6f %.6f | context %u after %d binds | globals wt %.1f %.1f %.1f loc %.1f %.1f %.1f | view row4 %.1f %.1f %.1f | proj _43 %.4f",
+					i, e.index, e.plane[0], e.plane[1], e.plane[2], e.plane[3], (unsigned)e.context, e.bindsSoFar, e.worldTranslate.x, e.worldTranslate.y, e.worldTranslate.z, e.location.x, e.location.y, e.location.z, e.viewRow4[0], e.viewRow4[1], e.viewRow4[2], e.proj43);
 		}
 	}
 
@@ -729,20 +1055,76 @@ namespace ReflectionProbe {
 		}
 	}
 
+	// The game's own reflection map and water depth (refraction) map: their D3D surfaces, whether either is the target
+	// the reflection pass drew into (aliasing would let the depth pass draw over the reflection), and the depth map.
+	static IDirect3DSurface9* MapSurface(UInt32 pointerAddress, IDirect3DTexture9** textureOut) {
+		*textureOut = nullptr;
+		BSRenderedTexture* rendered = *(BSRenderedTexture**)pointerAddress;
+		if (!rendered || !rendered->RenderedTextures[0] || !rendered->RenderedTextures[0]->rendererData) return nullptr;
+		IDirect3DTexture9* texture = rendered->GetD3DTexture(0);
+		*textureOut = texture;
+		IDirect3DSurface9* surface = nullptr;
+		if (!texture || FAILED(texture->GetSurfaceLevel(0, &surface))) return nullptr;
+		return surface;
+	}
+
+	static void LogMaps() {
+		IDirect3DTexture9 *reflTex, *depthTex;
+		IDirect3DSurface9* refl = MapSurface(WorldReflectionMapPtr, &reflTex);
+		IDirect3DSurface9* depth = MapSurface(DepthMapPtr, &depthTex);
+		D3DSURFACE_DESC dd = {};
+		if (depth) depth->GetDesc(&dd);
+		Logger::Log("UNOFFICIAL reflection probe maps: drawn-into target %p | spWorldReflectionMap texture %p surface %p (%s) | spDepthMap texture %p surface %p %ux%u format %u (%s)",
+			ReflectionTarget, reflTex, refl, refl && refl == ReflectionTarget ? "= target" : "not the target",
+			depthTex, depth, dd.Width, dd.Height, (unsigned)dd.Format, depth && depth == ReflectionTarget ? "= TARGET: ALIASED" : (depth && depth == refl ? "= reflection map: ALIASED" : "separate"));
+		if (depth) {
+			if (Mode == ModeAsIs) {
+				char file[MAX_PATH];
+				sprintf_s(file, "%s water depth map.png", Base);
+				const HRESULT hr = D3DXSaveSurfaceToFileA(file, D3DXIFF_PNG, depth, NULL, NULL);
+				Logger::Log("UNOFFICIAL reflection probe: water depth map %s (hr %08lX)", SUCCEEDED(hr) ? "saved" : "NOT saved", (unsigned long)hr);
+			}
+			depth->Release();
+		}
+		if (refl) refl->Release();
+	}
+
 	static void Report() {
-		Logger::Log("UNOFFICIAL reflection probe for screenshot %s:", Name);
+		static const char* const modeNames[ModeCount] = { "m0 as the game draws it", "m1 clip plane forced OFF at every bind", "m2 clip plane re-set by NVR at every bind" };
+		Logger::Log("UNOFFICIAL reflection probe for screenshot %s, %s%s:", Name, modeNames[Mode], FixOn() ? " (ReflectionClipFix on: m0 includes it)" : "");
 		LogPass("world pass", Shots[0]);
 		LogPass("reflection pass", Shots[1]);
 		LogDrawn();
-		LogWater();
+		Logger::Log("UNOFFICIAL reflection probe objects: %d drawn in the reflection context (%d skinned); first %d (name@bind, * = skinned): %s",
+			ObjTotal, ObjSkinnedTotal, ObjListed, ObjList[0] ? ObjList : "(none: the per-object hooks are off, or nothing was drawn)");
+		LogEvents();
+		if (Mode == ModeAsIs) LogWater();
+		LogMaps();
 		if (ReflectionTarget) {
 			char file[MAX_PATH];
-			sprintf_s(file, "%s reflection.png", Base);
+			sprintf_s(file, "%s reflection%s.png", Base, Suffix);
 			const HRESULT hr = D3DXSaveSurfaceToFileA(file, D3DXIFF_PNG, ReflectionTarget, NULL, NULL);
-			Logger::Log("UNOFFICIAL reflection probe: reflection map %s as \"%s reflection.png\" (hr %08lX)", SUCCEEDED(hr) ? "saved" : "NOT saved", Name, (unsigned long)hr);
+			Logger::Log("UNOFFICIAL reflection probe: reflection map %s as \"%s reflection%s.png\" (hr %08lX)", SUCCEEDED(hr) ? "saved" : "NOT saved", Name, Suffix, (unsigned long)hr);
 			ReflectionTarget->Release();
 			ReflectionTarget = nullptr;
 		}
+	}
+
+	static void Arm(int mode) {
+		Mode = mode;
+		sprintf_s(Suffix, " m%d", mode);
+		Shots[0] = PassShot();
+		Shots[1] = PassShot();
+		DrawnCount = DrawnTotal = StageCount = EventCount = EventTotal = 0;
+		ObjTotal = ObjSkinnedTotal = ObjListed = 0;
+		ObjList[0] = 0;
+		EndDraws = EndPrims = 0;
+		DrawnDone = false;
+		PassWorldPlaneValid = false;
+		PassWorldPlaneDerivations = 0;
+		if (ReflectionTarget) { ReflectionTarget->Release(); ReflectionTarget = nullptr; }
+		InstallDeviceHooks(TheRenderManager->device);
+		ArmedFrames = 30;  // the reflection pass only runs while water is in view
 	}
 
 	// Once per frame, after the screenshot check.
@@ -751,18 +1133,14 @@ namespace ReflectionProbe {
 			ScreenshotTakenThisFrame = false;
 			strcpy_s(Base, LastScreenshotBase);
 			strcpy_s(Name, LastScreenshotName);
-			Shots[0] = PassShot();
-			Shots[1] = PassShot();
-			DrawnCount = DrawnTotal = 0;
-			DrawnDone = false;
-			if (ReflectionTarget) { ReflectionTarget->Release(); ReflectionTarget = nullptr; }
-			ArmedFrames = 30;  // the reflection pass only runs while water is in view
+			Arm(ModeAsIs);
 			return;
 		}
 		if (!ArmedFrames) return;
-		if ((Shots[0].valid && Shots[1].valid) || --ArmedFrames == 0) {
+		if ((Shots[0].valid && Shots[1].valid && DrawnDone) || --ArmedFrames == 0) {
 			Report();
 			ArmedFrames = 0;
+			if (Mode + 1 < ModeCount) Arm(Mode + 1);
 		}
 	}
 }
@@ -1032,7 +1410,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		}
 	}
 	ShaderSplit::OnBind(PixelShader, PixelShader2, bindStart);
-	ReflectionProbe::OnBind(Geometry, PixelShader ? PixelShader->Name : nullptr);
+	ReflectionProbe::OnBind(Geometry, PixelShader ? PixelShader->Name : nullptr, VertexShader ? VertexShader->Name : nullptr);
 
 	// trace pipeline active shaders
 	if (TheSettingManager->SettingsMain.Develop.DebugMode && !InterfaceManager->IsActive(Menu::MenuType::kMenuType_Console) && Global->OnKeyDown(TheSettingManager->SettingsMain.Develop.TraceShaders)) {
@@ -1045,6 +1423,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+	ReflectionProbe::AfterBind();  // UNOFFICIAL ReflectionClipFix: the clip plane re-issued once the pass's shaders are bound
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
 	// UNOFFICIAL interior forward point-light shadows: the draw's lamps and their cube maps (PointShadowForward.h).
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
@@ -1114,11 +1493,13 @@ static void ForwardShadowsForPass(void* Pass) {
 }
 
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	ReflectionProbe::OnObject(Pass, false);
 	ForwardShadowsForPass(Pass);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 }
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	ReflectionProbe::OnObject(Pass, true);
 	ForwardShadowsForPass(Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
 }
@@ -1136,6 +1517,11 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 	return r;
 
 }
+
+// UNOFFICIAL: in third person RenderWorldSceneGraphHook clears the depth buffer and resolves it into the view-model depth
+// texture, the same empty picture every frame. It is resolved on the first such frame and once every 64 after (in case
+// the texture's contents were lost); RenderFirstPersonHook, which writes real data into that texture, resets the count.
+static unsigned ViewModelDepthClearedFrames = 0;
 
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
@@ -1175,7 +1561,9 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	if (!IsFirstPerson) {
 		// clear the viewmodel depth buffer
 		TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
-		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
+		if (ViewModelDepthClearedFrames == 0 || (ViewModelDepthClearedFrames & 63) == 0)	// UNOFFICIAL, see above
+			TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
+		ViewModelDepthClearedFrames++;
 	}
 }
 
@@ -1196,6 +1584,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	BarrelHeat::Clear();
 	ShaderSplit::EndContext();
 	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
+	ViewModelDepthClearedFrames = 0;	// UNOFFICIAL: the next third-person frame resolves the cleared buffer again
 }
 
 void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*) = (void (__thiscall*)(WaterManager*, NiCamera*, ShadowSceneNode*))Hooks::RenderReflections;
@@ -1372,6 +1761,7 @@ static void RenderMainMenuMovie() {
 
 CallDetour kRenderInterfaceDetour;
 void __fastcall RenderInterfaceHook(void* apThis, void*, void* apCuller, bool abPipboyVisible) {
+	ShaderWarmUp::OnInterfaceFrame();	// UNOFFICIAL: at the main menu, draw the shaders used in play once (ShaderWarmUp.h)
 	RenderMainMenuMovie();
 	ImGuiManager::NewFrame();
 	ThisCall(kRenderInterfaceDetour.GetOverwrittenAddr(), apThis, apCuller, abPipboyVisible);
