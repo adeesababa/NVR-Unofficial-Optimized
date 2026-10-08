@@ -205,8 +205,8 @@ nothing while off. Turn them on in the menu to try them:
   what is on screen. Since P75 it also guesses light from just off screen (`OffScreenLight`), bounces more
   than once (`MultiBounce`) and reuses the last frame (`Temporal`: less grain; a moving character's glow on
   the floor trails by about 0.15 s, set it off if that bothers you). About 0.5 ms at 1440p on a GTX 1070.
-- **Shaders > ShadowsInteriors > Forward** (since P75; **on by default since P77**, turning it off or on again
-  needs a restart) - indoor lamp shadows drawn on each object, lamp by lamp, instead of one dark mask over the
+- **Shaders > ShadowsInteriors > Forward** (since P75; **on by default since P77**; turning it on needs a restart
+  if the game started with it off) - indoor lamp shadows drawn on each object, lamp by lamp, instead of one dark mask over the
   finished picture: a lamp's shadow takes away only that lamp's light, so lamp glow and the room's ambient light
   stay bright and two lamps each cast their own shadow. Needs `Shaders > PBR` on. `Enabled` off = the old
   screen-space shadows. `DebugView` 1 shows each lamp's shadows in its own colour; 3 is a diagnostic view.
