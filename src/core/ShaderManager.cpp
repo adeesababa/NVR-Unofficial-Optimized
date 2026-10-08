@@ -112,6 +112,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_OcclusionWorldViewProjTransform", (D3DXVECTOR4*)&TheShaderManager->ShaderConst.OcclusionMap.OcclusionWorldViewProj);
 	TheShaderManager->RegisterConstant("TESR_LightPosition", (D3DXVECTOR4*) &TheShaderManager->LightPosition);
 	TheShaderManager->RegisterConstant("TESR_LightColor", (D3DXVECTOR4*) &TheShaderManager->LightColor);
+	TheShaderManager->RegisterConstant("TESR_ExtraLights", (D3DXVECTOR4*) &TheShaderManager->ExtraLights);	// UNOFFICIAL, GetNearbyLights
 	TheShaderManager->RegisterConstant("TESR_SpotLightPosition", (D3DXVECTOR4*) &TheShaderManager->SpotLightPosition);
 	TheShaderManager->RegisterConstant("TESR_SpotLightColor", (D3DXVECTOR4*) &TheShaderManager->SpotLightColor);
 	TheShaderManager->RegisterConstant("TESR_SpotLightDirection", (D3DXVECTOR4*) &TheShaderManager->SpotLightDirection);
@@ -747,6 +748,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// last frame's position keeps GetPointLightAmount sampling a cubemap nobody redraws.
 	memset(&ShadowsConstants->ShadowLightPosition, 0, ShadowCubeMapsScreen * sizeof(D3DXVECTOR4));
 	memset(&TheShaderManager->LightColor, 0, (TrackedLightsMax + ShadowCubeMapsScreen) * sizeof(D3DXVECTOR4)); // clear previous lights from array
+	memset(ExtraLights, 0, sizeof(ExtraLights));	// UNOFFICIAL: the mask's extra lamps, filled below with forward shadows
 
 	// ShadowManager::RenderShadowMaps only renders cubemaps for the first LightPoints slots.
 	// Filling past that gives the shader a live position and colour for a face that is never
@@ -806,7 +808,8 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			//bool CastShadow = Settings->UseCastShadowFlag ? Light->CastShadows : true; // Flag is broken by JIP
 			bool CastShadow = true;
 			if (fillLightRadius > 0.0f && Light->Spec.r > fillLightRadius) {	// UNOFFICIAL FillLightRadius, see above
-				CastShadow = false;
+				// (FillLightShadowStrength above 0: it keeps a shadow, that much of a full one: PointShadowForward::Publish)
+				CastShadow = Settings->Forward.FillLightShadowStrength > 0.0f;
 				static const void* loggedFill[64] = {};
 				static int loggedFillCount = 0;
 				if (logLamps && loggedFillCount < 64) {
@@ -815,8 +818,8 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 					if (!seen) {
 						loggedFill[loggedFillCount++] = v->second;
 						const D3DXVECTOR4 at = Light->m_worldTransform.pos.toD3DXVEC4();
-						Logger::Log("LAMP %p is a fill light (reach %.0f > FillLightRadius %.0f): it lights as before, without a shadow | at %.0f %.0f %.0f, colour %.2f %.2f %.2f x %.2f",
-							v->second, Light->Spec.r, fillLightRadius, at.x, at.y, at.z, Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+						Logger::Log("LAMP %p is a fill light (reach %.0f > FillLightRadius %.0f): it lights as before, its shadow at strength %.2f (0: none) | at %.0f %.0f %.0f, colour %.2f %.2f %.2f x %.2f",
+							v->second, Light->Spec.r, fillLightRadius, Settings->Forward.FillLightShadowStrength, at.x, at.y, at.z, Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
 					}
 				}
 			}
@@ -909,28 +912,32 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		}
 		// UNOFFICIAL (2026-10-08): the darkening mask (KeepDarkening, PointShadows.fx) knows 12 shadow lamps and 12 tracked
 		// ones. Lamps in the forward slots past 12 go to the front of the tracked list, so what they light is not darkened as
-		// unlit (the mask then knows the 24 best-ranked lamps, as before).
+		// unlit; what no longer fits there (forward slots past 24, the tracked lamps they push off) goes to the extra list,
+		// which the mask reads too (TESR_ExtraLights, the next ExtraLightsMax: the mask then knows the 40 nearest lamps). One
+		// register per lamp: w packs the radius (whole units) and the weight the mask gives it, luma(colour) x dimmer.
 		if (allSlots && sampledSlots > ShadowCubeMapsScreen) {
 			NiPointLight* keepLight[TrackedLightsMax] = {};
 			D3DXVECTOR4 keepPos[TrackedLightsMax], keepColour[TrackedLightsMax];
-			int kept = 0;
-			for (int s = ShadowCubeMapsScreen; s < sampledSlots && kept < TrackedLightsMax; s++) {
+			int kept = 0, extra = 0;
+			auto take = [&](NiPointLight* light, const D3DXVECTOR4& pos, const D3DXVECTOR4& colour) {
+				if (kept < TrackedLightsMax) { keepLight[kept] = light; keepPos[kept] = pos; keepColour[kept] = colour; kept++; }
+				else if (extra < ExtraLightsMax && pos.w >= 1.0f) {
+					const float weight = (0.2126f * colour.x + 0.7152f * colour.y + 0.0722f * colour.z) * colour.w;	// Helpers.hlsl luma
+					ExtraLights[extra] = pos;
+					ExtraLights[extra].w = floorf(pos.w) * 8.0f + std::clamp(weight, 0.0f, 7.99f);
+					extra++;
+				}
+			};
+			for (int s = ShadowCubeMapsScreen; s < sampledSlots; s++) {
 				ShadowSceneLight* shadowLight = (ShadowSceneLight*)assigned[s];
 				if (!shadowLight || !shadowLight->sourceLight) continue;
 				NiPointLight* Light = shadowLight->sourceLight;
-				keepLight[kept] = Light;
-				keepPos[kept] = Light->m_worldTransform.pos.toD3DXVEC4();
-				keepPos[kept].w = Light->Spec.r * Settings->LightRadiusMult;
-				keepColour[kept] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
-				kept++;
+				D3DXVECTOR4 pos = Light->m_worldTransform.pos.toD3DXVEC4();
+				pos.w = Light->Spec.r * Settings->LightRadiusMult;
+				take(Light, pos, D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer));
 			}
-			for (int t = 0; t < LightIndex && kept < TrackedLightsMax; t++) {
-				if (!LightsList[t]) continue;
-				keepLight[kept] = LightsList[t];
-				keepPos[kept] = LightPosition[t];
-				keepColour[kept] = LightColor[ShadowCubeMapsScreen + t];
-				kept++;
-			}
+			for (int t = 0; t < LightIndex; t++)
+				if (LightsList[t]) take(LightsList[t], LightPosition[t], LightColor[ShadowCubeMapsScreen + t]);
 			for (int t = 0; t < TrackedLightsMax; t++) {
 				LightsList[t] = t < kept ? keepLight[t] : nullptr;
 				LightPosition[t] = t < kept ? keepPos[t] : Empty;
@@ -1305,7 +1312,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P76 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P77 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 		else LogActiveSwitches(true);

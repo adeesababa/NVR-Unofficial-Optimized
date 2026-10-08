@@ -15,11 +15,16 @@
 // ([Shaders.ShadowsInteriors.Forward]) bind each object's own lamps and can use up to ShadowCubeMapsMax
 // ([Shaders.ShadowsInteriors.Main] LightPoints). Slots past ShadowCubeMapsScreen get their cube maps when first used.
 #define ShadowCubeMapsScreen 12
-#define ShadowCubeMapsMax 32
+#define ShadowCubeMapsMax 64	// UNOFFICIAL (2026-10-08): 32 -> 64, busy interiors (TOPS: 50-70 lamps) ran out of slots
 // PointShadows.fx / PointShadows2.fx sample the cubemaps of slots 0..10 only; the last slot's light is lit without a
 // shadow lookup, so its cubemap is never read and is not drawn.
 #define ShadowCubeMapsSampled (ShadowCubeMapsScreen - 1)
 #define TrackedLightsMax 12
+// UNOFFICIAL (2026-10-08): lamps the darkening mask (PointShadows.fx, TESR_ExtraLights) knows past its 12 shadow and 12
+// tracked ones: the forward shadow slots past 24 and the tracked lamps they push off, nearest first (GetNearbyLights). 16,
+// one register each: the effect's pixel shader has room for about 20 more constants (its shadow sampling's own constants
+// fill the rest of the 224; tests/effect_compile checks it with the game's compiler).
+#define ExtraLightsMax 16
 #define SpotLightsMax 1
 
 #define WordWaterHeightMapBuffer "TESR_WaterHeightMapBuffer"

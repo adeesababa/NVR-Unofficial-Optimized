@@ -21,7 +21,11 @@ public:
 	void					RenderAccums();
 	void					RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj);
 	void					AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);
-	void					RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex);
+	// UNOFFICIAL RedrawActorsOnly (PointShadowSchedule.h): which casters RenderShadowCubeMap draws, into which cube map.
+	// All: every caster into the live cube map (as before). StaticOnly: those that never move, into the slot's static cube
+	// map. MovingOnto: the static cube map copied into the live one, then only the moving casters, min-blended on top.
+	enum class CubeLayer { All, StaticOnly, MovingOnto };
+	bool					RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex, CubeLayer Layer = CubeLayer::All);	// false: MovingOnto's copy failed, nothing drawn
 	void					RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex);
 	void					RenderShadowMaps();
 	void					ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* ClearColor);

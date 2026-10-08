@@ -236,5 +236,6 @@ public:
 	D3DXVECTOR4				LightPosition[TrackedLightsMax];
 	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsScreen];	// PointShadows.fx TESR_LightColor[24]: 12 shadow lamps, then the tracked ones
 	D3DXVECTOR4				LightAttenuation[TrackedLightsMax];
+	D3DXVECTOR4				ExtraLights[ExtraLightsMax];	// UNOFFICIAL: PointShadows.fx TESR_ExtraLights: position, w = radius x 8 + weight (0 ends the list)
 };
 

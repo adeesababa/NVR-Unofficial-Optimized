@@ -79,15 +79,46 @@ static UInt64 HashPointShadowBytes(UInt64 hash, const void* data, size_t size) {
 	return hash;
 }
 
+// UNOFFICIAL RedrawActorsOnly (2026-10-08): rigid geometry that moves -- a held gun, a hat, a door swinging, a box being
+// pushed -- counts as moving while its world transform keeps changing and for MovingSettleFrames after it last changed.
+// Without this, people's rigid parts were in the static layer and changed it every frame, so it was redrawn every frame.
+// Each geometry is looked at once per frame (SkinnedBoundFrame); first sight counts as still.
+struct CasterMotion { UInt32 seen = 0, changed = 0; UInt64 transform = 0; bool known = false; };
+static std::unordered_map<NiGeometry*, CasterMotion> CasterMotions;
+static const UInt32 MovingSettleFrames = 60;
+
+static bool RecentlyMoved(NiGeometry* geo) {
+	CasterMotion& motion = CasterMotions[geo];
+	if (motion.seen != SkinnedBoundFrame || !motion.known) {
+		const UInt64 transform = HashPointShadowBytes(1469598103934665603ULL, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		if (motion.known && transform != motion.transform) motion.changed = SkinnedBoundFrame;
+		motion.transform = transform;
+		motion.known = true;
+		motion.seen = SkinnedBoundFrame;
+	}
+	return motion.changed && SkinnedBoundFrame - motion.changed < MovingSettleFrames;
+}
+
+// A caster that moves: skinned geometry (people, creatures), wind-blown SpeedTree leaves (both move without their transform
+// changing), and rigid geometry that moved lately (RecentlyMoved). They make a lamp's caster list dynamic, and
+// RedrawActorsOnly draws them apart from the rest (RenderShadowCubeMap).
+static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade) {
+	if (!geo) return false;
+	if (geo->skinInstance || (shade && shade->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf)) return true;
+	return RecentlyMoved(geo);
+}
+
 static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& staticCasters) {
 	hash = 1469598103934665603ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 
+	// The hash covers only the casters that never move, so with moving ones it describes what RedrawActorsOnly keeps in
+	// the static cube map.
 	for (auto entry = light->kGeometryList.start; entry; entry = entry->next) {
 		NiGeometry* geo = entry->data;
 		NiShadeProperty* shade = geo ? static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade)) : nullptr;
-		if (geo && (geo->skinInstance || (shade && shade->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf))) {
+		if (IsMovingCaster(geo, shade)) {
 			staticCasters = false;
 			continue;
 		}
@@ -105,6 +136,42 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 		}
 		if (material) casterHash = HashPointShadowBytes(casterHash, &material->fAlpha, sizeof(material->fAlpha));
 		hash = PointShadowAddCasterHash(hash, casterHash);
+	}
+}
+
+// UNOFFICIAL RedrawActorsOnly needs a min blend into the R32F cube maps (and a face copy, checked as it happens); asked
+// once. A failed copy turns it off for the session (ActorsOnlyBroken); the lamps are then redrawn whole, as before.
+static bool ActorsOnlyBroken = false;
+static bool ActorsOnlySupported(IDirect3DDevice9* device) {
+	static int supported = -1;
+	if (supported < 0) {
+		supported = 0;
+		D3DCAPS9 caps = {};
+		IDirect3D9* d3d = nullptr;
+		D3DDEVICE_CREATION_PARAMETERS creation = {};
+		D3DDISPLAYMODE mode = {};
+		if (SUCCEEDED(device->GetDeviceCaps(&caps)) && (caps.PrimitiveMiscCaps & D3DPMISCCAPS_BLENDOP) && SUCCEEDED(device->GetDirect3D(&d3d)) &&
+			SUCCEEDED(device->GetCreationParameters(&creation)) && SUCCEEDED(device->GetDisplayMode(0, &mode)))
+			supported = SUCCEEDED(d3d->CheckDeviceFormat(creation.AdapterOrdinal, creation.DeviceType, mode.Format,
+				D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING, D3DRTYPE_CUBETEXTURE, D3DFMT_R32F)) ? 1 : 0;
+		if (d3d) d3d->Release();
+		Logger::Log(supported ? "UNOFFICIAL RedrawActorsOnly: available (min blend into R32F cube maps)"
+			: "UNOFFICIAL RedrawActorsOnly: this GPU cannot min-blend into R32F cube maps; lamps are redrawn whole, as before");
+	}
+	return supported == 1 && !ActorsOnlyBroken;
+}
+
+// Lamps trade slots as the player walks (PointShadowSlots.h keeps them where it can). A lamp's static cube map stays with
+// the lamp: when another slot's was drawn for it, the two slots swap theirs, textures and records together. The static
+// cube maps are only ever copied from (never bound to a shader), so swapping the pointers is all it takes.
+static void AdoptStaticCubeMap(ShadowsExteriorEffect* shadows, PointShadowSlotState* staticSlots, int slot, const void* light) {
+	if (staticSlots[slot].valid && staticSlots[slot].light == light) return;
+	for (int k = 0; k < ShadowCubeMapsMax; k++) {
+		if (k == slot || !staticSlots[k].valid || staticSlots[k].light != light) continue;
+		std::swap(shadows->Textures.ShadowCubeMapStaticTexture[slot], shadows->Textures.ShadowCubeMapStaticTexture[k]);
+		for (int f = 0; f < 6; f++) std::swap(shadows->Textures.ShadowCubeMapStaticSurface[slot][f], shadows->Textures.ShadowCubeMapStaticSurface[k][f]);
+		std::swap(staticSlots[slot], staticSlots[k]);
+		return;
 	}
 }
 
@@ -607,14 +674,24 @@ static bool PlayerLampOffset(const ShadowSceneLight* light, const NiPoint3* ligh
 	return now;
 }
 
-void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex) {
-	if (Lights[LightIndex] == NULL) return; // No light at current index
+bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex, CubeLayer Layer) {
+	if (Lights[LightIndex] == NULL) return true; // No light at current index
 	
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 	ShadowsExteriorEffect::InteriorsStruct* Settings = &Shadows->Settings.Interiors;
 
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
+
+	// UNOFFICIAL RedrawActorsOnly: the moving layer starts from the static cube map, copied face by face (same size and
+	// format). A failed copy draws nothing; the caller redraws the lamp whole.
+	if (Layer == CubeLayer::MovingOnto) {
+		for (int Face = 0; Face < 6; Face++) {
+			IDirect3DSurface9* from = Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face];
+			IDirect3DSurface9* to = Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face];
+			if (!from || !to || FAILED(Device->StretchRect(from, NULL, to, NULL, D3DTEXF_NONE))) return false;
+		}
+	}
 	float Radius = 0.0f;
 	float MinRadius = Settings->Forms.MinRadius;
 	NiPoint3* LightPos = NULL;
@@ -675,6 +752,10 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			NiMaterialProperty* matProp = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
 
 			if (!shaderProp)
+				continue;
+
+			// UNOFFICIAL RedrawActorsOnly: the static layer takes what never moves, the moving layer the rest.
+			if (Layer != CubeLayer::All && IsMovingCaster(geo, shaderProp) != (Layer == CubeLayer::MovingOnto))
 				continue;
 
 			// Skip refraction and fire refraction.
@@ -739,6 +820,59 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 	}
 
+	// UNOFFICIAL RedrawActorsOnly: the moving casters go over the copied static distances; a min blend keeps the nearer.
+	if (Layer == CubeLayer::MovingOnto) {
+		RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE, RenderStateArgs);
+		RenderState->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_MIN, RenderStateArgs);
+		RenderState->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE, RenderStateArgs);
+		RenderState->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE, RenderStateArgs);
+	}
+
+	// UNOFFICIAL LogLamps diagnostic (2026-10-08): in the TOPS casino a ceiling fill light's forward shadow blacked out whole
+	// floor pieces. What a lamp's cube map draws close to the lamp decides that, so the first time each lamp's static (or
+	// whole) cube map is drawn, the casters within a fifth of its reach of it are logged (CASTERS lines): name, shader type,
+	// alpha blending/testing, material alpha, which pass draws it, how far its bound is from the lamp (negative: around it).
+	if (Settings->Forward.LogLamps && useGeometryList && Layer != CubeLayer::MovingOnto) {
+		static std::unordered_map<const void*, bool> loggedLamps;
+		static unsigned casterLines = 0;
+		const ShadowSceneLight* lamp = Lights[LightIndex];
+		if (casterLines < 600 && !loggedLamps[lamp]) {
+			loggedLamps[lamp] = true;
+			const float nearLimit = (std::max)(48.0f, 0.2f * pNiLight->Spec.r);
+			int nearCount = 0;
+			for (const CubeCaster& caster : cubeCasters) {
+				const NiBound* b = caster.geometry->m_kWorldBound;
+				if (!b) continue;
+				const float dx = b->Center.x - LightPos->x, dy = b->Center.y - LightPos->y, dz = b->Center.z - LightPos->z;
+				if (sqrtf(dx * dx + dy * dy + dz * dz) - b->Radius < nearLimit) nearCount++;
+			}
+			casterLines++;
+			Logger::Log("CASTERS lamp %p at %.0f %.0f %.0f, reach %.0f, cube radius %.0f, %s: %u casters, %d within %.0f of the lamp:",
+				(const void*)lamp, LightPos->x, LightPos->y, LightPos->z, pNiLight->Spec.r, Radius,
+				Layer == CubeLayer::StaticOnly ? "static layer" : "whole", (unsigned)cubeCasters.size(), nearCount, nearLimit);
+			int listed = 0;
+			for (const CubeCaster& caster : cubeCasters) {
+				NiGeometry* geo = caster.geometry;
+				const NiBound* b = geo->m_kWorldBound;
+				if (!b || listed >= 14 || casterLines >= 600) continue;
+				const float dx = b->Center.x - LightPos->x, dy = b->Center.y - LightPos->y, dz = b->Center.z - LightPos->z;
+				const float gap = sqrtf(dx * dx + dy * dy + dz * dz) - b->Radius;
+				if (gap >= nearLimit) continue;
+				NiShadeProperty* shade = static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade));
+				NiAlphaProperty* alpha = static_cast<NiAlphaProperty*>(geo->GetProperty(NiProperty::kType_Alpha));
+				NiMaterialProperty* material = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
+				const char* passName = caster.pass == skinnedGeoPass ? "skinned" : caster.pass == speedTreePass ? "speedtree" : caster.pass == alphaPass ? "alpha-tested" : "opaque";
+				listed++;
+				casterLines++;
+				Logger::Log("CASTERS   %s %p: shader type %d, alpha %s%s, material alpha %.2f, drawn as %s, bound radius %.0f, %.0f from the lamp%s",
+					geo->m_pcName ? geo->m_pcName : "(unnamed)", (const void*)geo, shade ? (int)shade->m_eShaderType : -1,
+					alpha && (alpha->flags & NiAlphaProperty::ALPHA_BLEND_MASK) ? "blended" : "not blended",
+					alpha && (alpha->flags & NiAlphaProperty::TEST_ENABLE_MASK) ? ", tested" : "", material ? material->fAlpha : -1.0f,
+					passName, b->Radius, gap, gap < 0.0f ? " (around the lamp)" : "");
+			}
+		}
+	}
+
 	for (int Face = 0; Face < 6; Face++) {
 		CameraDirection = FaceDirection[Face];
 		Up = FaceUp[Face];
@@ -773,14 +907,22 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		D3DXMatrixLookAtRH(&View, &Eye, &At, &Up);
 		Shadows->Constants.ShadowViewProj = View * Proj;
 
-		Device->SetRenderTarget(0, Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face]);
+		Device->SetRenderTarget(0, Layer == CubeLayer::StaticOnly ? Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face]
+			: Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face]);
 		Device->SetDepthStencilSurface(Shadows->Textures.ShadowCubeMapDepthSurface);
 
 		Device->SetViewport(&ShadowCubeMapViewPort);
-		Device->Clear(0L, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f), 1.0f, 0L);
+		// (MovingOnto keeps the copied distances: only the depth buffer starts empty)
+		Device->Clear(0L, NULL, Layer == CubeLayer::MovingOnto ? D3DCLEAR_ZBUFFER : D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f), 1.0f, 0L);
 
 		RenderAccums();
 	}
+
+	if (Layer == CubeLayer::MovingOnto) {
+		RenderState->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD, RenderStateArgs);
+		RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
+	}
+	return true;
 }
 
 
@@ -928,7 +1070,12 @@ void ShadowManager::RenderShadowMaps() {
 	PointShadowForward::Begin();	// UNOFFICIAL: idle unless the cube maps below are published
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // cancel out if rendering effects is disabled
 	// UNOFFICIAL SkinnedShadowFaceTest: skeleton bounds are rebuilt once per frame; forget meshes not seen for a while.
-	if ((++SkinnedBoundFrame & 1023) == 0) SkinnedBounds.clear();
+	if ((++SkinnedBoundFrame & 1023) == 0) {
+		SkinnedBounds.clear();
+		// UNOFFICIAL RedrawActorsOnly: forget geometry not seen for a while (keeping the rest's motion history).
+		for (auto it = CasterMotions.begin(); it != CasterMotions.end();)
+			it = SkinnedBoundFrame - it->second.seen > 1024 ? CasterMotions.erase(it) : std::next(it);
+	}
 
 	// track point lights for interiors and exteriors
 	ShadowSceneLight* ShadowLights[ShadowCubeMapsMax] = { NULL };
@@ -1218,6 +1365,10 @@ void ShadowManager::RenderShadowMaps() {
 		static unsigned scheduleFrame = 0, statFrames = 0, statPresent = 0, statRedrawn = 0, statStaticReused = 0;
 		static unsigned statReasons[(int)PointShadowRedraw::Count] = {};
 		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
+		// UNOFFICIAL RedrawActorsOnly (PointShadowSchedule.h PointShadowDrawPlan): what each slot's static cube map holds.
+		static PointShadowSlotState staticSlots[ShadowCubeMapsMax];
+		static unsigned statStaticDrawn = 0, statMovingOnly = 0, statWhole = 0;
+		const bool split = ShadowsInteriors->RedrawActorsOnly && ActorsOnlySupported(Device);
 
 		// render the cubemaps for each light; the last slot's cubemap is never sampled (ShadowCubeMapsSampled), so it is not drawn
 		// (UNOFFICIAL: with forward shadows indoors every slot up to LightPoints is drawn, PointShadowForward::ShadowedSlots)
@@ -1248,8 +1399,38 @@ void ShadowManager::RenderShadowMaps() {
 				continue;
 			}
 
+			// UNOFFICIAL RedrawActorsOnly: with people in reach, the walls and furniture come from the lamp's static cube map
+			// (drawn when missing or stale) and only the people are drawn again.
+			const bool hasList = shadowLight->kGeometryList.start != nullptr;
+			const bool moving = hasList && !now.staticCasters;
+			PointShadowSlotState staticNow = now;
+			staticNow.staticCasters = true;
+			staticNow.texture = nullptr;
+			if (split && hasList) {
+				AdoptStaticCubeMap(Shadows, staticSlots, i, shadowLight);
+				if (moving) Shadows->EnsureStaticCubeMap(i);
+				staticNow.texture = Shadows->Textures.ShadowCubeMapStaticTexture[i];
+			}
+			const PointShadowDraw draw = PointShadowDrawPlan(split && hasList, staticSlots[i], staticNow, moving);
+			if (draw == PointShadowDraw::StaticThenMoving) {
+				RenderShadowCubeMap(ShadowLights, i, CubeLayer::StaticOnly);
+				staticSlots[i] = staticNow;
+				if (GpuTimer::Enabled) statStaticDrawn++;
+			}
+			bool drawn = false;
+			if (draw != PointShadowDraw::All) {
+				drawn = RenderShadowCubeMap(ShadowLights, i, CubeLayer::MovingOnto);
+				if (drawn && GpuTimer::Enabled) statMovingOnly++;
+				if (!drawn) {
+					ActorsOnlyBroken = true;
+					Logger::Log("UNOFFICIAL RedrawActorsOnly: copying a static cube map failed; lamps are redrawn whole from now on, as before");
+				}
+			}
 			// Render targets set in function due to rendering multiple faces.
-			RenderShadowCubeMap(ShadowLights, i);
+			if (!drawn) {
+				RenderShadowCubeMap(ShadowLights, i);
+				if (GpuTimer::Enabled) statWhole++;
+			}
 			slots[i] = now;
 			if (GpuTimer::Enabled) { statRedrawn++; statReasons[(int)why]++; }
 
@@ -1277,8 +1458,14 @@ void ShadowManager::RenderShadowMaps() {
 			Logger::Log("POINT SHADOWS skinned casters (SkinnedShadowFaceTest %s): %.1f per frame drawn into %.1f faces (all faces would be %.1f), %.1f skipped beyond the lamp's reach, %.1f without a usable skeleton bound",
 				TheSettingManager->SettingsMain.Main.SkinnedShadowFaceTest ? "on" : "off", statSkinnedCasters * perFrame, statSkinnedFaces * perFrame,
 				statSkinnedCasters * perFrame * 6.0f, statSkinnedOutOfRange * perFrame, statSkinnedNoBound * perFrame);
+			unsigned rigidMoving = 0;
+			for (const auto& entry : CasterMotions)
+				if (entry.second.seen == SkinnedBoundFrame && entry.second.changed && SkinnedBoundFrame - entry.second.changed < MovingSettleFrames) rigidMoving++;
+			Logger::Log("POINT SHADOWS RedrawActorsOnly %s: per frame %.1f lamps redrawn whole, %.1f only their people (a copy of the walls and furniture, plus %.1f static layers drawn); %u rigid pieces moving now (held weapons, doors...)",
+				split ? "on" : (ShadowsInteriors->RedrawActorsOnly ? "unavailable" : "off"), statWhole * perFrame, statMovingOnly * perFrame, statStaticDrawn * perFrame, rigidMoving);
 			statSkinnedCasters = statSkinnedFaces = statSkinnedOutOfRange = statSkinnedNoBound = 0;
 			statFrames = statPresent = statRedrawn = statStaticReused = 0;
+			statStaticDrawn = statMovingOnly = statWhole = 0;
 			for (unsigned& r : statReasons) r = 0;
 		}
 	}

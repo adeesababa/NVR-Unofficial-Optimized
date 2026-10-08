@@ -635,7 +635,8 @@ static int TestObjects(Gpu& gpu, const std::string& oldFolder, const std::string
 	return failures;
 }
 
-// ---- Metal (UNOFFICIAL): ObjectTemplate's LIGHTS < 4 pixel shaders, SLS2000-2027 ----
+// ---- Metal (UNOFFICIAL): ObjectTemplate's LIGHTS < 4 pixel shaders, SLS2000-2027, and the LIGHTS >= 4 ones, SLS2029-2036
+// (objects lit by four or more lamps at once; metal there since 2026-10-08) ----
 // Their PS_INPUT: TEXCOORD0 uv (zw barrel), 1-3 the lights (.w radius; lightDir.w world up's y for the metal), 4 the
 // camera-relative world position (.w sentinel), 5 squared light distances (.w up's x), 6 the view (.w barrel), 7 projected
 // shadow, COLOR0 vertex colour (.a up's z, encoded), COLOR1 fog.
@@ -671,7 +672,9 @@ static Scene SmallObjectScene() {
 static int TestMetal(Gpu& gpu, const std::string& oldFolder, const std::string& newFolder) {
 	int failures = 0;
 	const std::string oldFile = oldFolder + "\\ObjectTemplate.hlsl", newFile = newFolder + "\\ObjectTemplate.hlsl";
-	struct Variant { const char* name; Defines defines; bool opt, metal; };   // metal: has the metal code (SPECULAR, not HAIR)
+	// metal: has the metal code (SPECULAR, not HAIR); maxLights: 0 for the LIGHTS < 4 shaders, else the LIGHTS >= 4 shader's
+	// MAX_LIGHTS (its scene, ObjectScene, and that many lights in use)
+	struct Variant { const char* name; Defines defines; bool opt, metal; int maxLights; };
 	const Variant variants[] = {
 		{ "SLS2017 (SPECULAR)", { { "PS", "" }, { "SPECULAR", "" } }, false, true },
 		{ "SLS2018 (SPECULAR, SI)", { { "PS", "" }, { "SPECULAR", "" }, { "SI", "" } }, false, true },
@@ -680,17 +683,23 @@ static int TestMetal(Gpu& gpu, const std::string& oldFolder, const std::string& 
 		{ "SLS2000 (no specular)", { { "PS", "" } }, false, false },
 		{ "SLS2001 (OPT)", { { "PS", "" }, { "OPT", "" } }, true, false },
 		{ "SLS2019 (SPECULAR, HAIR)", { { "PS", "" }, { "SPECULAR", "" }, { "HAIR", "" } }, false, false },
+		{ "SLS2034 (LIGHTS 4, SPECULAR)", { { "PS", "" }, { "LIGHTS", "4" }, { "SPECULAR", "" } }, false, true, 3 },
+		{ "SLS2035 (LIGHTS 4, SPECULAR, OPT)", { { "PS", "" }, { "LIGHTS", "4" }, { "SPECULAR", "" }, { "OPT", "" } }, true, true, 3 },
+		{ "SLS2036 (LIGHTS 4, SPECULAR, SI)", { { "PS", "" }, { "LIGHTS", "4" }, { "SPECULAR", "" }, { "SI", "" } }, false, true, 3 },
+		{ "SLS2031 (LIGHTS 4)", { { "PS", "" }, { "LIGHTS", "4" } }, false, false, 4 },
+		{ "SLS2029 (LIGHTS 9)", { { "PS", "" }, { "LIGHTS", "9" } }, false, false, 6 },
 	};
 	IDirect3DDevice9* device = gpu.device.Get();
 	Check(device->SetVertexShader(gpu.objectVS.Get()), "SetVertexShader");
 	BindTextures(gpu, false);
-	const Scene scene = SmallObjectScene();
-	std::puts("METAL (ObjectTemplate LIGHTS < 4): metal off must be bit-identical to the old shader; metal on must change the scene, no NaNs:");
+	const Scene smallScene = SmallObjectScene();
+	std::puts("METAL (ObjectTemplate): metal off must be bit-identical to the old shader; metal on must change the scene, no NaNs:");
 	for (const Variant& v : variants) {
+		const Scene scene = v.maxLights ? ObjectScene(v.maxLights) : smallScene;
 		ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
 		IDirect3DPixelShader9* oldShader = CreatePS(device, Compile(oldFile, "ps_3_0", v.defines, 0).Get(), oldHolder);
 		IDirect3DPixelShader9* newShader = CreatePS(device, Compile(newFile, "ps_3_0", v.defines, 0).Get(), newHolder);
-		Constants k = ObjectConstants(1, v.opt);
+		Constants k = ObjectConstants(v.maxLights ? (float)v.maxLights : 1.0f, v.opt);
 		k.Set(34, 0, 0.6f, 0.25f, 0.55f);       // TESR_PBRMetal: off
 		k.Set(36, 0.5f, 0.25f, 1, 0);           // TESR_PBRMetalLook
 		k.Apply(device);

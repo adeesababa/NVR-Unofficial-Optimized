@@ -393,6 +393,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// UNOFFICIAL (2026-10-07 review): the per-frame code (GetNearbyLights, PointShadowForward, PlayerLampOffset, the
 	// contact hardening) used to read these by name every frame; they are read here, when settings change.
 	Settings.Interiors.PlayerInsideLamp = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PlayerInsideLamp") != 0;
+	Settings.Interiors.RedrawActorsOnly = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "RedrawActorsOnly") != 0;
 	Settings.Interiors.PlayerLampMargin = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerLampMargin"), 1.0f);
 	{
 		InteriorsStruct::ForwardStruct& forward = Settings.Interiors.Forward;
@@ -412,7 +413,9 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.Softness = TheSettingManager->GetSettingF(section, "Softness");
 		forward.FadeIn = TheSettingManager->GetSettingF(section, "FadeIn");
 		forward.CameraIndependent = TheSettingManager->GetSettingI(section, "CameraIndependent") != 0;
+		forward.KeepLampsInView = TheSettingManager->GetSettingI(section, "KeepLampsInView") != 0;
 		forward.FillLightRadius = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "FillLightRadius"));
+		forward.FillLightShadowStrength = std::clamp(TheSettingManager->GetSettingF(section, "FillLightShadowStrength"), 0.0f, 1.0f);
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
@@ -557,7 +560,8 @@ void ShadowsExteriorEffect::RegisterTextures() {
 	CubeMapSizeCreated = ShadowCubeMapSize;
 	for (int i = 0; i < ShadowCubeMapsMax; i++) {
 		Textures.ShadowCubeMapTexture[i] = nullptr;
-		for (int j = 0; j < 6; j++) Textures.ShadowCubeMapSurface[i][j] = nullptr;
+		Textures.ShadowCubeMapStaticTexture[i] = nullptr;
+		for (int j = 0; j < 6; j++) Textures.ShadowCubeMapSurface[i][j] = Textures.ShadowCubeMapStaticSurface[i][j] = nullptr;
 		if (i >= ShadowCubeMapsScreen) continue;
 		TheRenderManager->device->CreateCubeTexture(ShadowCubeMapSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &Textures.ShadowCubeMapTexture[i], NULL);
 		for (int j = 0; j < 6; j++) {
@@ -594,6 +598,23 @@ bool ShadowsExteriorEffect::EnsureCubeMap(int slot) {
 	}
 	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[slot][j]);
 	Logger::Log("UNOFFICIAL point shadows: cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
+	return true;
+}
+
+// UNOFFICIAL RedrawActorsOnly: a slot's static cube map (only what never moves), made the first time a lamp in that slot
+// has people in reach. Same size and format as the slot's cube map, so a face copies over with StretchRect.
+bool ShadowsExteriorEffect::EnsureStaticCubeMap(int slot) {
+	if (slot < 0 || slot >= ShadowCubeMapsMax || !CubeMapSizeCreated) return false;
+	if (Textures.ShadowCubeMapStaticTexture[slot]) return true;
+	if (FAILED(TheRenderManager->device->CreateCubeTexture(CubeMapSizeCreated, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT,
+		&Textures.ShadowCubeMapStaticTexture[slot], NULL)) || !Textures.ShadowCubeMapStaticTexture[slot]) {
+		Textures.ShadowCubeMapStaticTexture[slot] = nullptr;
+		static bool warned = false;
+		if (!warned) { warned = true; Logger::Log("UNOFFICIAL RedrawActorsOnly: could not create a static cube map for slot %d (video memory?); that lamp is redrawn whole.", slot); }
+		return false;
+	}
+	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapStaticTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapStaticSurface[slot][j]);
+	Logger::Log("UNOFFICIAL RedrawActorsOnly: static cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
 	return true;
 }
 

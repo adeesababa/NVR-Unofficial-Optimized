@@ -70,3 +70,28 @@ inline bool PointShadowNeedsRedraw(const PointShadowSlotState& last, const Point
 {
 	return PointShadowRedrawReason(last, now, frame, slot, interval) != PointShadowRedraw::None;
 }
+
+// UNOFFICIAL RedrawActorsOnly (2026-10-08): a lamp's cube map in two layers. With people (skinned geometry) or wind-blown
+// leaves in a lamp's reach, its whole cube map -- walls, furniture and all -- was redrawn on every scheduled refresh just
+// to move their shadows, so lamps near people cost a full redraw most frames. Now such a slot keeps a second, "static"
+// cube map drawn from the casters that never move (the ones PointShadowCasterState hashes), and a refresh copies it into
+// the live cube map and draws only the moving casters on top (a min blend keeps the nearer distance). ShadowManager hands
+// the static cube map on with its lamp when lamps trade slots.
+enum class PointShadowDraw {
+	All,              // the whole caster list straight into the live cube map (as before)
+	StaticThenMoving, // the static cube map first (missing or stale), then the copy and the moving casters
+	MovingOnly,       // the copy of the static cube map, then only the moving casters (none: the copy alone)
+};
+
+// staticLast: what the slot's static cube map was drawn for (valid false: nothing); staticNow: the slot now, with the
+// static cube map's texture (nullptr: there is none) and staticCasters true; moving: the lamp's caster list has moving
+// casters. A lamp with only static casters goes straight into its live cube map (which is then final, see above) unless
+// an up-to-date static cube map makes it a copy.
+inline PointShadowDraw PointShadowDrawPlan(bool split, const PointShadowSlotState& staticLast, const PointShadowSlotState& staticNow,
+	bool moving)
+{
+	if (!split || !staticNow.texture) return PointShadowDraw::All;
+	const bool staticCurrent = PointShadowRedrawReason(staticLast, staticNow, 0, 0, 1) == PointShadowRedraw::None;
+	if (!moving) return staticCurrent ? PointShadowDraw::MovingOnly : PointShadowDraw::All;
+	return staticCurrent ? PointShadowDraw::MovingOnly : PointShadowDraw::StaticThenMoving;
+}

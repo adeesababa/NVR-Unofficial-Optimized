@@ -146,13 +146,16 @@ public:
 		bool				PlayerShadowFirstPerson;
 		// UNOFFICIAL (2026-10-07 review): read on each settings change instead of by name every frame.
 		bool				PlayerInsideLamp;	// [Shaders.ShadowsInteriors.Main] PlayerInsideLamp
+		bool				RedrawActorsOnly;	// UNOFFICIAL (2026-10-08) [Shaders.ShadowsInteriors.Main] RedrawActorsOnly
 		float				PlayerLampMargin;	// [Shaders.ShadowsInteriors.Main] PlayerLampMargin (at least 1)
 		struct ForwardStruct {	// [Shaders.ShadowsInteriors.Forward]
 			bool Enabled, KeepDarkening, DarkeningBlur, FirstPerson, ScopeFix, LogLamps;
 			bool CameraIndependent;		// UNOFFICIAL (2026-10-08): lamps get shadows by where you are, not where you look
+			bool KeepLampsInView;		// UNOFFICIAL (2026-10-08): the game's lamp view test may not drop lamps that reach the view
 			int LampRanking, DebugView;
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;	// LampSwitchMargin clamped to 0..0.9
-			float FillLightRadius;		// UNOFFICIAL (2026-10-08): lamps reaching farther than this cast no shadow (0 = off)
+			float FillLightRadius;		// UNOFFICIAL (2026-10-08): lamps reaching farther than this are fill lights (0 = none)
+			float FillLightShadowStrength;	// UNOFFICIAL (2026-10-08): how dark fill lights' shadows are, 0..1 (0 = no shadow)
 		} Forward;
 	};
 
@@ -197,6 +200,10 @@ public:
 		IDirect3DSurface9* ShadowPassSurface;
 		IDirect3DCubeTexture9* ShadowCubeMapTexture[ShadowCubeMapsMax];
 		IDirect3DSurface9* ShadowCubeMapSurface[ShadowCubeMapsMax][6];
+		// UNOFFICIAL RedrawActorsOnly: per slot, the lamp's cube map with only what never moves (PointShadowSchedule.h);
+		// made on first use (EnsureStaticCubeMap), never registered as a shader texture (only copied from)
+		IDirect3DCubeTexture9* ShadowCubeMapStaticTexture[ShadowCubeMapsMax];
+		IDirect3DSurface9* ShadowCubeMapStaticSurface[ShadowCubeMapsMax][6];
 		IDirect3DTexture9* ShadowSpotlightTexture[SpotLightsMax];
 		IDirect3DSurface9* ShadowSpotlightSurface[SpotLightsMax];
 		IDirect3DSurface9* ShadowCubeMapDepthSurface;
@@ -234,6 +241,7 @@ public:
 	// UNOFFICIAL (2026-10-08): slots past ShadowCubeMapsScreen get their cube map on first use (forward shadows with
 	// LightPoints above 12), at the size the others were made at (the shared depth surface's). false: no cube map.
 	bool		EnsureCubeMap(int slot);
+	bool		EnsureStaticCubeMap(int slot);	// UNOFFICIAL RedrawActorsOnly
 	UINT		CubeMapSizeCreated = 0;
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();

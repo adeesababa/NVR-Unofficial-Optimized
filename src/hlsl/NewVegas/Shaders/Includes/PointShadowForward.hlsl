@@ -33,10 +33,13 @@ float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked 
                                                   // spread (cube direction units per unit of the major axis; 0 = 1 tap)
 
 float4 NVR_PointShadowDebug     : register(c181); // x: debug view (0 off, 1 a lamp's blocked light in that lamp's colour, 2 the lit
-                                                  // area of every lamp that has a shadow tinted in its colour); y: NearFade
-                                                  // (world units; 0 off), see PointShadowNear
+                                                  // area of every lamp that has a shadow tinted in its colour, 3 PointShadowTrace);
+                                                  // y: NearFade (world units; 0 off), see PointShadowNear; z (view 3): which light
+                                                  // of the draw the focus lamp is, -1 none
 float4 NVR_PointShadowTint[6]   : register(c182); // rgb: debug colour of light k's lamp (one per cube-map slot; white = no shadow);
                                                   // w: how far light k's shadow has faded in, 0..1 (a lamp that just got one)
+float4 NVR_PointShadowFocus     : register(c188); // view 3: the focus lamp (cube slot 0) as NVR_PointShadowLight, whatever the draw's
+                                                  // lamps; its cube map is on NVR_PointShadowCube5
 
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
@@ -106,6 +109,33 @@ float3 PointShadowFactor(float shadow, float4 tint) {
                                                : shadow * lerp(1.0f, tint.rgb, 0.6f);
     }
     return factor;
+}
+
+// UNOFFICIAL DebugView 3 (diagnostic, 2026-10-08): what the cube map of the lamp in cube slot 0 (the only red lamp in views 1
+// and 2) says at this pixel, looked up from the pixel's own position, whatever lamps the game gave the object. Forward
+// shadows stopped dead where one floor piece met the next while the old screen-space pass (which works from the depth
+// buffer, per pixel) did not; this tells the cube map and the position apart from the per-object lamp setup.
+// False colour: green = what the cube map holds in this pixel's direction, blue = the pixel's own distance (both as a share
+// of the cube's reach, x 2.5), red = blocked. A surface the cube map saw itself is cyan (green = blue), an empty cube map
+// bright green everywhere. A 64-unit checker anchored on the lamp (must run on across object edges); the whole object at
+// 40% when the lamp is not one of the draw's lights. Dark blue: beyond the cube's reach. Orange: no lamp data reached the
+// draw. Grey: the vertex shader gave no position.
+float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
+    float4 light = NVR_PointShadowFocus;
+    [branch] if (!(valid > 0.0f)) return 0.5f;
+    [branch] if (!(light.w > 0.0f)) return float3(1.0f, 0.45f, 0.0f);
+    float3 toPixel = worldPos - light.xyz;
+    float3 p = toPixel + normal * (NVR_PointShadowParams.z * length(toPixel));
+    float d = length(p) * light.w;
+    float3 color = float3(0.0f, 0.0f, 0.15f);
+    [branch] if (d < 1.0f) {
+        float stored = texCUBElod(NVR_PointShadowCube5, float4(p * float3(1.0f, 1.0f, -1.0f), 0.0f)).r;
+        float blocked = (float)(stored > 0.0f) * (float)(stored <= d - NVR_PointShadowParams.y * d);
+        float3 cell = floor(toPixel / 64.0f);
+        float checker = frac((cell.x + cell.y + cell.z) * 0.5f) > 0.25f ? 1.0f : 0.7f;
+        color = float3(blocked, saturate(stored * 2.5f), saturate(d * 2.5f)) * checker;
+    }
+    return NVR_PointShadowDebug.z < 0.0f ? color * 0.4f : color;
 }
 
 // One function per light index of the draw: ps_3_0 cannot index samplers at run time.

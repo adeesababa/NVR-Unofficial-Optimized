@@ -12,7 +12,8 @@
 //  - ShadowManager::RenderShadowMaps: Begin() before anything, Publish() after the cube-map loop: the lights whose cube
 //    map really is theirs this frame (drawn or kept), with the position and radius it was drawn for.
 //  - SetShadersHook (Render.cpp): SetForDraw() matches the game's light list of the draw (BSShaderManager::
-//    pCurrentRenderPass 0x011F91E0: +0x09 count, +0x0C ShadowSceneLight*, light k = PSLightColor[k]) to those lights by
+//    pCurrentRenderPass 0x011F91E0: +0x09 count, +0x0C ShadowSceneLight*, light k = PSLightColor[k], one later in the OPT
+//    passes: FirstShaderLight) to those lights by
 //    pointer, writes c174-c187 and binds the cube maps to s8, s11-s15.
 //  - BSBatchRenderer::RenderPassImmediately_Standard/_Skinned (Render.cpp): OnRenderPass() does the same for every
 //    object. The game binds shaders only when the pass type or shader changes and then draws a run of objects with
@@ -35,9 +36,20 @@ namespace PointShadowForward {
 		UInt8				numLights;	// 09
 		UInt8				maxLights;	// 0A
 		UInt8				unk0B;		// 0B
-		ShadowSceneLight**	lights;		// 0C  light k = PSLightColor[k]
+		ShadowSceneLight**	lights;		// 0C  light k = PSLightColor[k - FirstShaderLight(pass)]
 	};
 	static_assert(offsetof(RenderPassView, numLights) == 0x09 && offsetof(RenderPassView, lights) == 0x0C, "RenderPass layout");
+
+	// UNOFFICIAL (2026-10-08): which light of the pass the pixel shader's PSLightColor[0] is. Every pass goes through
+	// SetupGeometryConstants_Lights (light k -> PSLightColor[k], light 0 usually the cell's directional light) except the
+	// two many-lamp OPT passes, which BSBatchRenderer::RenderPassImmediately_Standard 0x00B98E80 sets up itself:
+	// 0xCA Setup_ADT4_Opt 0x00B7DED0 (ObjectTemplate PS SLS2032) and 0xD1 Setup_ADTS10_Opt 0x00B7DFE0 (SLS2035). Their
+	// SetupGeometryOpt_Lights 0x00B7C850 / _LightsSpecular 0x00B7CB00 start at light 1 and write light k's colour to
+	// kShaderLightConstants[k] (SetLight1x2x: [k + 1]), so there PSLightColor[0] is light 1 (its .w the lamp count, the
+	// shader's lightsUsed; PSLightColor[1].w the gloss) and the directional light is not in the shader at all. Matching
+	// light k to cube k there gave each lamp the NEXT lamp's shadow and the first lamp none: forward shadows stopped dead
+	// where an OPT floor piece met its neighbour (the TOPS rope shadows, whole pieces lit or dark against the next one).
+	inline int FirstShaderLight(const RenderPassView* pass) { return pass->passEnum == 0xCA || pass->passEnum == 0xD1 ? 1 : 0; }
 
 	struct Slot { const ShadowSceneLight* light; D3DXVECTOR3 position; float radius; IDirect3DCubeTexture9* cube; int slot; float fade; };
 
@@ -47,6 +59,62 @@ namespace PointShadowForward {
 	inline bool FirstPerson = true;			// [Shaders.ShadowsInteriors.Forward] FirstPerson, read per frame
 	inline Slot Slots[ShadowCubeMapsMax] = {};
 	inline int SlotCount = 0;
+	inline int Focus = -1;					// DebugView 3: the Slots entry of the lamp in cube slot 0 (red in views 1 and 2), -1 none
+	inline unsigned TraceDraws = 0, TraceDrawsWithLamp = 0;	// DebugView 3: draws that got the focus lamp, and of those the ones lit by it
+	inline IDirect3DSurface9* TraceReadback = nullptr;		// DebugView 3: system-memory copy of one cube face (TraceCube)
+	inline UINT TraceReadbackSize = 0;
+
+	// DebugView 3 diagnostic: what one cube map holds, read back on the CPU (stalls the frame; every 2 seconds at most). Per
+	// face (named by the world direction it looks): share of texels nothing was drawn into (1), share at 0, the nearest stored
+	// distance and the mean of the drawn ones, and the centre texel (straight down: the floor's distance under the lamp).
+	inline void TraceCube(const char* what, IDirect3DCubeTexture9* cube) {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		D3DSURFACE_DESC desc;
+		if (!cube || FAILED(cube->GetLevelDesc(0, &desc))) { Logger::Log("TRACE   %s: no cube map", what); return; }
+		if (desc.Format != D3DFMT_R32F) { Logger::Log("TRACE   %s: format %d, not read", what, (int)desc.Format); return; }
+		if (!TraceReadback || TraceReadbackSize != desc.Width) {
+			if (TraceReadback) TraceReadback->Release();
+			TraceReadback = nullptr;
+			if (FAILED(device->CreateOffscreenPlainSurface(desc.Width, desc.Height, D3DFMT_R32F, D3DPOOL_SYSTEMMEM, &TraceReadback, NULL))) {
+				TraceReadback = nullptr;
+				Logger::Log("TRACE   %s: no readback surface", what);
+				return;
+			}
+			TraceReadbackSize = desc.Width;
+		}
+		static const char* faceName[6] = { "+X", "-X", "+Y", "-Y", "down", "up" };	// RenderShadowCubeMap FaceDirection, lookup (x, y, -z)
+		char text[900] = "";
+		size_t used = 0;
+		for (int face = 0; face < 6; face++) {
+			IDirect3DSurface9* surface = nullptr;
+			D3DLOCKED_RECT lock;
+			if (FAILED(cube->GetCubeMapSurface((D3DCUBEMAP_FACES)face, 0, &surface)) || !surface) continue;
+			const HRESULT copied = device->GetRenderTargetData(surface, TraceReadback);
+			surface->Release();
+			if (FAILED(copied) || FAILED(TraceReadback->LockRect(&lock, NULL, D3DLOCK_READONLY))) {
+				used += sprintf_s(text + used, sizeof(text) - used, " | %s: not read", faceName[face]);
+				continue;
+			}
+			unsigned empty = 0, zero = 0, drawn = 0;
+			double sum = 0.0;
+			float nearest = 1.0f;
+			for (UINT y = 0; y < desc.Height; y++) {
+				const float* row = (const float*)((const char*)lock.pBits + y * lock.Pitch);
+				for (UINT x = 0; x < desc.Width; x++) {
+					const float v = row[x];
+					if (!(v < 0.999f)) empty++;
+					else if (!(v > 0.0f)) zero++;
+					else { drawn++; sum += v; if (v < nearest) nearest = v; }
+				}
+			}
+			const float centre = ((const float*)((const char*)lock.pBits + (desc.Height / 2) * lock.Pitch))[desc.Width / 2];
+			TraceReadback->UnlockRect();
+			const float all = (float)(desc.Width * desc.Height) * 0.01f;
+			used += sprintf_s(text + used, sizeof(text) - used, " | %s: %.0f%% empty, %.0f%% zero, nearest %.3f, mean %.3f, centre %.3f",
+				faceName[face], empty / all, zero / all, nearest, drawn ? sum / drawn : 0.0, centre);
+		}
+		Logger::Log("TRACE   %s %p (%ux%u)%s", what, (const void*)cube, desc.Width, desc.Height, text);
+	}
 	inline float Params[4] = {};				// c180: strength, bias, normal offset, PCF spread
 	inline float DebugView = 0.0f;			// c181.x
 	inline float NearFade = 0.0f;			// c181.y: [Shaders.ShadowsInteriors.Main] NearFade (PointShadowForward.hlsl PointShadowNear)
@@ -112,8 +180,110 @@ namespace PointShadowForward {
 		return UsesAllSlots(exterior) ? (std::min)(points, (int)ShadowCubeMapsMax) : (std::min)(points, (int)ShadowCubeMapsSampled);
 	}
 	inline unsigned Frame = 0;				// counts frames (Begin), for ScopeFix outdoors (Render.cpp)
+
+	// UNOFFICIAL ObjectLamps diagnostic (2026-10-08, with [Shaders.ShadowsInteriors.Forward] LogLamps). Shadows popped on and
+	// off parts of objects as the camera turned, ending on mesh seams, while every lamp kept its cube map (LAMP lines). So for
+	// each object drawn in the world pass this notes, frame by frame, which point lamps the game drew it with and whether each
+	// came in a pass with forward shadows (an NVR shader compiled with them, forward shadows active) or without; when that
+	// changes between two frames in a row, an OBJECT line says how, with the passes' shaders and how far the camera turned
+	// and moved and the player moved in between. Read only: nothing drawn changes.
+	struct ObjectLampState {
+		UInt32 frame = 0, lastFrame = 0;
+		UInt8 count = 0, lastCount = 0;
+		const ShadowSceneLight* lamps[12] = {}; UInt8 how[12] = {}; const char* shader[12] = {};	// how: 1 with shadows, 2 without
+		const ShadowSceneLight* last[12] = {}; UInt8 lastHow[12] = {}; const char* lastShader[12] = {};
+	};
+	inline std::unordered_map<const void*, ObjectLampState> ObjectLamps;
+	inline bool LogObjectLamps = false;			// LogLamps, read per frame (Publish)
+	inline const char* LastPixelShaderName = nullptr;	// the pixel shader of the run being drawn (SetForDraw)
+	inline bool LastPixelShaderShadowed = false;
+	inline const char* LastVertexShaderName = nullptr;	// AimProbe: the run's vertex shader, and whether each is NVR's (SetShadersHook)
+	inline bool LastVertexShaderNvr = false, LastPixelShaderNvr = false;
+
+	// UNOFFICIAL AimProbe (LogLamps diagnostic, 2026-10-08). In the TOPS casino single floor pieces went dark under one lamp's
+	// forward shadow, and shadows stopped dead where one object met the next. To see what differs between such objects, every
+	// object drawn in the world pass whose bound the line of sight (camera position, camera forward) passes through is noted
+	// with each of its passes: vertex and pixel shader, whether each is NVR's or the game's, whether the pass has forward
+	// shadows, and its point lamps (with their cube map slots). When the set under the crosshair changes, at most twice a
+	// second, AIM lines list them, the ones whose centre is nearest the line of sight first.
+	// (2026-10-08: every light of the pass with its index k, the pass type and light count, and for the passes with forward
+	// shadows whether c174+k held a cube map for light k when it was drawn: the TOPS rope shadow stopped where the next object began.)
+	struct AimPass { const char* vs; const char* ps; bool vsNvr, psNvr, shadowed; UInt16 passEnum; UInt8 numLights; bool strength;
+		UInt8 count; UInt8 index[6]; bool point[6]; bool uploaded[6]; const ShadowSceneLight* lamps[6]; };
+	struct AimHit { const void* geometry; float along, off, radius; UInt8 passes; AimPass pass[4]; };
+	inline AimHit AimHits[10];
+	inline int AimHitCount = 0;
+	inline UInt32 AimFrame = 0, AimLastLogFrame = 0;
+	inline const void* AimLogged[10] = {};
+	inline int AimLoggedCount = 0;
+	inline unsigned AimLines = 0;
+	struct CameraState { UInt32 frame; D3DXVECTOR3 forward, position, player; };
+	inline CameraState Cameras[8] = {};
+	inline unsigned ObjectLampLines = 0;
+	inline unsigned StatLampAppeared = 0, StatLampGone = 0, StatLampLostShadow = 0, StatLampGotShadow = 0, StatLampStill = 0;
+
+	// UNOFFICIAL KeepLampsInView (2026-10-08, [Shaders.ShadowsInteriors.Forward] KeepLampsInView, indoors with forward shadows
+	// on). The game lights an object only with its ACTIVE lamps (BSShaderLightingProperty::GetFirstActiveLight 0x00B70590,
+	// GetNextActiveLight, GetNumberOfActiveLights, ...): those whose ShadowSceneLight +0x110 is not 0xFF, the mask
+	// ShadowSceneLight::TestFrustumCull (0x00B9E970, called once, from ShadowSceneNode::PreOnVisible at 0x00B5E915) writes
+	// when it finds the lamp's whole sphere outside the view (otherwise the bits of the cube faces out of view). Turning the
+	// camera, objects on screen lost lamps the game had just called out of view, and with them the lamp's light and its forward
+	// shadow (ObjectLamps log, 2026-10-08: 306 of 310 lamps that left an object did so as their mask became FF; 282 of 284
+	// came back as it cleared). The screen-space shadows never showed it: they darken the finished image, whatever lamps the
+	// objects had. Here the game's test runs as before, with its own previous result put back first so its fade and update
+	// bookkeeping sees no change that was ours; a lamp it calls out of view whose sphere does reach the render camera's view
+	// (LampReachesView, with a margin for a frame of turning) stays active for the frame.
+	inline bool KeepLampsWanted = false;		// KeepLampsInView with forward shadows on (Publish)
+	inline bool KeepLampsNow = false;			// ... and indoors this frame (Begin)
+	inline std::unordered_map<const ShadowSceneLight*, UInt16> GameCullMask;	// the game's own last TestFrustumCull result
+	inline unsigned StatCullCalls = 0, StatCullOut = 0, StatCullKept = 0;
+	inline const UInt32 kTestFrustumCallSite = 0x00B5E915, kTestFrustumCull = 0x00B9E970;
+	typedef void(__thiscall* TestFrustumCullFn)(ShadowSceneLight* light, void* cullingProcess);
+
+	// The lamp's sphere (its reach, Spec.r, as the game tests it) against the render camera's view: the four sides and the
+	// plane through the eye (as ShaderManager::GetNearbyLights' view test). Widened by 5% + 32 units + a tenth of its distance
+	// to the camera: a frame of turning, and rounding, never drops a lamp whose light is on screen.
+	inline bool LampReachesView(const ShadowSceneLight* light) {
+		const NiPointLight* source = light ? light->sourceLight : nullptr;
+		if (!source) return false;
+		const D3DXMATRIX& camera = TheRenderManager->InvViewMatrix;
+		const D3DXVECTOR3 right(camera._11, camera._12, camera._13), up(camera._21, camera._22, camera._23), forward(camera._31, camera._32, camera._33);
+		const float tanX = fabsf(TheRenderManager->InvProjMatrix._11), tanY = fabsf(TheRenderManager->InvProjMatrix._22);
+		const float normX = 1.0f / sqrtf(1.0f + tanX * tanX), normY = 1.0f / sqrtf(1.0f + tanY * tanY);
+		const D3DXVECTOR3 v(source->m_worldTransform.pos.x - TheRenderManager->CameraPosition.x, source->m_worldTransform.pos.y - TheRenderManager->CameraPosition.y,
+			source->m_worldTransform.pos.z - TheRenderManager->CameraPosition.z);
+		const float reach = source->Spec.r * 1.05f + 32.0f + 0.1f * D3DXVec3Length(&v);
+		const float x = D3DXVec3Dot(&v, &right), y = D3DXVec3Dot(&v, &up), z = D3DXVec3Dot(&v, &forward);
+		if (z < -reach) return false;
+		if ((tanX * z - x) * normX < -reach || (tanX * z + x) * normX < -reach) return false;
+		if ((tanY * z - y) * normY < -reach || (tanY * z + y) * normY < -reach) return false;
+		return true;
+	}
+
+	// Replaces the call at kTestFrustumCallSite (thiscall: ecx = the lamp, one argument, the culling process; ret 4).
+	inline void __fastcall TestFrustumCullHook(ShadowSceneLight* light, void*, void* cullingProcess) {
+		auto previous = GameCullMask.find(light);
+		if (previous != GameCullMask.end()) light->bIsEnabled = previous->second;
+		((TestFrustumCullFn)kTestFrustumCull)(light, cullingProcess);
+		GameCullMask[light] = light->bIsEnabled;
+		StatCullCalls++;
+		if (light->bIsEnabled != 0xFF) return;
+		StatCullOut++;
+		if (KeepLampsNow && light->bPointLight && LampReachesView(light)) {
+			light->bIsEnabled = 0;	// active, every face in view
+			StatCullKept++;
+		}
+	}
+
 	inline void Begin() {
 		Frame++;
+		Cameras[Frame & 7] = { Frame, D3DXVECTOR3(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z),
+			D3DXVECTOR3(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z),
+			Player ? D3DXVECTOR3(Player->pos.x, Player->pos.y, Player->pos.z) : D3DXVECTOR3(0.0f, 0.0f, 0.0f) };
+		if ((Frame & 1023) == 0)
+			for (auto it = ObjectLamps.begin(); it != ObjectLamps.end();) it = Frame - it->second.frame > 1024 ? ObjectLamps.erase(it) : std::next(it);
+		if ((Frame & 4095) == 0) GameCullMask.clear();	// freed lamps (a lamp new at a freed address gets one stale restore, harmless)
+		KeepLampsNow = KeepLampsWanted && !TheShaderManager->GameState.isExterior;
 		Active = false; SlotCount = 0; BoundThisFrame = false;
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 	}
@@ -127,8 +297,11 @@ namespace PointShadowForward {
 		static int lastCount = 0;
 		Active = false;
 		SlotCount = 0;
+		Focus = -1;
 		if (!CompiledIn) { lastCount = 0; return; }
 		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
+		LogObjectLamps = forward.LogLamps;
+		KeepLampsWanted = forward.Enabled && forward.KeepLampsInView;
 		const float strength = forward.Strength;
 		// UNOFFICIAL (2026-10-08): Enabled switched off in the menu stops the forward shadows at once (the shaders stay
 		// compiled in until a restart; idle = every draw gets c180.x 0 and the old screen-space pass runs). It used to be
@@ -155,15 +328,15 @@ namespace PointShadowForward {
 		ScopeWasInView = ScopeInView;
 		ScopeInView = false;
 		FirstPerson = forward.FirstPerson;
-		static unsigned rejectedLast = 0, rejectLogs = 0;
-		unsigned rejected = 0;
+		static UInt64 rejectedLast = 0; static unsigned rejectLogs = 0;	// UInt64: up to 64 slots
+		UInt64 rejected = 0;
 		for (int i = 0; i < count && i < ShadowCubeMapsMax; i++) {
 			if (!lights[i] || !cubes[i] || !slots[i].valid || slots[i].light != lights[i] || slots[i].texture != cubes[i] ||
 				!(slots[i].radius > 0.0f)) {
 				// LogLamps: a lamp with a slot whose cube map is not its own this frame gets no shadow.
 				if (lights[i]) {
-					rejected |= 1u << i;
-					if (!(rejectedLast & (1u << i)) && rejectLogs < 200 && forward.LogLamps) {
+					rejected |= 1ull << i;
+					if (!(rejectedLast & (1ull << i)) && rejectLogs < 200 && forward.LogLamps) {
 						rejectLogs++;
 						Logger::Log("LAMP %p in slot %d gets no shadow: its cube map is not drawn for it (drawn %d, same lamp %d, same texture %d, radius %.0f)",
 							lights[i], i, (int)slots[i].valid, (int)(slots[i].light == lights[i]), (int)(slots[i].texture == cubes[i]), slots[i].radius);
@@ -174,7 +347,12 @@ namespace PointShadowForward {
 			// The radius the cube map stores distances over (256 for carried lights), as RenderShadowCubeMap drew it.
 			double since = now;
 			for (int j = 0; j < lastCount; j++) if (lastLights[j] == lights[i]) { since = lastStart[j]; break; }
-			const float fade = fadeIn > 0.0f ? (float)(std::min)(1.0, (now - since) / fadeIn) : 1.0f;
+			float fade = fadeIn > 0.0f ? (float)(std::min)(1.0, (now - since) / fadeIn) : 1.0f;
+			// UNOFFICIAL FillLightShadowStrength (2026-10-08): a fill light (reach past FillLightRadius) stands for broad room
+			// light; its shadow is that share of a full one (the light it takes away), so a staircase or a table under it shades
+			// the floor instead of blacking it out. Rides in the per-lamp fade the shader multiplies the shadow by.
+			const NiPointLight* source = lights[i]->sourceLight;
+			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
 			start[SlotCount] = since;
 			Slots[SlotCount++] = { lights[i], D3DXVECTOR3(slots[i].x, slots[i].y, slots[i].z), slots[i].radius, cubes[i], i, fade };
 		}
@@ -182,6 +360,24 @@ namespace PointShadowForward {
 		for (int s = 0; s < SlotCount; s++) { lastLights[s] = Slots[s].light; lastStart[s] = start[s]; }
 		lastCount = SlotCount;
 		Active = SlotCount > 0;
+		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }
+		// DebugView 3: the focus lamp and what its cube maps hold, every 2 seconds (with the draws of the period before).
+		static double lastTrace = 0.0;
+		if (forward.DebugView >= 3 && now - lastTrace >= 2.0) {
+			lastTrace = now;
+			if (Focus < 0) Logger::Log("TRACE no lamp in cube slot 0 this frame (%d lamps with shadows)", SlotCount);
+			else {
+				const Slot& f = Slots[Focus];
+				const NiPointLight* source = f.light->sourceLight;
+				Logger::Log("TRACE focus lamp %p (cube slot 0) at %.0f %.0f %.0f, cube radius %.0f, reach %.0f, fade %.2f, camera %.0f %.0f %.0f; last period %u draws got it, %u of them lit by it",
+					(const void*)f.light, f.position.x, f.position.y, f.position.z, f.radius, source ? source->Spec.r : -1.0f, f.fade,
+					TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z,
+					TraceDraws, TraceDrawsWithLamp);
+				TraceCube("live cube", f.cube);
+				TraceCube("static cube", TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowCubeMapStaticTexture[f.slot]);
+			}
+			TraceDraws = TraceDrawsWithLamp = 0;
+		}
 	}
 
 	inline IDirect3DCubeTexture9* NeutralCube() {
@@ -216,25 +412,32 @@ namespace PointShadowForward {
 				TheRenderManager->SetSamplerState(stage, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 	}
 
-	inline bool Bound = false;				// the pixel shader the game bound last is one of the records that read c174-c187
-	inline float Uploaded[14][4] = {};		// c174-c187 as last written
+	inline bool Bound = false;				// the pixel shader the game bound last is one of the records that read c174-c188
+	inline float Uploaded[15][4] = {};		// c174-c188 as last written
 
 	// One object's render pass: its lamps to c174-c187 and the cube stages. wanted: the world pass, or the first-person
 	// pass with FirstPerson on (never the water reflection). force: just after a shader bind, write everything.
 	inline void SetForPass(const RenderPassView* pass, bool world, bool firstPerson, bool force) {
-		float constants[14][4] = {};// c174-c179 per light of the draw; c180 params (x 0: the shader skips it all);
-										// c181 debug view, near fade; c182-c187 per light of the draw: rgb debug colour (white = no shadow), w how far its shadow has faded in (FadeIn)
+		float constants[15][4] = {};// c174-c179 per light of the draw; c180 params (x 0: the shader skips it all);
+										// c181 debug view, near fade, (view 3) focus lamp's light index; c182-c187 per light of the draw: rgb debug
+										// colour (white = no shadow), w how far its shadow has faded in (FadeIn); c188 (view 3) the focus lamp
 		for (int k = 0; k < 6; k++) constants[8 + k][0] = constants[8 + k][1] = constants[8 + k][2] = 1.0f;
 		IDirect3DBaseTexture9* bound[6];
 		IDirect3DCubeTexture9* neutral = NeutralCube();
 		for (int k = 0; k < 6; k++) bound[k] = neutral;
 		int matched = 0;
+		const bool trace = DebugView > 2.5f;	// DebugView 3: PointShadowTrace (PointShadowForward.hlsl)
+		int focusIndex = -1;					// view 3: which light of the draw the focus lamp is
+		bool wanted = false;
 		if (Active && (world || (firstPerson && FirstPerson)) && pass && pass->lights && !OtherCamera(pass, firstPerson)) {
+			wanted = true;
 			const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;	// GetShadowWorldPos's origin
-			const int count = (std::min)((int)pass->numLights, 6);
+			const int first = FirstShaderLight(pass);	// k below is the shader's light (PSLightColor[k]), pass light first + k
+			const int count = (std::min)((int)pass->numLights - first, 6);
 			for (int k = 0; k < count; k++) {
-				const ShadowSceneLight* light = pass->lights[k];
+				const ShadowSceneLight* light = pass->lights[first + k];
 				if (!light || !light->bPointLight) continue;	// light 0 of most passes is the cell's directional light
+				if (trace && Focus >= 0 && Slots[Focus].light == light) focusIndex = k;
 				for (int s = 0; s < SlotCount; s++) {
 					if (Slots[s].light != light) continue;
 					constants[k][0] = Slots[s].position.x - camera.x;
@@ -245,7 +448,8 @@ namespace PointShadowForward {
 					static const float palette[11][3] = { { 1, 0.15f, 0.1f }, { 0.1f, 1, 0.15f }, { 0.15f, 0.35f, 1 },
 						{ 1, 0.9f, 0.1f }, { 0.1f, 1, 1 }, { 1, 0.2f, 1 }, { 1, 0.55f, 0.1f }, { 0.55f, 0.25f, 1 },
 						{ 0.6f, 1, 0.3f }, { 1, 0.45f, 0.6f }, { 0.4f, 0.8f, 1 } };	// by cube slot
-					memcpy(constants[8 + k], palette[Slots[s].slot % 11], 3 * sizeof(float));
+					// red for cube slot 0 alone (DebugView 3's lamp); the other slots share the other ten colours
+					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
 					matched++;
 					break;
@@ -255,12 +459,28 @@ namespace PointShadowForward {
 		if (matched) memcpy(constants[6], Params, sizeof(Params));
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
+		// DebugView 3 on every draw of the wanted passes, matched or not: the focus lamp at c188, its cube map on stage 15
+		// (NVR_PointShadowCube5: the view replaces the draw's own lighting, so light 5's lookup does not matter).
+		if (trace && wanted) {
+			memcpy(constants[6], Params, sizeof(Params));
+			constants[7][0] = DebugView;
+			constants[7][2] = (float)focusIndex;
+			if (Focus >= 0) {
+				const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+				constants[14][0] = Slots[Focus].position.x - camera.x;
+				constants[14][1] = Slots[Focus].position.y - camera.y;
+				constants[14][2] = Slots[Focus].position.z - camera.z;
+				constants[14][3] = 1.0f / Slots[Focus].radius;
+				bound[5] = Slots[Focus].cube;
+				if (!force) { TraceDraws++; if (focusIndex >= 0) TraceDrawsWithLamp++; }
+			}
+		}
 		// Every declared cube stage gets a cube texture, matched or not: a 2D texture left there by another shader would be
 		// the wrong type for the sampler. Between objects only what changed (the game's texture cache tells).
 		for (int k = 0; k < 6; k++)
 			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
-			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 14);
+			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 15);
 			memcpy(Uploaded, constants, sizeof(constants));
 		}
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }
@@ -269,11 +489,14 @@ namespace PointShadowForward {
 	// SetShadersHook, after the game bound a pass's shaders and set its constants.
 	inline void SetForDraw(NiD3DPixelShaderEx* pixelShader, bool world, bool firstPerson) {
 		Bound = false;
+		LastPixelShaderName = pixelShader ? pixelShader->Name : nullptr;	// ObjectLamps diagnostic
+		LastPixelShaderShadowed = false;
 		if (!CompiledIn || !pixelShader) return;
 		ShaderRecordPixel* interiorRecord = pixelShader->GetShaderRecord(ShaderRecordType::Interior);
 		if (!interiorRecord || !interiorRecord->PointShadowForward || pixelShader->ShaderHandle != interiorRecord->ShaderHandle)
 			return;	// only those records read c174-c187
 		Bound = true;
+		LastPixelShaderShadowed = Active;
 		BoundThisFrame = true;
 		SetForPass(*(RenderPassView**)0x011F91E0, world, firstPerson, true);
 	}
@@ -283,6 +506,179 @@ namespace PointShadowForward {
 		if (Bound) SetForPass(pass, world, firstPerson, false);
 	}
 
+	// ObjectLamps: frame o.frame (lamps/how) against the frame before it (last/lastHow) for one object. One line per object
+	// whose lamps changed while the player stood still and the camera moved (what turning the camera does), at most two a
+	// frame: + lamps that came, - lamps that left, ~ lamps whose kind of pass changed. Per lamp: its cube map slot (-1 none),
+	// how far its reach falls short of the object's bound (negative: it overlaps), its reach, the game's LOD dimmer and fade
+	// for it and the cube faces the game counts in view (ShadowSceneLight::TestFrustumCull, 0x00B9E970), and its distance to
+	// the camera. A lamp's fields are read only while it holds a cube map this frame (then it is alive).
+	inline unsigned ObjectLampFrameLines = 0, ObjectLampLinesFrame = 0;
+	inline void CompareObjectLamps(const void* geometry, const ObjectLampState& o) {
+		const CameraState& a = Cameras[o.lastFrame & 7];
+		const CameraState& b = Cameras[o.frame & 7];
+		const bool known = a.frame == o.lastFrame && b.frame == o.frame;
+		const float turn = known ? D3DXToDegree(acosf((std::max)(-1.0f, (std::min)(1.0f, D3DXVec3Dot(&a.forward, &b.forward))))) : -1.0f;
+		const D3DXVECTOR3 camMove = b.position - a.position, playerMove = b.player - a.player;
+		const float moved = known ? D3DXVec3Length(&camMove) : -1.0f, walked = known ? D3DXVec3Length(&playerMove) : -1.0f;
+		auto find = [](const ShadowSceneLight* const* lamps, int count, const ShadowSceneLight* light) { for (int i = 0; i < count; i++) if (lamps[i] == light) return i; return -1; };
+		auto slotOf = [](const ShadowSceneLight* light) { for (int s = 0; s < SlotCount; s++) if (Slots[s].light == light) return Slots[s].slot; return -1; };
+		const NiAVObject* object = (const NiAVObject*)geometry;
+		char text[1400] = "";
+		size_t used = 0;
+		int changes = 0;
+		for (int round = 0; round < 2; round++) {
+			const int count = round ? o.lastCount : o.count;
+			for (int i = 0; i < count; i++) {
+				const ShadowSceneLight* light = round ? o.last[i] : o.lamps[i];
+				if (round && find(o.lamps, o.count, light) >= 0) continue;	// compared in the first round
+				const int now = find(o.lamps, o.count, light), before = find(o.last, o.lastCount, light);
+				const int howNow = now >= 0 ? o.how[now] : 0, howBefore = before >= 0 ? o.lastHow[before] : 0;
+				if (howNow == howBefore) continue;
+				changes++;
+				if (!howBefore) StatLampAppeared++;
+				else if (!howNow) StatLampGone++;
+				else if ((howBefore & 1) && !(howNow & 1)) StatLampLostShadow++;
+				else if (!(howBefore & 1) && (howNow & 1)) StatLampGotShadow++;
+				if (known && walked < 0.5f) StatLampStill++;
+				if (used + 200 > sizeof(text)) continue;
+				const char sign = !howBefore ? '+' : !howNow ? '-' : '~';
+				const int slot = slotOf(light);
+				if (slot >= 0 && light->sourceLight && object->m_kWorldBound) {
+					const NiPoint3& lamp = light->sourceLight->m_worldTransform.pos;
+					const NiBound& bound = *object->m_kWorldBound;
+					const float dx = lamp.x - bound.Center.x, dy = lamp.y - bound.Center.y, dz = lamp.z - bound.Center.z;
+					const float reach = light->sourceLight->Spec.r;
+					const float gap = sqrtf(dx * dx + dy * dy + dz * dz) - bound.Radius - reach;
+					const float cx = lamp.x - b.position.x, cy = lamp.y - b.position.y, cz = lamp.z - b.position.z;
+					used += sprintf_s(text + used, sizeof(text) - used, " %c%p[slot %d, gap %.0f, reach %.0f, LOD %.2f, fade %.2f, faces out of view %02X (game %02X), %.0f from camera, NVR view test %s]",
+						sign, (const void*)light, slot, gap, reach, light->fLODDimmer, light->fFade, (unsigned)light->bIsEnabled,
+						GameCullMask.count(light) ? (unsigned)GameCullMask[light] : 0xFFFFu, sqrtf(cx * cx + cy * cy + cz * cz), LampReachesView(light) ? "in" : "out");
+				}
+				else used += sprintf_s(text + used, sizeof(text) - used, " %c%p[no cube map]", sign, (const void*)light);
+			}
+		}
+		if (!changes || !known || !(walked < 0.5f) || !(turn > 0.01f || moved > 0.5f)) return;
+		if (ObjectLampLinesFrame != Frame) { ObjectLampLinesFrame = Frame; ObjectLampFrameLines = 0; }
+		if (ObjectLampLines >= 600 || ObjectLampFrameLines >= 2) return;
+		ObjectLampFrameLines++;
+		if (++ObjectLampLines == 600) Logger::Log("OBJECT lamps log: 600 lines, stopping until restart.");
+		Logger::Log("OBJECT %s %p (bound radius %.0f): lamps %d -> %d,%s | camera turned %.2f deg, moved %.1f",
+			object->m_pcName ? object->m_pcName : "(unnamed)", geometry, object->m_kWorldBound ? object->m_kWorldBound->Radius : -1.0f,
+			(int)o.lastCount, (int)o.count, text, turn, moved);
+	}
+
+	// AimProbe: the hits of the frame just drawn, if they differ from the last ones logged.
+	inline void AimFlush() {
+		if (!AimHitCount || AimLines >= 500 || Frame - AimLastLogFrame < 30) return;
+		bool same = AimHitCount == AimLoggedCount;
+		for (int i = 0; same && i < AimHitCount; i++) {
+			bool found = false;
+			for (int j = 0; j < AimLoggedCount; j++) if (AimLogged[j] == AimHits[i].geometry) found = true;
+			same = found;
+		}
+		if (same) return;
+		AimLastLogFrame = Frame;
+		AimLoggedCount = AimHitCount;
+		for (int i = 0; i < AimHitCount; i++) AimLogged[i] = AimHits[i].geometry;
+		// nearest the line of sight first
+		for (int i = 1; i < AimHitCount; i++)
+			for (int j = i; j > 0 && AimHits[j].off < AimHits[j - 1].off; j--) { AimHit t = AimHits[j]; AimHits[j] = AimHits[j - 1]; AimHits[j - 1] = t; }
+		AimLines++;
+		Logger::Log("AIM %d objects on the line of sight (camera %.0f %.0f %.0f)", AimHitCount,
+			TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+		auto slotOf = [](const ShadowSceneLight* light) { for (int s = 0; s < SlotCount; s++) if (Slots[s].light == light) return Slots[s].slot; return -1; };
+		for (int i = 0; i < AimHitCount && AimLines < 500; i++) {
+			const AimHit& h = AimHits[i];
+			const NiAVObject* object = (const NiAVObject*)h.geometry;
+			char text[1200] = "";
+			size_t used = 0;
+			for (int p = 0; p < h.passes && used + 160 < sizeof(text); p++) {
+				const AimPass& a = h.pass[p];
+				used += sprintf_s(text + used, sizeof(text) - used, " | %s (%s) + %s (%s) %s, pass %04X, %d lights%s:", a.vs ? a.vs : "?",
+					a.vsNvr ? "NVR" : "game", a.ps ? a.ps : "?", a.psNvr ? "NVR" : "game", a.shadowed ? "forward shadows" : "NO forward shadows",
+					(unsigned)a.passEnum, (int)a.numLights, a.shadowed && !a.strength ? " (strength 0: lookups skipped)" : "");
+				for (int k = 0; k < a.count && used + 40 < sizeof(text); k++) {
+					if (!a.point[k]) { used += sprintf_s(text + used, sizeof(text) - used, " %d:dir", (int)a.index[k]); continue; }
+					const int slot = slotOf(a.lamps[k]);
+					used += sprintf_s(text + used, sizeof(text) - used, " %d:%p/s%d%s", (int)a.index[k], (const void*)a.lamps[k], slot,
+						!a.shadowed ? "" : a.uploaded[k] ? "" : slot >= 0 ? "(NOT UPLOADED)" : "");
+				}
+			}
+			AimLines++;
+			Logger::Log("AIM   %s %p: bound radius %.0f, centre %.0f along the line, %.0f off it%s", object->m_pcName ? object->m_pcName : "(unnamed)",
+				h.geometry, h.radius, h.along, h.off, text);
+		}
+	}
+
+	inline void NoteAim(const RenderPassView* pass) {
+		if (AimFrame != Frame) { AimFlush(); AimHitCount = 0; AimFrame = Frame; }
+		const NiAVObject* object = pass->geometry;
+		if (!object->m_kWorldBound) return;
+		const NiBound& bound = *object->m_kWorldBound;
+		const D3DXMATRIX& camera = TheRenderManager->InvViewMatrix;
+		D3DXVECTOR3 forward(camera._31, camera._32, camera._33);
+		D3DXVec3Normalize(&forward, &forward);
+		const D3DXVECTOR3 v(bound.Center.x - TheRenderManager->CameraPosition.x, bound.Center.y - TheRenderManager->CameraPosition.y,
+			bound.Center.z - TheRenderManager->CameraPosition.z);
+		const float along = D3DXVec3Dot(&v, &forward);
+		const float off2 = D3DXVec3LengthSq(&v) - along * along;
+		if (along < -bound.Radius || off2 > bound.Radius * bound.Radius) return;
+		int i = 0;
+		while (i < AimHitCount && AimHits[i].geometry != object) i++;
+		if (i == AimHitCount) {
+			if (AimHitCount == 10) return;
+			AimHits[i] = {};
+			AimHits[i].geometry = object; AimHits[i].along = along; AimHits[i].off = sqrtf((std::max)(off2, 0.0f)); AimHits[i].radius = bound.Radius;
+			AimHitCount++;
+		}
+		AimHit& h = AimHits[i];
+		if (h.passes == 4) return;
+		AimPass& a = h.pass[h.passes++];
+		a = {};
+		a.vs = LastVertexShaderName; a.ps = LastPixelShaderName; a.vsNvr = LastVertexShaderNvr; a.psNvr = LastPixelShaderNvr;
+		a.shadowed = LastPixelShaderShadowed && Bound;
+		a.passEnum = pass->passEnum; a.numLights = pass->numLights; a.strength = Uploaded[6][0] > 0.0f;
+		const int lights = pass->lights ? (std::min)((int)pass->numLights, 6) : 0;
+		for (int k = 0; k < lights; k++) {
+			if (!pass->lights[k]) continue;
+			a.index[a.count] = (UInt8)k; a.point[a.count] = pass->lights[k]->bPointLight != 0;
+			const int j = k - FirstShaderLight(pass);	// the shader's light (c174+j)
+			a.uploaded[a.count] = j >= 0 && j < 6 && Uploaded[j][3] > 0.0f;	// as uploaded for this draw (SetForPass)
+			a.lamps[a.count++] = pass->lights[k];
+		}
+	}
+
+	// ObjectLamps: after each object's draw in RenderPassImmediately_Standard/_Skinned (the run's pixel shader is known by
+	// then: SetForDraw ran for it, or for the run it belongs to).
+	inline void NoteDraw(const RenderPassView* pass, bool world) {
+		if (!LogObjectLamps || !world || !pass || !pass->geometry) return;
+		NoteAim(pass);
+		if (!pass->lights) return;
+		ObjectLampState& o = ObjectLamps[pass->geometry];
+		if (o.frame != Frame) {
+			if (o.frame && o.lastFrame && o.frame == o.lastFrame + 1) CompareObjectLamps(pass->geometry, o);
+			memcpy(o.last, o.lamps, sizeof(o.lamps)); memcpy(o.lastHow, o.how, sizeof(o.how)); memcpy(o.lastShader, o.shader, sizeof(o.shader));
+			o.lastCount = o.count;
+			o.lastFrame = o.frame;
+			o.count = 0;
+			o.frame = Frame;
+		}
+		const UInt8 how = LastPixelShaderShadowed ? 1 : 2;
+		const int lights = (std::min)((int)pass->numLights, 12);
+		for (int k = 0; k < lights; k++) {
+			const ShadowSceneLight* light = pass->lights[k];
+			if (!light || !light->bPointLight) continue;
+			int i = 0;
+			while (i < o.count && o.lamps[i] != light) i++;
+			if (i == o.count) {
+				if (o.count == 12) continue;
+				o.lamps[i] = light; o.how[i] = 0; o.shader[i] = nullptr; o.count++;
+			}
+			o.how[i] |= how;
+			if (!o.shader[i] || how == 2) o.shader[i] = LastPixelShaderName;	// a pass without shadows names its shader
+		}
+	}
+
 	// Once a frame (RenderShadowMaps), with the F10 profile: how much work it did.
 	inline void FrameStats() {
 		if (!GpuTimer::Enabled || !CompiledIn) return;
@@ -290,6 +686,13 @@ namespace PointShadowForward {
 			const float perFrame = 1.0f / StatFrames;
 			Logger::Log("POINT SHADOWS FORWARD %d shaders compiled in: %.1f cube maps in use, %.0f objects, %.0f with a shadowed lamp, %.1f lamps matched per frame",
 				CompiledCount, (float)SlotCount, StatDraws * perFrame, StatMatchedDraws * perFrame, StatMatchedLights * perFrame);
+			Logger::Log("POINT SHADOWS KeepLampsInView %s: per frame %.1f lamp view tests by the game, %.1f lamps it called wholly out of view, %.1f of those kept active (their light reaches the view)",
+				KeepLampsNow ? "on" : "off", StatCullCalls * perFrame, StatCullOut * perFrame, StatCullKept * perFrame);
+			StatCullCalls = StatCullOut = StatCullKept = 0;
+			if (LogObjectLamps)
+				Logger::Log("POINT SHADOWS OBJECT LAMPS (LogLamps): per frame %.2f lamps came onto objects, %.2f left them, %.2f lost their shadow (now in a pass without), %.2f got it; %.2f of these with the player standing still",
+					StatLampAppeared * perFrame, StatLampGone * perFrame, StatLampLostShadow * perFrame, StatLampGotShadow * perFrame, StatLampStill * perFrame);
+			StatLampAppeared = StatLampGone = StatLampLostShadow = StatLampGotShadow = StatLampStill = 0;
 			StatFrames = StatDraws = StatMatchedDraws = StatMatchedLights = 0;
 		}
 	}

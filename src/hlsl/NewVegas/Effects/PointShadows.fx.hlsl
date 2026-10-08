@@ -3,6 +3,10 @@
 float4 TESR_ShadowLightPosition[12];
 float4 TESR_LightPosition[12];
 float4 TESR_LightColor[24];
+// UNOFFICIAL (2026-10-08): the next 16 lamps past the 24 above, with forward shadows indoors (ShaderManager::
+// GetNearbyLights, ExtraLightsMax). One register each (this shader has room for little more): xyz position, w = radius
+// (whole units) x 8 + the weight luma(colour) x dimmer. w 0 ends the list.
+float4 TESR_ExtraLights[16];
 float4 TESR_ShadowFade;
 float4 TESR_PointShadowNear; // UNOFFICIAL x: NearFade, world units (0 off); y: EdgeFade (0 off); z: LampReachMask, 1 / LightRadiusMult (0 off)
 float4 TESR_SpotLightPosition;
@@ -156,6 +160,15 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 			float4 light = GetPointLightDistance(world_pos, TESR_LightPosition[i]);
 			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
 		}
+	}
+
+	// UNOFFICIAL: the extra lamps (above), so what only they light is not darkened as unlit. A pixel lit in full needs none.
+	[loop] for (int e = 0; e < 16; e++) {
+		[branch] if (!TESR_ExtraLights[e].w || Shadow >= 1.0f) break;
+		float radius = floor(TESR_ExtraLights[e].w * 0.125f);
+		float weight = TESR_ExtraLights[e].w - radius * 8.0f;
+		float4 light = GetPointLightDistance(world_pos, float4(TESR_ExtraLights[e].xyz, radius));
+		Shadow += saturate(LampAmount(light.xyz, light.w, normal) * weight) * EdgeWindow(light.w);
 	}
 
 	Shadow = saturate(Shadow);

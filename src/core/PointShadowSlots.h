@@ -8,7 +8,7 @@
 // PointShadowSchedule.h) -- work that PointShadowInterval was meant to save. The order of the slots does not
 // change the image (PointShadows.fx adds up the slots), so a light keeps the slot it had and only newcomers
 // take free ones. Kept free of engine types so tests/point_shadow_schedule.cpp can check it.
-constexpr int PointShadowSlotsMax = 32;	// UNOFFICIAL: ShadowCubeMapsMax (forward shadows can use 32 slots)
+constexpr int PointShadowSlotsMax = 64;	// UNOFFICIAL: ShadowCubeMapsMax (forward shadows can use 64 slots)
 
 // previous[0..slots): the light that held each slot on the last call (nullptr = free).
 // ranked[0..count):   the lights that get a slot now, nearest first; distinct, non-null, count <= slots <= PointShadowSlotsMax.
