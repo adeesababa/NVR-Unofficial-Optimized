@@ -50,7 +50,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // Fade on the instance origin. 4-component length (dp4 r2, r2), not xyz.
     float4 instClip = mul(ModelViewProj, float4(inst.xyz, 1.0f));
+#ifdef REVERSED_DEPTH
+    float instDist = length(float3(instClip.xy, instClip.w));
+#else
     float instDist = length(float4(instClip.xy, instClip.w - instClip.z, instClip.w));
+#endif
     OUT.sun.w = 1.0f - saturate((instDist - AlphaParam.z) / AlphaParam.w);
 
     // Orientation and light scale are packed into the fractional parts.

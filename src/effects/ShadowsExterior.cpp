@@ -364,6 +364,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 
 	// Interiors.
 	Settings.Interiors.Enabled = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Enabled");
+	Constants.PointShadowNear.x = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "NearFade"), 0.0f);
+	Constants.PointShadowNear.y = (std::min)((std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "EdgeFade"), 0.0f), 0.9f);
 	Settings.Interiors.Forms.AlphaEnabled = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "AlphaEnabled");
 	Settings.Interiors.Forms.Activators = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Activators");
 	Settings.Interiors.Forms.Actors = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Actors");
@@ -385,6 +387,33 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.UseCastShadowFlag = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "UseCastShadowFlag");
 	Settings.Interiors.PlayerShadowFirstPerson = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerShadowFirstPerson");
 	Settings.Interiors.PlayerShadowThirdPerson = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerShadowThirdPerson");
+	Settings.Interiors.PlayerInsideLamp = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PlayerInsideLamp") != 0;
+	Settings.Interiors.PlayerLampMargin = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerLampMargin"), 1.0f);
+	{
+		InteriorsStruct::ForwardStruct& forward = Settings.Interiors.Forward;
+		const char* section = "Shaders.ShadowsInteriors.Forward";
+		forward.Enabled = TheSettingManager->GetSettingI(section, "Enabled") != 0;
+		forward.KeepDarkening = TheSettingManager->GetSettingI(section, "KeepDarkening") != 0;
+		forward.DarkeningBlur = TheSettingManager->GetSettingI(section, "DarkeningBlur") != 0;
+		forward.FirstPerson = TheSettingManager->GetSettingI(section, "FirstPerson") != 0;
+		forward.ScopeFix = TheSettingManager->GetSettingI(section, "ScopeFix") != 0;
+		forward.LogLamps = TheSettingManager->GetSettingI(section, "LogLamps") != 0;
+		forward.LampRanking = TheSettingManager->GetSettingI(section, "LampRanking");
+		forward.DebugView = TheSettingManager->GetSettingI(section, "DebugView");
+		forward.LampSwitchMargin = (std::max)(0.0f, (std::min)(0.9f, TheSettingManager->GetSettingF(section, "LampSwitchMargin")));
+		forward.Strength = TheSettingManager->GetSettingF(section, "Strength");
+		forward.Bias = TheSettingManager->GetSettingF(section, "Bias");
+		forward.NormalOffset = TheSettingManager->GetSettingF(section, "NormalOffset");
+		forward.Softness = TheSettingManager->GetSettingF(section, "Softness");
+		forward.FadeIn = TheSettingManager->GetSettingF(section, "FadeIn");
+		forward.CameraIndependent = TheSettingManager->GetSettingI(section, "CameraIndependent") != 0;
+		forward.FillLightRadius = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "FillLightRadius"));
+	}
+	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
+	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
+	Settings.ContactHardening.MaxSoftness = max(min(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "MaxSoftness"), 32.0f), 1.0f);
+	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
+		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
 
 	bool isExterior = TheShaderManager->GameState.isExterior;
 
@@ -430,6 +459,7 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceData", &Constants.ScreenSpaceData);
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
+	TheShaderManager->RegisterConstant("TESR_PointShadowNear", &Constants.PointShadowNear);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
 	TheShaderManager->RegisterConstant("TESR_ShadowViewProjTransform", (D3DXVECTOR4*)&Constants.ShadowViewProj);
 	TheShaderManager->RegisterConstant("TESR_ShadowNearCenter", &ShadowMaps[MapNear].ShadowMapCascadeCenterRadius);
@@ -505,8 +535,11 @@ void ShadowsExteriorEffect::RegisterTextures() {
 	}
 
 
-	// initialize point lights cubemaps
+	CubeMapSizeCreated = ShadowCubeMapSize;
 	for (int i = 0; i < ShadowCubeMapsMax; i++) {
+		Textures.ShadowCubeMapTexture[i] = nullptr;
+		for (int j = 0; j < 6; j++) Textures.ShadowCubeMapSurface[i][j] = nullptr;
+		if (i >= ShadowCubeMapsScreen) continue;
 		TheRenderManager->device->CreateCubeTexture(ShadowCubeMapSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &Textures.ShadowCubeMapTexture[i], NULL);
 		for (int j = 0; j < 6; j++) {
 			Textures.ShadowCubeMapTexture[i]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[i][j]);
@@ -530,6 +563,21 @@ void ShadowsExteriorEffect::RegisterTextures() {
 /*
  * Recreate specific shadow maps, to be used after specific settings change.
  */
+bool ShadowsExteriorEffect::EnsureCubeMap(int slot) {
+	if (slot < 0 || slot >= ShadowCubeMapsMax || !CubeMapSizeCreated) return false;
+	if (Textures.ShadowCubeMapTexture[slot]) return true;
+	if (FAILED(TheRenderManager->device->CreateCubeTexture(CubeMapSizeCreated, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT,
+		&Textures.ShadowCubeMapTexture[slot], NULL)) || !Textures.ShadowCubeMapTexture[slot]) {
+		Textures.ShadowCubeMapTexture[slot] = nullptr;
+		static bool warned = false;
+		if (!warned) { warned = true; Logger::Log("UNOFFICIAL point shadows: could not create the cube map for slot %d (video memory?); lamps past it get no shadow.", slot); }
+		return false;
+	}
+	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[slot][j]);
+	Logger::Log("UNOFFICIAL point shadows: cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
+	return true;
+}
+
 void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cubemaps) {
 	if (cascades) {
 		if (ShadowAtlasSurface) {

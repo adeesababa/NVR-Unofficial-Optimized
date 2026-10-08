@@ -1,4 +1,5 @@
 #include "ShaderRecord.h"
+#include "ShaderWarmUp.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -504,6 +505,8 @@ void ShaderFloatValue::GetValueFromConstantTable() {
 * Sets the Constant Table for the shader
 */
 void ShaderRecord::SetCT() {
+
+	if (!UsedOnce) { UsedOnce = true; ShaderWarmUp::NoteFirstUse(Name); }
 
 	if (HasRenderedBuffer) TheRenderManager->device->StretchRect(TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface, NULL, TheTextureManager->RenderedSurface, NULL, D3DTEXF_NONE);
 	if (HasDepthBuffer) {

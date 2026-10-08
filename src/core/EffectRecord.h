@@ -30,6 +30,11 @@ public:
 	float					renderTime;
 	float					constantUpdateTime;
 
+	struct CachedHandle { unsigned Generation = 0; D3DXHANDLE Handle = NULL; };
+	unsigned				LoadGeneration = 1;
+	D3DXHANDLE				TechniqueHandle(CachedHandle& cache, const char* name);
+	D3DXHANDLE				ParameterHandle(CachedHandle& cache, const char* name);
+
 	ID3DXEffect* Effect;
 	const char* Name;
 };

@@ -49,6 +49,8 @@ public:
 	// Reused by AccumChildren. That runs per reference, per cell, per cascade, and a fresh
 	// std::stack allocated a deque block on every call; clear() keeps the capacity.
 	std::vector<NiAVObject*>	containersScratch;
+	struct CubeCaster { NiGeometry* geometry; RenderPass* pass; unsigned char faces; };
+	std::vector<CubeCaster>		cubeCasters;
 	int						PointLightsNum;
 	float					shadowMapsRenderTime;
 	bool					ShadowShadersLoaded;

@@ -166,6 +166,10 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
 }
 
+float getMetalFade(float3 cameraRelativePos) {
+    return TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, length(cameraRelativePos)) : 1.0f;
+}
+
 float getMetalRoughness(float specMask) {
     return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
 }

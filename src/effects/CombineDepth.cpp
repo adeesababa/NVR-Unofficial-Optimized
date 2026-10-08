@@ -91,17 +91,17 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 	if (mergedNormalsFailed || TheSettingManager->SettingsMain.Main.DisableMergedNormals ||
 		!Enabled || !Effect || !ShouldRender() || !NormalsSurface || !Textures.CombinedDepthSurface)
 		return false;
-	D3DXHANDLE technique = Effect->GetTechniqueByName("DepthNormals");
+	D3DXHANDLE technique = TechniqueHandle(techDepthNormals, "DepthNormals");
 	D3DSURFACE_DESC depthDesc = {}, normalsDesc = {};
-	D3DCAPS9 caps = {};
-	if (!technique || FAILED(Device->GetDeviceCaps(&caps)) || caps.NumSimultaneousRTs < 2 ||
+	const D3DCAPS9* caps = TheRenderManager->DeviceCaps();
+	if (!technique || !caps || caps->NumSimultaneousRTs < 2 ||
 		FAILED(Textures.CombinedDepthSurface->GetDesc(&depthDesc)) || FAILED(NormalsSurface->GetDesc(&normalsDesc)) ||
 		depthDesc.Width != normalsDesc.Width || depthDesc.Height != normalsDesc.Height) {
 		mergedNormalsFailed = true;
 		return false;
 	}
 	const bool sameBitDepth = (depthDesc.Format == D3DFMT_G32R32F) == (normalsDesc.Format == D3DFMT_A16B16G16R16F);
-	if (!sameBitDepth && !(caps.PrimitiveMiscCaps & D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)) {
+	if (!sameBitDepth && !(caps->PrimitiveMiscCaps & D3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS)) {
 		mergedNormalsFailed = true;
 		Logger::Log("Merged depth/normals unavailable: MRT with different bit depths not supported.");
 		return false;
@@ -132,7 +132,7 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 		if (SUCCEEDED(result)) {
 			result = Effect->BeginPass(0);
 			if (SUCCEEDED(result)) {
-				if (check) LogMergedState(Device, caps, depthDesc, normalsDesc, depthStencil);
+				if (check) LogMergedState(Device, *caps, depthDesc, normalsDesc, depthStencil);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 			}

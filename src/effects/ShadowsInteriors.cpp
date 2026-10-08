@@ -13,7 +13,7 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	FrameChain& chain = TheShaderManager->Chain;
 	SunShadowsEffect* scratch = TheShaderManager->Effects.SunShadows;
 	IDirect3DTexture9* shadowTexture = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture;
-	D3DXHANDLE technique = dedicatedFailed ? NULL : Effect->GetTechniqueByName("DedicatedInteriorShadows");
+	D3DXHANDLE technique = dedicatedFailed ? NULL : TechniqueHandle(techDedicated, "DedicatedInteriorShadows");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DSURFACE_DESC target = {}, blur = {};
 	if (!technique || !scratch || !shadowTexture || !scratch->scratchTexture[0] || !scratch->scratchTexture[1] ||

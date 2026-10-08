@@ -61,6 +61,8 @@ float* const BSShaderManager::fDepthBias = (float*)0x1200458;
 float* const BSShaderManager::fLODLandDrop = (float*)0x11AD808;
 NiPoint3* const BSShaderManager::kCameraPos = (NiPoint3*)0x11F474C;
 NiPoint4* const BSShaderManager::kLoadedRange = (NiPoint4*)0x11F95F4;
+float* const BSShaderManager::fSpecularLODStartFade = (float*)0x11F9454;
+float* const BSShaderManager::fSpecularLODEnd = (float*)0x11F9458;
 BSShader** BSShaderManager::pspShaders = (BSShader**)0x11F9548;
 
 ShadowSceneNode* BSShaderManager::GetShadowSceneNode(UInt32 aeType) {

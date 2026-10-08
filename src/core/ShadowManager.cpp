@@ -3,10 +3,57 @@
 #include "PointShadowSchedule.h"
 #include "PointShadowForward.h"
 
+struct SkinnedBoundEntry { UInt32 frame; bool ok; NiBound bound; };
+static std::unordered_map<NiGeometry*, SkinnedBoundEntry> SkinnedBounds;
+static UInt32 SkinnedBoundFrame = 0;
+static unsigned statSkinnedCasters = 0, statSkinnedFaces = 0, statSkinnedNoBound = 0, statSkinnedOutOfRange = 0;
+
+static bool SkinnedWorldBound(NiGeometry* geometry, NiBound& out) {
+	SkinnedBoundEntry& entry = SkinnedBounds[geometry];
+	if (entry.frame == SkinnedBoundFrame) { out = entry.bound; return entry.ok; }
+	entry.frame = SkinnedBoundFrame;
+	entry.ok = false;
+	NiSkinInstance* skin = geometry->skinInstance;
+	NiSkinData* data = skin ? skin->SkinData : nullptr;
+	if (!data || !data->BoneData || !skin->BoneObjects || data->Bones == 0) return false;
+	D3DXVECTOR3 center(0.0f, 0.0f, 0.0f);
+	float radius = -1.0f;
+	for (UInt32 i = 0; i < data->Bones; i++) {
+		NiAVObject* bone = skin->BoneObjects[i];
+		if (!bone) return false;
+		const NiTransform& t = bone->m_worldTransform;
+		const NiBound& b = data->BoneData[i].Bound;
+		if (!(b.Radius >= 0.0f && b.Radius < 1.0e6f) || !(t.scale > 0.0f && t.scale < 1.0e3f)) return false;
+		const NiPoint3 scaled = { b.Center.x * t.scale, b.Center.y * t.scale, b.Center.z * t.scale };
+		const NiPoint3 rotated = t.rot * scaled;
+		const D3DXVECTOR3 c(rotated.x + t.pos.x, rotated.y + t.pos.y, rotated.z + t.pos.z);
+		const float r = b.Radius * t.scale;
+		if (radius < 0.0f) { center = c; radius = r; continue; }
+		const D3DXVECTOR3 d = c - center;
+		const float dist = D3DXVec3Length(&d);
+		if (dist + r <= radius) continue;
+		if (dist + radius <= r) { center = c; radius = r; continue; }
+		const float merged = (dist + radius + r) * 0.5f;
+		center += d * ((merged - radius) / dist);
+		radius = merged;
+	}
+	if (radius < 0.0f) return false;
+	entry.bound.Center.x = center.x; entry.bound.Center.y = center.y; entry.bound.Center.z = center.z;
+	entry.bound.Radius = radius * 1.02f + 2.0f;
+	entry.ok = true;
+	out = entry.bound;
+	return true;
+}
+
 static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
                               const D3DXVECTOR3& direction) {
 	NiGeometry* geometry = object->IsGeometry() ? static_cast<NiGeometry*>(object) : nullptr;
-	if (geometry && geometry->skinInstance) return true;
+	if (geometry && geometry->skinInstance) {
+		NiBound skinned;
+		if (!TheSettingManager->SettingsMain.Main.SkinnedShadowFaceTest || !SkinnedWorldBound(geometry, skinned)) return true;
+		return ShadowSphereTouchesFace(skinned.Center.x - light->x, skinned.Center.y - light->y, skinned.Center.z - light->z,
+			skinned.Radius, direction.x, direction.y, direction.z);
+	}
 	NiBound* bound = object->m_kWorldBound;
 	if (!bound) return true;
 	return ShadowSphereTouchesFace(bound->Center.x - light->x,
@@ -477,6 +524,45 @@ void ShadowManager::RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightInde
 }
 
 
+static bool PlayerLampOffset(const ShadowSceneLight* light, const NiPoint3* lightPos, D3DXVECTOR3& offset) {
+	offset = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+	bool now = false;
+	const ShadowsExteriorEffect::InteriorsStruct& interiors = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors;
+	if (Player && light && lightPos && interiors.PlayerInsideLamp) {
+		const float scale = Player->scale > 0.0f ? Player->scale : 1.0f;
+		const float margin = interiors.PlayerLampMargin;
+		const NiPoint3& feet = Player->pos;
+		float top = feet.z + 128.0f * scale;
+		if (NiNode* node = Player->GetNode())
+			if (NiBound* bound = node->GetWorldBound())
+				top = (std::min)(bound->Center.z + bound->Radius, feet.z + 200.0f * scale);
+		const float zTop = top + margin, zBottom = feet.z - margin, reach = 32.0f * scale + margin;
+		const float dx = lightPos->x - feet.x, dy = lightPos->y - feet.y, d = sqrtf(dx * dx + dy * dy);
+		if (d < reach && lightPos->z > zBottom && lightPos->z < zTop) {
+			now = true;
+			auto smooth = [](float a, float b, float x) { const float s = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return s * s * (3.0f - 2.0f * s); };
+			const float depth = 1.0f - d / reach;
+			const float across = reach * (1.0f - smooth(0.5f, 1.0f, depth));
+			const float height = lightPos->z + (zTop - lightPos->z) * smooth(0.0f, 0.5f, depth);
+			const float ux = d > 0.001f ? dx / d : 0.0f, uy = d > 0.001f ? dy / d : 0.0f;
+			const float ends = (std::min)(std::clamp((zTop - lightPos->z) / margin, 0.0f, 1.0f), std::clamp((lightPos->z - zBottom) / margin, 0.0f, 1.0f));
+			offset = D3DXVECTOR3(feet.x + ux * across - lightPos->x, feet.y + uy * across - lightPos->y, height - lightPos->z) * ends;
+		}
+	}
+	static const ShadowSceneLight* inside[ShadowCubeMapsMax] = {};
+	int found = -1, empty = -1;
+	for (int i = 0; i < ShadowCubeMapsMax; i++) {
+		if (inside[i] == light) found = i;
+		else if (!inside[i] && empty < 0) empty = i;
+	}
+	if (now && found < 0 && empty >= 0) inside[empty] = light;
+	if (!now && found >= 0) inside[found] = nullptr;
+	if (now != (found >= 0) && lightPos && interiors.Forward.LogLamps)
+		Logger::Log("UNOFFICIAL PlayerInsideLamp: lamp %p at %.0f %.0f %.0f %s", (const void*)light, lightPos->x, lightPos->y, lightPos->z,
+			now ? "is inside the player: the player is left out of its cube map" : "is outside the player again");
+	return now;
+}
+
 void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex) {
 	if (Lights[LightIndex] == NULL) return; // No light at current index
 	
@@ -495,8 +581,10 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 	LightPos = &pNiLight->m_worldTransform.pos;
 	Radius = pNiLight->Spec.r * Shadows->Settings.Interiors.LightRadiusMult;
+#if defined(OBLIVION)
 	if (pNiLight->CanCarry)
 		Radius = 256.0f;
+#endif
 	Eye.x = LightPos->x - TheRenderManager->CameraPosition.x;
 	Eye.y = LightPos->y - TheRenderManager->CameraPosition.y;
 	Eye.z = LightPos->z - TheRenderManager->CameraPosition.z;
@@ -506,6 +594,8 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	Shadows->Constants.ShadowCubeMapLightPosition.w = Radius;
 	Shadows->Constants.Data.z = Radius;
 	D3DXMatrixPerspectiveFovRH(&Proj, D3DXToRadian(90.0f), 1.0f, 0.1f, Radius);
+	D3DXVECTOR3 playerOffset;
+	const bool lampInsidePlayer = PlayerLampOffset(Lights[LightIndex], LightPos, playerOffset);
 
 	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, D3DZB_TRUE, RenderStateArgs);
@@ -516,78 +606,87 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	RenderState->SetRenderState(D3DRS_ALPHAREF, 0, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_ALWAYS, RenderStateArgs);
 
-	for (int Face = 0; Face < 6; Face++) {
-		At = Eye;
-		switch (Face) {
-		case D3DCUBEMAP_FACE_POSITIVE_X:
-			CameraDirection = D3DXVECTOR3(1.0f, 0.0f, 0.0f);
-			Up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
-			break;
-		case D3DCUBEMAP_FACE_NEGATIVE_X:
-			CameraDirection = D3DXVECTOR3(-1.0f, 0.0f, 0.0f);
-			Up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
-			break;
-		case D3DCUBEMAP_FACE_POSITIVE_Y:
-			CameraDirection = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
-			Up = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
-			break;
-		case D3DCUBEMAP_FACE_NEGATIVE_Y:
-			CameraDirection = D3DXVECTOR3(0.0f, -1.0f, 0.0f);
-			Up = D3DXVECTOR3(0.0f, 0.0f, -1.0f);
-			break;
-		case D3DCUBEMAP_FACE_POSITIVE_Z:
-			CameraDirection = D3DXVECTOR3(0.0f, 0.0f, -1.0f);
-			Up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
-			break;
-		case D3DCUBEMAP_FACE_NEGATIVE_Z:
-			CameraDirection = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
-			Up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
-			break;
-		}
-		At += CameraDirection;
-
+	static const D3DXVECTOR3 FaceDirection[6] = { D3DXVECTOR3(1.0f, 0.0f, 0.0f), D3DXVECTOR3(-1.0f, 0.0f, 0.0f),
+		D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, -1.0f, 0.0f), D3DXVECTOR3(0.0f, 0.0f, -1.0f), D3DXVECTOR3(0.0f, 0.0f, 1.0f) };
+	static const D3DXVECTOR3 FaceUp[6] = { D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f),
+		D3DXVECTOR3(0.0f, 0.0f, 1.0f), D3DXVECTOR3(0.0f, 0.0f, -1.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f) };
+	const bool useGeometryList = Lights[LightIndex]->kGeometryList.start != nullptr;
+	cubeCasters.clear();
+	if (useGeometryList) {
 		// Since this is pure geometry, getting reference data will be difficult (read: slow)
-		auto iter = Lights[LightIndex]->kGeometryList.start;
-		if (iter) {
-			while (iter) {
-				NiGeometry* geo = iter->data;
-				iter = iter->next;
-				if (!geo || geo->m_flags & NiAVObject::APP_CULLED)
-					continue;
+		for (auto iter = Lights[LightIndex]->kGeometryList.start; iter; iter = iter->next) {
+			NiGeometry* geo = iter->data;
+			if (!geo || geo->m_flags & NiAVObject::APP_CULLED)
+				continue;
 
-				BSShaderProperty* shaderProp = static_cast<BSShaderProperty*>(geo->GetProperty(NiProperty::kType_Shade));
-				NiMaterialProperty* matProp = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
+			BSShaderProperty* shaderProp = static_cast<BSShaderProperty*>(geo->GetProperty(NiProperty::kType_Shade));
+			NiMaterialProperty* matProp = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
 
-				if (!shaderProp)
-					continue;
-				if (shaderProp->IsLightingProperty() && !TouchesShadowFace(geo, LightPos, CameraDirection))
-					continue;
+			if (!shaderProp)
+				continue;
 
-				// Skip refraction and fire refraction.
-				if (!CheckShaderFlags(geo))
-					continue;
+			// Skip refraction and fire refraction.
+			if (!CheckShaderFlags(geo))
+				continue;
 
-				bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);
-				bool isThirdPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kThirdPerson);
+			bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);
+			bool isThirdPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kThirdPerson);
 
-				// Skip objects if they are barely visible. 
-				if ((matProp && matProp->fAlpha < 0.05f))
-					continue;
+			// Skip objects if they are barely visible.
+			if ((matProp && matProp->fAlpha < 0.05f))
+				continue;
 
-				// Also skip viewmodel due to issues, and render player's model only in 3rd person
-				if (isFirstPerson) continue;
+			// Also skip viewmodel due to issues, and render player's model only in 3rd person
+			if (isFirstPerson) continue;
 
-				if (!Player->isThirdPerson && !Settings->PlayerShadowFirstPerson && isThirdPerson)
-					continue;
+			if (!Player->isThirdPerson && !Settings->PlayerShadowFirstPerson && isThirdPerson)
+				continue;
 
-				if (Player->isThirdPerson && !Settings->PlayerShadowThirdPerson && isThirdPerson)
-					continue;
+			if (Player->isThirdPerson && !Settings->PlayerShadowThirdPerson && isThirdPerson)
+				continue;
 
-				if (skinnedGeoPass->AccumObject(geo)) {}
-				else if (speedTreePass->AccumObject(geo)) {}
-				else if (Settings->Forms.AlphaEnabled && alphaPass->AccumObject(geo)) {}
-				else geometryPass->AccumObject(geo);
+			if (lampInsidePlayer && isThirdPerson) continue;
+
+			unsigned char faces = 63;
+			if (shaderProp->IsLightingProperty()) {
+				if (geo->skinInstance && TheSettingManager->SettingsMain.Main.SkinnedShadowFaceTest) {
+					NiBound skinned;
+					if (SkinnedWorldBound(geo, skinned)) {
+						const float dx = skinned.Center.x - LightPos->x, dy = skinned.Center.y - LightPos->y, dz = skinned.Center.z - LightPos->z;
+						if (sqrtf(dx * dx + dy * dy + dz * dz) - skinned.Radius > Radius) { statSkinnedOutOfRange++; continue; }
+					}
+					else statSkinnedNoBound++;
+				}
+				faces = 0;
+				for (int face = 0; face < 6; face++)
+					if (TouchesShadowFace(geo, LightPos, FaceDirection[face])) faces |= (unsigned char)(1 << face);
+				if (!faces) continue;
 			}
+			if (geo->skinInstance) {
+				statSkinnedCasters++;
+				for (int face = 0; face < 6; face++) if (faces & (1 << face)) statSkinnedFaces++;
+			}
+
+			RenderPass* pass = nullptr;
+			int test = skinnedGeoPass->TestObject(geo);
+			if (test == 1) pass = skinnedGeoPass;
+			if (!test) { test = speedTreePass->TestObject(geo); if (test == 1) pass = speedTreePass; }
+			if (!test && Settings->Forms.AlphaEnabled) { test = alphaPass->TestObject(geo); if (test == 1) pass = alphaPass; }
+			if (!test) { test = geometryPass->TestObject(geo); if (test == 1) pass = geometryPass; }
+			if (!pass) continue;
+			cubeCasters.push_back({ geo, pass, faces });
+		}
+	}
+
+	for (int Face = 0; Face < 6; Face++) {
+		CameraDirection = FaceDirection[Face];
+		Up = FaceUp[Face];
+		At = Eye + CameraDirection;
+
+		if (useGeometryList) {
+			const unsigned char bit = (unsigned char)(1 << Face);
+			for (const CubeCaster& caster : cubeCasters)
+				if (caster.faces & bit) caster.pass->GeometryList.push(caster.geometry);
 		}
 		else {
 			// old form based geo accumulation when the one perform by the game has not handled this light
@@ -607,6 +706,7 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 				Entry = Entry->next;
 			}
 		}
+
 
 
 		D3DXMatrixLookAtRH(&View, &Eye, &At, &Up);
@@ -756,6 +856,7 @@ void ShadowManager::LogSunShadowStats(bool cachedDistant) {
 void ShadowManager::RenderShadowMaps() {
 	PointShadowForward::Begin();
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // cancel out if rendering effects is disabled
+	if ((++SkinnedBoundFrame & 1023) == 0) SkinnedBounds.clear();
 
 	// track point lights for interiors and exteriors
 	ShadowSceneLight* ShadowLights[ShadowCubeMapsMax] = { NULL };
@@ -865,10 +966,9 @@ void ShadowManager::RenderShadowMaps() {
 		terrainLODPass->PixelShader = ShadowMapPixel;
 
 		if (ContactHardeningCompiled) {
-			const char* section = "Shaders.ContactHardening.Main";
-			const bool on = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
-			ContactHardeningData.x = on ? 0.00925f * max(TheSettingManager->GetSettingF(section, "SunSize"), 0.0f) : 0.0f;
-			ContactHardeningData.y = max(min(TheSettingManager->GetSettingF(section, "MaxSoftness"), 32.0f), 1.0f);
+			const bool on = Shadows->Settings.ContactHardening.Enabled;
+			ContactHardeningData.x = on ? 0.00925f * Shadows->Settings.ContactHardening.SunSize : 0.0f;
+			ContactHardeningData.y = Shadows->Settings.ContactHardening.MaxSoftness;
 			static float logged = -1.0f;
 			if (ContactHardeningData.x != logged) {
 				Logger::Log("UNOFFICIAL contact hardening %s (penumbra %.4f per unit of distance, max %.0f texels)",
@@ -878,7 +978,7 @@ void ShadowManager::RenderShadowMaps() {
 		}
 		else {
 			static bool hinted = false;
-			if (!hinted && TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled")) {
+			if (!hinted && Shadows->Settings.ContactHardening.Enabled) {
 				Logger::Log("UNOFFICIAL contact hardening was turned on after startup: restart the game once to apply it.");
 				hinted = true;
 			}
@@ -1033,9 +1133,10 @@ void ShadowManager::RenderShadowMaps() {
 		static unsigned statReasons[(int)PointShadowRedraw::Count] = {};
 		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
 
-		for (int i = 0; i < ShadowsInteriors->LightPoints && i < ShadowCubeMapsSampled; i++) {
+		const int shadowedSlots = PointShadowForward::ShadowedSlots(isExterior);
+		for (int i = 0; i < shadowedSlots; i++) {
 			ShadowSceneLight* shadowLight = ShadowLights[i];
-			if (!shadowLight) { slots[i].valid = false; continue; }
+			if (!shadowLight || !Shadows->EnsureCubeMap(i)) { slots[i].valid = false; continue; }
 
 			PointShadowSlotState now;
 			NiPointLight* pointLight = shadowLight->sourceLight;
@@ -1045,7 +1146,11 @@ void ShadowManager::RenderShadowMaps() {
 			now.x = pointLight->m_worldTransform.pos.x;
 			now.y = pointLight->m_worldTransform.pos.y;
 			now.z = pointLight->m_worldTransform.pos.z;
+#if defined(OBLIVION)
 			now.radius = pointLight->CanCarry ? 256.0f : pointLight->Spec.r * ShadowsInteriors->LightRadiusMult;
+#else
+			now.radius = pointLight->Spec.r * ShadowsInteriors->LightRadiusMult;
+#endif
 			PointShadowCasterState(shadowLight, now.casterHash, now.staticCasters);
 			now.valid = true;
 			if (GpuTimer::Enabled) statPresent++;
@@ -1066,8 +1171,7 @@ void ShadowManager::RenderShadowMaps() {
 		}
 		scheduleFrame++;
 		if (!isExterior) {
-			const int sampled = (std::min)(ShadowsInteriors->LightPoints, (int)ShadowCubeMapsSampled);
-			PointShadowForward::Publish(slots, ShadowLights, sampled, Shadows->Textures.ShadowCubeMapTexture);
+			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
 			PointShadowForward::FrameStats();
 		}
 
@@ -1081,6 +1185,10 @@ void ShadowManager::RenderShadowMaps() {
 				statReasons[(int)PointShadowRedraw::OtherLight] * perFrame, statReasons[(int)PointShadowRedraw::Moved] * perFrame,
 				statReasons[(int)PointShadowRedraw::Resized] * perFrame, statReasons[(int)PointShadowRedraw::OtherCell] * perFrame,
 				statReasons[(int)PointShadowRedraw::OtherTexture] * perFrame);
+			Logger::Log("POINT SHADOWS skinned casters (SkinnedShadowFaceTest %s): %.1f per frame drawn into %.1f faces (all faces would be %.1f), %.1f skipped beyond the lamp's reach, %.1f without a usable skeleton bound",
+				TheSettingManager->SettingsMain.Main.SkinnedShadowFaceTest ? "on" : "off", statSkinnedCasters * perFrame, statSkinnedFaces * perFrame,
+				statSkinnedCasters * perFrame * 6.0f, statSkinnedOutOfRange * perFrame, statSkinnedNoBound * perFrame);
+			statSkinnedCasters = statSkinnedFaces = statSkinnedOutOfRange = statSkinnedNoBound = 0;
 			statFrames = statPresent = statRedrawn = statStaticReused = 0;
 			for (unsigned& r : statReasons) r = 0;
 		}

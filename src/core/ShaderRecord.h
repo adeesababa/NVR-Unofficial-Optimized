@@ -96,6 +96,7 @@ public:
 	bool					HasDepthBuffer;
 	bool					ClearSamplers;
 	bool					PointShadowForward = false;
+	bool					UsedOnce = false;
 };
 
 class ShaderRecordVertex : public ShaderRecord {

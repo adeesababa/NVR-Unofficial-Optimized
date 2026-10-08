@@ -146,6 +146,7 @@ public:
 	struct MetalSettingsStruct {
 		float FirstPerson = 0.0f;
 		float World = 0.0f;
+		float FadeDistance = 0.0f;
 	};
 	MetalSettingsStruct	MetalSettings;
 	void	BeginFirstPerson(IDirect3DDevice9* Device);

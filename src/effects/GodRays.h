@@ -24,6 +24,7 @@ public:
 	float rayVisibility;
 	bool packedRenderFailed = false;
 	bool dedicatedRenderFailed = false;
+	CachedHandle techDedicated, paramLayout;
 	IDirect3DTexture9* raysTexture[2] = {};
 	IDirect3DSurface9* raysSurface[2] = {};
 	IDirect3DTexture9* raysTextureLow[2] = {};

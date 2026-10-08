@@ -11,6 +11,7 @@ struct SettingsMainStruct {
 		bool	ForceMSAA;
 		bool	ForceReflections;
 		bool	GameShadersInReflections;
+		bool	ReflectionClipFix;
 		bool	RemovePrecipitations;
 		bool	MemoryHeapManagement;
 		bool	MemoryTextureManagement;
@@ -24,6 +25,9 @@ struct SettingsMainStruct {
         bool    DisableChainGameTexture;
         bool    DisableMergedNormals;
         bool    SlimDepthBuffer;
+        bool    SkipRedundantConstants;
+        bool    ShaderWarmUp;
+        bool    SkinnedShadowFaceTest;
         bool    GodRaysLowRes;
         bool    AOLowRes;
         bool    FXAA;

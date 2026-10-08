@@ -13,6 +13,7 @@ public:
 
 	std::stack<NiGeometry*>	GeometryList;
 	virtual bool AccumObject(NiGeometry* Geo) { return true; };
+	virtual int TestObject(NiGeometry* Geo) { return 1; };
 	virtual void UpdateConstants(NiGeometry* Geo) {};
 	virtual void RenderGeometry(NiGeometry* Geo);
 	virtual void RegisterConstants() {};
@@ -32,6 +33,7 @@ public:
 	ConstantsStruct Constants;
 
 	bool AccumObject(NiGeometry* Geo);
+	int TestObject(NiGeometry* Geo);
 	void RegisterConstants();
 	void UpdateConstants(NiGeometry* Geo);
 };
@@ -46,6 +48,7 @@ public:
 	ConstantsStruct Constants;
 
 	bool AccumObject(NiGeometry* Geo);
+	int TestObject(NiGeometry* Geo);
 	void RegisterConstants();
 	void UpdateConstants(NiGeometry* Geo);
 };
@@ -61,6 +64,7 @@ public:
 	ConstantsStruct Constants;
 
 	bool AccumObject(NiGeometry* Geo);
+	int TestObject(NiGeometry* Geo);
 	void RegisterConstants();
 	void UpdateConstants(NiGeometry* Geo);
 	void RenderGeometry(NiGeometry* Geo);
@@ -80,6 +84,7 @@ public:
 	ConstantsStruct Constants;
 
 	bool AccumObject(NiGeometry* Geo);
+	int TestObject(NiGeometry* Geo);
 	void RegisterConstants(); 
 	void UpdateConstants(NiGeometry* Geo);
 };
@@ -97,5 +102,6 @@ public:
 	ConstantsStruct Constants;
 
 	bool AccumObject(NiGeometry* Geo);
+	int TestObject(NiGeometry* Geo);
 	void UpdateConstants(NiGeometry* Geo);
 };

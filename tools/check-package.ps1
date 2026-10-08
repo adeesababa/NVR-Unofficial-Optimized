@@ -30,7 +30,7 @@ foreach ($entry in $folders.GetEnumerator()) {
 	foreach ($file in $tracked) { $known[$file.Substring($entry.Key.Length).Replace('/', '\').ToLowerInvariant()] = $true }
 	foreach ($item in Get-ChildItem $dir -Recurse -File) {
 		$relative = $item.FullName.Substring($dir.Length)
-		if ($relative.ToLowerInvariant().StartsWith('cache\')) { continue }
+		if ($relative.ToLowerInvariant().StartsWith('cache\')) { continue }	# the shipped shader cache, checked below
 		if (!$known.ContainsKey($relative.ToLowerInvariant())) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 	}
 	$cache = Join-Path $dir 'Cache'

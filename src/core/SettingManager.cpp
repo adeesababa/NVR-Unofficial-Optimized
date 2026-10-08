@@ -483,6 +483,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.RemovePrecipitations = GetSettingI("Main.Main.Precipitations", "RemovePrecipitations");
 	SettingsMain.Main.ForceReflections = GetSettingI("Main.Main.Water", "ForceReflections");
 	SettingsMain.Main.GameShadersInReflections = GetSettingI("Main.Main.Water", "GameShadersInReflections") != 0;
+	SettingsMain.Main.ReflectionClipFix = GetSettingI("Main.Main.Water", "ReflectionClipFix") != 0;
 	SettingsMain.Main.MemoryHeapManagement = GetSettingI("Main.Main.Memory", "HeapManagement");
 	SettingsMain.Main.MemoryTextureManagement = GetSettingI("Main.Main.Memory", "TextureManagement");
 	SettingsMain.Main.AnisotropicFilter = GetSettingI("Main.Main.Misc", "AnisotropicFilter");
@@ -505,6 +506,9 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
 	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
+	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
+	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
+	SettingsMain.Main.ShaderWarmUp = boolSetting(performance, "ShaderWarmUp", false);
 	const char* reducedQuality = "Main.Main.ReducedQuality";
 	SettingsMain.Main.GodRaysLowRes = boolSetting(reducedQuality, "GodRaysLowRes", false);
 	SettingsMain.Main.AOLowRes = boolSetting(reducedQuality, "AOLowRes", false);

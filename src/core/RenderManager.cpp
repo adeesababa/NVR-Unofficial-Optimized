@@ -488,3 +488,14 @@ void DWNode::AddNode(const char* Name, NiAVObject* Child0, NiAVObject* Child1) {
 	(*Pointers::Generic::DetectorWindowNode)->AddObject(Node, 1);
 
 }
+
+const D3DCAPS9* RenderManager::DeviceCaps() {
+	static D3DCAPS9 caps = {};
+	static IDirect3DDevice9* capsDevice = nullptr;
+	static bool valid = false;
+	if (!valid || capsDevice != device) {
+		capsDevice = device;
+		valid = device && SUCCEEDED(device->GetDeviceCaps(&caps));
+	}
+	return valid ? &caps : nullptr;
+}

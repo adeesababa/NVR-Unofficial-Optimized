@@ -154,7 +154,7 @@ namespace ConstantFilter {
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
-		const bool enabled = TheSettingManager->GetSettingI("Main.Main.Performance", "SkipRedundantConstants") != 0;
+		const bool enabled = TheSettingManager->SettingsMain.Main.SkipRedundantConstants;
 		if (enabled && !Enabled) Wipe();
 		Enabled = enabled;
 		const LONG foreignTick = ForeignTick;

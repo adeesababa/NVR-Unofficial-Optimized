@@ -102,14 +102,18 @@ ShadowRenderPass::ShadowRenderPass() {
 }
 
 
-bool ShadowRenderPass::AccumObject(NiGeometry* Geo) {
-	if (!Geo->geomData || !Geo->geomData->m_pkBuffData) return false; // discard objects without buffer data
+int ShadowRenderPass::TestObject(NiGeometry* Geo) {
+	if (!Geo->geomData || !Geo->geomData->m_pkBuffData) return 0; // discard objects without buffer data
 
 	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
-	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return false;
+	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return 0;
+	return 1;
+}
 
-	GeometryList.push(Geo);
-	return true;
+bool ShadowRenderPass::AccumObject(NiGeometry* Geo) {
+	const int test = TestObject(Geo);
+	if (test == 1) GeometryList.push(Geo);
+	return test != 0;
 }
 
 
@@ -135,18 +139,22 @@ AlphaShadowRenderPass::AlphaShadowRenderPass() {
 }
 
 
-bool AlphaShadowRenderPass::AccumObject(NiGeometry* Geo) {
-	if (!Geo->geomData || !Geo->geomData->m_pkBuffData) return false; // discard objects without buffer data
+int AlphaShadowRenderPass::TestObject(NiGeometry* Geo) {
+	if (!Geo->geomData || !Geo->geomData->m_pkBuffData) return 0; // discard objects without buffer data
 
 	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
 	NiAlphaProperty* AProp = (NiAlphaProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
 
-	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return false;
-	if (!AProp) return false;
-	if (!(AProp->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(AProp->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) return false;
+	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return 0;
+	if (!AProp) return 0;
+	if (!(AProp->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(AProp->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK)) return 0;
+	return 1;
+}
 
-	GeometryList.push(Geo);
-	return true;
+bool AlphaShadowRenderPass::AccumObject(NiGeometry* Geo) {
+	const int test = TestObject(Geo);
+	if (test == 1) GeometryList.push(Geo);
+	return test != 0;
 }
 
 
@@ -187,26 +195,25 @@ SkinnedGeoShadowRenderPass::SkinnedGeoShadowRenderPass() {
 }
 
 
-bool SkinnedGeoShadowRenderPass::AccumObject(NiGeometry* Geo) {
+int SkinnedGeoShadowRenderPass::TestObject(NiGeometry* Geo) {
 	// check data for rigged geometry
 	if (!Geo->skinInstance)
-		return false;
+		return 0;
 
 	NiSkinInstance* skinInstance = Geo->skinInstance;
 	if (skinInstance->IsKindOf<BSDismemberSkinInstance>() && !((BSDismemberSkinInstance*)skinInstance)->IsRenderable)
-		return true;
+		return 2;
 
-	if (Geo->skinInstance->SkinPartition && Geo->skinInstance->SkinPartition->Partitions) {
+	if (Geo->skinInstance->SkinPartition && Geo->skinInstance->SkinPartition->Partitions)
+		return 1;
 
-		// only accum if valid data preset
-		//if (Geo->skinInstance->SkinPartition->Partitions[0].BuffData)
-			GeometryList.push(Geo);
-	
-		// we return true in any case because we still found skinned geo either way
-		return true;
-	}
+	return 0;
+}
 
-	return false;
+bool SkinnedGeoShadowRenderPass::AccumObject(NiGeometry* Geo) {
+	const int test = TestObject(Geo);
+	if (test == 1) GeometryList.push(Geo);
+	return test != 0;
 }
 
 
@@ -312,13 +319,16 @@ void SpeedTreeShadowRenderPass::RegisterConstants() {
 }
 
 
-bool SpeedTreeShadowRenderPass::AccumObject(NiGeometry* Geo) {
-
+int SpeedTreeShadowRenderPass::TestObject(NiGeometry* Geo) {
 	NiShadeProperty* shaderProp = static_cast<NiShadeProperty*>(Geo->GetProperty(NiProperty::kType_Shade));
-	if (shaderProp->m_eShaderType != NiShadeProperty::kProp_SpeedTreeLeaf) return false;
+	if (!shaderProp || shaderProp->m_eShaderType != NiShadeProperty::kProp_SpeedTreeLeaf) return 0;
+	return 1;
+}
 
-	GeometryList.push(Geo);
-	return true;
+bool SpeedTreeShadowRenderPass::AccumObject(NiGeometry* Geo) {
+	const int test = TestObject(Geo);
+	if (test == 1) GeometryList.push(Geo);
+	return test != 0;
 }
 
 
@@ -365,14 +375,18 @@ TerrainLODPass::TerrainLODPass() {
 }
 
 
-bool TerrainLODPass::AccumObject(NiGeometry* Geo) {
-	if (!Geo->geomData || !Geo->geomData->m_pkBuffData) return false; // discard objects without buffer data
+int TerrainLODPass::TestObject(NiGeometry* Geo) {
+	if (!Geo->geomData || !Geo->geomData->m_pkBuffData) return 0; // discard objects without buffer data
 
 	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
-	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return false;
+	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return 0;
+	return 1;
+}
 
-	GeometryList.push(Geo);
-	return true;
+bool TerrainLODPass::AccumObject(NiGeometry* Geo) {
+	const int test = TestObject(Geo);
+	if (test == 1) GeometryList.push(Geo);
+	return test != 0;
 }
 
 

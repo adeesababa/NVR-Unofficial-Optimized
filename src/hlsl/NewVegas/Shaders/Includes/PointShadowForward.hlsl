@@ -17,6 +17,10 @@ samplerCUBE NVR_PointShadowCube3 : register(s13);
 samplerCUBE NVR_PointShadowCube4 : register(s14);
 samplerCUBE NVR_PointShadowCube5 : register(s15);
 
+float4 PointShadowNear(float4 stored, float lightW) {
+    return NVR_PointShadowDebug.y > 0.0f ? smoothstep(0.0f, NVR_PointShadowDebug.y * lightW, stored) : 1.0f;
+}
+
 float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPos, float3 normal, float att) {
     [branch] if (!(light.w > 0.0f)) return 1.0f;
     float3 toPixel = worldPos - light.xyz;
@@ -37,11 +41,12 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
-        lit = dot(saturate((float4)(stored > threshold) + (float4)(stored <= 0.0f)), 0.25f);
+        float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+        lit = 1.0f - dot(blocked, 0.25f);
     }
     else {
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;
-        lit = saturate((float)(stored > threshold) + (float)(stored <= 0.0f));
+        lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
     }
     return lerp(1.0f, lit, NVR_PointShadowParams.x * fade);
 }

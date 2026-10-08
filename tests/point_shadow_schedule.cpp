@@ -161,6 +161,22 @@ int main()
 		CHECK(!moved, "stable slots: a light that was in a slot and is still ranked never changes slot");
 		CHECK(naiveMoves > 0 && totalMoves == 0, "stable slots: plain rank order would have moved lights %d times where stable slots move none", naiveMoves);
 	}
+	{
+		static int lamps[40];
+		const void* ranked[32]; const void* previous[32] = {}; const void* out[32];
+		for (int r = 0; r < 32; r++) ranked[r] = &lamps[r];
+		AssignStablePointShadowSlots(previous, ranked, 32, 32, out);
+		bool full = true;
+		for (int s = 0; s < 32; s++) full &= out[s] == ranked[s];
+		CHECK(full, "32 slots: 32 lights fill them in rank order");
+		for (int s = 0; s < 32; s++) previous[s] = out[s];
+		const void* reranked[32];
+		for (int r = 0; r < 32; r++) reranked[r] = r < 2 ? (const void*)&lamps[32 + r] : ranked[33 - r];
+		AssignStablePointShadowSlots(previous, reranked, 32, 32, out);
+		bool kept = true, newcomersIn = slotOf(out, 32, &lamps[32]) >= 0 && slotOf(out, 32, &lamps[33]) >= 0;
+		for (int r = 2; r < 32; r++) kept &= slotOf(out, 32, reranked[r]) == slotOf(previous, 32, reranked[r]);
+		CHECK(kept && newcomersIn, "32 slots: lights still ranked keep their slots (incl. slots 16-31), newcomers take the freed ones");
+	}
 
 	std::printf(failures ? "\n%d check(s) FAILED\n" : "\nAll point shadow schedule checks passed\n", failures);
 	return failures ? 1 : 0;

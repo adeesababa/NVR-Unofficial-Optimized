@@ -103,16 +103,16 @@ void SMAAEffect::EdgesDetectionPass(Input input) {
     // Select the technique accordingly.
     switch (input) {
     case INPUT_LUMA:
-        Effect->SetTechnique(Effect->GetTechniqueByName("LumaEdgeDetection"));
+        Effect->SetTechnique(TechniqueHandle(techLuma, "LumaEdgeDetection"));
         break;
     case INPUT_COLOR:
-        Effect->SetTechnique(Effect->GetTechniqueByName("ColorEdgeDetection"));
+        Effect->SetTechnique(TechniqueHandle(techColor, "ColorEdgeDetection"));
         break;
     case INPUT_DEPTH:
-        Effect->SetTechnique(Effect->GetTechniqueByName("DepthEdgeDetection"));
+        Effect->SetTechnique(TechniqueHandle(techDepth, "DepthEdgeDetection"));
         break;
     case INPUT_LUMADEPTH:
-        Effect->SetTechnique(Effect->GetTechniqueByName("LumaDepthEdgeDetection"));
+        Effect->SetTechnique(TechniqueHandle(techLumaDepth, "LumaDepthEdgeDetection"));
         break;
     default:
 		return;
@@ -134,7 +134,7 @@ void SMAAEffect::BlendingWeightsCalculationPass() {
     Device->SetRenderTarget(0, Textures.SMAA_Blend_Surface);
     Device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
 
-    Effect->SetTechnique(Effect->GetTechniqueByName("BlendWeightCalculation"));
+    Effect->SetTechnique(TechniqueHandle(techBlend, "BlendWeightCalculation"));
 
 	UINT passes;
 	Effect->Begin(&passes, 0);
@@ -149,7 +149,7 @@ void SMAAEffect::NeighborhoodBlendingPass(IDirect3DSurface9* RenderTarget) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 
     Device->SetRenderTarget(0, RenderTarget);
-    Effect->SetTechnique(Effect->GetTechniqueByName("NeighborhoodBlending"));
+    Effect->SetTechnique(TechniqueHandle(techNeighborhood, "NeighborhoodBlending"));
 
 	UINT passes;
 	Effect->Begin(&passes, 0);

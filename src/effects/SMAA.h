@@ -35,6 +35,7 @@ public:
 		IDirect3DSurface9* SMAA_Blend_Surface;
 	};
 	SMAATexturesStruct	Textures;
+	CachedHandle techLuma, techColor, techDepth, techLumaDepth, techBlend, techNeighborhood;
 
 	void	UpdateConstants();
 	void	RegisterConstants();

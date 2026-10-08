@@ -71,4 +71,7 @@ public:
 	void	GetFlashlightViewProj();
 	void	PublishLightConstants(bool abActive);
 	int		TechniqueIndex(const char* name);
+	void	RefreshTechniqueIndices();
+	unsigned techniqueGeneration = 0;
+	int		edgeFixIndex = -1, edgeFixShadowsIndex = -1;
 };

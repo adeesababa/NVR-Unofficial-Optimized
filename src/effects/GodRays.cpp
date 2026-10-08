@@ -53,8 +53,8 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DTexture9** textures = lowRes ? raysTextureLow : raysTexture;
 	IDirect3DSurface9** surfaces = lowRes ? raysSurfaceLow : raysSurface;
 	const UINT divisor = lowRes ? 4 : 2;
-	D3DXHANDLE technique = Effect->GetTechniqueByName("DedicatedGodRays");
-	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_GodRaysLayout");
+	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedGodRays");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_GodRaysLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {}, rays = {};

@@ -10,8 +10,9 @@
 #define BloodShaders ""
 
 #define SamplerStatesMax 12
-#define ShadowCubeMapsMax 12
-#define ShadowCubeMapsSampled (ShadowCubeMapsMax - 1)
+#define ShadowCubeMapsScreen 12
+#define ShadowCubeMapsMax 32
+#define ShadowCubeMapsSampled (ShadowCubeMapsScreen - 1)
 #define TrackedLightsMax 12
 #define SpotLightsMax 1
 

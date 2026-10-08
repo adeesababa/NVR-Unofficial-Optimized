@@ -24,4 +24,5 @@ public:
 	void	RegisterTextures();
 	bool	RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface);
 	bool	mergedNormalsFailed = false;
+	CachedHandle techDepthNormals;
 };

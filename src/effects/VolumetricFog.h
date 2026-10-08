@@ -45,6 +45,7 @@ public:
 	float	nightMinDarkness;
 	bool	packedFogFailed = false;
 	bool	dedicatedFogFailed = false;
+	CachedHandle techCompositeFog, techDedicatedFog, techApplyShadowAO, techPackedFog, paramCompositeFlags, paramCompositeAOTexel, paramFogLayout;
 	IDirect3DTexture9* fogTexture[2] = {};
 	IDirect3DSurface9* fogSurface[2] = {};
 

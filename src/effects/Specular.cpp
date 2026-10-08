@@ -43,16 +43,16 @@ bool SpecularEffect::ShouldRender() {
 };
 
 bool SpecularEffect::CanTakeBounce() {
-	return Enabled && Effect && Effect->GetTechniqueByName("SpecularBounce") && Effect->GetParameterByName(NULL, "NVR_BounceData") &&
-		Effect->GetParameterByName(NULL, "NVR_BounceLayout");
+	return Enabled && Effect && TechniqueHandle(techBounce, "SpecularBounce") && ParameterHandle(paramBounceData, "NVR_BounceData") &&
+		ParameterHandle(paramBounceLayout, "NVR_BounceLayout");
 }
 
 bool SpecularEffect::RenderWithBounce(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	IDirect3DTexture9* bounce, const D3DXVECTOR4& data, const D3DXVECTOR4& layout) {
 	if (!Enabled || !Effect || !ShouldRender() || !bounce) return false;
-	D3DXHANDLE technique = Effect->GetTechniqueByName("SpecularBounce");
-	D3DXHANDLE dataHandle = Effect->GetParameterByName(NULL, "NVR_BounceData");
-	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_BounceLayout");
+	D3DXHANDLE technique = TechniqueHandle(techBounce, "SpecularBounce");
+	D3DXHANDLE dataHandle = ParameterHandle(paramBounceData, "NVR_BounceData");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramBounceLayout, "NVR_BounceLayout");
 	FrameChain& chain = TheShaderManager->Chain;
 	if (!technique || !dataHandle || !layoutHandle || !chain.Owns(RenderTarget, RenderedSurface)) return false;
 	auto timer = TimeLogger();

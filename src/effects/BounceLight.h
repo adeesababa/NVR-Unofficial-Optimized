@@ -43,6 +43,7 @@ public:
 	void	EnsureBuffers(bool quarter);
 	bool	halfTried = false;
 	bool	quarterTried = false;
+	CachedHandle paramLayout, paramTemporal, paramAmbient, paramReproject, techTemporalHalf, techTemporal, techPlus;
 	bool				deferCombine = false;
 	bool				combineOnly = false;
 	bool				deferredReady = false;

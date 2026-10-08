@@ -27,6 +27,7 @@ namespace PointShadowForward {
 	inline int SlotCount = 0;
 	inline float Params[4] = {};
 	inline float DebugView = 0.0f;
+	inline float NearFade = 0.0f;
 	inline IDirect3DCubeTexture9* Neutral = nullptr;
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -70,11 +71,19 @@ namespace PointShadowForward {
 	}
 
 	inline bool BoundThisFrame = false;
+
+	inline bool UsesAllSlots(bool exterior) {
+		return CompiledIn && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
+	}
+	inline int ShadowedSlots(bool exterior) {
+		const int points = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.LightPoints;
+		return UsesAllSlots(exterior) ? (std::min)(points, (int)ShadowCubeMapsMax) : (std::min)(points, (int)ShadowCubeMapsSampled);
+	}
 	inline unsigned Frame = 0;
 	inline void Begin() {
 		Frame++;
 		Active = false; SlotCount = 0; BoundThisFrame = false;
-		ScopeFix = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") != 0;
+		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 	}
 
 	inline void Publish(const PointShadowSlotState* slots, ShadowSceneLight* const* lights, int count, IDirect3DCubeTexture9* const* cubes) {
@@ -84,28 +93,30 @@ namespace PointShadowForward {
 		Active = false;
 		SlotCount = 0;
 		if (!CompiledIn) { lastCount = 0; return; }
-		const float strength = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "Strength");
-		if (!(strength > 0.0f)) { lastCount = 0; return; }
+		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
+		const float strength = forward.Strength;
+		if (!forward.Enabled || !(strength > 0.0f)) { lastCount = 0; return; }
 		LARGE_INTEGER frequency, counter;
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&counter);
 		const double now = (double)counter.QuadPart / (double)frequency.QuadPart;
-		const float fadeIn = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "FadeIn");
+		const float fadeIn = forward.FadeIn;
 		double start[ShadowCubeMapsMax] = {};
 		const float face = (float)(std::max)(TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ShadowCubeMapSize, 1);
 		Params[0] = (std::min)(strength, 1.0f);
-		Params[1] = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "Bias");
-		Params[2] = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "NormalOffset") * 2.0f / face;
-		Params[3] = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "Softness") * 2.0f / face;
-		DebugView = (float)TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "DebugView");
-		ScopeFix = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") != 0;
+		Params[1] = forward.Bias;
+		Params[2] = forward.NormalOffset * 2.0f / face;
+		Params[3] = forward.Softness * 2.0f / face;
+		DebugView = (float)forward.DebugView;
+		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;
+		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 		if (ScopeInView != ScopeWasInView && ScopeLogs < 20) {
 			ScopeLogs++;
 			Logger::Log("UNOFFICIAL forward shadows: B42 Optics lens %s (no lamp shadows on it).", ScopeInView ? "in view" : "gone");
 		}
 		ScopeWasInView = ScopeInView;
 		ScopeInView = false;
-		FirstPerson = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "FirstPerson") != 0;
+		FirstPerson = forward.FirstPerson;
 		static unsigned rejectedLast = 0, rejectLogs = 0;
 		unsigned rejected = 0;
 		for (int i = 0; i < count && i < ShadowCubeMapsMax; i++) {
@@ -113,8 +124,7 @@ namespace PointShadowForward {
 				!(slots[i].radius > 0.0f)) {
 				if (lights[i]) {
 					rejected |= 1u << i;
-					if (!(rejectedLast & (1u << i)) && rejectLogs < 200 &&
-						TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "LogLamps")) {
+					if (!(rejectedLast & (1u << i)) && rejectLogs < 200 && forward.LogLamps) {
 						rejectLogs++;
 						Logger::Log("LAMP %p in slot %d gets no shadow: its cube map is not drawn for it (drawn %d, same lamp %d, same texture %d, radius %.0f)",
 							lights[i], i, (int)slots[i].valid, (int)(slots[i].light == lights[i]), (int)(slots[i].texture == cubes[i]), slots[i].radius);
@@ -147,8 +157,9 @@ namespace PointShadowForward {
 		return Neutral;
 	}
 
-	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture) {
+	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture, bool device = false) {
 		TheRenderManager->renderState->SetTexture(stage, texture);
+		if (device) TheRenderManager->device->SetTexture(stage, texture);
 		static const DWORD states[][2] = { { D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP }, { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP },
 			{ D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP }, { D3DSAMP_MAGFILTER, D3DTEXF_LINEAR }, { D3DSAMP_MINFILTER, D3DTEXF_LINEAR },
 			{ D3DSAMP_MIPFILTER, D3DTEXF_NONE }, { D3DSAMP_SRGBTEXTURE, FALSE } };
@@ -192,8 +203,9 @@ namespace PointShadowForward {
 		}
 		if (matched) memcpy(constants[6], Params, sizeof(Params));
 		constants[7][0] = matched ? DebugView : 0.0f;
+		constants[7][1] = matched ? NearFade : 0.0f;
 		for (int k = 0; k < 6; k++)
-			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k]);
+			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
 			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 14);
 			memcpy(Uploaded, constants, sizeof(constants));

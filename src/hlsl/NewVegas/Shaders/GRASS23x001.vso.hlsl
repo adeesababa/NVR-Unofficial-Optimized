@@ -49,7 +49,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // Both distances measure (x, y, w - z), not xyz.
     float4 instClip = mul(ModelViewProj, float4(inst.xyz, 1.0f));
+#ifdef REVERSED_DEPTH
+    float instDist = length(float3(instClip.xy, instClip.w));
+#else
     float instDist = length(float4(instClip.xy, instClip.w - instClip.z, instClip.w));
+#endif
     OUT.sun.w = 1.0f - saturate((instDist - AlphaParam.z) / AlphaParam.w);
 
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;

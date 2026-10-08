@@ -65,6 +65,21 @@ void SkyShaders::UpdateConstants() {
 	//
 	// Radiance below the horizon is ZERO -- no ground bounce is modelled. That reproduces the
 	// old form factor exactly: a floor sees the full dome, a wall half of it, a ceiling none.
+	{
+		PBRShaders* pbrForKey = TheShaderManager->Shaders.PBR;
+		ProjectionInputs inputs = { TheShaderManager->ShaderConst.SunPosition, TheShaderManager->ShaderConst.skyColor,
+			TheShaderManager->ShaderConst.skyLowColor, TheShaderManager->ShaderConst.horizonColor, Constants.SkyData,
+			TheShaderManager->ShaderConst.sunDiskColor, Constants.SunsetColor, TheShaderManager->ShaderConst.SunAmount.x,
+			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f };
+		inputs.sunsetColor.w = 0.0f;
+		const bool sunStill = lastProjectionValid &&
+			inputs.sunPos.x * lastProjection.sunPos.x + inputs.sunPos.y * lastProjection.sunPos.y + inputs.sunPos.z * lastProjection.sunPos.z >= 0.9999985f;
+		if (sunStill) inputs.sunPos = lastProjection.sunPos;
+		if (lastProjectionValid && memcmp(&inputs, &lastProjection, sizeof(inputs)) == 0) return;
+		lastProjection = inputs;
+		lastProjectionValid = true;
+	}
+
 	const D3DXVECTOR4& sunPos = TheShaderManager->ShaderConst.SunPosition;
 	D3DXVECTOR3 skyC = Linearize(TheShaderManager->ShaderConst.skyColor);
 	D3DXVECTOR3 skyLowC = Linearize(TheShaderManager->ShaderConst.skyLowColor);

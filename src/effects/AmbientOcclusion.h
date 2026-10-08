@@ -15,6 +15,7 @@ public:
 	IDirect3DTexture9* aoTextureLow[2] = {};
 	IDirect3DSurface9* aoSurfaceLow[2] = {};
 	bool lastLowRes = false;
+	CachedHandle techDedicated, paramLayout;
 
 	bool	UseLowRes() const;
 	IDirect3DSurface9* NextResultSurface() const { return UseLowRes() ? aoSurfaceLow[0] : aoSurface[0]; }

@@ -22,6 +22,9 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 - **New in P75, off by default:** lamp-by-lamp shadows indoors, a metal look for guns, lit "chrome"
   reflections, and a better bounce light (see below). **Fixed in P75:** the flashlight's bright rim
   around grass, bright colours changing hue, and shadows over B42 Optics scopes.
+- **Fixed in P76:** water reflections losing far buildings, lamp shadows ending at a circle, huge shadows
+  when you stand at a lamp, interior floors flickering light and dark, grass popping in, and a seam where
+  the far water begins (see below).
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -152,6 +155,23 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
 - **Fewer driver calls** (P75, `Main > Main > Performance > SkipRedundantConstants`, on) - shader-constant
   uploads that set exactly what the graphics card already holds are skipped (about 9 in 10 indoors, where the
   game's own draw calls limit the frame rate). Same picture.
+- **Water reflections** (fixed in P76, `Main > Main > Water > ReflectionClipFix`, on) - when you looked level
+  or up, the water lost the reflection of far buildings and showed the ground under the water instead.
+  Sun shadows are also no longer drawn into the reflection, where they made dark patches.
+- **Lamp shadows ending at a circle** (fixed in P76) - lamps the game marks as "can be carried" (fire barrels,
+  many light sources) only drew shadows in a small fixed radius, so shadows stopped at a hard circle.
+- **Standing at a lamp** (fixed in P76, `Shaders > ShadowsInteriors > Main > NearFade` and `PlayerInsideLamp`,
+  on) - walking through a lamp's light point threw huge, sharp shadows of you over the walls.
+- **Interior floors flickering** (fixed in P76) - floor pieces turned light or dark with hard edges as you moved
+  (an NVR shader skipped some of the game's lights; and with forward shadows on, objects could pick up
+  another lamp's shadow). With forward shadows on, lamps now get shadows by where you stand, not where you look
+  (`CameraIndependent`), and the big fill lights hidden in ceilings no longer cast shadows (`FillLightRadius`).
+  The forward-shadow switch now also works while playing. `LightPoints` can go up to 32 indoors with forward
+  shadows (default still 12; each extra lamp costs about 0.3-0.4 ms).
+- **Grass fade** (fixed in P76) - grass tufts popped in and out instead of fading, and faded at the wrong distance.
+- **Far water seam** (fixed in P76) - the line where the near water turns into the far water is gone.
+- **Lamp shadows with many characters** (P76, `Main > Main > Performance > SkinnedShadowFaceTest`, on) -
+  characters are drawn only into the lamp-shadow sides they can reach. Same shadows, less CPU work in crowds.
 
 **Experimental Gun FX** (since P67). The zip includes the `GunFX.dll` plugin. In the NVR menu, **Main > GunFX**
 has one switch per effect (muzzle puff, heat smoke, after-fire trail (since P69), ejection smoke, barrel glow, heat
@@ -220,6 +240,8 @@ Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIA
 > Built on the fork by [macrimmon12-tech](https://github.com/macrimmon12-tech/TESReloaded10)
 > (volumetric fog v2, skin and lighting fixes, ImGui menu and more), whose history is preserved in
 > this repository. All original copyright notices are unchanged.
+> The game-engine fixes since P75 (water reflection clip plane, scope fix, lamp shadow work) were built with
+> the help of [WallSoGB](https://github.com/WallSoGB)'s Fallout: New Vegas IDA Pro database.
 >
 > This is shared in good faith. If any of the original authors or maintainers feel this release
 > steps on their toes, please open an issue here and it will be taken down.

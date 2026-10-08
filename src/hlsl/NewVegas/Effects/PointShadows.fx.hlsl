@@ -2,6 +2,7 @@ float4 TESR_ShadowLightPosition[12];
 float4 TESR_LightPosition[12];
 float4 TESR_LightColor[24];
 float4 TESR_ShadowFade;
+float4 TESR_PointShadowNear;
 float4 TESR_SpotLightPosition;
 float4 TESR_SpotLightDirection;
 float4 TESR_SpotLightColor;
@@ -67,12 +68,25 @@ float GetSpotLightAmount(float4 worldPos, float4 spotLightPosition, float4 spotL
 }
 
 
-float PointLightAmountValueLod(samplerCUBE cube, float3 lightDir, float distance) {
+float PointLightAmountValueLod(samplerCUBE cube, float3 lightDir, float distance, float near) {
 	if (TESR_ShadowFade.z == 0) return 1;
 
 	float lightDepth = texCUBElod(cube, float4(lightDir, 0)).r;
 	float Shadow = lightDepth + BIAS * distance > distance;
-	return lerp(1, Shadow, lightDepth > 0.0f && lightDepth < 1.0f);
+	float blocker = near > 0.0f ? smoothstep(0.0f, near, lightDepth) : 1.0f;
+	return lerp(1, Shadow, (lightDepth > 0.0f && lightDepth < 1.0f) * blocker);
+}
+
+float EdgeWindow(float distance) {
+	return TESR_PointShadowNear.y > 0.0f ? 1.0f - smoothstep(1.0f - TESR_PointShadowNear.y, 1.0f, distance) : 1.0f;
+}
+
+float LampReach(float distance) {
+	return 1.0f - smoothstep(TESR_PointShadowNear.z, 1.0f, distance);
+}
+
+float LampAmount(float3 lightDir, float distance, float4 normal) {
+	return TESR_PointShadowNear.z > 0.0f ? LampReach(distance) : GetPointLightAtten(lightDir, distance, normal);
 }
 
 float ShadowedLight(samplerCUBE cube, float4 worldPos, float4 lightPos, float4 normal, float weight) {
@@ -80,8 +94,8 @@ float ShadowedLight(samplerCUBE cube, float4 worldPos, float4 lightPos, float4 n
 	float distance = length(lightDir) / lightPos.w;
 	[branch] if (!(distance < 1.0) || weight == 0) return 0;
 
-	float amount = PointLightAmountValueLod(cube, lightDir * float3(-1, -1, 1), distance) * GetPointLightAtten(lightDir, distance, normal);
-	return saturate(amount) * weight;
+	float amount = PointLightAmountValueLod(cube, lightDir * float3(-1, -1, 1), distance, TESR_PointShadowNear.x / lightPos.w) * LampAmount(lightDir, distance, normal);
+	return saturate(saturate(amount) * weight) * EdgeWindow(distance);
 }
 
 
@@ -104,15 +118,19 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer8, world_pos, TESR_ShadowLightPosition[8], normal, luma(TESR_LightColor[8].rgb) * TESR_LightColor[8].w);
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer9, world_pos, TESR_ShadowLightPosition[9], normal, luma(TESR_LightColor[9].rgb) * TESR_LightColor[9].w);
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer10, world_pos, TESR_ShadowLightPosition[10], normal, luma(TESR_LightColor[10].rgb) * TESR_LightColor[10].w);
-	[branch] if (TESR_ShadowLightPosition[11].w)
-		Shadow += GetPointLightContribution(world_pos, TESR_ShadowLightPosition[11], normal);
+	[branch] if (TESR_ShadowLightPosition[11].w) {
+		float4 light11 = GetPointLightDistance(world_pos, TESR_ShadowLightPosition[11]);
+		Shadow += saturate(LampAmount(light11.xyz, light11.w, normal)) * EdgeWindow(light11.w);
+	}
 
 	[branch] if (TESR_SpotLightPosition.w)
 		Shadow += GetSpotLightAmount(world_pos, TESR_SpotLightPosition, TESR_SpotLightDirection, normal) * luma(TESR_SpotLightColor.rgb) * TESR_SpotLightColor.w;
 	
 	for (int i = 0; i< 12; i++){
-		[branch] if (TESR_LightPosition[i].w)
-			Shadow += GetPointLightContribution(world_pos, TESR_LightPosition[i], normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w;
+		[branch] if (TESR_LightPosition[i].w) {
+			float4 light = GetPointLightDistance(world_pos, TESR_LightPosition[i]);
+			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
+		}
 	}
 
 	Shadow = saturate(Shadow);

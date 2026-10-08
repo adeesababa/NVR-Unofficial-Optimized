@@ -21,6 +21,9 @@ public:
 	};
 	SkyStruct Constants;
 	bool useSunDiskColor;
+	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor; float sunAmount, saturation; };
+	ProjectionInputs lastProjection = {};
+	bool lastProjectionValid = false;
 
 	void	UpdateConstants();
 	void	RegisterConstants();

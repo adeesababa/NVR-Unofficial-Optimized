@@ -21,6 +21,7 @@ float4 TESR_WaterShorelineParams : register(c20);
 float4 TESR_DebugVar : register(c21);
 float4 TESR_WaterShallowColor : register(c22);
 float4 TESR_SunAmount : register(c23);
+float4 TESR_WaterLODColor : register(c24);
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1); //unused
@@ -73,7 +74,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float4 reflectionPos = getReflectionSamplePosition(IN, surfaceNormal, refractionCoeff);
     float4 reflection = linearize(tex2Dproj(ReflectionMap, reflectionPos));
 
-    float4 color = linShallowColor * sunLuma;
+    float4 color = linearize(TESR_WaterLODColor) * sunLuma;
     // color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color);
     color = getFresnel(surfaceNormal, eyeDirection, reflection, TESR_WaveParams.w, color);
     color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);

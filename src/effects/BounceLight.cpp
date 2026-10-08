@@ -67,7 +67,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; lastValid = historyValid = false; return; }
 	EnsureBuffers(quarterResolution);
 	if (quarterResolution && !quarterTexture[0]) EnsureBuffers(false);
-	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_BounceLayout");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_BounceLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	const bool quarter = quarterResolution && quarterTexture[0] && quarterTexture[1] && quarterSurface[0] && quarterSurface[1] &&
@@ -82,19 +82,19 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	const bool extras = offScreenLight > 0.0f || multiBounce > 0.0f || temporal;
 	D3DXHANDLE temporalHandle = NULL, ambientHandle = NULL, reprojectHandle = NULL;
 	if (extras) {
-		temporalHandle = Effect->GetParameterByName(NULL, "NVR_BounceTemporal");
-		ambientHandle = Effect->GetParameterByName(NULL, "NVR_BounceAmbient");
-		reprojectHandle = Effect->GetParameterByName(NULL, "NVR_BounceReproject");
+		temporalHandle = ParameterHandle(paramTemporal, "NVR_BounceTemporal");
+		ambientHandle = ParameterHandle(paramAmbient, "NVR_BounceAmbient");
+		reprojectHandle = ParameterHandle(paramReproject, "NVR_BounceReproject");
 		D3DXHANDLE wanted = NULL;
 		if (temporal) {
 			EnsureHistory(quarter);
 			IDirect3DTexture9* const* textures = quarter ? quarterHistory : halfHistory;
 			IDirect3DSurface9* const* surfaces = quarter ? quarterHistorySurface : halfHistorySurface;
-			wanted = Effect->GetTechniqueByName(halfSamples ? "BounceLightTemporalHalf" : "BounceLightTemporal");
+			wanted = halfSamples ? TechniqueHandle(techTemporalHalf, "BounceLightTemporalHalf") : TechniqueHandle(techTemporal, "BounceLightTemporal");
 			if (wanted && textures[0] && textures[1] && surfaces[0] && surfaces[1]) { historyTexture = textures; historySurface = surfaces; }
 			else wanted = NULL;
 		}
-		if (!wanted) wanted = Effect->GetTechniqueByName("BounceLightPlus");
+		if (!wanted) wanted = TechniqueHandle(techPlus, "BounceLightPlus");
 		if (wanted && temporalHandle && ambientHandle && reprojectHandle) technique = wanted;
 		else historyTexture = nullptr;
 		static D3DXHANDLE reportedTechnique = NULL;

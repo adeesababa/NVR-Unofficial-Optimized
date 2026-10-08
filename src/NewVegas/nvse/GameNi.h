@@ -2534,7 +2534,10 @@ public:
 	D3DCAPS9						Caps;							// 1118
 
 	void SetCullMode(NiStencilProperty::DrawMode aeMode);
+
+	void NoteDeviceTexture(UInt32 stage, IDirect3DBaseTexture9* texture) { if (stage < 16) unk10A0[stage] = (UInt32)texture; }
 };
+assert(offsetof(NiDX9RenderState, unk10A0) == 0x10A0);
 assert(offsetof(NiDX9RenderState, Device) == 0x10F8);
 assert(sizeof(NiDX9RenderState) == 0x1248);
 
@@ -2995,6 +2998,8 @@ public:
 	static float* const fLODLandDrop;
 	static NiPoint3* const kCameraPos;
 	static NiPoint4* const kLoadedRange;
+	static float* const fSpecularLODStartFade;
+	static float* const fSpecularLODEnd;
 
 	static BSShader** pspShaders;
 

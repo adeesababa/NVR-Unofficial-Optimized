@@ -85,13 +85,21 @@ int FlashlightEffect::TechniqueIndex(const char* name) {
 	return -1;
 }
 
+void FlashlightEffect::RefreshTechniqueIndices() {
+	if (techniqueGeneration == LoadGeneration) return;
+	techniqueGeneration = LoadGeneration;
+	edgeFixIndex = TechniqueIndex("EdgeFix");
+	edgeFixShadowsIndex = TechniqueIndex("EdgeFixShadows");
+}
+
 void FlashlightEffect::UpdateConstants() {
 
 	ApplyLook(TheShaderManager->GameState.isExterior);
 
 	selectedPass = Settings.renderShadows ? 1 : 0;
 	if (Settings.edgeFix > 0) {
-		const int edgeTechnique = TechniqueIndex(Settings.renderShadows ? "EdgeFixShadows" : "EdgeFix");
+		RefreshTechniqueIndices();
+		const int edgeTechnique = Settings.renderShadows ? edgeFixShadowsIndex : edgeFixIndex;
 		if (edgeTechnique >= 0) selectedPass = edgeTechnique;
 	}
 

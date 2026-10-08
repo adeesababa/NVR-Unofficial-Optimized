@@ -47,7 +47,7 @@ public:
 		D3DXMATRIX		ShadowViewProj;
 		D3DXMATRIX		ShadowSpotlightCameraToLight[SpotLightsMax];
 		D3DXVECTOR4		ShadowCubeMapLightPosition;
-		D3DXVECTOR4		ShadowLightPosition[ShadowCubeMapsMax];
+		D3DXVECTOR4		ShadowLightPosition[ShadowCubeMapsScreen];
 		D3DXVECTOR4		ShadowMapRadius;
 		D3DXVECTOR4		ShadowBlur;
 		// Forward sun shadows, runtime side. x: 1 when the forward path is SUPPRESSED.
@@ -60,6 +60,7 @@ public:
 		D3DXMATRIX		OldCameraToLight[4];
 		D3DXVECTOR4		OldCenter[4];
 		D3DXVECTOR4		CrossFade;
+		D3DXVECTOR4		PointShadowNear;
 	};
 
 	// Settings
@@ -140,6 +141,21 @@ public:
 		bool				UseCastShadowFlag;
 		bool				PlayerShadowThirdPerson;
 		bool				PlayerShadowFirstPerson;
+		bool				PlayerInsideLamp;
+		float				PlayerLampMargin;
+		struct ForwardStruct {
+			bool Enabled, KeepDarkening, DarkeningBlur, FirstPerson, ScopeFix, LogLamps;
+			bool CameraIndependent;
+			int LampRanking, DebugView;
+			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;
+			float FillLightRadius;
+		} Forward;
+	};
+
+	struct ContactHardeningStruct {
+		bool				Enabled;
+		float				SunSize;
+		float				MaxSoftness;
 	};
 
 	struct ScreenSpaceStruct {
@@ -166,6 +182,7 @@ public:
 		ExteriorsStruct		Exteriors;
 		InteriorsStruct		Interiors;
 		SunSmoothingStruct  SunSmoothing;
+		ContactHardeningStruct ContactHardening;
 	};
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
@@ -210,6 +227,8 @@ public:
 	void		RegisterConstants();
 	void		RegisterTextures();
 	void		RecreateTextures(bool cascades, bool ortho, bool cubemaps);
+	bool		EnsureCubeMap(int slot);
+	UINT		CubeMapSizeCreated = 0;
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();
 	D3DXVECTOR3	SunGlideFrom = D3DXVECTOR3(0.0f, 0.0f, 1.0f);

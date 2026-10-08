@@ -12,6 +12,7 @@ public:
     float               GetObjectDistance(NiBound* Bound);
 	bool				IsReversedDepth();
 	const char*			D3D9RuntimeDescription();
+	const D3DCAPS9*		DeviceCaps();
 	D3DXMATRIX			WorldViewProjMatrix;
 	D3DXMATRIX			ViewProjMatrix;
 	D3DXMATRIX			InvViewProjMatrix;

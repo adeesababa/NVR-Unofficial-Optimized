@@ -32,6 +32,7 @@ public:
 		IDirect3DSurface9* LightSurface = nullptr;
 	};
 	TexturesStruct	Textures;
+	CachedHandle techBounce, paramBounceData, paramBounceLayout;
 
 	void	UpdateConstants();
 	void	RegisterConstants();

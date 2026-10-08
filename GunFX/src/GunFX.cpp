@@ -2190,7 +2190,10 @@ static void UpdateChain(SmokeChain& c, const SmokeSource& src, float dt, const V
 				float k = u < 30.0f ? (u - 15.0f) / 15.0f : 1.0f;
 				k *= (1.0f - dz / a) * bodyShare;
 				if (!s.clear && age < 0.4f) k *= (age - 0.1f) / 0.3f;
-				const NiPoint3 f = PoleFlow(o, d, a, U, u, way);
+				NiPoint3 f = PoleFlow(o, d, a, U, u, way);
+				const float ue = (U.x * o.x + U.y * o.y) / d;
+				const float radial = (f.x * o.x + f.y * o.y) / d;
+				if (ue > 0.0f && radial < 0.0f) { f.x -= radial * o.x / d; f.y -= radial * o.y / d; }
 				around.x += f.x * k; around.y += f.y * k;
 				const float gap = d - a;
 				if (u > 40.0f && gap < 1.2f * a)
