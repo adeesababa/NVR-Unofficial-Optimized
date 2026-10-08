@@ -1,6 +1,6 @@
 #pragma once
 
-constexpr int PointShadowSlotsMax = 32;
+constexpr int PointShadowSlotsMax = 64;
 
 inline void AssignStablePointShadowSlots(const void* const* previous, const void* const* ranked, int count, int slots,
 	const void** out)

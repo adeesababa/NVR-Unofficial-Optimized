@@ -21,7 +21,8 @@ public:
 	void					RenderAccums();
 	void					RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj);
 	void					AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);
-	void					RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex);
+	enum class CubeLayer { All, StaticOnly, MovingOnto };
+	bool					RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex, CubeLayer Layer = CubeLayer::All);
 	void					RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex);
 	void					RenderShadowMaps();
 	void					ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* ClearColor);

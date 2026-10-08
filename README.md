@@ -22,9 +22,11 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
 - **New in P75, off by default:** lamp-by-lamp shadows indoors, a metal look for guns, lit "chrome"
   reflections, and a better bounce light (see below). **Fixed in P75:** the flashlight's bright rim
   around grass, bright colours changing hue, and shadows over B42 Optics scopes.
-- **Fixed in P76:** water reflections losing far buildings, lamp shadows ending at a circle, huge shadows
-  when you stand at a lamp, interior floors flickering light and dark, grass popping in, and a seam where
-  the far water begins (see below).
+- **New in P77: lamp-by-lamp shadows indoors are on by default** (Shaders > ShadowsInteriors > Forward), now that
+  their last bugs are fixed: shadows no longer stop dead at the edge of a floor piece, and no longer pop as you turn.
+  **Also fixed in P77:** water reflections losing far buildings, lamp shadows ending at a circle, huge shadows when
+  you stand at a lamp, interior floors flickering light and dark, grass popping in, and a seam where the far water
+  begins (see below). (P77 replaces P76, which was withdrawn.)
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -155,22 +157,32 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
 - **Fewer driver calls** (P75, `Main > Main > Performance > SkipRedundantConstants`, on) - shader-constant
   uploads that set exactly what the graphics card already holds are skipped (about 9 in 10 indoors, where the
   game's own draw calls limit the frame rate). Same picture.
-- **Water reflections** (fixed in P76, `Main > Main > Water > ReflectionClipFix`, on) - when you looked level
+- **Water reflections** (fixed in P77, `Main > Main > Water > ReflectionClipFix`, on) - when you looked level
   or up, the water lost the reflection of far buildings and showed the ground under the water instead.
   Sun shadows are also no longer drawn into the reflection, where they made dark patches.
-- **Lamp shadows ending at a circle** (fixed in P76) - lamps the game marks as "can be carried" (fire barrels,
+- **Lamp shadows ending at a circle** (fixed in P77) - lamps the game marks as "can be carried" (fire barrels,
   many light sources) only drew shadows in a small fixed radius, so shadows stopped at a hard circle.
-- **Standing at a lamp** (fixed in P76, `Shaders > ShadowsInteriors > Main > NearFade` and `PlayerInsideLamp`,
-  on) - walking through a lamp's light point threw huge, sharp shadows of you over the walls.
-- **Interior floors flickering** (fixed in P76) - floor pieces turned light or dark with hard edges as you moved
+- **Standing at a lamp** (fixed in P77, `Shaders > ShadowsInteriors > Main > PlayerInsideLamp`, on; `NearFade`
+  optional, 0 = off) - walking through a lamp's light point threw huge, sharp shadows of you over the walls.
+- **Interior floors flickering** (fixed in P77) - floor pieces turned light or dark with hard edges as you moved
   (an NVR shader skipped some of the game's lights; and with forward shadows on, objects could pick up
   another lamp's shadow). With forward shadows on, lamps now get shadows by where you stand, not where you look
-  (`CameraIndependent`), and the big fill lights hidden in ceilings no longer cast shadows (`FillLightRadius`).
-  The forward-shadow switch now also works while playing. `LightPoints` can go up to 32 indoors with forward
-  shadows (default still 12; each extra lamp costs about 0.3-0.4 ms).
-- **Grass fade** (fixed in P76) - grass tufts popped in and out instead of fading, and faded at the wrong distance.
-- **Far water seam** (fixed in P76) - the line where the near water turns into the far water is gone.
-- **Lamp shadows with many characters** (P76, `Main > Main > Performance > SkinnedShadowFaceTest`, on) -
+  (`CameraIndependent`). The forward-shadow switch now also works while playing.
+- **Lamp shadows stopping at the edge of a floor piece** (fixed in P77, forward shadows) - a shadow ended in a
+  straight line where one floor piece met the next, and some pieces looked lit or dark next to their neighbours:
+  for objects the game draws with its many-lamp shader, each lamp got the next lamp's shadow and the first lamp
+  none. Also: lamp light and shadow popped off parts of objects when you turned the camera (the game dropped lamps
+  it wrongly thought were out of view; `KeepLampsInView`, on). With PBR metal on, metal no longer switches on and
+  off depending on where you stand in rooms with many lamps.
+- **Big ceiling fill lights** (P77, `FillLightRadius` 1000, `FillLightShadowStrength` 0.5) - lamps that light a
+  whole area cast half-strength shadows, so staircases and tables still shade the floor without blacking it out.
+- **More lamp shadows, cheaper** (P77) - with forward shadows on, `LightPoints` can go up to 64 indoors (default
+  now 24). A lamp's walls and furniture are drawn into its shadow once and kept; when people move near it only they
+  are redrawn (`Shaders > ShadowsInteriors > Main > RedrawActorsOnly`, on). Each lamp past 12 needs about 6 MB of
+  video memory.
+- **Grass fade** (fixed in P77) - grass tufts popped in and out instead of fading, and faded at the wrong distance.
+- **Far water seam** (fixed in P77) - the line where the near water turns into the far water is gone.
+- **Lamp shadows with many characters** (P77, `Main > Main > Performance > SkinnedShadowFaceTest`, on) -
   characters are drawn only into the lamp-shadow sides they can reach. Same shadows, less CPU work in crowds.
 
 **Experimental Gun FX** (since P67). The zip includes the `GunFX.dll` plugin. In the NVR menu, **Main > GunFX**
@@ -193,10 +205,11 @@ nothing while off. Turn them on in the menu to try them:
   what is on screen. Since P75 it also guesses light from just off screen (`OffScreenLight`), bounces more
   than once (`MultiBounce`) and reuses the last frame (`Temporal`: less grain; a moving character's glow on
   the floor trails by about 0.15 s, set it off if that bothers you). About 0.5 ms at 1440p on a GTX 1070.
-- **Shaders > ShadowsInteriors > Forward** (since P75, needs a restart) - indoor lamp shadows drawn on each
-  object, lamp by lamp, instead of one dark mask over the finished picture: a lamp's shadow takes away only
-  that lamp's light, so lamp glow and the room's ambient light stay bright and two lamps each cast their own
-  shadow. Needs `Shaders > PBR` on. `DebugView` 1 shows each lamp's shadows in its own colour.
+- **Shaders > ShadowsInteriors > Forward** (since P75; **on by default since P77**; turning it on needs a restart
+  if the game started with it off) - indoor lamp shadows drawn on each object, lamp by lamp, instead of one dark mask over the
+  finished picture: a lamp's shadow takes away only that lamp's light, so lamp glow and the room's ambient light
+  stay bright and two lamps each cast their own shadow. Needs `Shaders > PBR` on. `Enabled` off = the old
+  screen-space shadows. `DebugView` 1 shows each lamp's shadows in its own colour; 3 is a diagnostic view.
 - **Shaders > PBR > Metal > MetalOn** (since P75) - guns read as metal instead of plastic: reflections of the
   surroundings, colour on coloured metals, polished edges (your own weapon only by default).
 - **Shaders > PBR > EnvMaps > Lighting** (since P75) - the game's "chrome" reflections on guns, glass and

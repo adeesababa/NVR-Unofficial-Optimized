@@ -215,5 +215,6 @@ public:
 	D3DXVECTOR4				LightPosition[TrackedLightsMax];
 	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsScreen];
 	D3DXVECTOR4				LightAttenuation[TrackedLightsMax];
+	D3DXVECTOR4				ExtraLights[ExtraLightsMax];
 };
 

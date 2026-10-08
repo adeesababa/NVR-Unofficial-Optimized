@@ -142,13 +142,16 @@ public:
 		bool				PlayerShadowThirdPerson;
 		bool				PlayerShadowFirstPerson;
 		bool				PlayerInsideLamp;
+		bool				RedrawActorsOnly;
 		float				PlayerLampMargin;
 		struct ForwardStruct {
 			bool Enabled, KeepDarkening, DarkeningBlur, FirstPerson, ScopeFix, LogLamps;
 			bool CameraIndependent;
+			bool KeepLampsInView;
 			int LampRanking, DebugView;
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;
 			float FillLightRadius;
+			float FillLightShadowStrength;
 		} Forward;
 	};
 
@@ -193,6 +196,8 @@ public:
 		IDirect3DSurface9* ShadowPassSurface;
 		IDirect3DCubeTexture9* ShadowCubeMapTexture[ShadowCubeMapsMax];
 		IDirect3DSurface9* ShadowCubeMapSurface[ShadowCubeMapsMax][6];
+		IDirect3DCubeTexture9* ShadowCubeMapStaticTexture[ShadowCubeMapsMax];
+		IDirect3DSurface9* ShadowCubeMapStaticSurface[ShadowCubeMapsMax][6];
 		IDirect3DTexture9* ShadowSpotlightTexture[SpotLightsMax];
 		IDirect3DSurface9* ShadowSpotlightSurface[SpotLightsMax];
 		IDirect3DSurface9* ShadowCubeMapDepthSurface;
@@ -228,6 +233,7 @@ public:
 	void		RegisterTextures();
 	void		RecreateTextures(bool cascades, bool ortho, bool cubemaps);
 	bool		EnsureCubeMap(int slot);
+	bool		EnsureStaticCubeMap(int slot);
 	UINT		CubeMapSizeCreated = 0;
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();

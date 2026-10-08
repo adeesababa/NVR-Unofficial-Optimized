@@ -56,3 +56,18 @@ inline bool PointShadowNeedsRedraw(const PointShadowSlotState& last, const Point
 {
 	return PointShadowRedrawReason(last, now, frame, slot, interval) != PointShadowRedraw::None;
 }
+
+enum class PointShadowDraw {
+	All,
+	StaticThenMoving,
+	MovingOnly,
+};
+
+inline PointShadowDraw PointShadowDrawPlan(bool split, const PointShadowSlotState& staticLast, const PointShadowSlotState& staticNow,
+	bool moving)
+{
+	if (!split || !staticNow.texture) return PointShadowDraw::All;
+	const bool staticCurrent = PointShadowRedrawReason(staticLast, staticNow, 0, 0, 1) == PointShadowRedraw::None;
+	if (!moving) return staticCurrent ? PointShadowDraw::MovingOnly : PointShadowDraw::All;
+	return staticCurrent ? PointShadowDraw::MovingOnly : PointShadowDraw::StaticThenMoving;
+}

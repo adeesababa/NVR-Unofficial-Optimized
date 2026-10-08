@@ -862,7 +862,17 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)));
 #endif
-    
+
+#if INTERIOR_SHADOWS
+    [branch] if (NVR_PointShadowDebug.x > 2.5f) {
+        #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
+            OUT.color.rgb = 0.0f;
+        #else
+            OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
+        #endif
+    }
+#endif
+
     #if defined(DIFFUSE)
         OUT.color.a = 1;
     #elif defined(ONLY_SPECULAR)
@@ -990,10 +1000,18 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.xyz = normalize(expand(normal.xyz));
     
     float roughness = getRoughness(normal.a);
-    
+
     // Lighting.
     float3 viewDir = { IN.lightDir.w, IN.light2.w, IN.light3.w };
-    
+
+    #ifdef METAL
+        float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
+        float metallic = 0.0f;
+        [branch] if (TESR_PBRMetal.x > 0.0f)
+            metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f);
+        float lightRoughness = lerp(roughness, metalRoughness, metallic);
+    #endif
+
     float att;
 
     #if INTERIOR_SHADOWS
@@ -1035,29 +1053,6 @@ PS_OUTPUT main(PS_INPUT IN) {
                   ? GetSunShadow(sunShadowWorldPos, sunShadowNormal)
                   : 1.0f;
         #endif
-        float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * sunShadow, viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-    #else
-        att = vanillaAtt(PSLightPosition[0].xyz - IN.lPosition.xyz, PSLightPosition[0].w);
-        float3 lighting = (0 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.lightDir.xyz, att, SHADOWED(PSLightColor[0].rgb, 0, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-    #endif
-
-    att = vanillaAtt(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 0].w);
-    lighting += (1 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light2.xyz, att, SHADOWED(PSLightColor[1].rgb, 1, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-
-    att = vanillaAtt(PSLightPosition[lightOffset + 1].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 1].w);
-    lighting += (2 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light3.xyz, att, SHADOWED(PSLightColor[2].rgb, 2, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-
-    #if MAX_LIGHTS > 3
-        att = vanillaAtt(PSLightPosition[lightOffset + 2].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 2].w);
-        lighting += (3 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light4.xyz, att, SHADOWED(PSLightColor[3].rgb, 3, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-    #endif
-
-    #if MAX_LIGHTS > 4
-        att = vanillaAtt(PSLightPosition[3].xyz - IN.lPosition.xyz, PSLightPosition[3].w);
-        lighting += (4 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light5.xyz, att, SHADOWED(PSLightColor[4].rgb, 4, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-
-        att = vanillaAtt(PSLightPosition[4].xyz - IN.lPosition.xyz, PSLightPosition[4].w);
-        lighting += (5 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light6.xyz, att, SHADOWED(PSLightColor[5].rgb, 5, att), viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #endif
 
     // ddx/ddy must stay at pixel-shader top level.
@@ -1066,11 +1061,34 @@ PS_OUTPUT main(PS_INPUT IN) {
     #else
         float3 ambNormal = GetShadowGeometricNormal(SHADOW_WP_LOAD(IN));
     #endif
-    lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambNormal,
-                                   SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
+
+    float3 lighting;
+    #ifdef METAL
+    [branch] if (metallic > 0.0f) {
+        #define LIGHT_FINISH lightRoughness, metallic
+        #include "includes/ManyLightsDirect.hlsl"
+        #undef LIGHT_FINISH
+        lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), ambNormal,
+                                       SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
+        lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, lightRoughness,
+                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f);
+    }
+    else
+    #endif
+    {
+        #define LIGHT_FINISH roughness
+        #include "includes/ManyLightsDirect.hlsl"
+        #undef LIGHT_FINISH
+        lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambNormal,
+                                       SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
+    }
 
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
     float3 finalColor = lighting;
+
+    #ifdef METAL
+        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
+    #endif
     
     #ifndef OPT
         finalColor.rgb = (useFog <= 0.0 ? finalColor.rgb : lerp(finalColor.rgb, IN.fogColor.rgb, IN.fogColor.a));
@@ -1084,6 +1102,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
 
     OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(IN.lPosition.xyz));
+    #if INTERIOR_SHADOWS
+        [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
+    #endif
     OUT.color.a = baseColor.a * AmbientColor.a;
 
     return OUT;

@@ -11,9 +11,10 @@
 
 #define SamplerStatesMax 12
 #define ShadowCubeMapsScreen 12
-#define ShadowCubeMapsMax 32
+#define ShadowCubeMapsMax 64
 #define ShadowCubeMapsSampled (ShadowCubeMapsScreen - 1)
 #define TrackedLightsMax 12
+#define ExtraLightsMax 16
 #define SpotLightsMax 1
 
 #define WordWaterHeightMapBuffer "TESR_WaterHeightMapBuffer"

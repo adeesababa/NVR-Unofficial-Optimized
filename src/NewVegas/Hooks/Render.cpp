@@ -1300,6 +1300,9 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	(*SetShaders)(This, PassIndex);
 	ReflectionProbe::AfterBind();
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
+	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;
+	PointShadowForward::LastVertexShaderNvr = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
+	PointShadowForward::LastPixelShaderNvr = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);
@@ -1360,12 +1363,14 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	ReflectionProbe::OnObject(Pass, false);
 	ForwardShadowsForPass(Pass);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 }
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
 	ReflectionProbe::OnObject(Pass, true);
 	ForwardShadowsForPass(Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 }
 
 HRESULT (__thiscall* SetSamplerState)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8) = (HRESULT (__thiscall*)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8))Hooks::SetSamplerState;

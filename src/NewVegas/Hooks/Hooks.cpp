@@ -1,4 +1,5 @@
 #include "Hooks.h"
+#include "../../core/PointShadowForward.h"
 
 void AttachHooks() {
 
@@ -42,6 +43,15 @@ void AttachHooks() {
 
 	// Vanilla shader specific hooks.
 	kSkyShaderConstantsDetour.ReplaceVirtualFunc(0x10AFE94, SkyShader__UpdateConstants);
+
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled")) {
+		const UInt32 site = PointShadowForward::kTestFrustumCallSite;
+		if (*(UInt8*)site == 0xE8 && site + 5 + *(SInt32*)(site + 1) == PointShadowForward::kTestFrustumCull) {
+			WriteRelCall(site, (UInt32)&PointShadowForward::TestFrustumCullHook);
+			Logger::Log("UNOFFICIAL KeepLampsInView: the game's lamp view test (ShadowSceneNode::PreOnVisible) is checked against the render camera");
+		}
+		else Logger::Log("UNOFFICIAL KeepLampsInView: the call at %08X is not the game's lamp view test (another plugin?); not hooked", site);
+	}
 
 	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
 	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);

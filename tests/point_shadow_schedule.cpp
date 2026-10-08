@@ -178,6 +178,45 @@ int main()
 		CHECK(kept && newcomersIn, "32 slots: lights still ranked keep their slots (incl. slots 16-31), newcomers take the freed ones");
 	}
 
+	{
+		static int lamps[70];
+		const void* ranked[64]; const void* previous[64] = {}; const void* out[64];
+		for (int r = 0; r < 64; r++) ranked[r] = &lamps[r];
+		AssignStablePointShadowSlots(previous, ranked, 64, 64, out);
+		bool full = true;
+		for (int s = 0; s < 64; s++) full &= out[s] == ranked[s];
+		CHECK(full, "64 slots: 64 lights fill them in rank order");
+		for (int s = 0; s < 64; s++) previous[s] = out[s];
+		const void* reranked[64];
+		for (int r = 0; r < 64; r++) reranked[r] = r < 3 ? (const void*)&lamps[64 + r] : ranked[66 - r];
+		AssignStablePointShadowSlots(previous, reranked, 64, 64, out);
+		bool kept = true, newcomersIn = true;
+		for (int r = 0; r < 3; r++) newcomersIn &= slotOf(out, 64, &lamps[64 + r]) >= 0;
+		for (int r = 3; r < 64; r++) kept &= slotOf(out, 64, reranked[r]) == slotOf(previous, 64, reranked[r]);
+		CHECK(kept && newcomersIn, "64 slots: lights still ranked keep their slots (incl. slots 32-63), newcomers take the freed ones");
+	}
+
+	{
+		static int staticCube, otherCube;
+		auto staticOf = [](const void* light, unsigned long long hash, const void* cube) {
+			PointShadowSlotState s = StaticState(light, hash); s.texture = cube; return s;
+		};
+		const PointShadowSlotState drawn = staticOf(&lightA, 7, &staticCube);
+		PointShadowSlotState none = drawn; none.texture = nullptr;
+		PointShadowSlotState movedLamp = drawn; movedLamp.x += 1;
+		CHECK(PointShadowDrawPlan(false, drawn, drawn, true) == PointShadowDraw::All, "split off: the whole list, as before");
+		CHECK(PointShadowDrawPlan(true, PointShadowSlotState(), none, true) == PointShadowDraw::All, "no static cube map could be made: the whole list");
+		CHECK(PointShadowDrawPlan(true, PointShadowSlotState(), drawn, true) == PointShadowDraw::StaticThenMoving, "people in reach, static cube map never drawn: static first, then the people");
+		CHECK(PointShadowDrawPlan(true, drawn, drawn, true) == PointShadowDraw::MovingOnly, "people in reach, static cube map current: the copy and the people only");
+		CHECK(PointShadowDrawPlan(true, drawn, staticOf(&lightA, 8, &staticCube), true) == PointShadowDraw::StaticThenMoving, "a static caster changed (a door opened): static redrawn");
+		CHECK(PointShadowDrawPlan(true, drawn, staticOf(&lightB, 7, &staticCube), true) == PointShadowDraw::StaticThenMoving, "another lamp in the slot, its static cube map not here: static redrawn");
+		CHECK(PointShadowDrawPlan(true, drawn, staticOf(&lightA, 7, &otherCube), true) == PointShadowDraw::StaticThenMoving, "the static cube map texture was recreated: static redrawn");
+		CHECK(PointShadowDrawPlan(true, drawn, movedLamp, true) == PointShadowDraw::StaticThenMoving, "the lamp moved: static redrawn");
+		CHECK(PointShadowDrawPlan(true, drawn, drawn, false) == PointShadowDraw::MovingOnly, "the people left, static cube map current: the copy alone");
+		CHECK(PointShadowDrawPlan(true, drawn, staticOf(&lightA, 8, &staticCube), false) == PointShadowDraw::All, "all static and the static cube map stale: straight into the live cube map");
+		CHECK(PointShadowDrawPlan(true, PointShadowSlotState(), none, false) == PointShadowDraw::All, "a lamp that never had people near it: as before");
+	}
+
 	std::printf(failures ? "\n%d check(s) FAILED\n" : "\nAll point shadow schedule checks passed\n", failures);
 	return failures ? 1 : 0;
 }

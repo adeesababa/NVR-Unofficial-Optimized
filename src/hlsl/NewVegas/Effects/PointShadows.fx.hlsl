@@ -1,6 +1,7 @@
 float4 TESR_ShadowLightPosition[12];
 float4 TESR_LightPosition[12];
 float4 TESR_LightColor[24];
+float4 TESR_ExtraLights[16];
 float4 TESR_ShadowFade;
 float4 TESR_PointShadowNear;
 float4 TESR_SpotLightPosition;
@@ -131,6 +132,14 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 			float4 light = GetPointLightDistance(world_pos, TESR_LightPosition[i]);
 			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
 		}
+	}
+
+	[loop] for (int e = 0; e < 16; e++) {
+		[branch] if (!TESR_ExtraLights[e].w || Shadow >= 1.0f) break;
+		float radius = floor(TESR_ExtraLights[e].w * 0.125f);
+		float weight = TESR_ExtraLights[e].w - radius * 8.0f;
+		float4 light = GetPointLightDistance(world_pos, float4(TESR_ExtraLights[e].xyz, radius));
+		Shadow += saturate(LampAmount(light.xyz, light.w, normal) * weight) * EdgeWindow(light.w);
 	}
 
 	Shadow = saturate(Shadow);

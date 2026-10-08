@@ -9,6 +9,7 @@ float4 NVR_PointShadowParams    : register(c180);
 
 float4 NVR_PointShadowDebug     : register(c181);
 float4 NVR_PointShadowTint[6]   : register(c182);
+float4 NVR_PointShadowFocus     : register(c188);
 
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
@@ -58,6 +59,24 @@ float3 PointShadowFactor(float shadow, float4 tint) {
                                                : shadow * lerp(1.0f, tint.rgb, 0.6f);
     }
     return factor;
+}
+
+float3 PointShadowTrace(float3 worldPos, float3 normal, float valid) {
+    float4 light = NVR_PointShadowFocus;
+    [branch] if (!(valid > 0.0f)) return 0.5f;
+    [branch] if (!(light.w > 0.0f)) return float3(1.0f, 0.45f, 0.0f);
+    float3 toPixel = worldPos - light.xyz;
+    float3 p = toPixel + normal * (NVR_PointShadowParams.z * length(toPixel));
+    float d = length(p) * light.w;
+    float3 color = float3(0.0f, 0.0f, 0.15f);
+    [branch] if (d < 1.0f) {
+        float stored = texCUBElod(NVR_PointShadowCube5, float4(p * float3(1.0f, 1.0f, -1.0f), 0.0f)).r;
+        float blocked = (float)(stored > 0.0f) * (float)(stored <= d - NVR_PointShadowParams.y * d);
+        float3 cell = floor(toPixel / 64.0f);
+        float checker = frac((cell.x + cell.y + cell.z) * 0.5f) > 0.25f ? 1.0f : 0.7f;
+        color = float3(blocked, saturate(stored * 2.5f), saturate(d * 2.5f)) * checker;
+    }
+    return NVR_PointShadowDebug.z < 0.0f ? color * 0.4f : color;
 }
 
 float PointShadow0(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube0, NVR_PointShadowLight[0], NVR_PointShadowTint[0].w, worldPos, normal, att); }
