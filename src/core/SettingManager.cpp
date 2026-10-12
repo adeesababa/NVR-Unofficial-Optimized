@@ -509,6 +509,15 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
 	SettingsMain.Main.ShaderWarmUp = boolSetting(performance, "ShaderWarmUp", false);
+	SettingsMain.Main.HiddenObjectCulling = boolSetting(performance, "HiddenObjectCulling", false);
+	SettingsMain.Main.TrimLampPasses = boolSetting(performance, "TrimLampPasses", true);
+	SettingsMain.Main.LampScissor = boolSetting(performance, "LampScissor", true);
+	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
+	{
+		Configuration::ConfigNode node;
+		const int age = Config.FillNode(&node, performance, "HiddenObjectCullingMaxAge") ? node.IntValue : 4;
+		SettingsMain.Main.HiddenObjectCullingMaxAge = max(1, min(age, 7));
+	}
 	const char* reducedQuality = "Main.Main.ReducedQuality";
 	SettingsMain.Main.GodRaysLowRes = boolSetting(reducedQuality, "GodRaysLowRes", false);
 	SettingsMain.Main.AOLowRes = boolSetting(reducedQuality, "AOLowRes", false);

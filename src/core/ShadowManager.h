@@ -40,6 +40,8 @@ public:
 	ShaderRecordPixel*		ShadowMapPixel;
 	ShaderRecordVertex*		ShadowCubeMapVertex;
 	ShaderRecordPixel*		ShadowCubeMapPixel;
+	ShaderRecordPixel*		ShadowMapOpaquePixel;
+	ShaderRecordPixel*		ShadowCubeMapOpaquePixel;
 	ShaderRecordVertex*		ShadowMapBlurVertex;
 	ShaderRecordPixel*		ShadowMapBlurPixel;
 	ShaderRecordPixel*		ShadowMapClearPixel;
@@ -50,6 +52,7 @@ public:
 	// Reused by AccumChildren. That runs per reference, per cell, per cascade, and a fresh
 	// std::stack allocated a deque block on every call; clear() keeps the capacity.
 	std::vector<NiAVObject*>	containersScratch;
+	std::vector<NiNode*>		fallbackRefsScratch;
 	struct CubeCaster { NiGeometry* geometry; RenderPass* pass; unsigned char faces; };
 	std::vector<CubeCaster>		cubeCasters;
 	int						PointLightsNum;

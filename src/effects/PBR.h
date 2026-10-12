@@ -140,6 +140,9 @@ public:
 		D3DXVECTOR4		Metal;
 		D3DXVECTOR4		MetalLook;
 		D3DXVECTOR4		Env;
+		D3DXVECTOR4		LampPassTrim;
+		D3DXVECTOR4		Translucency = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		D3DXVECTOR4		SharpSky;
 	};
 	PBRStruct	Constants;
 
@@ -152,6 +155,13 @@ public:
 	void	BeginFirstPerson(IDirect3DDevice9* Device);
 	void	EndFirstPerson(IDirect3DDevice9* Device);
 	float		SkylightSaturation = 1.0f;
+
+	struct FoliageSettingsStruct {
+		float Translucency = 0.0f;
+		float Power = 4.0f;
+		float SunGate = 4.0f;
+	};
+	FoliageSettingsStruct	FoliageSettings;
 
 	void	UpdateConstants();
 	void	RegisterConstants();

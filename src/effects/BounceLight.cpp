@@ -130,7 +130,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		1.0f / half.Width, 1.0f / half.Height);
 	IDirect3DSurface9* depthSurface = nullptr;
 	Device->GetDepthStencilSurface(&depthSurface);
-	Device->SetDepthStencilSurface(nullptr);
+	if (!TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) Device->SetDepthStencilSurface(nullptr);
 
 	Effect->SetTechnique(technique);
 	SetCT();

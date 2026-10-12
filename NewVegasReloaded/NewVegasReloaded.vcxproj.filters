@@ -130,6 +130,15 @@
     <ClInclude Include="..\src\effects\Sharpening.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\HeatHaze.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\Sandstorm.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\VolumetricLight.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\Skin.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -400,6 +409,15 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Sharpening.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\HeatHaze.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\Sandstorm.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\VolumetricLight.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Skin.cpp">

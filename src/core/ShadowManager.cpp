@@ -223,6 +223,16 @@ void ShadowManager::Initialize() {
 	TheShadowManager->ShadowMapPixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowMap.pso", "Shadows\\");
 	TheShadowManager->ShadowCubeMapVertex = (ShaderRecordVertex*)ShaderRecord::LoadShader("ShadowCubeMap.vso", "Shadows\\");
 	TheShadowManager->ShadowCubeMapPixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowCubeMap.pso", "Shadows\\");
+	TheShadowManager->ShadowMapOpaquePixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowMapOpaque.pso", "Shadows\\");
+	TheShadowManager->ShadowCubeMapOpaquePixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowCubeMapOpaque.pso", "Shadows\\");
+	if (!TheShadowManager->ShadowMapOpaquePixel) {
+		TheShadowManager->ShadowMapOpaquePixel = TheShadowManager->ShadowMapPixel;
+		Logger::Log("[WARNING] ShadowMapOpaque.pso did not load; opaque shadow casters use the alpha-test shader.");
+	}
+	if (!TheShadowManager->ShadowCubeMapOpaquePixel) {
+		TheShadowManager->ShadowCubeMapOpaquePixel = TheShadowManager->ShadowCubeMapPixel;
+		Logger::Log("[WARNING] ShadowCubeMapOpaque.pso did not load; opaque cube casters use the alpha-test shader.");
+	}
 
     TheShadowManager->ShadowMapBlurVertex = (ShaderRecordVertex*) ShaderRecord::LoadShader("ShadowMapBlur.vso", "Shadows\\");
     TheShadowManager->ShadowMapBlurPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowMapBlur.pso", "Shadows\\");
@@ -231,7 +241,8 @@ void ShadowManager::Initialize() {
 
 	ShaderRecord* shadowShaders[] = { TheShadowManager->ShadowMapVertex, TheShadowManager->ShadowMapPixel,
 		TheShadowManager->ShadowCubeMapVertex, TheShadowManager->ShadowCubeMapPixel, TheShadowManager->ShadowMapBlurVertex,
-		TheShadowManager->ShadowMapBlurPixel, TheShadowManager->ShadowMapClearPixel };
+		TheShadowManager->ShadowMapBlurPixel, TheShadowManager->ShadowMapClearPixel, TheShadowManager->ShadowMapOpaquePixel,
+		TheShadowManager->ShadowCubeMapOpaquePixel };
 	TheShadowManager->ShadowShadersLoaded = true;
 	for (ShaderRecord* shader : shadowShaders) {
 		if (shader) shader->ClearSamplers = false;
@@ -356,9 +367,23 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 }
 
 
+static bool IsLodInLoadedCells(NiAVObject* Object) {
+#if defined(OBLIVION)
+	return false;
+#else
+	NiBound* Bound = Object->m_kWorldBound;
+	if (!Bound) return false;
+	const float Reach = Object->IsGeometry() ? 0.0f : Bound->Radius;
+	const NiPoint4* Range = BSShaderManager::kLoadedRange;
+	return fabsf(Bound->Center.x - Range->x) + Reach < Range->z && fabsf(Bound->Center.y - Range->y) + Reach < Range->w;
+#endif
+}
+
 // go through the Object children and sort the ones that will be rendered based on their properties
 void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLand, bool isLOD, NiFrustumPlanes *arPlanes) {
 	if (!NiObject) return;
+
+	const bool skipLoadedLod = isLOD && !isLand && TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.LodSkipLoaded;
 
 	std::vector<NiAVObject*>& containers = containersScratch;
 	containers.clear();
@@ -388,10 +413,12 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 		if (Node->IsKindOf<NiSwitchNode>()) {
 			// NiSwitchNode - only render active children (if exists) to the shadow map.
 			NiSwitchNode* SwitchNode = static_cast<NiSwitchNode*>(Node);
-			if (SwitchNode->m_iIndex < 0)
+			if (SwitchNode->m_iIndex < 0 || SwitchNode->m_iIndex >= Node->m_children.end)
 				continue;
 
 			child = Node->m_children.data[SwitchNode->m_iIndex];
+			if (!child || (skipLoadedLod && IsLodInLoadedCells(child)))
+				continue;
 			if (!child->IsGeometry())
 				containers.push_back(child);
 			else
@@ -413,6 +440,7 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 			else if (arPlanes && !child->WithinFrustum(arPlanes)) continue;
 
 			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
+			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
 			if (!child->IsGeometry())
 				containers.push_back(child);
 			else
@@ -790,6 +818,16 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 	}
 
+	fallbackRefsScratch.clear();
+	if (!useGeometryList) {
+		for (TList<TESObjectREFR>::Entry* Entry = &Player->parentCell->objectList.First; Entry; Entry = Entry->next) {
+			if (NiNode* RefNode = GetRefNode(Entry->item, &Settings->Forms)) {
+				if (RefNode->GetDistance(LightPos) <= Radius + RefNode->GetWorldBoundRadius() && !IsRefracting(Entry->item))
+					fallbackRefsScratch.push_back(RefNode);
+			}
+		}
+	}
+
 	for (int Face = 0; Face < 6; Face++) {
 		CameraDirection = FaceDirection[Face];
 		Up = FaceUp[Face];
@@ -802,21 +840,8 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 		else {
 			// old form based geo accumulation when the one perform by the game has not handled this light
-			TList<TESObjectREFR>::Entry* Entry = &Player->parentCell->objectList.First;
-			while (Entry) {
-				if (NiNode* RefNode = GetRefNode(Entry->item, &Settings->Forms)) {
-					// Detect if the object is in front of the light in the direction of the current face
-					// TODO: improve to base on frustum
-					D3DXVECTOR3 ObjectPos = RefNode->m_worldTransform.pos.toD3DXVEC3();
-					D3DXVECTOR3 ObjectToLight = ObjectPos - LightPos->toD3DXVEC3();
-
-					D3DXVec3Normalize(&ObjectToLight, &ObjectToLight);
-					bool inFront = D3DXVec3Dot(&ObjectToLight, &CameraDirection) > 0;
-					if (RefNode->GetDistance(LightPos) <= Radius + RefNode->GetWorldBoundRadius() && !IsRefracting(Entry->item))
-						AccumChildren(RefNode, &Settings->Forms, false, false);
-				}
-				Entry = Entry->next;
-			}
+			for (NiNode* RefNode : fallbackRefsScratch)
+				AccumChildren(RefNode, &Settings->Forms, false, false);
 		}
 
 
@@ -1078,15 +1103,15 @@ void ShadowManager::RenderShadowMaps() {
 		Shadows->GetCascadeDepths();
 
 		geometryPass->VertexShader = ShadowMapVertex;
-		geometryPass->PixelShader = ShadowMapPixel;
+		geometryPass->PixelShader = ShadowMapOpaquePixel;
 		alphaPass->VertexShader = ShadowMapVertex;
 		alphaPass->PixelShader = ShadowMapPixel;
 		skinnedGeoPass->VertexShader = ShadowMapVertex;
-		skinnedGeoPass->PixelShader = ShadowMapPixel;
+		skinnedGeoPass->PixelShader = ShadowMapOpaquePixel;
 		speedTreePass->VertexShader = ShadowMapVertex;
 		speedTreePass->PixelShader = ShadowMapPixel;
 		terrainLODPass->VertexShader = ShadowMapVertex;
-		terrainLODPass->PixelShader = ShadowMapPixel;
+		terrainLODPass->PixelShader = ShadowMapOpaquePixel;
 
 		if (ContactHardeningCompiled) {
 			const bool on = Shadows->Settings.ContactHardening.Enabled;
@@ -1240,11 +1265,11 @@ void ShadowManager::RenderShadowMaps() {
 
 	AlphaEnabled = ShadowsInteriors->Forms.AlphaEnabled;
 	geometryPass->VertexShader = ShadowCubeMapVertex;
-	geometryPass->PixelShader = ShadowCubeMapPixel;
+	geometryPass->PixelShader = ShadowCubeMapOpaquePixel;
 	alphaPass->VertexShader = ShadowCubeMapVertex;
 	alphaPass->PixelShader = ShadowCubeMapPixel;
 	skinnedGeoPass->VertexShader = ShadowCubeMapVertex;
-	skinnedGeoPass->PixelShader = ShadowCubeMapPixel;
+	skinnedGeoPass->PixelShader = ShadowCubeMapOpaquePixel;
 	speedTreePass->VertexShader = ShadowCubeMapVertex;
 	speedTreePass->PixelShader = ShadowCubeMapPixel;
 

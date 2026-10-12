@@ -620,6 +620,10 @@ float4 PSLightColor[10] : register(c3);
     float4 Toggles : register(c27);
 #endif
 
+#if defined(DIFFUSE) || defined(POINT)
+    float4 TESR_LampPassTrim : register(c196);
+#endif
+
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
@@ -760,7 +764,8 @@ PS_OUTPUT main(PS_INPUT IN) {
                 bool upKnown = upLength > 0.5f && skyValid > 0.0f;
                 float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
                 lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
-                                                       upReflect, upKnown ? 1.0f : 0.0f);
+                                                       upReflect, upKnown ? 1.0f : 0.0f,
+                                                       IN.shadowWorldPos.xyz, shadowGeometricNormal);
             }
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
                 lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
@@ -833,6 +838,17 @@ PS_OUTPUT main(PS_INPUT IN) {
         #else
             lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
+    #endif
+
+    #if defined(DIFFUSE) || defined(POINT)
+        float lampReach = att0;
+        #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+            lampReach = max(lampReach, att2);
+        #endif
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            lampReach = max(lampReach, att3);
+        #endif
+        clip((TESR_LampPassTrim.x > 0.0f && lampReach <= 0.0f && BarrelHeatMuzzle.w <= 0.0f) ? -1.0f : 0.0f);
     #endif
 
     #endif
@@ -1071,7 +1087,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), ambNormal,
                                        SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
         lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, lightRoughness,
-                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f);
+                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f,
+                                               (0.0f).xxx, (0.0f).xxx);
     }
     else
     #endif

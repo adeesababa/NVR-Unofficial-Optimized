@@ -7,6 +7,8 @@
 #include "../../core/PointShadowForward.h"
 #include "../../core/ShaderWarmUp.h"
 #include "../../core/ConstantFilter.h"
+#include "../../core/HiddenObjectCulling.h"
+#include "../../core/LampScissor.h"
 
 static GpuTimer PreSceneTimer("Pre-scene (to world scene)");
 static bool PreSceneTimerActive = false;
@@ -435,6 +437,8 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
 	FrameWorldArgsKnown = false;
 	ConstantFilter::BeginFrame(TheRenderManager->device);
+	HiddenObjectCulling::BeginFrame(TheRenderManager->device);
+	LampScissor::BeginFrame();
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -1300,6 +1304,8 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	(*SetShaders)(This, PassIndex);
 	ReflectionProbe::AfterBind();
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
+	LampScissor::OnBind(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World);
+	HiddenObjectCulling::OnBind(PixelShader);
 	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;
 	PointShadowForward::LastVertexShaderNvr = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
 	PointShadowForward::LastPixelShaderNvr = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
@@ -1360,16 +1366,25 @@ static void ForwardShadowsForPass(void* Pass) {
 }
 
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, false);
 	ForwardShadowsForPass(Pass);
+	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
+		HiddenObjectCulling::Abandon();
+		return;
+	}
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	LampScissor::After();
+	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 }
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, true);
 	ForwardShadowsForPass(Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 }
 
@@ -1399,12 +1414,14 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		static GpuTimer worldTimer("World scene (game)");
 		GpuProfileScope gpu(worldTimer, TheRenderManager->device);
 		ShaderSplit::BeginContext(ShaderSplit::World);
+		HiddenObjectCulling::BeginWorld();
 		GunFXSwitches::Update();
 		BarrelHaze::Reset();
 		BarrelHeat::BeginWorldProbe();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
 		BarrelHeat::EndWorldProbe();
 		BarrelHeat::Clear();
+		HiddenObjectCulling::EndWorld();
 		ShaderSplit::EndContext();
 	}
 

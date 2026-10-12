@@ -5,7 +5,10 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRExtraData", &Constants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_PBRMetal", &Constants.Metal);
 	TheShaderManager->RegisterConstant("TESR_PBRMetalLook", &Constants.MetalLook);
+	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
+	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
+	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
 }
 
 void PBRShaders::BeginFirstPerson(IDirect3DDevice9* Device) {
@@ -32,10 +35,15 @@ void PBRShaders::UpdateSettings() {
 	Constants.MetalLook.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "PolishedRoughness"), 0.05f, 1.0f);
 	Constants.MetalLook.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "Reflections"), 0.0f, 4.0f);
 	Constants.MetalLook.w = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "DebugView") ? 1.0f : 0.0f;
+	Constants.SharpSky.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "SharpSky"), 0.0f, 1.0f);
 	Constants.Env.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Lighting"), 0.0f, 1.0f);
 	Constants.Env.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Strength"), 0.0f, 8.0f);
 	Constants.Env.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "WithMetal"), 0.0f, 1.0f);
 	Constants.Env.w = 0.0f;
+
+	FoliageSettings.Translucency = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "Translucency"), 0.0f, 1.0f);
+	FoliageSettings.Power = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "Power"), 0.5f, 16.0f);
+	FoliageSettings.SunGate = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "SunGate"), 0.0f, 20.0f);
 
 Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main", "Saturation");
 	Settings.Default.Metallicness = TheSettingManager->GetSettingF("Shaders.PBR.Main", "Metallicness");
@@ -84,6 +92,13 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 }
 
 void PBRShaders::UpdateConstants() {
+	Constants.LampPassTrim.x = TheSettingManager->SettingsMain.Main.TrimLampPasses ? 1.0f : 0.0f;
+
+	Constants.Translucency.x = FoliageSettings.Translucency;
+	Constants.Translucency.y = FoliageSettings.Power;
+	Constants.Translucency.z = FoliageSettings.SunGate;
+	Constants.Translucency.w = 0.0f;
+
 	// get max value between rain animator and puddle animator
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);
 

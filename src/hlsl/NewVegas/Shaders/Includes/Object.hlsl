@@ -192,7 +192,18 @@ float3 SkyAmbientElevation(float z) {
     #endif
 }
 
-float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid) {
-    float3 env = ambient * TESR_PBRData.w + SkyAmbientElevation(upReflect) * SKY_AMBIENT_STRENGTH * skyValid;
+float3 getMetalSkyDirection(float3 worldPos, float3 worldNormal, float upReflect) {
+    float3 r = reflect(normalize(worldPos), worldNormal);
+    float horizontal = length(r.xy);
+    float2 bearing = horizontal > 1e-4f ? r.xy / horizontal : float2(1.0f, 0.0f);
+    return float3(bearing * sqrt(saturate(1.0f - upReflect * upReflect)), upReflect);
+}
+
+float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid,
+                       float3 worldPos, float3 worldNormal) {
+    float3 sky = SkyAmbientElevation(upReflect);
+    [branch] if (TESR_SharpSky.x > 0.0f && skyValid > 0.0f)
+        sky = SkyAmbientSharpened(getMetalSkyDirection(worldPos, worldNormal, upReflect), sky);
+    float3 env = ambient * TESR_PBRData.w + sky * SKY_AMBIENT_STRENGTH * skyValid;
     return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z;
 }

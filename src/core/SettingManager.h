@@ -28,6 +28,11 @@ struct SettingsMainStruct {
         bool    SkipRedundantConstants;
         bool    ShaderWarmUp;
         bool    SkinnedShadowFaceTest;
+        bool    HiddenObjectCulling;
+        int     HiddenObjectCullingMaxAge;
+        bool    ReShadeDepthCompat;
+        bool    LampScissor;
+        bool    TrimLampPasses;
         bool    GodRaysLowRes;
         bool    AOLowRes;
         bool    FXAA;

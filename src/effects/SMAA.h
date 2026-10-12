@@ -33,6 +33,8 @@ public:
 		IDirect3DSurface9* SMAA_Edges_Surface;
 		IDirect3DTexture9* SMAA_Blend_Texture;
 		IDirect3DSurface9* SMAA_Blend_Surface;
+		IDirect3DSurface9* StencilSurface = nullptr;
+		bool StencilFailed = false;
 	};
 	SMAATexturesStruct	Textures;
 	CachedHandle techLuma, techColor, techDepth, techLumaDepth, techBlend, techNeighborhood;

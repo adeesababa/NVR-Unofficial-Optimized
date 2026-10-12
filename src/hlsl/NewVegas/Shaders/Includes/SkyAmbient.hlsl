@@ -25,6 +25,8 @@
     #define SKYLIGHTING_MODE 0
 #endif
 
+float4 TESR_SharpSky : register(c136);
+
 #if SKYLIGHTING_MODE == 1
 
 // ---------------------------------------------------------------------------
@@ -96,6 +98,10 @@ float3 SkyAmbientRadiance(float3 worldNormal, float directionality) {
     return sqrt(max(GetSkyRadiance(dir), 0.0f)) * wSky;
 }
 
+float3 SkyAmbientSharpened(float3 dir, float3 plain) {
+    return plain;
+}
+
 #else
 
 // ---------------------------------------------------------------------------
@@ -136,6 +142,21 @@ float3 SkyAmbientRadiance(float3 worldNormal, float directionality) {
          + TESR_SkyIrradiance[8].rgb * (n.x * n.x - n.y * n.y);
 
     return sqrt(max(irradiance, 0.0f));
+}
+
+float3 SkyAmbientSharp(float3 dir) {
+    float3 radiance = TESR_SkyIrradiance[0].rgb
+         + 1.5f * (TESR_SkyIrradiance[1].rgb * dir.y + TESR_SkyIrradiance[2].rgb * dir.z + TESR_SkyIrradiance[3].rgb * dir.x)
+         + 4.0f * (TESR_SkyIrradiance[4].rgb * (dir.x * dir.y) + TESR_SkyIrradiance[5].rgb * (dir.y * dir.z)
+                 + TESR_SkyIrradiance[6].rgb * (3.0f * dir.z * dir.z - 1.0f) + TESR_SkyIrradiance[7].rgb * (dir.x * dir.z)
+                 + TESR_SkyIrradiance[8].rgb * (dir.x * dir.x - dir.y * dir.y));
+    return sqrt(max(radiance, 0.0f));
+}
+
+float3 SkyAmbientSharpened(float3 dir, float3 plain) {
+    float3 sharp = SkyAmbientSharp(dir);
+    sharp = lerp(sharp, max(sharp, plain), saturate(-dir.z));
+    return lerp(plain, sharp, TESR_SharpSky.x);
 }
 
 #endif

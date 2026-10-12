@@ -27,7 +27,8 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ||
-		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix")) {
+		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") ||
+		SettingsMain->Main.HiddenObjectCulling || SettingsMain->Main.LampScissor) {
 		DetourAttach(&(PVOID&)RenderPassStandard, &RenderPassStandardHook);
 		DetourAttach(&(PVOID&)RenderPassSkinned, &RenderPassSkinnedHook);
 	}
