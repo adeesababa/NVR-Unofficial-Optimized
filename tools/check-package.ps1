@@ -65,7 +65,7 @@ foreach ($item in Get-ChildItem $pkg) {
 	if ($allowed -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 }
 foreach ($item in Get-ChildItem (Join-Path $pkg 'NVSE\Plugins')) {
-	if ('NewVegasReloaded.dll', 'NewVegasReloaded.pdb', 'NewVegasReloaded.dll.defaults.toml', 'GunFX.dll', 'GunFX.pdb', 'GunFX.ini.defaults' -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
+	if ('NewVegasReloaded.dll', 'NewVegasReloaded.pdb', 'NewVegasReloaded.dll.defaults.toml', 'NewVegasReloaded.dll.materials.txt', 'GunFX.dll', 'GunFX.pdb', 'GunFX.ini.defaults' -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 }
 foreach ($file in 'COPYING.txt', 'License.md', 'README.md') {
 	if (!(Test-Path (Join-Path $pkg $file))) { Write-Host "MISSING  $file"; $problems++ }
@@ -79,6 +79,9 @@ if ((Get-FileHash (Join-Path $plugins 'NewVegasReloaded.dll')).Hash -ne (Get-Fil
 }
 if ((Text (Join-Path $plugins 'NewVegasReloaded.dll.defaults.toml')) -ne (Text (Join-Path $repo 'resource\NewVegasReloaded.dll.defaults.toml'))) {
 	Write-Host "STALE    NVSE\Plugins\NewVegasReloaded.dll.defaults.toml"; $problems++
+}
+if ((Text (Join-Path $plugins 'NewVegasReloaded.dll.materials.txt')) -ne (Text (Join-Path $repo 'resource\NewVegasReloaded.dll.materials.txt'))) {
+	Write-Host "STALE    NVSE\Plugins\NewVegasReloaded.dll.materials.txt"; $problems++
 }
 
 # 5. GunFX (since P67): the plugin is the latest local build; its defaults, effect meshes and guide are the repo's.

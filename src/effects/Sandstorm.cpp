@@ -141,6 +141,9 @@ void SandstormEffect::UpdateConstants() {
 }
 
 bool SandstormEffect::ShouldRender() {
+	// UNOFFICIAL 2026-10-13: SHELVED for the release (the user: too buggy). Never drawn, whatever a settings file says; its
+	// settings are gone from the defaults. The code stays for later.
+	return false;
 	return Constants.Data.x > 0.0f &&
 		TheShaderManager->GameState.isExterior &&
 		!TheShaderManager->GameState.isUnderwater;
