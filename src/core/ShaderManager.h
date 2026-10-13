@@ -153,10 +153,18 @@ public:
 		WaterLensEffect*		WaterLens;
 		WetWorldEffect*			WetWorld;
 		BarrelHazeEffect*		BarrelHaze;
+		HeatHazeEffect*			HeatHaze;
+		SandstormEffect*		Sandstorm;
+		VolumetricLightEffect*	VolumetricLight;
+		ReflectionsEffect*		Reflections;
+		SkyDitherEffect*		SkyDither;
+		VolumetricCloudsEffect*	VolumetricClouds;
+		BloodFlowEffect*		BloodFlow;
 		VolumetricSmokeEffect*	VolumetricSmoke;
 		DitherBusterEffect*		DitherBuster;
 		SMAAEffect*				SMAA;
 		FXAAEffect*				FXAA;
+		TAAEffect*				TAA;
 	};
 
 	struct ShadersStruct{

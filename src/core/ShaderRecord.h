@@ -94,6 +94,7 @@ public:
 	const char* Name;
 	bool					HasRenderedBuffer;
 	bool					HasDepthBuffer;
+	bool					HasTerrainBlendDepth = false;
 	bool					ClearSamplers;
 	bool					PointShadowForward = false;
 	bool					UsedOnce = false;

@@ -27,6 +27,17 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   **Also fixed in P77:** water reflections losing far buildings, lamp shadows ending at a circle, huge shadows when
   you stand at a lamp, interior floors flickering light and dark, grass popping in, and a seam where the far water
   begins (see below). (P77 replaces P76, which was withdrawn.)
+- **New in P78:** volumetric light (sun shafts through the air, **on by default**), the sky's colour banding fixed
+  where it is made (Shaders > SkyDither, **on by default**), a metal look on guns, robots and steel in the world with
+  per-texture material rules (Shaders > PBR > MaterialRules, **on by default**; the table is the editable file
+  `NewVegasReloaded.dll.materials.txt`), and, off by default: volumetric clouds (with cloud shadows and water
+  reflections), terrain blending, TAA, wet-ground reflections, heat haze, plant translucency, skin light diffusion,
+  more bloom options and the legacy fog for older presets (Shaders > VolumetricFog > LegacyFog). **Fixed in P78:**
+  bounce light drawn over pillars in front of lit walls, and ParallaxLite no longer locks the parallax distance.
+  Terrain blending, TAA's sharpness/mip bias, heat haze and the volumetric clouds' first version come
+  from Balebandro's [Physically-Based-Reloaded](https://github.com/Balebandro/Physically-Based-Reloaded) fork;
+  terrain blending follows Community Shaders' Terrain Blending; TAA by Conor. The release page also offers an
+  optional, experimental extra as a separate download: **FNV Multithreaded AI** (with its own readme).
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -115,7 +126,9 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
     6.2 -> 4.1 ms (about 65 -> 73.5 fps). It also stops the ground's bumps sooner, at about 15 m
     instead of 29 m (scaled to your screen: 1024 units at 1440p, 768 at 1080p, 1536 at 4K), where
     they are only a few pixels tall; in a rocky desert view that saved another 0.8 ms (about 4 fps)
-    with no visible difference.
+    with no visible difference. (Since 2026-10-12 this is done once, by setting Shaders > Terrain >
+    Parallax > MaxDistance when you switch ParallaxLite on; raise MaxDistance there afterwards if you
+    want the bumps to reach further, and it stays as you set it.)
   - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows (up to about 3 m) every 2nd
     frame instead of every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
     and creatures lag one frame, and right after a very fast turn the edge of the view may show

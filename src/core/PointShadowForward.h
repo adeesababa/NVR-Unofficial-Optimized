@@ -83,6 +83,8 @@ namespace PointShadowForward {
 	inline float Params[4] = {};
 	inline float DebugView = 0.0f;
 	inline float NearFade = 0.0f;
+	inline float Quality = 1.0f;
+	inline float Soft[4] = {};
 	inline IDirect3DCubeTexture9* Neutral = nullptr;
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -237,7 +239,10 @@ namespace PointShadowForward {
 		Params[0] = (std::min)(strength, 1.0f);
 		Params[1] = forward.Bias;
 		Params[2] = forward.NormalOffset * 2.0f / face;
-		Params[3] = forward.Softness * 2.0f / face;
+		Params[3] = forward.Quality > 0 ? forward.Softness * 2.0f / face : 0.0f;
+		Quality = (float)forward.Quality;
+		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;
+		Soft[1] = forward.ContactHardeningMinSoftness;
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
@@ -319,10 +324,10 @@ namespace PointShadowForward {
 	}
 
 	inline bool Bound = false;
-	inline float Uploaded[15][4] = {};
+	inline float Uploaded[16][4] = {};
 
 	inline void SetForPass(const RenderPassView* pass, bool world, bool firstPerson, bool force) {
-		float constants[15][4] = {};
+		float constants[16][4] = {};
 		for (int k = 0; k < 6; k++) constants[8 + k][0] = constants[8 + k][1] = constants[8 + k][2] = 1.0f;
 		IDirect3DBaseTexture9* bound[6];
 		IDirect3DCubeTexture9* neutral = NeutralCube();
@@ -357,12 +362,15 @@ namespace PointShadowForward {
 				}
 			}
 		}
-		if (matched) memcpy(constants[6], Params, sizeof(Params));
+		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); }
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
+		constants[7][3] = matched ? Quality : 0.0f;
 		if (trace && wanted) {
 			memcpy(constants[6], Params, sizeof(Params));
+			memcpy(constants[15], Soft, sizeof(Soft));
 			constants[7][0] = DebugView;
+			constants[7][3] = Quality;
 			constants[7][2] = (float)focusIndex;
 			if (Focus >= 0) {
 				const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
@@ -377,7 +385,7 @@ namespace PointShadowForward {
 		for (int k = 0; k < 6; k++)
 			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
-			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 15);
+			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 16);
 			memcpy(Uploaded, constants, sizeof(constants));
 		}
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }

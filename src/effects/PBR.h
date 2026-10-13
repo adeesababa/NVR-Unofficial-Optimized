@@ -140,6 +140,10 @@ public:
 		D3DXVECTOR4		Metal;
 		D3DXVECTOR4		MetalLook;
 		D3DXVECTOR4		Env;
+		D3DXVECTOR4		LampPassTrim;
+		D3DXVECTOR4		Translucency = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		D3DXVECTOR4		SharpSky;
+		D3DXVECTOR4		EnvCube = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	};
 	PBRStruct	Constants;
 
@@ -147,13 +151,34 @@ public:
 		float FirstPerson = 0.0f;
 		float World = 0.0f;
 		float FadeDistance = 0.0f;
+		float CubeReflections = 0.0f;
+		float EnvCubeReflections = 0.0f;
 	};
 	MetalSettingsStruct	MetalSettings;
+
+	struct MaterialRulesSettingsStruct {
+		bool Enabled = false;
+		bool DebugView = false;
+		bool LogMatches = false;
+		bool MetalOn = false;
+	};
+	MaterialRulesSettingsStruct	MaterialRulesSettings;
+	D3DXVECTOR4	MaterialRule = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+	D3DXVECTOR4	MaterialRough = D3DXVECTOR4(-1.0f, -1.0f, 0.0f, 0.0f);
+	D3DXVECTOR4	MaterialTint = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+
 	void	BeginFirstPerson(IDirect3DDevice9* Device);
 	void	EndFirstPerson(IDirect3DDevice9* Device);
 	float		SkylightSaturation = 1.0f;
 
+	struct FoliageSettingsStruct {
+		float Translucency = 0.0f;
+		float Power = 4.0f;
+		float SunGate = 4.0f;
+	};
+	FoliageSettingsStruct	FoliageSettings;
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
-};
+};

@@ -27,3 +27,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Frame statistics tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Log file test build failed.' }
 & "$repo\build\log-test\log_files.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Log file tests failed.' }
+& "$vs\MSBuild\Current\Bin\MSBuild.exe" "$repo\tests\effect_selftest.vcxproj" /p:Configuration=Release /p:Platform=Win32 /nologo /v:minimal
+if ($LASTEXITCODE -ne 0) { throw 'Effect self-test check build failed.' }
+& "$repo\build\selftest-test\effect_selftest.exe" "$repo\build\selftest-test"
+if ($LASTEXITCODE -ne 0) { throw 'Effect self-test checks failed.' }
+& "$vs\MSBuild\Current\Bin\MSBuild.exe" "$repo\tests\material_rules.vcxproj" /p:Configuration=Release /p:Platform=Win32 /nologo /v:minimal
+if ($LASTEXITCODE -ne 0) { throw 'Material rules test build failed.' }
+& "$repo\build\material-test\material_rules.exe" "$repo\resource\NewVegasReloaded.dll.materials.txt"
+if ($LASTEXITCODE -ne 0) { throw 'Material rules table checks failed.' }

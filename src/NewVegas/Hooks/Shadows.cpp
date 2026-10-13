@@ -3,6 +3,11 @@
 #include "../../core/GpuProfiler.h"
 
 void __fastcall RenderShadowMapHook(void* apThis) {
+	static bool reportedJitteredShadows = false;
+	if (!reportedJitteredShadows && TheShaderManager->Effects.TAA && TheShaderManager->Effects.TAA->IsJitterActive()) {
+		Logger::Log("[WARNING] TAA : shadow maps rendered while the world camera was jittered; cascades will shimmer");
+		reportedJitteredShadows = true;
+	}
 	TheShadowManager->RenderShadowMaps();
 	static GpuTimer gameShadowTimer("Game call 0x871A50");
 	GpuProfileScope gpu(gameShadowTimer, TheRenderManager->device);

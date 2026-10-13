@@ -146,6 +146,13 @@ VS_OUTPUT main(VS_INPUT IN) {
         final.rgb = pows(final.rgb, 1/TESR_HDRData.w); // delinearize
     }
     
+    [branch] if (TESR_ToneMappingClip.y > 0.0f) {
+        const float2 p = IN.pos + TESR_ToneMappingClip.z * float2(5.588238f, 3.235f);
+        const float n = frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f)))) +
+            frac(52.9829189f * frac(dot(p + float2(47.0f, 17.0f), float2(0.06711056f, 0.00583715f)))) - 1.0f;
+        final.rgb += n * TESR_ToneMappingClip.y * saturate(final.rgb * 128.0f);
+    }
+
     OUT.color_0 = float4(final.rgb,BlurScale.z); 
 
     return OUT;

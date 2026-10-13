@@ -7,6 +7,7 @@ void BounceLightEffect::UpdateConstants() {
 
 void BounceLightEffect::UpdateSettings() {
 	Constants.Data.x = TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "Strength");
+	strength = Constants.Data.x;
 	Constants.Data.y = TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "Radius");
 	Constants.Data.z = TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "DrawDistance");
 	Constants.Data.w = TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "BlurRadius");
@@ -15,6 +16,24 @@ void BounceLightEffect::UpdateSettings() {
 	multiBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "MultiBounce"), 0.0f, 2.0f);
 	temporal = TheSettingManager->GetSettingI("Shaders.BounceLight.Main", "Temporal") != 0;
 	halfSamples = TheSettingManager->GetSettingI("Shaders.BounceLight.Main", "HalfSamples") != 0;
+	const bool spillOn = TheSettingManager->GetSettingI("Shaders.BounceLight.Main", "NeonSpillOn") != 0;
+	neonSpill = spillOn ? std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpill"), 0.0f, 20.0f) : 0.0f;
+	spillReach = TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillReach");
+	spillReach = spillReach > 0.0f ? std::clamp(spillReach, 0.25f, 4.0f) : 1.0f;
+	spillLightLevel = TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillLightLevel");
+	spillLightLevel = spillLightLevel > 0.0f ? std::clamp(spillLightLevel, 0.25f, 50.0f) : 1.5f;
+	spillDebug = std::clamp(TheSettingManager->GetSettingI("Shaders.BounceLight.Main", "NeonSpillDebug"), 0, 2);
+	spillMemorySeconds = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillMemory"), 0.0f, 5.0f);
+	spillNear = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillNear"), 0.0f, 4.0f);
+	spillFar = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillFar"), 0.0f, 4.0f);
+	spillCap = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillBrightCap"), 0.0f, 100.0f);
+	spillHoldAfterTurn = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillHoldAfterTurn"), 0.0f, 5.0f);
+	spillSeparateDepth = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillSeparateDepth"), 0.0f, 1.0f);
+	spillCapSceneLight = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillCapSceneLight"), 0.0f, 1.0f);
+	spillMaskSpillOnly = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillMaskSpillOnly"), 0.0f, 1.0f);
+	spillHardEdges = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillHardEdges"), 0.0f, 1.0f);
+	spillSteadySeconds = std::clamp(TheSettingManager->GetSettingF("Shaders.BounceLight.Main", "NeonSpillSteadySeconds"), 0.0f, 2.0f);
+	hardEdges = TheSettingManager->GetSettingI("Shaders.BounceLight.Main", "HardEdges") != 0;
 }
 
 void BounceLightEffect::RegisterConstants() {
@@ -61,9 +80,206 @@ static float BounceLinear(float c) {
 	return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
 }
 
+bool BounceLightEffect::EnsureSpill() {
+	if (!spillTried) {
+		spillTried = true;
+		static const char* names[SpillLevels] = { "NVR_BounceSpill0", "NVR_BounceSpill1", "NVR_BounceSpill2", "NVR_BounceSpill3",
+			"NVR_BounceSpill4", "NVR_BounceSpill5", "NVR_BounceSpill6" };
+		int width = 320, height = (std::max)(1, (int)ceilf(320.0f * TheRenderManager->height / (float)TheRenderManager->width));
+		for (int i = 0; i < SpillLevels; i++) {
+			TheTextureManager->InitTexture(names[i], &spillTexture[i], &spillSurface[i], width, height, D3DFMT_A16B16G16R16F);
+			if (i == 0) {
+				static const char* steady[2] = { "NVR_BounceSpillSteady0", "NVR_BounceSpillSteady1" };
+				for (int k = 0; k < 2; k++) {
+					TheTextureManager->InitTexture(steady[k], &spillSteadyTexture[k], &spillSteadySurface[k], width, height, D3DFMT_A16B16G16R16F);
+					if (spillSteadySurface[k]) TheRenderManager->device->ColorFill(spillSteadySurface[k], NULL, D3DCOLOR_ARGB(0, 0, 0, 0));
+				}
+			}
+			width = (width + 1) / 2;
+			height = (height + 1) / 2;
+		}
+		static const char* memories[2][2] = { { "NVR_BounceSpillMemory0", "NVR_BounceSpillMemory1" },
+			{ "NVR_BounceSpillMemoryQuarter0", "NVR_BounceSpillMemoryQuarter1" } };
+		for (int q = 0; q < 2; q++) {
+			const int memoryWidth = q ? (TheRenderManager->width + 3) / 4 : (TheRenderManager->width + 1) / 2;
+			const int memoryHeight = q ? (TheRenderManager->height + 3) / 4 : (TheRenderManager->height + 1) / 2;
+			for (int i = 0; i < 2; i++) {
+				TheTextureManager->InitTexture(memories[q][i], &spillMemoryTexture[q][i], &spillMemorySurface[q][i], memoryWidth, memoryHeight, D3DFMT_A16B16G16R16F);
+				if (spillMemorySurface[q][i]) TheRenderManager->device->ColorFill(spillMemorySurface[q][i], NULL, D3DCOLOR_ARGB(0, 0, 0, 0));
+			}
+		}
+	}
+	for (int i = 0; i < SpillLevels; i++) if (!spillTexture[i] || !spillSurface[i]) return false;
+	return true;
+}
+
+float BounceLightEffect::SpillThreshold() {
+	D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient, direct = TheShaderManager->ShaderConst.sunColor;
+	if (!TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() &&
+		Player->parentCell->lighting) {
+		ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4();
+		direct = Player->parentCell->lighting->directional.toD3DXVECTOR4();
+	}
+	auto linear = [](float c) { c = (std::max)(c, 0.0f); return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); };
+	const float light = 0.2126f * linear(ambient.x + direct.x) + 0.7152f * linear(ambient.y + direct.y) + 0.0722f * linear(ambient.z + direct.z);
+	if (spillReportedLight < 0.0f || fabsf(light - spillReportedLight) > 0.2f * spillReportedLight) {
+		spillReportedLight = light;
+		Logger::Log("UNOFFICIAL BounceLight: neon spill: the scene's own light is %.3f (%s ambient %.2f %.2f %.2f + %s %.2f %.2f %.2f); lights brighter than %.3f count (x %.2f).",
+			light, TheShaderManager->GameState.isExterior ? "sky" : "cell", ambient.x, ambient.y, ambient.z,
+			TheShaderManager->GameState.isExterior ? "sun/moon" : "directional", direct.x, direct.y, direct.z, light * spillLightLevel, spillLightLevel);
+	}
+	return light * spillLightLevel;
+}
+
+bool BounceLightEffect::RenderSpillPyramid(IDirect3DDevice9* Device, IDirect3DTexture9* scene, float threshold) {
+	D3DXHANDLE technique = TechniqueHandle(techSpillPyramid, "BounceSpillPyramid");
+	D3DXHANDLE targetHandle = ParameterHandle(paramSpillTarget, "NVR_SpillTarget");
+	D3DXHANDLE memoryHandle = ParameterHandle(paramSpillMemory, "NVR_SpillMemory");
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || !targetHandle || !memoryHandle || !EnsureSpill() ||
+		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != SpillLevels)
+		return false;
+	static GpuTimer pyramidTimer("  Neon spill pyramid");
+	GpuProfileScope gpu(pyramidTimer, Device);
+	UINT passes = 0;
+	D3DXVECTOR4 memoryData(0.0f, 0.0f, 0.0f, threshold);
+	Effect->SetVector(memoryHandle, &memoryData);
+	if (D3DXHANDLE shapeHandle = ParameterHandle(paramSpillShape, "NVR_SpillShape")) {
+		D3DXVECTOR4 shape(spillNear, spillFar, spillCapSceneLight > 0.0f ? spillCap / spillLightLevel : spillCap, 0.0f);
+		Effect->SetVector(shapeHandle, &shape);
+	}
+	const bool steady = spillSteadySeconds > 0.0f && spillSteadyTexture[0] && spillSteadyTexture[1];
+	D3DXHANDLE steadyHandle = steady ? ParameterHandle(paramSpillSteady, "NVR_SpillSteady") : NULL;
+	D3DXHANDLE reprojectHandle = steady ? ParameterHandle(paramReproject, "NVR_BounceReproject") : NULL;
+	const bool steadyOn = steadyHandle && reprojectHandle;
+	if (steadyOn) {
+		const double now = TheFrameRateManager->Time;
+		const double gap = now - spillSteadyTime;
+		const bool usable = spillSteadyValid && gap > 0.0 && gap < 0.5 && !TheShaderManager->GameState.isCellChanged;
+		D3DXMATRIX reproject;
+		D3DXMatrixIdentity(&reproject);
+		if (usable) BounceLightReprojection(TheRenderManager->viewMatrix, TheRenderManager->InvViewMatrix, spillSteadyView, spillSteadyInvView, spillSteadyProj, &reproject);
+		bool moved = false;
+		for (int i = 0; i < 4 && usable && !moved; i++) for (int j = 0; j < 4 && !moved; j++)
+			moved = fabsf(TheRenderManager->viewMatrix.m[i][j] - spillSteadyView.m[i][j]) >= (i < 3 ? 1.0e-5f : 0.01f) ||
+				fabsf(TheRenderManager->projMatrix.m[i][j] - spillSteadyProj.m[i][j]) >= 1.0e-6f;
+		Effect->SetMatrix(reprojectHandle, &reproject);
+		D3DXVECTOR4 steadyData(usable ? std::clamp((float)(1.0 - exp(-gap / spillSteadySeconds)), 0.01f, 1.0f) : 1.0f, usable ? 1.0f : 0.0f,
+			spillDebug == 1 ? 1.0f : 0.0f, usable && !moved ? 1.0f : 0.0f);
+		static int logged = 0, frames = 0, stills = 0;
+		static float largest = 0.0f;
+		if (usable) {
+			frames++;
+			stills += moved ? 0 : 1;
+			for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) largest = (std::max)(largest, fabsf(TheRenderManager->viewMatrix.m[i][j] - spillSteadyView.m[i][j]));
+			if (frames % 300 == 0 && logged < 4) {
+				logged++;
+				Logger::Log("UNOFFICIAL BounceLight: NeonSpillSteadySeconds %.2f: share %.3f (frame %.4f s); of the last 300 frames %d had a still camera; largest view change %g.",
+					spillSteadySeconds, steadyData.x, (float)gap, stills, largest);
+				stills = 0;
+				largest = 0.0f;
+			}
+		}
+		Effect->SetVector(steadyHandle, &steadyData);
+	}
+	else if (D3DXHANDLE offHandle = ParameterHandle(paramSpillSteady, "NVR_SpillSteady")) {
+		D3DXVECTOR4 off(0.0f, 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(offHandle, &off);
+	}
+	Effect->SetTechnique(technique);
+	SetCT();
+	HRESULT result = Effect->Begin(&passes, 0);
+	if (FAILED(result)) return false;
+	for (int i = 0; i < SpillLevels && SUCCEEDED(result); i++) {
+		D3DSURFACE_DESC target = {}, read = {};
+		spillSurface[i]->GetDesc(&target);
+		if (i) spillSurface[i - 1]->GetDesc(&read);
+		D3DXVECTOR4 data(1.0f / target.Width, 1.0f / target.Height, i ? 1.0f / read.Width : 0.0f, i ? 1.0f / read.Height : 0.0f);
+		Effect->SetVector(targetHandle, &data);
+		for (int s = 0; s < SpillLevels; s++) Device->SetTexture(8 + s, nullptr);
+		D3DVIEWPORT9 viewport = { 0, 0, target.Width, target.Height, 0.0f, 1.0f };
+		result = Device->SetRenderTarget(0, spillSurface[i]);
+		if (SUCCEEDED(result)) result = Device->SetViewport(&viewport);
+		if (SUCCEEDED(result)) result = Effect->BeginPass(i);
+		if (FAILED(result)) break;
+		if (i) Device->SetTexture(8 + i - 1, spillTexture[i - 1]);
+		Device->SetTexture(2, scene);
+		DWORD writeMask1 = 0xF;
+		if (i == 0 && steadyOn) {
+			Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &writeMask1);
+			Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+			Device->SetTexture(15, spillSteadyTexture[spillSteadyIndex]);
+			const HRESULT second = Device->SetRenderTarget(1, spillSteadySurface[spillSteadyIndex ^ 1]);
+			static bool reportedSecond = false;
+			if (!reportedSecond) {
+				reportedSecond = true;
+				D3DCAPS9 caps = {};
+				Device->GetDeviceCaps(&caps);
+				Logger::Log("UNOFFICIAL BounceLight: NeonSpillSteadySeconds: second target %s (0x%08X), device takes %u targets at once, "
+					"its write mask was 0x%X, independent masks %s.", SUCCEEDED(second) ? "set" : "FAILED", (unsigned)second,
+					(unsigned)caps.NumSimultaneousRTs, (unsigned)writeMask1, (caps.PrimitiveMiscCaps & D3DPMISCCAPS_INDEPENDENTWRITEMASKS) ? "yes" : "no");
+			}
+		}
+		result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+		if (i == 0 && steadyOn) {
+			Device->SetRenderTarget(1, nullptr);
+			Device->SetTexture(15, nullptr);
+			Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
+		}
+		HRESULT endResult = Effect->EndPass();
+		if (SUCCEEDED(result)) result = endResult;
+	}
+	Effect->End();
+	for (int s = 0; s < SpillLevels; s++) Device->SetTexture(8 + s, nullptr);
+	if (steadyOn) {
+		if (SUCCEEDED(result)) {
+			spillSteadyIndex ^= 1;
+			spillSteadyValid = true;
+			spillSteadyTime = TheFrameRateManager->Time;
+			spillSteadyView = TheRenderManager->viewMatrix;
+			spillSteadyInvView = TheRenderManager->InvViewMatrix;
+			spillSteadyProj = TheRenderManager->projMatrix;
+		}
+		else spillSteadyValid = false;
+	}
+	return SUCCEEDED(result);
+}
+
+IDirect3DTexture9* BounceLightEffect::RenderSpillGather(IDirect3DDevice9* Device, bool quarter, const D3DVIEWPORT9& reduced) {
+	D3DXHANDLE technique = TechniqueHandle(techSpillGather, "BounceSpillGather");
+	if (spillSeparateDepth > 0.0f && ParameterHandle(paramSpillOptions, "NVR_SpillOptions"))
+		if (D3DXHANDLE separate = TechniqueHandle(techSpillGatherSeparate, "BounceSpillGatherSeparate")) technique = separate;
+	IDirect3DTexture9* const* textures = spillMemoryTexture[quarter ? 1 : 0];
+	IDirect3DSurface9* const* surfaces = spillMemorySurface[quarter ? 1 : 0];
+	if (!technique || !textures[0] || !textures[1] || !surfaces[0] || !surfaces[1]) return nullptr;
+	static GpuTimer spillTimer("  Neon spill gather");
+	GpuProfileScope gpu(spillTimer, Device);
+	const int write = spillMemoryIndex ^ 1;
+	Effect->SetTechnique(technique);
+	SetCT();
+	UINT passes = 0;
+	HRESULT result = Effect->Begin(&passes, 0);
+	if (FAILED(result)) return nullptr;
+	result = Device->SetRenderTarget(0, surfaces[write]);
+	if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
+	if (SUCCEEDED(result)) result = Effect->BeginPass(0);
+	if (SUCCEEDED(result)) {
+		for (int s = 0; s < SpillLevels; s++) Device->SetTexture(8 + s, spillTexture[s]);
+		Device->SetTexture(7, textures[spillMemoryIndex]);
+		result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+		HRESULT endResult = Effect->EndPass();
+		if (SUCCEEDED(result)) result = endResult;
+	}
+	Effect->End();
+	for (int s = 0; s < SpillLevels; s++) Device->SetTexture(8 + s, nullptr);
+	Device->SetTexture(7, nullptr);
+	return SUCCEEDED(result) ? textures[write] : nullptr;
+}
+
 void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
+	neonSpill = 0.0f;
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; lastValid = historyValid = false; return; }
 	EnsureBuffers(quarterResolution);
 	if (quarterResolution && !quarterTexture[0]) EnsureBuffers(false);
@@ -79,12 +295,13 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	D3DXHANDLE technique = Effect->GetTechnique(0);
 	IDirect3DTexture9* const* historyTexture = nullptr;
 	IDirect3DSurface9* const* historySurface = nullptr;
-	const bool extras = offScreenLight > 0.0f || multiBounce > 0.0f || temporal;
-	D3DXHANDLE temporalHandle = NULL, ambientHandle = NULL, reprojectHandle = NULL;
+	const bool extras = offScreenLight > 0.0f || multiBounce > 0.0f || temporal || neonSpill > 0.0f;
+	D3DXHANDLE temporalHandle = NULL, ambientHandle = NULL, reprojectHandle = NULL, spillHandle = NULL;
 	if (extras) {
 		temporalHandle = ParameterHandle(paramTemporal, "NVR_BounceTemporal");
 		ambientHandle = ParameterHandle(paramAmbient, "NVR_BounceAmbient");
 		reprojectHandle = ParameterHandle(paramReproject, "NVR_BounceReproject");
+		spillHandle = ParameterHandle(paramSpill, "NVR_BounceSpill");
 		D3DXHANDLE wanted = NULL;
 		if (temporal) {
 			EnsureHistory(quarter);
@@ -95,15 +312,27 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			else wanted = NULL;
 		}
 		if (!wanted) wanted = TechniqueHandle(techPlus, "BounceLightPlus");
-		if (wanted && temporalHandle && ambientHandle && reprojectHandle) technique = wanted;
+		if (wanted && temporalHandle && ambientHandle && reprojectHandle && (spillHandle || neonSpill <= 0.0f)) technique = wanted;
 		else historyTexture = nullptr;
 		static D3DXHANDLE reportedTechnique = NULL;
-		if (technique != reportedTechnique) {
+		static float reportedSpill = -1.0f, reportedLevel = -1.0f, reportedMemory = -1.0f, reportedShape = -1.0f, reportedRound6 = -1.0f;
+		static int reportedDebug = -1;
+		if (technique != reportedTechnique || neonSpill != reportedSpill || spillLightLevel != reportedLevel || spillDebug != reportedDebug ||
+			spillMemorySeconds != reportedMemory || spillNear + 7.0f * spillFar + 49.0f * spillCap != reportedShape ||
+			spillHoldAfterTurn + 7.0f * spillSeparateDepth + 49.0f * spillCapSceneLight + 343.0f * spillMaskSpillOnly + 2401.0f * spillHardEdges != reportedRound6) {
+			reportedMemory = spillMemorySeconds;
+			reportedShape = spillNear + 7.0f * spillFar + 49.0f * spillCap;
+			reportedRound6 = spillHoldAfterTurn + 7.0f * spillSeparateDepth + 49.0f * spillCapSceneLight + 343.0f * spillMaskSpillOnly + 2401.0f * spillHardEdges;
 			reportedTechnique = technique;
+			reportedSpill = neonSpill;
+			reportedLevel = spillLightLevel;
+			reportedDebug = spillDebug;
 			if (technique == Effect->GetTechnique(0))
-				Logger::Log("UNOFFICIAL BounceLight: OffScreenLight, MultiBounce and Temporal need the BounceLight.fx.hlsl that came with this DLL; running without them.");
-			else Logger::Log("UNOFFICIAL BounceLight: off-screen light %.2f, extra bounces %.2f, last frame's bounce reused: %s.",
-				offScreenLight, multiBounce, historyTexture ? (halfSamples ? "yes, 4 samples a frame" : "yes, 8 samples a frame") : "no");
+				Logger::Log("UNOFFICIAL BounceLight: OffScreenLight, MultiBounce, Temporal and NeonSpill need the BounceLight.fx.hlsl that came with this DLL; running without them.");
+			else Logger::Log("UNOFFICIAL BounceLight: off-screen light %.2f, extra bounces %.2f, last frame's bounce reused: %s, neon spill %.2f (reach %.2f, light level %.2f x the scene's own light, near %.2f, far %.2f, bright cap %.1f, memory %.1f s, hold after turn %.1f s, separate depth %s, cap x scene light %s, light-pixel test on the spill only %s, hard edges %s, debug view %d).",
+				offScreenLight, multiBounce, historyTexture ? (halfSamples ? "yes, 4 samples a frame" : "yes, 8 samples a frame") : "no",
+				neonSpill, spillReach, spillLightLevel, spillNear, spillFar, spillCap, spillMemorySeconds, spillHoldAfterTurn,
+				spillSeparateDepth > 0.0f ? "on" : "off", spillCapSceneLight > 0.0f ? "on" : "off", spillMaskSpillOnly > 0.0f ? "on" : "off", spillHardEdges > 0.0f ? "on" : "off", spillDebug);
 		}
 	}
 	const bool plus = technique != Effect->GetTechnique(0);
@@ -130,15 +359,42 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		1.0f / half.Width, 1.0f / half.Height);
 	IDirect3DSurface9* depthSurface = nullptr;
 	Device->GetDepthStencilSurface(&depthSurface);
-	Device->SetDepthStencilSurface(nullptr);
+	if (!TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) Device->SetDepthStencilSurface(nullptr);
 
-	Effect->SetTechnique(technique);
-	SetCT();
-	Effect->SetVector(layoutHandle, &layout);
 	const bool onlyCombine = combineOnly && deferredReady && deferredTexture == lowTexture[0];
 	const double now = TheFrameRateManager->Time;
 	const bool continuous = lastValid && lastQuarter == quarter && now - lastTime >= 0.0 && now - lastTime < 0.5 &&
 		!TheShaderManager->GameState.isCellChanged;
+	const float frameSeconds = continuous ? (float)(now - lastTime) : 0.0f;
+	if (!onlyCombine) {
+		bool moved = false;
+		for (int i = 0; i < 4 && continuous && !moved; i++) for (int j = 0; j < 3 && !moved; j++)
+			moved = fabsf(TheRenderManager->viewMatrix.m[i][j] - lastView.m[i][j]) >= (i < 3 ? 1.0e-5f : 0.01f);
+		spillStillSeconds = !continuous ? 1.0e9f : moved ? 0.0f : spillStillSeconds + frameSeconds;
+	}
+	bool spill = false;
+	const float spillThreshold = plus && neonSpill > 0.0f && !onlyCombine ? SpillThreshold() : 0.0f;
+	if (plus && neonSpill > 0.0f && !onlyCombine) {
+		spill = RenderSpillPyramid(Device, scene, spillThreshold);
+		if (!spill) {
+			static bool reported = false;
+			if (!reported) Logger::Log("UNOFFICIAL BounceLight: the neon spill's buffers or techniques are missing, or it failed to render; running without it.");
+			reported = true;
+		}
+	}
+	if (!onlyCombine) Constants.Data.x = spill ? 1.0f : strength;
+	D3DXHANDLE spillTechnique = technique;
+	const bool hard = hardEdges || (spill && spillHardEdges > 0.0f);
+	if (hard) {
+		if (technique == TechniqueHandle(techPlus, "BounceLightPlus")) spillTechnique = TechniqueHandle(techPlusHard, "BounceLightPlusHardEdges");
+		else if (technique == TechniqueHandle(techTemporal, "BounceLightTemporal")) spillTechnique = TechniqueHandle(techTemporalHard, "BounceLightTemporalHardEdges");
+		else if (technique == TechniqueHandle(techTemporalHalf, "BounceLightTemporalHalf")) spillTechnique = TechniqueHandle(techTemporalHalfHard, "BounceLightTemporalHalfHardEdges");
+		if (!spillTechnique) spillTechnique = technique;
+	}
+
+	Effect->SetTechnique(hardEdges || (spill && spillHardEdges > 0.0f) ? spillTechnique : technique);
+	SetCT();
+	Effect->SetVector(layoutHandle, &layout);
 	const bool useHistory = historyTexture != nullptr;
 	const int writeIndex = historyIndex ^ 1;
 	if (plus && !onlyCombine) {
@@ -156,6 +412,45 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		Effect->SetVector(temporalHandle, &temporalData);
 		Effect->SetVector(ambientHandle, &ambientData);
 		Effect->SetMatrix(reprojectHandle, &reproject);
+		D3DXVECTOR4 spillData(spill ? neonSpill : 0.0f, spill ? strength : 1.0f, spillReach, spillLightLevel);
+		if (spillHandle) Effect->SetVector(spillHandle, &spillData);
+	}
+	else if (D3DXHANDLE offHandle = ParameterHandle(paramSpill, "NVR_BounceSpill")) {
+		D3DXVECTOR4 spillOff(0.0f, 1.0f, spillReach, spillLightLevel);
+		Effect->SetVector(offHandle, &spillOff);
+	}
+	IDirect3DTexture9* spillResult = nullptr;
+	if (spill) {
+		D3DXHANDLE memoryHandle = ParameterHandle(paramSpillMemory, "NVR_SpillMemory");
+		const bool memory = continuous && spillMemoryValid;
+		const float holdAfterTurn = memory && spillHoldAfterTurn > 0.0f && spillStillSeconds < spillHoldAfterTurn ? 1.0f : 0.0f;
+		D3DXVECTOR4 memoryData(memory ? 0.85f : 0.0f, memory && spillMemorySeconds > 0.0f ? expf(-frameSeconds / spillMemorySeconds) : 0.0f, holdAfterTurn, spillThreshold);
+		if (memoryHandle) Effect->SetVector(memoryHandle, &memoryData);
+		D3DSURFACE_DESC level0 = {};
+		if (D3DXHANDLE optionsHandle = ParameterHandle(paramSpillOptions, "NVR_SpillOptions")) if (SUCCEEDED(spillSurface[0]->GetDesc(&level0))) {
+			D3DXVECTOR4 options((float)level0.Width, (float)level0.Height, spillMaskSpillOnly > 0.0f ? 1.0f : 0.0f,
+				spillMaskSpillOnly > 0.0f ? 1.5f * spillThreshold / spillLightLevel : 0.0f);
+			Effect->SetVector(optionsHandle, &options);
+		}
+		spillResult = memoryHandle ? RenderSpillGather(Device, quarter, reduced) : nullptr;
+		if (!spillResult) {
+			static bool reported = false;
+			if (!reported) Logger::Log("UNOFFICIAL BounceLight: the neon spill's gather failed; running without it.");
+			reported = true;
+			spill = false;
+			spillMemoryValid = false;
+			Constants.Data.x = strength;
+			D3DXVECTOR4 spillData(0.0f, 1.0f, spillReach, spillLightLevel);
+			if (spillHandle) Effect->SetVector(spillHandle, &spillData);
+		}
+		Effect->SetTechnique(hardEdges || (spill && spillHardEdges > 0.0f) ? spillTechnique : technique);
+		SetCT();
+	}
+	else spillMemoryValid = false;
+	const int debugView = spill || onlyCombine ? spillDebug * (neonSpill > 0.0f) : 0;
+	if (D3DXHANDLE debugHandle = ParameterHandle(paramSpillDebug, "NVR_SpillDebug")) {
+		D3DXVECTOR4 debugData((float)debugView, 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(debugHandle, &debugData);
 	}
 	static GpuTimer halfTimers[5] = { GpuTimer("  Bounce prepare (half)"), GpuTimer("  Bounce gather (half)"),
 		GpuTimer("  Bounce blur X (half)"), GpuTimer("  Bounce blur Y (half)"), GpuTimer("  Bounce combine (full)") };
@@ -185,6 +480,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			else if (p == 2 && useHistory) Device->SetTexture(5, historyTexture[writeIndex]);
 			else if (p == 2 || p == 4) Device->SetTexture(5, lowTexture[0]);
 			else if (p == 3) Device->SetTexture(5, lowTexture[1]);
+			Device->SetTexture(8, p == 1 && spill ? spillResult : combine && debugView == 1 ? spillTexture[0] : nullptr);
 			Device->SetTexture(2, scene);
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
@@ -198,6 +494,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	Device->SetTexture(5, nullptr);
 	Device->SetTexture(6, nullptr);
 	if (plus) Device->SetTexture(7, nullptr);
+	if (spill || debugView) for (int s = 0; s < SpillLevels; s++) Device->SetTexture(8 + s, nullptr);
 	Device->SetTexture(2, TheTextureManager->SourceTexture);
 	if (SUCCEEDED(result) && firstPass == 0) {
 		lastView = TheRenderManager->viewMatrix;
@@ -209,8 +506,9 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		frameNumber++;
 		historyValid = useHistory;
 		if (useHistory) historyIndex = writeIndex;
+		if (spillResult) { spillMemoryIndex ^= 1; spillMemoryValid = true; }
 	}
-	else if (FAILED(result)) lastValid = historyValid = false;
+	else if (FAILED(result)) lastValid = historyValid = spillMemoryValid = false;
 	Device->SetRenderTarget(0, RenderTarget);
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);

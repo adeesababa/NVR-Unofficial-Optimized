@@ -13,6 +13,7 @@ void RenderPass::RenderAccum() {
 	// Render normal geometry
 	while (!GeometryList.empty()) {
 		NiGeometry* Geo = GeometryList.top();
+		GeometryList.pop();
 		if (!Geo) continue;
 
 		UpdateConstants(Geo);
@@ -20,7 +21,6 @@ void RenderPass::RenderAccum() {
 		VertexShader->SetCT();
 
 		RenderGeometry(Geo);
-		GeometryList.pop();
 	}
 }
 
@@ -171,7 +171,7 @@ void AlphaShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
 	NiTexture* Texture = *((BSShaderPPLightingProperty*)ShaderProperty)->ppTextures[0];
 
-	if (Texture && Texture->rendererData->dTexture) {
+	if (Texture && Texture->rendererData && Texture->rendererData->dTexture) {
 
 		ShadowConstants->Data.y = 1.0f; // Alpha Control
 //			Constants.DiffuseMap = Texture->rendererData->dTexture;
@@ -359,7 +359,7 @@ void SpeedTreeShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	Device->SetVertexShaderConstantF(83, STProp->leafData->leafBase, 48);
 	
 	// Set diffuse texture at register 0
-	RenderState->SetTexture(0, Texture->dTexture);
+	RenderState->SetTexture(0, Texture ? Texture->dTexture : nullptr);
 	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP, false);
 	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP, false);
 	RenderState->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT, false);

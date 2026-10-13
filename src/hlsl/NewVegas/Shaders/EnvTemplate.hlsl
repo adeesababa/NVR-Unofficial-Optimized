@@ -76,6 +76,12 @@ VS_OUTPUT main(VS_INPUT IN) {
 #elif defined(PS)
 
 #include "includes/SkyAmbient.hlsl"
+#ifndef LIVE_CUBE
+    #define LIVE_CUBE 0
+#endif
+#if LIVE_CUBE
+    #include "includes/LiveCube.hlsl"
+#endif
 
 struct PS_INPUT {
     float2 uv : TEXCOORD0;
@@ -111,8 +117,18 @@ float4 main(PS_INPUT IN) : COLOR0 {
     color *= lerp(normal.a, tex2D(CustomEnvMask, IN.uv).x, EnvToggles.w) * EnvToggles.z * AmbientColor.a;
     color = EnvToggles.x > 0.0f ? color * IN.vertexColor : color;
 
-    float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z) * TESR_PBRExtraData.y;
+    float3 skyReflected = SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z);
+    [branch] if (TESR_SharpSky.x > 0.0f) skyReflected = SkyAmbientSharpened(normalize(reflected), skyReflected);
+    float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + skyReflected * TESR_PBRExtraData.y;
     color *= lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x);
+    #if LIVE_CUBE
+    [branch] if (TESR_EnvCube.y > 0.0f) {
+        float4 live = LiveCube(reflected, 0.1f);
+        float3 liveColor = live.rgb * (lerp(normal.a, tex2Dlod(CustomEnvMask, float4(IN.uv, 0.0f, 0.0f)).x, EnvToggles.w) * EnvToggles.z * AmbientColor.a);
+        liveColor = EnvToggles.x > 0.0f ? liveColor * IN.vertexColor : liveColor;
+        color = lerp(color, liveColor, TESR_EnvCube.y * live.a);
+    }
+    #endif
     float metalFade = TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, IN.fog.y) : 1.0f;
     color *= lerp(1.0f, TESR_PBREnv.z, saturate(TESR_PBRMetal.x) * metalFade);
     return float4(color * IN.fog.x, 1.0f);

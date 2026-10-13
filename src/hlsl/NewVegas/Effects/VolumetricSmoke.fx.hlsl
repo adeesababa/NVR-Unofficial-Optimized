@@ -38,24 +38,17 @@ sampler2D TESR_SmokeEnv : register(s6) = sampler_state {
 	ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE;
 };
 sampler2D TESR_SmokeCut : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler3D TESR_NoiseVolume : register(s8) < string ResourceName = "Effects\NoiseVolume.dds"; > = sampler_state {
+	ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR;
+};
 
 #include "Includes/Depth.hlsl"
 
 float4 SmokeAt(float2 uv) { return tex2D(TESR_SmokeBuffer, uv) + tex2D(TESR_SmokeBufferLow, uv); }
 float4 SmokeAtLod(float2 uv) { return tex2Dlod(TESR_SmokeBuffer, float4(uv, 0, 0)) + tex2Dlod(TESR_SmokeBufferLow, float4(uv, 0, 0)); }
 
-float hash3(float3 p) {
-	p = frac(p * 0.3183099 + 0.1);
-	p *= 17.0;
-	return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
-}
-float noise3(float3 x) {
-	float3 i = floor(x);
-	float3 f = frac(x);
-	f = f * f * (3.0 - 2.0 * f);
-	return lerp(lerp(lerp(hash3(i), hash3(i + float3(1, 0, 0)), f.x), lerp(hash3(i + float3(0, 1, 0)), hash3(i + float3(1, 1, 0)), f.x), f.y),
-	            lerp(lerp(hash3(i + float3(0, 0, 1)), hash3(i + float3(1, 0, 1)), f.x), lerp(hash3(i + float3(0, 1, 1)), hash3(i + float3(1, 1, 1)), f.x), f.y), f.z);
-}
+float noise3(float3 x) { return tex3Dlod(TESR_NoiseVolume, float4(x / 8.0, 0.0)).r; }
+float noiseFbm(float3 x) { return tex3Dlod(TESR_NoiseVolume, float4(x / 4.0, 0.0)).g; }
 float erfcApprox(float x) {
 	float z = abs(x);
 	float t = 1.0 + z * (0.278393 + z * (0.230389 + z * (0.000972 + z * 0.078108)));
@@ -342,8 +335,14 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 		}
 	}
 	[branch] if (sum.x > 0.00001) {
-		float3 p = (dir * (sum.w / sum.x) + TESR_CameraPosition.xyz) / 45.0 + float3(0.0, 0.0, -SmokeParams.w * 0.02);
-		float n = 0.65 * noise3(p) + 0.35 * noise3(p * 2.3 + 7.1);
+		float middle = sum.w / sum.x;
+		float n = 0.0;
+		[unroll] for (int k = 0; k < 3; k++) {
+			float t = middle * (0.6 + 0.4 * k);
+			float3 p = (dir * t + TESR_CameraPosition.xyz) / 45.0 + float3(0.0, 0.0, -SmokeParams.w * 0.02);
+			n += noiseFbm(p);
+		}
+		n = saturate((n / 3.0 - 0.5) * 1.6 + 0.5);
 		sum *= lerp(0.25, 1.7, n);
 	}
 	HazeOutput o;

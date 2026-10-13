@@ -27,6 +27,15 @@
 #define SHADOW_OLD_ATLAS_SAMPLER_REG s15
 #include "includes/Shadow.hlsl"
 
+#ifndef TERRAIN_BLEND
+    #define TERRAIN_BLEND 0
+#endif
+#if TERRAIN_BLEND && !SUN_CROSSFADE
+    #define TERRAIN_BLEND_ACTIVE 1
+#else
+    #define TERRAIN_BLEND_ACTIVE 0
+#endif
+
 
 struct VS_INPUT {
     float4 position : POSITION;
@@ -97,6 +106,9 @@ struct PS_INPUT
     float4 projectionPosition : TEXCOORD6_centroid;
     float3 viewPosition : TEXCOORD7_centroid;
     float4 sPosition : POSITION1;
+#if TERRAIN_BLEND_ACTIVE
+    float2 screenPos : VPOS;
+#endif
 };
 
 struct PS_OUTPUT {
@@ -123,9 +135,49 @@ float4 PointLightPosition[NUM_PT_LIGHTS] : register(c63);
 float PointLightCount : register(c88);
 #endif
 
+#if TERRAIN_BLEND_ACTIVE
+float4 TESR_TerrainBlendData : register(c176);
+float4 TESR_TerrainBlendExtra : register(c177);
+sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+float terrainBlendViewDepth(float depth) {
+    float2 zw = depth * float2(TESR_InvProjectionTransform[2][2], TESR_InvProjectionTransform[2][3]) +
+        float2(TESR_InvProjectionTransform[3][2], TESR_InvProjectionTransform[3][3]);
+    return zw.x / zw.y;
+}
+
+float getTerrainBlend(float4 projectionPosition, float2 screenPos) {
+    float terrainDepth = terrainBlendViewDepth(projectionPosition.z / projectionPosition.w);
+    float maxDistance = TESR_TerrainBlendData.z;
+    if (terrainDepth > maxDistance) return -1.0f;
+
+    float2 uv = (screenPos + 0.5f) * TESR_TerrainBlendExtra.xy;
+    float sceneDepth = terrainBlendViewDepth(tex2Dlod(TESR_TerrainBlendDepth, float4(uv, 0.0f, 0.0f)).x);
+    float covered = sceneDepth - terrainDepth;
+    if (covered <= 0.0f) return -1.0f;
+
+    float keep = saturate(covered * TESR_TerrainBlendData.y);
+    return lerp(keep, 1.0f, saturate((terrainDepth / maxDistance - 0.75f) * 4.0f));
+}
+
+float terrainBlendNoise(float2 screenPos) {
+    float2 p = screenPos + 5.588238f * TESR_TerrainBlendExtra.z;
+    return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
+#endif
+
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
+
+#if TERRAIN_BLEND_ACTIVE
+    float terrainKeep = -1.0f;
+    [branch] if (TESR_TerrainBlendData.x > 0.0f) {
+        terrainKeep = getTerrainBlend(IN.projectionPosition, IN.screenPos);
+        if (TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
+            clip(terrainKeep - terrainBlendNoise(IN.screenPos));
+    }
+#endif
     
     int texCount = TEX_COUNT;  // Macro.
     float3 tangent = normalize(IN.tangent.xyz);
@@ -197,6 +249,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     
     float3 finalColor = lighting;
     finalColor = lerp(finalColor, fog.rgb, fog.a); // Apply fog.
+
+#if TERRAIN_BLEND_ACTIVE
+    if (TESR_TerrainBlendData.w > 0.0f && terrainKeep >= 0.0f)
+        finalColor = lerp(float3(1.0f, 0.0f, 1.0f), finalColor, terrainKeep);
+#endif
 
     OUT.color_0.a = 1;
     OUT.color_0.rgb = finalColor;

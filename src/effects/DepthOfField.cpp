@@ -72,5 +72,14 @@ void DepthOfFieldEffect::RegisterConstants() {
 }
 
 bool DepthOfFieldEffect::ShouldRender() {
-	return Constants.Enabled || Constants.Blur.x;
+	if (Constants.Enabled) return true;
+	if (!Constants.Blur.x) return false;
+	const float farZ = TheRenderManager->CameraData.y;
+	const bool skip = farZ > 0.0f && farZ <= Constants.Blur.y;
+	static int logged = -1;
+	if (GpuTimer::Enabled && logged != (int)skip) {
+		logged = skip;
+		Logger::Log("UNOFFICIAL distant blur %s: camera far plane %.0f, blur starts at %.0f", skip ? "skipped (nothing that far)" : "runs", farZ, Constants.Blur.y);
+	}
+	return !skip;
 };

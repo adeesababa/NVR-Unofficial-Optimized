@@ -26,6 +26,13 @@ public:
 		D3DXVECTOR4		Night;           // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 		D3DXVECTOR4		NightScatter;    // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
 		D3DXVECTOR4		NightTint;       // xyz: multiplicative night fog color tint, w: NightAmbientStrength
+		D3DXVECTOR4		Legacy;
+		D3DXVECTOR4		LegacyLow;
+		D3DXVECTOR4		LegacyHigh;
+		D3DXVECTOR4		LegacySimple;
+		D3DXVECTOR4		LegacyBlend;
+		D3DXVECTOR4		LegacyHeight;
+		D3DXVECTOR4		LegacyData;
 		Animator		WeatherFilterAnimator;
 	};
 	VolumetricFogStruct	Constants;
@@ -33,6 +40,7 @@ public:
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
+	void	UpdateLegacySettings(const char* SettingCategory);
 	bool	ShouldRender();
 
 	// cached from UpdateSettings, consumed by UpdateConstants to drive WeatherFilterAnimator
@@ -46,6 +54,12 @@ public:
 	bool	packedFogFailed = false;
 	bool	dedicatedFogFailed = false;
 	CachedHandle techCompositeFog, techDedicatedFog, techApplyShadowAO, techPackedFog, paramCompositeFlags, paramCompositeAOTexel, paramFogLayout;
+	CachedHandle techCompositeFogLegacy, techDedicatedFogLegacy, techPackedFogLegacy;
+	bool	IsLegacy() const { return Constants.Legacy.x > 0.5f; }
+	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
+	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
+	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : TechniqueHandle(techPackedFog, "PackedFog"); }
+	UINT	PlainTechniqueIndex(UINT techniqueIndex);
 	IDirect3DTexture9* fogTexture[2] = {};
 	IDirect3DSurface9* fogSurface[2] = {};
 

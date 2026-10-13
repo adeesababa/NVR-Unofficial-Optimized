@@ -88,6 +88,7 @@ static void LogMergedState(IDirect3DDevice9* Device, const D3DCAPS9& caps, const
 }
 
 bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface) {
+	if (TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) return false;
 	if (mergedNormalsFailed || TheSettingManager->SettingsMain.Main.DisableMergedNormals ||
 		!Enabled || !Effect || !ShouldRender() || !NormalsSurface || !Textures.CombinedDepthSurface)
 		return false;

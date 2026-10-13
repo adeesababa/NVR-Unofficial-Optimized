@@ -107,6 +107,7 @@ public:
 		bool				MSAA;
 		bool				Mipmaps;
 		bool				LimitFrequency;
+		bool				LodSkipLoaded;
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;
@@ -152,6 +153,9 @@ public:
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;
 			float FillLightRadius;
 			float FillLightShadowStrength;
+			int Quality;
+			bool ContactHardening;
+			float ContactHardeningStrength, ContactHardeningMinSoftness;
 		} Forward;
 	};
 

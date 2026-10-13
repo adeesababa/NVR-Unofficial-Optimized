@@ -1,6 +1,7 @@
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "EffectSelfTest.h"
 
 #define RESZ_CODE 0x7FA05000
 
@@ -83,12 +84,20 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<WaterLensEffect>(&TheShaderManager->Effects.WaterLens);
 	TheShaderManager->RegisterEffect<WetWorldEffect>(&TheShaderManager->Effects.WetWorld);
 	TheShaderManager->RegisterEffect<BarrelHazeEffect>(&TheShaderManager->Effects.BarrelHaze);
+	TheShaderManager->RegisterEffect<HeatHazeEffect>(&TheShaderManager->Effects.HeatHaze);
+	TheShaderManager->RegisterEffect<SandstormEffect>(&TheShaderManager->Effects.Sandstorm);
+	TheShaderManager->RegisterEffect<VolumetricLightEffect>(&TheShaderManager->Effects.VolumetricLight);
+	TheShaderManager->RegisterEffect<SkyDitherEffect>(&TheShaderManager->Effects.SkyDither);
+	TheShaderManager->RegisterEffect<ReflectionsEffect>(&TheShaderManager->Effects.Reflections);
+	TheShaderManager->RegisterEffect<VolumetricCloudsEffect>(&TheShaderManager->Effects.VolumetricClouds);
+	TheShaderManager->RegisterEffect<BloodFlowEffect>(&TheShaderManager->Effects.BloodFlow);
 	TheShaderManager->Effects.BarrelHaze->Enabled = TheShaderManager->Effects.BarrelHaze->Effect != nullptr;
 	TheShaderManager->RegisterEffect<VolumetricSmokeEffect>(&TheShaderManager->Effects.VolumetricSmoke);
 	TheShaderManager->Effects.VolumetricSmoke->Enabled = TheShaderManager->Effects.VolumetricSmoke->Effect != nullptr;
 	TheShaderManager->RegisterEffect<DitherBusterEffect>(&TheShaderManager->Effects.DitherBuster);
 	TheShaderManager->RegisterEffect<SMAAEffect>(&TheShaderManager->Effects.SMAA);
 	TheShaderManager->RegisterEffect<FXAAEffect>(&TheShaderManager->Effects.FXAA);
+	TheShaderManager->RegisterEffect<TAAEffect>(&TheShaderManager->Effects.TAA);
 
 	TheShaderManager->RegisterShaderCollection<TonemappingShaders>(&TheShaderManager->Shaders.Tonemapping);
 	TheShaderManager->RegisterShaderCollection<POMShaders>(&TheShaderManager->Shaders.POM);
@@ -949,6 +958,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	static GpuTimer materialEffectsTimer("Wet + light materials");
 	static GpuTimer fogTimer("Volumetric fog");
 	static GpuTimer godRaysTimer("God rays");
+	static GpuTimer sandstormTimer("Sandstorm");
+	static GpuTimer volumetricLightTimer("Volumetric light");
+	static GpuTimer cloudsTimer("Volumetric clouds");
 	static GpuTimer hdrTimer("Luma + exposure + bloom");
 	static GpuTimer avgLumaTimer("  Average luma");
 	static GpuTimer exposureTimer("  Exposure");
@@ -1025,13 +1037,17 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	if (wouldRender(Effects.VolumetricClouds)) {
+		GpuProfileScope gpu(cloudsTimer, Device);
+		Effects.VolumetricClouds->RenderClouds(Device, RenderTarget, TheTextureManager->RenderedSurface, SourceSurface);
+	}
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
 	const bool aoApplies = wouldRender(AO);
-	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
+	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) || wouldRender(Effects.BloodFlow) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
-		wouldRender(Effects.BounceLight);
+		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections);
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
@@ -1087,7 +1103,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	const bool specularRenders = wouldRender(Effects.Specular) && Effects.Specular->Textures.LightSurface;
 	const bool bounceIntoSpecular = specularRenders && wouldRender(Effects.BounceLight) && !wouldRender(Effects.WetWorld) &&
-		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce();
+		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce() && !Effects.BounceLight->SpillOn() &&
+		!Effects.BounceLight->HardEdgesOn();
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		static GpuTimer bounceLightTimer("Bounce light");
@@ -1095,6 +1112,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.BounceLight->deferCombine = bounceIntoSpecular;
 		Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.BounceLight->deferCombine = false;
+	}
+	{
+		static GpuTimer bloodFlowTimer("Blood flow");
+		GpuProfileScope gpu(bloodFlowTimer, Device);
+		Effects.BloodFlow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -1130,6 +1152,20 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!specularDone) Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+	EffectSelfTest::Capture(EffectSelfTest::AfterSpill, TheTextureManager->RenderedSurface);
+	{
+		static GpuTimer reflectionsTimer("Reflections (SSR)");
+		GpuProfileScope gpu(reflectionsTimer, Device);
+		if (wouldRender(Effects.Reflections)) {
+			Effects.Reflections->RenderBuffers(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+			Effects.Reflections->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
+		else if (Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) {
+			Effects.Reflections->RenderCubeOnly(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
+	}
 	{
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
@@ -1150,6 +1186,18 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		AO->deferredReady = false;
+	}
+	{
+		GpuProfileScope gpu(volumetricLightTimer, Device);
+		if (wouldRender(Effects.VolumetricLight)) {
+			Effects.VolumetricLight->RenderBuffers(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
+	}
+	{
+		GpuProfileScope gpu(sandstormTimer, Device);
+		Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(godRaysTimer, Device);
@@ -1184,6 +1232,40 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	timer.LogTime("ShaderManager::RenderEffectsPreTonemapping");
 }
 
+
+static const char* ImageSpaceInstanceKind(UInt32 vtable) {
+	switch (vtable) {
+	case 0x102D12C: return "form";
+	case 0x102D2A4: return "DOF";
+	case 0x102D36C: return "radial blur";
+	case 0x102D454: return "radial blur (DRB)";
+	case 0x102D1CC: return "base";
+	default: return "unknown";
+	}
+}
+
+static void LogActiveImageSpaceEffects() {
+	if (!Tes) return;
+	int count = 0;
+	for (TList<void>::Entry* entry = &Tes->activeIMODs.First; entry && count < 32; entry = entry->next) {
+		UInt32* instance = (UInt32*)entry->item;
+		if (!instance || IsBadReadPtr(instance, 12 * sizeof(UInt32))) continue;
+		count++;
+		UInt32 formID = 0, formOffset = 0;
+		for (UInt32 k = 1; k < 12 && !formID; k++) {
+			TESForm* form = (TESForm*)instance[k];
+			if (form && !IsBadReadPtr(form, sizeof(TESForm)) && form->formType == TESForm::FormType::kFormType_ImageSpaceModifier) {
+				formID = form->refID;
+				formOffset = k * 4;
+			}
+		}
+		char words[12 * 9 + 1] = {};
+		for (int k = 0; k < 12; k++) sprintf_s(words + k * 9, 10, "%08X ", instance[k]);
+		Logger::Log("IMAGESPACE active %d: %s instance %p, IMOD form %08X (at +%02X) | %s", count, ImageSpaceInstanceKind(instance[0]),
+			(void*)instance, formID, formOffset, words);
+	}
+	Logger::Log("IMAGESPACE %d active image-space effect(s) (the game's fades, night eye, chem and weather tints)", count);
+}
 
 static void LogActiveSwitches(bool force) {
 	static std::string lastLine;
@@ -1230,8 +1312,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P77 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P78 test (forward quality + culling + lamp trims) %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
+		LogActiveImageSpaceEffects();
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush();
 		else LogActiveSwitches(true);
 	}
@@ -1263,6 +1346,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	IDirect3DSurface9* RenderedSurface = TheTextureManager->RenderedSurface;
 	static GpuTimer postCopyTimer("Post-tonemap copies");
 	static GpuTimer weatherTimer("Weather + legacy bloom");
+	static GpuTimer heatHazeTimer("Heat haze");
 	static GpuTimer colorTimer("Coloring + LUT");
 	static GpuTimer dofTimer("Depth of field");
 	static GpuTimer motionBlurTimer("Motion blur");
@@ -1273,6 +1357,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static GpuTimer sharpenTimer("Sharpening");
 	static GpuTimer cinemaTimer("Cinema");
 	static GpuTimer imageAdjustTimer("Image adjust + debug");
+	static GpuTimer skyDitherTimer("Sky dither");
+	static GpuTimer taaTimer("TAA");
 
 	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
 	Device->SetFVF(FrameFVF);
@@ -1291,9 +1377,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 
 	{
 		EffectRecord* const order[] = {
-			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
+			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.HeatHaze, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
 			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
-			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Debug };
+			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.SkyDither, Effects.Debug };
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
 			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
@@ -1302,10 +1388,19 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 
 	{
+		GpuProfileScope gpu(taaTimer, Device);
+		Effects.TAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+
+	{
 		GpuProfileScope gpu(weatherTimer, Device);
 		Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		GpuProfileScope gpu(heatHazeTimer, Device);
+		Effects.HeatHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 
 	Effects.VolumetricSmoke->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, nullptr);
@@ -1358,6 +1453,13 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		GpuProfileScope gpu(skyDitherTimer, Device);
+		Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Debug->RenderClipView(Device, RenderTarget);
 	}

@@ -14,6 +14,10 @@ void TonemappingShaders::UpdateConstants() {
 	bool isExterior = TheShaderManager->GameState.isExterior;
 	float transitionCurve = TheShaderManager->GameState.transitionCurve;
 	Constants.Clip.x = TheSettingManager->GetSettingI("Shaders.Tonemapping.Main", "HueSafeClip") ? 1.0f : 0.0f;
+	SkyDitherEffect* dither = TheShaderManager->Effects.SkyDither;
+	const bool toneMapDither = dither && dither->Enabled && TheSettingManager->GetSettingI("Shaders.SkyDither.Main", "AtToneMap");
+	Constants.Clip.y = toneMapDither ? dither->Settings.Strength / 255.0f : 0.0f;
+	Constants.Clip.z = (float)(((int)Constants.Clip.z + 1) % 64);
 
 	if (TheSettingManager->SettingsChanged || TheShaderManager->GameState.isDayTimeChanged) {
 		// Point light multiplier disabled for now
@@ -37,26 +41,28 @@ void TonemappingShaders::UpdateConstants() {
 		Constants.LotteData.w = TheShaderManager->GetTransitionValue(Settings.Main.TonemapShoulder, Settings.Night.TonemapShoulder, Settings.Interiors.TonemapShoulder);
 
 		// Scale values for VTLottes/AMDLottes
-		if (Constants.HDRData.x == 1.0) {
-			float hdrMax = max(1.0, Constants.BloomData.w * 100.0);
-			float contrast = max(0.01, Constants.LotteData.x * 1.35);
-			float shoulder = max(0.0, (min(1.0, Constants.LotteData.w * 0.993))); // Shoulder should not! exceed 1.0
-			float midIn = max(0.01, Constants.LotteData.z * 0.18);
-			float midOut = max(0.01, (Constants.LotteData.y * 0.18) / shoulder);
-			float colToneB = -((-pows(midIn, contrast) + (midOut * (pows(hdrMax, contrast * shoulder) * pows(midIn, contrast) -
-				pows(hdrMax, contrast) * pows(midIn, contrast * shoulder) * midOut)) /
-				(pows(hdrMax, contrast * shoulder) * midOut - pows(midIn, contrast * shoulder) * midOut)) /
-				(pows(midIn, contrast * shoulder) * midOut));
-
-			float colToneC = (pows(hdrMax, contrast * shoulder) * pows(midIn, contrast) - pows(hdrMax, contrast) * pows(midIn, contrast * shoulder) * midOut) /
-				(pows(hdrMax, contrast * shoulder) * midOut - pows(midIn, contrast * shoulder) * midOut);
-
-			Constants.LotteData.x = contrast;
-			Constants.LotteData.w = shoulder;
-			Constants.LotteData.z = colToneB;
-			Constants.LotteData.y = colToneC;
-		}
+		if (Constants.HDRData.x == 1.0) ScaleLotte(Constants.LotteData, Constants.BloomData.w);
 	}
+}
+
+void TonemappingShaders::ScaleLotte(D3DXVECTOR4& LotteData, float whitePoint) {
+	float hdrMax = max(1.0, whitePoint * 100.0);
+	float contrast = max(0.01, LotteData.x * 1.35);
+	float shoulder = max(0.0, (min(1.0, LotteData.w * 0.993))); // Shoulder should not! exceed 1.0
+	float midIn = max(0.01, LotteData.z * 0.18);
+	float midOut = max(0.01, (LotteData.y * 0.18) / shoulder);
+	float colToneB = -((-pows(midIn, contrast) + (midOut * (pows(hdrMax, contrast * shoulder) * pows(midIn, contrast) -
+		pows(hdrMax, contrast) * pows(midIn, contrast * shoulder) * midOut)) /
+		(pows(hdrMax, contrast * shoulder) * midOut - pows(midIn, contrast * shoulder) * midOut)) /
+		(pows(midIn, contrast * shoulder) * midOut));
+
+	float colToneC = (pows(hdrMax, contrast * shoulder) * pows(midIn, contrast) - pows(hdrMax, contrast) * pows(midIn, contrast * shoulder) * midOut) /
+		(pows(hdrMax, contrast * shoulder) * midOut - pows(midIn, contrast * shoulder) * midOut);
+
+	LotteData.x = contrast;
+	LotteData.w = shoulder;
+	LotteData.z = colToneB;
+	LotteData.y = colToneC;
 }
 
 void TonemappingShaders::UpdateSettings() {

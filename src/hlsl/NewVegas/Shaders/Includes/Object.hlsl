@@ -15,8 +15,19 @@
 float4 TESR_PBRData : register(c32);
 float4 TESR_PBRExtraData : register(c33);
 
+#ifdef MATERIAL_RULES
+float4 TESR_MaterialRule  : register(c197);
+float4 TESR_MaterialRough : register(c198);
+float4 TESR_MaterialTint  : register(c199);
+#endif
+
 float getRoughness(float gloss) {
-    return saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
+    float roughness = saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
+    #ifdef MATERIAL_RULES
+        [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
+            roughness = lerp(TESR_MaterialRough.x, TESR_MaterialRough.y, saturate(1.0f - gloss));
+    #endif
+    return roughness;
 }
 
 float getRoughness(float glossmap, float meshgloss){
@@ -159,10 +170,21 @@ float getMetalMask(float specMask) {
     return smoothstep(0.05f, 0.45f, specMask);
 }
 
+float getMetalStrength() {
+    #ifdef MATERIAL_RULES
+        if (TESR_MaterialRule.x > 0.0f) return TESR_MaterialRule.y;
+    #endif
+    return TESR_PBRMetal.x;
+}
+
 float getDerivedMetallic(float specMask, float3 albedo) {
     float peak = max(max(albedo.r, albedo.g), albedo.b);
     float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
     float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
+    #ifdef MATERIAL_RULES
+        [branch] if (TESR_MaterialRule.x > 0.0f)
+            return TESR_MaterialRule.z > 1.5f ? TESR_MaterialRule.y : saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_MaterialRule.y);
+    #endif
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
 }
 
@@ -171,7 +193,32 @@ float getMetalFade(float3 cameraRelativePos) {
 }
 
 float getMetalRoughness(float specMask) {
+    #ifdef MATERIAL_RULES
+        [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
+            return lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
+    #endif
     return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
+}
+
+float getMaterialReflections() {
+    #ifdef MATERIAL_RULES
+        if (TESR_MaterialRule.x > 0.0f) return TESR_MaterialRule.w;
+    #endif
+    return 1.0f;
+}
+
+float3 MaterialRulesDebug(float3 color, float3 albedo) {
+    #ifdef MATERIAL_RULES
+        [branch] if (TESR_MaterialRough.z > 0.5f) {
+            #ifdef ONLY_LIGHT
+                return 0.0f;
+            #else
+                float dim = luma(albedo) * 0.35f;
+                return TESR_MaterialRule.x > 0.0f ? lerp(dim.xxx, TESR_MaterialTint.rgb, 0.7f) : dim.xxx;
+            #endif
+        }
+    #endif
+    return color;
 }
 
 float3 EnvBRDFApprox(float3 f0, float roughness, float NdotV) {
@@ -192,7 +239,24 @@ float3 SkyAmbientElevation(float z) {
     #endif
 }
 
-float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid) {
-    float3 env = ambient * TESR_PBRData.w + SkyAmbientElevation(upReflect) * SKY_AMBIENT_STRENGTH * skyValid;
-    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z;
+float3 getMetalSkyDirection(float3 worldPos, float3 worldNormal, float upReflect) {
+    float3 r = reflect(normalize(worldPos), worldNormal);
+    float horizontal = length(r.xy);
+    float2 bearing = horizontal > 1e-4f ? r.xy / horizontal : float2(1.0f, 0.0f);
+    return float3(bearing * sqrt(saturate(1.0f - upReflect * upReflect)), upReflect);
+}
+
+float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid,
+                       float3 worldPos, float3 worldNormal) {
+    float3 sky = SkyAmbientElevation(upReflect);
+    [branch] if (TESR_SharpSky.x > 0.0f && skyValid > 0.0f)
+        sky = SkyAmbientSharpened(getMetalSkyDirection(worldPos, worldNormal, upReflect), sky);
+    float3 env = ambient * TESR_PBRData.w + sky * SKY_AMBIENT_STRENGTH * skyValid;
+    #ifdef NVR_LIVE_CUBE
+    [branch] if (TESR_EnvCube.x > 0.0f && skyValid > 0.0f) {
+        float4 live = LiveCube(getMetalSkyDirection(worldPos, worldNormal, upReflect), roughness);
+        env = lerp(env, live.rgb, TESR_EnvCube.x * live.a);
+    }
+    #endif
+    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z * getMaterialReflections();
 }

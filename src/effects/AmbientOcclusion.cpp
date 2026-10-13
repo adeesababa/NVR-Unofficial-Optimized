@@ -83,7 +83,7 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		(float)reduced.Height / original.Height, 1.0f / reduced.Width, 1.0f / reduced.Height);
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	HRESULT result = scene ? Device->GetDepthStencilSurface(&depthSurface) : E_FAIL;
-	if (SUCCEEDED(result)) result = Device->SetDepthStencilSurface(nullptr);
+	if (SUCCEEDED(result) && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) result = Device->SetDepthStencilSurface(nullptr);
 	if (FAILED(result)) {
 		if (depthSurface) depthSurface->Release();
 		return;

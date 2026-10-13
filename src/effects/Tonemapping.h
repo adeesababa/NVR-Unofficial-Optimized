@@ -44,6 +44,7 @@ public:
 	TonemappingStruct Constants;
 	
 	void	UpdateConstants();
+	static void	ScaleLotte(D3DXVECTOR4& LotteData, float whitePoint);
 	void	RegisterConstants();
 	void	UpdateSettings();
 };

@@ -181,6 +181,13 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
 
+	AppendDefine("LIVE_CUBE", TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections") > 0.0f ||
+		TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f ? "1" : "0");
+
+	AppendDefine("MATERIAL_RULES_ON", TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ? "1" : "0");
+
+	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
+
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
 
@@ -404,6 +411,7 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 			// mark this shader as needing to render depth/a buffer of the scene before the object can be rendered
 			if (!memcmp(ConstantDesc.Name, "TESR_DepthBuffer", 17)) HasDepthBuffer = true;
 			if (!memcmp(ConstantDesc.Name, "TESR_RenderedBuffer", 20)) HasRenderedBuffer = true;
+			if (!strcmp(ConstantDesc.Name, "TESR_TerrainBlendDepth")) HasTerrainBlendDepth = true;
 	
 			TextureIndex++;
 			break;
@@ -513,6 +521,7 @@ void ShaderRecord::SetCT() {
 		//Logger::Log("Resolving depth buffer for shader %s", Name);
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 	}
+	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
 
 	// reset samplers
 	if (ClearSamplers) {
@@ -701,4 +710,4 @@ void ShaderRecordPixel::SetShaderConstantF(UInt32 RegisterIndex, D3DXVECTOR4* Va
 
 	TheRenderManager->device->SetPixelShaderConstantF(RegisterIndex, (const float*)Value, RegisterCount);
 
-}
+}

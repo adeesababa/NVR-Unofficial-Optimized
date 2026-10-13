@@ -11,12 +11,18 @@ public:
 		float Strength;
 		int Passes;
 		float PassBlending;
+		float Spread;		// UNOFFICIAL: each wider level weighs 1 + Spread times the finer one (0: as before)
+		float GlowBoost;	// UNOFFICIAL: bright lights count up to 1 + GlowBoost times in the bloom (0: as before)
 	};
 	struct BloomSettingsStruct {
 		D3DXVECTOR4		Resolution[MaxPasses];
 		BloomSettings	Main;
 		BloomSettings	Night;
 		BloomSettings	Interiors;
+		// UNOFFICIAL, [Shaders.Bloom.Main] only (all times of day): see Bloom.fx.hlsl.
+		float			GlowLightLevel;	// how many times a white surface in the scene's own light a light must reach for GlowBoost
+		bool			LinearLight;	// blur linear light instead of the display-encoded image
+		bool			AntiFlicker;	// Karis-weighted first downsample
 	};
 	BloomSettingsStruct Settings;
 
@@ -24,6 +30,8 @@ public:
 		D3DXVECTOR4		Data;
 		D3DXVECTOR4		ExtraData;
 		D3DXVECTOR4		Resolution;
+		D3DXVECTOR4		Glow;		// UNOFFICIAL TESR_BloomGlow: x spread weight, y last upsample scale, z glow boost, w glow threshold
+		D3DXVECTOR4		GlowExtra;	// UNOFFICIAL TESR_BloomGlowExtra: x anti-flicker, y linear light
 	};
 	BloomStruct		Constants;
 

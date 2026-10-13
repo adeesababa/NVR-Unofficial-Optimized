@@ -25,6 +25,7 @@ public:
 	IDirect3DSurface9*		BloomSurface;
 	IDirect3DTexture9*		DepthTexture;
 	IDirect3DTexture9*		DepthTextureViewModel;
+	IDirect3DTexture9*		TerrainBlendDepthTexture = nullptr;
 	IDirect3DSurface9*		CombinedDepthSurface;
 	IDirect3DTexture9*		CombinedDepthTexture;
 	IDirect3DTexture9*		DepthTextureINTZ;

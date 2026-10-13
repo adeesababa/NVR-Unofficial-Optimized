@@ -13,6 +13,7 @@ float4 PSLightColor[10];
 float4 TESR_ReciprocalResolution;
 float4 TESR_SkinData;
 float4 TESR_SkinColor;
+float4 TESR_SkinDiffusion : register(c169);
 float4 TESR_DebugVar;
 
 
@@ -114,6 +115,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     r5.yzw = ((q13.x * shades(q5.xyz, -IN.texcoord_1)) * SunLightColor.xyzw) * 0.5;			// partial precision
     // Sun contribution, kept separate so the shadow scales it alone.
     float3 sunTerm = (SunLightColor.xyz * shades(q6.xyz, IN.texcoord_1.xyz)) + r5.yzw;
+    [branch] if (TESR_SkinDiffusion.x > 0.0f)
+        sunTerm = lerp(sunTerm, GetSunDiffusion(normalize(IN.texcoord_1), q5.xyz, q6.xyz, SunLightColor.xyz, TESR_SkinDiffusion.x, TESR_SkinDiffusion.y), TESR_SkinDiffusion.x);
 
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.

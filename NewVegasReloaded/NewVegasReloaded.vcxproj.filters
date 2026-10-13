@@ -130,6 +130,30 @@
     <ClInclude Include="..\src\effects\Sharpening.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\HeatHaze.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\Sandstorm.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\VolumetricLight.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\SkyDither.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\Reflections.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\VolumetricClouds.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\BloodFlow.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\BloodFlowBoxes.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\Skin.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -325,6 +349,9 @@
     <ClInclude Include="..\src\effects\FXAA.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\TAA.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.cpp">
@@ -400,6 +427,27 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Sharpening.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\HeatHaze.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\Sandstorm.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\VolumetricLight.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\SkyDither.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\Reflections.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\VolumetricClouds.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\BloodFlow.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Skin.cpp">
@@ -565,6 +613,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\FXAA.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\TAA.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\SunShadows.cpp">

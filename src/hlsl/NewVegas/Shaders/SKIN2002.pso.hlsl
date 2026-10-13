@@ -15,6 +15,7 @@ float4 Toggles : register(c27);
 float4 TESR_ReciprocalResolution;
 float4 TESR_SkinData;
 float4 TESR_SkinColor;
+float4 TESR_SkinDiffusion : register(c169);
 float4 TESR_DebugVar;
 
 
@@ -79,6 +80,8 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // calculate lighting components
     float3 lighting = GetLighting(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb);
+    [branch] if (TESR_SkinDiffusion.x > 0.0f)
+        lighting = lerp(lighting, GetSunDiffusion(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb, TESR_SkinDiffusion.x, TESR_SkinDiffusion.y), TESR_SkinDiffusion.x);
     float spec = GetSpecular(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb);
 
     // Outside the guard: the skylight needs this normal whether or not forward shadows

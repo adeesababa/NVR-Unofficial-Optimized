@@ -154,6 +154,19 @@
 #endif
 
 #include "includes/Helpers.hlsl"
+#ifndef LIVE_CUBE
+    #define LIVE_CUBE 0
+#endif
+#if defined(PS) && LIVE_CUBE && !(defined(SUN_CROSSFADE) && SUN_CROSSFADE)
+    #define NVR_LIVE_CUBE
+    #include "includes/LiveCube.hlsl"
+#endif
+#ifndef MATERIAL_RULES_ON
+    #define MATERIAL_RULES_ON 0
+#endif
+#if defined(PS) && MATERIAL_RULES_ON
+    #define MATERIAL_RULES
+#endif
 #include "includes/Object.hlsl"
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
@@ -620,6 +633,10 @@ float4 PSLightColor[10] : register(c3);
     float4 Toggles : register(c27);
 #endif
 
+#if defined(DIFFUSE) || defined(POINT)
+    float4 TESR_LampPassTrim : register(c196);
+#endif
+
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
@@ -745,7 +762,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             float3 light3Color = SHADOWED(PSLightColor[2].rgb, 2, att3);
         #endif
         float3 lighting;
-        [branch] if (TESR_PBRMetal.x > 0.0f) {
+        [branch] if (getMetalStrength() > 0.0f) {
             metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f);
             metalRoughness = lerp(roughness, metalRoughness, metallic);
             lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
@@ -760,7 +777,8 @@ PS_OUTPUT main(PS_INPUT IN) {
                 bool upKnown = upLength > 0.5f && skyValid > 0.0f;
                 float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
                 lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
-                                                       upReflect, upKnown ? 1.0f : 0.0f);
+                                                       upReflect, upKnown ? 1.0f : 0.0f,
+                                                       IN.shadowWorldPos.xyz, shadowGeometricNormal);
             }
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
                 lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
@@ -835,9 +853,21 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
     #endif
 
+    #if defined(DIFFUSE) || defined(POINT)
+        float lampReach = att0;
+        #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+            lampReach = max(lampReach, att2);
+        #endif
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            lampReach = max(lampReach, att3);
+        #endif
+        clip((TESR_LampPassTrim.x > 0.0f && lampReach <= 0.0f && BarrelHeatMuzzle.w <= 0.0f) ? -1.0f : 0.0f);
+    #endif
+
     #endif
 
     float3 finalColor = lighting.rgb;
+    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);
 
     #ifdef METAL
         [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
@@ -1007,7 +1037,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #ifdef METAL
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
         float metallic = 0.0f;
-        [branch] if (TESR_PBRMetal.x > 0.0f)
+        [branch] if (getMetalStrength() > 0.0f)
             metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f);
         float lightRoughness = lerp(roughness, metalRoughness, metallic);
     #endif
@@ -1071,7 +1101,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), ambNormal,
                                        SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
         lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, lightRoughness,
-                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f);
+                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f,
+                                               (0.0f).xxx, (0.0f).xxx);
     }
     else
     #endif
@@ -1085,6 +1116,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
     float3 finalColor = lighting;
+    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);
 
     #ifdef METAL
         [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
