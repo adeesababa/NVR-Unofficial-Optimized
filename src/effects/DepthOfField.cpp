@@ -72,5 +72,17 @@ void DepthOfFieldEffect::RegisterConstants() {
 }
 
 bool DepthOfFieldEffect::ShouldRender() {
-	return Constants.Enabled || Constants.Blur.x;
+	if (Constants.Enabled) return true;
+	if (!Constants.Blur.x) return false;
+	// UNOFFICIAL: distant blur only. Its pass (DistantOnly) leaves every pixel nearer than DistantBlurStartRange unchanged,
+	// and nothing is drawn beyond the camera's far plane, so when the far plane is nearer than the blur start (interiors,
+	// 30000 by default) the pass would only copy the image: skip it (~0.16 ms at 1440p).
+	const float farZ = TheRenderManager->CameraData.y;
+	const bool skip = farZ > 0.0f && farZ <= Constants.Blur.y;
+	static int logged = -1;
+	if (GpuTimer::Enabled && logged != (int)skip) {
+		logged = skip;
+		Logger::Log("UNOFFICIAL distant blur %s: camera far plane %.0f, blur starts at %.0f", skip ? "skipped (nothing that far)" : "runs", farZ, Constants.Blur.y);
+	}
+	return !skip;
 };

@@ -44,6 +44,7 @@ public:
 	TonemappingStruct Constants;
 	
 	void	UpdateConstants();
+	static void	ScaleLotte(D3DXVECTOR4& LotteData, float whitePoint);	// UNOFFICIAL: the VTLottes constants (also the self-test's VTLottes shot)
 	void	RegisterConstants();
 	void	UpdateSettings();
 };

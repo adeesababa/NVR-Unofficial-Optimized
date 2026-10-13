@@ -5,7 +5,14 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRExtraData", &Constants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_PBRMetal", &Constants.Metal);
 	TheShaderManager->RegisterConstant("TESR_PBRMetalLook", &Constants.MetalLook);
+	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
+	TheShaderManager->RegisterConstant("TESR_EnvCube", &Constants.EnvCube);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
+	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
+	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
+	TheShaderManager->RegisterConstant("TESR_MaterialRule", &MaterialRule);
+	TheShaderManager->RegisterConstant("TESR_MaterialRough", &MaterialRough);
+	TheShaderManager->RegisterConstant("TESR_MaterialTint", &MaterialTint);
 }
 
 // The first-person model's metal strength for its pass. Shaders upload their constants when bound, so the one still bound
@@ -36,11 +43,31 @@ void PBRShaders::UpdateSettings() {
 	Constants.MetalLook.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "PolishedRoughness"), 0.05f, 1.0f);
 	Constants.MetalLook.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "Reflections"), 0.0f, 4.0f);
 	Constants.MetalLook.w = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "DebugView") ? 1.0f : 0.0f;
+	// UNOFFICIAL SharpSky (SkyAmbient.hlsl SkyAmbientSharpened): metal and the env maps take the sky from the direction they
+	// reflect, sharper, rather than its smooth average. 0 = the plain sky.
+	Constants.SharpSky.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "SharpSky"), 0.0f, 1.0f);
 	// UNOFFICIAL environment maps by the light (EnvTemplate.hlsl).
 	Constants.Env.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Lighting"), 0.0f, 1.0f);
 	Constants.Env.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Strength"), 0.0f, 8.0f);
 	Constants.Env.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "WithMetal"), 0.0f, 1.0f);
 	Constants.Env.w = 0.0f;
+	// UNOFFICIAL CubeReflections (Includes/LiveCube.hlsl): metal and the env maps reflect the live surroundings cube that the
+	// Reflections effect keeps (CubeMap); applied in UpdateConstants only while that cube is kept up.
+	MetalSettings.CubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections"), 0.0f, 1.0f);
+	MetalSettings.EnvCubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections"), 0.0f, 1.0f);
+
+	// UNOFFICIAL material rules (Render.cpp MaterialRulesDraw), live; the table itself is read once at startup.
+	MaterialRulesSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") != 0;
+	MaterialRulesSettings.DebugView = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "DebugView") != 0;
+	MaterialRulesSettings.LogMatches = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "LogMatches") != 0;
+	MaterialRulesSettings.MetalOn = metalOn;
+	MaterialRough.z = MaterialRulesSettings.Enabled && MaterialRulesSettings.DebugView ? 1.0f : 0.0f;
+
+	// UNOFFICIAL foliage translucency (grass and leaf vertex shaders, FoliageTranslucency in Grass23x000.vso.hlsl). Power stays
+	// at 0.5 or more so pow() is well behaved near zero.
+	FoliageSettings.Translucency = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "Translucency"), 0.0f, 1.0f);
+	FoliageSettings.Power = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "Power"), 0.5f, 16.0f);
+	FoliageSettings.SunGate = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "SunGate"), 0.0f, 20.0f);
 
 Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main", "Saturation");
 	Settings.Default.Metallicness = TheSettingManager->GetSettingF("Shaders.PBR.Main", "Metallicness");
@@ -89,6 +116,22 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 }
 
 void PBRShaders::UpdateConstants() {
+	// UNOFFICIAL TrimLampPasses (ObjectTemplate.hlsl DIFFUSE / POINT passes), live.
+	Constants.LampPassTrim.x = TheSettingManager->SettingsMain.Main.TrimLampPasses ? 1.0f : 0.0f;
+
+	// UNOFFICIAL CubeReflections, live: zero while the Reflections effect does not keep the cube up (off, CubeMap off, a frame
+	// without it), so the shaders never read a stale or missing cube.
+	const ReflectionsEffect* reflections = TheShaderManager->Effects.Reflections;
+	const bool cube = reflections && reflections->CubeReady();
+	Constants.EnvCube = D3DXVECTOR4(cube ? MetalSettings.CubeReflections : 0.0f, cube ? MetalSettings.EnvCubeReflections : 0.0f,
+		(float)(ReflectionsEffect::CubeLevels - 1), 0.0f);
+
+	// UNOFFICIAL foliage translucency (see UpdateSettings), live.
+	Constants.Translucency.x = FoliageSettings.Translucency;
+	Constants.Translucency.y = FoliageSettings.Power;
+	Constants.Translucency.z = FoliageSettings.SunGate;
+	Constants.Translucency.w = 0.0f;
+
 	// get max value between rain animator and puddle animator
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);
 

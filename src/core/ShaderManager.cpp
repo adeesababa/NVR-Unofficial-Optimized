@@ -1,6 +1,7 @@
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "EffectSelfTest.h"
 
 #define RESZ_CODE 0x7FA05000
 
@@ -83,12 +84,20 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<WaterLensEffect>(&TheShaderManager->Effects.WaterLens);
 	TheShaderManager->RegisterEffect<WetWorldEffect>(&TheShaderManager->Effects.WetWorld);
 	TheShaderManager->RegisterEffect<BarrelHazeEffect>(&TheShaderManager->Effects.BarrelHaze);
+	TheShaderManager->RegisterEffect<HeatHazeEffect>(&TheShaderManager->Effects.HeatHaze);
+	TheShaderManager->RegisterEffect<SandstormEffect>(&TheShaderManager->Effects.Sandstorm);
+	TheShaderManager->RegisterEffect<VolumetricLightEffect>(&TheShaderManager->Effects.VolumetricLight);
+	TheShaderManager->RegisterEffect<SkyDitherEffect>(&TheShaderManager->Effects.SkyDither);
+	TheShaderManager->RegisterEffect<ReflectionsEffect>(&TheShaderManager->Effects.Reflections);
+	TheShaderManager->RegisterEffect<VolumetricCloudsEffect>(&TheShaderManager->Effects.VolumetricClouds);
+	TheShaderManager->RegisterEffect<BloodFlowEffect>(&TheShaderManager->Effects.BloodFlow);
 	TheShaderManager->Effects.BarrelHaze->Enabled = TheShaderManager->Effects.BarrelHaze->Effect != nullptr;
 	TheShaderManager->RegisterEffect<VolumetricSmokeEffect>(&TheShaderManager->Effects.VolumetricSmoke);
 	TheShaderManager->Effects.VolumetricSmoke->Enabled = TheShaderManager->Effects.VolumetricSmoke->Effect != nullptr;
 	TheShaderManager->RegisterEffect<DitherBusterEffect>(&TheShaderManager->Effects.DitherBuster);
 	TheShaderManager->RegisterEffect<SMAAEffect>(&TheShaderManager->Effects.SMAA);
 	TheShaderManager->RegisterEffect<FXAAEffect>(&TheShaderManager->Effects.FXAA);
+	TheShaderManager->RegisterEffect<TAAEffect>(&TheShaderManager->Effects.TAA);
 
 	TheShaderManager->RegisterShaderCollection<TonemappingShaders>(&TheShaderManager->Shaders.Tonemapping);
 	TheShaderManager->RegisterShaderCollection<POMShaders>(&TheShaderManager->Shaders.POM);
@@ -991,6 +1000,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	static GpuTimer materialEffectsTimer("Wet + light materials");
 	static GpuTimer fogTimer("Volumetric fog");
 	static GpuTimer godRaysTimer("God rays");
+	static GpuTimer sandstormTimer("Sandstorm");
+	static GpuTimer volumetricLightTimer("Volumetric light");
+	static GpuTimer cloudsTimer("Volumetric clouds");
 	static GpuTimer hdrTimer("Luma + exposure + bloom");
 	static GpuTimer avgLumaTimer("  Average luma");
 	static GpuTimer exposureTimer("  Exposure");
@@ -1087,13 +1099,19 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// them would render this frame, the fog reconstruct applies them in the same pass (same maths,
 	// same order), saving two full-resolution read/write passes of the HDR frame.
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	// UNOFFICIAL, optional: volumetric clouds over the sky (VolumetricClouds.h). First, so the shadow and AO applies and
+	// the fog all see them as part of the sky, and the composite apply below is not affected.
+	if (wouldRender(Effects.VolumetricClouds)) {
+		GpuProfileScope gpu(cloudsTimer, Device);
+		Effects.VolumetricClouds->RenderClouds(Device, RenderTarget, TheTextureManager->RenderedSurface, SourceSurface);
+	}
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
 	const bool aoApplies = wouldRender(AO);
-	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
+	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) || wouldRender(Effects.BloodFlow) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
-		wouldRender(Effects.BounceLight); // must see the scene with its shadows and AO applied
+		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections); // must see the scene with its shadows and AO applied
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	// UNOFFICIAL: when effects between keep the composite out of the fog pass, the shadow and AO applies still run
@@ -1156,8 +1174,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// UNOFFICIAL: the bounce light's full-resolution combine goes into the specular's, one pass for both, when nothing renders
 	// between them (the wet world and the flashlight read and change the image there).
 	const bool specularRenders = wouldRender(Effects.Specular) && Effects.Specular->Textures.LightSurface;
+	// (Not with the bounce light's NeonSpill on: its own combine has the spill's debug views and street smoothing.)
 	const bool bounceIntoSpecular = specularRenders && wouldRender(Effects.BounceLight) && !wouldRender(Effects.WetWorld) &&
-		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce();
+		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce() && !Effects.BounceLight->SpillOn() &&
+		!Effects.BounceLight->HardEdgesOn();
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		// UNOFFICIAL, optional: one bounce of screen-space indirect light, on the shadowed and AO'd scene.
@@ -1166,6 +1186,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.BounceLight->deferCombine = bounceIntoSpecular;
 		Effects.BounceLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.BounceLight->deferCombine = false;
+	}
+	{
+		// UNOFFICIAL, optional: blood that runs and dries, and pools under bodies (BloodFlow.h). On the shadowed, AO'd scene,
+		// before the wet world and the fog. Costs nothing when no blood is near.
+		static GpuTimer bloodFlowTimer("Blood flow");
+		GpuProfileScope gpu(bloodFlowTimer, Device);
+		Effects.BloodFlow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
@@ -1204,6 +1231,24 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!specularDone) Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+	EffectSelfTest::Capture(EffectSelfTest::AfterSpill, TheTextureManager->RenderedSurface);	// UNOFFICIAL, diagnostic: NeonSpillSelfTest
+	{
+		// UNOFFICIAL: screen-space reflections on the ground, of the scene with every light, shadow and highlight on it,
+		// before the fog (which then hazes the reflection with the surface). Half-resolution passes into the effect's own
+		// buffers, then its composite in the chain.
+		static GpuTimer reflectionsTimer("Reflections (SSR)");
+		GpuProfileScope gpu(reflectionsTimer, Device);
+		if (wouldRender(Effects.Reflections)) {
+			Effects.Reflections->RenderBuffers(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+			Effects.Reflections->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
+		else if (Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) {
+			// No floor reflects now, but metal and the env maps may read the surroundings cube: keep it up.
+			Effects.Reflections->RenderCubeOnly(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
+	}
 	{
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
@@ -1225,6 +1270,22 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		AO->deferredReady = false;
+	}
+	{
+		// UNOFFICIAL: volumetric sun light, after the fog (it darkens the fog's evenly lit air where the sun is shaded).
+		// The half-resolution march, history and blur into the effect's own buffers, then the composite in the chain.
+		GpuProfileScope gpu(volumetricLightTimer, Device);
+		if (wouldRender(Effects.VolumetricLight)) {
+			Effects.VolumetricLight->RenderBuffers(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
+	}
+	{
+		// UNOFFICIAL (from Physically-Based-Reloaded, Fable): dust storms, in HDR before exposure and bloom, so the dust is
+		// lit and blooms with the scene. Nothing is drawn outside a storm (SandstormEffect::ShouldRender).
+		GpuProfileScope gpu(sandstormTimer, Device);
+		Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(godRaysTimer, Device);
@@ -1263,6 +1324,45 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 // For A/B runs: the Performance and ReducedQuality switches in one log line, written when the F10 profile starts and
 // again whenever one of them changes while it runs, so each stretch of timings can be matched to its settings.
 // Lists whatever the defaults file has in those two sections, so new switches show up without touching this.
+// UNOFFICIAL (2026-10-11): the game's active image-space effects (TES::activeIMODs: fades, night eye, chem tints, the
+// wait-menu fade), logged with F10. For a screen tint or glare that stays when every NVR effect is off: the game's own
+// final shader blends these in, so a stuck one shows here. The instance layout is not known, so each instance is named by
+// its vtable, the image-space modifier form it points at is found by scanning its first words for a readable form of that
+// type, and its first 12 words are dumped for decoding.
+static const char* ImageSpaceInstanceKind(UInt32 vtable) {	// vtables from nvse/class_vtbls.h (kVtbl_ImageSpaceModifierInstance*)
+	switch (vtable) {
+	case 0x102D12C: return "form";
+	case 0x102D2A4: return "DOF";
+	case 0x102D36C: return "radial blur";
+	case 0x102D454: return "radial blur (DRB)";
+	case 0x102D1CC: return "base";
+	default: return "unknown";
+	}
+}
+
+static void LogActiveImageSpaceEffects() {
+	if (!Tes) return;
+	int count = 0;
+	for (TList<void>::Entry* entry = &Tes->activeIMODs.First; entry && count < 32; entry = entry->next) {
+		UInt32* instance = (UInt32*)entry->item;
+		if (!instance || IsBadReadPtr(instance, 12 * sizeof(UInt32))) continue;
+		count++;
+		UInt32 formID = 0, formOffset = 0;
+		for (UInt32 k = 1; k < 12 && !formID; k++) {
+			TESForm* form = (TESForm*)instance[k];
+			if (form && !IsBadReadPtr(form, sizeof(TESForm)) && form->formType == TESForm::FormType::kFormType_ImageSpaceModifier) {
+				formID = form->refID;
+				formOffset = k * 4;
+			}
+		}
+		char words[12 * 9 + 1] = {};
+		for (int k = 0; k < 12; k++) sprintf_s(words + k * 9, 10, "%08X ", instance[k]);
+		Logger::Log("IMAGESPACE active %d: %s instance %p, IMOD form %08X (at +%02X) | %s", count, ImageSpaceInstanceKind(instance[0]),
+			(void*)instance, formID, formOffset, words);
+	}
+	Logger::Log("IMAGESPACE %d active image-space effect(s) (the game's fades, night eye, chem and weather tints)", count);
+}
+
 static void LogActiveSwitches(bool force) {
 	static std::string lastLine;
 	static const char* sections[][2] = { { "Main.Main.Performance", "performance" }, { "Main.Main.ReducedQuality", "reduced quality" },
@@ -1312,8 +1412,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static CpuTimer frameIntervalTimer("Frame interval (CPU)");
 	if (Player->parentCell && !InterfaceManager->IsActive(Menu::kMenuType_Loading) && Global->OnKeyDown(0x44)) {
 		GpuTimer::Enabled = !GpuTimer::Enabled;
-		Logger::Log("GPU PROFILE P77 %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
+		Logger::Log("GPU PROFILE P78 test (forward quality + culling + lamp trims) %s (F10), effects %s, D3D9 runtime: %s", GpuTimer::Enabled ? "enabled" : "paused",
 			TheSettingManager->SettingsMain.Main.RenderEffects ? "on" : "OFF", TheRenderManager->D3D9RuntimeDescription());
+		LogActiveImageSpaceEffects();
 		if (!GpuTimer::Enabled) TheFrameTimeMonitor().Flush(); // report the frames collected so far
 		else LogActiveSwitches(true);
 	}
@@ -1347,6 +1448,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	IDirect3DSurface9* RenderedSurface = TheTextureManager->RenderedSurface;
 	static GpuTimer postCopyTimer("Post-tonemap copies");
 	static GpuTimer weatherTimer("Weather + legacy bloom");
+	static GpuTimer heatHazeTimer("Heat haze");
 	static GpuTimer colorTimer("Coloring + LUT");
 	static GpuTimer dofTimer("Depth of field");
 	static GpuTimer motionBlurTimer("Motion blur");
@@ -1357,6 +1459,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static GpuTimer sharpenTimer("Sharpening");
 	static GpuTimer cinemaTimer("Cinema");
 	static GpuTimer imageAdjustTimer("Image adjust + debug");
+	static GpuTimer skyDitherTimer("Sky dither");
+	static GpuTimer taaTimer("TAA");
 
 	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
 	Device->SetFVF(FrameFVF);
@@ -1379,9 +1483,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// tests are the ones EffectRecord::Render applies. A wrong guess is repaired in FrameChain::Owns.
 	{
 		EffectRecord* const order[] = {
-			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
+			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.HeatHaze, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
 			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
-			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Debug };
+			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.SkyDither, Effects.Debug };
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
 			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
@@ -1389,11 +1493,26 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		Chain.SetFinalEffect(last);
 	}
 
+	// UNOFFICIAL TAA (upstream #78, via Physically-Based-Reloaded; off by default) first: after tonemapping, so it resolves
+	// LDR values that cannot ghost as HDR highlights do, and ahead of everything below. Rain and snow are particles with no
+	// depth of their own to reproject by, DoF and motion blur want the stable image as input, and the lens effects and
+	// cinema overlay are fixed to the screen. TAAEffect::Render manages its own targets and syncs the frame chain first.
+	{
+		GpuProfileScope gpu(taaTimer, Device);
+		Effects.TAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+
 	{
 		GpuProfileScope gpu(weatherTimer, Device);
 		Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		// UNOFFICIAL (from Physically-Based-Reloaded): distant ground shimmering on hot afternoons. Before the gun smoke,
+		// so the smoke near the camera is not pulled into the shimmer of what is behind it.
+		GpuProfileScope gpu(heatHazeTimer, Device);
+		Effects.HeatHaze->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 
 	// GunFX: volumetric smoke first, then the heat haze distorts the result.
@@ -1450,6 +1569,15 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		// UNOFFICIAL: the last colour change before the 8-bit screen, so its noise breaks up the sky's bands exactly
+		// where they form (anything after it, e.g. sharpening, would amplify the noise).
+		GpuProfileScope gpu(skyDitherTimer, Device);
+		Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Debug->RenderClipView(Device, RenderTarget); // UNOFFICIAL: [Shaders.Debug.Main] ClipView
 	}

@@ -2,11 +2,18 @@
 
 #include <cstdarg>
 #include <unordered_set>
+#include <fstream>
+#include <sstream>
 #include "../../core/GpuProfiler.h"
 #include "../../core/GpuTimeline.h"
 #include "../../core/PointShadowForward.h"
 #include "../../core/ShaderWarmUp.h"
 #include "../../core/ConstantFilter.h"
+#include "../../core/HiddenObjectCulling.h"
+#include "../../core/LampScissor.h"
+#include "../../core/LampPassTest.h"
+#include "../../core/EffectSelfTest.h"
+#include "../../core/MaterialRules.h"
 
 // Everything from the start of the game's render call up to the world scene: NVR shadow maps,
 // the game's own pre-scene work (water reflection/refraction/depth maps and anything else).
@@ -481,6 +488,9 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
 	FrameWorldArgsKnown = false;
 	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
+	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: HiddenObjectCulling
+	LampScissor::BeginFrame();	// UNOFFICIAL: LampScissor
+	LampPassTest::BeginFrame();	// UNOFFICIAL, diagnostic: LampPassTestSkip
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -1356,6 +1366,95 @@ namespace BarrelHeat {
 	}
 }
 
+// UNOFFICIAL material rules ([Shaders.PBR.MaterialRules], core/MaterialRules.h, Object.hlsl): before each object, the class of
+// its diffuse texture (from NewVegasReloaded.dll.materials.txt next to the DLL, read once) goes to pixel c197-c199. Resolved
+// once per texture and kept by the texture's address (with its path, as a freed texture's address can be reused). Only the
+// object shaders (ObjectTemplate, MATERIAL_RULES) read these registers; everything else ignores them. Every object shader
+// bind uploads the registered "no rule" values (PBR.cpp), so AfterBind sends this object's again.
+namespace MaterialRulesDraw {
+	static MaterialRules::Table Table;
+	static bool Loaded = false;
+	struct Entry { std::string Path; int Rule; };
+	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
+	static float Current[12] = {};
+	static bool Active = false;		// Current holds a rule's values (sent; resent after each bind)
+
+	static void Load() {
+		Loaded = true;
+		char path[MAX_PATH] = {};
+		HMODULE module = nullptr;
+		GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&Load, &module);
+		GetModuleFileNameA(module, path, MAX_PATH);
+		char* ext = strrchr(path, '.');
+		if (ext) strcpy_s(ext, path + MAX_PATH - ext, ".dll.materials.txt");
+		std::ifstream file(path, std::ios::binary);
+		if (!file) { Logger::Log("MaterialRules: %s not found, no rules.", path); return; }
+		std::stringstream text;
+		text << file.rdbuf();
+		std::string errors;
+		if (!Table.Load(text.str(), errors)) Logger::Log("MaterialRules: lines skipped in %s:\n%s", path, errors.c_str());
+		Logger::Log("MaterialRules: %d classes read from %s.", Table.Count() - 1, path);
+	}
+
+	static int RuleFor(NiGeometry* geometry, bool log) {
+		BSShaderProperty* property = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
+		if (!property) return 0;
+		const UInt32 vtable = *(UInt32*)property;
+		if (vtable != 0x10AE0D0 && vtable != 0x10B9910) return 0;	// BSShaderPPLightingProperty, Lighting30ShaderProperty (nvse/class_vtbls.h)
+		if (property->ulFlags[0] & BSShaderProperty::Landscape) return 0;
+		BSShaderPPLightingProperty* lighting = (BSShaderPPLightingProperty*)property;
+		const NiSourceTexture* diffuse = lighting->ppTextures[0] ? lighting->ppTextures[0][0] : nullptr;
+		if (!diffuse || !diffuse->ddsPath1 || !diffuse->ddsPath1[0]) return 0;
+		auto known = ByTexture.find(diffuse);
+		if (known != ByTexture.end() && known->second.Path == diffuse->ddsPath1) return known->second.Rule;
+		const int rule = Table.Match(MaterialRules::Normalize(diffuse->ddsPath1));
+		ByTexture[diffuse] = { std::string(diffuse->ddsPath1), rule };
+		if (log && rule) Logger::Log("[MaterialRules] %s -> %s", diffuse->ddsPath1, Table.Get(rule).Name.c_str());
+		return rule;
+	}
+
+	// One object about to be drawn (RenderPassStandard/Skinned hooks).
+	static void ForObject(const PointShadowForward::RenderPassView* pass) {
+		PBRShaders* pbr = TheShaderManager->Shaders.PBR;
+		if (!pbr || !pbr->MaterialRulesSettings.Enabled) {
+			if (Active && pbr) {	// switched off: the "no rule" values back for the object shader still bound
+				TheRenderManager->device->SetPixelShaderConstantF(197, (const float*)&pbr->MaterialRule, 1);
+				TheRenderManager->device->SetPixelShaderConstantF(198, (const float*)&pbr->MaterialRough, 1);
+			}
+			Active = false;
+			return;
+		}
+		if (!Loaded) Load();
+		const int index = pass && pass->geometry ? RuleFor(pass->geometry, pbr->MaterialRulesSettings.LogMatches) : 0;
+		float values[12] = {
+			0.0f, 0.0f, 0.0f, 1.0f,
+			-1.0f, -1.0f, pbr->MaterialRough.z, 0.0f,
+			0.0f, 0.0f, 0.0f, 0.0f };
+		if (index) {
+			const MaterialRules::Rule& rule = Table.Get(index);
+			const bool metal = pbr->MaterialRulesSettings.MetalOn && rule.Metal != MaterialRules::MetalOff;
+			values[0] = 1.0f;
+			values[1] = metal ? rule.Strength : 0.0f;
+			values[2] = rule.Metal == MaterialRules::MetalFull ? 2.0f : 0.0f;	// "mask" is the guess until the _m mask is bound
+			values[3] = rule.Reflections;
+			values[4] = rule.RoughMin;
+			values[5] = rule.RoughMax;
+			values[8] = rule.Tint[0];
+			values[9] = rule.Tint[1];
+			values[10] = rule.Tint[2];
+		}
+		if (Active && !memcmp(values, Current, sizeof(values))) return;
+		memcpy(Current, values, sizeof(values));
+		Active = true;
+		TheRenderManager->device->SetPixelShaderConstantF(197, Current, 3);
+	}
+
+	// After an object shader's bind uploaded the registered "no rule" values.
+	static void AfterBind() {
+		if (Active) TheRenderManager->device->SetPixelShaderConstantF(197, Current, 3);
+	}
+}
+
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
 namespace ScopeSunShadows { static void ForDraw(const PointShadowForward::RenderPassView* pass); }
 
@@ -1369,6 +1468,15 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	NiD3DPixelShaderEx* PixelShader = (NiD3DPixelShaderEx*)Pass->PixelShader;
 	IDirect3DVertexShader9* VertexShader2 = TheRenderManager->renderState->GetVertexShader();
 	IDirect3DPixelShader9* PixelShader2 = TheRenderManager->renderState->GetPixelShader();
+
+	// UNOFFICIAL volumetric clouds: the game's cloud layers (SKYTEX.pso) stay hidden while they draw; in the water's reflection
+	// too when the clouds are drawn into it (WaterReflections), else they stay there. Set before the shader's constants are
+	// uploaded below. In the reflection pass, the clouds note its target, depth buffer and camera (DrawIntoReflection).
+	if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) {
+		const bool reflections = ShaderSplit::CurrentContext == ShaderSplit::Reflections;
+		clouds->Constants.Hide.x = reflections ? clouds->HideGameCloudsInReflection : clouds->HideGameClouds;
+		if (reflections && clouds->HideGameCloudsInReflection > 0.0f) clouds->CaptureReflection(TheRenderManager->device);
+	}
 
 	if (VertexShader) {
 		VertexShader->SetupShader(VertexShader2);
@@ -1410,6 +1518,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		}
 	}
 	ShaderSplit::OnBind(PixelShader, PixelShader2, bindStart);
+	if (ShaderSplit::CurrentContext == ShaderSplit::World) TerrainShaders::NoteWorldBind();	// UNOFFICIAL terrain blending diagnostic
 	ReflectionProbe::OnBind(Geometry, PixelShader ? PixelShader->Name : nullptr, VertexShader ? VertexShader->Name : nullptr);
 
 	// trace pipeline active shaders
@@ -1423,8 +1532,11 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+	MaterialRulesDraw::AfterBind();	// UNOFFICIAL material rules: this object's class again over the bind's "no rule"
 	ReflectionProbe::AfterBind();  // UNOFFICIAL ReflectionClipFix: the clip plane re-issued once the pass's shaders are bound
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
+	LampScissor::OnBind(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL LampScissor
+	HiddenObjectCulling::OnBind(PixelShader);	// UNOFFICIAL HiddenObjectCulling: only lamp-only passes may be skipped
 	// UNOFFICIAL interior forward point-light shadows: the draw's lamps and their cube maps (PointShadowForward.h).
 	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;	// AimProbe (LogLamps)
 	PointShadowForward::LastVertexShaderNvr = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
@@ -1496,16 +1608,29 @@ static void ForwardShadowsForPass(void* Pass) {
 }
 
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, false);
+	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	ForwardShadowsForPass(Pass);
+	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
+		HiddenObjectCulling::Abandon();	// (a lamp-only pass is never an object's first pass in practice; if it was, its query is not used)
+		return;
+	}
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	LampScissor::After();
+	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// LogLamps diagnostic
 }
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, true);
+	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	ForwardShadowsForPass(Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// LogLamps diagnostic
 }
 
@@ -1534,17 +1659,25 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	WorldRenderedThisFrame = true;
 	if (!FrameWorldArgsKnown) { FrameWorldArgsKnown = true; FrameWorldArgs[0] = IsFirstPerson; FrameWorldArgs[1] = WireFrame; FrameWorldArgs[2] = Arg4; }
 	FrameWorldCalls++;
+	// UNOFFICIAL TAA (off by default): the sub-pixel jitter covers the world scene and nothing else -- see
+	// TAAEffect::BeginJitter. A no-op unless TAA resolves this frame.
+	TAAEffect* TAA = TheShaderManager->Effects.TAA;
+	if (TAA) TAA->BeginJitter();
+	// UNOFFICIAL terrain blending (off by default): the world's depth is copied as the first land shader of this scene binds.
+	TerrainShaders::BeginWorldScene();
 	{
 		// Game geometry drawn with NVR's replacement shaders, including per-object sun shadows.
 		static GpuTimer worldTimer("World scene (game)");
 		GpuProfileScope gpu(worldTimer, TheRenderManager->device);
 		ShaderSplit::BeginContext(ShaderSplit::World);
+		HiddenObjectCulling::BeginWorld();
 		GunFXSwitches::Update();
 		BarrelHaze::Reset();
 		BarrelHeat::BeginWorldProbe();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
 		BarrelHeat::EndWorldProbe();
 		BarrelHeat::Clear();
+		HiddenObjectCulling::EndWorld();
 		ShaderSplit::EndContext();
 	}
 
@@ -1554,6 +1687,11 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	// through world geometry.
 	MaterialPass::CaptureScene(WorldSceneGraph);
 	MaterialPass::RenderWorld();
+
+	TerrainShaders::EndWorldScene();
+	// After the material pass, not before: it redraws world geometry over the scene, and must land on exactly the same
+	// jittered pixels the world did.
+	if (TAA) TAA->EndJitter();
 
 	const bool bPipBoyOpen = InterfaceManager->IsPipBoyOpen();
 	const bool bPipBoyLive = (TheGameMenuManager->IsLiveMenu && TheGameMenuManager->IsLiveMenu(Menu::kMenuType_BigFour, false, false) == GameMenuManager::MenuPauseState::MENU_LIVE);
@@ -1606,6 +1744,7 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 		ShaderSplit::BeginContext(ShaderSplit::Reflections);
 		(*RenderReflections)(This, Camera, SceneNode);
 		ShaderSplit::EndContext();
+		if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) clouds->EndReflectionPass(TheRenderManager->device);	// UNOFFICIAL
 		return;
 	}
 	
@@ -1629,6 +1768,7 @@ void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* 
 		ShaderSplit::BeginContext(ShaderSplit::Reflections);
 		(*RenderReflections)(This, Camera, SceneNode);
 		ShaderSplit::EndContext();
+		if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) clouds->EndReflectionPass(TheRenderManager->device);	// UNOFFICIAL
 	}
 	ShadowData->x = ShadowDataBackup;
 	TerrainParallaxData->x = TerrainParallaxBackup;
@@ -1712,6 +1852,8 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	TheRenderManager->UpdateSceneCameraData();
 	TheRenderManager->SetupSceneCamera();
 	TheShaderManager->UpdateConstants();
+	EffectSelfTest::BeginFrame();	// UNOFFICIAL, diagnostic: NeonSpillSelfTest (sets its configuration after the settings are read)
+	SettingShots::BeginFrame();		// UNOFFICIAL, test only: the auto-test's A/B shots (SettingShots.h)
 
 	if (SourceTarget && TheSettingManager->SettingsMain.Main.RenderPreTonemapping) {
 		SourceTarget->GetD3DTexture(0)->GetSurfaceLevel(0, &GameSurface); // get the surface from the game render target
@@ -1748,10 +1890,13 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		OutputSurface = TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface;
 		if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
 		TheShaderManager->RenderEffects(OutputSurface);
+		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);	// UNOFFICIAL, diagnostic
+		SettingShots::Capture(OutputSurface);	// UNOFFICIAL, test only
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 		ReflectionProbe::EndFrame();
 	}
 
+	EffectSelfTest::EndFrame(OutputSurface != NULL);	// UNOFFICIAL, diagnostic: the settings back, the run moves on
 	if (GameSurface) GameSurface->Release();
 }
 

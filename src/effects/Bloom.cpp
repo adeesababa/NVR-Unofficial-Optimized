@@ -6,6 +6,8 @@ void BloomEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloomData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_BloomExtraData", &Constants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_BloomResolution", &Constants.Resolution);
+	TheShaderManager->RegisterConstant("TESR_BloomGlow", &Constants.Glow);
+	TheShaderManager->RegisterConstant("TESR_BloomGlowExtra", &Constants.GlowExtra);
 };
 
 void BloomEffect::RegisterTextures() {
@@ -42,8 +44,35 @@ void BloomEffect::UpdateSettings() {
 
 	Settings.Interiors.Passes = TheSettingManager->GetSettingF("Shaders.Bloom.Interiors", "Passes");
 	Settings.Interiors.PassBlending = TheSettingManager->GetSettingF("Shaders.Bloom.Interiors", "PassBlending");
+
+	// UNOFFICIAL (a key missing from an older settings file reads 0: as before).
+	const char* sections[3] = { "Shaders.Bloom.Main", "Shaders.Bloom.Night", "Shaders.Bloom.Interiors" };
+	BloomSettings* periods[3] = { &Settings.Main, &Settings.Night, &Settings.Interiors };
+	for (int i = 0; i < 3; i++) {
+		periods[i]->Spread = std::clamp(TheSettingManager->GetSettingF(sections[i], "Spread"), -0.75f, 2.0f);
+		periods[i]->GlowBoost = std::clamp(TheSettingManager->GetSettingF(sections[i], "GlowBoost"), 0.0f, 20.0f);
+	}
+	Settings.GlowLightLevel = TheSettingManager->GetSettingF("Shaders.Bloom.Main", "GlowLightLevel");
+	Settings.GlowLightLevel = Settings.GlowLightLevel > 0.0f ? std::clamp(Settings.GlowLightLevel, 0.25f, 50.0f) : 1.5f;
+	Settings.LinearLight = TheSettingManager->GetSettingI("Shaders.Bloom.Main", "LinearLight") != 0;
+	Settings.AntiFlicker = TheSettingManager->GetSettingI("Shaders.Bloom.Main", "AntiFlicker") != 0;
 };
 
+
+
+
+// UNOFFICIAL GlowBoost: the brightness (linear) of a white surface in the scene's own light: the sky's ambient plus the sun's
+// or moon's light outdoors, the cell's ambient plus its directional light indoors (as BounceLightEffect::SpillThreshold).
+static float BloomSceneLight() {
+	D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient, direct = TheShaderManager->ShaderConst.sunColor;
+	if (!TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() &&
+		Player->parentCell->lighting) {
+		ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4();
+		direct = Player->parentCell->lighting->directional.toD3DXVECTOR4();
+	}
+	auto linear = [](float c) { c = (std::max)(c, 0.0f); return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); };
+	return 0.2126f * linear(ambient.x + direct.x) + 0.7152f * linear(ambient.y + direct.y) + 0.0722f * linear(ambient.z + direct.z);
+}
 
 void BloomEffect::UpdateConstants() {
 	// .x and .y updated dynamically to reflect filterRadius.
@@ -51,6 +80,21 @@ void BloomEffect::UpdateConstants() {
 	Constants.Data.y = 0.005f * ((float)TheRenderManager->width / TheRenderManager->height);  // Scaled for non-square resolutions.
 	Constants.Data.z = std::clamp(TheShaderManager->GetTransitionValue(Settings.Main.PassBlending, Settings.Night.PassBlending, Settings.Interiors.PassBlending), 0.0f, 1.0f);
 	Constants.Data.w = 1.0f / std::clamp(TheShaderManager->GetTransitionValue(Settings.Main.Passes, Settings.Night.Passes, Settings.Interiors.Passes), 2.0f, 8.0f);
+
+	// UNOFFICIAL Spread: the last upsample divides by the sum of the levels' weights (exactly .w as before at weight 1).
+	const float spread = 1.0f + std::clamp(TheShaderManager->GetTransitionValue(Settings.Main.Spread, Settings.Night.Spread, Settings.Interiors.Spread), -0.75f, 2.0f);
+	Constants.Glow.x = spread;
+	Constants.Glow.y = Constants.Data.w;
+	if (spread != 1.0f) {
+		const int passes = std::clamp((int)TheShaderManager->GetTransitionValue(Settings.Main.Passes, Settings.Night.Passes, Settings.Interiors.Passes), 2, 8);
+		float total = 0.0f, weight = 1.0f;
+		for (int i = 0; i < passes; i++) { total += weight; weight *= spread; }
+		Constants.Glow.y = 1.0f / total;
+	}
+	Constants.Glow.z = (std::max)(0.0f, TheShaderManager->GetTransitionValue(Settings.Main.GlowBoost, Settings.Night.GlowBoost, Settings.Interiors.GlowBoost));
+	Constants.Glow.w = Settings.GlowLightLevel * BloomSceneLight();
+	Constants.GlowExtra.x = Settings.AntiFlicker ? 1.0f : 0.0f;
+	Constants.GlowExtra.y = Settings.LinearLight ? 1.0f : 0.0f;
 
 	// Flag for tonemapping.
 	Constants.ExtraData.x = Enabled && (!TheShaderManager->GameState.OverlayIsOn);

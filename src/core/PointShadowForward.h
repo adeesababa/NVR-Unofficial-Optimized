@@ -118,6 +118,8 @@ namespace PointShadowForward {
 	inline float Params[4] = {};				// c180: strength, bias, normal offset, PCF spread
 	inline float DebugView = 0.0f;			// c181.x
 	inline float NearFade = 0.0f;			// c181.y: [Shaders.ShadowsInteriors.Main] NearFade (PointShadowForward.hlsl PointShadowNear)
+	inline float Quality = 1.0f;			// c181.w: [Shaders.ShadowsInteriors.Forward] Quality (Low arrives as spread 0 in c180.w)
+	inline float Soft[4] = {};				// c189: contact hardening strength (0 off), narrowest spread share
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };	// NVR_PointShadowCube0-5
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -317,7 +319,10 @@ namespace PointShadowForward {
 		Params[0] = (std::min)(strength, 1.0f);
 		Params[1] = forward.Bias;
 		Params[2] = forward.NormalOffset * 2.0f / face;
-		Params[3] = forward.Softness * 2.0f / face;
+		Params[3] = forward.Quality > 0 ? forward.Softness * 2.0f / face : 0.0f;	// Quality 0 (Low): one tap
+		Quality = (float)forward.Quality;
+		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;
+		Soft[1] = forward.ContactHardeningMinSoftness;
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
@@ -413,14 +418,15 @@ namespace PointShadowForward {
 	}
 
 	inline bool Bound = false;				// the pixel shader the game bound last is one of the records that read c174-c188
-	inline float Uploaded[15][4] = {};		// c174-c188 as last written
+	inline float Uploaded[16][4] = {};		// c174-c189 as last written
 
 	// One object's render pass: its lamps to c174-c187 and the cube stages. wanted: the world pass, or the first-person
 	// pass with FirstPerson on (never the water reflection). force: just after a shader bind, write everything.
 	inline void SetForPass(const RenderPassView* pass, bool world, bool firstPerson, bool force) {
-		float constants[15][4] = {};// c174-c179 per light of the draw; c180 params (x 0: the shader skips it all);
+		float constants[16][4] = {};// c174-c179 per light of the draw; c180 params (x 0: the shader skips it all);
 										// c181 debug view, near fade, (view 3) focus lamp's light index; c182-c187 per light of the draw: rgb debug
-										// colour (white = no shadow), w how far its shadow has faded in (FadeIn); c188 (view 3) the focus lamp
+										// colour (white = no shadow), w how far its shadow has faded in (FadeIn); c188 (view 3) the focus lamp;
+											// c181.w Quality; c189 contact hardening (strength, narrowest spread share)
 		for (int k = 0; k < 6; k++) constants[8 + k][0] = constants[8 + k][1] = constants[8 + k][2] = 1.0f;
 		IDirect3DBaseTexture9* bound[6];
 		IDirect3DCubeTexture9* neutral = NeutralCube();
@@ -456,14 +462,17 @@ namespace PointShadowForward {
 				}
 			}
 		}
-		if (matched) memcpy(constants[6], Params, sizeof(Params));
+		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); }
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
+		constants[7][3] = matched ? Quality : 0.0f;
 		// DebugView 3 on every draw of the wanted passes, matched or not: the focus lamp at c188, its cube map on stage 15
 		// (NVR_PointShadowCube5: the view replaces the draw's own lighting, so light 5's lookup does not matter).
 		if (trace && wanted) {
 			memcpy(constants[6], Params, sizeof(Params));
+			memcpy(constants[15], Soft, sizeof(Soft));
 			constants[7][0] = DebugView;
+			constants[7][3] = Quality;
 			constants[7][2] = (float)focusIndex;
 			if (Focus >= 0) {
 				const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
@@ -480,7 +489,7 @@ namespace PointShadowForward {
 		for (int k = 0; k < 6; k++)
 			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
-			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 15);
+			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 16);
 			memcpy(Uploaded, constants, sizeof(constants));
 		}
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }

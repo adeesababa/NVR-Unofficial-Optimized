@@ -15,6 +15,8 @@ float4 Toggles : register(c27);
 float4 TESR_ReciprocalResolution;
 float4 TESR_SkinData;
 float4 TESR_SkinColor;
+float4 TESR_SkinDiffusion : register(c169); // UNOFFICIAL: x PerPixelDiffusion, y Translucency (Skin.cpp). c169 is free:
+                                            // c136 is SharpSky (SkyAmbient.hlsl), c168/c170 particle lights; pinned because Shadow.hlsl's rule is to pin every TESR_ constant.
 float4 TESR_DebugVar;
 
 
@@ -79,6 +81,10 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // calculate lighting components
     float3 lighting = GetLighting(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb);
+    // UNOFFICIAL: per-pixel sun diffusion (Includes\Skin.hlsl GetSunDiffusion). PerPixelDiffusion 0 skips it: the sun is GetLighting.
+    // Ahead of the sun shadow below, so the transmission is shadowed with the rest of the sun.
+    [branch] if (TESR_SkinDiffusion.x > 0.0f)
+        lighting = lerp(lighting, GetSunDiffusion(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb, TESR_SkinDiffusion.x, TESR_SkinDiffusion.y), TESR_SkinDiffusion.x);
     float spec = GetSpecular(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb);
 
     // Outside the guard: the skylight needs this normal whether or not forward shadows

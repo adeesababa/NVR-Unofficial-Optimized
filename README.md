@@ -115,7 +115,9 @@ Press <kbd>O</kbd> in game to open the NVR menu, as usual. Two new panels:
     6.2 -> 4.1 ms (about 65 -> 73.5 fps). It also stops the ground's bumps sooner, at about 15 m
     instead of 29 m (scaled to your screen: 1024 units at 1440p, 768 at 1080p, 1536 at 4K), where
     they are only a few pixels tall; in a rocky desert view that saved another 0.8 ms (about 4 fps)
-    with no visible difference.
+    with no visible difference. (Since 2026-10-12 this is done once, by setting Shaders > Terrain >
+    Parallax > MaxDistance when you switch ParallaxLite on; raise MaxDistance there afterwards if you
+    want the bumps to reach further, and it stays as you set it.)
   - `NearCascadeInterval` - set to 2 to redraw the nearest sun shadows (up to about 3 m) every 2nd
     frame instead of every frame (1 = every frame, the original). Still shadows stay put; shadows of moving people
     and creatures lag one frame, and right after a very fast turn the edge of the view may show

@@ -98,6 +98,14 @@ VS_OUTPUT main(VS_INPUT IN) {
 #elif defined(PS)
 
 #include "includes/SkyAmbient.hlsl"
+// UNOFFICIAL CubeReflections: compiled in only when one of the CubeReflections settings is above 0 at startup (LIVE_CUBE from
+// ShaderRecord::LoadShader), so that otherwise this pass is exactly what it was. s10 is free here (this pass reads s0, s1, s3).
+#ifndef LIVE_CUBE
+    #define LIVE_CUBE 0
+#endif
+#if LIVE_CUBE
+    #include "includes/LiveCube.hlsl"
+#endif
 
 struct PS_INPUT {
     float2 uv : TEXCOORD0;
@@ -136,8 +144,22 @@ float4 main(PS_INPUT IN) : COLOR0 {
 
     // UNOFFICIAL: by the light round the object -- the ambient light and the sky along the reflected view (cube space is
     // world-aligned), scaled as the object shaders scale them.
-    float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z) * TESR_PBRExtraData.y;
+    // UNOFFICIAL SharpSky: that sky along the reflected view, sharper when [Shaders.PBR.Metal] SharpSky is on (SkyAmbient.hlsl).
+    float3 skyReflected = SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z);
+    [branch] if (TESR_SharpSky.x > 0.0f) skyReflected = SkyAmbientSharpened(normalize(reflected), skyReflected);
+    float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + skyReflected * TESR_PBRExtraData.y;
     color *= lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x);
+    #if LIVE_CUBE
+    // UNOFFICIAL CubeReflections ([Shaders.PBR.EnvMaps]): what the camera actually saw round it along the reflected view
+    // (includes/LiveCube.hlsl, already lit, so not scaled by the light again) in place of the game's painted cube map, as
+    // far as the live cube has seen that direction. Through the same mask and strength.
+    [branch] if (TESR_EnvCube.y > 0.0f) {
+        float4 live = LiveCube(reflected, 0.1f);   // a cube read needs no unit direction
+        float3 liveColor = live.rgb * (lerp(normal.a, tex2Dlod(CustomEnvMask, float4(IN.uv, 0.0f, 0.0f)).x, EnvToggles.w) * EnvToggles.z * AmbientColor.a);
+        liveColor = EnvToggles.x > 0.0f ? liveColor * IN.vertexColor : liveColor;
+        color = lerp(color, liveColor, TESR_EnvCube.y * live.a);
+    }
+    #endif
     // Less where the metal look already reflects the surroundings, and back in full where it has faded out with distance
     // (Object.hlsl getMetalFade, by TESR_PBRExtraData.w).
     float metalFade = TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, IN.fog.y) : 1.0f;

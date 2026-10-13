@@ -174,10 +174,18 @@ public:
 		WaterLensEffect*		WaterLens;
 		WetWorldEffect*			WetWorld;
 		BarrelHazeEffect*		BarrelHaze;
+		HeatHazeEffect*			HeatHaze;	// UNOFFICIAL: from Physically-Based-Reloaded
+		SandstormEffect*		Sandstorm;	// UNOFFICIAL: from Physically-Based-Reloaded (Fable)
+		VolumetricLightEffect*	VolumetricLight;	// UNOFFICIAL: sun shafts from the shadow maps
+		ReflectionsEffect*		Reflections;		// UNOFFICIAL: screen-space reflections on the ground
+		SkyDitherEffect*		SkyDither;			// UNOFFICIAL: breaks up the sky's banding before the 8-bit screen
+		VolumetricCloudsEffect*	VolumetricClouds;	// UNOFFICIAL: 3D clouds in place of the game's cloud layers
+		BloodFlowEffect*		BloodFlow;	// UNOFFICIAL: blood that runs and dries, pools under bodies
 		VolumetricSmokeEffect*	VolumetricSmoke;
 		DitherBusterEffect*		DitherBuster;
 		SMAAEffect*				SMAA;
 		FXAAEffect*				FXAA;
+		TAAEffect*				TAA;		// UNOFFICIAL: from Physically-Based-Reloaded (upstream #78 + Sharpness/MipBias), off by default
 	};
 
 	struct ShadersStruct{

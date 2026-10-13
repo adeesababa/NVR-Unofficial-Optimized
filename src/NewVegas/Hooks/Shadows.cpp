@@ -3,6 +3,13 @@
 #include "../../core/GpuProfiler.h"
 
 void __fastcall RenderShadowMapHook(void* apThis) {
+	// UNOFFICIAL TAA: the jitter covers the world scene only, on the understanding that shadow maps are rendered before it.
+	// If that ever stops being true, the cascades get fitted to a jittered frustum and shadow edges shimmer -- say so.
+	static bool reportedJitteredShadows = false;
+	if (!reportedJitteredShadows && TheShaderManager->Effects.TAA && TheShaderManager->Effects.TAA->IsJitterActive()) {
+		Logger::Log("[WARNING] TAA : shadow maps rendered while the world camera was jittered; cascades will shimmer");
+		reportedJitteredShadows = true;
+	}
 	TheShadowManager->RenderShadowMaps();
 	// The game's own call this hook replaced; timed so its share of the frame is visible.
 	static GpuTimer gameShadowTimer("Game call 0x871A50");

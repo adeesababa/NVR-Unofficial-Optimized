@@ -291,7 +291,8 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 63;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 65;  // 53 was an enhanced-water step, since removed
+extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
 	if (!TomlConfig.is_table()) return;
@@ -358,6 +359,39 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 		copyToInteriors("Shaders.Sharpening", "Main", { "Strength", "Clamp", "Offset" });
 		copyToInteriors("Shaders.Flashlight", "Main", { "ColorR", "ColorG", "ColorB", "Dimmer", "Angle", "Distance",
 			"NearFade", "HotspotLimit", "CookieStrength" });
+	}
+	// 64: volumetric light got its own night look ([Shaders.VolumetricLight.Night]) in place of Main's NightStrength,
+	// which scaled the strength and the darkening by moonlight. A saved Main carries over to Night as it looked.
+	if (version < 64) {
+		tomlValue* saved = UserSection("Shaders.VolumetricLight.Main");
+		tomlValue* parentTable = UserSection("Shaders.VolumetricLight");
+		if (saved && saved->is_table() && parentTable && parentTable->is_table() && !parentTable->contains("Night")) {
+			auto number = [&](const char* key, double fallback) {
+				if (!saved->contains(key)) return fallback;
+				const tomlValue& value = saved->at(key);
+				return value.is_integer() ? (double)value.as_integer() : value.is_floating() ? value.as_floating() : fallback;
+			};
+			const double nightStrength = number("NightStrength", 0.3);
+			tomlValue::table_type night;
+			night["Strength"] = number("Strength", 0.6) * nightStrength;
+			night["Darken"] = number("Darken", 0.4) * nightStrength;
+			for (const char* key : { "Density", "MaxDistance", "Anisotropy" })
+				if (saved->contains(key)) night[key] = number(key, 0.0);
+			(*parentTable)["Night"] = night;
+			Logger::Log("UNOFFICIAL settings: volumetric light now has separate night settings; your saved values (NightStrength %g) "
+				"were copied to Shaders.VolumetricLight.Night.", nightStrength);
+		}
+		if (saved && saved->is_table() && saved->contains("NightStrength")) saved->as_table().erase("NightStrength");
+	}
+	// 65: ParallaxLite no longer forces its shorter terrain parallax reach every frame; it writes it into
+	// Shaders.Terrain.Parallax MaxDistance once, when switched on (TerrainShaders::UpdateSettings, which knows the screen
+	// height). A config that already has it on gets that once too, so its look stays as it was until the player changes
+	// MaxDistance.
+	if (version < 65) {
+		tomlValue* saved = UserSection("Main.Main.ReducedQuality");
+		if (saved && saved->is_table() && saved->contains("ParallaxLite") && saved->at("ParallaxLite").is_boolean() &&
+			saved->at("ParallaxLite").as_boolean())
+			ParallaxLiteDistanceMigrationPending = true;
 	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
@@ -530,6 +564,24 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
 	SettingsMain.Main.ShaderWarmUp = boolSetting(performance, "ShaderWarmUp", false);
+	SettingsMain.Main.HiddenObjectCulling = boolSetting(performance, "HiddenObjectCulling", false);
+	SettingsMain.Main.TrimLampPasses = boolSetting(performance, "TrimLampPasses", true);
+	{
+		Configuration::ConfigNode node;
+		const int mode = Config.FillNode(&node, performance, "LampPassTestSkip") ? node.IntValue : 0;
+		SettingsMain.Main.LampPassTestSkip = max(0, min(mode, 3));
+	}
+	{
+		Configuration::ConfigNode node;
+		SettingsMain.Main.NeonSpillSelfTest = Config.FillNode(&node, "Shaders.BounceLight.Main", "NeonSpillSelfTest") ? node.BoolValue : false;
+	}
+	SettingsMain.Main.LampScissor = boolSetting(performance, "LampScissor", true);
+	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
+	{
+		Configuration::ConfigNode node;
+		const int age = Config.FillNode(&node, performance, "HiddenObjectCullingMaxAge") ? node.IntValue : 4;
+		SettingsMain.Main.HiddenObjectCullingMaxAge = max(1, min(age, 7));
+	}
 	const char* reducedQuality = "Main.Main.ReducedQuality";
 	SettingsMain.Main.GodRaysLowRes = boolSetting(reducedQuality, "GodRaysLowRes", false);
 	SettingsMain.Main.AOLowRes = boolSetting(reducedQuality, "AOLowRes", false);

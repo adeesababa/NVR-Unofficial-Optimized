@@ -58,6 +58,10 @@ sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; A
 sampler2D TESR_RenderedBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_ShadowAtlas : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// UNOFFICIAL: the general 3D noise (Textures\Effects\NoiseVolume.dds, tools/cloud_noise.cpp; g: 4-octave fbm, base
+// period 4 cells across the tile). Bound by VolumetricFogEffect::Render on stage 9: not a TESR_ sampler, because those
+// take stages by declaration order and the next one (6) is the dedicated path's NVR_FogBuffer.
+sampler3D NVR_FogNoise : register(s9) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NormalsBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 /*Height-based fog settings*/
@@ -409,12 +413,163 @@ float GetFogShadowVisibility(float4 positionWS, float3 normal) {
 }
 
 
+// ---- Legacy fog (custom build): the Simple + Height fog stack from before the fog rewrite (upstream 25189928) ----
+// Old presets (Uranium Haze and others) were tuned against it and set its keys (HeightFog*, SimpleFog*, MinimumBaseFog,
+// SunPower, FogNight...). Same maths as that shader, written as the colour * fogMul + fogAdd terms the half-resolution
+// passes need. Chosen by [Shaders.VolumetricFog.Main] LegacyFog: VolumetricFog.cpp then uses the *Legacy techniques,
+// compiled with legacy = true (both fogs in one shader go over ps_3_0's 224 constant registers).
+float4 TESR_VolumetricFogLow;    // x: FogSaturation, y: WeatherImpact, z: DistantFogRange, w: SunPower
+float4 TESR_VolumetricFogHigh;   // x: HeightFogDensity, y: HeightFogFalloff, z: HeightFogDist, w: HeightFogSkyColor
+float4 TESR_VolumetricFogSimple; // x: Extinction, y: Inscattering, z: FogNight, w: SimpleFogSkyColor
+float4 TESR_VolumetricFogBlend;  // x: DistantFogBlend, y: HeightFogBlend, z: HeightFogRolloff, w: SimpleFogBlend
+float4 TESR_VolumetricFogHeight; // x: DistantFogHeight, y: HeightFogHeight, z: SimpleFogHeight, w: isExterior
+float4 TESR_VolumetricFogData;   // x: MinimumBaseFog, y: HeightFogSaturation, z: Amount, w: HeightFogInscattering
+
+static const float LegacyBaseFogStrength = max(0, TESR_VolumetricFogData.x);
+static const float LegacyHeightFogSaturation = max(0, TESR_VolumetricFogData.y);
+static const float LegacyFogAmount = max(0, TESR_VolumetricFogData.z);
+static const float LegacyHeightFogInscattering = max(0.0, TESR_VolumetricFogData.w) * 0.1;
+
+static const float LegacyFogSaturation = max(0, TESR_VolumetricFogLow.x);
+static const float LegacyWeatherImpact = max(0, TESR_VolumetricFogLow.y);
+static const float LegacyDistantFogRange = exp(-4 * TESR_VolumetricFogLow.z);
+static const float LegacySunPower = max(0, TESR_VolumetricFogLow.w);
+
+static const float LegacyHeightFogDensity = max(0, TESR_VolumetricFogHigh.x);
+static const float LegacyHeightFogFalloff = max(0, TESR_VolumetricFogHigh.y);
+static const float LegacyHeightFogDist = TESR_VolumetricFogHigh.z;
+static const float LegacyHeightFogSkyColor = 2 * TESR_VolumetricFogHigh.w;
+
+static const float LegacyDistantFogHeight = TESR_VolumetricFogHeight.x;
+static const float LegacyHeightFogHeight = TESR_VolumetricFogHeight.y;
+static const float LegacySimpleFogHeight = TESR_VolumetricFogHeight.z * 1.5;
+static const float LegacyIsExterior = TESR_VolumetricFogHeight.w;
+
+static const float LegacyExtinction = max(0.0, TESR_VolumetricFogSimple.x) * 0.1;
+static const float LegacyInscattering = max(0.0, TESR_VolumetricFogSimple.y) * 0.1;
+static const float LegacyFogNight = max(0.0, TESR_VolumetricFogSimple.z);
+static const float LegacySimpleFogSkyColor = max(0, TESR_VolumetricFogSimple.w);
+
+static const float LegacyDistantFogBlend = TESR_VolumetricFogBlend.x;
+static const float LegacyHeightFogBlend = TESR_VolumetricFogBlend.y;
+static const float LegacyHeightFogRolloff = TESR_VolumetricFogBlend.z;
+static const float LegacySimpleFogBlend = TESR_VolumetricFogBlend.w;
+
+// The old getHeightFog: the 32-step sum in closed form (as getHeightFog above), then the old distance scaling
+// length(eyeVector) / distance, which getHeightFog above changed.
+float getLegacyHeightFog(float distance, float falloff, float3 worldPos, float heightOffset){
+	float3 eyeVector = worldPos - TESR_CameraPosition.xyz;
+	float3 step = eyeVector / stepnum;
+	float stepDist = length(step);
+
+	float z0 = TESR_CameraPosition.z - (FOG_GROUND + heightOffset * 1000);
+	float x = falloff * step.z;
+	const float n = stepnum;
+	float series;
+	[branch] if (abs(x) < 0.01) {
+		float a = n * x;
+		float numerator = 1 - a / 2 + a * a / 6 - a * a * a / 24 + a * a * a * a / 120;
+		float denominator = 1 - x / 2 + x * x / 6 - x * x * x / 24 + x * x * x * x / 120;
+		series = n * numerator / denominator;
+	}
+	else {
+		series = (1 - exp(-n * x)) / (1 - exp(-x));
+	}
+	float fog = stepDist * exp(-falloff * (z0 + step.z)) * series;
+	return fog * (length(eyeVector) / max(distance, 0.0001));
+}
+
+void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut)
+{
+	float4 pureFogColor = linearize(TESR_FogColor);
+
+	float depth = readDepthLod(uv);
+	float isDayTime = smoothstep(0.4, 0.8, TESR_SunAmount.x);
+	float isDayTimeFog = smoothstep(0.1, 0.6, TESR_SunAmount.x);
+	float SunsetFog = sin(TESR_SunAmount.x * PI) * 0.001 * LegacyIsExterior;
+
+	float3 eyeVector = toWorld(uv);
+	float3 eyeDirection = normalize(eyeVector);
+	eyeVector *= depth;
+	float3 worldPos = eyeVector + TESR_CameraPosition.xyz;
+	float pointHeight = worldPos.z;
+
+	float normalizedDepth = length(eyeVector) / farZ;
+	float fogPower = lerp(1, FogPower, saturate(LegacyWeatherImpact)) / lerp(LegacyHeightFogRolloff, 1 / LegacyFogNight, (1 - isDayTimeFog) * LegacyIsExterior);
+	float fogDepth = pows(normalizedDepth, fogPower);
+	fogDepth = fogDepth * farZ / (LegacyHeightFogDist * lerp(0.005, 1, LegacyIsExterior));
+
+	float strength = pows((saturate(1 - farFog / farZ) + saturate(1 - nearFog / farZ)) / 2, 2) / (FogPower + 1);
+	strength = LegacyBaseFogStrength + LegacyWeatherImpact * strength + SunsetFog;
+	float heightFade = exp(-pointHeight / (80000 * LegacySimpleFogHeight));
+
+	// default values used by interiors
+	float distantFog = 0.0, distantHeightFade = 0.0;
+	float4 skyColor = pureFogColor;
+	float inScattering = LegacyInscattering;
+	float extinction = LegacyExtinction;
+	float4 sun = black;
+
+	if (LegacyIsExterior){
+		float3 up = blue.xyz;
+		float sunHeight = shade(TESR_SunPosition.xyz, up);
+		float sunDir = dot(eyeDirection, TESR_SunPosition.xyz);
+		float sunInfluence = pows(compress(sunDir), SUNINFLUENCE);
+		float4 sunColor = float4(GetSunColor(sunHeight, 1, TESR_SunAmount.x, TESR_SunDiskColor.rgb, TESR_SunsetColor.rgb), 1);
+		sunColor *= isDayTime * LegacyIsExterior;
+
+		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+
+		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
+		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
+
+		float sunScattering = pows(compress(sunDir), 2 + sunStrength);
+		sunScattering *= pow(1 - sunHeight, 2) * isDayTimeFog * TESR_FogData.z;
+		sun = sunColor * sunScattering * LegacySunPower * 100;
+
+		distantFog = pows(smoothstep(LegacyDistantFogRange, 1.0, normalizedDepth), 0.5);
+		// The old shader's sky mask (only read here when DistantFogHeight is 0); it then set isSky to 0 for the rest.
+		[branch] if (LegacyDistantFogHeight == 0) distantHeightFade = 1.0 - (getSky(uv) > 0);
+		else distantHeightFade = exp(-pointHeight / (80000 * LegacyDistantFogHeight));
+
+		inScattering += SunsetFog;
+		extinction *= 1 - distantFog * isDayTimeFog;
+	}
+
+	// simple fog: lerp(color, color * (1 - ext) + fogColor * ins, SimpleFogBlend)
+	float4 simpleFogColor = fogColor(skyColor, pureFogColor, strength, LegacySimpleFogSkyColor, black, LegacyFogSaturation);
+	float simpleDensity = strength * heightFade;
+	float simpleExt = getFogFlat(fogDepth, simpleDensity * extinction).x;
+	float simpleIns = getFogFlat(fogDepth, simpleDensity * inScattering).x;
+	float simpleBlend = saturate(LegacySimpleFogBlend);
+	fogMul = lerp(1.0, saturate(1 - simpleExt), simpleBlend);
+	fogAdd = simpleFogColor.rgb * saturate(simpleIns) * simpleBlend;
+
+	// distant fog: lerp toward the sky colour
+	float distantBlend = distantFog * saturate(LegacyDistantFogBlend) * distantHeightFade * LegacyIsExterior;
+	fogMul *= 1 - distantBlend;
+	fogAdd = lerp(fogAdd, skyColor.rgb, distantBlend);
+
+	// height fog: lerp(color, color * (1 - ext) + fogColor * ins, HeightFogBlend), unclamped linear terms as before
+	float4 heightFogColor = fogColor(skyColor, pureFogColor, strength, LegacyHeightFogSkyColor, sun, LegacyHeightFogSaturation);
+	float heightFog = strength * LegacyHeightFogDensity * 0.00001 *
+		getLegacyHeightFog(fogDepth, 1.5 / (fogPower * LegacyHeightFogFalloff) * 0.0001, worldPos, LegacyHeightFogHeight);
+	float heightBlend = saturate(LegacyHeightFogBlend);
+	float heightScale = lerp(1.0, saturate(1 - heightFog * extinction), heightBlend);
+	fogMul *= heightScale;
+	fogAdd = fogAdd * heightScale + heightFogColor.rgb * saturate(heightFog * LegacyHeightFogInscattering) * heightBlend;
+
+	fogMul = lerp(1.0, fogMul, LegacyFogAmount);
+	fogAdd *= LegacyFogAmount;
+	nightAmountOut = LegacyFogAmount;
+}
+
 // Every step of the composite below is affine in the scene colour, per channel, so the whole
 // fog reduces to linear(result) = max(linear(scene) * fogMul + fogAdd, 0). The coefficients
 // depend only on depth, the sky mask and constants -- never on scene detail beyond getSky's
 // luma gate -- which lets the dedicated path evaluate them at half resolution and apply them
 // to the full-resolution scene instead of reconstructing the scene itself from half resolution.
-void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut)
+void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut)
 {
 	VSOUT IN = (VSOUT)0;
 	IN.UVCoord = uv;
@@ -464,7 +619,19 @@ void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAm
 
 	float nightWindSpeed = WindSpeed * lerp(1.0, NightWindSpeedScale, nightFactor);
 	float3 windOffset = float3(WindDirection * nightWindSpeed * TESR_GameTime.x * 0.002, 0);
-	float noiseVal = fbm3((worldPos + windOffset) / (1500 * NoiseScale));
+	// UNOFFICIAL: the noise is read from the 3D noise texture at four points along the view ray and averaged, so its
+	// patches sit in the air in front of things instead of being painted onto the surface behind them (it used to be
+	// read once, at that surface). The nearest 300 units are left out, where the pattern would swim with the camera;
+	// the farthest point is at most 12000 units out. A texture read costs less than one evaluation of the old
+	// procedural fbm3 (24 hashes). Averaging flattens the contrast, which the last line restores.
+	float noiseReach = min(length(eyeVector), 12000.0);
+	float noiseVal = 0.0;
+	[unroll] for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
+		float noiseT = lerp(min(300.0, noiseReach), noiseReach, (noiseStep + 0.5) / 4.0);
+		float3 noisePos = (TESR_CameraPosition.xyz + eyeDirection * noiseT + windOffset) / (1500 * NoiseScale);
+		noiseVal += tex3Dlod(NVR_FogNoise, float4(noisePos / 4.0, 0.0)).g;
+	}
+	noiseVal = saturate((noiseVal * 0.25 - 0.5) * 1.8 + 0.5);
 	float nightNoiseStrength = NoiseStrength * lerp(1.0, NightNoiseStrengthScale, nightFactor);
 
 	// Zero the noise's contribution to density on true sky pixels via isSkyDome (a hard depth
@@ -630,19 +797,28 @@ void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAm
 	nightAmountOut = nightAmount;
 }
 
-float4 VolumetricFog(VSOUT IN) : COLOR0
+// Legacy fog (custom build) or the current fog: legacy is a compile-time constant, one per technique.
+void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy)
+{
+	if (legacy)
+		LegacyFogTerms(uv, fogMul, fogAdd, nightAmountOut);
+	else
+		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut);
+}
+
+float4 VolumetricFog(VSOUT IN, uniform bool legacy) : COLOR0
 {
 	float4 color = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord));
 	float3 fogMul, fogAdd;
 	float nightAmount;
-	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount);
+	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount, legacy);
 	float4 finalColor = max(float4(color.rgb * fogMul + fogAdd, lerp(color.a, 1.0, nightAmount)), 0.0f);
 	return delinearize(finalColor);
 }
 
-float4 PackedFogEstimate(VSOUT IN) : COLOR0
+float4 PackedFogEstimate(VSOUT IN, uniform bool legacy) : COLOR0
 {
-	float4 fog = VolumetricFog(IN);
+	float4 fog = VolumetricFog(IN, legacy);
 	fog.a = saturate(readDepth(IN.UVCoord) / farZ);
 	return fog;
 }
@@ -683,7 +859,7 @@ technique
 	pass
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader  = compile ps_3_0 VolumetricFog();
+		PixelShader  = compile ps_3_0 VolumetricFog(false);
 	}
 }
 
@@ -692,7 +868,7 @@ technique PackedFog
 	pass Estimate
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 PackedFogEstimate();
+		PixelShader = compile ps_3_0 PackedFogEstimate(false);
 	}
 	pass Reconstruct
 	{
@@ -729,7 +905,7 @@ struct FogTermsOut
 // The nearest pixel wins so thin things in front, which may cover only one pixel of a block, always get a sample of their
 // own; the sky or ground behind them is covered by the neighbouring blocks or, where none of those is at their distance
 // either (a gap in foliage), by FogApply working the fog out for that pixel itself.
-FogTermsOut DedicatedFogEstimate(VSOUT IN)
+FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy)
 {
 	FogTermsOut OUT;
 	float2 h = 0.5 * TESR_ReciprocalResolution.xy;
@@ -743,7 +919,7 @@ FogTermsOut DedicatedFogEstimate(VSOUT IN)
 	}
 	float3 fogMul, fogAdd;
 	float nightAmount;
-	FogTerms(best, fogMul, fogAdd, nightAmount);
+	FogTerms(best, fogMul, fogAdd, nightAmount, legacy);
 	OUT.mulDepth = float4(fogMul, saturate(bestDepth / farZ));
 	OUT.add = float4(fogAdd, 1);
 	return OUT;
@@ -759,7 +935,7 @@ VSOUT HalfVS(VSIN IN)
 }
 
 // Depth-aware upsample of the half-resolution fog coefficients, applied to a gamma-space colour.
-float3 FogApply(float3 gammaColor, float2 uv)
+float3 FogApply(float3 gammaColor, float2 uv, bool legacy)
 {
 	float2 texel = NVR_FogLayout.zw;
 	float2 position = uv / texel - 0.5;
@@ -794,16 +970,16 @@ float3 FogApply(float3 gammaColor, float2 uv)
 	float bestDifference = min(min(difference.x, difference.y), min(difference.z, difference.w));
 	[branch] if (bestDifference > 3.0) {
 		float nightAmount;
-		FogTerms(uv, fogMul, fogAdd, nightAmount);
+		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy);
 	}
 
 	float3 color = linearize(gammaColor);
 	return delinearize(max(color * fogMul + fogAdd, 0.0f));
 }
 
-float4 DedicatedFogCombine(VSOUT IN) : COLOR0
+float4 DedicatedFogCombine(VSOUT IN, uniform bool legacy) : COLOR0
 {
-	return float4(FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord), 1);
+	return float4(FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy), 1);
 }
 
 // ---- Composite apply: exterior sun shadows and AO folded into the fog reconstruct ----
@@ -870,7 +1046,7 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	return linearColor * ao;
 }
 
-float4 DedicatedFogComposite(VSOUT IN) : COLOR0
+float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy) : COLOR0
 {
 	float3 color = tex2D(TESR_SourceBuffer, IN.UVCoord).rgb;
 	// Shadows and AO both use gamma 2.2: retain their shared linear value until
@@ -879,7 +1055,7 @@ float4 DedicatedFogComposite(VSOUT IN) : COLOR0
 	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	return float4(FogApply(color, IN.UVCoord), 1);
+	return float4(FogApply(color, IN.UVCoord, legacy), 1);
 }
 
 technique DedicatedFog
@@ -887,12 +1063,12 @@ technique DedicatedFog
 	pass Estimate
 	{
 		VertexShader = compile vs_3_0 HalfVS();
-		PixelShader = compile ps_3_0 DedicatedFogEstimate();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false);
 	}
 	pass Reconstruct
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 DedicatedFogCombine();
+		PixelShader = compile ps_3_0 DedicatedFogCombine(false);
 	}
 }
 
@@ -901,12 +1077,64 @@ technique CompositeFog
 	pass Estimate
 	{
 		VertexShader = compile vs_3_0 HalfVS();
-		PixelShader = compile ps_3_0 DedicatedFogEstimate();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false);
 	}
 	pass Reconstruct
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 DedicatedFogComposite();
+		PixelShader = compile ps_3_0 DedicatedFogComposite(false);
+	}
+}
+
+// ---- Custom build: the same techniques with the legacy fog (VolumetricFog.cpp picks them when LegacyFog is on) ----
+technique VolumetricFogLegacy
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader  = compile ps_3_0 VolumetricFog(true);
+	}
+}
+
+technique PackedFogLegacy
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 PackedFogEstimate(true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 PackedFogCombine();
+	}
+}
+
+technique DedicatedFogLegacy
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogCombine(true);
+	}
+}
+
+technique CompositeFogLegacy
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogComposite(true);
 	}
 }
 

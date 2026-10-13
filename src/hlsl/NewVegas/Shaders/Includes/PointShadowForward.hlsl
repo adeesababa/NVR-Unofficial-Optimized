@@ -35,11 +35,16 @@ float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked 
 float4 NVR_PointShadowDebug     : register(c181); // x: debug view (0 off, 1 a lamp's blocked light in that lamp's colour, 2 the lit
                                                   // area of every lamp that has a shadow tinted in its colour, 3 PointShadowTrace);
                                                   // y: NearFade (world units; 0 off), see PointShadowNear; z (view 3): which light
-                                                  // of the draw the focus lamp is, -1 none
+                                                  // of the draw the focus lamp is, -1 none; w: Quality (PCF taps with a
+                                                  // spread: 1 Medium = 4, as before; 2 High = 10; 3 Ultra = 20; Low
+                                                  // arrives as spread 0 = 1 tap)
 float4 NVR_PointShadowTint[6]   : register(c182); // rgb: debug colour of light k's lamp (one per cube-map slot; white = no shadow);
                                                   // w: how far light k's shadow has faded in, 0..1 (a lamp that just got one)
 float4 NVR_PointShadowFocus     : register(c188); // view 3: the focus lamp (cube slot 0) as NVR_PointShadowLight, whatever the draw's
                                                   // lamps; its cube map is on NVR_PointShadowCube5
+float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardening ([Shaders.ShadowsInteriors.Forward] ContactHardening):
+                                                  // x: strength (0 = off, the spread as before), y: the narrowest spread, as a
+                                                  // share of the Softness spread (where a blocker touches what it shadows)
 
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
@@ -54,6 +59,20 @@ samplerCUBE NVR_PointShadowCube5 : register(s15);
 // point is inside the blocker (a lamp at the player's head). lightW: 1 / the radius.
 float4 PointShadowNear(float4 stored, float lightW) {
     return NVR_PointShadowDebug.y > 0.0f ? smoothstep(0.0f, NVR_PointShadowDebug.y * lightW, stored) : 1.0f;
+}
+
+// UNOFFICIAL Quality High/Ultra: the blocked share summed over six taps, one along each axis at spread s.
+float PointShadowRing(samplerCUBE cube, float3 dir, float s, float threshold, float lightW) {
+    float4 a = float4(
+        texCUBElod(cube, float4(dir + float3( s, 0.0f, 0.0f), 0.0f)).r,
+        texCUBElod(cube, float4(dir + float3(-s, 0.0f, 0.0f), 0.0f)).r,
+        texCUBElod(cube, float4(dir + float3(0.0f,  s, 0.0f), 0.0f)).r,
+        texCUBElod(cube, float4(dir + float3(0.0f, -s, 0.0f), 0.0f)).r);
+    float2 b = float2(
+        texCUBElod(cube, float4(dir + float3(0.0f, 0.0f,  s), 0.0f)).r,
+        texCUBElod(cube, float4(dir + float3(0.0f, 0.0f, -s), 0.0f)).r);
+    return dot((float4)(a <= threshold) * (float4)(a > 0.0f) * PointShadowNear(a, lightW), 1.0f) +
+           dot((float2)(b <= threshold) * (float2)(b > 0.0f) * PointShadowNear(float4(b, 1.0f, 1.0f), lightW).xy, 1.0f);
 }
 
 // 1 lit, 0 fully shadowed (before strength). worldPos: camera-relative (GetShadowWorldPos in the VS). normal: the
@@ -84,13 +103,49 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         // Four taps on a rotated 2x2 grid: these four offsets give one on each diagonal of whichever face the
         // direction falls on. A face texel spans 2 * major / resolution in direction units.
         float s = NVR_PointShadowParams.w * max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
+        // UNOFFICIAL contact hardening (PCSS-style): find the blockers' mean distance over the full spread first, then
+        // narrow the spread by how far the blocker is from this point compared with the lamp: sharp where an object
+        // touches the floor, the full Softness spread further out. Nothing blocked in the search: lit, the PCF skipped.
+        [branch] if (NVR_PointShadowSoft.x > 0.0f) {
+            float4 search = float4(
+                texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
+            float centre = texCUBElod(cube, float4(dir, 0.0f)).r;
+            float4 isBlocker = (float4)(search <= threshold) * (float4)(search > 0.0f);
+            float centreBlocker = (float)(centre <= threshold) * (float)(centre > 0.0f);
+            float blockers = dot(isBlocker, 1.0f) + centreBlocker;
+            [branch] if (!(blockers > 0.0f)) return 1.0f;
+            float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
+            s *= clamp((d - blocker) / max(blocker, 0.0001f) * NVR_PointShadowSoft.x, NVR_PointShadowSoft.y, 1.0f);
+        }
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
         float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
-        lit = 1.0f - dot(blocked, 0.25f);
+        [branch] if (NVR_PointShadowDebug.w > 1.5f) {
+            // UNOFFICIAL Quality 2 (High): six more taps, one along each axis: the four across the face fill the 3x3 grid's
+            // edges, the two along the face's own axis land on the centre (it counts twice). Quality 3 (Ultra): the same ten
+            // again at half the spread, for a smoother edge over the same width.
+            float sum = dot(blocked, 1.0f) + PointShadowRing(cube, dir, s, threshold, light.w);
+            float taps = 10.0f;
+            [branch] if (NVR_PointShadowDebug.w > 2.5f) {
+                float h = 0.5f * s;
+                float4 inner = float4(
+                    texCUBElod(cube, float4(dir + h * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
+                    texCUBElod(cube, float4(dir + h * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
+                    texCUBElod(cube, float4(dir + h * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
+                    texCUBElod(cube, float4(dir + h * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
+                sum += dot((float4)(inner <= threshold) * (float4)(inner > 0.0f) * PointShadowNear(inner, light.w), 1.0f) +
+                       PointShadowRing(cube, dir, h, threshold, light.w);
+                taps = 20.0f;
+            }
+            lit = 1.0f - sum / taps;
+        }
+        else lit = 1.0f - dot(blocked, 0.25f);
     }
     else {
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;

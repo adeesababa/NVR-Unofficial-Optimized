@@ -1,0 +1,64 @@
+#pragma once
+
+// UNOFFICIAL: volumetric sun light (Effects\VolumetricLight.fx.hlsl) -- shafts of sunlight through the air, shaded by the
+// sun's cascaded shadow maps. A half-resolution march (noise-dithered start points), an optional history blend and a
+// depth-aware blur into its own buffers, then a full-resolution composite in the HDR chain, after the fog. Written for
+// this build after the idea in Physically-Based-Reloaded (no shared code).
+class VolumetricLightEffect : public EffectRecord
+{
+public:
+	VolumetricLightEffect() : EffectRecord("VolumetricLight") {};
+
+	// The look by day ([Shaders.VolumetricLight.Main]) and by night ([Shaders.VolumetricLight.Night]), blended by the
+	// time of day.
+	struct LookStruct {
+		float	Strength;		// how much sunlight the lit air adds
+		float	Darken;			// how much the shaded air dims what is behind it
+		float	Density;		// air density, per 1000 game units (the menu's precision)
+		float	MaxDistance;	// how far the march reaches, game units
+		float	Anisotropy;		// forward scattering (Henyey-Greenstein g)
+	};
+	struct SettingsStruct {
+		LookStruct	Day;
+		LookStruct	Night;
+		int		Steps;			// shadow samples per march
+		float	Temporal;		// share of last frame's result kept (0: no history)
+		float	BlurRadius;		// denoise blur, half-resolution texels each way
+		float	RainStrength;	// share of the strength in rain
+	};
+	SettingsStruct	Settings;
+
+	struct ConstantsStruct {
+		D3DXVECTOR4	Data;		// x: strength, y: darkening, z: density per game unit, w: march distance
+		D3DXVECTOR4	Data2;		// x: steps, y: g, z: fade, w: noise frame offset
+		D3DXVECTOR4	Data3;		// x: history weight this frame, y: blur radius
+		D3DXVECTOR4	Layout;		// xy: one half-resolution texel in screen UV
+		D3DXMATRIX	Reproject;	// camera-relative world -> last frame's clip space
+	};
+	ConstantsStruct	Constants;
+
+	struct TexturesStruct {
+		IDirect3DTexture9* MarchTexture = nullptr;
+		IDirect3DSurface9* MarchSurface = nullptr;
+		IDirect3DTexture9* BlurTexture = nullptr;
+		IDirect3DSurface9* BlurSurface = nullptr;
+		IDirect3DTexture9* TempTexture = nullptr;
+		IDirect3DSurface9* TempSurface = nullptr;
+		IDirect3DTexture9* HistoryTexture = nullptr;
+		IDirect3DSurface9* HistorySurface = nullptr;
+	};
+	TexturesStruct	Textures;
+
+	void	UpdateConstants();
+	void	RegisterConstants();
+	void	RegisterTextures();
+	void	UpdateSettings();
+	bool	ShouldRender();
+	void	RenderBuffers(IDirect3DDevice9* Device);	// march, history, blur: everything before the composite
+
+private:
+	D3DXMATRIX	lastView, lastInvView, lastProj;
+	UINT		frame = 0;
+	UINT		lastRenderedFrame = 0;
+	bool		haveHistory = false;
+};

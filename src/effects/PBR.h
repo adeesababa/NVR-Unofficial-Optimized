@@ -142,6 +142,10 @@ public:
 		D3DXVECTOR4		Metal;		// UNOFFICIAL TESR_PBRMetal: x strength this pass, y grey parts' metal, zw saturation ruling metal out
 		D3DXVECTOR4		MetalLook;	// UNOFFICIAL TESR_PBRMetalLook: x bare metal roughness, y polished, z sky reflections, w debug view
 		D3DXVECTOR4		Env;		// UNOFFICIAL TESR_PBREnv (EnvTemplate.hlsl): x Lighting, y Strength, z WithMetal
+		D3DXVECTOR4		LampPassTrim;	// UNOFFICIAL TESR_LampPassTrim (ObjectTemplate.hlsl lamp passes): x TrimLampPasses on
+		D3DXVECTOR4		Translucency = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_Translucency (Grass23x00*.vso, STLEAF00*.vso): x Translucency, y Power, z SunGate; zero is off
+		D3DXVECTOR4		SharpSky;	// UNOFFICIAL TESR_SharpSky (SkyAmbient.hlsl): x [Shaders.PBR.Metal] SharpSky, 0 = the plain sky
+		D3DXVECTOR4		EnvCube = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_EnvCube (Includes/LiveCube.hlsl): x metal's, y the env-map pass's share of the live cube (0 while it is not kept up), z its last mip
 	};
 	PBRStruct	Constants;
 
@@ -151,15 +155,41 @@ public:
 		float FirstPerson = 0.0f;
 		float World = 0.0f;
 		float FadeDistance = 0.0f;	// FadeDistance; 0: where the game starts dropping highlights
+		float CubeReflections = 0.0f;	// UNOFFICIAL [Shaders.PBR.Metal] CubeReflections: share of the live surroundings cube
+		float EnvCubeReflections = 0.0f;	// UNOFFICIAL [Shaders.PBR.EnvMaps] CubeReflections: the same for the env-map pass
 	};
 	MetalSettingsStruct	MetalSettings;
+
+	// UNOFFICIAL [Shaders.PBR.MaterialRules] (core/MaterialRules.h, Object.hlsl): per-texture classes from the editable
+	// table NewVegasReloaded.dll.materials.txt, sent before each object by Render.cpp MaterialRulesDraw. The registered
+	// constants are the "no rule" values every object shader gets when it is bound.
+	struct MaterialRulesSettingsStruct {
+		bool Enabled = false;
+		bool DebugView = false;
+		bool LogMatches = false;
+		bool MetalOn = false;	// [Shaders.PBR.Metal] MetalOn: the rules' metal is off with it too
+	};
+	MaterialRulesSettingsStruct	MaterialRulesSettings;
+	D3DXVECTOR4	MaterialRule = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);		// TESR_MaterialRule (c197): x 0 = no rule
+	D3DXVECTOR4	MaterialRough = D3DXVECTOR4(-1.0f, -1.0f, 0.0f, 0.0f);	// TESR_MaterialRough (c198): z DebugView
+	D3DXVECTOR4	MaterialTint = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);		// TESR_MaterialTint (c199)
+
 	void	BeginFirstPerson(IDirect3DDevice9* Device);
 	void	EndFirstPerson(IDirect3DDevice9* Device);
 	// UNOFFICIAL: the current SkylightingSaturation (day/night/interior and rain blended like the other values);
 	// SkyShaders::UpdateConstants applies it to the skylight's spherical-harmonic coefficients.
 	float		SkylightSaturation = 1.0f;
 
+	// UNOFFICIAL [Shaders.Foliage.Main] (Grass23x00*.vso, STLEAF00*.vso): backlit translucency. UpdateSettings reads it and
+	// UpdateConstants copies it to Constants.Translucency every frame. Off by default.
+	struct FoliageSettingsStruct {
+		float Translucency = 0.0f;
+		float Power = 4.0f;
+		float SunGate = 4.0f;
+	};
+	FoliageSettingsStruct	FoliageSettings;
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
-};
+};

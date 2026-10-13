@@ -26,6 +26,14 @@ public:
 		D3DXVECTOR4		Night;           // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 		D3DXVECTOR4		NightScatter;    // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
 		D3DXVECTOR4		NightTint;       // xyz: multiplicative night fog color tint, w: NightAmbientStrength
+		// Custom build: the fog from before the rewrite, for old presets ([Shaders.VolumetricFog.Main] LegacyFog).
+		D3DXVECTOR4		Legacy;          // x: 1 = legacy fog (C++ only: picks the *Legacy techniques)
+		D3DXVECTOR4		LegacyLow;       // x: FogSaturation, y: WeatherImpact, z: DistantFogRange, w: SunPower
+		D3DXVECTOR4		LegacyHigh;      // x: HeightFogDensity, y: HeightFogFalloff, z: HeightFogDist, w: HeightFogSkyColor
+		D3DXVECTOR4		LegacySimple;    // x: Extinction, y: Inscattering, z: FogNight, w: SimpleFogSkyColor
+		D3DXVECTOR4		LegacyBlend;     // x: DistantFogBlend, y: HeightFogBlend, z: HeightFogRolloff, w: SimpleFogBlend
+		D3DXVECTOR4		LegacyHeight;    // x: DistantFogHeight, y: HeightFogHeight, z: SimpleFogHeight, w: isExterior
+		D3DXVECTOR4		LegacyData;      // x: MinimumBaseFog, y: HeightFogSaturation, z: Amount, w: HeightFogInscattering
 		Animator		WeatherFilterAnimator;
 	};
 	VolumetricFogStruct	Constants;
@@ -33,6 +41,7 @@ public:
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
+	void	UpdateLegacySettings(const char* SettingCategory);
 	bool	ShouldRender();
 
 	// cached from UpdateSettings, consumed by UpdateConstants to drive WeatherFilterAnimator
@@ -47,6 +56,13 @@ public:
 	bool	dedicatedFogFailed = false;
 	// UNOFFICIAL: technique and parameter handles, looked up once per loaded effect (EffectRecord::CachedHandle).
 	CachedHandle techCompositeFog, techDedicatedFog, techApplyShadowAO, techPackedFog, paramCompositeFlags, paramCompositeAOTexel, paramFogLayout;
+	// Custom build: the same techniques with the legacy fog, used while LegacyFog is on.
+	CachedHandle techCompositeFogLegacy, techDedicatedFogLegacy, techPackedFogLegacy;
+	bool	IsLegacy() const { return Constants.Legacy.x > 0.5f; }
+	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
+	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
+	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : TechniqueHandle(techPackedFog, "PackedFog"); }
+	UINT	PlainTechniqueIndex(UINT techniqueIndex);
 	// [0]: fog multiply + depth, [1]: fog add -- written together as MRTs by the estimate pass
 	IDirect3DTexture9* fogTexture[2] = {};
 	IDirect3DSurface9* fogSurface[2] = {};

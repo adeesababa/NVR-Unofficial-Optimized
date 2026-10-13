@@ -89,9 +89,42 @@ public:
 	};
 	ParallaxStruct  ParallaxConstants;
 
+	// UNOFFICIAL terrain blending ([Shaders.Terrain.Blending]), ported from Balebandro's Physically-Based-Reloaded fork
+	// (Alejandro Martinez), after Community Shaders' Terrain Blending: where the land covers an object by less than
+	// BlendDistance, the land is dithered away (TerrainTemplate.hlsl), so rocks, walls and props sink softly into the
+	// ground instead of ending in a hard line. Off by default; compiled into the land shaders only when on at startup.
+	struct BlendingSettingsStruct {
+		bool	Enabled;
+		bool	Debug;
+		float	BlendDistance;
+		float	MaxDistance;
+	};
+	BlendingSettingsStruct BlendingSettings = {};
+
+	struct BlendingStruct {
+		D3DXVECTOR4		Data;		// x: on for this draw, y: 1 / blend distance, z: max distance, w: debug view
+		D3DXVECTOR4		Extra;		// xy: 1 / resolution, z: dither frame (moves only while TAA runs)
+	};
+	BlendingStruct	BlendingConstants = {};
+
 	bool			usePBR;
 
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
+
+	// Terrain blending. Begin/End bracket the game's world scene (RenderWorldSceneGraphHook): the first land shader bound
+	// in between copies the depth drawn so far -- the objects the land will cover -- and every land draw of that scene
+	// compares against it. PrepareBlending runs from ShaderRecord::SetCT for the land shaders, before their constants go up.
+	static void	BeginWorldScene();
+	static void	EndWorldScene();
+	void	PrepareBlending();
+	// Diagnostic: game passes bound in the world scene before its first land draw (SetShadersHook). The blend only sees the
+	// objects drawn before the land, so the log line at the first copy says whether there were any.
+	static void	NoteWorldBind() { if (BlendDepthState == 1) BindsBeforeCopy++; }
+
+private:
+	static inline int					BlendDepthState = 0;		// 0 outside the world scene, 1 copy still to take, 2 taken
+	static inline IDirect3DSurface9*	BlendWorldDepth = nullptr;	// depth surface bound as the world scene starts (compared only)
+	static inline unsigned				BindsBeforeCopy = 0;
 };

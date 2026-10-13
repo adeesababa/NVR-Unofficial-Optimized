@@ -5,6 +5,10 @@
 // 2560x1440 on full-screen draws.
 //  - terrain: TerrainTemplate.hlsl, TEX_COUNT 1-7, several parallax settings (roadmap 3C).
 //  - objects: ObjectTemplate.hlsl's multi-light pixel shaders SLS2029-2036 with 0-6 lights in use (roadmap 3J).
+//  - skin: SKIN2000/2001/2002/2003/2006, the hand-written skin pixel shaders (Includes\Skin.hlsl): PerPixelDiffusion 0 identical, 1 changes (UNOFFICIAL).
+//  - terrainblend (only when named): terrain blending in the NEW folder's TerrainTemplate (TERRAIN_BLEND), against the same
+//    file compiled without it: compiles everywhere, about half dithered away 5 units deep in a 10-unit band, the debug view
+//    never discards; GPU time off vs on (UNOFFICIAL).
 // Usage: build\shader-test\game_shaders.exe <old Shaders folder> <new Shaders folder> [terrain|objects]
 //        game_shaders.exe --asm-template <template file> <ps_3_0|vs_3_0> <output file> [NAME=VALUE ...]
 // tools\test-game-shaders.ps1 extracts the old folder from git HEAD and runs it.
@@ -38,10 +42,16 @@ static ComPtr<ID3DXBuffer> Compile(const std::string& file, const char* profile,
 	unsigned* slots = nullptr, std::string* disassembly = nullptr) {
 	std::vector<D3DXMACRO> macros;
 	for (const auto& d : defines) macros.push_back({ d.first.c_str(), d.second.c_str() });
-	macros.push_back({ "REVERSED_DEPTH", "" });
-	macros.push_back({ "FORWARD_SHADOWS", forwardShadows ? "1" : "0" });
-	macros.push_back({ "SKYLIGHTING_MODE", "0" });
-	macros.push_back({ "SHADOW_FIXED_MODE", "2" });
+	// The fixed defines, as ShaderRecord::LoadShader sets them. A define the caller gave (NAME=VALUE on --asm-template, or
+	// INTERIOR_SHADOWS / FORWARD_SHADOWS in a test) replaces the fixed one, as the game's AppendDefine does.
+	auto fixed = [&macros, &defines](const char* name, const char* value) {
+		for (const auto& d : defines) if (d.first == name) return;
+		macros.push_back({ name, value });
+	};
+	fixed("REVERSED_DEPTH", "");
+	fixed("FORWARD_SHADOWS", forwardShadows ? "1" : "0");
+	fixed("SKYLIGHTING_MODE", "0");
+	fixed("SHADOW_FIXED_MODE", "2");
 	macros.push_back({ NULL, NULL });
 	ComPtr<ID3DXBuffer> source, errors, code;
 	HRESULT hr = D3DXPreprocessShaderFromFileA(file.c_str(), macros.data(), NULL, &source, &errors);
@@ -232,6 +242,7 @@ static void CommonConstants(Constants& k) {
 	k.Set(103, 0, 0, 1, -TestProjectionA / TestProjectionB);
 	for (int r = 0; r < 4; r++) { k.Set(104 + r, 0, 0, 0, 0); k.c[(104 + r) * 4 + r] = 1; }
 	for (int i = 0; i < 9; i++) k.Set(137 + i, 0.3f / (i + 1), 0.25f / (i + 1), 0.35f / (i + 1), 0);  // sky irradiance
+	k.Set(136, 0, 0, 0, 0);                                                    // UNOFFICIAL TESR_SharpSky (c136): off, the plain sky
 }
 
 // waterline: TESR_TerrainParallaxExtraData.w, the camera-relative height below which CheapUnderwaterTerrain treats the
@@ -721,6 +732,19 @@ static int TestMetal(Gpu& gpu, const std::string& oldFolder, const std::string& 
 		if (same.nan || changed.nan) { printf("FAIL: NaN pixels\n"); failures++; }
 		if (v.metal && ChangedShare(a, on) < 0.05) { printf("FAIL: metal on barely changes the test scene\n"); failures++; }
 		if (!v.metal && changed.different) { printf("FAIL: metal on changes a variant without the metal code\n"); failures++; }
+		// UNOFFICIAL SharpSky (SkyAmbient.hlsl): the metal's sky along the reflected direction, sharper. Off (c136 0, above) is the
+		// plain sky. On changes the metal of the variants with a sky term (LIGHTS < 4; the LIGHTS >= 4 ones pass none) and nothing
+		// else, and makes no NaNs.
+		k.Set(136, 1, 0, 0, 0);
+		k.Apply(device);
+		const std::vector<float> sharpened = Render(gpu, newShader, scene);
+		k.Set(136, 0, 0, 0, 0);
+		k.Apply(device);
+		const Comparison sharp = Compare(on, sharpened);
+		printf("  %-30s SharpSky on: %.0f%% of pixels change, NaN %zu\n", v.name, 100.0 * ChangedShare(on, sharpened), sharp.nan);
+		if (sharp.nan) { printf("FAIL: NaN pixels with SharpSky on\n"); failures++; }
+		if (v.metal && !v.maxLights && ChangedShare(on, sharpened) < 0.05) { printf("FAIL: SharpSky on barely changes the metal\n"); failures++; }
+		if ((!v.metal || v.maxLights) && sharp.different) { printf("FAIL: SharpSky changes a variant with no sky term in its metal\n"); failures++; }
 		if (v.metal) {
 			// The distance fade (TESR_PBRExtraData.w, Object.hlsl getMetalFade; the scene is 150-450 units away): wholly short
 			// of it, metal on as without the fade; wholly beyond it, metal off (to rounding: the metal code with no metal
@@ -745,6 +769,67 @@ static int TestMetal(Gpu& gpu, const std::string& oldFolder, const std::string& 
 		k.Apply(device);
 		const std::string labelOn = std::string(v.name) + ", metal on";
 		TimeOldNew(gpu, labelOn.c_str(), oldShader, newShader, scene);
+	}
+	return failures;
+}
+
+// ---- Material rules (UNOFFICIAL): ObjectTemplate compiled with MATERIAL_RULES_ON (Object.hlsl, c197-c199) ----
+// With the rules compiled in, an object without a rule (c197.x 0) must look exactly as the old shader, metal off and on; a
+// rule must change the lit variants (roughness for every one; metal for the SPECULAR ones), and nothing may make NaNs.
+static int TestMaterialRules(Gpu& gpu, const std::string& oldFolder, const std::string& newFolder) {
+	int failures = 0;
+	const std::string oldFile = oldFolder + "\\ObjectTemplate.hlsl", newFile = newFolder + "\\ObjectTemplate.hlsl";
+	struct Variant { const char* name; Defines defines; bool opt, metal; int maxLights; };
+	const Variant variants[] = {
+		{ "SLS2017 (SPECULAR)", { { "PS", "" }, { "SPECULAR", "" } }, false, true },
+		{ "SLS2020 (SPECULAR, PROJ_SHADOW)", { { "PS", "" }, { "SPECULAR", "" }, { "PROJ_SHADOW", "" } }, false, true },
+		{ "SLS2000 (no specular)", { { "PS", "" } }, false, false },
+		{ "SLS2001 (OPT)", { { "PS", "" }, { "OPT", "" } }, true, false },
+		{ "SLS2034 (LIGHTS 4, SPECULAR)", { { "PS", "" }, { "LIGHTS", "4" }, { "SPECULAR", "" } }, false, true, 3 },
+		{ "SLS2035 (LIGHTS 4, SPECULAR, OPT)", { { "PS", "" }, { "LIGHTS", "4" }, { "SPECULAR", "" }, { "OPT", "" } }, true, true, 3 },
+	};
+	IDirect3DDevice9* device = gpu.device.Get();
+	Check(device->SetVertexShader(gpu.objectVS.Get()), "SetVertexShader");
+	BindTextures(gpu, false);
+	const Scene smallScene = SmallObjectScene();
+	std::puts("MATERIAL RULES (ObjectTemplate, MATERIAL_RULES_ON 1): no rule must be bit-identical to the old shader; rules change it, no NaNs:");
+	for (const Variant& v : variants) {
+		const Scene scene = v.maxLights ? ObjectScene(v.maxLights) : smallScene;
+		Defines rulesOn = v.defines;
+		rulesOn.push_back({ "MATERIAL_RULES_ON", "1" });
+		ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
+		IDirect3DPixelShader9* oldShader = CreatePS(device, Compile(oldFile, "ps_3_0", v.defines, 0).Get(), oldHolder);
+		IDirect3DPixelShader9* newShader = CreatePS(device, Compile(newFile, "ps_3_0", rulesOn, 0).Get(), newHolder);
+		Constants k = ObjectConstants(v.maxLights ? (float)v.maxLights : 1.0f, v.opt);
+		k.Set(36, 0.5f, 0.25f, 1, 0);
+		k.Set(197, 0, 0, 0, 1); k.Set(198, -1, -1, 0, 0); k.Set(199, 0, 0, 0, 0);	// no rule (PBR.h defaults)
+		size_t worst = 0;
+		for (int metal = 0; metal < 2; metal++) {
+			k.Set(34, (float)metal, 0.6f, 0.25f, 0.55f);
+			k.Apply(device);
+			const Comparison same = Compare(Render(gpu, oldShader, scene), Render(gpu, newShader, scene));
+			worst = (std::max)(worst, same.different);
+		}
+		k.Set(34, 0, 0.6f, 0.25f, 0.55f);
+		k.Apply(device);
+		const std::vector<float> base = Render(gpu, newShader, scene);
+		k.Set(197, 1, 0, 0, 1); k.Set(198, 0.75f, 1.0f, 0, 0); k.Apply(device);		// "rock": never metal, rough
+		const std::vector<float> rough = Render(gpu, newShader, scene);
+		k.Set(197, 1, 1, 2, 1); k.Set(198, 0.05f, 0.2f, 0, 0); k.Apply(device);		// "chrome": all metal, polished
+		const std::vector<float> chrome = Render(gpu, newShader, scene);
+		k.Set(197, 1, 0, 0, 1); k.Set(198, -1, -1, 1, 0); k.Set(199, 1, 0, 0, 0); k.Apply(device);	// DebugView
+		const std::vector<float> debug = Render(gpu, newShader, scene);
+		k.Set(197, 0, 0, 0, 1); k.Set(198, -1, -1, 0, 0); k.Set(199, 0, 0, 0, 0); k.Apply(device);
+		const Comparison r = Compare(base, rough), c = Compare(base, chrome), d = Compare(base, debug);
+		printf("  %-34s no rule: %s (%zu pixels differ) | rough rule %.0f%% | chrome rule %.0f%% | DebugView %.0f%% of pixels change, NaN %zu\n",
+			v.name, worst ? "DIFFERENT" : "identical", worst, 100.0 * ChangedShare(base, rough), 100.0 * ChangedShare(base, chrome),
+			100.0 * ChangedShare(base, debug), r.nan + c.nan + d.nan);
+		if (worst) failures++;
+		if (r.nan || c.nan || d.nan) { printf("FAIL: NaN pixels\n"); failures++; }
+		if (ChangedShare(base, debug) < 0.5) { printf("FAIL: DebugView does not tint the picture\n"); failures++; }
+		if (v.metal && ChangedShare(base, chrome) < 0.05) { printf("FAIL: the chrome rule barely changes a metal variant\n"); failures++; }
+		if (v.metal && ChangedShare(base, rough) < 0.05) { printf("FAIL: the rough rule barely changes a lit variant\n"); failures++; }
+		TimeOldNew(gpu, (std::string(v.name) + ", rules compiled in, no rule").c_str(), oldShader, newShader, scene);
 	}
 	return failures;
 }
@@ -851,11 +936,8 @@ static double MeanLuma(const std::vector<float>& a) {
 	return s / (a.size() / 4);
 }
 
-static int TestEnv(Gpu& gpu, const std::string& newFolder, const std::string& vanillaFolder) {
-	int failures = 0;
-	IDirect3DDevice9* device = gpu.device.Get();
-	const std::string file = newFolder + "\\EnvTemplate.hlsl";
-	// The cube map: a bright sky, dark ground, coloured sides.
+// The environment-map test cube: a bright sky, dark ground, coloured sides.
+static ComPtr<IDirect3DCubeTexture9> MakeEnvCube(IDirect3DDevice9* device) {
 	ComPtr<IDirect3DCubeTexture9> cube;
 	Check(device->CreateCubeTexture(64, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube, NULL), "CreateCubeTexture");
 	for (int face = 0; face < 6; face++) {
@@ -869,6 +951,15 @@ static int TestEnv(Gpu& gpu, const std::string& newFolder, const std::string& va
 		cube->UnlockRect((D3DCUBEMAP_FACES)face, 0);
 	}
 	Check(D3DXFilterTexture(cube.Get(), NULL, 0, D3DX_FILTER_BOX), "filter cube");
+	return cube;
+}
+
+static int TestEnv(Gpu& gpu, const std::string& newFolder, const std::string& vanillaFolder) {
+	int failures = 0;
+	IDirect3DDevice9* device = gpu.device.Get();
+	const std::string file = newFolder + "\\EnvTemplate.hlsl";
+	// The cube map: a bright sky, dark ground, coloured sides.
+	ComPtr<IDirect3DCubeTexture9> cube = MakeEnvCube(device);
 	for (int k = 0; k < 16; k++) device->SetTexture(k, nullptr);
 	device->SetTexture(0, gpu.textures[7].Get());   // NormalMap (alpha: the mask)
 	device->SetTexture(1, cube.Get());              // EnvironmentCubeMap
@@ -1143,6 +1234,270 @@ static int TestParallaxObjects(Gpu& gpu, const std::string& oldFolder, const std
 }
 
 
+// ---- Environment maps, SharpSky (UNOFFICIAL): EnvTemplate.hlsl, the old folder against the new one. No game files needed. ----
+static int TestEnvSharp(Gpu& gpu, const std::string& oldFolder, const std::string& newFolder) {
+	int failures = 0;
+	IDirect3DDevice9* device = gpu.device.Get();
+	const std::string oldFile = oldFolder + "\\EnvTemplate.hlsl", newFile = newFolder + "\\EnvTemplate.hlsl";
+	ComPtr<IDirect3DCubeTexture9> cube = MakeEnvCube(device);
+	for (int t = 0; t < 16; t++) device->SetTexture(t, nullptr);
+	device->SetTexture(0, gpu.textures[7].Get());   // NormalMap (alpha: the mask)
+	device->SetTexture(1, cube.Get());              // EnvironmentCubeMap
+	device->SetTexture(3, gpu.textures[1].Get());   // CustomEnvMask
+	ComPtr<IDirect3DVertexShader9> vs3;
+	Check(device->CreateVertexShader((const DWORD*)CompileText(PassThroughVS, "vs_3_0")->GetBufferPointer(), &vs3), "vs3");
+	Check(device->SetVertexShader(vs3.Get()), "set vs3");
+	const Scene pixelScene = EnvPixelScene();
+	std::puts("ENV MAPS SharpSky (EnvTemplate.hlsl, old folder vs new): off must match the old shader, on must change the reflection, no NaNs:");
+	struct PsVariant { const char* name; Defines defines; };
+	const PsVariant psVariants[] = { { "SLS2057", { { "PS", "" } } }, { "SLS2058", { { "PS", "" }, { "NEGATE_VIEW", "" } } } };
+	for (const PsVariant& v : psVariants) {
+		ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
+		IDirect3DPixelShader9* before = CreatePS(device, CompileSource(oldFile, "ps_3_0", v.defines).Get(), oldHolder);
+		IDirect3DPixelShader9* after = CreatePS(device, CompileSource(newFile, "ps_3_0", v.defines).Get(), newHolder);
+		Constants k;
+		CommonConstants(k);                        // TESR_SharpSky (c136) off
+		k.Set(1, 0.30f, 0.32f, 0.36f, 0.9f);     // AmbientColor
+		k.Set(27, 1, 0, 1.5f, 0.35f);            // EnvToggles: vertex colour, -, strength, custom mask share
+		k.Set(32, 0, 1, 1, 0.5f);                // TESR_PBRData: ambient scale
+		k.Set(33, 1, 0.5f, 0.5f, 0);             // TESR_PBRExtraData: skylight scale
+		k.Set(34, 0, 0.6f, 0.25f, 0.55f);        // TESR_PBRMetal: off
+		k.Set(35, 1, 1.5f, 0.5f, 0);             // TESR_PBREnv: Lighting 1, so the sky term is in use
+		k.Apply(device);
+		const std::vector<float> a = Render(gpu, before, pixelScene);
+		const Comparison off = Compare(a, Render(gpu, after, pixelScene));
+		k.Set(136, 1, 0, 0, 0);                  // TESR_SharpSky: on
+		k.Apply(device);
+		const std::vector<float> sharpened = Render(gpu, after, pixelScene);
+		const Comparison on = Compare(a, sharpened);
+		printf("  %s: off vs old: %zu pixels differ (worst %g) | on: %.0f%% of pixels change, mean %.4f -> %.4f, NaN %zu\n", v.name, off.different, off.worst,
+			100.0 * ChangedShare(a, sharpened), MeanLuma(a), MeanLuma(sharpened), on.nan);
+		if (off.different) { printf("FAIL: %s changes with SharpSky off\n", v.name); failures++; }
+		if (on.nan || off.nan) { printf("FAIL: NaN pixels\n"); failures++; }
+		if (ChangedShare(a, sharpened) < 0.05) { printf("FAIL: SharpSky on barely changes the reflection\n"); failures++; }
+	}
+	return failures;
+}
+
+// ---- Skin (UNOFFICIAL): SKIN2000/2001/2002/2003/2006, the hand-written skin pixel shaders and their sun term (Includes\Skin.hlsl).
+// They read what the object vertex shader passes through: sun, point light and eye directions in tangent space (unit length),
+// attenuation UVs, and shadowWorldPos with a sentinel w (0.1-0.9 here, never 1, so no forward sun shadow is applied; the
+// shadowed code is still compiled and must match). ----
+static void UnitDirection(float out[3]) {
+	const float v[3] = { Random() * 2 - 1, Random() * 2 - 1, Random() * 2 - 1 };
+	const float length = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) + 1e-6f;
+	for (int k = 0; k < 3; k++) out[k] = v[k] / length;
+}
+
+static Scene SkinScene() {
+	Scene scene;
+	for (int j = 0; j < Grid; j++)
+		for (int i = 0; i < Grid; i++) {
+			const float sx = i / float(Grid - 1), sy = j / float(Grid - 1);
+			Vertex v = {};
+			float sun[3], point1[3], point2[3], eye[3];
+			UnitDirection(sun); UnitDirection(point1); UnitDirection(point2); UnitDirection(eye);
+			Set(v, 0, sx * 2 - 1, 1 - sy * 2, 0.5f, 1);
+			Set(v, 1, sx * 5, sy * 5, 0, 0);                                                                // TEXCOORD0 uv
+			Set(v, 2, sun[0], sun[1], sun[2], 0);                                                           // TEXCOORD1 sun direction
+			Set(v, 3, point1[0], point1[1], point1[2], 0);                                                  // TEXCOORD2 point light 1 direction
+			Set(v, 4, point2[0], point2[1], point2[2], 0);                                                  // TEXCOORD3 point light 2 direction (SKIN2002: shadowWorldPos)
+			Set(v, 5, 0.1f + 0.8f * sx, 0.1f + 0.8f * sy, 0.1f + 0.8f * (1 - sx), 0.1f + 0.8f * (1 - sy));  // TEXCOORD4 attenuation UVs (SKIN2000/2001: shadowWorldPos)
+			Set(v, 6, 0.1f + 0.8f * (1 - sy), 0.1f + 0.8f * sx, 0.1f + 0.8f * sy, 0.1f + 0.8f * (1 - sx));  // TEXCOORD5 attenuation UVs (SKIN2006)
+			Set(v, 7, eye[0], eye[1], eye[2], 0);                                                           // TEXCOORD6 eye direction (SKIN2006: shadowWorldPos)
+			Set(v, 8, eye[0], eye[1], eye[2], 0);                                                           // TEXCOORD7 eye direction (SKIN2006)
+			Set(v, 9, 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 0.6f + 0.4f * Random(), 1);            // COLOR0 vertex colour
+			Set(v, 10, 0.5f, 0.55f, 0.6f, 0.1f + 0.3f * Random());                                          // COLOR1 fog colour and amount
+			scene.vertices.push_back(v);
+		}
+	GridIndices(scene);
+	return scene;
+}
+
+// Skin: base map s0, normal map s1, face-gen maps s2/s3, glow and attenuation maps s4/s5. s6 and s7 are shadow maps the
+// pixel shaders declare but do not sample; the shadow atlas (s9) stays unbound.
+static void BindSkinTextures(Gpu& gpu) {
+	const int textures[8] = { 0, 7, 2, 3, 4, 5, 6, 1 };
+	for (int k = 0; k < 14; k++) Check(gpu.device->SetTexture(k, k < 8 ? gpu.textures[textures[k]].Get() : nullptr), "SetTexture");
+}
+
+// The registers the skin shaders read. Sun at c3 (PSLightColor[0] or [1]), points at c4 and c5, TESR_SkinDiffusion at c169.
+static Constants SkinConstants(float diffusion, float translucency) {
+	Constants k;
+	CommonConstants(k);
+	k.Set(1, 0.15f, 0.15f, 0.18f, 1);                      // AmbientColor (.a 1: no alpha test)
+	k.Set(3, 1.0f, 0.9f, 0.75f, 1);                        // sun
+	k.Set(4, 0.35f, 0.6f, 1.0f, 1);                        // point light 1
+	k.Set(5, 1.0f, 0.35f, 0.2f, 1);                        // point light 2
+	k.Set(27, 1, 1, 0, 0.5f);                              // Toggles: vertex colour, fog, specularity, alpha ref
+	k.Set(134, 0, 0, 1, 1);                                // TESR_PBRData: light scale 1, ambient scale 1
+	k.Set(135, 1, 0.5f, 0.5f, 0);                          // TESR_PBRExtraData: skylight scale, directionality
+	k.Set(169, diffusion, translucency, 0, 0);             // TESR_SkinDiffusion: x PerPixelDiffusion, y Translucency
+	return k;
+}
+
+static int TestSkin(Gpu& gpu, const std::string& oldFolder, const std::string& newFolder) {
+	int failures = 0;
+	IDirect3DDevice9* device = gpu.device.Get();
+	struct Variant { const char* name; const char* file; Defines defines; bool interior; };
+	const Variant variants[] = {
+		{ "SKIN2000", "SKIN2000.pso.hlsl", {}, false },
+		{ "SKIN2001", "SKIN2001.pso.hlsl", {}, false },
+		{ "SKIN2002", "SKIN2002.pso.hlsl", {}, false },
+		{ "SKIN2003", "SKIN2003.pso.hlsl", {}, false },
+		{ "SKIN2006", "SKIN2006.pso.hlsl", {}, false },
+		// Interior builds of the two that take point-light shadows (ShaderManager: INTERIOR_SHADOWS, no forward sun shadow).
+		{ "SKIN2002 interior", "SKIN2002.pso.hlsl", { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" } }, true },
+		{ "SKIN2006 interior", "SKIN2006.pso.hlsl", { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" } }, true },
+	};
+	Check(device->SetVertexShader(gpu.objectVS.Get()), "SetVertexShader");
+	BindSkinTextures(gpu);
+	std::puts("SKIN pixels, 1024x1024 float target: PerPixelDiffusion 0 must be bit-identical to the old shader, 1 must change the scene, no NaNs:");
+	for (const Variant& v : variants)
+		for (int forwardShadows = 0; forwardShadows <= (v.interior ? 0 : 1); forwardShadows++) {
+			const std::string oldFile = oldFolder + "\\" + v.file, newFile = newFolder + "\\" + v.file;
+			ComPtr<IDirect3DPixelShader9> oldHolder, newHolder;
+			IDirect3DPixelShader9* oldShader = CreatePS(device, Compile(oldFile, "ps_3_0", v.defines, forwardShadows).Get(), oldHolder);
+			IDirect3DPixelShader9* newShader = CreatePS(device, Compile(newFile, "ps_3_0", v.defines, forwardShadows).Get(), newHolder);
+			const Scene scene = SkinScene();
+			SkinConstants(0, 0).Apply(device);
+			const std::vector<float> reference = Render(gpu, oldShader, scene);
+			const Comparison off = Compare(reference, Render(gpu, newShader, scene));
+			SkinConstants(1, 0.5f).Apply(device);
+			const std::vector<float> on = Render(gpu, newShader, scene);
+			const Comparison onResult = Compare(reference, on);
+			const double changed = ChangedShare(reference, on);
+			printf("  %-18s forward shadows %d: off %s (%zu pixels differ, largest %.3g); on: %.1f%% of pixels change\n",
+				v.name, forwardShadows, off.different ? "DIFFERENT" : "identical", off.different, off.worst, 100 * changed);
+			if (off.different) failures++;
+			if (off.nan || onResult.nan) { printf("FAIL: %s, forward shadows %d: NaN pixels\n", v.name, forwardShadows); failures++; }
+			if (changed < 0.05) { printf("FAIL: %s, forward shadows %d: the diffusion barely changes the test scene\n", v.name, forwardShadows); failures++; }
+		}
+	return failures;
+}
+
+// UNOFFICIAL terrain blending (TerrainTemplate.hlsl TERRAIN_BLEND, [Shaders.Terrain.Blending]). The "scene depth" the land
+// compares against is made by drawing the same land with a pixel shader that writes the reversed depth of a point
+// `behind` units further along the view ray: 0 = nothing behind (the sky, depth 0), else an object that close behind.
+static ComPtr<IDirect3DTexture9> BlendDepthTexture(Gpu& gpu, const Scene& scene, UINT width, UINT height, float behind) {
+	IDirect3DDevice9* device = gpu.device.Get();
+	ComPtr<IDirect3DTexture9> texture;
+	Check(device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &texture, NULL), "blend depth texture");
+	ComPtr<IDirect3DSurface9> surface, previous;
+	Check(texture->GetSurfaceLevel(0, &surface), "blend depth surface");
+	Check(device->GetRenderTarget(0, &previous), "GetRenderTarget");
+	Check(device->SetRenderTarget(0, surface.Get()), "SetRenderTarget blend depth");
+	D3DVIEWPORT9 viewport = { 0, 0, width, height, 0, 1 };
+	Check(device->SetViewport(&viewport), "SetViewport blend depth");
+	Check(device->Clear(0, NULL, D3DCLEAR_TARGET, 0, 1, 0), "Clear blend depth");
+	if (behind > 0) {
+		char source[512];
+		sprintf_s(source, "float4 main(float4 proj : TEXCOORD6) : COLOR0 { float w = proj.w + %.6f; return (%.9g * w + %.9g) / w; }",
+			behind, TestProjectionA, TestProjectionB);
+		ComPtr<ID3DXBuffer> code, errors;
+		Check(D3DXCompileShader(source, (UINT)strlen(source), NULL, NULL, "main", "ps_3_0", 0, &code, &errors, NULL), "compile blend depth shader");
+		ComPtr<IDirect3DPixelShader9> holder;
+		Check(device->BeginScene(), "BeginScene");
+		Draw(device, CreatePS(device, code.Get(), holder), scene);
+		Check(device->EndScene(), "EndScene");
+	}
+	Check(device->SetRenderTarget(0, previous.Get()), "SetRenderTarget restore");
+	return texture;
+}
+
+static size_t ClearedPixels(const std::vector<float>& pixels) {
+	size_t cleared = 0;
+	for (size_t p = 0; p < pixels.size(); p += 4) if (pixels[p] == 0 && pixels[p + 1] == 0 && pixels[p + 2] == 0 && pixels[p + 3] == 0) cleared++;
+	return cleared;
+}
+
+static int TestTerrainBlend(Gpu& gpu, const std::string& newFolder) {
+	int failures = 0;
+	const std::string file = newFolder + "\\TerrainTemplate.hlsl";
+	auto defines = [](int texCount, const char* lights, bool blend) {
+		Defines d = { { "PS", "" }, { "TEX_COUNT", std::to_string(texCount) } };
+		if (lights) d.push_back({ "NUM_PT_LIGHTS", lights });
+		if (blend) d.push_back({ "TERRAIN_BLEND", "1" });
+		return d;
+	};
+	std::puts("TERRAIN BLEND instruction slots, off -> compiled in (forward shadows):");
+	for (int texCount = 1; texCount <= 7; texCount++) {
+		unsigned off, on;
+		Compile(file, "ps_3_0", defines(texCount, NULL, false), 1, &off);
+		Compile(file, "ps_3_0", defines(texCount, NULL, true), 1, &on);
+		Compile(file, "ps_3_0", defines(texCount, "24", true), 1);
+		printf("  TEX_COUNT %d: %u -> %u\n", texCount, off, on);
+	}
+	IDirect3DDevice9* device = gpu.device.Get();
+	Check(device->SetVertexShader(gpu.terrainVS.Get()), "SetVertexShader");
+	BindTextures(gpu, true);
+	device->SetSamplerState(15, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+	device->SetSamplerState(15, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+	device->SetSamplerState(15, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+	device->SetSamplerState(15, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+	device->SetSamplerState(15, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+	const float parallax[4] = { 1, 1, 1, 1 };
+	// on: TESR_TerrainBlendData.x; debug: .w. Blend distance 10, max distance 4096; 1 / resolution; dither frame 0.
+	auto constants = [&](float on, float debug, UINT width, UINT height) {
+		Constants k = TerrainConstants(parallax);
+		k.Set(176, on, 1.0f / 10.0f, 4096.0f, debug);
+		k.Set(177, 1.0f / width, 1.0f / height, 0, 0);
+		k.Apply(device);
+	};
+	std::puts("TERRAIN BLEND pixels, 1024x1024 float target (against the same file without TERRAIN_BLEND):");
+	for (int texCount = 1; texCount <= 7; texCount += 3) {
+		ComPtr<IDirect3DPixelShader9> offHolder, onHolder;
+		IDirect3DPixelShader9* offShader = CreatePS(device, Compile(file, "ps_3_0", defines(texCount, NULL, false), 0).Get(), offHolder);
+		IDirect3DPixelShader9* onShader = CreatePS(device, Compile(file, "ps_3_0", defines(texCount, NULL, true), 0).Get(), onHolder);
+		const Scene scene = TerrainScene(texCount);
+		ComPtr<IDirect3DTexture9> sky = BlendDepthTexture(gpu, scene, Gpu::Size, Gpu::Size, 0);
+		ComPtr<IDirect3DTexture9> near5 = BlendDepthTexture(gpu, scene, Gpu::Size, Gpu::Size, 5);
+		ComPtr<IDirect3DTexture9> far50 = BlendDepthTexture(gpu, scene, Gpu::Size, Gpu::Size, 50);
+		constants(0, 0, Gpu::Size, Gpu::Size);
+		const std::vector<float> reference = Render(gpu, offShader, scene);
+		auto report = [&](const char* name, IDirect3DTexture9* depth, float on, float debug, bool mustMatch) {
+			Check(device->SetTexture(15, depth), "SetTexture s15");
+			constants(on, debug, Gpu::Size, Gpu::Size);
+			const std::vector<float> pixels = Render(gpu, onShader, scene);
+			const Comparison result = Compare(reference, pixels);
+			const double gone = ClearedPixels(pixels) / double(Gpu::Size * Gpu::Size);
+			printf("  TEX_COUNT %d, %-46s %s", texCount, name, result.different ? "different" : "identical");
+			if (result.different) printf(" (%.1f%% of pixels, largest %.3g)", 100.0 * result.different / (Gpu::Size * Gpu::Size), result.worst);
+			printf(", dithered away %.1f%%\n", 100 * gone);
+			if (mustMatch && result.different) { std::puts("FAIL: expected identical"); failures++; }
+			if (result.nan) { printf("FAIL: %zu NaN pixels\n", result.nan); failures++; }
+			return gone;
+		};
+		report("compiled in, off (Data.x 0)", sky.Get(), 0, 0, false);
+		report("on, nothing behind the land (sky)", sky.Get(), 1, 0, false);
+		report("on, objects 50 units behind (> BlendDistance)", far50.Get(), 1, 0, false);
+		const double half = report("on, objects 5 units behind (half the band)", near5.Get(), 1, 0, false);
+		if (half < 0.35 || half > 0.65) { std::puts("FAIL: about half the land should dither away 5 units over an object"); failures++; }
+		const double debugGone = report("debug view, objects 5 units behind", near5.Get(), 1, 1, false);
+		if (debugGone > 0) { std::puts("FAIL: the debug view must not discard"); failures++; }
+	}
+	std::puts("TERRAIN BLEND GPU time per full-screen draw at 2560x1440 (A16B16G16R16F), forward shadows compiled in:");
+	for (int texCount = 1; texCount <= 7; texCount += 3) {
+		ComPtr<IDirect3DPixelShader9> offHolder, onHolder;
+		IDirect3DPixelShader9* offShader = CreatePS(device, Compile(file, "ps_3_0", defines(texCount, NULL, false), 1).Get(), offHolder);
+		IDirect3DPixelShader9* onShader = CreatePS(device, Compile(file, "ps_3_0", defines(texCount, NULL, true), 1).Get(), onHolder);
+		const Scene scene = TerrainScene(texCount);
+		ComPtr<IDirect3DTexture9> sky = BlendDepthTexture(gpu, scene, 2560, 1440, 0);
+		ComPtr<IDirect3DTexture9> near5 = BlendDepthTexture(gpu, scene, 2560, 1440, 5);
+		const std::string label = "TEX_COUNT " + std::to_string(texCount);
+		Check(device->SetTexture(15, sky.Get()), "SetTexture s15");
+		constants(0, 0, 2560, 1440);
+		TimeOldNew(gpu, (label + ", not compiled vs compiled, off").c_str(), offShader, onShader, scene);
+		constants(1, 0, 2560, 1440);
+		TimeOldNew(gpu, (label + ", not compiled vs on, sky behind").c_str(), offShader, onShader, scene);
+		Check(device->SetTexture(15, near5.Get()), "SetTexture s15");
+		TimeOldNew(gpu, (label + ", not compiled vs on, all in band").c_str(), offShader, onShader, scene);
+	}
+	Check(device->SetTexture(15, nullptr), "SetTexture s15");
+	return failures;
+}
+
+
 int main(int argc, char** argv) {
 	try {
 		if (argc >= 5 && strcmp(argv[1], "--asm-template") == 0) {
@@ -1176,6 +1531,10 @@ int main(int argc, char** argv) {
 		if (which.empty() || which == "objects") failures += TestObjects(gpu, argv[1], argv[2]);
 		if (which.empty() || which == "parallax") failures += TestParallaxObjects(gpu, argv[1], argv[2]);
 		if (which.empty() || which == "metal") failures += TestMetal(gpu, argv[1], argv[2]);
+		if (which.empty() || which == "materials") failures += TestMaterialRules(gpu, argv[1], argv[2]);
+		if (which.empty() || which == "envsharp") failures += TestEnvSharp(gpu, argv[1], argv[2]);
+		if (which.empty() || which == "skin") failures += TestSkin(gpu, argv[1], argv[2]);
+		if (which == "terrainblend") failures += TestTerrainBlend(gpu, argv[2]);	// UNOFFICIAL: needs a TerrainTemplate with TERRAIN_BLEND
 		if (failures) { printf("%d game shader check(s) FAILED\n", failures); return 1; }
 		std::puts("All game shader checks passed.");
 		return 0;

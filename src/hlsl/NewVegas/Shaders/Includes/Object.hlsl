@@ -15,8 +15,23 @@
 float4 TESR_PBRData : register(c32);
 float4 TESR_PBRExtraData : register(c33);
 
+// UNOFFICIAL material rules ([Shaders.PBR.MaterialRules], core/MaterialRules.h): the class of the texture being drawn, from
+// the editable table NewVegasReloaded.dll.materials.txt, written by NVR before each object (Render.cpp MaterialRulesDraw).
+// Read only where MATERIAL_RULES is defined (ObjectTemplate). While TESR_MaterialRule.x is 0 (rules off, or no rule for
+// the texture) every function below returns exactly what it did without the rules.
+#ifdef MATERIAL_RULES
+float4 TESR_MaterialRule  : register(c197); // x: 1 a rule applies, y: metal strength (0 = none), z: 2 = all metal (else the guess), w: reflections multiplier
+float4 TESR_MaterialRough : register(c198); // x/y: roughness where the highlight mask is full / bare (x < 0: the global roughness), z: 1 DebugView
+float4 TESR_MaterialTint  : register(c199); // rgb: the class's DebugView colour
+#endif
+
 float getRoughness(float gloss) {
-    return saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
+    float roughness = saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
+    #ifdef MATERIAL_RULES
+        [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
+            roughness = lerp(TESR_MaterialRough.x, TESR_MaterialRough.y, saturate(1.0f - gloss));
+    #endif
+    return roughness;
 }
 
 float getRoughness(float glossmap, float meshgloss){
@@ -168,10 +183,24 @@ float getMetalMask(float specMask) {
     return smoothstep(0.05f, 0.45f, specMask);
 }
 
+// This draw's metal strength: [Shaders.PBR.Metal] for the pass, or the material rule's (0 for a class that is never metal).
+// Uniform over the draw, so the metal branches on it stay cheap.
+float getMetalStrength() {
+    #ifdef MATERIAL_RULES
+        if (TESR_MaterialRule.x > 0.0f) return TESR_MaterialRule.y;
+    #endif
+    return TESR_PBRMetal.x;
+}
+
 float getDerivedMetallic(float specMask, float3 albedo) {
     float peak = max(max(albedo.r, albedo.g), albedo.b);
     float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
     float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
+    #ifdef MATERIAL_RULES
+        // A rule's "full" metal (chrome, brass) is metal whatever its colour; otherwise the guess at the rule's strength.
+        [branch] if (TESR_MaterialRule.x > 0.0f)
+            return TESR_MaterialRule.z > 1.5f ? TESR_MaterialRule.y : saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_MaterialRule.y);
+    #endif
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
 }
 
@@ -183,7 +212,36 @@ float getMetalFade(float3 cameraRelativePos) {
 
 // Metal's roughness: satin where the mask is bare, polished where it is painted (the mask is no gloss map, see above).
 float getMetalRoughness(float specMask) {
+    #ifdef MATERIAL_RULES
+        // A rule's roughness range: its bare end where the mask is bare, its polished end where the mask is painted.
+        [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
+            return lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
+    #endif
     return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
+}
+
+// The metal's reflections of its surroundings, times the rule's (1 without one).
+float getMaterialReflections() {
+    #ifdef MATERIAL_RULES
+        if (TESR_MaterialRule.x > 0.0f) return TESR_MaterialRule.w;
+    #endif
+    return 1.0f;
+}
+
+// [Shaders.PBR.MaterialRules] DebugView: each class in its colour over a dim grey image, textures without a rule grey.
+// Passes that only add lamp light add nothing while it is on.
+float3 MaterialRulesDebug(float3 color, float3 albedo) {
+    #ifdef MATERIAL_RULES
+        [branch] if (TESR_MaterialRough.z > 0.5f) {
+            #ifdef ONLY_LIGHT
+                return 0.0f;
+            #else
+                float dim = luma(albedo) * 0.35f;
+                return TESR_MaterialRule.x > 0.0f ? lerp(dim.xxx, TESR_MaterialTint.rgb, 0.7f) : dim.xxx;
+            #endif
+        }
+    #endif
+    return color;
 }
 
 // The split-sum environment response (scale and bias on F0) for a roughness and N.V: Karis, "Physically Based Shading on
@@ -209,10 +267,35 @@ float3 SkyAmbientElevation(float z) {
     #endif
 }
 
+// UNOFFICIAL SharpSky: the reflected view in world space, for SkyAmbientSharpened. Its bearing is the reflection of the geometric
+// normal (worldPos is camera-relative, so the view ray is its direction); its height is upReflect, so the normal map's bumps still
+// show. The tangent frame carries no world bearing, so a bump does not turn the sky sideways.
+float3 getMetalSkyDirection(float3 worldPos, float3 worldNormal, float upReflect) {
+    float3 r = reflect(normalize(worldPos), worldNormal);
+    float horizontal = length(r.xy);
+    float2 bearing = horizontal > 1e-4f ? r.xy / horizontal : float2(1.0f, 0.0f);
+    return float3(bearing * sqrt(saturate(1.0f - upReflect * upReflect)), upReflect);
+}
+
 // What metal reflects in place of the diffuse light it lacks: the weather ambient and the sky along the reflected view
 // (upReflect: that view's world up component; skyValid 0 when it is unknown), weighted by the split-sum response for
 // the metal's colour (F0) and roughness. getAmbientLighting's terms, with the reflection for the normal.
-float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid) {
-    float3 env = ambient * TESR_PBRData.w + SkyAmbientElevation(upReflect) * SKY_AMBIENT_STRENGTH * skyValid;
-    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z;
+// UNOFFICIAL SharpSky: with it on and the sky known, the sky is taken along the reflected direction (getMetalSkyDirection, from
+// worldPos and the geometric worldNormal), blended from the plain sky. Off, this is the plain sky exactly.
+float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, float upReflect, float skyValid,
+                       float3 worldPos, float3 worldNormal) {
+    float3 sky = SkyAmbientElevation(upReflect);
+    [branch] if (TESR_SharpSky.x > 0.0f && skyValid > 0.0f)
+        sky = SkyAmbientSharpened(getMetalSkyDirection(worldPos, worldNormal, upReflect), sky);
+    float3 env = ambient * TESR_PBRData.w + sky * SKY_AMBIENT_STRENGTH * skyValid;
+    // UNOFFICIAL CubeReflections ([Shaders.PBR.Metal], ObjectTemplate defines NVR_LIVE_CUBE): what the camera saw round it
+    // along the reflected view (includes/LiveCube.hlsl) in place of the ambient and sky, as far as the cube has seen that
+    // direction. Needs the direction, so only where the sky is known (skyValid).
+    #ifdef NVR_LIVE_CUBE
+    [branch] if (TESR_EnvCube.x > 0.0f && skyValid > 0.0f) {
+        float4 live = LiveCube(getMetalSkyDirection(worldPos, worldNormal, upReflect), roughness);
+        env = lerp(env, live.rgb, TESR_EnvCube.x * live.a);
+    }
+    #endif
+    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z * getMaterialReflections();
 }

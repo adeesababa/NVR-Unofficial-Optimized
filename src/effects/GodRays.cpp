@@ -90,7 +90,8 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	DWORD oldScissorEnabled = FALSE;
 	HRESULT result = Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorEnabled);
 	if (SUCCEEDED(result)) result = Device->GetDepthStencilSurface(&depthSurface);
-	if (SUCCEEDED(result)) result = Device->SetDepthStencilSurface(nullptr);
+	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (a single smaller target is legal with it).
+	if (SUCCEEDED(result) && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) result = Device->SetDepthStencilSurface(nullptr);
 	if (FAILED(result)) {
 		if (depthSurface) depthSurface->Release();
 		dedicatedRenderFailed = true;

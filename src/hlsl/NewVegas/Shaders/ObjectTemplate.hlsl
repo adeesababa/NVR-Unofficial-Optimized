@@ -158,6 +158,24 @@
 #endif
 
 #include "includes/Helpers.hlsl"
+// UNOFFICIAL: the live surroundings cube for metal (includes/LiveCube.hlsl), before Object.hlsl, whose getMetalAmbient reads
+// it. Compiled in only when a CubeReflections setting is above 0 at startup (LIVE_CUBE, ShaderRecord::LoadShader), and not with
+// the sun cross-fade, whose old atlas takes the same sampler.
+#ifndef LIVE_CUBE
+    #define LIVE_CUBE 0
+#endif
+#if defined(PS) && LIVE_CUBE && !(defined(SUN_CROSSFADE) && SUN_CROSSFADE)
+    #define NVR_LIVE_CUBE
+    #include "includes/LiveCube.hlsl"
+#endif
+// UNOFFICIAL material rules (Object.hlsl): the per-texture class the pixel shaders read (c197-c199). Compiled in only when
+// [Shaders.PBR.MaterialRules] Enabled is on at startup (MATERIAL_RULES_ON, ShaderRecord::LoadShader).
+#ifndef MATERIAL_RULES_ON
+    #define MATERIAL_RULES_ON 0
+#endif
+#if defined(PS) && MATERIAL_RULES_ON
+    #define MATERIAL_RULES
+#endif
 #include "includes/Object.hlsl"
 // UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
 // shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow
@@ -642,6 +660,10 @@ float4 PSLightColor[10] : register(c3);
     float4 Toggles : register(c27);
 #endif
 
+#if defined(DIFFUSE) || defined(POINT)
+    float4 TESR_LampPassTrim : register(c196);   // UNOFFICIAL TrimLampPasses: x > 0 = on (pinned clear of the game's own registers)
+#endif
+
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
@@ -763,7 +785,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if defined(METAL)
-        // UNOFFICIAL metal (Object.hlsl). TESR_PBRMetal.x is the same for every pixel of a draw, so this is one cheap
+        // UNOFFICIAL metal (Object.hlsl). getMetalStrength() (TESR_PBRMetal.x, or the material rule's) is the same for every pixel of a draw, so this is one cheap
         // branch: off ([Shaders.PBR.Metal] 0 for this pass) runs the old lighting below exactly. On: how much of the pixel
         // is metal; the metal share has a tinted highlight (F0 = its colour) and no diffuse light, and reflects its
         // surroundings instead of the diffuse ambient (the sky along the reflected view, by world up from the VS).
@@ -780,7 +802,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             float3 light3Color = SHADOWED(PSLightColor[2].rgb, 2, att3);
         #endif
         float3 lighting;
-        [branch] if (TESR_PBRMetal.x > 0.0f) {
+        [branch] if (getMetalStrength() > 0.0f) {
             // Faded out with distance (getMetalFade); at full without the position (a vanilla vertex shader ran).
             metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f);
             metalRoughness = lerp(roughness, metalRoughness, metallic);
@@ -796,7 +818,8 @@ PS_OUTPUT main(PS_INPUT IN) {
                 bool upKnown = upLength > 0.5f && skyValid > 0.0f;
                 float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
                 lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
-                                                       upReflect, upKnown ? 1.0f : 0.0f);
+                                                       upReflect, upKnown ? 1.0f : 0.0f,
+                                                       IN.shadowWorldPos.xyz, shadowGeometricNormal);
             }
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
                 lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
@@ -871,9 +894,25 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
     #endif
 
+    #if defined(DIFFUSE) || defined(POINT)
+        // UNOFFICIAL TrimLampPasses ([Main.Main.Performance], TESR_LampPassTrim.x, 2026-10-11): these passes add lamp light
+        // on top of an object already drawn (additive, no fog, no depth write). Where the pixel is outside every lamp's
+        // reach each lamp adds exactly 0 (vanillaAttSq), so the pixel is dropped instead of being blended in as 0
+        // (POINT: alpha, the blend weight, is 0 there too). Not while the GunFX barrel glow is on (it adds its own colour).
+        float lampReach = att0;
+        #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+            lampReach = max(lampReach, att2);
+        #endif
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            lampReach = max(lampReach, att3);
+        #endif
+        clip((TESR_LampPassTrim.x > 0.0f && lampReach <= 0.0f && BarrelHeatMuzzle.w <= 0.0f) ? -1.0f : 0.0f);
+    #endif
+
     #endif // METAL
 
     float3 finalColor = lighting.rgb;
+    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
 
     #ifdef METAL
         // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image.
@@ -1053,7 +1092,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // indoors that term is off anyway. Finish specular-anti-aliased here at top level (ddx/ddy).
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
         float metallic = 0.0f;
-        [branch] if (TESR_PBRMetal.x > 0.0f)
+        [branch] if (getMetalStrength() > 0.0f)
             metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f);
         float lightRoughness = lerp(roughness, metalRoughness, metallic);
     #endif
@@ -1124,7 +1163,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), ambNormal,
                                        SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
         lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, lightRoughness,
-                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f);
+                                               saturate(dot(normal.xyz, normalize(viewDir))), 0.0f, 0.0f,
+                                               (0.0f).xxx, (0.0f).xxx);
     }
     else
     #endif
@@ -1138,6 +1178,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
     float3 finalColor = lighting;
+    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
 
     #ifdef METAL
         // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image (as in the LIGHTS < 4 variant).

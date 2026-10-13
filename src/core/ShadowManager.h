@@ -43,6 +43,9 @@ public:
 	ShaderRecordPixel*		ShadowMapPixel;
 	ShaderRecordVertex*		ShadowCubeMapVertex;
 	ShaderRecordPixel*		ShadowCubeMapPixel;
+	// UNOFFICIAL: ShadowMap.pso / ShadowCubeMap.pso without the alpha-test discard, for opaque casters (early-Z).
+	ShaderRecordPixel*		ShadowMapOpaquePixel;
+	ShaderRecordPixel*		ShadowCubeMapOpaquePixel;
 	ShaderRecordVertex*		ShadowMapBlurVertex;
 	ShaderRecordPixel*		ShadowMapBlurPixel;
 	ShaderRecordPixel*		ShadowMapClearPixel;
@@ -53,6 +56,8 @@ public:
 	// Reused by AccumChildren. That runs per reference, per cell, per cascade, and a fresh
 	// std::stack allocated a deque block on every call; clear() keeps the capacity.
 	std::vector<NiAVObject*>	containersScratch;
+	// UNOFFICIAL: the cube map form-based fallback's references in range of the light, collected once per light.
+	std::vector<NiNode*>		fallbackRefsScratch;
 	// UNOFFICIAL: RenderShadowCubeMap's casters, sorted once per light for all six faces (kept to avoid an allocation).
 	struct CubeCaster { NiGeometry* geometry; RenderPass* pass; unsigned char faces; };
 	std::vector<CubeCaster>		cubeCasters;

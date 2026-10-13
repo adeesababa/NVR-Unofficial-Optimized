@@ -27,6 +27,19 @@
 #define SHADOW_OLD_ATLAS_SAMPLER_REG s15 // the sun cross-fade's kept atlas (SUN_CROSSFADE only)
 #include "includes/Shadow.hlsl"
 
+// UNOFFICIAL terrain blending ([Shaders.Terrain.Blending]), ported from Balebandro's Physically-Based-Reloaded fork
+// (Alejandro Martinez, fork commit a23a624b), which follows the idea of Community Shaders' Terrain Blending (Skyrim).
+// Compiled in only when Enabled at startup (TERRAIN_BLEND from ShaderRecord::LoadShader), so that otherwise these shaders
+// are exactly what they were. It needs s15, which the sun cross-fade's kept atlas takes: not with SUN_CROSSFADE.
+#ifndef TERRAIN_BLEND
+    #define TERRAIN_BLEND 0
+#endif
+#if TERRAIN_BLEND && !SUN_CROSSFADE
+    #define TERRAIN_BLEND_ACTIVE 1
+#else
+    #define TERRAIN_BLEND_ACTIVE 0
+#endif
+
 
 struct VS_INPUT {
     float4 position : POSITION;
@@ -97,6 +110,9 @@ struct PS_INPUT
     float4 projectionPosition : TEXCOORD6_centroid;
     float3 viewPosition : TEXCOORD7_centroid;
     float4 sPosition : POSITION1;
+#if TERRAIN_BLEND_ACTIVE
+    float2 screenPos : VPOS;
+#endif
 };
 
 struct PS_OUTPUT {
@@ -123,9 +139,62 @@ float4 PointLightPosition[NUM_PT_LIGHTS] : register(c63);
 float PointLightCount : register(c88);
 #endif
 
+#if TERRAIN_BLEND_ACTIVE
+// The world's depth as the first land draw of the scene started (TerrainShaders::PrepareBlending) holds the objects
+// drawn before the land: rocks, walls, props. Where the land covers one of them by less than the blend distance, the
+// land is dithered away over that depth, so the object's buried part shows through and it sinks into the ground
+// instead of ending in a hard line. Opaque pass, so a dither (clip) rather than blending: with TAA (which moves the
+// pattern every frame) it averages into a smooth fade; without TAA the pattern stands still, a fine even stipple.
+// Registers pinned clear of the game's (land PS tops out at c93) and of every other NVR constant.
+float4 TESR_TerrainBlendData : register(c176);  // x: on for this draw, y: 1 / blend distance, z: max distance, w: debug view
+float4 TESR_TerrainBlendExtra : register(c177); // xy: 1 / resolution, z: dither frame (0 without TAA)
+// One line (ShaderTextureValue::GetSamplerStateString).
+sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+// View depth of a depth-buffer value through the camera's inverse projection: only its z and w columns depend on the
+// depth (the jitter and the screen position live in x and y). Used for the land and the scene alike, so both match.
+float terrainBlendViewDepth(float depth) {
+    float2 zw = depth * float2(TESR_InvProjectionTransform[2][2], TESR_InvProjectionTransform[2][3]) +
+        float2(TESR_InvProjectionTransform[3][2], TESR_InvProjectionTransform[3][3]);
+    return zw.x / zw.y;
+}
+
+// How much of the land to keep at this pixel: 1 opaque, 0 gone; -1 where blending does not apply.
+float getTerrainBlend(float4 projectionPosition, float2 screenPos) {
+    float terrainDepth = terrainBlendViewDepth(projectionPosition.z / projectionPosition.w);
+    float maxDistance = TESR_TerrainBlendData.z;
+    if (terrainDepth > maxDistance) return -1.0f;
+
+    float2 uv = (screenPos + 0.5f) * TESR_TerrainBlendExtra.xy;
+    float sceneDepth = terrainBlendViewDepth(tex2Dlod(TESR_TerrainBlendDepth, float4(uv, 0.0f, 0.0f)).x);
+    float covered = sceneDepth - terrainDepth;  // how far behind the land the object is
+    if (covered <= 0.0f) return -1.0f;          // the object is in front: the depth test handles it
+
+    float keep = saturate(covered * TESR_TerrainBlendData.y);
+    // Back to a hard edge over the last quarter before the max distance, so there is no visible line.
+    return lerp(keep, 1.0f, saturate((terrainDepth / maxDistance - 0.75f) * 4.0f));
+}
+
+// Interleaved gradient noise (Jimenez); the frame offset moves it only while TAA runs.
+float terrainBlendNoise(float2 screenPos) {
+    float2 p = screenPos + 5.588238f * TESR_TerrainBlendExtra.z;
+    return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
+#endif
+
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
+
+#if TERRAIN_BLEND_ACTIVE
+    // First, so a dithered-away pixel skips the rest where the GPU can (whole quads).
+    float terrainKeep = -1.0f;
+    [branch] if (TESR_TerrainBlendData.x > 0.0f) {
+        terrainKeep = getTerrainBlend(IN.projectionPosition, IN.screenPos);
+        if (TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
+            clip(terrainKeep - terrainBlendNoise(IN.screenPos));
+    }
+#endif
     
     int texCount = TEX_COUNT;  // Macro.
     float3 tangent = normalize(IN.tangent.xyz);
@@ -201,6 +270,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     
     float3 finalColor = lighting;
     finalColor = lerp(finalColor, fog.rgb, fog.a); // Apply fog.
+
+#if TERRAIN_BLEND_ACTIVE
+    // Debug: the blend band in magenta (full magenta = the land fully gone there), nothing dithered away.
+    if (TESR_TerrainBlendData.w > 0.0f && terrainKeep >= 0.0f)
+        finalColor = lerp(float3(1.0f, 0.0f, 1.0f), finalColor, terrainKeep);
+#endif
 
     OUT.color_0.a = 1;
     OUT.color_0.rgb = finalColor;

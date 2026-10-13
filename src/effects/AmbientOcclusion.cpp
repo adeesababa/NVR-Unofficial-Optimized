@@ -91,7 +91,8 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	// so bind it there instead of copying the full frame into SourceBuffer.
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	HRESULT result = scene ? Device->GetDepthStencilSurface(&depthSurface) : E_FAIL;
-	if (SUCCEEDED(result)) result = Device->SetDepthStencilSurface(nullptr);
+	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (a single smaller target is legal with it).
+	if (SUCCEEDED(result) && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) result = Device->SetDepthStencilSurface(nullptr);
 	if (FAILED(result)) {
 		if (depthSurface) depthSurface->Release();
 		return;

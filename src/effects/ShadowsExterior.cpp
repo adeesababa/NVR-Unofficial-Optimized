@@ -93,6 +93,9 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	int oldCascadeResolution = Settings.ShadowMaps.CascadeResolution;
 	bool oldMSAA = Settings.ShadowMaps.MSAA;
 	bool oldPrefilter = Settings.ShadowMaps.Prefilter;
+
+	// Read for every quality level: it removes doubled and ghost shadows, it does not trade quality.
+	Settings.ShadowMaps.LodSkipLoaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "LodSkipLoaded");
 	
 	// Custom settings.
 	if (quality < 0 || quality > 3) {
@@ -416,6 +419,10 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.KeepLampsInView = TheSettingManager->GetSettingI(section, "KeepLampsInView") != 0;
 		forward.FillLightRadius = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "FillLightRadius"));
 		forward.FillLightShadowStrength = std::clamp(TheSettingManager->GetSettingF(section, "FillLightShadowStrength"), 0.0f, 1.0f);
+		forward.Quality = std::clamp(TheSettingManager->GetSettingI(section, "Quality"), 0, 3);
+		forward.ContactHardening = TheSettingManager->GetSettingI(section, "ContactHardening") != 0;
+		forward.ContactHardeningStrength = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "ContactHardeningStrength"));
+		forward.ContactHardeningMinSoftness = std::clamp(TheSettingManager->GetSettingF(section, "ContactHardeningMinSoftness"), 0.0f, 1.0f);
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
@@ -949,7 +956,7 @@ D3DXMATRIX ShadowsExteriorEffect::GetCascadeViewProj(ShadowMapSettings* ShadowMa
 	// Calculate the frustum corners in world space (from a unit cube in projective space).
 	D3DXMATRIX* invViewProj = &TheRenderManager->InvViewProjMatrix;
 
-	float ndcNear = 1.0f ? TheRenderManager->IsReversedDepth() : 0.0f;
+	float ndcNear = TheRenderManager->IsReversedDepth() ? 1.0f : 0.0f;	// (was written '1.0f ? IsReversedDepth() : 0.0f', same value)
 	float ndcFar = 1.0f - ndcNear;
 	D3DXVECTOR3 frustumCorners[8] = {
 		D3DXVECTOR3(-1.0f,  1.0f, ndcNear), // Near plane.

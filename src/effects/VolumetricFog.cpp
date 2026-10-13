@@ -51,6 +51,10 @@ void VolumetricFogEffect::UpdateSettings(){
 	else
 		strcat(SettingCategory, "Interiors");
 
+	// Custom build: one switch for exteriors and interiors, in Main.
+	Constants.Legacy.x = TheSettingManager->GetSettingI("Shaders.VolumetricFog.Main", "LegacyFog") ? 1.0f : 0.0f;
+	if (Constants.Legacy.x > 0.5f) UpdateLegacySettings(SettingCategory);
+
 	Constants.Global.x = TheSettingManager->GetSettingF(SettingCategory, "Amount");
 	Constants.Weather.w = TheSettingManager->GetSettingF(SettingCategory, "FogSaturation");
 
@@ -141,6 +145,57 @@ void VolumetricFogEffect::UpdateSettings(){
 	Constants.Global.y = TheSettingManager->GetSettingI("Shaders.VolumetricFog.Night", "DisableSkyMask") ? 1.0f : 0.0f;
 }
 
+/*
+* Custom build: the settings of the fog from before the rewrite (upstream 25189928), read exactly as that version did, so
+* old presets that set HeightFog*, SimpleFog*, MinimumBaseFog, SunPower, FogNight... look as they were made to look.
+*/
+void VolumetricFogEffect::UpdateLegacySettings(const char* SettingCategory) {
+	Constants.LegacyData.x = TheSettingManager->GetSettingF(SettingCategory, "MinimumBaseFog");
+	Constants.LegacyData.y = TheSettingManager->GetSettingF(SettingCategory, "HeightFogSaturation");
+	Constants.LegacyData.z = TheSettingManager->GetSettingF(SettingCategory, "Amount");
+	Constants.LegacyData.w = TheSettingManager->GetSettingF(SettingCategory, "HeightFogInscattering");
+
+	Constants.LegacyLow.x = TheSettingManager->GetSettingF(SettingCategory, "FogSaturation");
+	Constants.LegacyLow.y = TheSettingManager->GetSettingF(SettingCategory, "WeatherImpact");
+
+	Constants.LegacyHigh.x = TheSettingManager->GetSettingF(SettingCategory, "HeightFogDensity");
+	Constants.LegacyHigh.y = TheSettingManager->GetSettingF(SettingCategory, "HeightFogFalloff");
+	Constants.LegacyHigh.z = TheSettingManager->GetSettingF(SettingCategory, "HeightFogDist");
+
+	Constants.LegacyHeight.y = TheSettingManager->GetSettingF(SettingCategory, "HeightFogHeight");
+	Constants.LegacyHeight.z = TheSettingManager->GetSettingF(SettingCategory, "SimpleFogHeight");
+	Constants.LegacyHeight.w = TheShaderManager->GameState.isExterior ? 1.0f : 0.0f;
+
+	Constants.LegacySimple.x = TheSettingManager->GetSettingF(SettingCategory, "Extinction");
+	Constants.LegacySimple.y = TheSettingManager->GetSettingF(SettingCategory, "Inscattering");
+
+	Constants.LegacyBlend.y = TheSettingManager->GetSettingF(SettingCategory, "HeightFogBlend");
+	Constants.LegacyBlend.z = TheSettingManager->GetSettingF(SettingCategory, "HeightFogRolloff");
+	Constants.LegacyBlend.w = TheSettingManager->GetSettingF(SettingCategory, "SimpleFogBlend");
+
+	if (TheShaderManager->GameState.isExterior) {
+		Constants.LegacyHeight.x = TheSettingManager->GetSettingF(SettingCategory, "DistantFogHeight");
+		Constants.LegacyLow.z = TheSettingManager->GetSettingF(SettingCategory, "DistantFogRange");
+		Constants.LegacyBlend.x = TheSettingManager->GetSettingF(SettingCategory, "DistantFogBlend");
+
+		Constants.LegacyLow.w = TheSettingManager->GetSettingF(SettingCategory, "SunPower");
+		Constants.LegacySimple.z = TheSettingManager->GetSettingF(SettingCategory, "FogNight");
+		Constants.LegacySimple.w = TheSettingManager->GetSettingF(SettingCategory, "SimpleFogSkyColor");
+		Constants.LegacyHigh.w = TheSettingManager->GetSettingF(SettingCategory, "HeightFogSkyColor");
+	}
+	else {
+		// these settings don't do anything in interiors
+		Constants.LegacyHeight.x = 0.0f;
+		Constants.LegacyLow.z = 0.0f;
+		Constants.LegacyBlend.x = 0.0f;
+
+		Constants.LegacyLow.w = 0.0f;
+		Constants.LegacySimple.z = 1.0f;
+		Constants.LegacySimple.w = 0.0f;
+		Constants.LegacyHigh.w = 0.0f;
+	}
+}
+
 void VolumetricFogEffect::RegisterConstants(){
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogDensity", &Constants.Density);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogShape", &Constants.Shape);
@@ -154,6 +209,12 @@ void VolumetricFogEffect::RegisterConstants(){
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogNight", &Constants.Night);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogNightScatter", &Constants.NightScatter);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogNightTint", &Constants.NightTint);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogLow", &Constants.LegacyLow);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogHigh", &Constants.LegacyHigh);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogSimple", &Constants.LegacySimple);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogBlend", &Constants.LegacyBlend);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogHeight", &Constants.LegacyHeight);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogData", &Constants.LegacyData);
 }
 
 
@@ -185,7 +246,7 @@ void VolumetricFogEffect::RegisterTextures() {
 bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] ||
 		TheSettingManager->SettingsMain.Main.DisableCompositeApply ||
-		!TechniqueHandle(techCompositeFog, "CompositeFog") || !ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags"))
+		!CompositeTechnique() || !ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags"))
 		return false;
 	if (aoSurface && !ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel")) {
 		D3DSURFACE_DESC fog = {}, ao = {};
@@ -264,8 +325,11 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface) {
 	if (dedicatedFogFailed) return false;
+	// UNOFFICIAL ReShadeDepthCompat: this two-target pass must unbind the game's depth-stencil (a GTX 1070 drops it
+	// otherwise), so the plain full-resolution fog runs instead, as in the original NVR.
+	if (TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) return false;
 	const bool composite = compositeShadow || (compositeAO && compositeAOTexture);
-	D3DXHANDLE technique = composite ? TechniqueHandle(techCompositeFog, "CompositeFog") : TechniqueHandle(techDedicatedFog, "DedicatedFog");
+	D3DXHANDLE technique = composite ? CompositeTechnique() : DedicatedTechnique();
 	D3DXHANDLE flagsHandle = composite ? ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") : NULL;
 	if (composite && !flagsHandle) return false;
 	D3DXHANDLE layoutHandle = ParameterHandle(paramFogLayout, "NVR_FogLayout");
@@ -392,10 +456,49 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	return true;
 }
 
+/*
+* Custom build: the full-resolution fallback technique. With LegacyFog on, the index of VolumetricFogLegacy (looked up by
+* name), otherwise the caller's.
+*/
+UINT VolumetricFogEffect::PlainTechniqueIndex(UINT techniqueIndex) {
+	if (!IsLegacy() || !Effect) return techniqueIndex;
+	D3DXEFFECT_DESC effect = {};
+	if (FAILED(Effect->GetDesc(&effect))) return techniqueIndex;
+	for (UINT t = 0; t < effect.Techniques; t++) {
+		D3DXTECHNIQUE_DESC description = {};
+		D3DXHANDLE technique = Effect->GetTechnique(t);
+		if (technique && SUCCEEDED(Effect->GetTechniqueDesc(technique, &description)) && description.Name &&
+			!strcmp(description.Name, "VolumetricFogLegacy"))
+			return t;
+	}
+	return techniqueIndex;
+}
+
 void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
+
+	// UNOFFICIAL: the fog's density noise, a 3D texture on stage 9 (NVR_FogNoise in the effect), for every path below;
+	// taken off again when this returns, so nothing drawn later finds it there.
+	static IDirect3DBaseTexture9* noise = nullptr;
+	static bool noiseLoaded = false;
+	if (!noiseLoaded) {
+		noiseLoaded = true;
+		noise = TheTextureManager->GetFileTexture("Data\\Textures\\Effects\\NoiseVolume.dds", TextureRecord::TextureRecordType::VolumeBuffer);
+		if (!noise) Logger::Log("[ERROR] VolumetricFog: Textures\\Effects\\NoiseVolume.dds is missing: the fog's patches are off.");
+	}
+	struct NoiseBinding {
+		IDirect3DDevice9* device;
+		NoiseBinding(IDirect3DDevice9* d, IDirect3DBaseTexture9* t) : device(d) {
+			device->SetTexture(9, t);
+			TheRenderManager->renderState->NoteDeviceTexture(9, t);
+			const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP},
+				{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_LINEAR} };
+			for (const auto& s : states) TheRenderManager->SetSamplerState(9, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+		}
+		~NoiseBinding() { device->SetTexture(9, nullptr); TheRenderManager->renderState->NoteDeviceTexture(9, nullptr); }
+	} noiseBinding(Device, noise);
 
 	{
 		auto timer = TimeLogger();
@@ -408,7 +511,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	// The caller must apply deferred shadows/AO before retrying ordinary fog.
 	if (compositeShadow || compositeAO) return;
 
-	D3DXHANDLE technique = TechniqueHandle(techPackedFog, "PackedFog");
+	D3DXHANDLE technique = PackedTechnique();
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {};
@@ -419,7 +522,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		original.Width != target.Width || original.Height != target.Height ||
 		target.Width != scratch.Width || target.Height != scratch.Height ||
 		(target.Width & 1) || (target.Height & 1)) {
-		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
+		EffectRecord::Render(Device, RenderTarget, RenderedSurface, PlainTechniqueIndex(techniqueIndex), ClearRenderTarget, SourceBuffer);
 		return;
 	}
 
@@ -456,7 +559,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		Device->StretchRect(SourceBuffer, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 		packedFogFailed = true;
 		Logger::Log("Packed volumetric fog failed (%08lx); using legacy path until restart.", result);
-		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
+		EffectRecord::Render(Device, RenderTarget, RenderedSurface, PlainTechniqueIndex(techniqueIndex), ClearRenderTarget, SourceBuffer);
 		return;
 	}
 	static bool reported = false;

@@ -27,9 +27,12 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
 	// UNOFFICIAL interior forward shadows: each object's own lamps (PointShadowForward.h).
-	// (Also for ScopeFix outdoors, which works on the same per-object call.)
+	// (Also for ScopeFix outdoors, HiddenObjectCulling, LampScissor and the material rules, which work on the same per-object call; their
+	// switches are live only while this hook is in, i.e. with any of these on at startup.)
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ||
-		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix")) {
+		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") ||
+		SettingsMain->Main.HiddenObjectCulling || SettingsMain->Main.LampScissor ||
+		TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled")) {
 		DetourAttach(&(PVOID&)RenderPassStandard, &RenderPassStandardHook);
 		DetourAttach(&(PVOID&)RenderPassSkinned, &RenderPassSkinnedHook);
 	}

@@ -1,4 +1,9 @@
 #include "Terrain.h"
+#include "../core/GpuProfiler.h"
+
+// Set by SettingManager::Configuration::UpdateOldDefaults (settings version 65) when a saved config already had ParallaxLite
+// on, from builds that forced its distance cap every frame; UpdateSettings then writes the suggested distance once.
+bool ParallaxLiteDistanceMigrationPending = false;
 
 void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainData", &Constants.Data);
@@ -6,6 +11,58 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainSkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendExtra", &BlendingConstants.Extra);
+}
+
+// UNOFFICIAL terrain blending (ported from Physically-Based-Reloaded, Balebandro / Alejandro Martinez; the idea is Community
+// Shaders' Terrain Blending). The world's depth surface is noted as the scene starts, so the land shaders know the main
+// scene from anything with its own depth buffer. Only the pointer is kept, for comparing; the reference goes at once.
+void TerrainShaders::BeginWorldScene() {
+	BlendDepthState = 0;
+	BlendWorldDepth = nullptr;
+	BindsBeforeCopy = 0;
+	TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+	if (!terrain || !terrain->BlendingSettings.Enabled || !TheTextureManager->TerrainBlendDepthTexture || !TheShaderManager->GameState.isExterior) return;
+	IDirect3DSurface9* depth = nullptr;
+	TheRenderManager->device->GetDepthStencilSurface(&depth);
+	if (!depth) return;
+	BlendWorldDepth = depth;
+	depth->Release();
+	BlendDepthState = 1;
+}
+
+void TerrainShaders::EndWorldScene() {
+	BlendDepthState = 0;
+	BlendWorldDepth = nullptr;
+}
+
+// Runs as a land shader binds (ShaderRecord::SetCT), before its constants upload. In the world scene the first bind copies
+// the depth drawn so far (one depth copy a frame, the same resolve NVR's depth buffer uses) and every land draw of that
+// scene compares against it. Anywhere else (another depth buffer bound, outside the world scene) blending is off.
+void TerrainShaders::PrepareBlending() {
+	BlendingConstants.Data.x = 0.0f;
+	if (BlendDepthState == 0 || !BlendWorldDepth) return;
+
+	IDirect3DSurface9* current = nullptr;
+	TheRenderManager->device->GetDepthStencilSurface(&current);
+	const bool mainScene = current && current == BlendWorldDepth;
+	if (current) current->Release();
+	if (!mainScene) return;
+
+	if (BlendDepthState == 1) {
+		static GpuTimer copyTimer("Terrain blend depth copy");	// F10
+		GpuProfileScope gpu(copyTimer, TheRenderManager->device);
+		TheRenderManager->ResolveDepthBuffer(TheTextureManager->TerrainBlendDepthTexture);
+		BlendDepthState = 2;
+		// The first few scenes, then every 3600th (about a minute): the blend needs objects drawn before the land.
+		static unsigned copies = 0;
+		if (copies < 3 || copies % 3600 == 0)
+			Logger::Log("Terrain blending: depth copied at the first land draw of the world scene, after %u other passes%s", BindsBeforeCopy,
+				BindsBeforeCopy ? "" : " (nothing drawn before the land: nothing to blend with)");
+		copies++;
+	}
+	BlendingConstants.Data.x = 1.0f;
 }
 
 
@@ -52,8 +109,44 @@ void TerrainShaders::UpdateSettings() {
 	ParallaxSettings.Height = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Height");
 	ParallaxSettings.ShadowsIntensity = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "ShadowsIntensity");
 
+	// [Main.Main.ReducedQuality] ParallaxLite suggests a shorter terrain parallax reach: 1024 units at 1440p, where the user
+	// saw no difference from 2048 in a rocky desert view and it saved 0.8 ms on top of the lite search. Scaled with the
+	// screen height, since a bump's size on screen is (screen height / distance): 768 at 1080p, 1536 at 4K. It is written
+	// into Shaders.Terrain.Parallax MaxDistance ONCE, when ParallaxLite is switched on (menu, preset, or a config that turns
+	// it on), and only if MaxDistance is longer; after that MaxDistance is the player's to change and stays as set. (Until
+	// 2026-10-12 it was a cap applied every frame, so MaxDistance could not be raised while ParallaxLite was on.)
+	// SettingsVersion 65 does the same once for configs that already had ParallaxLite on (SettingManager.cpp).
+	{
+		static bool seen = false, wasLite = false;
+		const bool lite = TheSettingManager->SettingsMain.Main.ParallaxLite;
+		const bool switchedOn = lite && (seen ? !wasLite : ParallaxLiteDistanceMigrationPending);
+		seen = true;
+		wasLite = lite;
+		ParallaxLiteDistanceMigrationPending = false;
+		if (switchedOn && TheRenderManager && TheRenderManager->height) {
+			const int suggested = (int)(1024.0f * TheRenderManager->height / 1440.0f + 0.5f);
+			if (ParallaxSettings.MaxDistance > (float)suggested) {
+				Logger::Log("UNOFFICIAL ParallaxLite switched on: Shaders.Terrain.Parallax MaxDistance %g -> %d (suggested for %u lines; "
+					"change it in the menu if you want it longer, it is not changed again).", ParallaxSettings.MaxDistance, suggested,
+					TheRenderManager->height);
+				TheSettingManager->SetSetting("Shaders.Terrain.Parallax", "MaxDistance", suggested);
+				ParallaxSettings.MaxDistance = (float)suggested;
+			}
+		}
+	}
+
 	LODSettings.NoiseScale = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseScale");
 	LODSettings.NoiseTile = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseTile");
+
+	// UNOFFICIAL terrain blending. Turning it on in the menu needs a restart (the land shaders and the depth copy are made
+	// at startup); turning it off works at once.
+	BlendingSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") != 0;
+	BlendingSettings.Debug = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Debug") != 0;
+	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 1.0f, 100.0f);
+	BlendingSettings.MaxDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MaxDistance"), 256.0f, 16384.0f);
+	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
+	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
+	BlendingConstants.Data.w = BlendingSettings.Debug ? 1.0f : 0.0f;
 }
 
 void TerrainShaders::UpdateConstants() {
@@ -61,6 +154,13 @@ void TerrainShaders::UpdateConstants() {
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);
 
 	if (!TheShaderManager->GameState.isExterior) return;
+
+	// UNOFFICIAL terrain blending: the dither moves every frame only while TAA runs (it then averages into a smooth fade);
+	// without TAA a moving dither would crawl, so it stands still.
+	BlendingConstants.Extra.x = 1.0f / (float)TheRenderManager->width;
+	BlendingConstants.Extra.y = 1.0f / (float)TheRenderManager->height;
+	TAAEffect* taa = TheShaderManager->Effects.TAA;
+	BlendingConstants.Extra.z = taa && taa->Enabled && taa->Effect ? fmodf(BlendingConstants.Extra.z + 1.0f, 64.0f) : 0.0f;
 
 	Constants.ExtraData.x = usePBR;
 	Constants.ExtraData.y = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.Saturation, Settings.Night.Saturation, 0.0),
@@ -98,14 +198,8 @@ void TerrainShaders::UpdateConstants() {
 	// replaces both.
 	ParallaxConstants.Data.w = TheSettingManager->SettingsMain.Main.ParallaxLite ? 2.0f : ParallaxSettings.HighQuality;
 
-	// ParallaxLite also caps how far the terrain parallax (and its shadows) reaches: 1024 units at 1440p, where the user
-	// saw no difference from 2048 in a rocky desert view and it saved 0.8 ms on top of the lite search. Scaled with the
-	// screen height, since a bump's size on screen is (screen height / distance): 768 at 1080p, 1536 at 4K. A lower
-	// MaxDistance the player chose still applies; everyone without ParallaxLite keeps MaxDistance as it is.
-	float maxDistance = ParallaxSettings.MaxDistance;
-	if (TheSettingManager->SettingsMain.Main.ParallaxLite)
-		maxDistance = min(maxDistance, 1024.0f * TheRenderManager->height / 1440.0f);
-	ParallaxConstants.ExtraData.x = maxDistance;
+	// MaxDistance as set (ParallaxLite's shorter reach is written into the setting once, in UpdateSettings, not forced here).
+	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;
 	ParallaxConstants.ExtraData.z = ParallaxSettings.ShadowsIntensity;
 

@@ -21,6 +21,58 @@ public:
 	float				multiBounce = 0.0f;		// extra bounces from last frame's result (0: none, as before; 1: all of it)
 	bool				temporal = false;		// reuse last frame's gather (the history buffers below)
 	bool				halfSamples = false;	// with temporal: 4 samples a frame instead of 8
+	// UNOFFICIAL NeonSpill ([Shaders.BounceLight.Main] NeonSpill, NeonSpillReach, NeonSpillThreshold; BounceLight.fx.hlsl):
+	// long-range light from bright lights (neon, lamps), gathered from a pyramid of ever smaller copies of the lights on
+	// screen (seven buffers, level 0 320 texels wide at any resolution, made the first time it runs: about 0.6 MB). With it
+	// on, the gather applies Strength to the short-range bounce and the combine's strength (Constants.Data.x) is 1. 0: off,
+	// as before.
+	static const int	SpillLevels = 7;
+	float				strength = 0.0f;		// [Shaders.BounceLight.Main] Strength
+	float				neonSpill = 0.0f;
+	float				spillReach = 1.0f;
+	float				spillLightLevel = 1.5f;	// NeonSpillLightLevel: times a white surface in the scene's own light a light must reach
+	float				spillReportedLight = -1.0f;	// the scene light last logged
+	int					spillDebug = 0;			// NeonSpillDebug: 0 off, 1 what counts as a light, 2 the bounce light alone
+	// With the spill on, the combine is this effect's own (not folded into the specular's): it has the debug views and the
+	// slope-aware smoothing on the street (BounceLight.fx.hlsl's Combine). Read by ShaderManager.
+	bool	SpillOn() const { return Enabled && neonSpill > 0.0f; }
+	// UNOFFICIAL HardEdges: the hard depth test in this effect's own Combine; the specular's folded combine has only the soft one,
+	// so ShaderManager does not fold it while this is on.
+	bool	HardEdgesOn() const { return Enabled && hardEdges; }
+	bool	hardEdges = false;				// HardEdges: Combine's (and Blur's) hard depth test for every Plus/Temporal technique
+	float				spillMemorySeconds = 1.0f;	// NeonSpillMemory: how long the light of a sign that left the screen lingers
+	float				spillNear = 1.0f, spillFar = 1.0f;	// NeonSpillNear / NeonSpillFar: weight of the closest / farthest reads
+	float				spillCap = 0.0f;			// NeonSpillBrightCap: most a light counts, x the light test (0: no limit)
+	// UNOFFICIAL round 6, each 0 = round 5 exactly (public, so a self-test can override them per frame after UpdateSettings).
+	float				spillHoldAfterTurn = 0.0f;	// NeonSpillHoldAfterTurn: seconds the memory's hold keeps working after the view stops
+	float				spillSeparateDepth = 0.0f;	// NeonSpillSeparateDepth: > 0 = technique BounceSpillGatherSeparate (no light on a sign's own wall)
+	float				spillCapSceneLight = 0.0f;	// NeonSpillCapSceneLight: > 0 = BrightCap in multiples of the scene's own light, not the light test
+	float				spillHardEdges = 0.0f;		// NeonSpillHardEdges: > 0 = Combine's hard depth test (no 4 x 4 blocks of wall light on thin things)
+	float				spillMaskSpillOnly = 0.0f;	// NeonSpillMaskSpillOnly: > 0 = light pixels lose only the spill (GatherPlus), not all bounce (Combine)
+	float				spillStillSeconds = 0.0f;	// how long the view has not moved (for NeonSpillHoldAfterTurn)
+	IDirect3DTexture9*	spillTexture[SpillLevels] = {};
+	IDirect3DSurface9*	spillSurface[SpillLevels] = {};
+	bool				spillTried = false;
+	// The spill's own low-resolution result with memory, per resolution [0 half, 1 quarter] and ping-pong (this frame's /
+	// last frame's). Made with the pyramid's buffers.
+	IDirect3DTexture9*	spillMemoryTexture[2][2] = {};
+	IDirect3DSurface9*	spillMemorySurface[2][2] = {};
+	int					spillMemoryIndex = 0;		// the buffer last frame's spill went to
+	bool				spillMemoryValid = false;
+	// UNOFFICIAL NeonSpillSteadySeconds (2026-10-12, the user's muzzle flashes spilling light through walls): each level-0 texel's
+	// light averaged over that long (rgb, a = depth), ping-pong, written by the pyramid's level-0 pass as its second target; a
+	// light counts only as far as it has been there that long, so a flash of a few frames barely counts. 0: off.
+	float				spillSteadySeconds = 0.0f;
+	IDirect3DTexture9*	spillSteadyTexture[2] = {};
+	IDirect3DSurface9*	spillSteadySurface[2] = {};
+	int					spillSteadyIndex = 0;		// the buffer last frame's average went to
+	bool				spillSteadyValid = false;
+	double				spillSteadyTime = 0.0;
+	D3DXMATRIX			spillSteadyView, spillSteadyInvView, spillSteadyProj;
+	bool	EnsureSpill();
+	bool	RenderSpillPyramid(IDirect3DDevice9* Device, IDirect3DTexture9* scene, float threshold);
+	float	SpillThreshold();
+	IDirect3DTexture9*	RenderSpillGather(IDirect3DDevice9* Device, bool quarter, const D3DVIEWPORT9& reduced);
 	// Temporal: last frame's gather and this frame's, per resolution, made the first time Temporal runs (EnsureHistory).
 	IDirect3DTexture9*	halfHistory[2] = {};
 	IDirect3DSurface9*	halfHistorySurface[2] = {};
@@ -56,6 +108,9 @@ public:
 	bool	quarterTried = false;
 	// UNOFFICIAL: handles looked up once per loaded effect (EffectRecord::CachedHandle).
 	CachedHandle paramLayout, paramTemporal, paramAmbient, paramReproject, techTemporalHalf, techTemporal, techPlus;
+	CachedHandle paramSpill, paramSpillTarget, paramSpillDebug, paramSpillMemory, paramSpillShape, techSpillPyramid, techSpillGather;
+	CachedHandle paramSpillOptions, techSpillGatherSeparate, techPlusHard, techTemporalHard, techTemporalHalfHard;
+	CachedHandle paramSpillSteady;
 	// With deferCombine, Render runs the low-resolution passes only and leaves their result for
 	// SpecularEffect::RenderWithBounce (deferredReady, deferredTexture, deferredLayout); with combineOnly, the combine
 	// alone, from that result (if the merged pass could not run). Set by ShaderManager.

@@ -18,6 +18,9 @@ float4 AddlParams   : register(c7);
 row_major float4x4 ModelViewProj : register(c9);
 float4 FogColor     : register(c14);
 float4 FogParam     : register(c15);
+// UNOFFICIAL: backlit translucency settings (PBR.cpp, [Shaders.Foliage.Main]). c18 is free: nothing else here uses it and
+// InstanceData starts at c20.
+float4 TESR_Translucency : register(c18);
 
 // c20..c247, below the relocated matrices.
 #ifndef GRASS_INSTANCE_COUNT
@@ -40,6 +43,17 @@ struct VS_OUTPUT {
     float4 sun            : TEXCOORD5;   // .w = distance fade
     float4 fog            : COLOR0;      // .w = fog amount
 };
+
+// UNOFFICIAL: backlit translucency (docs/research/foliage-translucency.md). Light that reaches the eye through a blade
+// from the far side: the surface faces away from the sun (back: N against Lback), the eye looks into the sun through it
+// (align), and the sun is above the horizon (gate). p is the camera-relative world position, Lsun the world sun direction.
+float FoliageTranslucency(float3 N, float3 Lback, float3 p, float3 Lsun) {
+    float3 V = -p / max(length(p), 1e-6f);
+    float back = saturate(-dot(N, Lback));
+    float align = pow(saturate(dot(V, -Lsun)), TESR_Translucency.y);
+    float gate = saturate(Lsun.z * TESR_Translucency.z);
+    return TESR_Translucency.x * back * align * gate;
+}
 
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
@@ -91,6 +105,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     float4 worldPos = float4(pos + inst.xyz, 1.0f);
     OUT.position = mul(ModelViewProj, worldPos);
 
+    // UNOFFICIAL: backlit translucency joins the sun term, so the PS shadow applies to it too. Skipped at Translucency 0.
+    float3 shadowWorldPos = GetShadowWorldPos(OUT.position);
+    [branch] if (TESR_Translucency.x > 0.0f) {
+        NdotL += FoliageTranslucency(orient, DiffuseDir, shadowWorldPos, DiffuseDir);
+    }
+
     // Kept separate so the PS can shadow the sun alone.
     OUT.ambient = lightScale * AmbientColor;
     OUT.sun.xyz = ((lightScale * IN.color.rgb) * NdotL) * DiffuseColor * AddlParams.x;
@@ -104,7 +124,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.uv = IN.uv;
 
 
-    OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
+    OUT.shadowWorldPos = float4(shadowWorldPos, SHADOW_VS_SENTINEL);
 
     return OUT;
 };

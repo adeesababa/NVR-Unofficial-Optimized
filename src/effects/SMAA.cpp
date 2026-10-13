@@ -72,6 +72,25 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 
 	auto timer = TimeLogger();
 
+	// UNOFFICIAL: the edge pass marks edge pixels in the stencil and the costly weight pass (32-step searches) runs only
+	// there. Until 2026-10-11 the stencil was whatever depth buffer the game had left bound (perhaps multisampled, another
+	// size or none), so the mask may have done nothing. SMAA now binds its own screen-size D24S8 for its three passes and
+	// puts the old one back after. Same picture (pixels without an edge get weight 0 either way), less work.
+	IDirect3DSurface9* previousDepth = nullptr;
+	if (!Textures.StencilSurface && !Textures.StencilFailed) {
+		if (FAILED(Device->CreateDepthStencilSurface(TheRenderManager->width, TheRenderManager->height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, TRUE, &Textures.StencilSurface, NULL))) {
+			Textures.StencilSurface = nullptr;
+			Textures.StencilFailed = true;
+			Logger::Log("UNOFFICIAL SMAA: no depth-stencil surface of its own; uses the bound one as before");
+		}
+	}
+	// UNOFFICIAL ReShadeDepthCompat: keep the game's depth-stencil bound and clear its stencil, as before P78.
+	const bool ownStencil = Textures.StencilSurface != nullptr && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat;
+	if (ownStencil) {
+		if (FAILED(Device->GetDepthStencilSurface(&previousDepth))) previousDepth = nullptr;	// none bound
+		Device->SetDepthStencilSurface(Textures.StencilSurface);
+	}
+
 	// Clear the stencil buffer.
 	Device->Clear(0, nullptr, D3DCLEAR_STENCIL, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
 
@@ -85,6 +104,8 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	EdgesDetectionPass(Settings.Main.EdgeDetection);
 	BlendingWeightsCalculationPass();
 	NeighborhoodBlendingPass(chained ? chain.Output() : RenderTarget);
+	if (ownStencil) Device->SetDepthStencilSurface(previousDepth);	// null if none was bound
+	if (previousDepth) previousDepth->Release();
 
 	if (chained) {
 		chain.Commit();

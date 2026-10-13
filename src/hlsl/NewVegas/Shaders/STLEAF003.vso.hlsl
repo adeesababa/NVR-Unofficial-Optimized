@@ -24,6 +24,9 @@ float4 NormalAdjust  : register(c17);  // .y
 
 float4 BranchRows[16] : register(c18);
 float4 LeafData[48]   : register(c34);
+// UNOFFICIAL: backlit translucency settings (PBR.cpp, [Shaders.Foliage.Main]). c82 is the first register past LeafData; the
+// engine's uploads stop at c81, and the compiler keeps its literal constants off this one.
+float4 TESR_Translucency : register(c82);
 
 struct VS_INPUT {
     float4 position     : POSITION;
@@ -43,6 +46,17 @@ struct VS_OUTPUT {
 
 float WrapPi(float v, float scale) {
     return frac(v * scale + 0.5f) * 6.28318548f - 3.14159274f;
+}
+
+// UNOFFICIAL: backlit translucency (docs/research/foliage-translucency.md). Light that reaches the eye through a blade
+// from the far side: the surface faces away from the sun (back: N against Lback), the eye looks into the sun through it
+// (align), and the sun is above the horizon (gate). p is the camera-relative world position, Lsun the world sun direction.
+float FoliageTranslucency(float3 N, float3 Lback, float3 p, float3 Lsun) {
+    float3 V = -p / max(length(p), 1e-6f);
+    float back = saturate(-dot(N, Lback));
+    float align = pow(saturate(dot(V, -Lsun)), TESR_Translucency.y);
+    float gate = saturate(Lsun.z * TESR_Translucency.z);
+    return TESR_Translucency.x * back * align * gate;
 }
 
 VS_OUTPUT main(VS_INPUT IN) {
@@ -104,11 +118,19 @@ VS_OUTPUT main(VS_INPUT IN) {
     float NdotL = saturate(dot(N, SunDir.xyz));
     float lightScale = frac(v3.z);
 
+    OUT.position = mul(ModelViewProj, pos);
+
+    // UNOFFICIAL: backlit translucency joins the sun term, so TEXCOORD3 (sun) and TEXCOORD1 (lighting) both carry it and the
+    // PS shadow takes it out in shade. N and SunDir are model space, as NdotL; the eye and TESR_SmoothedSunDir are world
+    // space. Indoors (TESR_ShadowFormatData.z is 0) it is off. Skipped at Translucency 0.
+    float3 shadowWorldPos = GetShadowWorldPos(OUT.position);
+    [branch] if (TESR_Translucency.x > 0.0f) {
+        NdotL += FoliageTranslucency(N, SunDir.xyz, shadowWorldPos, TESR_SmoothedSunDir.xyz) * TESR_ShadowFormatData.z;
+    }
+
     float3 sun = lightScale * (NdotL * DiffuseColor.rgb * SunScale.x);
     OUT.sun = sun;
     OUT.lighting = float4(sun + lightScale * AmbientColor.rgb + pointLight, 1.0f);
-
-    OUT.position = mul(ModelViewProj, pos);
 
     float3 fogVec = float3(OUT.position.x, OUT.position.y, OUT.position.w - OUT.position.z);
     float fogDist = length(fogVec);
@@ -117,7 +139,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.fog.w = pow(1.0f - t, FogParam.z);
 
     OUT.uv = IN.uv;
-    OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
+    OUT.shadowWorldPos = float4(shadowWorldPos, SHADOW_VS_SENTINEL);
 
     return OUT;
 };

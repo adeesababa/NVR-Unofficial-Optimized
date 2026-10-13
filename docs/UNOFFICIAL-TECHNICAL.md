@@ -214,9 +214,12 @@ frames the body sits partly inside its own old shadow and flickers:
   3-4x the difference; 2: -16..-22%; 3: no faster than 8 steps. The other settings stay bit-identical.
   In game (open desert, standing still): GPU SPLIT TERRAIN 3.74 -> 2.59 ms, world scene 6.19 -> 4.96, game frame
   total 12.26 -> 11.04, ~81 -> 89 fps; the user rated the visual change minimal (a matter of taste in the small shadows).
-- **ParallaxLite, terrain distance (P61).** Terrain.cpp caps `TESR_TerrainParallaxExtraData.x` (MaxDistance) at
-  1024 * screen height / 1440 while ParallaxLite is on (a bump's height on screen goes with screen height / distance,
-  so the visible cutoff is the same at any resolution: 768 at 1080p, 1536 at 4K); a lower MaxDistance still applies.
+- **ParallaxLite, terrain distance (P61; one-time since 2026-10-12).** Until 2026-10-12 Terrain.cpp capped
+  `TESR_TerrainParallaxExtraData.x` every frame, so MaxDistance could not be raised while ParallaxLite was on. Now
+  TerrainShaders::UpdateSettings writes the value into Shaders.Terrain.Parallax MaxDistance once, when ParallaxLite is
+  switched on (and only if MaxDistance is longer); settings version 65 does it once for configs that already had it on.
+  The value is 1024 * screen height / 1440 (a bump's height on screen goes with screen height / distance,
+  so the visible cutoff is the same at any resolution: 768 at 1080p, 1536 at 4K).
   In game at 1440p (log 04-37-40, rocky desert, lite on): MaxDistance 2048 -> 1024 terrain 4.53 -> 3.77 ms, 70.4 ->
   74.5 fps, no visible difference in same-spot screenshots. Harness equivalent (MaxDistance halved): -40..-66% total
   lite terrain time, but its noisy, mostly distant test ground overstates the picture change.

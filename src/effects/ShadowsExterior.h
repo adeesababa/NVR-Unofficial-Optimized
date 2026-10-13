@@ -110,6 +110,7 @@ public:
 		bool				MSAA;
 		bool				Mipmaps;
 		bool				LimitFrequency;
+		bool				LodSkipLoaded;	// UNOFFICIAL (Fable): object LOD inside the loaded cells casts no shadow (the full models do)
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;
@@ -156,6 +157,9 @@ public:
 			float LampSwitchMargin, Strength, Bias, NormalOffset, Softness, FadeIn;	// LampSwitchMargin clamped to 0..0.9
 			float FillLightRadius;		// UNOFFICIAL (2026-10-08): lamps reaching farther than this are fill lights (0 = none)
 			float FillLightShadowStrength;	// UNOFFICIAL (2026-10-08): how dark fill lights' shadows are, 0..1 (0 = no shadow)
+			int Quality;				// UNOFFICIAL (2026-10-10): PCF taps, 0 Low (1), 1 Medium (4, as before), 2 High (10), 3 Ultra (20)
+			bool ContactHardening;		// UNOFFICIAL (2026-10-10): lamp shadows sharp at contact, Softness further out (not the sun's [Shaders.ContactHardening])
+			float ContactHardeningStrength, ContactHardeningMinSoftness;	// at least 0; 0..1 share of the Softness spread
 		} Forward;
 	};
 
