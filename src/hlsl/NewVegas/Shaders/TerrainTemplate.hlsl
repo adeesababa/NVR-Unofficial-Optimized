@@ -142,9 +142,10 @@ float PointLightCount : register(c88);
 #if TERRAIN_BLEND_ACTIVE
 // The world's depth as the first land draw of the scene started (TerrainShaders::PrepareBlending) holds the objects
 // drawn before the land: rocks, walls, props. Where the land covers one of them by less than the blend distance, the
-// land is dithered away over that depth, so the object's buried part shows through and it sinks into the ground
-// instead of ending in a hard line. Opaque pass, so a dither (clip) rather than blending: with TAA (which moves the
-// pattern every frame) it averages into a smooth fade; without TAA the pattern stands still, a fine even stipple.
+// land fades out over that depth, so the object's buried part shows through and it sinks into the ground instead of
+// ending in a hard line. Smooth (default): the land is drawn see-through there (its alpha; Terrain.cpp turns blending on
+// for its opaque pass) over the object, which the game drew before the land - a smooth fade without TAA. Off: a dither
+// (clip), which averages into a fade only with TAA (it moves the pattern every frame), a fine still stipple without.
 // Registers pinned clear of the game's (land PS tops out at c93) and of every other NVR constant.
 float4 TESR_TerrainBlendData : register(c176);  // x: on for this draw, y: 1 / blend distance, z: max distance, w: debug view
 float4 TESR_TerrainBlendExtra : register(c177); // xy: 1 / resolution, z: dither frame (0 without TAA), w: 1 Smooth (blended, not dithered)
