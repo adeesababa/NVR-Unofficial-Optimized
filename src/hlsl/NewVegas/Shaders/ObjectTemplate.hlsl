@@ -205,7 +205,10 @@
 #ifdef PS
     // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS): SHADOWED(colour, k, att) gives light k of the draw
     // its own cube-map shadow (looked up once per pixel near the top of main); without INTERIOR_SHADOWS it is just the
-    // colour.
+    // colour. POINT_SHADOW_SCALAR (2026-10-14): ptShadow0..5 held as plain numbers, the debug views' tint applied where
+    // each is used: six float3 kept alive across the lighting put the 4+ lamp shader (SLS2035 with _rmaos maps, hand blood
+    // and MoreLampsPerObject on) one temp register over ps_3_0's 32, and its interior record failed to compile.
+    #define POINT_SHADOW_SCALAR
     #include "includes/PointShadowForward.hlsl"
     // UNOFFICIAL 2026-10-13: blood on the first-person weapon and gloves (c218-c219, set per draw; off for every other draw).
     #include "includes/HandBlood.hlsl"
@@ -847,7 +850,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             float3 ptNormal = 0.0f;
         #endif
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
-        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
+        float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             // Light k of the draw is PSLightColor[k]; light 0 is a point light only in the DIFFUSE and POINT passes.
             #if defined(DIFFUSE) || defined(POINT)
@@ -1228,7 +1231,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT); the attenuations below are the
         // ones the lighting further down computes, so the compiler shares them.
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
-        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
+        float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             #ifdef OPT
                 ptShadow0 = POINT_SHADOW_LOOKUP(0, PT_ATT(0));

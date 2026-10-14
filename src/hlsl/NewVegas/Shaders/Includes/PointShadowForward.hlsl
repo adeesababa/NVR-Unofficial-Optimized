@@ -208,9 +208,17 @@ float PointShadow5(float3 worldPos, float3 normal, float att) { return PointShad
 //                                world position, 0 under a vanilla one) must be in scope -- see ObjectTemplate.hlsl.
 //   POINT_SHADOW(k, att), SHADOWED(colour, k, att): light k's shadow, light k's colour with it (att is only there to
 //                                keep the call sites readable; the lookup already used it).
+#ifdef POINT_SHADOW_SCALAR
+// UNOFFICIAL 2026-10-14 (ObjectTemplate.hlsl): float ptShadow0..5, the debug tint applied at each use (same result, fewer
+// temp registers held across the lighting).
+#define POINT_SHADOW_LOOKUP(k, att) PointShadow##k(ptWorldPos, ptNormal, (att) * ptValid)
+#define POINT_SHADOW(k, att) PointShadowFactor(ptShadow##k, NVR_PointShadowTint[k])
+#define SHADOWED(color, k, att) ((color) * POINT_SHADOW(k, att))
+#else
 #define POINT_SHADOW_LOOKUP(k, att) PointShadowFactor(PointShadow##k(ptWorldPos, ptNormal, (att) * ptValid), NVR_PointShadowTint[k])
 #define POINT_SHADOW(k, att) ptShadow##k
 #define SHADOWED(color, k, att) ((color) * ptShadow##k)
+#endif
 
 #else
 
