@@ -16,6 +16,10 @@ public:
 	// seen from behind (the game uses them where the player never sees their other side), so the sun and the volumetric light
 	// shone straight through them. Closed objects come out the same either way: the face nearest the sun wins the depth test.
 	static inline bool TwoSided = false;
+	// UNOFFICIAL 2026-10-14: while the light grid's sun map is drawn (ShadowManager, ShadowGridColor.pso), each caster's diffuse
+	// texture is bound at s0 so the map records its colour; TESR_ShadowData.w says whether one was bound.
+	static inline bool BindDiffuse = false;
+	static void BindDiffuseOf(NiGeometry* Geo);
 
 	std::stack<NiGeometry*>	GeometryList;
 	virtual bool AccumObject(NiGeometry* Geo) { return true; };

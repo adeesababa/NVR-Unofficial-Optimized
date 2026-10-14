@@ -269,6 +269,9 @@ void ShadowManager::Initialize() {
 	// and an opaque caster never reaches the discard (TESR_ShadowData.y is 0). Alpha and leaf passes keep the clip shader.
 	TheShadowManager->ShadowMapOpaquePixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowMapOpaque.pso", "Shadows\\");
 	TheShadowManager->ShadowCubeMapOpaquePixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowCubeMapOpaque.pso", "Shadows\\");
+	// UNOFFICIAL 2026-10-14: the light grid's sun map with colours; missing, the grid's bounce takes one ground colour.
+	TheShadowManager->ShadowGridColorPixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowGridColor.pso", "Shadows\\");
+	if (TheShadowManager->ShadowGridColorPixel) TheShadowManager->ShadowGridColorPixel->ClearSamplers = false;
 	// A missing copy falls back to the clip shader: the same image, only the early-Z gain is lost.
 	if (!TheShadowManager->ShadowMapOpaquePixel) {
 		TheShadowManager->ShadowMapOpaquePixel = TheShadowManager->ShadowMapPixel;
@@ -1392,7 +1395,23 @@ void ShadowManager::RenderShadowMaps() {
 			Device->SetDepthStencilSurface(ambientLight->gridSunDepth);
 			ShadowData->z = 1; // plain depth, as the ortho map
 			Shadows->Constants.ShadowViewProj = ambientLight->GridSunViewProj(SunDir);
+			// With the colour shader: every pass draws depth + the caster's colour (its diffuse texture) into two targets.
+			const bool colour = ShadowGridColorPixel && ambientLight->gridSunColorSurface;
+			RenderPass* passes[] = { geometryPass, alphaPass, skinnedGeoPass, speedTreePass, terrainLODPass };
+			ShaderRecordPixel* saved[5] = {};
+			if (colour) {
+				for (int i = 0; i < 5; i++) { saved[i] = passes[i]->PixelShader; passes[i]->PixelShader = ShadowGridColorPixel; }
+				Device->SetRenderTarget(1, ambientLight->gridSunColorSurface);
+				RenderPass::BindDiffuse = true;
+			}
 			RenderShadowMap(&ambientLight->gridSunMap, &Shadows->Constants.ShadowViewProj);
+			if (colour) {
+				for (int i = 0; i < 5; i++) passes[i]->PixelShader = saved[i];
+				Device->SetRenderTarget(1, nullptr);
+				RenderPass::BindDiffuse = false;
+				ShadowData->w = 0.0f;
+			}
+			ambientLight->gridSunHasColor = colour;
 		}
 	}
 

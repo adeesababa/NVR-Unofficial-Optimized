@@ -398,9 +398,18 @@ float ShadowPCF2x2Clamped(float2 uv, float depth, float2 lo, float2 hi) {
 }
 #endif
 
-float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 quadrantOffset, float bias, float bleedReduction) {
-    float4 lightSpace = mul(float4(position, 1.0f), lightTransform);
 #if SHADOW_FIXED_MODE == 3
+// UNOFFICIAL 2026-10-14: Mode 3's lookup with or without contact hardening in one body (contact false: the plain 3 x 3), so a
+// shader holds one copy of the 3 x 3 and one of the disc, not one per exit and per caller (SunCascadeTap): the copies put the
+// 4-lamp object shaders (SLS2034, SLS2036) over ps_3_0's temp registers with _rmaos maps and hand blood on.
+float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 quadrantOffset, float bias, bool contact);
+#endif
+float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 quadrantOffset, float bias, float bleedReduction) {
+#if SHADOW_FIXED_MODE == 3
+    return SampleShadowAtlasPCSS(position, lightTransform, quadrantOffset, bias, true);
+}
+float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 quadrantOffset, float bias, bool contact) {
+    float4 lightSpace = mul(float4(position, 1.0f), lightTransform);
     // UNOFFICIAL 2026-10-14 contact hardening for PCF (Mode 3), as below for EVSM4 but on plain depth (PCSS):
     //   1. Blocker search: the depths over the widest penumbra; the ones nearer the sun than this point are its casters,
     //      their average how far toward the sun they are.
@@ -422,22 +431,27 @@ float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 
     // deep in the umbra and gets the plain lookup (so a miss here only ever looks like plain Mode 3); only real penumbra
     // pixels pay for the 1 + 8 disc of 2 x 2 compares.
     static const float2 search[5] = { float2(0.0f, 0.0f), float2(0.73f, 0.20f), float2(-0.20f, 0.73f), float2(-0.73f, -0.20f), float2(0.20f, -0.73f) };
-    float casterSum = 0.0f, casters = 0.0f;
-    [unroll] for (int s = 0; s < 5; s++) {   // one read at a time: the terrain shaders are at the temp register limit
-        float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
-        float blocks = d < depth ? 1.0f : 0.0f;
-        casterSum += d * blocks;
-        casters += blocks;
+    float radius = 0.0f;
+    [branch] if (contact) {
+        float casterSum = 0.0f, casters = 0.0f;
+        [unroll] for (int s = 0; s < 5; s++) {   // one read at a time: the terrain shaders are at the temp register limit
+            float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
+            float blocks = d < depth ? 1.0f : 0.0f;
+            casterSum += d * blocks;
+            casters += blocks;
+        }
+        float distance = max(depth - casterSum / max(casters, 1.0f), 0.0f) * worldPerDepth;
+        radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
     }
-    [branch] if (casters < 0.5f || casters > 4.5f) return ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
-
-    float distance = max(depth - casterSum / casters, 0.0f) * worldPerDepth;
-    float radius = min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
-    [branch] if (radius <= texel) return ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
-    float lit = ShadowPCF2x2Clamped(uv, depth, lo, hi);
-    [unroll] for (int i = 0; i < 8; i++)
-        lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, depth, lo, hi);
-    return lit / 9.0f;
+    float lit;
+    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
+    else {
+        lit = ShadowPCF2x2Clamped(uv, depth, lo, hi);
+        [unroll] for (int i = 0; i < 8; i++)
+            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, depth, lo, hi);
+        lit /= 9.0f;
+    }
+    return lit;
 #elif SHADOW_FIXED_MODE != 2
     return SampleShadowAtlas(lightSpace, quadrantOffset, bias, bleedReduction);
 #else
@@ -542,10 +556,10 @@ float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float4 offsetD
     float offset = c < 0.5f ? offsetDistance.x : c < 1.5f ? offsetDistance.y : c < 2.5f ? offsetDistance.z : offsetDistance.w;
     float3 position = worldPos + offset * worldNormal;
 #if CONTACT_HARDENING
-    [branch] if (c < 1.5f && TESR_ContactHardeningData.x > 0.0f)
-        return SampleShadowAtlasContact(position, lightTransform, quadrant, bias, 0.0f);
-#endif
+    return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && TESR_ContactHardeningData.x > 0.0f);
+#else
     return SampleShadowAtlas(mul(float4(position, 1.0f), lightTransform), quadrant, bias, 0.0f);
+#endif
 }
 #endif
 
@@ -632,15 +646,14 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     else if (distances.y < radii.y) { cascade = 1.0f; fade = smoothstep(radii.y * blend, radii.y, distances.y); }
     else if (distances.z < radii.z) { cascade = 2.0f; fade = smoothstep(radii.z * blend, radii.z, distances.z); }
     else if (distances.w < radii.w) { cascade = 3.0f; fade = smoothstep(radii.w * blend, radii.w, distances.w); }
+    // UNOFFICIAL 2026-10-14: in a cascade's outer band each point takes this cascade or the next by a fine dither (share = fade)
+    // instead of looking both up and blending: two inlined lookups put 30 of the 55 outdoor object shaders over ps_3_0's 32 temp
+    // registers with PCSS on, and the game silently drew those objects with its own shaders. Past the Lod cascade: unshadowed.
+    float dither = frac(52.9829189f * frac(dot(worldPos, float3(0.0671106f, 0.00583715f, 0.0437f))));
+    cascade += fade > dither ? 1.0f : 0.0f;
     float shadow = 1.0f;
-    [branch] if (cascade >= 0.0f) {
+    [branch] if (cascade >= 0.0f && cascade < 3.5f)
         shadow = SunCascadeTap(cascade, worldPos, worldNormal, offsetDistance, bias);
-        [branch] if (fade > 0.0f) {
-            float next = 1.0f;
-            [branch] if (cascade < 2.5f) next = SunCascadeTap(cascade + 1.0f, worldPos, worldNormal, offsetDistance, bias);
-            shadow = lerp(shadow, next, fade);
-        }
-    }
 #else
     // Initialised: a point beyond the last cascade falls through every branch.
     float shadow = 1.0f;

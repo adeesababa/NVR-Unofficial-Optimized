@@ -45,6 +45,7 @@ public:
 	ShaderRecordPixel*		ShadowCubeMapPixel;
 	// UNOFFICIAL: ShadowMap.pso / ShadowCubeMap.pso without the alpha-test discard, for opaque casters (early-Z).
 	ShaderRecordPixel*		ShadowMapOpaquePixel;
+	ShaderRecordPixel*		ShadowGridColorPixel = nullptr;	// UNOFFICIAL 2026-10-14: light grid sun map, depth + colour (optional)
 	ShaderRecordPixel*		ShadowCubeMapOpaquePixel;
 	ShaderRecordVertex*		ShadowMapBlurVertex;
 	ShaderRecordPixel*		ShadowMapBlurPixel;

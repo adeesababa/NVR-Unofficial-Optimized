@@ -44,6 +44,14 @@ public:
 	IDirect3DTexture9*	gridSunTexture = nullptr;	// R32F depth from the sun
 	IDirect3DSurface9*	gridSunSurface = nullptr;
 	IDirect3DSurface9*	gridSunDepth = nullptr;
+	IDirect3DTexture9*	gridSunColorTexture = nullptr;	// A8R8G8B8: the sunlit surfaces' own colours (ShadowGridColor.pso)
+	IDirect3DSurface9*	gridSunColorSurface = nullptr;
+	bool				gridSunHasColor = false;
+	bool				gridColorValid = false;			// the finished grid carries colours
+	IDirect3DTexture9*	gridWaveColor[2] = {};			// rgb: colour x light, a: light (each step, as gridWave)
+	IDirect3DSurface9*	gridWaveColorSurface[2] = {};
+	IDirect3DTexture9*	gridAccumColor[2] = {};			// the same over all steps
+	IDirect3DSurface9*	gridAccumColorSurface[2] = {};
 	IDirect3DTexture9*	gridWave[2] = {};			// this step's light (A16B16G16R16F, the atlas)
 	IDirect3DSurface9*	gridWaveSurface[2] = {};
 	IDirect3DTexture9*	gridAccum[2] = {};			// the light over all steps so far

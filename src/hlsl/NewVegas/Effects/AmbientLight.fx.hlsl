@@ -333,13 +333,19 @@ AccumulateOut Accumulate(VSOUT IN) {
 //    falling on its surface, and adds it as the screen bounce was added.
 // The grid moves with the player in whole cells, so it does not crawl; it has no occlusion, so light can cross a thin wall.
 float4 NVR_GridOrigin;          // xyz: the grid's corner relative to the camera now, w: cell size (world units)
-float4 NVR_GridData;            // x: strength (0: no grid), y: share of a neighbour's light passed on per step, z: RSM texel size (world units), w: debug
+float4 NVR_GridData;            // x: strength (0: no grid), y: share of a neighbour's light passed on per step, z: sun map texel size (world units), w: 1 the grid carries the surfaces' colours
 float4 NVR_GridLight;           // rgb: the bounced light's colour (sun x ground colour, linear), w: injection scale
 float4x4 NVR_GridSunToGrid;     // sun depth map clip space (x, y, depth) -> position relative to the grid's corner
 float4x4 NVR_GridToSun;         // position relative to the grid's corner -> sun depth map clip space
 sampler2D NVR_GridWave : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_GridAccum : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D NVR_GridSunDepth : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-14 colour: the sunlit surfaces' colours (ShadowGridColor.pso), and per cell the colour carried with the light
+// (rgb: colour x light, a: light; the colour is rgb / a), for each step and over all steps.
+sampler2D NVR_GridSunColor : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_GridWaveColor : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_GridAccumColor : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+static const float3 GridGroundColor = float3(0.55f, 0.42f, 0.30f);	// without colours: a desert ground (linear)
 
 static const float GridX = 32.0f, GridY = 32.0f, GridZ = 16.0f;
 static const float AtlasSize = 128.0f;   // 4 x 4 tiles of 32 x 32
@@ -369,7 +375,7 @@ float3 SunMapPosition(float2 uv, float depth) {
 	return p.xyz / p.w;
 }
 
-struct GridOut { float4 wave : COLOR0; float4 accum : COLOR1; };
+struct GridOut { float4 wave : COLOR0; float4 accum : COLOR1; float4 waveColor : COLOR2; float4 accumColor : COLOR3; };
 
 GridOut GridInject(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
@@ -381,6 +387,7 @@ GridOut GridInject(VSOUT IN) {
 	float span = 1.75f * size / NVR_GridData.z;
 	float stepTexels = span / 6.0f;
 	float4 sh = 0.0f;
+	float4 colour = 0.0f;	// the surfaces' colours (linear) added up, and how many
 	[loop] for (int j = 0; j < 6; j++) {
 		[loop] for (int i = 0; i < 6; i++) {
 			float2 uv = centreUV + (float2(i, j) - 2.5f) * stepTexels / SunMapSize;
@@ -398,6 +405,7 @@ GridOut GridInject(VSOUT IN) {
 			n = len > 1e-4f ? n / len : float3(0.0f, 0.0f, 1.0f);
 			n *= dot(n, TESR_SunDirection.xyz) < 0.0f ? -1.0f : 1.0f;
 			sh += CosineLobe(n);
+			colour += float4(NVR_GridData.w > 0.5f ? pow(tex2Dlod(NVR_GridSunColor, float4(uv, 0.0f, 0.0f)).rgb, 2.2f) : GridGroundColor, 1.0f);
 		}
 	}
 	// Each read stands for stepTexels^2 map texels of sunlit surface; as a share of a cell's face.
@@ -406,12 +414,16 @@ GridOut GridInject(VSOUT IN) {
 	OUT.wave = sh;
 	// Not in the total: a surface's own cell would light the surface with the light it sends out (the ground lit itself, test 1).
 	OUT.accum = 0.0f;
+	// The colour as colour x light (the light: the lobe's all-directions part), so steps can add it up weighted by light.
+	OUT.waveColor = float4(colour.rgb / max(colour.a, 1.0f), 1.0f) * sh.x;
+	OUT.accumColor = 0.0f;
 	return OUT;
 }
 
 GridOut GridPropagate(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
 	float4 sh = 0.0f;
+	float4 colour = 0.0f;
 	[unroll] for (int k = 0; k < 6; k++) {
 		float3 axis = k == 0 ? float3(1, 0, 0) : k == 1 ? float3(-1, 0, 0) : k == 2 ? float3(0, 1, 0) : k == 3 ? float3(0, -1, 0) : k == 4 ? float3(0, 0, 1) : float3(0, 0, -1);
 		float3 neighbour = cell - axis;	// the neighbour on the far side; its light travels along +axis to this cell
@@ -419,10 +431,15 @@ GridOut GridPropagate(VSOUT IN) {
 		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour), 0.0f, 0.0f));
 		float sent = max(dot(from, ShBasis(axis)), 0.0f);
 		sh += CosineLobe(axis) * (sent * NVR_GridData.y);
+		// The neighbour's colour travels with the light it sends.
+		float4 fromColour = tex2Dlod(NVR_GridWaveColor, float4(CellUV(neighbour), 0.0f, 0.0f));
+		colour += float4(fromColour.rgb / max(fromColour.a, 1e-5f), 1.0f) * (sent * NVR_GridData.y);
 	}
 	GridOut OUT;
 	OUT.wave = sh;
 	OUT.accum = tex2Dlod(NVR_GridAccum, float4(IN.UVCoord, 0.0f, 0.0f)) + sh;	// the total so far (read at the texel centre) plus this step
+	OUT.waveColor = colour;
+	OUT.accumColor = tex2Dlod(NVR_GridAccumColor, float4(IN.UVCoord, 0.0f, 0.0f)) + colour;
 	return OUT;
 }
 
@@ -443,10 +460,18 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
 	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
 	float4 sh = lerp(a, b, fz);
+	// The surfaces' colour the light comes from (weighted by their light), or one ground colour.
+	float3 colour = GridGroundColor;
+	[branch] if (NVR_GridData.w > 0.5f) {
+		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
+		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
+		float4 c = lerp(ca, cb, fz);
+		colour = c.a > 1e-5f ? c.rgb / c.a : GridGroundColor;
+	}
 	// The light arriving over the hemisphere round the normal; / pi so that a surface ringed by the bounce of ground lit with
 	// colour C gets about C x the share of the view the ground fills (test 1: x 1 washed the picture out).
 	float irradiance = max(dot(sh, CosineLobe(normal)), 0.0f) * 0.3183f;
-	return irradiance * NVR_GridLight.rgb * fade;
+	return irradiance * colour * NVR_GridLight.rgb * fade;
 }
 
 // Pass 5: upsample and apply.
