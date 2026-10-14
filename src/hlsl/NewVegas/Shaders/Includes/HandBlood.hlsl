@@ -63,22 +63,28 @@ float3 HandBloodRunCell(float2 p, float i, float seed, float fill, float2 size, 
 	float rr = r * (1.0f - ragged * (sin(a * 3.0f + h1 * 6.28f) * 0.18f + sin(a * 7.0f + h2 * 6.28f) * 0.08f));
 	float edge = rr - length(d);
 	float2 slope = d / max(rr, 1e-3f);
-	float len = run * (h4 > 0.45f ? lerp(0.25f, 2.8f, h5 * h5) : 0.0f) * (0.6f + r * 2.0f);
+	float len = run * (h4 > 0.45f ? lerp(0.2f, 1.6f, h5 * h5) : 0.0f) * (0.6f + r * 2.0f);
 	[branch] if (len > 0.02f) {
-		float2 start = centre + down * r * 0.55f + across * (h3 - 0.5f) * r * 1.1f;
+		float2 start = centre + down * r * 0.3f + across * (h3 - 0.5f) * r * 0.5f;
 		float2 ds = p - start;
 		float along = dot(ds, down);
 		float s = clamp(along, 0.0f, len);
-		float wander = (sin(s * 3.1f + h1 * 6.28f) + 0.5f * sin(s * 7.7f + h2 * 6.28f)) * 0.05f * (0.5f + h5);
-		float width = r * lerp(0.4f, 0.13f, s / len) * (0.8f + 0.4f * h2);
+		float wander = sin(s * 2.1f + h1 * 6.28f) * 0.015f * (0.5f + h5);
+		float width = r * lerp(0.7f, 0.5f, s / len) * (0.85f + 0.3f * h2);
 		float lateral = dot(ds, across) - wander;
 		float streak = width - length(float2(along - s, lateral));
-		float endWander = (sin(len * 3.1f + h1 * 6.28f) + 0.5f * sin(len * 7.7f + h2 * 6.28f)) * 0.05f * (0.5f + h5);
-		float beadR = r * lerp(0.25f, 0.6f, h4);
+		float endWander = sin(len * 2.1f + h1 * 6.28f) * 0.015f * (0.5f + h5);
+		float beadR = r * lerp(0.6f, 0.85f, h4);
 		float2 toBead = p - (start + down * len + across * endWander);
-		float bead = frac(h0 * 7.13f) > 0.35f ? beadR - length(toBead) : -1.0f;
-		if (streak > edge) { edge = streak; slope = across * (lateral / max(width, 1e-3f)) * 0.8f + down * saturate((along - s) / max(width, 1e-3f)) * 0.5f; }
-		if (bead > edge) { edge = bead; slope = toBead / max(beadR, 1e-3f); }
+		float bead = beadR - length(toBead);
+		float k = r * 0.35f;
+		float runBody = max(streak, bead) + pow(saturate((k - abs(streak - bead)) / k), 2.0f) * k * 0.25f;
+		float joined = max(edge, runBody) + pow(saturate((k - abs(edge - runBody)) / k), 2.0f) * k * 0.25f;
+		if (joined > edge) {
+			slope = bead > streak ? toBead / max(beadR, 1e-3f)
+				: across * (lateral / max(width, 1e-3f)) * 0.8f + down * saturate((along - s) / max(width, 1e-3f)) * 0.5f;
+			edge = joined;
+		}
 	}
 	float c = shown > 0.0f ? saturate(edge / max(pixel, 0.002f) + 0.5f) * saturate(shown * 8.0f) : 0.0f;
 	return float3(c, clamp(slope, -1.0f, 1.0f));

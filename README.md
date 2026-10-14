@@ -50,7 +50,9 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   stops sunlight and light shafts shining through one-sided walls). **Fixed in P79:** stripes on the ground with
   volumetric clouds on, a pale sheen sweeping over the casinos' marble walls, the 5th and 6th lamp on an object lit
   from the wrong place, `UsePointShadowsDay/Night` only taking effect at the next dawn or dusk, a crash at startup when
-  the graphics driver refuses a shader, and GunFX's smoke haze now drifts steadily instead of shifting as you walk.
+  the graphics driver refuses a shader, GunFX's barrel glow vanishing in some lighting, the blood on the weapon looking
+  clear in some lighting (its runs are now short, wide drips), and GunFX's smoke haze now drifts
+  steadily instead of shifting as you walk.
   The blood on the weapon follows mrfury97's HUD raindrops (Physically-Based-Reloaded testbed, after Ascii1457's
   Screen Space Shaders), and the blood textures were made for this build.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is

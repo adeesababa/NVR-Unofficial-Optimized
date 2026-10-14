@@ -697,6 +697,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !defined(ONLY_LIGHT)
         baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
+    #elif HAND_BLOOD && !defined(ONLY_SPECULAR)
+        #if defined(DIFFUSE)
+            baseColor.rgb = handBloodCover > 0.0f ? HandBloodAlbedo((0.25f).xxx) * 4.0f : baseColor.rgb;
+        #else
+            baseColor.rgb = handBloodCover > 0.0f ? HandBloodAlbedo(heatMaterialFactor) / heatMaterialFactor : baseColor.rgb;
+        #endif
     #endif
 
     #ifdef METAL
