@@ -139,6 +139,7 @@
     <ClCompile Include="..\src\effects\Animator.cpp" />
     <ClCompile Include="..\src\effects\AvgLuma.cpp" />
     <ClCompile Include="..\src\effects\SkyView.cpp" />
+    <ClCompile Include="..\src\effects\AmbientLight.cpp" />
     <ClCompile Include="..\src\effects\BloodLens.cpp" />
     <ClCompile Include="..\src\effects\Bloom.cpp" />
     <ClCompile Include="..\src\effects\BloomLegacy.cpp" />
@@ -258,6 +259,7 @@
     <ClInclude Include="..\src\effects\Animator.h" />
     <ClInclude Include="..\src\effects\AvgLuma.h" />
     <ClInclude Include="..\src\effects\SkyView.h" />
+    <ClInclude Include="..\src\effects\AmbientLight.h" />
     <ClInclude Include="..\src\effects\BloodLens.h" />
     <ClInclude Include="..\src\effects\Bloom.h" />
     <ClInclude Include="..\src\effects\BloomLegacy.h" />

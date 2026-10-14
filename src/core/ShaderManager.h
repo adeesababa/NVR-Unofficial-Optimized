@@ -141,6 +141,7 @@ public:
 		AmbientOcclusionEffect*	AmbientOcclusion;
 		AvgLumaEffect*			AvgLuma;
 		SkyViewEffect*			SkyView;	// UNOFFICIAL: the physical sky's table ([Shaders.Sky.Physical])
+		AmbientLightEffect*		AmbientLight;	// UNOFFICIAL: AO and bounce light in one pass (replaces both while on)
 		BloodLensEffect*		BloodLens;
 		BloomEffect*			Bloom;
 		BloomLegacyEffect*		BloomLegacy;

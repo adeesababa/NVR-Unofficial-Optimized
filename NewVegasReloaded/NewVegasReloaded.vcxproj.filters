@@ -64,6 +64,9 @@
     <ClInclude Include="..\src\effects\SkyView.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\AmbientLight.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\BloodLens.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -379,6 +382,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\SkyView.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\AmbientLight.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\BloodLens.cpp">

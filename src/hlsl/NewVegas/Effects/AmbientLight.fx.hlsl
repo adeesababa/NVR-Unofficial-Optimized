@@ -1,0 +1,244 @@
+// UNOFFICIAL 2026-10-14: ambient occlusion and bounce light in one pass ([Shaders.AmbientLight], src/effects/AmbientLight.cpp).
+// While it is on it replaces the AmbientOcclusion and BounceLight effects (ShaderManager skips them).
+//
+// Both come from the same reads: for each half-resolution pixel, two directions across the screen (turned per pixel by blue
+// noise), four reads each way along each. Along every direction the highest the surroundings rise above the pixel's surface (its
+// "horizon") gives how much of the sky above the pixel they hide: ambient occlusion, worked out as in "Practical Real-Time
+// Strategies for Accurate Indirect Occlusion" (Jimenez et al. 2016, GTAO), cosine-weighted, so creases darken and open ground
+// does not. Each read that raises the horizon also sends the light it shows on screen to the pixel, in proportion to how much
+// more of the view above the pixel it covers and to how much the two face each other: the bounce light (after "Horizon-based
+// indirect lighting", Mayaux 2018; Therrien et al. 2023 do the same with bitmasks, which shader model 3 has no integers for).
+//
+// Pass 1 Prepare (half): depth, normal and colour of each half-resolution pixel packed into one texel (as BounceLight's), so
+//        each read of the estimate is one small texel.
+// Pass 2 Estimate (half): rgb = bounce light, a = visibility (1 open, 0 fully hidden).
+// Pass 3-4 Blur (half): depth-aware, horizontal then vertical, all four channels.
+// Pass 5 Apply (full): depth-aware upsample; the scene darkened by the occlusion (less on bright surfaces, as the old AO) and the
+//        bounce added, tinted by the surface's own hue (as BounceLight: there is no albedo buffer).
+
+float4 TESR_AmbientLightData;   // x: radius (world units), y: occlusion strength, z: bounce strength, w: draw distance
+float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-1), y: brightness above which it fades, z: blur radius (half-res texels per tap), w: debug view (1 occlusion, 2 bounce)
+float4 TESR_ReciprocalResolution;
+float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
+
+sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_SourceBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D TESR_NormalsBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_BlueNoiseSampler : register(s3) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// Bound by AmbientLight.cpp per pass (not TESR_ samplers: those bind by their order in the file). After the TESR_ ones.
+sampler2D NVR_ALPrep : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_ALBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+static const float Radius = max(TESR_AmbientLightData.x, 1.0f);
+static const float OcclusionStrength = TESR_AmbientLightData.y;
+static const float BounceStrength = TESR_AmbientLightData.z;
+static const float DrawDistance = max(TESR_AmbientLightData.w, 100.0f);
+static const float DarkestAO = saturate(TESR_AmbientLightData2.x);
+static const float BrightFade = TESR_AmbientLightData2.y;
+static const float BlurStep = max(TESR_AmbientLightData2.z, 0.5f);
+static const float DebugView = TESR_AmbientLightData2.w;
+static const int SLICES = 2;
+static const int STEPS = 4;
+static const float NearFade = 40.0f;          // view depth (world units) below which nothing is done: the weapon, the camera's own body
+static const float MaxScreenRadius = 0.08f;   // largest radius on screen, as a share of the screen width (keeps the reads in cache)
+
+struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
+struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
+
+VSOUT FrameVS(VSIN IN) {
+	VSOUT OUT = (VSOUT)0.0f;
+	OUT.vertPos = IN.vertPos;
+	OUT.UVCoord = IN.UVCoord;
+	return OUT;
+}
+
+#include "Includes/Helpers.hlsl"
+#include "Includes/Depth.hlsl"
+
+// View-space position (x right, y up, z forward, world units) from a screen position and the linear depth (view z / far z).
+float3 PositionFromLinear(float2 uv, float linear01) {
+	float z = projectedDepthFromLinear(linear01);
+	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, z, 1.0f), TESR_InvProjectionTransform);
+	return viewSpace.xyz / viewSpace.w;
+}
+
+// View-space position from a screen position and its view depth: two multiply-adds (the projection is symmetric).
+float3 PositionFromViewZ(float2 uv, float z) {
+	return float3((uv.x * 2.0f - 1.0f) / TESR_ProjectionTransform[0][0], (1.0f - uv.y * 2.0f) / TESR_ProjectionTransform[1][1], 1.0f) * z;
+}
+
+// Two values in [0, 1] as 12-bit integers in one 32-bit float, and a unit vector as two numbers in [0, 1] (as BounceLight's).
+float Pack2(float2 v) { v = floor(saturate(v) * 4095.0f + 0.5f); return v.x * 4096.0f + v.y; }
+float2 Unpack2(float p) { float high = floor(p / 4096.0f); return float2(high, p - high * 4096.0f) / 4095.0f; }
+float2 OctEncode(float3 n) {
+	n /= abs(n.x) + abs(n.y) + abs(n.z);
+	float2 s = n.xy >= 0.0f ? 1.0f : -1.0f;
+	float2 e = n.z >= 0.0f ? n.xy : (1.0f - abs(n.yx)) * s;
+	return e * 0.5f + 0.5f;
+}
+float3 OctDecode(float2 e) {
+	e = e * 2.0f - 1.0f;
+	float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+	float t = saturate(-n.z);
+	n.xy += n.xy >= 0.0f ? -t : t;
+	return normalize(n);
+}
+
+// Pass 1: x = view depth (world units), y = normal, z = colour red and green (square-root encoded), w = colour blue (linear light, capped
+// so small bright glints do not spray light around).
+float4 Prepare(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
+	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
+	float3 light = min(linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb), 1.0f);
+	return float4(viewZ, Pack2(OctEncode(normal)), Pack2(sqrt(light.rg)), light.b);
+}
+
+// GTAO's cosine-weighted visible arc of one slice between its two horizons (cosines), each kept within the hemisphere round the
+// normal.
+float SliceArc(float horizonCos0, float horizonCos1, float n, float cosNormal, float sinN) {
+	float h0 = n + clamp(-acos(clamp(horizonCos1, -1.0f, 1.0f)) - n, -1.5707963f, 1.5707963f);
+	float h1 = n + clamp(acos(clamp(horizonCos0, -1.0f, 1.0f)) - n, -1.5707963f, 1.5707963f);
+	return (cosNormal + 2.0f * h0 * sinN - cos(2.0f * h0 - n)) * 0.25f + (cosNormal + 2.0f * h1 * sinN - cos(2.0f * h1 - n)) * 0.25f;
+}
+
+// Pass 2: the occlusion and the bounce light (see the top of the file).
+float4 Estimate(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float4 center = tex2Dlod(NVR_ALPrep, float4(uv, 0.0f, 0.0f));
+	float3 origin = PositionFromViewZ(uv, center.x);
+	float fade = smoothstep(NearFade, NearFade * 2.0f, origin.z) * (1.0f - smoothstep(DrawDistance * 0.7f, DrawDistance, origin.z));
+	[branch] if (fade <= 0.0f) return float4(0.0f, 0.0f, 0.0f, 1.0f);
+
+	float3 normal = OctDecode(Unpack2(center.y));
+	float3 viewVec = normalize(-origin);
+	float3 noise = tex2Dlod(TESR_BlueNoiseSampler, float4(uv / (256.0f * NVR_ALLayout.zw), 0.0f, 0.0f)).xyz;
+	// The radius on screen: r world units at depth z span r * P00 / (2 z) of the screen's width (P11 for the height).
+	float2 screenRadius = Radius * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * origin.z);
+	screenRadius *= min(1.0f, MaxScreenRadius / screenRadius.x);
+	float falloffStart = 0.4f * Radius;
+
+	// Diagnostics (DebugView 3-6): the pixel's normal, its view depth / 2000, the reach on screen x 10, raw horizons.
+	[branch] if (DebugView > 2.5f && DebugView < 3.5f) return float4(normal * 0.5f + 0.5f, 1.0f);
+	[branch] if (DebugView > 3.5f && DebugView < 4.5f) return float4(origin.z / 2000.0f, frac(origin.z / 100.0f), 0.0f, 1.0f);
+	[branch] if (DebugView > 4.5f && DebugView < 5.5f) return float4(screenRadius * 10.0f, Radius / 1000.0f, 1.0f);
+	float visibility = 0.0f, weightSum = 0.0f;
+	float3 bounce = 0.0f;
+	float firstCos = 0.0f, firstLow = 0.0f;
+	[unroll] for (int slice = 0; slice < SLICES; slice++) {
+		float phi = (slice + noise.x) * (3.14159265f / SLICES);
+		float2 omega = float2(cos(phi), -sin(phi));             // on screen (y down)
+		float3 direction = float3(cos(phi), sin(phi), 0.0f);    // the same in view space (y up)
+		float3 orthoDirection = direction - dot(direction, viewVec) * viewVec;
+		float3 axis = normalize(cross(orthoDirection, viewVec));
+		float3 projectedNormal = normal - axis * dot(normal, axis);
+		float projectedLength = length(projectedNormal) + 1e-5f;
+		float signNormal = dot(orthoDirection, projectedNormal) >= 0.0f ? 1.0f : -1.0f;
+		float cosNormal = saturate(dot(projectedNormal, viewVec) / projectedLength);
+		float n = signNormal * acos(cosNormal);
+		// Start each side's horizon at the pixel's own tangent plane: nothing below it can hide anything.
+		float lowCos0 = cos(n + 1.5707963f), lowCos1 = cos(n - 1.5707963f);
+		float horizonCos0 = lowCos0, horizonCos1 = lowCos1;
+		[unroll] for (int k = 0; k < STEPS; k++) {
+			float s = (k + frac(noise.y + k * 0.618034f)) / STEPS;
+			s *= s;                                              // more reads close to the pixel
+			float2 offset = omega * screenRadius * max(s, 2.0f * NVR_ALLayout.z);
+			[unroll] for (int side = 0; side < 2; side++) {
+				float2 sampleUV = uv + (side == 0 ? offset : -offset);
+				float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, 1.0f) * step(0.0f, sampleUV.y) * step(sampleUV.y, 1.0f);
+				sampleUV = (floor(saturate(sampleUV) / NVR_ALLayout.zw) + 0.5f) * NVR_ALLayout.zw;   // the centre of the texel read
+				float4 texel = tex2Dlod(NVR_ALPrep, float4(sampleUV, 0.0f, 0.0f));
+				float3 delta = PositionFromViewZ(sampleUV, texel.x) - origin;
+				float dist = length(delta) + 1e-4f;
+				float3 dir = delta / dist;
+				float weight = saturate((Radius - dist) / (Radius - falloffStart)) * onScreen * step(NearFade, origin.z + delta.z);
+				float lowCos = side == 0 ? lowCos0 : lowCos1;
+				float sampleCos = lerp(lowCos, dot(dir, viewVec), weight);
+				float horizon = side == 0 ? horizonCos0 : horizonCos1;
+				// Bounce: the part of the view above the pixel this read newly covers, lit by what the read shows, as far as
+				// the two surfaces face each other.
+				float covered = max(sampleCos - horizon, 0.0f);
+				float facing = saturate(dot(normal, dir)) * saturate(dot(OctDecode(Unpack2(texel.y)), -dir));
+				float2 rg = Unpack2(texel.z);
+				bounce += float3(rg * rg, texel.w) * (covered * facing);
+				if (side == 0) horizonCos0 = max(horizonCos0, sampleCos); else horizonCos1 = max(horizonCos1, sampleCos);
+				if (slice == 0 && side == 0 && k == 1) { firstCos = dot(dir, viewVec); firstLow = weight; }
+			}
+		}
+		// The slice's visible arc, over what it would be with nothing in the way: one slice's arc is only right on average
+		// over all directions (it exceeds 1 for a surface seen at an angle), so a few slices alone need this to keep open
+		// ground at exactly 1.
+		float sinN = sin(n);
+		visibility += projectedLength * SliceArc(horizonCos0, horizonCos1, n, cosNormal, sinN);
+		weightSum += projectedLength * SliceArc(lowCos0, lowCos1, n, cosNormal, sinN);
+	}
+	// Raised to a power (1.5 at strength 1, as XeGTAO does) so creases and contact read as the eye expects.
+	[branch] if (DebugView > 5.5f) return float4(visibility / max(weightSum, 1e-4f), firstCos * 0.5f + 0.5f, firstLow, 1.0f);
+	visibility = pow(saturate(visibility / max(weightSum, 1e-4f)), 1.5f * OcclusionStrength);
+	visibility = lerp(1.0f, visibility, fade);
+	// Bounce: x 2 per slice side covered, so a pixel enclosed by surfaces showing light L receives about L.
+	return float4(bounce * (2.0f * fade / SLICES), saturate(visibility));
+}
+
+// Passes 3-4: depth-aware blur, 7 taps along axis (half-resolution texels apart x BlurStep).
+float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
+	float depth = tex2Dlod(NVR_ALPrep, float4(IN.UVCoord, 0.0f, 0.0f)).x;
+	float tolerance = max(depth * 0.03f, 2.0f);
+	static const float weights[4] = { 0.30f, 0.23f, 0.11f, 0.05f };
+	float4 sum = tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f)) * weights[0];
+	float total = weights[0];
+	[unroll] for (int i = 1; i < 4; i++) {
+		[unroll] for (int side = -1; side <= 1; side += 2) {
+			float2 tapUV = IN.UVCoord + axis * NVR_ALLayout.zw * (i * side * BlurStep);
+			float tapDepth = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)).x;
+			float w = weights[i] * saturate(1.0f - abs(tapDepth - depth) / tolerance);
+			sum += tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)) * w;
+			total += w;
+		}
+	}
+	return sum / total;
+}
+
+// Pass 5: upsample and apply.
+float4 Apply(VSOUT IN) : COLOR0 {
+	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
+	float depth = readDepth(IN.UVCoord);
+	[branch] if (depth < NearFade || depth > DrawDistance) return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
+
+	// The four nearest half-resolution texels, the ones at another depth (across an object's edge) counted less.
+	float2 position = IN.UVCoord / NVR_ALLayout.zw - 0.5f;
+	float2 base = floor(position);
+	float2 fraction = position - base;
+	float tolerance = max(depth * 0.03f, 2.0f);
+	float4 sum = 0.0f;
+	float weights = 1.0e-5f;
+	[unroll] for (int y = 0; y < 2; y++) {
+		[unroll] for (int x = 0; x < 2; x++) {
+			float2 tapUV = (base + float2(x, y) + 0.5f) * NVR_ALLayout.zw;
+			float tapDepth = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)).x;
+			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
+			weight /= 1.0f + abs(tapDepth - depth) / tolerance;
+			sum += tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)) * weight;
+			weights += weight;
+		}
+	}
+	float4 ambient = sum / weights;
+
+	float3 lin = linearize(color.rgb);
+	float ao = lerp(DarkestAO, 1.0f, ambient.a);
+	ao = lerp(ao, 1.0f, saturate((luma(lin) - BrightFade) * 3.0f));   // bright surfaces keep their light, as the old AO
+	float peak = max(max(lin.r, lin.g), max(lin.b, 0.0001f));
+	float3 albedo = lin / peak * 0.6f;                                  // the surface's hue stands in for its colour (as BounceLight)
+	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);	// diagnostics: the estimate's raw values
+	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : BounceStrength * ambient.rgb * albedo, 1.0f));
+	lin = lin * ao + BounceStrength * ambient.rgb * albedo;
+	return delinearize(float4(lin, color.a));
+}
+
+technique AmbientLight {
+	pass Prepare { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Prepare(); }
+	pass Estimate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Estimate(); }
+	pass BlurX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(1.0f, 0.0f)); }
+	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
+	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
+}

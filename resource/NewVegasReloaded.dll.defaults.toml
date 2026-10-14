@@ -193,6 +193,19 @@ StrengthMultiplier = 1.0                # Global AO strength/darkness multiplier
 [_Shaders.AmbientOcclusion.Status]
 Enabled = true                          # Shadows based on object proximity/creases for more realistic light contribution.
 
+[_Shaders.AmbientLight.Main]
+Radius = 250.0                      # UNOFFICIAL: how far the occlusion and the bounce reach, in world units (about 70 = 1 m).
+OcclusionStrength = 2.5             # [0-4] How dark creases, corners and the ground under things get.
+BounceStrength = 5.0                # [0-10] How much light lit surfaces send onto nearby ones.
+DrawDistance = 6000.0               # Distance from the camera where the effect has faded out.
+DarkestOcclusion = 0.25             # [0-1] The darkest the occlusion may make a pixel (as AmbientOcclusion's ClampStrength).
+BrightnessFade = 0.7                # Bright surfaces keep their light: the occlusion fades out above this brightness (as AmbientOcclusion's LumThreshold).
+BlurRadius = 1.0                    # [0.5-4] Smoothing of the grain, in half-resolution pixels per step (x3 each way).
+DebugView = 0                       # 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
+
+[_Shaders.AmbientLight.Status]
+Enabled = false                     # UNOFFICIAL: ambient occlusion and bounce light worked out together in one pass (GTAO with horizon-based bounce light), at half resolution: occlusion that follows the shape of things (creases and the ground under objects, no halos on open ground) and bounce light that comes from what actually blocks the sky, for less than the two separate effects cost. While on it replaces the Ambient Occlusion and Bounce Light effects (their own settings are kept for when it is off).
+
 [_Shaders.Blood.Status]
 Enabled = false                         # Not currently used
 

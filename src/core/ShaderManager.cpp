@@ -50,6 +50,7 @@ void ShaderManager::Initialize() {
 	// initializing the list of effect names
 	TheShaderManager->RegisterEffect<AvgLumaEffect>(&TheShaderManager->Effects.AvgLuma);
 	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
+	TheShaderManager->RegisterEffect<AmbientLightEffect>(&TheShaderManager->Effects.AmbientLight);
 	TheShaderManager->RegisterEffect<AmbientOcclusionEffect>(&TheShaderManager->Effects.AmbientOcclusion);
 	TheShaderManager->RegisterEffect<BloodLensEffect>(&TheShaderManager->Effects.BloodLens);
 	TheShaderManager->RegisterEffect<BloomEffect>(&TheShaderManager->Effects.Bloom);
@@ -1166,13 +1167,21 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(cloudsTimer, Device);
 		Effects.VolumetricClouds->RenderClouds(Device, RenderTarget, TheTextureManager->RenderedSurface, SourceSurface);
 	}
+	// UNOFFICIAL AmbientLight (AmbientLight.h): AO and bounce light in one pass. While it renders it replaces AmbientOcclusion and
+	// BounceLight: both are switched off for the rest of this call (and back as they were when it returns), so every path below
+	// (the merged shadow + AO apply, the bounce folded into the specular) sees them off.
+	const bool ambientLight = wouldRender(Effects.AmbientLight);
+	struct EnabledGuard { EffectRecord* effect; bool was; ~EnabledGuard() { if (effect) effect->Enabled = was; } };
+	EnabledGuard aoGuard{ ambientLight ? Effects.AmbientOcclusion : nullptr, Effects.AmbientOcclusion->Enabled };
+	EnabledGuard bounceGuard{ ambientLight ? Effects.BounceLight : nullptr, Effects.BounceLight->Enabled };
+	if (ambientLight) Effects.AmbientOcclusion->Enabled = Effects.BounceLight->Enabled = false;
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
 	const bool aoApplies = wouldRender(AO);
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) || wouldRender(Effects.BloodFlow) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
-		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections); // must see the scene with its shadows and AO applied
+		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections) || ambientLight; // must see the scene with its shadows and AO applied
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	// UNOFFICIAL: when effects between keep the composite out of the fog pass, the shadow and AO applies still run
@@ -1239,6 +1248,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool bounceIntoSpecular = specularRenders && wouldRender(Effects.BounceLight) && !wouldRender(Effects.WetWorld) &&
 		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce() && !Effects.BounceLight->SpillOn() &&
 		!Effects.BounceLight->HardEdgesOn();
+	if (ambientLight) {
+		// UNOFFICIAL: AO and bounce light in one pass, on the shadowed scene, where the bounce light ran.
+		static GpuTimer ambientLightTimer("Ambient light (AO + bounce)");
+		GpuProfileScope gpu(ambientLightTimer, Device);
+		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		// UNOFFICIAL, optional: one bounce of screen-space indirect light, on the shadowed and AO'd scene.
