@@ -378,6 +378,10 @@ static const float2 ContactDisc[12] = {
     float2(0.7906f, 0.2887f), float2(-0.8224f, 0.3395f), float2(0.3965f, -0.8472f), float2(0.2930f, 0.9341f) };  // golden-angle spiral
 
 #if SHADOW_FIXED_MODE == 3
+static const float2 ContactDisc8[8] = {
+    float2(0.2500f, 0.0000f), float2(-0.3193f, 0.2925f), float2(0.0489f, -0.5569f), float2(0.4025f, 0.5248f),
+    float2(-0.7385f, -0.1306f), float2(0.6997f, -0.4451f), float2(-0.2340f, 0.8705f), float2(-0.4467f, -0.8590f) };  // golden-angle spiral, 8 points
+
 // UNOFFICIAL 2026-10-14: the 2 x 2 texels round uv compared with depth and blended bilinearly, kept inside the quadrant.
 float ShadowPCF2x2Clamped(float2 uv, float depth, float2 lo, float2 hi) {
     float texel = TESR_ShadowBlur.x;
@@ -413,25 +417,27 @@ float SampleShadowAtlasContact(float3 position, float4x4 lightTransform, float2 
     float2 lo = quadrantOffset + texel * 0.5f;
     float2 hi = quadrantOffset + 0.5f - texel * 0.5f;
 
+    // Cheaper version (2026-10-14, was 7 search reads + 13 x 2 x 2 everywhere a caster was near, +0.9 ms): four search
+    // reads at 3/4 of the widest penumbra plus the centre; where none or all of them are blocked the point is plainly lit or
+    // deep in the umbra and gets the plain lookup (so a miss here only ever looks like plain Mode 3); only real penumbra
+    // pixels pay for the 1 + 8 disc of 2 x 2 compares.
+    static const float2 search[5] = { float2(0.0f, 0.0f), float2(0.73f, 0.20f), float2(-0.20f, 0.73f), float2(-0.73f, -0.20f), float2(0.20f, -0.73f) };
     float casterSum = 0.0f, casters = 0.0f;
-    [unroll] for (int s = 0; s < 12; s += 2) {   // every other point of the disc: six reads, then the centre
-        float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + ContactDisc[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
+    [unroll] for (int s = 0; s < 5; s++) {   // one read at a time: the terrain shaders are at the temp register limit
+        float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
         float blocks = d < depth ? 1.0f : 0.0f;
         casterSum += d * blocks;
         casters += blocks;
     }
-    float centre = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv, lo, hi), 0.0f, 0.0f)).x;
-    casterSum += centre * (centre < depth ? 1.0f : 0.0f);
-    casters += centre < depth ? 1.0f : 0.0f;
-    [branch] if (casters < 0.5f) return ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);   // nothing near: the plain lookup
+    [branch] if (casters < 0.5f || casters > 4.5f) return ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
 
     float distance = max(depth - casterSum / casters, 0.0f) * worldPerDepth;
     float radius = min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
     [branch] if (radius <= texel) return ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
     float lit = ShadowPCF2x2Clamped(uv, depth, lo, hi);
-    [unroll] for (int i = 0; i < 12; i++)
-        lit += ShadowPCF2x2Clamped(uv + ContactDisc[i] * radius, depth, lo, hi);
-    return lit / 13.0f;
+    [unroll] for (int i = 0; i < 8; i++)
+        lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, depth, lo, hi);
+    return lit / 9.0f;
 #elif SHADOW_FIXED_MODE != 2
     return SampleShadowAtlas(lightSpace, quadrantOffset, bias, bleedReduction);
 #else
