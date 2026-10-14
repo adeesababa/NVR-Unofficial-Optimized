@@ -1285,7 +1285,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!specularDone) Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+#if NVR_TEST_TOOLS
 	EffectSelfTest::Capture(EffectSelfTest::AfterSpill, TheTextureManager->RenderedSurface);	// UNOFFICIAL, diagnostic: NeonSpillSelfTest
+#endif
 	{
 		// UNOFFICIAL: screen-space reflections on the ground, of the scene with every light, shadow and highlight on it,
 		// before the fog (which then hazes the reflection with the surface). Half-resolution passes into the effect's own

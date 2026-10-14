@@ -440,8 +440,8 @@ void RenderManager::CheckAndTakeScreenShot(IDirect3DSurface9* RenderTarget, bool
 		strcat(Filename, Name);
 		strcpy_s(LastScreenshotBase, Filename);  // for the reflection probe (Hooks/Render.cpp)
 		strcpy_s(LastScreenshotName, Name + 1);
-		ScreenshotTakenThisFrame = true;
-		strcat(Filename, HDR?".hdr":".jpg");
+		// UNOFFICIAL 2026-10-13 (a tester: one screenshot saved a pile of pictures): the old reflection probe (P54, Hooks/Render.cpp)
+		// is no longer started by a screenshot. And one extension (it saved "<time>.jpg.png").
 		strcat(Filename, HDR?".hdr":".png");
 		if (HDR)
 			D3DXSaveSurfaceToFileA(Filename, D3DXIFF_HDR, RenderTarget, NULL, NULL);

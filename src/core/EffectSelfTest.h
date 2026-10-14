@@ -1,4 +1,5 @@
 #pragma once
+#include "TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (off in release builds)
 
 // UNOFFICIAL, DIAGNOSTIC (2026-10-12): [Shaders.BounceLight.Main] NeonSpillSelfTest. Ticking the box runs one in-game A/B test of
 // the neon spill (Bounce Light NeonSpill) INSIDE ONE LAUNCH. Blocks of Settle frames (not read: the last block's bounce history

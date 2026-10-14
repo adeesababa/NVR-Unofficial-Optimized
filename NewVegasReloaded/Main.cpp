@@ -20,7 +20,9 @@ extern "C" {
 				MessageBox(NULL, L"Vanilla Plus Terrain not found.\nNew Vegas Reloaded cannot be used without it, please install it.", L"New Vegas Reloaded", MB_OK | MB_ICONERROR);
 				ExitProcess(0);
 			}
+#if NVR_TEST_TOOLS
 			EffectSelfTest::RegisterLink();	// UNOFFICIAL, TEST ONLY: after every plugin is loaded (critic-notes 14)
+#endif
 			break;
 		case NVSEMessagingInterface::kMessage_PreLoadGame:
 			TheSettingManager->GameLoading = true;
@@ -108,8 +110,10 @@ extern "C" {
 			((NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging))->RegisterListener(Interface->GetPluginHandle(), "NVSE", MessageHandler);
 			((NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging))->RegisterListener(Interface->GetPluginHandle(), "Shader Loader", ShaderLoaderHandler);
 			// UNOFFICIAL, TEST ONLY: the auto-test plugin's messages (EffectSelfTest.h); without that plugin nothing is ever sent.
+#if NVR_TEST_TOOLS
 			EffectSelfTest::LinkMessaging = (NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging);
 			EffectSelfTest::LinkHandle = Interface->GetPluginHandle();
+#endif
 			// (The listener itself is registered at kMessage_PostLoad: xNVSE refuses a listener for a plugin it has not loaded yet,
 			// and NewVegasReloaded loads before NVRAutoTest. critic-notes 14, after the calibration's exit 33.)
 
