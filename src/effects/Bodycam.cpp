@@ -81,7 +81,15 @@ void BodycamEffect::UpdateSettings() {
 }
 
 void BodycamEffect::UpdateConstants() {
-	Clock += std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);
+	// UNOFFICIAL 2026-10-13 (user: VideoFps did nothing): NVR updates every effect's constants twice a frame (before the world
+	// and again before the post effects), and the clock ran at twice real time: VideoFps 30 behaved as 60, so nothing was
+	// held below 60 fps (and the exposure, the bob and the hiccups ran twice as fast). Everything here now advances once a frame.
+	static double lastFrameTime = -1.0;
+	const double frameTime = TheFrameRateManager->Time;
+	if (frameTime == lastFrameTime) return;	// the second call this frame: the constants are already set
+	const double elapsed = lastFrameTime < 0.0 ? 0.016 : frameTime - lastFrameTime;
+	lastFrameTime = frameTime;
+	Clock += std::clamp(elapsed, 0.0, 0.1);
 	Constants.Noise.z = (float)fmod(floor(Clock * 30.0), 4096.0);	// the noise changes 30 times a second, like video
 
 	// The grade: indoors its own; outdoors day and night blended by the time of day (1 day, 0 night, smooth through dawn
@@ -132,7 +140,7 @@ void BodycamEffect::UpdateConstants() {
 
 	// UNOFFICIAL 2026-10-13: how fast the view moves (turning: screens a second; running: units a second), for the compression
 	// breaking down and the rolling shutter. Rises at once, falls over about a third of a second (the encoder catches up).
-	const float dt = (float)std::clamp((double)TheFrameRateManager->ElapsedTime, 1e-4, 0.1);
+	const float dt = (float)std::clamp(elapsed, 1e-4, 0.1);
 	const D3DXVECTOR3 pos(Player->pos.x, Player->pos.y, Player->pos.z);
 	D3DXVECTOR3 step = pos - LastPos;
 	LastPos = pos;
@@ -323,6 +331,21 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	// (A hiccup's frozen picture: the last kept frame shown again; a frame is kept every frame while hiccups are on.)
 	const bool hold = HoldValid && ((VideoFrameRate >= 1.0f && tick == HoldTick) || FreezeLeft > 0.0f);
 	Constants.Video.w = hold ? 1.0f : 0.0f;
+	// UNOFFICIAL 2026-10-13, diagnostic (user: VideoFps does not seem to work): every 5 s while it is on (8 times), how many
+	// frames were drawn and held, the game's frame rate, and where the kept frame came from.
+	static int drawnCount = 0, heldCount = 0, reports = 0;
+	static double reportStart = -1.0;
+	static const char* source = "none";
+	if (VideoFrameRate >= 1.0f && reports < 8) {
+		if (reportStart < 0.0) reportStart = Clock;
+		(hold ? heldCount : drawnCount)++;
+		if (Clock - reportStart >= 5.0) {
+			Logger::Log("UNOFFICIAL Bodycam video: %d drawn, %d held in %.1f s (game %.0f fps, video %.0f fps); kept frame from %s, chain %s",
+				drawnCount, heldCount, Clock - reportStart, (drawnCount + heldCount) / (Clock - reportStart), VideoFrameRate, source,
+				TheShaderManager->Chain.IsActive() ? "on" : "off");
+			drawnCount = heldCount = 0; reportStart = Clock; reports++;
+		}
+	}
 	EffectRecord::Render(Device, RenderTarget, RenderedSurface, 0, ClearRenderTarget, SourceBuffer);
 	if (hold) return;
 	if (VideoFrameRate < 1.0f && Constants.Glitch.w <= 0.0f) { HoldValid = false; return; }
@@ -331,6 +354,8 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	// into it, or the target on the old path).
 	FrameChain& chain = TheShaderManager->Chain;
 	IDirect3DSurface9* result = !chain.IsActive() ? RenderTarget : chain.IsDirectFinal(this) ? chain.FinalSurface() : TheTextureManager->RenderedSurface;
+	source = !chain.IsActive() ? "the target (no chain)" : chain.IsDirectFinal(this) ? "the game target (direct final)" :
+		result == RenderedSurface ? "the chain's current image (same as the input!)" : "the chain's current image";
 	D3DSURFACE_DESC desc;
 	if (!result || FAILED(result->GetDesc(&desc))) { HoldValid = false; return; }
 	if (!HoldSurface || desc.Width != HoldDesc.Width || desc.Height != HoldDesc.Height || desc.Format != HoldDesc.Format) {
