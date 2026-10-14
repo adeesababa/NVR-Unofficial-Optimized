@@ -38,6 +38,11 @@ sampler2D TESR_VolumetricLightMarch : register(s3) = sampler_state { ADDRESSU = 
 sampler2D TESR_VolumetricLightBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_VolumetricLightTemp : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_VolumetricLightHistory : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-14 froxel grid (Froxels on): linear filtering for the composite's reads between grid columns; the passes
+// that build it read texel centres only, where the filter returns the texel itself.
+sampler2D TESR_VolumetricLightGrid : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D TESR_VolumetricLightGridTemp : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 TESR_VolumetricLightGridLayout; // xy: grid columns and rows (one per 16 x 16 screen pixels), zw: one atlas texel in UV
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float Strength = TESR_VolumetricLightData.x;
@@ -204,6 +209,20 @@ float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 float4 BlurXPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 { return BlurAxis(TESR_VolumetricLightTemp, vpos, float2(1.0, 0.0)); }
 float4 BlurYPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 { return BlurAxis(TESR_VolumetricLightMarch, vpos, float2(0.0, 1.0)); }
 
+// The lit and shaded air over the frame: the sunlight added, the shaded air's darkening (air: r lit share, g all air).
+float4 CompositeAir(float2 uv, float4 color, float2 air) {
+	// Henyey-Greenstein phase, times 4 pi (1 for air that scatters evenly), capped so looking straight at the sun
+	// cannot blow out.
+	float cosTheta = dot(normalize(toWorld(uv)), TESR_SmoothedSunDir.xyz);
+	float g = Anisotropy;
+	float phase = min((1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosTheta, 1.0e-4), 1.5), 8.0);
+
+	float3 lin = linearize(max(color.rgb, 0.0));
+	float shadedAir = saturate(air.g - air.r);
+	lin = lin * (1.0 - Darken * Fade * shadedAir) + linearize(TESR_SunColor.rgb) * (Strength * Fade * phase * air.r);
+	return float4(delinearize(max(lin, 0.0)), color.a);
+}
+
 // ---- 0: Composite, full resolution ----
 float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
@@ -228,17 +247,80 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		}
 	}
 	air /= weights;
+	return CompositeAir(uv, color, air);
+}
 
-	// Henyey-Greenstein phase, times 4 pi (1 for air that scatters evenly), capped so looking straight at the sun
-	// cannot blow out.
-	float cosTheta = dot(normalize(toWorld(uv)), TESR_SmoothedSunDir.xyz);
-	float g = Anisotropy;
-	float phase = min((1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosTheta, 1.0e-4), 1.5), 8.0);
+// ---- UNOFFICIAL 2026-10-14: froxel grid ([Shaders.VolumetricLight.Main] Froxels) ----
+// Instead of marching every half-resolution pixel (Steps shadow reads each, then history and two blurs), the air in front
+// of the camera is cut into a grid: one column per 16 x 16 screen pixels, 64 slices deep out to MaxDistance (spaced by the
+// square of the slice number, so thin near the eye and thick far out). The sun's shadow is read twice per cell, once, and
+// summed front to back; every pixel then reads the sum at its own depth. About a sixteenth of the march's shadow reads, no
+// noise to hide, so no history and no blur. The 64 slices sit in one 2D texture, 8 x 8 tiles of the grid's columns x rows
+// (D3D9 cannot draw into a 3D texture), slice z in tile (z mod 8, z / 8).
+//   5 GridLight: per cell, the share of the view the cell's lit air scatters towards the eye (the air density is the same
+//                everywhere, so the transmittance in front of it is exact: exp(-sigma * depth)).  -> Grid
+//   6 GridRow:   sums along each row of 8 tiles (slices 8r .. 8r + 7).                               Grid -> GridTemp
+//   7 GridCarry: adds the totals of the rows before.                                                 GridTemp -> Grid
+//                Slice z then holds the lit share from the eye to the far side of slice z.
+//   8 CompositeGrid: the composite above, the lit share read at the pixel's depth (two reads between the slices it lies
+//                in), the share of all the air worked out exactly (1 - exp(-sigma * depth)).
+static const float2 GridSize = TESR_VolumetricLightGridLayout.xy;
+static const float2 GridAtlasTexel = TESR_VolumetricLightGridLayout.zw;
 
-	float3 lin = linearize(max(color.rgb, 0.0));
-	float shadedAir = saturate(air.g - air.r);
-	lin = lin * (1.0 - Darken * Fade * shadedAir) + linearize(TESR_SunColor.rgb) * (Strength * Fade * phase * air.r);
-	return float4(delinearize(max(lin, 0.0)), color.a);
+// Planar depth of slice coordinate s (0 .. 64, the near side of slice s).
+float GridDepth(float s) { s /= 64.0; return MarchDistance * s * s; }
+
+// The atlas UV of slice z at grid coordinate local (texel k's centre at k + 0.5), kept inside the slice's tile.
+float2 GridUV(float z, float2 local) {
+	float2 tile = float2(fmod(z, 8.0), floor(z / 8.0));
+	return (tile * GridSize + clamp(local, 0.5, GridSize - 0.5)) * GridAtlasTexel;
+}
+
+float4 GridLightPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 tile = floor(vpos / GridSize);
+	float2 cell = vpos - tile * GridSize;          // the column, 0 .. GridSize - 1
+	float z = tile.y * 8.0 + tile.x;
+	float near = GridDepth(z), far = GridDepth(z + 1.0);
+	// Two shadow reads per cell, a quarter and three quarters of the way through it, on rays through opposite quarters
+	// of its 16 x 16 pixels: thin shadows (poles, wires) between the column centres are not missed outright.
+	float shadow = MarchShadow(toWorld((cell + 0.25) / GridSize) * lerp(near, far, 0.25)) +
+	               MarchShadow(toWorld((cell + 0.75) / GridSize) * lerp(near, far, 0.75));
+	float sigma = Density * length(toWorld((cell + 0.5) / GridSize));
+	return float4(0.5 * shadow * (exp(-sigma * near) - exp(-sigma * far)), 0.0, 0.0, 1.0);
+}
+
+float4 GridRowPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 tile = floor(vpos / GridSize);
+	float2 cell = vpos - tile * GridSize + 0.5;
+	float sum = 0.0;
+	[unroll] for (int c = 0; c < 8; c++)
+		if (c <= tile.x) sum += tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(tile.y * 8.0 + c, cell), 0, 0)).r;
+	return float4(sum, 0.0, 0.0, 1.0);
+}
+
+float4 GridCarryPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 tile = floor(vpos / GridSize);
+	float2 cell = vpos - tile * GridSize + 0.5;
+	float sum = tex2Dlod(TESR_VolumetricLightGridTemp, float4(GridUV(tile.y * 8.0 + tile.x, cell), 0, 0)).r;
+	[unroll] for (int r = 0; r < 7; r++)
+		if (r < tile.y) sum += tex2Dlod(TESR_VolumetricLightGridTemp, float4(GridUV(r * 8.0 + 7.0, cell), 0, 0)).r;
+	return float4(sum, 0.0, 0.0, 1.0);
+}
+
+float4 CompositeGridPS(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
+	float depth = readDepthLod(uv);
+	float planar = depth >= farZ * 0.996 ? MarchDistance : min(depth, MarchDistance);
+
+	float s = sqrt(planar / MarchDistance) * 64.0;   // slice coordinate of the pixel's depth
+	float z = min(floor(s), 63.0);
+	float2 local = uv * GridSize;
+	float farSide = tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(z, local), 0, 0)).r;
+	float nearSide = z > 0.5 ? tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(z - 1.0, local), 0, 0)).r : 0.0;
+	float sigma = Density * length(toWorld(uv));
+	float2 air = float2(lerp(nearSide, farSide, saturate(s - z)), 1.0 - exp(-sigma * planar));
+	return CompositeAir(uv, color, air);
 }
 
 technique Composite {
@@ -278,5 +360,36 @@ technique BlurY {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 BlurYPS();
 		Texture[4] = <NoTexture>;   // writes Buffer
+	}
+}
+
+technique GridLight {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 GridLightPS();
+		Texture[7] = <NoTexture>;   // writes Grid
+	}
+}
+
+technique GridRow {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 GridRowPS();
+		Texture[8] = <NoTexture>;   // writes GridTemp
+	}
+}
+
+technique GridCarry {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 GridCarryPS();
+		Texture[7] = <NoTexture>;   // writes Grid
+	}
+}
+
+technique CompositeGrid {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 CompositeGridPS();
 	}
 }

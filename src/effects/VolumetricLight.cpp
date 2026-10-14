@@ -17,6 +17,7 @@ void VolumetricLightEffect::UpdateSettings() {
 	Settings.Temporal = std::clamp(TheSettingManager->GetSettingF(section, "Temporal"), 0.0f, 0.97f);
 	Settings.BlurRadius = std::clamp(TheSettingManager->GetSettingF(section, "BlurRadius"), 0.0f, 8.0f);
 	Settings.RainStrength = std::clamp(TheSettingManager->GetSettingF(section, "RainStrength"), 0.0f, 1.0f);
+	Settings.Froxels = TheSettingManager->GetSettingI(section, "Froxels") != 0;
 }
 
 void VolumetricLightEffect::RegisterConstants() {
@@ -25,6 +26,7 @@ void VolumetricLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightData3", &Constants.Data3);
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightLayout", &Constants.Layout);
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightReproject", (D3DXVECTOR4*)&Constants.Reproject);
+	TheShaderManager->RegisterConstant("TESR_VolumetricLightGridLayout", &Constants.GridLayout);
 }
 
 void VolumetricLightEffect::RegisterTextures() {
@@ -34,6 +36,13 @@ void VolumetricLightEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("TESR_VolumetricLightTemp", &Textures.TempTexture, &Textures.TempSurface, w, h, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("TESR_VolumetricLightHistory", &Textures.HistoryTexture, &Textures.HistorySurface, w, h, D3DFMT_A16B16G16R16F);
 	Constants.Layout = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
+
+	// UNOFFICIAL 2026-10-14 froxel grid: one column per 16 x 16 pixels, its 64 slices in 8 x 8 tiles (1280 x 720 at 1440p,
+	// 3.7 MB each). Made whatever the setting, so it can be switched on in game.
+	const UINT gw = (TheRenderManager->width + 15) / 16, gh = (TheRenderManager->height + 15) / 16;
+	TheTextureManager->InitTexture("TESR_VolumetricLightGrid", &Textures.GridTexture, &Textures.GridSurface, gw * 8, gh * 8, D3DFMT_R32F);
+	TheTextureManager->InitTexture("TESR_VolumetricLightGridTemp", &Textures.GridTempTexture, &Textures.GridTempSurface, gw * 8, gh * 8, D3DFMT_R32F);
+	Constants.GridLayout = D3DXVECTOR4((float)gw, (float)gh, 1.0f / (gw * 8), 1.0f / (gh * 8));
 }
 
 void VolumetricLightEffect::UpdateConstants() {
@@ -71,6 +80,21 @@ bool VolumetricLightEffect::ShouldRender() {
 // With Temporal on: March -> March buffer, Temporal -> Temp (copied to History for next frame), Blur X -> March,
 // Blur Y -> Buffer. Off: March -> Temp, then the same blurs. The composite (technique 0) then reads Buffer.
 void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
+	if (CompositeTechnique() == 8) {
+		// UNOFFICIAL 2026-10-14 froxel grid: light the cells, then the two summing passes (techniques 5, 6, 7).
+		static GpuTimer gridTimers[3] = { GpuTimer("  VL grid light"), GpuTimer("  VL grid sum rows"), GpuTimer("  VL grid sum carry") };
+		auto gridPass = [&](IDirect3DSurface9* target, UINT technique) {
+			GpuProfileScope gpuPass(gridTimers[technique - 5], Device);
+			Device->SetRenderTarget(0, target);
+			Render(Device, target, target, technique, false, target);
+		};
+		gridPass(Textures.GridSurface, 5);
+		gridPass(Textures.GridTempSurface, 6);
+		gridPass(Textures.GridSurface, 7);
+		haveHistory = false;	// the march's history is stale when it is switched back
+		lastRenderedFrame = frame;
+		return;
+	}
 	const bool temporal = Settings.Temporal > 0.0f;
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;

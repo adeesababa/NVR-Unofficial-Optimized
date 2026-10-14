@@ -25,6 +25,7 @@ public:
 		float	Temporal;		// share of last frame's result kept (0: no history)
 		float	BlurRadius;		// denoise blur, half-resolution texels each way
 		float	RainStrength;	// share of the strength in rain
+		bool	Froxels;		// UNOFFICIAL 2026-10-14: the froxel grid instead of the march (see the .fx)
 	};
 	SettingsStruct	Settings;
 
@@ -34,6 +35,7 @@ public:
 		D3DXVECTOR4	Data3;		// x: history weight this frame, y: blur radius
 		D3DXVECTOR4	Layout;		// xy: one half-resolution texel in screen UV
 		D3DXMATRIX	Reproject;	// camera-relative world -> last frame's clip space
+		D3DXVECTOR4	GridLayout;	// xy: froxel grid columns and rows, zw: one atlas texel in UV
 	};
 	ConstantsStruct	Constants;
 
@@ -46,6 +48,10 @@ public:
 		IDirect3DSurface9* TempSurface = nullptr;
 		IDirect3DTexture9* HistoryTexture = nullptr;
 		IDirect3DSurface9* HistorySurface = nullptr;
+		IDirect3DTexture9* GridTexture = nullptr;		// the froxel grid's 64 slices, 8 x 8 tiles (R32F)
+		IDirect3DSurface9* GridSurface = nullptr;
+		IDirect3DTexture9* GridTempTexture = nullptr;
+		IDirect3DSurface9* GridTempSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 
@@ -55,6 +61,7 @@ public:
 	void	UpdateSettings();
 	bool	ShouldRender();
 	void	RenderBuffers(IDirect3DDevice9* Device);	// march, history, blur: everything before the composite
+	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface ? 8 : 0; }
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;

@@ -1021,6 +1021,7 @@ Temporal = 0.9                         # [0.0-0.95] Day and night: how much of l
 BlurRadius = 4.0                       # [0-8] Day and night: how wide the edge-aware smoothing is (in half-resolution pixels each way). It takes out the fine noise that breaks up the bands, and stops at the edges of buildings and trees. 0: no smoothing.
 Anisotropy = 0.5                       # [0.0-0.9] By day: forward scattering: higher concentrates the light around the sun and fades it looking away.
 RainStrength = 0.5                     # [0.0-1.0] Day and night: share of the strength in rain.
+Froxels = false                        # Day and night: work the shafts out on a coarse 3D grid of the air (one column per 16 x 16 pixels, 64 slices deep) instead of along every pixel's view: far fewer shadow reads, no noise, so Steps, Temporal and BlurRadius are not used. Softer shaft edges.
 
 [_Shaders.VolumetricLight.Night]
 Strength = 0.09                        # [0.0-3.0] By moonlight: how much light the lit air adds.

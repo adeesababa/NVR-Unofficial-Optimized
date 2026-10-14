@@ -1361,7 +1361,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (wouldRender(Effects.VolumetricLight)) {
 			Effects.VolumetricLight->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
-			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.VolumetricLight->CompositeTechnique(), false, SourceSurface);
 		}
 	}
 	{
