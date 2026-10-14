@@ -205,6 +205,7 @@ GridBounce = 0.0                    # UNOFFICIAL, EXPERIMENTAL: the sun's bounce
 GridCellSize = 200.0                # [50-800] Size of one grid cell in world units (32 x 32 x 16 cells round you: 200 covers about 90 x 90 x 45 m). Smaller = finer but shorter reach.
 GridSteps = 8                       # [1-16] How many cells the light spreads from what it bounces off.
 GridSpread = 0.3                    # [0-0.6] How much light passes on from cell to cell each step.
+GridScreenStrength = 6.0            # [0-40] Indoors and at night (no sun): how strongly the light surfaces show on screen (lamps, neon, fire) feeds the grid. It remembers what it saw, so the bounce stays when you turn away.
 GridBlocking = 1.0                  # [0-4] How much walls and other surfaces stop the grid's light passing through them (0: light leaks through everything).
 Temporal = true                     # UNOFFICIAL: keeps the bounce light from frame to frame (moved with the camera) and turns its sample pattern every frame, so the grain averages out instead of crawling (worst on grass at high BounceStrength). Off: each frame on its own, as before.
 DebugView = 0                       # 7: the light grid's bounce alone. 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).

@@ -14,13 +14,14 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
-	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 7);
+	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 8);
 	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 	gridBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBounce"), 0.0f, 10.0f);
 	gridCell = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridCellSize"), 50.0f, 800.0f);
 	gridSteps = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "GridSteps"), 1, 16);
 	gridSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridSpread"), 0.0f, 0.6f);
 	gridBlocking = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBlocking"), 0.0f, 4.0f);
+	gridScreenStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridScreenStrength"), 0.0f, 40.0f);
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -49,6 +50,10 @@ void AmbientLightEffect::EnsureGridBuffers() {
 	TheTextureManager->InitTexture("NVR_GridWave1", &gridWave[1], &gridWaveSurface[1], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_GridAccum0", &gridAccum[0], &gridAccumSurface[0], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_GridAccum1", &gridAccum[1], &gridAccumSurface[1], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_GridScreen0", &gridScreen[0], &gridScreenSurface[0], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_GridScreen1", &gridScreen[1], &gridScreenSurface[1], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_GridScreenColor0", &gridScreenColor[0], &gridScreenColorSurface[0], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_GridScreenColor1", &gridScreenColor[1], &gridScreenColorSurface[1], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_GridGeometry", &gridGeometry, &gridGeometrySurface, GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_GridSunColor", &gridSunColorTexture, &gridSunColorSurface, GridSunMapSize, GridSunMapSize, D3DFMT_A8R8G8B8);
 	TheTextureManager->InitTexture("NVR_GridWaveColor0", &gridWaveColor[0], &gridWaveColorSurface[0], GridAtlasSize, GridAtlasSize, D3DFMT_A16B16G16R16F);
@@ -67,9 +72,16 @@ void AmbientLightEffect::EnsureGridBuffers() {
 // frame? Every 4th frame, at once when the grid has to move (the player walked into another cell), never with the sun down.
 bool AmbientLightEffect::WantsGridSunMap(const D3DXVECTOR3& sunDir) {
 	gridSunFresh = false;
-	if (!Enabled || !Effect || gridBounce <= 0.0f || sunDir.z < 0.03f || TheShaderManager->GameState.isUnderwater) { gridValid = false; return false; }
+	gridSunActive = false;
+	if (!Enabled || !Effect || gridBounce <= 0.0f || sunDir.z < 0.03f || TheShaderManager->GameState.isUnderwater) return false;
 	EnsureGridBuffers();
 	if (!gridSunSurface || !gridSunDepth || !gridWaveSurface[0] || !gridWaveSurface[1] || !gridAccumSurface[0] || !gridAccumSurface[1] || !gridGeometrySurface) return false;
+	gridSunActive = true;
+	return GridMoveOrDue();
+}
+
+// The grid's corner for the camera now (whole cells), and whether to update it: every 4th frame, at once when it has to move.
+bool AmbientLightEffect::GridMoveOrDue() {
 	const NiPoint3 camera = WorldSceneGraph->camera->m_worldTransform.pos;
 	const double cell = gridCell;
 	gridPendingOrigin[0] = floor(camera.x / cell) * cell - 16.0 * cell;
@@ -130,10 +142,9 @@ D3DXMATRIX AmbientLightEffect::GridSunViewProj(const D3DXVECTOR3& sunDir) {
 	return viewProj;
 }
 
-// The grid from a freshly drawn sun map: inject, then spread gridSteps times (each pass writes this step and the running total).
-void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device) {
-	if (!gridSunFresh) return;
-	gridSunFresh = false;
+// The grid, every few frames: the screen memory first (indoors and at night: no sun map), then inject (the sun map's surfaces
+// and/or the screen memory), then spread gridSteps times (each pass writes this step and the running total).
+void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool screen) {
 	D3DXHANDLE technique = Effect->GetTechniqueByName("AmbientLightGrid");
 	D3DXHANDLE originHandle = ParameterHandle(paramGridOrigin, "NVR_GridOrigin");
 	D3DXHANDLE dataHandle = ParameterHandle(paramGridData, "NVR_GridData");
@@ -141,52 +152,94 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device) {
 	D3DXHANDLE sunToGridHandle = ParameterHandle(paramGridSunToGrid, "NVR_GridSunToGrid");
 	D3DXHANDLE toSunHandle = ParameterHandle(paramGridToSun, "NVR_GridToSun");
 	D3DXHANDLE stepHandle = ParameterHandle(paramGridStep, "NVR_GridStep");
-	if (!technique || !originHandle || !dataHandle || !lightHandle || !sunToGridHandle || !toSunHandle || !stepHandle) {
+	D3DXHANDLE shiftHandle = ParameterHandle(paramGridShift, "NVR_GridShift");
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || !originHandle || !dataHandle || !lightHandle || !sunToGridHandle || !toSunHandle || !stepHandle || !shiftHandle ||
+		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 3) {
 		static bool reported = false;
 		if (!reported) Logger::Log("UNOFFICIAL AmbientLight: the light grid needs the AmbientLight.fx.hlsl that came with this DLL; GridBounce off.");
 		reported = true;
 		gridValid = false;
 		return;
 	}
+	screen = screen && gridScreenSurface[0] && gridScreenSurface[1] && gridScreenColorSurface[0] && gridScreenColorSurface[1];
 	static GpuTimer gridTimer("  Ambient light grid (inject + spread)");
 	GpuProfileScope gpu(gridTimer, Device);
 	const NiPoint3 camera = WorldSceneGraph->camera->m_worldTransform.pos;
 	D3DXVECTOR4 origin((float)(gridPendingOrigin[0] - camera.x), (float)(gridPendingOrigin[1] - camera.y), (float)(gridPendingOrigin[2] - camera.z), gridCell);
-	const bool colour = gridSunHasColor && gridSunColorSurface;
-	D3DXVECTOR4 data(gridBounce, gridSpread, gridSunTexel, colour ? 1.0f : 0.0f);
-	D3DXVECTOR4 light(1.0f, 1.0f, 1.0f, 1.0f);
+	const bool colour = gridWaveColorSurface[0] && gridAccumColorSurface[0];
+	D3DXVECTOR4 data(gridBounce, gridSpread, gridSunTexel, colour && gridSunHasColor ? 1.0f : 0.0f);
+	const D3DXVECTOR4& sunColor = TheShaderManager->ShaderConst.sunColor;
+	D3DXVECTOR4 light(powf((std::max)(sunColor.x, 0.0f), 2.2f), powf((std::max)(sunColor.y, 0.0f), 2.2f), powf((std::max)(sunColor.z, 0.0f), 2.2f), 1.0f);
+	// The screen memory moves with the grid: a cell now at c was at c + shift.
+	const bool keep = gridScreenValid && !TheShaderManager->GameState.isCellChanged;
+	D3DXVECTOR4 shift(keep ? (float)((gridPendingOrigin[0] - gridScreenOrigin[0]) / gridCell) : 0.0f,
+		keep ? (float)((gridPendingOrigin[1] - gridScreenOrigin[1]) / gridCell) : 0.0f,
+		keep ? (float)((gridPendingOrigin[2] - gridScreenOrigin[2]) / gridCell) : 0.0f, keep ? 1.0f : 0.0f);
 	D3DVIEWPORT9 original = {}, atlas = { 0, 0, (DWORD)GridAtlasSize, (DWORD)GridAtlasSize, 0.0f, 1.0f };
 	Device->GetViewport(&original);
 	Effect->SetTechnique(technique);
+	SetCT();	// the TESR_ textures (depth, normals) for the screen memory
 	Effect->SetVector(originHandle, &origin);
 	Effect->SetVector(dataHandle, &data);
 	Effect->SetVector(lightHandle, &light);
-	Effect->SetMatrix(sunToGridHandle, &gridSunToGrid);
-	Effect->SetMatrix(toSunHandle, &gridToSun);
+	Effect->SetVector(shiftHandle, &shift);
+	if (D3DXHANDLE h = ParameterHandle(paramGridScreen, "NVR_GridScreen")) {
+		D3DXVECTOR4 screenData(gridScreenStrength, 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(h, &screenData);
+	}
+	if (sun) {
+		Effect->SetMatrix(sunToGridHandle, &gridSunToGrid);
+		Effect->SetMatrix(toSunHandle, &gridToSun);
+	}
+	auto clearStages = [&]() {
+		for (int s = 5; s <= 14; s++) if (s != 11) Device->SetTexture(s, nullptr);
+	};
 	UINT passes = 0;
 	HRESULT result = Effect->Begin(&passes, 0);
 	int wave = 0, accum = 0;
 	if (SUCCEEDED(result)) {
+		// The screen memory.
+		if (screen) {
+			const int read = gridScreenIndex, write = gridScreenIndex ^ 1;
+			clearStages();
+			result = Device->SetRenderTarget(0, gridScreenSurface[write]);
+			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, gridScreenColorSurface[write]);
+			if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
+			if (SUCCEEDED(result)) result = Effect->BeginPass(0);
+			if (SUCCEEDED(result)) {
+				Device->SetTexture(1, TheTextureManager->RenderedTexture);	// TESR_SourceBuffer: the image now
+				Device->SetTexture(6, gridScreen[read]);					// NVR_GridScreenOld
+				Device->SetTexture(7, gridScreenColor[read]);				// NVR_GridScreenColorOld
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				HRESULT endResult = Effect->EndPass();
+				if (SUCCEEDED(result)) result = endResult;
+			}
+			if (SUCCEEDED(result)) {
+				gridScreenIndex = write;
+				gridScreenValid = true;
+				for (int i = 0; i < 3; i++) gridScreenOrigin[i] = gridPendingOrigin[i];
+			}
+			Device->SetRenderTarget(1, nullptr);
+		}
 		for (int step = 0; step <= gridSteps && SUCCEEDED(result); step++) {
 			const int writeWave = step == 0 ? 0 : wave ^ 1, writeAccum = step == 0 ? 0 : accum ^ 1;
-			Device->SetTexture(8, nullptr);
-			Device->SetTexture(9, nullptr);
-			Device->SetTexture(10, nullptr);
-			for (int s = 12; s <= 14; s++) Device->SetTexture(s, nullptr);
-			Device->SetTexture(5, nullptr);
+			clearStages();
 			result = Device->SetRenderTarget(0, gridWaveSurface[writeWave]);
 			// The second target: on injection the cells' surfaces (blocking), then the running total.
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, step == 0 ? gridGeometrySurface : gridAccumSurface[writeAccum]);
-			D3DXVECTOR4 stepData(step == 1 ? 1.0f : 0.0f, gridBlocking, 0.0f, 0.0f);
+			D3DXVECTOR4 stepData(step == 1 ? 1.0f : 0.0f, gridBlocking, sun ? 1.0f : 0.0f, screen && gridScreenValid ? 1.0f : 0.0f);
 			Effect->SetVector(stepHandle, &stepData);
-			// The colour, carried along with the light: targets 2 and 3 (without the colour buffers the shader's colour outputs go
-			// nowhere and the apply falls back to one ground colour).
+			// The colour, carried along with the light: targets 2 and 3.
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, colour ? gridWaveColorSurface[writeWave] : nullptr);
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(3, colour ? gridAccumColorSurface[writeAccum] : nullptr);
 			if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
-			if (SUCCEEDED(result)) result = Effect->BeginPass(step == 0 ? 0 : 1);
+			if (SUCCEEDED(result)) result = Effect->BeginPass(step == 0 ? 1 : 2);
 			if (FAILED(result)) break;
-			if (step == 0) { Device->SetTexture(10, gridSunTexture); if (colour) Device->SetTexture(12, gridSunColorTexture); }
+			if (step == 0) {
+				if (sun) { Device->SetTexture(10, gridSunTexture); if (gridSunHasColor) Device->SetTexture(12, gridSunColorTexture); }
+				if (screen && gridScreenValid) { Device->SetTexture(6, gridScreen[gridScreenIndex]); Device->SetTexture(7, gridScreenColor[gridScreenIndex]); }
+			}
 			else {
 				Device->SetTexture(8, gridWave[wave]); Device->SetTexture(9, gridAccum[accum]);
 				Device->SetTexture(5, gridGeometry);	// NVR_GridGeometry (NVR_ALPrep's stage)
@@ -203,11 +256,8 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device) {
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderTarget(2, nullptr);
 	Device->SetRenderTarget(3, nullptr);
-	Device->SetTexture(8, nullptr);
-	Device->SetTexture(9, nullptr);
-	Device->SetTexture(10, nullptr);
-	for (int s = 12; s <= 14; s++) Device->SetTexture(s, nullptr);
-	Device->SetTexture(5, nullptr);
+	clearStages();
+	Device->SetTexture(1, TheTextureManager->SourceTexture);
 	Device->SetViewport(&original);
 	if (SUCCEEDED(result)) {
 		gridAccumIndex = accum;
@@ -215,7 +265,8 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device) {
 		for (int i = 0; i < 3; i++) gridOrigin[i] = gridPendingOrigin[i];
 		gridValid = true;
 		static bool logged = false;
-		if (!logged) Logger::Log("UNOFFICIAL AmbientLight: light grid running (cell %.0f units, %d steps, sun map texel %.1f units).", gridCell, gridSteps, gridSunTexel);
+		if (!logged) Logger::Log("UNOFFICIAL AmbientLight: light grid running (cell %.0f units, %d steps, sun map %s, screen memory %s).",
+			gridCell, gridSteps, sun ? "yes" : "no", screen ? "yes" : "no");
 		logged = true;
 	}
 	else {
@@ -266,8 +317,19 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 
 	// UNOFFICIAL 2026-10-14 light grid: inject and spread when the sun map was drawn this frame; the apply reads the finished
 	// grid (stage 9) with its corner relative to the camera now.
-	const bool gridOn = gridBounce > 0.0f && TheShaderManager->GameState.isExterior;
-	if (gridOn) RenderGrid(Device);
+	// UNOFFICIAL 2026-10-14: outdoors with the sun up the sun map feeds it (updated when ShadowManager drew the map); indoors and
+	// at night the screen memory (updated on the same cadence, decided here).
+	const bool gridOn = gridBounce > 0.0f;
+	if (gridOn) {
+		EnsureGridBuffers();
+		const bool buffers = gridWaveSurface[0] && gridWaveSurface[1] && gridAccumSurface[0] && gridAccumSurface[1] && gridGeometrySurface;
+		if (buffers) {
+			if (gridSunActive) { if (gridSunFresh) RenderGrid(Device, true, false); }
+			else if (GridMoveOrDue()) RenderGrid(Device, false, true);
+		}
+		gridSunFresh = false;
+		gridSunActive = false;	// WantsGridSunMap sets it again next frame while the sun map is in use
+	}
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
@@ -278,12 +340,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		if (use) {
 			const NiPoint3 camera = WorldSceneGraph->camera->m_worldTransform.pos;
 			D3DXVECTOR4 origin((float)(gridOrigin[0] - camera.x), (float)(gridOrigin[1] - camera.y), (float)(gridOrigin[2] - camera.z), gridCell);
-			// The bounced light's colour: the sun's (linear); the surfaces' own colours come from the grid (NVR_GridData.w 1),
-			// else one desert-ground colour (the shader's fallback).
-			const D3DXVECTOR4& sun = TheShaderManager->ShaderConst.sunColor;
-			D3DXVECTOR4 light(powf((std::max)(sun.x, 0.0f), 2.2f), powf((std::max)(sun.y, 0.0f), 2.2f), powf((std::max)(sun.z, 0.0f), 2.2f), 1.0f);
 			if (D3DXHANDLE h = ParameterHandle(paramGridOrigin, "NVR_GridOrigin")) Effect->SetVector(h, &origin);
-			if (D3DXHANDLE h = ParameterHandle(paramGridLight, "NVR_GridLight")) Effect->SetVector(h, &light);
 		}
 	}
 	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
@@ -338,6 +395,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			else if (p == 5) Device->SetTexture(7, historyTexture[writeIndex]);
 			if (p == 5 && gridValid) Device->SetTexture(9, gridAccum[gridAccumIndex]);
 			if (p == 5 && gridValid && gridColorValid) Device->SetTexture(14, gridAccumColor[gridAccumIndex]);
+			if (p == 5 && gridScreenValid) Device->SetTexture(8, gridScreen[gridScreenIndex]);	// DebugView 8
 			if (p == 4) Device->SetTexture(11, occlusionHistory[readIndex]);
 			else if (p == 5) Device->SetTexture(11, occlusionHistory[writeIndex]);
 			Device->SetTexture(1, scene);	// TESR_SourceBuffer slot: the current image
@@ -357,6 +415,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetTexture(11, nullptr);
 	Device->SetTexture(14, nullptr);
 	Device->SetTexture(15, nullptr);
+	Device->SetTexture(8, nullptr);
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
 	// UNOFFICIAL Temporal: this frame's history is next frame's "last frame".

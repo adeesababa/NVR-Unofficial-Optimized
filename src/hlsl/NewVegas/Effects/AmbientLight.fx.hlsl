@@ -344,7 +344,7 @@ AccumulateOut Accumulate(VSOUT IN) {
 // The grid moves with the player in whole cells, so it does not crawl; it has no occlusion, so light can cross a thin wall.
 float4 NVR_GridOrigin;          // xyz: the grid's corner relative to the camera now, w: cell size (world units)
 float4 NVR_GridData;            // x: strength (0: no grid), y: share of a neighbour's light passed on per step, z: sun map texel size (world units), w: 1 the grid carries the surfaces' colours
-float4 NVR_GridLight;           // rgb: the bounced light's colour (sun x ground colour, linear), w: injection scale
+float4 NVR_GridLight;           // rgb: the sun's colour (linear; the sun map's surfaces send their colour x it), w: injection scale
 float4x4 NVR_GridSunToGrid;     // sun depth map clip space (x, y, depth) -> position relative to the grid's corner
 float4x4 NVR_GridToSun;         // position relative to the grid's corner -> sun depth map clip space
 sampler2D NVR_GridWave : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -359,7 +359,7 @@ sampler2D NVR_GridAccumColor : register(s14) = sampler_state { ADDRESSU = CLAMP;
 // from the sun map at injection. Read through stage 5 during the grid passes (every sampler register is taken; NVR_ALPrep is not
 // used by them), so it is NVR_ALPrep under another name.
 #define NVR_GridGeometry NVR_ALPrep
-float4 NVR_GridStep;            // x: 1 on the first spreading step (the running total starts at 0), y: blocking strength
+float4 NVR_GridStep;            // x: 1 on the first spreading step (the running total starts at 0), y: blocking strength, z: 1 sun map in, w: 1 screen memory in
 static const float3 GridGroundColor = float3(0.55f, 0.42f, 0.30f);	// without colours: a desert ground (linear)
 
 static const float GridX = 32.0f, GridY = 32.0f, GridZ = 16.0f;
@@ -392,50 +392,121 @@ float3 SunMapPosition(float2 uv, float depth) {
 
 struct GridOut { float4 wave : COLOR0; float4 accum : COLOR1; float4 waveColor : COLOR2; float4 accumColor : COLOR3; };
 
+// UNOFFICIAL 2026-10-14 screen memory (indoors and at night, where there is no sun map): every grid update, each cell seen on
+// screen takes the light its surfaces show there (lamps, neon, fire: whatever lit them), as order-1 harmonics round their
+// normals and colour x light; a cell out of view, or hidden behind something, keeps what it had (so the bounce does not come
+// and go as the camera turns). Stored per cell of the world: when the grid moves, the old values move with it (NVR_GridShift).
+// Read through the stages of NVR_ALBuffer / NVR_ALHistory (every sampler register is taken; the grid passes use neither).
+#define NVR_GridScreenOld NVR_ALBuffer
+#define NVR_GridScreenColorOld NVR_ALHistory
+float4 NVR_GridShift;           // xyz: the grid's move since the screen memory was stored (cells), w: 1 the memory is usable
+float4 NVR_GridScreen;          // x: the screen memory's strength (GridScreenStrength)
+
+struct ScreenOut { float4 sh : COLOR0; float4 colour : COLOR1; };
+
+ScreenOut ScreenInject(VSOUT IN) {
+	ScreenOut OUT;
+	float3 cell = AtlasCell(IN.UVCoord);
+	float size = NVR_GridOrigin.w;
+	// What this cell held before (from where it was in the grid then).
+	float3 oldCell = cell + NVR_GridShift.xyz;
+	bool had = NVR_GridShift.w > 0.5f && all(oldCell >= 0.0f) && oldCell.x < GridX && oldCell.y < GridY && oldCell.z < GridZ;
+	OUT.sh = had ? tex2Dlod(NVR_GridScreenOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
+	OUT.colour = had ? tex2Dlod(NVR_GridScreenColorOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
+	// The cell on screen: its centre in view space (camera-relative world -> view: the view matrix's rotation alone).
+	float3 centre = NVR_GridOrigin.xyz + (cell + 0.5f) * size;
+	float3 view = mul(float4(centre, 0.0f), TESR_ViewTransform).xyz;
+	[branch] if (view.z < 0.5f * size) return OUT;	// behind the camera, or round it (a cell's centre half a cell ahead still counts)
+	float3 screen = projectPosition(view);
+	[branch] if (any(screen.xy < 0.0f) || any(screen.xy > 1.0f)) return OUT;
+	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z);
+	float3 low = centre - 0.5f * size;
+	float4 sh = 0.0f, colour = 0.0f;
+	float hits = 0.0f, empty = 0.0f;
+	[loop] for (int j = 0; j < 4; j++) {
+		[loop] for (int i = 0; i < 4; i++) {
+			float2 uv = screen.xy + ((float2(i, j) + 0.5f) / 4.0f * 2.0f - 1.0f) * extent;
+			if (any(uv < 0.0f) || any(uv > 1.0f)) continue;
+			float depth = readDepthLod(uv);
+			float3 p = toWorld(uv) * depth;
+			float3 inCell = p - low;
+			[branch] if (all(inCell >= 0.0f) && all(inCell < size)) {
+				// A surface in the cell: the light it shows (linear, capped), round its normal.
+				float3 light = min(pows(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb, 2.2f), 4.0f);
+				float l = luma(light);
+				sh += CosineLobe(normalize(GetWorldNormalLod(uv))) * l;
+				colour += float4(light, l);
+				hits += 1.0f;
+			}
+			else if (depth > view.z + size) empty += 1.0f;	// seen through: the cell is open air there
+		}
+	}
+	[branch] if (hits + empty < 4.0f) return OUT;	// mostly hidden behind something nearer: keep what it had
+	// Each hit stands for a sixteenth of about 1.2 x 1.2 cell faces of surface.
+	float share = 1.44f / 16.0f * NVR_GridScreen.x;
+	OUT.sh = lerp(OUT.sh, sh * share, 0.5f);
+	OUT.colour = lerp(OUT.colour, colour * share, 0.5f);
+	return OUT;
+}
+
 GridOut GridInject(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
 	float size = NVR_GridOrigin.w;
 	float3 low = cell * size;
-	float4 centre = mul(float4(low + 0.5f * size, 1.0f), NVR_GridToSun);
-	float2 centreUV = float2(centre.x * 0.5f + 0.5f, 0.5f - centre.y * 0.5f);
-	// A cell seen from the sun covers up to about 1.75 cells across: 6 x 6 reads over that.
-	float span = 1.75f * size / NVR_GridData.z;
-	float stepTexels = span / 6.0f;
 	float4 sh = 0.0f;
-	float4 colour = 0.0f;	// the surfaces' colours (linear) added up, and how many
+	float4 colour = 0.0f;	// the surfaces' colour x light (rgb) and light (a), added up
 	float3 normals = 0.0f;	// their normals added up (blocking)
-	[loop] for (int j = 0; j < 6; j++) {
-		[loop] for (int i = 0; i < 6; i++) {
-			float2 uv = centreUV + (float2(i, j) - 2.5f) * stepTexels / SunMapSize;
-			float depth = tex2Dlod(NVR_GridSunDepth, float4(uv, 0.0f, 0.0f)).r;
-			if (depth >= 0.9999f) continue;	// nothing drawn there
-			float3 p = SunMapPosition(uv, depth);
-			float3 inCell = p - low;
-			if (any(inCell < 0.0f) || any(inCell >= size)) continue;
-			// The surface's normal from its neighbours in the map (facing the sun).
-			float2 px = 1.0f / SunMapSize;
-			float3 px1 = SunMapPosition(uv + float2(px.x, 0.0f), tex2Dlod(NVR_GridSunDepth, float4(uv + float2(px.x, 0.0f), 0.0f, 0.0f)).r);
-			float3 py1 = SunMapPosition(uv + float2(0.0f, px.y), tex2Dlod(NVR_GridSunDepth, float4(uv + float2(0.0f, px.y), 0.0f, 0.0f)).r);
-			float3 n = cross(px1 - p, py1 - p);
-			float len = length(n);
-			n = len > 1e-4f ? n / len : float3(0.0f, 0.0f, 1.0f);
-			n *= dot(n, TESR_SunDirection.xyz) < 0.0f ? -1.0f : 1.0f;
-			sh += CosineLobe(n);
-			normals += n;
-			colour += float4(NVR_GridData.w > 0.5f ? pow(tex2Dlod(NVR_GridSunColor, float4(uv, 0.0f, 0.0f)).rgb, 2.2f) : GridGroundColor, 1.0f);
+	float count = 0.0f;
+	float faceShare = 0.0f;
+	[branch] if (NVR_GridStep.z > 0.5f) {
+		float4 centre = mul(float4(low + 0.5f * size, 1.0f), NVR_GridToSun);
+		float2 centreUV = float2(centre.x * 0.5f + 0.5f, 0.5f - centre.y * 0.5f);
+		// A cell seen from the sun covers up to about 1.75 cells across: 6 x 6 reads over that.
+		float span = 1.75f * size / NVR_GridData.z;
+		float stepTexels = span / 6.0f;
+		[loop] for (int j = 0; j < 6; j++) {
+			[loop] for (int i = 0; i < 6; i++) {
+				float2 uv = centreUV + (float2(i, j) - 2.5f) * stepTexels / SunMapSize;
+				float depth = tex2Dlod(NVR_GridSunDepth, float4(uv, 0.0f, 0.0f)).r;
+				if (depth >= 0.9999f) continue;	// nothing drawn there
+				float3 p = SunMapPosition(uv, depth);
+				float3 inCell = p - low;
+				if (any(inCell < 0.0f) || any(inCell >= size)) continue;
+				// The surface's normal from its neighbours in the map (facing the sun).
+				float2 px = 1.0f / SunMapSize;
+				float3 px1 = SunMapPosition(uv + float2(px.x, 0.0f), tex2Dlod(NVR_GridSunDepth, float4(uv + float2(px.x, 0.0f), 0.0f, 0.0f)).r);
+				float3 py1 = SunMapPosition(uv + float2(0.0f, px.y), tex2Dlod(NVR_GridSunDepth, float4(uv + float2(0.0f, px.y), 0.0f, 0.0f)).r);
+				float3 n = cross(px1 - p, py1 - p);
+				float len = length(n);
+				n = len > 1e-4f ? n / len : float3(0.0f, 0.0f, 1.0f);
+				n *= dot(n, TESR_SunDirection.xyz) < 0.0f ? -1.0f : 1.0f;
+				// What it sends out: its colour (linear) x the sun's.
+				float3 albedo = NVR_GridData.w > 0.5f ? pow(tex2Dlod(NVR_GridSunColor, float4(uv, 0.0f, 0.0f)).rgb, 2.2f) : GridGroundColor;
+				float3 light = albedo * NVR_GridLight.rgb;
+				float l = luma(light);
+				sh += CosineLobe(n) * l;
+				colour += float4(light, l);
+				normals += n;
+				count += 1.0f;
+			}
 		}
+		// Each read stands for stepTexels^2 map texels of sunlit surface; as a share of a cell's face.
+		faceShare = (stepTexels * NVR_GridData.z) * (stepTexels * NVR_GridData.z) / (size * size);
+		sh *= NVR_GridLight.w * faceShare;
+		colour *= faceShare;
 	}
-	// Each read stands for stepTexels^2 map texels of sunlit surface; as a share of a cell's face.
-	float faceShare = (stepTexels * NVR_GridData.z) * (stepTexels * NVR_GridData.z) / (size * size);
-	sh *= NVR_GridLight.w * faceShare;
+	// Indoors and at night: the screen memory (ScreenInject), already colour x light.
+	[branch] if (NVR_GridStep.w > 0.5f) {
+		sh += tex2Dlod(NVR_GridScreenOld, float4(IN.UVCoord, 0.0f, 0.0f));
+		colour += tex2Dlod(NVR_GridScreenColorOld, float4(IN.UVCoord, 0.0f, 0.0f));
+	}
 	GridOut OUT;
 	OUT.wave = sh;
 	// The second target holds the cell's surfaces for blocking (not the running total: that starts at 0 on the first step,
 	// NVR_GridStep.x; injection is kept out of it, else a surface's own cell lit the surface with what it sends out).
 	float normalLength = length(normals);
-	OUT.accum = float4(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f), colour.a * faceShare);
-	// The colour as colour x light (the light: the lobe's all-directions part), so steps can add it up weighted by light.
-	OUT.waveColor = float4(colour.rgb / max(colour.a, 1.0f), 1.0f) * sh.x;
+	OUT.accum = float4(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f), count * faceShare);
+	OUT.waveColor = colour;
 	OUT.accumColor = 0.0f;
 	return OUT;
 }
@@ -484,18 +555,22 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
 	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
 	float4 sh = lerp(a, b, fz);
-	// The surfaces' colour the light comes from (weighted by their light), or one ground colour.
-	float3 colour = GridGroundColor;
+	// The colour of the light arriving (colour x light over light: its brightness is in the harmonics), white without colours.
+	float3 colour = 1.0f;
 	[branch] if (NVR_GridData.w > 0.5f) {
 		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
 		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
 		float4 c = lerp(ca, cb, fz);
-		colour = c.a > 1e-5f ? c.rgb / c.a : GridGroundColor;
+		colour = c.a > 1e-5f ? c.rgb / c.a : 1.0f;
 	}
 	// The light arriving over the hemisphere round the normal; / pi so that a surface ringed by the bounce of ground lit with
 	// colour C gets about C x the share of the view the ground fills (test 1: x 1 washed the picture out).
-	float irradiance = max(dot(sh, CosineLobe(normal)), 0.0f) * 0.3183f;
-	return irradiance * colour * NVR_GridLight.rgb * fade;
+	// The harmonics hold the way the light travels; a surface receives what travels toward it, against its normal (2026-10-14: it
+	// read the light leaving it, so the ground lit itself and indoors almost nothing arrived).
+	// x 1.5 (was 1 / pi): the spreading loses most of the light on the way (each step passes on GridSpread of it); at 1.5 a rock face
+	// beside sunlit ground gets about the share of the ground's light a real one does (half its view is ground).
+	float irradiance = max(dot(sh, CosineLobe(-normal)), 0.0f) * 1.5f;
+	return irradiance * colour * fade;
 }
 
 // Pass 5: upsample and apply.
@@ -537,6 +612,14 @@ float4 Apply(VSOUT IN) : COLOR0 {
 		float3 normal = normalize(GetWorldNormalLod(IN.UVCoord));
 		gridBounce = GridBounce(cameraRelative, normal) * (NVR_GridData.x * ao);
 	}
+	// 8 (diagnostic): the screen memory in the pixel's own cell, unspread (r: its light x 4, g: cell seen at all, b: grid colour
+	// light x 4), NVR_GridWave's stage bound to the memory for it.
+	[branch] if (DebugView > 7.5f) {
+		float3 cameraRelative = toWorld(IN.UVCoord) * depth;
+		float3 c = floor((cameraRelative - NVR_GridOrigin.xyz) / NVR_GridOrigin.w);
+		float4 m = tex2Dlod(NVR_GridWave, float4(CellUV(clamp(c, 0.0f, float3(GridX, GridY, GridZ) - 1.0f)), 0.0f, 0.0f));
+		return float4(saturate(m.x * 4.0f), m.x != 0.0f ? 0.5f : 0.0f, saturate(gridBounce.b * 4.0f), 1.0f);
+	}
 	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));	// 7: the grid's bounce alone
 	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);	// diagnostics: the estimate's raw values
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : BounceStrength * ambient.rgb * albedo, 1.0f));
@@ -555,6 +638,7 @@ technique AmbientLight {
 
 // UNOFFICIAL 2026-10-14: the light grid (see GridInject above), each pass into two targets (the step and the running total).
 technique AmbientLightGrid {
+	pass ScreenInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 ScreenInject(); }
 	pass GridInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridInject(); }
 	pass GridPropagate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridPropagate(); }
 }

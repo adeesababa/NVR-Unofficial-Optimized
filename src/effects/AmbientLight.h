@@ -44,7 +44,18 @@ public:
 	float				gridBlocking = 1.0f;	// how much the surfaces in a cell stop light crossing it
 	IDirect3DTexture9*	gridGeometry = nullptr;	// per cell: the surfaces' average normal and cover (blocking; A16B16G16R16F)
 	IDirect3DSurface9*	gridGeometrySurface = nullptr;
-	CachedHandle		paramGridStep;
+	CachedHandle		paramGridStep, paramGridShift, paramGridScreen;
+	float				gridScreenStrength = 6.0f;	// GridScreenStrength
+	// UNOFFICIAL 2026-10-14 screen memory (indoors, at night): per cell the light its surfaces showed on screen (ScreenInject).
+	IDirect3DTexture9*	gridScreen[2] = {};			// harmonics (A16B16G16R16F, the atlas), ping-pong
+	IDirect3DSurface9*	gridScreenSurface[2] = {};
+	IDirect3DTexture9*	gridScreenColor[2] = {};	// colour x light
+	IDirect3DSurface9*	gridScreenColorSurface[2] = {};
+	int					gridScreenIndex = 0;
+	bool				gridScreenValid = false;
+	double				gridScreenOrigin[3] = {};	// the grid corner the memory was stored for
+	bool				gridSunActive = false;		// the sun map feeds the grid now (outdoors, sun up; set by WantsGridSunMap)
+	bool	GridMoveOrDue();						// works the grid's corner out; true when it is time to update
 	IDirect3DTexture9*	gridSunTexture = nullptr;	// R32F depth from the sun
 	IDirect3DSurface9*	gridSunSurface = nullptr;
 	IDirect3DSurface9*	gridSunDepth = nullptr;
@@ -75,7 +86,7 @@ public:
 	void	EnsureGridBuffers();
 	bool	WantsGridSunMap(const D3DXVECTOR3& sunDir);		// ShadowManager: draw the sun map this frame?
 	D3DXMATRIX GridSunViewProj(const D3DXVECTOR3& sunDir);	// sets gridSunMap up for it and returns its view-projection
-	void	RenderGrid(IDirect3DDevice9* Device);
+	void	RenderGrid(IDirect3DDevice9* Device, bool sun, bool screen);
 	// UNOFFICIAL 2026-10-14 (set by ShaderManager for one Render): apply the sun shadows in this effect's passes, their own pass
 	// skipped; shadowApplied reports that it was done.
 	bool				foldShadow = false;
