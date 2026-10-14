@@ -160,18 +160,26 @@ float terrainBlendViewDepth(float depth) {
     return zw.x / zw.y;
 }
 
-// How much of the land to keep at this pixel: 1 opaque, 0 gone; -1 where blending does not apply.
-float getTerrainBlend(float4 projectionPosition, float2 screenPos) {
+// The land's view depth here (x) and how far behind it the object drawn before it is (y; 0 or less: in front, or none).
+float2 terrainBlendDepths(float4 projectionPosition, float2 screenPos) {
     float terrainDepth = terrainBlendViewDepth(projectionPosition.z / projectionPosition.w);
-    float maxDistance = TESR_TerrainBlendData.z;
-    if (terrainDepth > maxDistance) return -1.0f;
-
     float2 uv = (screenPos + 0.5f) * TESR_TerrainBlendExtra.xy;
     float sceneDepth = terrainBlendViewDepth(tex2Dlod(TESR_TerrainBlendDepth, float4(uv, 0.0f, 0.0f)).x);
-    float covered = sceneDepth - terrainDepth;  // how far behind the land the object is
+    return float2(terrainDepth, sceneDepth - terrainDepth);
+}
+
+// How much of the land to keep at this pixel: 1 opaque, 0 gone; -1 where blending does not apply. coveredWidth: how much
+// `covered` changes from one pixel to the next.
+float getTerrainBlend(float terrainDepth, float covered, float coveredWidth) {
+    float maxDistance = TESR_TerrainBlendData.z;
+    if (terrainDepth > maxDistance) return -1.0f;
     if (covered <= 0.0f) return -1.0f;          // the object is in front: the depth test handles it
 
-    float keep = saturate(covered * TESR_TerrainBlendData.y);
+    // UNOFFICIAL 2026-10-14 (user: a faint shimmer along the seams with Smooth): a few metres away the band (BlendDistance
+    // deep) was only a pixel or two wide on screen and crawled as the view moved. It is now at least about three pixels
+    // wide, at most four times BlendDistance (so a hill in front of a distant rock never turns see-through at its edge).
+    float range = clamp(coveredWidth * 3.0f, 1.0f / TESR_TerrainBlendData.y, 4.0f / TESR_TerrainBlendData.y);
+    float keep = saturate(covered / range);
     // Back to a hard edge over the last quarter before the max distance, so there is no visible line.
     return lerp(keep, 1.0f, saturate((terrainDepth / maxDistance - 0.75f) * 4.0f));
 }
@@ -190,8 +198,11 @@ PS_OUTPUT main(PS_INPUT IN) {
 #if TERRAIN_BLEND_ACTIVE
     // First, so a dithered-away pixel skips the rest where the GPU can (whole quads).
     float terrainKeep = -1.0f;
+    // (Read outside the branch: the screen derivative needs every pixel of the 2 x 2 quad.)
+    float2 blendDepths = terrainBlendDepths(IN.projectionPosition, IN.screenPos);
+    float coveredWidth = fwidth(blendDepths.y);
     [branch] if (TESR_TerrainBlendData.x > 0.0f) {
-        terrainKeep = getTerrainBlend(IN.projectionPosition, IN.screenPos);
+        terrainKeep = getTerrainBlend(blendDepths.x, blendDepths.y, coveredWidth);
         // UNOFFICIAL 2026-10-13 (user: blend instead, so it needs no TAA): Smooth draws the land see-through there instead
         // (its alpha below; Terrain.cpp turns blending on for the land's opaque pass): the object, drawn before the land,
         // shows through it in a smooth fade. A pixel with next to nothing of the land left is skipped.
