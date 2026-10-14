@@ -1184,6 +1184,14 @@ namespace BarrelHeat {
 	static GetHeatFn GetHeat = nullptr;
 	static bool Active = false;
 	static bool ProbeFrame = false;
+	// UNOFFICIAL 2026-10-13 (user: the glow disappears in some lighting): the game binds an object shader once and then draws
+	// every object that uses the same pass with it (no new bind), so the glow set at the bind followed the FIRST object of the
+	// run: a gun piece drawn later in it (the barrel after the mag release, each with its own transform) got the glow placed in
+	// the other piece's space, or none. Which pieces share a run depends on their lamps and shadows, hence "some lighting".
+	// Now also set per object (ForObject, from the RenderPass hooks), with the shaders of the last bind.
+	static NiD3DVertexShaderEx* BoundVertex = nullptr;
+	static NiD3DPixelShaderEx* BoundPixel = nullptr;
+	static float FrameHeat = 0.0f;		// the hottest of the player's two weapon nodes this frame (0: nothing to do)
 	static float ProbeHeat[10] = {};
 	static bool ProbeBridge = false;
 	static unsigned ProbeDraws = 0, ProbeUploads = 0, ProbeSamples = 0;
@@ -1285,10 +1293,26 @@ namespace BarrelHeat {
 		ProbeFrame = false;
 	}
 
-	static void SetForDraw(NiGeometry* geometry, NiD3DVertexShaderEx* vertexShader, NiD3DPixelShaderEx* pixelShader) {
+	// Once a frame, before the world: the player's weapons' heat, so objects need no work while the guns are cold.
+	static void BeginFrame() {
+		FrameHeat = 0.0f;
+		if (!Player) return;
+		if (!GetHeat) {
+			HMODULE smoke = GetModuleHandleA("GunFX.dll");
+			if (smoke) GetHeat = (GetHeatFn)GetProcAddress(smoke, "GunFX_GetHeatV3");
+			if (!GetHeat) return;
+		}
+		SkinInfo* skins[2] = { Player->firstPersonSkinInfo, Player->ActorSkinInfo };
+		for (SkinInfo* skin : skins) {
+			float state[10] = {};
+			if (skin && skin->WeaponNode && GetHeat(state, skin->WeaponNode) && state[3] > FrameHeat) FrameHeat = state[3];
+		}
+	}
+
+	static void Upload(NiGeometry* geometry, NiD3DVertexShaderEx* vertexShader, NiD3DPixelShaderEx* pixelShader) {
 		const bool firstPerson = ShaderSplit::CurrentContext == ShaderSplit::FirstPerson;
 		if (!firstPerson && ShaderSplit::CurrentContext != ShaderSplit::World) return;
-		if (!firstPerson) ProbeDraw(geometry, vertexShader, pixelShader);
+		if (FrameHeat <= 0.0f) return;
 		if (!pixelShader || !pixelShader->Name || !pixelShader->ShaderHandleBackup ||
 			pixelShader->ShaderHandle == pixelShader->ShaderHandleBackup) return;
 		const char* name = pixelShader->Name;
@@ -1363,6 +1387,29 @@ namespace BarrelHeat {
 		TheRenderManager->device->SetPixelShaderConstantF(171, state, 3);
 		Active = true;
 		if (!firstPerson && ProbeFrame) ++ProbeUploads;
+	}
+
+	// A pass's shaders just bound (SetShadersHook), for the object current at the bind.
+	static void SetForDraw(NiGeometry* geometry, NiD3DVertexShaderEx* vertexShader, NiD3DPixelShaderEx* pixelShader) {
+		BoundVertex = vertexShader;
+		BoundPixel = pixelShader;
+		if (ShaderSplit::CurrentContext == ShaderSplit::World) ProbeDraw(geometry, vertexShader, pixelShader);
+		Upload(geometry, vertexShader, pixelShader);
+	}
+
+	// Each object about to be drawn (RenderPassStandard/Skinned hooks): its own glow, or none, with the shaders still bound
+	// from the last bind. (If the object's draw binds new shaders, SetShadersHook sets it again for them.)
+	static void ForObject(const PointShadowForward::RenderPassView* pass) {
+		if (!Active && FrameHeat <= 0.0f) return;
+		Clear();
+		if (pass && pass->geometry && BoundPixel) Upload(pass->geometry, BoundVertex, BoundPixel);
+	}
+
+	// Leaving the world or first-person pass: nothing carried into the next.
+	static void EndContext() {
+		Clear();
+		BoundVertex = nullptr;
+		BoundPixel = nullptr;
 	}
 }
 
@@ -1749,6 +1796,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
+	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
 		HiddenObjectCulling::Abandon();	// (a lamp-only pass is never an object's first pass in practice; if it was, its query is not used)
@@ -1765,6 +1813,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
+	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
 	HiddenObjectCulling::After();
@@ -1824,10 +1873,11 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		GunFXSwitches::Update();
 		HandBlood::Update();	// UNOFFICIAL: blood on the first-person weapon and gloves (once a frame)
 		BarrelHaze::Reset();
+		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
 		BarrelHeat::EndWorldProbe();
-		BarrelHeat::Clear();
+		BarrelHeat::EndContext();
 		HiddenObjectCulling::EndWorld();
 		ShaderSplit::EndContext();
 	}
@@ -1875,7 +1925,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
-	BarrelHeat::Clear();
+	BarrelHeat::EndContext();
 	ShaderSplit::EndContext();
 	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
 	ViewModelDepthClearedFrames = 0;	// UNOFFICIAL: the next third-person frame resolves the cleared buffer again
