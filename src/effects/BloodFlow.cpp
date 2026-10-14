@@ -36,7 +36,57 @@ namespace {
 		float GameAge;		// the game's own age (Age becomes ours, counted from when it was first seen)
 		void* TextureSet;
 		void* Decal;
+		// UNOFFICIAL 2026-10-13: how its texture lies on the wall (ProcessGeometry's texture coordinates, 0x68BA0F on), and
+		// its colour. Turn +0x114 (radians round its direction), atlas quarter +0x124 (0-3, else the whole texture), mirrored
+		// +0x2C (u = 1 - u), colour +0x134 (r, g, b: AddPolygon puts it in every vertex's colour, the texture is grey). The
+		// hit mesh (+0x10C, its world rotation +0x68 and scale +0x98) takes the decal's mesh-space axes to the world.
+		float Turn;
+		int Quarter;
+		bool Mirrored;
+		float Tint[3];
+		bool HaveMesh;
+		float MeshRotation[9], MeshScale;
 	};
+
+	// UNOFFICIAL 2026-10-13: the decal's texture layout in world terms, the way BSTempEffectSimpleDecal::ProcessGeometry
+	// (0x68B4C0) works out its vertices' texture coordinates: rows 0 and 1 of MakeZRotation(turn) * GetRotationZToVector(
+	// mesh-space direction) are its u and v axes in the hit mesh's space; u = dot(vertex - centre, row0) / width + 0.5, v
+	// likewise over the height, both halved and moved to the quarter (0: +0, 1: u + 0.5, 2: v + 0.5, 3: both; anything else
+	// the whole texture), then u = 1 - u if mirrored. In the world (the mesh's rotation R, scale k): the axes are R * row,
+	// the sizes k * width and k * height. Gives the item's DecalU (u's axis over the width) and DecalCode (BloodFlowBoxes.h);
+	// false if anything is off (the shader then keeps its own stream starts).
+	typedef float* (__cdecl* RotationZToVectorFn)(float* out, float x, float y, float z);
+	const RotationZToVectorFn GetRotationZToVector = (RotationZToVectorFn)0x00C4B600;	// BSUtilities::GetRotationZToVector
+
+	bool DecalLayout(const RawSplat& s, BloodFlowBoxes::Item& item) {
+		if (!s.HaveMesh || s.Local || !(s.MeshScale > 1e-3f) || !(s.Width > 0.01f) || !(s.Height > 0.01f)) return false;
+		float zv[9];
+		GetRotationZToVector(zv, s.Normal[0], s.Normal[1], s.Normal[2]);
+		const float c = cosf(s.Turn), sn = sinf(s.Turn);
+		float row0[3], row1[3], u[3], v[3], dir[3];
+		for (int i = 0; i < 3; i++) {
+			row0[i] = c * zv[i] + sn * zv[3 + i];
+			row1[i] = -sn * zv[i] + c * zv[3 + i];
+		}
+		const float* r = s.MeshRotation;
+		for (int i = 0; i < 3; i++) {
+			u[i] = r[i * 3] * row0[0] + r[i * 3 + 1] * row0[1] + r[i * 3 + 2] * row0[2];
+			v[i] = r[i * 3] * row1[0] + r[i * 3 + 1] * row1[1] + r[i * 3 + 2] * row1[2];
+		}
+		const float width = s.Width * s.MeshScale, height = s.Height * s.MeshScale;
+		// The shader rebuilds v as cross(normal, u): the normal it has is the item's (against the way the blood was thrown).
+		const float dl = sqrtf(s.Direction[0] * s.Direction[0] + s.Direction[1] * s.Direction[1] + s.Direction[2] * s.Direction[2]);
+		if (!(dl > 1e-4f)) return false;
+		for (int i = 0; i < 3; i++) dir[i] = -s.Direction[i] / dl;
+		const float cx = dir[1] * u[2] - dir[2] * u[1], cy = dir[2] * u[0] - dir[0] * u[2], cz = dir[0] * u[1] - dir[1] * u[0];
+		const float along = cx * v[0] + cy * v[1] + cz * v[2];
+		if (fabsf(along) < 0.9f) return false;	// not at right angles: something read wrong
+		const float ratio = std::clamp(width / height, 0.5f, 2.0f);
+		const int ratioStep = std::clamp((int)lroundf((log2f(ratio) + 1.0f) * 31.5f), 0, 63);
+		item.DecalU = D3DXVECTOR3(u[0], u[1], u[2]) / width;
+		item.DecalCode = std::clamp(s.Quarter, 0, 4) + (s.Mirrored ? 5 : 0) + (along < 0.0f ? 10 : 0) + 20 * ratioStep;
+		return true;
+	}
 
 	struct ListNode { void* Item; ListNode* Next; };
 
@@ -65,6 +115,13 @@ namespace {
 				s.GameAge = s.Age;
 				s.TextureSet = *(void**)(e + 0x30);
 				s.Decal = e;
+				s.Turn = *(float*)(e + 0x114);
+				s.Quarter = *(UInt8*)(e + 0x124);
+				s.Mirrored = *(UInt8*)(e + 0x2C) != 0;
+				memcpy(s.Tint, e + 0x134, 12);
+				UInt8* mesh = *(UInt8**)(e + 0x10C);
+				s.HaveMesh = mesh != nullptr;
+				if (mesh) { memcpy(s.MeshRotation, mesh + 0x68, 36); s.MeshScale = *(float*)(mesh + 0x98); }
 				n++;
 			}
 		}
@@ -92,12 +149,24 @@ namespace {
 		bool HasBody;			// the fields below are set
 		float BoundCenter[3], BoundRadius;
 		float MinZ;
+		// UNOFFICIAL 2026-10-13 (user: a pool where a limb is cut off): ExtraDismemberedLimbs (0x5F) +0x0C, one bit per body
+		// part (ExtraDismemberedLimbs::Dismember 0x430410), and where each cut part's joint is on the body (its node's origin:
+		// the elbow for a forearm, the neck for a head); PartFound false: not a skeleton with those names (most creatures).
+		UInt16 Dismembered;
+		float PartPos[16][3];
+		bool PartFound[16];
 	};
+
+	// The node whose origin is where part k (BGSBodyPart types: 1-2 head, 3-4 left arm, 5-6 right arm, 7-9 left leg, 10-12
+	// right leg, 13 brain) was cut off, on a human skeleton. 0 (torso), 14 (weapon) and 15: none.
+	const char* const PartNode[16] = { nullptr, "Bip01 Head", "Bip01 Head", "Bip01 L UpperArm", "Bip01 L Forearm", "Bip01 R UpperArm",
+		"Bip01 R Forearm", "Bip01 L Thigh", "Bip01 L Calf", "Bip01 L Foot", "Bip01 R Thigh", "Bip01 R Calf", "Bip01 R Foot", "Bip01 Head",
+		nullptr, nullptr };
 
 	// The world position of every node under root (up to 256 nodes): the lowest z, the middle of the skeleton (a spine
 	// bone if there is one, else the average of the nodes below the root) and how many were seen. Nodes further than
 	// `reach` from `bound` are left out: some sit at the world's origin (not placed yet), which once put a pool at z -1.5.
-	int WalkNodes(NiAVObject* root, float& minZ, float* centre, const float* bound, float reach) {
+	int WalkNodes(NiAVObject* root, float& minZ, float* centre, const float* bound, float reach, RawActor* parts = nullptr) {
 		NiAVObject* stack[64];
 		int top = 0, seen = 0, nodes = 0;
 		float sum[3] = {}, spine[3] = {};
@@ -118,6 +187,13 @@ namespace {
 				nodes++;
 				const char* name = object->m_pcName;
 				if (!haveSpine && name && strstr(name, "Spine")) { spine[0] = at.x; spine[1] = at.y; spine[2] = at.z; haveSpine = true; }
+				if (parts && name && name[0] == 'B') {
+					for (int k = 0; k < 16; k++) {
+						if (!PartNode[k] || parts->PartFound[k] || !(parts->Dismembered & (1 << k)) || strcmp(name, PartNode[k])) continue;
+						parts->PartPos[k][0] = at.x; parts->PartPos[k][1] = at.y; parts->PartPos[k][2] = at.z;
+						parts->PartFound[k] = true;
+					}
+				}
 			}
 			for (UInt32 i = 0; i < node->m_children.end && top < 64; i++)
 				if (node->m_children.data[i]) stack[top++] = node->m_children.data[i];
@@ -147,6 +223,8 @@ namespace {
 					a.LifeState = actor->lifeState;
 					a.HasBody = false;
 					a.Bleeds = true;
+					a.Dismembered = 0;
+					memset(a.PartFound, 0, sizeof(a.PartFound));
 					TESForm* base = actor->baseForm;
 					if (base && base->formType == TESForm::kFormType_Creature && *((UInt8*)base + 0x12C) == 6) a.Bleeds = false;  // robot
 					if ((actor->flags & 0x800) != 0) a.Bleeds = false;   // disabled
@@ -160,7 +238,9 @@ namespace {
 							a.BoundRadius = bound->Radius;
 							a.MinZ = 1e30f;
 							const float boundAt[3] = { bound->Center.x, bound->Center.y, bound->Center.z };
-							a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f) > 4 && a.BoundRadius > 1.0f &&
+							if (BSExtraData* cut = actor->extraDataList.GetExtraData(BSExtraData::ExtraDataType::kExtraData_DismemberedLimbs))
+								a.Dismembered = *(UInt16*)((UInt8*)cut + 0x0C);
+							a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
 								a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
 						}
 					}
@@ -205,10 +285,22 @@ namespace {
 		D3DXVECTOR3 Last = D3DXVECTOR3(0, 0, 0);	// body centre last frame
 		D3DXVECTOR3 Pool = D3DXVECTOR3(0, 0, 0);	// the pool's centre on the ground
 		float MaxRadius = 0.0f;
+		// UNOFFICIAL 2026-10-13: a pool of its own under each cut-off part (GibPools), from when the cut is first seen; its place
+		// follows the stump until the body comes to rest.
+		UInt16 GibMask = 0;
+		double GibAt[16] = {};
+		D3DXVECTOR3 GibPool[16] = {};
 	};
 	std::unordered_map<UInt32, Body> Bodies;
 	std::unordered_map<void*, bool> BloodTextureSets;	// texture set -> is it blood
 	int LoggedTextures = 0, LoggedSplats = 0, LoggedPools = 0, LoggedLists = 0, LoggedNearest = 0;
+	// UNOFFICIAL 2026-10-13: the last blood decal colour seen (pools, which have no decal, take it), and the layout log.
+	float LastTint[3] = { 0.0f, 0.0f, 0.0f };
+	bool HaveTint = false;
+	int LoggedLayouts = 0;
+	int LoggedMerges = 0;
+	int LoggedGibs = 0;
+	int ItemLogTick = 0;
 
 	// When each splat was first seen (the game does not age most of them). Keyed by the decal, checked by its origin, so a
 	// new splat made where an old one was freed starts afresh.
@@ -217,12 +309,65 @@ namespace {
 	double LastSplatGather = -1e9;
 }
 
+// UNOFFICIAL 2026-10-13: for HandBlood (blood on the first-person weapon and gloves, Render.cpp): the game's blood splats that
+// appeared since the last call within `reach` of `eye`, whether or not BloodFlow is on. Returns how close the nearest one is
+// (reach and above: none). Splats there on the first call, or after a pause of over a second (a load), count as seen. Also the
+// last blood decal colour seen (false: none yet).
+float BloodFlowNewBloodNear(const D3DXVECTOR3& eye, float reach) {
+	static RawSplat raw[1024];
+	static std::unordered_map<void*, UInt32> seen;
+	static ULONGLONG lastCall = 0;
+	const ULONGLONG now = GetTickCount64();
+	const bool fresh = lastCall == 0 || now - lastCall > 1000;
+	lastCall = now;
+	const int fromTemp = ReadSplats(ProcessListsAddress + 0x58, raw, 0, 1024);
+	const int total = ReadSplats(DecalListAddress, raw, fromTemp, 1024);
+	float nearest = reach;
+	std::unordered_map<void*, UInt32> next;
+	next.reserve(total);
+	for (int i = 0; i < total; i++) {
+		const RawSplat& s = raw[i];
+		const UInt32 key = HashFloats(s.Origin, 3);
+		next[s.Decal] = key;
+		auto old = seen.find(s.Decal);
+		if (fresh || (old != seen.end() && old->second == key) || !s.TextureSet || s.Local) continue;
+		auto found = BloodTextureSets.find(s.TextureSet);
+		if (found == BloodTextureSets.end()) {
+			char path[260];
+			ReadTexturePath(s.TextureSet, path, sizeof(path));
+			found = BloodTextureSets.emplace(s.TextureSet, strstr(path, "blood") != nullptr).first;
+		}
+		if (!found->second) continue;
+		if (s.Tint[0] + s.Tint[1] + s.Tint[2] > 0.0f) { for (int c = 0; c < 3; c++) LastTint[c] = s.Tint[c]; HaveTint = true; }
+		const float distance = Length(D3DXVECTOR3(s.Origin[0], s.Origin[1], s.Origin[2]) - eye);
+		if (distance < nearest) nearest = distance;
+	}
+	seen.swap(next);
+	return nearest;
+}
+
+bool BloodFlowLastTint(float out[3]) {
+	if (!HaveTint) return false;
+	for (int c = 0; c < 3; c++) out[c] = LastTint[c];
+	return true;
+}
+
+// UNOFFICIAL 2026-10-13 (perf): TESR_BloodFlowShape: xyz the camera-centred space's eye (the inverse view's translation); w: 1
+// the vertex shader cuts the boxes to the blood's bounds (BloodFlow.fx.hlsl, CutBox). Kept here, not in BloodFlow.h's
+// constants (a widely included header: changing it needs a clean build).
+static D3DXVECTOR4 BloodFlowShape(0.0f, 0.0f, 0.0f, 0.0f);
+
 void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFresh", &Constants.Fresh);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowMatch", &Constants.Match);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowDryRatio", &Constants.DryRatio);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowBeads", &Constants.Beads);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowShape", &BloodFlowShape);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDry", &Constants.Dry);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowInfo", &Constants.Info);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowPool", &Constants.Pool);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowProbe", &Constants.Probe);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowFlow", &Constants.Flow);
 }
 
 void BloodFlowEffect::RegisterTextures() {
@@ -255,7 +400,10 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.Splats = TheSettingManager->GetSettingI(section, "Splats") != 0;
 	Settings.Pools = TheSettingManager->GetSettingI(section, "Pools") != 0;
 	Settings.DripLength = std::clamp(TheSettingManager->GetSettingF(section, "DripLength"), 0.0f, 200.0f);
-	Settings.DripSpeed = std::clamp(TheSettingManager->GetSettingF(section, "DripSpeed"), 0.05f, 10.0f);
+	// UNOFFICIAL 2026-10-13 rewrite: FlowSpeed (was DripSpeed), Viscosity, BloodAmount.
+	Settings.FlowSpeed = std::clamp(TheSettingManager->GetSettingF(section, "FlowSpeed"), 0.05f, 10.0f);
+	Settings.Viscosity = std::clamp(TheSettingManager->GetSettingF(section, "Viscosity"), 0.0f, 3.0f);
+	Settings.BloodAmount = std::clamp(TheSettingManager->GetSettingF(section, "BloodAmount"), 0.0f, 1.0f);
 	Settings.DryTime = std::clamp(TheSettingManager->GetSettingF(section, "DryTime"), 1.0f, 3600.0f);
 	Settings.PoolSize = std::clamp(TheSettingManager->GetSettingF(section, "PoolSize"), 0.1f, 4.0f);
 	Settings.PoolSpreadTime = std::clamp(TheSettingManager->GetSettingF(section, "PoolSpreadTime"), 1.0f, 600.0f);
@@ -272,6 +420,20 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.MaxSplats = std::clamp(TheSettingManager->GetSettingI(section, "MaxSplats"), 0, ItemMax);
 	Settings.MaxPools = std::clamp(TheSettingManager->GetSettingI(section, "MaxPools"), 0, 32);
 	Settings.DebugView = TheSettingManager->GetSettingI(section, "DebugView");
+	// UNOFFICIAL 2026-10-13: pools and puddles take their shape from the game's blood splatter decals (BloodFlow.fx.hlsl,
+	// TESR_BloodSplatter) when it is a loose file (a texture replacer): NVR does not read the game's archives, and without it
+	// the shader keeps its drawn shapes.
+	Settings.MatchGameColor = TheSettingManager->GetSettingI(section, "MatchGameColor") != 0;
+	Settings.MatchShade = std::clamp(TheSettingManager->GetSettingF(section, "MatchShade"), 0.01f, 1.0f);
+	Settings.MatchBrightness = std::clamp(TheSettingManager->GetSettingF(section, "MatchBrightness"), 0.1f, 8.0f);
+	Settings.StreamWidth = std::clamp(TheSettingManager->GetSettingF(section, "StreamWidth"), 0.1f, 4.0f);
+	Settings.Beads = std::clamp(TheSettingManager->GetSettingF(section, "Beads"), 0.0f, 3.0f);
+	Settings.GibPools = std::clamp(TheSettingManager->GetSettingF(section, "GibPools"), 0.0f, 3.0f);
+	Settings.Merge = std::clamp(TheSettingManager->GetSettingF(section, "Merge"), 0.0f, 2.0f);
+	Settings.MergeCount = std::clamp(TheSettingManager->GetSettingI(section, "MergeCount"), 2, 64);
+	Settings.BeadSize = std::clamp(TheSettingManager->GetSettingF(section, "BeadSize"), 1.0f, 200.0f);
+	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
+	Logger::Log("BloodFlow: splatter decals for pools and puddles: %s", Settings.SplatterAtlas ? "Textures\\decals\\fxbloodsplatterdecals01.dds" : "none (no loose file), drawn shapes");
 }
 
 void BloodFlowEffect::GatherSplats() {
@@ -331,7 +493,46 @@ void BloodFlowEffect::GatherSplats() {
 	}
 	std::sort(candidates, candidates + kept, [](const Candidate& a, const Candidate& b) { return a.Distance < b.Distance; });
 	kept = min(kept, Settings.MaxSplats);
+	// UNOFFICIAL 2026-10-13 (user: blood that gathers could merge into one, to cost less): where MergeCount or more splats lie
+	// close together on the same surface (centres within Merge x their radii, facing alike), they become one item: the first
+	// in a fixed order (by decal, so it does not change as the camera moves) grown to cover the others. One box and one set of
+	// streams instead of many overlapping ones, each running the whole blood shader over the same pixels. 0: off.
+	static int mergedInto[1024];
+	static float grownRadius[1024];
+	std::sort(candidates, candidates + kept, [&](const Candidate& a, const Candidate& b) { return raw[a.Index].Decal < raw[b.Index].Decal; });
+	auto splatRadius = [&](const RawSplat& s) { float r = 0.5f * max(s.Width, s.Height); return (r > 0.5f && r < 200.0f) ? std::clamp(r, 1.0f, 60.0f) : 8.0f; };
+	auto splatFacing = [&](const RawSplat& s) { D3DXVECTOR3 n(-s.Direction[0], -s.Direction[1], -s.Direction[2]); const float l = Length(n); return l > 1e-3f ? n / l : D3DXVECTOR3(0, 0, 1); };
+	int merged = 0;
+	for (int c = 0; c < kept; c++) { mergedInto[c] = -1; grownRadius[c] = splatRadius(raw[candidates[c].Index]); }
+	if (Settings.Merge > 0.0f && Settings.MergeCount >= 2) {
+		static int members[1024];
+		for (int c = 0; c < kept; c++) {
+			if (mergedInto[c] >= 0) continue;
+			const RawSplat& a = raw[candidates[c].Index];
+			const D3DXVECTOR3 ca(a.Origin[0], a.Origin[1], a.Origin[2]), na = splatFacing(a);
+			const float ra = splatRadius(a);
+			int n = 0;
+			for (int d = c + 1; d < kept; d++) {
+				if (mergedInto[d] >= 0) continue;
+				const RawSplat& b = raw[candidates[d].Index];
+				const D3DXVECTOR3 cb(b.Origin[0], b.Origin[1], b.Origin[2]);
+				const D3DXVECTOR3 nb = splatFacing(b);
+				if (D3DXVec3Dot(&na, &nb) < 0.85f) continue;
+				if (Length(cb - ca) > Settings.Merge * (ra + splatRadius(b))) continue;
+				members[n++] = d;
+			}
+			if (n + 1 < Settings.MergeCount) continue;
+			for (int m = 0; m < n; m++) {
+				const RawSplat& b = raw[candidates[members[m]].Index];
+				mergedInto[members[m]] = c;
+				grownRadius[c] = std::clamp(max(grownRadius[c], Length(D3DXVECTOR3(b.Origin[0], b.Origin[1], b.Origin[2]) - ca) + splatRadius(b) * 0.6f), 1.0f, 60.0f);
+				merged++;
+			}
+		}
+	}
+	if (merged > 0 && LoggedMerges < 10) { LoggedMerges++; Logger::Log("BloodFlow: %d of %d splats merged into neighbours (Merge %.2f, MergeCount %d)", merged, kept, Settings.Merge, Settings.MergeCount); }
 	for (int c = 0; c < kept && Count < ItemMax; c++) {
+		if (mergedInto[c] >= 0) continue;	// drawn as part of another
 		RawSplat& s = raw[candidates[c].Index];
 		Item& item = Items[Count];
 		const D3DXVECTOR3 center(s.Origin[0], s.Origin[1], s.Origin[2]);
@@ -344,7 +545,7 @@ void BloodFlowEffect::GatherSplats() {
 		if (!(radius > 0.5f && radius < 200.0f)) radius = 8.0f;
 		item.Center = center;
 		item.Normal = normal;
-		item.Radius = std::clamp(radius, 1.0f, 60.0f);
+		item.Radius = max(std::clamp(radius, 1.0f, 60.0f), grownRadius[c]);
 		item.Age = std::clamp(s.Age, 0.0f, 1e6f);
 		item.Seed = Hash01(HashFloats(s.Origin, 3));
 		float fade = 1.0f - std::clamp((candidates[c].Distance - 0.8f * Settings.MaxDistance) / (0.2f * Settings.MaxDistance), 0.0f, 1.0f);
@@ -354,6 +555,27 @@ void BloodFlowEffect::GatherSplats() {
 		item.Fade = fade;
 		item.Pool = false;
 		if (item.Fade <= 0.0f) continue;
+		// UNOFFICIAL 2026-10-13 (user: match my own blood, streams from the splatter's blood, not its edge): its texture's layout
+		// and its colour (the shader multiplies in the texture's grey, MatchShade).
+		item.DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+		item.DecalCode = 0;
+		item.Tint = 0.0f;
+		const bool laidOut = DecalLayout(s, item);
+		if (Settings.MatchGameColor) {
+			int t[3];
+			for (int i = 0; i < 3; i++) t[i] = std::clamp((int)lroundf(s.Tint[i] * 255.0f), 0, 255);
+			if (t[0] + t[1] + t[2] > 0) {
+				item.Tint = (float)(t[0] * 65536 + t[1] * 256 + t[2]);
+				for (int i = 0; i < 3; i++) LastTint[i] = s.Tint[i];
+				HaveTint = true;
+			}
+		}
+		if (LoggedLayouts < 6) {
+			LoggedLayouts++;
+			Logger::Log("BloodFlow: splat texture layout %s (quarter %d, turn %.2f, mirrored %d, mesh scale %.2f, %.1f x %.1f), colour %.3f %.3f %.3f",
+				laidOut ? "read" : "NOT read", s.Quarter, s.Turn, s.Mirrored ? 1 : 0, s.HaveMesh ? s.MeshScale : 0.0f, s.Width, s.Height,
+				s.Tint[0], s.Tint[1], s.Tint[2]);
+		}
 		UInt64 key = (UInt64)(UInt32)(uintptr_t)s.Decal | ((UInt64)HashFloats(s.Origin, 3) << 32);
 		item.Slot = SlotFor(key & ~(1ull << 63));
 		item.Fresh = false;
@@ -387,6 +609,8 @@ void BloodFlowEffect::GatherPools() {
 			continue;
 		}
 		if (!a.Bleeds || !a.HasBody) continue;
+		// UNOFFICIAL 2026-10-13: a body whose bound is nonsense (log: radius 2.6e10, lowest node -2.4e9) gets no pool.
+		if (!(a.BoundRadius < 2000.0f) || !(fabsf(a.MinZ) < 1e6f)) continue;
 		// Seen alive a moment ago: it died now. Otherwise the body was already there (loaded with the cell, or a save):
 		// its pool is old, spread and dry.
 		const bool old = body.DeadAt < 0.0 && !(body.AliveAt >= 0.0 && Clock - body.AliveAt < 5.0);
@@ -417,6 +641,23 @@ void BloodFlowEffect::GatherPools() {
 				}
 			}
 		}
+		if (Settings.GibPools > 0.0f) {
+			const UInt16 fresh = a.Dismembered & ~body.GibMask;
+			for (int k = 0; k < 16; k++) {
+				if (!(a.Dismembered & (1 << k))) continue;
+				if (fresh & (1 << k)) body.GibAt[k] = old ? Clock - 1e5 : Clock;
+				if (body.Locked && !(fresh & (1 << k))) continue;	// at rest: it stays where it is
+				// The stump's joint, on the ground under it; a part with no such node: beside the body's middle.
+				const float* at = a.PartFound[k] ? a.PartPos[k] : a.BoundCenter;
+				const float spread = a.PartFound[k] ? 0.0f : a.BoundRadius * 0.3f;
+				body.GibPool[k] = D3DXVECTOR3(at[0] + spread * cosf(k * 1.7f), at[1] + spread * sinf(k * 1.7f), a.MinZ - 1.5f);
+			}
+			if (fresh && LoggedGibs < 20) {
+				LoggedGibs++;
+				Logger::Log("BloodFlow: %08X cut parts %04X (new %04X): pools under them%s", a.RefID, a.Dismembered, fresh, old ? " (old body)" : "");
+			}
+			body.GibMask = a.Dismembered;
+		}
 		if (!body.Locked) continue;
 		const float distance = Length(body.Pool - eye);
 		if (!(distance < Settings.MaxDistance)) continue;
@@ -440,6 +681,14 @@ void BloodFlowEffect::GatherPools() {
 		item.Seed = Hash01(candidates[c].RefID);
 		item.Fade = 1.0f - std::clamp((candidates[c].Distance - 0.8f * Settings.MaxDistance) / (0.2f * Settings.MaxDistance), 0.0f, 1.0f);
 		item.Pool = true;
+		item.DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+		item.DecalCode = 0;
+		item.Tint = 0.0f;
+		if (Settings.MatchGameColor && HaveTint) {
+			int t[3];
+			for (int i = 0; i < 3; i++) t[i] = std::clamp((int)lroundf(LastTint[i] * 255.0f), 0, 255);
+			item.Tint = (float)(t[0] * 65536 + t[1] * 256 + t[2]);
+		}
 		if (c == 0 && LoggedNearest < 30) {
 			static double loggedAt = -1e9;
 			if (Clock - loggedAt > 2.0) {
@@ -448,6 +697,41 @@ void BloodFlowEffect::GatherPools() {
 				const D3DXVECTOR3 rel = body.Pool - eye;
 				Logger::Log("BloodFlow: nearest pool %08X at (%.1f %.1f %.1f), from the eye (%.1f %.1f %.1f) = %.0f units, radius %.1f, age %.1f s, eye (%.1f %.1f %.1f)",
 					candidates[c].RefID, body.Pool.x, body.Pool.y, body.Pool.z, rel.x, rel.y, rel.z, candidates[c].Distance, item.Radius, item.Age, eye.x, eye.y, eye.z);
+			}
+		}
+	}
+	// UNOFFICIAL 2026-10-13: the cut-off parts' pools (GibPools), for the same bodies, while there is room.
+	for (int c = 0; c < kept && Settings.GibPools > 0.0f; c++) {
+		const Body& body = Bodies[candidates[c].RefID];
+		if (!body.GibMask) continue;
+		int gibs = 0;
+		for (int k = 0; k < 16 && Count < ItemMax && gibs < 3; k++) {
+			if (!(body.GibMask & (1 << k))) continue;
+			// (A stump inside the body's own pool adds nothing but a second full-cost pool over the same pixels: the body's pool
+			// is it. User's F10, 2026-10-13: a ghoul with four cut limbs drew five pools on one spot.)
+			const float sx = body.GibPool[k].x - body.Pool.x, sy = body.GibPool[k].y - body.Pool.y;
+			if (sx * sx + sy * sy < body.MaxRadius * body.MaxRadius * 0.49f) continue;
+			gibs++;
+			const UInt64 key = (1ull << 63) | ((UInt64)(HashFloats((const float*)&body.GibPool[k], 3) ^ (UInt32)(k * 0x9E3779B1u)) << 32) | candidates[c].RefID;
+			const int slot = SlotFor(key);
+			if (slot < 0) continue;
+			Item& item = Items[Count++];
+			item.Slot = slot;
+			item.Fresh = false;
+			item.Center = body.GibPool[k];
+			item.Normal = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+			item.Radius = std::clamp(body.MaxRadius * Settings.GibPools, 4.0f, 60.0f);
+			item.Age = (float)min(Clock - max(body.GibAt[k], body.LockAt), 1e5);
+			item.Seed = Hash01(candidates[c].RefID * 31u + (UInt32)k * 977u);
+			item.Fade = 1.0f - std::clamp((candidates[c].Distance - 0.8f * Settings.MaxDistance) / (0.2f * Settings.MaxDistance), 0.0f, 1.0f);
+			item.Pool = true;
+			item.DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+			item.DecalCode = 0;
+			item.Tint = 0.0f;
+			if (Settings.MatchGameColor && HaveTint) {
+				int t[3];
+				for (int i = 0; i < 3; i++) t[i] = std::clamp((int)lroundf(LastTint[i] * 255.0f), 0, 255);
+				item.Tint = (float)(t[0] * 65536 + t[1] * 256 + t[2]);
 			}
 		}
 	}
@@ -464,21 +748,32 @@ void BloodFlowEffect::UpdateConstants() {
 	Clock += std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);
 	Frame++;
 	Count = 0;
-	// UNOFFICIAL 2026-10-13: SHELVED for the release (the user: not ready). No splats or pools are gathered, so nothing draws
-	// (ShouldRender: Count > 0) and the game's lists are not walked, whatever a settings file says. Its settings are gone from
-	// the defaults; the code stays for later (toolslood-sim.ps1 still runs the shader offline).
-	return;
 	if (TheShaderManager->GameState.isUnderwater) return;
 	if (Settings.Splats) GatherSplats();
 	if (Settings.Pools) GatherPools();
+	// UNOFFICIAL 2026-10-13: with F10 on, how many it draws (next to the Blood timers), every 240 frames.
+	if (GpuTimer::Enabled && ++ItemLogTick >= 240) {
+		ItemLogTick = 0;
+		int pools = 0;
+		for (int i = 0; i < Count; i++) pools += Items[i].Pool ? 1 : 0;
+		Logger::Log("BLOOD ITEMS: %d splats, %d pools (bodies' and cut limbs')", Count - pools, pools);
+	}
 
 	Constants.Fresh = D3DXVECTOR4(SrgbToLinear(Settings.FreshColor[0]), SrgbToLinear(Settings.FreshColor[1]), SrgbToLinear(Settings.FreshColor[2]), Settings.Gloss);
 	Constants.Dry = D3DXVECTOR4(SrgbToLinear(Settings.DryColor[0]), SrgbToLinear(Settings.DryColor[1]), SrgbToLinear(Settings.DryColor[2]), Settings.DryTime);
-	Constants.Info = D3DXVECTOR4(TheShaderManager->GameState.isExterior ? 1.0f : 0.0f, (float)Settings.DebugView, Settings.PoolDryTime, Settings.DripSpeed);
+	Constants.Info = D3DXVECTOR4(TheShaderManager->GameState.isExterior ? 1.0f : 0.0f, (float)Settings.DebugView, Settings.PoolDryTime, Settings.FlowSpeed);
 	// Gravity: 9.81 m/s^2 at 1.4287 cm a unit.
 	Constants.Pool = D3DXVECTOR4(Settings.PoolSpreadTime, Settings.DripLength, Settings.MaxFall, 687.0f);
 	// Paths are kept once seen from close enough that a pixel is under 0.8 units (about 1100 units away at 1440p).
-	Constants.Probe = D3DXVECTOR4(1.0f / PathRows, 0.8f, (float)PathRows, 0.0f);
+	Constants.Probe = D3DXVECTOR4(1.0f / PathRows, 0.8f, (float)PathRows, Settings.SplatterAtlas ? 1.0f : 0.0f);
+	// The flow's motion runs on the effect's own clock, wrapped every 1023 s (a whole number of the shader's 3 s flow
+	// periods) so it keeps its precision.
+	Constants.Match = D3DXVECTOR4(Settings.MatchShade, Settings.MatchBrightness, Settings.StreamWidth, Settings.MatchGameColor ? 1.0f : 0.0f);
+	for (int i = 0; i < 3; i++)
+		((float*)&Constants.DryRatio)[i] = std::clamp(SrgbToLinear(Settings.DryColor[i]) / max(SrgbToLinear(Settings.FreshColor[i]), 1e-4f), 0.05f, 4.0f);
+	Constants.DryRatio.w = 0.0f;
+	Constants.Beads = D3DXVECTOR4(Settings.Beads, Settings.BeadSize, 0.0f, 0.0f);
+	Constants.Flow = D3DXVECTOR4(Settings.FlowSpeed, Settings.Viscosity, Settings.BloodAmount, (float)fmod(Clock, 1023.0));
 }
 
 bool BloodFlowEffect::ShouldRender() {
@@ -488,7 +783,7 @@ bool BloodFlowEffect::ShouldRender() {
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
 	UINT technique, bool clear, IDirect3DSurface9* source) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
-	static CachedHandle techniqueCache, probeCache, boundsCache;
+	static CachedHandle techniqueCache, probeCache, boundsCache, beadsCache;
 	D3DXHANDLE boxes = TechniqueHandle(techniqueCache, "BloodFlow");
 	D3DXHANDLE probe = TechniqueHandle(probeCache, "BloodFlowProbe");
 	D3DXHANDLE boundsTechnique = TechniqueHandle(boundsCache, "BloodFlowBounds");
@@ -531,7 +826,10 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	Effect->SetTechnique(probe);
 	SetCT();
 	UINT passes = 0;
+	// UNOFFICIAL 2026-10-13 (user: blood pools close up cost a lot; F10 showed Blood flow 4.4 ms): each step timed on its own.
+	static GpuTimer probeTimer("  Blood probe"), boundsTimer("  Blood bounds"), paintTimer("  Blood paint (boxes)"), beadsTimer("  Blood beads");
 	if (probeTriangles && SUCCEEDED(Effect->Begin(&passes, 0))) {
+		GpuProfileScope gpu(probeTimer, device);
 		Effect->BeginPass(0);
 		device->SetVertexDeclaration(Declaration);
 		device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, probeTriangles, ProbeVertices, sizeof(VolumetricSmokeQuads::Vertex));
@@ -552,6 +850,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	device->SetTexture(6, nullptr);
 	TheRenderManager->renderState->NoteDeviceTexture(6, nullptr);
 	if (boundsTriangles && SUCCEEDED(Effect->Begin(&passes, 0))) {
+		GpuProfileScope gpu(boundsTimer, device);
 		Effect->BeginPass(0);
 		device->SetVertexDeclaration(Declaration);
 		device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, boundsTriangles, BoundsVertices, sizeof(VolumetricSmokeQuads::Vertex));
@@ -564,8 +863,36 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	// were written just now, so none is fresh for this pass.
 	for (int i = 0; i < Count; i++) Items[i].Fresh = false;
 	float bounds[4];
+	int splatTriangles = 0;
 	const int triangles = BloodFlowBoxes::Build(Items, Count, Settings.DripLength, Settings.MaxFall, eye, D3DXVECTOR3(inv._41, inv._42, inv._43),
-		TheRenderManager->ViewProjMatrix, Vertices, bounds);
+		TheRenderManager->ViewProjMatrix, Vertices, bounds, &splatTriangles);
+	// UNOFFICIAL 2026-10-13 (perf): the vertex shader projects the boxes, cut down to the items' bounds just drawn (CutBox),
+	// reading the bounds texture from the first vertex sampler: when the card can read that format there.
+	static int vertexBounds = -1;
+	if (vertexBounds < 0) {
+		vertexBounds = 0;
+		IDirect3D9* d3d = nullptr;
+		D3DDEVICE_CREATION_PARAMETERS creation = {};
+		D3DDISPLAYMODE mode = {};
+		if (SUCCEEDED(device->GetDirect3D(&d3d)) && d3d) {
+			if (SUCCEEDED(device->GetCreationParameters(&creation)) && SUCCEEDED(device->GetDisplayMode(0, &mode)))
+				vertexBounds = SUCCEEDED(d3d->CheckDeviceFormat(creation.AdapterOrdinal, creation.DeviceType, mode.Format,
+					D3DUSAGE_QUERY_VERTEXTEXTURE, D3DRTYPE_TEXTURE, D3DFMT_A32B32G32R32F)) ? 1 : 0;
+			d3d->Release();
+		}
+		Logger::Log("BloodFlow: boxes cut to the blood's bounds on the GPU: %s", vertexBounds ? "yes" : "no (the card cannot read the bounds format in a vertex shader)");
+	}
+	BloodFlowShape = D3DXVECTOR4(inv._41, inv._42, inv._43, vertexBounds && BoundsTexture ? 1.0f : 0.0f);
+	auto bindVertexBounds = [&](bool bind) {
+		if (!vertexBounds) return;
+		device->SetTexture(D3DVERTEXTEXTURESAMPLER0, bind ? BoundsTexture : nullptr);
+		if (!bind) return;
+		device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+		device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+		device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+		device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+	};
 	const float minU = bounds[0], minV = bounds[1], maxU = bounds[2], maxV = bounds[3];
 
 	// The shader blends straight into the current image (the chain's current texture, or the game's target without the
@@ -584,13 +911,31 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		Effect->SetTechnique(boxes);
 		SetCT();
 		if (SUCCEEDED(Effect->Begin(&passes, 0))) {
+			GpuProfileScope gpu(paintTimer, device);
 			Effect->BeginPass(0);
+			bindVertexBounds(true);
 			device->SetVertexDeclaration(Declaration);
 			device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangles, Vertices, sizeof(VolumetricSmokeQuads::Vertex));
 			Effect->EndPass();
 			Effect->End();
 		}
+		// UNOFFICIAL 2026-10-13: the wet beads over the game's splats, on top of the blood (BloodFlow.fx.hlsl, BeadsPS).
+		D3DXHANDLE beads = TechniqueHandle(beadsCache, "BloodBeads");
+		// (Over the splats only: their triangles come first. The pools' boxes only ever discarded there.)
+		if (beads && Settings.Beads > 0.0f && Settings.SplatterAtlas && splatTriangles > 0) {
+			Effect->SetTechnique(beads);
+			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
+				GpuProfileScope gpu(beadsTimer, device);
+				Effect->BeginPass(0);
+				bindVertexBounds(true);
+				device->SetVertexDeclaration(Declaration);
+				device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, splatTriangles, Vertices, sizeof(VolumetricSmokeQuads::Vertex));
+				Effect->EndPass();
+				Effect->End();
+			}
+		}
 	}
+	bindVertexBounds(false);
 	if (previousDeclaration) device->SetVertexDeclaration(previousDeclaration);
 	device->SetStreamSource(0, previousStream, previousOffset, previousStride);
 	device->SetRenderTarget(0, previousTarget);

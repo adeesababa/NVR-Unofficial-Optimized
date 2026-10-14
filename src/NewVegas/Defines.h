@@ -19,6 +19,7 @@
 // PointShadows.fx / PointShadows2.fx sample the cubemaps of slots 0..10 only; the last slot's light is lit without a
 // shadow lookup, so its cubemap is never read and is not drawn.
 #define ShadowCubeMapsSampled (ShadowCubeMapsScreen - 1)
+#define ExteriorBatchedMax 44	// UNOFFICIAL ExteriorLightPoints: outdoors at most 4 batches of 11 shadowed lamps
 #define TrackedLightsMax 12
 // UNOFFICIAL (2026-10-08): lamps the darkening mask (PointShadows.fx, TESR_ExtraLights) knows past its 12 shadow and 12
 // tracked ones: the forward shadow slots past 24 and the tracked lamps they push off, nearest first (GetNearbyLights). 16,

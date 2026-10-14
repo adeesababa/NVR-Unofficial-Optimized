@@ -190,6 +190,8 @@
     // its own cube-map shadow (looked up once per pixel near the top of main); without INTERIOR_SHADOWS it is just the
     // colour.
     #include "includes/PointShadowForward.hlsl"
+    // UNOFFICIAL 2026-10-13: blood on the first-person weapon and gloves (c218-c219, set per draw; off for every other draw).
+    #include "includes/HandBlood.hlsl"
 #endif
 
 // GunFX barrel glow (P67). Heat bridge from GunFX.dll. Coordinates are local to the drawn gun mesh, so
@@ -434,7 +436,12 @@ VS_OUTPUT main(VS_INPUT IN) {
 
 #elif defined(VS) && LIGHTS >= 4
 
-#if LIGHTS > 4
+// UNOFFICIAL MoreLampsPerObject (SPECULAR_LAMPS6, ShaderRecord): the specular LIGHTS 4 variants take 6 lamps, as many as the
+// game then gives their passes (it capped them at 2-3 and dropped the rest: lamps popped on and off objects).
+#ifndef SPECULAR_LAMPS6
+    #define SPECULAR_LAMPS6 0
+#endif
+#if LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
     #define MAX_LIGHTS 6
 #elif LIGHTS > 3 && !defined(SPECULAR)
     #define MAX_LIGHTS 4
@@ -697,6 +704,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     // quality fix for high-frequency normal maps (hair chief among them), not a debug toggle,
     // and ddx/ddy have to run here at top level regardless of anything below.
     roughness = SpecularAA(normal.xyz, roughness);
+    // UNOFFICIAL 2026-10-13: blood on first-person geometry (Includes/HandBlood.hlsl); derivatives, so at top level.
+    HandBlood(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w));
+    roughness = HandBloodRoughness(roughness);
+    normal.xyz = HandBloodNormal(normal.xyz);
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -716,6 +727,9 @@ PS_OUTPUT main(PS_INPUT IN) {
         #else
             baseColor.rgb = baseColor.rgb * IN.vertexColor.rgb;
         #endif
+    #endif
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !defined(ONLY_LIGHT)
+        baseColor.rgb = HandBloodAlbedo(baseColor.rgb);	// UNOFFICIAL: the blood's colour (after the vertex colour: blood is not tinted by it)
     #endif
 
     #ifdef METAL
@@ -804,7 +818,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 lighting;
         [branch] if (getMetalStrength() > 0.0f) {
             // Faded out with distance (getMetalFade); at full without the position (a vanilla vertex shader ran).
-            metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f);
+            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, baseColor.rgb) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f));
             metalRoughness = lerp(roughness, metalRoughness, metallic);
             lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #ifdef SI
@@ -984,7 +998,12 @@ PS_OUTPUT main(PS_INPUT IN) {
 
 #elif defined(PS) && LIGHTS >= 4
 
-#if LIGHTS > 4
+// UNOFFICIAL MoreLampsPerObject (SPECULAR_LAMPS6, ShaderRecord): the specular LIGHTS 4 variants take 6 lamps, as many as the
+// game then gives their passes (it capped them at 2-3 and dropped the rest: lamps popped on and off objects).
+#ifndef SPECULAR_LAMPS6
+    #define SPECULAR_LAMPS6 0
+#endif
+#if LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
     #define MAX_LIGHTS 6
 #elif LIGHTS > 3 && !defined(SPECULAR)
     #define MAX_LIGHTS 4
@@ -1079,6 +1098,15 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.xyz = normalize(expand(normal.xyz));
     
     float roughness = getRoughness(normal.a);
+    // UNOFFICIAL 2026-10-13 (user: polished marble walls in the casinos flickered round their lamps): the same geometric
+    // specular AA as the other path above. This 4+ lamp path had none, so a glossy wall (material rules' stonepolished)
+    // with a fine normal map sparkled from pixel to pixel as the view moved.
+    roughness = SpecularAA(normal.xyz, roughness);
+    // UNOFFICIAL 2026-10-13: blood on first-person geometry (Includes/HandBlood.hlsl); derivatives, so at top level.
+    HandBlood(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));
+    roughness = HandBloodRoughness(roughness);
+    normal.xyz = HandBloodNormal(normal.xyz);
+    baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
 
     // Lighting.
     float3 viewDir = { IN.lightDir.w, IN.light2.w, IN.light3.w };
@@ -1093,7 +1121,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
         float metallic = 0.0f;
         [branch] if (getMetalStrength() > 0.0f)
-            metallic = getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f);
+            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f));
         float lightRoughness = lerp(roughness, metalRoughness, metallic);
     #endif
 
@@ -1119,8 +1147,10 @@ PS_OUTPUT main(PS_INPUT IN) {
                 ptShadow3 = POINT_SHADOW_LOOKUP(3, PT_ATT(lightOffset + 2));
             #endif
             #if MAX_LIGHTS > 4
-                ptShadow4 = POINT_SHADOW_LOOKUP(4, PT_ATT(3));
-                ptShadow5 = POINT_SHADOW_LOOKUP(5, PT_ATT(4));
+                // UNOFFICIAL 2026-10-13: lightOffset, as for the lamps above (it was missing: in the OPT passes lamps 5 and 6
+                // took the previous lamp's position).
+                ptShadow4 = POINT_SHADOW_LOOKUP(4, PT_ATT(lightOffset + 3));
+                ptShadow5 = POINT_SHADOW_LOOKUP(5, PT_ATT(lightOffset + 4));
             #endif
         }
         #undef PT_ATT

@@ -137,6 +137,7 @@ public:
 		bool				TorchesCastShadows;
 		FormsStruct			Forms;
 		int					LightPoints;
+		int					ExteriorLightPoints;	// UNOFFICIAL: outdoors, lamps with shadows (above 12: the screen-space pass in batches)
 		int					Quality;
 		int					ShadowCubeMapSize;
 		int					DrawDistance;

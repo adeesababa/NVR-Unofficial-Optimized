@@ -148,7 +148,11 @@ float4 main(PS_INPUT IN) : COLOR0 {
     float3 skyReflected = SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z);
     [branch] if (TESR_SharpSky.x > 0.0f) skyReflected = SkyAmbientSharpened(normalize(reflected), skyReflected);
     float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + skyReflected * TESR_PBRExtraData.y;
-    color *= lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x);
+    // UNOFFICIAL 2026-10-13: never brighter than the game's own (at most 1). Indoors the ambient light can be high enough
+    // that ambient x AmbientScale x Strength came to 2-3, and the reflection on the casinos' marble walls (env-mapped, with a
+    // mask) was drawn at 1.5-3 times the game's: a pale sheen that the PBR-darkened walls under it showed up, sweeping across
+    // them as the player moved (the user: "goes away with PBR off"). Dimmer in the dark, as before.
+    color *= min(lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x), 1.0f);
     #if LIVE_CUBE
     // UNOFFICIAL CubeReflections ([Shaders.PBR.EnvMaps]): what the camera actually saw round it along the reflected view
     // (includes/LiveCube.hlsl, already lit, so not scaled by the light again) in place of the game's painted cube map, as

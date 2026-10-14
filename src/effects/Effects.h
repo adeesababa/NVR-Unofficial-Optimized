@@ -39,6 +39,7 @@
 #include "Sandstorm.h"
 #include "VolumetricLight.h"
 #include "SkyDither.h"
+#include "Bodycam.h"
 #include "Reflections.h"
 #include "VolumetricClouds.h"
 #include "BloodFlow.h"

@@ -177,7 +177,15 @@ namespace PointShadowForward {
 	inline bool UsesAllSlots(bool exterior) {
 		return CompiledIn && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
 	}
+	// UNOFFICIAL ExteriorLightPoints (2026-10-13): outdoors above 12, every slot up to it has a shadow, the screen-space pass
+	// drawn in batches of 11 (ShaderManager::RenderPointShadowBatches).
+	// (Only while lamp shadows are on outdoors, UsePointShadowsDay/Night: TESR_ShadowFade.z; otherwise nothing is gained.)
+	inline bool ExteriorBatched(bool exterior) {
+		return exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ExteriorLightPoints > ShadowCubeMapsScreen &&
+			TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowFade.z > 0.0f;
+	}
 	inline int ShadowedSlots(bool exterior) {
+		if (ExteriorBatched(exterior)) return (std::min)(TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ExteriorLightPoints, (int)ExteriorBatchedMax);
 		const int points = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.LightPoints;
 		return UsesAllSlots(exterior) ? (std::min)(points, (int)ShadowCubeMapsMax) : (std::min)(points, (int)ShadowCubeMapsSampled);
 	}

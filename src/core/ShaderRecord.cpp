@@ -198,10 +198,18 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	// otherwise the object shaders are exactly what they were (the rules' branches cost 1-5% there even unused).
 	AppendDefine("MATERIAL_RULES_ON", TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ? "1" : "0");
 
+	// UNOFFICIAL MoreLampsPerObject (Hooks.cpp patches the game's cap to match): the specular many-lamp object shaders take
+	// 6 lamps instead of 3. Read at startup, like the engine patch.
+	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
+
 	// UNOFFICIAL terrain blending (TerrainTemplate.hlsl, from Physically-Based-Reloaded): compiled in only when on at startup,
 	// like LIVE_CUBE, so that otherwise the land shaders are exactly what they were. TextureManager makes its depth copy
 	// under the same condition.
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
+
+	// UNOFFICIAL 2026-10-13 blood on the first-person weapon and gloves (Includes/HandBlood.hlsl, HandBlood.cpp): compiled in only
+	// when on at startup, like TERRAIN_BLEND (the per-draw switch alone cost every lit object 2-5 %).
+	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
 
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
@@ -700,7 +708,9 @@ ShaderRecordVertex::ShaderRecordVertex(const char* shaderName) {
 
 ShaderRecordVertex::~ShaderRecordVertex() {
 
-	ShaderHandle->Release();
+	// UNOFFICIAL 2026-10-13: none when the driver refused the shader (LoadShader deletes the record then): releasing
+	// nothing crashed the game at startup instead of falling back to the game's own shader.
+	if (ShaderHandle) ShaderHandle->Release();
 
 }
 
@@ -713,7 +723,9 @@ ShaderRecordPixel::ShaderRecordPixel(const char* shaderName) {
 
 ShaderRecordPixel::~ShaderRecordPixel() {
 
-	ShaderHandle->Release();
+	// UNOFFICIAL 2026-10-13: none when the driver refused the shader (LoadShader deletes the record then): releasing
+	// nothing crashed the game at startup instead of falling back to the game's own shader.
+	if (ShaderHandle) ShaderHandle->Release();
 
 }
 

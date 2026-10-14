@@ -11,6 +11,12 @@ public:
 	ShaderRecordVertex* VertexShader;
 	ShaderRecordPixel* PixelShader;
 
+	// UNOFFICIAL 2026-10-13: draw every caster double-sided ([Shaders.ShadowsExteriors.Main] TwoSidedCasters, sun shadow maps
+	// only; ShadowManager::RenderShadowMap sets it round its draws). Each object's own cull mode otherwise skips one-sided walls
+	// seen from behind (the game uses them where the player never sees their other side), so the sun and the volumetric light
+	// shone straight through them. Closed objects come out the same either way: the face nearest the sun wins the depth test.
+	static inline bool TwoSided = false;
+
 	std::stack<NiGeometry*>	GeometryList;
 	virtual bool AccumObject(NiGeometry* Geo) { return true; };
 	// UNOFFICIAL: the test behind AccumObject without the push, so a caller can sort geometry once and push it several

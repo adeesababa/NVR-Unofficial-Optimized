@@ -36,7 +36,10 @@ void RenderPass::RenderGeometry(NiGeometry* Geo) {
 	NiProperty* pProp = Geo->GetProperty(NiProperty::PropertyType::kType_Stencil);
 
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
-	if (pProp) {
+	if (RenderPass::TwoSided) {
+		RenderState->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE, RenderStateArgs);	// UNOFFICIAL TwoSidedCasters
+	}
+	else if (pProp) {
 		NiStencilProperty* pStencilProp = static_cast<NiStencilProperty*>(pProp);
 		RenderState->SetCullMode(pStencilProp->GetDrawMode());
 	}
@@ -245,7 +248,10 @@ void SkinnedGeoShadowRenderPass::RenderGeometry(NiGeometry* Geo) {
 	NiProperty* pProp = Geo->GetProperty(NiProperty::PropertyType::kType_Stencil);
 
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
-	if (pProp) {
+	if (RenderPass::TwoSided) {
+		RenderState->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE, RenderStateArgs);	// UNOFFICIAL TwoSidedCasters
+	}
+	else if (pProp) {
 		NiStencilProperty* pStencilProp = static_cast<NiStencilProperty*>(pProp);
 		RenderState->SetCullMode(pStencilProp->GetDrawMode());
 	}

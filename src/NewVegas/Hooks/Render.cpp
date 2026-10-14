@@ -1458,6 +1458,91 @@ namespace MaterialRulesDraw {
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
 namespace ScopeSunShadows { static void ForDraw(const PointShadowForward::RenderPassView* pass); }
 
+// UNOFFICIAL 2026-10-13: blood on the first-person weapon and gloves (Shaders/Includes/HandBlood.hlsl; the idea and its wiring
+// are mrfury97's HUD raindrops in the Physically-Based-Reloaded testbed). Fresh blood splats appearing near the camera (an NPC
+// hit up close: BloodFlowNewBloodNear, BloodFlow.cpp) add blood, more the nearer; it dries over DryTime and fades over FadeTime,
+// and goes underwater. The object shaders draw it only when compiled in ([Shaders.HandBlood.Status] Enabled at startup,
+// ShaderRecord.cpp HAND_BLOOD) and only for draws whose c218.x is above 0: set here for every first-person pass, cleared for
+// the first other one.
+float BloodFlowNewBloodNear(const D3DXVECTOR3& eye, float reach);
+bool BloodFlowLastTint(float out[3]);
+namespace HandBlood {
+	static bool Checked = false, Compiled = false, Set = false;
+	static float Amount = 0.0f, Wet = 0.0f, Seed = 0.0f, Spray = 0.0f;
+	static float SinceHit = 1e6f;	// seconds since blood was last added (the drops run for a few seconds after)
+	static float Draw[8] = {};
+	static ULONGLONG LastTick = 0;
+	static int Logged = 0;
+
+	// Once a frame, before the scene.
+	static void Update() {
+		if (!Checked) {
+			Checked = true;
+			Compiled = TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") != 0;
+			Logger::Log("UNOFFICIAL HandBlood: %s", Compiled ? "on (blood on the first-person weapon and gloves)" : "off (not compiled into the shaders)");
+		}
+		if (!Compiled) return;
+		const char* section = "Shaders.HandBlood.Main";
+		const ULONGLONG now = GetTickCount64();
+		const float dt = LastTick ? std::clamp((now - LastTick) / 1000.0f, 0.0f, 0.25f) : 0.0f;
+		LastTick = now;
+		const float reach = std::clamp(TheSettingManager->GetSettingF(section, "Reach"), 10.0f, 1000.0f);
+		const D3DXVECTOR3 eye(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+		const float nearest = BloodFlowNewBloodNear(eye, reach);
+		if (nearest < reach) {
+			if (Amount < 0.02f) { Seed = (float)(rand() % 997); Spray = (rand() % 6283) / 1000.0f; }	// clean: a new spatter
+			const float closeness = 1.0f - nearest / reach;
+			Amount = std::clamp(Amount + std::clamp(TheSettingManager->GetSettingF(section, "PerHit"), 0.0f, 1.0f) * (0.35f + 0.65f * closeness), 0.0f, 1.0f);
+			Wet = 1.0f;
+			SinceHit = 0.0f;
+			if (Logged < 20) { Logged++; Logger::Log("UNOFFICIAL HandBlood: fresh blood %.0f units away: amount %.2f", nearest, Amount); }
+		}
+		const float dryTime = std::clamp(TheSettingManager->GetSettingF(section, "DryTime"), 1.0f, 3600.0f);
+		const float fadeTime = std::clamp(TheSettingManager->GetSettingF(section, "FadeTime"), 0.0f, 36000.0f);
+		Wet = std::clamp(Wet - dt / dryTime, 0.0f, 1.0f);
+		if (fadeTime > 0.0f) Amount *= expf(-dt / fadeTime);
+		if (TheShaderManager->GameState.isUnderwater) Amount = 0.0f;	// washed off
+		if (Amount < 0.003f) Amount = 0.0f;
+		if (TheSettingManager->GetSettingI(section, "DebugView")) { Amount = 1.0f; Wet = 1.0f; }
+		// The colour: the game's own blood decals' (their colour times the splatter texture's grey, BloodFlow's MatchShade), as a
+		// texture colour; Color until one has been seen.
+		float tint[3];
+		const float shade = std::clamp(TheSettingManager->GetSettingF("Shaders.BloodFlow.Main", "MatchShade"), 0.01f, 1.0f);
+		if (BloodFlowLastTint(tint)) for (int c = 0; c < 3; c++) Draw[4 + c] = std::clamp(tint[c] * shade, 0.0f, 1.0f);
+		else {
+			Draw[4] = TheSettingManager->GetSettingF(section, "ColorR");
+			Draw[5] = TheSettingManager->GetSettingF(section, "ColorG");
+			Draw[6] = TheSettingManager->GetSettingF(section, "ColorB");
+		}
+		// Darker than the decals' own colour by Brightness (the blood is thick on the gun); the drops run over RunTime seconds
+		// after each hit, as far as Run says.
+		const float brightness = std::clamp(TheSettingManager->GetSettingF(section, "Brightness"), 0.05f, 2.0f);
+		for (int c = 4; c < 7; c++) Draw[c] = std::clamp(Draw[c] * brightness, 0.0f, 1.0f);
+		SinceHit = std::clamp(SinceHit + dt, 0.0f, 1e6f);
+		const float runTime = std::clamp(TheSettingManager->GetSettingF(section, "RunTime"), 0.1f, 60.0f);
+		Draw[7] = std::clamp(TheSettingManager->GetSettingF(section, "Run"), 0.0f, 2.0f) * (1.0f - expf(-SinceHit / runTime));
+		if (TheSettingManager->GetSettingI(section, "DebugView")) Draw[7] = std::clamp(TheSettingManager->GetSettingF(section, "Run"), 0.0f, 2.0f);
+		Draw[0] = Amount;
+		Draw[1] = Wet;
+		Draw[2] = std::clamp(TheSettingManager->GetSettingF(section, "CellSize"), 0.2f, 20.0f);
+		Draw[3] = Seed;
+	}
+
+	// Every geometry pass, after its shaders are bound.
+	static void SetForDraw() {
+		if (!Compiled) return;
+		if (Draw[0] > 0.0f && ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) {
+			TheRenderManager->device->SetPixelShaderConstantF(218, Draw, 2);
+			Set = true;
+		}
+		else if (Set) {
+			const float off[8] = {};
+			TheRenderManager->device->SetPixelShaderConstantF(218, off, 2);
+			Set = false;
+		}
+	}
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -1535,6 +1620,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	MaterialRulesDraw::AfterBind();	// UNOFFICIAL material rules: this object's class again over the bind's "no rule"
 	ReflectionProbe::AfterBind();  // UNOFFICIAL ReflectionClipFix: the clip plane re-issued once the pass's shaders are bound
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
+	HandBlood::SetForDraw();	// UNOFFICIAL: blood on the first-person weapon and gloves
 	LampScissor::OnBind(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL LampScissor
 	HiddenObjectCulling::OnBind(PixelShader);	// UNOFFICIAL HiddenObjectCulling: only lamp-only passes may be skipped
 	// UNOFFICIAL interior forward point-light shadows: the draw's lamps and their cube maps (PointShadowForward.h).
@@ -1601,7 +1687,58 @@ namespace ScopeSunShadows {
 	}
 }
 
+// UNOFFICIAL, diagnostic (2026-10-13, with [Shaders.ShadowsInteriors.Forward] LogLamps): how many lamps the game gives each
+// object's draw, per pass type, and the largest per-pass cap it set (RenderPass +0x0A), logged every 3 seconds. Asked for by
+// "increase the per object point light limit": a wall piece next to a lamp stayed unlit by it while its neighbour was lit.
+namespace LampCountStats {
+	static unsigned Draws[256][16] = {};
+	static unsigned MaxCap[256] = {};
+	static DWORD Last = 0;
+	// Every lamp that reached a draw in the interval: its position and reach (its NiLight: +0xF8; world position +0x8C, radius
+	// +0xE0, as ShadowLightShader::SetupGeometryOpt_LightsSpecular reads them) and in how many draws.
+	struct Seen { const void* light; float x, y, z, radius; unsigned draws; };
+	static Seen Lamps[128] = {};
+	static int LampCount = 0;
+	static void Count(const PointShadowForward::RenderPassView* pass) {
+		if (!PointShadowForward::LogObjectLamps || !pass) return;
+		const unsigned type = pass->passEnum & 0xFF;
+		Draws[type][(std::min)((unsigned)pass->numLights, 15u)]++;
+		MaxCap[type] = (std::max)(MaxCap[type], (unsigned)pass->maxLights);
+		for (int k = 0; pass->lights && k < pass->numLights; k++) {
+			const ShadowSceneLight* light = pass->lights[k];
+			if (!light) continue;
+			int i = 0;
+			while (i < LampCount && Lamps[i].light != light) i++;
+			if (i == LampCount) {
+				if (LampCount == 128) continue;
+				const char* source = *(const char* const*)((const char*)light + 0xF8);
+				if (!source) continue;
+				const float* p = (const float*)(source + 0x8C);
+				Lamps[LampCount++] = { light, p[0], p[1], p[2], *(const float*)(source + 0xE0), 0 };
+			}
+			Lamps[i].draws++;
+		}
+		const DWORD now = GetTickCount();
+		if (now - Last < 3000) return;
+		Last = now;
+		for (int i = 0; i < LampCount; i++)
+			Logger::Log("LAMP SEEN %p at %.0f %.0f %.0f, reach %.0f, in %u draws", Lamps[i].light, Lamps[i].x, Lamps[i].y, Lamps[i].z, Lamps[i].radius, Lamps[i].draws);
+		LampCount = 0;
+		for (unsigned t = 0; t < 256; t++) {
+			unsigned total = 0;
+			for (unsigned n = 0; n < 16; n++) total += Draws[t][n];
+			if (!total) continue;
+			char text[256] = ""; size_t used = 0;
+			for (unsigned n = 0; n < 16 && used < sizeof(text) - 16; n++)
+				if (Draws[t][n]) used += snprintf(text + used, sizeof(text) - used, " %u:%u", n, Draws[t][n]);
+			Logger::Log("LAMP COUNTS pass 0x%02X: %u draws, lamps per draw (count:draws)%s, largest cap %u", t, total, text, MaxCap[t]);
+		}
+		memset(Draws, 0, sizeof(Draws)); memset(MaxCap, 0, sizeof(MaxCap));
+	}
+}
+
 static void ForwardShadowsForPass(void* Pass) {
+	LampCountStats::Count((const PointShadowForward::RenderPassView*)Pass);
 	PointShadowForward::OnRenderPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw((const PointShadowForward::RenderPassView*)Pass);
@@ -1635,6 +1772,19 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 }
 
 HRESULT (__thiscall* SetSamplerState)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8) = (HRESULT (__thiscall*)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8))Hooks::SetSamplerState;
+
+// UNOFFICIAL LampReachMargin (2026-10-13, [Main.Main.Misc]): the game attaches a lamp to an object when the lamp's reach
+// overlaps the object's bound sphere (distance - Scale x bound radius < reach). Fire lights flicker: their position jitters
+// by a few units every frame, so a lamp whose reach ended right at an object's bound attached and detached frame after
+// frame, and its light and shadow flicked on and off over the whole object (a Gomorrah wall: gap -1 to +2 units, every
+// frame, LogLamps). The bound is taken this much larger: a lamp just past the edge stays attached. Its light has faded to
+// nothing at its reach, so nothing changes but the flicker (and an object may keep one more lamp, at no visible cost).
+bool(__thiscall* BoundWithinLightRadius)(void*, const float*, void*, float) = (bool(__thiscall*)(void*, const float*, void*, float))0x00B9DAE0;
+float LampReachMargin = 0.0f;
+bool __fastcall BoundWithinLightRadiusHook(void* This, UInt32 edx, const float* Bound, void* Light, float Scale) {
+	if (LampReachMargin > 0.0f && Bound && Bound[3] > 1.0f) Scale += LampReachMargin / Bound[3];
+	return BoundWithinLightRadius(This, Bound, Light, Scale);
+}
 HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt32 Sampler, D3DSAMPLERSTATETYPE Type, UInt32 Value, UInt8 Save) {
 
 	UInt16* TypeMap = (UInt16*)0x126F92C;
@@ -1672,6 +1822,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		ShaderSplit::BeginContext(ShaderSplit::World);
 		HiddenObjectCulling::BeginWorld();
 		GunFXSwitches::Update();
+		HandBlood::Update();	// UNOFFICIAL: blood on the first-person weapon and gloves (once a frame)
 		BarrelHaze::Reset();
 		BarrelHeat::BeginWorldProbe();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);

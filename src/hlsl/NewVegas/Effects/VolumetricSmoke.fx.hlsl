@@ -93,6 +93,8 @@ float4 SmokeAtLod(float2 uv) { return tex2Dlod(TESR_SmokeBuffer, float4(uv, 0, 0
 float noise3(float3 x) { return tex3Dlod(TESR_NoiseVolume, float4(x / 8.0, 0.0)).r; }
 // Its 4-octave fbm, the same scale for its first octave.
 float noiseFbm(float3 x) { return tex3Dlod(TESR_NoiseVolume, float4(x / 4.0, 0.0)).g; }
+// The same at a coarser mip level (lod), for points seen so far off that one pixel covers several of its texels.
+float noiseFbmLod(float3 x, float lod) { return tex3Dlod(TESR_NoiseVolume, float4(x / 4.0, lod)).g; }
 // erfc (Abramowitz & Stegun 7.1.27, error below 0.0005).
 float erfcApprox(float x) {
 	float z = abs(x);
@@ -379,6 +381,13 @@ float BulletField(float3 cam, float3 dir, float sceneDist, out float t0, out flo
 // the light are lighter. Then noise, fixed in the world at the haze's middle distance along the ray and drifting slowly,
 // makes the total lumpy and layered rather than smooth balls: once per pixel, not per blob (noise for every blob a ray
 // passes through cost a millisecond in a full room).
+// UNOFFICIAL 2026-10-13 (user: the haze looks swirly at some angles): the noise used to be read at the haze's middle
+// distance along each ray. That distance follows the walls (the haze stops at them) and the blobs (the middle of each one's
+// stretch), so the points it was read at lay on a shrunken copy of the room, or on a sphere through your eye: looking
+// along a wall or a corridor, or past a blob, the noise was smeared into rings round the vanishing point, and it slid as you
+// moved (tests: work\haze_swirl.cpp). Now it is read on four fixed shells round the eye (HazeShell), each counting by how
+// much of this ray's haze lies in its band of distances (worked out exactly with the blobs, HazeBandEdge): the lumps keep
+// their size and shape whatever the walls or blobs do, and far shells read a coarser mip so they do not shimmer.
 // Writes optical depth, light share and flash (as step 1) into TESR_SmokeHaze, and in alpha the distance to the nearest surface
 // of its block (what it was cut at), for step 2's depth-aware upscaling (HazeAt).
 // How much of the segment smoke (TESR_SmokeBuffer and TESR_SmokeBufferLow) the bullets cut along this ray (0 none .. 1
@@ -414,6 +423,11 @@ struct HazeOutput {
 	float4 cut : COLOR1;    // TESR_SmokeCut
 };
 
+// The haze's noise shells round the eye (game units) and the band edges between them (geometric: near haze shows its lumps
+// big, far haze small, as in a real fog).
+static const float4 HazeShell = float4(16.0, 90.0, 355.0, 1300.0);
+static const float3 HazeBandEdge = float3(45.0, 180.0, 700.0);
+
 HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 	float scale = max(SmokeLook.z, 1.0);
 	float2 uv = (vpos + 0.5) * TESR_ReciprocalResolution.xy * scale;
@@ -432,7 +446,8 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 	}
 	float3 L = LightDirection();
 	float flashReach2 = max(SmokeFlashColor.w * SmokeFlashColor.w, 1.0);
-	float4 sum = 0.0;
+	float3 sum = 0.0;
+	float tNear = 1e9, tFar = 0.0;    // UNOFFICIAL 2026-10-13: where along the ray the haze starts and ends (the noise below)
 	[loop] for (int i = 0; i < 40; i++) {
 		if (i >= HazeInfo.x) break;
 		float4 shape = HazeShape[i];
@@ -449,13 +464,16 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 				float iR2 = 1.0 / R2, kk = 1.0 - d2 * iR2;
 				float F1 = s1 * (kk * kk - s1 * s1 * iR2 * (0.6666667 * kk - 0.2 * s1 * s1 * iR2));
 				float F0 = s0 * (kk * kk - s0 * s0 * iR2 * (0.6666667 * kk - 0.2 * s0 * s0 * iR2));
-				float tau = HazeLook[i].x * 0.9375 / shape.w * (F1 - F0);
+				float rho = HazeLook[i].x * 0.9375 / shape.w;
+				float tau = rho * (F1 - F0);
+				tNear = min(tNear, tc + s0);
+				tFar = max(tFar, tc + s1);
 				float sm = 0.5 * (s0 + s1);
 				float3 rel = (dir * (tc + sm) - oc) / shape.w;     // the middle of the ray's stretch, from the centre, in radii
 				float lit = 0.75 + 0.25 * dot(rel, L);
 				float3 toFlash = SmokeFlash.xyz - shape.xyz;
 				float flash = SmokeFlash.w * exp(-dot(toFlash, toFlash) / (flashReach2 + 0.25 * R2));
-				sum += tau * float4(1.0, lit, flash, tc + sm);
+				sum += tau * float3(1.0, lit, flash);
 			}
 		}
 	}
@@ -485,17 +503,45 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 		}
 	}
 	[branch] if (sum.x > 0.00001) {
-		// World positions (NVR's space plus the camera's) round the haze's middle distance along this ray: three reads of
-		// the noise texture's fbm spread through the haze, so it is thicker and thinner in depth too, not one value per
-		// ray (it was two procedural noises at the middle distance). Averaging flattens the contrast: restored.
-		float middle = sum.w / sum.x;
-		float n = 0.0;
-		[unroll] for (int k = 0; k < 3; k++) {
-			float t = middle * (0.6 + 0.4 * k);
-			float3 p = (dir * t + TESR_CameraPosition.xyz) / 45.0 + float3(0.0, 0.0, -SmokeParams.w * 0.02);
-			n += noiseFbm(p);
+		// UNOFFICIAL 2026-10-13 (user: the haze shifts about as you walk toward or away from it; it should keep moving on its
+		// own instead): the shells round the eye moved with you, so walking slid the noise through the world. Now it is read
+		// where this ray crosses planes fixed in the world (across the axis the ray runs most along, every D units, D doubling
+		// for long stretches so there are at most 8), inside the haze's own stretch along the ray: the lumps stay put as you
+		// move, a plane coming into the stretch fades in rather than popping. The noise itself drifts all the time (a slow
+		// breeze, rising a little), so the haze churns while you stand still.
+		float pixelAngle = 2.0 * scale * TESR_ReciprocalResolution.y / TESR_ProjectionTransform[1][1];
+		float3 drift = float3(0.35, 0.2, 0.25) * SmokeParams.w * 0.05;
+		float3 ad = abs(dir);
+		float3 axis = ad.x > ad.y && ad.x > ad.z ? float3(1.0, 0.0, 0.0) : (ad.y > ad.z ? float3(0.0, 1.0, 0.0) : float3(0.0, 0.0, 1.0));
+		float dirA = dot(dir, axis);
+		float camA = dot(TESR_CameraPosition.xyz, axis);
+		float extent = max(tFar - tNear, 0.0);
+		float D = 30.0 * exp2(ceil(log2(max(extent / 210.0, 1.0))));
+		float side = dirA >= 0.0 ? 1.0 : -1.0;
+		float atNear = camA + dirA * tNear;
+		float first = (side > 0.0 ? ceil(atNear / D) : floor(atNear / D)) * D;
+		float total = 0.0, total2 = 0.0, acc = 0.0;
+		[loop] for (int k = 0; k < 8; k++) {
+			float t = (first + side * k * D - camA) / (abs(dirA) > 0.0001 ? dirA : 0.0001);
+			if (t > tFar) break;
+			float w = saturate((t - tNear) / (0.5 * D)) * saturate((tFar - t) / (0.5 * D));
+			[branch] if (w > 0.0) {
+				float3 p = (dir * t + TESR_CameraPosition.xyz) / 45.0 + drift;
+				acc += w * noiseFbmLod(p, log2(max(t * pixelAngle / 2.8125, 1.0)));
+				total += w;
+				total2 += w * w;
+			}
 		}
-		n = saturate((n / 3.0 - 0.5) * 1.6 + 0.5);
+		// (A stretch thinner than the planes' spacing: its middle, once.)
+		[branch] if (total < 0.001) {
+			float t = 0.5 * (tNear + tFar);
+			acc = noiseFbmLod((dir * t + TESR_CameraPosition.xyz) / 45.0 + drift, log2(max(t * pixelAngle / 2.8125, 1.0)));
+			total = 1.0;
+			total2 = 1.0;
+		}
+		// Averaging several reads flattens the contrast by about the square root of how many count: restored by that.
+		float spread = clamp(sqrt(total * total / max(total2, 0.000001)), 1.0, 2.5);
+		float n = saturate((acc / total - 0.5) * 1.6 * spread + 0.5);
 		sum *= lerp(0.25, 1.7, n);
 	}
 	HazeOutput o;

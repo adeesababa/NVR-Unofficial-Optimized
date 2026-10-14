@@ -329,6 +329,24 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			if (oldTarget) oldTarget->Release();
 			if (oldDepth) oldDepth->Release();
 			reflectState->Apply();
+			// UNOFFICIAL 2026-10-13: SetCT wrote our textures and sampler states through the game's render-state cache, and
+			// the state block has just put the device back behind its back: the cache still held ours (WRAP on s2-s5/s8, CLAMP
+			// on the rest). A later draw that wanted exactly our value was skipped and kept the device's restored one: a terrain
+			// layer drawn clamped, its edge texels smeared into stripes (user report, save NVRAutoTest6). Tell the cache what
+			// the device really holds again.
+			for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
+				const UInt32 stage = TextureShaderValues[c].RegisterIndex;
+				if (stage >= 16) continue;
+				IDirect3DBaseTexture9* texture = nullptr;
+				Device->GetTexture(stage, &texture);
+				TheRenderManager->renderState->NoteDeviceTexture(stage, texture);
+				if (texture) texture->Release();
+				for (int i = 1; i < SamplerStatesMax; i++) {
+					DWORD value = 0;
+					if (SUCCEEDED(Device->GetSamplerState(stage, (D3DSAMPLERSTATETYPE)i, &value)))
+						TheRenderManager->SetSamplerState(stage, (D3DSAMPLERSTATETYPE)i, value);
+				}
+			}
 		}
 	}
 	target->Release();

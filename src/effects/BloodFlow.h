@@ -24,7 +24,9 @@ public:
 		bool	Splats;			// drips and drying on the game's wall splats
 		bool	Pools;			// pools under bodies
 		float	DripLength;		// longest drip, in game units
-		float	DripSpeed;		// how fast drips run (1 = normal)
+		float	FlowSpeed;		// how fast the blood runs and creeps (1 = normal)
+		float	Viscosity;		// how much the distortion noise breaks up the flow (higher = more uneven, clumpy)
+		float	BloodAmount;	// 0-1: threshold on the blood's thickness, how much of it shows
 		float	DryTime;		// seconds for a splat or drip to dry
 		float	PoolSize;		// pool size, as a share of the body's size
 		float	PoolSpreadTime;	// seconds a pool takes to spread (most of the way)
@@ -37,6 +39,17 @@ public:
 		int		MaxSplats;
 		int		MaxPools;
 		int		DebugView;		// 1: boxes in green, blood in red
+		bool	SplatterAtlas;	// the game's blood splatter decals are there as a loose file (pools and puddles take their shape)
+		// UNOFFICIAL 2026-10-13 (user: match my regular blood's colour, resize the trails):
+		bool	MatchGameColor;	// the blood takes each game splat's own colour (its decal colour times MatchShade) instead of FreshColor
+		float	MatchShade;		// the splatter texture's own grey (sRGB; the user's 2048 replacer measures 0.12)
+		float	MatchBrightness;	// multiplies the matched colour
+		float	StreamWidth;	// multiplies the trails' width
+		float	Beads;			// UNOFFICIAL 2026-10-13: wet beads over the game's splats (0 off)
+		float	BeadSize;		// game units a tile of the drops texture covers
+		float	Merge;			// splats closer than this x their radii merge into one item (0 off)
+		float	GibPools;		// a pool under each cut-off limb, this x the body's pool size (0 off)
+		int		MergeCount;		// ... when at least this many lie together
 	};
 	BloodFlowSettingsStruct	Settings;
 
@@ -46,6 +59,10 @@ public:
 		D3DXVECTOR4	Info;		// x: outdoors, y: debug view, z: pool dry time (s), w: drip speed
 		D3DXVECTOR4	Pool;		// x: pool spread time (s); y: longest drip (game units); z: longest fall; w: gravity (units/s^2)
 		D3DXVECTOR4	Probe;		// x: 1 / path texture rows; y: finest detail a path is kept at (units per pixel)
+		D3DXVECTOR4	Flow;		// x: flow speed; y: viscosity; z: blood amount; w: clock (seconds, wraps every 1023)
+		D3DXVECTOR4	Match;		// x: splatter texture grey (sRGB); y: brightness; z: trail width; w: 1 match the game's colour
+		D3DXVECTOR4	DryRatio;	// rgb: dried over fresh colour (linear, from the settings), for the matched colour
+		D3DXVECTOR4	Beads;		// x: wet beads' strength (0 off), y: a drops tile's size (game units)
 	};
 	BloodFlowStruct	Constants;
 

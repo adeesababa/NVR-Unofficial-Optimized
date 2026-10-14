@@ -28,6 +28,14 @@ namespace BloodFlowBoxes {
 		bool		Pool;
 		int			Slot;		// its rows in the path texture (Streams per slot)
 		bool		Fresh;		// the slot's rows hold nothing of this item yet (new, or not drawn last frame)
+		// UNOFFICIAL 2026-10-13: how the game laid its splatter texture on the wall (splats only; zero for pools), so the
+		// streams start where its blood is, and its colour. DecalU: world direction of the texture's u over the decal's
+		// width (u = dot(point - Center, DecalU) + 0.5); DecalCode: which quarter of the atlas (0-3, 4 the whole), +5 mirrored,
+		// +10 v runs the other way round the normal, +20 x the width/height ratio step (BloodFlow.cpp); Tint: the decal's
+		// colour times the texture's own grey, sRGB 0-255 packed r*65536 + g*256 + b (0: none, the settings' colour).
+		D3DXVECTOR3	DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+		int			DecalCode = 0;
+		float		Tint = 0.0f;
 	};
 
 	inline float Length(const D3DXVECTOR3& v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
@@ -39,8 +47,9 @@ namespace BloodFlowBoxes {
 		const float code = (float)item.Slot + (item.Pool ? 1000.0f : 0.0f) + (item.Fresh ? 2000.0f : 0.0f);
 		const float a[4] = { center.x, center.y, center.z, code };
 		const float b[4] = { item.Normal.x, item.Normal.y, item.Normal.z, item.Radius };
-		const float c[4] = { item.Age, item.Fade, floorf(item.Seed * 4095.0f + 0.5f), dripLength };
-		const float d[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		// (The decal's code rides above the seed: c.z = seed + 4096 * code, whole numbers well inside a float's 24 bits.)
+		const float c[4] = { item.Age, item.Fade, floorf(item.Seed * 4095.0f + 0.5f) + 4096.0f * (float)item.DecalCode, dripLength };
+		const float d[4] = { item.DecalU.x, item.DecalU.y, item.DecalU.z, item.Tint };
 		memcpy(data.a, a, 16); memcpy(data.b, b, 16); memcpy(data.c, c, 16); memcpy(data.d, d, 16);
 	}
 
@@ -50,13 +59,22 @@ namespace BloodFlowBoxes {
 	// boxes' screen areas in UV (min u, min v, max u, max v; the whole screen if a box reaches behind the eye).
 	// The boxes are level (world axes): a splat's reaches down far enough for its streams and for drops falling off an
 	// edge under it (maxFall); a pool's covers the trickles that run off it downhill.
+	// UNOFFICIAL 2026-10-13 (perf, user: pools close up cost a lot): the vertices are not projected here any more. Each
+	// carries its corner item-relative (position xyz) and its face (w: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z), all six faces
+	// of every box on screen; the vertex shader (BloodFlow.fx.hlsl, CutBox) cuts the box down to the item's real bounds
+	// (the bounds pass, just drawn), keeps the faces past the eye and projects them. The splats' triangles come first:
+	// splatTriangles gets how many (the wet beads are drawn over those only).
 	inline int Build(const Item* items, int count, float dripLength, float maxFall, const D3DXVECTOR3& eye, const D3DXVECTOR3& origin,
-		const D3DXMATRIX& viewProj, VolumetricSmokeQuads::Vertex* out, float bounds[4]) {
+		const D3DXMATRIX& viewProj, VolumetricSmokeQuads::Vertex* out, float bounds[4], int* splatTriangles = nullptr) {
 		float minU = 1.0f, minV = 1.0f, maxU = 0.0f, maxV = 0.0f;
 		int triangles = 0;
 		const D3DXVECTOR3 u(1.0f, 0.0f, 0.0f), d(0.0f, 1.0f, 0.0f), n(0.0f, 0.0f, 1.0f);
-		for (int i = 0; i < count; i++) {
-			const Item& item = items[i];
+		if (splatTriangles) *splatTriangles = 0;
+		for (int i = 0; i < count * 2; i++) {
+			// Splats on the first run through the list, pools on the second.
+			if (i == count && splatTriangles) *splatTriangles = triangles;
+			const Item& item = items[i % count];
+			if (item.Pool != (i >= count)) continue;
 			float reach, low, high;
 			const float r = item.Radius;
 			if (item.Pool) {
@@ -108,19 +126,16 @@ namespace BloodFlowBoxes {
 			}
 			VolumetricSmokeQuads::Vertex data = {};
 			ItemData(item, center, dripLength, data);
-			// The box's faces seen from inside (their outward normal points away from the eye): every pixel the box covers is
-			// shaded once, whether the eye is outside the box or in it.
+			// All six faces: the vertex shader keeps those seen from inside (their outward normal points away from the eye),
+			// so every pixel the box covers is shaded once, whether the eye is outside the box or in it.
 			static const int faces[6][4] = { { 0, 2, 6, 4 }, { 1, 5, 7, 3 }, { 0, 4, 5, 1 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 6, 7, 5 } };
-			const D3DXVECTOR3 outward[6] = { -u, u, -d, d, -n, n };
 			for (int f = 0; f < 6; f++) {
-				const D3DXVECTOR3 faceCenter = (corner[faces[f][0]] + corner[faces[f][1]] + corner[faces[f][2]] + corner[faces[f][3]]) * 0.25f;
-				if (D3DXVec3Dot(&outward[f], &faceCenter) <= 0.0f) continue;
 				static const int order[6] = { 0, 1, 2, 0, 2, 3 };
 				for (int t = 0; t < 6; t++) {
 					VolumetricSmokeQuads::Vertex& v = out[triangles * 3 + t];
 					v = data;
-					const D3DXVECTOR4& p = clip[faces[f][order[t]]];
-					v.x = p.x; v.y = p.y; v.z = p.z; v.w = p.w;
+					const int k = faces[f][order[t]];
+					v.x = (k & 1) ? u1 : u0; v.y = (k & 2) ? d1 : d0; v.z = (k & 4) ? n1 : n0; v.w = (float)f;
 				}
 				triangles += 2;
 			}

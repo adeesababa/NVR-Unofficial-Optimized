@@ -55,8 +55,17 @@ static float RampZ(const Ramp& r, float x, float y) { return r.sx * (x - r.x0) +
 // Terrain mode: a height field. Falls towards the camera (-y) at about 6 degrees on average, with long swells and small
 // bumps, so slopes run from about 2 to 15 degrees; a back wall stands at WallY. Material 0 (ground).
 static bool TerrainMode = false;
+// Rocks (2026-10-13, BloodFlow rewrite): smooth bumps a few units high just downhill of some splats; the streams must go
+// round them, not over (the obstacle check). x, y, radius, height.
+static const float Rocks[][4] = { { 60, 24, 6, 5 }, { -120, 44, 6, 5 }, { -30, 86, 7, 5 } };
+static bool WithRocks = true;
+static float RockZ(float x, float y) {
+	float z = 0.0f;
+	if (WithRocks) for (const auto& r : Rocks) { const float u = ((x - r[0]) * (x - r[0]) + (y - r[1]) * (y - r[1])) / (r[2] * r[2]); if (u < 1) z += r[3] * (1 - u) * (1 - u); }
+	return z;
+}
 static float GroundZ(float x, float y) {
-	return 0.105f * y + 9.0f * sinf(x * 0.011f + 0.6f) * cosf(y * 0.008f) + 14.0f * (Fbm(x * 0.006f + 4.0f, y * 0.006f) - 0.5f);
+	return 0.105f * y + 9.0f * sinf(x * 0.011f + 0.6f) * cosf(y * 0.008f) + 14.0f * (Fbm(x * 0.006f + 4.0f, y * 0.006f) - 0.5f) + RockZ(x, y);
 }
 static D3DXVECTOR3 GroundNormal(float x, float y) {
 	const float e = 0.5f;
@@ -180,6 +189,16 @@ int main(int argc, char** argv) {
 	const std::string outDir = argv[2];
 	const bool close = argc > 3 && !strcmp(argv[3], "close");
 	TerrainMode = argc > 3 && !strcmp(argv[3], "terrain");
+	// "bars" (2026-10-13), after the mode: the earlier drawn trails (BLOOD_BARS) instead of WetWorld's rivulets, for comparison
+	// (shaders before the rewrite). After the rewrite: "norocks" (terrain without the rocks), "amount=0.4", "visc=2",
+	// "speed=1.5" (BloodAmount, Viscosity, FlowSpeed; defaults 0.75, 1, 1).
+	bool bars = false;
+	float amount = 0.75f, viscosity = 1.0f, flowSpeed = 1.0f;
+	for (int i = 3; i < argc; i++) {
+		bars |= !strcmp(argv[i], "bars");
+		if (!strcmp(argv[i], "norocks")) WithRocks = false;
+		sscanf_s(argv[i], "amount=%f", &amount); sscanf_s(argv[i], "visc=%f", &viscosity); sscanf_s(argv[i], "speed=%f", &flowSpeed);
+	}
 
 	WNDCLASSA wc = {}; wc.lpfnWndProc = DefWindowProcA; wc.lpszClassName = "BloodPreview"; wc.hInstance = GetModuleHandleA(NULL);
 	RegisterClassA(&wc);
@@ -267,9 +286,32 @@ int main(int argc, char** argv) {
 
 	ID3DXEffect* effect = nullptr;
 	ID3DXBuffer* errors = nullptr;
-	if (FAILED(D3DXCreateEffectFromFileA(device, argv[1], NULL, NULL, 0, NULL, &effect, &errors))) {
+	const D3DXMACRO barsMacros[] = { { "BLOOD_BARS", "1" }, { NULL, NULL } };
+	if (FAILED(D3DXCreateEffectFromFileA(device, argv[1], bars ? barsMacros : NULL, NULL, 0, NULL, &effect, &errors))) {
 		std::printf("effect failed: %s\n", errors ? (const char*)errors->GetBufferPointer() : "?");
 		return 1;
+	}
+	// The rivulets' streak texture (TESR_BloodStreaks, stage 7), from the tree the effect is in: <tree>\src\hlsl\... ->
+	// <tree>\resource\Textures\Precipitations\water-streaks_n.dds.
+	IDirect3DTexture9* streaksTex = nullptr;
+	IDirect3DVolumeTexture9* noiseTex = nullptr;
+	// The game's blood splatter decals (TESR_BloodSplatter, stage 9): BLOOD_SPLATTER, else the user's game folder; none: the
+	// shader's drawn shapes (TESR_BloodFlowProbe.w 0).
+	IDirect3DTexture9* splatterTex = nullptr;
+	IDirect3DTexture9* smallSplatterTex = nullptr;
+	D3DXCreateTextureFromFileA(device, getenv("BLOOD_SPLATTER") ? getenv("BLOOD_SPLATTER") : "H:\\SteamLibrary\\steamapps\\common\\Fallout New Vegas enplczru\\Data\\Textures\\decals\\fxbloodsplatterdecals01.dds", &splatterTex);
+	std::printf("splatter decals: %s\n", splatterTex ? "loaded" : "none (drawn shapes)");
+	{
+		std::string tree = argv[1];
+		const size_t at = tree.find("src\\hlsl");
+		tree = at == std::string::npos ? std::string() : tree.substr(0, at);
+		const std::string streaks = tree + "resource\\Textures\\Effects\\BloodRuns.dds";	// UNOFFICIAL 2026-10-13: the blood runs (was the rain streaks)
+		if (FAILED(D3DXCreateTextureFromFileA(device, streaks.c_str(), &streaksTex))) { std::printf("streak texture not found: %s\n", streaks.c_str()); return 1; }
+		// The flow's distortion noise (TESR_NoiseVolume, stage 8), after the rewrite.
+		const std::string noise = tree + "resource\\Textures\\Effects\\NoiseVolume.dds";
+		if (FAILED(D3DXCreateVolumeTextureFromFileA(device, noise.c_str(), &noiseTex))) { std::printf("noise texture not found: %s\n", noise.c_str()); return 1; }
+		// UNOFFICIAL 2026-10-13: the small splatters where drops land (TESR_BloodSpatterSmall, stage 10).
+		D3DXCreateTextureFromFileA(device, (tree + "resource\\Textures\\Effects\\BloodSpatterSmall.dds").c_str(), &smallSplatterTex);
 	}
 	auto vec = [&](const char* name, float x, float y, float z, float w) { D3DXVECTOR4 v(x, y, z, w); effect->SetVector(name, &v); };
 	auto lin = [](float c) { return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); };
@@ -282,9 +324,13 @@ int main(int argc, char** argv) {
 	vec("TESR_BloodFlowFresh", lin(0.42f), lin(0.03f), lin(0.028f), 0.5f);
 	vec("TESR_BloodFlowDry", lin(0.24f), lin(0.085f), lin(0.065f), 120.0f);
 	vec("TESR_BloodFlowPool", 25.0f, dripLength, maxFall, 687.0f);
-	vec("TESR_BloodFlowProbe", 1.0f / PathRows, 0.8f, (float)PathRows, 0);
+	vec("TESR_BloodFlowProbe", 1.0f / PathRows, 0.8f, (float)PathRows, splatterTex ? 1.0f : 0.0f);
+	// UNOFFICIAL 2026-10-13: matched colour off here (no game decals), trails at their normal width; dried / fresh from the default colours.
+	vec("TESR_BloodFlowMatch", 0.12f, 1.0f, 1.0f, 0.0f);
+	vec("TESR_BloodFlowDryRatio", lin(0.24f) / lin(0.42f), lin(0.085f) / lin(0.03f), lin(0.065f) / lin(0.028f), 0.0f);
 	vec("TESR_DepthConstants", 0, 0, 0, 1);
 	vec("TESR_CameraData", NearZ, FarZ, 0, 0);
+	vec("TESR_HorizonColor", 0.62f, 0.68f, 0.78f, 1);
 
 	const D3DVERTEXELEMENT9 elements[] = {
 		{ 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -345,7 +391,12 @@ int main(int argc, char** argv) {
 		effect->SetMatrix("TESR_InvViewTransform", &cam.invView);
 		effect->SetMatrix("TESR_ProjectionTransform", &cam.proj);
 		effect->SetMatrix("TESR_InvProjectionTransform", &cam.invProj);
-		vec("TESR_BloodFlowInfo", 1.0f, debug, 300.0f, 1.0f);
+		// The boxes are projected by the vertex shader (CutBox), cut to the bounds unless BLOOD_CUT=0.
+		effect->SetMatrix("TESR_ViewProjectionTransform", &cam.viewProj);
+		static const bool cut = !getenv("BLOOD_CUT") || atoi(getenv("BLOOD_CUT")) != 0;
+		vec("TESR_BloodFlowShape", 0.0f, 0.0f, 0.0f, cut ? 1.0f : 0.0f);
+		vec("TESR_BloodFlowInfo", 1.0f, debug, 300.0f, flowSpeed);
+		vec("TESR_BloodFlowFlow", flowSpeed, viscosity, amount, age);	// the effect's clock: here the blood's age
 		for (auto& it : items) { it.Age = age; it.Fresh = written[it.Slot] != passes - 1; }
 		CHECK(device->UpdateSurface(scene, NULL, image, NULL));
 		CHECK(device->StretchRect(image, NULL, source, NULL, D3DTEXF_NONE));
@@ -354,6 +405,7 @@ int main(int argc, char** argv) {
 			// NVR binds each TESR_ texture straight to its sampler's register (EffectRecord::SetCT).
 			device->SetTexture(0, depthTex); device->SetTexture(1, sourceTex); device->SetTexture(2, normalTex);
 			device->SetTexture(3, shadowTex); device->SetTexture(4, viewModelTex); device->SetTexture(5, paths); device->SetTexture(6, boundsTex);
+		device->SetTexture(7, streaksTex); device->SetTexture(8, noiseTex); device->SetTexture(9, splatterTex); device->SetTexture(10, smallSplatterTex);
 		};
 		const int probeTriangles = BloodFlowBoxes::BuildProbe(items.data(), (int)items.size(), dripLength, PathRows, BloodFlowBoxes::Streams, cam.eye, probeVertices);
 		const int write = 1 - pathIndex;
@@ -394,8 +446,13 @@ int main(int argc, char** argv) {
 			CHECK(effect->Begin(&n, 0));
 			CHECK(effect->BeginPass(0));
 			bind(pathTex[pathIndex]);
+			device->SetTexture(D3DVERTEXTEXTURESAMPLER0, boundsTex);
+			device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+			device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
 			device->SetVertexDeclaration(declaration);
 			if (triangles) CHECK(device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangles, vertices, sizeof(VolumetricSmokeQuads::Vertex)));
+			device->SetTexture(D3DVERTEXTEXTURESAMPLER0, NULL);
 			effect->EndPass();
 			effect->End();
 		}
@@ -472,6 +529,30 @@ int main(int argc, char** argv) {
 				degrees > 5.0f ? (longest > 4.0f ? " (runs downhill: ok)" : " (DOES NOT RUN)") : " (about level: stays)");
 		}
 		std::printf("TERRAIN CHECK: %d of %d splats on slopes over 5 degrees run downhill: %s\n", running, sloped, running == sloped ? "PASS" : "FAIL");
+		// The obstacle check: path points (each stream's 14) on a rock's upper half = blood running over it.
+		int over = 0, nearRock = 0, total = 0;
+		for (const auto& it : items) for (int k = 0; k < BloodFlowBoxes::Streams; k++) {
+			const int row = it.Slot * BloodFlowBoxes::Streams + k;
+			if (texel(pathsA, 0, row)[3] < -0.5f) continue;
+			bool met = false;
+			// (A stream that starts on a rock has not climbed it.)
+			bool startsOnRock = false;
+			for (const auto& r : Rocks) { const float* q = texel(pathsA, 2, row); const float dx = it.Center.x + q[0] - r[0], dy = it.Center.y + q[1] - r[1]; startsOnRock |= sqrtf(dx * dx + dy * dy) < r[2]; }
+			if (startsOnRock) continue;
+			for (int c = 2; c < BloodFlowBoxes::PathColumns; c++) {
+				const float* q = texel(pathsA, c, row);
+				const float x = it.Center.x + q[0], y = it.Center.y + q[1];
+				for (const auto& r : Rocks) {
+					const float d = sqrtf((x - r[0]) * (x - r[0]) + (y - r[1]) * (y - r[1]));
+					if (d < r[2] * 0.55f) { over++; std::printf("  on a rock: item %d stream %d point %d at (%.1f %.1f), rock at (%.0f %.0f)\n", it.Slot, k, c, x, y, r[0], r[1]); }
+					if (d < r[2] * 1.6f) met = true;
+				}
+				total++;
+			}
+			nearRock += met;
+		}
+		std::printf("OBSTACLE CHECK: %d streams came near a rock; %d of %d path points on a rock's top%s\n", nearRock, over, total,
+			!WithRocks ? " (no rocks)" : over == 0 ? ": PASS" : ": FAIL");
 		// The time-lapse: 0-20 s every 0.5 s, then the debug view at the same times.
 		for (int pass = 0; pass < 2; pass++) for (int f = 0; f <= 40; f++) {
 			if (frame(camA, f * 0.5f, (float)pass, true)) return 1;

@@ -26,6 +26,12 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
+	LampReachMargin = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.Misc", "LampReachMargin"));
+	if (LampReachMargin > 0.0f) {	// UNOFFICIAL, Render.cpp
+		const LONG attached = DetourAttach(&(PVOID&)BoundWithinLightRadius, &BoundWithinLightRadiusHook);
+		Logger::Log("UNOFFICIAL LampReachMargin %.0f: hook %s (%ld), first bytes %02X %02X %02X", LampReachMargin, attached == NO_ERROR ? "attached" : "FAILED", attached,
+			((const UInt8*)0x00B9DAE0)[0], ((const UInt8*)0x00B9DAE0)[1], ((const UInt8*)0x00B9DAE0)[2]);
+	}
 	// UNOFFICIAL interior forward shadows: each object's own lamps (PointShadowForward.h).
 	// (Also for ScopeFix outdoors, HiddenObjectCulling, LampScissor and the material rules, which work on the same per-object call; their
 	// switches are live only while this hook is in, i.e. with any of these on at startup.)
@@ -69,6 +75,21 @@ void AttachHooks() {
 	SafeWrite32(0x0046CF9B, sizeof(TESWeatherEx));
 
 	SafeWrite8(0xB575AA, 0x75);				// Prevent shader package destruction
+
+	// UNOFFICIAL MoreLampsPerObject (2026-10-13): BSShaderPPLightingProperty::AddPass_Opt (0x00BDE9B0) gives a specular
+	// many-lamp pass (0xD0, 0xD1: most lit surfaces indoors) at most 3-4 entries, the first light and 2-3 lamps (ADD ECX,2 at
+	// 0x00BDEA3D; the others get 5-6 or 6-7) and drops every lamp past that, with no extra pass for them. The list is sorted by
+	// brightness and lamps go in and out of view, so which 2-3 an object kept changed as the player moved: a wall piece next
+	// to a lamp lit by it, then not. ADD ECX,5: 6-7 entries, as the other many-lamp passes; the shaders take 6
+	// (SPECULAR_LAMPS6, ShaderRecord.cpp). Written only if the bytes are the game's.
+	if (TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject")) {
+		const UInt8* site = (const UInt8*)0x00BDEA3D;
+		if (site[0] == 0x83 && site[1] == 0xC1 && site[2] == 0x02) {
+			SafeWrite8(0x00BDEA3F, 0x05);
+			Logger::Log("UNOFFICIAL MoreLampsPerObject: specular many-lamp passes take up to 6 lamps (the game: 3)");
+		}
+		else Logger::Log("UNOFFICIAL MoreLampsPerObject: the game's code at 00BDEA3D is not as expected (another plugin?); not changed");
+	}
 	SafeWrite8(0x008751C0, 0);				// Stops to clear the depth buffer when rendering the 1st person node
 	SafeWrite16(0x0086A170, 0x9090);		// Avoids to pause the game when ALT-TAB
 

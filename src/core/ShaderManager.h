@@ -178,6 +178,7 @@ public:
 		SandstormEffect*		Sandstorm;	// UNOFFICIAL: from Physically-Based-Reloaded (Fable)
 		VolumetricLightEffect*	VolumetricLight;	// UNOFFICIAL: sun shafts from the shadow maps
 		ReflectionsEffect*		Reflections;		// UNOFFICIAL: screen-space reflections on the ground
+		BodycamEffect*			Bodycam;			// UNOFFICIAL, testbed: police body-camera look
 		SkyDitherEffect*		SkyDither;			// UNOFFICIAL: breaks up the sky's banding before the 8-bit screen
 		VolumetricCloudsEffect*	VolumetricClouds;	// UNOFFICIAL: 3D clouds in place of the game's cloud layers
 		BloodFlowEffect*		BloodFlow;	// UNOFFICIAL: blood that runs and dries, pools under bodies
@@ -244,6 +245,9 @@ public:
 	D3DXVECTOR4				LightPosition[TrackedLightsMax];
 	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsScreen];	// PointShadows.fx TESR_LightColor[24]: 12 shadow lamps, then the tracked ones
 	D3DXVECTOR4				LightAttenuation[TrackedLightsMax];
+	D3DXVECTOR4				BatchLightPosition[ShadowCubeMapsMax];	// UNOFFICIAL ExteriorLightPoints: every shadow slot's lamp (w radius)
+	D3DXVECTOR4				BatchLightColor[ShadowCubeMapsMax];		// ... and colour (w dimmer); zero = none
+	void					RenderPointShadowBatches();
 	D3DXVECTOR4				ExtraLights[ExtraLightsMax];	// UNOFFICIAL: PointShadows.fx TESR_ExtraLights: position, w = radius x 8 + weight (0 ends the list)
 };
 

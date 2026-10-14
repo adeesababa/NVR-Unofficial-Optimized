@@ -88,6 +88,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<SandstormEffect>(&TheShaderManager->Effects.Sandstorm);
 	TheShaderManager->RegisterEffect<VolumetricLightEffect>(&TheShaderManager->Effects.VolumetricLight);
 	TheShaderManager->RegisterEffect<SkyDitherEffect>(&TheShaderManager->Effects.SkyDither);
+	TheShaderManager->RegisterEffect<BodycamEffect>(&TheShaderManager->Effects.Bodycam);
 	TheShaderManager->RegisterEffect<ReflectionsEffect>(&TheShaderManager->Effects.Reflections);
 	TheShaderManager->RegisterEffect<VolumetricCloudsEffect>(&TheShaderManager->Effects.VolumetricClouds);
 	TheShaderManager->RegisterEffect<BloodFlowEffect>(&TheShaderManager->Effects.BloodFlow);
@@ -765,7 +766,11 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// frame or cell. Lights beyond the cap fall through to the non-shadowing tracked list.
 	// (UNOFFICIAL: with forward shadows indoors, up to ShadowCubeMapsMax -- PointShadowForward::ShadowedSlots)
 	const bool allSlots = PointShadowForward::UsesAllSlots(TheShaderManager->GameState.isExterior);
-	const int ShadowLightsMax = min(Settings->LightPoints, allSlots ? (int)ShadowCubeMapsMax : (int)ShadowCubeMapsScreen);
+	// UNOFFICIAL ExteriorLightPoints: outdoors above 12, that many lamps get shadows, every slot sampled (in batches).
+	const bool batched = PointShadowForward::ExteriorBatched(TheShaderManager->GameState.isExterior);
+	const int ShadowLightsMax = batched ? PointShadowForward::ShadowedSlots(true) : min(Settings->LightPoints, allSlots ? (int)ShadowCubeMapsMax : (int)ShadowCubeMapsScreen);
+	memset(BatchLightPosition, 0, sizeof(BatchLightPosition));
+	memset(BatchLightColor, 0, sizeof(BatchLightColor));
 
 	// get the data for all tracked lights
 	int ShadowIndex = 0;
@@ -870,7 +875,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// distance order gave it, and only slots 0..10 take part in the stable assignment.
 	{
 		const int casters = TheShadowManager->PointLightsNum;
-		const int sampledSlots = allSlots ? ShadowLightsMax : min(ShadowLightsMax, (int)ShadowCubeMapsSampled);
+		const int sampledSlots = allSlots || batched ? ShadowLightsMax : min(ShadowLightsMax, (int)ShadowCubeMapsSampled);
 		const int stableCasters = min(casters, sampledSlots);
 		const void* ranked[ShadowCubeMapsMax] = {};
 		const void* assigned[ShadowCubeMapsMax] = {};
@@ -905,7 +910,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			}
 			if (lampLogLines >= 600) Logger::Log("LAMP log: 600 lines, stopping until restart.");
 		}
-		if (!allSlots && casters > sampledSlots) assigned[ShadowCubeMapsScreen - 1] = ShadowCasters[sampledSlots];
+		if (!allSlots && !batched && casters > sampledSlots) assigned[ShadowCubeMapsScreen - 1] = ShadowCasters[sampledSlots];
 		for (int s = 0; s < ShadowCubeMapsMax; s++) previousSlots[s] = s < sampledSlots ? assigned[s] : nullptr;
 
 		for (int s = 0; s < ShadowCubeMapsMax; s++) {
@@ -915,7 +920,10 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			NiPointLight* Light = shadowLight->sourceLight;
 			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
 			LightPos.w = Light->Spec.r * Settings->LightRadiusMult;
+			BatchLightPosition[s] = LightPos;
+			BatchLightColor[s] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
 			if (s >= ShadowCubeMapsScreen) continue;	// (the screen-space passes' arrays end at 12; see below)
+			if (batched && s == ShadowCubeMapsScreen - 1) continue;	// (batched: slot 11 is the second batch's, with its shadow)
 			ShadowsConstants->ShadowLightPosition[s] = LightPos;
 			LightColor[s] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
 		}
@@ -958,6 +966,51 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	timer.LogTime("ShaderManager::GetNearbyLights");
 }
 
+
+// UNOFFICIAL ExteriorLightPoints (2026-10-13): the screen-space point-shadow pass reads 11 shadowed lamps at once (ps_3_0 has 16
+// samplers), so outdoors past those the shadow slots are drawn in batches of 11 more: the slots' cube maps put in the first
+// 11 cube samplers' places (the samplers read through these pointers at each bind) and their lamps in the first 11 entries,
+// then the pass's AddShadowedLamps technique adds their light to the buffer (blend one, one). The sum is saturated where it
+// is read, as the single pass saturated its own; the lamps without shadows and the flashlight are in the first batch only.
+void ShaderManager::RenderPointShadowBatches() {
+	ShadowsExteriorEffect* shadows = Effects.ShadowsExteriors;
+	const int slots = PointShadowForward::ShadowedSlots(true);
+	const int batchSize = ShadowCubeMapsSampled;	// 11
+	if (slots <= batchSize || !Effects.PointShadows->Effect || Effects.PointShadows->Effect->GetTechnique(1) == NULL) return;
+	IDirect3DCubeTexture9* savedCube[ShadowCubeMapsScreen];
+	D3DXVECTOR4 savedPosition[ShadowCubeMapsScreen], savedColour[ShadowCubeMapsScreen];
+	for (int k = 0; k < ShadowCubeMapsScreen; k++) {
+		savedCube[k] = shadows->Textures.ShadowCubeMapTexture[k];
+		savedPosition[k] = shadows->Constants.ShadowLightPosition[k];
+		savedColour[k] = LightColor[k];
+	}
+	int drawn = 0;
+	for (int first = batchSize; first < slots; first += batchSize) {
+		bool any = false;
+		for (int k = 0; k < ShadowCubeMapsScreen; k++) {
+			const int s = first + k;
+			IDirect3DCubeTexture9* cube = k < batchSize && s < slots ? shadows->Textures.ShadowCubeMapTexture[s] : nullptr;
+			const bool live = cube && BatchLightPosition[s].w > 0.0f;
+			shadows->Textures.ShadowCubeMapTexture[k] = live ? cube : savedCube[k];	// (an unused entry keeps a valid cube bound)
+			shadows->Constants.ShadowLightPosition[k] = live ? BatchLightPosition[s] : D3DXVECTOR4(0, 0, 0, 0);
+			LightColor[k] = live ? BatchLightColor[s] : D3DXVECTOR4(0, 0, 0, 0);
+			any |= live;
+		}
+		if (any) { RenderEffectToRT(shadows->Textures.ShadowPassSurface, Effects.PointShadows, false, 1); drawn++; }
+	}
+	int live = 0;
+	for (int s = 0; s < slots; s++) live += BatchLightPosition[s].w > 0.0f;
+	static int loggedLive = -1, loggedDrawn = -1;
+	if (live != loggedLive || drawn != loggedDrawn) {
+		Logger::Log("UNOFFICIAL ExteriorLightPoints: %d lamps with shadows (of %d slots), %d further batch(es) drawn", live, slots, drawn);
+		loggedLive = live; loggedDrawn = drawn;
+	}
+	for (int k = 0; k < ShadowCubeMapsScreen; k++) {
+		shadows->Textures.ShadowCubeMapTexture[k] = savedCube[k];
+		shadows->Constants.ShadowLightPosition[k] = savedPosition[k];
+		LightColor[k] = savedColour[k];
+	}
+}
 
 bool ShaderManager::ShouldRenderShadowMaps() {
 	if (GameState.isExterior)
@@ -1055,6 +1108,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			const float pointShadowsWere = Effects.ShadowsExteriors->Constants.ShadowFade.z;
 			if (forwardInterior) Effects.ShadowsExteriors->Constants.ShadowFade.z = 0.0f;
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
+			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();	// UNOFFICIAL ExteriorLightPoints
 			// The stock/custom shader remains compatible: it has no named merged
 			// technique, so lights 6-11 still take the original second pass.
 			static EffectRecord::CachedHandle mergedTechnique;	// UNOFFICIAL: looked up once per loaded effect
@@ -1460,6 +1514,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	static GpuTimer cinemaTimer("Cinema");
 	static GpuTimer imageAdjustTimer("Image adjust + debug");
 	static GpuTimer skyDitherTimer("Sky dither");
+	static GpuTimer bodycamTimer("Bodycam");
 	static GpuTimer taaTimer("TAA");
 
 	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
@@ -1485,7 +1540,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		EffectRecord* const order[] = {
 			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.HeatHaze, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
 			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
-			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.SkyDither, Effects.Debug };
+			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug };
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
 			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
@@ -1569,6 +1624,11 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	{
+		// UNOFFICIAL, testbed: the body-camera look, on the finished picture (the sky dither still comes after it).
+		GpuProfileScope gpu(bodycamTimer, Device);
+		Effects.Bodycam->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		// UNOFFICIAL: the last colour change before the 8-bit screen, so its noise breaks up the sky's bands exactly
