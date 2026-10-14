@@ -1,4 +1,5 @@
 #include "VolumetricClouds.h"
+#include "../core/FrameClock.h"
 #include "../core/GpuProfiler.h"
 
 void VolumetricCloudsEffect::UpdateSettings() {
@@ -89,7 +90,9 @@ static int WeatherIndex(TESWeather* weather) {
 
 void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
-	const float dt = std::clamp((float)TheFrameRateManager->ElapsedTime, 0.0f, 0.1f);
+	// UNOFFICIAL 2026-10-13: once a frame, at the tuned rate (FrameClock.h: UpdateConstants runs twice a frame).
+	static double lastFrameTime = -1.0;
+	const float dt = (float)(ElapsedOncePerFrame(lastFrameTime) * TunedClockRate);
 
 	// The weather's coverage, blended across a weather change as the game blends its own (weatherPercent: 1 = the new
 	// weather in full), then eased so a change of weather builds or clears the clouds over about a minute.
