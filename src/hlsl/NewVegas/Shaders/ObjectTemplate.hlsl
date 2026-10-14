@@ -730,6 +730,17 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !defined(ONLY_LIGHT)
         baseColor.rgb = HandBloodAlbedo(baseColor.rgb);	// UNOFFICIAL: the blood's colour (after the vertex colour: blood is not tinted by it)
+    #elif HAND_BLOOD && !defined(ONLY_SPECULAR)
+        // UNOFFICIAL 2026-10-13 (user: the blood on the gun looks clear in some lighting): the lighting-only passes (ONLY_LIGHT,
+        // and the DIFFUSE lamp passes added to them) draw the light alone, and a later pass multiplies in the gun's texture, so
+        // the blood's colour above never reached them: only its gloss and bumps showed. Here the light is scaled so that,
+        // once multiplied by the texture, the blood comes out its own colour.
+        #if defined(DIFFUSE)
+            // (No texture in these passes: the gun's texture taken as a dark grey, 0.25.)
+            baseColor.rgb = handBloodCover > 0.0f ? HandBloodAlbedo((0.25f).xxx) * 4.0f : baseColor.rgb;
+        #else
+            baseColor.rgb = handBloodCover > 0.0f ? HandBloodAlbedo(heatMaterialFactor) / heatMaterialFactor : baseColor.rgb;	// (exactly as before where there is no blood)
+        #endif
     #endif
 
     #ifdef METAL
