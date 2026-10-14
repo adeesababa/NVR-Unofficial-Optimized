@@ -429,8 +429,6 @@ void RenderManager::CheckAndTakeScreenShot(IDirect3DSurface9* RenderTarget, bool
 		strcat(Filename, Name);
 		strcpy_s(LastScreenshotBase, Filename);
 		strcpy_s(LastScreenshotName, Name + 1);
-		ScreenshotTakenThisFrame = true;
-		strcat(Filename, HDR?".hdr":".jpg");
 		strcat(Filename, HDR?".hdr":".png");
 		if (HDR)
 			D3DXSaveSurfaceToFileA(Filename, D3DXIFF_HDR, RenderTarget, NULL, NULL);

@@ -444,7 +444,9 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	ConstantFilter::BeginFrame(TheRenderManager->device);
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);
 	LampScissor::BeginFrame();
+#if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();
+#endif
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -1619,7 +1621,9 @@ static void ForwardShadowsForPass(void* Pass) {
 }
 
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+#if NVR_TEST_TOOLS
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
+#endif
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
@@ -1636,7 +1640,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 }
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+#if NVR_TEST_TOOLS
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
+#endif
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
@@ -1860,8 +1866,10 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	TheRenderManager->UpdateSceneCameraData();
 	TheRenderManager->SetupSceneCamera();
 	TheShaderManager->UpdateConstants();
+#if NVR_TEST_TOOLS
 	EffectSelfTest::BeginFrame();
 	SettingShots::BeginFrame();
+#endif
 
 	if (SourceTarget && TheSettingManager->SettingsMain.Main.RenderPreTonemapping) {
 		SourceTarget->GetD3DTexture(0)->GetSurfaceLevel(0, &GameSurface); // get the surface from the game render target
@@ -1898,13 +1906,17 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		OutputSurface = TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface;
 		if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
 		TheShaderManager->RenderEffects(OutputSurface);
+#if NVR_TEST_TOOLS
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);
 		SettingShots::Capture(OutputSurface);
+#endif
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 		ReflectionProbe::EndFrame();
 	}
 
+#if NVR_TEST_TOOLS
 	EffectSelfTest::EndFrame(OutputSurface != NULL);
+#endif
 	if (GameSurface) GameSurface->Release();
 }
 

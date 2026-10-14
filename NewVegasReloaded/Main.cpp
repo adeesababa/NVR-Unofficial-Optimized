@@ -20,7 +20,9 @@ extern "C" {
 				MessageBox(NULL, L"Vanilla Plus Terrain not found.\nNew Vegas Reloaded cannot be used without it, please install it.", L"New Vegas Reloaded", MB_OK | MB_ICONERROR);
 				ExitProcess(0);
 			}
+#if NVR_TEST_TOOLS
 			EffectSelfTest::RegisterLink();
+#endif
 			break;
 		case NVSEMessagingInterface::kMessage_PreLoadGame:
 			TheSettingManager->GameLoading = true;
@@ -107,8 +109,10 @@ extern "C" {
 		if (!Interface->IsEditor) {
 			((NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging))->RegisterListener(Interface->GetPluginHandle(), "NVSE", MessageHandler);
 			((NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging))->RegisterListener(Interface->GetPluginHandle(), "Shader Loader", ShaderLoaderHandler);
+#if NVR_TEST_TOOLS
 			EffectSelfTest::LinkMessaging = (NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging);
 			EffectSelfTest::LinkHandle = Interface->GetPluginHandle();
+#endif
 
 			auto* nvseData = (NVSEDataInterface*)Interface->QueryInterface(kInterface_Data);
 			if (nvseData)

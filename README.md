@@ -45,7 +45,9 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   BloodFlow: splats run down walls and slopes and drip off edges, pools spread under bodies and cut-off limbs, wet beads
   on fresh blood, all in the colour of your own blood textures), **blood on your weapon and gloves** when you hit someone
   up close (Shaders > HandBlood, needs a restart), a **police body-camera look** (Shaders > Bodycam, with its own day,
-  night and interior settings, 30 fps video, slow auto exposure and video breakup while moving), more lamp shadows
+  night and interior settings, 30 fps video, slow auto exposure, video breakup while moving, a chest-mount bob,
+  gunfire jolt and flash overload, a night low-light mode, light smear, encoder hiccups, autofocus hunting, an optional wider
+  view (`WideView`) and an optional cheap-microphone filter on all the game's sound (`Mic`)), more lamp shadows
   outdoors (Shaders > ShadowsInteriors > Main > `ExteriorLightPoints`) and `TwoSidedCasters` (Shaders > ShadowsExteriors,
   stops sunlight and light shafts shining through one-sided walls). **Fixed in P79:** stripes on the ground with
   volumetric clouds on, a pale sheen sweeping over the casinos' marble walls, the 5th and 6th lamp on an object lit

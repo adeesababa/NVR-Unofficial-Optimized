@@ -3,6 +3,7 @@
 #include <unordered_map>
 
 #include "BloodFlow.h"
+#include "../core/FrameClock.h"
 
 namespace {
 	const UInt32 ProcessListsAddress = 0x11E0E80;
@@ -656,7 +657,8 @@ void BloodFlowEffect::GatherPools() {
 }
 
 void BloodFlowEffect::UpdateConstants() {
-	Clock += std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);
+	static double lastFrameTime = -1.0;
+	Clock += ElapsedOncePerFrame(lastFrameTime) * TunedClockRate;
 	Frame++;
 	Count = 0;
 	if (TheShaderManager->GameState.isUnderwater) return;

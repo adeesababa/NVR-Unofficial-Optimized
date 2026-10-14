@@ -1,6 +1,7 @@
 #include <algorithm>
 
 #include "HeatHaze.h"
+#include "../core/FrameClock.h"
 
 void HeatHazeEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_HeatHazeData", &Constants.Data);
@@ -24,7 +25,8 @@ static float SmoothStep(float edge0, float edge1, float x) {
 }
 
 void HeatHazeEffect::UpdateConstants() {
-	float elapsed = std::clamp((float)TheFrameRateManager->ElapsedTime, 0.0f, 0.1f);
+	static double lastFrameTime = -1.0;
+	float elapsed = (float)(ElapsedOncePerFrame(lastFrameTime) * TunedClockRate);
 
 	float hour = TheShaderManager->ShaderConst.GameTime.y;
 	float sunriseEnd = TheShaderManager->ShaderConst.SunTiming.y;

@@ -3,6 +3,9 @@
 #include <cstring>
 
 #include "Bodycam.h"
+#include "BodycamAudio.h"
+
+static BodycamAudio::Settings MicSettings;
 
 void BodycamEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BodycamLens", &Constants.Lens);
@@ -14,6 +17,9 @@ void BodycamEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BodycamGrade", &Constants.Grade);
 	TheShaderManager->RegisterConstant("TESR_BodycamVideo", &Constants.Video);
 	TheShaderManager->RegisterConstant("TESR_BodycamAdapt", &Constants.Adapt);
+	TheShaderManager->RegisterConstant("TESR_BodycamBody", &Constants.Body);
+	TheShaderManager->RegisterConstant("TESR_BodycamFlash", &Constants.Flash);
+	TheShaderManager->RegisterConstant("TESR_BodycamGlitch", &Constants.Glitch);
 }
 
 void BodycamEffect::RegisterTextures() {
@@ -40,6 +46,8 @@ namespace {
 		{ "MotionBlur", 0.0f, 3.0f }, { "LensDirt", 0.0f, 2.0f }, { "Tint", 0.0f, 1.0f }, { "Text", 0.0f, 1.0f },
 		{ "VideoFps", 0.0f, 60.0f }, { "AutoExposure", 0.0f, 1.0f }, { "ExposureSpeed", 0.1f, 10.0f }, { "Breakup", 0.0f, 2.0f },
 		{ "RollingShutter", 0.0f, 3.0f },
+		{ "Bounce", 0.0f, 2.0f }, { "GunJolt", 0.0f, 3.0f }, { "Overload", 0.0f, 2.0f }, { "LowLight", 0.0f, 1.0f },
+		{ "LightSmear", 0.0f, 2.0f }, { "Hiccups", 0.0f, 1.0f }, { "Autofocus", 0.0f, 2.0f },
 	};
 }
 
@@ -53,10 +61,24 @@ void BodycamEffect::UpdateSettings() {
 	readLook("Shaders.Bodycam.Night", Night);
 	readLook("Shaders.Bodycam.Interiors", Interiors);
 	Constants.Text.y = std::clamp(TheSettingManager->GetSettingF(section, "TextSize"), 1.0f, 12.0f);
+	MicSettings.Mix = std::clamp(TheSettingManager->GetSettingF(section, "Mic"), 0.0f, 1.0f);
+	MicSettings.Bits = std::clamp(TheSettingManager->GetSettingF(section, "MicBits"), 0.0f, 16.0f);
+	MicSettings.SampleRate = std::clamp(TheSettingManager->GetSettingF(section, "MicSampleRate"), 0.0f, 48000.0f);
+	MicSettings.Compression = std::clamp(TheSettingManager->GetSettingF(section, "MicCompression"), 0.0f, 1.0f);
+	MicSettings.GainDb = std::clamp(TheSettingManager->GetSettingF(section, "MicGain"), -24.0f, 24.0f);
+	MicSettings.Tone = std::clamp(TheSettingManager->GetSettingF(section, "MicTone"), 0.0f, 1.0f);
+	MicSettings.Hiss = std::clamp(TheSettingManager->GetSettingF(section, "MicHiss"), 0.0f, 1.0f);
+	const float wide = TheSettingManager->GetSettingF(section, "WideView");
+	WideView = wide >= 30.0f ? (std::min)(wide, 150.0f) : 0.0f;
 }
 
 void BodycamEffect::UpdateConstants() {
-	Clock += std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);
+	static double lastFrameTime = -1.0;
+	const double frameTime = TheFrameRateManager->Time;
+	if (frameTime == lastFrameTime) return;
+	const double elapsed = lastFrameTime < 0.0 ? 0.016 : frameTime - lastFrameTime;
+	lastFrameTime = frameTime;
+	Clock += std::clamp(elapsed, 0.0, 0.1);
 	Constants.Noise.z = (float)fmod(floor(Clock * 30.0), 4096.0);
 
 	LookStruct look = Interiors;
@@ -99,7 +121,7 @@ void BodycamEffect::UpdateConstants() {
 	Constants.Motion.x += (moved.x - Constants.Motion.x) * 0.5f;
 	Constants.Motion.y += (moved.y - Constants.Motion.y) * 0.5f;
 
-	const float dt = (float)std::clamp((double)TheFrameRateManager->ElapsedTime, 1e-4, 0.1);
+	const float dt = (float)std::clamp(elapsed, 1e-4, 0.1);
 	const D3DXVECTOR3 pos(Player->pos.x, Player->pos.y, Player->pos.z);
 	D3DXVECTOR3 step = pos - LastPos;
 	LastPos = pos;
@@ -116,6 +138,62 @@ void BodycamEffect::UpdateConstants() {
 	Constants.Adapt.z = look.v[ExposureSpeed];
 	Constants.Adapt.w = MeasureValid ? 1.0f : 0.0f;
 	VideoFrameRate = look.v[VideoFps];
+
+	const float ground = run < 2000.0f ? sqrtf(step.x * step.x + step.y * step.y) / dt : 0.0f;
+	const float moving = std::clamp(ground / 300.0f, 0.0f, 1.0f);
+	StepAmount += ((ground > 15.0f ? moving : 0.0f) - StepAmount) * std::clamp(dt / 0.25f, 0.0f, 1.0f);
+	StepPhase = fmodf(StepPhase + dt * (ground > 15.0f ? 0.45f + ground / 450.0f : 0.0f), 1.0f);
+	const float bob = look.v[Bounce] * StepAmount, stride = StepPhase * 6.2831853f;
+	const D3DXVECTOR3 steps(sinf(stride) * 0.004f * bob, (0.5f - 0.5f * cosf(stride * 2.0f)) * 0.006f * bob, sinf(stride) * 0.012f * bob);
+	TurnRoll += (std::clamp(-turnPerSecond.x * 0.02f, -0.03f, 0.03f) * look.v[Bounce] - TurnRoll) * std::clamp(dt / 0.15f, 0.0f, 1.0f);
+
+	int shots = 0;
+	InventoryChanges::EntryData* ammo = Player->process ? ((MiddleHighProcess*)Player->process)->ammoInfo : nullptr;
+	if (ammo && ammo->type) {
+		if (ammo->type == AmmoType && AmmoCount >= 0 && ammo->countDelta < AmmoCount && AmmoCount - ammo->countDelta <= 10)
+			shots = AmmoCount - ammo->countDelta;
+		AmmoType = ammo->type;
+		AmmoCount = ammo->countDelta;
+	}
+	else { AmmoType = nullptr; AmmoCount = -1; }
+	if (shots > 0) {
+		const float j = look.v[GunJolt];
+		JoltSpeed += D3DXVECTOR3(((rand() % 1000) / 1000.0f - 0.5f) * 0.25f, -0.35f - (rand() % 1000) / 4000.0f, ((rand() % 1000) / 1000.0f - 0.5f) * 0.6f) * j;
+		if (look.v[Overload] > 0.0f) { FlashNow = 1.0f; DipNow = 1.0f; }
+	}
+	const float w0 = 6.2831853f * 7.0f;
+	for (float left = dt; left > 0.0f; left -= 1.0f / 120.0f) {
+		const float h = (std::min)(left, 1.0f / 120.0f);
+		JoltSpeed += (-Jolt * (w0 * w0) - JoltSpeed * (2.0f * 0.35f * w0)) * h;
+		Jolt += JoltSpeed * h;
+	}
+	FlashNow *= expf(-dt / 0.06f);
+	DipNow *= expf(-dt / 0.4f);
+	Constants.Body.x = steps.x + Jolt.x;
+	Constants.Body.y = steps.y + Jolt.y;
+	Constants.Body.z = steps.z + TurnRoll + Jolt.z;
+	Constants.Body.w = 1.0f + look.v[Bounce] * 0.035f + look.v[GunJolt] * 0.02f;
+	Constants.Flash.x = FlashNow * look.v[Overload];
+	Constants.Flash.y = (std::max)(DipNow - FlashNow, 0.0f) * look.v[Overload];
+	Constants.Flash.z = look.v[LowLight];
+	Constants.Flash.w = look.v[LightSmear];
+
+	const float hiccups = look.v[Hiccups];
+	FreezeLeft = (std::max)(FreezeLeft - dt, 0.0f);
+	GlitchLeft = (std::max)(GlitchLeft - dt, 0.0f);
+	if (hiccups > 0.0f) {
+		HiccupWait -= dt * (1.0f + MotionLevel * 2.0f);
+		if (HiccupWait <= 0.0f) {
+			if (rand() % 2) FreezeLeft = 0.07f + (rand() % 1000) / 1000.0f * 0.15f;
+			else { GlitchLeft = 0.1f + (rand() % 1000) / 1000.0f * 0.25f; Constants.Glitch.y = (float)(rand() % 997); }
+			const float mean = 20.0f + (3.0f - 20.0f) * hiccups;
+			HiccupWait = -logf((std::max)((rand() % 1000 + 1) / 1001.0f, 1e-3f)) * mean;
+		}
+	}
+	else { FreezeLeft = GlitchLeft = 0.0f; }
+	Constants.Glitch.x = GlitchLeft > 0.0f ? 0.5f + 0.5f * hiccups : 0.0f;
+	Constants.Glitch.z = look.v[Autofocus];
+	Constants.Glitch.w = hiccups;
 
 	TimeGlobals* time = TimeGlobals::Get();
 	int year = 2281, month = 10, day = 1, hour = 0, minute = 0;
@@ -198,7 +276,7 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	LastRender = Clock;
 	if (stale) { HoldValid = false; MeasureValid = false; }
 
-	if (Constants.Adapt.x > 0.0f && MeasureSurface[0] && MeasureSurface[1]) {
+	if ((Constants.Adapt.x > 0.0f || Constants.Glitch.z > 0.0f) && MeasureSurface[0] && MeasureSurface[1]) {
 		const int write = 1 - MeasureIndex;
 		MeasureRead = MeasureTexture[MeasureIndex];
 		Constants.Adapt.w = MeasureValid ? 1.0f : 0.0f;
@@ -213,14 +291,29 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	else MeasureValid = false;
 
 	const double tick = VideoFrameRate >= 1.0f ? floor(Clock * VideoFrameRate) : -1.0;
-	const bool hold = VideoFrameRate >= 1.0f && HoldValid && tick == HoldTick;
+	const bool hold = HoldValid && ((VideoFrameRate >= 1.0f && tick == HoldTick) || FreezeLeft > 0.0f);
 	Constants.Video.w = hold ? 1.0f : 0.0f;
+	static int drawnCount = 0, heldCount = 0, reports = 0;
+	static double reportStart = -1.0;
+	static const char* source = "none";
+	if (VideoFrameRate >= 1.0f && reports < 8) {
+		if (reportStart < 0.0) reportStart = Clock;
+		(hold ? heldCount : drawnCount)++;
+		if (Clock - reportStart >= 5.0) {
+			Logger::Log("UNOFFICIAL Bodycam video: %d drawn, %d held in %.1f s (game %.0f fps, video %.0f fps); kept frame from %s, chain %s",
+				drawnCount, heldCount, Clock - reportStart, (drawnCount + heldCount) / (Clock - reportStart), VideoFrameRate, source,
+				TheShaderManager->Chain.IsActive() ? "on" : "off");
+			drawnCount = heldCount = 0; reportStart = Clock; reports++;
+		}
+	}
 	EffectRecord::Render(Device, RenderTarget, RenderedSurface, 0, ClearRenderTarget, SourceBuffer);
 	if (hold) return;
-	if (VideoFrameRate < 1.0f) { HoldValid = false; return; }
+	if (VideoFrameRate < 1.0f && Constants.Glitch.w <= 0.0f) { HoldValid = false; return; }
 
 	FrameChain& chain = TheShaderManager->Chain;
 	IDirect3DSurface9* result = !chain.IsActive() ? RenderTarget : chain.IsDirectFinal(this) ? chain.FinalSurface() : TheTextureManager->RenderedSurface;
+	source = !chain.IsActive() ? "the target (no chain)" : chain.IsDirectFinal(this) ? "the game target (direct final)" :
+		result == RenderedSurface ? "the chain's current image (same as the input!)" : "the chain's current image";
 	D3DSURFACE_DESC desc;
 	if (!result || FAILED(result->GetDesc(&desc))) { HoldValid = false; return; }
 	if (!HoldSurface || desc.Width != HoldDesc.Width || desc.Height != HoldDesc.Height || desc.Format != HoldDesc.Format) {
@@ -239,4 +332,32 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	}
 	HoldValid = SUCCEEDED(Device->StretchRect(result, NULL, HoldSurface, NULL, D3DTEXF_NONE));
 	HoldTick = tick;
+}
+
+void BodycamEffect::ApplyWideView() {
+	static bool widened = false;
+	static float before = 0.0f, current = 0.0f;
+	BodycamEffect* cam = TheShaderManager->Effects.Bodycam;
+	BodycamAudio::Settings mic = MicSettings;
+	if (!cam || !cam->Enabled) mic.Mix = 0.0f;
+	BodycamAudio::Wanted = mic;
+	if (mic.Mix > 0.0f) BodycamAudio::Install();
+	if (!Player || !WorldSceneGraph || TheSettingManager->SettingsMain.CameraMode.Enabled) return;
+	const float wide = cam && cam->Enabled ? cam->WideView : 0.0f;
+	const bool free = !Player->IsAiming() && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && !Player->IsVanity();
+	const float dt = (float)std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);
+	auto set = [](float fov) {
+		Player->worldFoV = fov;
+		if (fabsf(WorldSceneGraph->cameraFOV - fov) > 0.01f) WorldSceneGraph->UpdateParticleShaderFoV(fov);
+	};
+	if (wide > 0.0f) {
+		if (!widened) { before = current = Player->worldFoV; widened = true; }
+		if (!free) { current = Player->worldFoV; return; }
+		current = fabsf(wide - current) < 0.05f ? wide : current + (wide - current) * (std::min)(1.0f, dt * 6.0f);
+		set(current);
+	}
+	else if (widened && free) {
+		widened = false;
+		set(before);
+	}
 }

@@ -1200,7 +1200,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!specularDone) Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+#if NVR_TEST_TOOLS
 	EffectSelfTest::Capture(EffectSelfTest::AfterSpill, TheTextureManager->RenderedSurface);
+#endif
 	{
 		static GpuTimer reflectionsTimer("Reflections (SSR)");
 		GpuProfileScope gpu(reflectionsTimer, Device);

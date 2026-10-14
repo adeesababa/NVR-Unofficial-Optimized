@@ -1,4 +1,5 @@
 #pragma once
+#include "TestTools.h"
 
 #include <atomic>
 #include "EffectSelfTestCore.h"

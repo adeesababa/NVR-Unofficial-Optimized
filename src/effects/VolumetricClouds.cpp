@@ -1,4 +1,5 @@
 #include "VolumetricClouds.h"
+#include "../core/FrameClock.h"
 #include "../core/GpuProfiler.h"
 
 void VolumetricCloudsEffect::UpdateSettings() {
@@ -86,7 +87,8 @@ static int WeatherIndex(TESWeather* weather) {
 
 void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
-	const float dt = std::clamp((float)TheFrameRateManager->ElapsedTime, 0.0f, 0.1f);
+	static double lastFrameTime = -1.0;
+	const float dt = (float)(ElapsedOncePerFrame(lastFrameTime) * TunedClockRate);
 
 	float targetCoverage = Settings.Coverage[0], targetRain = 0.0f, targetType = Settings.TypeBias[0];
 	if (sky && sky->firstWeather) {

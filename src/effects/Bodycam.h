@@ -15,11 +15,15 @@ public:
 		D3DXVECTOR4	Grade;
 		D3DXVECTOR4	Video;
 		D3DXVECTOR4	Adapt;
+		D3DXVECTOR4	Body;
+		D3DXVECTOR4	Flash;
+		D3DXVECTOR4	Glitch;
 	};
 	BodycamStruct	Constants;
 
 	enum LookKey { Fisheye, FitEdges, Border, Fringe, EdgeBlur, LensBlur, Vignette, Sharpen, Exposure, Contrast, Saturation, Lift, Cool,
-		Glow, Grain, Blocks, MotionBlur, LensDirt, Tint, Text, VideoFps, AutoExposure, ExposureSpeed, Breakup, RollingShutter, LookKeys };
+		Glow, Grain, Blocks, MotionBlur, LensDirt, Tint, Text, VideoFps, AutoExposure, ExposureSpeed, Breakup, RollingShutter,
+		Bounce, GunJolt, Overload, LowLight, LightSmear, Hiccups, Autofocus, LookKeys };
 	struct LookStruct { float v[LookKeys]; };
 	LookStruct		Day = {}, Night = {}, Interiors = {};
 	float			LastYaw = 0.0f, LastPitch = 0.0f;
@@ -44,6 +48,16 @@ public:
 	float				VideoFrameRate = 0.0f;
 	char				Shown[2][65] = {};
 	double				Clock = 0.0;
+	float				StepPhase = 0.0f, StepAmount = 0.0f;
+	D3DXVECTOR3			Jolt = D3DXVECTOR3(0.0f, 0.0f, 0.0f), JoltSpeed = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+	float				TurnRoll = 0.0f;
+	const void*			AmmoType = nullptr;
+	int					AmmoCount = -1;
+	float				FlashNow = 0.0f, DipNow = 0.0f;
+	float				HiccupWait = 3.0f, GlitchLeft = 0.0f, FreezeLeft = 0.0f;
+	bool				Frozen = false;
+	float				WideView = 0.0f;
+	static void			ApplyWideView();
 
 	void	UpdateConstants();
 	void	RegisterConstants();
