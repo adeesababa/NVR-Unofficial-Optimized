@@ -1,32 +1,15 @@
 #pragma once
 
-// UNOFFICIAL LampScissor ([Main.Main.Performance] LampScissor, 2026-10-11).
-//
-// Indoors the game adds the light of extra lamps to an object in passes of their own (ObjectTemplate DIFFUSE, PS
-// SLS2045/2046, and POINT specular, SLS2051-2056): the whole object is drawn again, shaded and blended for every pixel,
-// although a lamp only reaches pixels within its radius (vanillaAttSq is exactly 0 beyond it). In the Rivet City hangar
-// these passes cost ~2.5-3 ms of the 7 ms world scene (P47), about half of their draws passing 0 pixels.
-// Here such a draw is limited to the screen rectangle that can hold its lamps' spheres (scissor test), so pixels no lamp
-// can reach are not shaded at all. Exact: the rectangle is the projection of each sphere's bounding box (so it contains
-// the sphere), widened by a margin; a lamp whose box reaches behind the near plane, or anything unusual (not a point
-// light, no radius, another camera's viewport, an orthographic camera) leaves the draw unscissored. A draw none of whose
-// lamps is on screen at all is skipped (it adds nothing visible).
-// Reach: ShadowLightShader::SetupGeometryConstants_Lights 0x00B78A90 puts the lamp into the object's model space and
-// divides the radius by the object's scale (or scales the position instead for passes 0x231-0x233), so in world space
-// a lamp reaches exactly NiPointLight::Spec.r (+0xE0, BSShaderLightingProperty::SetLight1x2x 0x00B70820) from its world
-// position (+0x8C). ShadowSceneLight +0xF4 = point light, +0xF8 = the NiPointLight.
-// Only the world scene, only the Standard (not skinned) draw, only NVR's own versions of those pixel shaders.
 namespace LampScissor {
 
-	inline bool Enabled = false;		// the setting, read each frame
-	inline bool LampOnlyPass = false;	// the bound pixel shader is one of NVR's lamp-only passes (SetShadersHook)
-	inline bool Scissored = false;		// Before() turned the scissor test on; After() restores
+	inline bool Enabled = false;
+	inline bool LampOnlyPass = false;
+	inline bool Scissored = false;
 	inline DWORD SavedEnable = FALSE;
 	inline RECT SavedRect = {};
 	inline unsigned StatFrames = 0;
 	inline double StatDraws = 0, StatScissored = 0, StatSkipped = 0, StatFull = 0, StatAreaShare = 0;
 
-	// SetShadersHook, after the game bound the pass's shaders.
 	inline void OnBind(const NiD3DPixelShaderEx* shader, bool world) {
 		LampOnlyPass = false;
 		if (!Enabled || !world || !shader || !shader->Name || !shader->ShaderHandleBackup ||
@@ -54,7 +37,6 @@ namespace LampScissor {
 
 	enum Result { Draw, Skip };
 
-	// Before an object's draw (RenderPassStandardHook). Skip: nothing of it can be lit; otherwise drawn, maybe scissored.
 	inline Result Before(const PointShadowForward::RenderPassView* pass, bool world) {
 		Scissored = false;
 		if (!Enabled || !LampOnlyPass || !world || !pass || !pass->numLights || !pass->lights) return Draw;
@@ -72,7 +54,6 @@ namespace LampScissor {
 		const NiFrustum& frustum = camera->Frustum;
 		const float frustumWidth = frustum.Right - frustum.Left, frustumHeight = frustum.Top - frustum.Bottom;
 		if (frustumWidth <= 0.0f || frustumHeight <= 0.0f || frustum.Near <= 0.0f) { if (GpuTimer::Enabled) StatFull += 1; return Draw; }
-		// View basis as RenderManager::UpdateSceneCameraData builds it: forward, up, right = columns 0, 1, 2.
 		const float forward[3] = { rot.data[0][0], rot.data[1][0], rot.data[2][0] };
 		const float up[3] = { rot.data[0][1], rot.data[1][1], rot.data[2][1] };
 		const float right[3] = { rot.data[0][2], rot.data[1][2], rot.data[2][2] };
@@ -92,7 +73,7 @@ namespace LampScissor {
 				const float p[3] = { centre.x + ((corner & 1) ? reach : -reach) - eye.x, centre.y + ((corner & 2) ? reach : -reach) - eye.y,
 					centre.z + ((corner & 4) ? reach : -reach) - eye.z };
 				const float z = p[0] * forward[0] + p[1] * forward[1] + p[2] * forward[2];
-				if (z < frustum.Near * 0.5f) { if (GpuTimer::Enabled) StatFull += 1; return Draw; }	// box reaches behind the camera
+				if (z < frustum.Near * 0.5f) { if (GpuTimer::Enabled) StatFull += 1; return Draw; }
 				const float x = p[0] * right[0] + p[1] * right[1] + p[2] * right[2];
 				const float y = p[0] * up[0] + p[1] * up[1] + p[2] * up[2];
 				const float ndcX = (2.0f * x / z - (frustum.Right + frustum.Left)) / frustumWidth;
@@ -101,7 +82,7 @@ namespace LampScissor {
 				lampMinX = (std::min)(lampMinX, sx); lampMaxX = (std::max)(lampMaxX, sx);
 				lampMinY = (std::min)(lampMinY, sy); lampMaxY = (std::max)(lampMaxY, sy);
 			}
-			if (lampMaxX < 0.0f || lampMaxY < 0.0f || lampMinX > (float)port.Width || lampMinY > (float)port.Height) continue;	// off screen
+			if (lampMaxX < 0.0f || lampMaxY < 0.0f || lampMinX > (float)port.Width || lampMinY > (float)port.Height) continue;
 			anyOnScreen = true;
 			minX = (std::min)(minX, lampMinX); maxX = (std::max)(maxX, lampMaxX);
 			minY = (std::min)(minY, lampMinY); maxY = (std::max)(maxY, lampMaxY);
@@ -113,7 +94,7 @@ namespace LampScissor {
 		rect.right = (LONG)(std::min)((float)port.Width, ceilf(maxX) + 1.0f);
 		rect.bottom = (LONG)(std::min)((float)port.Height, ceilf(maxY) + 1.0f);
 		if (rect.right <= rect.left || rect.bottom <= rect.top) { if (GpuTimer::Enabled) StatSkipped += 1; return Skip; }
-		if (rect.left == 0 && rect.top == 0 && rect.right == (LONG)port.Width && rect.bottom == (LONG)port.Height) return Draw;	// whole screen anyway
+		if (rect.left == 0 && rect.top == 0 && rect.right == (LONG)port.Width && rect.bottom == (LONG)port.Height) return Draw;
 		if (FAILED(device->GetRenderState(D3DRS_SCISSORTESTENABLE, &SavedEnable)) || FAILED(device->GetScissorRect(&SavedRect))) return Draw;
 		device->SetScissorRect(&rect);
 		device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
@@ -125,7 +106,6 @@ namespace LampScissor {
 		return Draw;
 	}
 
-	// After the draw: the scissor state as it was (the game's render-state cache never saw the change).
 	inline void After() {
 		if (!Scissored) return;
 		Scissored = false;

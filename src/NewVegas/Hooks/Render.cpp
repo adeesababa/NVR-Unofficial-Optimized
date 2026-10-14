@@ -1334,6 +1334,79 @@ namespace MaterialRulesDraw {
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
 namespace ScopeSunShadows { static void ForDraw(const PointShadowForward::RenderPassView* pass); }
 
+float BloodFlowNewBloodNear(const D3DXVECTOR3& eye, float reach);
+bool BloodFlowLastTint(float out[3]);
+namespace HandBlood {
+	static bool Checked = false, Compiled = false, Set = false;
+	static float Amount = 0.0f, Wet = 0.0f, Seed = 0.0f, Spray = 0.0f;
+	static float SinceHit = 1e6f;
+	static float Draw[8] = {};
+	static ULONGLONG LastTick = 0;
+	static int Logged = 0;
+
+	static void Update() {
+		if (!Checked) {
+			Checked = true;
+			Compiled = TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") != 0;
+			Logger::Log("UNOFFICIAL HandBlood: %s", Compiled ? "on (blood on the first-person weapon and gloves)" : "off (not compiled into the shaders)");
+		}
+		if (!Compiled) return;
+		const char* section = "Shaders.HandBlood.Main";
+		const ULONGLONG now = GetTickCount64();
+		const float dt = LastTick ? std::clamp((now - LastTick) / 1000.0f, 0.0f, 0.25f) : 0.0f;
+		LastTick = now;
+		const float reach = std::clamp(TheSettingManager->GetSettingF(section, "Reach"), 10.0f, 1000.0f);
+		const D3DXVECTOR3 eye(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+		const float nearest = BloodFlowNewBloodNear(eye, reach);
+		if (nearest < reach) {
+			if (Amount < 0.02f) { Seed = (float)(rand() % 997); Spray = (rand() % 6283) / 1000.0f; }
+			const float closeness = 1.0f - nearest / reach;
+			Amount = std::clamp(Amount + std::clamp(TheSettingManager->GetSettingF(section, "PerHit"), 0.0f, 1.0f) * (0.35f + 0.65f * closeness), 0.0f, 1.0f);
+			Wet = 1.0f;
+			SinceHit = 0.0f;
+			if (Logged < 20) { Logged++; Logger::Log("UNOFFICIAL HandBlood: fresh blood %.0f units away: amount %.2f", nearest, Amount); }
+		}
+		const float dryTime = std::clamp(TheSettingManager->GetSettingF(section, "DryTime"), 1.0f, 3600.0f);
+		const float fadeTime = std::clamp(TheSettingManager->GetSettingF(section, "FadeTime"), 0.0f, 36000.0f);
+		Wet = std::clamp(Wet - dt / dryTime, 0.0f, 1.0f);
+		if (fadeTime > 0.0f) Amount *= expf(-dt / fadeTime);
+		if (TheShaderManager->GameState.isUnderwater) Amount = 0.0f;
+		if (Amount < 0.003f) Amount = 0.0f;
+		if (TheSettingManager->GetSettingI(section, "DebugView")) { Amount = 1.0f; Wet = 1.0f; }
+		float tint[3];
+		const float shade = std::clamp(TheSettingManager->GetSettingF("Shaders.BloodFlow.Main", "MatchShade"), 0.01f, 1.0f);
+		if (BloodFlowLastTint(tint)) for (int c = 0; c < 3; c++) Draw[4 + c] = std::clamp(tint[c] * shade, 0.0f, 1.0f);
+		else {
+			Draw[4] = TheSettingManager->GetSettingF(section, "ColorR");
+			Draw[5] = TheSettingManager->GetSettingF(section, "ColorG");
+			Draw[6] = TheSettingManager->GetSettingF(section, "ColorB");
+		}
+		const float brightness = std::clamp(TheSettingManager->GetSettingF(section, "Brightness"), 0.05f, 2.0f);
+		for (int c = 4; c < 7; c++) Draw[c] = std::clamp(Draw[c] * brightness, 0.0f, 1.0f);
+		SinceHit = std::clamp(SinceHit + dt, 0.0f, 1e6f);
+		const float runTime = std::clamp(TheSettingManager->GetSettingF(section, "RunTime"), 0.1f, 60.0f);
+		Draw[7] = std::clamp(TheSettingManager->GetSettingF(section, "Run"), 0.0f, 2.0f) * (1.0f - expf(-SinceHit / runTime));
+		if (TheSettingManager->GetSettingI(section, "DebugView")) Draw[7] = std::clamp(TheSettingManager->GetSettingF(section, "Run"), 0.0f, 2.0f);
+		Draw[0] = Amount;
+		Draw[1] = Wet;
+		Draw[2] = std::clamp(TheSettingManager->GetSettingF(section, "CellSize"), 0.2f, 20.0f);
+		Draw[3] = Seed;
+	}
+
+	static void SetForDraw() {
+		if (!Compiled) return;
+		if (Draw[0] > 0.0f && ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) {
+			TheRenderManager->device->SetPixelShaderConstantF(218, Draw, 2);
+			Set = true;
+		}
+		else if (Set) {
+			const float off[8] = {};
+			TheRenderManager->device->SetPixelShaderConstantF(218, off, 2);
+			Set = false;
+		}
+	}
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -1400,6 +1473,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	MaterialRulesDraw::AfterBind();
 	ReflectionProbe::AfterBind();
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
+	HandBlood::SetForDraw();
 	LampScissor::OnBind(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World);
 	HiddenObjectCulling::OnBind(PixelShader);
 	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;
@@ -1455,7 +1529,53 @@ namespace ScopeSunShadows {
 	}
 }
 
+namespace LampCountStats {
+	static unsigned Draws[256][16] = {};
+	static unsigned MaxCap[256] = {};
+	static DWORD Last = 0;
+	struct Seen { const void* light; float x, y, z, radius; unsigned draws; };
+	static Seen Lamps[128] = {};
+	static int LampCount = 0;
+	static void Count(const PointShadowForward::RenderPassView* pass) {
+		if (!PointShadowForward::LogObjectLamps || !pass) return;
+		const unsigned type = pass->passEnum & 0xFF;
+		Draws[type][(std::min)((unsigned)pass->numLights, 15u)]++;
+		MaxCap[type] = (std::max)(MaxCap[type], (unsigned)pass->maxLights);
+		for (int k = 0; pass->lights && k < pass->numLights; k++) {
+			const ShadowSceneLight* light = pass->lights[k];
+			if (!light) continue;
+			int i = 0;
+			while (i < LampCount && Lamps[i].light != light) i++;
+			if (i == LampCount) {
+				if (LampCount == 128) continue;
+				const char* source = *(const char* const*)((const char*)light + 0xF8);
+				if (!source) continue;
+				const float* p = (const float*)(source + 0x8C);
+				Lamps[LampCount++] = { light, p[0], p[1], p[2], *(const float*)(source + 0xE0), 0 };
+			}
+			Lamps[i].draws++;
+		}
+		const DWORD now = GetTickCount();
+		if (now - Last < 3000) return;
+		Last = now;
+		for (int i = 0; i < LampCount; i++)
+			Logger::Log("LAMP SEEN %p at %.0f %.0f %.0f, reach %.0f, in %u draws", Lamps[i].light, Lamps[i].x, Lamps[i].y, Lamps[i].z, Lamps[i].radius, Lamps[i].draws);
+		LampCount = 0;
+		for (unsigned t = 0; t < 256; t++) {
+			unsigned total = 0;
+			for (unsigned n = 0; n < 16; n++) total += Draws[t][n];
+			if (!total) continue;
+			char text[256] = ""; size_t used = 0;
+			for (unsigned n = 0; n < 16 && used < sizeof(text) - 16; n++)
+				if (Draws[t][n]) used += snprintf(text + used, sizeof(text) - used, " %u:%u", n, Draws[t][n]);
+			Logger::Log("LAMP COUNTS pass 0x%02X: %u draws, lamps per draw (count:draws)%s, largest cap %u", t, total, text, MaxCap[t]);
+		}
+		memset(Draws, 0, sizeof(Draws)); memset(MaxCap, 0, sizeof(MaxCap));
+	}
+}
+
 static void ForwardShadowsForPass(void* Pass) {
+	LampCountStats::Count((const PointShadowForward::RenderPassView*)Pass);
 	PointShadowForward::OnRenderPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw((const PointShadowForward::RenderPassView*)Pass);
@@ -1489,6 +1609,13 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 }
 
 HRESULT (__thiscall* SetSamplerState)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8) = (HRESULT (__thiscall*)(NiDX9RenderState*, UInt32, D3DSAMPLERSTATETYPE, UInt32, UInt8))Hooks::SetSamplerState;
+
+bool(__thiscall* BoundWithinLightRadius)(void*, const float*, void*, float) = (bool(__thiscall*)(void*, const float*, void*, float))0x00B9DAE0;
+float LampReachMargin = 0.0f;
+bool __fastcall BoundWithinLightRadiusHook(void* This, UInt32 edx, const float* Bound, void* Light, float Scale) {
+	if (LampReachMargin > 0.0f && Bound && Bound[3] > 1.0f) Scale += LampReachMargin / Bound[3];
+	return BoundWithinLightRadius(This, Bound, Light, Scale);
+}
 HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt32 Sampler, D3DSAMPLERSTATETYPE Type, UInt32 Value, UInt8 Save) {
 
 	UInt16* TypeMap = (UInt16*)0x126F92C;
@@ -1519,6 +1646,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		ShaderSplit::BeginContext(ShaderSplit::World);
 		HiddenObjectCulling::BeginWorld();
 		GunFXSwitches::Update();
+		HandBlood::Update();
 		BarrelHaze::Reset();
 		BarrelHeat::BeginWorldProbe();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);

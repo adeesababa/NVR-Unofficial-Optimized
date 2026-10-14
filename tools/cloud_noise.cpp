@@ -1,16 +1,3 @@
-// UNOFFICIAL: builds the noise textures of the volumetric clouds (Effects\VolumetricClouds.fx.hlsl) as DDS files, so
-// they are made the same way every time instead of drawn by hand. All three tile in every direction.
-//   CloudShape.dds    128^3 L8 volume, full mip chain: the clouds' big shapes. Perlin-Worley noise (Perlin fbm lifted
-//                     where Worley cells are bright, so it reads as billows) eroded by a finer Worley fbm, as in
-//                     "The real-time volumetric cloudscapes of Horizon Zero Dawn" (Schneider, SIGGRAPH 2015).
-//   CloudDetail.dds   32^3 L8 volume, full mip chain: a Worley fbm that wears away the shapes' edges into wisps.
-//   CloudWeather.dds  512^2 A8R8G8B8, full mip chain: r where clouds may form (thresholded by the weather's coverage),
-//                     g cloud type (0 flat layers .. 1 tall heaps), b local density.
-//   NoiseVolume.dds   64^3 A8R8G8B8, full mip chain: general smooth noise for the fog and the gun smoke. r one octave of
-//                     gradient noise (8 cells across the tile, like a value noise of period 1 scaled by 1/8), g four
-//                     octaves of it (fbm), b a Worley fbm (billows), a another single octave, independent of r. Each is
-//                     stretched so 1 % .. 99 % of its values span 0 .. 1 (mean about 0.5), as the shaders' old noise did.
-// Usage: build\cloud-noise\cloud_noise.exe <output folder>   (writes the three files into it)
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -33,7 +20,6 @@ static float Remap(float v, float lo, float hi, float newLo, float newHi) {
 	return newLo + (v - lo) / std::max(hi - lo, 1e-6f) * (newHi - newLo);
 }
 
-// Distance to the nearest feature point (one per cell, period cells across the tile), in cells; 0 .. about 0.9.
 static float Worley(float x, float y, float z, int period, uint32_t seed) {
 	const float px = x * period, py = y * period, pz = z * period;
 	const int cx = (int)std::floor(px), cy = (int)std::floor(py), cz = (int)std::floor(pz);
@@ -48,7 +34,6 @@ static float Worley(float x, float y, float z, int period, uint32_t seed) {
 	}
 	return std::sqrt(best);
 }
-// Bright cell centres, dark borders: the billowy look.
 static float WorleyCells(float x, float y, float z, int period, uint32_t seed) {
 	return 1.0f - Saturate(Worley(x, y, z, period, seed));
 }
@@ -66,7 +51,6 @@ static float Gradient(uint32_t h, float x, float y, float z) {
 	case 12: return x + y; case 13: return -x + y; case 14: return -y + z; default: return -y - z;
 	}
 }
-// Gradient noise tiling every period cells; about -1 .. 1.
 static float Perlin(float x, float y, float z, int period, uint32_t seed) {
 	const float px = x * period, py = y * period, pz = z * period;
 	const int ix = (int)std::floor(px), iy = (int)std::floor(py), iz = (int)std::floor(pz);
@@ -83,7 +67,6 @@ static float Perlin(float x, float y, float z, int period, uint32_t seed) {
 	const float y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
 	return y0 + (y1 - y0) * w;
 }
-// 0 .. 1 fbm of octaves Perlin layers, each twice the frequency and half the weight of the last.
 static float PerlinFbm(float x, float y, float z, int period, int octaves, uint32_t seed) {
 	float sum = 0.0f, weight = 0.5f, total = 0.0f;
 	for (int o = 0; o < octaves; o++) {
@@ -94,7 +77,6 @@ static float PerlinFbm(float x, float y, float z, int period, int octaves, uint3
 	return Saturate(sum / total * 0.75f + 0.5f);
 }
 
-// ---- DDS writing (uncompressed; volume or 2D; full mip chain) ----
 struct DdsPixelFormat { uint32_t size, flags, fourCC, bits, r, g, b, a; };
 struct DdsHeader {
 	uint32_t size, flags, height, width, pitch, depth, mips, reserved[11];
@@ -111,13 +93,13 @@ static bool WriteDds(const std::string& path, int width, int height, int depth, 
 	h.pitch = width * bytesPerPixel;
 	h.mips = (uint32_t)levels.size();
 	h.format.size = 32;
-	if (bytesPerPixel == 1) { h.format.flags = 0x20000; h.format.bits = 8; h.format.r = 0xFF; }	// luminance
+	if (bytesPerPixel == 1) { h.format.flags = 0x20000; h.format.bits = 8; h.format.r = 0xFF; }
 	else { h.format.flags = 0x40 | 0x1; h.format.bits = 32; h.format.r = 0xFF0000; h.format.g = 0xFF00; h.format.b = 0xFF; h.format.a = 0xFF000000u; }
 	h.caps = 0x1000 | 0x8 | 0x400000;
 	h.caps2 = depth > 1 ? 0x200000 : 0;
 	FILE* f = std::fopen(path.c_str(), "wb");
 	if (!f) return false;
-	const uint32_t magic = 0x20534444;	// "DDS "
+	const uint32_t magic = 0x20534444;
 	std::fwrite(&magic, 4, 1, f);
 	std::fwrite(&h, sizeof(h), 1, f);
 	for (const auto& level : levels) std::fwrite(level.data(), 1, level.size(), f);
@@ -125,7 +107,6 @@ static bool WriteDds(const std::string& path, int width, int height, int depth, 
 	return true;
 }
 
-// Box-filtered mip chain of a channels-per-texel volume (depth 1 for a 2D texture).
 static std::vector<std::vector<uint8_t>> MipChain(std::vector<uint8_t> top, int w, int h, int d, int channels) {
 	std::vector<std::vector<uint8_t>> levels;
 	levels.push_back(top);
@@ -149,7 +130,6 @@ static std::vector<std::vector<uint8_t>> MipChain(std::vector<uint8_t> top, int 
 
 static uint8_t Byte(float v) { return (uint8_t)std::lround(Saturate(v) * 255.0f); }
 
-// Linear stretch so the 1st .. 99th percentiles of values span 0 .. 1.
 static void Stretch(std::vector<float>& values) {
 	std::vector<float> sorted = values;
 	std::sort(sorted.begin(), sorted.end());
@@ -161,7 +141,6 @@ int main(int argc, char** argv) {
 	if (argc != 2) { std::puts("usage: cloud_noise <output folder>"); return 2; }
 	const std::string out = argv[1];
 
-	// Shape: Perlin-Worley, then eroded by a lower-frequency Worley fbm.
 	{
 		const int n = 128;
 		std::vector<uint8_t> voxels((size_t)n * n * n);
@@ -182,7 +161,6 @@ int main(int argc, char** argv) {
 		std::printf("shape mean %.3f\n", sum / ((double)n * n * n));
 		if (!WriteDds(out + "\\CloudShape.dds", n, n, n, 1, MipChain(voxels, n, n, n, 1))) { std::puts("write failed"); return 1; }
 	}
-	// Detail: Worley fbm.
 	{
 		const int n = 32;
 		std::vector<uint8_t> voxels((size_t)n * n * n);
@@ -192,7 +170,6 @@ int main(int argc, char** argv) {
 		}
 		if (!WriteDds(out + "\\CloudDetail.dds", n, n, n, 1, MipChain(voxels, n, n, n, 1))) { std::puts("write failed"); return 1; }
 	}
-	// Weather map: coverage pattern, cloud type, density. BGRA byte order (A8R8G8B8).
 	{
 		const int n = 512;
 		std::vector<uint8_t> texels((size_t)n * n * 4);
@@ -208,7 +185,6 @@ int main(int argc, char** argv) {
 		}
 		if (!WriteDds(out + "\\CloudWeather.dds", n, n, 1, 4, MipChain(texels, n, n, 1, 4))) { std::puts("write failed"); return 1; }
 	}
-	// General noise volume for the fog and the smoke.
 	{
 		const int n = 64;
 		const size_t count = (size_t)n * n * n;
@@ -224,10 +200,10 @@ int main(int argc, char** argv) {
 		Stretch(smooth); Stretch(fbm); Stretch(billows); Stretch(second);
 		std::vector<uint8_t> texels(count * 4);
 		for (size_t i = 0; i < count; i++) {
-			texels[i * 4 + 0] = Byte(billows[i]);	// b
-			texels[i * 4 + 1] = Byte(fbm[i]);		// g
-			texels[i * 4 + 2] = Byte(smooth[i]);	// r
-			texels[i * 4 + 3] = Byte(second[i]);	// a
+			texels[i * 4 + 0] = Byte(billows[i]);
+			texels[i * 4 + 1] = Byte(fbm[i]);
+			texels[i * 4 + 2] = Byte(smooth[i]);
+			texels[i * 4 + 3] = Byte(second[i]);
 		}
 		if (!WriteDds(out + "\\NoiseVolume.dds", n, n, n, 4, MipChain(texels, n, n, n, 4))) { std::puts("write failed"); return 1; }
 	}

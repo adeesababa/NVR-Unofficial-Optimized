@@ -157,6 +157,7 @@ public:
 		SandstormEffect*		Sandstorm;
 		VolumetricLightEffect*	VolumetricLight;
 		ReflectionsEffect*		Reflections;
+		BodycamEffect*			Bodycam;
 		SkyDitherEffect*		SkyDither;
 		VolumetricCloudsEffect*	VolumetricClouds;
 		BloodFlowEffect*		BloodFlow;
@@ -223,6 +224,9 @@ public:
 	D3DXVECTOR4				LightPosition[TrackedLightsMax];
 	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsScreen];
 	D3DXVECTOR4				LightAttenuation[TrackedLightsMax];
+	D3DXVECTOR4				BatchLightPosition[ShadowCubeMapsMax];
+	D3DXVECTOR4				BatchLightColor[ShadowCubeMapsMax];
+	void					RenderPointShadowBatches();
 	D3DXVECTOR4				ExtraLights[ExtraLightsMax];
 };
 

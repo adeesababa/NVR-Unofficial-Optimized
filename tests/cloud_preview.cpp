@@ -1,7 +1,3 @@
-// Offline look check of the volumetric clouds (Effects\VolumetricClouds.fx.hlsl), without the game: renders the three
-// techniques the way VolumetricCloudsEffect does (march, temporal, composite) over a plain sky gradient for a few views,
-// sun positions and weathers, and saves each as a PNG. Run from src/hlsl/NewVegas/Effects.
-// Usage: build\cloud-preview\cloud_preview.exe <Textures\Effects folder> <output folder> [frames] [width height]
 #include <windows.h>
 #include <d3d9.h>
 #include <d3dx9.h>
@@ -19,13 +15,13 @@ static void Check(HRESULT hr, const char* what) {
 
 struct View {
 	const char* name;
-	float yaw, pitch;          // degrees: where the camera looks
-	float sunYaw, sunPitch;    // degrees: where the light comes from
-	float day;                 // 0 night .. 1 day
+	float yaw, pitch;
+	float sunYaw, sunPitch;
+	float day;
 	float coverage, rain, typeBias;
-	float sunR, sunG, sunB;    // light colour (gamma)
-	float skyR, skyG, skyB;    // sky top (gamma)
-	float horR, horG, horB;    // horizon (gamma)
+	float sunR, sunG, sunB;
+	float skyR, skyG, skyB;
+	float horR, horG, horB;
 };
 
 static D3DXVECTOR3 Direction(float yawDeg, float pitchDeg) {
@@ -100,7 +96,6 @@ int main(int argc, char** argv) {
 			{ "7-night",             90, 20,   10, 50, 0.0f, 0.5f, 0.0f, 0.0f, 0.25f, 0.30f, 0.40f, 0.03f, 0.05f, 0.10f, 0.06f, 0.08f, 0.14f },
 		};
 		for (const View& v : views) {
-			// the scene: a sky gradient with a band of distant ground across the bottom (not sky in the depth buffer)
 			D3DXVECTOR3 forward = Direction(v.yaw, v.pitch);
 			D3DXVECTOR3 eye(0, 0, 0), up(0, 0, 1), at = forward;
 			D3DXMATRIX view, proj, viewProj;
@@ -163,7 +158,6 @@ int main(int argc, char** argv) {
 				vec("TESR_CloudsBlocks", 1.0f / BW, 1.0f / BH, order[frame % 4][0], order[frame % 4][1]);
 				Check(device->BeginScene(), "begin");
 				UINT passes;
-				// march
 				device->SetRenderTarget(0, currentS.Get());
 				D3DVIEWPORT9 blocks = { 0, 0, BW, BH, 0, 1 }; device->SetViewport(&blocks);
 				D3DVIEWPORT9 low = { 0, 0, LW, LH, 0, 1 };
@@ -174,7 +168,6 @@ int main(int argc, char** argv) {
 				device->SetTexture(6, NULL); device->SetTexture(7, history[read].Get()); device->SetTexture(8, noiseVolume.Get());
 				quad(BW, BH);
 				effect->EndPass(); effect->End();
-				// temporal
 				device->SetRenderTarget(0, historyS[1 - read].Get()); device->SetViewport(&low);
 				effect->SetTechnique(effect->GetTechniqueByName("Temporal"));
 				effect->Begin(&passes, 0); effect->BeginPass(0);
@@ -184,7 +177,6 @@ int main(int argc, char** argv) {
 				read = 1 - read;
 				device->EndScene();
 			}
-			// composite
 			Check(device->BeginScene(), "begin");
 			device->SetRenderTarget(0, finalS.Get());
 			D3DVIEWPORT9 full = { 0, 0, W, H, 0, 1 }; device->SetViewport(&full);
@@ -195,7 +187,6 @@ int main(int argc, char** argv) {
 			quad(W, H);
 			effect->EndPass(); effect->End();
 			device->EndScene();
-			// wait for the GPU, for the timing
 			ComPtr<IDirect3DQuery9> query; device->CreateQuery(D3DQUERYTYPE_EVENT, &query);
 			query->Issue(D3DISSUE_END); while (query->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) Sleep(0);
 			QueryPerformanceCounter(&f1);

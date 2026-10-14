@@ -25,9 +25,6 @@
     #define SKYLIGHTING_MODE 0
 #endif
 
-// UNOFFICIAL SharpSky: [Shaders.PBR.Metal] SharpSky in x, 0 = the plain sky. Both modes read it. Only mode 0 has the harmonics
-// to sharpen (SkyAmbientSharp), so mode 1 keeps the plain sky. c136 is the one register between the PBR block (c135) and the
-// sky (c137) that no shader uses.
 float4 TESR_SharpSky : register(c136);
 
 #if SKYLIGHTING_MODE == 1
@@ -101,7 +98,6 @@ float3 SkyAmbientRadiance(float3 worldNormal, float directionality) {
     return sqrt(max(GetSkyRadiance(dir), 0.0f)) * wSky;
 }
 
-// UNOFFICIAL SharpSky: no harmonics to sharpen in this mode, so the plain sky stays.
 float3 SkyAmbientSharpened(float3 dir, float3 plain) {
     return plain;
 }
@@ -148,10 +144,6 @@ float3 SkyAmbientRadiance(float3 worldNormal, float directionality) {
     return sqrt(max(irradiance, 0.0f));
 }
 
-// UNOFFICIAL SharpSky: the same nine coefficients evaluated as the sky's radiance along dir, not its smooth irradiance. Sky.cpp
-// stores band l at (A_l / pi) of its projection (A0/pi = 1, A1/pi = 2/3, A2/pi = 1/4: the clamped cosine's bands), so undoing
-// the convolution weights bands 1, 1.5 and 4 (band 0 stays 1). Order 2 rings: a plain sky reads about a quarter brighter in
-// linear light at the zenith and dips below zero under the horizon, so the sum is clamped here.
 float3 SkyAmbientSharp(float3 dir) {
     float3 radiance = TESR_SkyIrradiance[0].rgb
          + 1.5f * (TESR_SkyIrradiance[1].rgb * dir.y + TESR_SkyIrradiance[2].rgb * dir.z + TESR_SkyIrradiance[3].rgb * dir.x)
@@ -161,9 +153,6 @@ float3 SkyAmbientSharp(float3 dir) {
     return sqrt(max(radiance, 0.0f));
 }
 
-// UNOFFICIAL SharpSky: plain (the caller's encoded sky along dir) blended to the sharp one by TESR_SharpSky.x. Below the horizon
-// the sharp value is kept no lower than the plain one, more so the further dir turns down: the sky is zero there, and the plain
-// value is what the object reflected before.
 float3 SkyAmbientSharpened(float3 dir, float3 plain) {
     float3 sharp = SkyAmbientSharp(dir);
     sharp = lerp(sharp, max(sharp, plain), saturate(-dir.z));

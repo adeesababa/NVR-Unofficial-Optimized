@@ -1,21 +1,18 @@
 #pragma once
 
-// UNOFFICIAL: sky dither (Effects\SkyDither.fx.hlsl). The sky's smooth gradients show bands on an 8-bit screen; a faint
-// noise of about one brightness step, added just before the picture goes to the screen, breaks the bands up so the eye
-// sees a smooth gradient. Sky only by default (on textured surfaces it is invisible anyway and only costs a read).
 class SkyDitherEffect : public EffectRecord
 {
 public:
 	SkyDitherEffect() : EffectRecord("SkyDither") {};
 
 	struct SettingsStruct {
-		float	Strength;		// noise size, in steps of the 256 brightness levels
-		bool	SkyOnly;		// only where the sky shows
+		float	Strength;
+		bool	SkyOnly;
 	};
 	SettingsStruct	Settings;
 
 	struct ConstantsStruct {
-		D3DXVECTOR4	Data;		// x: noise size (1 = one 8-bit step), y: 1 = sky only, z: noise frame offset
+		D3DXVECTOR4	Data;
 	};
 	ConstantsStruct	Constants;
 

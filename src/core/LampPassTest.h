@@ -1,11 +1,5 @@
 #pragma once
 
-// UNOFFICIAL, DIAGNOSTIC (2026-10-11): how much merging lamp passes could ever save. [Main.Main.Performance]
-// LampPassTestSkip skips, in the world scene, the passes a merged light pass would replace (THE PICTURE IS WRONG while
-// it is on: objects lose the lamps and highlights of those passes). F10 with it off and on, same view, gives the
-// upper bound of the saving. 1: the extra lamp passes (DIFFUSEPT2/3, 2 or 3 more lamps each), 2: the highlight
-// passes (2x SPECULAR DIR/PT/PT2/PT3), 3: both. Pass enums as Physically-Based-Reloaded's MergedLights
-// (NewVegas/Hooks/Shaders.cpp there): the forms a light-only pass can take, not the tree branch (_Sb) or hair ones.
 namespace LampPassTest {
 	inline int Mode = 0;
 	inline UInt32 SkippedLamp = 0, SkippedSpecular = 0, Frames = 0;
@@ -23,7 +17,6 @@ namespace LampPassTest {
 		return false;
 	}
 
-	// Once a frame: the setting, and a log line every 300 frames while the test is on.
 	inline void BeginFrame() {
 		Mode = TheSettingManager->SettingsMain.Main.LampPassTestSkip;
 		if (!Mode) { SkippedLamp = SkippedSpecular = Frames = 0; return; }
@@ -34,7 +27,6 @@ namespace LampPassTest {
 		}
 	}
 
-	// Before a pass is drawn: true = skip it.
 	inline bool Skip(const void* pass, bool world) {
 		if (!Mode || !world || !pass) return false;
 		const UInt16 passEnum = *(const UInt16*)((const UInt8*)pass + 0x04);

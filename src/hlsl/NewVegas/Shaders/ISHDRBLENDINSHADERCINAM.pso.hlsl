@@ -20,7 +20,7 @@ float4 TESR_LotteData : register(c28);
 float4 TESR_ToneMapping : register(c29);
 float4 TESR_BloomExtraData : register(c30); // .x - NVR bloom on/off.
 float4 TESR_ReciprocalResolution : register(c31); //
-float4 TESR_ToneMappingClip : register(c32); // UNOFFICIAL y: dither size (0 off), z: dither frame (sky dither at the tonemap)
+float4 TESR_ToneMappingClip : register(c32);
 
 
 
@@ -142,11 +142,6 @@ VS_OUTPUT main(VS_INPUT IN) {
         final.rgb = pows(final.rgb, 1/TESR_HDRData.w); // delinearize
     }
 
-    // UNOFFICIAL sky dither at the tonemap ([Shaders.SkyDither.Main] AtToneMap): HERE the HDR picture is rounded to the 8-bit
-    // target, and the sky's smooth gradients turn into bands of one level each. NVR's later effects and its end-of-chain dither
-    // only see those steps (measured: the same staircase with the end dither on and off). A triangular noise of about one level
-    // added before this rounding lets each pixel round up or down in proportion to where the true value lies, so the gradient
-    // survives as a fine grain the eye averages away. A new pattern every frame; it fades out below half a level so black stays black.
     [branch] if (TESR_ToneMappingClip.y > 0.0f) {
         const float2 p = IN.pos + TESR_ToneMappingClip.z * float2(5.588238f, 3.235f);
         const float n = frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f)))) +

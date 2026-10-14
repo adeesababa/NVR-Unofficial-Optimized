@@ -39,12 +39,10 @@ void VolumetricLightEffect::RegisterTextures() {
 void VolumetricLightEffect::UpdateConstants() {
 	frame++;
 
-	// Day and night looks, blended by the time of day (GameState.isDayTime: 1 day, 0 night, smooth through dawn/dusk).
 	const float day = std::clamp(TheShaderManager->GameState.isDayTime, 0.0f, 1.0f);
 	const LookStruct& d = Settings.Day;
 	const LookStruct& n = Settings.Night;
 
-	// Fade: the sun shadows' own fade (ShadowFade.x, 1 = no shadows: sunrise, sunset, a dim moon), less in rain, as set.
 	const ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 	float fade = 1.0f - std::clamp(shadows->Constants.ShadowFade.x, 0.0f, 1.0f);
 	fade *= std::lerp(1.0f, Settings.RainStrength, std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f));
@@ -62,20 +60,16 @@ void VolumetricLightEffect::UpdateConstants() {
 bool VolumetricLightEffect::ShouldRender() {
 	const ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 	return TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater &&
-		shadows && shadows->Constants.ShadowFade.y > 0.0f &&	// the sun's shadow maps are drawn this frame
+		shadows && shadows->Constants.ShadowFade.y > 0.0f &&
 		Constants.Data2.z > 0.001f && (Constants.Data.x > 0.0f || Constants.Data.y > 0.0f) &&
 		Textures.MarchSurface && Textures.BlurSurface && Textures.TempSurface && Textures.HistorySurface;
 }
 
-// The half-resolution passes, into the effect's own buffers (techniques: 1 March, 3 Temporal, 2 Blur X, 4 Blur Y).
-// With Temporal on: March -> March buffer, Temporal -> Temp (copied to History for next frame), Blur X -> March,
-// Blur Y -> Buffer. Off: March -> Temp, then the same blurs. The composite (technique 0) then reads Buffer.
 void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const bool temporal = Settings.Temporal > 0.0f;
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;
 
-	// Last frame's result is usable if this effect drew it, and the camera did not jump (load, fast travel, a cut).
 	bool usable = temporal && haveHistory && lastRenderedFrame + 1 == frame;
 	if (usable) {
 		const double dx = (double)invView._41 - lastInvView._41, dy = (double)invView._42 - lastInvView._42,
@@ -83,9 +77,6 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		usable = dx * dx + dy * dy + dz * dz < 500.0 * 500.0;
 	}
 	if (usable) {
-		// Camera-relative world position p -> last frame's view: (p + cameraNow - cameraLast) * Rlast, then last frame's
-		// projection. Worked out round the two camera positions in double precision (the Mojave's coordinates run past
-		// 100 000 units, where float rounding would lose the few units the camera moves between frames).
 		const double move[3] = { (double)invView._41 - lastInvView._41, (double)invView._42 - lastInvView._42,
 			(double)invView._43 - lastInvView._43 };
 		D3DXMATRIX toLastView;
@@ -101,7 +92,6 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
 	Constants.Data2.w = temporal ? (float)(frame % 64) : 0.0f;
 
-	// UNOFFICIAL 2026-10-13: F10 timers per pass (technique 1 march, 3 temporal, 2 / 4 blur).
 	static GpuTimer passTimers[5] = { GpuTimer("  VL composite"), GpuTimer("  VL march (half)"), GpuTimer("  VL blur X (half)"),
 		GpuTimer("  VL temporal (half)"), GpuTimer("  VL blur Y (half)") };
 	auto pass = [&](IDirect3DSurface9* target, UINT technique) {

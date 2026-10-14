@@ -23,11 +23,9 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			Constants.ShadowFade.x = std::lerp(MoonVisibility, (float)1.0, Constants.ShadowFade.x);
 		}
 
-		if (TheShaderManager->GameState.isDayTimeChanged) {
-			// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant
-			bool usePointLights = (TheShaderManager->GameState.isDayTime > 0.5) ? Settings.Exteriors.UsePointShadowsDay: Settings.Exteriors.UsePointShadowsNight;
-			Constants.ShadowFade.z = usePointLights;
-		}
+		// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant
+		bool usePointLights = (TheShaderManager->GameState.isDayTime > 0.5) ? Settings.Exteriors.UsePointShadowsDay: Settings.Exteriors.UsePointShadowsNight;
+		Constants.ShadowFade.z = usePointLights;
 		Constants.ShadowFade.y = Settings.Exteriors.Enabled && Enabled;
 		Constants.ShadowFade.w = Constants.ShadowMapRadius.w; //furthest distance for point lights shadows
 
@@ -381,6 +379,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.Forms.MinRadius = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "MinRadius");
 	Settings.Interiors.Quality = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Quality");
 	Settings.Interiors.LightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LightPoints"), ShadowCubeMapsMax));
+	Settings.Interiors.ExteriorLightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ExteriorLightPoints"), ExteriorBatchedMax));
 	Settings.Interiors.TorchesCastShadows = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TorchesCastShadows");
 	Settings.Interiors.ShadowCubeMapSize = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ShadowCubeMapSize");
 	Settings.Interiors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "Darkness");

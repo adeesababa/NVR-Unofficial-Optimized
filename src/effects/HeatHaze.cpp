@@ -1,6 +1,3 @@
-// UNOFFICIAL: ported from Physically-Based-Reloaded (github.com/Balebandro/Physically-Based-Reloaded, testbed branch,
-// GPL-3.0, the same licence as this project). Credit its authors when shipping.
-
 #include <algorithm>
 
 #include "HeatHaze.h"
@@ -29,27 +26,23 @@ static float SmoothStep(float edge0, float edge1, float x) {
 void HeatHazeEffect::UpdateConstants() {
 	float elapsed = std::clamp((float)TheFrameRateManager->ElapsedTime, 0.0f, 0.1f);
 
-	// Time of day: nothing before the sun is fully up, building to the hottest hour, gone by sunset.
 	float hour = TheShaderManager->ShaderConst.GameTime.y;
 	float sunriseEnd = TheShaderManager->ShaderConst.SunTiming.y;
 	float sunsetStart = TheShaderManager->ShaderConst.SunTiming.z;
 	float peak = std::clamp(Settings.PeakHour, sunriseEnd + 1.0f, sunsetStart - 1.0f);
 	float dayHeat = hour < peak ? SmoothStep(sunriseEnd, peak, hour) : 1.0f - SmoothStep(peak, sunsetStart, hour);
 
-	// Weather: clear skies full, cloudy less, rain and snow none; and none while the ground is wet.
 	float weatherTarget = 1.0f;
 	if (TheShaderManager->GameState.isCloudy) weatherTarget = Settings.CloudyScale;
 	if (TheShaderManager->GameState.isRainy || TheShaderManager->GameState.isSnow) weatherTarget = 0.0f;
 	WetWorldEffect* wet = TheShaderManager->Effects.WetWorld;
 	if (wet) weatherTarget *= 1.0f - std::clamp(max(wet->Constants.Data.x, wet->Constants.Data.z), 0.0f, 1.0f);
-	// Eased over about ten seconds, so a weather change fades the haze rather than switching it.
 	float ease = min(1.0f, elapsed / 10.0f);
 	WeatherHeat += (weatherTarget - WeatherHeat) * ease;
 
 	Heat = dayHeat * WeatherHeat;
 	if (!TheShaderManager->GameState.isExterior || TheShaderManager->GameState.isUnderwater) Heat = 0.0f;
 
-	// The offset in uv, sized so a given Strength looks the same at any resolution (pixels at 1080p).
 	Constants.Data.x = Settings.Strength * Heat / 1080.0f;
 	Constants.Data.y = Settings.StartDistance;
 	Constants.Data.z = Settings.FullDistance;

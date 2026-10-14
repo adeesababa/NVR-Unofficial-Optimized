@@ -1,22 +1,5 @@
 #pragma once
 
-// UNOFFICIAL, DIAGNOSTIC (2026-10-12): the device-side and number-side half of the in-game effect self-test (EffectSelfTest.h
-// has the game half: the setting, the configurations, the hooks and the log text). No game types here, so
-// tests\effect_selftest.cpp runs it on a real D3D9 device with made-up frames. Grown out of the merged-lamps self-test
-// (MergeSelfTest.h, parked in work\parked\merged-lamps).
-// - Reader: a render target -> a quarter-size float picture (rgb). The GPU halves it twice with linear StretchRects (a 4x4 box
-//   average for even sizes) and only the quarter-size picture is read back; if that is not possible, the whole target is read
-//   and averaged 4x4 on the CPU. Multisampled targets are resolved first.
-// - Series / BlockStats: one block's consecutive frames at one capture point: mean picture and per-pixel mean frame-to-frame
-//   change of luma (the flicker).
-// - PointData / Compare / FinishRun: each configuration against the mean of the reference (spill off) blocks before and after
-//   it (critic-review-4: linear drift cancels), per 8 x 8 region, so the figures can leave out regions that changed by
-//   themselves; flicker against the reference's brightness; light pixels and the ring round them; the noise floor.
-// - Pictures: built on the CPU from small per-pixel maps made during the run, written as PNG with WIC (no device), on the
-//   game's worker thread.
-// - Shots (critic-review-14 part 1): ShotReader reads the final picture at FULL size as 8-bit BGRA for a PNG per configuration;
-//   FrameOverride sets values for one frame and puts them back bit for bit; BounceValues / Read / Write are the Bounce Light
-//   members a configuration sets (templates, so the test can check them on a stand-in).
 #include <d3d9.h>
 #include <d3dx9.h>
 #include <wincodec.h>
@@ -30,8 +13,7 @@
 
 namespace SelfTestCore {
 
-	enum { Scale = 4, Grid = 8, MaxConfigs = 16, RingRadius = 8 };	// 16: critic-review-9's 13 measured configurations + 3 picture-only ones (critic-review-14);
-																	// the light sheet holds the measured ones + 2 tiles in 16
+	enum { Scale = 4, Grid = 8, MaxConfigs = 16, RingRadius = 8 };
 
 	inline float Luma(const float* c) { return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]; }
 	inline float Saturation(const float* c) {
@@ -39,7 +21,6 @@ namespace SelfTestCore {
 		return peak > 1.0e-4f ? (peak - (std::max)(low, 0.0f)) / peak : 0.0f;
 	}
 	inline float Linear(float c) { c = (std::max)(c, 0.0f); return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
-	// BounceLight.fx.hlsl's SpillBrightness on linearize(colour): luminance blended to the brightest channel by saturation.
 	inline float SpillBrightness(const float* encoded) {
 		const float c[3] = { Linear(encoded[0]), Linear(encoded[1]), Linear(encoded[2]) };
 		const float peak = (std::max)(c[0], (std::max)(c[1], c[2]));
@@ -53,7 +34,6 @@ namespace SelfTestCore {
 			f == D3DFMT_A2R10G10B10 || f == D3DFMT_A2B10G10R10;
 	}
 
-	// One row of a locked surface -> rgba floats.
 	inline void ConvertRow(D3DFORMAT format, const unsigned char* line, unsigned width, float* row) {
 		switch (format) {
 		case D3DFMT_A16B16G16R16F: D3DXFloat16To32Array(row, (const D3DXFLOAT16*)line, width * 4); break;
@@ -63,7 +43,7 @@ namespace SelfTestCore {
 				row[x * 4] = line[x * 4 + 2] / 255.0f; row[x * 4 + 1] = line[x * 4 + 1] / 255.0f; row[x * 4 + 2] = line[x * 4] / 255.0f; row[x * 4 + 3] = 1.0f;
 			}
 			break;
-		default: {	// 10-bit
+		default: {
 			const unsigned* p = (const unsigned*)line;
 			const bool rFirst = format == D3DFMT_A2B10G10R10;
 			for (unsigned x = 0; x < width; x++) {
@@ -75,15 +55,15 @@ namespace SelfTestCore {
 	}
 
 	struct Reader {
-		IDirect3DSurface9* resolve = nullptr;	// multisampled source: resolved here first (full size)
-		IDirect3DSurface9* half = nullptr;		// GPU path: half and quarter size render targets
+		IDirect3DSurface9* resolve = nullptr;
+		IDirect3DSurface9* half = nullptr;
 		IDirect3DSurface9* quarter = nullptr;
-		IDirect3DSurface9* readback = nullptr;	// system memory: quarter size (GPU path) or full size (CPU path)
-		D3DSURFACE_DESC desc = {};				// the source these were made for
-		bool cpu = false;						// the CPU path (set if the GPU halving fails; forceCpu for the test)
+		IDirect3DSurface9* readback = nullptr;
+		D3DSURFACE_DESC desc = {};
+		bool cpu = false;
 		bool forceCpu = false;
-		unsigned width = 0, height = 0;			// the picture read: source size / Scale
-		const char* error = nullptr;			// why the last Read failed
+		unsigned width = 0, height = 0;
+		const char* error = nullptr;
 
 		void Release() {
 			if (resolve) { resolve->Release(); resolve = nullptr; }
@@ -106,7 +86,6 @@ namespace SelfTestCore {
 			return true;
 		}
 
-		// The target's current picture into rgb (width x height x 3, quarter size). False (and error) if it cannot be read.
 		bool Read(IDirect3DDevice9* device, IDirect3DSurface9* target, std::vector<float>& rgb) {
 			error = nullptr;
 			D3DSURFACE_DESC d = {};
@@ -123,7 +102,7 @@ namespace SelfTestCore {
 			}
 			if (!cpu) {
 				if (FAILED(device->StretchRect(source, NULL, half, NULL, D3DTEXF_LINEAR)) || FAILED(device->StretchRect(half, NULL, quarter, NULL, D3DTEXF_LINEAR))) {
-					cpu = true;	// this driver cannot filter this format: read it whole from now on
+					cpu = true;
 					if (!Make(device, d)) return false;
 					if (resolve && FAILED(device->StretchRect(target, NULL, resolve, NULL, D3DTEXF_NONE))) { error = "resolve failed"; return false; }
 				}
@@ -146,7 +125,7 @@ namespace SelfTestCore {
 					float* o = out + (size_t)(cpu ? x / Scale : x) * 3;
 					for (int c = 0; c < 3; c++) {
 						const float v = row[(size_t)x * 4 + c];
-						if (v == v && v < 65504.0f && v > -65504.0f) o[c] += v * inv;	// NaN / inf counted as 0
+						if (v == v && v < 65504.0f && v > -65504.0f) o[c] += v * inv;
 					}
 				}
 			}
@@ -155,14 +134,12 @@ namespace SelfTestCore {
 		}
 	};
 
-	// One block's frames at one point (a block = Settle frames not read, then Measure frames read, under one configuration).
 	struct Series {
 		unsigned frames = 0, width = 0, height = 0;
 		std::vector<float> rgbSum, previous, change;
 
 		void Reset() { frames = width = height = 0; for (auto* v : { &rgbSum, &previous, &change }) { v->clear(); v->shrink_to_fit(); } }
 
-		// False if the size changed (the run must stop).
 		bool Add(const std::vector<float>& rgb, unsigned w, unsigned h) {
 			const size_t n = (size_t)w * h;
 			if (!frames) { width = w; height = h; rgbSum.assign(n * 3, 0.0f); previous.resize(n); change.assign(n, 0.0f); }
@@ -178,7 +155,6 @@ namespace SelfTestCore {
 		}
 	};
 
-	// A block's means: picture (rgb), luma, and the mean frame-to-frame change of luma (the flicker), per pixel.
 	struct BlockStats {
 		unsigned frames = 0, width = 0, height = 0;
 		std::vector<float> rgb, luma, flicker;
@@ -197,24 +173,22 @@ namespace SelfTestCore {
 
 	enum { Regions = Grid * Grid, MaxReferences = 2 * MaxConfigs + 2, MaxBlocks = 4 * MaxConfigs };
 
-	// One comparison's sums per region (8 x 8), so its figures can be taken over all regions, or only over the regions that did
-	// not change by themselves between the reference blocks (animated things, the sky).
 	struct RegionSums {
-		double luma0 = 0, luma1 = 0;				// all pixels: the reference, the configuration
-		double lit = 0, b10 = 0, b25 = 0, b50 = 0, d10 = 0;	// counts among the reference's lit pixels
-		double flicker = 0, refFlicker = 0, level = 0;	// lit pixels: the configuration's and the reference's flicker, the reference's brightness
-		double flickering = 0, refFlickering = 0;	// lit pixels flickering (configuration, reference)
-		double mask[3][5] = {};						// per mask class (0 none, 1 lights, 2 ring): count, luma0, luma1, saturation0, saturation1
+		double luma0 = 0, luma1 = 0;
+		double lit = 0, b10 = 0, b25 = 0, b50 = 0, d10 = 0;
+		double flicker = 0, refFlicker = 0, level = 0;
+		double flickering = 0, refFlickering = 0;
+		double mask[3][5] = {};
 	};
 
 	struct Figures {
-		double whole = 0;							// sum of luma / the reference's
-		float brighter10 = 0, brighter25 = 0, brighter50 = 0, darker10 = 0;	// % of the reference's lit pixels
-		float flicker = 0, refFlicker = 0;			// mean frame-to-frame change over the lit pixels, % of the REFERENCE's brightness
-		float flickerPixels = 0, refFlickerPixels = 0;	// % of the lit pixels flickering (> 1% of the reference's brightness a frame; > 1/255 on a display picture)
+		double whole = 0;
+		float brighter10 = 0, brighter25 = 0, brighter50 = 0, darker10 = 0;
+		float flicker = 0, refFlicker = 0;
+		float flickerPixels = 0, refFlickerPixels = 0;
 		bool masks = false;
 		float lightsShare = 0, ringShare = 0, lightsRatio = 0, lightsColour = 0, ringRatio = 0, ringColour = 0;
-		int regions = 0;							// regions counted
+		int regions = 0;
 	};
 
 	struct Result {
@@ -222,32 +196,29 @@ namespace SelfTestCore {
 		unsigned frames = 0;
 		bool moved = false;
 		RegionSums region[Regions];
-		Figures all, stable;						// over all regions; over the regions that did not change by themselves
-		float ratio[Grid][Grid] = {};				// luma ratio per region
-		int top[3] = { -1, -1, -1 };				// the three regions with the highest ratio (row * Grid + column)
+		Figures all, stable;
+		float ratio[Grid][Grid] = {};
+		int top[3] = { -1, -1, -1 };
 	};
 
-	// Everything kept per capture point. Blocks run reference, configuration 1, reference, configuration 2, ... reference; each
-	// configuration is compared with the mean of the reference blocks just before and after it, so drift that is linear in
-	// time (the time of day, a weather change) cancels.
 	struct PointData {
 		unsigned width = 0, height = 0;
-		bool hdr = true;							// before tonemapping, or a display picture (flickering threshold 1/255)
-		float lit = 0;								// "lit" = brighter than 5% of the first reference block's mean
-		std::vector<float> refRgb, refLuma;			// the first reference block: the picture, the masks, the display scale
-		std::vector<unsigned char> mask;			// 0 nothing, 1 a light (as the spill's light test counts it), 2 the ring round the lights
+		bool hdr = true;
+		float lit = 0;
+		std::vector<float> refRgb, refLuma;
+		std::vector<unsigned char> mask;
 		bool masks = false;
-		float threshold = 0;						// the light test used for the mask (linear)
-		BlockStats previous, config;				// running: the last reference block; the configuration block waiting for the next one
-		int references = 0;							// reference blocks finished
-		double refRegion[MaxReferences][Regions] = {};	// each reference block's luma per region (noise floor, drift)
-		Result results[MaxConfigs];					// [0]: the first reference block against itself
-		std::vector<signed char> heat[MaxConfigs];	// per configuration: (ratio - 1) x 3 x 127, clamped (pictures)
-		std::vector<unsigned char> flick[MaxConfigs];	// per configuration ([0] the first reference): flicker / 3% of the reference brightness x 255
-		std::vector<unsigned char> refFlick[MaxConfigs];	// the same for the reference blocks round each configuration (intrusion check)
-		Result firstTry[MaxConfigs];				// a configuration run again (critic-review-6): its first, disturbed result
-		std::vector<signed char> drift;				// the last reference block against the first, as heat
-		bool excluded[Regions] = {};				// regions that changed by themselves (reference to reference outside 1 +- 0.05)
+		float threshold = 0;
+		BlockStats previous, config;
+		int references = 0;
+		double refRegion[MaxReferences][Regions] = {};
+		Result results[MaxConfigs];
+		std::vector<signed char> heat[MaxConfigs];
+		std::vector<unsigned char> flick[MaxConfigs];
+		std::vector<unsigned char> refFlick[MaxConfigs];
+		Result firstTry[MaxConfigs];
+		std::vector<signed char> drift;
+		bool excluded[Regions] = {};
 		int excludedCount = 0;
 
 		void Reset() {
@@ -268,15 +239,13 @@ namespace SelfTestCore {
 
 	inline signed char HeatCode(float ratio) { const float s = (std::max)(-1.0f, (std::min)(1.0f, (ratio - 1.0f) * 3.0f)); return (signed char)(s * 127.0f); }
 
-	// The light pixels (SpillBrightness of the first reference block above threshold) and the ring round them (within RingRadius
-	// pixels, lights excluded).
 	inline void BuildMasks(PointData& p, float threshold) {
 		const unsigned w = p.width, h = p.height;
 		if (p.refRgb.size() != (size_t)w * h * 3 || threshold <= 0.0f) { p.masks = false; return; }
 		p.threshold = threshold;
 		std::vector<unsigned char> lights((size_t)w * h), rows((size_t)w * h);
 		for (size_t i = 0; i < lights.size(); i++) lights[i] = SpillBrightness(&p.refRgb[i * 3]) > threshold;
-		for (unsigned y = 0; y < h; y++)	// dilate: rows, then columns (a square of side 2 RingRadius + 1)
+		for (unsigned y = 0; y < h; y++)
 			for (unsigned x = 0; x < w; x++) {
 				unsigned char any = 0;
 				for (int k = -RingRadius; k <= RingRadius && !any; k++) { const int xx = (int)x + k; if (xx >= 0 && xx < (int)w) any = lights[(size_t)y * w + xx]; }
@@ -293,7 +262,6 @@ namespace SelfTestCore {
 		p.masks = true;
 	}
 
-	// The figures of a comparison over all regions, or without the excluded ones. O(regions).
 	inline Figures Sum(const PointData& p, const Result& r, bool stableOnly) {
 		Figures f;
 		RegionSums s;
@@ -323,8 +291,6 @@ namespace SelfTestCore {
 		return f;
 	}
 
-	// A configuration block against the mean of two reference blocks (a == b for the first reference against itself). Writes
-	// the configuration's picture maps (heat, flicker). Every per-picture value is taken before the pixel loop. O(pixels).
 	inline Result Compare(PointData& p, const BlockStats& a, const BlockStats& b, const BlockStats& c, int config) {
 		Result r;
 		const unsigned w = p.width, h = p.height;
@@ -349,7 +315,7 @@ namespace SelfTestCore {
 					double* m = q.mask[p.mask[i]];
 					m[0] += 1; m[1] += l0; m[2] += l1; m[3] += Saturation(rgb0); m[4] += Saturation(&c.rgb[i * 3]);
 				}
-				const float level = (std::max)(l0, lit);	// the REFERENCE's brightness: added steady light is not "less flicker"
+				const float level = (std::max)(l0, lit);
 				const float refFlicker = 0.5f * (a.flicker[i] + b.flicker[i]);
 				const float scale = 255.0f / (p.hdr ? 0.03f * level : 3.0f / 255.0f);
 				p.flick[config][i] = (unsigned char)(std::min)(255.0f, c.flicker[i] * scale);
@@ -387,7 +353,6 @@ namespace SelfTestCore {
 		p.references++;
 	}
 
-	// The first reference block: the picture, the "lit" level, its own flicker (configuration 0's result, masks added later).
 	inline bool FirstReference(PointData& p, BlockStats&& s, bool hdr) {
 		if (!s.frames) return false;
 		p.width = s.width; p.height = s.height; p.hdr = hdr;
@@ -401,11 +366,8 @@ namespace SelfTestCore {
 		return true;
 	}
 
-	// A configuration block: kept until the next reference block.
 	inline void ConfigurationBlock(PointData& p, BlockStats&& s) { p.config = std::move(s); }
 
-	// A later reference block: the waiting configuration against it and the one before; then it is the one before.
-	// countRegions false: a reference of another kind (the bloom-off references) stays out of the noise floor and the drift.
 	inline void NextReference(PointData& p, BlockStats&& s, int config, bool countRegions = true) {
 		if (p.config.Valid(p.width, p.height)) p.results[config] = Compare(p, p.previous, s, p.config, config);
 		if (countRegions) AddReferenceRegions(p, s);
@@ -413,9 +375,6 @@ namespace SelfTestCore {
 		p.previous = std::move(s);
 	}
 
-	// The end of the run: the regions that changed by themselves (any pair of reference blocks in a row outside 1 +- 0.05, in
-	// regions with light), the drift picture (last reference against the first), the first reference's mask figures, and every
-	// result's figures over all and over the steady regions.
 	inline void FinishRun(PointData& p) {
 		const size_t n = (size_t)p.width * p.height;
 		p.excludedCount = 0;
@@ -424,7 +383,7 @@ namespace SelfTestCore {
 			p.excluded[g] = false;
 			for (int k = 0; k + 1 < p.references; k++) {
 				const double a = p.refRegion[k][g], b = p.refRegion[k + 1][g];
-				if (a < p.lit * pixelsPerRegion * 0.5 && b < p.lit * pixelsPerRegion * 0.5) continue;	// a dark region: its ratio means nothing
+				if (a < p.lit * pixelsPerRegion * 0.5 && b < p.lit * pixelsPerRegion * 0.5) continue;
 				const double ratio = a > 0 ? b / a : 2.0;
 				if (ratio < 0.95 || ratio > 1.05) { p.excluded[g] = true; break; }
 			}
@@ -435,7 +394,7 @@ namespace SelfTestCore {
 			for (size_t i = 0; i < n; i++)
 				if (p.refLuma[i] > p.lit || p.previous.luma[i] > p.lit) p.drift[i] = HeatCode(p.previous.luma[i] / (std::max)(p.refLuma[i], 1.0e-6f));
 		}
-		if (p.masks && p.mask.size() == n && p.refRgb.size() == n * 3) {	// the first reference against itself
+		if (p.masks && p.mask.size() == n && p.refRgb.size() == n * 3) {
 			Result& r = p.results[0];
 			for (unsigned y = 0; y < p.height; y++)
 				for (unsigned x = 0; x < p.width; x++) {
@@ -454,7 +413,6 @@ namespace SelfTestCore {
 		p.previous.Clear(); p.config.Clear();
 	}
 
-	// The noise floor: an inner reference block against the mean of its neighbours (whole picture, or the steady regions).
 	inline double ReferenceRatio(const PointData& p, int k, bool stableOnly) {
 		if (k < 1 || k + 1 >= p.references) return 0.0;
 		double own = 0, around = 0;
@@ -465,10 +423,6 @@ namespace SelfTestCore {
 		return around > 0 ? own / around : 0.0;
 	}
 
-	// Was a configuration block disturbed (someone walking past, critic-review-6)? Over all regions: more than 3% of the lit
-	// pixels 10%+ darker than the references round it (the spill can only darken through round 5's light-pixel mask, a few
-	// tenths of a percent), or, in the pixels the spill does not light (less than 2% added in every other configuration), more
-	// than twice the flicker of the references round it. Uses the picture maps; O(pixels x configurations).
 	struct Intrusion { bool valid = false, flagged = false; float darker = 0, flickerRatio = 0; double unlitShare = 0; };
 	inline Intrusion CheckIntrusion(const PointData& p, int config, int configs) {
 		Intrusion in;
@@ -477,7 +431,7 @@ namespace SelfTestCore {
 		if (!r.valid || config <= 0 || config >= MaxConfigs || p.flick[config].size() != n || p.refFlick[config].size() != n) return in;
 		in.valid = true;
 		in.darker = Sum(p, r, false).darker10;
-		const signed char lit2 = (signed char)(0.02f * 3.0f * 127.0f + 0.5f);	// HeatCode of a ratio of 1.02
+		const signed char lit2 = (signed char)(0.02f * 3.0f * 127.0f + 0.5f);
 		double flicker = 0, reference = 0;
 		size_t count = 0;
 		for (size_t i = 0; i < n; i++) {
@@ -488,22 +442,19 @@ namespace SelfTestCore {
 			flicker += p.flick[config][i]; reference += p.refFlick[config][i]; count++;
 		}
 		in.unlitShare = 100.0 * count / n;
-		in.flickerRatio = (float)((flicker + count) / (reference + count));	// +1 code a pixel: a steady reference does not divide by 0
+		in.flickerRatio = (float)((flicker + count) / (reference + count));
 		in.flagged = in.darker > 3.0f || (count > n / 50 && in.flickerRatio > 2.0f);
 		return in;
 	}
 
-	// The noise of the run: the largest steady-region deviation of an inner reference block from the mean of its neighbours.
 	inline double NoiseLevel(const PointData& p) {
 		double worst = 0.0;
 		for (int k = 1; k + 1 < p.references; k++) { const double r = ReferenceRatio(p, k, true); if (r > 0) worst = (std::max)(worst, fabs(r - 1.0)); }
 		return worst;
 	}
 
-	// ---- pictures ----
 	inline unsigned Byte(float v) { return (unsigned)((std::max)(0.0f, (std::min)(1.0f, v)) * 255.0f + 0.5f); }
 
-	// The reference picture as a viewable grey/colour value: before tonemapping squeezed round its average, else as it is.
 	struct Display {
 		float exposure = 1.0f; bool hdr = true;
 		void Map(const float* c, float* out) const {
@@ -523,11 +474,6 @@ namespace SelfTestCore {
 		return d;
 	}
 
-	// A cols x rows sheet of width x height tiles as 32-bit BGRA (opaque), tile(index, x, y, rgb out) per pixel. Plain CPU work,
-	// no device: it runs on a worker thread in the game (EffectSelfTest.h). Stops (false) if it takes longer than limitSeconds.
-	// (2026-10-12 hang: the light sheet called PointData::LitThreshold(), a loop over the whole picture, for every pixel:
-	// 7 tiles x 230,400 pixels x 2 x 230,400 at 2560x1440, minutes on the render thread. Every per-picture value is now taken
-	// once, before the pixel loops; the per-pixel maps are made during the run.)
 	template <class Tile>
 	inline bool BuildSheet(std::vector<unsigned>& out, unsigned width, unsigned height, unsigned cols, unsigned rows, double limitSeconds, Tile tile) {
 		out.assign((size_t)width * cols * height * rows, 0xFF000000u);
@@ -547,7 +493,6 @@ namespace SelfTestCore {
 		return true;
 	}
 
-	// A BGRA picture to a PNG file with the Windows Imaging Component (no device, any thread). False if not written.
 	inline bool SavePng(const char* path, unsigned width, unsigned height, const std::vector<unsigned>& bgra) {
 		if (bgra.size() != (size_t)width * height) return false;
 		const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -579,7 +524,6 @@ namespace SelfTestCore {
 		if (code < 0) { c[0] = grey * (1 - s); c[1] = grey * (1 - s); c[2] = grey * (1 - s) + s; }
 		else { c[0] = grey * (1 - s) + s; c[1] = grey * (1 - s); c[2] = grey * (1 - s); }
 	}
-	// The regions left out of the summary, as a dark red edge round each (used on the last tile).
 	inline bool ExcludedEdge(const PointData& p, unsigned x, unsigned y) {
 		const int g = p.RegionOf(x, y);
 		if (!p.excluded[g]) return false;
@@ -588,9 +532,6 @@ namespace SelfTestCore {
 		return x < x0 + 2 || x + 2 > x1 || y < y0 + 2 || y + 2 > y1;
 	}
 
-	// 4 x 4 tiles: the first reference picture; configurations 1..configs-1 against their references (blue darker, red brighter,
-	// full colour = 33%); the last reference against the first (what changed by itself); the light pixels red and the ring round
-	// them yellow, with the regions left out of the summary edged in dark red.
 	inline bool BuildLightSheet(std::vector<unsigned>& out, const PointData& p, int configs, double limitSeconds) {
 		if (!SheetData(p)) return false;
 		const Display display = DisplayFor(p);
@@ -602,7 +543,7 @@ namespace SelfTestCore {
 			const float grey = Luma(picture) * 0.6f;
 			if (t == 0) { c[0] = picture[0]; c[1] = picture[1]; c[2] = picture[2]; return; }
 			c[0] = c[1] = c[2] = grey;
-			const int last = configs;			// the drift tile, then the mask tile
+			const int last = configs;
 			if ((int)t < configs) { if (p.heat[t].size() == n) HeatColour(p.heat[t][i], grey, c); return; }
 			if ((int)t == last) { if (p.drift.size() == n) HeatColour(p.drift[i], grey, c); return; }
 			if ((int)t == last + 1) {
@@ -615,8 +556,6 @@ namespace SelfTestCore {
 		});
 	}
 
-	// 4 x 4 tiles: the first reference picture, then the flicker of configurations 0..configs-1 (black steady, yellow = 3% of the
-	// reference's brightness a frame before tonemapping, 3/255 a frame on a display picture), then the regions left out.
 	inline bool BuildFlickerSheet(std::vector<unsigned>& out, const PointData& p, int configs, double limitSeconds) {
 		if (!SheetData(p)) return false;
 		const Display display = DisplayFor(p);
@@ -647,9 +586,6 @@ namespace SelfTestCore {
 		return BuildFlickerSheet(sheet, p, configs, limitSeconds) && SavePng(path, p.width * 4, p.height * 4, sheet);
 	}
 
-	// The run: blocks of Settle frames (not read: the last block's bounce history and spill memory drain) then Measure frames (read
-	// at every point), each under one configuration (0 = the reference, spill off). Standard(): reference, 1, reference, 2, ...,
-	// reference; Add() appends blocks (the re-runs of disturbed configurations: configuration, reference).
 	struct Schedule {
 		int settle = 0, measure = 0, step = 0, count = 0;
 		int configs[MaxBlocks] = {};
@@ -666,13 +602,8 @@ namespace SelfTestCore {
 		bool Done() const { return step >= count * PerBlock(); }
 	};
 
-	// ---- critic-review-14 part 1: full-size shots, and the overrides they need ----
-
-	// The Bounce Light members a configuration may set: one field per member, read and written only through Read / Write (new
-	// keys: add the field, its line in Read, Write and EffectSelfTest.h's ReadDefaults, and the configurations that use it).
 	struct BounceValues {
 		float neonSpill = 0, spillReach = 0, spillLightLevel = 0, spillNear = 0, spillFar = 0, spillCap = 0, spillMemorySeconds = 0;
-		// round 6 (WORKER-B, critic-review-9): 0 = off, as round 5
 		float spillSeparateDepth = 0, spillHardEdges = 0, spillHoldAfterTurn = 0, spillCapSceneLight = 0, spillMaskSpillOnly = 0;
 		int spillDebug = 0;
 		bool operator==(const BounceValues& o) const {
@@ -695,9 +626,6 @@ namespace SelfTestCore {
 		b->spillCapSceneLight = v.spillCapSceneLight; b->spillMaskSpillOnly = v.spillMaskSpillOnly;
 	}
 
-	// Values set for one frame (shader constants the self-test does not own: TESR_HDRBloomData.x, TESR_HDRData.x, TESR_ToneMapping.x,
-	// TESR_LotteData): Set keeps the frame's value and writes the test's; Restore puts them back in reverse order, so a value set
-	// twice comes back as it was before the first Set. A plain copy back: bit for bit.
 	struct FrameOverride {
 		struct Slot { float* where; float saved; };
 		Slot slots[16] = {};
@@ -712,9 +640,6 @@ namespace SelfTestCore {
 		bool Active() const { return count > 0; }
 	};
 
-	// The picture as shown, at full size, as 8-bit BGRA for a PNG: a multisampled target is resolved first (as Reader does); 8-bit
-	// and 10-bit formats are taken as they are, float formats clamped to 0-1 (the final picture is display-ready). The readback is
-	// one SYSTEMMEM surface, made again only when the size or format changes.
 	struct ShotReader {
 		IDirect3DSurface9* resolve = nullptr;
 		IDirect3DSurface9* readback = nullptr;

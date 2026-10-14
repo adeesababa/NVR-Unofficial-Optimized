@@ -1,36 +1,12 @@
-// UNOFFICIAL: volumetric sun light -- shafts of sunlight through the air, where trees, buildings and rocks shade it.
-// Written for this build; the idea comes from Physically-Based-Reloaded's Volumetric Light (mcstfuerson's shader, ported
-// by Conor), but no code is shared: theirs marches its own shadow lookup at half resolution with a history pass; this
-// one reuses Includes/SunCascades.hlsl (the lookup Specular already uses).
-//
-// A march with few steps bands (each step is a hard edge in the light). The march breaks the bands up into noise by
-// starting each pixel's steps at a different point, and the passes after it take the noise out again:
-//   1 March    (half resolution): from the eye towards each block's surface, at most MaxDistance, Steps samples of the
-//              sun's shadow, each pixel's start shifted by interleaved gradient noise (a new pattern every frame when
-//              Temporal is on). r: the share of the view the lit air scatters towards the eye (single scattering,
-//              1 - exp falloff), g: the same if all the air were lit, b: depth / farZ (for the depth-aware passes).
-//              Written to TESR_VolumetricLightTemp, or to TESR_VolumetricLightMarch when Temporal is on.
-//   3 Temporal (half resolution, only when Temporal is on): March -> Temp. Blends in last frame's result at the same
-//              spot (TESR_VolumetricLightHistory, reprojected by depth), held to the range of this frame's neighbours so
-//              a moving shadow does not leave a trail. The effect then copies Temp into History for the next frame.
-//   2 Blur X, 4 Blur Y (half resolution): Temp -> March -> TESR_VolumetricLightBuffer, a depth-aware Gaussian each way
-//              (BlurRadius texels), which keeps the shafts sharp at the edges of buildings while smoothing the noise.
-//   0 Composite (full resolution, in the frame chain): depth-aware upsample, then the lit air adds sunlight (shaped by
-//              the forward-scattering phase, brightest looking towards the sun) and the shaded air darkens what is behind
-//              it a little -- the game's fog lights all the air alike, so without that the shafts would only ever brighten.
-//
-// The frame here is gamma encoded HDR (VolumetricFog linearises it the same way): the light is added in linear light.
-
 float4 TESR_ReciprocalResolution;
 float4 TESR_SunColor;
-float4 TESR_ShadowFade;              // read by Includes/Shadows.hlsl (point lights; unused here)
-float4 TESR_VolumetricLightData;     // x: strength, y: shade darkening, z: air density per game unit, w: march distance
-float4 TESR_VolumetricLightData2;    // x: steps, y: phase asymmetry g, z: fade (shadows on, rain), w: noise frame offset
-float4 TESR_VolumetricLightData3;    // x: history weight (0 = none this frame), y: blur radius in half-resolution texels
-float4 TESR_VolumetricLightLayout;   // xy: one half-resolution texel in screen UV, zw: unused
-float4x4 TESR_VolumetricLightReproject; // camera-relative world position -> last frame's clip space
+float4 TESR_ShadowFade;
+float4 TESR_VolumetricLightData;
+float4 TESR_VolumetricLightData2;
+float4 TESR_VolumetricLightData3;
+float4 TESR_VolumetricLightLayout;
+float4x4 TESR_VolumetricLightReproject;
 
-// Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_ShadowAtlas : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
@@ -38,7 +14,7 @@ sampler2D TESR_VolumetricLightMarch : register(s3) = sampler_state { ADDRESSU = 
 sampler2D TESR_VolumetricLightBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_VolumetricLightTemp : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_VolumetricLightHistory : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
-texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
+texture NoTexture;
 
 static const float Strength = TESR_VolumetricLightData.x;
 static const float Darken = TESR_VolumetricLightData.y;
@@ -61,20 +37,11 @@ VSOUT FrameVS(VSIN IN) { VSOUT OUT = (VSOUT)0.0f; OUT.vertPos = IN.vertPos; OUT.
 #include "Includes/Shadows.hlsl"
 #include "Includes/SunCascades.hlsl"
 
-// Interleaved gradient noise (Jimenez 2014) in [0, 1): neighbouring pixels get well spread values with no visible
-// pattern, so the march's steps land at different depths side by side and the bands turn into fine noise. Shifted by
-// a new amount every frame when Temporal is on, so the history averages different start points at each pixel.
 float GradientNoise(float2 pixel) {
 	pixel += NoiseFrame * 5.588238;
 	return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
 }
 
-// The sun's visibility at one point of the march: one atlas read from the first cascade that holds the point (no blend
-// between cascades, no normal offset: the march averages many points and is blurred). Beyond the LOD cascade (the
-// shadow distance) the air counts as lit. EVSM4 reads only its positive warp. The LOD cascade matters: at the default
-// 6000-unit shadow distance the first three end near 1750 units, so without it every building farther than that let
-// the light straight through. GetSunCascadeLight, which blends cascades with a full three-format
-// lookup each, made the march loop take minutes to compile.
 float MarchShadow(float3 position) {
 	float4x4 lightTransform;
 	float2 quadrant;
@@ -103,15 +70,14 @@ float MarchShadow(float3 position) {
 	return ChebyshevUpperBound(moments.xz, warped, depthScale * depthScale, bleed);
 }
 
-// ---- 1: March, half resolution ----
 float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
-	float2 uv = (vpos + 0.5) * LowTexel;                                  // this block's centre on screen
-	float depth = readDepthLod(uv - 0.5 * TESR_ReciprocalResolution.xy);   // a pixel centre in the block, not an edge
+	float2 uv = (vpos + 0.5) * LowTexel;
+	float depth = readDepthLod(uv - 0.5 * TESR_ReciprocalResolution.xy);
 	float isSky = depth >= farZ * 0.996 ? 1.0 : 0.0;
 	float planar = isSky > 0.0 ? MarchDistance : min(depth, MarchDistance);
 
-	float3 ray = toWorld(uv);                       // the eye vector per unit of planar depth (camera-relative world)
-	float sigma = Density * length(ray);            // extinction per unit of planar depth
+	float3 ray = toWorld(uv);
+	float sigma = Density * length(ray);
 	float dt = planar / Steps;
 	float offset = GradientNoise(vpos);
 
@@ -122,13 +88,10 @@ float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 		lit += MarchShadow(ray * t) * transmittance;
 		all += transmittance;
 	}
-	float scattered = sigma * dt;                   // the share each sample scatters towards the eye
+	float scattered = sigma * dt;
 	return float4(lit * scattered, all * scattered, depth / farZ, 1.0);
 }
 
-// ---- 3: Temporal, half resolution ----
-// Last frame's result where this block's surface was then: the four history texels round it, bilinearly, each only if
-// its depth matches. Returns how much of it matched (0: off screen, or something else stood there).
 float HistoryAt(float2 position, float expected01, out float2 history) {
 	position = position / LowTexel - 0.5;
 	float2 base = floor(position);
@@ -149,8 +112,6 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 uv = (vpos + 0.5) * LowTexel;
 	float4 current = tex2Dlod(TESR_VolumetricLightMarch, float4(uv, 0, 0));
 
-	// The range this frame's neighbours on the same surface span: the history is held inside it, so where a shadow
-	// moved (or the camera uncovered new ground) the old light cannot linger.
 	float tolerance = max(current.b * 0.05, 0.00002);
 	float2 low = current.rg, high = current.rg;
 	[unroll] for (int y = -1; y <= 1; y++) {
@@ -175,9 +136,6 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	return float4(lerp(current.rg, history, weight), current.b, 1.0);
 }
 
-// ---- 2 / 4: Blur X / Blur Y, half resolution ----
-// A Gaussian over BlurRadius texels each way (sigma half the radius), each tap weighed down by how far its depth is
-// from the centre's, so the light does not smear across the edge of a building onto the sky behind it.
 float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 	float4 centre = tex2Dlod(source, float4((vpos + 0.5) * LowTexel, 0, 0));
 	float tolerance = max(centre.b * 0.05, 0.00002);
@@ -185,8 +143,6 @@ float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 	float falloff = -0.5 / (sigma * sigma);
 	float2 sum = centre.rg;
 	float weights = 1.0;
-	// UNOFFICIAL 2026-10-13: only the taps inside BlurRadius are read (those beyond weighed exactly 0 but were still
-	// fetched: with the default radius 4, half of the 16 reads of each blur pass did nothing).
 	[loop] for (int i = 1; i <= 8; i++) {
 		if (i > BlurRadius) break;
 		float gauss = exp(falloff * i * i);
@@ -203,13 +159,11 @@ float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 float4 BlurXPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 { return BlurAxis(TESR_VolumetricLightTemp, vpos, float2(1.0, 0.0)); }
 float4 BlurYPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 { return BlurAxis(TESR_VolumetricLightMarch, vpos, float2(0.0, 1.0)); }
 
-// ---- 0: Composite, full resolution ----
 float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
 	float depth = readDepthLod(uv);
 
-	// Depth-aware bilinear upsample from the half-resolution buffer (texel k stands for its centre).
 	float2 position = uv / LowTexel - 0.5;
 	float2 base = floor(position);
 	float2 fraction = position - base;
@@ -228,8 +182,6 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	}
 	air /= weights;
 
-	// Henyey-Greenstein phase, times 4 pi (1 for air that scatters evenly), capped so looking straight at the sun
-	// cannot blow out.
 	float cosTheta = dot(normalize(toWorld(uv)), TESR_SmoothedSunDir.xyz);
 	float g = Anisotropy;
 	float phase = min((1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosTheta, 1.0e-4), 1.5), 8.0);
@@ -251,7 +203,7 @@ technique March {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 MarchPS();
-		Texture[3] = <NoTexture>;   // writes March (Temporal on) or Temp (off); reads neither
+		Texture[3] = <NoTexture>;
 		Texture[5] = <NoTexture>;
 	}
 }
@@ -260,7 +212,7 @@ technique BlurX {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 BlurXPS();
-		Texture[3] = <NoTexture>;   // writes March
+		Texture[3] = <NoTexture>;
 	}
 }
 
@@ -268,7 +220,7 @@ technique Temporal {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 TemporalPS();
-		Texture[5] = <NoTexture>;   // writes Temp
+		Texture[5] = <NoTexture>;
 	}
 }
 
@@ -276,6 +228,6 @@ technique BlurY {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 BlurYPS();
-		Texture[4] = <NoTexture>;   // writes Buffer
+		Texture[4] = <NoTexture>;
 	}
 }

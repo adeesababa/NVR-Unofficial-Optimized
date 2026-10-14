@@ -13,6 +13,7 @@
 #define ShadowCubeMapsScreen 12
 #define ShadowCubeMapsMax 64
 #define ShadowCubeMapsSampled (ShadowCubeMapsScreen - 1)
+#define ExteriorBatchedMax 44
 #define TrackedLightsMax 12
 #define ExtraLightsMax 16
 #define SpotLightsMax 1

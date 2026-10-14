@@ -26,6 +26,12 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
+	LampReachMargin = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.Misc", "LampReachMargin"));
+	if (LampReachMargin > 0.0f) {
+		const LONG attached = DetourAttach(&(PVOID&)BoundWithinLightRadius, &BoundWithinLightRadiusHook);
+		Logger::Log("UNOFFICIAL LampReachMargin %.0f: hook %s (%ld), first bytes %02X %02X %02X", LampReachMargin, attached == NO_ERROR ? "attached" : "FAILED", attached,
+			((const UInt8*)0x00B9DAE0)[0], ((const UInt8*)0x00B9DAE0)[1], ((const UInt8*)0x00B9DAE0)[2]);
+	}
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ||
 		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") ||
 		SettingsMain->Main.HiddenObjectCulling || SettingsMain->Main.LampScissor ||
@@ -62,6 +68,15 @@ void AttachHooks() {
 	SafeWrite32(0x0046CF9B, sizeof(TESWeatherEx));
 
 	SafeWrite8(0xB575AA, 0x75);				// Prevent shader package destruction
+
+	if (TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject")) {
+		const UInt8* site = (const UInt8*)0x00BDEA3D;
+		if (site[0] == 0x83 && site[1] == 0xC1 && site[2] == 0x02) {
+			SafeWrite8(0x00BDEA3F, 0x05);
+			Logger::Log("UNOFFICIAL MoreLampsPerObject: specular many-lamp passes take up to 6 lamps (the game: 3)");
+		}
+		else Logger::Log("UNOFFICIAL MoreLampsPerObject: the game's code at 00BDEA3D is not as expected (another plugin?); not changed");
+	}
 	SafeWrite8(0x008751C0, 0);				// Stops to clear the depth buffer when rendering the 1st person node
 	SafeWrite16(0x0086A170, 0x9090);		// Avoids to pause the game when ALT-TAB
 

@@ -39,7 +39,6 @@ void ReflectionsEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("TESR_ReflectionsHistory", &Textures.HistoryTexture, &Textures.HistorySurface, w, h, D3DFMT_A16B16G16R16F);
 	Constants.Layout = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
 
-	// The surroundings cube (FP16, about 0.6 MB in all). If any part fails, the cube stays off (CubeMap is ignored).
 	IDirect3DDevice9* device = TheRenderManager->device;
 	bool ok = true;
 	for (int c = 0; c < 2 && ok; c++) {
@@ -62,7 +61,6 @@ void ReflectionsEffect::UpdateConstants() {
 	frame++;
 	const bool exterior = TheShaderManager->GameState.isExterior;
 
-	// Wetness: the rain falling now, or (with Wet World on) its puddles, which dry off slowly after the rain.
 	float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
 	const WetWorldEffect* wetWorld = TheShaderManager->Effects.WetWorld;
 	if (wetWorld && wetWorld->Enabled) wet = (std::max)(wet, std::clamp(wetWorld->Constants.Data.z, 0.0f, 1.0f));
@@ -81,28 +79,23 @@ void ReflectionsEffect::UpdateConstants() {
 }
 
 bool ReflectionsEffect::ShouldRender() {
-	if (cubeOnly) return true;	// RenderCubeOnly's own passes
+	if (cubeOnly) return true;
 	const NormalsEffect* normals = TheShaderManager->Effects.Normals;
 	return !TheShaderManager->GameState.isUnderwater && normals && normals->Enabled &&
 		(Constants.Data.x > 0.0f || Constants.Data.y > 0.0f) &&
 		Textures.TraceSurface && Textures.BufferSurface && Textures.TempSurface && Textures.HistorySurface;
 }
 
-// The half-resolution passes (techniques: 1 Trace, 3 Temporal, 2 Blur X, 4 Blur Y), as VolumetricLight's:
-// Temporal on: Trace -> Trace buffer, Temporal -> Temp (copied to History), Blur X -> Trace, Blur Y -> Buffer.
-// Off: Trace -> Temp, then the same blurs. The composite (technique 0) then reads Buffer.
 void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const bool temporal = Settings.Temporal > 0.0f;
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;
 
-	// Last frame's result is usable if this effect drew it, and the camera did not jump (load, fast travel, a cut).
 	bool usable = temporal && haveHistory && lastRenderedFrame + 1 == frame;
 	const double move[3] = { (double)invView._41 - lastInvView._41, (double)invView._42 - lastInvView._42,
 		(double)invView._43 - lastInvView._43 };
 	if (usable) usable = move[0] * move[0] + move[1] * move[1] + move[2] * move[2] < 500.0 * 500.0;
 	if (usable) {
-		// Camera-relative world -> last frame's view, in double round the two camera positions (see VolumetricLight.cpp).
 		D3DXMATRIX toLastView;
 		for (int i = 0; i < 3; i++) {
 			for (int j = 0; j < 3; j++) toLastView.m[i][j] = lastView.m[i][j];
@@ -116,7 +109,6 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
 	Constants.Data2.w = temporal ? (float)(frame % 64) : 0.0f;
 
-	// The surroundings cube, before the trace reads it.
 	CubeStep(Device);
 
 	auto pass = [&](IDirect3DSurface9* target, UINT technique) {
@@ -140,9 +132,6 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	lastProj = TheRenderManager->projMatrix;
 }
 
-// The cube is kept up whenever CubeMap is on (and it exists), floors reflecting or not: metal and the env maps read it too
-// ([Shaders.PBR.Metal] / [Shaders.PBR.EnvMaps] CubeReflections). Not under water (what is on screen there is not the
-// surroundings).
 bool ReflectionsEffect::CubeWanted() {
 	return Settings.CubeMap && Cubes.Env && !TheShaderManager->GameState.isUnderwater;
 }
@@ -157,8 +146,6 @@ void ReflectionsEffect::RenderCubeOnly(IDirect3DDevice9* Device) {
 	cubeOnly = false;
 }
 
-// One cube update. Emptied first when it was not kept up last frame, in another cell, or after a jump (load, fast travel):
-// what it held belongs somewhere else.
 void ReflectionsEffect::CubeStep(IDirect3DDevice9* Device) {
 	const bool cubeOn = CubeWanted();
 	Constants.Cube2 = D3DXVECTOR4(Settings.CubeCapture, Settings.CubeFade, (float)(CubeLevels - 1), cubeOn ? 1.0f : 0.0f);
@@ -175,9 +162,6 @@ void ReflectionsEffect::CubeStep(IDirect3DDevice9* Device) {
 	cubeInvView = invView;
 }
 
-// The surroundings cube (techniques 5 Capture, 6 Filter): each face of the new capture cube from last frame's and the
-// image; then every face of every mip of the reflection cube from the new capture. 6 + 42 small draws. The techniques
-// unbind the cube they write (Texture[n] = NoTexture), so a cube is never read and written in the same pass.
 void ReflectionsEffect::RenderCube(IDirect3DDevice9* Device, bool reset) {
 	const int write = captureIndex ^ 1;
 	Cubes.CaptureLastSlot = Cubes.Capture[captureIndex];

@@ -503,7 +503,9 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	if (ShadowMap->CustomClearRequired)
 		ClearShadowCascade(&ShadowMap->ShadowMapViewPort, &ShadowMap->ClearColor);
 
+	RenderPass::TwoSided = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "TwoSidedCasters") != 0;
 	RenderAccums();
+	RenderPass::TwoSided = false;
 }
 
 

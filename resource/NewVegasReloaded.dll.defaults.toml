@@ -75,6 +75,8 @@ ReplaceIntro = false        # Controls rendering of the main menu custom video.
 ScreenshotKey = 87          # Keycode for custom screenshot hotkey (removes HUD and saves as jpg).
 HDRScreenshot = false       # Save screenshots in fbx (use with DXVK HDR)
 PresetManagerEnabled = false # Master toggle for automatic per-location Preset Manager resolution. Off = your own settings are authoritative; Save/Load/Delete in the Preset Manager panel still work. Defaults off: it silently wins the location-based settings that third-party tools like Cartographer -- which this feature supersedes -- also try to control, so turn it on deliberately once you're not running one of those alongside it.
+MoreLampsPerObject = true    # UNOFFICIAL (2026-10-13), needs a restart: the game lit most shiny surfaces indoors (anything with a specular map) with at most 2-3 lamps each and dropped the rest; which ones it kept changed as you moved, so lamp light popped on and off whole wall and floor pieces. On: up to 6, like the game's other many-lamp passes. A little more GPU time where many lamps overlap. Off = the game's limit.
+LampReachMargin = 16.0       # UNOFFICIAL, BUG FIX (2026-10-13), needs a restart: game units (about 70 to a metre). The game lights an object with a lamp only while the lamp's reach touches the object; fire lights flicker and move a few units, so a lamp at the edge of an object's reach switched on and off every frame and its light and shadow flickered over whole walls and floors. The object counts this much larger, so a lamp at the edge stays. Its light is already zero there, so nothing else changes. 0 = as before.
 
 [_Main.Main.Performance]
 SkipRedundantConstants = true # UNOFFICIAL: skip shader-constant uploads that set exactly what the graphics device already holds (measured indoors: about 9 in 10 of them). Same picture; less work for the CPU, which indoors is what limits the frame rate. Live: F10 logs a CONSTANT FILTER line. Turn off if anything ever renders wrong.
@@ -749,6 +751,7 @@ VerticalScale = 1.6                  # Multiplier for the length of the drops/st
 Enabled = true                       # Rain effect that is blocked by objects above and refracts light.
 
 [_Shaders.ShadowsExteriors.Main]
+TwoSidedCasters = false                # UNOFFICIAL: sun shadows (and the volumetric light, which reads them) are cast by both sides of every object. Fixes sunlight and light shafts shining through one-sided walls (the game uses them where you never see the other side). Same picture for closed objects; a little more shadow-map drawing.
 Quality = 4                          # Quality preset - 0: Low, 1: Medium, 2: High, 3: Full, 4: Custom
 Enabled = true                       # Enable sun shadows using rendered shadow maps.
 ForwardShadows = true                # Evaluate sun shadows per-object in the lighting shaders
@@ -898,6 +901,7 @@ Darkness = 0.65                      # Darkness of shadows.
 Doors = true                         # Wether to include objects with "Doors" flag when rendering shadowmaps.
 Furniture = true                     # Wether to include objects with "Furniture" flag when rendering shadowmaps.
 LightPoints = 24                     # How many lamps can cast shadows at once (24 = default). UNOFFICIAL: indoors with forward shadows ([Shaders.ShadowsInteriors.Forward] Enabled) up to 64; each lamp past 12 needs about 6 MB of video memory at ShadowCubeMapSize 512 (12 MB with people near it, RedrawActorsOnly) and about 0.3-0.4 ms whenever its shadow is redrawn whole (lamps with nothing moving near them are drawn once; with RedrawActorsOnly, lamps with people near them redraw only the people). Outdoors, and indoors without forward shadows, at most 12.
+ExteriorLightPoints = 12             # UNOFFICIAL (2026-10-13) [0-44]: OUTDOORS, how many lamps cast shadows (needs [Shaders.ShadowsExteriors.Main] UsePointShadowsDay/Night on). 12 = as before. Above 12 the shadow pass is drawn in batches of 11 lamps (about 0.3 ms each at 1440p) and each lamp needs a shadow cube map (about 6 MB at ShadowCubeMapSize 512, plus its drawing whenever things near it move).
 LightRadiusMult = 1.5                # A muliplier for the lights radius to render shadows for.
 MinRadius = 10.0                     # Wether to include objects with a radius of less than x pixels on the screen in the shadowmaps.
 Misc = true                          # Wether to include objects with misc flags when rendering shadowmaps.
@@ -1078,6 +1082,144 @@ ReflectionDebug = 0                    # UNOFFICIAL [0-2]: checking only. 1: in 
 
 [_Shaders.VolumetricClouds.Status]
 Enabled = false                        # UNOFFICIAL, EXPERIMENTAL (2026-10-11): real 3D clouds high above the ground, lit by the sun and the sky, moving with the wind and following the weather, in place of the game's flat cloud pictures. About 1 ms at 2560x1440 on a GTX 1070. Exteriors only.
+
+[_Shaders.Bodycam.Main]
+Fisheye = 0.45                         # UNOFFICIAL [0-1]: how much the wide lens bends straight lines outward towards the edges. Main = by day; Night and Interiors have their own value of every setting here (all but TextSize).
+FitEdges = 0.9                         # [0-1] Zooms in so the bent picture still fills the screen (1: no black corners from the bend; 0: none).
+Border = 0.95                          # [0-1] A soft black oval round the picture, like looking through the camera's frame. 0: none.
+Fringe = 3.1                           # [0-10] Colour fringes (red and blue apart) towards the edges, in pixels at 1080p.
+EdgeBlur = 1.6                         # [0-2] The cheap lens blurs towards the edges.
+LensBlur = 0.5                         # [0-2] A mild blur over the whole picture (the cheap lens is never quite in focus). 0 off, 1 about 2.5 pixels at 1080p.
+Vignette = 0.75                        # [0-1] Darker corners.
+Sharpen = 0.5                          # [0-3] The camera's oversharpening: halos along edges.
+Exposure = 0.75                        # [0.5-3] By day: overexposure, brighter than the game, highlights clipping. (Night and Interiors have their own.)
+Contrast = 1.25                        # [0.5-2] By day: contrast round mid-grey (harsh above 1).
+Saturation = 0.7                       # [0-2] By day: colour, below 1 washed out.
+Lift = 0.2                             # [0-1.5] By day: raises the dark tones (as a camera's auto exposure does in the dark); black and white stay.
+Cool = 1.0                             # [0-1] By day: takes the yellow out of New Vegas's own colour grade, towards the neutral whites of real footage.
+Glow = 0.8                             # [0-2] Bright areas bleed over what is near them.
+Grain = 2.0                            # [0-2] Sensor noise, changing 30 times a second, stronger in the dark.
+Blocks = 0.2                           # [0-1] Video-compression blocks in dark, flat areas.
+MotionBlur = 0.5                       # [0-3] Smear while the view turns. 0: none.
+LensDirt = 0.4                         # [0-2] Smudges on the lens that light up in bright light.
+Tint = 0.55                            # [0-1] A faint green cast.
+Text = 0.0                             # [0-1] The timestamp in the top right (the game's date and clock). 0: none.
+TextSize = 4.0                         # [1-12] Size of the timestamp's pixels, at 1080p.
+VideoFps = 30                          # [0-60] Video frame rate: each frame is held until the next is due, as recorded footage plays (the game keeps running at full speed underneath). 0: off, every frame drawn.
+AutoExposure = 0.8                     # [0-1] The camera's exposure lags behind the light: stepping into the sun blows the picture out before it settles, going indoors it goes dark first. In steady light it changes nothing. 0: off.
+ExposureSpeed = 1.5                    # [0.1-10] Seconds the exposure takes to catch up (most of the way in about twice this).
+Breakup = 0.1                          # [0-2] The video compression breaks down while the view turns fast or you run: bigger blocks over everything. 0: off.
+RollingShutter = 0.1                   # [0-3] Rolling-shutter wobble: upright things lean while the view pans fast, the picture squashes on fast tilts. 0: off.
+
+[_Shaders.Bodycam.Night]
+Fisheye = 0.45                         # At night outdoors (blended with the day values through dawn and dusk): every Main effect has its own value here (same ranges as Main).
+FitEdges = 0.9
+Border = 0.95
+Fringe = 3.1
+EdgeBlur = 1.6
+LensBlur = 0.5
+Vignette = 0.75
+Sharpen = 0.5
+Exposure = 0.7                         # [0.5-3] At night outdoors (blended with the day values through dawn and dusk).
+Contrast = 1.1                         # [0.5-2]
+Saturation = 0.8                       # [0-2]
+Lift = 0.4                             # [0-1.5] Raises the dark tones so the night is not crushed to black.
+Cool = 0.4                             # [0-1]
+Glow = 0.8
+Grain = 2.0
+Blocks = 0.3
+MotionBlur = 0.5
+LensDirt = 0.4
+Tint = 0.55
+Text = 0.0
+VideoFps = 30                          
+AutoExposure = 0.8                     
+ExposureSpeed = 1.5                    
+Breakup = 1.0                          
+RollingShutter = 1.0                   
+
+[_Shaders.Bodycam.Interiors]
+Fisheye = 0.45                         # Indoors: every Main effect has its own value here (same ranges as Main).
+FitEdges = 0.9
+Border = 0.95
+Fringe = 3.1
+EdgeBlur = 1.6
+LensBlur = 0.5
+Vignette = 0.75
+Sharpen = 0.5
+Exposure = 1.25                        # [0.5-3] Indoors.
+Contrast = 1.25                        # [0.5-2]
+Saturation = 0.6                       # [0-2]
+Lift = 0.3                             # [0-1.5]
+Cool = 0.3                             # [0-1]
+Glow = 0.8
+Grain = 2.0
+Blocks = 0.2
+MotionBlur = 0.5
+LensDirt = 0.4
+Tint = 0.55
+Text = 0.0
+VideoFps = 30                          
+AutoExposure = 0.8                     
+ExposureSpeed = 1.5                    
+Breakup = 1.0                          
+RollingShutter = 1.0                   
+
+[_Shaders.Bodycam.Status]
+Enabled = false                        # UNOFFICIAL: police body-camera look (wide bent lens, oversharpened, noisy compressed video, timestamp).
+
+[_Shaders.HandBlood.Main]
+PerHit = 0.35                          # UNOFFICIAL [0-1]: blood on your weapon and gloves from each fresh blood splat near you (more the nearer). The idea is mrfury97's HUD raindrops.
+Reach = 220.0                          # [10-1000] Game units: fresh blood this close to the camera counts (point blank, melee).
+DryTime = 90.0                         # [1-3600] Seconds until it has dried dark and matte.
+FadeTime = 600.0                       # [0-36000] Seconds it takes to wear off (most of it in about twice this). 0: stays. Water washes it off.
+CellSize = 1.5                         # [0.2-20] Size of the spatter's droplets, in game units (bigger = coarser spatter).
+ColorR = 0.11                          # [0-1] Blood colour (texture sRGB) until a blood decal has been seen; after that the game's own blood colour is used.
+ColorG = 0.012
+ColorB = 0.012
+Brightness = 1.0                       # [0.05-2] Brightness of the blood against your blood decals' colour (below 1 darker: thick blood on the gun).
+Run = 1.0                              # [0-2] How far drops run down the surface after a hit (0: they stay round). Upright surfaces run most, level ones not at all.
+RunTime = 4.0                          # [0.1-60] Seconds the drops take to run (most of the way in about twice this).
+DebugView = 0                          # 1: always fully bloodied (to see it without a fight).
+
+[_Shaders.HandBlood.Status]
+Enabled = false                        # Blood on the first-person weapon and gloves. Read at startup (compiled into the object shaders; off = the shaders exactly as before; on costs about 3-5% of lit-object shading).
+
+[_Shaders.BloodFlow.Main]
+Splats = true                          # The game's blood splats grow streams that run down whatever they are on the way gravity pulls (straight down a wall, slantwise across a slope, round a rock), slowing as they go. A stream that reaches a ledge or the floor gathers in a small puddle; one that reaches an edge with nothing under it hangs in a drop that falls and leaves a stain where it lands. Wet while fresh, then darker and browner as it dries (thin trails first).
+Pools = true                           # A pool of blood spreads under a body after death; on a slope it slides downhill and trickles run off its low side, gathering where the ground levels out. Wet at first, drying to a dark stain. Not under robots.
+DripLength = 40.0                      # [0-120] Longest stream, in game units (about 1.4 cm each), measured along the surface. 0: no streams.
+FlowSpeed = 1.0                        # [0.2-4.0] How fast the blood runs down slopes and walls, and how fast it creeps inside the streams.
+Viscosity = 1.0                        # [0.0-2.0] How much noise breaks up the flow: higher = thicker, sludgier blood that creeps unevenly and bunches into clumps; 0 = a smooth even film.
+BloodAmount = 0.75                     # [0.0-1.0] How much of the blood shows: a threshold on its thickness, so less blood breaks up into beads and clumps (streams, puddles, pools). 0 = none, 1 = all of it.
+MaxFall = 200.0                        # [0-600] How far drops falling off an edge are followed down to where they land (game units). 0: drops hang at the edge but never fall.
+DryTime = 120.0                        # [10-1800] Seconds for splats and streams to dry (thin trails dry in about half this, puddles take longer).
+PoolSize = 1.0                         # [0.3-2.5] Pool size, as a share of the usual (about a body's width).
+PoolSpreadTime = 25.0                  # [3-120] Seconds a pool takes to spread most of the way.
+PoolDryTime = 300.0                    # [30-3600] Seconds for a pool to dry to a dark stain.
+Gloss = 0.5                            # [0.0-2.0] How much fresh blood shines (small highlights from the sun and lamps, never brighter than the light there). Thick blood shines most; dry blood not at all.
+FreshColorR = 0.42                     # [0.0-1.0] Fresh blood colour, sRGB, as it looks on a mid-grey wall in the same light. A thin film stains what it is on this colour.
+FreshColorG = 0.03
+FreshColorB = 0.028
+DryColorR = 0.24                       # [0.0-1.0] Dried blood colour, sRGB: a dark, brownish red.
+DryColorG = 0.085
+DryColorB = 0.065
+MatchGameColor = true                  # Fresh blood takes each game splat's own colour (the colour its decal is drawn with, times MatchShade), so streams and pools match your blood textures. false: FreshColor below. Dried blood keeps the same darkening and browning as DryColor over FreshColor.
+MatchShade = 0.12                      # [0.02-0.5] The blood splatter texture's own grey (sRGB) that the game multiplies by the decal colour. 0.12 suits a dark splatter texture (measured on a popular 2048 blood replacer); raise it for a lighter one.
+MatchBrightness = 1.0                  # [0.3-3.0] Brightens (above 1) or darkens the matched colour, if the streams still look lighter or darker than the game's splats in the same light.
+StreamWidth = 1.0                      # [0.2-3.0] Width of the streams running from a splat (and of their drops and the puddles they end in). Below 1 thinner, above 1 thicker.
+Beads = 1.0                            # [0-3] Wet beads: glossy domed drops of blood over the game's own splats (where its splatter texture has blood), catching the sun and lamps, drying away drop by drop. 0: off.
+BeadSize = 60.0                        # [1-200] Game units one tile of the drops texture covers: smaller = smaller, more numerous beads.
+Merge = 0.6                            # [0-2] Splats that pile up merge into one (cheaper: one area to draw instead of many overlapping ones): centres closer than this x their radii. 0: off.
+MergeCount = 3                         # [2-64] ... once at least this many lie together.
+GibPools = 0.8                         # [0-3] A pool of its own grows under each cut-off limb (at the stump: neck, elbow, knee...), this size x the body's pool. 0: off.
+MaxDistance = 3000.0                   # [500-10000] No streams or pools further than this (game units); they fade out over the last fifth.
+MaxSplats = 48                         # [0-96] Most splats drawn at once (the nearest).
+MaxPools = 12                          # [0-32] Most pools drawn at once (the nearest).
+DebugView = 0                          # 1: what each splat and pool covers in green (white rings every 10 units round it), streams red, puddles and pools yellow, a drop at an edge blue, where drops land cyan, falling drops white.
+
+[_Shaders.BloodFlow.Status]
+Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.
 
 [_Shaders.Skin.Main]
 PerPixelDiffusion = 0.0    # UNOFFICIAL: 0-1. Softer, reddish light wrapping into the shadow side of faces and bodies, like light under the skin. 0 = as before.

@@ -1,12 +1,3 @@
-// Preview of the BloodFlow effect without the game: a small scene (depth, normals and colour made here by ray casting:
-// floor, back wall, a ledge on the wall, a floating table top (an overhang), a steep ramp and a gentle mound), the game's
-// blood splats painted on it, then the real BloodFlow.fx.hlsl drawn over it with the real box and probe code
-// (src\effects\BloodFlowBoxes.h), the way NVR does it: the probe pass into a ping-pong path texture, then the boxes.
-// Writes PNGs per age, a debug view, and a camera-move check (paths found from one camera, kept, drawn from another).
-// Usage: build\blood-test\blood_preview.exe <path to BloodFlow.fx.hlsl> <output folder> [close | terrain]
-// terrain (2026-10-13): rolling desert ground instead (gentle 3-15 degree slopes, as most of the Mojave), blood thrown onto it
-// as the game reports ground splats (thrown straight down), two pools on slopes; writes a 20 s time-lapse (terrain_NNN.png,
-// every 0.5 s, plus the same in the debug view) and a check per splat: did its streams run downhill, and how far.
 #include <windows.h>
 #include <d3d9.h>
 #include <d3dx9.h>
@@ -34,29 +25,32 @@ static float ToGamma(float c) { c = c < 0 ? 0 : c; return c <= 0.0031308f ? c * 
 
 #define CHECK(x) do { HRESULT hr_ = (x); if (FAILED(hr_)) { std::printf("FAILED %s: 0x%08lX (line %d)\n", #x, (unsigned long)hr_, __LINE__); return 1; } } while (0)
 
-// ---- The scene ----------------------------------------------------------------------------------------------------
-struct Hit { float t; D3DXVECTOR3 n; int material; };	// material: 0 floor, 1 wall, 2 wood, 3 concrete block
+struct Hit { float t; D3DXVECTOR3 n; int material; };
 
 struct Box { D3DXVECTOR3 lo, hi; int material; };
 static const Box Boxes[] = {
-	{ D3DXVECTOR3(-230, 268, 56), D3DXVECTOR3(-50, 300, 64), 2 },	// a ledge on the wall
-	{ D3DXVECTOR3(0, 150, 62), D3DXVECTOR3(120, 200, 100), 2 },	// a table top floating above the floor (an overhang)
+	{ D3DXVECTOR3(-230, 268, 56), D3DXVECTOR3(-50, 300, 64), 2 },
+	{ D3DXVECTOR3(0, 150, 62), D3DXVECTOR3(120, 200, 100), 2 },
 };
-// Ramps: z = sx * (x - x0) + sy * (y - y0) over x0..x1, y0..y1 (solid under it, down to the floor).
 struct Ramp { float x0, x1, y0, y1, sx, sy; int material; };
 static const Ramp Ramps[] = {
-	{ 135, 260, 110, 250, 0.25f, 0.75f, 3 },	// steep (about 40 degrees), falling towards the camera and left
-	{ -240, -100, 60, 200, 0.0f, 0.25f, 3 },	// a gentle mound (14 degrees), falling towards the camera
+	{ 135, 260, 110, 250, 0.25f, 0.75f, 3 },
+	{ -240, -100, 60, 200, 0.0f, 0.25f, 3 },
 };
 static const float WallY = 300.0f;
 
 static float RampZ(const Ramp& r, float x, float y) { return r.sx * (x - r.x0) + r.sy * (y - r.y0); }
 
-// Terrain mode: a height field. Falls towards the camera (-y) at about 6 degrees on average, with long swells and small
-// bumps, so slopes run from about 2 to 15 degrees; a back wall stands at WallY. Material 0 (ground).
 static bool TerrainMode = false;
+static const float Rocks[][4] = { { 60, 24, 6, 5 }, { -120, 44, 6, 5 }, { -30, 86, 7, 5 } };
+static bool WithRocks = true;
+static float RockZ(float x, float y) {
+	float z = 0.0f;
+	if (WithRocks) for (const auto& r : Rocks) { const float u = ((x - r[0]) * (x - r[0]) + (y - r[1]) * (y - r[1])) / (r[2] * r[2]); if (u < 1) z += r[3] * (1 - u) * (1 - u); }
+	return z;
+}
 static float GroundZ(float x, float y) {
-	return 0.105f * y + 9.0f * sinf(x * 0.011f + 0.6f) * cosf(y * 0.008f) + 14.0f * (Fbm(x * 0.006f + 4.0f, y * 0.006f) - 0.5f);
+	return 0.105f * y + 9.0f * sinf(x * 0.011f + 0.6f) * cosf(y * 0.008f) + 14.0f * (Fbm(x * 0.006f + 4.0f, y * 0.006f) - 0.5f) + RockZ(x, y);
 }
 static D3DXVECTOR3 GroundNormal(float x, float y) {
 	const float e = 0.5f;
@@ -134,21 +128,19 @@ static Hit Cast(const D3DXVECTOR3& o, const D3DXVECTOR3& d) {
 	return h;
 }
 
-// The game's splats (painted into the image) and BloodFlow's items for them. hint: the guessed normal BloodFlow.cpp
-// sends (against the way the blood was thrown), deliberately a little off.
 struct Splat { D3DXVECTOR3 at; D3DXVECTOR3 hint; float r; };
 static std::vector<Splat> MakeSplats() {
 	std::vector<Splat> s;
-	if (TerrainMode) {	// on the ground, thrown straight down (the game's "thrown (0 0 1)"), the hint a little off
+	if (TerrainMode) {
 		const float at[][3] = { { -120, 60, 13 }, { -30, 110, 11 }, { 60, 40, 14 }, { 140, 150, 12 }, { -170, 190, 10 }, { 20, 220, 12 } };
 		for (const auto& a : at) s.push_back({ D3DXVECTOR3(a[0], a[1], GroundZ(a[0], a[1])), D3DXVECTOR3(0.05f, -0.05f, 1.0f), a[2] });
 		return s;
 	}
-	s.push_back({ D3DXVECTOR3(-140, WallY, 95), D3DXVECTOR3(0.1f, -1, 0.05f), 12 });		// wall above the ledge
-	s.push_back({ D3DXVECTOR3(-10, WallY, 34), D3DXVECTOR3(-0.2f, -1, 0.1f), 14 });		// low on the wall, runs to the floor
-	s.push_back({ D3DXVECTOR3(70, 150, 90), D3DXVECTOR3(0.25f, -1, 0.15f), 10 });		// table's front face, drips off its edge
-	s.push_back({ D3DXVECTOR3(195, 135, RampZ(Ramps[0], 195, 135)), D3DXVECTOR3(0.2f, -0.6f, 0.7f), 12 });	// the steep ramp
-	s.push_back({ D3DXVECTOR3(60, 95, 0), D3DXVECTOR3(0, 0, 1), 10 });					// on the floor: stays put
+	s.push_back({ D3DXVECTOR3(-140, WallY, 95), D3DXVECTOR3(0.1f, -1, 0.05f), 12 });
+	s.push_back({ D3DXVECTOR3(-10, WallY, 34), D3DXVECTOR3(-0.2f, -1, 0.1f), 14 });
+	s.push_back({ D3DXVECTOR3(70, 150, 90), D3DXVECTOR3(0.25f, -1, 0.15f), 10 });
+	s.push_back({ D3DXVECTOR3(195, 135, RampZ(Ramps[0], 195, 135)), D3DXVECTOR3(0.2f, -0.6f, 0.7f), 12 });
+	s.push_back({ D3DXVECTOR3(60, 95, 0), D3DXVECTOR3(0, 0, 1), 10 });
 	return s;
 }
 
@@ -180,6 +172,13 @@ int main(int argc, char** argv) {
 	const std::string outDir = argv[2];
 	const bool close = argc > 3 && !strcmp(argv[3], "close");
 	TerrainMode = argc > 3 && !strcmp(argv[3], "terrain");
+	bool bars = false;
+	float amount = 0.75f, viscosity = 1.0f, flowSpeed = 1.0f;
+	for (int i = 3; i < argc; i++) {
+		bars |= !strcmp(argv[i], "bars");
+		if (!strcmp(argv[i], "norocks")) WithRocks = false;
+		sscanf_s(argv[i], "amount=%f", &amount); sscanf_s(argv[i], "visc=%f", &viscosity); sscanf_s(argv[i], "speed=%f", &flowSpeed);
+	}
 
 	WNDCLASSA wc = {}; wc.lpfnWndProc = DefWindowProcA; wc.lpszClassName = "BloodPreview"; wc.hInstance = GetModuleHandleA(NULL);
 	RegisterClassA(&wc);
@@ -209,13 +208,12 @@ int main(int argc, char** argv) {
 	boundsTex->GetSurfaceLevel(0, &boundsSurface);
 	D3DLOCKED_RECT lr;
 	CHECK(shadowTex->LockRect(0, &lr, NULL, 0));
-	for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) ((DWORD*)((char*)lr.pBits + y * lr.Pitch))[x] = 0x0000FFFF;   // r = 1: in the sun
+	for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) ((DWORD*)((char*)lr.pBits + y * lr.Pitch))[x] = 0x0000FFFF;
 	shadowTex->UnlockRect(0);
 	CHECK(viewModelTex->LockRect(0, &lr, NULL, 0));
-	for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) ((float*)((char*)lr.pBits + y * lr.Pitch))[x] = 1.0f;          // no weapon
+	for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) ((float*)((char*)lr.pBits + y * lr.Pitch))[x] = 1.0f;
 	viewModelTex->UnlockRect(0);
 
-	// Renders the scene from a camera into the depth, normal and scene textures.
 	auto renderScene = [&](const Camera& cam) -> int {
 		std::vector<float> depth(W * H), normals(W * H * 4), colour(W * H * 3);
 		for (int py = 0; py < H; py++) for (int px = 0; px < W; px++) {
@@ -225,7 +223,7 @@ int main(int argc, char** argv) {
 			const int i = py * W + px;
 			if (h.material < 0) { depth[i] = 1.0f; colour[i * 3] = 0.5f; colour[i * 3 + 1] = 0.6f; colour[i * 3 + 2] = 0.8f; continue; }
 			const D3DXVECTOR3 p = cam.eye + dir * h.t;
-			depth[i] = h.t / FarZ;	// dir's forward component is 1: t is the view depth
+			depth[i] = h.t / FarZ;
 			normals[i * 4 + 0] = D3DXVec3Dot(&h.n, &cam.R) * 0.5f + 0.5f;
 			normals[i * 4 + 1] = D3DXVec3Dot(&h.n, &cam.U) * 0.5f + 0.5f;
 			normals[i * 4 + 2] = D3DXVec3Dot(&h.n, &cam.F) * 0.5f + 0.5f;
@@ -267,13 +265,29 @@ int main(int argc, char** argv) {
 
 	ID3DXEffect* effect = nullptr;
 	ID3DXBuffer* errors = nullptr;
-	if (FAILED(D3DXCreateEffectFromFileA(device, argv[1], NULL, NULL, 0, NULL, &effect, &errors))) {
+	const D3DXMACRO barsMacros[] = { { "BLOOD_BARS", "1" }, { NULL, NULL } };
+	if (FAILED(D3DXCreateEffectFromFileA(device, argv[1], bars ? barsMacros : NULL, NULL, 0, NULL, &effect, &errors))) {
 		std::printf("effect failed: %s\n", errors ? (const char*)errors->GetBufferPointer() : "?");
 		return 1;
 	}
+	IDirect3DTexture9* streaksTex = nullptr;
+	IDirect3DVolumeTexture9* noiseTex = nullptr;
+	IDirect3DTexture9* splatterTex = nullptr;
+	IDirect3DTexture9* smallSplatterTex = nullptr;
+	D3DXCreateTextureFromFileA(device, getenv("BLOOD_SPLATTER") ? getenv("BLOOD_SPLATTER") : "H:\\SteamLibrary\\steamapps\\common\\Fallout New Vegas enplczru\\Data\\Textures\\decals\\fxbloodsplatterdecals01.dds", &splatterTex);
+	std::printf("splatter decals: %s\n", splatterTex ? "loaded" : "none (drawn shapes)");
+	{
+		std::string tree = argv[1];
+		const size_t at = tree.find("src\\hlsl");
+		tree = at == std::string::npos ? std::string() : tree.substr(0, at);
+		const std::string streaks = tree + "resource\\Textures\\Effects\\BloodRuns.dds";
+		if (FAILED(D3DXCreateTextureFromFileA(device, streaks.c_str(), &streaksTex))) { std::printf("streak texture not found: %s\n", streaks.c_str()); return 1; }
+		const std::string noise = tree + "resource\\Textures\\Effects\\NoiseVolume.dds";
+		if (FAILED(D3DXCreateVolumeTextureFromFileA(device, noise.c_str(), &noiseTex))) { std::printf("noise texture not found: %s\n", noise.c_str()); return 1; }
+		D3DXCreateTextureFromFileA(device, (tree + "resource\\Textures\\Effects\\BloodSpatterSmall.dds").c_str(), &smallSplatterTex);
+	}
 	auto vec = [&](const char* name, float x, float y, float z, float w) { D3DXVECTOR4 v(x, y, z, w); effect->SetVector(name, &v); };
 	auto lin = [](float c) { return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); };
-	// The defaults in NewVegasReloaded.dll.defaults.toml ([Shaders.BloodFlow.Main]).
 	const float dripLength = 40.0f, maxFall = 200.0f;
 	vec("TESR_ReciprocalResolution", 1.0f / W, 1.0f / H, (float)W / H, 0);
 	vec("TESR_SunDirection", sun.x, sun.y, sun.z, 1);
@@ -282,9 +296,12 @@ int main(int argc, char** argv) {
 	vec("TESR_BloodFlowFresh", lin(0.42f), lin(0.03f), lin(0.028f), 0.5f);
 	vec("TESR_BloodFlowDry", lin(0.24f), lin(0.085f), lin(0.065f), 120.0f);
 	vec("TESR_BloodFlowPool", 25.0f, dripLength, maxFall, 687.0f);
-	vec("TESR_BloodFlowProbe", 1.0f / PathRows, 0.8f, (float)PathRows, 0);
+	vec("TESR_BloodFlowProbe", 1.0f / PathRows, 0.8f, (float)PathRows, splatterTex ? 1.0f : 0.0f);
+	vec("TESR_BloodFlowMatch", 0.12f, 1.0f, 1.0f, 0.0f);
+	vec("TESR_BloodFlowDryRatio", lin(0.24f) / lin(0.42f), lin(0.085f) / lin(0.03f), lin(0.065f) / lin(0.028f), 0.0f);
 	vec("TESR_DepthConstants", 0, 0, 0, 1);
 	vec("TESR_CameraData", NearZ, FarZ, 0, 0);
+	vec("TESR_HorizonColor", 0.62f, 0.68f, 0.78f, 1);
 
 	const D3DVERTEXELEMENT9 elements[] = {
 		{ 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -304,7 +321,6 @@ int main(int argc, char** argv) {
 	for (int i = 0; i < 2; i++) pathTex[i]->GetSurfaceLevel(0, &pathSurface[i]);
 	device->GetDepthStencilSurface(&backDepth);
 
-	// The items: the splats and two pools (on the flat floor; on the mound).
 	std::vector<BloodFlowBoxes::Item> items;
 	for (size_t i = 0; i < splats.size(); i++) {
 		BloodFlowBoxes::Item it = {};
@@ -312,7 +328,7 @@ int main(int argc, char** argv) {
 		it.Radius = splats[i].r; it.Seed = Hash(splats[i].at.x, splats[i].at.z + 1.0f); it.Fade = 1.0f; it.Pool = false; it.Slot = (int)i;
 		items.push_back(it);
 	}
-	if (TerrainMode) {	// two pools under bodies, on slopes
+	if (TerrainMode) {
 		BloodFlowBoxes::Item it = {};
 		it.Normal = D3DXVECTOR3(0, 0, 1); it.Fade = 1; it.Pool = true;
 		it.Center = D3DXVECTOR3(-80, 160, GroundZ(-80, 160) - 1.5f); it.Radius = 30; it.Seed = 0.31f; it.Slot = 10;
@@ -328,7 +344,6 @@ int main(int argc, char** argv) {
 		items.push_back(it);
 	}
 	int passes = 0, pathIndex = 0;
-	// GPU timing (timestamp queries round the probe pass and the boxes), when `timing` is set.
 	bool timing = false;
 	IDirect3DQuery9 *stamp[3] = {}, *disjoint = nullptr, *frequency = nullptr;
 	for (int i = 0; i < 3; i++) device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &stamp[i]);
@@ -338,22 +353,25 @@ int main(int argc, char** argv) {
 	int written[ItemMax];
 	for (int i = 0; i < ItemMax; i++) written[i] = -10;
 
-	// One frame: the probe pass (paths), then the boxes, at `age`, from `cam` (as BloodFlowEffect::Render).
 	auto frame = [&](const Camera& cam, float age, float debug, bool draw) -> int {
 		vec("TESR_CameraPosition", cam.eye.x, cam.eye.y, cam.eye.z, 1);
 		effect->SetMatrix("TESR_ViewTransform", &cam.view);
 		effect->SetMatrix("TESR_InvViewTransform", &cam.invView);
 		effect->SetMatrix("TESR_ProjectionTransform", &cam.proj);
 		effect->SetMatrix("TESR_InvProjectionTransform", &cam.invProj);
-		vec("TESR_BloodFlowInfo", 1.0f, debug, 300.0f, 1.0f);
+		effect->SetMatrix("TESR_ViewProjectionTransform", &cam.viewProj);
+		static const bool cut = !getenv("BLOOD_CUT") || atoi(getenv("BLOOD_CUT")) != 0;
+		vec("TESR_BloodFlowShape", 0.0f, 0.0f, 0.0f, cut ? 1.0f : 0.0f);
+		vec("TESR_BloodFlowInfo", 1.0f, debug, 300.0f, flowSpeed);
+		vec("TESR_BloodFlowFlow", flowSpeed, viscosity, amount, age);
 		for (auto& it : items) { it.Age = age; it.Fresh = written[it.Slot] != passes - 1; }
 		CHECK(device->UpdateSurface(scene, NULL, image, NULL));
 		CHECK(device->StretchRect(image, NULL, source, NULL, D3DTEXF_NONE));
 		CHECK(device->BeginScene());
 		auto bind = [&](IDirect3DTexture9* paths) {
-			// NVR binds each TESR_ texture straight to its sampler's register (EffectRecord::SetCT).
 			device->SetTexture(0, depthTex); device->SetTexture(1, sourceTex); device->SetTexture(2, normalTex);
 			device->SetTexture(3, shadowTex); device->SetTexture(4, viewModelTex); device->SetTexture(5, paths); device->SetTexture(6, boundsTex);
+		device->SetTexture(7, streaksTex); device->SetTexture(8, noiseTex); device->SetTexture(9, splatterTex); device->SetTexture(10, smallSplatterTex);
 		};
 		const int probeTriangles = BloodFlowBoxes::BuildProbe(items.data(), (int)items.size(), dripLength, PathRows, BloodFlowBoxes::Streams, cam.eye, probeVertices);
 		const int write = 1 - pathIndex;
@@ -372,7 +390,6 @@ int main(int argc, char** argv) {
 		for (auto& it : items) { written[it.Slot] = passes; it.Fresh = false; }
 		passes++;
 		pathIndex = write;
-		// The bounds pass, from the paths just written.
 		const int boundsTriangles = BloodFlowBoxes::BuildProbe(items.data(), (int)items.size(), dripLength, ItemMax, 1, cam.eye, boundsVertices);
 		CHECK(device->SetRenderTarget(0, boundsSurface));
 		device->SetTexture(6, NULL);
@@ -394,8 +411,13 @@ int main(int argc, char** argv) {
 			CHECK(effect->Begin(&n, 0));
 			CHECK(effect->BeginPass(0));
 			bind(pathTex[pathIndex]);
+			device->SetTexture(D3DVERTEXTEXTURESAMPLER0, boundsTex);
+			device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+			device->SetSamplerState(D3DVERTEXTEXTURESAMPLER0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
 			device->SetVertexDeclaration(declaration);
 			if (triangles) CHECK(device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangles, vertices, sizeof(VolumetricSmokeQuads::Vertex)));
+			device->SetTexture(D3DVERTEXTEXTURESAMPLER0, NULL);
 			effect->EndPass();
 			effect->End();
 		}
@@ -413,7 +435,6 @@ int main(int argc, char** argv) {
 		}
 		return 0;
 	};
-	// The path texture's rows, read back.
 	auto readPaths = [&](std::vector<float>& out) -> int {
 		CHECK(device->GetRenderTargetData(pathSurface[pathIndex], pathReadSurface));
 		D3DLOCKED_RECT l;
@@ -436,7 +457,6 @@ int main(int argc, char** argv) {
 	const Camera camB = close ? MakeCamera(D3DXVECTOR3(-20, 60, 100), -12.0f, 10.0f) : MakeCamera(D3DXVECTOR3(150, -80, 130), -16.0f, 14.0f);
 	if (renderScene(camA)) return 1;
 
-	// Settle the paths (kept after a few frames), then report what the probe found.
 	for (int i = 0; i < 4; i++) if (frame(camA, 0.0f, 0, false)) return 1;
 	std::vector<float> pathsA;
 	if (readPaths(pathsA)) return 1;
@@ -456,7 +476,6 @@ int main(int argc, char** argv) {
 	}
 
 	if (TerrainMode) {
-		// The check: every ground splat on a slope steeper than about 5 degrees should send streams downhill.
 		int sloped = 0, running = 0;
 		for (const auto& it : items) {
 			if (it.Pool) continue;
@@ -472,14 +491,34 @@ int main(int argc, char** argv) {
 				degrees > 5.0f ? (longest > 4.0f ? " (runs downhill: ok)" : " (DOES NOT RUN)") : " (about level: stays)");
 		}
 		std::printf("TERRAIN CHECK: %d of %d splats on slopes over 5 degrees run downhill: %s\n", running, sloped, running == sloped ? "PASS" : "FAIL");
-		// The time-lapse: 0-20 s every 0.5 s, then the debug view at the same times.
+		int over = 0, nearRock = 0, total = 0;
+		for (const auto& it : items) for (int k = 0; k < BloodFlowBoxes::Streams; k++) {
+			const int row = it.Slot * BloodFlowBoxes::Streams + k;
+			if (texel(pathsA, 0, row)[3] < -0.5f) continue;
+			bool met = false;
+			bool startsOnRock = false;
+			for (const auto& r : Rocks) { const float* q = texel(pathsA, 2, row); const float dx = it.Center.x + q[0] - r[0], dy = it.Center.y + q[1] - r[1]; startsOnRock |= sqrtf(dx * dx + dy * dy) < r[2]; }
+			if (startsOnRock) continue;
+			for (int c = 2; c < BloodFlowBoxes::PathColumns; c++) {
+				const float* q = texel(pathsA, c, row);
+				const float x = it.Center.x + q[0], y = it.Center.y + q[1];
+				for (const auto& r : Rocks) {
+					const float d = sqrtf((x - r[0]) * (x - r[0]) + (y - r[1]) * (y - r[1]));
+					if (d < r[2] * 0.55f) { over++; std::printf("  on a rock: item %d stream %d point %d at (%.1f %.1f), rock at (%.0f %.0f)\n", it.Slot, k, c, x, y, r[0], r[1]); }
+					if (d < r[2] * 1.6f) met = true;
+				}
+				total++;
+			}
+			nearRock += met;
+		}
+		std::printf("OBSTACLE CHECK: %d streams came near a rock; %d of %d path points on a rock's top%s\n", nearRock, over, total,
+			!WithRocks ? " (no rocks)" : over == 0 ? ": PASS" : ": FAIL");
 		for (int pass = 0; pass < 2; pass++) for (int f = 0; f <= 40; f++) {
 			if (frame(camA, f * 0.5f, (float)pass, true)) return 1;
 			char name[512];
 			std::snprintf(name, sizeof(name), "%s\\terrain_%s%03d.png", outDir.c_str(), pass ? "debug_" : "", f);
 			CHECK(D3DXSaveSurfaceToFileA(name, D3DXIFF_PNG, image, NULL, NULL));
 		}
-		// Close up, low over the sloped splat at (60, 40), as a player looks at a body: the same 20 s.
 		const Camera camClose = MakeCamera(D3DXVECTOR3(35, -25, GroundZ(35, -25) + 70), 18.0f, 42.0f);
 		if (renderScene(camClose)) return 1;
 		for (int i = 0; i < ItemMax; i++) written[i] = -10;
@@ -501,8 +540,6 @@ int main(int argc, char** argv) {
 		else if (frame(camA, shot.age, shot.debug, true)) return 1;
 		if (save(shot.name)) return 1;
 	}
-	// Drops falling off the table's edge: 24 frames 1/8 s apart, the part of the picture round the fall put side by side
-	// (6 x 4 tiles, read left to right, top to bottom) in blood3_drops.png.
 	{
 		IDirect3DSurface9* montage;
 		CHECK(device->CreateRenderTarget(W, H, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &montage, NULL));
@@ -530,10 +567,8 @@ int main(int argc, char** argv) {
 		montage->Release();
 	}
 
-	// Cost: the probe pass (paths kept: only the copy) and the boxes, at 12 s, averaged over 100 frames; then the probe
-	// pass with every path worked out afresh each frame (its worst case: new items, or ones never seen whole).
 	if (stamp[0] && disjoint && frequency) {
-		for (int i = 0; i < 200; i++) if (frame(camA, 12.0f, 0, true)) return 1;		// warm up (the GPU's clocks)
+		for (int i = 0; i < 200; i++) if (frame(camA, 12.0f, 0, true)) return 1;
 		timing = true;
 		for (int i = 0; i < 100; i++) if (frame(camA, 12.0f, 0, true)) return 1;
 		std::printf("GPU cost at %dx%d, 12 s, %d items: probe + bounds passes (paths kept) %.3f ms, boxes %.3f ms\n", W, H, (int)items.size(), probeMs / 100.0, boxMs / 100.0);
@@ -544,13 +579,12 @@ int main(int argc, char** argv) {
 		for (int i = 0; i < 4; i++) if (frame(camA, 12.0f, 0, false)) return 1;
 	}
 
-	// Camera move: the paths found from A are kept and drawn from B; then the same from B alone (afresh), to compare.
 	if (renderScene(camB)) return 1;
 	if (frame(camB, 12.0f, 0, true)) return 1;
 	if (save("9_moved_kept_12s")) return 1;
 	std::vector<float> kept;
 	if (readPaths(kept)) return 1;
-	for (auto& it : items) written[it.Slot] = -10;	// forget: everything starts afresh from B
+	for (auto& it : items) written[it.Slot] = -10;
 	for (int i = 0; i < 4; i++) if (frame(camB, 12.0f, 0, false)) return 1;
 	if (frame(camB, 12.0f, 0, true)) return 1;
 	if (save("9_moved_fresh_12s")) return 1;

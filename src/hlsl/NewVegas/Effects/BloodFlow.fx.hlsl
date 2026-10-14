@@ -1,20 +1,3 @@
-// UNOFFICIAL, optional (Shaders.BloodFlow, off by default): blood that runs like a liquid, dries, and pools under bodies.
-// BloodFlow.cpp sends the game's blood splats and the bodies' pools as items. Two passes:
-//  - BloodFlowProbe (ProbePS): for each item, into a small path texture, where its streams of blood go. Each stream
-//    starts on the splat's lower part and is walked down the surface the depth buffer shows, step by step, the way
-//    gravity pulls along that surface (straight down a wall, slantwise across a slope, round a rock). It stops where the
-//    surface turns flat (the blood gathers there: on a ledge, at the foot of a wall) or comes to an edge with nothing
-//    under it (the blood hangs there and falls in drops; the drops' landing place is found the same way). A pool finds
-//    the slope of the ground round it, and trickles run off its downhill side. Once a path has been seen whole for a
-//    few frames it is kept, so it does not move when the camera does.
-//  - BloodFlow (BloodPS): a box round each item; every pixel in it finds its surface point from the depth buffer and
-//    paints what reaches it: the streams (thin trails with a bead at the front, running over the first seconds and
-//    slowing), the puddles they end in, the drop hanging at an edge, drops falling (drawn in the air, in front of what
-//    is behind them) and the stain where they land; the pool, stretched downhill on a slope. Blended into the image.
-// The blood's colour is the light at the pixel (worked out from the image) times the blood's own colour: a thin film
-// is a dark red stain the surface shows through, a thick layer is the blood's own dark red. Fresh blood shines a little
-// (the sun where it is not shaded, the lamps); dried blood is darker, browner and matte. Nothing glows.
-
 float4 TESR_ReciprocalResolution;
 float4 TESR_SunDirection;
 float4 TESR_SunColor;
@@ -22,13 +5,19 @@ float4 TESR_SunAmbient;
 float4 TESR_LightPosition[12];
 float4 TESR_ShadowLightPosition[12];
 float4 TESR_LightColor[24];
-float4 TESR_BloodFlowFresh;	// rgb: fresh blood colour (linear); w: gloss
-float4 TESR_BloodFlowDry;	// rgb: dried blood colour (linear); w: splat dry time (s)
-float4 TESR_BloodFlowInfo;	// x: outdoors; y: debug view; z: pool dry time (s); w: drip speed
-float4 TESR_BloodFlowPool;	// x: pool spread time (s); y: longest drip (game units); z: longest fall (game units); w: gravity (units/s^2)
-float4 TESR_BloodFlowProbe;	// x: 1 / path texture rows; y: finest detail (units per pixel) a path is kept at
+float4 TESR_BloodFlowFresh;
+float4 TESR_BloodFlowDry;
+float4 TESR_BloodFlowInfo;
+float4 TESR_BloodFlowPool;
+float4 TESR_BloodFlowProbe;
+float4 TESR_BloodFlowFlow;
+float4 TESR_HorizonColor;
+float4 TESR_BloodFlowMatch;
+float4 TESR_BloodFlowDryRatio;
+float4 TESR_BloodFlowBeads;
+float4 TESR_BloodFlowShape;
+float4x4 TESR_ViewProjectionTransform;
 
-// (Declared in register order: the samplers bind by the order they are declared in.)
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_SourceBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_NormalsBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -36,29 +25,37 @@ sampler2D TESR_PointShadowBuffer : register(s3) = sampler_state { ADDRESSU = CLA
 sampler2D TESR_DepthBufferViewModel : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_BloodFlowPaths : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_BloodFlowBounds : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_BloodStreaks : register(s7) < string ResourceName = "Effects\BloodRuns.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler3D TESR_NoiseVolume : register(s8) < string ResourceName = "Effects\NoiseVolume.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_BloodSplatter : register(s9) < string ResourceName = "decals\fxbloodsplatterdecals01.dds"; > = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_BloodSpatterSmall : register(s10) < string ResourceName = "Effects\BloodSpatterSmall.dds"; > = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_BloodDrops : register(s11) < string ResourceName = "Effects\BloodDrops.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
 
-static const float AssumedAlbedo = 0.3;	// a typical surface's brightest channel: the light at a pixel is about that over this
-static const float Streams = 6.0;		// rows per item in the path texture (BloodFlowBoxes.h)
-static const float PathColumns = 16.0;	// texels per row: 0 header, 1 end, 2-15 points along the path
-static const float LockFrames = 3.0;	// a path seen whole this many frames running is kept
-static const float WallFlatZ = 0.94;	// blood running down stops on anything flatter than about 20 degrees
-static const float GroundFlatZ = 0.985;	// trickles off a pool run on down to about 10 degrees
-// UNOFFICIAL 2026-10-13 (user: streaks did not run down terrain): a splat on the ground (flatter than WallFlatZ) runs downhill
-// until the ground is about level, not until 20 degrees as on a wall: the Mojave's slopes are mostly gentler than that, so
-// every ground splat stayed a round stain.
-static const float SplatGroundFlatZ = 0.996;	// about 5 degrees
-static const float UnderZ = -0.3;		// a surface facing down more than this: the blood drips off it
+static const float AssumedAlbedo = 0.3;
+static const float Streams = 6.0;
+static const float PathColumns = 16.0;
+static const float LockFrames = 3.0;
+static const float WallFlatZ = 0.94;
+static const float GroundFlatZ = 0.985;
+static const float SplatGroundFlatZ = 0.996;
+static const float UnderZ = -0.3;
+static const float ValleyPull = 2.5;
+static const float Meander = 0.35;
+static const float StreakAcross = 0.022;
+static const float StreakAlong = 0.025;
+static const float FlowPeriod = 3.0;
+static const float CreepUnits = 2.5;
 
 struct VSIN {
-	float4 position : POSITION;	// clip space (BloodFlow.cpp projects the box, or places the probe quad)
-	float4 a : TEXCOORD0;		// xyz: the item's centre, eye-relative; w: slot + 1000 if a pool + 2000 if its rows are new
-	float4 b : TEXCOORD1;		// xyz: a guess at the surface's normal; w: radius (splat) or largest radius (pool)
-	float4 c : TEXCOORD2;		// x: age (s); y: fade; z: seed 0-4095 (a whole number); w: longest drip (0: none)
-	float4 d : TEXCOORD3;		// unused
+	float4 position : POSITION;
+	float4 a : TEXCOORD0;
+	float4 b : TEXCOORD1;
+	float4 c : TEXCOORD2;
+	float4 d : TEXCOORD3;
 };
 
 struct VSOUT {
@@ -87,6 +84,8 @@ VSOUT BoxVS(VSIN IN) {
 	return OUT;
 }
 
+float ItemSeed(float cz) { return fmod(floor(cz + 0.5), 4096.0) / 4096.0; }
+
 float hash1(float n) {
 	return frac(sin(n) * 43758.5453);
 }
@@ -110,7 +109,47 @@ float fbm(float2 p) {
 	return 0.6 * valueNoise(p) + 0.3 * valueNoise(p * 2.13 + 5.2) + 0.1 * valueNoise(p * 4.71 + 1.7);
 }
 
-// The item's slot code (VSIN a.w): slot, pool, fresh rows.
+float2 FlowNoise(float3 p) { return tex3Dlod(TESR_NoiseVolume, float4(p / 8.0, 0.0)).ra; }
+
+float Splatter(float2 local, float seed, float footprint) {
+	float pick = floor(frac(seed * 13.7) * 3.0);
+	float angle = seed * 37.0;
+	float2 r = float2(local.x * cos(angle) - local.y * sin(angle), local.x * sin(angle) + local.y * cos(angle));
+	float2 uv = (float2(fmod(pick, 2.0), floor(pick * 0.5)) + 0.5 + clamp(r, -0.48, 0.48)) * 0.5;
+	return tex2Dlod(TESR_BloodSplatter, float4(uv, 0.0, log2(max(footprint * 1024.0, 1.0)))).a * step(abs(r.x), 0.48) * step(abs(r.y), 0.48);
+}
+
+float DecalCover(float3 rel, float4 b, float4 c, float4 d, float mip) {
+	if (TESR_BloodFlowProbe.w < 0.5 || dot(d.xyz, d.xyz) < 1e-12) return -1.0;
+	float code = floor(floor(c.z + 0.5) / 4096.0);
+	float quarter = fmod(code, 5.0);
+	float ratio = exp2(floor(code / 20.0) / 31.5 - 1.0);
+	float3 v = cross(normalize(b.xyz), d.xyz) * ratio * (fmod(floor(code / 10.0), 2.0) > 0.5 ? -1.0 : 1.0);
+	float2 uv = float2(dot(rel, d.xyz), dot(rel, v)) + 0.5;
+	if (any(uv < 0.0) || any(uv > 1.0)) return 0.0;
+	uv = quarter < 3.5 ? uv * 0.5 + float2(fmod(quarter, 2.0), floor(quarter * 0.5)) * 0.5 : uv;
+	if (fmod(floor(code / 5.0), 2.0) > 0.5) uv.x = 1.0 - uv.x;
+	return tex2Dlod(TESR_BloodSplatter, float4(uv, 0.0, mip)).a;
+}
+
+float SmallSplatter(float2 local, float seed, float footprint) {
+	float pick = floor(frac(seed * 29.3) * 16.0);
+	float angle = seed * 53.0;
+	float2 r = float2(local.x * cos(angle) - local.y * sin(angle), local.x * sin(angle) + local.y * cos(angle));
+	float2 uv = (float2(fmod(pick, 4.0), floor(pick * 0.25)) + 0.5 + clamp(r, -0.48, 0.48)) * 0.25;
+	return tex2Dlod(TESR_BloodSpatterSmall, float4(uv, 0.0, log2(max(footprint * 256.0, 1.0)))).a * step(abs(r.x), 0.48) * step(abs(r.y), 0.48);
+}
+
+float RaggedCore(float2 d, float r, float seed) {
+	float2 way = d / max(length(d), 1e-4);
+	float edge = r * (0.65 + 0.7 * valueNoise(way * 1.7 + seed * 23.0));
+	return saturate(1.0 - length(d) / max(edge, 1e-3)) * 0.5;
+}
+
+sampler2D BloodFlowBoundsVS : register(vs_3_0, s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+float Shows(float T, float dT) { return saturate((T - 1.0 + TESR_BloodFlowFlow.z) / max(dT, 0.02) + 0.5); }
+
 void DecodeSlot(float w, out float slot, out float pool, out float fresh) {
 	float code = floor(w + 0.5);
 	fresh = code >= 2000.0 ? 1.0 : 0.0;
@@ -123,18 +162,14 @@ float4 PathTexel(float column, float row) {
 	return tex2Dlod(TESR_BloodFlowPaths, float4((column + 0.5) / PathColumns, (row + 0.5) * TESR_BloodFlowProbe.x, 0.0, 0.0));
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-// Streams: where each starts, how far and how fast it runs. The same in both passes (the probe walks the path, the
-// paint pass shows as much of it as has run by now).
-
 struct Stream {
 	float active;
-	float2 start;		// splats: across and down the splat's surface from its centre
-	float lengthMax;	// the most it runs, along the surface
-	float tau;			// how fast (most of the way in about twice this, in seconds)
-	float delay;		// seconds before it starts
-	float width;		// half its width
-	float dropVolume;	// how much run (in length of stream) makes one drop at an edge
+	float2 start;
+	float lengthMax;
+	float tau;
+	float delay;
+	float width;
+	float dropVolume;
 };
 
 Stream SplatStream(float seed, float k, float R, float dripMax, float speed) {
@@ -142,18 +177,17 @@ Stream SplatStream(float seed, float k, float R, float dripMax, float speed) {
 	float s1 = hash1(seed * 91.7 + k * 13.1);
 	float s2 = hash1(seed * 47.3 + k * 7.7);
 	float s3 = hash1(seed * 23.9 + k * 3.3);
-	s.active = (s3 >= 0.3 && dripMax > 0.0) ? 1.0 : 0.0;	// not every part of a splat runs
+	s.active = (s3 >= 0.3 && dripMax > 0.0) ? 1.0 : 0.0;
 	float x0 = (s1 * 2.0 - 1.0) * 0.6 * R;
-	s.start = float2(x0, R * (0.35 + 0.35 * s2) * sqrt(saturate(1.0 - sqr(x0 / R))));	// from near the splat's lower edge
-	s.lengthMax = dripMax * (0.3 + 0.7 * s3) * saturate(R / 6.0 + 0.3);				// bigger splats run further
+	s.start = float2(x0, R * (0.35 + 0.35 * s2) * sqrt(saturate(1.0 - sqr(x0 / R))));
+	s.lengthMax = dripMax * (0.3 + 0.7 * s3) * saturate(R / 6.0 + 0.3);
 	s.tau = (1.5 + 3.5 * s2) / speed;
 	s.delay = (0.2 + 1.2 * s1) / speed;
-	s.width = clamp(R * (0.05 + 0.05 * s1), 0.35, 2.0);
+	s.width = clamp(R * (0.05 + 0.05 * s1), 0.35, 2.0) * TESR_BloodFlowMatch.z;
 	s.dropVolume = (2.5 + 2.5 * s2) * s.width;
 	return s;
 }
 
-// A trickle running off a pool on a slope (k 0 or 1). slope: the ground's rise over run.
 Stream PoolStream(float seed, float k, float R, float slope, float spreadTime) {
 	Stream s;
 	float s1 = hash1(seed * 71.3 + k * 17.9);
@@ -164,43 +198,32 @@ Stream PoolStream(float seed, float k, float R, float slope, float spreadTime) {
 	s.lengthMax = R * (0.8 + 2.2 * saturate(slope * 2.0)) * (0.6 + 0.4 * s3);
 	s.tau = spreadTime * (0.8 + 0.6 * s2);
 	s.delay = spreadTime * (0.25 + 0.2 * s1);
-	s.width = clamp(R * 0.06 * (0.8 + 0.4 * s1), 0.8, 2.5);
+	s.width = clamp(R * 0.06 * (0.8 + 0.4 * s1), 0.8, 2.5) * TESR_BloodFlowMatch.z;
 	s.dropVolume = (2.5 + 2.5 * s2) * s.width;
 	return s;
 }
 
-// How far a stream has run by `age` (it slows as it goes).
 float StreamRun(Stream s, float lengthMax, float age) {
 	return lengthMax * (1.0 - exp(-max(age - s.delay, 0.0) / s.tau));
 }
 
-// When a stream has run `run` (inverse of StreamRun).
 float StreamTime(Stream s, float lengthMax, float run) {
 	return s.delay - s.tau * log(max(1.0 - run / lengthMax, 1e-4));
 }
 
-// A pool's middle moves downhill on a slope and it stretches that way (slope: rise over run).
 float PoolShift(float slope) { return 0.35 * saturate(slope * 2.0); }
 float PoolStretch(float slope) { return 1.0 + 0.9 * saturate(slope * 2.0); }
-
-// ---------------------------------------------------------------------------------------------------------------------
-// The probe: what the depth buffer shows.
 
 float3 CameraRight() { return float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]); }
 float3 CameraUp() { return float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]); }
 float3 CameraForward() { return float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]); }
 
-// An eye-relative point -> (u, v, view depth); the inverse of toWorld(uv) * depth.
 float3 ProjectRel(float3 rel) {
 	float z = dot(rel, CameraForward());
 	float2 ndc = float2(dot(rel, CameraRight()) * TESR_ProjectionTransform[0][0], dot(rel, CameraUp()) * TESR_ProjectionTransform[1][1]) / max(z, 0.001);
 	return float3(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y, z);
 }
 
-// What the depth buffer shows on the line of sight through Q (eye-relative): X, the surface there, and N its normal;
-// along: how far that surface is behind Q along the line (negative: in front of it); tol: how far off still counts as
-// on it (more for a coarser step, a far surface or one seen edge on). False when Q cannot be seen: off screen, behind
-// the eye or behind the weapon.
 bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float along, out float tol) {
 	float3 s = ProjectRel(Q);
 	X = Q;
@@ -213,7 +236,7 @@ bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float 
 	if ((TESR_DepthConstants.z == 0 && viewmodel < 0.9) || (TESR_DepthConstants.z > 0 && viewmodel > 0.01)) return false;
 	float depth = readDepthLod(s.xy);
 	float dist = length(Q);
-	if (depth >= farZ * 0.98) { along = 1e6; return true; }		// sky: nothing behind it
+	if (depth >= farZ * 0.98) { along = 1e6; return true; }
 	X = toWorld(s.xy) * depth;
 	N = normalize(GetWorldNormalLod(s.xy));
 	along = (depth - s.z) * dist / s.z;
@@ -222,30 +245,46 @@ bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float 
 	return true;
 }
 
-// Runs blood from S (eye-relative, on the surface, normal N) down the surface for up to `target` units, the way gravity
-// pulls along it, in steps of h. Returns where it got to (xyz) and how far it ran (w). end: 0 it ran the whole way,
-// 1 it stopped on something flat (it gathers there), 2 it came to an edge with nothing under it (it drips off there).
-// valid becomes 0 if part of the way could not be seen (the path then carries on along the last surface seen).
-float4 RunDown(float3 S, float3 N, float target, float h, float flatZ, float wiggleSeed, inout float valid, out float end) {
+float Relief(float3 Q, float3 pos, float3 N, float limit) {
+	float3 s = ProjectRel(Q);
+	if (s.z < nearZ * 2.0 || s.x < 0.002 || s.y < 0.002 || s.x > 0.998 || s.y > 0.998) return 0.0;
+	float depth = readDepthLod(s.xy);
+	if (depth >= farZ * 0.98) return -limit;
+	return clamp(dot(toWorld(s.xy) * depth - pos, N), -limit, limit);
+}
+
+float4 RunDown(float3 S, float3 N, float target, float h, float flatZ, float wiggleSeed, float width, float side, inout float valid, out float end) {
 	float3 pos = S;
 	float arc = 0.0;
+	float going = 0.0;
 	end = 0.0;
 	[loop] for (int i = 0; i < 48; i++) {
 		if (arc >= target - 0.001) break;
 		if (N.z > flatZ) { end = 1.0; break; }
 		if (N.z < UnderZ) { end = 2.0; break; }
-		// Gravity (0, 0, -1) along the surface, with a slow sideways wander of its own.
-		float3 d = normalize(float3(N.x * N.z, N.y * N.z, N.z * N.z - 1.0));
-		float3 side = normalize(cross(N, d));
-		d = normalize(d + side * (valueNoise(float2(arc * 0.07 + wiggleSeed, wiggleSeed * 3.1)) - 0.5) * 0.6);
 		float stepSize = min(h, target - arc);
+		float3 across = normalize(cross(N, float3(0.0, 0.0, -1.0)));
+		float3 d = cross(across, N);
+		float reach = width * 1.5 + 0.75;
+		float limit = reach * 2.0 + stepSize;
+		float hLeft = Relief(pos + (d * 0.5 + across) * reach, pos, N, limit);
+		float hRight = Relief(pos + (d * 0.5 - across) * reach, pos, N, limit);
+		float hAhead = 0.0;
+		float3 Xa, Na;
+		float alongA, tolA;
+		if (SeeSurface(pos + d * (stepSize + width), stepSize, Xa, Na, alongA, tolA) && Na.z <= flatZ) hAhead = clamp(dot(Xa - pos, N), -limit, limit);
+		float lean = clamp((hRight - hLeft) / reach * ValleyPull, -1.2, 1.2);
+		float raised = saturate((hAhead - 0.35 * stepSize - 0.3) / (0.5 * stepSize + 0.5));
+		if (raised > 0.3 && going == 0.0) going = abs(hRight - hLeft) > 0.2 ? sign(hRight - hLeft) : side;
+		if (raised < 0.05) going = 0.0;
+		float wander = (valueNoise(float2(arc * 0.07 + wiggleSeed, wiggleSeed * 3.1)) - 0.5) * 2.0 * Meander;
+		d = normalize(d + across * (lean + going * raised * 2.5 + wander));
 		float3 next = pos + d * stepSize;
 		float3 X, N2;
 		float along, tol;
 		if (!SeeSurface(next, stepSize, X, N2, along, tol)) { valid = 0.0; pos = next; arc += stepSize; continue; }
 		if (abs(along) <= tol) { pos = X; N = N2; arc += stepSize; continue; }
 		if (along > 0.0) {
-			// Nothing under the next step: an edge. Find the brink by halving the step twice.
 			float sz = stepSize;
 			[unroll] for (int b = 0; b < 2; b++) {
 				sz *= 0.5;
@@ -253,8 +292,6 @@ float4 RunDown(float3 S, float3 N, float target, float h, float flatZ, float wig
 				float am, tm;
 				if (SeeSurface(pos + d * sz, sz, Xm, Nm, am, tm) && abs(am) <= tm) { pos = Xm; arc += sz; }
 			}
-			// Round the edge: if there is a surface right under the brink (the face below a slope's edge, not the
-			// underside of an overhang), the blood goes on down it.
 			float3 Xw, Nw;
 			float aw, tw;
 			if (SeeSurface(pos - float3(0.0, 0.0, h), h, Xw, Nw, aw, tw) && abs(aw) <= tw && Nw.z > UnderZ && Nw.z < flatZ) {
@@ -267,13 +304,11 @@ float4 RunDown(float3 S, float3 N, float target, float h, float flatZ, float wig
 			break;
 		}
 		if (N2.z > 0.6 && X.z - next.z >= -tol && X.z - next.z <= stepSize + tol) {
-			// Into something standing out under it (a ledge, the floor): the blood stops on its top.
 			pos = float3(next.xy, X.z);
 			arc += stepSize;
 			end = 1.0;
 			break;
 		}
-		// Hidden behind something: carry on along the same surface.
 		valid = 0.0;
 		pos = next;
 		arc += stepSize;
@@ -281,8 +316,6 @@ float4 RunDown(float3 S, float3 N, float target, float h, float flatZ, float wig
 	return float4(pos, arc);
 }
 
-// Falls straight down from E (eye-relative) until something under it is seen. Returns how far, or -1 if nothing within
-// maxFall.
 float FallFrom(float3 E, float maxFall, inout float valid) {
 	float stepSize = max(maxFall / 24.0, 2.0);
 	[loop] for (int j = 1; j <= 24; j++) {
@@ -292,21 +325,13 @@ float FallFrom(float3 E, float maxFall, inout float valid) {
 		float3 X, N;
 		float along, tol;
 		if (!SeeSurface(F, stepSize, X, N, along, tol)) { valid = 0.0; continue; }
-		if (along > tol) continue;										// still in the air
-		if (N.z > 0.5 && X.z >= F.z - tol && X.z <= F.z + stepSize + tol) return max(E.z - X.z, 0.0);	// the ground
-		valid = 0.0;													// something in front hides it
+		if (along > tol) continue;
+		if (N.z > 0.5 && X.z >= F.z - tol && X.z <= F.z + stepSize + tol) return max(E.z - X.z, 0.0);
+		valid = 0.0;
 	}
 	return -1.0;
 }
 
-// The probe pass: one texel per (column, row) of the path texture, for the item whose quad covers it.
-//  Splat stream rows, and the trickle rows (0, 1) of a pool:
-//   column 0: (frames seen whole, how far it runs before it stops, how far drops fall from its end (-1: no ground seen),
-//              end: -1 no stream, 0 runs its length, 1 gathers on the flat, 2 drips off an edge)
-//   column 1: (where it stops, item-relative; longest run)
-//   columns 2-15: points along the path (item-relative xyz, distance along it), evenly spaced over the longest run
-//  A pool's last row (the ground round it): column 0 (frames seen whole, points seen, 0, -2), column 1 (the ground's
-//   normal, its height under the centre relative to the centre).
 float4 ProbePS(PSIN IN) : COLOR0 {
 	float slot, pool, fresh;
 	DecodeSlot(IN.a.w, slot, pool, fresh);
@@ -315,21 +340,17 @@ float4 ProbePS(PSIN IN) : COLOR0 {
 	float k = row - slot * Streams;
 	float4 previous = PathTexel(column, row);
 	float4 previousHead = PathTexel(0.0, row);
-	if (fresh < 0.5 && previousHead.x >= LockFrames) return previous;	// kept
+	if (fresh < 0.5 && previousHead.x >= LockFrames) return previous;
 	float seenBefore = fresh > 0.5 ? 0.0 : previousHead.x;
 
 	float3 C = IN.a.xyz;
 	float R = IN.b.w;
-	float seed = floor(IN.c.z + 0.5) / 4096.0;
-	// Too far away to see the surface's shape well: worked out every frame, never kept.
+	float seed = ItemSeed(IN.c.z);
 	float3 cs = ProjectRel(C);
 	float pixel = cs.z * 2.0 * TESR_ReciprocalResolution.y / TESR_ProjectionTransform[1][1];
 	float valid = pixel <= TESR_BloodFlowProbe.y ? 1.0 : 0.0;
 
 	if (pool > 0.5 && k > Streams - 1.5) {
-		// The ground round the pool: a ring of points just outside it, where the ground (not the body) shows. Twice: the
-		// second time the points follow the slope the first found, and only ground facing about the same way counts
-		// (not an arm or a leg).
 		float3 groundGuess = float3(0.0, 0.0, 1.0);
 		float3 sumN = 0.0;
 		float3 sumX = 0.0;
@@ -365,9 +386,8 @@ float4 ProbePS(PSIN IN) : COLOR0 {
 	Stream s;
 	float3 S, N;
 	float flatZ;
-	float none = 0.0;			// no stream: 1 for good (kept at once), 2 for now (worked out again next frame)
+	float none = 0.0;
 	if (pool > 0.5) {
-		// A trickle off the pool's downhill side, once the ground round it is known (last frame's) and slopes.
 		float groundRow = slot * Streams + Streams - 1.0;
 		float4 groundHead = PathTexel(0.0, groundRow);
 		float4 ground = PathTexel(1.0, groundRow);
@@ -389,26 +409,35 @@ float4 ProbePS(PSIN IN) : COLOR0 {
 	else {
 		s = SplatStream(seed, k, R, IN.c.w, TESR_BloodFlowInfo.w);
 		flatZ = WallFlatZ;
-		// The surface at the splat's centre: its slope decides where the streams start.
 		float3 X0, N0;
 		float along0, tol0;
 		bool seen0 = SeeSurface(C, 2.0, X0, N0, along0, tol0) && abs(along0) <= R * 0.5 + 4.0;
 		if (!seen0) valid = 0.0;
 		float3 plane = seen0 ? N0 : normalize(IN.b.xyz);
-		if (plane.z > WallFlatZ) flatZ = SplatGroundFlatZ;	// on the ground: downhill until about level
+		if (plane.z > WallFlatZ) flatZ = SplatGroundFlatZ;
 		if (s.active < 0.5) none = 1.0;
-		else if (plane.z > flatZ) none = seen0 ? 1.0 : 2.0;	// on a floor: it stays where it is
+		else if (plane.z > flatZ) none = seen0 ? 1.0 : 2.0;
 		float3 down = float3(plane.x * plane.z, plane.y * plane.z, plane.z * plane.z - 1.0);
 		down = length(down) > 0.01 ? normalize(down) : float3(0.0, 0.0, -1.0);
 		float3 across = normalize(cross(plane, down));
-		S = (seen0 ? X0 : C) + across * s.start.x + down * s.start.y;
+		float3 base = seen0 ? X0 : C;
+		[branch] if (dot(IN.d.xyz, IN.d.xyz) > 1e-12 && TESR_BloodFlowProbe.w > 0.5) {
+			float bestScore = -1.0;
+			[loop] for (int i = 0; i < 16; i++) {
+				float2 cand = float2((hash1(seed * 53.1 + k * 11.3 + i * 1.71) * 2.0 - 1.0) * 0.8 * R,
+					(hash1(seed * 29.7 + k * 5.9 + i * 2.37) * 1.1 - 0.25) * R);
+				float cover = DecalCover(base - C + across * cand.x + down * cand.y, IN.b, IN.c, IN.d, 5.0);
+				float score = cover + 0.3 * cand.y / R;
+				if (cover > 0.35 && score > bestScore) { bestScore = score; s.start = cand; }
+			}
+		}
+		S = base + across * s.start.x + down * s.start.y;
 		N = plane;
 	}
 	if (none > 0.5) {
 		if (column < 0.5) return float4(none < 1.5 ? LockFrames : 0.0, 0.0, 0.0, -1.0);
 		return float4(0.0, 0.0, 0.0, 0.0);
 	}
-	// Onto the surface.
 	float3 X, N1;
 	float along, tol;
 	if (SeeSurface(S, 2.0, X, N1, along, tol) && abs(along) <= tol * 2.0) { S = X; N = N1; }
@@ -417,31 +446,26 @@ float4 ProbePS(PSIN IN) : COLOR0 {
 	float h = max(s.lengthMax / 40.0, 0.6);
 	float target = column < 1.5 ? s.lengthMax : (column - 2.0) * s.lengthMax / 13.0;
 	float end;
-	float4 reached = RunDown(S, N, target, h, flatZ, seed * 61.0 + k * 7.0, valid, end);
+	float side = s.start.x + (k - 0.5) * 0.001 < 0.0 ? -1.0 : 1.0;
+	float4 reached = RunDown(S, N, target, h, flatZ, seed * 61.0 + k * 7.0, s.width, side, valid, end);
 	if (column > 1.5) return float4(reached.xyz - C, reached.w);
 	if (column > 0.5) return float4(reached.xyz - C, s.lengthMax);
 	float fall = 0.0;
-	if (end > 1.5) fall = FallFrom(reached.xyz, TESR_BloodFlowPool.z, valid);	// (not ?: : HLSL works out both sides)
+	if (end > 1.5) fall = FallFrom(reached.xyz, TESR_BloodFlowPool.z, valid);
 	return float4(valid > 0.5 ? seenBefore + 1.0 : 0.0, reached.w, fall, end);
 }
-
-// ---------------------------------------------------------------------------------------------------------------------
-// The bounds pass (BoundsPS): for each item (row = its slot, from the path texture just written), the box round all
-// its blood can reach, item-relative: column 0 (lowest corner, 1), column 1 (highest corner, 1). The paint pass drops
-// every pixel outside it at once (the box drawn round an item has to allow for any path; this one is the real paths).
 
 float4 BoundsPS(PSIN IN) : COLOR0 {
 	float slot, pool, fresh;
 	DecodeSlot(IN.a.w, slot, pool, fresh);
 	float column = floor(IN.vpos.x);
 	float R = IN.b.w;
-	float seed = floor(IN.c.z + 0.5) / 4096.0;
+	float seed = ItemSeed(IN.c.z);
 	float firstRow = slot * Streams;
 	float3 lo, hi;
 	float slope = 0.0;
 	float count = Streams;
 	if (pool > 0.5) {
-		// The pool, moved and stretched downhill (see BloodPS), on the ground's plane.
 		float4 groundHead = PathTexel(0.0, firstRow + Streams - 1.0);
 		float4 ground = PathTexel(1.0, firstRow + Streams - 1.0);
 		bool known = groundHead.y >= 5.0;
@@ -454,7 +478,6 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 		count = 2.0;
 	}
 	else {
-		// The game's splat itself (it dries too).
 		lo = -(R * 1.1 + 1.0);
 		hi = R * 1.1 + 1.0;
 	}
@@ -467,15 +490,12 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 		Stream s;
 		if (pool > 0.5) s = PoolStream(seed, k, R, slope, TESR_BloodFlowPool.x);
 		else s = SplatStream(seed, k, R, IN.c.w, TESR_BloodFlowInfo.w);
-		// The path strays at most this far from the line from its start to its end (see PaintPath); its puddle at most
-		// this big.
 		float3 chord = last.xyz - first;
 		float stray = 0.5 * sqrt(max(head.y * head.y - dot(chord, chord), 0.0));
 		float grow = stray + s.width * 4.0 + 3.0 + sqrt(max(last.w - head.y, 0.0) * s.width);
 		lo = min(lo, min(first, last.xyz) - grow);
 		hi = max(hi, max(first, last.xyz) + grow);
 		if (head.w > 1.5) {
-			// Drops falling from its end, and their stain.
 			float3 L = last.xyz - float3(0.0, 0.0, head.z > 0.0 ? head.z : TESR_BloodFlowPool.z);
 			float spread = s.width * 10.0 + 3.0;
 			lo = min(lo, L - spread);
@@ -485,16 +505,12 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 	return column < 0.5 ? float4(lo, 1.0) : float4(hi, 1.0);
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-// The paint pass.
-
-// What blood a pixel gets: the strongest thing that reaches it decides how thick it is and how it leans.
 struct Paint {
-	float cover;	// 0-1 how much of the pixel's surface it covers
-	float thick;	// 0 a thin film (a stain the surface shows through) - 1 a thick layer (pool, drop)
-	float3 bend;	// how its surface leans (rounded trails and drops), added to the surface's normal
-	float air;		// 0-1 a falling drop in front of the surface
-	float debug;	// 1 trail, 2 puddle, 3 edge drop, 4 landing stain
+	float cover;
+	float thick;
+	float3 bend;
+	float air;
+	float debug;
 };
 
 void Add(inout Paint p, float c, float thick, float3 bend, float debug) {
@@ -506,7 +522,6 @@ void Add(inout Paint p, float c, float thick, float3 bend, float debug) {
 	}
 }
 
-// The closest distance between the eye ray (ro + rd t, rd unit length) and the segment a-b; t: where along the ray.
 float RaySegment(float3 ro, float3 rd, float3 a, float3 b, out float t) {
 	float3 ab = b - a;
 	float3 w0 = ro - a;
@@ -520,40 +535,51 @@ float RaySegment(float3 ro, float3 rd, float3 a, float3 b, out float t) {
 	return length(ro + rd * t - (a + ab * u));
 }
 
-// One stream (path texture row `row`) on the surface: its trail, the bead at its front, and the puddle it ends in or the
-// drop hanging at the edge it reached. pp: the pixel's surface point, item-relative.
-void PaintPath(float row, Stream s, float3 pp, float aa, float age, float seed, inout Paint p) {
+struct Nearest {
+	float row;
+	float best;
+	float arc;
+	float side;
+	float score;
+};
+
+void StreamState(float row, inout Stream s, float age, out float ground, out float shown, out float excess, out float lengthMax) {
 	float4 head = PathTexel(0.0, row);
-	if (head.w < -0.5) return;
 	float4 last = PathTexel(1.0, row);
-	float lengthMax = max(last.w, 0.01);
-	float3 first = PathTexel(2.0, row).xyz;
-	float3 chord = last.xyz - first;
-	float chordLength2 = dot(chord, chord);
-	// UNOFFICIAL 2026-10-13 (user screenshot: on the ground the streams were stiff even bars with a round shiny cap at the end,
-	// "like mushrooms", and did not seem to flow): how much this path runs over the ground rather than down a wall (a wall's
-	// path drops about its whole length; one down a 10 degree slope only a sixth of it). On the ground: thinner, tapering to
-	// a point, ragged and wandering a little, soaking a faint stain into the dirt round it, three times slower, and no cap:
-	// what keeps coming ends as a small flat smear. Walls as before.
-	float ground = 1.0 - smoothstep(0.45, 0.75, abs(chord.z) / max(sqrt(chordLength2), 1e-3));
+	lengthMax = max(last.w, 0.01);
+	float3 chord = last.xyz - PathTexel(2.0, row).xyz;
+	ground = 1.0 - smoothstep(0.45, 0.75, abs(chord.z) / max(length(chord), 1e-3));
 	s.tau *= lerp(1.0, 3.0, ground);
 	s.delay *= lerp(1.0, 2.0, ground);
 	s.width = lerp(s.width, min(s.width, 1.0) * 0.7, ground);
 	float run = StreamRun(s, lengthMax, age);
-	float shown = min(run, head.y);
-	float excess = max(run - head.y, 0.0);
-	if (run < 0.05) return;
-	// Is the pixel near the path at all? A path of length L from its start to its end strays at most
-	// sqrt(L^2 - chord^2) / 2 from the straight line between them.
+	shown = min(run, head.y);
+	excess = max(run - head.y, 0.0);
+}
+
+float3 StreamTip(float row, float shown, float lengthMax) {
+	float f = min(shown / (lengthMax / 13.0), 13.0);
+	float4 P0 = PathTexel(2.0 + floor(f), row);
+	float4 P1 = PathTexel(2.0 + min(floor(f) + 1.0, 13.0), row);
+	return lerp(P0.xyz, P1.xyz, saturate((shown - P0.w) / max(P1.w - P0.w, 1e-4)));
+}
+
+void FindPath(float row, Stream s, float3 pp, float3 n, float aa, float age, float seed, inout Nearest nr, inout Paint p) {
+	float4 head = PathTexel(0.0, row);
+	if (head.w < -0.5) return;
+	float ground, shown, excess, lengthMax;
+	StreamState(row, s, age, ground, shown, excess, lengthMax);
+	if (shown + excess < 0.05) return;
+	float3 first = PathTexel(2.0, row).xyz;
+	float3 chord = PathTexel(1.0, row).xyz - first;
+	float chordLength2 = dot(chord, chord);
 	float3 toLine = pp - (first + chord * saturate(dot(pp - first, chord) / max(chordLength2, 1e-4)));
 	float stray = 0.5 * sqrt(max(head.y * head.y - chordLength2, 0.0));
 	if (length(toLine) > stray + s.width * 3.0 + 2.0 + sqrt(excess * s.width) + aa) return;
-	// The points are spaced `spacing` apart along the path (until it stops): the closest point on the part run so far.
-	float spacing = lengthMax / 13.0;
-	float segments = min(ceil(shown / spacing - 0.001), 13.0);
+	float segments = min(ceil(shown * 13.0 / lengthMax - 0.001), 13.0);
 	float best = 1e9;
 	float bestArc = 0.0;
-	float3 toBest = 0.0;
+	float bestSide = 1.0;
 	float4 A = PathTexel(2.0, row);
 	[loop] for (float j = 0.0; j < segments; j += 1.0) {
 		float4 B = PathTexel(j + 3.0, row);
@@ -563,57 +589,64 @@ void PaintPath(float row, Stream s, float3 pp, float aa, float age, float seed, 
 		float t = l2 > 1e-6 ? min(saturate(dot(pp - A.xyz, ab) / l2), most) : 0.0;
 		float3 off = pp - (A.xyz + ab * t);
 		float dist = length(off);
-		if (dist < best) { best = dist; bestArc = lerp(A.w, B.w, t); toBest = off; }
+		if (dist < best) { best = dist; bestArc = lerp(A.w, B.w, t); bestSide = dot(cross(ab, off), n); }
 		A = B;
 	}
-	// The front: `shown` along the path.
-	float f = min(shown / spacing, 13.0);
-	float4 P0 = PathTexel(2.0 + floor(f), row);
-	float4 P1 = PathTexel(2.0 + min(floor(f) + 1.0, 13.0), row);
-	float3 tip = lerp(P0.xyz, P1.xyz, saturate((shown - P0.w) / max(P1.w - P0.w, 1e-4)));
-	// On the ground the trail wanders a little either side of the path (it follows the dirt's small bumps) and its edge is
-	// ragged: the distance measured to the wandering line (sideways to the way it runs at its front), the width varied along it.
-	float lumpy = valueNoise(float2(bestArc * 0.09 + seed * 37.0, row * 1.7));
-	[branch] if (ground > 0.01) {
-		float3 side = cross(P1.xyz - P0.xyz, float3(0.0, 0.0, 1.0));
-		side *= rsqrt(max(dot(side, side), 1e-6));
-		toBest -= side * ((lumpy - 0.5) * 2.2 * ground * saturate(bestArc / 6.0));
-		best = length(toBest);
+	if (best - s.width * 1.5 < nr.score) {
+		nr.row = row;
+		nr.best = best;
+		nr.arc = bestArc;
+		nr.side = bestSide;
+		nr.score = best - s.width * 1.5;
 	}
-	// The trail: thinner as it goes, a thin film (it leaves only a coat behind the bead). On the ground: to a fine point,
-	// with a ragged edge, and a faint stain soaked into the dirt round it.
-	float along = saturate(bestArc / max(shown, 0.01));
-	float rag = lerp(1.0, 0.65 + 0.7 * frac(lumpy * 7.31 + bestArc * 0.23), ground);
-	float w = s.width * lerp(1.0, 0.65, along) * lerp(1.0, (1.0 - 0.75 * along) * rag, ground);
-	Add(p, saturate(0.5 - (best - w) / aa) * lerp(0.95, 0.75, along), lerp(0.3, 0.2, ground), toBest / max(w, 0.01) * lerp(0.6, 0.3, ground), 1.0);
-	[branch] if (ground > 0.01) {
-		float soak = w * 2.6 + 0.6;
-		Add(p, saturate(1.0 - best / soak) * 0.3 * ground * (1.0 - 0.5 * along), 0.0, 0.0, 1.0);
-	}
-	float3 toTip = pp - tip;
-	[branch] if (excess <= 0.0) {
-		// The bead at the front, fattening as it runs (on the ground only a little: it soaks in as it goes).
-		float bead = w * lerp(1.3 + 0.5 * saturate(shown / lengthMax), 1.15, ground);
-		Add(p, saturate(0.5 - (length(toTip) - bead) / aa), lerp(0.8, 0.45, ground), toTip / bead * lerp(1.0, 0.5, ground), 1.0);
-	}
-	else if (head.w < 1.5) {
-		// Gathered where it stopped: a puddle as big as what kept coming. UNOFFICIAL 2026-10-13: on the ground it soaks in
-		// instead: a smaller, flat, matte smear (the round shiny cap read as a mushroom on the end of every trail).
-		float rp = s.width * 1.2 + sqrt(excess * s.width * lerp(0.9, 0.3, ground));
-		float edge = rp * (0.8 + lerp(0.35, 0.5, ground) * valueNoise(float2(atan2(toTip.y, toTip.x) * lerp(1.6, 2.6, ground) + seed * 23.0, row * 3.0)));
-		float d = length(toTip) - edge;
-		Add(p, saturate(0.5 - d / aa), lerp(0.6 + 0.3 * saturate(-d / max(rp * 0.5, 0.5)), 0.3, ground), float3(toTip.xy / max(rp, 0.1), 0.0) * saturate(1.0 + d / max(rp * 0.3, 0.3)) * 0.4 * (1.0 - ground), 2.0);
-	}
-	else {
-		// Hanging at the edge, swelling until it lets go.
-		float rh = s.width * (1.0 + 0.9 * pow(frac(excess / s.dropVolume), 0.333));
-		float3 off = toTip + float3(0.0, 0.0, rh * 0.5);
-		Add(p, saturate(0.5 - (length(off) - rh) / aa), 0.9, off / rh, 3.0);
+	[branch] if (excess > 0.0) {
+		float3 toTip = pp - StreamTip(row, shown, lengthMax);
+		[branch] if (head.w < 1.5) {
+			float rp = s.width * 1.2 + sqrt(excess * s.width * lerp(0.9, 0.3, ground));
+			float rag = FlowNoise(float3(toTip.xy / max(rp, 0.5) * 1.3, seed * 23.0 + row)).x - 0.5;
+			float T = 1.0 - dot(toTip.xy, toTip.xy) / (rp * rp) + rag * (0.5 + 0.5 * TESR_BloodFlowFlow.y) * lerp(0.6, 0.9, ground);
+			[branch] if (TESR_BloodFlowProbe.w > 0.5)
+				T = Splatter(toTip.xy / (rp * 2.6), seed + row * 0.137, aa / (rp * 2.6)) * 1.25 - 0.1 + RaggedCore(toTip.xy, rp * 0.5, seed + row * 0.37);
+			T += clamp(-toTip.z / max(rp * 0.25, 0.4), -1.5, 1.0) * 0.45;
+			Add(p, Shows(T, aa * 2.0 / rp) * step(abs(toTip.z), rp + 2.0), lerp(0.55 + 0.35 * saturate(T), 0.3, ground), float3(toTip.xy / rp, 0.0) * saturate(1.0 - 3.0 * T) * 0.4 * (1.0 - ground), 2.0);
+		}
+		else {
+			float rh = s.width * (1.0 + 0.9 * pow(frac(excess / s.dropVolume), 0.333));
+			float3 off = toTip + float3(0.0, 0.0, rh * 0.5);
+			Add(p, saturate(0.5 - (length(off) - rh) / aa), 0.9, off / rh, 3.0);
+		}
 	}
 }
 
-// One stream's drops, if it runs off an edge: one leaves each time `dropVolume` more has run, falling as anything
-// falls (drawn on the eye ray ro + rd t in front of the surface at sceneDist), and the stain where they land.
+void PaintStream(Nearest nr, Stream s, float3 pp, float3 n, float aa, float age, float seed, inout Paint p) {
+	[branch] if (nr.row < 0.0) return;
+	float row = nr.row;
+	float ground, shown, excess, lengthMax;
+	StreamState(row, s, age, ground, shown, excess, lengthMax);
+	float3 way = PathTexel(1.0, row).xyz - PathTexel(2.0, row).xyz;
+	way *= rsqrt(max(dot(way, way), 1e-6));
+	float along = saturate(nr.arc / max(shown, 0.01));
+	float back = nr.arc < shown - 0.01 ? shown - nr.arc : -dot(pp - StreamTip(row, shown, lengthMax), way);
+	float bead = saturate(1.0 - back / (3.0 * s.width)) * (excess <= 0.0 ? 1.0 : 0.4);
+	float w = max(s.width * lerp(0.6, 1.0, along) * lerp(1.0, 1.0 - 0.6 * along, ground) * (1.0 + lerp(0.45, 0.1, ground) * bead), 0.05);
+	float3 side = normalize(cross(n, way));
+	float u = (nr.side < 0.0 ? -nr.best : nr.best) / w;
+	float2 dn = FlowNoise(float3(u * 0.6, nr.arc * 0.3 - TESR_BloodFlowFlow.w * TESR_BloodFlowFlow.x * 0.1, seed * 37.0 + row * 0.37)) - 0.5;
+	float phase = frac(TESR_BloodFlowFlow.w / FlowPeriod + seed);
+	float2 drift = float2(dn.y * TESR_BloodFlowFlow.y * StreakAcross * 0.5,
+		-CreepUnits * FlowPeriod * StreakAlong * TESR_BloodFlowFlow.x * max(1.0 + 1.6 * TESR_BloodFlowFlow.y * dn.x, 0.1) * lerp(1.0, 0.4, ground));
+	float4 st = float4(u * 0.5 * StreakAcross + frac(seed * 7.3 + row * 0.29), nr.arc * StreakAlong, 0.0, max(log2(aa * StreakAlong * 1024.0), 0.0));
+	float4 t = lerp(tex2Dlod(TESR_BloodStreaks, st + float4(drift * phase, 0.0, 0.0)),
+		tex2Dlod(TESR_BloodStreaks, st + float4(drift * frac(phase + 0.5) + 0.5, 0.0, 0.0)), abs(1.0 - 2.0 * phase)).gbar;
+	float T = 1.0 - u * u * (1.0 - 0.6 * TESR_BloodFlowFlow.y * dn.y) + (t.a - 0.3) * 0.5 + dn.x * TESR_BloodFlowFlow.y * 0.7 * (1.0 + bead);
+	Add(p, Shows(T, aa * 2.0 / w), saturate(T) * lerp(lerp(0.35, 0.9, bead), lerp(0.2, 0.45, bead), ground),
+		(side * (u * 0.6 + (t.x * 2.0 - 1.0) * 0.5 * t.a) + way * (saturate(-back / w) * 0.5 - (t.y * 2.0 - 1.0) * 0.5 * t.a)) * lerp(1.0, 0.5, ground), 1.0);
+	[branch] if (ground > 0.01) {
+		float soak = s.width * 2.6 + 0.6;
+		Add(p, saturate(1.0 - nr.best / soak) * 0.3 * ground * (1.0 - 0.5 * along), 0.0, 0.0, 1.0);
+	}
+}
+
 void PaintDrops(float row, Stream s, float3 pp, float3 ro, float3 rd, float sceneDist, float aa, float age, float seed, inout Paint p) {
 	float4 head = PathTexel(0.0, row);
 	if (head.w < 1.5) return;
@@ -621,9 +654,8 @@ void PaintDrops(float row, Stream s, float3 pp, float3 ro, float3 rd, float scen
 	float lengthMax = max(last.w, 0.01);
 	float excess = StreamRun(s, lengthMax, age) - head.y;
 	if (excess < s.dropVolume) return;
-	float3 E = last.xyz;		// the edge
+	float3 E = last.xyz;
 	float fallLength = head.z > 0.0 ? head.z : TESR_BloodFlowPool.z;
-	// Nowhere near the column the drops fall down, nor the stain under it: nothing to do.
 	float tColumn;
 	float nearColumn = RaySegment(ro, rd, E - float3(0.0, 0.0, fallLength), E, tColumn) - s.width * 1.5 - aa * tColumn / sceneDist;
 	float nearStain = length(pp - E + float3(0.0, 0.0, fallLength)) - s.width * 10.0;
@@ -637,38 +669,45 @@ void PaintDrops(float row, Stream s, float3 pp, float3 ro, float3 rd, float scen
 		if (fallen - m < 1.0 || since < 0.0 || since > fallTime) continue;
 		float3 bottom = E - float3(0.0, 0.0, 0.5 * g * since * since + radius);
 		float t;
-		float dist = RaySegment(ro, rd, bottom, bottom + float3(0.0, 0.0, min(g * since * 0.02, 8.0)), t);	// a little stretched by its speed
+		float dist = RaySegment(ro, rd, bottom, bottom + float3(0.0, 0.0, min(g * since * 0.02, 8.0)), t);
 		if (t > 0.0 && t < sceneDist - 0.5) p.air = max(p.air, saturate(0.5 - (dist - radius) / max(aa * t / sceneDist, 0.02)));
 	}
-	// Where they land: a stain that grows with each drop, with a few spatters round it.
 	float landed = floor(max(StreamRun(s, lengthMax, age - fallTime) - head.y, 0.0) / s.dropVolume);
 	[branch] if (head.z > 0.0 && landed >= 1.0) {
 		float3 off = pp - E + float3(0.0, 0.0, head.z);
 		float rl = s.width * (1.2 + 0.9 * sqrt(landed));
-		float edge = rl * (0.75 + 0.5 * valueNoise(float2(atan2(off.y, off.x) * 2.0 + seed * 40.0, row)));
-		float c = saturate(0.5 - (length(off) - edge) / aa);
-		float cellSize = s.width * 1.5;
-		float2 inCell = frac(off.xy / cellSize) - 0.5;
-		float spot = hash2(floor(off.xy / cellSize) + seed * 13.0) > 0.8 ? saturate(0.5 - (length(inCell) * cellSize - s.width * 0.35) / aa) : 0.0;
-		spot *= step(length(off), rl * 2.2) * saturate(landed / 3.0);
-		Add(p, max(c, spot) * step(abs(off.z), 3.0), 0.55, float3(0.0, 0.0, 0.0), 4.0);
+		float c;
+		[branch] if (TESR_BloodFlowProbe.w > 0.5) {
+			float T = SmallSplatter(off.xy / (rl * 3.2), seed + row * 0.29, aa / (rl * 3.2)) * 1.25 - 0.1 + saturate(1.0 - length(off.xy) / (rl * 0.35)) * 0.5;
+			c = Shows(T, aa * 2.0 / rl);
+		}
+		else {
+			float edge = rl * (0.75 + 0.5 * valueNoise(float2(atan2(off.y, off.x) * 2.0 + seed * 40.0, row)));
+			c = saturate(0.5 - (length(off) - edge) / aa);
+			float cellSize = s.width * 1.5;
+			float2 inCell = frac(off.xy / cellSize) - 0.5;
+			float spot = hash2(floor(off.xy / cellSize) + seed * 13.0) > 0.8 ? saturate(0.5 - (length(inCell) * cellSize - s.width * 0.35) / aa) : 0.0;
+			c = max(c, spot * step(length(off), rl * 2.2) * saturate(landed / 3.0));
+		}
+		Add(p, c * step(abs(off.z), 3.0), 0.55, float3(0.0, 0.0, 0.0), 4.0);
 	}
 }
 
-// A highlight's shape, 1 at its peak (Blinn-Phong): its brightness is set by the caller.
-float Lobe(float3 N, float3 V, float3 L, float exponent) {
+float Glint(float3 N, float3 V, float3 L, float a2) {
 	float3 H = normalize(L + V);
-	return pow(saturate(dot(N, H)), exponent) * saturate(dot(N, L) * 4.0);
+	float nh = saturate(dot(N, H));
+	float lh = saturate(dot(L, H));
+	float d = nh * nh * (a2 - 1.0) + 1.0;
+	return a2 / (3.14159 * d * d) * (0.02 + 0.98 * pow(1.0 - lh, 5.0)) * 0.25 / max(lh * lh, 0.1) * saturate(dot(N, L));
 }
 
-// A lamp's share of the highlight: lamp.xyz in world space, lamp.w its radius (0: no lamp). The fall-off is WetWorld's.
-float LampLobe(float3 N, float3 V, float3 P, float4 lamp, float3 color, float exponent) {
+float LampGlint(float3 N, float3 V, float3 P, float4 lamp, float3 color, float a2) {
 	if (lamp.w <= 0.0) return 0.0;
 	float3 toLamp = lamp.xyz - P;
 	float s = saturate(dot(toLamp, toLamp) / (lamp.w * lamp.w));
-	if (s >= 1.0) return 0.0;		// out of its reach
+	if (s >= 1.0) return 0.0;
 	float atten = (1.0 - s) * (1.0 - s) / (1.0 + 5.0 * s);
-	return Lobe(N, V, normalize(toLamp), exponent) * atten * saturate(luma(color));
+	return Glint(N, V, normalize(toLamp), a2) * atten * saturate(luma(color));
 }
 
 float4 BloodPS(PSIN IN) : COLOR0 {
@@ -678,24 +717,17 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	float depth = min(readDepth(uv), farZ * 0.98);
 	bool sky = depth >= farZ * 0.979;
 
-	// (Kept to what the streams need: the rest is worked out after them, so the shader fits in its registers.)
 	float slot, pool, fresh;
 	DecodeSlot(IN.a.w, slot, pool, fresh);
-	float3 rel = toWorld(uv) * depth;		// the surface, eye-relative
+	float3 rel = toWorld(uv) * depth;
 	float sceneDist = length(rel);
 	float3 rd = rel / sceneDist;
-	// The surface, item-relative (none on the sky); the eye is at -IN.a.xyz.
 	float3 pp = sky ? float3(1e5, 1e5, 1e5) : rel - IN.a.xyz;
-	// Rounded: values passed from the vertices differ a little from pixel to pixel, and the hashes would turn that into
-	// noise (drips flickering on and off from row to row).
-	float seed = floor(IN.c.z + 0.5) / 4096.0;
-	// The size of a pixel on the surface here (for smooth edges).
+	float seed = ItemSeed(IN.c.z);
 	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05);
 	float firstRow = slot * Streams;
 
-	// Outside the box round everything this item's blood reaches (the bounds pass), and the eye ray not crossing it
-	// either (a drop could be falling in front of the surface): nothing here.
-	float boundsV = (firstRow + Streams * 0.5) * TESR_BloodFlowProbe.x;	// its row of the bounds texture (one per slot)
+	float boundsV = (firstRow + Streams * 0.5) * TESR_BloodFlowProbe.x;
 	float4 lo = tex2Dlod(TESR_BloodFlowBounds, float4(0.25, boundsV, 0.0, 0.0));
 	float4 hi = tex2Dlod(TESR_BloodFlowBounds, float4(0.75, boundsV, 0.0, 0.0));
 	[branch] if (lo.w > 0.5) {
@@ -720,7 +752,6 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	float rim = 0.0;
 
 	[branch] if (pool > 0.5) {
-		// The ground round the pool (from the probe): on a slope the pool moves downhill and stretches that way.
 		float4 groundHead = PathTexel(0.0, firstRow + Streams - 1.0);
 		float4 ground = PathTexel(1.0, firstRow + Streams - 1.0);
 		bool known = fresh < 0.5 && groundHead.y >= 5.0;
@@ -728,17 +759,15 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		float slope = length(gN.xy) / max(gN.z, 0.3);
 		float2 downhill = slope > 1e-3 ? normalize(gN.xy) : float2(1.0, 0.0);
 		float R = IN.b.w;
-		float grow = sqrt(saturate(1.0 - exp(-IN.c.x * 3.0 / TESR_BloodFlowPool.x)));	// most of the way by the spread time
+		float grow = sqrt(saturate(1.0 - exp(-IN.c.x * 3.0 / TESR_BloodFlowPool.x)));
 		float radius = R * grow;
 		float2 q = pp.xy - downhill * R * PoolShift(slope) * grow;
 		float alongQ = dot(q, downhill);
 		float2 shaped = float2(alongQ / (alongQ > 0.0 ? PoolStretch(slope) : 1.0), dot(q, float2(-downhill.y, downhill.x)));
 		float fromCentre = length(shaped);
-		// On the ground near the plane the probe found (a little more leeway further out).
 		float groundZ = (known ? ground.w : 0.0) - (gN.x * pp.x + gN.y * pp.y) / max(gN.z, 0.3);
 		bool onGround = fromCentre < R * 1.45 && pp.z < groundZ + 5.0 + 0.15 * fromCentre && pp.z > groundZ - (8.0 + 0.3 * fromCentre);
 		[branch] if (onGround && radius > 0.05 && normalize(GetWorldNormalLod(uv)).z > 0.6) {
-			// A main body and a lobe off one side, joined smoothly, with a ragged edge from noise fixed to the ground.
 			float angle = seed * 6.2832;
 			float2 lobeWay = float2(cos(angle), sin(angle));
 			float dMain = fromCentre - radius;
@@ -746,115 +775,244 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 			float kk = radius * 0.3 + 0.01;
 			float mixLobe = saturate(0.5 + 0.5 * (dLobe - dMain) / kk);
 			float dist = lerp(dLobe, dMain, mixLobe) - kk * mixLobe * (1.0 - mixLobe);
-			dist += (fbm(pp.xy * 0.09 + seed * 17.0) - 0.5) * radius * 0.55;
-			float cover = saturate(0.5 - dist / aa);
-			rim = saturate(1.0 + dist / max(radius * 0.12, 0.8)) * cover;
-			float deep = saturate(-dist / max(radius * 0.5, 0.5));
-			// The edge bulges (a meniscus): its normal leans outward there.
+			dist += (fbm(pp.xy * 0.09 + seed * 17.0) - 0.5) * radius * 0.55 * (0.5 + 0.5 * TESR_BloodFlowFlow.y);
+			dist += clamp(pp.z - groundZ, -radius * 0.4, radius * 0.4) * 0.8;
+			float T = 0.25 - dist / max(radius, 0.5) * 0.9;
+			[branch] if (TESR_BloodFlowProbe.w > 0.5)
+				T = Splatter(shaped / (radius * 2.2), seed, aa / (radius * 2.2)) * 1.25 - 0.1 + RaggedCore(shaped, radius * 0.55, seed)
+					- clamp(pp.z - groundZ, -radius * 0.4, radius * 0.4) * 0.72 / max(radius, 0.5);
+			float cover = Shows(T, aa * 0.9 / max(radius, 0.5));
+			float inward = (T - 1.0 + TESR_BloodFlowFlow.z) * max(radius, 0.5) / 0.9;
+			rim = saturate(1.0 - inward / max(radius * 0.12, 0.8)) * cover;
+			float deep = saturate(inward / max(radius * 0.5, 0.5));
 			float2 outward = length(pp.xy) > 0.001 ? normalize(pp.xy) : float2(0.0, 0.0);
 			Add(p, cover, 0.35 + 0.65 * deep, float3(outward * rim * rim * 0.3, 0.0), 2.0);
 		}
-		// Trickles off the downhill side.
+		Nearest nr;
+		nr.row = -1.0; nr.best = 1e9; nr.arc = 0.0; nr.side = 1.0; nr.score = 1e9;
 		[loop] for (float k = 0.0; k < 2.0; k += 1.0)
-			PaintPath(firstRow + k, PoolStream(seed, k, IN.b.w, slope, TESR_BloodFlowPool.x), pp, aa, IN.c.x, seed, p);
+			FindPath(firstRow + k, PoolStream(seed, k, IN.b.w, slope, TESR_BloodFlowPool.x), pp, float3(gN.xy, max(gN.z, 0.3)), aa, IN.c.x, seed, nr, p);
+		PaintStream(nr, PoolStream(seed, nr.row - firstRow, IN.b.w, slope, TESR_BloodFlowPool.x), pp, float3(gN.xy, max(gN.z, 0.3)), aa, IN.c.x, seed, p);
 		[loop] for (float k2 = 0.0; k2 < 2.0; k2 += 1.0)
 			PaintDrops(firstRow + k2, PoolStream(seed, k2, IN.b.w, slope, TESR_BloodFlowPool.x), pp, -IN.a.xyz, rd, sceneDist, aa, IN.c.x, seed, p);
 	}
 	else {
+		Nearest nr;
+		nr.row = -1.0; nr.best = 1e9; nr.arc = 0.0; nr.side = 1.0; nr.score = 1e9;
 		[loop] for (float k = 0.0; k < Streams; k += 1.0)
-			PaintPath(firstRow + k, SplatStream(seed, k, IN.b.w, IN.c.w, TESR_BloodFlowInfo.w), pp, aa, IN.c.x, seed, p);
+			FindPath(firstRow + k, SplatStream(seed, k, IN.b.w, IN.c.w, TESR_BloodFlowInfo.w), pp, IN.b.xyz, aa, IN.c.x, seed, nr, p);
+		PaintStream(nr, SplatStream(seed, nr.row - firstRow, IN.b.w, IN.c.w, TESR_BloodFlowInfo.w), pp, IN.b.xyz, aa, IN.c.x, seed, p);
 		[loop] for (float k2 = 0.0; k2 < Streams; k2 += 1.0)
 			PaintDrops(firstRow + k2, SplatStream(seed, k2, IN.b.w, IN.c.w, TESR_BloodFlowInfo.w), pp, -IN.a.xyz, rd, sceneDist, aa, IN.c.x, seed, p);
 	}
 
 	float4 scene = tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0, 0.0));
-	float splat = 0.0;		// the game's own splat under it (found by its red)
+	float splat = 0.0;
 	if (pool < 0.5) {
-		// The game's splat: inside its radius, wherever the image is red.
 		float inside = 1.0 - smoothstep(0.7, 1.05, length(pp) / IN.b.w);
 		float redness = saturate((scene.r - max(scene.g, scene.b)) / max(scene.r, 0.02) * 1.6 - 0.35);
 		splat = inside * redness;
-		p.cover *= 1.0 - 0.6 * splat * step(p.thick, 0.5);	// where a trail starts inside the splat, the splat shows
+		p.cover *= 1.0 - 0.6 * splat * step(p.thick, 0.5);
 	}
 
 	if (TESR_BloodFlowInfo.y > 0.5) {
-		// Debug view. Red: trails; yellow: puddles and pools; blue: a drop at an edge; cyan: where drops land; white:
-		// falling drops; green: the rest of the area it looks at; white rings every 10 units round the item's centre.
 		if (p.air > 0.5) return float4(1, 1, 1, 0.9);
 		if (p.cover > 0.5) {
 			float3 c = p.debug < 1.5 ? float3(1, 0, 0) : p.debug < 2.5 ? float3(1, 0.9, 0) : p.debug < 3.5 ? float3(0, 0.3, 1) : float3(0, 1, 1);
 			return float4(c, 0.85);
 		}
-		if (!sky && frac(length(pp) / 10.0) < 0.06) return float4(1, 1, 1, 0.6);
+		if (pp.x < 9e4 && frac(length(pp) / 10.0) < 0.06) return float4(1, 1, 1, 0.6);
 		return float4(0, 0.6, 0, 0.35);
 	}
 	float amount = saturate(max(max(p.cover, splat), p.air));
 	if (amount * IN.c.y < 0.004) discard;
 
 	float3 sceneLin = linearize(max(scene.rgb, 0.0));
-	// The light here, from the brightest channel (the game's red splat is dark only in green and blue); capped, so a
-	// lamp-lit or white surface cannot make the blood glow.
-	float light = min(max(sceneLin.r, max(sceneLin.g, sceneLin.b)) / AssumedAlbedo, 2.5);
+	float lit = 0.0;
+	if (TESR_BloodFlowInfo.x > 0.5) {
+		float sunAmbient = max(luma(linearize(TESR_SunAmbient.rgb)), 0.001);
+		float4 shadows = tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0.0, 0.0));
+		lit = saturate(pow(abs((shadows.r + shadows.g) / sunAmbient), 5.0));
+	}
+	float irradiance = luma(linearize(saturate(TESR_SunAmbient.rgb)))
+		+ lit * luma(linearize(saturate(TESR_SunColor.rgb))) * saturate(dot(normalize(GetWorldNormalLod(uv)), normalize(TESR_SunDirection.xyz)));
+	float light = min(max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)) / AssumedAlbedo, irradiance), 2.5);
 	float age = IN.c.x;
 	float dryTime = pool > 0.5 ? TESR_BloodFlowInfo.z : TESR_BloodFlowDry.w;
-	// Drying: a thin film dries much sooner than a thick layer.
 	float dry = smoothstep(0.0, 1.0, age / (dryTime * lerp(0.5, 1.6, p.thick)));
-	float3 albedo = lerp(TESR_BloodFlowFresh.rgb, TESR_BloodFlowDry.rgb, dry);
-	// Dried blood is uneven: thicker and thinner patches, fixed to the surface.
+	float3 freshColour = TESR_BloodFlowFresh.rgb;
+	float3 dryColour = TESR_BloodFlowDry.rgb;
+	[branch] if (TESR_BloodFlowMatch.w > 0.5 && IN.d.w > 0.5) {
+		float t = floor(IN.d.w + 0.5);
+		float r = floor(t / 65536.0);
+		r += (t - r * 65536.0 >= 65536.0) ? 1.0 : ((t - r * 65536.0 < 0.0) ? -1.0 : 0.0);
+		float gb = t - r * 65536.0;
+		float g = floor(gb / 256.0);
+		g += (gb - g * 256.0 >= 256.0) ? 1.0 : ((gb - g * 256.0 < 0.0) ? -1.0 : 0.0);
+		freshColour = linearize(saturate(float3(r, g, gb - g * 256.0) / 255.0 * TESR_BloodFlowMatch.x)) * TESR_BloodFlowMatch.y;
+		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
+	}
+	float3 albedo = lerp(freshColour, dryColour, dry);
 	albedo *= lerp(1.0, 0.8 + 0.4 * valueNoise((pp.xy + pp.z) * 0.35 + seed * 31.0), dry);
-	// A thin film is a stain: the surface shows through, darkened and reddened. A thick layer is the blood's own colour,
-	// darker where deep, with a dark ring at a dried pool's edge.
-	float3 film = sceneLin * saturate(albedo / AssumedAlbedo);
-	float3 layer = light * albedo * lerp(1.0, 0.6, saturate(p.thick * 1.3 - 0.3)) * (1.0 - 0.35 * dry * rim);
-	float3 blood = lerp(film, layer, saturate(p.thick * 1.4 - 0.2));
+	float3 through = exp(-(1.2 + log(max(albedo.r, 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * p.thick));
+	float3 blood = (sceneLin * through + light * albedo * lerp(1.0, 0.6, saturate(p.thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
+	blood += light * albedo * (pow(saturate(dot(rd, normalize(TESR_SunDirection.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - saturate(p.thick)) * 0.8);
 	float3 colour = sceneLin;
-	colour = lerp(colour, colour * lerp(1.0, float3(0.5, 0.62, 0.62), dry), splat);	// the game's splat dries too: darker, browner
+	colour = lerp(colour, colour * lerp(1.0, float3(0.5, 0.62, 0.62), dry), splat);
 	colour = lerp(colour, blood, p.cover);
 
-	// Fresh blood shines a little, thick blood most: the sun (outdoors, where it is not shaded) and the lamps, as
-	// directions only, at most about the light measured here (no glare, no glow); a faint colourless sheen at low angles.
-	float wet = max(p.cover, splat * 0.5);
-	float gloss = TESR_BloodFlowFresh.w * (1.0 - dry) * wet * lerp(0.35, 1.0, p.thick);
+	float wet = max(p.cover, splat * 0.12);
+	float gloss = TESR_BloodFlowFresh.w * (1.0 - dry) * wet * lerp(0.5, 1.0, p.thick);
 	[branch] if (gloss > 0.001) {
 		float3 V = -rd;
 		float3 Nb = normalize(normalize(GetWorldNormalLod(uv)) + p.bend * 0.8);
-		float exponent = lerp(300.0, 60.0, dry);
-		float lobes = 0.0;
-		if (TESR_BloodFlowInfo.x > 0.5) {
-			float sunAmbient = max(luma(linearize(TESR_SunAmbient.rgb)), 0.001);
-			float4 shadows = tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0.0, 0.0));
-			float lit = saturate(pow(abs((shadows.r + shadows.g) / sunAmbient), 5.0));
-			lobes += Lobe(Nb, V, normalize(TESR_SunDirection.xyz), exponent) * lit * saturate(luma(linearize(TESR_SunColor.rgb)));
-		}
+		float rough = lerp(0.12, 0.45, dry);
+		float a2 = rough * rough * rough * rough;
+		float glints = 0.0;
+		if (TESR_BloodFlowInfo.x > 0.5) glints += Glint(Nb, V, normalize(TESR_SunDirection.xyz), a2) * lit * saturate(luma(linearize(TESR_SunColor.rgb)));
 		float3 P = TESR_CameraPosition.xyz + rd * sceneDist;
 		[loop] for (int i = 0; i < 12; i++) {
-			lobes += LampLobe(Nb, V, P, TESR_ShadowLightPosition[i], TESR_LightColor[i].rgb, exponent);
-			lobes += LampLobe(Nb, V, P, TESR_LightPosition[i], TESR_LightColor[i + 12].rgb, exponent);
+			glints += LampGlint(Nb, V, P, TESR_ShadowLightPosition[i], TESR_LightColor[i].rgb, a2);
+			glints += LampGlint(Nb, V, P, TESR_LightPosition[i], TESR_LightColor[i + 12].rgb, a2);
 		}
-		float fresnel = 0.04 + 0.96 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
-		colour += (min(lobes, 1.0) * 0.55 + 0.05 * fresnel) * light * gloss;
+		float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
+		float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
+		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * (1.0 - rough) * 0.5) * gloss;
 	}
-	// A falling drop: a dark red bead with a faint glint, in front of whatever is behind it (lit about as that is).
-	float3 drop = light * (TESR_BloodFlowFresh.rgb * 0.7 + float3(0.02, 0.004, 0.004) * TESR_BloodFlowFresh.w);
+	float3 drop = light * (freshColour * 0.7 + float3(0.02, 0.004, 0.004) * TESR_BloodFlowFresh.w);
 	colour = lerp(colour, drop, p.air);
-	colour = min(colour, 1.0);
+	float ceiling = max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1.0);
+	colour = min(colour, ceiling);
 
-	// Blended over the image by `alpha`: the colour is given as what the pixel would be at full strength, so where the
-	// image is still what this read, the result is exactly `colour`.
 	float alpha = amount * IN.c.y;
 	float3 full = (colour - sceneLin * (1.0 - amount)) / max(amount, 0.004);
-	return float4(delinearize(max(full, 0.0)), alpha);
+	full = max(full, 0.0);
+	full *= ceiling / max(max(full.r, max(full.g, full.b)), ceiling);
+	return float4(delinearize(full), alpha);
 }
+
+VSOUT CutBox(VSIN IN, float limit) {
+	VSOUT OUT;
+	OUT.a = IN.a;
+	OUT.b = IN.b;
+	OUT.c = IN.c;
+	OUT.d = IN.d;
+	float3 corner = IN.position.xyz;
+	float margin = 1.5 + 0.004 * length(IN.a.xyz);
+	if (TESR_BloodFlowShape.w > 0.5) {
+		float slot, pool, fresh;
+		DecodeSlot(IN.a.w, slot, pool, fresh);
+		float boundsV = (slot * Streams + Streams * 0.5) * TESR_BloodFlowProbe.x;
+		float4 lo = tex2Dlod(BloodFlowBoundsVS, float4(0.25, boundsV, 0.0, 0.0));
+		float4 hi = tex2Dlod(BloodFlowBoundsVS, float4(0.75, boundsV, 0.0, 0.0));
+		if (lo.w > 0.5 && hi.w > 0.5) corner = clamp(corner, lo.xyz - margin, hi.xyz + margin);
+	}
+	corner = clamp(corner, -limit - margin, limit + margin);
+	float3 rel = IN.a.xyz + corner;
+	float face = floor(IN.position.w + 0.5);
+	float axis = floor(face * 0.5);
+	float side = face - axis * 2.0 > 0.5 ? 1.0 : -1.0;
+	float plane = axis < 0.5 ? rel.x : (axis < 1.5 ? rel.y : rel.z);
+	OUT.position = side * plane > 0.0 ? mul(float4(rel + TESR_BloodFlowShape.xyz, 1.0), TESR_ViewProjectionTransform) : float4(0.0, 0.0, -2.0, 1.0);
+	return OUT;
+}
+
+VSOUT PaintVS(VSIN IN) { return CutBox(IN, 1e9); }
+VSOUT BeadsVS(VSIN IN) { return CutBox(IN, IN.b.w * 1.1 + 1.0); }
 
 technique BloodFlow
 {
 	pass
 	{
-		VertexShader = compile vs_3_0 BoxVS();
+		VertexShader = compile vs_3_0 PaintVS();
 		PixelShader = compile ps_3_0 BloodPS();
 		AlphaBlendEnable = true;
 		SrcBlend = SrcAlpha;
 		DestBlend = InvSrcAlpha;
+		BlendOp = Add;
+		SeparateAlphaBlendEnable = false;
+		AlphaTestEnable = false;
+		ZEnable = false;
+		ZWriteEnable = false;
+		StencilEnable = false;
+		CullMode = None;
+		ScissorTestEnable = false;
+		ColorWriteEnable = 7;
+	}
+}
+
+float4 BeadsPS(PSIN IN) : COLOR0 {
+	float2 uv = (IN.vpos + 0.5) * TESR_ReciprocalResolution.xy;
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	if (pool > 0.5 || TESR_BloodFlowBeads.x <= 0.0 || TESR_BloodFlowProbe.w < 0.5 || dot(IN.d.xyz, IN.d.xyz) < 1e-12) discard;
+	float viewmodelDepth = tex2D(TESR_DepthBufferViewModel, uv).x;
+	if ((TESR_DepthConstants.z == 0 && viewmodelDepth < 0.9) || (TESR_DepthConstants.z > 0 && viewmodelDepth > 0.01)) discard;
+	float depth = readDepth(uv);
+	if (depth >= farZ * 0.979) discard;
+	float3 rel = toWorld(uv) * depth;
+	float3 pp = rel - IN.a.xyz;
+	float3 n = normalize(IN.b.xyz);
+	if (abs(dot(pp, n)) > IN.b.w * 0.5 + 4.0) discard;
+	float code = floor(floor(IN.c.z + 0.5) / 4096.0);
+	float quarter = fmod(code, 5.0);
+	float ratio = exp2(floor(code / 20.0) / 31.5 - 1.0);
+	float3 vAxis = cross(n, IN.d.xyz) * ratio * (fmod(floor(code / 10.0), 2.0) > 0.5 ? -1.0 : 1.0);
+	float2 local = float2(dot(pp, IN.d.xyz), dot(pp, vAxis)) + 0.5;
+	if (any(local < 0.0) || any(local > 1.0)) discard;
+	float2 atlas = quarter < 3.5 ? local * 0.5 + float2(fmod(quarter, 2.0), floor(quarter * 0.5)) * 0.5 : local;
+	bool mirrored = fmod(floor(code / 5.0), 2.0) > 0.5;
+	if (mirrored) atlas.x = 1.0 - atlas.x;
+	float width = 1.0 / length(IN.d.xyz);
+	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05);
+	float blood = tex2Dlod(TESR_BloodSplatter, float4(atlas, 0.0, log2(max(aa / width * 1024.0, 1.0)))).a;
+	if (blood < 0.25) discard;
+	float tiles = max(width / max(TESR_BloodFlowBeads.y, 1.0), 1.0);
+	float4 drop = tex2Dlod(TESR_BloodDrops, float4(local * tiles, 0.0, log2(max(aa / width * tiles * 1024.0, 1.0))));
+	float wet = 1.0 - smoothstep(0.0, TESR_BloodFlowDry.w * 0.8, IN.c.x);
+	float show = saturate((wet * 1.1 - drop.a) * 6.0) * saturate(blood * 1.6 - 0.4);
+	float h = drop.r * show;
+	if (h < 0.01) discard;
+	float2 slope = (drop.gb * 2.0 - 1.0) * show;
+	float3 N = normalize(GetWorldNormalLod(uv));
+	float3 T = normalize(IN.d.xyz) * (mirrored ? -1.0 : 1.0);
+	float3 B = normalize(vAxis);
+	float3 Nb = normalize(N + (T * slope.x - B * slope.y) * 1.5);
+	float3 sceneLin = linearize(max(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0, 0.0)).rgb, 0.0));
+	float light = min(max(sceneLin.r, max(sceneLin.g, sceneLin.b)) / AssumedAlbedo, 2.5);
+	float3 V = -normalize(rel);
+	float a2 = 0.06 * 0.06 * 0.06 * 0.06;
+	float glints = 0.0;
+	if (TESR_BloodFlowInfo.x > 0.5) {
+		float sunAmbient = max(luma(linearize(TESR_SunAmbient.rgb)), 0.001);
+		float4 shadows = tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0.0, 0.0));
+		float lit = saturate(pow(abs((shadows.r + shadows.g) / sunAmbient), 5.0));
+		glints += Glint(Nb, V, normalize(TESR_SunDirection.xyz), a2) * lit * saturate(luma(linearize(TESR_SunColor.rgb)));
+	}
+	float3 P = TESR_CameraPosition.xyz + rel;
+	[loop] for (int i = 0; i < 12; i++) {
+		if (TESR_ShadowLightPosition[i].w <= 0.0 && TESR_LightPosition[i].w <= 0.0) break;
+		glints += LampGlint(Nb, V, P, TESR_ShadowLightPosition[i], TESR_LightColor[i].rgb, a2);
+		glints += LampGlint(Nb, V, P, TESR_LightPosition[i], TESR_LightColor[i + 12].rgb, a2);
+	}
+	float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
+	float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
+	float strength = TESR_BloodFlowBeads.x * IN.c.y;
+	float3 shine = (min(glints, 1.0) * 0.45 * min(light, 1.2) + fresnel * surroundings * 0.4) * h * strength;
+	float darken = 1.0 - 0.3 * h * saturate(strength);
+	float3 under = sceneLin * darken;
+	return float4(max(delinearize(under + shine) - delinearize(under), 0.0), darken);
+}
+
+technique BloodBeads
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 BeadsVS();
+		PixelShader = compile ps_3_0 BeadsPS();
+		AlphaBlendEnable = true;
+		SrcBlend = One;
+		DestBlend = SrcAlpha;
 		BlendOp = Add;
 		SeparateAlphaBlendEnable = false;
 		AlphaTestEnable = false;

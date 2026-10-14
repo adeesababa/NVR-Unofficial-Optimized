@@ -9,18 +9,6 @@
 #include <unordered_map>
 #include <vector>
 
-// UNOFFICIAL material rules (docs/MATERIAL-RULES-PLAN.md): per-texture settings for the object shaders' PBR guess, picked
-// from the diffuse texture's path by a small text table the user can edit (NewVegasReloaded.dll.materials.txt). Kept free
-// of NVR's globals so the offline check (tests\material_rules.cpp) runs exactly this code over every texture in the game.
-//
-// Table lines (# starts a comment):
-//   class   <name> metal=<off|guess|mask|full> strength=<0-1> rough=<min>-<max> reflections=<x> tint=<r>,<g>,<b>
-//   folder  <prefix> <class> [final]     longest prefix wins; "final" folders are decided before any keyword
-//   keyword <word> <class> [not=<a>,<b>] the file name contains <word> and none of the not= words
-//   file    <path> <class>               one texture, before everything else
-//   strip   <prefix>                     a folder level to look through: "strip textures\nvdlc01" makes
-//                                        textures\nvdlc01\clutter\x.dds match as textures\clutter\x.dds
-// Order: file, final folder, keyword, folder, else no rule (today's look exactly). The class "default" is no rule too.
 namespace MaterialRules {
 
 	enum Metal { MetalGuess = 0, MetalMask = 1, MetalFull = 2, MetalOff = 3 };
@@ -28,14 +16,13 @@ namespace MaterialRules {
 	struct Rule {
 		std::string	Name;
 		int			Metal = MetalGuess;
-		float		Strength = 1.0f;		// the metal's strength (replaces [Shaders.PBR.Metal] World/FirstPerson for this texture)
-		float		RoughMin = -1.0f;		// < 0: the global roughness (getRoughness)
+		float		Strength = 1.0f;
+		float		RoughMin = -1.0f;
 		float		RoughMax = -1.0f;
-		float		Reflections = 1.0f;		// metal's surroundings reflection, times [Shaders.PBR.Metal] Reflections
-		float		Tint[3] = { 0.5f, 0.5f, 0.5f };	// DebugView colour
+		float		Reflections = 1.0f;
+		float		Tint[3] = { 0.5f, 0.5f, 0.5f };
 	};
 
-	// "Data\Textures\Weapons\Foo.DDS" -> "textures\weapons\foo.dds"
 	inline std::string Normalize(const char* path) {
 		std::string p(path ? path : "");
 		for (char& c : p) c = (c == '/') ? '\\' : (char)tolower((unsigned char)c);
@@ -51,10 +38,8 @@ namespace MaterialRules {
 
 	class Table {
 	public:
-		// Rule 0 is "no rule": Match returns 0 for anything the table does not cover.
 		Table() { Rules.push_back(Rule()); Rules[0].Name = "default"; }
 
-		// Returns false and fills Errors (one line each) for lines it could not read; good lines are kept.
 		bool Load(const std::string& text, std::string& errors) {
 			*this = Table();
 			bool ok = true;
@@ -83,7 +68,6 @@ namespace MaterialRules {
 			return ok;
 		}
 
-		// The rule for a normalised path (Normalize).
 		int Match(const std::string& path) const {
 			auto exact = Files.find(path);
 			if (exact != Files.end()) return exact->second;

@@ -11,6 +11,8 @@ public:
 	ShaderRecordVertex* VertexShader;
 	ShaderRecordPixel* PixelShader;
 
+	static inline bool TwoSided = false;
+
 	std::stack<NiGeometry*>	GeometryList;
 	virtual bool AccumObject(NiGeometry* Geo) { return true; };
 	virtual int TestObject(NiGeometry* Geo) { return 1; };

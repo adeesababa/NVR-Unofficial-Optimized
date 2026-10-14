@@ -18,7 +18,7 @@ public:
 	struct SkinStruct {
 		D3DXVECTOR4		SkinData;
 		D3DXVECTOR4		SkinColor;
-		D3DXVECTOR4		SkinDiffusion;	// UNOFFICIAL: x PerPixelDiffusion, y Translucency (TESR_SkinDiffusion)
+		D3DXVECTOR4		SkinDiffusion;
 	};
 	SkinStruct Constants;
 

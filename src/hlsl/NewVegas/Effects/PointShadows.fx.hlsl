@@ -100,7 +100,7 @@ float ShadowedLight(samplerCUBE cube, float4 worldPos, float4 lightPos, float4 n
 }
 
 
-float4 Shadow( VSOUT IN ) : COLOR0 {
+float4 Shadow( VSOUT IN, uniform bool batch ) : COLOR0 {
 
 	float2 uv = IN.UVCoord;
 	float depth = readDepth(uv);
@@ -119,22 +119,22 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer8, world_pos, TESR_ShadowLightPosition[8], normal, luma(TESR_LightColor[8].rgb) * TESR_LightColor[8].w);
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer9, world_pos, TESR_ShadowLightPosition[9], normal, luma(TESR_LightColor[9].rgb) * TESR_LightColor[9].w);
 	Shadow += ShadowedLight(TESR_ShadowCubeMapBuffer10, world_pos, TESR_ShadowLightPosition[10], normal, luma(TESR_LightColor[10].rgb) * TESR_LightColor[10].w);
-	[branch] if (TESR_ShadowLightPosition[11].w) {
+	[branch] if (!batch && TESR_ShadowLightPosition[11].w) {
 		float4 light11 = GetPointLightDistance(world_pos, TESR_ShadowLightPosition[11]);
 		Shadow += saturate(LampAmount(light11.xyz, light11.w, normal)) * EdgeWindow(light11.w);
 	}
 
-	[branch] if (TESR_SpotLightPosition.w)
+	[branch] if (!batch && TESR_SpotLightPosition.w)
 		Shadow += GetSpotLightAmount(world_pos, TESR_SpotLightPosition, TESR_SpotLightDirection, normal) * luma(TESR_SpotLightColor.rgb) * TESR_SpotLightColor.w;
 	
-	for (int i = 0; i< 12; i++){
+	for (int i = 0; i< 12 && !batch; i++){
 		[branch] if (TESR_LightPosition[i].w) {
 			float4 light = GetPointLightDistance(world_pos, TESR_LightPosition[i]);
 			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
 		}
 	}
 
-	[loop] for (int e = 0; e < 16; e++) {
+	[loop] for (int e = 0; e < 16 && !batch; e++) {
 		[branch] if (!TESR_ExtraLights[e].w || Shadow >= 1.0f) break;
 		float radius = floor(TESR_ExtraLights[e].w * 0.125f);
 		float weight = TESR_ExtraLights[e].w - radius * 8.0f;
@@ -150,6 +150,17 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 technique MergedPointShadows {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 Shadow();
+		PixelShader = compile ps_3_0 Shadow(false);
+	}
+}
+
+technique AddShadowedLamps {
+	pass {
+		AlphaBlendEnable = true;
+		SrcBlend = ONE;
+		DestBlend = ONE;
+		BlendOp = ADD;
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 Shadow(true);
 	}
 }

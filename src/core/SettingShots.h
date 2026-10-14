@@ -1,22 +1,5 @@
 #pragma once
 
-// UNOFFICIAL, TEST ONLY (2026-10-12): A/B shots for the auto-test (work\NVRAutoTest, run_autotest.py --shots <file>). When the
-// test plugin asks NVR for a run (EffectSelfTest's link, kLinkStart) and the launcher has put Data\NVSE\Plugins\NVRAutoTest.shots.txt
-// in the game folder, NVR runs this instead of the neon self-test. Each shot in the file changes some settings IN MEMORY ONLY
-// (never saved: the menu's Save is the only writer, and the test ends the game without it), waits a number of frames, saves the
-// finished picture (before the HUD) as NVR-Unofficial-Optimized-Logs\NeonSelfTest_<run>_ab_<NN>_<slug>.png (the name the launcher
-// collects), and puts every setting back before the next shot. Without the file (normal play) nothing here ever runs.
-//
-// The file, one command per line ('#' starts a comment):
-//   frames 120                                   frames each shot waits before its picture (default 120: history buffers settle)
-//   profile                                      switches the F10 GPU profile on for the run (its per-second lines go to the log)
-//   shot <slug>                                  starts a shot; its picture is named after the slug
-//   set <Section> <Key> <value>                  e.g. set Shaders.Reflections.Main GroundSheen 0.8 (typed as the setting is)
-//   effect <Name> <0|1>                          an effect or shader collection off or on, as the menu's switch (e.g. effect Reflections 1)
-//   console <command>                            a console command, run at the start of the shot's first frame (set GameHour to 13,
-//                                                player.setangle x -30, fw 0015BD42, ...). NOT undone: it stays for the later shots,
-//                                                and the place check allows a move during a shot that runs one.
-// Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <atomic>
 #include <fstream>
 #include <sstream>
@@ -28,7 +11,7 @@
 namespace SettingShots {
 
 	inline const char* const RequestFile = "Data\\NVSE\\Plugins\\NVRAutoTest.shots.txt";
-	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
+	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };
 
 	struct Change { bool effect = false, console = false; std::string section, key, value; };
 	struct Shot { std::string slug; std::vector<Change> changes; };
@@ -47,8 +30,8 @@ namespace SettingShots {
 	inline NVSEMessagingInterface* Messaging = nullptr;
 	inline UInt32 Handle = 0;
 	inline TESObjectCELL* Cell = nullptr;
-	inline std::vector<std::string> Commands;	// this shot's console commands, run at the start of its first frame
-	inline bool Moves = false;					// this shot ran console commands: the player may change place
+	inline std::vector<std::string> Commands;
+	inline bool Moves = false;
 
 	inline bool Requested() { return GetFileAttributesA(RequestFile) != INVALID_FILE_ATTRIBUTES; }
 
@@ -56,7 +39,6 @@ namespace SettingShots {
 		if (Messaging) Messaging->Dispatch(Handle, type, (void*)text, (UInt32)strlen(text) + 1, "NVRAutoTest");
 	}
 
-	// The link's start, when the request file is there (EffectSelfTest::AutoTestMessage).
 	inline void Request(NVSEMessagingInterface* messaging, UInt32 handle) { Messaging = messaging; Handle = handle; Pending = true; }
 
 	inline bool Parse(std::string& error) {
@@ -73,7 +55,7 @@ namespace SettingShots {
 			std::string command;
 			if (!(words >> command)) continue;
 			if (command == "frames") { words >> Frames; Frames = std::clamp(Frames, 2, 1200); }
-			else if (command == "profile") GpuTimer::Enabled = true;	// UNOFFICIAL 2026-10-13: the F10 GPU profile, on for the whole run
+			else if (command == "profile") GpuTimer::Enabled = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
@@ -102,7 +84,6 @@ namespace SettingShots {
 
 	inline bool Truthy(const std::string& v) { return v == "1" || v == "true" || v == "on" || v == "yes"; }
 
-	// One shot's changes, the old values kept for Revert.
 	inline void Apply(const Shot& s) {
 		Commands.clear();
 		Moves = false;
@@ -134,7 +115,6 @@ namespace SettingShots {
 		TheSettingManager->LoadSettings();
 	}
 
-	// Every change of the shot undone, newest first.
 	inline void Revert() {
 		for (auto u = Undos.rbegin(); u != Undos.rend(); ++u) {
 			if (u->effect) { TheShaderManager->SwitchShaderStatus(u->section.c_str()); continue; }
@@ -165,7 +145,6 @@ namespace SettingShots {
 		return 0;
 	}
 
-	// Render.cpp, right after ShaderManager::UpdateConstants and EffectSelfTest::BeginFrame.
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
 			AllQueued = false;
@@ -200,7 +179,6 @@ namespace SettingShots {
 		Frame++;
 	}
 
-	// Render.cpp, the finished picture before the HUD (where the neon self-test takes its Final shots).
 	inline void Capture(IDirect3DSurface9* surface) {
 		if (!Running || Frame < Frames || !surface) return;
 		const Shot& shot = List[Index];

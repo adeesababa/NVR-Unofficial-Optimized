@@ -21,8 +21,6 @@ float4 NormalAdjust  : register(c17);  // .y
 
 float4 BranchRows[16] : register(c18);  // 4 matrices, row stride 1, matrix stride a0.y
 float4 LeafData[48]   : register(c34);
-// UNOFFICIAL: backlit translucency settings (PBR.cpp, [Shaders.Foliage.Main]). c82 is the first register past LeafData; the
-// engine's uploads stop at c81, and the compiler keeps its literal constants off this one.
 float4 TESR_Translucency : register(c82);
 
 struct VS_INPUT {
@@ -46,9 +44,6 @@ float WrapPi(float v, float scale) {
     return frac(v * scale + 0.5f) * 6.28318548f - 3.14159274f;
 }
 
-// UNOFFICIAL: backlit translucency (docs/research/foliage-translucency.md). Light that reaches the eye through a blade
-// from the far side: the surface faces away from the sun (back: N against Lback), the eye looks into the sun through it
-// (align), and the sun is above the horizon (gate). p is the camera-relative world position, Lsun the world sun direction.
 float FoliageTranslucency(float3 N, float3 Lback, float3 p, float3 Lsun) {
     float3 V = -p / max(length(p), 1e-6f);
     float back = saturate(-dot(N, Lback));
@@ -115,9 +110,6 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     OUT.position = mul(ModelViewProj, pos);
 
-    // UNOFFICIAL: backlit translucency joins the sun term, so TEXCOORD3 (sun) and TEXCOORD1 (lighting) both carry it and the
-    // PS shadow takes it out in shade. N and SunDir are model space, as NdotL; the eye and TESR_SmoothedSunDir are world
-    // space. Indoors (TESR_ShadowFormatData.z is 0) it is off. Skipped at Translucency 0.
     float3 shadowWorldPos = GetShadowWorldPos(OUT.position);
     [branch] if (TESR_Translucency.x > 0.0f) {
         NdotL += FoliageTranslucency(N, SunDir.xyz, shadowWorldPos, TESR_SmoothedSunDir.xyz) * TESR_ShadowFormatData.z;

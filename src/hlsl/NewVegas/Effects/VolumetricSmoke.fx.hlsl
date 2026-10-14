@@ -49,6 +49,7 @@ float4 SmokeAtLod(float2 uv) { return tex2Dlod(TESR_SmokeBuffer, float4(uv, 0, 0
 
 float noise3(float3 x) { return tex3Dlod(TESR_NoiseVolume, float4(x / 8.0, 0.0)).r; }
 float noiseFbm(float3 x) { return tex3Dlod(TESR_NoiseVolume, float4(x / 4.0, 0.0)).g; }
+float noiseFbmLod(float3 x, float lod) { return tex3Dlod(TESR_NoiseVolume, float4(x / 4.0, lod)).g; }
 float erfcApprox(float x) {
 	float z = abs(x);
 	float t = 1.0 + z * (0.278393 + z * (0.230389 + z * (0.000972 + z * 0.078108)));
@@ -268,6 +269,9 @@ struct HazeOutput {
 	float4 cut : COLOR1;
 };
 
+static const float4 HazeShell = float4(16.0, 90.0, 355.0, 1300.0);
+static const float3 HazeBandEdge = float3(45.0, 180.0, 700.0);
+
 HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 	float scale = max(SmokeLook.z, 1.0);
 	float2 uv = (vpos + 0.5) * TESR_ReciprocalResolution.xy * scale;
@@ -286,7 +290,8 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 	}
 	float3 L = LightDirection();
 	float flashReach2 = max(SmokeFlashColor.w * SmokeFlashColor.w, 1.0);
-	float4 sum = 0.0;
+	float3 sum = 0.0;
+	float tNear = 1e9, tFar = 0.0;
 	[loop] for (int i = 0; i < 40; i++) {
 		if (i >= HazeInfo.x) break;
 		float4 shape = HazeShape[i];
@@ -301,13 +306,16 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 				float iR2 = 1.0 / R2, kk = 1.0 - d2 * iR2;
 				float F1 = s1 * (kk * kk - s1 * s1 * iR2 * (0.6666667 * kk - 0.2 * s1 * s1 * iR2));
 				float F0 = s0 * (kk * kk - s0 * s0 * iR2 * (0.6666667 * kk - 0.2 * s0 * s0 * iR2));
-				float tau = HazeLook[i].x * 0.9375 / shape.w * (F1 - F0);
+				float rho = HazeLook[i].x * 0.9375 / shape.w;
+				float tau = rho * (F1 - F0);
+				tNear = min(tNear, tc + s0);
+				tFar = max(tFar, tc + s1);
 				float sm = 0.5 * (s0 + s1);
 				float3 rel = (dir * (tc + sm) - oc) / shape.w;
 				float lit = 0.75 + 0.25 * dot(rel, L);
 				float3 toFlash = SmokeFlash.xyz - shape.xyz;
 				float flash = SmokeFlash.w * exp(-dot(toFlash, toFlash) / (flashReach2 + 0.25 * R2));
-				sum += tau * float4(1.0, lit, flash, tc + sm);
+				sum += tau * float3(1.0, lit, flash);
 			}
 		}
 	}
@@ -335,14 +343,37 @@ HazeOutput HazePS(VSOUT input, float2 vpos : VPOS) {
 		}
 	}
 	[branch] if (sum.x > 0.00001) {
-		float middle = sum.w / sum.x;
-		float n = 0.0;
-		[unroll] for (int k = 0; k < 3; k++) {
-			float t = middle * (0.6 + 0.4 * k);
-			float3 p = (dir * t + TESR_CameraPosition.xyz) / 45.0 + float3(0.0, 0.0, -SmokeParams.w * 0.02);
-			n += noiseFbm(p);
+		float pixelAngle = 2.0 * scale * TESR_ReciprocalResolution.y / TESR_ProjectionTransform[1][1];
+		float3 drift = float3(0.35, 0.2, 0.25) * SmokeParams.w * 0.05;
+		float3 ad = abs(dir);
+		float3 axis = ad.x > ad.y && ad.x > ad.z ? float3(1.0, 0.0, 0.0) : (ad.y > ad.z ? float3(0.0, 1.0, 0.0) : float3(0.0, 0.0, 1.0));
+		float dirA = dot(dir, axis);
+		float camA = dot(TESR_CameraPosition.xyz, axis);
+		float extent = max(tFar - tNear, 0.0);
+		float D = 30.0 * exp2(ceil(log2(max(extent / 210.0, 1.0))));
+		float side = dirA >= 0.0 ? 1.0 : -1.0;
+		float atNear = camA + dirA * tNear;
+		float first = (side > 0.0 ? ceil(atNear / D) : floor(atNear / D)) * D;
+		float total = 0.0, total2 = 0.0, acc = 0.0;
+		[loop] for (int k = 0; k < 8; k++) {
+			float t = (first + side * k * D - camA) / (abs(dirA) > 0.0001 ? dirA : 0.0001);
+			if (t > tFar) break;
+			float w = saturate((t - tNear) / (0.5 * D)) * saturate((tFar - t) / (0.5 * D));
+			[branch] if (w > 0.0) {
+				float3 p = (dir * t + TESR_CameraPosition.xyz) / 45.0 + drift;
+				acc += w * noiseFbmLod(p, log2(max(t * pixelAngle / 2.8125, 1.0)));
+				total += w;
+				total2 += w * w;
+			}
 		}
-		n = saturate((n / 3.0 - 0.5) * 1.6 + 0.5);
+		[branch] if (total < 0.001) {
+			float t = 0.5 * (tNear + tFar);
+			acc = noiseFbmLod((dir * t + TESR_CameraPosition.xyz) / 45.0 + drift, log2(max(t * pixelAngle / 2.8125, 1.0)));
+			total = 1.0;
+			total2 = 1.0;
+		}
+		float spread = clamp(sqrt(total * total / max(total2, 0.000001)), 1.0, 2.5);
+		float n = saturate((acc / total - 0.5) * 1.6 * spread + 0.5);
 		sum *= lerp(0.25, 1.7, n);
 	}
 	HazeOutput o;

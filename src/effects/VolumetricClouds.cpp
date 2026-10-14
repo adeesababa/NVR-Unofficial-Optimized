@@ -9,7 +9,6 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.Coverage[1] = std::clamp(TheSettingManager->GetSettingF(section, "CoverageCloudy"), 0.0f, 1.0f);
 	Settings.Coverage[2] = std::clamp(TheSettingManager->GetSettingF(section, "CoverageRainy"), 0.0f, 1.0f);
 	Settings.Coverage[3] = std::clamp(TheSettingManager->GetSettingF(section, "CoverageSnow"), 0.0f, 1.0f);
-	// fair weather piles up into heaps, rain and snow spread into flat grey layers
 	Settings.TypeBias[0] = 0.2f; Settings.TypeBias[1] = 0.0f; Settings.TypeBias[2] = -0.4f; Settings.TypeBias[3] = -0.4f;
 	Settings.Density = std::clamp(TheSettingManager->GetSettingF(section, "Density"), 0.05f, 5.0f);
 	Settings.ShapeSize = std::clamp(TheSettingManager->GetSettingF(section, "ShapeSize"), 500.0f, 50000.0f);
@@ -57,7 +56,6 @@ void VolumetricCloudsEffect::RegisterConstants() {
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
-	// HalfResolution (read once, at start): the march grid at half instead of a quarter of the screen each way.
 	const UINT divisor = TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "HalfResolution") ? 2 : 4;
 	lowWidth = (TheRenderManager->width + divisor - 1) / divisor;
 	lowHeight = (TheRenderManager->height + divisor - 1) / divisor;
@@ -76,7 +74,6 @@ void VolumetricCloudsEffect::RegisterTextures() {
 	D3DXMatrixIdentity(&lastViewProj);
 }
 
-// Index into the per-weather settings: 0 pleasant, 1 cloudy, 2 rainy, 3 snow.
 static int WeatherIndex(TESWeather* weather) {
 	if (!weather) return 0;
 	switch (weather->GetWeatherType()) {
@@ -91,8 +88,6 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
 	const float dt = std::clamp((float)TheFrameRateManager->ElapsedTime, 0.0f, 0.1f);
 
-	// The weather's coverage, blended across a weather change as the game blends its own (weatherPercent: 1 = the new
-	// weather in full), then eased so a change of weather builds or clears the clouds over about a minute.
 	float targetCoverage = Settings.Coverage[0], targetRain = 0.0f, targetType = Settings.TypeBias[0];
 	if (sky && sky->firstWeather) {
 		const int now = WeatherIndex(sky->firstWeather);
@@ -108,16 +103,9 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	rain += (targetRain - rain) * ease;
 	typeBias += (targetType - typeBias) * ease;
 
-	// Wind: the sky's own wind direction and speed move the clouds; the detail drifts on its own so they also change shape.
 	const float windSpeed = sky ? std::clamp(sky->windSpeed, 0.0f, 1.0f) : 0.2f;
 	const float windAngle = sky ? sky->windDirection : 0.0f;
-	// Faster than real wind at that height (which barely moves a cloud kilometres away), as games do and as the game's
-	// own cloud layers scroll.
-	const float speed = Settings.WindSpeed * (15.0f + 45.0f * windSpeed);	// metres per second
-	// UNOFFICIAL GameTime: the clouds move by the game's clock instead of the frame time, measured in seconds at the normal
-	// time scale (so in play they move exactly as before): a pause or a menu stops them, waiting or sleeping moves them on
-	// as far as that time would, and the first frame after a load places them from the game's date, so the same save shows
-	// the same sky. Off: the frame time, as before.
+	const float speed = Settings.WindSpeed * (15.0f + 45.0f * windSpeed);
 	float advance = dt;
 	if (Settings.GameTime) {
 		TimeGlobals* clock = TimeGlobals::Get();
@@ -127,7 +115,6 @@ void VolumetricCloudsEffect::UpdateConstants() {
 			const double now = days * 86400.0 / scale;
 			const double step = now - lastCloudTime;
 			if (lastCloudTime < 0.0 || step < 0.0 || step > 30.0 * 86400.0) {
-				// from the date: the wind as it stands now, carried over the whole time since the game began
 				const double total = fmod(now, 1.0e7);
 				wind.x = (float)fmod(cos((double)windAngle) * speed * total, 900000.0);
 				wind.y = (float)fmod(sin((double)windAngle) * speed * total, 900000.0);
@@ -141,7 +128,6 @@ void VolumetricCloudsEffect::UpdateConstants() {
 			lastCloudTime = now;
 		}
 	}
-	// wrapped at 900 km, a whole number of tiles of every noise texture, so the wrap never shows
 	wind.x = fmodf(wind.x + cosf(windAngle) * speed * advance, 900000.0f);
 	wind.y = fmodf(wind.y + sinf(windAngle) * speed * advance, 900000.0f);
 	wind.z = fmodf(wind.z + Settings.Evolution * advance, 900000.0f);
@@ -167,8 +153,6 @@ bool VolumetricCloudsEffect::ShouldRender() {
 
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
-	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
-	// or a pause in the clouds (indoors, a menu), it starts over from this frame's march.
 	const D3DXMATRIX viewProj = TheRenderManager->ViewProjMatrix;
 	const double now = TheFrameRateManager->Time;
 	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCellChanged;
@@ -180,38 +164,30 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	Constants.March.z = (float)frame;
 
 	Textures.HistoryRead = Textures.HistoryTexture[read];
-	// UNOFFICIAL 2026-10-13: F10 timers per pass.
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
 		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, 1); }				// march
-	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
-	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }	// UNOFFICIAL: cloud shadow map
+	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, 1); }
+	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }
+	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }
 	read = 1 - read;
 	Textures.HistoryRead = Textures.HistoryTexture[read];
 	Device->SetRenderTarget(0, RenderTarget);
-	{ GpuProfileScope gpu(compositeTimer, Device); Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface); }					// composite
+	{ GpuProfileScope gpu(compositeTimer, Device); Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface); }
 
 	lastViewProj = viewProj;
 	lastRenderTime = now;
 	frame++;
 }
 
-// ---- UNOFFICIAL 2026-10-12: the clouds in the game's water reflection ----
-
-// Drawn when on, outdoors, and the history is this session's last frame or so (the reflection pass comes before this frame's
-// march: it shows last frame's clouds, as on screen a frame ago).
 bool VolumetricCloudsEffect::ReflectionWanted() const {
 	return Enabled && Effect && Settings.WaterReflections > 0.0f && TheShaderManager->GameState.isExterior &&
 		!TheShaderManager->GameState.isUnderwater && lastRenderTime >= 0.0 && TheFrameRateManager->Time - lastRenderTime < 0.25;
 }
 
-// The reflection is drawn multisampled and copied (resolved) into the texture the water reads with StretchRect, inside the
-// game's pass: drawn after the pass, the clouds never reached that texture. The device's StretchRect (vtable slot 34) is
-// hooked once: a copy FROM the noted reflection target draws the clouds into it first. Any other copy passes straight on.
 namespace {
 	typedef HRESULT(__stdcall* StretchRectFn)(IDirect3DDevice9*, IDirect3DSurface9*, const RECT*, IDirect3DSurface9*, const RECT*, D3DTEXTUREFILTERTYPE);
 	StretchRectFn OriginalStretchRect = nullptr;
-	void* RuntimeStretchRect = nullptr;	// the runtime's own entry, as first seen
+	void* RuntimeStretchRect = nullptr;
 	VolumetricCloudsEffect* ResolveOwner = nullptr;
 	HRESULT __stdcall CloudsStretchRect(IDirect3DDevice9* device, IDirect3DSurface9* source, const RECT* sourceRect, IDirect3DSurface9* dest,
 		const RECT* destRect, D3DTEXTUREFILTERTYPE filter) {
@@ -228,9 +204,6 @@ void VolumetricCloudsEffect::BeforeResolve(IDirect3DDevice9* Device, IDirect3DSu
 	}
 }
 
-// At the first shader bind in the reflection pass: its target, depth buffer and camera (later targets in the pass are other
-// work). The native runtime puts its own StretchRect back into the device's table (seen right after the first draw), so the
-// hook is checked at every pass; it is put back only over the runtime's own entry, never over another program's hook.
 void VolumetricCloudsEffect::CaptureReflection(IDirect3DDevice9* Device) {
 	if (reflectNoted || !ReflectionWanted()) return;
 	reflectNoted = true;
@@ -259,15 +232,11 @@ void VolumetricCloudsEffect::CaptureReflection(IDirect3DDevice9* Device) {
 	}
 }
 
-// The end of the game's reflection pass: drawn now if no copy came during it (a reflection drawn straight into its texture).
 void VolumetricCloudsEffect::EndReflectionPass(IDirect3DDevice9* Device) {
 	DrawIntoReflection(Device);
 	reflectNoted = false;
 }
 
-// Before the copy for the water (else after the game's reflection pass): a quad at the far plane over the reflection, depth-tested against the pass's own depth
-// buffer (only the sky is still at the far plane), blended over it. Every device state is put back as it was (a state block),
-// so the game's render-state cache stays true.
 void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 	if (!reflectTarget) return;
 	IDirect3DSurface9* target = reflectTarget; IDirect3DSurface9* depth = reflectDepth;
@@ -275,7 +244,6 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 	D3DSURFACE_DESC desc;
 	if (ReflectionWanted() && SUCCEEDED(target->GetDesc(&desc)) && (reflectState || SUCCEEDED(Device->CreateStateBlock(D3DSBT_ALL, &reflectState)))) {
 		const bool reversed = TheRenderManager->IsReversedDepth();
-		// The reflection camera's clip space -> world direction: its view without the translation (directions only).
 		D3DXMATRIX rotation = reflectView;
 		rotation._41 = rotation._42 = rotation._43 = 0.0f;
 		D3DXMATRIX viewProj;
@@ -307,7 +275,7 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			UINT passes = 0;
 			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
 				Effect->BeginPass(0);
-				Device->SetRenderState(D3DRS_ZENABLE, Settings.ReflectionDebug == 2 ? D3DZB_FALSE : D3DZB_TRUE);	// debug 2: no depth test
+				Device->SetRenderState(D3DRS_ZENABLE, Settings.ReflectionDebug == 2 ? D3DZB_FALSE : D3DZB_TRUE);
 				Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 				Device->SetRenderState(D3DRS_ZFUNC, reversed ? D3DCMP_GREATEREQUAL : D3DCMP_LESSEQUAL);
 				Device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
@@ -329,6 +297,19 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			if (oldTarget) oldTarget->Release();
 			if (oldDepth) oldDepth->Release();
 			reflectState->Apply();
+			for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
+				const UInt32 stage = TextureShaderValues[c].RegisterIndex;
+				if (stage >= 16) continue;
+				IDirect3DBaseTexture9* texture = nullptr;
+				Device->GetTexture(stage, &texture);
+				TheRenderManager->renderState->NoteDeviceTexture(stage, texture);
+				if (texture) texture->Release();
+				for (int i = 1; i < SamplerStatesMax; i++) {
+					DWORD value = 0;
+					if (SUCCEEDED(Device->GetSamplerState(stage, (D3DSAMPLERSTATETYPE)i, &value)))
+						TheRenderManager->SetSamplerState(stage, (D3DSAMPLERSTATETYPE)i, value);
+				}
+			}
 		}
 	}
 	target->Release();

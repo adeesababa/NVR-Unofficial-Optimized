@@ -1,6 +1,3 @@
-# BloodFlow simulation without the game (tests/blood_preview.cpp, terrain mode): builds the preview, runs the tree's
-# BloodFlow.fx.hlsl on gentle desert ground, prints the per-splat check (PASS / FAIL) and opens the time-lapse viewer.
-#   powershell -ExecutionPolicy Bypass -File tools\blood-sim.ps1 [-Out H:\_NVR-blood-sim\latest] [-NoOpen]
 param([string]$Out = 'H:\_NVR-blood-sim\latest', [switch]$NoOpen)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path

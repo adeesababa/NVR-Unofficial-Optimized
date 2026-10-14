@@ -134,6 +134,7 @@ public:
 		bool				TorchesCastShadows;
 		FormsStruct			Forms;
 		int					LightPoints;
+		int					ExteriorLightPoints;
 		int					Quality;
 		int					ShadowCubeMapSize;
 		int					DrawDistance;

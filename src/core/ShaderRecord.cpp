@@ -186,7 +186,11 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 
 	AppendDefine("MATERIAL_RULES_ON", TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ? "1" : "0");
 
+	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
+
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
+
+	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
 
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
@@ -682,7 +686,7 @@ ShaderRecordVertex::ShaderRecordVertex(const char* shaderName) {
 
 ShaderRecordVertex::~ShaderRecordVertex() {
 
-	ShaderHandle->Release();
+	if (ShaderHandle) ShaderHandle->Release();
 
 }
 
@@ -695,7 +699,7 @@ ShaderRecordPixel::ShaderRecordPixel(const char* shaderName) {
 
 ShaderRecordPixel::~ShaderRecordPixel() {
 
-	ShaderHandle->Release();
+	if (ShaderHandle) ShaderHandle->Release();
 
 }
 

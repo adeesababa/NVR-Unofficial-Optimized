@@ -38,6 +38,21 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   from Balebandro's [Physically-Based-Reloaded](https://github.com/Balebandro/Physically-Based-Reloaded) fork;
   terrain blending follows Community Shaders' Terrain Blending; TAA by Conor. The release page also offers an
   optional, experimental extra as a separate download: **FNV Multithreaded AI** (with its own readme).
+- **New in P79** (P79 replaces P78, which was withdrawn): **rain on surfaces** by macintroll (Shaders > WetWorld, on as
+  before: splashes, streaks running down walls, puddles in hollows that reflect the sky and the surroundings; only costs
+  anything while it rains), and **lamp light that no longer pops or flickers** indoors (`Main > Main > Misc`:
+  `MoreLampsPerObject` and `LampReachMargin`, on, need a restart). Off by default: **blood that flows** (Shaders >
+  BloodFlow: splats run down walls and slopes and drip off edges, pools spread under bodies and cut-off limbs, wet beads
+  on fresh blood, all in the colour of your own blood textures), **blood on your weapon and gloves** when you hit someone
+  up close (Shaders > HandBlood, needs a restart), a **police body-camera look** (Shaders > Bodycam, with its own day,
+  night and interior settings, 30 fps video, slow auto exposure and video breakup while moving), more lamp shadows
+  outdoors (Shaders > ShadowsInteriors > Main > `ExteriorLightPoints`) and `TwoSidedCasters` (Shaders > ShadowsExteriors,
+  stops sunlight and light shafts shining through one-sided walls). **Fixed in P79:** stripes on the ground with
+  volumetric clouds on, a pale sheen sweeping over the casinos' marble walls, the 5th and 6th lamp on an object lit
+  from the wrong place, `UsePointShadowsDay/Night` only taking effect at the next dawn or dusk, a crash at startup when
+  the graphics driver refuses a shader, and GunFX's smoke haze now drifts steadily instead of shifting as you walk.
+  The blood on the weapon follows mrfury97's HUD raindrops (Physically-Based-Reloaded testbed, after Ascii1457's
+  Screen Space Shaders), and the blood textures were made for this build.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -266,8 +281,12 @@ Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIA
 > Built on the fork by [macrimmon12-tech](https://github.com/macrimmon12-tech/TESReloaded10)
 > (volumetric fog v2, skin and lighting fixes, ImGui menu and more), whose history is preserved in
 > this repository. All original copyright notices are unchanged.
-> The game-engine fixes since P75 (water reflection clip plane, scope fix, lamp shadow work) were built with
-> the help of [WallSoGB](https://github.com/WallSoGB)'s Fallout: New Vegas IDA Pro database.
+> The game-engine fixes since P75 (water reflection clip plane, scope fix, lamp shadow work, and in P79 the lamp
+> limits and the blood decal work) were built with the help of [WallSoGB](https://github.com/WallSoGB)'s
+> Fallout: New Vegas IDA Pro database. The WetWorld rain shader and its textures are by macintroll (with Boomstick),
+> used with permission. Terrain blending, TAA's sharpness/mip bias, heat haze and the volumetric clouds' first version
+> come from Balebandro's Physically-Based-Reloaded fork; TAA by Conor; the blood on the weapon follows mrfury97's HUD
+> raindrops, after Ascii1457's Screen Space Shaders.
 >
 > This is shared in good faith. If any of the original authors or maintainers feel this release
 > steps on their toes, please open an issue here and it will be taken down.

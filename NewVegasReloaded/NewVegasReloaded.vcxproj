@@ -172,6 +172,7 @@
     <ClCompile Include="..\src\effects\Sandstorm.cpp" />
     <ClCompile Include="..\src\effects\VolumetricLight.cpp" />
     <ClCompile Include="..\src\effects\SkyDither.cpp" />
+    <ClCompile Include="..\src\effects\Bodycam.cpp" />
     <ClCompile Include="..\src\effects\Reflections.cpp" />
     <ClCompile Include="..\src\effects\VolumetricClouds.cpp" />
     <ClCompile Include="..\src\effects\BloodFlow.cpp" />
@@ -293,6 +294,7 @@
     <ClInclude Include="..\src\effects\Sandstorm.h" />
     <ClInclude Include="..\src\effects\VolumetricLight.h" />
     <ClInclude Include="..\src\effects\SkyDither.h" />
+    <ClInclude Include="..\src\effects\Bodycam.h" />
     <ClInclude Include="..\src\effects\Reflections.h" />
     <ClInclude Include="..\src\effects\VolumetricClouds.h" />
     <ClInclude Include="..\src\effects\BloodFlow.h" />

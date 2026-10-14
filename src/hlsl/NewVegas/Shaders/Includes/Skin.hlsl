@@ -58,21 +58,14 @@ float3 GetLighting(float3 lightDirection, float3 eyeDirection, float3 normal, fl
     return max(lighting, 0);
 }
 
-// UNOFFICIAL: per-pixel sun diffusion, used when PerPixelDiffusion ([Shaders.Skin.Main], TESR_SkinDiffusion.x) is above 0.
-// Same tangent-space inputs as GetLighting. Returns the sun term with a wrapped terminator, red bending furthest into the
-// shadow side, and thin-part transmission (ears, nostrils) where the sun is behind the surface and the eye looks through it
-// toward the sun, scaled by Translucency. The caller blends it with GetLighting by PerPixelDiffusion, then applies the sun
-// shadow as usual, so the transmission is shadowed like the rest of the sun.
 float3 GetSunDiffusion(float3 lightDirection, float3 eyeDirection, float3 normal, float3 lightColor, float diffusion, float translucency){
     float NdotL = dot(normal, lightDirection);
 
-    // Wrapped diffuse per channel, (N.L + w) / (1 + w): the lit side keeps its brightness.
     float3 wrapAmount = float3(0.45f, 0.25f, 0.15f) * diffusion;
     float3 diffuse = saturate((NdotL + wrapAmount) / (1 + wrapAmount));
 
-    float fresnel = sqr(1 - shades(normal, eyeDirection)) * shades(lightDirection, -eyeDirection) * 0.5; // as GetLighting
+    float fresnel = sqr(1 - shades(normal, eyeDirection)) * shades(lightDirection, -eyeDirection) * 0.5;
 
-    // Thin parts: only where the sun is behind the surface (N.L below 0.2), strongest when the eye looks straight at it.
     float3 transmission = translucency * pow(shades(eyeDirection, -lightDirection), 4) * saturate(-NdotL + 0.2f) * float3(1.0f, 0.35f, 0.2f);
 
     return max((diffuse + fresnel + transmission) * lightColor, 0);

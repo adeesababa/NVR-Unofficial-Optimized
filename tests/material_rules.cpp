@@ -1,8 +1,3 @@
-// Offline check of the material rules (src/core/MaterialRules.h, resource/NewVegasReloaded.dll.materials.txt).
-//   material_rules.exe <materials.txt> [textures.txt]
-// Always: the table loads without errors and the known cases below land where they should (exit 1 if not).
-// With a texture list (tools/material-rules/list_textures.py output): class counts over the colour textures, plus up to
-// 20 evenly spread members of each class, to look for wrong classifications by eye.
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -39,12 +34,10 @@ int main(int argc, char** argv) {
 	std::string errors;
 	if (!table.Load(text.str(), errors)) { printf("TABLE ERRORS:\n%s", errors.c_str()); ++failures; }
 
-	// Normalisation.
 	if (MaterialRules::Normalize("Data\\Textures\\Weapons\\Foo.DDS") != "textures\\weapons\\foo.dds") { printf("FAIL normalise 1\n"); ++failures; }
 	if (MaterialRules::Normalize("weapons/foo.dds") != "textures\\weapons\\foo.dds") { printf("FAIL normalise 2\n"); ++failures; }
 	if (MaterialRules::Normalize("C:\\Games\\FNV\\Data\\textures\\a.dds") != "textures\\a.dds") { printf("FAIL normalise 3\n"); ++failures; }
 
-	// Known cases (the plan's false positives among them).
 	Expect(table, "textures\\weapons\\2handrifle\\huntingrifle.dds", "gun");
 	Expect(table, "textures\\weapons\\2handlauncher\\1stpersonrockitlauncher.dds", "gun");
 	Expect(table, "textures\\weapons\\1handmelee\\machete.dds", "blade");

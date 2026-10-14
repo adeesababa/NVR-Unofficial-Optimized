@@ -1,9 +1,3 @@
-// TAA cost and look, old against new, without the game (2026-10-13): both TAA.fx.hlsl files run on this GPU at 2560 x 1440
-// on a detailed test picture with the camera moved a fraction of a pixel sideways (so the history filter really resamples).
-//   old: Resolve + full-screen FP16 copy of the resolve into the history buffer + Output (as before)
-//   new: Resolve + Output (the two buffers take turns: no copy)
-// Prints the GPU time of each and how far the two resolves differ (in 8-bit steps).
-// Usage: build\taa-test\taa_bench.exe <old TAA.fx.hlsl> <new TAA.fx.hlsl>
 #include <windows.h>
 #include <d3d9.h>
 #include <d3dx9.h>
@@ -27,7 +21,6 @@ int main(int argc, char** argv) {
 	IDirect3DDevice9* device = nullptr;
 	CHECK(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_HARDWARE_VERTEXPROCESSING, &pp, &device));
 
-	// The picture: edges, fine texture and bright spots (HDR), as the frame and as last frame's result.
 	std::vector<D3DXFLOAT16> pixels((size_t)W * H * 4);
 	for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
 		const float stripes = ((x / 7 + y / 11) & 1) ? 0.8f : 0.2f;
@@ -74,8 +67,6 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 	}
-	// Camera: identity view, 90 degree projection, far 10000; moved 0.15 units sideways since last frame: at depth 500-600
-	// that is about a third of a pixel, so the history is read between texels.
 	D3DXMATRIX identity, proj;
 	D3DXMatrixIdentity(&identity);
 	D3DXMatrixIdentity(&proj);
@@ -106,11 +97,10 @@ int main(int argc, char** argv) {
 	auto bindInputs = [&]() {
 		device->SetTexture(0, source); device->SetTexture(2, depth); device->SetTexture(3, viewModel);
 	};
-	// One frame each way, as TAA.cpp does it.
 	auto oldFrame = [&]() {
 		bindInputs(); device->SetTexture(1, historyA);
 		device->SetRenderTarget(0, resolveOldS); draw(effects[0], "Resolve");
-		device->StretchRect(resolveOldS, NULL, historyBS, NULL, D3DTEXF_NONE);	// the copy the new path drops
+		device->StretchRect(resolveOldS, NULL, historyBS, NULL, D3DTEXF_NONE);
 		device->SetTexture(1, historyB);
 		device->SetRenderTarget(0, back); draw(effects[0], "Output");
 	};
@@ -120,7 +110,6 @@ int main(int argc, char** argv) {
 		device->SetTexture(1, resolveNew);
 		device->SetRenderTarget(0, back); draw(effects[1], "Output");
 	};
-	// The look: one resolve each from the same history, compared.
 	CHECK(device->BeginScene());
 	oldFrame(); newFrame();
 	CHECK(device->EndScene());
@@ -135,7 +124,6 @@ int main(int argc, char** argv) {
 		D3DXFloat16To32Array(pa, (const D3DXFLOAT16*)((char*)a.pBits + y * a.Pitch) + x * 4, 4);
 		D3DXFloat16To32Array(pb, (const D3DXFLOAT16*)((char*)b.pBits + y * b.Pitch) + x * 4, 4);
 		for (int c = 0; c < 3; c++) {
-			// In display steps: tonemapped (x / (1 + x)), 8 bits.
 			const double d = fabs(pa[c] / (1.0 + pa[c]) - pb[c] / (1.0 + pb[c])) * 255.0;
 			sum += d; worst = d > worst ? d : worst; over += d > 1.0; count++;
 		}
@@ -144,7 +132,6 @@ int main(int argc, char** argv) {
 	std::printf("LOOK: new resolve vs old, camera moved a third of a pixel: mean %.3f, worst %.2f 8-bit steps, %.3f%% of values over 1 step\n",
 		sum / count, worst, 100.0 * over / count);
 
-	// The cost: GPU timestamps round 300 frames of each, after a warm-up.
 	IDirect3DQuery9 *t0, *t1, *disjoint, *frequency;
 	device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &t0); device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &t1);
 	device->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &disjoint); device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &frequency);
@@ -166,7 +153,7 @@ int main(int argc, char** argv) {
 		return 0;
 	};
 	double oldMs = 0, newMs = 0, oldMs2 = 0, newMs2 = 0;
-	timeIt(oldFrame, oldMs); timeIt(newFrame, newMs); timeIt(oldFrame, oldMs2); timeIt(newFrame, newMs2);	// twice, interleaved
+	timeIt(oldFrame, oldMs); timeIt(newFrame, newMs); timeIt(oldFrame, oldMs2); timeIt(newFrame, newMs2);
 	std::printf("COST at %dx%d: old %.3f / %.3f ms, new %.3f / %.3f ms (two runs each) -> saves %.3f ms (%.0f%%)\n", W, H,
 		oldMs, oldMs2, newMs, newMs2, 0.5 * (oldMs + oldMs2 - newMs - newMs2), 100.0 * (1.0 - (newMs + newMs2) / (oldMs + oldMs2)));
 	return 0;

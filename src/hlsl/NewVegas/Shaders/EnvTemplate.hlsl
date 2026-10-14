@@ -120,7 +120,7 @@ float4 main(PS_INPUT IN) : COLOR0 {
     float3 skyReflected = SkyAmbientRadiance(normalize(reflected), TESR_PBRExtraData.z);
     [branch] if (TESR_SharpSky.x > 0.0f) skyReflected = SkyAmbientSharpened(normalize(reflected), skyReflected);
     float3 surroundings = AmbientColor.rgb * TESR_PBRData.w + skyReflected * TESR_PBRExtraData.y;
-    color *= lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x);
+    color *= min(lerp((1.0f).xxx, surroundings * TESR_PBREnv.y, TESR_PBREnv.x), 1.0f);
     #if LIVE_CUBE
     [branch] if (TESR_EnvCube.y > 0.0f) {
         float4 live = LiveCube(reflected, 0.1f);

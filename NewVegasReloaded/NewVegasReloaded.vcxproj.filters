@@ -142,6 +142,9 @@
     <ClInclude Include="..\src\effects\SkyDither.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\Bodycam.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\Reflections.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -439,6 +442,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\SkyDither.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\Bodycam.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Reflections.cpp">

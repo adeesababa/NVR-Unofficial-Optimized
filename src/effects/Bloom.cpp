@@ -45,7 +45,6 @@ void BloomEffect::UpdateSettings() {
 	Settings.Interiors.Passes = TheSettingManager->GetSettingF("Shaders.Bloom.Interiors", "Passes");
 	Settings.Interiors.PassBlending = TheSettingManager->GetSettingF("Shaders.Bloom.Interiors", "PassBlending");
 
-	// UNOFFICIAL (a key missing from an older settings file reads 0: as before).
 	const char* sections[3] = { "Shaders.Bloom.Main", "Shaders.Bloom.Night", "Shaders.Bloom.Interiors" };
 	BloomSettings* periods[3] = { &Settings.Main, &Settings.Night, &Settings.Interiors };
 	for (int i = 0; i < 3; i++) {
@@ -61,8 +60,6 @@ void BloomEffect::UpdateSettings() {
 
 
 
-// UNOFFICIAL GlowBoost: the brightness (linear) of a white surface in the scene's own light: the sky's ambient plus the sun's
-// or moon's light outdoors, the cell's ambient plus its directional light indoors (as BounceLightEffect::SpillThreshold).
 static float BloomSceneLight() {
 	D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient, direct = TheShaderManager->ShaderConst.sunColor;
 	if (!TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() &&
@@ -81,7 +78,6 @@ void BloomEffect::UpdateConstants() {
 	Constants.Data.z = std::clamp(TheShaderManager->GetTransitionValue(Settings.Main.PassBlending, Settings.Night.PassBlending, Settings.Interiors.PassBlending), 0.0f, 1.0f);
 	Constants.Data.w = 1.0f / std::clamp(TheShaderManager->GetTransitionValue(Settings.Main.Passes, Settings.Night.Passes, Settings.Interiors.Passes), 2.0f, 8.0f);
 
-	// UNOFFICIAL Spread: the last upsample divides by the sum of the levels' weights (exactly .w as before at weight 1).
 	const float spread = 1.0f + std::clamp(TheShaderManager->GetTransitionValue(Settings.Main.Spread, Settings.Night.Spread, Settings.Interiors.Spread), -0.75f, 2.0f);
 	Constants.Glow.x = spread;
 	Constants.Glow.y = Constants.Data.w;
