@@ -378,6 +378,7 @@ float GetFogShadowValue(float4x4 lightTransform, float4 coord, float offsetX, fl
 	LightSpaceCoord.x += offsetX;
 	LightSpaceCoord.y += offsetY;
 
+	[branch] if (TESR_ShadowFormatData.x == 3.0f) return ShadowPCF2x2(TESR_ShadowAtlas, LightSpaceCoord.xy, LightSpaceCoord.z - 0.0002f, TESR_ShadowBlur.x);	// UNOFFICIAL PCF
 	float4 moments = tex2Dlod(TESR_ShadowAtlas, float4(LightSpaceCoord.xy, 0.0f, 0.0f));
 
 	float Mode = TESR_ShadowFormatData.x;

@@ -18,13 +18,14 @@ class ShadowsExteriorEffect : public EffectRecord
 public:
 	ShadowsExteriorEffect() : EffectRecord("ShadowsExteriors") {};
 
-	static const int Modes = 3;
+	static const int Modes = 4;	// UNOFFICIAL: 3 = PCF (plain depth, filtered at lookup)
 	static const int FormatBits = 2;
 
 	D3DFORMAT Formats[Modes][FormatBits] = {
 		{D3DFMT_G16R16, D3DFMT_G32R32F},
 		{D3DFMT_G16R16F, D3DFMT_G32R32F},
 		{D3DFMT_A16B16G16R16F, D3DFMT_A32B32G32R32F},
+		{D3DFMT_R32F, D3DFMT_R32F},	// UNOFFICIAL PCF: depth needs the 32 bits whatever Format says
 	};
 	
 	enum ShadowMapTypeEnum {

@@ -881,7 +881,7 @@ Intensity = 0.315                    # Rescale the intensity of screenspace shad
 Sharp = false                        # UNOFFICIAL: sharper, steadier contact shadows for less: the ray toward the sun followed in 16 even steps instead of 4 random ones smoothed by two big blurs (about a third of the cost). With forward shadows (the default). BlurRadius is not used with it on.
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
-Mode = 2							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4
+Mode = 2							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
 Format = 0							 # Texture format, higher means higher quality, but higher bandwidth cost. 0: 16 bit, 1: 32 bit
 CascadeResolution = 1				 # Resolution used for shadow cascades. 0: 1024, 1: 1536, 2: 2048,
                                      # 3: 2560, 4: 3072, 5: 3584. The atlas holds 2x2 cascades, so

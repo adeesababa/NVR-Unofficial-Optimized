@@ -202,6 +202,31 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 #endif
 }
 
+#if SHADOW_FIXED_MODE == 3
+// UNOFFICIAL 2026-10-14 PCF ([Shaders.ShadowsExteriors.ShadowMaps] Mode 3). The atlas holds the light-space depth itself; each
+// lookup compares the 3 x 3 texels round the point with the point's depth and weighs the results with a quadratic B-spline
+// centred on the point (smooth, about two texels of penumbra, no stair steps as the point moves across texels). Nothing to
+// prefilter, so no blur pass, and no light bleeding (the price of variance maps). Taps are kept inside the cascade's quadrant.
+float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffset) {
+    float texel = TESR_ShadowBlur.x;
+    float2 lo = quadrantOffset + texel * 0.5f;
+    float2 hi = quadrantOffset + 0.5f - texel * 0.5f;
+    float2 p = uv / texel - 0.5f;
+    float2 c = floor(p + 0.5f);              // the nearest texel
+    float2 f = p - c;                         // -0.5 .. 0.5 from its centre
+    float3 wx = float3(0.5f * (0.5f - f.x) * (0.5f - f.x), 0.75f - f.x * f.x, 0.5f * (0.5f + f.x) * (0.5f + f.x));
+    float3 wy = float3(0.5f * (0.5f - f.y) * (0.5f - f.y), 0.75f - f.y * f.y, 0.5f * (0.5f + f.y) * (0.5f + f.y));
+    float lit = 0.0f;
+    [unroll] for (int y = 0; y < 3; y++) {
+        [unroll] for (int x = 0; x < 3; x++) {
+            float2 tapUV = clamp((c + float2(x - 1, y - 1) + 0.5f) * texel, lo, hi);
+            lit += (depth <= tex2Dlod(atlas, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * wx[x] * wy[y];
+        }
+    }
+    return lit;
+}
+#endif
+
 float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, float bleedReduction) {
     lightSpace.xyz /= lightSpace.w;
     lightSpace.x = lightSpace.x * 0.5f + 0.5f;
@@ -210,6 +235,9 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
     // Fold into the correct atlas quadrant.
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
+#if SHADOW_FIXED_MODE == 3
+    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias, quadrantOffset);   // UNOFFICIAL PCF
+#else
     float4 moments = SampleShadowMoments(lightSpace.xy, quadrantOffset);
 
 #if SHADOW_FIXED_MODE == 0
@@ -232,6 +260,7 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
     float negContrib = ShadowChebyshevUpperBound(moments.yw, warped.y, minVariance.y, bleedReduction);
     return min(posContrib, negContrib);
 #endif
+#endif
 }
 
 #if SUN_CROSSFADE
@@ -244,6 +273,9 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
     lightSpace.y = lightSpace.y * -0.5f + 0.5f;
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
+#if SHADOW_FIXED_MODE == 3
+    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias, quadrantOffset);   // UNOFFICIAL PCF
+#else
     float4 moments = tex2Dlod(TESR_ShadowAtlasOld, float4(lightSpace.xy, 0.0f, 0.0f));
 
 #if SHADOW_FIXED_MODE == 0
@@ -261,6 +293,7 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
     float posContrib = ShadowChebyshevUpperBound(moments.xz, warped.x, minVariance.x, bleedReduction);
     float negContrib = ShadowChebyshevUpperBound(moments.yw, warped.y, minVariance.y, bleedReduction);
     return min(posContrib, negContrib);
+#endif
 #endif
 }
 
@@ -477,6 +510,8 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
 
 #if SHADOW_FIXED_MODE == 0
     const float baseBias = 0.00001f;
+#elif SHADOW_FIXED_MODE == 3
+    const float baseBias = 0.0002f;   // UNOFFICIAL PCF: a depth offset (light-space depth), not a variance floor
 #else
     const float baseBias = 0.01f;
 #endif

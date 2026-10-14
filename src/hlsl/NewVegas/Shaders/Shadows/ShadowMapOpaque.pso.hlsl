@@ -71,6 +71,9 @@ PS_OUTPUT main(VS_OUTPUT IN) {
 		float2 exponents = GetEVSMExponents(40.0f, 5.0f);
 		float2 evsm2 = WarpDepth(depth, exponents);
 		OUT.color_0 = float4(evsm2, 0.0f, 1.0f);
+#elif SHADOW_FIXED_MODE == 3
+		// UNOFFICIAL PCF: the depth alone, compared at lookup (Shadow.hlsl ShadowPCF3x3).
+		OUT.color_0 = float4(depth, 0.0f, 0.0f, 1.0f);
 #else
 		// EVSM4
 		float2 exponents = GetEVSMExponents(40.0f, 5.0f);

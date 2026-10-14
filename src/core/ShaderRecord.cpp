@@ -259,10 +259,10 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 		default: // 4 (Custom), or an out-of-range value -- fall back to the raw setting.
 			shadowMode = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode");
 			if (shadowMode < 0) shadowMode = 0;
-			if (shadowMode > 2) shadowMode = 2;
+			if (shadowMode > 3) shadowMode = 3;	// UNOFFICIAL: 3 = PCF
 			break;
 		}
-		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : "2");
+		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
 	}
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(ShaderSourcePath, Macros, NULL, &ShaderSource, &Errors);

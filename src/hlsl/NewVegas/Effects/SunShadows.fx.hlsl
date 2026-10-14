@@ -137,6 +137,9 @@ float GetLightAmountValue(float4x4 lightTransform, float4 coord, float offsetX, 
         shadow = GetLightAmountValueEVSM2(shadowBufferValue.xy, LightSpaceCoord.z, bias, bleedReduction, FormatBits);
 	else
         shadow = GetLightAmountValueEVSM4(shadowBufferValue, LightSpaceCoord.z, bias, bleedReduction, FormatBits);
+	// UNOFFICIAL PCF (Mode 3): blended in without one more branch (this file is at ps_3_0's 16 constant branches). The
+	// deferred path only; with forward shadows (the default) the object shaders do the lookup.
+	shadow = lerp(shadow, ShadowPCF2x2(TESR_ShadowAtlas, LightSpaceCoord.xy, LightSpaceCoord.z - 0.0002f, TESR_ShadowBlur.x), saturate(Mode - 2.0f));
 	
     return shadow;
 }

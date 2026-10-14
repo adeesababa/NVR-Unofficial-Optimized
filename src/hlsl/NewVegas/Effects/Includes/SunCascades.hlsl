@@ -27,6 +27,7 @@ float4 SunCascadeTexCoord(float4 coord) {
 float SunCascadeValue(float4x4 lightTransform, float4 coord, float offsetX, float offsetY, float bias, float bleedReduction) {
 	float4 lightSpace = SunCascadeTexCoord(mul(coord, lightTransform));
 	lightSpace.xy = lightSpace.xy * 0.5 + float2(offsetX, offsetY);   // the cascade's quadrant of the atlas
+	[branch] if (TESR_ShadowFormatData.x == 3.0f) return ShadowPCF2x2(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - 0.0002f, TESR_ShadowBlur.x);	// UNOFFICIAL PCF
 	float4 moments = tex2Dlod(TESR_ShadowAtlas, float4(lightSpace.xy, 0.0f, 0.0f));
 	float shadow;
 	[branch] if (TESR_ShadowFormatData.x == 0.0f)

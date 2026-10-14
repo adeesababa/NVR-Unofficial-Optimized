@@ -93,6 +93,7 @@ float MarchShadow(float3 position) {
 	}
 	else return 1.0;
 	float4 lightSpace = SunCascadeTexCoord(mul(float4(position, 1.0), lightTransform));
+	[branch] if (TESR_ShadowFormatData.x == 3.0) return ShadowPCF2x2(TESR_ShadowAtlas, lightSpace.xy * 0.5 + quadrant, lightSpace.z - 0.0002, TESR_ShadowBlur.x);	// UNOFFICIAL PCF
 	float4 moments = tex2Dlod(TESR_ShadowAtlas, float4(lightSpace.xy * 0.5 + quadrant, 0.0, 0.0));
 	float bias = TESR_ShadowFormatData.x == 0.0 ? 0.00001 : 0.01;
 	if (TESR_ShadowFormatData.x == 0.0) return GetLightAmountValueVSM(moments.xy, lightSpace.z, bias, bleed);

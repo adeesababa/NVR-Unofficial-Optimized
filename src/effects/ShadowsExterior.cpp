@@ -249,6 +249,10 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 		}
 	}
 	
+	// UNOFFICIAL 2026-10-14 Mode 3 (PCF): the atlas holds the depth itself, compared at lookup (Shadow.hlsl ShadowPCF3x3), so
+	// there is nothing to prefilter (the blur is what made VSM/EVSM soft, and its cost), and MSAA's resolve would average depths
+	// across edges (shadow acne and gaps), so both are off.
+	if (Settings.ShadowMaps.Mode == 3) { Settings.ShadowMaps.Prefilter = 0; Settings.ShadowMaps.MSAA = 0; }
 	Settings.ShadowMaps.Format = Formats[Settings.ShadowMaps.Mode][Settings.ShadowMaps.FormatBits];
 
 	// Set clear color for clearing the cascades.
