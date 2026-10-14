@@ -304,6 +304,12 @@ float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, fl
                           TESR_ShadowOldFarCenter.w,  TESR_ShadowOldLodCenter.w);
     float4 texelWorld = 4.0f * radii * max(TESR_ShadowBlur.x, 1.0f / 16384.0f);
     float4 offsetDistance = offsetScale * SHADOW_NORMAL_BIAS_TEXELS * texelWorld;
+#if SHADOW_FIXED_MODE == 3
+    // UNOFFICIAL 2026-10-14 (user: fine stripes over the power armour with PCF): plain depth compared over a 3 x 3 footprint
+    // catches the receiver's own surface wherever it slopes away from the sun (shadow acne; the variance maps tolerated it).
+    // Push the lookup off the surface along its normal, 1.5 map texels at a glancing sun (none facing it), as is usual for PCF.
+    offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
+#endif
     const float blend = 0.9f;
     float4 distances = float4(
         length(worldPos - TESR_ShadowOldNearCenter.xyz),
@@ -598,6 +604,12 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // The floor keeps a zero constant from producing an infinite offset.
     float4 texelWorld = 4.0f * radii * max(TESR_ShadowBlur.x, 1.0f / 16384.0f);
     float4 offsetDistance = offsetScale * SHADOW_NORMAL_BIAS_TEXELS * texelWorld;
+#if SHADOW_FIXED_MODE == 3
+    // UNOFFICIAL 2026-10-14 (user: fine stripes over the power armour with PCF): plain depth compared over a 3 x 3 footprint
+    // catches the receiver's own surface wherever it slopes away from the sun (shadow acne; the variance maps tolerated it).
+    // Push the lookup off the surface along its normal, 1.5 map texels at a glancing sun (none facing it), as is usual for PCF.
+    offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
+#endif
 
 #if SHADOW_FIXED_MODE == 0
     const float baseBias = 0.00001f;

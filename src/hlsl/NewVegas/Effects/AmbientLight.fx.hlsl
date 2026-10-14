@@ -81,6 +81,15 @@ VSOUT FrameVS(VSIN IN) {
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
 
+// UNOFFICIAL 2026-10-14 (user: an orange tip on the first-person gun): the weapon and arms' own depth, bound by hand (an NVR_
+// sampler: a TESR_ one would bind by its place in the file). Those pixels get nothing from this effect and stand in for no
+// surface round about (they would darken the ground behind the gun).
+sampler2D NVR_ALViewModel : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+bool IsViewModel(float2 uv) {
+	float d = tex2Dlod(NVR_ALViewModel, float4(uv, 0.0f, 0.0f)).x;
+	return (TESR_DepthConstants.z == 0 && d < 0.9f) || (TESR_DepthConstants.z > 0 && d > 0.01f);
+}
+
 // ShadowsExteriors.fx.hlsl Shadow() on a gamma-encoded colour (the same maths as VolumetricFog.fx.hlsl CompositeSunShadow).
 float3 SunShadowApply(float3 color, float2 uv) {
 	[branch] if (TESR_WaterSettings.z == 1) {
@@ -135,6 +144,7 @@ float3 OctDecode(float2 e) {
 float4 Prepare(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
+	if (IsViewModel(uv)) viewZ = 1.0e6f;	// the weapon: as if open sky behind (nothing done, hides nothing)
 	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
 	// UNOFFICIAL 2026-10-14: the colour averaged over the 4x4 full-resolution pixels round the texel (four bilinear reads), not one
 	// spot: the bounce gathered from single pixels jumped between a bright blade tip and the dark gap beside it (grass shimmer).
@@ -345,6 +355,11 @@ sampler2D NVR_GridSunDepth : register(s10) = sampler_state { ADDRESSU = CLAMP; A
 sampler2D NVR_GridSunColor : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_GridWaveColor : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_GridAccumColor : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-14 blocking: per cell the surfaces in it (xyz: their average normal, w: how much of a cell face they cover),
+// from the sun map at injection. Read through stage 5 during the grid passes (every sampler register is taken; NVR_ALPrep is not
+// used by them), so it is NVR_ALPrep under another name.
+#define NVR_GridGeometry NVR_ALPrep
+float4 NVR_GridStep;            // x: 1 on the first spreading step (the running total starts at 0), y: blocking strength
 static const float3 GridGroundColor = float3(0.55f, 0.42f, 0.30f);	// without colours: a desert ground (linear)
 
 static const float GridX = 32.0f, GridY = 32.0f, GridZ = 16.0f;
@@ -388,6 +403,7 @@ GridOut GridInject(VSOUT IN) {
 	float stepTexels = span / 6.0f;
 	float4 sh = 0.0f;
 	float4 colour = 0.0f;	// the surfaces' colours (linear) added up, and how many
+	float3 normals = 0.0f;	// their normals added up (blocking)
 	[loop] for (int j = 0; j < 6; j++) {
 		[loop] for (int i = 0; i < 6; i++) {
 			float2 uv = centreUV + (float2(i, j) - 2.5f) * stepTexels / SunMapSize;
@@ -405,15 +421,19 @@ GridOut GridInject(VSOUT IN) {
 			n = len > 1e-4f ? n / len : float3(0.0f, 0.0f, 1.0f);
 			n *= dot(n, TESR_SunDirection.xyz) < 0.0f ? -1.0f : 1.0f;
 			sh += CosineLobe(n);
+			normals += n;
 			colour += float4(NVR_GridData.w > 0.5f ? pow(tex2Dlod(NVR_GridSunColor, float4(uv, 0.0f, 0.0f)).rgb, 2.2f) : GridGroundColor, 1.0f);
 		}
 	}
 	// Each read stands for stepTexels^2 map texels of sunlit surface; as a share of a cell's face.
-	sh *= NVR_GridLight.w * (stepTexels * NVR_GridData.z) * (stepTexels * NVR_GridData.z) / (size * size);
+	float faceShare = (stepTexels * NVR_GridData.z) * (stepTexels * NVR_GridData.z) / (size * size);
+	sh *= NVR_GridLight.w * faceShare;
 	GridOut OUT;
 	OUT.wave = sh;
-	// Not in the total: a surface's own cell would light the surface with the light it sends out (the ground lit itself, test 1).
-	OUT.accum = 0.0f;
+	// The second target holds the cell's surfaces for blocking (not the running total: that starts at 0 on the first step,
+	// NVR_GridStep.x; injection is kept out of it, else a surface's own cell lit the surface with what it sends out).
+	float normalLength = length(normals);
+	OUT.accum = float4(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f), colour.a * faceShare);
 	// The colour as colour x light (the light: the lobe's all-directions part), so steps can add it up weighted by light.
 	OUT.waveColor = float4(colour.rgb / max(colour.a, 1.0f), 1.0f) * sh.x;
 	OUT.accumColor = 0.0f;
@@ -424,12 +444,16 @@ GridOut GridPropagate(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
 	float4 sh = 0.0f;
 	float4 colour = 0.0f;
+	float4 blocker = tex2Dlod(NVR_GridGeometry, float4(IN.UVCoord, 0.0f, 0.0f));
 	[unroll] for (int k = 0; k < 6; k++) {
 		float3 axis = k == 0 ? float3(1, 0, 0) : k == 1 ? float3(-1, 0, 0) : k == 2 ? float3(0, 1, 0) : k == 3 ? float3(0, -1, 0) : k == 4 ? float3(0, 0, 1) : float3(0, 0, -1);
 		float3 neighbour = cell - axis;	// the neighbour on the far side; its light travels along +axis to this cell
 		if (any(neighbour < 0.0f) || neighbour.x >= GridX || neighbour.y >= GridY || neighbour.z >= GridZ) continue;
 		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour), 0.0f, 0.0f));
 		float sent = max(dot(from, ShBasis(axis)), 0.0f);
+		// Blocking: the surfaces in this cell stop the light crossing them, as far as they face across its path (a floor does
+		// not stop light running along it).
+		sent *= 1.0f - saturate(blocker.w * abs(dot(blocker.xyz, axis)) * NVR_GridStep.y);
 		sh += CosineLobe(axis) * (sent * NVR_GridData.y);
 		// The neighbour's colour travels with the light it sends.
 		float4 fromColour = tex2Dlod(NVR_GridWaveColor, float4(CellUV(neighbour), 0.0f, 0.0f));
@@ -437,7 +461,7 @@ GridOut GridPropagate(VSOUT IN) {
 	}
 	GridOut OUT;
 	OUT.wave = sh;
-	OUT.accum = tex2Dlod(NVR_GridAccum, float4(IN.UVCoord, 0.0f, 0.0f)) + sh;	// the total so far (read at the texel centre) plus this step
+	OUT.accum = (NVR_GridStep.x > 0.5f ? 0.0f : tex2Dlod(NVR_GridAccum, float4(IN.UVCoord, 0.0f, 0.0f))) + sh;	// the total so far (read at the texel centre) plus this step
 	OUT.waveColor = colour;
 	OUT.accumColor = tex2Dlod(NVR_GridAccumColor, float4(IN.UVCoord, 0.0f, 0.0f)) + colour;
 	return OUT;
@@ -479,7 +503,7 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	[branch] if (NVR_ALFlags.x > 0.5f) color = float4(SunShadowApply(color.rgb, IN.UVCoord), 1.0f);
 	float depth = readDepth(IN.UVCoord);
-	[branch] if (depth < NearFade || depth > DrawDistance) return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
+	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(IN.UVCoord)) return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
 
 	// The four nearest half-resolution texels, the ones at another depth (across an object's edge) counted less.
 	float2 position = IN.UVCoord / NVR_ALLayout.zw - 0.5f;

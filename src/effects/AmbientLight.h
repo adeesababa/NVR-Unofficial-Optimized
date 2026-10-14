@@ -41,6 +41,10 @@ public:
 	float				gridCell = 200.0f;		// cell size, world units
 	int					gridSteps = 8;			// spreading steps
 	float				gridSpread = 0.3f;		// share of a neighbour's light passed on per step
+	float				gridBlocking = 1.0f;	// how much the surfaces in a cell stop light crossing it
+	IDirect3DTexture9*	gridGeometry = nullptr;	// per cell: the surfaces' average normal and cover (blocking; A16B16G16R16F)
+	IDirect3DSurface9*	gridGeometrySurface = nullptr;
+	CachedHandle		paramGridStep;
 	IDirect3DTexture9*	gridSunTexture = nullptr;	// R32F depth from the sun
 	IDirect3DSurface9*	gridSunSurface = nullptr;
 	IDirect3DSurface9*	gridSunDepth = nullptr;
