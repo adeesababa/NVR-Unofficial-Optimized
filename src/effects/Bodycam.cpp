@@ -5,6 +5,11 @@
 #include <cstring>
 
 #include "Bodycam.h"
+#include "BodycamAudio.h"
+
+// UNOFFICIAL 2026-10-13: the microphone's settings ([Shaders.Bodycam.Main] Mic...), handed to the audio filter every frame while
+// Bodycam is on (BodycamAudio.h). Kept here, not in Bodycam.h (included everywhere).
+static BodycamAudio::Settings MicSettings;
 
 void BodycamEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BodycamLens", &Constants.Lens);
@@ -64,6 +69,13 @@ void BodycamEffect::UpdateSettings() {
 	readLook("Shaders.Bodycam.Night", Night);
 	readLook("Shaders.Bodycam.Interiors", Interiors);
 	Constants.Text.y = std::clamp(TheSettingManager->GetSettingF(section, "TextSize"), 1.0f, 12.0f);	// one size for all
+	MicSettings.Mix = std::clamp(TheSettingManager->GetSettingF(section, "Mic"), 0.0f, 1.0f);
+	MicSettings.Bits = std::clamp(TheSettingManager->GetSettingF(section, "MicBits"), 0.0f, 16.0f);
+	MicSettings.SampleRate = std::clamp(TheSettingManager->GetSettingF(section, "MicSampleRate"), 0.0f, 48000.0f);
+	MicSettings.Compression = std::clamp(TheSettingManager->GetSettingF(section, "MicCompression"), 0.0f, 1.0f);
+	MicSettings.GainDb = std::clamp(TheSettingManager->GetSettingF(section, "MicGain"), -24.0f, 24.0f);
+	MicSettings.Tone = std::clamp(TheSettingManager->GetSettingF(section, "MicTone"), 0.0f, 1.0f);
+	MicSettings.Hiss = std::clamp(TheSettingManager->GetSettingF(section, "MicHiss"), 0.0f, 1.0f);
 	const float wide = TheSettingManager->GetSettingF(section, "WideView");
 	WideView = wide >= 30.0f ? (std::min)(wide, 150.0f) : 0.0f;
 }
@@ -346,8 +358,13 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 void BodycamEffect::ApplyWideView() {
 	static bool widened = false;
 	static float before = 0.0f, current = 0.0f;
-	if (!Player || !WorldSceneGraph || TheSettingManager->SettingsMain.CameraMode.Enabled) return;
 	BodycamEffect* cam = TheShaderManager->Effects.Bodycam;
+	// (Also the microphone, every frame: on while Bodycam is, off at once when it is switched off; installed on first use.)
+	BodycamAudio::Settings mic = MicSettings;
+	if (!cam || !cam->Enabled) mic.Mix = 0.0f;
+	BodycamAudio::Wanted = mic;
+	if (mic.Mix > 0.0f) BodycamAudio::Install();
+	if (!Player || !WorldSceneGraph || TheSettingManager->SettingsMain.CameraMode.Enabled) return;
 	const float wide = cam && cam->Enabled ? cam->WideView : 0.0f;
 	const bool free = !Player->IsAiming() && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && !Player->IsVanity();
 	const float dt = (float)std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);

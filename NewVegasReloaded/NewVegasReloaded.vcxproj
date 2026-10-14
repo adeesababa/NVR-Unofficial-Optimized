@@ -295,6 +295,7 @@
     <ClInclude Include="..\src\effects\VolumetricLight.h" />
     <ClInclude Include="..\src\effects\SkyDither.h" />
     <ClInclude Include="..\src\effects\Bodycam.h" />
+    <ClInclude Include="..\src\effects\BodycamAudio.h" />
     <ClInclude Include="..\src\effects\Reflections.h" />
     <ClInclude Include="..\src\effects\VolumetricClouds.h" />
     <ClInclude Include="..\src\effects\BloodFlow.h" />

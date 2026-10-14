@@ -1118,6 +1118,13 @@ LightSmear = 0.3                       # [0-2] Very bright lights bleed into ver
 Hiccups = 0.3                          # [0-1] Encoder hiccups: now and then a frozen frame or a short burst of broken blocks (more often while moving); higher = more often. 0: off.
 Autofocus = 0.8                        # [0-2] Autofocus hunting: when what is in the middle of the picture gets much nearer or further, the picture goes soft and pulls back into focus. 0: off.
 WideView = 0.0                         # [0, 60-150] Main only: the world's field of view while Bodycam is on (body cameras see much wider than the game). Eased in and out, left alone while aiming and in menus; your game's own value comes back when Bodycam is off. Only the live value is changed, never your INI. 0: the game's own (try 100).
+Mic = 0.0                              # [0-1] Main only: all the game's sound as if picked up by the camera's own cheap microphone (the knobs below), while Bodycam is on. 0: off; 1: all mic.
+MicTone = 0.7                          # [0-1] The small mic's band: 0 full range, 1 a tiny phone-like mic (bass and treble cut).
+MicCompression = 0.7                   # [0-1] Automatic gain: quiet sounds brought up, loud ones held down; it pumps after a gunshot.
+MicGain = 6.0                          # [-24 to 24] dB into the mic's cheap preamp: higher clips (distorts) loud sounds sooner.
+MicBits = 10                           # [0, 2-16] Bitcrush: the bits kept (lower = grittier). 0: off.
+MicSampleRate = 16000                  # [0, 500-48000] Hz the mic is sampled at (lower = duller, lo-fi). 0: off.
+MicHiss = 0.3                          # [0-1] Background hiss.
 
 [_Shaders.Bodycam.Night]
 Fisheye = 0.45                         # At night outdoors (blended with the day values through dawn and dusk): every Main effect has its own value here (same ranges as Main).
