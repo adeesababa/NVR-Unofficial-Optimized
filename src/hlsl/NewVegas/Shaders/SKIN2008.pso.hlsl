@@ -104,7 +104,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     q258.xyz = (saturate(((3 - (q18.x * 2)) * sqr(q18.x)) - ((3 - (q17.x * 2)) * sqr(q17.x))) * const_2.xyz) + r1.wzy;			// partial precision
     q44.xyz = (r0.w * q258.xyz) + (((q9.x * const_2.xyz) + q14.xyz) * saturate((1 - att1.x) - att13.x));			// partial precision
     OUT.color_0.a = 1;			// partial precision
-    OUT.color_0.rgb = q44.xyz;			// partial precision
+    OUT.color_0.rgb = LinEncode(q44.xyz);
 
     return OUT;
 };

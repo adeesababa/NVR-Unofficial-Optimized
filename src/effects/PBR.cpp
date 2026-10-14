@@ -7,6 +7,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRMetalLook", &Constants.MetalLook);
 	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
 	TheShaderManager->RegisterConstant("TESR_EnvCube", &Constants.EnvCube);
+	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
@@ -47,11 +48,21 @@ void PBRShaders::UpdateSettings() {
 	MetalSettings.CubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections"), 0.0f, 1.0f);
 	MetalSettings.EnvCubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections"), 0.0f, 1.0f);
 
+	const float linearGamma = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ?
+		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
+	Constants.Linear.x = linearGamma;
+	Constants.Linear.y = 1.0f / linearGamma;
+
 	MaterialRulesSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") != 0;
 	MaterialRulesSettings.DebugView = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "DebugView") != 0;
 	MaterialRulesSettings.LogMatches = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "LogMatches") != 0;
 	MaterialRulesSettings.MetalOn = metalOn;
 	MaterialRough.z = MaterialRulesSettings.Enabled && MaterialRulesSettings.DebugView ? 1.0f : 0.0f;
+
+	RmaosSettings.On = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "On") != 0;
+	RmaosSettings.Occlusion = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "Occlusion"), 0.0f, 1.0f);
+	RmaosSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "DebugView"), 0, 4);
+	RmaosSettings.LogMatches = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "LogMatches") != 0;
 
 	FoliageSettings.Translucency = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "Translucency"), 0.0f, 1.0f);
 	FoliageSettings.Power = std::clamp(TheSettingManager->GetSettingF("Shaders.Foliage.Main", "Power"), 0.5f, 16.0f);

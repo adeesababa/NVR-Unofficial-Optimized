@@ -12,6 +12,13 @@
     #include "includes/SkyAmbient.hlsl"
 #endif
 
+#if defined(__INTELLISENSE__)
+    #include "LinearLight.hlsl"
+#else
+    #include "includes/LinearLight.hlsl"
+#endif
+#define LinSky(c) LinColor(c)
+
 float4 TESR_PBRData : register(c32);
 float4 TESR_PBRExtraData : register(c33);
 
@@ -21,7 +28,44 @@ float4 TESR_MaterialRough : register(c198);
 float4 TESR_MaterialTint  : register(c199);
 #endif
 
+#ifdef RMAOS
+float4 NVR_Rmaos : register(c220);
+sampler2D NVR_RmaosMap : register(s2);
+static float4 RmaosValue = float4(1.0f, 0.0f, 1.0f, 1.0f);
+#define RMAOS_ACTIVE (NVR_Rmaos.x > 0.5f)
+
+void RmaosRead(float2 uv) {
+    float2 dx = ddx(uv), dy = ddy(uv);
+    [branch] if (RMAOS_ACTIVE) RmaosValue = tex2Dgrad(NVR_RmaosMap, uv, dx, dy);
+}
+
+float RmaosAmbient() {
+    return RMAOS_ACTIVE ? lerp(1.0f, RmaosValue.b, saturate(NVR_Rmaos.y)) : 1.0f;
+}
+
+float3 RmaosDebug(float3 color, float3 albedo) {
+    [branch] if (NVR_Rmaos.z > 0.5f) {
+        #ifdef ONLY_LIGHT
+            return 0.0f;
+        #else
+            float dim = luma(albedo) * 0.35f;
+            if (NVR_Rmaos.z > 3.5f) return RMAOS_ACTIVE ? lerp(dim.xxx, float3(0.1f, 0.9f, 0.2f), 0.6f) : dim.xxx;
+            if (!RMAOS_ACTIVE) return dim.xxx;
+            float value = NVR_Rmaos.z < 1.5f ? RmaosValue.r : NVR_Rmaos.z < 2.5f ? RmaosValue.g : RmaosValue.b;
+            return value.xxx;
+        #endif
+    }
+    return color;
+}
+#else
+float RmaosAmbient() { return 1.0f; }
+float3 RmaosDebug(float3 color, float3 albedo) { return color; }
+#endif
+
 float getRoughness(float gloss) {
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+    #endif
     float roughness = saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
     #ifdef MATERIAL_RULES
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
@@ -87,7 +131,7 @@ float3 getVanillaLightingAtt(float3 lightDir, float att, float3 lightColor, floa
 
 // PBR
 float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness) {
-    lightColor = lightColor * TESR_PBRData.z;
+    lightColor = lightColor * LinScale(TESR_PBRData.z);
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
     
     float att = vanillaAtt(lightDir, radius);
@@ -102,7 +146,7 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
 }
 
 float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
-    lightColor = lightColor * TESR_PBRData.z;
+    lightColor = lightColor * LinScale(TESR_PBRData.z);
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
 
     #if defined(ONLY_SPECULAR)
@@ -119,7 +163,7 @@ float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, f
 }
 
 float3 getSunLighting(float3 lightDir, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
-    lightColor = lightColor * TESR_PBRData.z;
+    lightColor = lightColor * LinScale(TESR_PBRData.z);
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
 
     #if defined(ONLY_SPECULAR)
@@ -148,19 +192,19 @@ float4 TESR_DebugVar : register(c135);
 #define SKY_AMBIENT_STRENGTH  (TESR_PBRExtraData.y)      // scale on skyUpper at w = 1
 
 float3 getAmbientLighting(float3 ambient, float3 albedo) {
-    return ambient * TESR_PBRData.w * albedo;
+    return ambient * LinScale(TESR_PBRData.w) * albedo * RmaosAmbient();
 }
 
 float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, float worldNormalValid) {
-    float3 flatAmbient = ambient * TESR_PBRData.w;
+    float3 flatAmbient = ambient * LinScale(TESR_PBRData.w);
 
     // AmbientScale (TESR_PBRData.w) scales the weather ambient above but not this: the sky is a
     // second, independent light source, so SkylightingScale is its only strength knob and it
     // survives AmbientScale = 0.
-    float3 skyTerm = SkyAmbientRadiance(worldNormal, TESR_PBRExtraData.z) * SKY_AMBIENT_STRENGTH;
+    float3 skyTerm = LinSky(SkyAmbientRadiance(worldNormal, TESR_PBRExtraData.z)) * LinScale(SKY_AMBIENT_STRENGTH);
 
     // worldNormalValid is 0 under a vanilla VS, where the carried world position is undefined.
-    return (flatAmbient + skyTerm * worldNormalValid) * albedo;
+    return (flatAmbient + skyTerm * worldNormalValid) * albedo * RmaosAmbient();
 }
 
 float4 TESR_PBRMetal     : register(c34);
@@ -171,6 +215,9 @@ float getMetalMask(float specMask) {
 }
 
 float getMetalStrength() {
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) return 1.0f;
+    #endif
     #ifdef MATERIAL_RULES
         if (TESR_MaterialRule.x > 0.0f) return TESR_MaterialRule.y;
     #endif
@@ -181,6 +228,9 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     float peak = max(max(albedo.r, albedo.g), albedo.b);
     float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
     float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
+    #ifdef RMAOS
+        [branch] if (RMAOS_ACTIVE) return RmaosValue.g;
+    #endif
     #ifdef MATERIAL_RULES
         [branch] if (TESR_MaterialRule.x > 0.0f)
             return TESR_MaterialRule.z > 1.5f ? TESR_MaterialRule.y : saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_MaterialRule.y);
@@ -193,6 +243,9 @@ float getMetalFade(float3 cameraRelativePos) {
 }
 
 float getMetalRoughness(float specMask) {
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+    #endif
     #ifdef MATERIAL_RULES
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
             return lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
@@ -251,12 +304,12 @@ float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, 
     float3 sky = SkyAmbientElevation(upReflect);
     [branch] if (TESR_SharpSky.x > 0.0f && skyValid > 0.0f)
         sky = SkyAmbientSharpened(getMetalSkyDirection(worldPos, worldNormal, upReflect), sky);
-    float3 env = ambient * TESR_PBRData.w + sky * SKY_AMBIENT_STRENGTH * skyValid;
+    float3 env = ambient * LinScale(TESR_PBRData.w) + LinSky(sky) * LinScale(SKY_AMBIENT_STRENGTH) * skyValid;
     #ifdef NVR_LIVE_CUBE
     [branch] if (TESR_EnvCube.x > 0.0f && skyValid > 0.0f) {
         float4 live = LiveCube(getMetalSkyDirection(worldPos, worldNormal, upReflect), roughness);
-        env = lerp(env, live.rgb, TESR_EnvCube.x * live.a);
+        env = lerp(env, LinSky(live.rgb), TESR_EnvCube.x * live.a);
     }
     #endif
-    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z * getMaterialReflections();
+    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z * getMaterialReflections() * RmaosAmbient();
 }

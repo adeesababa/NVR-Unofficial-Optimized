@@ -246,6 +246,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 		}
 	}
 	
+	if (Settings.ShadowMaps.Mode == 3) { Settings.ShadowMaps.Prefilter = 0; Settings.ShadowMaps.MSAA = 0; }
 	Settings.ShadowMaps.Format = Formats[Settings.ShadowMaps.Mode][Settings.ShadowMaps.FormatBits];
 
 	// Set clear color for clearing the cascades.
@@ -297,6 +298,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ScreenSpaceData.y = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "BlurRadius");
 	Constants.ScreenSpaceData.z = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "RenderDistance");
 	Constants.ScreenSpaceData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "Intensity"), 0.0f);
+	Settings.ScreenSpace.Sharp = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Sharp") != 0;
 
 	// Sun smoothing settings.
 	Settings.SunSmoothing.SmoothSun = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "SmoothSun");

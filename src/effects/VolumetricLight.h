@@ -19,6 +19,8 @@ public:
 		float	Temporal;
 		float	BlurRadius;
 		float	RainStrength;
+		bool	Froxels;
+		bool	FogVolume;
 	};
 	SettingsStruct	Settings;
 
@@ -28,6 +30,8 @@ public:
 		D3DXVECTOR4	Data3;
 		D3DXVECTOR4	Layout;
 		D3DXMATRIX	Reproject;
+		D3DXVECTOR4	GridLayout;
+		D3DXVECTOR4	GridData;
 	};
 	ConstantsStruct	Constants;
 
@@ -40,6 +44,10 @@ public:
 		IDirect3DSurface9* TempSurface = nullptr;
 		IDirect3DTexture9* HistoryTexture = nullptr;
 		IDirect3DSurface9* HistorySurface = nullptr;
+		IDirect3DTexture9* GridTexture = nullptr;
+		IDirect3DSurface9* GridSurface = nullptr;
+		IDirect3DTexture9* GridTempTexture = nullptr;
+		IDirect3DSurface9* GridTempSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 
@@ -49,6 +57,7 @@ public:
 	void	UpdateSettings();
 	bool	ShouldRender();
 	void	RenderBuffers(IDirect3DDevice9* Device);
+	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface ? 8 : 0; }
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;

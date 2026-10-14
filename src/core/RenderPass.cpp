@@ -2,6 +2,26 @@
 #include "ShadowBoneUpload.h"
 
 
+void RenderPass::BindDiffuseOf(NiGeometry* Geo) {
+	ShadowsExteriorEffect::ShadowStruct* ShadowConstants = &TheShaderManager->Effects.ShadowsExteriors->Constants;
+	ShadowConstants->Data.w = 0.0f;
+	if (!BindDiffuse) return;
+	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
+	if (!ShaderProperty || !ShaderProperty->IsLightingProperty()) return;
+	NiSourceTexture** textures = ((BSShaderPPLightingProperty*)ShaderProperty)->ppTextures[0];
+	NiTexture* Texture = textures ? *textures : nullptr;
+	if (!Texture || !Texture->rendererData || !Texture->rendererData->dTexture) return;
+	NiDX9RenderState* RenderState = TheRenderManager->renderState;
+	RenderState->SetTexture(0, Texture->rendererData->dTexture);
+	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP, false);
+	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR, false);
+	ShadowConstants->Data.w = 1.0f;
+}
+
+
 void RenderPass::RenderAccum() {
 	if (GeometryList.empty()) return;
 
@@ -131,6 +151,7 @@ void ShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	ShadowConstants->Data.x = 0.0f; // Type of geo (0 normal, 1 actors (skinned), 2 speedtree leaves)
 	ShadowConstants->Data.y = 0.0f; // Alpha Control
 	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+	BindDiffuseOf(Geo);
 }
 
 
@@ -231,6 +252,7 @@ void SkinnedGeoShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	Constants->Data.x = 1.0f; // Type of geo (0 normal, 1 actors (skinned), 2 speedtree leaves)
 	Constants->Data.y = 0.0f; // Alpha control
 	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+	BindDiffuseOf(Geo);
 }
 
 
@@ -401,6 +423,7 @@ void TerrainLODPass::UpdateConstants(NiGeometry* Geo) {
 	ShadowConstants->Data.x = 3.0f; // Type of geo (0 normal, 1 actors (skinned), 2 speedtree leaves, 3 terrain LOD)
 	ShadowConstants->Data.y = 0.0f; // Alpha Control
 	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+	BindDiffuseOf(Geo);
 	D3DXMatrixTranspose(&Constants.WorldTranspose, &TheShaderManager->ShaderConst.ShadowWorld);
 
 	BSShaderPPLightingProperty* prop = (BSShaderPPLightingProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);

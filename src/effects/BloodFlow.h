@@ -33,6 +33,10 @@ public:
 		float	StreamWidth;
 		float	Beads;
 		float	BeadSize;
+		float	Splat;
+		float	SplatReach;
+		float	SplatSpray;
+		float	SplatDrips;
 		float	Merge;
 		float	GibPools;
 		int		MergeCount;
@@ -49,6 +53,7 @@ public:
 		D3DXVECTOR4	Match;
 		D3DXVECTOR4	DryRatio;
 		D3DXVECTOR4	Beads;
+		D3DXVECTOR4	Splat;
 	};
 	BloodFlowStruct	Constants;
 

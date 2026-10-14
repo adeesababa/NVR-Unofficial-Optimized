@@ -119,6 +119,8 @@ public:
 	struct	EffectsStruct {
 		AmbientOcclusionEffect*	AmbientOcclusion;
 		AvgLumaEffect*			AvgLuma;
+		SkyViewEffect*			SkyView;
+		AmbientLightEffect*		AmbientLight;
 		BloodLensEffect*		BloodLens;
 		BloomEffect*			Bloom;
 		BloomLegacyEffect*		BloomLegacy;

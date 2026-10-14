@@ -5,7 +5,8 @@
 float4 TESR_GameTime;
 float4 TESR_ReciprocalResolution;
 float4 TESR_CinemaData; // x: AspectRatio y: VignetteRadius z: VignetteDarkness, w: overlayStrength
-float4 TESR_CinemaSettings; //x: dirtlens opacity, y:grainAmount, z:chromatic aberration strength 
+float4 TESR_CinemaSettings; //x: dirtlens opacity, y:grainAmount, z:chromatic aberration strength
+float4 TESR_SkyDitherData;
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -112,11 +113,34 @@ float4 Cinema(VSOUT IN) : COLOR0
 }
 
 
+float GradientNoise(float2 pixel) {
+	return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
+float4 CinemaDither(VSOUT IN, float2 vpos : VPOS) : COLOR0
+{
+	float4 color = Cinema(IN);
+	[branch] if (TESR_SkyDitherData.y > 0.0 && tex2D(TESR_DepthBuffer, IN.UVCoord).x < 0.996) return color;
+	float2 pixel = vpos + TESR_SkyDitherData.z * float2(5.588238, 3.235);
+	float noise = GradientNoise(pixel) + GradientNoise(pixel + float2(47.0, 17.0)) - 1.0;
+	color.rgb += noise * TESR_SkyDitherData.x;
+	return color;
+}
+
 technique
 {
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader = compile ps_3_0 Cinema();
+    }
+}
+
+technique CinemaSkyDither
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader = compile ps_3_0 CinemaDither();
     }
 }

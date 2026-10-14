@@ -93,6 +93,11 @@ public:
 		bool	Enabled;
 		bool	Debug;
 		float	BlendDistance;
+		float	GroundWidth;
+		float	HeightBlend;
+		float	SlopeBlend;
+		float	MinPixels;
+		int		DebugView;
 		float	MaxDistance;
 	};
 	BlendingSettingsStruct BlendingSettings = {};
@@ -100,6 +105,7 @@ public:
 	struct BlendingStruct {
 		D3DXVECTOR4		Data;
 		D3DXVECTOR4		Extra;
+		D3DXVECTOR4		Shape;
 	};
 	BlendingStruct	BlendingConstants = {};
 

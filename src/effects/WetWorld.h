@@ -20,6 +20,14 @@ public:
 	float increaseRate;
 	float decreaseRate;
 
+	IDirect3DTexture9*	coverTexture = nullptr;
+	IDirect3DSurface9*	coverSurface = nullptr;
+	IDirect3DQuery9*	coverQuery = nullptr;
+	bool				coverPending = false;
+	bool				covered = false;
+	void	RegisterTextures();
+	void	RenderCoverTest(IDirect3DDevice9* Device);
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();

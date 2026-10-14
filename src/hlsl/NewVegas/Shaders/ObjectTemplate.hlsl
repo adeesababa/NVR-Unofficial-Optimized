@@ -167,6 +167,18 @@
 #if defined(PS) && MATERIAL_RULES_ON
     #define MATERIAL_RULES
 #endif
+#ifndef RMAOS_ON
+    #define RMAOS_ON 0
+#endif
+#if defined(PS) && RMAOS_ON
+    #define RMAOS
+#endif
+#ifndef LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING_ON 0
+#endif
+#if defined(PS) && LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING
+#endif
 #include "includes/Object.hlsl"
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
@@ -174,8 +186,13 @@
 #endif
 #include "includes/Shadow.hlsl"
 #ifdef PS
+    #define POINT_SHADOW_SCALAR
     #include "includes/PointShadowForward.hlsl"
     #include "includes/HandBlood.hlsl"
+    #if defined(HUD_RAIN_ON) && HUD_RAIN_ON
+        #define HUD_RAIN 1
+    #endif
+    #include "includes/HudRain.hlsl"
 #endif
 
 float4 BarrelHeatMuzzle : register(c171);
@@ -605,11 +622,19 @@ struct PS_OUTPUT {
     sampler2D NormalMap : register(s1);
 #endif
 
-#if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-    float4 AmbientColor : register(c1);
+#ifdef LINEAR_LIGHTING
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        float4 AmbientColorIn : register(c1);
+        static float4 AmbientColor;
+    #endif
+    float4 PSLightColorIn[10] : register(c3);
+    static float4 PSLightColor[10];
+#else
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        float4 AmbientColor : register(c1);
+    #endif
+    float4 PSLightColor[10] : register(c3);
 #endif
-
-float4 PSLightColor[10] : register(c3);
 
 #if (defined(SI) || defined(HAIR)) && !defined(ONLY_SPECULAR)
     #ifdef ONLY_LIGHT
@@ -645,11 +670,21 @@ float4 PSLightColor[10] : register(c3);
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
     
+#ifdef LINEAR_LIGHTING
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
+        PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+    #endif
+#endif
+
+    HudRain(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w));
+
 #if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
     float3 heatMaterialFactor = 1.0f;
 #endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-        float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+        float4 baseColor = HUD_RAIN_TEX(BaseMap, IN.uv.xy);
     
         #if defined(ONLY_LIGHT)
             heatMaterialFactor = max(baseColor.rgb, 0.03f);
@@ -663,9 +698,12 @@ PS_OUTPUT main(PS_INPUT IN) {
         clip(AmbientColor.a >= 1 ? 0 : (baseColor.a - alphaTestRef));
     #endif
     
-    float4 normal = tex2D(NormalMap, IN.uv.xy);
+    float4 normal = HUD_RAIN_TEX(NormalMap, IN.uv.xy);
     normal.xyz = normalize(expand(normal.xyz));
     
+    #ifdef RMAOS
+        RmaosRead(IN.uv.xy);
+    #endif
     float roughness = getRoughness(normal.a);
 
     // Geometric specular AA -- see the comment on SpecularAA itself. Unconditional: this is a
@@ -675,6 +713,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     HandBlood(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w));
     roughness = HandBloodRoughness(roughness);
     normal.xyz = HandBloodNormal(normal.xyz);
+    roughness = HudRainRoughness(roughness);
+    normal.xyz = HudRainNormal(normal.xyz);
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -704,6 +744,9 @@ PS_OUTPUT main(PS_INPUT IN) {
             baseColor.rgb = handBloodCover > 0.0f ? HandBloodAlbedo(heatMaterialFactor) / heatMaterialFactor : baseColor.rgb;
         #endif
     #endif
+    const float3 albedoStored = baseColor.rgb;
+    baseColor.rgb = LinColor(baseColor.rgb);
+    baseColor.rgb *= HudRainLens(float3(0.0f, 0.0f, 1.0f)).x;
 
     #ifdef METAL
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
@@ -749,7 +792,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             float3 ptNormal = 0.0f;
         #endif
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
-        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
+        float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             #if defined(DIFFUSE) || defined(POINT)
                 ptShadow0 = POINT_SHADOW_LOOKUP(0, vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w));
@@ -779,11 +822,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
         float3 lighting;
         [branch] if (getMetalStrength() > 0.0f) {
-            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, baseColor.rgb) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f));
+            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, albedoStored) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f));
             metalRoughness = lerp(roughness, metalRoughness, metallic);
             lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #ifdef SI
-                lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+                lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
             #endif
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), shadowGeometricNormal, skyValid);
             [branch] if (metallic > 0.0f) {
@@ -806,7 +849,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         else {
             lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
             #ifdef SI
-                lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+                lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
             #endif
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, shadowGeometricNormal, skyValid);
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
@@ -836,7 +879,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // Self emmitance.
     #ifdef SI
         float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
-        lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+        lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
     #endif
     
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
@@ -882,11 +925,15 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #endif
 
-    float3 finalColor = lighting.rgb;
-    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);
+    #if !defined(DIFFUSE) && !defined(POINT)
+        lighting += PSLightColor[0].rgb * shadowMultiplier * baseColor.rgb * HudRainLens(IN.lightDir.xyz).y;
+    #endif
+    float3 finalColor = LinEncode(lighting.rgb);
+    finalColor = MaterialRulesDebug(finalColor, albedoStored);
+    finalColor = RmaosDebug(finalColor, albedoStored);
 
     #ifdef METAL
-        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
+        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(albedoStored).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
     #endif
     
     // Fog.
@@ -1010,9 +1057,15 @@ struct PS_OUTPUT {
 sampler2D BaseMap : register(s0);
 sampler2D NormalMap : register(s1);
 
-float4 AmbientColor : register(c1);
-
-float4 PSLightColor[10] : register(c3);
+#ifdef LINEAR_LIGHTING
+    float4 AmbientColorIn : register(c1);
+    static float4 AmbientColor;
+    float4 PSLightColorIn[10] : register(c3);
+    static float4 PSLightColor[10];
+#else
+    float4 AmbientColor : register(c1);
+    float4 PSLightColor[10] : register(c3);
+#endif
 float4 PSLightPosition[8] : register(c19);
 
 
@@ -1033,7 +1086,14 @@ float4 PSLightPosition[8] : register(c19);
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
 
-    float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+#ifdef LINEAR_LIGHTING
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
+        PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+#endif
+
+    HudRain(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));
+    float4 baseColor = HUD_RAIN_TEX(BaseMap, IN.uv.xy);
     
     #ifndef OPT
         clip(AmbientColor.a >= 1 ? 0 : (baseColor.a - alphaTestRef));
@@ -1045,15 +1105,23 @@ PS_OUTPUT main(PS_INPUT IN) {
         baseColor.rgb = baseColor.rgb * IN.vertexColor.rgb;
     #endif
     
-    float4 normal = tex2D(NormalMap, IN.uv.xy);
+    float4 normal = HUD_RAIN_TEX(NormalMap, IN.uv.xy);
     normal.xyz = normalize(expand(normal.xyz));
     
+    #ifdef RMAOS
+        RmaosRead(IN.uv.xy);
+    #endif
     float roughness = getRoughness(normal.a);
     roughness = SpecularAA(normal.xyz, roughness);
     HandBlood(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));
     roughness = HandBloodRoughness(roughness);
     normal.xyz = HandBloodNormal(normal.xyz);
+    roughness = HudRainRoughness(roughness);
+    normal.xyz = HudRainNormal(normal.xyz);
     baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
+    const float3 albedoStored = baseColor.rgb;
+    baseColor.rgb = LinColor(baseColor.rgb);
+    baseColor.rgb *= HudRainLens(float3(0.0f, 0.0f, 1.0f)).x;
 
     // Lighting.
     float3 viewDir = { IN.lightDir.w, IN.light2.w, IN.light3.w };
@@ -1062,7 +1130,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
         float metallic = 0.0f;
         [branch] if (getMetalStrength() > 0.0f)
-            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f));
+            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, albedoStored) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f));
         float lightRoughness = lerp(roughness, metalRoughness, metallic);
     #endif
 
@@ -1073,7 +1141,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 ptNormal = GetShadowGeometricNormal(ptWorldPos);
         float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
-        float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
+        float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             #ifdef OPT
                 ptShadow0 = POINT_SHADOW_LOOKUP(0, PT_ATT(0));
@@ -1139,11 +1207,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     }
 
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
-    float3 finalColor = lighting;
-    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);
+    float3 finalColor = LinEncode(lighting);
+    finalColor = MaterialRulesDebug(finalColor, albedoStored);
+    finalColor = RmaosDebug(finalColor, albedoStored);
 
     #ifdef METAL
-        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
+        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(albedoStored).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
     #endif
     
     #ifndef OPT

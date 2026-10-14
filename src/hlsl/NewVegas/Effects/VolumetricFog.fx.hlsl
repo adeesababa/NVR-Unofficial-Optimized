@@ -151,6 +151,64 @@ static const float FogSkyColorCoeff = 6.0;
 #include "Includes/Sky.hlsl"
 #include "Includes/Normals.hlsl"
 
+#ifndef PHYSICAL_SKY_ON
+    #define PHYSICAL_SKY_ON 0
+#endif
+#if PHYSICAL_SKY_ON
+float4 TESR_PhysSky;
+float4 TESR_PhysSkySun;
+sampler2D NVR_FogSkyView : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+float3 PhysicalFogSky(float3 dir, float3 gameSky) {
+    float horizontal = length(dir.xy), sunHorizontal = length(TESR_PhysSkySun.xy);
+    float cosBearing = (horizontal > 1e-4f && sunHorizontal > 1e-4f) ? dot(dir.xy, TESR_PhysSkySun.xy) / (horizontal * sunHorizontal) : 1.0f;
+    float2 tableUV = float2(acos(clamp(cosBearing, -1.0f, 1.0f)) / 3.14159265f, sqrt(asin(saturate(dir.z)) / 1.57079633f));
+    float3 phys = tex2Dlod(NVR_FogSkyView, float4(tableUV, 0.0f, 0.0f)).rgb * (0.001f * TESR_PhysSky.y * TESR_SunsetColor.w);
+    float3 weatherHue = gameSky / max(luma(gameSky), 1e-6f);
+    return lerp(gameSky, lerp(phys, luma(phys) * weatherHue, TESR_PhysSky.z), TESR_PhysSky.x);
+}
+#endif
+
+float4 NVR_FogGridFlags;
+float4 TESR_VolumetricLightData;
+float4 TESR_VolumetricLightData2;
+float4 TESR_VolumetricLightGridLayout;
+float4 TESR_VolumetricLightGridData;
+sampler2D NVR_FogGrid : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+float4 FogGridSum(float2 uv, float depth) {
+	float marchDistance = TESR_VolumetricLightData.w;
+	float planar = depth >= farZ * 0.996 ? marchDistance : min(depth, marchDistance);
+	float s = sqrt(planar / marchDistance) * 64.0;
+	float z = min(floor(s), 63.0);
+	float2 gridSize = TESR_VolumetricLightGridLayout.xy;
+	float2 local = clamp(uv * gridSize, 0.5, gridSize - 0.5);
+	float2 farTile = float2(fmod(z, 8.0), floor(z / 8.0));
+	float2 nearTile = float2(fmod(z - 1.0, 8.0), floor((z - 1.0) / 8.0));
+	float4 farSide = tex2Dlod(NVR_FogGrid, float4((farTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0));
+	float4 nearSide = z > 0.5 ? tex2Dlod(NVR_FogGrid, float4((nearTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0)) : 0.0;
+	return lerp(nearSide, farSide, saturate(s - z));
+}
+
+float2 FogGridAir(float2 uv, float depth) {
+	float marchDistance = TESR_VolumetricLightData.w;
+	float planar = depth >= farZ * 0.996 ? marchDistance : min(depth, marchDistance);
+	float sigma = TESR_VolumetricLightData.z * length(toWorld(uv));
+	return float2(FogGridSum(uv, depth).r / TESR_VolumetricLightGridData.y, 1.0 - exp(-sigma * planar));
+}
+
+float3 FogGridLight(float3 gammaColor, float2 uv) {
+	float2 air = FogGridAir(uv, readDepthLod(uv));
+	float cosTheta = dot(normalize(toWorld(uv)), TESR_SmoothedSunDir.xyz);
+	float g = TESR_VolumetricLightData2.y;
+	float phase = min((1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosTheta, 1.0e-4), 1.5), 8.0);
+	float fade = TESR_VolumetricLightData2.z;
+	float3 lin = linearize(max(gammaColor, 0.0));
+	float shadedAir = saturate(air.y - air.x);
+	lin = lin * (1.0 - TESR_VolumetricLightData.y * fade * shadedAir) + linearize(TESR_SunColor.rgb) * (TESR_VolumetricLightData.x * fade * phase * air.x);
+	return delinearize(max(lin, 0.0));
+}
+
 struct VSOUT
 {
 	float4 vertPos : POSITION;
@@ -344,6 +402,7 @@ float GetFogShadowValue(float4x4 lightTransform, float4 coord, float offsetX, fl
 	LightSpaceCoord.x += offsetX;
 	LightSpaceCoord.y += offsetY;
 
+	[branch] if (TESR_ShadowFormatData.x == 3.0f) return ShadowPCF2x2(TESR_ShadowAtlas, LightSpaceCoord.xy, LightSpaceCoord.z - 0.0002f, TESR_ShadowBlur.x);
 	float4 moments = tex2Dlod(TESR_ShadowAtlas, float4(LightSpaceCoord.xy, 0.0f, 0.0f));
 
 	float Mode = TESR_ShadowFormatData.x;
@@ -502,6 +561,9 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		sunColor *= isDayTime * LegacyIsExterior;
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+#if PHYSICAL_SKY_ON
+		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
+#endif
 
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
 		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
@@ -593,14 +655,22 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 
 	float nightWindSpeed = WindSpeed * lerp(1.0, NightWindSpeedScale, nightFactor);
 	float3 windOffset = float3(WindDirection * nightWindSpeed * TESR_GameTime.x * 0.002, 0);
-	float noiseReach = min(length(eyeVector), 12000.0);
 	float noiseVal = 0.0;
-	[unroll] for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
-		float noiseT = lerp(min(300.0, noiseReach), noiseReach, (noiseStep + 0.5) / 4.0);
-		float3 noisePos = (TESR_CameraPosition.xyz + eyeDirection * noiseT + windOffset) / (1500 * NoiseScale);
-		noiseVal += tex3Dlod(NVR_FogNoise, float4(noisePos / 4.0, 0.0)).g;
+	float4 fogVolume = 0.0;
+	[branch] if (NVR_FogGridFlags.x > 0.5 && TESR_VolumetricLightGridData.x > 0.5) {
+		fogVolume = FogGridSum(IN.UVCoord, depth);
+		noiseVal = fogVolume.g > 1.0e-6 ? fogVolume.b / fogVolume.g : 0.5;
 	}
-	noiseVal = saturate((noiseVal * 0.25 - 0.5) * 1.8 + 0.5);
+	else {
+		float noiseReach = min(length(eyeVector), 12000.0);
+		[unroll] for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
+			float noiseT = lerp(min(300.0, noiseReach), noiseReach, (noiseStep + 0.5) / 4.0);
+			float3 noisePos = (TESR_CameraPosition.xyz + eyeDirection * noiseT + windOffset) / (1500 * NoiseScale);
+			noiseVal += tex3Dlod(NVR_FogNoise, float4(noisePos / 4.0, 0.0)).g;
+		}
+		noiseVal *= 0.25;
+	}
+	noiseVal = saturate((noiseVal - 0.5) * 1.8 + 0.5);
 	float nightNoiseStrength = NoiseStrength * lerp(1.0, NightNoiseStrengthScale, nightFactor);
 
 	// Zero the noise's contribution to density on true sky pixels via isSkyDome (a hard depth
@@ -628,11 +698,20 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	float strength = max(0, nvrDensity + WeatherImpact * vanillaStrength);
 
 	// ---- shadow-coupled sun in-scattering, sampled once per pixel at the fog's terminating point ----
-	float3 worldNormal = GetWorldNormalLod(IN.UVCoord);
 	float shadowVisibility = 1.0;
 	[branch]
 	if (isExterior > 0.5 && ShadowStrength > 0.0 && TESR_ShadowFade.y > 0.5) {
-		shadowVisibility = lerp(1.0, GetFogShadowVisibility(float4(worldPos, 1.0), worldNormal), ShadowStrength);
+		[branch] if (fogVolume.g > 1.0e-6) {
+			shadowVisibility = lerp(1.0, saturate(fogVolume.a / fogVolume.g), ShadowStrength);
+		}
+		else if (NVR_FogGridFlags.x > 0.5) {
+			float2 air = FogGridAir(IN.UVCoord, depth);
+			shadowVisibility = lerp(1.0, air.y > 1.0e-6 ? saturate(air.x / air.y) : 1.0, ShadowStrength);
+		}
+		else {
+			float3 worldNormal = GetWorldNormalLod(IN.UVCoord);
+			shadowVisibility = lerp(1.0, GetFogShadowVisibility(float4(worldPos, 1.0), worldNormal), ShadowStrength);
+		}
 	}
 
 	float distantFog = 0.0, distantHeightFade = 0.0;
@@ -649,6 +728,9 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		sunColorV *= isDayTime * isExterior;
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+#if PHYSICAL_SKY_ON
+		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
+#endif
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
@@ -922,7 +1004,9 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy)
 
 float4 DedicatedFogCombine(VSOUT IN, uniform bool legacy) : COLOR0
 {
-	return float4(FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy), 1);
+	float3 color = FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy);
+	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);
+	return float4(color, 1);
 }
 
 float4 NVR_CompositeFlags;
@@ -990,7 +1074,9 @@ float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy) : COLOR0
 	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	return float4(FogApply(color, IN.UVCoord, legacy), 1);
+	color = FogApply(color, IN.UVCoord, legacy);
+	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);
+	return float4(color, 1);
 }
 
 technique DedicatedFog

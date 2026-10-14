@@ -62,6 +62,11 @@ namespace BloodFlowBoxes {
 				low = r + dripLength + maxFall + 8.0f;
 				high = r + 6.0f;
 			}
+			if (!item.Pool) {
+				reach = (std::max)(reach, r * 8.0f + 4.0f);
+				low = (std::max)(low, r * 8.0f + 4.0f);
+				high = (std::max)(high, r * 1.0f + 6.0f);
+			}
 			const float u0 = -reach, u1 = reach, d0 = -reach, d1 = reach, n0 = -low, n1 = high;
 			const D3DXVECTOR3 center = item.Center - eye;
 			D3DXVECTOR3 corner[8];

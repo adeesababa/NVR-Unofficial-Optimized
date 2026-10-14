@@ -144,6 +144,7 @@ public:
 		D3DXVECTOR4		Translucency = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		D3DXVECTOR4		SharpSky;
 		D3DXVECTOR4		EnvCube = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		D3DXVECTOR4		Linear = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);
 	};
 	PBRStruct	Constants;
 
@@ -163,6 +164,13 @@ public:
 		bool MetalOn = false;
 	};
 	MaterialRulesSettingsStruct	MaterialRulesSettings;
+	struct RmaosSettingsStruct {
+		bool On = false;
+		float Occlusion = 1.0f;
+		int DebugView = 0;
+		bool LogMatches = false;
+	};
+	RmaosSettingsStruct	RmaosSettings;
 	D3DXVECTOR4	MaterialRule = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
 	D3DXVECTOR4	MaterialRough = D3DXVECTOR4(-1.0f, -1.0f, 0.0f, 0.0f);
 	D3DXVECTOR4	MaterialTint = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);

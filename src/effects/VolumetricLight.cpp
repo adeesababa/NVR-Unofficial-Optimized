@@ -17,6 +17,8 @@ void VolumetricLightEffect::UpdateSettings() {
 	Settings.Temporal = std::clamp(TheSettingManager->GetSettingF(section, "Temporal"), 0.0f, 0.97f);
 	Settings.BlurRadius = std::clamp(TheSettingManager->GetSettingF(section, "BlurRadius"), 0.0f, 8.0f);
 	Settings.RainStrength = std::clamp(TheSettingManager->GetSettingF(section, "RainStrength"), 0.0f, 1.0f);
+	Settings.Froxels = TheSettingManager->GetSettingI(section, "Froxels") != 0;
+	Settings.FogVolume = TheSettingManager->GetSettingI("Shaders.VolumetricFog.Main", "FogVolume") != 0;
 }
 
 void VolumetricLightEffect::RegisterConstants() {
@@ -25,6 +27,8 @@ void VolumetricLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightData3", &Constants.Data3);
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightLayout", &Constants.Layout);
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightReproject", (D3DXVECTOR4*)&Constants.Reproject);
+	TheShaderManager->RegisterConstant("TESR_VolumetricLightGridLayout", &Constants.GridLayout);
+	TheShaderManager->RegisterConstant("TESR_VolumetricLightGridData", &Constants.GridData);
 }
 
 void VolumetricLightEffect::RegisterTextures() {
@@ -34,6 +38,11 @@ void VolumetricLightEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("TESR_VolumetricLightTemp", &Textures.TempTexture, &Textures.TempSurface, w, h, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("TESR_VolumetricLightHistory", &Textures.HistoryTexture, &Textures.HistorySurface, w, h, D3DFMT_A16B16G16R16F);
 	Constants.Layout = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
+
+	const UINT gw = (TheRenderManager->width + 15) / 16, gh = (TheRenderManager->height + 15) / 16;
+	TheTextureManager->InitTexture("TESR_VolumetricLightGrid", &Textures.GridTexture, &Textures.GridSurface, gw * 8, gh * 8, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("TESR_VolumetricLightGridTemp", &Textures.GridTempTexture, &Textures.GridTempSurface, gw * 8, gh * 8, D3DFMT_A16B16G16R16F);
+	Constants.GridLayout = D3DXVECTOR4((float)gw, (float)gh, 1.0f / (gw * 8), 1.0f / (gh * 8));
 }
 
 void VolumetricLightEffect::UpdateConstants() {
@@ -55,6 +64,11 @@ void VolumetricLightEffect::UpdateConstants() {
 	Constants.Data2.y = std::lerp(n.Anisotropy, d.Anisotropy, day);
 	Constants.Data2.z = fade;
 	Constants.Data3.y = Settings.BlurRadius;
+
+	const float depth = Constants.Data.z * Constants.Data.w;
+	Constants.GridData.y = depth > 1.0e-4f ? 1.0f / (1.0f - expf(-depth)) : 1.0f;
+	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
+	Constants.GridData.x = Settings.FogVolume && fog && fog->Enabled && !fog->IsLegacy() ? 1.0f : 0.0f;
 }
 
 bool VolumetricLightEffect::ShouldRender() {
@@ -66,6 +80,38 @@ bool VolumetricLightEffect::ShouldRender() {
 }
 
 void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
+	if (CompositeTechnique() == 8) {
+		static GpuTimer gridTimers[3] = { GpuTimer("  VL grid light"), GpuTimer("  VL grid sum rows"), GpuTimer("  VL grid sum carry") };
+		auto gridPass = [&](IDirect3DSurface9* target, UINT technique) {
+			GpuProfileScope gpuPass(gridTimers[technique - 5], Device);
+			Device->SetRenderTarget(0, target);
+			Render(Device, target, target, technique, false, target);
+		};
+		static IDirect3DBaseTexture9* noise = nullptr;
+		static bool noiseLoaded = false;
+		if (!noiseLoaded) {
+			noiseLoaded = true;
+			noise = TheTextureManager->GetFileTexture("Data\\Textures\\Effects\\NoiseVolume.dds", TextureRecord::TextureRecordType::VolumeBuffer);
+		}
+		const bool bindNoise = Constants.GridData.x > 0.5f && noise;
+		if (bindNoise) {
+			Device->SetTexture(9, noise);
+			TheRenderManager->renderState->NoteDeviceTexture(9, noise);
+			const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP},
+				{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_LINEAR} };
+			for (const auto& s : states) TheRenderManager->SetSamplerState(9, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+		}
+		gridPass(Textures.GridSurface, 5);
+		if (bindNoise) {
+			Device->SetTexture(9, nullptr);
+			TheRenderManager->renderState->NoteDeviceTexture(9, nullptr);
+		}
+		gridPass(Textures.GridTempSurface, 6);
+		gridPass(Textures.GridSurface, 7);
+		haveHistory = false;
+		lastRenderedFrame = frame;
+		return;
+	}
 	const bool temporal = Settings.Temporal > 0.0f;
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;

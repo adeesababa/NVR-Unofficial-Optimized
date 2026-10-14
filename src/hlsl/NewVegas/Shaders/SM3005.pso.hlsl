@@ -155,7 +155,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Vanilla: (diffuseSum + AmbientColor) * albedo, with no highlight to add.
     float4 baseTex = tex2D(BaseMap, uv);
     float3 albedo = baseTex.rgb * IN.color;
-    float3 color = (diffuse + ambient) * albedo;
+    float3 color = LinEncode((diffuse + ambient) * LinColor(albedo));
 
     // Decal fog and blend modes, straight from the disassembly. MatAlpha .z and .w select
     // between the fogged, unfogged and whitened variants; .x scales the output alpha.

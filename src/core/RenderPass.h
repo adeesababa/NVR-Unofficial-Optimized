@@ -12,6 +12,8 @@ public:
 	ShaderRecordPixel* PixelShader;
 
 	static inline bool TwoSided = false;
+	static inline bool BindDiffuse = false;
+	static void BindDiffuseOf(NiGeometry* Geo);
 
 	std::stack<NiGeometry*>	GeometryList;
 	virtual bool AccumObject(NiGeometry* Geo) { return true; };

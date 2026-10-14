@@ -304,6 +304,7 @@ void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowMatch", &Constants.Match);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDryRatio", &Constants.DryRatio);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowBeads", &Constants.Beads);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowSplat", &Constants.Splat);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowShape", &BloodFlowShape);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDry", &Constants.Dry);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowInfo", &Constants.Info);
@@ -368,6 +369,10 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.Merge = std::clamp(TheSettingManager->GetSettingF(section, "Merge"), 0.0f, 2.0f);
 	Settings.MergeCount = std::clamp(TheSettingManager->GetSettingI(section, "MergeCount"), 2, 64);
 	Settings.BeadSize = std::clamp(TheSettingManager->GetSettingF(section, "BeadSize"), 1.0f, 200.0f);
+	Settings.Splat = std::clamp(TheSettingManager->GetSettingF(section, "Splat"), 0.0f, 1.0f);
+	Settings.SplatReach = std::clamp(TheSettingManager->GetSettingF(section, "SplatReach"), 0.2f, 3.0f);
+	Settings.SplatSpray = std::clamp(TheSettingManager->GetSettingF(section, "SplatSpray"), 0.0f, 2.0f);
+	Settings.SplatDrips = std::clamp(TheSettingManager->GetSettingF(section, "SplatDrips"), 0.0f, 3.0f);
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
 	Logger::Log("BloodFlow: splatter decals for pools and puddles: %s", Settings.SplatterAtlas ? "Textures\\decals\\fxbloodsplatterdecals01.dds" : "none (no loose file), drawn shapes");
 }
@@ -681,6 +686,7 @@ void BloodFlowEffect::UpdateConstants() {
 		((float*)&Constants.DryRatio)[i] = std::clamp(SrgbToLinear(Settings.DryColor[i]) / max(SrgbToLinear(Settings.FreshColor[i]), 1e-4f), 0.05f, 4.0f);
 	Constants.DryRatio.w = 0.0f;
 	Constants.Beads = D3DXVECTOR4(Settings.Beads, Settings.BeadSize, 0.0f, 0.0f);
+	Constants.Splat = D3DXVECTOR4(Settings.Splat, Settings.SplatReach, Settings.SplatSpray, Settings.SplatDrips);
 	Constants.Flow = D3DXVECTOR4(Settings.FlowSpeed, Settings.Viscosity, Settings.BloodAmount, (float)fmod(Clock, 1023.0));
 }
 
@@ -691,7 +697,7 @@ bool BloodFlowEffect::ShouldRender() {
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
 	UINT technique, bool clear, IDirect3DSurface9* source) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
-	static CachedHandle techniqueCache, probeCache, boundsCache, beadsCache;
+	static CachedHandle techniqueCache, probeCache, boundsCache, beadsCache, splatCache;
 	D3DXHANDLE boxes = TechniqueHandle(techniqueCache, "BloodFlow");
 	D3DXHANDLE probe = TechniqueHandle(probeCache, "BloodFlowProbe");
 	D3DXHANDLE boundsTechnique = TechniqueHandle(boundsCache, "BloodFlowBounds");
@@ -731,7 +737,8 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	Effect->SetTechnique(probe);
 	SetCT();
 	UINT passes = 0;
-	static GpuTimer probeTimer("  Blood probe"), boundsTimer("  Blood bounds"), paintTimer("  Blood paint (boxes)"), beadsTimer("  Blood beads");
+	static GpuTimer probeTimer("  Blood probe"), boundsTimer("  Blood bounds"), paintTimer("  Blood paint (boxes)"), beadsTimer("  Blood beads"),
+		splatTimer("  Blood splat shapes");
 	if (probeTriangles && SUCCEEDED(Effect->Begin(&passes, 0))) {
 		GpuProfileScope gpu(probeTimer, device);
 		Effect->BeginPass(0);
@@ -814,6 +821,18 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 			device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangles, Vertices, sizeof(VolumetricSmokeQuads::Vertex));
 			Effect->EndPass();
 			Effect->End();
+		}
+		D3DXHANDLE splatShape = TechniqueHandle(splatCache, "BloodSplat");
+		if (splatShape && Settings.Splat > 0.0f && splatTriangles > 0) {
+			Effect->SetTechnique(splatShape);
+			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
+				GpuProfileScope gpu(splatTimer, device);
+				Effect->BeginPass(0);
+				device->SetVertexDeclaration(Declaration);
+				device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, splatTriangles, Vertices, sizeof(VolumetricSmokeQuads::Vertex));
+				Effect->EndPass();
+				Effect->End();
+			}
 		}
 		D3DXHANDLE beads = TechniqueHandle(beadsCache, "BloodBeads");
 		if (beads && Settings.Beads > 0.0f && Settings.SplatterAtlas && splatTriangles > 0) {

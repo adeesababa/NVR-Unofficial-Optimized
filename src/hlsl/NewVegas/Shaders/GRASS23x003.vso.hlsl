@@ -39,6 +39,7 @@ struct VS_OUTPUT {
     float4 shadowWorldPos : TEXCOORD1;   // vanilla leaves TEXCOORD1 unused on this pair
     float4 ambient        : TEXCOORD4;
     float4 sun            : TEXCOORD5;   // .w = distance fade
+    float2 amount         : TEXCOORD6;
     float4 fog            : COLOR0;      // .w = fog amount
 };
 
@@ -97,8 +98,9 @@ VS_OUTPUT main(VS_INPUT IN) {
         NdotL += FoliageTranslucency(N, DiffuseDir, shadowWorldPos, DiffuseDir);
     }
 
-    OUT.ambient = lightScale * AmbientColor;
-    OUT.sun.xyz = ((lightScale * IN.color.rgb) * NdotL) * DiffuseColor * AddlParams.x;
+    OUT.ambient = AmbientColor;
+    OUT.sun.xyz = IN.color.rgb * DiffuseColor;
+    OUT.amount = float2(lightScale, lightScale * NdotL * AddlParams.x);
 
     float fogDist = length(float3(OUT.position.xy, OUT.position.w - OUT.position.z));
     float fogStrength = 1.0f - saturate((FogParam.x - fogDist) / FogParam.y);

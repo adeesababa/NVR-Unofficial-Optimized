@@ -950,6 +950,17 @@ float4 Wet(VSOUT IN) : COLOR0
     return float4(saturate(wetRGB + splashAdd), 1.0f);
 }
 
+float4 CoverTest(VSOUT IN) : COLOR0
+{
+    float4 o = mul(float4(0.0f, 0.0f, 48.0f, 1.0f), TESR_ShadowCameraToLightTransformOrtho);
+    o.xyz /= o.w;
+    float2 ouv = float2(o.x * 0.5f + 0.5f, o.y * -0.5f + 0.5f);
+    float top = SampleOrthoDepth(ouv);
+    bool inside = all(ouv > 0.0f) && all(ouv < 1.0f);
+    clip(inside && o.z > top + 0.003f ? 1.0f : -1.0f);
+    return float4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
 technique
 {
     pass
@@ -971,5 +982,14 @@ technique
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader  = compile ps_3_0 Wet();
+    }
+}
+
+technique CoverTestTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 CoverTest();
     }
 }

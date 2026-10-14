@@ -88,6 +88,7 @@ public:
 	virtual void			CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* ConstantTable);
 	virtual void			SetShaderConstantF(UInt32 RegisterIndex, D3DXVECTOR4* Value, UInt32 RegisterCount) = 0;
 
+	static void				BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overrides);
 	static ShaderRecord*	LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template = ShaderTemplate{},
 		const char* CacheSubPath = nullptr, const D3DXMACRO* Overrides = nullptr);
 

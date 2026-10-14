@@ -104,6 +104,18 @@
 
 #include "includes/Helpers.hlsl"
 #include "includes/Parallax.hlsl"
+#ifndef LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING_ON 0
+#endif
+#if defined(PS) && LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING
+#endif
+#ifndef RMAOS_ON
+    #define RMAOS_ON 0
+#endif
+#if defined(PS) && RMAOS_ON && !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
+    #define RMAOS
+#endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
 
@@ -309,7 +321,10 @@ struct PS_OUTPUT {
 
 
 #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-    #if !defined(NO_LIGHT)
+    #if !defined(NO_LIGHT) && defined(LINEAR_LIGHTING)
+        float4 AmbientColorIn : register(c1);
+        static float4 AmbientColor;
+    #elif !defined(NO_LIGHT)
         float4 AmbientColor : register(c1);
     #endif
     sampler2D BaseMap : register(s0);
@@ -355,7 +370,10 @@ float4 EmittanceColor : register(c2);
         sampler2D ShadowMaskMap : register(s7);
     #endif
 #endif
-#if !defined(NO_LIGHT)
+#if !defined(NO_LIGHT) && defined(LINEAR_LIGHTING)
+    float4 PSLightColorIn[10] : register(c3);
+    static float4 PSLightColor[10];
+#elif !defined(NO_LIGHT)
     float4 PSLightColor[10] : register(c3);
 #endif
 #ifndef OPT
@@ -374,6 +392,14 @@ float4 EmittanceColor : register(c2);
 PS_OUTPUT main(PS_INPUT IN)
 {
     PS_OUTPUT OUT;
+
+#if defined(LINEAR_LIGHTING) && !defined(NO_LIGHT)
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
+        PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+    #endif
+#endif
     
     #if !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
         float alpha = tex2D(BaseMap, IN.uv.xy).a;
@@ -412,6 +438,7 @@ PS_OUTPUT main(PS_INPUT IN)
             baseColor.xyz = baseColor.xyz * IN.vertexColor.rgb;
         #endif
     #endif
+    baseColor.rgb = LinColor(baseColor.rgb);
     
     // Shadows.
     float3 shadowMultiplier = 1.0;
@@ -452,6 +479,9 @@ PS_OUTPUT main(PS_INPUT IN)
         float4 normal = tex2D(NormalMap, offsetUV.xy);
         normal.xyz = normalize(expand(normal.xyz));
 
+        #ifdef RMAOS
+            RmaosRead(offsetUV.xy);
+        #endif
         float roughness = getRoughness(normal.a);
     
         #if !defined(DIFFUSE) && !defined(POINT)
@@ -477,7 +507,7 @@ PS_OUTPUT main(PS_INPUT IN)
         // Self emmitance.
         #ifdef SI
             float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
-            lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+            lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
         #endif
     
         #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
@@ -521,6 +551,9 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
     #endif
     
+    lighting.rgb = LinEncode(lighting.rgb);
+    lighting.rgb = RmaosDebug(lighting.rgb, baseColor.rgb);
+
     // Fog.
     #ifndef NO_FOG
         #ifndef OPT

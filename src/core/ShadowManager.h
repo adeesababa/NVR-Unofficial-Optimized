@@ -41,6 +41,7 @@ public:
 	ShaderRecordVertex*		ShadowCubeMapVertex;
 	ShaderRecordPixel*		ShadowCubeMapPixel;
 	ShaderRecordPixel*		ShadowMapOpaquePixel;
+	ShaderRecordPixel*		ShadowGridColorPixel = nullptr;
 	ShaderRecordPixel*		ShadowCubeMapOpaquePixel;
 	ShaderRecordVertex*		ShadowMapBlurVertex;
 	ShaderRecordPixel*		ShadowMapBlurPixel;

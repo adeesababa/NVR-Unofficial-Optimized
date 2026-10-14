@@ -326,6 +326,14 @@ int main(int argc, char** argv) {
 		BloodFlowBoxes::Item it = {};
 		it.Center = splats[i].at; it.Normal = splats[i].hint; D3DXVec3Normalize(&it.Normal, &it.Normal);
 		it.Radius = splats[i].r; it.Seed = Hash(splats[i].at.x, splats[i].at.z + 1.0f); it.Fade = 1.0f; it.Pool = false; it.Slot = (int)i;
+		if (getenv("BLOOD_NO_LAYOUT") == nullptr) {
+			D3DXVECTOR3 up(0, 0, 1), u;
+			D3DXVec3Cross(&u, &up, &it.Normal);
+			if (D3DXVec3Length(&u) < 0.1f) u = D3DXVECTOR3(1, 0, 0);
+			D3DXVec3Normalize(&u, &u);
+			it.DecalU = u / (2.0f * it.Radius);
+			it.DecalCode = (int)(i % 4) + 20 * 32;
+		}
 		items.push_back(it);
 	}
 	if (TerrainMode) {
@@ -364,6 +372,7 @@ int main(int argc, char** argv) {
 		vec("TESR_BloodFlowShape", 0.0f, 0.0f, 0.0f, cut ? 1.0f : 0.0f);
 		vec("TESR_BloodFlowInfo", 1.0f, debug, 300.0f, flowSpeed);
 		vec("TESR_BloodFlowFlow", flowSpeed, viscosity, amount, age);
+		vec("TESR_BloodFlowSplat", 1.0f, 1.0f, 1.0f, 1.0f);
 		for (auto& it : items) { it.Age = age; it.Fresh = written[it.Slot] != passes - 1; }
 		CHECK(device->UpdateSurface(scene, NULL, image, NULL));
 		CHECK(device->StretchRect(image, NULL, source, NULL, D3DTEXF_NONE));
@@ -420,6 +429,16 @@ int main(int argc, char** argv) {
 			device->SetTexture(D3DVERTEXTEXTURESAMPLER0, NULL);
 			effect->EndPass();
 			effect->End();
+			if (getenv("BLOOD_NO_SPLAT") == nullptr && effect->GetTechniqueByName("BloodSplat")) {
+				effect->SetTechnique("BloodSplat");
+				CHECK(effect->Begin(&n, 0));
+				CHECK(effect->BeginPass(0));
+				bind(pathTex[pathIndex]);
+				device->SetVertexDeclaration(declaration);
+				if (triangles) CHECK(device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triangles, vertices, sizeof(VolumetricSmokeQuads::Vertex)));
+				effect->EndPass();
+				effect->End();
+			}
 		}
 		device->EndScene();
 		if (timing) {

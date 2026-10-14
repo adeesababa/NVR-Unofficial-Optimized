@@ -1,5 +1,7 @@
 #include "ShaderRecord.h"
 #include "ShaderWarmUp.h"
+#include "PointShadowForward.h"
+#include "ShaderPrecompile.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -96,6 +98,104 @@ std::string ShaderProgram::PortableSource(ID3DXBuffer* Source) {
 	return Text;
 }
 
+void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overrides) {
+	// Append a define to the template, keeping the array null-terminated.
+	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
+		int i = 0;
+		while (i < 28 && Template.Defines[i].Name != NULL) {
+			if (!strcmp(Template.Defines[i].Name, Name)) return;
+			i++;
+		}
+		if (i >= 28) return;  // out of room; silently skip rather than overrun
+		Template.Defines[i] = { Name, Definition };
+		Template.Defines[i + 1] = { NULL, NULL };
+	};
+
+	if (Overrides)
+		for (const D3DXMACRO* o = Overrides; o->Name; o++) AppendDefine(o->Name, o->Definition);
+
+	if (TheRenderManager->IsReversedDepth())
+		AppendDefine("REVERSED_DEPTH", "");
+
+	// Forward sun shadows. Read straight from the setting manager rather than from the
+	// ShadowsExteriors effect, because shaders can be loaded before that effect is built.
+	//
+	// This governs whether the forward path is compiled in at all, so that builds which do not
+	// want it pay nothing for it. Whether it RUNS is a separate, runtime decision made by
+	// TESR_ShadowForwardData -- see ShadowsExteriorEffect::UpdateSettings. Changing the setting
+	// alters the preprocessed source, so CheckPreprocessResult recompiles on next load.
+	AppendDefine("FORWARD_SHADOWS",
+		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
+
+	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
+
+	AppendDefine("LIVE_CUBE", TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections") > 0.0f ||
+		TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f ? "1" : "0");
+
+	AppendDefine("MATERIAL_RULES_ON", TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ? "1" : "0");
+
+	AppendDefine("RMAOS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? "1" : "0");
+
+	AppendDefine("HUD_RAIN_ON", TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f ? "1" : "0");
+
+	AppendDefine("LINEAR_LIGHTING_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ? "1" : "0");
+
+	AppendDefine("PHYSICAL_SKY_ON", TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0");
+
+	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
+
+	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
+
+	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
+
+	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
+		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
+
+	// Which skylighting model is compiled in. 0 = spherical harmonic irradiance, 1 = the older
+	// single directional sample. Compile time rather than a runtime branch: ps_3_0 flattens
+	// branches like this, so a runtime switch would make every lit pixel pay for BOTH paths.
+	// Changing the setting alters the preprocessed source, so the cache recompiles on next load.
+	AppendDefine("SKYLIGHTING_MODE",
+		TheSettingManager->GetSettingI("Shaders.PBR.Main", "SkylightingMode") ? "1" : "0");
+
+	// Shadow atlas encoding: 0 = VSM, 1 = EVSM2, 2 = EVSM4. Compile time for the same reason as
+	// above -- Shadow.hlsl's GetSunShadow and ShadowMap.pso both branch on it with #if, not a
+	// runtime read, since ps_3_0 would otherwise flatten all three variants into every shadowed
+	// pixel. Read straight from the setting manager rather than from the ShadowsExteriors
+	// effect, same reasoning as FORWARD_SHADOWS above.
+	//
+	// Must mirror ShadowsExteriorEffect::UpdateSettingsFromQuality's Quality -> Mode mapping:
+	// Quality 0/1 -> VSM, 2 -> EVSM2, 3 -> EVSM4. Quality 4 (Custom) reads Mode directly, same
+	// as UpdateSettingsFromQuality does for that case. Previously this was never defined, so it
+	// silently fell back to Shadow.hlsl's own "#ifndef SHADOW_FIXED_MODE -> 2" default: every
+	// shader was compiled assuming EVSM4 regardless of Quality, so GetSunShadow's
+	// "TESR_ShadowFormatData.x != SHADOW_FIXED_MODE" check only ever matched at Quality 3/Full,
+	// and forward shadows silently no-op'd (return unshadowed) at every other quality level.
+	{
+		int quality = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality");
+		int shadowMode;
+		switch (quality) {
+		case 0:
+		case 1:
+			shadowMode = 0; // VSM
+			break;
+		case 2:
+			shadowMode = 1; // EVSM2
+			break;
+		case 3:
+			shadowMode = 2; // EVSM4
+			break;
+		default: // 4 (Custom), or an out-of-range value -- fall back to the raw setting.
+			shadowMode = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode");
+			if (shadowMode < 0) shadowMode = 0;
+			if (shadowMode > 3) shadowMode = 3;
+			break;
+		}
+		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
+	}
+
+}
+
 /*
 Loads the shader by name from a given subfolder (optionally). Shader will be compiled if needed.
 @returns the ShaderRecord for this shader.
@@ -103,6 +203,7 @@ Loads the shader by name from a given subfolder (optionally). Shader will be com
 ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template, const char* CacheSubPath,
 	const D3DXMACRO* Overrides) {
 	auto timer = TimeLogger();
+	ShaderPrecompile::StartOnce();
 
 	ShaderRecord* ShaderProg = NULL;
 	ID3DXBuffer* ShaderSource = NULL;
@@ -151,103 +252,20 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 
 	D3DXMACRO* Macros = &(Template.Defines[0]);
 
-	// Append a define to the template, keeping the array null-terminated.
-	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
-		int i = 0;
-		while (i < 28 && Template.Defines[i].Name != NULL) {
-			if (!strcmp(Template.Defines[i].Name, Name)) return;
-			i++;
-		}
-		if (i >= 28) return;  // out of room; silently skip rather than overrun
-		Template.Defines[i] = { Name, Definition };
-		Template.Defines[i + 1] = { NULL, NULL };
-	};
+	BuildDefines(Template, Overrides);
 
-	if (Overrides)
-		for (const D3DXMACRO* o = Overrides; o->Name; o++) AppendDefine(o->Name, o->Definition);
-
-	if (TheRenderManager->IsReversedDepth())
-		AppendDefine("REVERSED_DEPTH", "");
-
-	// Forward sun shadows. Read straight from the setting manager rather than from the
-	// ShadowsExteriors effect, because shaders can be loaded before that effect is built.
-	//
-	// This governs whether the forward path is compiled in at all, so that builds which do not
-	// want it pay nothing for it. Whether it RUNS is a separate, runtime decision made by
-	// TESR_ShadowForwardData -- see ShadowsExteriorEffect::UpdateSettings. Changing the setting
-	// alters the preprocessed source, so CheckPreprocessResult recompiles on next load.
-	AppendDefine("FORWARD_SHADOWS",
-		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
-
-	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
-
-	AppendDefine("LIVE_CUBE", TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections") > 0.0f ||
-		TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f ? "1" : "0");
-
-	AppendDefine("MATERIAL_RULES_ON", TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ? "1" : "0");
-
-	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
-
-	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
-
-	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
-
-	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
-		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
-
-	// Which skylighting model is compiled in. 0 = spherical harmonic irradiance, 1 = the older
-	// single directional sample. Compile time rather than a runtime branch: ps_3_0 flattens
-	// branches like this, so a runtime switch would make every lit pixel pay for BOTH paths.
-	// Changing the setting alters the preprocessed source, so the cache recompiles on next load.
-	AppendDefine("SKYLIGHTING_MODE",
-		TheSettingManager->GetSettingI("Shaders.PBR.Main", "SkylightingMode") ? "1" : "0");
-
-	// Shadow atlas encoding: 0 = VSM, 1 = EVSM2, 2 = EVSM4. Compile time for the same reason as
-	// above -- Shadow.hlsl's GetSunShadow and ShadowMap.pso both branch on it with #if, not a
-	// runtime read, since ps_3_0 would otherwise flatten all three variants into every shadowed
-	// pixel. Read straight from the setting manager rather than from the ShadowsExteriors
-	// effect, same reasoning as FORWARD_SHADOWS above.
-	//
-	// Must mirror ShadowsExteriorEffect::UpdateSettingsFromQuality's Quality -> Mode mapping:
-	// Quality 0/1 -> VSM, 2 -> EVSM2, 3 -> EVSM4. Quality 4 (Custom) reads Mode directly, same
-	// as UpdateSettingsFromQuality does for that case. Previously this was never defined, so it
-	// silently fell back to Shadow.hlsl's own "#ifndef SHADOW_FIXED_MODE -> 2" default: every
-	// shader was compiled assuming EVSM4 regardless of Quality, so GetSunShadow's
-	// "TESR_ShadowFormatData.x != SHADOW_FIXED_MODE" check only ever matched at Quality 3/Full,
-	// and forward shadows silently no-op'd (return unshadowed) at every other quality level.
-	{
-		int quality = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality");
-		int shadowMode;
-		switch (quality) {
-		case 0:
-		case 1:
-			shadowMode = 0; // VSM
-			break;
-		case 2:
-			shadowMode = 1; // EVSM2
-			break;
-		case 3:
-			shadowMode = 2; // EVSM4
-			break;
-		default: // 4 (Custom), or an out-of-range value -- fall back to the raw setting.
-			shadowMode = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "Mode");
-			if (shadowMode < 0) shadowMode = 0;
-			if (shadowMode > 2) shadowMode = 2;
-			break;
-		}
-		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : "2");
-	}
-
-	HRESULT prepass = D3DXPreprocessShaderFromFileA(ShaderSourcePath, Macros, NULL, &ShaderSource, &Errors);
+	const bool precompiled = ShaderPrecompile::Take(ShaderCompiledPath, &ShaderSource, &Shader);
+	HRESULT prepass = precompiled ? D3D_OK : D3DXPreprocessShaderFromFileA(ShaderSourcePath, Macros, NULL, &ShaderSource, &Errors);
 	if (prepass == D3D_OK) {
-		bool Compile = !CheckPreprocessResult(ShaderPreprocessedPath, ShaderSource);
+		bool Compile = precompiled ? false : !CheckPreprocessResult(ShaderPreprocessedPath, ShaderSource);
 
 		if (strstr(Name, ".vso"))
 			strcpy(ShaderProfile, "vs_3_0");
 		else if (strstr(Name, ".pso"))
 			strcpy(ShaderProfile, "ps_3_0");
 
-		if (!Compile){
+		if (precompiled) Function = Shader ? Shader->GetBufferPointer() : NULL;
+		else if (!Compile){
 			std::ifstream FileBinary(ShaderCompiledPath, std::ios::in | std::ios::binary | std::ios::ate);
 			if (FileBinary.is_open()) {
 				std::streamoff Size = FileBinary.tellg();
@@ -267,7 +285,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 			}
 		}
 
-		if (Compile || !Function) {
+		if (!precompiled && (Compile || !Function)) {
 			// compile if option was enabled or compiled version not found
 			D3DXCompileShader(
 				(const char*)ShaderSource->GetBufferPointer(),

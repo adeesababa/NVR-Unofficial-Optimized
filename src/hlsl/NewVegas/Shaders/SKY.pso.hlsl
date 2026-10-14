@@ -15,6 +15,14 @@ float4 TESR_SunPosition: register(c13);
 float4 TESR_SunsetColor: register(c14); // sunsetColor.w is sky strength multiplier
 float4 TESR_HDRBloomData: register(c15);
 float4 TESR_SunDiskColor: register(c16);
+#ifndef PHYSICAL_SKY_ON
+    #define PHYSICAL_SKY_ON 0
+#endif
+#if PHYSICAL_SKY_ON
+float4 TESR_PhysSky: register(c17);
+float4 TESR_PhysSkySun: register(c18);
+sampler2D TESR_SkyViewLUT : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#endif
 
 static const float4x4 ditherMat = {{0.0588, 0.5294, 0.1765, 0.6471},
 									{0.7647, 0.2941, 0.8824, 0.4118},
@@ -61,6 +69,17 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     float3 sunColor = GetSunColor(sunHeight, TESR_SkyData.x, TESR_SunAmount.x, TESR_SunDiskColor.rgb, TESR_SunsetColor.rgb);
     float3 skyColor = GetSkyColor(verticality, athmosphere, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, sunColor);
+
+#if PHYSICAL_SKY_ON
+    [branch] if (TESR_PhysSky.x > 0.0f) {
+        float horizontal = length(eyeDir.xy), sunHorizontal = length(TESR_PhysSkySun.xy);
+        float cosBearing = (horizontal > 1e-4f && sunHorizontal > 1e-4f) ? dot(eyeDir.xy, TESR_PhysSkySun.xy) / (horizontal * sunHorizontal) : 1.0f;
+        float2 tableUV = float2(acos(clamp(cosBearing, -1.0f, 1.0f)) / 3.14159265f, sqrt(asin(saturate(eyeDir.z)) / 1.57079633f));
+        float3 phys = tex2Dlod(TESR_SkyViewLUT, float4(tableUV, 0.0f, 0.0f)).rgb * (0.001f * TESR_PhysSky.y);
+        float3 weatherHue = skyColor / max(luma(skyColor), 1e-6f);
+        skyColor = lerp(skyColor, lerp(phys, luma(phys) * weatherHue, TESR_PhysSky.z), TESR_PhysSky.x);
+    }
+#endif
 
     OUT.color_0 = delinearize(float4(skyColor * TESR_SunsetColor.w, 1)) ; // multiply sky strength for HDR
 

@@ -11,6 +11,7 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendExtra", &BlendingConstants.Extra);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendShape", &BlendingConstants.Shape);
 }
 
 void TerrainShaders::BeginWorldScene() {
@@ -54,6 +55,15 @@ void TerrainShaders::PrepareBlending() {
 		copies++;
 	}
 	BlendingConstants.Data.x = 1.0f;
+	if (BlendingConstants.Extra.w > 0.5f) {
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		if (!state->GetRenderState(D3DRS_ALPHABLENDENABLE)) {
+			state->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE, RenderStateArgs);
+			state->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA, RenderStateArgs);
+			state->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA, RenderStateArgs);
+			state->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD, RenderStateArgs);
+		}
+	}
 }
 
 
@@ -124,11 +134,19 @@ void TerrainShaders::UpdateSettings() {
 
 	BlendingSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") != 0;
 	BlendingSettings.Debug = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Debug") != 0;
-	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 1.0f, 100.0f);
+	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 0.5f, 20.0f);
 	BlendingSettings.MaxDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MaxDistance"), 256.0f, 16384.0f);
+	BlendingSettings.GroundWidth = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "GroundWidth"), 0.0f, 100.0f);
+	BlendingSettings.HeightBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "HeightBlend"), 0.0f, 2.0f);
+	BlendingSettings.SlopeBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "SlopeBlend"), 0.0f, 2.0f);
+	BlendingSettings.MinPixels = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MinPixels"), 0.0f, 8.0f);
+	BlendingSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "DebugView"), 0, 4);
+	if (BlendingSettings.Debug && BlendingSettings.DebugView == 0) BlendingSettings.DebugView = 1;
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
-	BlendingConstants.Data.w = BlendingSettings.Debug ? 1.0f : 0.0f;
+	BlendingConstants.Data.w = (float)BlendingSettings.DebugView;
+	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
+	BlendingConstants.Extra.w = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Smooth") ? 1.0f : 0.0f;
 }
 
 void TerrainShaders::UpdateConstants() {

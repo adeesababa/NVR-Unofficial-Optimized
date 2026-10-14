@@ -108,7 +108,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 #endif
 
     lighting += spec + pointLightLighting + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
-    float4 finalColor = float4(lighting * baseColor.rgb, baseColor.a * AmbientColor.a);
+    float4 finalColor = float4(LinEncode(lighting * LinColor(baseColor.rgb)), baseColor.a * AmbientColor.a);
     finalColor.rgb = ApplyFog(finalColor.rgb, IN.color_1, Toggles);
 
     OUT.color_0.rgba = finalColor;

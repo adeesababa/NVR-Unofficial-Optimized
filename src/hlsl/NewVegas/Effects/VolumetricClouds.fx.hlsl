@@ -31,6 +31,14 @@ sampler2D TESR_CloudHistory : register(s7) = sampler_state { ADDRESSU = CLAMP; A
 sampler3D TESR_NoiseVolume : register(s8) < string ResourceName = "Effects\NoiseVolume.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NormalsBuffer : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_CloudShadow : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#ifndef PHYSICAL_SKY_ON
+    #define PHYSICAL_SKY_ON 0
+#endif
+#if PHYSICAL_SKY_ON
+float4 TESR_PhysSky;
+float4 TESR_PhysSkySun;
+sampler2D TESR_SkyViewLUT : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#endif
 texture NoTexture;
 
 static const float Base = TESR_CloudsShape.x;
@@ -60,6 +68,9 @@ VSOUT FrameVS(VSIN IN) { VSOUT OUT = (VSOUT)0.0f; OUT.vertPos = IN.vertPos; OUT.
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
+#if PHYSICAL_SKY_ON
+    #include "Includes/Atmosphere.hlsl"
+#endif
 
 float Remap(float v, float lo, float hi, float newLo, float newHi) { return newLo + (v - lo) / max(hi - lo, 1e-5) * (newHi - newLo); }
 
@@ -118,6 +129,23 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float3 skyLow = linearize(TESR_HorizonColor.rgb);
 	float3 ambientTop = skyTop * AmbientStrength * (1.0 - 0.4 * RainDark);
 	float3 ambientBottom = lerp(skyLow, skyTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark);
+#if PHYSICAL_SKY_ON
+	[branch] if (TESR_PhysSky.x > 0.0) {
+		const float share = TESR_PhysSky.x, tint = TESR_PhysSky.z, tableScale = 0.001 * TESR_PhysSky.y;
+		float3 through = exp(-AtmSunDepth(AtmGround + Base + 0.5 * Thickness, TESR_PhysSkySun.z, TESR_PhysSky.w));
+		float3 physSun = luma(sun) * through / max(luma(through), 1e-4);
+		sun = lerp(sun, lerp(physSun, sun, tint), share);
+		float3 zenith = tex2Dlod(TESR_SkyViewLUT, float4(0.5, 1.0, 0.0, 0.0)).rgb * tableScale;
+		float3 low = (tex2Dlod(TESR_SkyViewLUT, float4(0.0, 0.35, 0.0, 0.0)).rgb + tex2Dlod(TESR_SkyViewLUT, float4(0.5, 0.35, 0.0, 0.0)).rgb +
+			tex2Dlod(TESR_SkyViewLUT, float4(1.0, 0.35, 0.0, 0.0)).rgb) * (tableScale / 3.0);
+		zenith *= luma(skyTop) / max(luma(zenith), 1e-6);
+		low *= luma(skyLow) / max(luma(low), 1e-6);
+		float3 physTop = lerp(zenith, skyTop, tint);
+		float3 physLow = lerp(low, skyLow, tint);
+		ambientTop = lerp(ambientTop, physTop * AmbientStrength * (1.0 - 0.4 * RainDark), share);
+		ambientBottom = lerp(ambientBottom, lerp(physLow, physTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark), share);
+	}
+#endif
 	float lightStep = Thickness / 12.0;
 	float lightRise = max(light.z, 0.1);
 

@@ -67,6 +67,9 @@ public:
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
 	bool	compositeApplied = false;
+	IDirect3DTexture9* gridTexture = nullptr;
+	bool	gridApplied = false;
+	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
 	bool	CanApplyShadowAO();
 	bool	RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,

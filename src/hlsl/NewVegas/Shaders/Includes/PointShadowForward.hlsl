@@ -130,9 +130,15 @@ float PointShadow3(float3 worldPos, float3 normal, float att) { return PointShad
 float PointShadow4(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube4, NVR_PointShadowLight[4], NVR_PointShadowTint[4].w, worldPos, normal, att); }
 float PointShadow5(float3 worldPos, float3 normal, float att) { return PointShadowCube(NVR_PointShadowCube5, NVR_PointShadowLight[5], NVR_PointShadowTint[5].w, worldPos, normal, att); }
 
+#ifdef POINT_SHADOW_SCALAR
+#define POINT_SHADOW_LOOKUP(k, att) PointShadow##k(ptWorldPos, ptNormal, (att) * ptValid)
+#define POINT_SHADOW(k, att) PointShadowFactor(ptShadow##k, NVR_PointShadowTint[k])
+#define SHADOWED(color, k, att) ((color) * POINT_SHADOW(k, att))
+#else
 #define POINT_SHADOW_LOOKUP(k, att) PointShadowFactor(PointShadow##k(ptWorldPos, ptNormal, (att) * ptValid), NVR_PointShadowTint[k])
 #define POINT_SHADOW(k, att) ptShadow##k
 #define SHADOWED(color, k, att) ((color) * ptShadow##k)
+#endif
 
 #else
 

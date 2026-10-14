@@ -49,6 +49,8 @@ void ShaderManager::Initialize() {
 
 	// initializing the list of effect names
 	TheShaderManager->RegisterEffect<AvgLumaEffect>(&TheShaderManager->Effects.AvgLuma);
+	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
+	TheShaderManager->RegisterEffect<AmbientLightEffect>(&TheShaderManager->Effects.AmbientLight);
 	TheShaderManager->RegisterEffect<AmbientOcclusionEffect>(&TheShaderManager->Effects.AmbientOcclusion);
 	TheShaderManager->RegisterEffect<BloodLensEffect>(&TheShaderManager->Effects.BloodLens);
 	TheShaderManager->RegisterEffect<BloomEffect>(&TheShaderManager->Effects.Bloom);
@@ -1063,8 +1065,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			D3DXHANDLE fusedTechnique = Effects.SunShadows->TechniqueHandle(fusedCache, "ForwardContactShadows");
 			const bool fusedForwardContact = Effects.ShadowsExteriors->Settings.Exteriors.ForwardShadows &&
 				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique;
+			static EffectRecord::CachedHandle sharpCache;
+			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
+			const bool sharpContact = fusedForwardContact && Effects.ShadowsExteriors->Settings.ScreenSpace.Sharp && sharpTechnique != NULL &&
+				Effects.SunShadows->Effect->GetTechnique(2) == sharpTechnique;
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface,
-				Effects.SunShadows, false, fusedForwardContact ? 1 : 0);
+				Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
 		}
 	}
 	else {
@@ -1085,27 +1091,39 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	if (Effects.SkyView && Effects.SkyView->ShouldRender()) {
+		static GpuTimer skyViewTimer("Physical sky table");
+		GpuProfileScope gpu(skyViewTimer, Device);
+		Effects.SkyView->RenderTable(Device, RenderTarget);
+	}
 	if (wouldRender(Effects.VolumetricClouds)) {
 		GpuProfileScope gpu(cloudsTimer, Device);
 		Effects.VolumetricClouds->RenderClouds(Device, RenderTarget, TheTextureManager->RenderedSurface, SourceSurface);
 	}
+	const bool ambientLight = wouldRender(Effects.AmbientLight);
+	struct EnabledGuard { EffectRecord* effect; bool was; ~EnabledGuard() { if (effect) effect->Enabled = was; } };
+	EnabledGuard aoGuard{ ambientLight ? Effects.AmbientOcclusion : nullptr, Effects.AmbientOcclusion->Enabled };
+	EnabledGuard bounceGuard{ ambientLight ? Effects.BounceLight : nullptr, Effects.BounceLight->Enabled };
+	if (ambientLight) Effects.AmbientOcclusion->Enabled = Effects.BounceLight->Enabled = false;
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
 	const bool aoApplies = wouldRender(AO);
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) || wouldRender(Effects.BloodFlow) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
-		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections);
+		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections) || ambientLight;
 	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
 		Fog->CanApplyShadowAO();
 	AO->deferredReady = false;
+	const bool shadowIntoAmbientLight = ambientLight && shadowApplies && !composite && !pairApply && !wouldRender(Effects.SnowAccumulation) &&
+		!TheSettingManager->SettingsMain.Main.DisableCompositeApply;
 
 	{
 		GpuProfileScope gpu(shadowApplyTimer, Device);
 		if (GameState.isExterior) {
-			if (!(composite && shadowApplies) && !pairApply)
+			if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		else if (keepDarkening) {
@@ -1153,6 +1171,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool bounceIntoSpecular = specularRenders && wouldRender(Effects.BounceLight) && !wouldRender(Effects.WetWorld) &&
 		!wouldRender(Effects.Flashlight) && Effects.Specular->CanTakeBounce() && !Effects.BounceLight->SpillOn() &&
 		!Effects.BounceLight->HardEdgesOn();
+	if (ambientLight) {
+		static GpuTimer ambientLightTimer("Ambient light (AO + bounce)");
+		GpuProfileScope gpu(ambientLightTimer, Device);
+		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;
+		Effects.AmbientLight->shadowApplied = false;
+		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.AmbientLight->foldShadow = false;
+		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied)
+			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		static GpuTimer bounceLightTimer("Bounce light");
@@ -1168,6 +1196,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
+		if (Effects.WetWorld->Enabled && Effects.WetWorld->Constants.Data.x > 0.0f && GameState.isExterior && !GameState.isUnderwater &&
+			TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f) {
+			Effects.WetWorld->RenderCoverTest(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
 		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		// Beam march first, into its own half res buffer, so the Flashlight Combine pass can
 		// read it. Control.x already folds the effect toggle, the per view toggle and the
@@ -1216,6 +1249,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 	}
+	const bool lightGrid = Effects.VolumetricLight->CompositeTechnique() == 8 && wouldRender(Effects.VolumetricLight);
+	if (lightGrid) {
+		Effects.VolumetricLight->RenderBuffers(Device);
+		Device->SetRenderTarget(0, RenderTarget);
+	}
+	Fog->gridTexture = lightGrid ? Effects.VolumetricLight->Textures.GridTexture : nullptr;
+	Fog->gridApplied = false;
 	{
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
@@ -1239,11 +1279,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(volumetricLightTimer, Device);
-		if (wouldRender(Effects.VolumetricLight)) {
+		if (lightGrid) {
+			if (!Fog->gridApplied)
+				Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 8, false, SourceSurface);
+		}
+		else if (wouldRender(Effects.VolumetricLight)) {
 			Effects.VolumetricLight->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
-			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.VolumetricLight->CompositeTechnique(), false, SourceSurface);
 		}
+		Fog->gridTexture = nullptr;
 	}
 	{
 		GpuProfileScope gpu(sandstormTimer, Device);
@@ -1426,6 +1471,12 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
 	Effects.Debug->CaptureClipStart(Device, RenderTarget);
 
+	auto renders = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	const bool colorLUT = renders(Effects.Coloring) && !Effects.LUT->Settings.PreTonemapping && renders(Effects.LUT) &&
+		Effects.Coloring->Effect->GetTechniqueByName("ColoringLUT");
+	const bool cinemaDither = renders(Effects.Cinema) && renders(Effects.SkyDither) && !renders(Effects.ImageAdjust) &&
+		!renders(Effects.Bodycam) && Effects.Cinema->Effect->GetTechniqueByName("CinemaSkyDither");
+
 	{
 		EffectRecord* const order[] = {
 			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.HeatHaze, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
@@ -1433,7 +1484,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug };
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
-			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
+			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender() &&
+				!(colorLUT && effect == Effects.LUT) && !(cinemaDither && effect == Effects.SkyDither)) last = effect;
 		if (Effects.Debug->ClipViewActive()) last = Effects.Debug;
 		Chain.SetFinalEffect(last);
 	}
@@ -1460,8 +1512,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// screenspace coloring/blurring effects get rendered last
 	{
 		GpuProfileScope gpu(colorTimer, Device);
-		Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		if (!Effects.LUT->Settings.PreTonemapping)
+		Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, colorLUT ? 1 : 0, false, SourceSurface);
+		if (!Effects.LUT->Settings.PreTonemapping && !colorLUT)
 			Effects.LUT->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
@@ -1499,7 +1551,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	{
 		GpuProfileScope gpu(cinemaTimer, Device);
-		Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, cinemaDither ? 1 : 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
@@ -1511,7 +1563,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	{
 		GpuProfileScope gpu(skyDitherTimer, Device);
-		Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (!cinemaDither) Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);

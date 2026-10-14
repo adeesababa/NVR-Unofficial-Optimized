@@ -57,6 +57,21 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   steadily instead of shifting as you walk.
   The blood on the weapon follows mrfury97's HUD raindrops (Physically-Based-Reloaded testbed, after Ascii1457's
   Screen Space Shaders), and the blood textures were made for this build.
+- **New in P80 (pre-release):** the shipped defaults are now the author's own settings, with these new pieces on:
+  **linear lighting** (light added up in linear space, so lit sides and shadows fall off naturally; Shaders > PBR >
+  Linear), a **physical sky** (the sky's colours from the air itself; Shaders > Sky > Physical), **PCSS sun shadows**
+  (Shadow Maps `Mode` 3 + Contact Hardening: sharp where an object meets the ground, softer further away, and cheaper
+  than before), a **light grid for the fog and light shafts** (Volumetric Light `Froxels` + Volumetric Fog `FogVolume`),
+  **AmbientLight** (ambient occlusion and bounce light in one pass, replacing the old AO, with a **3D light grid** for the
+  bounce, `GridBounce`: the sun's light bounced off the surroundings, and indoors and at night the light of lamps and neon,
+  without the shimmer or popping of screen-only bounce light), **PBR material maps** (`_rmaos` textures next to the
+  diffuse or under `textures\pbr\`; Shaders > PBR > Rmaos), **rain drops on your first-person weapon** (Wet World
+  `HudDrops`), blood splats shaped like **thrown paint** (arms, spray lines and drips that run down walls and slopes), and
+  **terrain blending** that keeps a thin seam on shallow objects (`GroundWidth`, `HeightBlend`). Shaders now compile on
+  all CPU cores at startup (`ParallelShaderCompile`; a full rebuild in about a fifth of the time). Grass: set
+  `b30GrassVS=1` under `[Grass]` in `Fallout.ini` and `FalloutPrefs.ini`, or the game uses old grass shaders that NVR
+  cannot replace (grass then glows at night). The terrain blending update is ported from mrfury97's fork (after Terrain
+  Blending - NVSE); the weapon rain drops follow Conor's raindrop shader.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.

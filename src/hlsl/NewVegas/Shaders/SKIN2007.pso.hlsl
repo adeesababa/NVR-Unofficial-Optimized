@@ -130,6 +130,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // register carries the base texture's alpha and then has .xyz overwritten by the lighting
     // sum, so .a comes from texel0 above. This pass applies no albedo.
     OUT.color_0.rgb = ((saturate((1 - att1.x) - att46.x) * ((q21.x * r6.xyz) + r1.wzy)) + q16.xyz) + PBRAmbient(AmbientColor.rgb);			// partial precision
+    OUT.color_0.rgb = LinEncode(OUT.color_0.rgb);
 
     return OUT;
 };

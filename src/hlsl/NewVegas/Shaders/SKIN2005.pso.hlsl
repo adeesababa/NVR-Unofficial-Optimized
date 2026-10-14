@@ -108,7 +108,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Vanilla ends: texld_pp r6, t0, s0 / add_pp r6.xyz, r0, c1 / mov_pp oC0, r6 -- one
     // register carries the base texture's alpha and then has .xyz overwritten by the lighting
     // sum, so .a comes from texel0 above. This pass applies no albedo.
-    OUT.color_0.rgb = q17.xyz + PBRAmbient(AmbientColor.rgb);			// partial precision
+    OUT.color_0.rgb = LinEncode(q17.xyz + PBRAmbient(AmbientColor.rgb));
 
     return OUT;
 };

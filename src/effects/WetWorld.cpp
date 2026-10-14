@@ -35,6 +35,33 @@ void WetWorldEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WetWorldData", &Constants.Data);
 }
 
+void WetWorldEffect::RegisterTextures() {
+	TheTextureManager->InitTexture("NVR_WetWorldCover", &coverTexture, &coverSurface, 1, 1, D3DFMT_A8R8G8B8);
+}
+
+void WetWorldEffect::RenderCoverTest(IDirect3DDevice9* Device) {
+	if (!Enabled || !Effect || !coverSurface) return;
+	if (!coverQuery && FAILED(Device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &coverQuery))) { coverQuery = nullptr; return; }
+	if (coverPending) {
+		DWORD pixels = 0;
+		if (coverQuery->GetData(&pixels, sizeof(pixels), 0) != S_OK) return;
+		covered = pixels > 0;
+		coverPending = false;
+	}
+	DWORD zEnable = 0, zWrite = 0;
+	Device->GetRenderState(D3DRS_ZENABLE, &zEnable);
+	Device->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite);
+	Device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+	coverQuery->Issue(D3DISSUE_BEGIN);
+	Device->SetRenderTarget(0, coverSurface);
+	Render(Device, coverSurface, coverSurface, 1, false, nullptr);
+	coverQuery->Issue(D3DISSUE_END);
+	coverPending = true;
+	Device->SetRenderState(D3DRS_ZENABLE, zEnable);
+	Device->SetRenderState(D3DRS_ZWRITEENABLE, zWrite);
+}
+
 bool WetWorldEffect::ShouldRender() { 
 	return (Constants.Data.x || Constants.Data.z) && TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater;
 };

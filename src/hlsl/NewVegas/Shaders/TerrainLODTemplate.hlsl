@@ -7,6 +7,12 @@
 #define REVERSED_DEPTH
 
 #include "includes/Helpers.hlsl"
+#ifndef LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING_ON 0
+#endif
+#if defined(PS) && LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING
+#endif
 #include "includes/Terrain.hlsl"
 #include "includes/Shadow.hlsl"
 
@@ -137,9 +143,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos);
     float sunShadow = FORWARD_SHADOWS ? GetSunShadow(IN.shadowWorldPos, shadowNormal) : 1.0f;
 
-    float3 lighting = getSunLighting(IN.sunDirection.xyz, PSLightColor.rgb, eyeDir, normal.xyz, AmbientColor.rgb, baseColor, normal.a, LandLODSpec.x, 1.0, sunShadow, shadowNormal);
+    float3 lighting = getSunLighting(IN.sunDirection.xyz, LinColor(PSLightColor.rgb), eyeDir, normal.xyz, LinColor(AmbientColor.rgb), LinColor(baseColor), normal.a, LandLODSpec.x, 1.0, sunShadow, shadowNormal);
 
-    float3 final = lighting;
+    float3 final = LinEncode(lighting);
     final = lerp(final, final * (0.8 * noise + 0.55), saturate(TESR_TerrainExtraData.z)); // Apply noise.
     final = lerp(final, IN.fog.rgb, IN.fog.a);
 

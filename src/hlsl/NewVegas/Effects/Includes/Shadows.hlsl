@@ -80,6 +80,17 @@ float ChebyshevUpperBound(float2 moments, float mean, float minVariance,
     return (mean <= moments.x ? 1.0f : pMax);
 }
 
+float ShadowPCF2x2(sampler2D atlas, float2 uv, float depth, float texel) {
+    float2 p = uv / texel - 0.5f;
+    float2 base = floor(p);
+    float2 f = p - base;
+    float2 uv0 = (base + 0.5f) * texel;
+    float4 d = float4(tex2Dlod(atlas, float4(uv0, 0.0f, 0.0f)).x, tex2Dlod(atlas, float4(uv0 + float2(texel, 0.0f), 0.0f, 0.0f)).x,
+                      tex2Dlod(atlas, float4(uv0 + float2(0.0f, texel), 0.0f, 0.0f)).x, tex2Dlod(atlas, float4(uv0 + texel, 0.0f, 0.0f)).x);
+    float4 lit = depth <= d ? 1.0f : 0.0f;
+    return lerp(lerp(lit.x, lit.y, f.x), lerp(lit.z, lit.w, f.x), f.y);
+}
+
 float GetLightAmountValueVSM(float2 moments, float depth, float bias, float bleedReduction) {
     return ChebyshevUpperBound(moments, depth, bias, bleedReduction);
 }

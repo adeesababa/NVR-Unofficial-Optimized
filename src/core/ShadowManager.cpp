@@ -225,6 +225,8 @@ void ShadowManager::Initialize() {
 	TheShadowManager->ShadowCubeMapPixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowCubeMap.pso", "Shadows\\");
 	TheShadowManager->ShadowMapOpaquePixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowMapOpaque.pso", "Shadows\\");
 	TheShadowManager->ShadowCubeMapOpaquePixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowCubeMapOpaque.pso", "Shadows\\");
+	TheShadowManager->ShadowGridColorPixel = (ShaderRecordPixel*)ShaderRecord::LoadShader("ShadowGridColor.pso", "Shadows\\");
+	if (TheShadowManager->ShadowGridColorPixel) TheShadowManager->ShadowGridColorPixel->ClearSamplers = false;
 	if (!TheShadowManager->ShadowMapOpaquePixel) {
 		TheShadowManager->ShadowMapOpaquePixel = TheShadowManager->ShadowMapPixel;
 		Logger::Log("[WARNING] ShadowMapOpaque.pso did not load; opaque shadow casters use the alpha-test shader.");
@@ -1259,6 +1261,33 @@ void ShadowManager::RenderShadowMaps() {
 			OrthoData->y = ShadowMap->ShadowMapInverseResolution;
 	
 			shadowMapTimer.LogTime("ShadowManager::RenderShadowMap Ortho");
+		}
+
+		AmbientLightEffect* ambientLight = TheShaderManager->Effects.AmbientLight;
+		if (ambientLight && ambientLight->WantsGridSunMap(SunDir)) {
+			static GpuTimer gridSunTimer("Light grid sun map");
+			GpuProfileScope gpu(gridSunTimer, Device);
+			RecalculateBillboardVectors(&SunDir);
+			Device->SetRenderTarget(0, ambientLight->gridSunSurface);
+			Device->SetDepthStencilSurface(ambientLight->gridSunDepth);
+			ShadowData->z = 1;
+			Shadows->Constants.ShadowViewProj = ambientLight->GridSunViewProj(SunDir);
+			const bool colour = ShadowGridColorPixel && ambientLight->gridSunColorSurface;
+			RenderPass* passes[] = { geometryPass, alphaPass, skinnedGeoPass, speedTreePass, terrainLODPass };
+			ShaderRecordPixel* saved[5] = {};
+			if (colour) {
+				for (int i = 0; i < 5; i++) { saved[i] = passes[i]->PixelShader; passes[i]->PixelShader = ShadowGridColorPixel; }
+				Device->SetRenderTarget(1, ambientLight->gridSunColorSurface);
+				RenderPass::BindDiffuse = true;
+			}
+			RenderShadowMap(&ambientLight->gridSunMap, &Shadows->Constants.ShadowViewProj);
+			if (colour) {
+				for (int i = 0; i < 5; i++) passes[i]->PixelShader = saved[i];
+				Device->SetRenderTarget(1, nullptr);
+				RenderPass::BindDiffuse = false;
+				ShadowData->w = 0.0f;
+			}
+			ambientLight->gridSunHasColor = colour;
 		}
 	}
 

@@ -4,6 +4,10 @@
 #include <unordered_set>
 #include <fstream>
 #include <sstream>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include "../../core/GpuProfiler.h"
 #include "../../core/GpuTimeline.h"
 #include "../../core/PointShadowForward.h"
@@ -14,6 +18,8 @@
 #include "../../core/LampPassTest.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
+
+namespace RmaosDraw { static void Upload(); }
 
 static GpuTimer PreSceneTimer("Pre-scene (to world scene)");
 static bool PreSceneTimerActive = false;
@@ -433,6 +439,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	// nothing while the light is off.
 	FlashlightEffect* Flashlight = TheShaderManager->Effects.Flashlight;
 	MaterialPass::BeginFrame(Flashlight->Enabled && Flashlight->spotLightActive);
+	RmaosDraw::Upload();
 
 	//if (SettingsMain->Develop.TraceShaders && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && Global->OnKeyDown(SettingsMain->Develop.TraceShaders) && DWNode::Get() == NULL) DWNode::Create();
 	static GpuTimer frameTimer("Game frame total");
@@ -1370,6 +1377,135 @@ namespace MaterialRulesDraw {
 	}
 }
 
+namespace RmaosDraw {
+	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; };
+	static std::unordered_map<std::string, Map> ByPath;
+	struct Entry { std::string Path; Map* Found; };
+	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
+	struct Job { Map* Target; std::string File; std::vector<char> Bytes; };
+	static std::mutex Lock;
+	static std::condition_variable Wake;
+	static std::deque<Job> ToRead, Read;
+	static bool WorkerStarted = false, Checked = false, Compiled = false;
+	static float Current[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+	static int Loaded = 0;
+
+	static void Worker() {
+		for (;;) {
+			Job job;
+			{
+				std::unique_lock<std::mutex> hold(Lock);
+				Wake.wait(hold, [] { return !ToRead.empty(); });
+				job = std::move(ToRead.front());
+				ToRead.pop_front();
+			}
+			std::ifstream file(job.File, std::ios::binary);
+			if (file) job.Bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+			std::lock_guard<std::mutex> hold(Lock);
+			Read.push_back(std::move(job));
+		}
+	}
+
+	static bool Exists(const std::string& file) {
+		const DWORD attributes = GetFileAttributesA(file.c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+	}
+
+	static Map* Find(const std::string& path, bool log) {
+		auto known = ByPath.find(path);
+		if (known != ByPath.end()) return &known->second;
+		Map& map = ByPath[path];
+		map.Missing = true;
+		if (path.size() < 13 || path.compare(path.size() - 4, 4, ".dds") != 0) return &map;
+		const std::string base = path.substr(0, path.size() - 4);
+		std::vector<std::string> stems = { base };
+		if (base.size() > 2 && base.compare(base.size() - 2, 2, "_d") == 0) stems.push_back(base.substr(0, base.size() - 2));
+		std::vector<std::string> candidates;
+		for (const std::string& stem : stems) candidates.push_back(stem + "_rmaos.dds");
+		if (base.compare(0, 13, "textures\\pbr\\") != 0)
+			for (const std::string& stem : stems) candidates.push_back("textures\\pbr\\" + stem.substr(9) + "_rmaos.dds");
+		for (const std::string& c : candidates) {
+			const std::string file = "Data\\" + c;
+			if (!Exists(file)) continue;
+			map.File = file;
+			map.Missing = false;
+			break;
+		}
+		if (log) Logger::Log("[Rmaos] %s -> %s", path.c_str(), map.Missing ? "none" : map.File.c_str());
+		return &map;
+	}
+
+	static void Upload() {
+		Current[0] = -1.0f;
+		for (int n = 0; n < 2; n++) {
+			Job job;
+			{
+				std::lock_guard<std::mutex> hold(Lock);
+				if (Read.empty()) return;
+				job = std::move(Read.front());
+				Read.pop_front();
+			}
+			IDirect3DTexture9* texture = nullptr;
+			if (!job.Bytes.empty())
+				D3DXCreateTextureFromFileInMemoryEx(TheRenderManager->device, job.Bytes.data(), (UINT)job.Bytes.size(), D3DX_DEFAULT_NONPOW2,
+					D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT, 0, D3DFMT_UNKNOWN, D3DPOOL_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0, NULL, NULL, &texture);
+			if (texture) { job.Target->Texture = texture; Loaded++; }
+			else { job.Target->Missing = true; Logger::Log("[Rmaos] could not load %s", job.File.c_str()); }
+		}
+	}
+
+	static void Send(const float values[4], IDirect3DTexture9* texture) {
+		if (texture) {
+			TheRenderManager->device->SetTexture(2, texture);
+			TheRenderManager->renderState->NoteDeviceTexture(2, texture);
+			const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP},
+				{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_LINEAR} };
+			for (const auto& s : states) TheRenderManager->SetSamplerState(2, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+		}
+		if (!memcmp(values, Current, sizeof(Current))) return;
+		memcpy(Current, values, sizeof(Current));
+		TheRenderManager->device->SetPixelShaderConstantF(220, Current, 1);
+	}
+
+	static void ForObject(const PointShadowForward::RenderPassView* pass) {
+		if (!Checked) {
+			Checked = true;
+			Compiled = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") != 0;
+		}
+		if (!Compiled) return;
+		PBRShaders* pbr = TheShaderManager->Shaders.PBR;
+		float values[4] = { 0.0f, pbr ? pbr->RmaosSettings.Occlusion : 1.0f, pbr ? (float)pbr->RmaosSettings.DebugView : 0.0f, 0.0f };
+		Map* map = nullptr;
+		NiGeometry* geometry = pass ? pass->geometry : nullptr;
+		BSShaderProperty* property = geometry ? (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade) : nullptr;
+		const UInt32 vtable = property ? *(UInt32*)property : 0;
+		if ((vtable == 0x10AE0D0 || vtable == 0x10B9910) && !(property->ulFlags[0] & BSShaderProperty::Landscape)) {
+			BSShaderPPLightingProperty* lighting = (BSShaderPPLightingProperty*)property;
+			const NiSourceTexture* diffuse = lighting->ppTextures[0] ? lighting->ppTextures[0][0] : nullptr;
+			if (diffuse && diffuse->ddsPath1 && diffuse->ddsPath1[0]) {
+				auto known = ByTexture.find(diffuse);
+				if (known != ByTexture.end() && known->second.Path == diffuse->ddsPath1) map = known->second.Found;
+				else {
+					map = Find(MaterialRules::Normalize(diffuse->ddsPath1), pbr && pbr->RmaosSettings.LogMatches);
+					ByTexture[diffuse] = { std::string(diffuse->ddsPath1), map };
+				}
+			}
+		}
+		if (map && !map->Missing && !map->Texture && !map->Queued) {
+			map->Queued = true;
+			std::lock_guard<std::mutex> hold(Lock);
+			if (!WorkerStarted) { WorkerStarted = true; std::thread(Worker).detach(); }
+			ToRead.push_back({ map, map->File, {} });
+			Wake.notify_one();
+		}
+		const bool on = map && map->Texture && pbr && pbr->RmaosSettings.On;
+		values[0] = on ? 1.0f : 0.0f;
+		Send(values, on ? map->Texture : nullptr);
+	}
+
+	int LoadedCount() { return Loaded; }
+}
+
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
 namespace ScopeSunShadows { static void ForDraw(const PointShadowForward::RenderPassView* pass); }
 
@@ -1446,6 +1582,59 @@ namespace HandBlood {
 	}
 }
 
+namespace HudRain {
+	static bool Checked = false, Compiled = false, Set = false;
+	static float Wet = 0.0f, Clock = 0.0f;
+	static float Draw[8] = {};
+	static ULONGLONG LastTick = 0;
+
+	static void Update() {
+		if (!Checked) {
+			Checked = true;
+			Compiled = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f;
+			Logger::Log("UNOFFICIAL HudDrops: %s", Compiled ? "on (rain drops on the first-person weapon)" : "off (not compiled into the shaders)");
+		}
+		if (!Compiled) return;
+		const char* section = "Shaders.WetWorld.Main";
+		const ULONGLONG now = GetTickCount64();
+		const float dt = LastTick ? std::clamp((now - LastTick) / 1000.0f, 0.0f, 0.25f) : 0.0f;
+		LastTick = now;
+		WetWorldEffect* wet = TheShaderManager->Effects.WetWorld;
+		const auto& state = TheShaderManager->GameState;
+		const float rain = wet && wet->Enabled ? std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f) : 0.0f;
+		const bool open = state.isExterior && !state.isUnderwater && !(wet && wet->covered);
+		const float exposure = open ? rain : 0.0f;
+		const float wetTime = std::clamp(TheSettingManager->GetSettingF(section, "HudWetTime"), 0.5f, 600.0f);
+		const float dryTime = std::clamp(TheSettingManager->GetSettingF(section, "HudDryTime"), 0.5f, 600.0f);
+		Wet = exposure > 0.0f ? (std::min)(Wet + dt * exposure / wetTime, 1.0f) : (std::max)(Wet - dt / dryTime, 0.0f);
+		if (state.isUnderwater) Wet = 0.0f;
+		const bool debug = TheSettingManager->GetSettingI(section, "HudDebug") != 0;
+		if (debug) Wet = 1.0f;
+		if (Wet > 0.0f) Clock = fmodf(Clock + dt * (0.5f + (std::max)(rain, debug ? 1.0f : 0.0f)), 3600.0f);
+		Draw[0] = Wet * std::clamp(TheSettingManager->GetSettingF(section, "HudDrops"), 0.0f, 1.0f);
+		Draw[1] = 1.0f - std::clamp(TheSettingManager->GetSettingF(section, "HudDropDensity"), 0.0f, 1.0f);
+		Draw[2] = Clock;
+		Draw[3] = std::clamp(TheSettingManager->GetSettingF(section, "HudRefraction"), 0.0f, 4.0f);
+		Draw[4] = std::clamp(TheSettingManager->GetSettingF(section, "HudReflection"), 0.0f, 8.0f);
+		Draw[5] = std::clamp(TheSettingManager->GetSettingF(section, "HudGloss"), 0.0f, 1.0f);
+		Draw[6] = std::clamp(TheSettingManager->GetSettingF(section, "HudWetGloss"), 0.0f, 1.0f);
+		Draw[7] = std::clamp(TheSettingManager->GetSettingF(section, "HudDropSize"), 0.05f, 20.0f);
+	}
+
+	static void SetForDraw() {
+		if (!Compiled) return;
+		if (Draw[0] > 0.0f && ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) {
+			TheRenderManager->device->SetPixelShaderConstantF(221, Draw, 2);
+			Set = true;
+		}
+		else if (Set) {
+			const float off[8] = {};
+			TheRenderManager->device->SetPixelShaderConstantF(221, off, 2);
+			Set = false;
+		}
+	}
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -1513,6 +1702,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	ReflectionProbe::AfterBind();
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
 	HandBlood::SetForDraw();
+	HudRain::SetForDraw();
 	LampScissor::OnBind(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World);
 	HiddenObjectCulling::OnBind(PixelShader);
 	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;
@@ -1627,6 +1817,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
+	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
@@ -1646,6 +1837,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
+	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
@@ -1692,6 +1884,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		HiddenObjectCulling::BeginWorld();
 		GunFXSwitches::Update();
 		HandBlood::Update();
+		HudRain::Update();
 		BarrelHaze::Reset();
 		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();
