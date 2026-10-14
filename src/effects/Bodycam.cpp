@@ -16,6 +16,9 @@ void BodycamEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BodycamGrade", &Constants.Grade);
 	TheShaderManager->RegisterConstant("TESR_BodycamVideo", &Constants.Video);
 	TheShaderManager->RegisterConstant("TESR_BodycamAdapt", &Constants.Adapt);
+	TheShaderManager->RegisterConstant("TESR_BodycamBody", &Constants.Body);
+	TheShaderManager->RegisterConstant("TESR_BodycamFlash", &Constants.Flash);
+	TheShaderManager->RegisterConstant("TESR_BodycamGlitch", &Constants.Glitch);
 }
 
 void BodycamEffect::RegisterTextures() {
@@ -46,6 +49,8 @@ namespace {
 		{ "MotionBlur", 0.0f, 3.0f }, { "LensDirt", 0.0f, 2.0f }, { "Tint", 0.0f, 1.0f }, { "Text", 0.0f, 1.0f },
 		{ "VideoFps", 0.0f, 60.0f }, { "AutoExposure", 0.0f, 1.0f }, { "ExposureSpeed", 0.1f, 10.0f }, { "Breakup", 0.0f, 2.0f },
 		{ "RollingShutter", 0.0f, 3.0f },
+		{ "Bounce", 0.0f, 2.0f }, { "GunJolt", 0.0f, 3.0f }, { "Overload", 0.0f, 2.0f }, { "LowLight", 0.0f, 1.0f },
+		{ "LightSmear", 0.0f, 2.0f }, { "Hiccups", 0.0f, 1.0f }, { "Autofocus", 0.0f, 2.0f },
 	};
 }
 
@@ -59,6 +64,8 @@ void BodycamEffect::UpdateSettings() {
 	readLook("Shaders.Bodycam.Night", Night);
 	readLook("Shaders.Bodycam.Interiors", Interiors);
 	Constants.Text.y = std::clamp(TheSettingManager->GetSettingF(section, "TextSize"), 1.0f, 12.0f);	// one size for all
+	const float wide = TheSettingManager->GetSettingF(section, "WideView");
+	WideView = wide >= 30.0f ? (std::min)(wide, 150.0f) : 0.0f;
 }
 
 void BodycamEffect::UpdateConstants() {
@@ -133,6 +140,69 @@ void BodycamEffect::UpdateConstants() {
 	Constants.Adapt.z = look.v[ExposureSpeed];
 	Constants.Adapt.w = MeasureValid ? 1.0f : 0.0f;
 	VideoFrameRate = look.v[VideoFps];
+
+	// UNOFFICIAL 2026-10-13: the chest mount (picture only: the aim is untouched). Steps from the speed over the ground: the
+	// picture sways side to side once a stride and dips at each step, rolling a little with it; it also leans into turns.
+	const float ground = run < 2000.0f ? sqrtf(step.x * step.x + step.y * step.y) / dt : 0.0f;
+	const float moving = std::clamp(ground / 300.0f, 0.0f, 1.0f);
+	StepAmount += ((ground > 15.0f ? moving : 0.0f) - StepAmount) * std::clamp(dt / 0.25f, 0.0f, 1.0f);
+	StepPhase = fmodf(StepPhase + dt * (ground > 15.0f ? 0.45f + ground / 450.0f : 0.0f), 1.0f);	// strides a second
+	const float bob = look.v[Bounce] * StepAmount, stride = StepPhase * 6.2831853f;
+	const D3DXVECTOR3 steps(sinf(stride) * 0.004f * bob, (0.5f - 0.5f * cosf(stride * 2.0f)) * 0.006f * bob, sinf(stride) * 0.012f * bob);
+	TurnRoll += (std::clamp(-turnPerSecond.x * 0.02f, -0.03f, 0.03f) * look.v[Bounce] - TurnRoll) * std::clamp(dt / 0.15f, 0.0f, 1.0f);
+
+	// Gunfire: shots seen as the ammo count dropping (the same ammo; at most a few at once: not a drop of the whole stack).
+	int shots = 0;
+	InventoryChanges::EntryData* ammo = Player->process ? ((MiddleHighProcess*)Player->process)->ammoInfo : nullptr;
+	if (ammo && ammo->type) {
+		if (ammo->type == AmmoType && AmmoCount >= 0 && ammo->countDelta < AmmoCount && AmmoCount - ammo->countDelta <= 10)
+			shots = AmmoCount - ammo->countDelta;
+		AmmoType = ammo->type;
+		AmmoCount = ammo->countDelta;
+	}
+	else { AmmoType = nullptr; AmmoCount = -1; }
+	// Each shot jolts the mount (a spring: kicked, rings once, settles) and the muzzle flash overloads the sensor; the auto
+	// exposure then pulls the picture down for a moment.
+	if (shots > 0) {
+		const float j = look.v[GunJolt];
+		JoltSpeed += D3DXVECTOR3(((rand() % 1000) / 1000.0f - 0.5f) * 0.25f, -0.35f - (rand() % 1000) / 4000.0f, ((rand() % 1000) / 1000.0f - 0.5f) * 0.6f) * j;
+		if (look.v[Overload] > 0.0f) { FlashNow = 1.0f; DipNow = 1.0f; }
+	}
+	const float w0 = 6.2831853f * 7.0f;	// 7 Hz
+	for (float left = dt; left > 0.0f; left -= 1.0f / 120.0f) {
+		const float h = (std::min)(left, 1.0f / 120.0f);
+		JoltSpeed += (-Jolt * (w0 * w0) - JoltSpeed * (2.0f * 0.35f * w0)) * h;
+		Jolt += JoltSpeed * h;
+	}
+	FlashNow *= expf(-dt / 0.06f);
+	DipNow *= expf(-dt / 0.4f);
+	Constants.Body.x = steps.x + Jolt.x;
+	Constants.Body.y = steps.y + Jolt.y;
+	Constants.Body.z = steps.z + TurnRoll + Jolt.z;
+	Constants.Body.w = 1.0f + look.v[Bounce] * 0.035f + look.v[GunJolt] * 0.02f;	// zoomed in enough that no edge shows
+	Constants.Flash.x = FlashNow * look.v[Overload];
+	Constants.Flash.y = (std::max)(DipNow - FlashNow, 0.0f) * look.v[Overload];
+	Constants.Flash.z = look.v[LowLight];
+	Constants.Flash.w = look.v[LightSmear];
+
+	// Encoder hiccups: now and then (more often while the view moves) a frozen picture (a dropped or repeated frame) or a short
+	// burst of broken blocks.
+	const float hiccups = look.v[Hiccups];
+	FreezeLeft = (std::max)(FreezeLeft - dt, 0.0f);
+	GlitchLeft = (std::max)(GlitchLeft - dt, 0.0f);
+	if (hiccups > 0.0f) {
+		HiccupWait -= dt * (1.0f + MotionLevel * 2.0f);
+		if (HiccupWait <= 0.0f) {
+			if (rand() % 2) FreezeLeft = 0.07f + (rand() % 1000) / 1000.0f * 0.15f;
+			else { GlitchLeft = 0.1f + (rand() % 1000) / 1000.0f * 0.25f; Constants.Glitch.y = (float)(rand() % 997); }
+			const float mean = 20.0f + (3.0f - 20.0f) * hiccups;	// seconds between hiccups on average
+			HiccupWait = -logf((std::max)((rand() % 1000 + 1) / 1001.0f, 1e-3f)) * mean;
+		}
+	}
+	else { FreezeLeft = GlitchLeft = 0.0f; }
+	Constants.Glitch.x = GlitchLeft > 0.0f ? 0.5f + 0.5f * hiccups : 0.0f;
+	Constants.Glitch.z = look.v[Autofocus];
+	Constants.Glitch.w = hiccups;
 
 	// The timestamp: the game's date and clock; the seconds run in real time (the game clock runs 30 times faster, so its
 	// seconds would blur).
@@ -223,7 +293,7 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	LastRender = Clock;
 	if (stale) { HoldValid = false; MeasureValid = false; }
 
-	if (Constants.Adapt.x > 0.0f && MeasureSurface[0] && MeasureSurface[1]) {
+	if ((Constants.Adapt.x > 0.0f || Constants.Glitch.z > 0.0f) && MeasureSurface[0] && MeasureSurface[1]) {
 		const int write = 1 - MeasureIndex;
 		MeasureRead = MeasureTexture[MeasureIndex];			// last frame's, read by the measure pass
 		Constants.Adapt.w = MeasureValid ? 1.0f : 0.0f;
@@ -238,11 +308,12 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	else MeasureValid = false;
 
 	const double tick = VideoFrameRate >= 1.0f ? floor(Clock * VideoFrameRate) : -1.0;
-	const bool hold = VideoFrameRate >= 1.0f && HoldValid && tick == HoldTick;
+	// (A hiccup's frozen picture: the last kept frame shown again; a frame is kept every frame while hiccups are on.)
+	const bool hold = HoldValid && ((VideoFrameRate >= 1.0f && tick == HoldTick) || FreezeLeft > 0.0f);
 	Constants.Video.w = hold ? 1.0f : 0.0f;
 	EffectRecord::Render(Device, RenderTarget, RenderedSurface, 0, ClearRenderTarget, SourceBuffer);
 	if (hold) return;
-	if (VideoFrameRate < 1.0f) { HoldValid = false; return; }
+	if (VideoFrameRate < 1.0f && Constants.Glitch.w <= 0.0f) { HoldValid = false; return; }
 
 	// Keep the new video frame: where the picture went (the chain's current image, the game target if Bodycam drew straight
 	// into it, or the target on the old path).
@@ -266,4 +337,32 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	}
 	HoldValid = SUCCEEDED(Device->StretchRect(result, NULL, HoldSurface, NULL, D3DTEXF_NONE));
 	HoldTick = tick;
+}
+
+// UNOFFICIAL 2026-10-13 (user: the wide view as an option): [Shaders.Bodycam.Main] WideView, the world's field of view while
+// Bodycam is on (a body camera sees much wider than the game). Eased in and out; left to the game while aiming (its zoom) and in
+// menus; the game's own value back when Bodycam or WideView goes off. Only the live value is changed, never the game's INI
+// settings, so nothing can be saved with it. Not while [Main.CameraMode] sets its own.
+void BodycamEffect::ApplyWideView() {
+	static bool widened = false;
+	static float before = 0.0f, current = 0.0f;
+	if (!Player || !WorldSceneGraph || TheSettingManager->SettingsMain.CameraMode.Enabled) return;
+	BodycamEffect* cam = TheShaderManager->Effects.Bodycam;
+	const float wide = cam && cam->Enabled ? cam->WideView : 0.0f;
+	const bool free = !Player->IsAiming() && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && !Player->IsVanity();
+	const float dt = (float)std::clamp((double)TheFrameRateManager->ElapsedTime, 0.0, 0.1);
+	auto set = [](float fov) {
+		Player->worldFoV = fov;
+		if (fabsf(WorldSceneGraph->cameraFOV - fov) > 0.01f) WorldSceneGraph->UpdateParticleShaderFoV(fov);
+	};
+	if (wide > 0.0f) {
+		if (!widened) { before = current = Player->worldFoV; widened = true; }
+		if (!free) { current = Player->worldFoV; return; }
+		current = fabsf(wide - current) < 0.05f ? wide : current + (wide - current) * (std::min)(1.0f, dt * 6.0f);
+		set(current);
+	}
+	else if (widened && free) {
+		widened = false;
+		set(before);
+	}
 }

@@ -24,13 +24,19 @@ public:
 		D3DXVECTOR4	Video;	// x: compression breakdown now (setting x how fast the view moves), y/z: rolling-shutter lean across/down (uv over
 							//    the picture's height), w: 1 show the held video frame (the picture is not drawn again)
 		D3DXVECTOR4	Adapt;	// x: auto exposure strength, y: this frame's seconds, z: seconds the exposure takes to follow, w: 1 measured
+		// UNOFFICIAL 2026-10-13 (user: the rest of the list too): the body the camera is strapped to, the gunfire, the dark, the
+		// encoder and the autofocus.
+		D3DXVECTOR4	Body;	// xy: the picture's shift (uv; the chest bobbing and the gun's jolt), z: its roll (radians), w: zoom that hides the edges
+		D3DXVECTOR4	Flash;	// x: muzzle-flash overload now (0-1), y: exposure dip after it (0-1), z: low-light mode, w: light smear
+		D3DXVECTOR4	Glitch;	// x: broken-block burst now (0-1), y: its seed, z: autofocus strength, w: seconds this frame
 	};
 	BodycamStruct	Constants;
 
 	// Every effect has a value by day (Main), at night (blended with the day's through dawn and dusk) and indoors. UNOFFICIAL
 	// 2026-10-13 (user: the whole suite per lighting condition, not only the grade). Kept as one array so they blend alike.
 	enum LookKey { Fisheye, FitEdges, Border, Fringe, EdgeBlur, LensBlur, Vignette, Sharpen, Exposure, Contrast, Saturation, Lift, Cool,
-		Glow, Grain, Blocks, MotionBlur, LensDirt, Tint, Text, VideoFps, AutoExposure, ExposureSpeed, Breakup, RollingShutter, LookKeys };
+		Glow, Grain, Blocks, MotionBlur, LensDirt, Tint, Text, VideoFps, AutoExposure, ExposureSpeed, Breakup, RollingShutter,
+		Bounce, GunJolt, Overload, LowLight, LightSmear, Hiccups, Autofocus, LookKeys };
 	struct LookStruct { float v[LookKeys]; };
 	LookStruct		Day = {}, Night = {}, Interiors = {};
 	float			LastYaw = 0.0f, LastPitch = 0.0f;	// the view's turn last frame (degrees), for the motion blur
@@ -57,6 +63,18 @@ public:
 	float				VideoFrameRate = 0.0f;	// VideoFps now (0: every frame drawn)
 	char				Shown[2][65] = {};	// the text in the texture now
 	double				Clock = 0.0;		// real seconds, for the frame number and the timestamp's seconds
+	// UNOFFICIAL 2026-10-13: the chest mount's bob (step phase, smoothed amount), the gun's jolt (a spring), shots seen from the
+	// ammo count, the flash and the exposure dip after it, encoder hiccups (a frozen picture or a burst of broken blocks).
+	float				StepPhase = 0.0f, StepAmount = 0.0f;
+	D3DXVECTOR3			Jolt = D3DXVECTOR3(0.0f, 0.0f, 0.0f), JoltSpeed = D3DXVECTOR3(0.0f, 0.0f, 0.0f);	// x, y (uv), z roll
+	float				TurnRoll = 0.0f;
+	const void*			AmmoType = nullptr;
+	int					AmmoCount = -1;
+	float				FlashNow = 0.0f, DipNow = 0.0f;
+	float				HiccupWait = 3.0f, GlitchLeft = 0.0f, FreezeLeft = 0.0f;
+	bool				Frozen = false;
+	float				WideView = 0.0f;	// [Shaders.Bodycam.Main] WideView: the world's field of view while on (degrees, 0 = the game's)
+	static void			ApplyWideView();	// once a frame (CameraManager::SetSceneGraph)
 
 	void	UpdateConstants();
 	void	RegisterConstants();

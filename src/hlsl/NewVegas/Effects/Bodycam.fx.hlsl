@@ -21,6 +21,10 @@ float4 TESR_BodycamGrade;			// x: cool (neutralises the game's yellow grade), y:
 // UNOFFICIAL 2026-10-13 (user picked: 30 fps video, slow auto exposure, the video breaking down when moving):
 float4 TESR_BodycamVideo;			// x: compression breakdown now, y/z: rolling-shutter lean across/down, w: 1 show the held video frame
 float4 TESR_BodycamAdapt;			// x: auto exposure strength, y: frame seconds, z: seconds the exposure takes to follow, w: 1 measured
+// UNOFFICIAL 2026-10-13 (user: the rest of the list too):
+float4 TESR_BodycamBody;			// xy: the picture's shift (uv: chest bob, gun jolt), z: its roll (radians), w: zoom hiding the edges
+float4 TESR_BodycamFlash;			// x: muzzle-flash overload now, y: exposure dip after it, z: low-light mode, w: light smear
+float4 TESR_BodycamGlitch;			// x: broken-block burst now, y: its seed, z: autofocus strength, w: hiccups
 
 // (Declared in register order: the samplers bind by the order they are declared in.)
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -29,6 +33,8 @@ sampler2D TESR_BodycamTextBuffer : register(s1) = sampler_state { ADDRESSU = CLA
 // the camera's exposure has followed to).
 sampler2D TESR_BodycamHoldBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_BodycamExposureBuffer : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-13: the scene's depth (linear, as a share of the far distance), for the autofocus. Last: it takes the next stage.
+sampler2D TESR_DepthBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 static const float2 TextTextureSize = float2(256.0, 12.0);	// Bodycam.h TextWidth, TextHeight
 
@@ -82,9 +88,12 @@ float LensDirt(float2 uv) {
 }
 
 // Where the lens shows screen point uv from: centred, x in aspect units, pushed out by (1 + k r^2), zoomed back in.
+// UNOFFICIAL 2026-10-13: first the chest mount: the picture rolled and shifted (the bob, the gun's jolt), zoomed in so no edge shows.
 float2 Bend(float2 uv, float scale) {
 	float aspect = TESR_ReciprocalResolution.z;
 	float2 p = (uv * 2.0 - 1.0) * float2(aspect, 1.0);
+	float roll = TESR_BodycamBody.z, rs = sin(roll), rc = cos(roll);
+	p = float2(p.x * rc - p.y * rs, p.x * rs + p.y * rc) / max(TESR_BodycamBody.w, 1.0) + TESR_BodycamBody.xy * 2.0 * float2(aspect, 1.0);
 	float r2 = dot(p, p);
 	p *= (1.0 + TESR_BodycamLens.x * r2) * scale / TESR_BodycamLens.y;
 	return p / float2(aspect, 1.0) * 0.5 + 0.5;
@@ -114,11 +123,21 @@ float4 MeasurePS(VSOUT IN) : COLOR0 {
 		}
 	}
 	float now = sum / 64.0;
-	float2 last = log(max(tex2Dlod(TESR_BodycamExposureBuffer, float4(0.5, 0.5, 0.0, 0.0)).rg, 1e-4));
+	float4 stored = tex2Dlod(TESR_BodycamExposureBuffer, float4(0.5, 0.5, 0.0, 0.0));
+	float2 last = log(max(stored.rg, 1e-4));
 	if (TESR_BodycamAdapt.w < 0.5) last = now.xx;
 	float fast = lerp(last.x, now, 1.0 - exp(-TESR_BodycamAdapt.y / 0.08));
 	float slow = lerp(last.y, fast, 1.0 - exp(-TESR_BodycamAdapt.y / max(TESR_BodycamAdapt.z, 0.05)));
-	return float4(exp(fast), exp(slow), 0.0, 1.0);
+	// UNOFFICIAL 2026-10-13: the autofocus: b, how far the middle of the picture is (log of its depth, five points); a, where the
+	// lens is focused, following it over about a third of a second (the picture is soft while they differ).
+	float depth = 0.0;
+	[unroll] for (int k = 0; k < 5; k++) {
+		float2 at = 0.5 + float2(k == 1 ? -0.06 : k == 2 ? 0.06 : 0.0, k == 3 ? -0.06 : k == 4 ? 0.06 : 0.0);
+		depth += log(max(tex2Dlod(TESR_DepthBuffer, float4(at, 0.0, 0.0)).x, 1e-4));
+	}
+	depth /= 5.0;
+	float focus = TESR_BodycamAdapt.w < 0.5 ? depth : lerp(stored.a, depth, 1.0 - exp(-TESR_BodycamAdapt.y / 0.3));
+	return float4(exp(fast), exp(slow), depth, focus);
 }
 
 float4 BodycamPS(VSOUT IN) : COLOR0 {
@@ -148,6 +167,11 @@ float4 BodycamPS(VSOUT IN) : COLOR0 {
 	// further out (about 6 pixels at 1080p in the corners at 0.7). Lens blur softens the whole picture on top (about 2.5
 	// pixels at 1080p at 1: the cheap plastic lens is never quite in focus).
 	float blurRadius = (TESR_BodycamFrame.y * edge * edge * 2.0 + TESR_BodycamGrade.y * 2.5) * px.y * scale1080;
+	// UNOFFICIAL 2026-10-13: the autofocus hunting: soft while the lens catches up with how far the middle of the picture is.
+	[branch] if (TESR_BodycamGlitch.z > 0.0 && TESR_BodycamAdapt.w > 0.5) {
+		float2 focus = tex2Dlod(TESR_BodycamExposureBuffer, float4(0.5, 0.5, 0.0, 0.0)).ba;
+		blurRadius += TESR_BodycamGlitch.z * saturate(abs(focus.x - focus.y) * 0.7) * 6.0 * px.y * scale1080;
+	}
 	[branch] if (blurRadius > px.y * 0.5) {
 		float2 r = blurRadius * float2(px.x / px.y, 1.0);
 		float3 ring = 0.0;
@@ -179,6 +203,20 @@ float4 BodycamPS(VSOUT IN) : COLOR0 {
 		glow += max(Read(at + way2 * 0.035) - 0.65, 0.0) * 0.35;
 	}
 	colour += glow * 0.125 * TESR_BodycamImage.w * 2.0;
+	// UNOFFICIAL 2026-10-13: light smear: a cheap sensor bleeds very bright light up and down its column, a vertical streak
+	// through lamps and the sun (most of all in low light). Twelve reads up and down the column, jittered per pixel.
+	[branch] if (TESR_BodycamFlash.w > 0.0) {
+		float jitter = frac(52.9829189 * frac(dot(uv / px, float2(0.06711056, 0.00583715))));
+		float3 streak = 0.0;
+		[unroll] for (int i = 1; i <= 6; i++) {
+			float o = (i - 0.5 + jitter) * 0.045;
+			float weight = 1.0 - i / 7.0;
+			streak += (max(Read(at + float2(0.0, o)) - 0.85, 0.0) + max(Read(at - float2(0.0, o)) - 0.85, 0.0)) * weight;
+		}
+		colour += streak * 0.35 * TESR_BodycamFlash.w * (1.0 + TESR_BodycamFlash.z);
+	}
+	// The muzzle flash overloads the sensor: the frame washes out round bright parts for a moment.
+	colour += glow * 0.5 * TESR_BodycamFlash.x;
 
 	// Compression blocks in the dark and flat parts.
 	float3 block = Read(Bend(blockUV, 1.0) + shutter);
@@ -217,6 +255,8 @@ float4 BodycamPS(VSOUT IN) : COLOR0 {
 		float2 measured = tex2Dlod(TESR_BodycamExposureBuffer, float4(0.5, 0.5, 0.0, 0.0)).rg;
 		gain = clamp(pow(max(measured.x, 1e-4) / max(measured.y, 1e-4), TESR_BodycamAdapt.x / 2.2), 0.2, 5.0);
 	}
+	// UNOFFICIAL 2026-10-13: a shot's flash blows the frame out, then the exposure pulls it down before settling.
+	gain *= (1.0 + TESR_BodycamFlash.x * 1.5) * (1.0 - TESR_BodycamFlash.y * 0.4);
 	colour *= TESR_BodycamFrame.z * gain;
 	colour = pow(ClipToWhite(colour), 1.0 / (1.0 + TESR_BodycamMotion.w));
 	// (Clipped here: contrast above 1 pushes the channels past 0 and 1, and Cool below then turned those into blown-out blue.)
@@ -227,6 +267,12 @@ float4 BodycamPS(VSOUT IN) : COLOR0 {
 	float luma = Luma(colour);
 	colour = lerp(luma.xxx, colour, TESR_BodycamImage.z);
 	colour *= lerp(float3(1.0, 1.0, 1.0), float3(0.94, 1.0, 0.95), TESR_BodycamNoise.w);
+	// UNOFFICIAL 2026-10-13: low-light mode: in the dark the camera gives up colour for brightness: nearly black and white, the
+	// shadows lifted, and (below) much more grain. Mostly a night setting.
+	[branch] if (TESR_BodycamFlash.z > 0.0) {
+		float l = Luma(colour);
+		colour = lerp(colour, float3(0.96, 1.0, 0.97) * pow(max(l, 0.0), 0.85), TESR_BodycamFlash.z * 0.9);
+	}
 	colour = ClipToWhite(colour);
 	colour = (1.0 - exp(-max(colour, 0.0) * 1.15)) / (1.0 - exp(-1.15));	// compresses the top, keeps 0 and 1
 	colour = saturate(colour);
@@ -236,7 +282,7 @@ float4 BodycamPS(VSOUT IN) : COLOR0 {
 	float2 cell = floor(uv / px);
 	float n = Hash(cell + frame * 17.31) - 0.5;
 	float3 chroma = float3(Hash(cell * 1.3 + frame * 3.7), Hash(cell * 0.7 + frame * 5.1), Hash(cell * 1.9 + frame * 7.3)) - 0.5;
-	float amount = TESR_BodycamNoise.x * 0.06 * lerp(1.0, 0.35, saturate(Luma(colour) * 1.5));
+	float amount = TESR_BodycamNoise.x * 0.06 * lerp(1.0, 0.35, saturate(Luma(colour) * 1.5)) * (1.0 + TESR_BodycamFlash.z * 1.5);
 	colour += (n + chroma * 0.4) * amount;
 
 	// Vignette; outside the bent picture (FitEdges below 1): black.
@@ -246,6 +292,21 @@ float4 BodycamPS(VSOUT IN) : COLOR0 {
 	float ovalStart = lerp(1.6, 0.75, TESR_BodycamFrame.x);
 	colour *= 1.0 - smoothstep(ovalStart, ovalStart + 0.35, oval);
 	colour *= all(at >= 0.0) && all(at <= 1.0) ? 1.0 : 0.0;
+
+	// UNOFFICIAL 2026-10-13: an encoder hiccup: for a moment some 16 x 16 blocks show stale picture (the last kept frame,
+	// shifted sideways) or smear, some with their colour channels slipped.
+	[branch] if (TESR_BodycamGlitch.x > 0.0) {
+		float2 blockId = floor(uv / (px * 16.0));
+		float h = Hash(blockId + TESR_BodycamGlitch.y);
+		float row = Hash(float2(blockId.y, TESR_BodycamGlitch.y * 0.37));
+		if (h < TESR_BodycamGlitch.x * 0.35 || row < TESR_BodycamGlitch.x * 0.08) {
+			float2 shift = float2((Hash(blockId * 1.7 + TESR_BodycamGlitch.y) - 0.5) * 0.08, 0.0);
+			float3 stale = tex2Dlod(TESR_BodycamHoldBuffer, float4(uv + shift, 0.0, 0.0)).rgb;
+			float3 smear = Read(Bend((blockId + 0.5) * px * 16.0, 1.0));
+			colour = Hash(blockId + 7.0) > 0.5 ? stale : smear;
+			if (Hash(blockId + 3.0) > 0.6) colour.rb = colour.br;
+		}
+	}
 
 	// The timestamp, top right, not bent: white with a dark edge. (Only its two reads are inside the test; the blends are
 	// done after it, unconditionally: with the blends inside, the compiler dropped the overlay, 2026-10-13.)

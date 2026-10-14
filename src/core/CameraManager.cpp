@@ -48,6 +48,7 @@ void CameraManager::SetSceneGraph() {
 			Player->SetFoV(FoV);
 		}
 	}
+	BodycamEffect::ApplyWideView();	// UNOFFICIAL: Bodycam's WideView (Bodycam.cpp)
 	TheShaderManager->ShaderConst.ReciprocalResolution.w = Player->GetFoV(false);
 
 }
