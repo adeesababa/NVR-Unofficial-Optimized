@@ -63,6 +63,17 @@ sampler3D TESR_NoiseVolume : register(s8) < string ResourceName = "Effects\Noise
 // UNOFFICIAL 2026-10-12: the water test's normals (s9) and the cloud shadow map (s10), after the others in register order.
 sampler2D TESR_NormalsBuffer : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_CloudShadow : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-14 physical sky ([Shaders.Sky.Physical], Effects/SkyView.fx.hlsl, Sky.cpp): the clouds take their sunlight
+// and sky light from the same air as the sky. Compiled in only when on at startup (PHYSICAL_SKY_ON, EffectRecord::LoadEffect).
+// Its table is the next TESR_ sampler in register order (s11).
+#ifndef PHYSICAL_SKY_ON
+    #define PHYSICAL_SKY_ON 0
+#endif
+#if PHYSICAL_SKY_ON
+float4 TESR_PhysSky;        // x: share of the physical sky, y: brightness (the table's, matched to the weather's sky), z: weather tint, w: haze
+float4 TESR_PhysSkySun;     // xyz: the sun's real direction
+sampler2D TESR_SkyViewLUT : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#endif
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float Base = TESR_CloudsShape.x;
@@ -92,6 +103,9 @@ VSOUT FrameVS(VSIN IN) { VSOUT OUT = (VSOUT)0.0f; OUT.vertPos = IN.vertPos; OUT.
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
+#if PHYSICAL_SKY_ON
+    #include "Includes/Atmosphere.hlsl"
+#endif
 
 float Remap(float v, float lo, float hi, float newLo, float newHi) { return newLo + (v - lo) / max(hi - lo, 1e-5) * (newHi - newLo); }
 
@@ -164,6 +178,28 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float3 skyLow = linearize(TESR_HorizonColor.rgb);
 	float3 ambientTop = skyTop * AmbientStrength * (1.0 - 0.4 * RainDark);
 	float3 ambientBottom = lerp(skyLow, skyTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark);
+#if PHYSICAL_SKY_ON
+	// UNOFFICIAL physical sky. The sunlight keeps the weather's brightness but takes the colour of what is left of it after
+	// crossing the air to the middle of the cloud layer (redder and dimmer the lower the sun: the clouds' own sunrise and
+	// sunset). The sky light on their tops takes the colour of the physical sky straight up, on their undersides that of the
+	// sky low down (from the sky's table), each at the weather's brightness. WeatherTint keeps that much of the weather's colours, as on the sky.
+	[branch] if (TESR_PhysSky.x > 0.0) {
+		const float share = TESR_PhysSky.x, tint = TESR_PhysSky.z, tableScale = 0.001 * TESR_PhysSky.y;
+		float3 through = exp(-AtmSunDepth(AtmGround + Base + 0.5 * Thickness, TESR_PhysSkySun.z, TESR_PhysSky.w));
+		float3 physSun = luma(sun) * through / max(luma(through), 1e-4);
+		sun = lerp(sun, lerp(physSun, sun, tint), share);
+		float3 zenith = tex2Dlod(TESR_SkyViewLUT, float4(0.5, 1.0, 0.0, 0.0)).rgb * tableScale;
+		float3 low = (tex2Dlod(TESR_SkyViewLUT, float4(0.0, 0.35, 0.0, 0.0)).rgb + tex2Dlod(TESR_SkyViewLUT, float4(0.5, 0.35, 0.0, 0.0)).rgb +
+			tex2Dlod(TESR_SkyViewLUT, float4(1.0, 0.35, 0.0, 0.0)).rgb) * (tableScale / 3.0);
+		// The colours only: each at the weather's own brightness for that part of the sky, so the clouds are as bright as before.
+		zenith *= luma(skyTop) / max(luma(zenith), 1e-6);
+		low *= luma(skyLow) / max(luma(low), 1e-6);
+		float3 physTop = lerp(zenith, skyTop, tint);
+		float3 physLow = lerp(low, skyLow, tint);
+		ambientTop = lerp(ambientTop, physTop * AmbientStrength * (1.0 - 0.4 * RainDark), share);
+		ambientBottom = lerp(ambientBottom, lerp(physLow, physTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark), share);
+	}
+#endif
 	float lightStep = Thickness / 12.0;
 	float lightRise = max(light.z, 0.1);                     // a low sun still climbs out of the layer
 
