@@ -147,7 +147,7 @@ float PointLightCount : register(c88);
 // pattern every frame) it averages into a smooth fade; without TAA the pattern stands still, a fine even stipple.
 // Registers pinned clear of the game's (land PS tops out at c93) and of every other NVR constant.
 float4 TESR_TerrainBlendData : register(c176);  // x: on for this draw, y: 1 / blend distance, z: max distance, w: debug view
-float4 TESR_TerrainBlendExtra : register(c177); // xy: 1 / resolution, z: dither frame (0 without TAA)
+float4 TESR_TerrainBlendExtra : register(c177); // xy: 1 / resolution, z: dither frame (0 without TAA), w: 1 Smooth (blended, not dithered)
 // One line (ShaderTextureValue::GetSamplerStateString).
 sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
@@ -191,8 +191,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     float terrainKeep = -1.0f;
     [branch] if (TESR_TerrainBlendData.x > 0.0f) {
         terrainKeep = getTerrainBlend(IN.projectionPosition, IN.screenPos);
+        // UNOFFICIAL 2026-10-13 (user: blend instead, so it needs no TAA): Smooth draws the land see-through there instead
+        // (its alpha below; Terrain.cpp turns blending on for the land's opaque pass): the object, drawn before the land,
+        // shows through it in a smooth fade. A pixel with next to nothing of the land left is skipped.
         if (TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
-            clip(terrainKeep - terrainBlendNoise(IN.screenPos));
+            clip(TESR_TerrainBlendExtra.w > 0.5f ? terrainKeep - 0.004f : terrainKeep - terrainBlendNoise(IN.screenPos));
     }
 #endif
     
@@ -278,6 +281,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
 
     OUT.color_0.a = 1;
+#if TERRAIN_BLEND_ACTIVE
+    if (TESR_TerrainBlendExtra.w > 0.5f && TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f) OUT.color_0.a = terrainKeep;
+#endif
     OUT.color_0.rgb = finalColor;
 
     return OUT;

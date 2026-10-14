@@ -63,6 +63,18 @@ void TerrainShaders::PrepareBlending() {
 		copies++;
 	}
 	BlendingConstants.Data.x = 1.0f;
+	// UNOFFICIAL 2026-10-13 Smooth: the land's see-through part (its alpha, TerrainTemplate.hlsl) blended over the objects drawn
+	// before it, for the opaque pass only (a pass that already blends, e.g. adding a lamp's light, keeps its own blending). Set
+	// through the game's render-state cache, so the next draw that wants no blending turns it off again.
+	if (BlendingConstants.Extra.w > 0.5f) {
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		if (!state->GetRenderState(D3DRS_ALPHABLENDENABLE)) {
+			state->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE, RenderStateArgs);
+			state->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA, RenderStateArgs);
+			state->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA, RenderStateArgs);
+			state->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD, RenderStateArgs);
+		}
+	}
 }
 
 
@@ -147,6 +159,8 @@ void TerrainShaders::UpdateSettings() {
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
 	BlendingConstants.Data.w = BlendingSettings.Debug ? 1.0f : 0.0f;
+	// UNOFFICIAL 2026-10-13 (user: blend so it does not need TAA): Smooth (on by default) fades the land by blending; off, the dither.
+	BlendingConstants.Extra.w = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Smooth") ? 1.0f : 0.0f;
 }
 
 void TerrainShaders::UpdateConstants() {
