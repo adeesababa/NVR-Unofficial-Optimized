@@ -603,6 +603,15 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	float3 lin = linearize(color.rgb);
 	float ao = lerp(DarkestAO, 1.0f, ambient.a);
 	ao = lerp(ao, 1.0f, saturate((luma(lin) - BrightFade) * 3.0f));   // bright surfaces keep their light, as the old AO
+	// UNOFFICIAL 2026-10-14 (user: the occlusion still shimmers on grass): where the depth is busy (grass, bushes: neighbouring
+	// pixels on different blades, a bend in the depth no flat surface has, even seen edge on), the occlusion is mostly chance
+	// (which blade covers the pixel this frame, swaying), and the blur and the frame history cannot settle it (they keep
+	// pixels at other depths apart). There it keeps only a quarter of its darkening; solid ground and walls keep all of it.
+	float2 px = TESR_ReciprocalResolution.xy;
+	float bendX = abs(readDepthLod(IN.UVCoord + float2(px.x, 0.0f)) + readDepthLod(IN.UVCoord - float2(px.x, 0.0f)) - 2.0f * depth);
+	float bendY = abs(readDepthLod(IN.UVCoord + float2(0.0f, px.y)) + readDepthLod(IN.UVCoord - float2(0.0f, px.y)) - 2.0f * depth);
+	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
+	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
 	float peak = max(max(lin.r, lin.g), max(lin.b, 0.0001f));
 	float3 albedo = lin / peak * 0.6f;                                  // the surface's hue stands in for its colour (as BounceLight)
 	// UNOFFICIAL 2026-10-14: the light grid's bounce (GridBounce), darkened by the occlusion as light from round about is.

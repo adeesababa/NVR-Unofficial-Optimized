@@ -90,6 +90,7 @@ public:
 
 	// CacheSubPath: the cache subfolder when it is not SubPath (an Interior record compiled from the main source);
 	// Overrides: defines that win over the global ones ShaderRecord adds (NULL-terminated).
+	static void				BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overrides);	// UNOFFICIAL: the defines LoadShader compiles with
 	static ShaderRecord*	LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template = ShaderTemplate{},
 		const char* CacheSubPath = nullptr, const D3DXMACRO* Overrides = nullptr);
 

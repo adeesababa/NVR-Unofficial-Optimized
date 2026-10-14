@@ -22,6 +22,9 @@ void AmbientLightEffect::UpdateSettings() {
 	gridSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridSpread"), 0.0f, 0.6f);
 	gridBlocking = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBlocking"), 0.0f, 4.0f);
 	gridScreenStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridScreenStrength"), 0.0f, 40.0f);
+	// UNOFFICIAL 2026-10-14 (user stacked BounceStrength 5 on the grid and saw only its grain): with the light grid on, the
+	// screen-space bounce is off; GridBounce is the bounce's strength then.
+	if (gridBounce > 0.0f) Constants.Data.z = 0.0f;
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).

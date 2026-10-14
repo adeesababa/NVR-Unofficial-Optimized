@@ -1,5 +1,7 @@
 #include "ShaderRecord.h"
 #include "ShaderWarmUp.h"
+#include "PointShadowForward.h"
+#include "ShaderPrecompile.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -100,61 +102,9 @@ std::string ShaderProgram::PortableSource(ID3DXBuffer* Source) {
 	return Text;
 }
 
-/*
-Loads the shader by name from a given subfolder (optionally). Shader will be compiled if needed.
-@returns the ShaderRecord for this shader.
-*/
-ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template, const char* CacheSubPath,
-	const D3DXMACRO* Overrides) {
-	auto timer = TimeLogger();
-
-	ShaderRecord* ShaderProg = NULL;
-	ID3DXBuffer* ShaderSource = NULL;
-	ID3DXBuffer* Shader = NULL;
-	ID3DXBuffer* Errors = NULL;
-	ID3DXConstantTable* ConstantTable = NULL;
-	void* Function = NULL;
-	char ShaderProfile[7];
-	
-	char BaseDirectory[MAX_PATH];
-	char CacheDirectory[MAX_PATH];
-	char ShaderSourcePath[MAX_PATH];
-	char ShaderPreprocessedPath[MAX_PATH];
-	char ShaderCompiledPath[MAX_PATH];
-	
-	// Build filenames.
-	strcpy(BaseDirectory, ShadersPath);
-	strcpy(CacheDirectory, BaseDirectory);
-	strcat(CacheDirectory, "Cache\\");
-	if (SubPath) strcat(BaseDirectory, SubPath);
-	if (CacheSubPath) {
-		strcat(CacheDirectory, CacheSubPath);
-		CreateDirectoryA(CacheDirectory, NULL);	// nothing else writes there
-	}
-	else if (SubPath) strcat(CacheDirectory, SubPath);
-
-	strcpy(ShaderSourcePath, BaseDirectory);
-	if (Template.Name != NULL) {
-		strcat(ShaderSourcePath, Template.Name);
-	}
-	else {
-		strcat(ShaderSourcePath, Name);
-	}
-	strcat(ShaderSourcePath, ".hlsl");
-
-	if (!FileExists(ShaderSourcePath)) {
-		return ShaderProg;
-	}
-
-	strcpy(ShaderPreprocessedPath, CacheDirectory);
-	strcat(ShaderPreprocessedPath, Name);
-	strcat(ShaderPreprocessedPath, ".hlsl");
-
-	strcpy(ShaderCompiledPath, CacheDirectory);
-	strcat(ShaderCompiledPath, Name);
-
-	D3DXMACRO* Macros = &(Template.Defines[0]);
-
+// UNOFFICIAL 2026-10-14: the defines every NVR game shader is compiled with (the template's, the overrides first, then the
+// settings'), in its own function so ShaderPrecompile works them out the same way.
+void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overrides) {
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
@@ -273,16 +223,79 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
 	}
 
-	HRESULT prepass = D3DXPreprocessShaderFromFileA(ShaderSourcePath, Macros, NULL, &ShaderSource, &Errors);
+}
+
+/*
+Loads the shader by name from a given subfolder (optionally). Shader will be compiled if needed.
+@returns the ShaderRecord for this shader.
+*/
+ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template, const char* CacheSubPath,
+	const D3DXMACRO* Overrides) {
+	auto timer = TimeLogger();
+	ShaderPrecompile::StartOnce();	// UNOFFICIAL: the first shader starts the parallel compile (once)
+
+	ShaderRecord* ShaderProg = NULL;
+	ID3DXBuffer* ShaderSource = NULL;
+	ID3DXBuffer* Shader = NULL;
+	ID3DXBuffer* Errors = NULL;
+	ID3DXConstantTable* ConstantTable = NULL;
+	void* Function = NULL;
+	char ShaderProfile[7];
+	
+	char BaseDirectory[MAX_PATH];
+	char CacheDirectory[MAX_PATH];
+	char ShaderSourcePath[MAX_PATH];
+	char ShaderPreprocessedPath[MAX_PATH];
+	char ShaderCompiledPath[MAX_PATH];
+	
+	// Build filenames.
+	strcpy(BaseDirectory, ShadersPath);
+	strcpy(CacheDirectory, BaseDirectory);
+	strcat(CacheDirectory, "Cache\\");
+	if (SubPath) strcat(BaseDirectory, SubPath);
+	if (CacheSubPath) {
+		strcat(CacheDirectory, CacheSubPath);
+		CreateDirectoryA(CacheDirectory, NULL);	// nothing else writes there
+	}
+	else if (SubPath) strcat(CacheDirectory, SubPath);
+
+	strcpy(ShaderSourcePath, BaseDirectory);
+	if (Template.Name != NULL) {
+		strcat(ShaderSourcePath, Template.Name);
+	}
+	else {
+		strcat(ShaderSourcePath, Name);
+	}
+	strcat(ShaderSourcePath, ".hlsl");
+
+	if (!FileExists(ShaderSourcePath)) {
+		return ShaderProg;
+	}
+
+	strcpy(ShaderPreprocessedPath, CacheDirectory);
+	strcat(ShaderPreprocessedPath, Name);
+	strcat(ShaderPreprocessedPath, ".hlsl");
+
+	strcpy(ShaderCompiledPath, CacheDirectory);
+	strcat(ShaderCompiledPath, Name);
+
+	D3DXMACRO* Macros = &(Template.Defines[0]);
+
+	BuildDefines(Template, Overrides);	// UNOFFICIAL 2026-10-14: in its own function, shared with ShaderPrecompile
+
+	// UNOFFICIAL 2026-10-14 ParallelShaderCompile (ShaderPrecompile.h): the result a worker thread already made for this shader.
+	const bool precompiled = ShaderPrecompile::Take(ShaderCompiledPath, &ShaderSource, &Shader);
+	HRESULT prepass = precompiled ? D3D_OK : D3DXPreprocessShaderFromFileA(ShaderSourcePath, Macros, NULL, &ShaderSource, &Errors);
 	if (prepass == D3D_OK) {
-		bool Compile = !CheckPreprocessResult(ShaderPreprocessedPath, ShaderSource);
+		bool Compile = precompiled ? false : !CheckPreprocessResult(ShaderPreprocessedPath, ShaderSource);
 
 		if (strstr(Name, ".vso"))
 			strcpy(ShaderProfile, "vs_3_0");
 		else if (strstr(Name, ".pso"))
 			strcpy(ShaderProfile, "ps_3_0");
 
-		if (!Compile){
+		if (precompiled) Function = Shader ? Shader->GetBufferPointer() : NULL;
+		else if (!Compile){
 			std::ifstream FileBinary(ShaderCompiledPath, std::ios::in | std::ios::binary | std::ios::ate);
 			if (FileBinary.is_open()) {
 				std::streamoff Size = FileBinary.tellg();
@@ -302,7 +315,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 			}
 		}
 
-		if (Compile || !Function) {
+		if (!precompiled && (Compile || !Function)) {
 			// compile if option was enabled or compiled version not found
 			D3DXCompileShader(
 				(const char*)ShaderSource->GetBufferPointer(),
