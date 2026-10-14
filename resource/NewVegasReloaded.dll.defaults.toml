@@ -728,6 +728,10 @@ Enabled = true                       # UNOFFICIAL: per-texture material classes 
 DebugView = false                    # Shows each class in its own colour (guns red, wood brown, glass cyan, plants green, rock grey...) over a dim grey picture; textures without a rule stay grey. For checking the table.
 LogMatches = false                   # Writes each texture's class to the log the first time it is drawn ("[MaterialRules] <texture> -> <class>").
 
+[_Shaders.PBR.Linear]
+Enabled = false                      # UNOFFICIAL: linear lighting on objects and the ground. The game adds light up in gamma space, so lit sides drop off too fast into shade, two lamps add up too dark and coloured light tints too little. On, colours are decoded to linear, lit, and encoded back: softer, fuller light falloff and truer colour mixing. Changes the look (brighter mid-tones and ambient), so the exposure and ambient may want retuning. Switching it on or off needs a restart (off, the shaders are exactly as before and cost nothing).
+Gamma = 2.2                          # [1.0-3.0] The gamma the colours are decoded with, live. 2.2 is standard; 1.0 looks the same as off.
+
 [_Shaders.PBR.Status]
 Enabled = true                       # Adds PBR specular formula to object shaders
 

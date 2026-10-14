@@ -18,6 +18,14 @@
 #endif
 
 #include "includes/Helpers.hlsl"
+// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl, [Shaders.PBR.Linear]): the land lights in linear space while it is on.
+// Compiled in only when on at startup (LINEAR_LIGHTING_ON, ShaderRecord::LoadShader).
+#ifndef LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING_ON 0
+#endif
+#if defined(PS) && LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING
+#endif
 #include "includes/Terrain.hlsl"
 #include "includes/Parallax.hlsl"
 
@@ -245,7 +253,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float gloss = 0.0f;
     float specExponent = 0.0f;
-    float3 baseColor = blendDiffuseMaps(IN.vertex_color, offsetUV, texCount, BaseMap, weights);
+    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
     float3 combinedNormal = blendNormalMaps(offsetUV, texCount, NormalMap, weights, spec, gloss, specExponent);
 
     float3 lightTS = mul(tbn, SunDir.xyz);
@@ -258,7 +266,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     parallaxShadowMultiplier *= GetSunShadow(shadowWorldPos, shadowNormal);
     #endif
 
-    float3 lighting = getSunLighting(lightTS, SunColor.rgb, eyeDir, combinedNormal, AmbientColor.rgb, baseColor, gloss, specExponent, 1.0, parallaxShadowMultiplier, shadowNormal);
+    float3 lighting = getSunLighting(lightTS, LinColor(SunColor.rgb), eyeDir, combinedNormal, LinColor(AmbientColor.rgb), baseColor, gloss, specExponent, 1.0, parallaxShadowMultiplier, shadowNormal);
 
     #if defined(NUM_PT_LIGHTS)
         [loop] for (int i = 0; i < PointLightCount; i++) {
@@ -268,7 +276,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             [branch]
             if (att > 0.001) {
                 pointlightDir = mul(tbn, pointlightDir);
-                lighting += getPointLightLighting(pointlightDir, att, PointLightColor[i].rgb, eyeDir, combinedNormal, baseColor, gloss, specExponent);
+                lighting += getPointLightLighting(pointlightDir, att, LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
             }
         }
     #endif
@@ -283,7 +291,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     fog.rgb = FogColor.rgb;
     fog.a = pow(fogStrength, FogParam.z);
     
-    float3 finalColor = lighting;
+    float3 finalColor = LinEncode(lighting);	// UNOFFICIAL linear lighting: back to the stored (gamma) space, before the fog
     finalColor = lerp(finalColor, fog.rgb, fog.a); // Apply fog.
 
 #if TERRAIN_BLEND_ACTIVE

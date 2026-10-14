@@ -13,6 +13,15 @@
     #include "includes/SkyAmbient.hlsl"
 #endif
 
+// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl): where a template defines LINEAR_LIGHTING the sky's colour is decoded
+// too (LinColor); otherwise LinColor returns it unchanged.
+#if defined(__INTELLISENSE__)
+    #include "LinearLight.hlsl"
+#else
+    #include "includes/LinearLight.hlsl"
+#endif
+#define LinSky(c) LinColor(c)
+
 float4 TESR_TerrainData : register(c89);
 float4 TESR_TerrainExtraData : register(c90);
 
@@ -72,7 +81,7 @@ float3 getVanillaLightingAtt(float3 lightDir, float att, float3 lightColor, floa
 }
 
 float3 getPointLightLighting(float3 lightDir, float att, float3 lightColor, float3 eyeDir, float3 normal, float3 albedo, float gloss = 0.0, float glossPower = 0.0, float metallicness = 1.0) {
-    float3 pointlightColor = lightColor * TESR_TerrainData.z;
+    float3 pointlightColor = lightColor * LinScale(TESR_TerrainData.z);
 
     [branch]
     if (TESR_TerrainExtraData.x){
@@ -92,15 +101,15 @@ float3 getPointLightLighting(float3 lightDir, float att, float3 lightColor, floa
 }
 
 float3 getSunLighting(float3 lightDir, float3 sunColor, float3 eyeDir, float3 normal, float3 AmbientColor, float3 albedo, float gloss = 0.0, float glossPower = 0.0, float metallicness = 1.0, float parallaxMultiplier = 1.0, float3 worldNormal = float3(0.0f, 0.0f, 1.0f)) {
-    float3 lightColor = sunColor * TESR_TerrainData.z * parallaxMultiplier;
-    float3 ambientColor = AmbientColor * TESR_TerrainData.w;
+    float3 lightColor = sunColor * LinScale(TESR_TerrainData.z) * parallaxMultiplier;
+    float3 ambientColor = AmbientColor * LinScale(TESR_TerrainData.w);
 
     // Hemisphere skylight, matching getAmbientLighting in Object.hlsl. worldNormal is the
     // geometric world normal, not the tangent-space shading normal used above. AmbientScale
     // (TESR_TerrainData.w) scales the weather ambient above but not this: the sky is a second,
     // independent light source, so SkylightingScale is its only strength knob and it survives
     // AmbientScale = 0.
-    ambientColor += SkyAmbientRadiance(worldNormal, TESR_TerrainSkyData.y) * SKY_AMBIENT_STRENGTH;
+    ambientColor += LinSky(SkyAmbientRadiance(worldNormal, TESR_TerrainSkyData.y)) * LinScale(SKY_AMBIENT_STRENGTH);
     float3 color = albedo;
     color = lerp(luma(albedo), color, TESR_TerrainExtraData.y);
 

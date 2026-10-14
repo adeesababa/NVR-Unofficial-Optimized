@@ -7,6 +7,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRMetalLook", &Constants.MetalLook);
 	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
 	TheShaderManager->RegisterConstant("TESR_EnvCube", &Constants.EnvCube);
+	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
@@ -55,6 +56,13 @@ void PBRShaders::UpdateSettings() {
 	// Reflections effect keeps (CubeMap); applied in UpdateConstants only while that cube is kept up.
 	MetalSettings.CubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections"), 0.0f, 1.0f);
 	MetalSettings.EnvCubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections"), 0.0f, 1.0f);
+
+	// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl: ObjectTemplate, TerrainTemplate). Enabled is read at startup
+	// (ShaderRecord::LoadShader compiles it in); Gamma is live, and 1 returns every colour unchanged.
+	const float linearGamma = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ?
+		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
+	Constants.Linear.x = linearGamma;
+	Constants.Linear.y = 1.0f / linearGamma;
 
 	// UNOFFICIAL material rules (Render.cpp MaterialRulesDraw), live; the table itself is read once at startup.
 	MaterialRulesSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") != 0;

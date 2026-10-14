@@ -176,6 +176,15 @@
 #if defined(PS) && MATERIAL_RULES_ON
     #define MATERIAL_RULES
 #endif
+// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl, [Shaders.PBR.Linear]): the pixel shaders light in linear space while
+// it is on. Compiled in only when on at startup (LINEAR_LIGHTING_ON, ShaderRecord::LoadShader). The game's colour constants
+// are then read under new names (...In) and decoded into the old names at the start of main.
+#ifndef LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING_ON 0
+#endif
+#if defined(PS) && LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING
+#endif
 #include "includes/Object.hlsl"
 // UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
 // shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow
@@ -635,11 +644,19 @@ struct PS_OUTPUT {
     sampler2D NormalMap : register(s1);
 #endif
 
-#if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-    float4 AmbientColor : register(c1);
+#ifdef LINEAR_LIGHTING
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        float4 AmbientColorIn : register(c1);
+        static float4 AmbientColor;	// UNOFFICIAL linear lighting: AmbientColorIn decoded (rgb), at the start of main
+    #endif
+    float4 PSLightColorIn[10] : register(c3);
+    static float4 PSLightColor[10];	// UNOFFICIAL linear lighting: PSLightColorIn decoded (rgb; .a as it is), at the start of main
+#else
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        float4 AmbientColor : register(c1);
+    #endif
+    float4 PSLightColor[10] : register(c3);
 #endif
-
-float4 PSLightColor[10] : register(c3);
 
 #if (defined(SI) || defined(HAIR)) && !defined(ONLY_SPECULAR)
     #ifdef ONLY_LIGHT
@@ -675,6 +692,15 @@ float4 PSLightColor[10] : register(c3);
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
     
+#ifdef LINEAR_LIGHTING
+    // UNOFFICIAL linear lighting: the light colours decoded.
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
+        PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+    #endif
+#endif
+
 #if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
     float3 heatMaterialFactor = 1.0f;
 #endif
@@ -742,6 +768,10 @@ PS_OUTPUT main(PS_INPUT IN) {
             baseColor.rgb = handBloodCover > 0.0f ? HandBloodAlbedo(heatMaterialFactor) / heatMaterialFactor : baseColor.rgb;	// (exactly as before where there is no blood)
         #endif
     #endif
+    // UNOFFICIAL linear lighting: the albedo decoded for the lighting (where the texture is multiplied in by a later pass,
+    // the factor above is, which comes out the same). The metal guess and the debug views keep the stored colour.
+    const float3 albedoStored = baseColor.rgb;
+    baseColor.rgb = LinColor(baseColor.rgb);
 
     #ifdef METAL
         // UNOFFICIAL: metal (Object.hlsl), only while [Shaders.PBR.Metal] is on for this pass; see the lighting below.
@@ -829,11 +859,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 lighting;
         [branch] if (getMetalStrength() > 0.0f) {
             // Faded out with distance (getMetalFade); at full without the position (a vanilla vertex shader ran).
-            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, baseColor.rgb) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f));
+            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, albedoStored) * (skyValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f));
             metalRoughness = lerp(roughness, metalRoughness, metallic);
             lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #ifdef SI
-                lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+                lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
             #endif
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), shadowGeometricNormal, skyValid);
             [branch] if (metallic > 0.0f) {
@@ -856,7 +886,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         else {
             lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
             #ifdef SI
-                lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+                lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
             #endif
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, shadowGeometricNormal, skyValid);
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
@@ -886,7 +916,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // Self emmitance.
     #ifdef SI
         float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
-        lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+        lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
     #endif
     
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
@@ -936,12 +966,12 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #endif // METAL
 
-    float3 finalColor = lighting.rgb;
-    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
+    float3 finalColor = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space
+    finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
 
     #ifdef METAL
         // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image.
-        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
+        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(albedoStored).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
     #endif
     
     // Fog.
@@ -1070,9 +1100,15 @@ struct PS_OUTPUT {
 sampler2D BaseMap : register(s0);
 sampler2D NormalMap : register(s1);
 
-float4 AmbientColor : register(c1);
-
-float4 PSLightColor[10] : register(c3);
+#ifdef LINEAR_LIGHTING
+    float4 AmbientColorIn : register(c1);
+    static float4 AmbientColor;	// UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant
+    float4 PSLightColorIn[10] : register(c3);
+    static float4 PSLightColor[10];
+#else
+    float4 AmbientColor : register(c1);
+    float4 PSLightColor[10] : register(c3);
+#endif
 float4 PSLightPosition[8] : register(c19);
 
 
@@ -1092,6 +1128,13 @@ float4 PSLightPosition[8] : register(c19);
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
+
+#ifdef LINEAR_LIGHTING
+    // UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant.
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
+        PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+#endif
 
     float4 baseColor = tex2D(BaseMap, IN.uv.xy);
     
@@ -1118,6 +1161,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     roughness = HandBloodRoughness(roughness);
     normal.xyz = HandBloodNormal(normal.xyz);
     baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
+    const float3 albedoStored = baseColor.rgb;	// UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant
+    baseColor.rgb = LinColor(baseColor.rgb);
 
     // Lighting.
     float3 viewDir = { IN.lightDir.w, IN.light2.w, IN.light3.w };
@@ -1132,7 +1177,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float metalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
         float metallic = 0.0f;
         [branch] if (getMetalStrength() > 0.0f)
-            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, baseColor.rgb) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f));
+            metallic = HAND_BLOOD_METAL(getDerivedMetallic(normal.a, albedoStored) * (SHADOW_WP_VALID(IN) ? getMetalFade(SHADOW_WP_LOAD(IN)) : 1.0f));
         float lightRoughness = lerp(roughness, metalRoughness, metallic);
     #endif
 
@@ -1218,12 +1263,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     }
 
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
-    float3 finalColor = lighting;
-    finalColor = MaterialRulesDebug(finalColor, baseColor.rgb);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
+    float3 finalColor = LinEncode(lighting);	// UNOFFICIAL linear lighting
+    finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
 
     #ifdef METAL
         // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image (as in the LIGHTS < 4 variant).
-        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(baseColor.rgb).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
+        [branch] if (TESR_PBRMetalLook.w > 0.5f) finalColor = lerp(luma(albedoStored).xxx * 0.35f, float3(1.0f, 0.45f, 0.05f), metallic);
     #endif
     
     #ifndef OPT
