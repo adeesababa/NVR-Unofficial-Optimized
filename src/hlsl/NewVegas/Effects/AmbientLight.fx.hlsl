@@ -38,6 +38,7 @@ float4 TESR_ShadowData;         // y: darkness
 float4 TESR_ShadowFade;         // x: fading at sunrise/sunset, z: point light shadows
 float4 TESR_SkyColor;
 float4 TESR_SunAmbient;
+float4 TESR_SunDirection;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_SourceBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
@@ -48,6 +49,9 @@ sampler2D TESR_PointShadowBuffer : register(s4) = sampler_state { ADDRESSU = CLA
 sampler2D NVR_ALPrep : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_ALBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_ALHistory : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-14: the occlusion kept from frame to frame too (r visibility, g view depth): with the sample pattern turning every
+// frame the occlusion alone showed a new grain each frame (user: "a sort of noise filter over everything").
+sampler2D NVR_ALOcclusionHistory : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 static const float Radius = max(TESR_AmbientLightData.x, 1.0f);
 static const float OcclusionStrength = TESR_AmbientLightData.y;
@@ -261,12 +265,17 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	return float4(bounce / total.y, visibility / total.x);
 }
 
-// Pass 5 (UNOFFICIAL): this frame's blurred bounce (NVR_ALBuffer) blended into last frame's (NVR_ALHistory); see the top.
-float4 Accumulate(VSOUT IN) : COLOR0 {
+// Pass 5 (UNOFFICIAL): this frame's blurred bounce (NVR_ALBuffer) blended into last frame's (NVR_ALHistory); see the top. The
+// occlusion the same way into its own history (second target).
+struct AccumulateOut { float4 bounce : COLOR0; float4 occlusion : COLOR1; };
+AccumulateOut Accumulate(VSOUT IN) {
+	AccumulateOut OUT;
 	float2 uv = IN.UVCoord;
 	float4 current = tex2Dlod(NVR_ALBuffer, float4(uv, 0.0f, 0.0f));
 	float viewZ = tex2Dlod(NVR_ALPrep, float4(uv, 0.0f, 0.0f)).x;
-	[branch] if (!(NVR_ALTemporal.x > 0.0f) || viewZ < NearFade) return float4(current.rgb, viewZ);
+	OUT.bounce = float4(current.rgb, viewZ);
+	OUT.occlusion = float4(current.a, viewZ, 0.0f, 1.0f);
+	[branch] if (!(NVR_ALTemporal.x > 0.0f) || viewZ < NearFade) return OUT;
 	float3 origin = PositionFromViewZ(uv, viewZ);
 	float4 clip = mul(float4(origin, 1.0f), NVR_ALReproject);
 	float w = max(clip.w, 0.001f);
@@ -283,21 +292,161 @@ float4 Accumulate(VSOUT IN) : COLOR0 {
 	weight *= abs(float4(t00.a, t10.a, t01.a, t11.a) - last.z) < max(last.z * 0.05f, 4.0f);
 	float found = dot(weight, 1.0f);
 	float3 history = (t00.rgb * weight.x + t10.rgb * weight.y + t01.rgb * weight.z + t11.rgb * weight.w) / max(found, 1.0e-4f);
+	float4 o = float4(tex2Dlod(NVR_ALOcclusionHistory, float4((base + 0.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).r,
+		tex2Dlod(NVR_ALOcclusionHistory, float4((base + float2(1.5f, 0.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f)).r,
+		tex2Dlod(NVR_ALOcclusionHistory, float4((base + float2(0.5f, 1.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f)).r,
+		tex2Dlod(NVR_ALOcclusionHistory, float4((base + 1.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).r);
+	float occlusionHistory = dot(o, weight) / max(found, 1.0e-4f);
 	// Held within what the bounce round the spot shows now (its four neighbours), a little wider: a blade that swayed away, or
 	// light that changed, does not linger.
-	float3 low = current.rgb, high = current.rgb;
+	float4 low = current, high = current;
 	[unroll] for (int i = 0; i < 4; i++) {
 		float2 offset = (i < 2 ? float2(i * 2 - 1, 0.0f) : float2(0.0f, i * 2 - 5)) * NVR_ALLayout.zw;
-		float3 n = tex2Dlod(NVR_ALBuffer, float4(uv + offset, 0.0f, 0.0f)).rgb;
+		float4 n = tex2Dlod(NVR_ALBuffer, float4(uv + offset, 0.0f, 0.0f));
 		low = min(low, n);
 		high = max(high, n);
 	}
-	float3 margin = (high - low) * 0.25f;
-	history = clamp(history, low - margin, high + margin);
+	float4 margin = (high - low) * 0.25f;
+	history = clamp(history, low.rgb - margin.rgb, high.rgb + margin.rgb);
+	occlusionHistory = clamp(occlusionHistory, low.a - margin.a, high.a + margin.a);
 	float inside = all(last.xy > 0.0f) && all(last.xy < 1.0f) && last.z > NearFade;
 	float moved = length((last.xy - uv) / NVR_ALLayout.zw);
 	float keep = NVR_ALTemporal.x / (1.0f + moved / NVR_ALTemporal.y) * saturate(found * 2.0f) * inside;
-	return float4(lerp(current.rgb, history, keep), viewZ);
+	OUT.bounce = float4(lerp(current.rgb, history, keep), viewZ);
+	OUT.occlusion = float4(lerp(current.a, occlusionHistory, keep), viewZ, 0.0f, 1.0f);
+	return OUT;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-14 (user: the screen-space bounce is noisy and comes and goes as the camera turns): the sun's bounce
+// light from a 3D light grid round the player ([Shaders.AmbientLight.Main] GridBounce), after CryEngine 3's light propagation
+// volumes (Kaplanyan 2009). It does not depend on what the screen shows, so it neither shimmers nor pops when turning.
+//  - ShadowManager draws a small depth map of the world from the sun round the grid (NVR_GridSunDepth, every few frames
+//    and whenever the grid moves): every surface the sun lights there, on screen or not.
+//  - Pass GridInject: each grid cell (a texel of a 2D atlas: 32 x 32 cells per tile, 4 x 4 tiles for 16 layers) gathers
+//    the sunlit surfaces in it from that map; each sends its light out round its normal (a cosine lobe, as order-1
+//    spherical harmonics: one number for all directions and three for the direction; the light's colour is the sun's x
+//    a ground colour, the same everywhere for now).
+//  - Pass GridPropagate (GridSteps times): each cell takes the light its six neighbours send its way, so it spreads a cell
+//    a step; the total over the steps is the bounce light (NVR_GridAccum).
+//  - Apply: each pixel reads the grid where it is (between the eight nearest cell centres), turns it into the light
+//    falling on its surface, and adds it as the screen bounce was added.
+// The grid moves with the player in whole cells, so it does not crawl; it has no occlusion, so light can cross a thin wall.
+float4 NVR_GridOrigin;          // xyz: the grid's corner relative to the camera now, w: cell size (world units)
+float4 NVR_GridData;            // x: strength (0: no grid), y: share of a neighbour's light passed on per step, z: RSM texel size (world units), w: debug
+float4 NVR_GridLight;           // rgb: the bounced light's colour (sun x ground colour, linear), w: injection scale
+float4x4 NVR_GridSunToGrid;     // sun depth map clip space (x, y, depth) -> position relative to the grid's corner
+float4x4 NVR_GridToSun;         // position relative to the grid's corner -> sun depth map clip space
+sampler2D NVR_GridWave : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_GridAccum : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D NVR_GridSunDepth : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+static const float GridX = 32.0f, GridY = 32.0f, GridZ = 16.0f;
+static const float AtlasSize = 128.0f;   // 4 x 4 tiles of 32 x 32
+static const float SunMapSize = 256.0f;
+
+// Order-1 spherical harmonics: a clamped cosine lobe round n, and a function's value in direction d.
+float4 CosineLobe(float3 n) { return float4(0.886227f, 1.023328f * n); }
+float4 ShBasis(float3 d) { return float4(0.282095f, 0.488603f * d); }
+
+// The atlas texel (centre, uv) of cell (x, y, z).
+float2 CellUV(float3 c) {
+	float tile = c.z;
+	float2 t = float2(fmod(tile, 4.0f), floor(tile / 4.0f));
+	return (t * 32.0f + c.xy + 0.5f) / AtlasSize;
+}
+
+// The cell an atlas texel holds.
+float3 AtlasCell(float2 uv) {
+	float2 texel = floor(uv * AtlasSize);
+	float2 t = floor(texel / 32.0f);
+	return float3(texel - t * 32.0f, t.y * 4.0f + t.x);
+}
+
+// A point of the sun's depth map (uv, depth) relative to the grid's corner.
+float3 SunMapPosition(float2 uv, float depth) {
+	float4 p = mul(float4(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f, depth, 1.0f), NVR_GridSunToGrid);
+	return p.xyz / p.w;
+}
+
+struct GridOut { float4 wave : COLOR0; float4 accum : COLOR1; };
+
+GridOut GridInject(VSOUT IN) {
+	float3 cell = AtlasCell(IN.UVCoord);
+	float size = NVR_GridOrigin.w;
+	float3 low = cell * size;
+	float4 centre = mul(float4(low + 0.5f * size, 1.0f), NVR_GridToSun);
+	float2 centreUV = float2(centre.x * 0.5f + 0.5f, 0.5f - centre.y * 0.5f);
+	// A cell seen from the sun covers up to about 1.75 cells across: 6 x 6 reads over that.
+	float span = 1.75f * size / NVR_GridData.z;
+	float stepTexels = span / 6.0f;
+	float4 sh = 0.0f;
+	[loop] for (int j = 0; j < 6; j++) {
+		[loop] for (int i = 0; i < 6; i++) {
+			float2 uv = centreUV + (float2(i, j) - 2.5f) * stepTexels / SunMapSize;
+			float depth = tex2Dlod(NVR_GridSunDepth, float4(uv, 0.0f, 0.0f)).r;
+			if (depth >= 0.9999f) continue;	// nothing drawn there
+			float3 p = SunMapPosition(uv, depth);
+			float3 inCell = p - low;
+			if (any(inCell < 0.0f) || any(inCell >= size)) continue;
+			// The surface's normal from its neighbours in the map (facing the sun).
+			float2 px = 1.0f / SunMapSize;
+			float3 px1 = SunMapPosition(uv + float2(px.x, 0.0f), tex2Dlod(NVR_GridSunDepth, float4(uv + float2(px.x, 0.0f), 0.0f, 0.0f)).r);
+			float3 py1 = SunMapPosition(uv + float2(0.0f, px.y), tex2Dlod(NVR_GridSunDepth, float4(uv + float2(0.0f, px.y), 0.0f, 0.0f)).r);
+			float3 n = cross(px1 - p, py1 - p);
+			float len = length(n);
+			n = len > 1e-4f ? n / len : float3(0.0f, 0.0f, 1.0f);
+			n *= dot(n, TESR_SunDirection.xyz) < 0.0f ? -1.0f : 1.0f;
+			sh += CosineLobe(n);
+		}
+	}
+	// Each read stands for stepTexels^2 map texels of sunlit surface; as a share of a cell's face.
+	sh *= NVR_GridLight.w * (stepTexels * NVR_GridData.z) * (stepTexels * NVR_GridData.z) / (size * size);
+	GridOut OUT;
+	OUT.wave = sh;
+	// Not in the total: a surface's own cell would light the surface with the light it sends out (the ground lit itself, test 1).
+	OUT.accum = 0.0f;
+	return OUT;
+}
+
+GridOut GridPropagate(VSOUT IN) {
+	float3 cell = AtlasCell(IN.UVCoord);
+	float4 sh = 0.0f;
+	[unroll] for (int k = 0; k < 6; k++) {
+		float3 axis = k == 0 ? float3(1, 0, 0) : k == 1 ? float3(-1, 0, 0) : k == 2 ? float3(0, 1, 0) : k == 3 ? float3(0, -1, 0) : k == 4 ? float3(0, 0, 1) : float3(0, 0, -1);
+		float3 neighbour = cell - axis;	// the neighbour on the far side; its light travels along +axis to this cell
+		if (any(neighbour < 0.0f) || neighbour.x >= GridX || neighbour.y >= GridY || neighbour.z >= GridZ) continue;
+		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour), 0.0f, 0.0f));
+		float sent = max(dot(from, ShBasis(axis)), 0.0f);
+		sh += CosineLobe(axis) * (sent * NVR_GridData.y);
+	}
+	GridOut OUT;
+	OUT.wave = sh;
+	OUT.accum = tex2Dlod(NVR_GridAccum, float4(IN.UVCoord, 0.0f, 0.0f)) + sh;	// the total so far (read at the texel centre) plus this step
+	return OUT;
+}
+
+// The grid's bounce light falling on a surface at a camera-relative position with a world normal (0 outside the grid).
+float3 GridBounce(float3 cameraRelative, float3 normal) {
+	float size = NVR_GridOrigin.w;
+	// Half a cell off the surface along its normal: a surface's own cell holds the light it sends out, not what it receives.
+	float3 g = (cameraRelative - NVR_GridOrigin.xyz + normal * (0.5f * size)) / size - 0.5f;
+	float3 dims = float3(GridX, GridY, GridZ);
+	float3 edge = min(g + 0.5f, dims - 0.5f - g);
+	float fade = saturate(min(min(edge.x, edge.y), edge.z) / 2.0f);
+	[branch] if (fade <= 0.0f) return 0.0f;
+	g = clamp(g, 0.0f, dims - 1.0f);
+	float z0 = floor(g.z);
+	float z1 = min(z0 + 1.0f, GridZ - 1.0f);
+	float fz = g.z - z0;
+	// Within a layer the atlas's own bilinear filter (kept inside the tile: g.xy is clamped to the cell centres).
+	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
+	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
+	float4 sh = lerp(a, b, fz);
+	// The light arriving over the hemisphere round the normal; / pi so that a surface ringed by the bounce of ground lit with
+	// colour C gets about C x the share of the view the ground fills (test 1: x 1 washed the picture out).
+	float irradiance = max(dot(sh, CosineLobe(normal)), 0.0f) * 0.3183f;
+	return irradiance * NVR_GridLight.rgb * fade;
 }
 
 // Pass 5: upsample and apply.
@@ -321,7 +470,7 @@ float4 Apply(VSOUT IN) : COLOR0 {
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0f + abs(tapDepth - depth) / tolerance;
 			// UNOFFICIAL: the bounce from the accumulated buffer (Accumulate), the occlusion from the blurred one.
-			sum += float4(tex2Dlod(NVR_ALHistory, float4(tapUV, 0.0f, 0.0f)).rgb, tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)).a) * weight;
+			sum += float4(tex2Dlod(NVR_ALHistory, float4(tapUV, 0.0f, 0.0f)).rgb, tex2Dlod(NVR_ALOcclusionHistory, float4(tapUV, 0.0f, 0.0f)).r) * weight;
 			weights += weight;
 		}
 	}
@@ -332,9 +481,17 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	ao = lerp(ao, 1.0f, saturate((luma(lin) - BrightFade) * 3.0f));   // bright surfaces keep their light, as the old AO
 	float peak = max(max(lin.r, lin.g), max(lin.b, 0.0001f));
 	float3 albedo = lin / peak * 0.6f;                                  // the surface's hue stands in for its colour (as BounceLight)
+	// UNOFFICIAL 2026-10-14: the light grid's bounce (GridBounce), darkened by the occlusion as light from round about is.
+	float3 gridBounce = 0.0f;
+	[branch] if (NVR_GridData.x > 0.0f) {
+		float3 cameraRelative = toWorld(IN.UVCoord) * depth;
+		float3 normal = normalize(GetWorldNormalLod(IN.UVCoord));
+		gridBounce = GridBounce(cameraRelative, normal) * (NVR_GridData.x * ao);
+	}
+	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));	// 7: the grid's bounce alone
 	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);	// diagnostics: the estimate's raw values
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : BounceStrength * ambient.rgb * albedo, 1.0f));
-	lin = lin * ao + BounceStrength * ambient.rgb * albedo;
+	lin = lin * ao + (BounceStrength * ambient.rgb + gridBounce) * albedo;
 	return delinearize(float4(lin, color.a));
 }
 
@@ -345,4 +502,10 @@ technique AmbientLight {
 	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
 	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
+}
+
+// UNOFFICIAL 2026-10-14: the light grid (see GridInject above), each pass into two targets (the step and the running total).
+technique AmbientLightGrid {
+	pass GridInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridInject(); }
+	pass GridPropagate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridPropagate(); }
 }

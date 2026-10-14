@@ -24,12 +24,46 @@ public:
 	// while the other is written, and last frame's camera to find each spot in it.
 	IDirect3DTexture9*	historyTexture[2] = {};
 	IDirect3DSurface9*	historySurface[2] = {};
+	IDirect3DTexture9*	occlusionHistory[2] = {};		// UNOFFICIAL 2026-10-14: the occlusion's (r visibility, g view depth; A16B16G16R16F like the bounce history: one MRT bit depth)
+	IDirect3DSurface9*	occlusionHistorySurface[2] = {};
 	int					historyIndex = 0;		// the one holding last frame's
 	bool				historyValid = false;
 	bool				temporal = true;
 	D3DXMATRIX			lastView, lastInvView, lastProj;
 	double				lastTime = 0.0;
 	unsigned			frameNumber = 0;
+
+	// UNOFFICIAL 2026-10-14 light grid (GridBounce; AmbientLight.fx.hlsl GridInject): the sun's bounce light in a 32 x 32 x 16
+	// grid of cells round the player, from a small depth map of the world seen from the sun (drawn by ShadowManager).
+	static const int	GridSunMapSize = 256;
+	static const int	GridAtlasSize = 128;	// 4 x 4 tiles of 32 x 32 cells
+	float				gridBounce = 0.0f;		// strength (0: off, nothing made or drawn)
+	float				gridCell = 200.0f;		// cell size, world units
+	int					gridSteps = 8;			// spreading steps
+	float				gridSpread = 0.3f;		// share of a neighbour's light passed on per step
+	IDirect3DTexture9*	gridSunTexture = nullptr;	// R32F depth from the sun
+	IDirect3DSurface9*	gridSunSurface = nullptr;
+	IDirect3DSurface9*	gridSunDepth = nullptr;
+	IDirect3DTexture9*	gridWave[2] = {};			// this step's light (A16B16G16R16F, the atlas)
+	IDirect3DSurface9*	gridWaveSurface[2] = {};
+	IDirect3DTexture9*	gridAccum[2] = {};			// the light over all steps so far
+	IDirect3DSurface9*	gridAccumSurface[2] = {};
+	int					gridAccumIndex = 0;			// the one holding the finished grid
+	bool				gridBuffersTried = false;
+	bool				gridSunFresh = false;		// the sun map was drawn this frame: inject and spread again
+	bool				gridValid = false;			// a finished grid exists (for gridOrigin)
+	double				gridOrigin[3] = {};			// the finished grid's corner (absolute world)
+	double				gridPendingOrigin[3] = {};	// the corner of the grid the sun map just drawn is for
+	unsigned			gridFrame = 0;
+	float				gridSunTexel = 1.0f;		// world units per sun map texel
+	D3DXMATRIX			gridSunToGrid, gridToSun;
+	ShadowsExteriorEffect::ShadowMapSettings gridSunMap = {};
+	CachedHandle		paramGridOrigin, paramGridData, paramGridLight, paramGridSunToGrid, paramGridToSun;
+
+	void	EnsureGridBuffers();
+	bool	WantsGridSunMap(const D3DXVECTOR3& sunDir);		// ShadowManager: draw the sun map this frame?
+	D3DXMATRIX GridSunViewProj(const D3DXVECTOR3& sunDir);	// sets gridSunMap up for it and returns its view-projection
+	void	RenderGrid(IDirect3DDevice9* Device);
 	// UNOFFICIAL 2026-10-14 (set by ShaderManager for one Render): apply the sun shadows in this effect's passes, their own pass
 	// skipped; shadowApplied reports that it was done.
 	bool				foldShadow = false;

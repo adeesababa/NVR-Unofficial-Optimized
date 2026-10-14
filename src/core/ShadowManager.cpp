@@ -1380,6 +1380,20 @@ void ShadowManager::RenderShadowMaps() {
 	
 			shadowMapTimer.LogTime("ShadowManager::RenderShadowMap Ortho");
 		}
+
+		// UNOFFICIAL 2026-10-14: the light grid's map of the world from the sun (AmbientLight GridBounce), plain depth as the
+		// ortho map, every few frames.
+		AmbientLightEffect* ambientLight = TheShaderManager->Effects.AmbientLight;
+		if (ambientLight && ambientLight->WantsGridSunMap(SunDir)) {
+			static GpuTimer gridSunTimer("Light grid sun map");
+			GpuProfileScope gpu(gridSunTimer, Device);
+			RecalculateBillboardVectors(&SunDir);
+			Device->SetRenderTarget(0, ambientLight->gridSunSurface);
+			Device->SetDepthStencilSurface(ambientLight->gridSunDepth);
+			ShadowData->z = 1; // plain depth, as the ortho map
+			Shadows->Constants.ShadowViewProj = ambientLight->GridSunViewProj(SunDir);
+			RenderShadowMap(&ambientLight->gridSunMap, &Shadows->Constants.ShadowViewProj);
+		}
 	}
 
 	// Render shadow maps for point lights

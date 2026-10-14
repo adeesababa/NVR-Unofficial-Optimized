@@ -201,8 +201,12 @@ DrawDistance = 6000.0               # Distance from the camera where the effect 
 DarkestOcclusion = 0.25             # [0-1] The darkest the occlusion may make a pixel (as AmbientOcclusion's ClampStrength).
 BrightnessFade = 0.7                # Bright surfaces keep their light: the occlusion fades out above this brightness (as AmbientOcclusion's LumThreshold).
 BlurRadius = 1.0                    # [0.5-4] Smoothing of the grain, in half-resolution pixels per step (x3 each way).
+GridBounce = 0.0                    # UNOFFICIAL, EXPERIMENTAL: the sun's bounce light from a 3D light grid round you (light propagation volume), outdoors in daylight. Unlike BounceStrength it does not depend on what is on screen, so it neither shimmers nor comes and goes as you turn; it is soft (room-sized), and can leak through thin walls. 0 = off (nothing extra drawn). Try 1. Use with BounceStrength 0.
+GridCellSize = 200.0                # [50-800] Size of one grid cell in world units (32 x 32 x 16 cells round you: 200 covers about 90 x 90 x 45 m). Smaller = finer but shorter reach.
+GridSteps = 8                       # [1-16] How many cells the light spreads from what it bounces off.
+GridSpread = 0.3                    # [0-0.6] How much light passes on from cell to cell each step.
 Temporal = true                     # UNOFFICIAL: keeps the bounce light from frame to frame (moved with the camera) and turns its sample pattern every frame, so the grain averages out instead of crawling (worst on grass at high BounceStrength). Off: each frame on its own, as before.
-DebugView = 0                       # 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
+DebugView = 0                       # 7: the light grid's bounce alone. 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
 
 [_Shaders.AmbientLight.Status]
 Enabled = false                     # UNOFFICIAL: ambient occlusion and bounce light worked out together in one pass (GTAO with horizon-based bounce light), at half resolution: occlusion that follows the shape of things (creases and the ground under objects, no halos on open ground) and bounce light that comes from what actually blocks the sky, for less than the two separate effects cost. While on it replaces the Ambient Occlusion and Bounce Light effects (their own settings are kept for when it is off).
@@ -743,14 +747,14 @@ DebugView = false                    # Shows each class in its own colour (guns 
 LogMatches = false                   # Writes each texture's class to the log the first time it is drawn ("[MaterialRules] <texture> -> <class>").
 
 [_Shaders.PBR.Rmaos]
-Enabled = false                      # UNOFFICIAL: PBR material maps. Where a texture has a <name>_rmaos.dds beside it (or under textures\pbr\ at the same path; the Community Shaders "True PBR" layout: red roughness, green metal, blue ambient occlusion, alpha specular level), objects take their roughness, metal and occlusion from it instead of the guesses. Loose files only. Restart to switch (it is compiled into the object shaders).
+Enabled = true                       # UNOFFICIAL: PBR material maps. Where a texture has a <name>_rmaos.dds beside it (or under textures\pbr\ at the same path; the Community Shaders "True PBR" layout: red roughness, green metal, blue ambient occlusion, alpha specular level), objects take their roughness, metal and occlusion from it instead of the guesses. Loose files only. Restart to switch (it is compiled into the object shaders).
 On = true                            # With Enabled: use the maps (live switch, for comparing). Off: objects as without them.
 Occlusion = 1.0                      # [0.0-1.0] How much the maps' ambient occlusion darkens the ambient light.
 DebugView = 0                        # [0-4] 1: the maps' roughness in grey; 2: metal; 3: occlusion; 4: objects that have a map in green, others dim grey. 0: normal picture.
 LogMatches = false                   # Writes each texture to the log the first time it is drawn, with its map or "none" ("[Rmaos] <texture> -> <file>"): which textures a place uses.
 
 [_Shaders.PBR.Linear]
-Enabled = false                      # UNOFFICIAL: linear lighting on objects and the ground. The game adds light up in gamma space, so lit sides drop off too fast into shade, two lamps add up too dark and coloured light tints too little. On, colours are decoded to linear, lit, and encoded back: softer, fuller light falloff and truer colour mixing. Changes the look (brighter mid-tones and ambient), so the exposure and ambient may want retuning. Switching it on or off needs a restart (off, the shaders are exactly as before and cost nothing).
+Enabled = true                       # UNOFFICIAL: linear lighting on objects and the ground. The game adds light up in gamma space, so lit sides drop off too fast into shade, two lamps add up too dark and coloured light tints too little. On, colours are decoded to linear, lit, and encoded back: softer, fuller light falloff and truer colour mixing. Changes the look (brighter mid-tones and ambient), so the exposure and ambient may want retuning. Switching it on or off needs a restart (off, the shaders are exactly as before and cost nothing).
 Gamma = 2.2                          # [1.0-3.0] The gamma the colours are decoded with, live. 2.2 is standard; 1.0 looks the same as off.
 
 [_Shaders.PBR.Status]
@@ -889,7 +893,7 @@ Intensity = 0.315                    # Rescale the intensity of screenspace shad
 Sharp = false                        # UNOFFICIAL: sharper, steadier contact shadows for less: the ray toward the sun followed in 16 even steps instead of 4 random ones smoothed by two big blurs (about a third of the cost). With forward shadows (the default). BlurRadius is not used with it on.
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
-Mode = 2							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
+Mode = 3							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
 Format = 0							 # Texture format, higher means higher quality, but higher bandwidth cost. 0: 16 bit, 1: 32 bit
 CascadeResolution = 1				 # Resolution used for shadow cascades. 0: 1024, 1: 1536, 2: 2048,
                                      # 3: 2560, 4: 3072, 5: 3584. The atlas holds 2x2 cascades, so
@@ -990,7 +994,7 @@ SunSize = 1.0                        # UNOFFICIAL, optional: how soft far shadow
 MaxSoftness = 4.0                    # Cap on the blur, in shadow map texels (1-32). Higher allows softer edges under tall objects but costs more and can show aliasing.
 
 [_Shaders.ContactHardening.Status]
-Enabled = false                      # UNOFFICIAL, optional: sun shadows sharp where an object meets the ground and softer the further they fall from it. Needs a game RESTART the first time it is turned on (compiled into the shaders only then, so off costs nothing); after that the switch works live. Needs ForwardShadows.
+Enabled = true                       # UNOFFICIAL, optional: sun shadows sharp where an object meets the ground and softer the further they fall from it. Needs a game RESTART the first time it is turned on (compiled into the shaders only then, so off costs nothing); after that the switch works live. Needs ForwardShadows.
 
 [_Shaders.Sharpening.Main]
 Clamp = 0.1
@@ -1029,7 +1033,7 @@ Temporal = 0.9                         # [0.0-0.95] Day and night: how much of l
 BlurRadius = 4.0                       # [0-8] Day and night: how wide the edge-aware smoothing is (in half-resolution pixels each way). It takes out the fine noise that breaks up the bands, and stops at the edges of buildings and trees. 0: no smoothing.
 Anisotropy = 0.5                       # [0.0-0.9] By day: forward scattering: higher concentrates the light around the sun and fades it looking away.
 RainStrength = 0.5                     # [0.0-1.0] Day and night: share of the strength in rain.
-Froxels = false                        # Day and night: work the shafts out on a coarse 3D grid of the air (one column per 16 x 16 pixels, 64 slices deep) instead of along every pixel's view: far fewer shadow reads, no noise, so Steps, Temporal and BlurRadius are not used. Softer shaft edges.
+Froxels = true                         # Day and night: work the shafts out on a coarse 3D grid of the air (one column per 16 x 16 pixels, 64 slices deep) instead of along every pixel's view: far fewer shadow reads, no noise, so Steps, Temporal and BlurRadius are not used. Softer shaft edges.
 
 [_Shaders.VolumetricLight.Night]
 Strength = 0.09                        # [0.0-3.0] By moonlight: how much light the lit air adds.
@@ -1308,7 +1312,7 @@ StarTwinkle = 1.0                   # Speed of the star twinkling
 
 
 [_Shaders.Sky.Physical]
-Enabled = false                     # UNOFFICIAL: a physical sky. The sky's colours come from the air itself (blue overhead, pale near the horizon, a bright glow round the sun, red and gold as it sets) instead of the weather's painted gradient. The weather still sets how bright the sky is, and WeatherTint keeps some of its colour; the game's own twilight and night sky take over once the sun is down. The sky light on objects follows the sky on screen. Switching it on or off needs a restart (off, the sky shader is exactly as before).
+Enabled = true                      # UNOFFICIAL: a physical sky. The sky's colours come from the air itself (blue overhead, pale near the horizon, a bright glow round the sun, red and gold as it sets) instead of the weather's painted gradient. The weather still sets how bright the sky is, and WeatherTint keeps some of its colour; the game's own twilight and night sky take over once the sun is down. The sky light on objects follows the sky on screen. Switching it on or off needs a restart (off, the sky shader is exactly as before).
 Brightness = 1.0                    # [0.0-4.0] Brightness against the weather's sky (1 = the same overall brightness).
 WeatherTint = 0.35                  # [0.0-1.0] How much of the weather's own sky colour to keep (0 = the air's colours only, 1 = the weather's colours with the air's light and shade).
 Haze = 1.0                          # [0.0-10.0] Dust and haze in the air: a wider, whiter glow round the sun and a paler horizon. Desert air is dusty: 1.5-3 looks hazier.
@@ -1437,7 +1441,7 @@ Enabled = true                      # Replaces shaders used by terrain, adding P
 Enabled = true                      # Post Process underwater fog/godrays/caustics effect.
 
 [_Shaders.VolumetricFog.Main]
-FogVolume = false                   # Outdoors, with the volumetric light's Froxels on: the fog's patches and its sunlight are worked out through the air along each view (its density, drifting noise and the sun's shadow on a 3D grid), instead of from four noise points and the shadow at the far end. Fog in shade stays dark, patches sit in the air. The fog's amount and colours are unchanged.
+FogVolume = true                    # Outdoors, with the volumetric light's Froxels on: the fog's patches and its sunlight are worked out through the air along each view (its density, drifting noise and the sun's shadow on a 3D grid), instead of from four noise points and the shadow at the far end. Fog in shade stays dark, patches sit in the air. The fog's amount and colours are unchanged.
 Amount = 0.4                        # Global multiplier for the final fog strength in exteriors.
 FogSaturation = 1.7                 # Tune the saturation of the fog color.
 BaseDensity = 0.2                   # NVR-authored fog density baseline, independent of vanilla weather fog.
@@ -1587,7 +1591,7 @@ Viscosity = 0.05
 Enabled = true                      # Short refraction water drop animation on the lens when exiting water.
 
 [_Shaders.WetWorld.Main]
-HudDrops = 0.0                       # [0.0-1.0] UNOFFICIAL: rain drops on your first-person weapon while you stand in the rain (not under cover), drying off afterwards (after mrfury97's HUD raindrops). Each drop is a little lens: it magnifies the surface under it, focuses the sun into a bright spot and catches a glint. 0: off (restart to switch on or off: it is compiled into the object shaders).
+HudDrops = 1.0                       # [0.0-1.0] UNOFFICIAL: rain drops on your first-person weapon while you stand in the rain (not under cover), drying off afterwards (after mrfury97's HUD raindrops). Each drop is a little lens: it magnifies the surface under it, focuses the sun into a bright spot and catches a glint. 0: off (restart to switch on or off: it is compiled into the object shaders).
 HudDropSize = 0.6                    # [0.05-20] Size of a drop's cell in game units (the biggest drops are about three quarters of it across).
 HudDropDensity = 0.6                 # [0.0-1.0] How many drops gather at full wetness.
 HudRefraction = 1.0                  # [0.0-4.0] How strongly a drop magnifies the surface under it.

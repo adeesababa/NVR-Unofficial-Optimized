@@ -66,7 +66,7 @@ sampler2D TESR_DepthBufferViewModel : register(s4) = sampler_state { ADDRESSU = 
 sampler2D TESR_BloodFlowPaths : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_BloodFlowBounds : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 // UNOFFICIAL 2026-10-13 (later): now NVR's own blood runs (Textures\Effects\BloodRuns.dds, made for the user by Fable from the
-// brief in NVR-Lunacy\docslood-texture-brief: 8 drip runs, r height, gb normal xy, a age along the run), read as .gbar so the
+// brief in NVR-Lunacy\docs\blood-texture-brief: 8 drip runs, r height, gb normal xy, a age along the run), read as .gbar so the
 // code below keeps the rain streaks' layout (xy normal, a cover). Before: WetWorld's rain streaks (Boomstick and Mac): hand-drawn rivulets, thin at the top and ending in a bead
 // at the bottom; rgb its normal, a its cover. Scrolled down each stream as its flowing surface detail (PaintStream).
 sampler2D TESR_BloodStreaks : register(s7) < string ResourceName = "Effects\BloodRuns.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -1417,6 +1417,9 @@ float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[
 	float coreR = SplatCoreRadius(a, seed, grow);
 	float T = (coreR - r) / max(coreR, 0.05) * 1.6;
 	float reach = TESR_BloodFlowSplat.y;
+	// UNOFFICIAL 2026-10-14 (user: frames tank staring at blood up close, where one splat fills the screen): deep inside the core
+	// nothing below can change the picture (the spray's thickness tops out at 0.9, an arm's adds little shading), so stop here.
+	[branch] if (T >= 0.9) return T;
 
 	// Thick arms: blobs thrown out of the core, tapering, ending in a droplet, a drip running down from it on a wall.
 	float arms = SplatArms(seed);
@@ -1461,6 +1464,14 @@ float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[
 		float ang = loner > 0.5 ? g1 * 6.2832 : bAng + (g1 - 0.5) * 2.0 * bSpread;
 		float2 dir = float2(cos(ang), sin(ang));
 		float toward = 0.5 + 0.5 * dot(dir, leanDir);
+		// UNOFFICIAL 2026-10-14: a quick test first (the core radius below is costly): is the pixel anywhere near this line (along
+		// it, within a hair of its direction) or, on a slope, below it where its drips hang? Most pixels are near only a few lines.
+		float lenBound = (1.0 + (0.2 + 2.2 * g3 * g3) * reach * lerp(0.5, 1.3, toward) * (1.0 - 0.6 * loner)) * grow;
+		float across = abs(dot(q, float2(-dir.y, dir.x))), along = dot(q, dir);
+		bool nearLine = along > 0.0 && along < lenBound + 0.03 && across < 0.03;
+		float2 tip = dir * lenBound;
+		bool nearDrips = run > 0.0 && q.x > min(0.0, tip.x) - 0.03 && q.x < max(0.0, tip.x) + 0.03 && q.y > min(0.0, tip.y) - 0.03;
+		[branch] if (!nearLine && !nearDrips) continue;
 		float start = SplatCoreRadius(ang, seed, grow) * (0.75 + 0.35 * g2);
 		float len = (start + (0.2 + 2.2 * g3 * g3) * reach * lerp(0.5, 1.3, toward) * (1.0 - 0.6 * loner)) * grow;
 		float t;
