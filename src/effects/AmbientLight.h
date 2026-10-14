@@ -19,7 +19,17 @@ public:
 	IDirect3DTexture9*	bufferTexture[2] = {};		// rgb bounce, a visibility (A16B16G16R16F), ping-pong for the blur
 	IDirect3DSurface9*	bufferSurface[2] = {};
 	bool				buffersTried = false;
-	CachedHandle		paramLayout, paramFlags;
+	CachedHandle		paramLayout, paramFlags, paramTemporal, paramReproject;
+	// UNOFFICIAL 2026-10-14 Temporal: the bounce kept from frame to frame (rgb bounce, a view depth; A16B16G16R16F), one read
+	// while the other is written, and last frame's camera to find each spot in it.
+	IDirect3DTexture9*	historyTexture[2] = {};
+	IDirect3DSurface9*	historySurface[2] = {};
+	int					historyIndex = 0;		// the one holding last frame's
+	bool				historyValid = false;
+	bool				temporal = true;
+	D3DXMATRIX			lastView, lastInvView, lastProj;
+	double				lastTime = 0.0;
+	unsigned			frameNumber = 0;
 	// UNOFFICIAL 2026-10-14 (set by ShaderManager for one Render): apply the sun shadows in this effect's passes, their own pass
 	// skipped; shadowApplied reports that it was done.
 	bool				foldShadow = false;

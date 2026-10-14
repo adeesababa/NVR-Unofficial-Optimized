@@ -13,7 +13,12 @@
 //        each read of the estimate is one small texel.
 // Pass 2 Estimate (half): rgb = bounce light, a = visibility (1 open, 0 fully hidden).
 // Pass 3-4 Blur (half): depth-aware, horizontal then vertical, all four channels.
-// Pass 5 Apply (full): depth-aware upsample; the scene darkened by the occlusion (less on bright surfaces, as the old AO) and the
+// Pass 5 Accumulate (half, UNOFFICIAL 2026-10-14, user: "shimmers really hard above 1 bounce strength", worst on grass): the
+//        bounce light blended into last frame's at the same spot (found by reprojection, kept only where the depth there
+//        matches, less of it the further the spot moved, and held within the range of the bounce round it now so swaying grass
+//        does not smear). With it the estimate's noise turns every frame, so the frames average out. rgb = bounce, a = view depth
+//        (next frame's match). Off ([Shaders.AmbientLight.Main] Temporal) or after a break: this frame's bounce as it is.
+// Pass 6 Apply (full): depth-aware upsample; the scene darkened by the occlusion (less on bright surfaces, as the old AO) and the
 //        bounce added, tinted by the surface's own hue (as BounceLight: there is no albedo buffer).
 //
 // UNOFFICIAL 2026-10-14 cheaper: outdoors, the sun-shadow apply (ShadowsExteriors.fx.hlsl, a full-resolution pass of its own while
@@ -26,6 +31,8 @@ float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
 float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass)
+float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
+float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
 float4 TESR_WaterSettings;      // x: water height, z: camera underwater
 float4 TESR_ShadowData;         // y: darkness
 float4 TESR_ShadowFade;         // x: fading at sunrise/sunset, z: point light shadows
@@ -40,6 +47,7 @@ sampler2D TESR_PointShadowBuffer : register(s4) = sampler_state { ADDRESSU = CLA
 // Bound by AmbientLight.cpp per pass (not TESR_ samplers: those bind by their order in the file). After the TESR_ ones.
 sampler2D NVR_ALPrep : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_ALBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_ALHistory : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 static const float Radius = max(TESR_AmbientLightData.x, 1.0f);
 static const float OcclusionStrength = TESR_AmbientLightData.y;
@@ -148,6 +156,8 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 	float3 normal = OctDecode(Unpack2(center.y));
 	float3 viewVec = normalize(-origin);
 	float3 noise = tex2Dlod(TESR_BlueNoiseSampler, float4(uv / (256.0f * NVR_ALLayout.zw), 0.0f, 0.0f)).xyz;
+	// UNOFFICIAL: with Temporal, a new pattern every frame (golden-ratio steps keep it blue noise), so the frames average out.
+	noise.xy = frac(noise.xy + (NVR_ALTemporal.x > 0.0f ? NVR_ALTemporal.z : 0.0f) * float2(0.618034f, 0.754878f));
 	// The radius on screen: r world units at depth z span r * P00 / (2 z) of the screen's width (P11 for the height).
 	float2 screenRadius = Radius * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * origin.z);
 	screenRadius *= min(1.0f, MaxScreenRadius / screenRadius.x);
@@ -215,23 +225,70 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 	return float4(bounce * (2.0f * fade / SLICES), saturate(visibility));
 }
 
-// Passes 3-4: depth-aware blur, 7 taps along axis (half-resolution texels apart x BlurStep).
+// Passes 3-4: depth-aware blur, 7 taps along axis (half-resolution texels apart x BlurStep). UNOFFICIAL 2026-10-14: the bounce
+// (rgb) blurs across a much looser depth step than the occlusion (a). Grass is a field of blades each at its own depth, so the
+// tight step kept every grass pixel to itself and its grain was never smoothed; light that bounces is soft anyway, while the
+// occlusion keeps its crisp edges.
 float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	float depth = readDepthLod(IN.UVCoord);
 	float tolerance = max(depth * 0.03f, 2.0f);
+	float looseTolerance = max(depth * 0.25f, 16.0f);
 	static const float weights[4] = { 0.30f, 0.23f, 0.11f, 0.05f };
-	float4 sum = tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f)) * weights[0];
-	float total = weights[0];
+	float4 center = tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f));
+	float3 bounce = center.rgb * weights[0];
+	float visibility = center.a * weights[0];
+	float2 total = weights[0];	// x occlusion, y bounce
 	[unroll] for (int i = 1; i < 4; i++) {
 		[unroll] for (int side = -1; side <= 1; side += 2) {
 			float2 tapUV = IN.UVCoord + axis * NVR_ALLayout.zw * (i * side * BlurStep);
-			float tapDepth = readDepthLod(tapUV);
-			float w = weights[i] * saturate(1.0f - abs(tapDepth - depth) / tolerance);
-			sum += tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)) * w;
+			float dz = abs(readDepthLod(tapUV) - depth);
+			float2 w = weights[i] * saturate(1.0f - dz / float2(tolerance, looseTolerance));
+			float4 tap = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f));
+			visibility += tap.a * w.x;
+			bounce += tap.rgb * w.y;
 			total += w;
 		}
 	}
-	return sum / total;
+	return float4(bounce / total.y, visibility / total.x);
+}
+
+// Pass 5 (UNOFFICIAL): this frame's blurred bounce (NVR_ALBuffer) blended into last frame's (NVR_ALHistory); see the top.
+float4 Accumulate(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float4 current = tex2Dlod(NVR_ALBuffer, float4(uv, 0.0f, 0.0f));
+	float viewZ = tex2Dlod(NVR_ALPrep, float4(uv, 0.0f, 0.0f)).x;
+	[branch] if (!(NVR_ALTemporal.x > 0.0f) || viewZ < NearFade) return float4(current.rgb, viewZ);
+	float3 origin = PositionFromViewZ(uv, viewZ);
+	float4 clip = mul(float4(origin, 1.0f), NVR_ALReproject);
+	float w = max(clip.w, 0.001f);
+	float3 last = float3(clip.x / w * 0.5f + 0.5f, 0.5f - clip.y / w * 0.5f, clip.w);
+	// Last frame's at that point: the four half-resolution pixels round it, bilinearly, each only if its depth matches.
+	float2 position = last.xy / NVR_ALLayout.zw - 0.5f;
+	float2 base = floor(position);
+	float2 f = position - base;
+	float4 t00 = tex2Dlod(NVR_ALHistory, float4((base + 0.5f) * NVR_ALLayout.zw, 0.0f, 0.0f));
+	float4 t10 = tex2Dlod(NVR_ALHistory, float4((base + float2(1.5f, 0.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f));
+	float4 t01 = tex2Dlod(NVR_ALHistory, float4((base + float2(0.5f, 1.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f));
+	float4 t11 = tex2Dlod(NVR_ALHistory, float4((base + 1.5f) * NVR_ALLayout.zw, 0.0f, 0.0f));
+	float4 weight = float4((1.0f - f.x) * (1.0f - f.y), f.x * (1.0f - f.y), (1.0f - f.x) * f.y, f.x * f.y);
+	weight *= abs(float4(t00.a, t10.a, t01.a, t11.a) - last.z) < max(last.z * 0.05f, 4.0f);
+	float found = dot(weight, 1.0f);
+	float3 history = (t00.rgb * weight.x + t10.rgb * weight.y + t01.rgb * weight.z + t11.rgb * weight.w) / max(found, 1.0e-4f);
+	// Held within what the bounce round the spot shows now (its four neighbours), a little wider: a blade that swayed away, or
+	// light that changed, does not linger.
+	float3 low = current.rgb, high = current.rgb;
+	[unroll] for (int i = 0; i < 4; i++) {
+		float2 offset = (i < 2 ? float2(i * 2 - 1, 0.0f) : float2(0.0f, i * 2 - 5)) * NVR_ALLayout.zw;
+		float3 n = tex2Dlod(NVR_ALBuffer, float4(uv + offset, 0.0f, 0.0f)).rgb;
+		low = min(low, n);
+		high = max(high, n);
+	}
+	float3 margin = (high - low) * 0.25f;
+	history = clamp(history, low - margin, high + margin);
+	float inside = all(last.xy > 0.0f) && all(last.xy < 1.0f) && last.z > NearFade;
+	float moved = length((last.xy - uv) / NVR_ALLayout.zw);
+	float keep = NVR_ALTemporal.x / (1.0f + moved / NVR_ALTemporal.y) * saturate(found * 2.0f) * inside;
+	return float4(lerp(current.rgb, history, keep), viewZ);
 }
 
 // Pass 5: upsample and apply.
@@ -254,7 +311,8 @@ float4 Apply(VSOUT IN) : COLOR0 {
 			float tapDepth = readDepthLod(tapUV);
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0f + abs(tapDepth - depth) / tolerance;
-			sum += tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)) * weight;
+			// UNOFFICIAL: the bounce from the accumulated buffer (Accumulate), the occlusion from the blurred one.
+			sum += float4(tex2Dlod(NVR_ALHistory, float4(tapUV, 0.0f, 0.0f)).rgb, tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)).a) * weight;
 			weights += weight;
 		}
 	}
@@ -276,5 +334,6 @@ technique AmbientLight {
 	pass Estimate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Estimate(); }
 	pass BlurX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(1.0f, 0.0f)); }
 	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
+	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
 }

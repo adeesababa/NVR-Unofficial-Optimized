@@ -201,6 +201,7 @@ DrawDistance = 6000.0               # Distance from the camera where the effect 
 DarkestOcclusion = 0.25             # [0-1] The darkest the occlusion may make a pixel (as AmbientOcclusion's ClampStrength).
 BrightnessFade = 0.7                # Bright surfaces keep their light: the occlusion fades out above this brightness (as AmbientOcclusion's LumThreshold).
 BlurRadius = 1.0                    # [0.5-4] Smoothing of the grain, in half-resolution pixels per step (x3 each way).
+Temporal = true                     # UNOFFICIAL: keeps the bounce light from frame to frame (moved with the camera) and turns its sample pattern every frame, so the grain averages out instead of crawling (worst on grass at high BounceStrength). Off: each frame on its own, as before.
 DebugView = 0                       # 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
 
 [_Shaders.AmbientLight.Status]

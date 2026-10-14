@@ -1,4 +1,5 @@
 #include "AmbientLight.h"
+#include "BounceLightMath.h"
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -14,9 +15,11 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
 	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 6);
+	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 }
 
-// Half resolution, made the first time it runs (about 14 MB at 1440p: one A32B32G32R32F, two A16B16G16R16F).
+// Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
+// UNOFFICIAL 2026-10-14: the two history buffers too (Temporal; without them it runs as before, history share 0).
 void AmbientLightEffect::EnsureBuffers() {
 	if (buffersTried) return;
 	buffersTried = true;
@@ -25,6 +28,8 @@ void AmbientLightEffect::EnsureBuffers() {
 	TheTextureManager->InitTexture("NVR_AmbientLightPrep", &prepTexture, &prepSurface, width, height, D3DFMT_A32B32G32R32F);
 	TheTextureManager->InitTexture("NVR_AmbientLight0", &bufferTexture[0], &bufferSurface[0], width, height, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_AmbientLight1", &bufferTexture[1], &bufferSurface[1], width, height, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_AmbientLightHistory0", &historyTexture[0], &historySurface[0], width, height, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_AmbientLightHistory1", &historyTexture[1], &historySurface[1], width, height, D3DFMT_A16B16G16R16F);
 }
 
 bool AmbientLightEffect::ShouldRender() {
@@ -34,7 +39,7 @@ bool AmbientLightEffect::ShouldRender() {
 void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
-	if (!ShouldRender()) { renderTime = 0; return; }
+	if (!ShouldRender()) { renderTime = 0; historyValid = false; return; }
 	EnsureBuffers();
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_ALLayout");
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
@@ -43,10 +48,11 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	D3DSURFACE_DESC half = {};
 	D3DXHANDLE technique = Effect->GetTechnique(0);
 	if (!layoutHandle || !scene || !prepTexture || !prepSurface || !bufferTexture[0] || !bufferTexture[1] || !bufferSurface[0] ||
-		!bufferSurface[1] || !technique || FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 5 ||
+		!bufferSurface[1] || !historyTexture[0] || !historyTexture[1] || !historySurface[0] || !historySurface[1] || !technique ||
+		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 6 ||
 		FAILED(Device->GetViewport(&original)) || FAILED(bufferSurface[0]->GetDesc(&half))) {
 		static bool reported = false;
-		if (!reported) Logger::Log("UNOFFICIAL AmbientLight: buffers missing or AmbientLight.fx.hlsl is not the matching version (5 passes), effect skipped.");
+		if (!reported) Logger::Log("UNOFFICIAL AmbientLight: buffers missing or AmbientLight.fx.hlsl is not the matching version (6 passes), effect skipped.");
 		reported = true;
 		renderTime = 0;
 		return;
@@ -72,24 +78,47 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 		Effect->SetVector(flagsHandle, &flags);
 	}
-	static GpuTimer passTimers[5] = { GpuTimer("  Ambient light prepare (half)"), GpuTimer("  Ambient light estimate (half)"),
-		GpuTimer("  Ambient light blur X (half)"), GpuTimer("  Ambient light blur Y (half)"), GpuTimer("  Ambient light apply (full)") };
+	// UNOFFICIAL Temporal: last frame's bounce is usable if it was made a moment ago in the same cell (a load or a door means
+	// another place); the depth test in the shader catches the rest.
+	const double now = TheFrameRateManager->Time;
+	const bool continuous = historyValid && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCellChanged;
+	D3DXHANDLE temporalHandle = ParameterHandle(paramTemporal, "NVR_ALTemporal");
+	D3DXHANDLE reprojectHandle = ParameterHandle(paramReproject, "NVR_ALReproject");
+	const int readIndex = historyIndex, writeIndex = historyIndex ^ 1;
+	if (temporalHandle && reprojectHandle) {
+		static const float HistoryShare = 0.9f;		// last frame's share for a spot that has not moved
+		static const float MotionPixels = 4.0f;		// half as much for one that moved this many half-resolution pixels
+		D3DXVECTOR4 temporalData(temporal && continuous ? HistoryShare : 0.0f, MotionPixels, (float)(frameNumber % 1024), 0.0f);
+		D3DXMATRIX reproject;
+		D3DXMatrixIdentity(&reproject);
+		if (continuous) BounceLightReprojection(TheRenderManager->viewMatrix, TheRenderManager->InvViewMatrix, lastView, lastInvView, lastProj, &reproject);
+		Effect->SetVector(temporalHandle, &temporalData);
+		Effect->SetMatrix(reprojectHandle, &reproject);
+	}
+	static GpuTimer passTimers[6] = { GpuTimer("  Ambient light prepare (half)"), GpuTimer("  Ambient light estimate (half)"),
+		GpuTimer("  Ambient light blur X (half)"), GpuTimer("  Ambient light blur Y (half)"), GpuTimer("  Ambient light accumulate (half)"),
+		GpuTimer("  Ambient light apply (full)") };
 	UINT passes = 0;
 	HRESULT result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		for (UINT p = 0; p < 5 && SUCCEEDED(result); ++p) {
-			// Prepare -> prep; Estimate (prep) -> 0; blur X (0) -> 1; blur Y (1) -> 0; Apply (0) -> the frame.
-			const bool apply = p == 4;
-			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : bufferSurface[p == 2 ? 1 : 0];
+		for (UINT p = 0; p < 6 && SUCCEEDED(result); ++p) {
+			// Prepare -> prep; Estimate (prep) -> 0; blur X (0) -> 1; blur Y (1) -> 0; Accumulate (0, last history) -> this
+			// frame's history; Apply (0 for the occlusion, this frame's history for the bounce) -> the frame.
+			const bool apply = p == 5;
+			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
+				bufferSurface[p == 2 ? 1 : 0];
 			Device->SetTexture(5, nullptr);
 			Device->SetTexture(6, nullptr);
+			Device->SetTexture(7, nullptr);
 			result = Device->SetRenderTarget(0, destination);
 			if (SUCCEEDED(result)) result = Device->SetViewport(apply ? &original : &reduced);
 			if (SUCCEEDED(result)) result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
 			if (p > 0) Device->SetTexture(5, prepTexture);
-			if (p == 2 || p == 4) Device->SetTexture(6, bufferTexture[0]);
+			if (p == 2 || p == 4 || p == 5) Device->SetTexture(6, bufferTexture[0]);
 			else if (p == 3) Device->SetTexture(6, bufferTexture[1]);
+			if (p == 4) Device->SetTexture(7, historyTexture[readIndex]);
+			else if (p == 5) Device->SetTexture(7, historyTexture[writeIndex]);
 			Device->SetTexture(1, scene);	// TESR_SourceBuffer slot: the current image
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
@@ -102,7 +131,19 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	}
 	Device->SetTexture(5, nullptr);
 	Device->SetTexture(6, nullptr);
+	Device->SetTexture(7, nullptr);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
+	// UNOFFICIAL Temporal: this frame's history is next frame's "last frame".
+	if (SUCCEEDED(result)) {
+		historyIndex = writeIndex;
+		historyValid = true;
+		lastView = TheRenderManager->viewMatrix;
+		lastInvView = TheRenderManager->InvViewMatrix;
+		lastProj = TheRenderManager->projMatrix;
+		lastTime = now;
+		frameNumber++;
+	}
+	else historyValid = false;
 	Device->SetRenderTarget(0, RenderTarget);
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
