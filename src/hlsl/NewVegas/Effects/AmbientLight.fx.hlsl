@@ -141,21 +141,13 @@ float3 OctDecode(float2 e) {
 
 // Pass 1: x = view depth (world units), y = normal, z = colour red and green (square-root encoded), w = colour blue (linear light, capped
 // so small bright glints do not spray light around).
+// UNOFFICIAL 2026-10-14 (user: remove the screen bounce; the light grid is the bounce light): depth and normal only.
 float4 Prepare(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
 	if (IsViewModel(uv)) viewZ = 1.0e6f;	// the weapon: as if open sky behind (nothing done, hides nothing)
 	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
-	// UNOFFICIAL 2026-10-14: the colour averaged over the 4x4 full-resolution pixels round the texel (four bilinear reads), not one
-	// spot: the bounce gathered from single pixels jumped between a bright blade tip and the dark gap beside it (grass shimmer).
-	float2 px = TESR_ReciprocalResolution.xy;
-	float3 source = 0.25f * (tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(-1.0f, -1.0f), 0.0f, 0.0f)).rgb +
-		tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(1.0f, -1.0f), 0.0f, 0.0f)).rgb +
-		tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(-1.0f, 1.0f), 0.0f, 0.0f)).rgb +
-		tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(1.0f, 1.0f), 0.0f, 0.0f)).rgb);
-	[branch] if (NVR_ALFlags.x > 0.5f) source = SunShadowApply(source, uv);
-	float3 light = min(linearize(source), 1.0f);
-	return float4(viewZ, Pack2(OctEncode(normal)), Pack2(sqrt(light.rg)), light.b);
+	return float4(viewZ, Pack2(OctEncode(normal)), 0.0f, 0.0f);
 }
 
 // GTAO's cosine-weighted visible arc of one slice between its two horizons (cosines), each kept within the hemisphere round the
@@ -225,10 +217,6 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 				// of the view a read newly covered above the horizon so far, so on grass and rough ground a pixel's light came
 				// from one or two reads picked by chance, and jumped from pixel to pixel and frame to frame (user: shimmer and
 				// orange speckles).
-				float raised = saturate(sampleCos - lowCos);
-				float facing = saturate(dot(normal, dir)) * saturate(dot(OctDecode(Unpack2(texel.y)), -dir));
-				float2 rg = Unpack2(texel.z);
-				bounce += float3(rg * rg, texel.w) * (raised * facing);
 				if (side == 0) horizonCos0 = max(horizonCos0, sampleCos); else horizonCos1 = max(horizonCos1, sampleCos);
 				if (slice == 0 && side == 0 && k == 1) { firstCos = dot(dir, viewVec); firstLow = weight; }
 			}
@@ -294,35 +282,29 @@ AccumulateOut Accumulate(VSOUT IN) {
 	float2 position = last.xy / NVR_ALLayout.zw - 0.5f;
 	float2 base = floor(position);
 	float2 f = position - base;
-	float4 t00 = tex2Dlod(NVR_ALHistory, float4((base + 0.5f) * NVR_ALLayout.zw, 0.0f, 0.0f));
-	float4 t10 = tex2Dlod(NVR_ALHistory, float4((base + float2(1.5f, 0.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f));
-	float4 t01 = tex2Dlod(NVR_ALHistory, float4((base + float2(0.5f, 1.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f));
-	float4 t11 = tex2Dlod(NVR_ALHistory, float4((base + 1.5f) * NVR_ALLayout.zw, 0.0f, 0.0f));
+	// (2026-10-14: the occlusion's own history holds the view depth too; the bounce's history is gone with the screen bounce.)
+	float2 t00 = tex2Dlod(NVR_ALOcclusionHistory, float4((base + 0.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).rg;
+	float2 t10 = tex2Dlod(NVR_ALOcclusionHistory, float4((base + float2(1.5f, 0.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f)).rg;
+	float2 t01 = tex2Dlod(NVR_ALOcclusionHistory, float4((base + float2(0.5f, 1.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f)).rg;
+	float2 t11 = tex2Dlod(NVR_ALOcclusionHistory, float4((base + 1.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).rg;
 	float4 weight = float4((1.0f - f.x) * (1.0f - f.y), f.x * (1.0f - f.y), (1.0f - f.x) * f.y, f.x * f.y);
-	weight *= abs(float4(t00.a, t10.a, t01.a, t11.a) - last.z) < max(last.z * 0.05f, 4.0f);
+	weight *= abs(float4(t00.g, t10.g, t01.g, t11.g) - last.z) < max(last.z * 0.05f, 4.0f);
 	float found = dot(weight, 1.0f);
-	float3 history = (t00.rgb * weight.x + t10.rgb * weight.y + t01.rgb * weight.z + t11.rgb * weight.w) / max(found, 1.0e-4f);
-	float4 o = float4(tex2Dlod(NVR_ALOcclusionHistory, float4((base + 0.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).r,
-		tex2Dlod(NVR_ALOcclusionHistory, float4((base + float2(1.5f, 0.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f)).r,
-		tex2Dlod(NVR_ALOcclusionHistory, float4((base + float2(0.5f, 1.5f)) * NVR_ALLayout.zw, 0.0f, 0.0f)).r,
-		tex2Dlod(NVR_ALOcclusionHistory, float4((base + 1.5f) * NVR_ALLayout.zw, 0.0f, 0.0f)).r);
-	float occlusionHistory = dot(o, weight) / max(found, 1.0e-4f);
+	float occlusionHistory = dot(float4(t00.r, t10.r, t01.r, t11.r), weight) / max(found, 1.0e-4f);
 	// Held within what the bounce round the spot shows now (its four neighbours), a little wider: a blade that swayed away, or
 	// light that changed, does not linger.
-	float4 low = current, high = current;
+	float low = current.a, high = current.a;
 	[unroll] for (int i = 0; i < 4; i++) {
 		float2 offset = (i < 2 ? float2(i * 2 - 1, 0.0f) : float2(0.0f, i * 2 - 5)) * NVR_ALLayout.zw;
-		float4 n = tex2Dlod(NVR_ALBuffer, float4(uv + offset, 0.0f, 0.0f));
+		float n = tex2Dlod(NVR_ALBuffer, float4(uv + offset, 0.0f, 0.0f)).a;
 		low = min(low, n);
 		high = max(high, n);
 	}
-	float4 margin = (high - low) * 0.25f;
-	history = clamp(history, low.rgb - margin.rgb, high.rgb + margin.rgb);
-	occlusionHistory = clamp(occlusionHistory, low.a - margin.a, high.a + margin.a);
+	float margin = (high - low) * 0.25f;
+	occlusionHistory = clamp(occlusionHistory, low - margin, high + margin);
 	float inside = all(last.xy > 0.0f) && all(last.xy < 1.0f) && last.z > NearFade;
 	float moved = length((last.xy - uv) / NVR_ALLayout.zw);
 	float keep = NVR_ALTemporal.x / (1.0f + moved / NVR_ALTemporal.y) * saturate(found * 2.0f) * inside;
-	OUT.bounce = float4(lerp(current.rgb, history, keep), viewZ);
 	OUT.occlusion = float4(lerp(current.a, occlusionHistory, keep), viewZ, 0.0f, 1.0f);
 	return OUT;
 }
@@ -594,7 +576,7 @@ float4 Apply(VSOUT IN) : COLOR0 {
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0f + abs(tapDepth - depth) / tolerance;
 			// UNOFFICIAL: the bounce from the accumulated buffer (Accumulate), the occlusion from the blurred one.
-			sum += float4(tex2Dlod(NVR_ALHistory, float4(tapUV, 0.0f, 0.0f)).rgb, tex2Dlod(NVR_ALOcclusionHistory, float4(tapUV, 0.0f, 0.0f)).r) * weight;
+			sum.a += tex2Dlod(NVR_ALOcclusionHistory, float4(tapUV, 0.0f, 0.0f)).r * weight;	// (the occlusion only: no screen bounce)
 			weights += weight;
 		}
 	}
@@ -631,8 +613,8 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	}
 	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));	// 7: the grid's bounce alone
 	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);	// diagnostics: the estimate's raw values
-	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : BounceStrength * ambient.rgb * albedo, 1.0f));
-	lin = lin * ao + (BounceStrength * ambient.rgb + gridBounce) * albedo;
+	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));	// 2: the bounce (the light grid's)
+	lin = lin * ao + gridBounce * albedo;	// (the screen bounce removed 2026-10-14: the light grid is the bounce)
 	return delinearize(float4(lin, color.a));
 }
 
@@ -643,6 +625,7 @@ technique AmbientLight {
 	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
 	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
+
 }
 
 // UNOFFICIAL 2026-10-14: the light grid (see GridInject above), each pass into two targets (the step and the running total).

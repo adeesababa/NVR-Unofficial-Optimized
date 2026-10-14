@@ -9,7 +9,7 @@ void AmbientLightEffect::RegisterConstants() {
 void AmbientLightEffect::UpdateSettings() {
 	Constants.Data.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "Radius"), 10.0f, 1000.0f);
 	Constants.Data.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "OcclusionStrength"), 0.0f, 4.0f);
-	Constants.Data.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BounceStrength"), 0.0f, 10.0f);
+	Constants.Data.z = 0.0f;	// UNOFFICIAL 2026-10-14: the screen bounce removed (BounceStrength); GridBounce is the bounce
 	Constants.Data.w = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DrawDistance"), 500.0f, 50000.0f);
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
@@ -22,9 +22,6 @@ void AmbientLightEffect::UpdateSettings() {
 	gridSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridSpread"), 0.0f, 0.6f);
 	gridBlocking = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBlocking"), 0.0f, 4.0f);
 	gridScreenStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridScreenStrength"), 0.0f, 40.0f);
-	// UNOFFICIAL 2026-10-14 (user stacked BounceStrength 5 on the grid and saw only its grain): with the light grid on, the
-	// screen-space bounce is off; GridBounce is the bounce's strength then.
-	if (gridBounce > 0.0f) Constants.Data.z = 0.0f;
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).

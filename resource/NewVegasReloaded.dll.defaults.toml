@@ -197,18 +197,17 @@ Enabled = true                          # Shadows based on object proximity/crea
 [_Shaders.AmbientLight.Main]
 Radius = 250.0                      # UNOFFICIAL: how far the occlusion and the bounce reach, in world units (about 70 = 1 m).
 OcclusionStrength = 2.5             # [0-4] How dark creases, corners and the ground under things get.
-BounceStrength = 5.0                # [0-10] How much light lit surfaces send onto nearby ones, worked out from the screen (grainy, comes and goes as you turn). Ignored while GridBounce is above 0 (the light grid replaces it).
 DrawDistance = 6000.0               # Distance from the camera where the effect has faded out.
 DarkestOcclusion = 0.25             # [0-1] The darkest the occlusion may make a pixel (as AmbientOcclusion's ClampStrength).
 BrightnessFade = 0.7                # Bright surfaces keep their light: the occlusion fades out above this brightness (as AmbientOcclusion's LumThreshold).
 BlurRadius = 1.0                    # [0.5-4] Smoothing of the grain, in half-resolution pixels per step (x3 each way).
-GridBounce = 0.0                    # UNOFFICIAL, EXPERIMENTAL: the sun's bounce light from a 3D light grid round you (light propagation volume), outdoors in daylight. Unlike BounceStrength it does not depend on what is on screen, so it neither shimmers nor comes and goes as you turn; it is soft (room-sized), and can leak through thin walls. 0 = off (nothing extra drawn). Try 1. Use with BounceStrength 0.
+GridBounce = 0.0                    # UNOFFICIAL, EXPERIMENTAL: the sun's bounce light from a 3D light grid round you (light propagation volume), outdoors in daylight. It is AmbientLight's bounce light: it does not depend on what is on screen, so it neither shimmers nor comes and goes as you turn; soft (room-sized) light. Indoors and at night it takes the light of lamps and neon seen on screen (GridScreenStrength). 0 = no bounce light (nothing extra drawn).
 GridCellSize = 200.0                # [50-800] Size of one grid cell in world units (32 x 32 x 16 cells round you: 200 covers about 90 x 90 x 45 m). Smaller = finer but shorter reach.
 GridSteps = 8                       # [1-16] How many cells the light spreads from what it bounces off.
 GridSpread = 0.3                    # [0-0.6] How much light passes on from cell to cell each step.
 GridScreenStrength = 6.0            # [0-40] Indoors and at night (no sun): how strongly the light surfaces show on screen (lamps, neon, fire) feeds the grid. It remembers what it saw, so the bounce stays when you turn away.
 GridBlocking = 1.0                  # [0-4] How much walls and other surfaces stop the grid's light passing through them (0: light leaks through everything).
-Temporal = true                     # UNOFFICIAL: keeps the bounce light from frame to frame (moved with the camera) and turns its sample pattern every frame, so the grain averages out instead of crawling (worst on grass at high BounceStrength). Off: each frame on its own, as before.
+Temporal = true                     # UNOFFICIAL: keeps the occlusion from frame to frame (moved with the camera) and turns its sample pattern every frame, so its grain averages out instead of crawling. Off: each frame on its own.
 DebugView = 0                       # 7: the light grid's bounce alone. 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
 
 [_Shaders.AmbientLight.Status]
