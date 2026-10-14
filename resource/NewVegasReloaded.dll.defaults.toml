@@ -1425,6 +1425,7 @@ Enabled = true                      # Replaces shaders used by terrain, adding P
 Enabled = true                      # Post Process underwater fog/godrays/caustics effect.
 
 [_Shaders.VolumetricFog.Main]
+FogVolume = false                   # Outdoors, with the volumetric light's Froxels on: the fog's patches and its sunlight are worked out through the air along each view (its density, drifting noise and the sun's shadow on a 3D grid), instead of from four noise points and the shadow at the far end. Fog in shade stays dark, patches sit in the air. The fog's amount and colours are unchanged.
 Amount = 0.4                        # Global multiplier for the final fog strength in exteriors.
 FogSaturation = 1.7                 # Tune the saturation of the fog color.
 BaseDensity = 0.2                   # NVR-authored fog density baseline, independent of vanilla weather fog.

@@ -187,11 +187,11 @@ float4 NVR_FogGridFlags;
 float4 TESR_VolumetricLightData;       // x: strength, y: shade darkening, z: air density per game unit, w: march distance
 float4 TESR_VolumetricLightData2;      // y: phase asymmetry g, z: fade (shadows on, rain)
 float4 TESR_VolumetricLightGridLayout; // xy: grid columns and rows, zw: one atlas texel in UV
+float4 TESR_VolumetricLightGridData;   // x: fog volume on (the grid's g, b, a are filled), y: scale of the lit share (r)
 sampler2D NVR_FogGrid : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
-// As VolumetricLight.fx.hlsl CompositeGridPS: x the share of the view the lit air scatters towards the eye, y the same if
-// all the air were lit, out to the planar depth given (the sky's: the march distance).
-float2 FogGridAir(float2 uv, float depth) {
+// The grid's sums from the eye out to the planar depth given (the sky's: the march distance), see VolumetricLight.fx.hlsl.
+float4 FogGridSum(float2 uv, float depth) {
 	float marchDistance = TESR_VolumetricLightData.w;
 	float planar = depth >= farZ * 0.996 ? marchDistance : min(depth, marchDistance);
 	float s = sqrt(planar / marchDistance) * 64.0;
@@ -200,10 +200,18 @@ float2 FogGridAir(float2 uv, float depth) {
 	float2 local = clamp(uv * gridSize, 0.5, gridSize - 0.5);
 	float2 farTile = float2(fmod(z, 8.0), floor(z / 8.0));
 	float2 nearTile = float2(fmod(z - 1.0, 8.0), floor((z - 1.0) / 8.0));
-	float farSide = tex2Dlod(NVR_FogGrid, float4((farTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0)).r;
-	float nearSide = z > 0.5 ? tex2Dlod(NVR_FogGrid, float4((nearTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0)).r : 0.0;
+	float4 farSide = tex2Dlod(NVR_FogGrid, float4((farTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0));
+	float4 nearSide = z > 0.5 ? tex2Dlod(NVR_FogGrid, float4((nearTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0)) : 0.0;
+	return lerp(nearSide, farSide, saturate(s - z));
+}
+
+// x the share of the view the lit air scatters towards the eye, y the same if all the air were lit (VolumetricLight's
+// CompositeGridPS).
+float2 FogGridAir(float2 uv, float depth) {
+	float marchDistance = TESR_VolumetricLightData.w;
+	float planar = depth >= farZ * 0.996 ? marchDistance : min(depth, marchDistance);
 	float sigma = TESR_VolumetricLightData.z * length(toWorld(uv));
-	return float2(lerp(nearSide, farSide, saturate(s - z)), 1.0 - exp(-sigma * planar));
+	return float2(FogGridSum(uv, depth).r / TESR_VolumetricLightGridData.y, 1.0 - exp(-sigma * planar));
 }
 
 // The volumetric light's composite (VolumetricLight.fx.hlsl CompositeAir) on a gamma-encoded colour.
@@ -693,14 +701,25 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	// read once, at that surface). The nearest 300 units are left out, where the pattern would swim with the camera;
 	// the farthest point is at most 12000 units out. A texture read costs less than one evaluation of the old
 	// procedural fbm3 (24 hashes). Averaging flattens the contrast, which the last line restores.
-	float noiseReach = min(length(eyeVector), 12000.0);
 	float noiseVal = 0.0;
-	[unroll] for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
-		float noiseT = lerp(min(300.0, noiseReach), noiseReach, (noiseStep + 0.5) / 4.0);
-		float3 noisePos = (TESR_CameraPosition.xyz + eyeDirection * noiseT + windOffset) / (1500 * NoiseScale);
-		noiseVal += tex3Dlod(NVR_FogNoise, float4(noisePos / 4.0, 0.0)).g;
+	// UNOFFICIAL 2026-10-14 fog volume ([Shaders.VolumetricFog.Main] FogVolume, with the volumetric light's froxel grid): the
+	// noise averaged over the whole view out to the grid's depth, each point weighed by the fog's density there (the grid's
+	// b / g), instead of four points along it; and below, the sun's shadow averaged the same way (a / g).
+	float4 fogVolume = 0.0;
+	[branch] if (NVR_FogGridFlags.x > 0.5 && TESR_VolumetricLightGridData.x > 0.5) {
+		fogVolume = FogGridSum(IN.UVCoord, depth);
+		noiseVal = fogVolume.g > 1.0e-6 ? fogVolume.b / fogVolume.g : 0.5;
 	}
-	noiseVal = saturate((noiseVal * 0.25 - 0.5) * 1.8 + 0.5);
+	else {
+		float noiseReach = min(length(eyeVector), 12000.0);
+		[unroll] for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
+			float noiseT = lerp(min(300.0, noiseReach), noiseReach, (noiseStep + 0.5) / 4.0);
+			float3 noisePos = (TESR_CameraPosition.xyz + eyeDirection * noiseT + windOffset) / (1500 * NoiseScale);
+			noiseVal += tex3Dlod(NVR_FogNoise, float4(noisePos / 4.0, 0.0)).g;
+		}
+		noiseVal *= 0.25;
+	}
+	noiseVal = saturate((noiseVal - 0.5) * 1.8 + 0.5);
 	float nightNoiseStrength = NoiseStrength * lerp(1.0, NightNoiseStrengthScale, nightFactor);
 
 	// Zero the noise's contribution to density on true sky pixels via isSkyDome (a hard depth
@@ -731,7 +750,11 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	float shadowVisibility = 1.0;
 	[branch]
 	if (isExterior > 0.5 && ShadowStrength > 0.0 && TESR_ShadowFade.y > 0.5) {
-		[branch] if (NVR_FogGridFlags.x > 0.5) {
+		[branch] if (fogVolume.g > 1.0e-6) {
+			// UNOFFICIAL fog volume: the sun's share of the fog along the view, weighed by the fog's density.
+			shadowVisibility = lerp(1.0, saturate(fogVolume.a / fogVolume.g), ShadowStrength);
+		}
+		else if (NVR_FogGridFlags.x > 0.5) {
 			// UNOFFICIAL froxel grid: the sun's share of the air along the view (see FogGridAir).
 			float2 air = FogGridAir(IN.UVCoord, depth);
 			shadowVisibility = lerp(1.0, air.y > 1.0e-6 ? saturate(air.x / air.y) : 1.0, ShadowStrength);

@@ -26,6 +26,7 @@ public:
 		float	BlurRadius;		// denoise blur, half-resolution texels each way
 		float	RainStrength;	// share of the strength in rain
 		bool	Froxels;		// UNOFFICIAL 2026-10-14: the froxel grid instead of the march (see the .fx)
+		bool	FogVolume;		// UNOFFICIAL 2026-10-14: [Shaders.VolumetricFog.Main] FogVolume, the fog's density in the grid too
 	};
 	SettingsStruct	Settings;
 
@@ -36,6 +37,7 @@ public:
 		D3DXVECTOR4	Layout;		// xy: one half-resolution texel in screen UV
 		D3DXMATRIX	Reproject;	// camera-relative world -> last frame's clip space
 		D3DXVECTOR4	GridLayout;	// xy: froxel grid columns and rows, zw: one atlas texel in UV
+		D3DXVECTOR4	GridData;	// x: fog volume on, y: scale of the lit share in the grid (keeps it in half-float range)
 	};
 	ConstantsStruct	Constants;
 
@@ -48,7 +50,7 @@ public:
 		IDirect3DSurface9* TempSurface = nullptr;
 		IDirect3DTexture9* HistoryTexture = nullptr;
 		IDirect3DSurface9* HistorySurface = nullptr;
-		IDirect3DTexture9* GridTexture = nullptr;		// the froxel grid's 64 slices, 8 x 8 tiles (R32F)
+		IDirect3DTexture9* GridTexture = nullptr;		// the froxel grid's 64 slices, 8 x 8 tiles (RGBA half float)
 		IDirect3DSurface9* GridSurface = nullptr;
 		IDirect3DTexture9* GridTempTexture = nullptr;
 		IDirect3DSurface9* GridTempSurface = nullptr;

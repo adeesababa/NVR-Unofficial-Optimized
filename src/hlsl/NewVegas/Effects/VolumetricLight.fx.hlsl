@@ -43,6 +43,20 @@ sampler2D TESR_VolumetricLightHistory : register(s6) = sampler_state { ADDRESSU 
 sampler2D TESR_VolumetricLightGrid : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D TESR_VolumetricLightGridTemp : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 float4 TESR_VolumetricLightGridLayout; // xy: grid columns and rows (one per 16 x 16 screen pixels), zw: one atlas texel in UV
+float4 TESR_VolumetricLightGridData;   // x: fog volume on ([Shaders.VolumetricFog.Main] FogVolume), y: scale of the lit share (r)
+// The fog volume's density and patches, as VolumetricFog.fx.hlsl ModernFogTerms works them out (same constants).
+float4 TESR_FogData;                   // w: fog power
+float4 TESR_SunAmount;                 // x: day
+float4 TESR_GameTime;                  // x: game time (ms)
+float4 TESR_VolumetricFogDensity;      // y: WeatherImpact
+float4 TESR_VolumetricFogShape;        // x: HeightFalloff
+float4 TESR_VolumetricFogWind;         // xy: wind direction, z: wind speed, w: noise scale
+float4 TESR_VolumetricFogScatter;      // w: HeightInfluence
+float4 TESR_VolumetricFogWeather;      // y: isExterior
+float4 TESR_VolumetricFogNight;        // z: HeightFalloffScale
+float4 TESR_VolumetricFogNightScatter; // y: WindSpeedScale
+// The fog's 3D noise (Textures\Effects\NoiseVolume.dds), bound by hand on stage 9 while the grid is lit (VolumetricLight.cpp).
+sampler3D NVR_FogNoise : register(s9) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float Strength = TESR_VolumetricLightData.x;
@@ -257,8 +271,11 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 // summed front to back; every pixel then reads the sum at its own depth. About a sixteenth of the march's shadow reads, no
 // noise to hide, so no history and no blur. The 64 slices sit in one 2D texture, 8 x 8 tiles of the grid's columns x rows
 // (D3D9 cannot draw into a 3D texture), slice z in tile (z mod 8, z / 8).
-//   5 GridLight: per cell, the share of the view the cell's lit air scatters towards the eye (the air density is the same
-//                everywhere, so the transmittance in front of it is exact: exp(-sigma * depth)).  -> Grid
+//   5 GridLight: per cell, r: the share of the view the cell's lit air scatters towards the eye (the air density is the
+//                same everywhere, so the transmittance in front of it is exact: exp(-sigma * depth)), times GridData.y to
+//                keep it in half-float range. With the fog volume on (GridData.x), also the fog's density by height (g), that
+//                times its 3D noise (b) and times the sun's shadow (a), each per unit of the grid's depth; the fog then takes
+//                its patches (b / g) and its sun shading (a / g) along each view from them.         -> Grid
 //   6 GridRow:   sums along each row of 8 tiles (slices 8r .. 8r + 7).                               Grid -> GridTemp
 //   7 GridCarry: adds the totals of the rows before.                                                 GridTemp -> Grid
 //                Slice z then holds the lit share from the eye to the far side of slice z.
@@ -276,6 +293,23 @@ float2 GridUV(float z, float2 local) {
 	return (tile * GridSize + clamp(local, 0.5, GridSize - 0.5)) * GridAtlasTexel;
 }
 
+// The fog's density by height at a camera-relative height (relative to the camera's: only ratios of it are used), as
+// VolumetricFog.fx.hlsl getHeightFog's falloff with its night and weather scaling, and HeightInfluence.
+float FogHeightWeight(float height, float nightFactor) {
+	float fogPower = lerp(1.0, TESR_FogData.w, saturate(TESR_VolumetricFogDensity.y));
+	float heightFalloff = max(0.0001, TESR_VolumetricFogShape.x) * lerp(1.0, max(0.0, TESR_VolumetricFogNight.z), nightFactor);
+	float falloff = 1.5e-4 / (fogPower * heightFalloff);
+	return lerp(1.0, exp(clamp(-falloff * height, -20.0, 10.0)), saturate(TESR_VolumetricFogScatter.w));
+}
+
+// The fog's 3D noise at a camera-relative position, as VolumetricFog.fx.hlsl ModernFogTerms reads it (wind-blown).
+float FogNoiseAt(float3 position, float nightFactor) {
+	float windSpeed = TESR_VolumetricFogWind.z * lerp(1.0, max(0.0, TESR_VolumetricFogNightScatter.y), nightFactor);
+	float3 windOffset = float3(TESR_VolumetricFogWind.xy * windSpeed * TESR_GameTime.x * 0.002, 0.0);
+	float3 noisePos = (TESR_CameraPosition.xyz + position + windOffset) / (1500.0 * max(0.0001, TESR_VolumetricFogWind.w));
+	return tex3Dlod(NVR_FogNoise, float4(noisePos / 4.0, 0.0)).g;
+}
+
 float4 GridLightPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 tile = floor(vpos / GridSize);
 	float2 cell = vpos - tile * GridSize;          // the column, 0 .. GridSize - 1
@@ -283,28 +317,37 @@ float4 GridLightPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float near = GridDepth(z), far = GridDepth(z + 1.0);
 	// Two shadow reads per cell, a quarter and three quarters of the way through it, on rays through opposite quarters
 	// of its 16 x 16 pixels: thin shadows (poles, wires) between the column centres are not missed outright.
-	float shadow = MarchShadow(toWorld((cell + 0.25) / GridSize) * lerp(near, far, 0.25)) +
-	               MarchShadow(toWorld((cell + 0.75) / GridSize) * lerp(near, far, 0.75));
+	float3 positionA = toWorld((cell + 0.25) / GridSize) * lerp(near, far, 0.25);
+	float3 positionB = toWorld((cell + 0.75) / GridSize) * lerp(near, far, 0.75);
+	float shadowA = MarchShadow(positionA), shadowB = MarchShadow(positionB);
 	float sigma = Density * length(toWorld((cell + 0.5) / GridSize));
-	return float4(0.5 * shadow * (exp(-sigma * near) - exp(-sigma * far)), 0.0, 0.0, 1.0);
+	float4 cellValue = float4(0.5 * (shadowA + shadowB) * (exp(-sigma * near) - exp(-sigma * far)) * TESR_VolumetricLightGridData.y, 0.0, 0.0, 0.0);
+	[branch] if (TESR_VolumetricLightGridData.x > 0.5) {
+		float nightFactor = TESR_VolumetricFogWeather.y * (1.0 - smoothstep(0.4, 0.8, TESR_SunAmount.x));
+		float share = 0.5 * (far - near) / MarchDistance;   // each point's share of the grid's depth
+		float hA = FogHeightWeight(positionA.z, nightFactor), hB = FogHeightWeight(positionB.z, nightFactor);
+		float nA = FogNoiseAt(positionA, nightFactor), nB = FogNoiseAt(positionB, nightFactor);
+		cellValue.gba = share * float3(hA + hB, hA * nA + hB * nB, hA * shadowA + hB * shadowB);
+	}
+	return cellValue;
 }
 
 float4 GridRowPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 tile = floor(vpos / GridSize);
 	float2 cell = vpos - tile * GridSize + 0.5;
-	float sum = 0.0;
+	float4 sum = 0.0;
 	[unroll] for (int c = 0; c < 8; c++)
-		if (c <= tile.x) sum += tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(tile.y * 8.0 + c, cell), 0, 0)).r;
-	return float4(sum, 0.0, 0.0, 1.0);
+		if (c <= tile.x) sum += tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(tile.y * 8.0 + c, cell), 0, 0));
+	return sum;
 }
 
 float4 GridCarryPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 tile = floor(vpos / GridSize);
 	float2 cell = vpos - tile * GridSize + 0.5;
-	float sum = tex2Dlod(TESR_VolumetricLightGridTemp, float4(GridUV(tile.y * 8.0 + tile.x, cell), 0, 0)).r;
+	float4 sum = tex2Dlod(TESR_VolumetricLightGridTemp, float4(GridUV(tile.y * 8.0 + tile.x, cell), 0, 0));
 	[unroll] for (int r = 0; r < 7; r++)
-		if (r < tile.y) sum += tex2Dlod(TESR_VolumetricLightGridTemp, float4(GridUV(r * 8.0 + 7.0, cell), 0, 0)).r;
-	return float4(sum, 0.0, 0.0, 1.0);
+		if (r < tile.y) sum += tex2Dlod(TESR_VolumetricLightGridTemp, float4(GridUV(r * 8.0 + 7.0, cell), 0, 0));
+	return sum;
 }
 
 float4 CompositeGridPS(VSOUT IN) : COLOR0 {
@@ -319,7 +362,7 @@ float4 CompositeGridPS(VSOUT IN) : COLOR0 {
 	float farSide = tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(z, local), 0, 0)).r;
 	float nearSide = z > 0.5 ? tex2Dlod(TESR_VolumetricLightGrid, float4(GridUV(z - 1.0, local), 0, 0)).r : 0.0;
 	float sigma = Density * length(toWorld(uv));
-	float2 air = float2(lerp(nearSide, farSide, saturate(s - z)), 1.0 - exp(-sigma * planar));
+	float2 air = float2(lerp(nearSide, farSide, saturate(s - z)) / TESR_VolumetricLightGridData.y, 1.0 - exp(-sigma * planar));
 	return CompositeAir(uv, color, air);
 }
 

@@ -18,6 +18,7 @@ void VolumetricLightEffect::UpdateSettings() {
 	Settings.BlurRadius = std::clamp(TheSettingManager->GetSettingF(section, "BlurRadius"), 0.0f, 8.0f);
 	Settings.RainStrength = std::clamp(TheSettingManager->GetSettingF(section, "RainStrength"), 0.0f, 1.0f);
 	Settings.Froxels = TheSettingManager->GetSettingI(section, "Froxels") != 0;
+	Settings.FogVolume = TheSettingManager->GetSettingI("Shaders.VolumetricFog.Main", "FogVolume") != 0;
 }
 
 void VolumetricLightEffect::RegisterConstants() {
@@ -27,6 +28,7 @@ void VolumetricLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightLayout", &Constants.Layout);
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightReproject", (D3DXVECTOR4*)&Constants.Reproject);
 	TheShaderManager->RegisterConstant("TESR_VolumetricLightGridLayout", &Constants.GridLayout);
+	TheShaderManager->RegisterConstant("TESR_VolumetricLightGridData", &Constants.GridData);
 }
 
 void VolumetricLightEffect::RegisterTextures() {
@@ -38,10 +40,10 @@ void VolumetricLightEffect::RegisterTextures() {
 	Constants.Layout = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
 
 	// UNOFFICIAL 2026-10-14 froxel grid: one column per 16 x 16 pixels, its 64 slices in 8 x 8 tiles (1280 x 720 at 1440p,
-	// 3.7 MB each). Made whatever the setting, so it can be switched on in game.
+	// 7.4 MB each). Made whatever the setting, so it can be switched on in game.
 	const UINT gw = (TheRenderManager->width + 15) / 16, gh = (TheRenderManager->height + 15) / 16;
-	TheTextureManager->InitTexture("TESR_VolumetricLightGrid", &Textures.GridTexture, &Textures.GridSurface, gw * 8, gh * 8, D3DFMT_R32F);
-	TheTextureManager->InitTexture("TESR_VolumetricLightGridTemp", &Textures.GridTempTexture, &Textures.GridTempSurface, gw * 8, gh * 8, D3DFMT_R32F);
+	TheTextureManager->InitTexture("TESR_VolumetricLightGrid", &Textures.GridTexture, &Textures.GridSurface, gw * 8, gh * 8, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("TESR_VolumetricLightGridTemp", &Textures.GridTempTexture, &Textures.GridTempSurface, gw * 8, gh * 8, D3DFMT_A16B16G16R16F);
 	Constants.GridLayout = D3DXVECTOR4((float)gw, (float)gh, 1.0f / (gw * 8), 1.0f / (gh * 8));
 }
 
@@ -66,6 +68,13 @@ void VolumetricLightEffect::UpdateConstants() {
 	Constants.Data2.y = std::lerp(n.Anisotropy, d.Anisotropy, day);
 	Constants.Data2.z = fade;
 	Constants.Data3.y = Settings.BlurRadius;
+
+	// The grid's lit share is scaled to about 1 for a view through the whole grid (the half-float grid would round the
+	// small per-cell values of thin air away), and divided back out where it is read.
+	const float depth = Constants.Data.z * Constants.Data.w;
+	Constants.GridData.y = depth > 1.0e-4f ? 1.0f / (1.0f - expf(-depth)) : 1.0f;
+	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
+	Constants.GridData.x = Settings.FogVolume && fog && fog->Enabled && !fog->IsLegacy() ? 1.0f : 0.0f;
 }
 
 bool VolumetricLightEffect::ShouldRender() {
@@ -88,7 +97,26 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 			Device->SetRenderTarget(0, target);
 			Render(Device, target, target, technique, false, target);
 		};
+		// The fog's 3D noise on stage 9 (NVR_FogNoise) while the cells are lit, for the fog volume.
+		static IDirect3DBaseTexture9* noise = nullptr;
+		static bool noiseLoaded = false;
+		if (!noiseLoaded) {
+			noiseLoaded = true;
+			noise = TheTextureManager->GetFileTexture("Data\\Textures\\Effects\\NoiseVolume.dds", TextureRecord::TextureRecordType::VolumeBuffer);
+		}
+		const bool bindNoise = Constants.GridData.x > 0.5f && noise;
+		if (bindNoise) {
+			Device->SetTexture(9, noise);
+			TheRenderManager->renderState->NoteDeviceTexture(9, noise);
+			const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP},
+				{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_LINEAR} };
+			for (const auto& s : states) TheRenderManager->SetSamplerState(9, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+		}
 		gridPass(Textures.GridSurface, 5);
+		if (bindNoise) {
+			Device->SetTexture(9, nullptr);
+			TheRenderManager->renderState->NoteDeviceTexture(9, nullptr);
+		}
 		gridPass(Textures.GridTempSurface, 6);
 		gridPass(Textures.GridSurface, 7);
 		haveHistory = false;	// the march's history is stale when it is switched back
