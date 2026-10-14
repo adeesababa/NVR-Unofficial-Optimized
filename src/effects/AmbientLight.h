@@ -19,7 +19,11 @@ public:
 	IDirect3DTexture9*	bufferTexture[2] = {};		// rgb bounce, a visibility (A16B16G16R16F), ping-pong for the blur
 	IDirect3DSurface9*	bufferSurface[2] = {};
 	bool				buffersTried = false;
-	CachedHandle		paramLayout;
+	CachedHandle		paramLayout, paramFlags;
+	// UNOFFICIAL 2026-10-14 (set by ShaderManager for one Render): apply the sun shadows in this effect's passes, their own pass
+	// skipped; shadowApplied reports that it was done.
+	bool				foldShadow = false;
+	bool				shadowApplied = false;
 
 	void	EnsureBuffers();
 	void	UpdateConstants() {};

@@ -66,6 +66,12 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
+	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
+	const bool shadow = foldShadow && flagsHandle;
+	if (flagsHandle) {
+		D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(flagsHandle, &flags);
+	}
 	static GpuTimer passTimers[5] = { GpuTimer("  Ambient light prepare (half)"), GpuTimer("  Ambient light estimate (half)"),
 		GpuTimer("  Ambient light blur X (half)"), GpuTimer("  Ambient light blur Y (half)"), GpuTimer("  Ambient light apply (full)") };
 	UINT passes = 0;
@@ -75,15 +81,15 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			// Prepare -> prep; Estimate (prep) -> 0; blur X (0) -> 1; blur Y (1) -> 0; Apply (0) -> the frame.
 			const bool apply = p == 4;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : bufferSurface[p == 2 ? 1 : 0];
-			Device->SetTexture(4, nullptr);
 			Device->SetTexture(5, nullptr);
+			Device->SetTexture(6, nullptr);
 			result = Device->SetRenderTarget(0, destination);
 			if (SUCCEEDED(result)) result = Device->SetViewport(apply ? &original : &reduced);
 			if (SUCCEEDED(result)) result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
-			if (p > 0) Device->SetTexture(4, prepTexture);
-			if (p == 2 || p == 4) Device->SetTexture(5, bufferTexture[0]);
-			else if (p == 3) Device->SetTexture(5, bufferTexture[1]);
+			if (p > 0) Device->SetTexture(5, prepTexture);
+			if (p == 2 || p == 4) Device->SetTexture(6, bufferTexture[0]);
+			else if (p == 3) Device->SetTexture(6, bufferTexture[1]);
 			Device->SetTexture(1, scene);	// TESR_SourceBuffer slot: the current image
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
@@ -94,8 +100,8 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		}
 		Effect->End();
 	}
-	Device->SetTexture(4, nullptr);
 	Device->SetTexture(5, nullptr);
+	Device->SetTexture(6, nullptr);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
 	Device->SetRenderTarget(0, RenderTarget);
 	Device->SetViewport(&original);
@@ -104,6 +110,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	if (SUCCEEDED(result)) {
 		if (chained) chain.Commit();
 		else Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
+		shadowApplied = shadow;
 	}
 	else {
 		static bool reported = false;

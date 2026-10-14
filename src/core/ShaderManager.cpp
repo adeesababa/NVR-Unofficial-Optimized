@@ -1194,11 +1194,15 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
 		Fog->CanApplyShadowAO();
 	AO->deferredReady = false;
+	// UNOFFICIAL 2026-10-14: with AmbientLight on, the sun-shadow apply goes into its passes (nothing reads the scene between them
+	// unless snow accumulates); if it does not render after all, the shadow pass runs after it (below).
+	const bool shadowIntoAmbientLight = ambientLight && shadowApplies && !composite && !pairApply && !wouldRender(Effects.SnowAccumulation) &&
+		!TheSettingManager->SettingsMain.Main.DisableCompositeApply;
 
 	{
 		GpuProfileScope gpu(shadowApplyTimer, Device);
 		if (GameState.isExterior) {
-			if (!(composite && shadowApplies) && !pairApply)
+			if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		else if (keepDarkening) {
@@ -1257,7 +1261,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// UNOFFICIAL: AO and bounce light in one pass, on the shadowed scene, where the bounce light ran.
 		static GpuTimer ambientLightTimer("Ambient light (AO + bounce)");
 		GpuProfileScope gpu(ambientLightTimer, Device);
+		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;
+		Effects.AmbientLight->shadowApplied = false;
 		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.AmbientLight->foldShadow = false;
+		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied)
+			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {

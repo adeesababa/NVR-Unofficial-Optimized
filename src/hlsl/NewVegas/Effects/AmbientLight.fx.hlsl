@@ -15,19 +15,31 @@
 // Pass 3-4 Blur (half): depth-aware, horizontal then vertical, all four channels.
 // Pass 5 Apply (full): depth-aware upsample; the scene darkened by the occlusion (less on bright surfaces, as the old AO) and the
 //        bounce added, tinted by the surface's own hue (as BounceLight: there is no albedo buffer).
+//
+// UNOFFICIAL 2026-10-14 cheaper: outdoors, the sun-shadow apply (ShadowsExteriors.fx.hlsl, a full-resolution pass of its own while
+// this effect is on) is done here instead (NVR_ALFlags.x): in Apply before the occlusion, and in Prepare on the colour the bounce
+// light is gathered from, so both see the scene as they did after that pass. The blurs and the apply take their depths from the
+// depth buffer (4 bytes a read) instead of the 16-byte prepared texel.
 
 float4 TESR_AmbientLightData;   // x: radius (world units), y: occlusion strength, z: bounce strength, w: draw distance
 float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-1), y: brightness above which it fades, z: blur radius (half-res texels per tap), w: debug view (1 occlusion, 2 bounce)
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
+float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass)
+float4 TESR_WaterSettings;      // x: water height, z: camera underwater
+float4 TESR_ShadowData;         // y: darkness
+float4 TESR_ShadowFade;         // x: fading at sunrise/sunset, z: point light shadows
+float4 TESR_SkyColor;
+float4 TESR_SunAmbient;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_SourceBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D TESR_NormalsBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_BlueNoiseSampler : register(s3) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_PointShadowBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 // Bound by AmbientLight.cpp per pass (not TESR_ samplers: those bind by their order in the file). After the TESR_ ones.
-sampler2D NVR_ALPrep : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
-sampler2D NVR_ALBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_ALPrep : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_ALBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 static const float Radius = max(TESR_AmbientLightData.x, 1.0f);
 static const float OcclusionStrength = TESR_AmbientLightData.y;
@@ -54,6 +66,27 @@ VSOUT FrameVS(VSIN IN) {
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
+#include "Includes/Normals.hlsl"
+
+// ShadowsExteriors.fx.hlsl Shadow() on a gamma-encoded colour (the same maths as VolumetricFog.fx.hlsl CompositeSunShadow).
+float3 SunShadowApply(float3 color, float2 uv) {
+	[branch] if (TESR_WaterSettings.z == 1) {
+		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * readDepthLod(uv);
+		if (worldPos.z < (TESR_WaterSettings.x + 2) && worldPos.z > (TESR_WaterSettings.x - 2) && dot(GetWorldNormalLod(uv), float3(0, 0, -1)) > 0.999)
+			return color;
+	}
+	float darkness = max(0.0, 1 - TESR_ShadowData.y);
+	float2 shadow = tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0, 0)).rg;
+	shadow.r = lerp(TESR_ShadowFade.x, 1.0f, shadow.r);
+	float ambient = lerp(1, luma(TESR_SunAmbient), darkness * TESR_ShadowFade.z);
+	shadow.r = lerp(0, ambient, shadow.r);
+	shadow.r += shadow.g;
+	shadow.r = saturate(lerp(darkness, 1.0, shadow.r));
+	float3 linearColor = pows(color, 2.2);
+	float3 colorShadow = luma(linearColor) * shadow.r * pows(TESR_SkyColor.rgb, 2.2);
+	colorShadow = lerp(colorShadow, linearColor * shadow.r, saturate(shadow.r + 0.5));
+	return pows(max(0.0, colorShadow), 1.0 / 2.2);
+}
 
 // View-space position (x right, y up, z forward, world units) from a screen position and the linear depth (view z / far z).
 float3 PositionFromLinear(float2 uv, float linear01) {
@@ -90,7 +123,9 @@ float4 Prepare(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
 	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
-	float3 light = min(linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb), 1.0f);
+	float3 source = tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb;
+	[branch] if (NVR_ALFlags.x > 0.5f) source = SunShadowApply(source, uv);
+	float3 light = min(linearize(source), 1.0f);
 	return float4(viewZ, Pack2(OctEncode(normal)), Pack2(sqrt(light.rg)), light.b);
 }
 
@@ -182,7 +217,7 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 
 // Passes 3-4: depth-aware blur, 7 taps along axis (half-resolution texels apart x BlurStep).
 float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
-	float depth = tex2Dlod(NVR_ALPrep, float4(IN.UVCoord, 0.0f, 0.0f)).x;
+	float depth = readDepthLod(IN.UVCoord);
 	float tolerance = max(depth * 0.03f, 2.0f);
 	static const float weights[4] = { 0.30f, 0.23f, 0.11f, 0.05f };
 	float4 sum = tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f)) * weights[0];
@@ -190,7 +225,7 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	[unroll] for (int i = 1; i < 4; i++) {
 		[unroll] for (int side = -1; side <= 1; side += 2) {
 			float2 tapUV = IN.UVCoord + axis * NVR_ALLayout.zw * (i * side * BlurStep);
-			float tapDepth = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)).x;
+			float tapDepth = readDepthLod(tapUV);
 			float w = weights[i] * saturate(1.0f - abs(tapDepth - depth) / tolerance);
 			sum += tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)) * w;
 			total += w;
@@ -202,6 +237,7 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 // Pass 5: upsample and apply.
 float4 Apply(VSOUT IN) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
+	[branch] if (NVR_ALFlags.x > 0.5f) color = float4(SunShadowApply(color.rgb, IN.UVCoord), 1.0f);
 	float depth = readDepth(IN.UVCoord);
 	[branch] if (depth < NearFade || depth > DrawDistance) return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
 
@@ -215,7 +251,7 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
 			float2 tapUV = (base + float2(x, y) + 0.5f) * NVR_ALLayout.zw;
-			float tapDepth = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)).x;
+			float tapDepth = readDepthLod(tapUV);
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0f + abs(tapDepth - depth) / tolerance;
 			sum += tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)) * weight;
