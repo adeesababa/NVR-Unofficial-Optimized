@@ -500,6 +500,23 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		~NoiseBinding() { device->SetTexture(9, nullptr); TheRenderManager->renderState->NoteDeviceTexture(9, nullptr); }
 	} noiseBinding(Device, noise);
 
+	// UNOFFICIAL physical sky (VolumetricFog.fx.hlsl PhysicalFogSky): the sky's table on stage 10 (NVR_FogSkyView) while it is
+	// drawn this frame; taken off again when this returns.
+	struct SkyViewBinding {
+		IDirect3DDevice9* device; bool bound;
+		SkyViewBinding(IDirect3DDevice9* d) : device(d), bound(false) {
+			SkyViewEffect* table = TheShaderManager->Effects.SkyView;
+			if (!table || !table->Textures.TableTexture || !table->ShouldRender()) return;
+			bound = true;
+			device->SetTexture(10, table->Textures.TableTexture);
+			TheRenderManager->renderState->NoteDeviceTexture(10, table->Textures.TableTexture);
+			const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+				{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+			for (const auto& s : states) TheRenderManager->SetSamplerState(10, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+		}
+		~SkyViewBinding() { if (bound) { device->SetTexture(10, nullptr); TheRenderManager->renderState->NoteDeviceTexture(10, nullptr); } }
+	} skyViewBinding(Device);
+
 	{
 		auto timer = TimeLogger();
 		if (RenderDedicated(Device, RenderTarget, RenderedSurface)) {

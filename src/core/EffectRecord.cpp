@@ -79,10 +79,13 @@ bool EffectRecord::LoadEffect() {
 	// Effects get the same compile-time defines the game shaders do. Only the PREPROCESS call
 	// needs them -- D3DXCreateEffectCompiler below is handed the already-preprocessed source.
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
-	D3DXMACRO EffectMacros[3];
+	D3DXMACRO EffectMacros[4];
 	int macroCount = 0;
 	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
+	// UNOFFICIAL physical sky (VolumetricFog.fx.hlsl): compiled in only when on at startup.
+	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
+		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
 	if (TheRenderManager->IsReversedDepth())
 		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
 	EffectMacros[macroCount] = { NULL, NULL };

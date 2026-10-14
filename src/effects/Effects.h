@@ -3,6 +3,7 @@
 #include "AmbientOcclusion.h"
 #include "ShadowsExterior.h"
 #include "AvgLuma.h"
+#include "SkyView.h"
 #include "BloodLens.h"
 #include "Bloom.h"
 #include "BloomLegacy.h"

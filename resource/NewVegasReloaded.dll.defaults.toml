@@ -1280,6 +1280,12 @@ SunsetB = 0.03                      # Color boost for sunset/sunrise sun color (
 StarTwinkle = 1.0                   # Speed of the star twinkling
 
 
+[_Shaders.Sky.Physical]
+Enabled = false                     # UNOFFICIAL: a physical sky. The sky's colours come from the air itself (blue overhead, pale near the horizon, a bright glow round the sun, red and gold as it sets) instead of the weather's painted gradient. The weather still sets how bright the sky is, and WeatherTint keeps some of its colour; the game's own twilight and night sky take over once the sun is down. The sky light on objects follows the sky on screen. Switching it on or off needs a restart (off, the sky shader is exactly as before).
+Brightness = 1.0                    # [0.0-4.0] Brightness against the weather's sky (1 = the same overall brightness).
+WeatherTint = 0.35                  # [0.0-1.0] How much of the weather's own sky colour to keep (0 = the air's colours only, 1 = the weather's colours with the air's light and shade).
+Haze = 1.0                          # [0.0-10.0] Dust and haze in the air: a wider, whiter glow round the sun and a paler horizon. Desert air is dusty: 1.5-3 looks hazier.
+
 [_Shaders.Sky.Clouds]
 UseNormals = false                  # EXPERIMENTAL-Uses the R & G channels of the clouds texture to calculate normals for lighting. Requires special textures
 SphericalNormals = false            # EXPERIMENTAL-Uses this setting if the normals of the clouds point to the center of the panoramic texture

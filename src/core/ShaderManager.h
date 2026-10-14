@@ -140,6 +140,7 @@ public:
 	struct	EffectsStruct {
 		AmbientOcclusionEffect*	AmbientOcclusion;
 		AvgLumaEffect*			AvgLuma;
+		SkyViewEffect*			SkyView;	// UNOFFICIAL: the physical sky's table ([Shaders.Sky.Physical])
 		BloodLensEffect*		BloodLens;
 		BloomEffect*			Bloom;
 		BloomLegacyEffect*		BloomLegacy;

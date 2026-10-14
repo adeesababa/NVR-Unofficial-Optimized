@@ -24,13 +24,19 @@ public:
 		// Order-2 spherical harmonic irradiance for the sky, for the ambient in the lighting
 		// shaders. 9 coefficients, already convolved with the clamped-cosine kernel.
 		D3DXVECTOR4		Irradiance[9];
+		// UNOFFICIAL physical sky (SKY.pso.hlsl, Includes/Atmosphere.hlsl): x share, y brightness, z weather tint, w haze
+		D3DXVECTOR4		PhysSky = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 1.0f);
+		D3DXVECTOR4		PhysSkySun = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);	// xyz: the sun's real direction
 	};
+	// UNOFFICIAL [Shaders.Sky.Physical]
+	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; };
+	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f };
 	SkyStruct Constants;
 	bool useSunDiskColor;
 	// UNOFFICIAL: the spherical-harmonic projection in UpdateConstants (512 samples of the sky model, and UpdateConstants
 	// runs twice a frame) is redone only when something it reads has changed: these are the last run's inputs. The sun's
 	// direction counts as changed when it has turned by more than a tenth of a degree (it creeps every frame outdoors).
-	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor; float sunAmount, saturation; };
+	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; };
 	ProjectionInputs lastProjection = {};
 	bool lastProjectionValid = false;
 

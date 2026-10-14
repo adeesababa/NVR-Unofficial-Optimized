@@ -8,6 +8,69 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudVolumeLight", &Constants.CloudVolumeLight);
 	TheShaderManager->RegisterConstant("TESR_SunsetColor", &Constants.SunsetColor);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradiance", &Constants.Irradiance[0]);
+	TheShaderManager->RegisterConstant("TESR_PhysSky", &Constants.PhysSky);
+	TheShaderManager->RegisterConstant("TESR_PhysSkySun", &Constants.PhysSkySun);
+}
+
+// UNOFFICIAL 2026-10-14 physical sky: Effects/Includes/Atmosphere.hlsl AtmSky, line for line (see there). Kept in step by
+// hand, like EvalSky above: change one and change the other.
+namespace PhysAtmosphere {
+	static const float Ground = 6360000.0f, Top = 6460000.0f;
+	static const D3DXVECTOR3 Rayleigh(5.802e-6f, 13.558e-6f, 33.1e-6f);
+	static const float RayleighH = 8000.0f, MieScatter = 3.996e-6f, MieExtinct = 4.44e-6f, MieH = 1200.0f, MieG = 0.8f;
+	static const D3DXVECTOR3 Ozone(0.650e-6f, 1.881e-6f, 0.085e-6f);
+	static const float OzoneColumn = 15000.0f, Pi = 3.14159265f;
+
+	static float Chapman(float X, float h, float cosChi) {
+		const float c = sqrtf(X + h);
+		if (cosChi >= 0.0f) return c / (c * cosChi + 1.0f) * exp2f(-h);
+		const float x0 = sqrtf(1.0f - cosChi * cosChi) * (X + h);
+		return 2.0f * sqrtf(x0) * exp2f((std::min)(X - x0, 120.0f)) - c / (1.0f - c * cosChi) * exp2f(-h);
+	}
+
+	static D3DXVECTOR3 Exp(const D3DXVECTOR3& v) { return D3DXVECTOR3(expf(v.x), expf(v.y), expf(v.z)); }
+	static D3DXVECTOR3 Mul(const D3DXVECTOR3& a, const D3DXVECTOR3& b) { return D3DXVECTOR3(a.x * b.x, a.y * b.y, a.z * b.z); }
+
+	static D3DXVECTOR3 SunDepth(float r, float cosChi, float haze) {
+		const float alt = r - Ground, hR = RayleighH * 0.693147f, hM = MieH * 0.693147f;
+		const float chR = Chapman(Ground / hR, alt / hR, cosChi), chM = Chapman(Ground / hM, alt / hM, cosChi);
+		const float airmass = chR / (std::max)(expf(-alt / RayleighH), 1e-6f);
+		const float mie = MieExtinct * haze * MieH * chM;
+		return Rayleigh * (RayleighH * chR) + D3DXVECTOR3(mie, mie, mie) + Ozone * (OzoneColumn * airmass);
+	}
+
+	static D3DXVECTOR3 Radiance(const D3DXVECTOR3& dir, const D3DXVECTOR3& sunDir, float camAlt, float haze) {
+		const float r0 = Ground + camAlt, mu = dir.z;
+		float tMax = -r0 * mu + sqrtf((std::max)(r0 * r0 * (mu * mu - 1.0f) + Top * Top, 0.0f));
+		const float discGround = r0 * r0 * (mu * mu - 1.0f) + Ground * Ground;
+		if (mu < 0.0f && discGround >= 0.0f) tMax = -r0 * mu - sqrtf(discGround);
+		const float nu = D3DXVec3Dot(&dir, &sunDir);
+		const float phaseR = 3.0f / (16.0f * Pi) * (1.0f + nu * nu);
+		const float g2 = MieG * MieG;
+		const float phaseM = 3.0f / (8.0f * Pi) * ((1.0f - g2) * (1.0f + nu * nu)) / ((2.0f + g2) * powf((std::max)(1.0f + g2 - 2.0f * MieG * nu, 1e-4f), 1.5f));
+		D3DXVECTOR3 depth(0.0f, 0.0f, 0.0f), sumR(0.0f, 0.0f, 0.0f), sumM(0.0f, 0.0f, 0.0f);
+		for (int i = 0; i < 12; i++) {
+			const float s0 = i / 12.0f, s1 = (i + 1) / 12.0f, t0 = tMax * s0 * s0, t1 = tMax * s1 * s1, dt = t1 - t0;
+			const D3DXVECTOR3 p = D3DXVECTOR3(0.0f, 0.0f, r0) + dir * (0.5f * (t0 + t1));
+			const float r = D3DXVec3Length(&p), alt = r - Ground;
+			const float dR = expf(-alt / RayleighH), dM = expf(-alt / MieH), dO = (std::max)(0.0f, 1.0f - fabsf(alt - 25000.0f) / 15000.0f);
+			const float mie = MieExtinct * haze * dM;
+			const D3DXVECTOR3 ext = Rayleigh * dR + D3DXVECTOR3(mie, mie, mie) + Ozone * dO;
+			const D3DXVECTOR3 T = Exp(-(depth + ext * (0.5f * dt) + SunDepth(r, D3DXVec3Dot(&p, &sunDir) / r, haze)));
+			sumR += T * (dR * dt);
+			sumM += T * (dM * dt);
+			depth += ext * dt;
+		}
+		return Mul(sumR, Rayleigh) * phaseR + sumM * (MieScatter * haze * phaseM);
+	}
+
+	static float Luma(const D3DXVECTOR3& c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; }
+
+	// SKY.pso.hlsl's blend of the game's sky colour with the physical one (phys already scaled to the weather's brightness).
+	static D3DXVECTOR3 Blend(const D3DXVECTOR3& game, const D3DXVECTOR3& phys, const D3DXVECTOR4& physSky) {
+		const D3DXVECTOR3 tinted = phys + (game * (Luma(phys) / (std::max)(Luma(game), 1e-6f)) - phys) * physSky.z;
+		return game + (tinted - game) * physSky.x;
+	}
 }
 
 // Mirrors GetSunColor / GetSkyColor in Shaders/Includes/Sky.hlsl. Kept in step by hand: the
@@ -74,8 +137,10 @@ void SkyShaders::UpdateConstants() {
 		PBRShaders* pbrForKey = TheShaderManager->Shaders.PBR;
 		ProjectionInputs inputs = { TheShaderManager->ShaderConst.SunPosition, TheShaderManager->ShaderConst.skyColor,
 			TheShaderManager->ShaderConst.skyLowColor, TheShaderManager->ShaderConst.horizonColor, Constants.SkyData,
-			TheShaderManager->ShaderConst.sunDiskColor, Constants.SunsetColor, TheShaderManager->ShaderConst.SunAmount.x,
-			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f };
+			TheShaderManager->ShaderConst.sunDiskColor, Constants.SunsetColor,
+			D3DXVECTOR4(PhysicalSettings.Enabled ? 1.0f : 0.0f, PhysicalSettings.Brightness, PhysicalSettings.WeatherTint, PhysicalSettings.Haze),
+			TheShaderManager->ShaderConst.SunAmount.x,
+			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f };
 		inputs.sunsetColor.w = 0.0f;	// only rgb is read below
 		const bool sunStill = lastProjectionValid &&
 			inputs.sunPos.x * lastProjection.sunPos.x + inputs.sunPos.y * lastProjection.sunPos.y + inputs.sunPos.z * lastProjection.sunPos.z >= 0.9999985f;
@@ -109,6 +174,48 @@ void SkyShaders::UpdateConstants() {
 	D3DXVECTOR3 sh[9];
 	for (int i = 0; i < 9; i++) sh[i] = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 
+	// UNOFFICIAL physical sky ([Shaders.Sky.Physical]): its share fades in from just below the horizon to just above it,
+	// so the game's own twilight and night stay; outdoors only. Its brightness is matched to the weather's sky: the
+	// average luminance over the dome, both measured on the same samples as the projection below, which then projects
+	// the blend that SKY.pso shows, so the sky light on objects comes from the sky on screen.
+	{
+		D3DXVECTOR3 realSun(sunPos.x, sunPos.y, sunPos.z);
+		if (!(TheShaderManager->GameState.isExterior && TheShaderManager->GameState.dayLight > 0.5f)) realSun.z = -realSun.z;	// ShaderManager turns it upward
+		float share = std::clamp((realSun.z + 0.05f) / 0.1f, 0.0f, 1.0f);
+		share = share * share * (3.0f - 2.0f * share);
+		if (!PhysicalSettings.Enabled || !TheShaderManager->GameState.isExterior) share = 0.0f;
+		Constants.PhysSky = D3DXVECTOR4(share, 1.0f, PhysicalSettings.WeatherTint, PhysicalSettings.Haze);
+		Constants.PhysSkySun = D3DXVECTOR4(realSun.x, realSun.y, realSun.z, 0.0f);
+	}
+	const bool physical = Constants.PhysSky.x > 0.0f;
+	// The air is worked out on a grid half as fine each way (one sample per 2 x 2 of the projection's: 128 rays of 12 steps,
+	// about a quarter of a millisecond, redone only when the sun has moved or a setting changed); plenty for the brightness
+	// match and the smooth sky light.
+	static D3DXVECTOR3 physSamples[(16 / 2) * (32 / 2)];
+	if (physical) {
+		const D3DXVECTOR3 realSun(Constants.PhysSkySun.x, Constants.PhysSkySun.y, Constants.PhysSkySun.z);
+		for (int i = 0; i < STEPS_T / 2; i++) {
+			const float theta = (2 * i + 1) * dTheta, st = sinf(theta), ct = cosf(theta);
+			for (int j = 0; j < STEPS_P / 2; j++) {
+				const float phi = (2 * j + 1) * dPhi;
+				D3DXVECTOR3 physDir(st * cosf(phi), st * sinf(phi), (std::max)(ct, 0.002f));
+				D3DXVec3Normalize(&physDir, &physDir);
+				physSamples[i * (STEPS_P / 2) + j] = PhysAtmosphere::Radiance(physDir, realSun, 300.0f, PhysicalSettings.Haze);
+			}
+		}
+		float gameSum = 0.0f, physSum = 0.0f;
+		for (int i = 0; i < STEPS_T; i++) {
+			const float theta = (i + 0.5f) * dTheta, st = sinf(theta), ct = cosf(theta), dOmega = st * dTheta * dPhi;
+			for (int j = 0; j < STEPS_P; j++) {
+				const float phi = (j + 0.5f) * dPhi;
+				const D3DXVECTOR3 d(st * cosf(phi), st * sinf(phi), ct);
+				physSum += PhysAtmosphere::Luma(physSamples[(i / 2) * (STEPS_P / 2) + j / 2]) * dOmega;
+				gameSum += PhysAtmosphere::Luma(EvalSky(d, sunPos, Constants.SkyData, skyC, skyLowC, horizonC, sunColor, sunHeight, isDayTime)) * dOmega;
+			}
+		}
+		Constants.PhysSky.y = physSum > 1e-12f ? PhysicalSettings.Brightness * gameSum / physSum : 0.0f;
+	}
+
 	for (int i = 0; i < STEPS_T; i++) {
 		float theta = (i + 0.5f) * dTheta;
 		float st = sinf(theta), ct = cosf(theta);
@@ -123,7 +230,9 @@ void SkyShaders::UpdateConstants() {
 			// the widest range of sky and a concave curve pulls an average of spread values
 			// down hardest.
 			D3DXVECTOR3 L = EvalSky(d, sunPos, Constants.SkyData, skyC, skyLowC, horizonC,
-				sunColor, sunHeight, isDayTime) * dOmega;
+				sunColor, sunHeight, isDayTime);
+			if (physical) L = PhysAtmosphere::Blend(L, physSamples[(i / 2) * (STEPS_P / 2) + j / 2] * Constants.PhysSky.y, Constants.PhysSky);	// UNOFFICIAL physical sky
+			L *= dOmega;
 
 			sh[0] += L * 0.282095f;
 			sh[1] += L * (0.488603f * d.y);
@@ -178,6 +287,13 @@ void SkyShaders::UpdateSettings() {
 	Constants.CloudData.w = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Brightness");
 
 	Constants.CloudData.y = TheSettingManager->GetSettingF("Shaders.Sky.Main", "StarTwinkle");
+
+	// UNOFFICIAL physical sky (Effects/Includes/Atmosphere.hlsl). Enabled is read at startup too (ShaderRecord compiles it in).
+	PhysicalSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") != 0;
+	PhysicalSettings.Brightness = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Brightness"), 0.0f, 4.0f);
+	PhysicalSettings.WeatherTint = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "WeatherTint"), 0.0f, 1.0f);
+	PhysicalSettings.Haze = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Haze"), 0.0f, 10.0f);
+	lastProjectionValid = false;
 
 	// UNOFFICIAL (from Physically-Based-Reloaded, Fable): volumetric clouds (SKYTEX.pso.hlsl). DetailScale and UVScale
 	// are entered per 1000 game units (the menu cannot show values as small as 1 / 40000); the shader wants them per unit.

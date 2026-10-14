@@ -154,6 +154,30 @@ static const float FogSkyColorCoeff = 6.0;
 #include "Includes/Sky.hlsl"
 #include "Includes/Normals.hlsl"
 
+// UNOFFICIAL 2026-10-14 physical sky ([Shaders.Sky.Physical], Effects/SkyView.fx.hlsl, Sky.cpp): the fog takes the sky colour it
+// fades toward from the physical sky in the direction it is seen, as SKY.pso shows the sky itself, so fog and sky agree (a
+// weather whose fog covers the whole dome would otherwise hide the physical sky entirely). Compiled in only when on at
+// startup (PHYSICAL_SKY_ON, EffectRecord::LoadEffect). The sky's table is bound by hand on stage 10 (VolumetricFog.cpp):
+// it is not a TESR_ sampler, as TESR_ samplers bind by their order in the file.
+#ifndef PHYSICAL_SKY_ON
+    #define PHYSICAL_SKY_ON 0
+#endif
+#if PHYSICAL_SKY_ON
+float4 TESR_PhysSky;        // x: share of the physical sky, y: brightness, z: weather tint, w: haze
+float4 TESR_PhysSkySun;     // xyz: the sun's real direction
+sampler2D NVR_FogSkyView : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+// SKY.pso.hlsl's blend for the direction dir, over the game's sky colour gameSky (already at the sky's strength).
+float3 PhysicalFogSky(float3 dir, float3 gameSky) {
+    float horizontal = length(dir.xy), sunHorizontal = length(TESR_PhysSkySun.xy);
+    float cosBearing = (horizontal > 1e-4f && sunHorizontal > 1e-4f) ? dot(dir.xy, TESR_PhysSkySun.xy) / (horizontal * sunHorizontal) : 1.0f;
+    float2 tableUV = float2(acos(clamp(cosBearing, -1.0f, 1.0f)) / 3.14159265f, sqrt(asin(saturate(dir.z)) / 1.57079633f));
+    float3 phys = tex2Dlod(NVR_FogSkyView, float4(tableUV, 0.0f, 0.0f)).rgb * (0.001f * TESR_PhysSky.y * TESR_SunsetColor.w);
+    float3 weatherHue = gameSky / max(luma(gameSky), 1e-6f);
+    return lerp(gameSky, lerp(phys, luma(phys) * weatherHue, TESR_PhysSky.z), TESR_PhysSky.x);
+}
+#endif
+
 struct VSOUT
 {
 	float4 vertPos : POSITION;
@@ -519,6 +543,9 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		sunColor *= isDayTime * LegacyIsExterior;
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+#if PHYSICAL_SKY_ON
+		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
+#endif
 
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
 		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
@@ -681,6 +708,9 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		sunColorV *= isDayTime * isExterior;
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+#if PHYSICAL_SKY_ON
+		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
+#endif
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);

@@ -49,6 +49,7 @@ void ShaderManager::Initialize() {
 
 	// initializing the list of effect names
 	TheShaderManager->RegisterEffect<AvgLumaEffect>(&TheShaderManager->Effects.AvgLuma);
+	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
 	TheShaderManager->RegisterEffect<AmbientOcclusionEffect>(&TheShaderManager->Effects.AmbientOcclusion);
 	TheShaderManager->RegisterEffect<BloodLensEffect>(&TheShaderManager->Effects.BloodLens);
 	TheShaderManager->RegisterEffect<BloomEffect>(&TheShaderManager->Effects.Bloom);
@@ -1155,6 +1156,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
 	// UNOFFICIAL, optional: volumetric clouds over the sky (VolumetricClouds.h). First, so the shadow and AO applies and
 	// the fog all see them as part of the sky, and the composite apply below is not affected.
+	// UNOFFICIAL physical sky: its table for the sky shader (read next frame), first, so the clouds can use it this frame too.
+	if (Effects.SkyView && Effects.SkyView->ShouldRender()) {
+		static GpuTimer skyViewTimer("Physical sky table");
+		GpuProfileScope gpu(skyViewTimer, Device);
+		Effects.SkyView->RenderTable(Device, RenderTarget);
+	}
 	if (wouldRender(Effects.VolumetricClouds)) {
 		GpuProfileScope gpu(cloudsTimer, Device);
 		Effects.VolumetricClouds->RenderClouds(Device, RenderTarget, TheTextureManager->RenderedSurface, SourceSurface);
