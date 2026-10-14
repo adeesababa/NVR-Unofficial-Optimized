@@ -661,7 +661,11 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // UNOFFICIAL 2026-10-14: in a cascade's outer band each point takes this cascade or the next by a fine dither (share = fade)
     // instead of looking both up and blending: two inlined lookups put 30 of the 55 outdoor object shaders over ps_3_0's 32 temp
     // registers with PCSS on, and the game silently drew those objects with its own shaders. Past the Lod cascade: unshadowed.
-    float dither = frac(52.9829189f * frac(dot(worldPos, float3(0.0671106f, 0.00583715f, 0.0437f))));
+    // A random number per point (a sin-free hash, fine-grained: a new value every ~0.15 units). Not the screen dither formula on
+    // world positions: that made diagonal stripes across the band (user: lines over the power armour).
+    float3 hashP = frac(worldPos * 7.1031f);
+    hashP += dot(hashP, hashP.yzx + 33.33f);
+    float dither = frac((hashP.x + hashP.y) * hashP.z);
     cascade += fade > dither ? 1.0f : 0.0f;
     float shadow = 1.0f;
     [branch] if (cascade >= 0.0f && cascade < 3.5f)
