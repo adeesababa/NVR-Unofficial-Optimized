@@ -1332,6 +1332,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 	}
+	// UNOFFICIAL 2026-10-14 froxel grid ([Shaders.VolumetricLight.Main] Froxels): the volumetric light's grid is built before
+	// the fog, which reads it (its sunlight shaded along the view) and does the volumetric light's composite in its own last
+	// pass; the volumetric light below then only draws its composite if the fog could not.
+	const bool lightGrid = Effects.VolumetricLight->CompositeTechnique() == 8 && wouldRender(Effects.VolumetricLight);
+	if (lightGrid) {
+		Effects.VolumetricLight->RenderBuffers(Device);
+		Device->SetRenderTarget(0, RenderTarget);
+	}
+	Fog->gridTexture = lightGrid ? Effects.VolumetricLight->Textures.GridTexture : nullptr;
+	Fog->gridApplied = false;
 	{
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
@@ -1358,11 +1368,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// UNOFFICIAL: volumetric sun light, after the fog (it darkens the fog's evenly lit air where the sun is shaded).
 		// The half-resolution march, history and blur into the effect's own buffers, then the composite in the chain.
 		GpuProfileScope gpu(volumetricLightTimer, Device);
-		if (wouldRender(Effects.VolumetricLight)) {
+		if (lightGrid) {
+			if (!Fog->gridApplied)
+				Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 8, false, SourceSurface);
+		}
+		else if (wouldRender(Effects.VolumetricLight)) {
 			Effects.VolumetricLight->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 			Effects.VolumetricLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.VolumetricLight->CompositeTechnique(), false, SourceSurface);
 		}
+		Fog->gridTexture = nullptr;
 	}
 	{
 		// UNOFFICIAL (from Physically-Based-Reloaded, Fable): dust storms, in HDR before exposure and bloom, so the dust is

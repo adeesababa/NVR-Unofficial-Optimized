@@ -178,6 +178,47 @@ float3 PhysicalFogSky(float3 dir, float3 gameSky) {
 }
 #endif
 
+// UNOFFICIAL 2026-10-14 froxel grid ([Shaders.VolumetricLight.Main] Froxels, VolumetricLight.fx.hlsl): when the volumetric
+// light's grid is built this frame it is bound here by hand on stage 11 (VolumetricFog.cpp; not a TESR_ sampler, for the
+// reason above). Then (NVR_FogGridFlags) x: the fog's sunlight is shaded by the share of the air along the view that the
+// sun reaches, read from the grid, instead of by the shadow at the far end of the view (four cascade reads), and y: the
+// volumetric light's composite is done here, after the fog, instead of in a full-resolution pass of its own.
+float4 NVR_FogGridFlags;
+float4 TESR_VolumetricLightData;       // x: strength, y: shade darkening, z: air density per game unit, w: march distance
+float4 TESR_VolumetricLightData2;      // y: phase asymmetry g, z: fade (shadows on, rain)
+float4 TESR_VolumetricLightGridLayout; // xy: grid columns and rows, zw: one atlas texel in UV
+sampler2D NVR_FogGrid : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+// As VolumetricLight.fx.hlsl CompositeGridPS: x the share of the view the lit air scatters towards the eye, y the same if
+// all the air were lit, out to the planar depth given (the sky's: the march distance).
+float2 FogGridAir(float2 uv, float depth) {
+	float marchDistance = TESR_VolumetricLightData.w;
+	float planar = depth >= farZ * 0.996 ? marchDistance : min(depth, marchDistance);
+	float s = sqrt(planar / marchDistance) * 64.0;
+	float z = min(floor(s), 63.0);
+	float2 gridSize = TESR_VolumetricLightGridLayout.xy;
+	float2 local = clamp(uv * gridSize, 0.5, gridSize - 0.5);
+	float2 farTile = float2(fmod(z, 8.0), floor(z / 8.0));
+	float2 nearTile = float2(fmod(z - 1.0, 8.0), floor((z - 1.0) / 8.0));
+	float farSide = tex2Dlod(NVR_FogGrid, float4((farTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0)).r;
+	float nearSide = z > 0.5 ? tex2Dlod(NVR_FogGrid, float4((nearTile * gridSize + local) * TESR_VolumetricLightGridLayout.zw, 0, 0)).r : 0.0;
+	float sigma = TESR_VolumetricLightData.z * length(toWorld(uv));
+	return float2(lerp(nearSide, farSide, saturate(s - z)), 1.0 - exp(-sigma * planar));
+}
+
+// The volumetric light's composite (VolumetricLight.fx.hlsl CompositeAir) on a gamma-encoded colour.
+float3 FogGridLight(float3 gammaColor, float2 uv) {
+	float2 air = FogGridAir(uv, readDepthLod(uv));
+	float cosTheta = dot(normalize(toWorld(uv)), TESR_SmoothedSunDir.xyz);
+	float g = TESR_VolumetricLightData2.y;
+	float phase = min((1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosTheta, 1.0e-4), 1.5), 8.0);
+	float fade = TESR_VolumetricLightData2.z;
+	float3 lin = linearize(max(gammaColor, 0.0));
+	float shadedAir = saturate(air.y - air.x);
+	lin = lin * (1.0 - TESR_VolumetricLightData.y * fade * shadedAir) + linearize(TESR_SunColor.rgb) * (TESR_VolumetricLightData.x * fade * phase * air.x);
+	return delinearize(max(lin, 0.0));
+}
+
 struct VSOUT
 {
 	float4 vertPos : POSITION;
@@ -687,11 +728,18 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	float strength = max(0, nvrDensity + WeatherImpact * vanillaStrength);
 
 	// ---- shadow-coupled sun in-scattering, sampled once per pixel at the fog's terminating point ----
-	float3 worldNormal = GetWorldNormalLod(IN.UVCoord);
 	float shadowVisibility = 1.0;
 	[branch]
 	if (isExterior > 0.5 && ShadowStrength > 0.0 && TESR_ShadowFade.y > 0.5) {
-		shadowVisibility = lerp(1.0, GetFogShadowVisibility(float4(worldPos, 1.0), worldNormal), ShadowStrength);
+		[branch] if (NVR_FogGridFlags.x > 0.5) {
+			// UNOFFICIAL froxel grid: the sun's share of the air along the view (see FogGridAir).
+			float2 air = FogGridAir(IN.UVCoord, depth);
+			shadowVisibility = lerp(1.0, air.y > 1.0e-6 ? saturate(air.x / air.y) : 1.0, ShadowStrength);
+		}
+		else {
+			float3 worldNormal = GetWorldNormalLod(IN.UVCoord);
+			shadowVisibility = lerp(1.0, GetFogShadowVisibility(float4(worldPos, 1.0), worldNormal), ShadowStrength);
+		}
 	}
 
 	// default values used by interiors
@@ -1010,7 +1058,9 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy)
 
 float4 DedicatedFogCombine(VSOUT IN, uniform bool legacy) : COLOR0
 {
-	return float4(FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy), 1);
+	float3 color = FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy);
+	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
+	return float4(color, 1);
 }
 
 // ---- Composite apply: exterior sun shadows and AO folded into the fog reconstruct ----
@@ -1086,7 +1136,9 @@ float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy) : COLOR0
 	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	return float4(FogApply(color, IN.UVCoord, legacy), 1);
+	color = FogApply(color, IN.UVCoord, legacy);
+	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
+	return float4(color, 1);
 }
 
 technique DedicatedFog

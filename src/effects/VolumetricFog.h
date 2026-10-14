@@ -74,6 +74,11 @@ public:
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
 	bool	compositeApplied = false;
+	// UNOFFICIAL 2026-10-14 froxel grid (set by ShaderManager for the frame): the volumetric light's grid, read by the dedicated
+	// path on stage 11 (NVR_FogGrid); gridApplied reports that the volumetric light's composite was done in the fog's pass.
+	IDirect3DTexture9* gridTexture = nullptr;
+	bool	gridApplied = false;
+	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
 	// The shadow and AO applies in one pass of their own (technique ApplyShadowAO), for frames where effects between them
 	// and the fog keep them out of the fog pass. Returns false, leaving the scene untouched, if it could not.

@@ -386,6 +386,20 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 			Effect->SetVector(aoTexelHandle, &aoTexel);
 		}
 	}
+	// UNOFFICIAL froxel grid: on stage 11 while this draws, with the flags that make the fog read it.
+	D3DXHANDLE gridHandle = ParameterHandle(paramGridFlags, "NVR_FogGridFlags");
+	const bool grid = gridTexture && gridHandle;
+	if (gridHandle) {
+		D3DXVECTOR4 gridFlags(grid ? 1.0f : 0.0f, grid ? 1.0f : 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(gridHandle, &gridFlags);
+	}
+	if (grid) {
+		Device->SetTexture(11, gridTexture);
+		TheRenderManager->renderState->NoteDeviceTexture(11, gridTexture);
+		const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+			{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+		for (const auto& s : states) TheRenderManager->SetSamplerState(11, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+	}
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
@@ -422,6 +436,15 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Device->SetTexture(6, nullptr);
 	Device->SetTexture(7, nullptr);
 	Device->SetTexture(8, nullptr);
+	if (grid) {
+		Device->SetTexture(11, nullptr);
+		TheRenderManager->renderState->NoteDeviceTexture(11, nullptr);
+	}
+	if (gridHandle) {
+		// The other paths must not read a grid that is not bound.
+		D3DXVECTOR4 off(0.0f, 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(gridHandle, &off);
+	}
 	Device->SetTexture(0, TheTextureManager->SourceTexture);
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderTarget(0, RenderTarget);
@@ -441,6 +464,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		return false;
 	}
 	compositeApplied = composite;
+	gridApplied = grid;
 	static bool reportedComposite = false;
 	if (composite && !reportedComposite) {
 		Logger::Log("UNOFFICIAL composite apply active: sun shadows %s, AO %s folded into the fog pass.",
