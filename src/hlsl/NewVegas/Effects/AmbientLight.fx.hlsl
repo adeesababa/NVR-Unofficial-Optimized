@@ -5,9 +5,9 @@
 // noise), four reads each way along each. Along every direction the highest the surroundings rise above the pixel's surface (its
 // "horizon") gives how much of the sky above the pixel they hide: ambient occlusion, worked out as in "Practical Real-Time
 // Strategies for Accurate Indirect Occlusion" (Jimenez et al. 2016, GTAO), cosine-weighted, so creases darken and open ground
-// does not. Each read that raises the horizon also sends the light it shows on screen to the pixel, in proportion to how much
-// more of the view above the pixel it covers and to how much the two face each other: the bounce light (after "Horizon-based
-// indirect lighting", Mayaux 2018; Therrien et al. 2023 do the same with bitmasks, which shader model 3 has no integers for).
+// does not. Each read also sends the light it shows on screen to the pixel, as far as it rises above the pixel's surface and the
+// two face each other: the bounce light (first after "Horizon-based indirect lighting", Mayaux 2018, counting only the part of
+// the view each read newly covered; UNOFFICIAL 2026-10-14 every read counts smoothly instead, see Estimate: far less shimmer).
 //
 // Pass 1 Prepare (half): depth, normal and colour of each half-resolution pixel packed into one texel (as BounceLight's), so
 //        each read of the estimate is one small texel.
@@ -59,6 +59,7 @@ static const float BlurStep = max(TESR_AmbientLightData2.z, 0.5f);
 static const float DebugView = TESR_AmbientLightData2.w;
 static const int SLICES = 2;
 static const int STEPS = 4;
+static const float BounceScale = 2.5f;       // UNOFFICIAL 2026-10-14: the smooth bounce's level, matched to the old one's average in game (2.0 read ~20% lower)
 static const float NearFade = 40.0f;          // view depth (world units) below which nothing is done: the weapon, the camera's own body
 static const float MaxScreenRadius = 0.08f;   // largest radius on screen, as a share of the screen width (keeps the reads in cache)
 
@@ -131,7 +132,13 @@ float4 Prepare(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
 	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
-	float3 source = tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb;
+	// UNOFFICIAL 2026-10-14: the colour averaged over the 4x4 full-resolution pixels round the texel (four bilinear reads), not one
+	// spot: the bounce gathered from single pixels jumped between a bright blade tip and the dark gap beside it (grass shimmer).
+	float2 px = TESR_ReciprocalResolution.xy;
+	float3 source = 0.25f * (tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(-1.0f, -1.0f), 0.0f, 0.0f)).rgb +
+		tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(1.0f, -1.0f), 0.0f, 0.0f)).rgb +
+		tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(-1.0f, 1.0f), 0.0f, 0.0f)).rgb +
+		tex2Dlod(TESR_SourceBuffer, float4(uv + px * float2(1.0f, 1.0f), 0.0f, 0.0f)).rgb);
 	[branch] if (NVR_ALFlags.x > 0.5f) source = SunShadowApply(source, uv);
 	float3 light = min(linearize(source), 1.0f);
 	return float4(viewZ, Pack2(OctEncode(normal)), Pack2(sqrt(light.rg)), light.b);
@@ -199,13 +206,15 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 				float weight = saturate((Radius - dist) / (Radius - falloffStart)) * onScreen * step(NearFade, origin.z + delta.z);
 				float lowCos = side == 0 ? lowCos0 : lowCos1;
 				float sampleCos = lerp(lowCos, dot(dir, viewVec), weight);
-				float horizon = side == 0 ? horizonCos0 : horizonCos1;
-				// Bounce: the part of the view above the pixel this read newly covers, lit by what the read shows, as far as
-				// the two surfaces face each other.
-				float covered = max(sampleCos - horizon, 0.0f);
+				// Bounce: what the read shows, as far as it rises above the pixel's own surface (within reach) and the two
+				// surfaces face each other. UNOFFICIAL 2026-10-14: every read counts smoothly; it used to count only the part
+				// of the view a read newly covered above the horizon so far, so on grass and rough ground a pixel's light came
+				// from one or two reads picked by chance, and jumped from pixel to pixel and frame to frame (user: shimmer and
+				// orange speckles).
+				float raised = saturate(sampleCos - lowCos);
 				float facing = saturate(dot(normal, dir)) * saturate(dot(OctDecode(Unpack2(texel.y)), -dir));
 				float2 rg = Unpack2(texel.z);
-				bounce += float3(rg * rg, texel.w) * (covered * facing);
+				bounce += float3(rg * rg, texel.w) * (raised * facing);
 				if (side == 0) horizonCos0 = max(horizonCos0, sampleCos); else horizonCos1 = max(horizonCos1, sampleCos);
 				if (slice == 0 && side == 0 && k == 1) { firstCos = dot(dir, viewVec); firstLow = weight; }
 			}
@@ -221,8 +230,8 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 	[branch] if (DebugView > 5.5f) return float4(visibility / max(weightSum, 1e-4f), firstCos * 0.5f + 0.5f, firstLow, 1.0f);
 	visibility = pow(saturate(visibility / max(weightSum, 1e-4f)), 1.5f * OcclusionStrength);
 	visibility = lerp(1.0f, visibility, fade);
-	// Bounce: x 2 per slice side covered, so a pixel enclosed by surfaces showing light L receives about L.
-	return float4(bounce * (2.0f * fade / SLICES), saturate(visibility));
+	// Bounce: the average over the reads, x BounceScale so a pixel enclosed by surfaces showing light L receives about L.
+	return float4(bounce * (BounceScale * fade / (SLICES * STEPS * 2)), saturate(visibility));
 }
 
 // Passes 3-4: depth-aware blur, 7 taps along axis (half-resolution texels apart x BlurStep). UNOFFICIAL 2026-10-14: the bounce
