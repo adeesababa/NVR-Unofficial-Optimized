@@ -174,6 +174,7 @@ public:
 		bool				Enabled;
 		float				BlurRadius;
 		float				RenderDistance;
+		bool				Sharp = false;	// UNOFFICIAL: SunShadows.fx.hlsl's ForwardContactSharp (one sharp march, no big blurs)
 	};
 
 	struct SunSmoothingStruct {

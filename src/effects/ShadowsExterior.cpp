@@ -300,6 +300,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ScreenSpaceData.y = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "BlurRadius");
 	Constants.ScreenSpaceData.z = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "RenderDistance");
 	Constants.ScreenSpaceData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "Intensity"), 0.0f);
+	Settings.ScreenSpace.Sharp = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Sharp") != 0;	// UNOFFICIAL
 
 	// Sun smoothing settings.
 	Settings.SunSmoothing.SmoothSun = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "SmoothSun");

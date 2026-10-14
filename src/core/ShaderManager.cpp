@@ -1125,8 +1125,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			D3DXHANDLE fusedTechnique = Effects.SunShadows->TechniqueHandle(fusedCache, "ForwardContactShadows");
 			const bool fusedForwardContact = Effects.ShadowsExteriors->Settings.Exteriors.ForwardShadows &&
 				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique;
+			// UNOFFICIAL Sharp ([Shaders.ShadowsExteriors.ScreenSpace]): the one-march technique (third in SunShadows.fx.hlsl).
+			static EffectRecord::CachedHandle sharpCache;
+			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
+			const bool sharpContact = fusedForwardContact && Effects.ShadowsExteriors->Settings.ScreenSpace.Sharp && sharpTechnique != NULL &&
+				Effects.SunShadows->Effect->GetTechnique(2) == sharpTechnique;
 			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface,
-				Effects.SunShadows, false, fusedForwardContact ? 1 : 0);
+				Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
 		}
 	}
 	else {

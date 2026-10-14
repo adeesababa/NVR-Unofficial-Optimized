@@ -344,6 +344,63 @@ float4 FinalContactBlur(VSOUT IN) : COLOR0
 }
 
 
+// UNOFFICIAL 2026-10-14 sharp contact shadows ([Shaders.ShadowsExteriors.ScreenSpace] Sharp; technique ForwardContactSharp). The
+// march above takes four randomly lengthened steps and leaves the grain to two full-resolution 12-tap blurs (two thirds of the
+// cost). Here the ray toward the sun is followed across the screen in 16 even steps, no randomness, from the pixel to the
+// same reach the old march had (perspective-correct depth along it); so there is no grain to blur, only a tiny smoothing of
+// the steps' stair edges in the second pass (SharpContactFinish). The same tests and weighting as ScreenSpaceShadow.
+#define SHARP_STEPS 16
+float4 SharpContactShadow(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord;
+	float4 color = tex2D(TESR_PointShadowBuffer, uv);
+	if (!TESR_ShadowScreenSpaceData.x) return float4(1.0, color.g, 0, 1);
+	float3 pos = reconstructPosition(uv);
+	if (pos.z > SSS_MAXDEPTH) return float4(1.0, color.g, 0, 1);
+	float3 light = normalize(TESR_ViewSpaceLightDir.xyz);
+	float facing = saturate(dot(GetNormal(uv), light) * 8.0f);
+	if (facing <= 0.0f) return float4(1.0, color.g, 0, 1);
+	float bias = max(0.01f, pos.z * 0.002f);
+
+	float rayLength = pows(getHomogenousDepth(uv) / farZ, 0.6) * SSS_DIST * 2.0f;
+	if (light.z < 0.0f) rayLength = min(rayLength, max(pos.z - 2.0f * nearZ, 0.0f) / -light.z);   // stay in front of the camera
+	float3 endPos = pos + light * rayLength;
+	float2 endUV = projectPosition(endPos).xy;
+	float invZ0 = 1.0f / pos.z, invZ1 = 1.0f / max(endPos.z, nearZ);
+
+	float occlusion = 0.0f, total = 0.0f;
+	[unroll] for (int i = 1; i <= SHARP_STEPS; i++) {
+		float t = i / (float)SHARP_STEPS;
+		float rayZ = 1.0f / lerp(invZ0, invZ1, t);
+		float delta = rayZ - readDepthLod(lerp(uv, endUV, t));
+		float w = 1.0f / (1.0f + t * 4.0f);                    // nearer steps count more, as the old 1 / step
+		occlusion += (delta > bias && delta < SSS_THICKNESS) * w;
+		total += w;
+	}
+	occlusion = pows(occlusion / total, 0.3) * facing;
+	return float4(lerp(1.0f - occlusion, 1.0f, smoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z)), color.g, 0, 1);
+}
+
+// The four neighbours averaged in with the centre where they lie at the same depth (only the stair edges change), then the
+// intensity curve, as FinalContactBlur. The point shadows (g) pass through.
+float4 SharpContactFinish(VSOUT IN) : COLOR0
+{
+	float4 center = tex2D(TESR_PointShadowBuffer, IN.UVCoord);
+	float depth = readDepthLod(IN.UVCoord);
+	if (depth > SSS_MAXDEPTH) return center;
+	float sum = center.r * 2.0f, weights = 2.0f;
+	float tolerance = max(depth * 0.02f, 1.0f);
+	static const float2 offsets[4] = { float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1) };
+	[unroll] for (int i = 0; i < 4; i++) {
+		float2 tapUV = IN.UVCoord + offsets[i] * TESR_ReciprocalResolution.xy;
+		float w = abs(readDepthLod(tapUV) - depth) < tolerance ? 1.0f : 0.0f;
+		sum += tex2D(TESR_PointShadowBuffer, tapUV).r * w;
+		weights += w;
+	}
+	center.r = pow(sum / weights, TESR_ShadowScreenSpaceData.w);
+	return center;
+}
+
 technique {
 
 	pass {
@@ -385,5 +442,18 @@ technique ForwardContactShadows {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 FinalContactBlur();
+	}
+}
+
+// UNOFFICIAL: the sharp contact shadows (above), forward path only. Third technique (ShaderManager checks the index).
+technique ForwardContactSharp {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 SharpContactShadow();
+	}
+
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 SharpContactFinish();
 	}
 }

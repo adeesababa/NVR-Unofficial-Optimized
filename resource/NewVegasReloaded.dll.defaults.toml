@@ -878,6 +878,7 @@ BlurRadius = 1.0                     # Blur strength for denoising screenspace s
 Enabled = true                       # Wether to render screen space contact/detail shadows
 RenderDistance = 180000              # Max distance at which to compute screen space shadows
 Intensity = 0.315                    # Rescale the intensity of screenspace shadows, to combat jitter and blur making them very faint even at maximum brightness.
+Sharp = false                        # UNOFFICIAL: sharper, steadier contact shadows for less: the ray toward the sun followed in 16 even steps instead of 4 random ones smoothed by two big blurs (about a third of the cost). With forward shadows (the default). BlurRadius is not used with it on.
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
 Mode = 2							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4
