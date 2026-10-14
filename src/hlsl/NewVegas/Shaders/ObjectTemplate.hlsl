@@ -209,6 +209,12 @@
     #include "includes/PointShadowForward.hlsl"
     // UNOFFICIAL 2026-10-13: blood on the first-person weapon and gloves (c218-c219, set per draw; off for every other draw).
     #include "includes/HandBlood.hlsl"
+    // UNOFFICIAL 2026-10-14: rain on the first-person weapon (Wet World HudDrops, includes/HudRain.hlsl, c221-c222 set per draw;
+    // compiled in only when HudDrops is on at startup: HUD_RAIN_ON, ShaderRecord::LoadShader).
+    #if defined(HUD_RAIN_ON) && HUD_RAIN_ON
+        #define HUD_RAIN 1
+    #endif
+    #include "includes/HudRain.hlsl"
 #endif
 
 // GunFX barrel glow (P67). Heat bridge from GunFX.dll. Coordinates are local to the drawn gun mesh, so
@@ -709,11 +715,15 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 #endif
 
+    // UNOFFICIAL: rain drops on the first-person weapon (includes/HudRain.hlsl), before the textures are read: they are read
+    // through the drops (HUD_RAIN_TEX).
+    HudRain(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w));
+
 #if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
     float3 heatMaterialFactor = 1.0f;
 #endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-        float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+        float4 baseColor = HUD_RAIN_TEX(BaseMap, IN.uv.xy);
     
         #if defined(ONLY_LIGHT)
             // Keep the sampled albedo before the lighting-only path discards it.
@@ -729,7 +739,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         clip(AmbientColor.a >= 1 ? 0 : (baseColor.a - alphaTestRef));
     #endif
     
-    float4 normal = tex2D(NormalMap, IN.uv.xy);
+    float4 normal = HUD_RAIN_TEX(NormalMap, IN.uv.xy);
     normal.xyz = normalize(expand(normal.xyz));
     
     #ifdef RMAOS
@@ -745,6 +755,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     HandBlood(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w));
     roughness = HandBloodRoughness(roughness);
     normal.xyz = HandBloodNormal(normal.xyz);
+    roughness = HudRainRoughness(roughness);	// UNOFFICIAL: the rain drops, wet and rounded
+    normal.xyz = HudRainNormal(normal.xyz);
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -783,6 +795,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // the factor above is, which comes out the same). The metal guess and the debug views keep the stored colour.
     const float3 albedoStored = baseColor.rgb;
     baseColor.rgb = LinColor(baseColor.rgb);
+    baseColor.rgb *= HudRainLens(float3(0.0f, 0.0f, 1.0f)).x;	// UNOFFICIAL: a drop's rim bends the light away (darker)
 
     #ifdef METAL
         // UNOFFICIAL: metal (Object.hlsl), only while [Shaders.PBR.Metal] is on for this pass; see the lighting below.
@@ -977,6 +990,10 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #endif // METAL
 
+    #if !defined(DIFFUSE) && !defined(POINT)
+        // UNOFFICIAL: the sun focused through each rain drop into a bright spot on its far side (includes/HudRain.hlsl).
+        lighting += PSLightColor[0].rgb * shadowMultiplier * baseColor.rgb * HudRainLens(IN.lightDir.xyz).y;
+    #endif
     float3 finalColor = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space
     finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
     finalColor = RmaosDebug(finalColor, albedoStored);           // UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
@@ -1148,7 +1165,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
 #endif
 
-    float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+    HudRain(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));	// UNOFFICIAL: rain drops, before the textures are read
+    float4 baseColor = HUD_RAIN_TEX(BaseMap, IN.uv.xy);
     
     #ifndef OPT
         clip(AmbientColor.a >= 1 ? 0 : (baseColor.a - alphaTestRef));
@@ -1160,7 +1178,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         baseColor.rgb = baseColor.rgb * IN.vertexColor.rgb;
     #endif
     
-    float4 normal = tex2D(NormalMap, IN.uv.xy);
+    float4 normal = HUD_RAIN_TEX(NormalMap, IN.uv.xy);
     normal.xyz = normalize(expand(normal.xyz));
     
     #ifdef RMAOS
@@ -1175,9 +1193,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     HandBlood(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));
     roughness = HandBloodRoughness(roughness);
     normal.xyz = HandBloodNormal(normal.xyz);
+    roughness = HudRainRoughness(roughness);	// UNOFFICIAL: the rain drops, wet and rounded
+    normal.xyz = HudRainNormal(normal.xyz);
     baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
     const float3 albedoStored = baseColor.rgb;	// UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant
     baseColor.rgb = LinColor(baseColor.rgb);
+    baseColor.rgb *= HudRainLens(float3(0.0f, 0.0f, 1.0f)).x;	// UNOFFICIAL: a drop's rim bends the light away (darker)
 
     // Lighting.
     float3 viewDir = { IN.lightDir.w, IN.light2.w, IN.light3.w };

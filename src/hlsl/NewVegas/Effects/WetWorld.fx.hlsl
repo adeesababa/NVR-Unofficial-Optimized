@@ -999,6 +999,21 @@ float4 Wet(VSOUT IN) : COLOR0
     return float4(saturate(wetRGB + splashAdd), 1.0f);
 }
 
+// UNOFFICIAL 2026-10-14 (HudDrops, Shaders/Includes/HudRain.hlsl): is the camera under cover? One pixel, kept (counted by an
+// occlusion query, WetWorldEffect::RenderCoverTest) only if something in the ortho map lies above the camera (48 units up:
+// above the player's own head, below any roof worth the name). Outside the ortho map the sky is open. After mrfury97's HUD
+// raindrops (Physically-Based-Reloaded testbed), which read the same map for the same test.
+float4 CoverTest(VSOUT IN) : COLOR0
+{
+    float4 o = mul(float4(0.0f, 0.0f, 48.0f, 1.0f), TESR_ShadowCameraToLightTransformOrtho);
+    o.xyz /= o.w;
+    float2 ouv = float2(o.x * 0.5f + 0.5f, o.y * -0.5f + 0.5f);
+    float top = SampleOrthoDepth(ouv);
+    bool inside = all(ouv > 0.0f) && all(ouv < 1.0f);
+    clip(inside && o.z > top + 0.003f ? 1.0f : -1.0f);
+    return float4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
 // Render technique
 technique
 {
@@ -1021,5 +1036,14 @@ technique
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader  = compile ps_3_0 Wet();
+    }
+}
+
+technique CoverTestTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 CoverTest();
     }
 }

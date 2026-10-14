@@ -1286,6 +1286,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(materialEffectsTimer, Device);
+		// UNOFFICIAL HudDrops: the camera's cover test while it rains outdoors (Render.cpp HudRain reads its answer).
+		if (Effects.WetWorld->Enabled && Effects.WetWorld->Constants.Data.x > 0.0f && GameState.isExterior && !GameState.isUnderwater &&
+			TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f) {
+			Effects.WetWorld->RenderCoverTest(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
 		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		// Beam march first, into its own half res buffer, so the Flashlight Combine pass can
 		// read it. Control.x already folds the effect toggle, the per view toggle and the

@@ -1740,6 +1740,65 @@ namespace HandBlood {
 	}
 }
 
+// UNOFFICIAL 2026-10-14: rain on the first-person weapon (Wet World's HudDrops; Shaders/Includes/HudRain.hlsl, after mrfury97's HUD
+// raindrops in the Physically-Based-Reloaded testbed). The wetness gathers while the camera stands in the rain outdoors and not
+// under cover (WetWorldEffect::RenderCoverTest), up over HudWetTime (heavy rain), and dries over HudDryTime; washed off underwater.
+// c221-c222 for every first-person pass, cleared for the first other one.
+namespace HudRain {
+	static bool Checked = false, Compiled = false, Set = false;
+	static float Wet = 0.0f, Clock = 0.0f;
+	static float Draw[8] = {};
+	static ULONGLONG LastTick = 0;
+
+	// Once a frame, before the scene.
+	static void Update() {
+		if (!Checked) {
+			Checked = true;
+			Compiled = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f;
+			Logger::Log("UNOFFICIAL HudDrops: %s", Compiled ? "on (rain drops on the first-person weapon)" : "off (not compiled into the shaders)");
+		}
+		if (!Compiled) return;
+		const char* section = "Shaders.WetWorld.Main";
+		const ULONGLONG now = GetTickCount64();
+		const float dt = LastTick ? std::clamp((now - LastTick) / 1000.0f, 0.0f, 0.25f) : 0.0f;
+		LastTick = now;
+		WetWorldEffect* wet = TheShaderManager->Effects.WetWorld;
+		const auto& state = TheShaderManager->GameState;
+		const float rain = wet && wet->Enabled ? std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f) : 0.0f;
+		const bool open = state.isExterior && !state.isUnderwater && !(wet && wet->covered);
+		const float exposure = open ? rain : 0.0f;
+		const float wetTime = std::clamp(TheSettingManager->GetSettingF(section, "HudWetTime"), 0.5f, 600.0f);
+		const float dryTime = std::clamp(TheSettingManager->GetSettingF(section, "HudDryTime"), 0.5f, 600.0f);
+		Wet = exposure > 0.0f ? (std::min)(Wet + dt * exposure / wetTime, 1.0f) : (std::max)(Wet - dt / dryTime, 0.0f);
+		if (state.isUnderwater) Wet = 0.0f;
+		const bool debug = TheSettingManager->GetSettingI(section, "HudDebug") != 0;
+		if (debug) Wet = 1.0f;
+		if (Wet > 0.0f) Clock = fmodf(Clock + dt * (0.5f + (std::max)(rain, debug ? 1.0f : 0.0f)), 3600.0f);
+		Draw[0] = Wet * std::clamp(TheSettingManager->GetSettingF(section, "HudDrops"), 0.0f, 1.0f);
+		Draw[1] = 1.0f - std::clamp(TheSettingManager->GetSettingF(section, "HudDropDensity"), 0.0f, 1.0f);
+		Draw[2] = Clock;
+		Draw[3] = std::clamp(TheSettingManager->GetSettingF(section, "HudRefraction"), 0.0f, 4.0f);
+		Draw[4] = std::clamp(TheSettingManager->GetSettingF(section, "HudReflection"), 0.0f, 8.0f);
+		Draw[5] = std::clamp(TheSettingManager->GetSettingF(section, "HudGloss"), 0.0f, 1.0f);
+		Draw[6] = std::clamp(TheSettingManager->GetSettingF(section, "HudWetGloss"), 0.0f, 1.0f);
+		Draw[7] = std::clamp(TheSettingManager->GetSettingF(section, "HudDropSize"), 0.05f, 20.0f);
+	}
+
+	// Every geometry pass, after its shaders are bound.
+	static void SetForDraw() {
+		if (!Compiled) return;
+		if (Draw[0] > 0.0f && ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) {
+			TheRenderManager->device->SetPixelShaderConstantF(221, Draw, 2);
+			Set = true;
+		}
+		else if (Set) {
+			const float off[8] = {};
+			TheRenderManager->device->SetPixelShaderConstantF(221, off, 2);
+			Set = false;
+		}
+	}
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -1818,6 +1877,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	ReflectionProbe::AfterBind();  // UNOFFICIAL ReflectionClipFix: the clip plane re-issued once the pass's shaders are bound
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
 	HandBlood::SetForDraw();	// UNOFFICIAL: blood on the first-person weapon and gloves
+	HudRain::SetForDraw();	// UNOFFICIAL: rain drops on the first-person weapon (Wet World HudDrops)
 	LampScissor::OnBind(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL LampScissor
 	HiddenObjectCulling::OnBind(PixelShader);	// UNOFFICIAL HiddenObjectCulling: only lamp-only passes may be skipped
 	// UNOFFICIAL interior forward point-light shadows: the draw's lamps and their cube maps (PointShadowForward.h).
@@ -2028,6 +2088,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		HiddenObjectCulling::BeginWorld();
 		GunFXSwitches::Update();
 		HandBlood::Update();	// UNOFFICIAL: blood on the first-person weapon and gloves (once a frame)
+		HudRain::Update();	// UNOFFICIAL: rain drops on the first-person weapon (once a frame)
 		BarrelHaze::Reset();
 		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();

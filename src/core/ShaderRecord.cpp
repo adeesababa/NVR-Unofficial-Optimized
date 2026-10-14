@@ -202,6 +202,10 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 	// startup, so that otherwise the object shaders are exactly what they were.
 	AppendDefine("RMAOS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? "1" : "0");
 
+	// UNOFFICIAL rain on the first-person weapon (Includes/HudRain.hlsl, ObjectTemplate.hlsl, Render.cpp HudRain): compiled in only
+	// when Wet World's HudDrops is above 0 at startup.
+	AppendDefine("HUD_RAIN_ON", TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f ? "1" : "0");
+
 	// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl: ObjectTemplate, TerrainTemplate): compiled in only when on at
 	// startup, so that otherwise those shaders are exactly what they were. Gamma stays live (PBRShaders::UpdateSettings).
 	AppendDefine("LINEAR_LIGHTING_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ? "1" : "0");
