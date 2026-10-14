@@ -2168,7 +2168,7 @@ static const char* kCinemaDofModeNames[] = {
 	"0 - Always", "1 - Not during dialog", "2 - Only during dialog", "3 - Disabled",
 };
 static const char* kShadowsModeNames[] = {
-	"0 - VSM", "1 - EVSM2", "2 - EVSM4",
+	"0 - VSM", "1 - EVSM2", "2 - EVSM4", "3 - PCF (restart)",	// UNOFFICIAL 2026-10-14: 3 was in the code (ShaderRecord SHADOW_FIXED_MODE) but not here
 };
 // SleepingMode.Mode has no TOML comment; values derived from
 // src/core/Hooks/SleepingCommon.cpp's ShowSleepWaitMenuHook.
