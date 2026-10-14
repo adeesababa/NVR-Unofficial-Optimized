@@ -93,6 +93,13 @@ namespace BloodFlowBoxes {
 				low = r + dripLength + maxFall + 8.0f;
 				high = r + 6.0f;
 			}
+			// UNOFFICIAL 2026-10-14: room for the splat's own shape (SplatPS: arms and spray out to a few radii, its drips below);
+			// the other passes cut their boxes to the real bounds on the GPU.
+			if (!item.Pool) {
+				reach = (std::max)(reach, r * 8.0f + 4.0f);
+				low = (std::max)(low, r * 8.0f + 4.0f);
+				high = (std::max)(high, r * 1.0f + 6.0f);
+			}
 			const float u0 = -reach, u1 = reach, d0 = -reach, d1 = reach, n0 = -low, n1 = high;
 			const D3DXVECTOR3 center = item.Center - eye;   // eye-relative
 			D3DXVECTOR3 corner[8];

@@ -47,6 +47,11 @@ public:
 		float	StreamWidth;	// multiplies the trails' width
 		float	Beads;			// UNOFFICIAL 2026-10-13: wet beads over the game's splats (0 off)
 		float	BeadSize;		// game units a tile of the drops texture covers
+		// UNOFFICIAL 2026-10-14 (user: like paint thrown at a wall): each splat's own impact shape (BloodFlow.fx.hlsl SplatPS)
+		float	Splat;			// strength (0 off)
+		float	SplatReach;		// how far the arms and spray reach, in splat radii
+		float	SplatSpray;		// how many spray lines and how much mist (0-2)
+		float	SplatDrips;		// how far its drips run on walls and slopes, in splat radii (0 none)
 		float	Merge;			// splats closer than this x their radii merge into one item (0 off)
 		float	GibPools;		// a pool under each cut-off limb, this x the body's pool size (0 off)
 		int		MergeCount;		// ... when at least this many lie together
@@ -63,6 +68,7 @@ public:
 		D3DXVECTOR4	Match;		// x: splatter texture grey (sRGB); y: brightness; z: trail width; w: 1 match the game's colour
 		D3DXVECTOR4	DryRatio;	// rgb: dried over fresh colour (linear, from the settings), for the matched colour
 		D3DXVECTOR4	Beads;		// x: wet beads' strength (0 off), y: a drops tile's size (game units)
+		D3DXVECTOR4	Splat;		// UNOFFICIAL 2026-10-14: x strength, y reach, z spray, w drips (SplatPS)
 	};
 	BloodFlowStruct	Constants;
 

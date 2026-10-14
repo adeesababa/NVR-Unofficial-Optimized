@@ -1263,6 +1263,10 @@ MatchBrightness = 1.0                  # [0.3-3.0] Brightens (above 1) or darken
 StreamWidth = 1.0                      # [0.2-3.0] Width of the streams running from a splat (and of their drops and the puddles they end in). Below 1 thinner, above 1 thicker.
 Beads = 1.0                            # [0-3] Wet beads: glossy domed drops of blood over the game's own splats (where its splatter texture has blood), catching the sun and lamps, drying away drop by drop. 0: off.
 BeadSize = 60.0                        # [1-200] Game units one tile of the drops texture covers: smaller = smaller, more numerous beads.
+Splat = 1.0                            # [0-1] UNOFFICIAL: each splat gets its own impact shape, as paint thrown at a wall: a lumpy core, thick arms and dozens of thin spray lines shot out in random directions (bunched to one side for a glancing hit), droplets flung past them, and on walls and slopes drips running down from the core, the arms and the spray. No two alike. 0: off (the game's decal only).
+SplatReach = 1.0                       # [0.2-3] How far the arms and spray lines reach, in splat radii.
+SplatSpray = 1.0                       # [0-2] How many thin spray lines and how much fine mist.
+SplatDrips = 1.0                       # [0-3] How far the splat's drips run down walls and slopes (in splat radii; none on level ground).
 Merge = 0.6                            # [0-2] Splats that pile up merge into one (cheaper: one area to draw instead of many overlapping ones): centres closer than this x their radii. 0: off.
 MergeCount = 3                         # [2-64] ... once at least this many lie together.
 GibPools = 0.8                         # [0-3] A pool of its own grows under each cut-off limb (at the stump: neck, elbow, knee...), this size x the body's pool. 0: off.
