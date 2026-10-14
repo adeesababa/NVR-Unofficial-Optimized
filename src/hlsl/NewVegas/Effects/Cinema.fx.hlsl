@@ -5,7 +5,10 @@
 float4 TESR_GameTime;
 float4 TESR_ReciprocalResolution;
 float4 TESR_CinemaData; // x: AspectRatio y: VignetteRadius z: VignetteDarkness, w: overlayStrength
-float4 TESR_CinemaSettings; //x: dirtlens opacity, y:grainAmount, z:chromatic aberration strength 
+float4 TESR_CinemaSettings; //x: dirtlens opacity, y:grainAmount, z:chromatic aberration strength
+// UNOFFICIAL 2026-10-14: SkyDither.fx.hlsl's constant, for the second technique, which adds the sky dither to Cinema's result in the
+// same pass (ShaderManager runs it in place of the two when nothing renders between them). Same maths as SkyDither.fx.hlsl.
+float4 TESR_SkyDitherData;   // x: noise size (1/255 = one 8-bit step), y: 1 = sky only, z: noise frame offset
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -114,11 +117,35 @@ float4 Cinema(VSOUT IN) : COLOR0
 }
 
 
+// UNOFFICIAL: SkyDither.fx.hlsl's DitherPS on Cinema's result. Keep in step with SkyDither.fx.hlsl.
+float GradientNoise(float2 pixel) {
+	return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
+float4 CinemaDither(VSOUT IN, float2 vpos : VPOS) : COLOR0
+{
+	float4 color = Cinema(IN);
+	[branch] if (TESR_SkyDitherData.y > 0.0 && tex2D(TESR_DepthBuffer, IN.UVCoord).x < 0.996) return color;
+	float2 pixel = vpos + TESR_SkyDitherData.z * float2(5.588238, 3.235);
+	float noise = GradientNoise(pixel) + GradientNoise(pixel + float2(47.0, 17.0)) - 1.0;
+	color.rgb += noise * TESR_SkyDitherData.x;
+	return color;
+}
+
 technique
 {
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader = compile ps_3_0 Cinema();
+    }
+}
+
+technique CinemaSkyDither
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader = compile ps_3_0 CinemaDither();
     }
 }

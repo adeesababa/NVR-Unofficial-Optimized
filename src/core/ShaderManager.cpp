@@ -1557,6 +1557,15 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// UNOFFICIAL: the clipping view's modes 2 and 3 compare with the picture as it arrives here, straight out of the tonemapper.
 	Effects.Debug->CaptureClipStart(Device, RenderTarget);
 
+	// UNOFFICIAL 2026-10-14: neighbouring per-pixel passes in one. Coloring then the LUT (Coloring.fx.hlsl's ColoringLUT), and Cinema
+	// then the sky dither (Cinema.fx.hlsl's CinemaSkyDither) when nothing renders between them (image adjust idle, no body camera).
+	// Same maths; the colour is just not rounded to the buffer's precision in between.
+	auto renders = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	const bool colorLUT = renders(Effects.Coloring) && !Effects.LUT->Settings.PreTonemapping && renders(Effects.LUT) &&
+		Effects.Coloring->Effect->GetTechniqueByName("ColoringLUT");
+	const bool cinemaDither = renders(Effects.Cinema) && renders(Effects.SkyDither) && !renders(Effects.ImageAdjust) &&
+		!renders(Effects.Bodycam) && Effects.Cinema->Effect->GetTechniqueByName("CinemaSkyDither");
+
 	// Name the effect that will render last so its final pass writes the game target directly and
 	// the chain ends without a copy (FrameChain::SetFinalEffect). Same order as the calls below; the
 	// tests are the ones EffectRecord::Render applies. A wrong guess is repaired in FrameChain::Owns.
@@ -1567,7 +1576,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug };
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
-			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
+			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender() &&
+				!(colorLUT && effect == Effects.LUT) && !(cinemaDither && effect == Effects.SkyDither)) last = effect;
 		if (Effects.Debug->ClipViewActive()) last = Effects.Debug; // UNOFFICIAL: the clipping view draws after everything
 		Chain.SetFinalEffect(last);
 	}
@@ -1601,8 +1611,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// screenspace coloring/blurring effects get rendered last
 	{
 		GpuProfileScope gpu(colorTimer, Device);
-		Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
-		if (!Effects.LUT->Settings.PreTonemapping)
+		Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, colorLUT ? 1 : 0, false, SourceSurface);
+		if (!Effects.LUT->Settings.PreTonemapping && !colorLUT)
 			Effects.LUT->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
@@ -1643,7 +1653,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	{
 		GpuProfileScope gpu(cinemaTimer, Device);
-		Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, cinemaDither ? 1 : 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
@@ -1658,7 +1668,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		// UNOFFICIAL: the last colour change before the 8-bit screen, so its noise breaks up the sky's bands exactly
 		// where they form (anything after it, e.g. sharpening, would amplify the noise).
 		GpuProfileScope gpu(skyDitherTimer, Device);
-		Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (!cinemaDither) Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
