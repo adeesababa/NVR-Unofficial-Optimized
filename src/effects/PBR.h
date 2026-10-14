@@ -171,6 +171,15 @@ public:
 		bool MetalOn = false;	// [Shaders.PBR.Metal] MetalOn: the rules' metal is off with it too
 	};
 	MaterialRulesSettingsStruct	MaterialRulesSettings;
+	// UNOFFICIAL 2026-10-14 [Shaders.PBR.Rmaos] (Render.cpp RmaosDraw, Object.hlsl RMAOS): Enabled compiles it in at startup;
+	// On switches it live (off: every object as without maps).
+	struct RmaosSettingsStruct {
+		bool On = false;
+		float Occlusion = 1.0f;	// share of the map's occlusion applied to the ambient light
+		int DebugView = 0;		// 1 roughness, 2 metal, 3 occlusion, 4 which objects have a map
+		bool LogMatches = false;
+	};
+	RmaosSettingsStruct	RmaosSettings;
 	D3DXVECTOR4	MaterialRule = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);		// TESR_MaterialRule (c197): x 0 = no rule
 	D3DXVECTOR4	MaterialRough = D3DXVECTOR4(-1.0f, -1.0f, 0.0f, 0.0f);	// TESR_MaterialRough (c198): z DebugView
 	D3DXVECTOR4	MaterialTint = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);		// TESR_MaterialTint (c199)

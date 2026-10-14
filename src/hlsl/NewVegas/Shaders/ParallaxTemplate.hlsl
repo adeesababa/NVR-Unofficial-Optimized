@@ -112,6 +112,14 @@
 #if defined(PS) && LINEAR_LIGHTING_ON
     #define LINEAR_LIGHTING
 #endif
+// UNOFFICIAL _rmaos maps (Object.hlsl): the main lit passes only (the lamp-only and specular-only passes take s2 for the height
+// map). Compiled in only when [Shaders.PBR.Rmaos] Enabled is on at startup (RMAOS_ON, ShaderRecord::LoadShader).
+#ifndef RMAOS_ON
+    #define RMAOS_ON 0
+#endif
+#if defined(PS) && RMAOS_ON && !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
+    #define RMAOS
+#endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
 
@@ -476,6 +484,9 @@ PS_OUTPUT main(PS_INPUT IN)
         float4 normal = tex2D(NormalMap, offsetUV.xy);
         normal.xyz = normalize(expand(normal.xyz));
 
+        #ifdef RMAOS
+            RmaosRead(offsetUV.xy);	// UNOFFICIAL _rmaos map (Object.hlsl)
+        #endif
         float roughness = getRoughness(normal.a);
     
         #if !defined(DIFFUSE) && !defined(POINT)
@@ -546,6 +557,7 @@ PS_OUTPUT main(PS_INPUT IN)
     #endif
     
     lighting.rgb = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space, before the fog
+    lighting.rgb = RmaosDebug(lighting.rgb, baseColor.rgb);	// UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
 
     // Fog.
     #ifndef NO_FOG

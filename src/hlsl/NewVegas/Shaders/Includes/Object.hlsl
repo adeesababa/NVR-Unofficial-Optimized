@@ -34,7 +34,53 @@ float4 TESR_MaterialRough : register(c198); // x/y: roughness where the highligh
 float4 TESR_MaterialTint  : register(c199); // rgb: the class's DebugView colour
 #endif
 
+// UNOFFICIAL 2026-10-14 _rmaos maps ([Shaders.PBR.Rmaos], Render.cpp RmaosDraw): where a texture has a <name>_rmaos.dds (the
+// Community Shaders "True PBR" layout: r roughness, g metallic, b ambient occlusion with white = none, a specular level), NVR binds
+// it on s2 (no object shader samples s2, and the game binds nothing there for objects) and sets NVR_Rmaos.x for the draw. The
+// map's roughness and metal then replace the guesses from the normal map's alpha and the colour, and its occlusion darkens the
+// ambient light. RmaosRead samples it once at the top of main (derivatives); everything below reads RmaosValue. Defined only
+// in ObjectTemplate's pixel shaders, and only when on at startup (RMAOS_ON); while NVR_Rmaos.x is 0 every function returns
+// exactly what it did before.
+#ifdef RMAOS
+float4 NVR_Rmaos : register(c220); // x: 1 = this draw has an _rmaos map on s2, y: occlusion strength, z: DebugView (1 roughness, 2 metal, 3 occlusion, 4 which objects have one)
+sampler2D NVR_RmaosMap : register(s2);
+static float4 RmaosValue = float4(1.0f, 0.0f, 1.0f, 1.0f);
+#define RMAOS_ACTIVE (NVR_Rmaos.x > 0.5f)
+
+void RmaosRead(float2 uv) {
+    float2 dx = ddx(uv), dy = ddy(uv);
+    [branch] if (RMAOS_ACTIVE) RmaosValue = tex2Dgrad(NVR_RmaosMap, uv, dx, dy);
+}
+
+// The ambient light's share the map's occlusion leaves (1 without a map).
+float RmaosAmbient() {
+    return RMAOS_ACTIVE ? lerp(1.0f, RmaosValue.b, saturate(NVR_Rmaos.y)) : 1.0f;
+}
+
+// DebugView: the map's roughness, metal or occlusion in grey; 4: objects with a map in green, others dim grey.
+float3 RmaosDebug(float3 color, float3 albedo) {
+    [branch] if (NVR_Rmaos.z > 0.5f) {
+        #ifdef ONLY_LIGHT
+            return 0.0f;
+        #else
+            float dim = luma(albedo) * 0.35f;
+            if (NVR_Rmaos.z > 3.5f) return RMAOS_ACTIVE ? lerp(dim.xxx, float3(0.1f, 0.9f, 0.2f), 0.6f) : dim.xxx;
+            if (!RMAOS_ACTIVE) return dim.xxx;
+            float value = NVR_Rmaos.z < 1.5f ? RmaosValue.r : NVR_Rmaos.z < 2.5f ? RmaosValue.g : RmaosValue.b;
+            return value.xxx;
+        #endif
+    }
+    return color;
+}
+#else
+float RmaosAmbient() { return 1.0f; }
+float3 RmaosDebug(float3 color, float3 albedo) { return color; }
+#endif
+
 float getRoughness(float gloss) {
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+    #endif
     float roughness = saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
     #ifdef MATERIAL_RULES
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
@@ -162,7 +208,7 @@ float4 TESR_DebugVar : register(c135);
 #define SKY_AMBIENT_STRENGTH  (TESR_PBRExtraData.y)      // scale on skyUpper at w = 1
 
 float3 getAmbientLighting(float3 ambient, float3 albedo) {
-    return ambient * LinScale(TESR_PBRData.w) * albedo;
+    return ambient * LinScale(TESR_PBRData.w) * albedo * RmaosAmbient();
 }
 
 float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, float worldNormalValid) {
@@ -174,7 +220,7 @@ float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, flo
     float3 skyTerm = LinSky(SkyAmbientRadiance(worldNormal, TESR_PBRExtraData.z)) * LinScale(SKY_AMBIENT_STRENGTH);
 
     // worldNormalValid is 0 under a vanilla VS, where the carried world position is undefined.
-    return (flatAmbient + skyTerm * worldNormalValid) * albedo;
+    return (flatAmbient + skyTerm * worldNormalValid) * albedo * RmaosAmbient();
 }
 
 // ---- Metal (UNOFFICIAL) ----------------------------------------------------------------------------------------------
@@ -195,6 +241,9 @@ float getMetalMask(float specMask) {
 // This draw's metal strength: [Shaders.PBR.Metal] for the pass, or the material rule's (0 for a class that is never metal).
 // Uniform over the draw, so the metal branches on it stay cheap.
 float getMetalStrength() {
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) return 1.0f;	// the map says where the metal is
+    #endif
     #ifdef MATERIAL_RULES
         if (TESR_MaterialRule.x > 0.0f) return TESR_MaterialRule.y;
     #endif
@@ -205,6 +254,9 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     float peak = max(max(albedo.r, albedo.g), albedo.b);
     float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
     float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
+    #ifdef RMAOS
+        [branch] if (RMAOS_ACTIVE) return RmaosValue.g;
+    #endif
     #ifdef MATERIAL_RULES
         // A rule's "full" metal (chrome, brass) is metal whatever its colour; otherwise the guess at the rule's strength.
         [branch] if (TESR_MaterialRule.x > 0.0f)
@@ -221,6 +273,9 @@ float getMetalFade(float3 cameraRelativePos) {
 
 // Metal's roughness: satin where the mask is bare, polished where it is painted (the mask is no gloss map, see above).
 float getMetalRoughness(float specMask) {
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+    #endif
     #ifdef MATERIAL_RULES
         // A rule's roughness range: its bare end where the mask is bare, its polished end where the mask is painted.
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
@@ -306,5 +361,5 @@ float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, 
         env = lerp(env, LinSky(live.rgb), TESR_EnvCube.x * live.a);
     }
     #endif
-    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z * getMaterialReflections();
+    return EnvBRDFApprox(f0, roughness, NdotV) * env * TESR_PBRMetalLook.z * getMaterialReflections() * RmaosAmbient();
 }

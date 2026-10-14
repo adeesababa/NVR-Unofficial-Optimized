@@ -176,6 +176,14 @@
 #if defined(PS) && MATERIAL_RULES_ON
     #define MATERIAL_RULES
 #endif
+// UNOFFICIAL _rmaos maps (Object.hlsl): compiled in only when [Shaders.PBR.Rmaos] Enabled is on at startup (RMAOS_ON,
+// ShaderRecord::LoadShader).
+#ifndef RMAOS_ON
+    #define RMAOS_ON 0
+#endif
+#if defined(PS) && RMAOS_ON
+    #define RMAOS
+#endif
 // UNOFFICIAL linear lighting (Includes/LinearLight.hlsl, [Shaders.PBR.Linear]): the pixel shaders light in linear space while
 // it is on. Compiled in only when on at startup (LINEAR_LIGHTING_ON, ShaderRecord::LoadShader). The game's colour constants
 // are then read under new names (...In) and decoded into the old names at the start of main.
@@ -724,6 +732,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     float4 normal = tex2D(NormalMap, IN.uv.xy);
     normal.xyz = normalize(expand(normal.xyz));
     
+    #ifdef RMAOS
+        RmaosRead(IN.uv.xy);	// UNOFFICIAL _rmaos map (Object.hlsl): read once, here at top level
+    #endif
     float roughness = getRoughness(normal.a);
 
     // Geometric specular AA -- see the comment on SpecularAA itself. Unconditional: this is a
@@ -968,6 +979,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float3 finalColor = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space
     finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
+    finalColor = RmaosDebug(finalColor, albedoStored);           // UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
 
     #ifdef METAL
         // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image.
@@ -1151,6 +1163,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     float4 normal = tex2D(NormalMap, IN.uv.xy);
     normal.xyz = normalize(expand(normal.xyz));
     
+    #ifdef RMAOS
+        RmaosRead(IN.uv.xy);	// UNOFFICIAL _rmaos map (Object.hlsl): read once, here at top level
+    #endif
     float roughness = getRoughness(normal.a);
     // UNOFFICIAL 2026-10-13 (user: polished marble walls in the casinos flickered round their lamps): the same geometric
     // specular AA as the other path above. This 4+ lamp path had none, so a glossy wall (material rules' stonepolished)
@@ -1265,6 +1280,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
     float3 finalColor = LinEncode(lighting);	// UNOFFICIAL linear lighting
     finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
+    finalColor = RmaosDebug(finalColor, albedoStored);           // UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
 
     #ifdef METAL
         // [Shaders.PBR.Metal] DebugView: metal in orange over a dim grey image (as in the LIGHTS < 4 variant).
