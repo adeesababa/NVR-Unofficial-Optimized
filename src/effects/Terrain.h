@@ -97,6 +97,11 @@ public:
 		bool	Enabled;
 		bool	Debug;
 		float	BlendDistance;
+		float	GroundWidth;	// UNOFFICIAL 2026-10-14 (port): the band's width across the ground at most (shallow objects)
+		float	HeightBlend;	// how much the land texture's height map shapes the edge
+		float	SlopeBlend;		// BlendDistance multiplier on steep land
+		float	MinPixels;		// the fade's minimum width on screen
+		int		DebugView;		// 1 band magenta, 2 land kept, 3 depth below the surface, 4 fade depth
 		float	MaxDistance;
 	};
 	BlendingSettingsStruct BlendingSettings = {};
@@ -104,6 +109,7 @@ public:
 	struct BlendingStruct {
 		D3DXVECTOR4		Data;		// x: on for this draw, y: 1 / blend distance, z: max distance, w: debug view
 		D3DXVECTOR4		Extra;		// xy: 1 / resolution, z: dither frame (moves only while TAA runs)
+		D3DXVECTOR4		Shape;		// UNOFFICIAL 2026-10-14: x ground width, y height blend, z slope blend, w minimum pixels
 	};
 	BlendingStruct	BlendingConstants = {};
 

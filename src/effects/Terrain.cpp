@@ -13,6 +13,7 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendExtra", &BlendingConstants.Extra);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendShape", &BlendingConstants.Shape);
 }
 
 // UNOFFICIAL terrain blending (ported from Physically-Based-Reloaded, Balebandro / Alejandro Martinez; the idea is Community
@@ -154,11 +155,20 @@ void TerrainShaders::UpdateSettings() {
 	// at startup); turning it off works at once.
 	BlendingSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") != 0;
 	BlendingSettings.Debug = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Debug") != 0;
-	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 1.0f, 100.0f);
+	// UNOFFICIAL 2026-10-14 (ported from mrfury97's fork, 0a7cbdc5): capped at 20, deeper bands show too much of what the land
+	// covers; the band's width across the ground (GroundWidth), the land's height map at the edge, steep land, minimum pixels.
+	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 0.5f, 20.0f);
 	BlendingSettings.MaxDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MaxDistance"), 256.0f, 16384.0f);
+	BlendingSettings.GroundWidth = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "GroundWidth"), 0.0f, 100.0f);
+	BlendingSettings.HeightBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "HeightBlend"), 0.0f, 2.0f);
+	BlendingSettings.SlopeBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "SlopeBlend"), 0.0f, 2.0f);
+	BlendingSettings.MinPixels = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MinPixels"), 0.0f, 8.0f);
+	BlendingSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "DebugView"), 0, 4);
+	if (BlendingSettings.Debug && BlendingSettings.DebugView == 0) BlendingSettings.DebugView = 1;	// the old switch
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
-	BlendingConstants.Data.w = BlendingSettings.Debug ? 1.0f : 0.0f;
+	BlendingConstants.Data.w = (float)BlendingSettings.DebugView;
+	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
 	// UNOFFICIAL 2026-10-13 (user: blend so it does not need TAA): Smooth (on by default) fades the land by blending; off, the dither.
 	BlendingConstants.Extra.w = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Smooth") ? 1.0f : 0.0f;
 }

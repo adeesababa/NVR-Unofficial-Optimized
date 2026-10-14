@@ -109,7 +109,13 @@ struct PS_INPUT
 {
     float2 uv : TEXCOORD0;
     float3 vertex_color : TEXCOORD1_centroid;
+#if TERRAIN_BLEND_ACTIVE
+    // Not centroid with terrain blending: it takes this position's screen derivatives, which centroid sampling spoils at
+    // triangle edges (with anti-aliasing) by moving the sample point there.
+    float3 lPosition : TEXCOORD2;
+#else
     float3 lPosition : TEXCOORD2_centroid;
+#endif
     float3 tangent : TEXCOORD3_centroid;
     float3 binormal : TEXCOORD4_centroid;
     float3 normal : TEXCOORD5_centroid;
@@ -157,6 +163,7 @@ float PointLightCount : register(c88);
 // Registers pinned clear of the game's (land PS tops out at c93) and of every other NVR constant.
 float4 TESR_TerrainBlendData : register(c176);  // x: on for this draw, y: 1 / blend distance, z: max distance, w: debug view
 float4 TESR_TerrainBlendExtra : register(c177); // xy: 1 / resolution, z: dither frame (0 without TAA), w: 1 Smooth (blended, not dithered)
+float4 TESR_TerrainBlendShape : register(c178); // x: ground width, y: height blend, z: slope blend, w: minimum pixels
 // One line (ShaderTextureValue::GetSamplerStateString).
 sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
@@ -168,28 +175,98 @@ float terrainBlendViewDepth(float depth) {
     return zw.x / zw.y;
 }
 
-// The land's view depth here (x) and how far behind it the object drawn before it is (y; 0 or less: in front, or none).
-float2 terrainBlendDepths(float4 projectionPosition, float2 screenPos) {
-    float terrainDepth = terrainBlendViewDepth(projectionPosition.z / projectionPosition.w);
-    float2 uv = (screenPos + 0.5f) * TESR_TerrainBlendExtra.xy;
-    float sceneDepth = terrainBlendViewDepth(tex2Dlod(TESR_TerrainBlendDepth, float4(uv, 0.0f, 0.0f)).x);
-    return float2(terrainDepth, sceneDepth - terrainDepth);
+// UNOFFICIAL 2026-10-14: ported from mrfury97's NVR fork (commit 0a7cbdc5, "band below the surface, constant ground width",
+// itself after Terrain Blending - NVSE). The distance is how far the object's surface lies below the land, along the land's
+// normal: the same from every viewing angle and on slopes. The band has a constant width across the ground: a fixed depth
+// is depth / tan(angle) wide there, a crisp seam at a wall but metres of see-through land over a shallow road shoulder, and
+// a whole buried flat mesh (ending in a hard line at its border) when it lies parallel to the land. So the depth that fades
+// is min(BlendDistance, GroundWidth x tan(angle)). The angle: the object's surface rebuilt from the depth copy at this pixel
+// and its four neighbours, on each axis the side without a jump (mesh edges, a different object), against the land's normal
+// and its triangle's facet (the flatter; the flattest pairing, so creases don't count); the same neighbours give how fast the
+// gap changes from pixel to pixel (the fade's minimum width on screen).
+struct TerrainBlendGap {
+    float covered;    // how far below the land surface the object is (along the land's normal; 0 or less: none)
+    float width;      // how much that changes from one pixel to the next
+    float tangent;    // tan of the angle between the object's surface and the ground (0: parallel)
+};
+
+// The object behind a land point: along the same view ray, at the depth copy's view depth (view depth grows linearly
+// along a ray). In the land's space.
+float3 terrainBlendObject(float2 uv, float3 landPos, float landViewDepth, float3 eye) {
+    float sceneViewDepth = terrainBlendViewDepth(tex2Dlod(TESR_TerrainBlendDepth, float4(uv, 0.0f, 0.0f)).x);
+    return eye + (landPos - eye) * (sceneViewDepth / max(landViewDepth, 1e-3f));
 }
 
-// How much of the land to keep at this pixel: 1 opaque, 0 gone; -1 where blending does not apply. coveredWidth: how much
-// `covered` changes from one pixel to the next.
-float getTerrainBlend(float terrainDepth, float covered, float coveredWidth) {
-    float maxDistance = TESR_TerrainBlendData.z;
-    if (terrainDepth > maxDistance) return -1.0f;
-    if (covered <= 0.0f) return -1.0f;          // the object is in front: the depth test handles it
+// landPos, eye: the land point and the eye in the land's space; landViewDepth: its view depth; dPx, dPy, dZx, dZy: their
+// ddx/ddy (taken at the top level); normal: the land's normal.
+TerrainBlendGap terrainBlendGap(float2 screenPos, float3 landPos, float landViewDepth, float3 dPx, float3 dPy, float dZx, float dZy, float3 eye, float3 normal) {
+    TerrainBlendGap gap;
+    gap.width = 0.0f;
+    gap.tangent = 0.0f;
+    float2 texel = TESR_TerrainBlendExtra.xy;
+    float2 uv = (screenPos + 0.5f) * texel;
+    float3 o = terrainBlendObject(uv, landPos, landViewDepth, eye);
+    gap.covered = dot(landPos - o, normal);
+    float blendDistance = 1.0f / TESR_TerrainBlendData.y;
+    float limit = blendDistance * 4.0f * max(1.0f, TESR_TerrainBlendShape.z);
+    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > 0.0f && gap.covered < limit) {
+        float3 oR = terrainBlendObject(uv + float2(texel.x, 0.0f), landPos + dPx, landViewDepth + dZx, eye);
+        float3 oL = terrainBlendObject(uv - float2(texel.x, 0.0f), landPos - dPx, landViewDepth - dZx, eye);
+        float3 oD = terrainBlendObject(uv + float2(0.0f, texel.y), landPos + dPy, landViewDepth + dZy, eye);
+        float3 oU = terrainBlendObject(uv - float2(0.0f, texel.y), landPos - dPy, landViewDepth - dZy, eye);
+        float3 eR = oR - o, eL = o - oL, eD = oD - o, eU = o - oU;
+        float3 ex = length(eR) < length(eL) ? eR : eL;   // the side without a jump
+        float3 ey = length(eD) < length(eU) ? eD : eU;
+        // Both sides of an axis where neither jumps (within 2x of each other): at a crease the sides lie on different
+        // faces, so every pairing is tried and the flattest kept.
+        float3 ex2 = (length(eR) < 2.0f * length(eL) && length(eL) < 2.0f * length(eR)) ? (length(eR) < length(eL) ? eL : eR) : ex;
+        float3 ey2 = (length(eD) < 2.0f * length(eU) && length(eU) < 2.0f * length(eD)) ? (length(eD) < length(eU) ? eU : eD) : ey;
+        float3 facet = normalize(cross(dPx, dPy));
+        float3 n1 = normalize(cross(ex, ey)), n2 = normalize(cross(ex2, ey)), n3 = normalize(cross(ex, ey2)), n4 = normalize(cross(ex2, ey2));
+        float sineFacet = min(min(length(cross(n1, facet)), length(cross(n2, facet))), min(length(cross(n3, facet)), length(cross(n4, facet))));
+        float sineNormal = min(min(length(cross(n1, normal)), length(cross(n2, normal))), min(length(cross(n3, normal)), length(cross(n4, normal))));
+        float sine = min(sineFacet, sineNormal);
+        gap.tangent = sine / max(sqrt(saturate(1.0f - sine * sine)), 1e-3f);
+        gap.width = abs(dot(dPx - ex, normal)) + abs(dot(dPy - ey, normal));
+    }
+    return gap;
+}
 
-    // UNOFFICIAL 2026-10-14 (user: a faint shimmer along the seams with Smooth): a few metres away the band (BlendDistance
-    // deep) was only a pixel or two wide on screen and crawled as the view moved. It is now at least about three pixels
-    // wide, at most four times BlendDistance (so a hill in front of a distant rock never turns see-through at its edge).
-    float range = clamp(coveredWidth * 3.0f, 1.0f / TESR_TerrainBlendData.y, 4.0f / TESR_TerrainBlendData.y);
-    float keep = saturate(covered / range);
+// How deep the fade reaches: BlendDistance (times SlopeBlend on steep land), but no more than GroundWidth across the
+// ground. slope: 1 - normal.z.
+float terrainBlendDepthRange(TerrainBlendGap gap, float slope) {
+    float distance = (1.0f / TESR_TerrainBlendData.y) * lerp(1.0f, TESR_TerrainBlendShape.z, saturate(slope * 2.0f));
+    return min(distance, TESR_TerrainBlendShape.x * gap.tangent);
+}
+
+// How much of the land to keep at this pixel: 1 opaque, 0 gone; -1 where blending does not apply. The fade is at least
+// MinPixels wide on screen (a band only a pixel deep crawls as the view moves; 2026-10-14) and at most four times its depth
+// (so a hill in front of a distant rock never turns see-through at its edge).
+float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
+    float maxDistance = TESR_TerrainBlendData.z;
+    if (landViewDepth > maxDistance || gap.covered <= 0.0f) return -1.0f;   // the object in front: the depth test handles it
+    float distance = terrainBlendDepthRange(gap, slope);
+    if (distance < 0.05f) return -1.0f;   // parallel to the ground: nothing to fade
+    float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
+    float keep = saturate(gap.covered / range);
     // Back to a hard edge over the last quarter before the max distance, so there is no visible line.
-    return lerp(keep, 1.0f, saturate((terrainDepth / maxDistance - 0.75f) * 4.0f));
+    return lerp(keep, 1.0f, saturate((landViewDepth / maxDistance - 0.75f) * 4.0f));
+}
+
+// A natural edge: where the land's texture is high (its height map: the diffuse alpha), the land reaches a little further
+// over the object, where it is low a little less. Strongest mid-fade, none at either end. height 0-1.
+float terrainBlendEdge(float keep, float height) {
+    if (keep >= 1.0f || keep < 0.0f) return keep;
+    return saturate(keep + (height - 0.5f) * TESR_TerrainBlendShape.y * 4.0f * keep * (1.0f - keep));
+}
+
+// The blended height (diffuse alpha where a layer has a height map, else 0.5) for terrainBlendEdge.
+// Explicit gradients (dx, dy: the uv's, taken at the top level): it runs inside a branch.
+float terrainBlendHeight(float2 uv, float2 dx, float2 dy, int texCount, sampler2D tex[7], float weights[7], float heightStatus[7]) {
+    float height = 0.0f;
+    [unroll] for (int i = 0; i < texCount; i++)
+        height += (heightStatus[i] > 0.0f ? tex2Dgrad(tex[i], uv, dx, dy).a : 0.5f) * weights[i];
+    return height;
 }
 
 // Interleaved gradient noise (Jimenez); the frame offset moves it only while TAA runs.
@@ -206,16 +283,20 @@ PS_OUTPUT main(PS_INPUT IN) {
 #if TERRAIN_BLEND_ACTIVE
     // First, so a dithered-away pixel skips the rest where the GPU can (whole quads).
     float terrainKeep = -1.0f;
-    // (Read outside the branch: the screen derivative needs every pixel of the 2 x 2 quad.)
-    float2 blendDepths = terrainBlendDepths(IN.projectionPosition, IN.screenPos);
-    float coveredWidth = fwidth(blendDepths.y);
+    // (The derivatives at the top level: every pixel of the 2 x 2 quad.)
+    float3 blendLandPos = IN.lPosition.xyz;
+    float blendViewDepth = terrainBlendViewDepth(IN.projectionPosition.z / IN.projectionPosition.w);
+    float3 blendNormal = normalize(IN.normal.xyz);
+    TerrainBlendGap blendGap = terrainBlendGap(IN.screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
+        ddx(blendViewDepth), ddy(blendViewDepth), IN.viewPosition.xyz, blendNormal);
     [branch] if (TESR_TerrainBlendData.x > 0.0f) {
-        terrainKeep = getTerrainBlend(blendDepths.x, blendDepths.y, coveredWidth);
+        terrainKeep = getTerrainBlend(blendGap, blendViewDepth, 1.0f - blendNormal.z);
         // UNOFFICIAL 2026-10-13 (user: blend instead, so it needs no TAA): Smooth draws the land see-through there instead
         // (its alpha below; Terrain.cpp turns blending on for the land's opaque pass): the object, drawn before the land,
-        // shows through it in a smooth fade. A pixel with next to nothing of the land left is skipped.
-        if (TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
-            clip(TESR_TerrainBlendExtra.w > 0.5f ? terrainKeep - 0.004f : terrainKeep - terrainBlendNoise(IN.screenPos));
+        // shows through it in a smooth fade. A pixel with next to nothing of the land left is skipped here, first (the
+        // height-shaped edge below cannot bring back a pixel this far gone).
+        if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w > 0.5f && terrainKeep >= 0.0f && terrainKeep < 0.004f)
+            clip(-1.0f);
     }
 #endif
     
@@ -254,6 +335,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     float gloss = 0.0f;
     float specExponent = 0.0f;
     float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
+#if TERRAIN_BLEND_ACTIVE
+    // The land texture's height shapes the blend's edge (HeightBlend); the dither, if used, cuts on the shaped edge.
+    [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y > 0.0f)
+        terrainKeep = terrainBlendEdge(terrainKeep, terrainBlendHeight(offsetUV, dx, dy, texCount, BaseMap, weights, heightStatus));
+    if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
+        clip(terrainKeep - terrainBlendNoise(IN.screenPos));
+#endif
     float3 combinedNormal = blendNormalMaps(offsetUV, texCount, NormalMap, weights, spec, gloss, specExponent);
 
     float3 lightTS = mul(tbn, SunDir.xyz);
@@ -295,9 +383,17 @@ PS_OUTPUT main(PS_INPUT IN) {
     finalColor = lerp(finalColor, fog.rgb, fog.a); // Apply fog.
 
 #if TERRAIN_BLEND_ACTIVE
-    // Debug: the blend band in magenta (full magenta = the land fully gone there), nothing dithered away.
-    if (TESR_TerrainBlendData.w > 0.0f && terrainKeep >= 0.0f)
-        finalColor = lerp(float3(1.0f, 0.0f, 1.0f), finalColor, terrainKeep);
+    // Debug views (DebugView): 1 the blend band in magenta (full magenta: the land fully gone), 2 how much land is kept (white:
+    // all), 3 how deep the object is below the surface (black at the surface, white at four times BlendDistance; dark blue:
+    // nothing behind the land), 4 how deep the fade reaches (white: the full BlendDistance, grey: a shallow object's seam).
+    float blendDebug = TESR_TerrainBlendData.w;
+    [branch] if (blendDebug > 2.5f && TESR_TerrainBlendData.x > 0.0f) {
+        if (blendGap.covered <= 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
+        else if (blendDebug < 3.5f) finalColor = saturate(blendGap.covered * TESR_TerrainBlendData.y * 0.25f);
+        else finalColor = saturate(terrainBlendDepthRange(blendGap, 1.0f - blendNormal.z) * TESR_TerrainBlendData.y);
+    }
+    else if (blendDebug > 1.5f && terrainKeep >= 0.0f) finalColor = terrainKeep;
+    else if (blendDebug > 0.5f && terrainKeep >= 0.0f) finalColor = lerp(float3(1.0f, 0.0f, 1.0f), finalColor, terrainKeep);
 #endif
 
     OUT.color_0.a = 1;
