@@ -15,6 +15,7 @@ struct PS_INPUT {
     float3 ambient        : TEXCOORD4_centroid;
     float4 sun            : TEXCOORD5_centroid;   // .w = distance fade
     float4 fog            : COLOR0;               // .w = fog amount
+    float2 amount         : TEXCOORD6_centroid;   // UNOFFICIAL: x ambient amount, y sun amount (plain numbers: not decoded)
 };
 
 struct PS_OUTPUT {
@@ -24,20 +25,21 @@ struct PS_OUTPUT {
 PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     PS_OUTPUT OUT;
 
-    float3 sun = IN.sun.xyz;
+    float sunAmount = IN.amount.y;
 
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
 #if FORWARD_SHADOWS
     // ddx/ddy must stay at top level, outside dynamic flow control.
-    sun *= SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
+    sunAmount *= SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
          ? GetSunShadow(IN.shadowWorldPos.xyz, shadowNormal)
          : 1.0f;
 #endif
 
     // Same split getSunLighting/getAmbientLighting apply on the object path.
-    float3 lighting = PBRLight(sun) + PBRAmbient(IN.ambient.xyz) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
+    // UNOFFICIAL linear lighting (2026-10-14): only the colours are decoded; the amounts multiply after (see the VS).
+    float3 lighting = PBRLight(IN.sun.xyz) * sunAmount + PBRAmbient(IN.ambient.xyz) * IN.amount.x + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
 
     float4 albedo = tex2D(DiffuseMap, IN.uv.xy);
     float3 litColor = LinEncode(lighting * LinColor(albedo.rgb));	// UNOFFICIAL linear lighting: decoded albedo, encoded result (PBRScale.hlsl decodes the light)

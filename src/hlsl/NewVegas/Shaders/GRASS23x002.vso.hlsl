@@ -41,6 +41,7 @@ struct VS_OUTPUT {
     float4 shadowWorldPos : TEXCOORD1;   // vanilla leaves TEXCOORD1 unused on this pair
     float4 ambient        : TEXCOORD4;
     float4 sun            : TEXCOORD5;   // .w = distance fade
+    float2 amount         : TEXCOORD6;   // UNOFFICIAL: x ambient amount, y sun amount (plain numbers, see below)
     float4 fog            : COLOR0;      // .w = fog amount
 };
 
@@ -112,8 +113,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     }
 
     // Kept separate so the PS can shadow the sun alone.
-    OUT.ambient = lightScale * AmbientColor;
-    OUT.sun.xyz = ((lightScale * IN.color.rgb) * NdotL) * DiffuseColor * AddlParams.x;
+    // UNOFFICIAL linear lighting (2026-10-14): colours and plain numbers apart. The PS decodes the colours (sun, vertex colour,
+    // ambient) to linear; the blade's light scale and the sun's angle are already plain amounts, and decoding them too (they
+    // used to be multiplied in here) squared them darker: the grass came out about half as bright as it should.
+    OUT.ambient = AmbientColor;
+    OUT.sun.xyz = IN.color.rgb * DiffuseColor;
+    OUT.amount = float2(lightScale, lightScale * NdotL * AddlParams.x);
 
     // Fog from clip-space xyz distance.
     float fogDist = length(float3(OUT.position.xy, OUT.position.w - OUT.position.z));
