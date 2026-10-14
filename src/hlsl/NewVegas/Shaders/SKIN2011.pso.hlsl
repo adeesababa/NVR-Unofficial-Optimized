@@ -167,8 +167,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     q56.xyz = (3 >= EmittanceColor.a ? r1.wzyx : ((r5.z * ((q26.x * const_8.xyz) + q25.xyz)) + r1.wzy));			// partial precision
     r1.w = r0.w * AmbientColor.a;			// partial precision
     q57.xyz = max(q56.xyz + PBRAmbient(AmbientColor.rgb), 0);			// partial precision
+#ifdef LINEAR_LIGHTING
+    q60.xyz = LinEncode(q57.xyz * LinColor(q28.xyz));	// UNOFFICIAL linear lighting: decoded albedo, encoded result (PBRScale.hlsl decodes the light)
+    r1.xyz = (Toggles.y <= 0.0 ? q60.xyz : ((IN.color_1.a * (IN.color_1.rgb - q60.xyz)) + q60.xyz));
+#else
     q60.xyz = q57.xyz * q28.xyz;			// partial precision
     r1.xyz = (Toggles.y <= 0.0 ? q60.xyz : ((IN.color_1.a * (IN.color_1.rgb - (q28.xyz * q57.xyz))) + q60.xyz));			// partial precision
+#endif
     OUT.color_0.rgba = r1.xyzw;			// partial precision
 
     return OUT;

@@ -151,7 +151,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // Was a debug override: selectColor(TESR_DebugVar.x, ...) emitted a flat light colour
     // unless the dev var was zero. Kept only the real result.
-    OUT.color_0.rgba = float4(r6, 1);
+    OUT.color_0.rgba = float4(LinEncode(r6), 1);	// UNOFFICIAL linear lighting: encoded (PBRScale.hlsl decodes the light)
     return OUT;
 };
 

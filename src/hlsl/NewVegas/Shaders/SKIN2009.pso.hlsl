@@ -121,6 +121,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     r1.yzw = (const_5.zyx * q22.x) + ((q10.x * r2.w) * r2.zyx);			// partial precision
     OUT.color_0.a = 1;			// partial precision
     OUT.color_0.rgb = (saturate((1 - att1.x) - att51.x) * ((q24.x * const_2.xyz) + r1.wzy)) + r0.xyz;			// partial precision
+    OUT.color_0.rgb = LinEncode(OUT.color_0.rgb);	// UNOFFICIAL linear lighting: encoded (PBRScale.hlsl decodes the light)
 
     return OUT;
 };

@@ -173,7 +173,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Vanilla: (diffuseSum + AmbientColor) * (r7 * albedo) + specSum * specScale
     // Ambient joins the sum before the albedo multiply, so unlit hair keeps its tint.
     float3 ambient = PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
-    float3 color = (diffuse + ambient) * tintedAlbedo + specular * specScale;
+    float3 color = LinEncode((diffuse + ambient) * LinColor(tintedAlbedo) + specular * specScale);	// UNOFFICIAL linear lighting: decoded albedo, encoded result (PBRScale.hlsl decodes the light)
 
     // Blend mode: fog / premultiplied / additive, by MatAlpha.z and .w.
     float3 fogged   = lerp(color, IN.fog.rgb, IN.fog.w);

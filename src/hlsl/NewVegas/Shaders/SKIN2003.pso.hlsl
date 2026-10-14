@@ -95,7 +95,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     float spec = GetSpecular(lightDirection, eyeDirection, normal, PBRLight(PSLightColor[1]).rgb);
 
     lighting += spec + pointLightLighting + PBRAmbient(AmbientColor.rgb);
-    float4 finalColor = float4(lighting * baseColor.rgb, baseColor.a * AmbientColor.a);
+    float4 finalColor = float4(LinEncode(lighting * LinColor(baseColor.rgb)), baseColor.a * AmbientColor.a);	// UNOFFICIAL linear lighting: decoded albedo, encoded result (PBRScale.hlsl decodes the light)
     finalColor.rgb = ApplyFog(finalColor.rgb, IN.color_1, Toggles);
 
     OUT.color_0.rgba = finalColor;

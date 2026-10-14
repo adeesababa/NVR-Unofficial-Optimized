@@ -40,7 +40,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     float3 lighting = PBRLight(sun) + PBRAmbient(IN.ambient.xyz) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
 
     float4 albedo = tex2D(DiffuseMap, IN.uv.xy);
-    float3 litColor = lighting * albedo.rgb;
+    float3 litColor = LinEncode(lighting * LinColor(albedo.rgb));	// UNOFFICIAL linear lighting: decoded albedo, encoded result (PBRScale.hlsl decodes the light)
 
     OUT.color.rgb = lerp(litColor, IN.fog.rgb, IN.fog.w);
     // UNOFFICIAL grass fade: the game fades grass by scaling its alpha with distance (TEXCOORD5.w from the VS,

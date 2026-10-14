@@ -104,6 +104,14 @@
 
 #include "includes/Helpers.hlsl"
 #include "includes/Parallax.hlsl"
+// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl, [Shaders.PBR.Linear]): the pixel shaders light in linear space while
+// it is on (as ObjectTemplate.hlsl). Compiled in only when on at startup (LINEAR_LIGHTING_ON, ShaderRecord::LoadShader).
+#ifndef LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING_ON 0
+#endif
+#if defined(PS) && LINEAR_LIGHTING_ON
+    #define LINEAR_LIGHTING
+#endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
 
@@ -309,7 +317,10 @@ struct PS_OUTPUT {
 
 
 #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-    #if !defined(NO_LIGHT)
+    #if !defined(NO_LIGHT) && defined(LINEAR_LIGHTING)
+        float4 AmbientColorIn : register(c1);
+        static float4 AmbientColor;	// UNOFFICIAL linear lighting: AmbientColorIn decoded (rgb), at the start of main
+    #elif !defined(NO_LIGHT)
         float4 AmbientColor : register(c1);
     #endif
     sampler2D BaseMap : register(s0);
@@ -355,7 +366,10 @@ float4 EmittanceColor : register(c2);
         sampler2D ShadowMaskMap : register(s7);
     #endif
 #endif
-#if !defined(NO_LIGHT)
+#if !defined(NO_LIGHT) && defined(LINEAR_LIGHTING)
+    float4 PSLightColorIn[10] : register(c3);
+    static float4 PSLightColor[10];	// UNOFFICIAL linear lighting: PSLightColorIn decoded (rgb; .a as it is), at the start of main
+#elif !defined(NO_LIGHT)
     float4 PSLightColor[10] : register(c3);
 #endif
 #ifndef OPT
@@ -374,6 +388,15 @@ float4 EmittanceColor : register(c2);
 PS_OUTPUT main(PS_INPUT IN)
 {
     PS_OUTPUT OUT;
+
+#if defined(LINEAR_LIGHTING) && !defined(NO_LIGHT)
+    // UNOFFICIAL linear lighting: the light colours decoded.
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
+        PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+    #endif
+#endif
     
     #if !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
         float alpha = tex2D(BaseMap, IN.uv.xy).a;
@@ -412,6 +435,7 @@ PS_OUTPUT main(PS_INPUT IN)
             baseColor.xyz = baseColor.xyz * IN.vertexColor.rgb;
         #endif
     #endif
+    baseColor.rgb = LinColor(baseColor.rgb);	// UNOFFICIAL linear lighting: the albedo decoded for the lighting
     
     // Shadows.
     float3 shadowMultiplier = 1.0;
@@ -477,7 +501,7 @@ PS_OUTPUT main(PS_INPUT IN)
         // Self emmitance.
         #ifdef SI
             float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
-            lighting += baseColor.rgb * glow.rgb * EmittanceColor.rgb;
+            lighting += baseColor.rgb * LinColor(glow.rgb * EmittanceColor.rgb);
         #endif
     
         #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
@@ -521,6 +545,8 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
     #endif
     
+    lighting.rgb = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space, before the fog
+
     // Fog.
     #ifndef NO_FOG
         #ifndef OPT

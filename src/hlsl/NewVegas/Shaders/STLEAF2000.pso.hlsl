@@ -10,7 +10,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float3 lighting = LeafLighting(IN);
     float4 albedo = tex2D(DiffuseMap, IN.uv);
-    float3 lit = albedo.rgb * lighting;
+    float3 lit = LinEncode(LinColor(albedo.rgb) * lighting);	// UNOFFICIAL linear lighting: decoded albedo, encoded result (Leaf.hlsl decodes the light)
 
     OUT.color.rgb = lit;
     OUT.color.a = albedo.a;

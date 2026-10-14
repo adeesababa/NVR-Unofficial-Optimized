@@ -4,6 +4,17 @@
 #ifndef LEAF_INCLUDED
 #define LEAF_INCLUDED
 
+// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl, [Shaders.PBR.Linear]), compiled in only when on at startup
+// (LINEAR_LIGHTING_ON, ShaderRecord::LoadShader); otherwise LinColor / LinEncode / LinScale return their input.
+#if defined(LINEAR_LIGHTING_ON) && LINEAR_LIGHTING_ON && !defined(LINEAR_LIGHTING)
+    #define LINEAR_LIGHTING
+#endif
+#if defined(__INTELLISENSE__)
+    #include "LinearLight.hlsl"
+#else
+    #include "includes/LinearLight.hlsl"
+#endif
+
 sampler2D DiffuseMap : register(s0);
 
 struct PS_INPUT {
@@ -25,9 +36,18 @@ float3 LeafLighting(PS_INPUT IN) {
     float s = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
             ? GetSunShadow(IN.shadowWorldPos.xyz, n)
             : 1.0f;
-    return IN.lighting.rgb - IN.sun * (1.0f - s);
+    #ifdef LINEAR_LIGHTING
+        // UNOFFICIAL linear lighting: the sun and the rest decoded apart, added in linear (encoded in the leaf shaders).
+        return LinColor(IN.lighting.rgb - IN.sun) + LinColor(IN.sun) * s;
+    #else
+        return IN.lighting.rgb - IN.sun * (1.0f - s);
+    #endif
 #else
-    return IN.lighting.rgb;
+    #ifdef LINEAR_LIGHTING
+        return LinColor(IN.lighting.rgb - IN.sun) + LinColor(IN.sun);
+    #else
+        return IN.lighting.rgb;
+    #endif
 #endif
 }
 
