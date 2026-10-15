@@ -19,7 +19,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.SunStrength = std::clamp(TheSettingManager->GetSettingF(section, "SunStrength"), 0.0f, 10.0f);
 	Settings.AmbientStrength = std::clamp(TheSettingManager->GetSettingF(section, "AmbientStrength"), 0.0f, 10.0f);
 	Settings.Forward = std::clamp(TheSettingManager->GetSettingF(section, "ForwardScattering"), 0.0f, 0.95f);
-	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 128);
+	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 1280);
 	Settings.MaxDistance = std::clamp(TheSettingManager->GetSettingF(section, "MaxDistance"), 5000.0f, 200000.0f);
 	Settings.HazeDistance = std::clamp(TheSettingManager->GetSettingF(section, "HazeDistance"), 1000.0f, 200000.0f);
 	Settings.WindSpeed = std::clamp(TheSettingManager->GetSettingF(section, "WindSpeed"), 0.0f, 20.0f);
@@ -39,7 +39,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
-	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 1.0f);
+	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	coverage = -1.0f;
 }
@@ -64,11 +64,11 @@ void VolumetricCloudsEffect::RegisterConstants() {
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
-	int resolution = std::clamp(TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "Resolution"), 0, 2);
+	int resolution = std::clamp(TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "Resolution"), 0, 5);
 	if (resolution == 0 && TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "HalfResolution")) resolution = 1;
-	const UINT divisor = resolution == 2 ? 1 : resolution == 1 ? 2 : 4;
-	lowWidth = (TheRenderManager->width + divisor - 1) / divisor;
-	lowHeight = (TheRenderManager->height + divisor - 1) / divisor;
+	static const float scales[6] = { 0.25f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f };
+	lowWidth = (UINT)ceilf(TheRenderManager->width * scales[resolution]);
+	lowHeight = (UINT)ceilf(TheRenderManager->height * scales[resolution]);
 	blockWidth = (lowWidth + 1) / 2;
 	blockHeight = (lowHeight + 1) / 2;
 	TheTextureManager->InitTexture("TESR_CloudCurrent", &Textures.CurrentTexture, &Textures.CurrentSurface, blockWidth, blockHeight, D3DFMT_A16B16G16R16F);

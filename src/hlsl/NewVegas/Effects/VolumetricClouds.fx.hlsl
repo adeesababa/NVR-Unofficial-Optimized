@@ -60,7 +60,7 @@ static const float Steps = max(TESR_CloudsMarch.x, 4.0);
 static const float MaxDistance = TESR_CloudsMarch.y;
 static const float HazeDistance = max(TESR_CloudsMarch.w, 1.0);
 static const float2 LowTexel = TESR_CloudsLayout.xy;
-static const float Sharpness = saturate(TESR_CloudsMotion.w);
+static const float Sharpness = max(TESR_CloudsMotion.w, 0.0);
 
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
@@ -162,13 +162,16 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float3 scattered = 0.0;
 	float transmittance = 1.0;
 	float depthSum = 0.0, depthWeight = 0.0;
-	[loop] for (float i = 0.0; i < 64.0; i += 1.0) {
-		if (i >= steps || transmittance < 0.01) break;
+	bool marching = true;
+	[loop] for (float outer = 0.0; outer < 6.0 && marching; outer += 1.0) {
+	[loop] for (float inner = 0.0; inner < 255.0; inner += 1.0) {
+		float i = outer * 255.0 + inner;
+		if (i >= steps || transmittance < 0.01) { marching = false; break; }
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
 		float3 p = float3(camera.xy + dir.xy * t, altitude) + wind;
-		float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * Sharpness);
+		float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * saturate(Sharpness));
 		float density = CloudDensity(p, h, lod, false);
 		[branch] if (density > 0.0) {
 			float opticalDepth = 0.0;
@@ -197,6 +200,7 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 			depthWeight += transmittance * (1.0 - stepTransmittance);
 			transmittance *= stepTransmittance;
 		}
+	}
 	}
 	float distance = depthWeight > 0.0 ? depthSum / depthWeight : tStart;
 	float haze = exp(-(distance * distance) / (HazeDistance * HazeDistance)) * saturate((MaxDistance - distance) / (0.4 * MaxDistance));
@@ -339,7 +343,13 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		}
 		return color;
 	}
-	float4 clouds = CatmullRom(uv);
+	float4 clouds;
+	[branch] if (LowTexel.x < TESR_ReciprocalResolution.x * 0.99) {
+		float2 q = 0.25 * TESR_ReciprocalResolution.xy;
+		clouds = 0.25 * (tex2Dlod(TESR_CloudHistory, float4(uv + float2(-q.x, -q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(uv + float2(q.x, -q.y), 0, 0)) +
+			tex2Dlod(TESR_CloudHistory, float4(uv + float2(-q.x, q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(uv + q, 0, 0)));
+	}
+	else clouds = CatmullRom(uv);
 	[branch] if (Sharpness > 0.0) {
 		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(LowTexel.x, 0.0), 0, 0));
 		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(LowTexel.x, 0.0), 0, 0));
