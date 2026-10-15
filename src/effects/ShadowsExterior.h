@@ -169,6 +169,7 @@ public:
 		bool				Enabled;
 		float				SunSize;		// at least 0
 		float				MaxSoftness;	// 1..32
+		bool				Smooth;			// UNOFFICIAL 2026-10-15: smooth penumbra edges (Includes/Shadow.hlsl, PCF Mode 3)
 	};
 
 	struct ScreenSpaceStruct {

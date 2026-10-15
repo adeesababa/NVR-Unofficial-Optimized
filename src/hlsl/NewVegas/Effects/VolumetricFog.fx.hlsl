@@ -52,6 +52,7 @@ float4 TESR_VolumetricFogGlobal;     // x: Amount, y: NightDisableSkyMask, z: Mo
 // don't crowd Main as more of them get added.
 float4 TESR_VolumetricFogNight;        // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 float4 TESR_VolumetricFogNightScatter; // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
+float4 TESR_VolumetricFogSun;          // UNOFFICIAL 2026-10-15 x: SunGlow (1 = the glow round the sun as inherited from NVR)
 float4 TESR_VolumetricFogNightTint;    // xyz: multiplicative night fog color tint, w: NightAmbientStrength
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -790,7 +791,9 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 
 		float sunScattering = pows(compress(sunDir), lerp(8.0, 1.0, PhaseAsymmetry) + sunStrength);
 		sunScattering *= pow(1 - sunHeight, 2) * isDayTimeFog * TESR_FogData.z;
-		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100;
+		// UNOFFICIAL 2026-10-15 SunGlow: this glow (inherited from NVR, up to 100 times the sun's colour where the fog lies
+		// toward a low sun) blew the sun out with the fog on; SunGlow scales it (1 = as it was).
+		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100 * TESR_VolumetricFogSun.x;
 
 		distantFog = pows(smoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
 		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : exp(-worldPos.z / (80000 * DistantFogHeight));

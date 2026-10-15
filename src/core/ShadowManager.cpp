@@ -1234,6 +1234,7 @@ void ShadowManager::RenderShadowMaps() {
 			const bool on = Shadows->Settings.ContactHardening.Enabled;
 			ContactHardeningData.x = on ? 0.00925f * Shadows->Settings.ContactHardening.SunSize : 0.0f;
 			ContactHardeningData.y = Shadows->Settings.ContactHardening.MaxSoftness;
+			ContactHardeningData.z = Shadows->Settings.ContactHardening.Smooth ? 1.0f : 0.0f;	// UNOFFICIAL 2026-10-15 Smooth
 			static float logged = -1.0f;
 			if (ContactHardeningData.x != logged) {
 				Logger::Log("UNOFFICIAL contact hardening %s (penumbra %.4f per unit of distance, max %.0f texels)",

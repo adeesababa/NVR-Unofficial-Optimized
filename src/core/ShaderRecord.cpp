@@ -138,6 +138,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// shaders are exactly what they were. Read here for the same reason as FORWARD_SHADOWS; takes effect on restart.
 	// UNOFFICIAL optional contact-hardening sun shadows: compiled in only when on at startup, like SUN_CROSSFADE.
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
+	// UNOFFICIAL 2026-10-15: interior forward lamp shadows with smooth edges (Includes/PointShadowForward.hlsl)
+	AppendDefine("POINT_SHADOW_SMOOTH", TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "SmoothEdges") ? "1" : "0");
 
 	// UNOFFICIAL CubeReflections (Includes/LiveCube.hlsl): metal and the env-map pass read the live surroundings cube only when
 	// compiled in, which is when either setting is above 0 at startup, so that otherwise those shaders are exactly what they were.

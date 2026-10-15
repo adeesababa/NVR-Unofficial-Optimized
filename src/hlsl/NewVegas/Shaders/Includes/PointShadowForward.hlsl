@@ -26,6 +26,12 @@
 
 #if INTERIOR_SHADOWS
 
+// UNOFFICIAL 2026-10-15 [Shaders.ShadowsInteriors.Forward] SmoothEdges (needs a restart): compiled in only when on
+// (ShaderRecord::LoadShader), as it adds about 50 instruction slots to the 4-lamp object shaders (6 lamp slots each).
+#ifndef POINT_SHADOW_SMOOTH
+    #define POINT_SHADOW_SMOOTH 0
+#endif
+
 float4 NVR_PointShadowLight[6]  : register(c174); // per light of the draw, see above
 float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked light adds nothing), y: depth bias (share of the
                                                   // distance, 0.018 as PointShadows.fx), z: normal offset (world units per
@@ -125,7 +131,19 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
+        // UNOFFICIAL 2026-10-15 SmoothEdges (POINT_SHADOW_SMOOTH): the cube map is read with linear filtering, so across a
+        // shadow's edge the stored distance slides from the blocker's to the lit surface's over one texel. A plain compare
+        // turns that into a hard step that follows the texel grid (blocky edges, worst where contact hardening narrows the
+        // taps). Instead each tap is blocked by how far its distance is below the threshold, against the nearest blocker
+        // among the four taps: a tap on the blocker counts fully, one on the edge partly, so the edge fades over a texel
+        // as with bilinear PCF (the four taps; High and Ultra's extra rings stay plain compares, to keep the 4-lamp shaders
+        // as small as possible). Off: the plain compare, exactly as before.
+#if POINT_SHADOW_SMOOTH
+        float invRamp = 1.0f / max(threshold - min(min(stored.x, stored.y), min(stored.z, stored.w)), 0.0001f);
+        float4 blocked = saturate((threshold - stored) * invRamp) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+#else
         float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+#endif
         [branch] if (NVR_PointShadowDebug.w > 1.5f) {
             // UNOFFICIAL Quality 2 (High): six more taps, one along each axis: the four across the face fill the 3x3 grid's
             // edges, the two along the face's own axis land on the centre (it counts twice). Quality 3 (Ultra): the same ten

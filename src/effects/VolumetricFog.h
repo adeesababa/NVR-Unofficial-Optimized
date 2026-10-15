@@ -26,6 +26,7 @@ public:
 		D3DXVECTOR4		Night;           // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 		D3DXVECTOR4		NightScatter;    // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
 		D3DXVECTOR4		NightTint;       // xyz: multiplicative night fog color tint, w: NightAmbientStrength
+		D3DXVECTOR4		Sun;             // UNOFFICIAL 2026-10-15 x: SunGlow, the fog's glow round the sun (1 = as inherited, 0 interiors)
 		// Custom build: the fog from before the rewrite, for old presets ([Shaders.VolumetricFog.Main] LegacyFog).
 		D3DXVECTOR4		Legacy;          // x: 1 = legacy fog (C++ only: picks the *Legacy techniques)
 		D3DXVECTOR4		LegacyLow;       // x: FogSaturation, y: WeatherImpact, z: DistantFogRange, w: SunPower

@@ -383,7 +383,7 @@ float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, fl
 // Compiled in only when the setting is on at startup (CONTACT_HARDENING from ShaderRecord::LoadShader), so that off the
 // shaders are exactly what they were. c167: after the sun cross-fade's c146-c166.
 // ---------------------------------------------------------------------------
-float4 TESR_ContactHardeningData : register(c167); // x: penumbra width per world unit of caster distance (0 = off), y: widest penumbra radius (atlas texels)
+float4 TESR_ContactHardeningData : register(c167); // x: penumbra width per world unit of caster distance (0 = off), y: widest penumbra radius (atlas texels), z: 1 = Smooth (PCF Mode 3)
 
 static const float2 ContactDisc[12] = {
     float2(0.2041f, 0.0000f), float2(-0.2607f, 0.2388f), float2(0.0399f, -0.4547f), float2(0.3286f, 0.4286f),
@@ -457,14 +457,27 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         float distance = max(depth - casterSum / max(casters, 1.0f), 0.0f) * worldPerDepth;
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
     }
-    float lit;
-    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
-    else {
+    // UNOFFICIAL 2026-10-15 [Shaders.ContactHardening.Main] Smooth (TESR_ContactHardeningData.z), against the aliasing seen
+    // with contact hardening: (1) the plain 3 x 3 (under a texel) and the disc (over it) no longer switch at one penumbra
+    // width, where the edge's look jumped along a visible line: between one and two texels they blend; (2) the disc's
+    // eight taps are turned by a different angle for each third of a shadow texel (a hash of the point's place in the
+    // shadow map, so the pattern stays put on the ground as the camera moves): the eight copies of the edge that showed as
+    // stair-steps and bands in wide penumbrae become a fine, even grain instead. Off: the switch and the fixed disc, the
+    // same arithmetic as before.
+    float w3 = TESR_ContactHardeningData.z > 0.0f ? saturate(2.0f - radius / texel) : (radius <= texel ? 1.0f : 0.0f);
+    float lit = 0.0f;
+    [branch] if (w3 > 0.0f) lit = w3 * ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
+    [branch] if (w3 < 1.0f) {
         float discDepth = depth - ShadowSlopeBias * (radius / texel + 1.0f);
-        lit = ShadowPCF2x2Clamped(uv, discDepth, lo, hi);
-        [unroll] for (int i = 0; i < 8; i++)
-            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, discDepth, lo, hi);
-        lit /= 9.0f;
+        float2 turn = float2(1.0f, 0.0f);
+        [branch] if (TESR_ContactHardeningData.z > 0.0f)
+            sincos(6.2831853f * frac(52.9829189f * frac(dot(floor(uv / texel * 3.0f), float2(0.06711056f, 0.00583715f)))), turn.y, turn.x);
+        float disc = ShadowPCF2x2Clamped(uv, discDepth, lo, hi);
+        [unroll] for (int i = 0; i < 8; i++) {
+            float2 o = ContactDisc8[i];
+            disc += ShadowPCF2x2Clamped(uv + float2(o.x * turn.x - o.y * turn.y, o.x * turn.y + o.y * turn.x) * radius, discDepth, lo, hi);
+        }
+        lit += (1.0f - w3) * disc / 9.0f;
     }
     return lit;
 #elif SHADOW_FIXED_MODE != 2

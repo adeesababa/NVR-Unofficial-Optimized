@@ -102,6 +102,10 @@ Sharp = true
 [_Shaders.ShadowsInteriors.Forward]
 Quality = 3
 DarkeningBlur = true
+SmoothEdges = true
+
+[_Shaders.ContactHardening.Main]
+Smooth = true
 
 # Twice the default reach of the effects not listed above.
 [_Shaders.ShadowsExteriors.Main]
