@@ -209,9 +209,16 @@ TerrainBlendGap terrainBlendGap(float2 screenPos, float3 landPos, float landView
     float2 uv = (screenPos + 0.5f) * texel;
     float3 o = terrainBlendObject(uv, landPos, landViewDepth, eye);
     gap.covered = dot(landPos - o, normal);
+    // UNOFFICIAL 2026-10-15: ported from mrfury97's fork (6a384add, "no opaque land along the contact line"). A land pixel
+    // only draws in front of the object behind it (the depth test), so a negative gap is the two depths' imprecision (and
+    // anti-aliasing's sampling) right where the object meets the ground: it counts as 0, the object at the surface, so the
+    // land is fully faded there. Read as "object in front", it drew the land opaque along the contact line: a thin bright
+    // line between faded pixels. Tolerance: 1 unit plus 0.1 % of the view distance.
+    float tolerance = 1.0f + landViewDepth * 0.001f;
     float blendDistance = 1.0f / TESR_TerrainBlendData.y;
     float limit = blendDistance * 4.0f * max(1.0f, TESR_TerrainBlendShape.z);
-    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > 0.0f && gap.covered < limit) {
+    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > -tolerance && gap.covered < limit) {
+        gap.covered = max(gap.covered, 0.0f);
         float3 oR = terrainBlendObject(uv + float2(texel.x, 0.0f), landPos + dPx, landViewDepth + dZx, eye);
         float3 oL = terrainBlendObject(uv - float2(texel.x, 0.0f), landPos - dPx, landViewDepth - dZx, eye);
         float3 oD = terrainBlendObject(uv + float2(0.0f, texel.y), landPos + dPy, landViewDepth + dZy, eye);
@@ -246,7 +253,7 @@ float terrainBlendDepthRange(TerrainBlendGap gap, float slope) {
 // (so a hill in front of a distant rock never turns see-through at its edge).
 float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
     float maxDistance = TESR_TerrainBlendData.z;
-    if (landViewDepth > maxDistance || gap.covered <= 0.0f) return -1.0f;   // the object in front: the depth test handles it
+    if (landViewDepth > maxDistance || gap.covered < 0.0f) return -1.0f;   // the object in front: the depth test handles it
     float distance = terrainBlendDepthRange(gap, slope);
     if (distance < 0.05f) return -1.0f;   // parallel to the ground: nothing to fade
     float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
@@ -394,7 +401,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // nothing behind the land), 4 how deep the fade reaches (white: the full BlendDistance, grey: a shallow object's seam).
     float blendDebug = TESR_TerrainBlendData.w;
     [branch] if (blendDebug > 2.5f && TESR_TerrainBlendData.x > 0.0f) {
-        if (blendGap.covered <= 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
+        if (blendGap.covered < 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
         else if (blendDebug < 3.5f) finalColor = saturate(blendGap.covered * TESR_TerrainBlendData.y * 0.25f);
         else finalColor = saturate(terrainBlendDepthRange(blendGap, 1.0f - blendNormal.z) * TESR_TerrainBlendData.y);
     }
