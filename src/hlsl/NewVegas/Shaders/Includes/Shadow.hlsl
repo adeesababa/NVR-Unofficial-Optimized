@@ -193,6 +193,8 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 }
 
 #if SHADOW_FIXED_MODE == 3
+static float ShadowSlopeBias = 0.0f;
+
 float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffset) {
     float texel = TESR_ShadowBlur.x;
     float2 lo = quadrantOffset + texel * 0.5f;
@@ -222,7 +224,7 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias, quadrantOffset);
+    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);
 #else
     float4 moments = SampleShadowMoments(lightSpace.xy, quadrantOffset);
 
@@ -257,7 +259,7 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias, quadrantOffset);
+    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);
 #else
     float4 moments = tex2Dlod(TESR_ShadowAtlasOld, float4(lightSpace.xy, 0.0f, 0.0f));
 
@@ -392,9 +394,10 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     float radius = 0.0f;
     [branch] if (contact) {
         float casterSum = 0.0f, casters = 0.0f;
+        float searchDepth = depth - ShadowSlopeBias * (0.73f * TESR_ContactHardeningData.y + 1.0f);
         [unroll] for (int s = 0; s < 5; s++) {
             float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
-            float blocks = d < depth ? 1.0f : 0.0f;
+            float blocks = d < searchDepth ? 1.0f : 0.0f;
             casterSum += d * blocks;
             casters += blocks;
         }
@@ -402,11 +405,12 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
     }
     float lit;
-    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
+    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
     else {
-        lit = ShadowPCF2x2Clamped(uv, depth, lo, hi);
+        float discDepth = depth - ShadowSlopeBias * (radius / texel + 1.0f);
+        lit = ShadowPCF2x2Clamped(uv, discDepth, lo, hi);
         [unroll] for (int i = 0; i < 8; i++)
-            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, depth, lo, hi);
+            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, discDepth, lo, hi);
         lit /= 9.0f;
     }
     return lit;
@@ -541,6 +545,7 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     float4 offsetDistance = offsetScale * SHADOW_NORMAL_BIAS_TEXELS * texelWorld;
 #if SHADOW_FIXED_MODE == 3
     offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
+    ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
 #endif
 
 #if SHADOW_FIXED_MODE == 0

@@ -197,18 +197,17 @@ Enabled = false                          # Shadows based on object proximity/cre
 [_Shaders.AmbientLight.Main]
 Radius = 250.0                      # UNOFFICIAL: how far the occlusion and the bounce reach, in world units (about 70 = 1 m).
 OcclusionStrength = 1.0             # [0-4] How dark creases, corners and the ground under things get.
-BounceStrength = 0.0                # [0-10] How much light lit surfaces send onto nearby ones, worked out from the screen (grainy, comes and goes as you turn). Ignored while GridBounce is above 0 (the light grid replaces it).
 DrawDistance = 12000.0               # Distance from the camera where the effect has faded out.
 DarkestOcclusion = 0.25             # [0-1] The darkest the occlusion may make a pixel (as AmbientOcclusion's ClampStrength).
 BrightnessFade = 0.7                # Bright surfaces keep their light: the occlusion fades out above this brightness (as AmbientOcclusion's LumThreshold).
 BlurRadius = 2.0                    # [0.5-4] Smoothing of the grain, in half-resolution pixels per step (x3 each way).
-GridBounce = 1.25                    # UNOFFICIAL, EXPERIMENTAL: the sun's bounce light from a 3D light grid round you (light propagation volume), outdoors in daylight. Unlike BounceStrength it does not depend on what is on screen, so it neither shimmers nor comes and goes as you turn; it is soft (room-sized), and can leak through thin walls. 0 = off (nothing extra drawn). Try 1. Use with BounceStrength 0.
+GridBounce = 1.25                    # UNOFFICIAL, EXPERIMENTAL: the sun's bounce light from a 3D light grid round you (light propagation volume), outdoors in daylight. It is AmbientLight's bounce light: it does not depend on what is on screen, so it neither shimmers nor comes and goes as you turn; soft (room-sized) light. Indoors and at night it takes the light of lamps and neon seen on screen (GridScreenStrength). 0 = no bounce light (nothing extra drawn).
 GridCellSize = 200.0                # [50-800] Size of one grid cell in world units (32 x 32 x 16 cells round you: 200 covers about 90 x 90 x 45 m). Smaller = finer but shorter reach.
 GridSteps = 8                       # [1-16] How many cells the light spreads from what it bounces off.
 GridSpread = 0.3                    # [0-0.6] How much light passes on from cell to cell each step.
 GridScreenStrength = 6.0            # [0-40] Indoors and at night (no sun): how strongly the light surfaces show on screen (lamps, neon, fire) feeds the grid. It remembers what it saw, so the bounce stays when you turn away.
 GridBlocking = 1.0                  # [0-4] How much walls and other surfaces stop the grid's light passing through them (0: light leaks through everything).
-Temporal = true                     # UNOFFICIAL: keeps the bounce light from frame to frame (moved with the camera) and turns its sample pattern every frame, so the grain averages out instead of crawling (worst on grass at high BounceStrength). Off: each frame on its own, as before.
+Temporal = true                     # UNOFFICIAL: keeps the occlusion from frame to frame (moved with the camera) and turns its sample pattern every frame, so its grain averages out instead of crawling. Off: each frame on its own.
 DebugView = 0                       # 7: the light grid's bounce alone. 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
 
 [_Shaders.AmbientLight.Status]
@@ -1092,12 +1091,15 @@ EdgeSharpness = 2.0                    # [1-8] How quickly a cloud goes from cle
 ShapeSmoothing = 0.0                   # [0-3] Smooths the big cloud shapes (reads the shape noise at a coarser level): fewer small stray puffs, softer outlines.
 Turbulence = 1.0                       # [0-2] Twists and stretches the noise the clouds are made of, so they swirl and streak instead of showing rows of round blots. 0: off.
 DetailSmoothness = 0.5                 # [0-1] Share of smooth noise in the edge detail (the rest is round billows). Higher: wispier, less lumpy edges.
-HalfResolution = false                 # Work the clouds out at half instead of a quarter of the screen size each way: a little more fine detail, roughly 1.5x the cost. Needs a restart.
+HalfResolution = false                 # Older switch, the same as Resolution 1 (used only while Resolution is 0). Needs a restart.
+Resolution = 0                         # UNOFFICIAL [0-2]: the size the clouds are worked out at. 0: a quarter of the screen each way (cheapest). 1: half, a little more fine detail, about 1.5x the cost. 2: the full screen, the sharpest edges and wisps, but 4 times the pixels of 1 (by far the most costly; check the cost with F10). Needs a restart.
 WeatherSize = 30000.0                  # [2000-200000] Size of the pattern of where clouds form, in metres. Smaller: more, smaller cloud fields.
 SunStrength = 1.4                      # [0-10] How bright the sun (or moon) makes the clouds.
 AmbientStrength = 0.7                  # [0-10] How much the sky colour lights the clouds from all around (their shaded sides and undersides).
 ForwardScattering = 0.6                # [0-0.95] How strongly the clouds glow when you look toward the sun (silver linings).
-Steps = 48                             # [8-64] Samples along each view ray. Fewer is faster but grainier.
+Steps = 48                             # [8-128] Samples along each view ray. Fewer is faster but grainier; more gives finer, steadier detail (cost grows with it).
+FineDetail = 0.0                       # UNOFFICIAL [0-1]: a second, finer layer of wisps and curls on the cloud edges, so they keep detail close up instead of one size of lump. 0: off (no cost). One more texture read per sample when on; best with Resolution 1 or 2.
+FineDetailSize = 140.0                 # UNOFFICIAL [10-5000]: size of that finer layer, in metres. Smaller: finer grain.
 MaxDistance = 80000.0                  # [5000-200000] How far away clouds are still drawn, in metres.
 HazeDistance = 30000.0                 # [1000-200000] Distance, in metres, at which far clouds have mostly thinned out into the sky.
 WindSpeed = 1.0                        # [0-20] How fast the clouds drift with the game's wind: 1 is about 15 m/s in calm weather to 60 m/s in a gale (faster than real, so you can see them move).
@@ -1108,6 +1110,7 @@ HideGameClouds = true                  # Hide the game's own flat cloud layers w
 GameTime = true                        # UNOFFICIAL: the clouds move by the game's clock: waiting or sleeping moves them on as far as that time would, a pause or a menu stops them, and the same save shows the same sky. Off: they move by the real time on screen, as before.
 Shadows = 0.6                          # UNOFFICIAL [0-1]: how much the clouds shade the ground in the sunlight (drifting cloud shadows across the land). 0: no cloud shadows.
 ShadowRange = 30000.0                  # UNOFFICIAL [4000-100000]: how far round you the cloud shadows reach, in metres across. Larger reaches farther but each shadow is a little softer.
+ShadowResolution = 256                 # UNOFFICIAL [256-2048]: detail of the cloud shadows: 256, 512, 1024 or 2048 texels across ShadowRange (256 over 30000 m is about 120 m per texel, soft edges). Higher: crisper cloud shadow edges, but the shadow map is redrawn every frame, so 1024 costs about 16 times 256 (check with F10). Needs a restart.
 WaterReflections = 1.0                 # UNOFFICIAL [0-1]: these clouds in the water's reflection, drawn into the game's own reflection where it shows sky (so the water waves and tints them like the rest), in place of the game's flat cloud layers there. 0: the game's clouds in the water, as before.
 ShadowDebug = false                    # UNOFFICIAL: shows the cloud shadows alone (white: sunlit, black: shaded by a cloud; walls turned from the sun greyer). For checking only.
 ReflectionDebug = 0                    # UNOFFICIAL [0-2]: checking only. 1: in the water reflection, paints red where it looks up into the sky and blue where down (where the clouds would go), behind what the game drew. 2: the same over everything.

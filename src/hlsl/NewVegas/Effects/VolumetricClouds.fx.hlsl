@@ -14,6 +14,7 @@ float4 TESR_CloudsLayout;
 float4 TESR_CloudsBlocks;
 float4 TESR_CloudsLook;
 float4x4 TESR_CloudsPrevViewProj;
+float4 TESR_CloudsDetail;
 float4 TESR_CloudsExtra;
 float4x4 TESR_CloudsReflectInvVP;
 float4x4 TESR_CloudsHistoryViewProj;
@@ -100,6 +101,11 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 		float4 warp = tex3Dlod(TESR_NoiseVolume, float4(q * 0.125, lod));
 		q += (warp.rga - 0.5) * TESR_CloudsLook.z;
 		float detail = lerp(tex3Dlod(TESR_CloudDetail, float4(q, lod)).r, warp.g, TESR_CloudsLook.w);
+		[branch] if (TESR_CloudsDetail.x > 0.0) {
+			float3 f = (p + float3(0.0, 0.0, 1.7 * TESR_CloudsWind.z)) / max(TESR_CloudsDetail.y, 1.0) + (warp.gar - 0.5) * TESR_CloudsLook.z;
+			float fine = tex3Dlod(TESR_CloudDetail, float4(f, lod)).r;
+			detail = lerp(detail, detail * 0.65 + fine * 0.35, TESR_CloudsDetail.x);
+		}
 		float wisps = lerp(detail, 1.0 - detail, saturate(h * 6.0));
 		base = saturate(Remap(base, wisps * Erosion, 1.0, 0.0, 1.0));
 	}
@@ -253,7 +259,7 @@ float4 CatmullRom(float2 uv) {
 
 static const float ShadowStrength = TESR_CloudsExtra.x;
 static const float ShadowRange = max(TESR_CloudsExtra.y, 1000.0);
-static const float ShadowMapSize = 256.0;
+static const float ShadowMapSize = max(TESR_CloudsDetail.z, 256.0);
 
 float2 ShadowCentre() {
 	float texel = ShadowRange / ShadowMapSize;

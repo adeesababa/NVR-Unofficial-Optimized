@@ -26,6 +26,8 @@ public:
 		float	WaterReflections;
 		bool	ShadowDebug;
 		int		ReflectionDebug;
+		float	FineDetail;
+		float	FineDetailSize;
 	};
 	SettingsStruct	Settings = {};
 
@@ -44,6 +46,7 @@ public:
 		D3DXMATRIX	ReflectInvVP;
 		D3DXMATRIX	HistoryViewProj;
 		D3DXVECTOR4	ReflectData;
+		D3DXVECTOR4	Detail;
 	};
 	ConstantsStruct	Constants = {};
 
@@ -57,6 +60,7 @@ public:
 		IDirect3DSurface9* ShadowSurface = nullptr;
 	};
 	TexturesStruct	Textures;
+	UINT	shadowMapSize = 256;
 
 	float	HideGameClouds = 0.0f;
 	float	HideGameCloudsInReflection = 0.0f;

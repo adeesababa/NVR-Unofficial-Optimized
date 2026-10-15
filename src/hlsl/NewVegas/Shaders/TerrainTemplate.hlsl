@@ -60,7 +60,7 @@ struct VS_OUTPUT {
     float4 sPosition : POSITION;
     float2 uv : TEXCOORD0;
     float3 vertex_color : TEXCOORD1;
-    float3 lPosition : TEXCOORD2;
+    float4 lPosition : TEXCOORD2;
     float3 tangent : TEXCOORD3;
     float3 binormal : TEXCOORD4;
     float3 normal : TEXCOORD5;
@@ -88,6 +88,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.uv.xy = IN.uv.xy;
     OUT.vertex_color.xyz = clamp(IN.vertex_color.rgb, 0.0f, 1.0f);
     OUT.lPosition.xyz = IN.position.xyz;
+    OUT.lPosition.w = posPS.w;
     OUT.tangent.xyz = IN.tangent.xyz;
     OUT.binormal.xyz = IN.binormal.xyz;
     OUT.normal.xyz = IN.normal.xyz;
@@ -104,7 +105,7 @@ struct PS_INPUT
     float2 uv : TEXCOORD0;
     float3 vertex_color : TEXCOORD1_centroid;
 #if TERRAIN_BLEND_ACTIVE
-    float3 lPosition : TEXCOORD2;
+    float4 lPosition : TEXCOORD2;
 #else
     float3 lPosition : TEXCOORD2_centroid;
 #endif
@@ -154,7 +155,7 @@ sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CL
 float terrainBlendViewDepth(float depth) {
     float2 zw = depth * float2(TESR_InvProjectionTransform[2][2], TESR_InvProjectionTransform[2][3]) +
         float2(TESR_InvProjectionTransform[3][2], TESR_InvProjectionTransform[3][3]);
-    return zw.x / zw.y;
+    return abs(zw.x / zw.y);
 }
 
 struct TerrainBlendGap {
@@ -176,9 +177,11 @@ TerrainBlendGap terrainBlendGap(float2 screenPos, float3 landPos, float landView
     float2 uv = (screenPos + 0.5f) * texel;
     float3 o = terrainBlendObject(uv, landPos, landViewDepth, eye);
     gap.covered = dot(landPos - o, normal);
+    float tolerance = 1.0f + landViewDepth * 0.001f;
     float blendDistance = 1.0f / TESR_TerrainBlendData.y;
     float limit = blendDistance * 4.0f * max(1.0f, TESR_TerrainBlendShape.z);
-    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > 0.0f && gap.covered < limit) {
+    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > -tolerance && gap.covered < limit) {
+        gap.covered = max(gap.covered, 0.0f);
         float3 oR = terrainBlendObject(uv + float2(texel.x, 0.0f), landPos + dPx, landViewDepth + dZx, eye);
         float3 oL = terrainBlendObject(uv - float2(texel.x, 0.0f), landPos - dPx, landViewDepth - dZx, eye);
         float3 oD = terrainBlendObject(uv + float2(0.0f, texel.y), landPos + dPy, landViewDepth + dZy, eye);
@@ -206,7 +209,7 @@ float terrainBlendDepthRange(TerrainBlendGap gap, float slope) {
 
 float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
     float maxDistance = TESR_TerrainBlendData.z;
-    if (landViewDepth > maxDistance || gap.covered <= 0.0f) return -1.0f;
+    if (landViewDepth > maxDistance || gap.covered < 0.0f) return -1.0f;
     float distance = terrainBlendDepthRange(gap, slope);
     if (distance < 0.05f) return -1.0f;
     float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
@@ -239,7 +242,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #if TERRAIN_BLEND_ACTIVE
     float terrainKeep = -1.0f;
     float3 blendLandPos = IN.lPosition.xyz;
-    float blendViewDepth = terrainBlendViewDepth(IN.projectionPosition.z / IN.projectionPosition.w);
+    float blendViewDepth = IN.lPosition.w;
     float3 blendNormal = normalize(IN.normal.xyz);
     TerrainBlendGap blendGap = terrainBlendGap(IN.screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
         ddx(blendViewDepth), ddy(blendViewDepth), IN.viewPosition.xyz, blendNormal);
@@ -330,7 +333,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #if TERRAIN_BLEND_ACTIVE
     float blendDebug = TESR_TerrainBlendData.w;
     [branch] if (blendDebug > 2.5f && TESR_TerrainBlendData.x > 0.0f) {
-        if (blendGap.covered <= 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
+        if (blendGap.covered < 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
         else if (blendDebug < 3.5f) finalColor = saturate(blendGap.covered * TESR_TerrainBlendData.y * 0.25f);
         else finalColor = saturate(terrainBlendDepthRange(blendGap, 1.0f - blendNormal.z) * TESR_TerrainBlendData.y);
     }
