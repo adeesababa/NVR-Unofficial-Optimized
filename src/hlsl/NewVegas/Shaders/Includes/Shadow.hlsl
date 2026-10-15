@@ -53,7 +53,7 @@ float4 TESR_ShadowData        : register(c128); // y: darkness (z is INTERIOR cu
 float4 TESR_ShadowFormatData  : register(c129); // x: mode (0 VSM, 1 EVSM2, 2 EVSM4), y: format bits
 float4 TESR_ShadowFade        : register(c130); // x: sunrise/sunset fade, y: shadow maps active
 float4 TESR_SmoothedSunDir    : register(c131);
-float4 TESR_ShadowBlur        : register(c132); // x: 1 / atlas resolution, y: lod cascade updated
+float4 TESR_ShadowBlur        : register(c132); // x: 1 / atlas resolution, y: lod cascade updated, z: 1 = SmoothFilter (PCF)
 float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is SUPPRESSED
 
 // Object templates top out at s7. Override BEFORE including for wider sampler arrays --
@@ -218,6 +218,29 @@ float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffse
     float texel = TESR_ShadowBlur.x;
     float2 lo = quadrantOffset + texel * 0.5f;
     float2 hi = quadrantOffset + 0.5f - texel * 0.5f;
+    // UNOFFICIAL 2026-10-15 [Shaders.ShadowsExteriors.ShadowMaps] SmoothFilter (TESR_ShadowBlur.z; user: shadows on the
+    // character alias, worse at a lower CascadeResolution). Close up -- a third-person character, a low sun across a steep
+    // surface -- one shadow-map texel covers several screen pixels, and the 3 x 3 quadratic B-spline's soft edge still follows
+    // the texels' stair steps. This weighs the 4 x 4 texels round the point with a cubic B-spline instead: a little wider and
+    // one order smoother, so those steps round off into a clean curve. 16 compares instead of 9; the taps reach 2 texels out
+    // (half a texel more slope bias).
+    [branch] if (TESR_ShadowBlur.z > 0.0f) {
+        float2 q = uv / texel - 0.5f;
+        float2 b = floor(q);
+        float2 t = q - b;                     // 0 .. 1 past the texel at b
+        float2 t2 = t * t, t3 = t2 * t;
+        float4 cx = float4((1.0f - t.x) * (1.0f - t.x) * (1.0f - t.x), 3.0f * t3.x - 6.0f * t2.x + 4.0f, -3.0f * t3.x + 3.0f * t2.x + 3.0f * t.x + 1.0f, t3.x) / 6.0f;
+        float4 cy = float4((1.0f - t.y) * (1.0f - t.y) * (1.0f - t.y), 3.0f * t3.y - 6.0f * t2.y + 4.0f, -3.0f * t3.y + 3.0f * t2.y + 3.0f * t.y + 1.0f, t3.y) / 6.0f;
+        float cubicDepth = depth - 0.5f * ShadowSlopeBias;
+        float cubic = 0.0f;
+        [unroll] for (int cyi = 0; cyi < 4; cyi++) {
+            [unroll] for (int cxi = 0; cxi < 4; cxi++) {
+                float2 tapUV = clamp((b + float2(cxi - 1, cyi - 1) + 0.5f) * texel, lo, hi);
+                cubic += (cubicDepth <= tex2Dlod(atlas, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * cx[cxi] * cy[cyi];
+            }
+        }
+        return cubic;
+    }
     float2 p = uv / texel - 0.5f;
     float2 c = floor(p + 0.5f);              // the nearest texel
     float2 f = p - c;                         // -0.5 .. 0.5 from its centre

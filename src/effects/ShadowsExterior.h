@@ -115,6 +115,7 @@ public:
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;
+		bool				SmoothFilter;	// UNOFFICIAL 2026-10-15: PCF (Mode 3) with a 4 x 4 cubic B-spline instead of the 3 x 3
 	};
 
 	struct OrthoStruct {

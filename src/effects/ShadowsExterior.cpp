@@ -104,11 +104,15 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		Settings.ShadowMaps.Distance = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "Distance"), 100.0f);
 		Settings.ShadowMaps.CascadeLambda = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "CascadeLambda"), 0.0f, 1.0f);
+		// UNOFFICIAL 2026-10-15 SmoothFilter (TESR_ShadowBlur.z, read by Includes/Shadow.hlsl ShadowPCF3x3), live
+		Settings.ShadowMaps.SmoothFilter = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "SmoothFilter") != 0;
+		Constants.ShadowBlur.z = Settings.ShadowMaps.SmoothFilter ? 1.0f : 0.0f;
 		Settings.ShadowMaps.LimitFrequency = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "LimitFrequency");
 
 		// 0..5 -> 1024, 1536, 2048, 2560, 3072, 3584 per cascade. The atlas packs 2x2 cascades,
 		// so the texture is twice this in each dimension: index 5 is a 7168x7168 atlas.
-		int cascadeStep = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CascadeResolution"), 0, 5);
+		// UNOFFICIAL 2026-10-15: 6 -> 4096 (an 8192 x 8192 atlas, 256 MB as PCF's R32F), Max Quality's.
+		int cascadeStep = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CascadeResolution"), 0, 6);
 		ULONG cascadeRes = (ULONG)(cascadeStep + 2) * 512;
 
 		// Cap against what the device can actually create. InitTexture does not report failure,

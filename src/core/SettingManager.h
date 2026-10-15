@@ -351,7 +351,7 @@ public:
 			std::string Description;
 			bool		Reboot;
 			UInt32		Type;
-			bool		MaxQuality = false;	// UNOFFICIAL 2026-10-15: this value is Max Quality's, not the user's (shown greyed in the menu)
+			bool		MaxQuality = false;	// UNOFFICIAL 2026-10-15: this value is Max Quality's, not the user's own (shown red in the menu)
 
 			// Typed value, kept in sync with Value above. Populated for every node
 			// regardless of Type (e.g. a Boolean node also gets IntValue/FloatValue)
@@ -374,13 +374,18 @@ public:
 		void			SetValue(ConfigNode* Node);
 		void			CreateWeatherSection(const char* WeatherName, TESWeather* Weather);
 		tomlValue*		FindSection(tomlValue* table, StringList* keys);
+		void			SetValueIn(tomlValue& Target, ConfigNode* Node);	// UNOFFICIAL: SetValue into the given table
+		bool			IsMaxQualityKey(const char* Section, const char* Key);	// UNOFFICIAL: Max Quality sets this one (while it is on)
+		static void		MergeTables(tomlValue& Into, const tomlValue& From);	// UNOFFICIAL: From's values over Into's, tables merged
 		tomlValue*		UserSection(const char* Section);
 		void			UpdateOldDefaults();
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;
 		tomlValue		MaxQualityConfig;	// UNOFFICIAL 2026-10-15: Max Quality's settings (NewVegasReloaded.dll.maxquality.toml), read over the user's while it is on
+		tomlValue		MaxQualityUser;		// UNOFFICIAL: the user's own changes to those (NewVegasReloaded.dll.maxquality.user.toml, also in MaxQualityConfig)
 		bool			MaxQualityActive = false;
+		bool			MaxQualityUserChanged = false;	// MaxQualityUser has changes the next Save writes
 		bool			configLoaded;
 		char*			Config;
 		char*			ConfigB;

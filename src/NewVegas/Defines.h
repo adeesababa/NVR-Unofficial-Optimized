@@ -4,6 +4,7 @@
 #define TomlSettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.toml"
 #define DefaultsSettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.defaults.toml"
 #define MaxQualitySettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.maxquality.toml"	// UNOFFICIAL 2026-10-15 Max Quality
+#define MaxQualityUserSettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.maxquality.user.toml"	// UNOFFICIAL: the user's own changes to Max Quality's values
 #define ShadersPath "Data\\Shaders\\NewVegasReloaded\\Shaders\\"
 #define EffectsPath "Data\\Shaders\\NewVegasReloaded\\Effects\\"
 #define RenderStateArgs 0, 0

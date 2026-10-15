@@ -1456,9 +1456,6 @@ static void RevertToSnapshot() {
 				lut->LoadLUT(slot, value.c_str());
 				continue;
 			}
-			// UNOFFICIAL 2026-10-15: a value Max Quality sets is its own, not the user's: never written back to their file
-			SettingManager::Configuration::ConfigNode current;
-			if (TheSettingManager->Config.FillNode(&current, section.c_str(), key.c_str()) && current.MaxQuality) continue;
 			TheSettingManager->SetSettingS(const_cast<char*>(section.c_str()),
 			                               const_cast<char*>(key.c_str()),
 			                               const_cast<char*>(value.c_str()));
@@ -2186,7 +2183,7 @@ static const char* kShadowFormatNames[] = {
 	"0 - 16 bit", "1 - 32 bit",
 };
 static const char* kShadowCascadeResolutionNames[] = {
-	"0 - 1024", "1 - 1536", "2 - 2048",
+	"0 - 1024", "1 - 1536", "2 - 2048", "3 - 2560", "4 - 3072", "5 - 3584", "6 - 4096",
 };
 static const char* kShadowOrthoResolutionNames[] = {
 	"0 - 128", "1 - 256", "2 - 512", "3 - 1024", "4 - 2048",
@@ -2252,10 +2249,13 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Revert to value at session start");
 	};
 
-	// UNOFFICIAL 2026-10-15: a value Max Quality sets is shown greyed (the user's own comes back when it is turned off)
+	// UNOFFICIAL 2026-10-15: a value Max Quality sets is shown red and stays editable; a change goes into Max Quality's own
+	// layer (SettingManager::Configuration::SetValue), never into the user's settings.
 	const bool maxLocked = node.MaxQuality;
-	bool inert = IsInertSetting(node.Section, node.Key) || maxLocked;
+	bool inert = IsInertSetting(node.Section, node.Key);
 	if (inert) ImGui::BeginDisabled();
+	if (maxLocked) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+	struct MaxColour { bool on; ~MaxColour() { if (on) ImGui::PopStyleColor(); } } maxColour{ maxLocked };
 
 	// Hover state of the *primary* widget for each case, captured immediately
 	// after that widget so RevertBtn()'s own "~" button (submitted right
@@ -2273,7 +2273,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		}
 		mainHovered = ImGui::IsItemHovered();
 		if (inert && mainHovered) {
-			if (maxLocked) ImGui::SetTooltip("Set by Max Quality while it is on (NewVegasReloaded.dll.maxquality.toml). Your own value comes back when you turn it off.");
+			if (maxLocked) ImGui::SetTooltip("Max Quality value (NewVegasReloaded.dll.maxquality.toml). Changes here are saved to NewVegasReloaded.dll.maxquality.user.toml, not to your own settings.");
 			else ImGui::SetTooltip("Disabled: has no effect. Mipmaps/anisotropy are commented out in "
 				"ShadowsExterior.cpp (deferred shadows produce artifacted derivatives).");
 		}
@@ -2346,7 +2346,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		}
 		mainHovered = ImGui::IsItemHovered();
 		if (inert && mainHovered) {
-			if (maxLocked) ImGui::SetTooltip("Set by Max Quality while it is on (NewVegasReloaded.dll.maxquality.toml). Your own value comes back when you turn it off.");
+			if (maxLocked) ImGui::SetTooltip("Max Quality value (NewVegasReloaded.dll.maxquality.toml). Changes here are saved to NewVegasReloaded.dll.maxquality.user.toml, not to your own settings.");
 			else ImGui::SetTooltip("Disabled: has no effect. Mipmaps/anisotropy are commented out in "
 				"ShadowsExterior.cpp (deferred shadows produce artifacted derivatives).");
 		}
@@ -2783,7 +2783,7 @@ void ImGuiManager::BuildUI() {
 				"pushes quality settings to their maximum. Expect a much lower frame rate (often half or less).\n"
 				"Your own settings are kept: turn it off and restart to get them back exactly.\n"
 				"Takes effect after Save and a game restart.%s",
-				MaxQuality::Active ? "\nIt is ON now: greyed values in the menu are its own (NewVegasReloaded.dll.maxquality.toml), not yours." : "");
+				MaxQuality::Active ? "\nIt is ON now: red values in the menu are its own. You can change them: those changes are saved to NewVegasReloaded.dll.maxquality.user.toml, not to your own settings." : "");
 		if (wanted != MaxQuality::Active) {
 			ImGui::SameLine();
 			ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Save + restart to turn it %s", wanted ? "on" : "off");

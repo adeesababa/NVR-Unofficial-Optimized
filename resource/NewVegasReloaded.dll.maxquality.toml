@@ -86,7 +86,8 @@ MaxDistance = 6000.0
 # would need about 600 MB more video memory), and so does how many lamps cast shadows at once (LightPoints: 64 would need
 # about 300-600 MB more).
 [_Shaders.ShadowsExteriors.ShadowMaps]
-CascadeResolution = 4
+CascadeResolution = 6
+SmoothFilter = true
 Format = 1
 LimitFrequency = false
 Distance = 12000
