@@ -162,11 +162,8 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float3 scattered = 0.0;
 	float transmittance = 1.0;
 	float depthSum = 0.0, depthWeight = 0.0;
-	bool marching = true;
-	[loop] for (float outer = 0.0; outer < 6.0 && marching; outer += 1.0) {
-	[loop] for (float inner = 0.0; inner < 255.0; inner += 1.0) {
-		float i = outer * 255.0 + inner;
-		if (i >= steps || transmittance < 0.01) { marching = false; break; }
+	[loop] for (float i = 0.0; i < 64.0; i += 1.0) {
+		if (i >= steps || transmittance < 0.01) break;
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
@@ -200,7 +197,6 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 			depthWeight += transmittance * (1.0 - stepTransmittance);
 			transmittance *= stepTransmittance;
 		}
-	}
 	}
 	float distance = depthWeight > 0.0 ? depthSum / depthWeight : tStart;
 	float haze = exp(-(distance * distance) / (HazeDistance * HazeDistance)) * saturate((MaxDistance - distance) / (0.4 * MaxDistance));
