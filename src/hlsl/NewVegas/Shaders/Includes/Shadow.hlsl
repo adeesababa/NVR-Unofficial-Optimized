@@ -203,6 +203,13 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 }
 
 #if SHADOW_FIXED_MODE == 3
+// UNOFFICIAL 2026-10-14 (user: the stripes over the power armour came back, low sun): how far the receiver's own surface falls
+// away from the sun per shadow-map texel, in light-space depth, set by GetSunShadow from the surface's slope to the sun. A
+// lookup that compares texels n away from the point lowers its depth by n of these, so a flat surface never shadows itself
+// whatever the angle (receiver-plane bias). The fixed normal offset alone was too small at a lowish sun (it grew with
+// 1 - N.L), and the contact-hardening disc reaches several texels out with no slack at all. 0 for callers that don't set it.
+static float ShadowSlopeBias = 0.0f;
+
 // UNOFFICIAL 2026-10-14 PCF ([Shaders.ShadowsExteriors.ShadowMaps] Mode 3). The atlas holds the light-space depth itself; each
 // lookup compares the 3 x 3 texels round the point with the point's depth and weighs the results with a quadratic B-spline
 // centred on the point (smooth, about two texels of penumbra, no stair steps as the point moves across texels). Nothing to
@@ -236,7 +243,7 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias, quadrantOffset);   // UNOFFICIAL PCF
+    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);   // UNOFFICIAL PCF (3 x 3: taps up to 1.5 texels out)
 #else
     float4 moments = SampleShadowMoments(lightSpace.xy, quadrantOffset);
 
@@ -274,7 +281,7 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias, quadrantOffset);   // UNOFFICIAL PCF
+    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);   // UNOFFICIAL PCF
 #else
     float4 moments = tex2Dlod(TESR_ShadowAtlasOld, float4(lightSpace.xy, 0.0f, 0.0f));
 
@@ -440,9 +447,10 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     float radius = 0.0f;
     [branch] if (contact) {
         float casterSum = 0.0f, casters = 0.0f;
+        float searchDepth = depth - ShadowSlopeBias * (0.73f * TESR_ContactHardeningData.y + 1.0f);
         [unroll] for (int s = 0; s < 5; s++) {   // one read at a time: the terrain shaders are at the temp register limit
             float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
-            float blocks = d < depth ? 1.0f : 0.0f;
+            float blocks = d < searchDepth ? 1.0f : 0.0f;
             casterSum += d * blocks;
             casters += blocks;
         }
@@ -450,11 +458,12 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
     }
     float lit;
-    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth, quadrantOffset);
+    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
     else {
-        lit = ShadowPCF2x2Clamped(uv, depth, lo, hi);
+        float discDepth = depth - ShadowSlopeBias * (radius / texel + 1.0f);
+        lit = ShadowPCF2x2Clamped(uv, discDepth, lo, hi);
         [unroll] for (int i = 0; i < 8; i++)
-            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, depth, lo, hi);
+            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, discDepth, lo, hi);
         lit /= 9.0f;
     }
     return lit;
@@ -609,6 +618,10 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // catches the receiver's own surface wherever it slopes away from the sun (shadow acne; the variance maps tolerated it).
     // Push the lookup off the surface along its normal, 1.5 map texels at a glancing sun (none facing it), as is usual for PCF.
     offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
+    // Receiver-plane slack (see ShadowSlopeBias): tan of the sun's angle to the face, capped at 5 (about 79 degrees, where the
+    // face is barely lit anyway), times one texel of light-space depth (the cascades are 2 radii deep and 2 radii / (0.5 /
+    // TESR_ShadowBlur.x) texels wide, so a texel is 2 * TESR_ShadowBlur.x of depth in every cascade).
+    ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
 #endif
 
 #if SHADOW_FIXED_MODE == 0

@@ -43,6 +43,7 @@ float4 TESR_CloudsBlocks;      // xy: one march texel (a 2 x 2 block) in UV, zw:
 float4 TESR_CloudsLook;        // x: edge sharpness (1 = soft .. 8 = hard), y: shape noise mip bias (0 = full detail),
                                // z: turbulence (distortion of the noise lookups), w: share of smooth noise in the detail
 float4x4 TESR_CloudsPrevViewProj; // last frame's view-projection, for the history
+float4 TESR_CloudsDetail;      // UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m)
 float4 TESR_CloudsExtra;       // UNOFFICIAL x: shadow strength (0 off), y: shadow map width (m), z: 1 = reflection debug view, w: 1 = shadow debug view
 float4x4 TESR_CloudsReflectInvVP;    // UNOFFICIAL: the water reflection camera's clip space -> world direction (no translation)
 float4x4 TESR_CloudsHistoryViewProj; // UNOFFICIAL: the view-projection the history in TESR_CloudHistory was made with
@@ -144,6 +145,14 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 		float4 warp = tex3Dlod(TESR_NoiseVolume, float4(q * 0.125, lod));
 		q += (warp.rga - 0.5) * TESR_CloudsLook.z;
 		float detail = lerp(tex3Dlod(TESR_CloudDetail, float4(q, lod)).r, warp.g, TESR_CloudsLook.w);
+		// UNOFFICIAL 2026-10-14 FineDetail: the same detail texture again at a smaller size (and through the same twist), a
+		// second octave, so the edges keep small wisps and curls close up instead of the one size of lump. One more read per
+		// sample, only when on.
+		[branch] if (TESR_CloudsDetail.x > 0.0) {
+			float3 f = (p + float3(0.0, 0.0, 1.7 * TESR_CloudsWind.z)) / max(TESR_CloudsDetail.y, 1.0) + (warp.gar - 0.5) * TESR_CloudsLook.z;
+			float fine = tex3Dlod(TESR_CloudDetail, float4(f, lod)).r;
+			detail = lerp(detail, detail * 0.65 + fine * 0.35, TESR_CloudsDetail.x);
+		}
 		float wisps = lerp(detail, 1.0 - detail, saturate(h * 6.0));
 		base = saturate(Remap(base, wisps * Erosion, 1.0, 0.0, 1.0));
 	}

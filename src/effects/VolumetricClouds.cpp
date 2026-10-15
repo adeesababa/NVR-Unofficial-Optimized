@@ -20,7 +20,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.SunStrength = std::clamp(TheSettingManager->GetSettingF(section, "SunStrength"), 0.0f, 10.0f);
 	Settings.AmbientStrength = std::clamp(TheSettingManager->GetSettingF(section, "AmbientStrength"), 0.0f, 10.0f);
 	Settings.Forward = std::clamp(TheSettingManager->GetSettingF(section, "ForwardScattering"), 0.0f, 0.95f);
-	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 64);
+	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 128);
 	Settings.MaxDistance = std::clamp(TheSettingManager->GetSettingF(section, "MaxDistance"), 5000.0f, 200000.0f);
 	Settings.HazeDistance = std::clamp(TheSettingManager->GetSettingF(section, "HazeDistance"), 1000.0f, 200000.0f);
 	Settings.WindSpeed = std::clamp(TheSettingManager->GetSettingF(section, "WindSpeed"), 0.0f, 20.0f);
@@ -38,6 +38,8 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.WaterReflections = std::clamp(TheSettingManager->GetSettingF(section, "WaterReflections"), 0.0f, 2.0f);
 	Settings.ShadowDebug = TheSettingManager->GetSettingI(section, "ShadowDebug") != 0;
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
+	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
+	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
 }
 
 void VolumetricCloudsEffect::RegisterConstants() {
@@ -52,14 +54,19 @@ void VolumetricCloudsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudsLook", &Constants.Look);
 	TheShaderManager->RegisterConstant("TESR_CloudsPrevViewProj", (D3DXVECTOR4*)&Constants.PrevViewProj);
 	TheShaderManager->RegisterConstant("TESR_CloudsExtra", &Constants.Extra);
+	TheShaderManager->RegisterConstant("TESR_CloudsDetail", &Constants.Detail);
 	TheShaderManager->RegisterConstant("TESR_CloudsReflectInvVP", (D3DXVECTOR4*)&Constants.ReflectInvVP);
 	TheShaderManager->RegisterConstant("TESR_CloudsHistoryViewProj", (D3DXVECTOR4*)&Constants.HistoryViewProj);
 	TheShaderManager->RegisterConstant("TESR_CloudsReflectData", &Constants.ReflectData);
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
-	// HalfResolution (read once, at start): the march grid at half instead of a quarter of the screen each way.
-	const UINT divisor = TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "HalfResolution") ? 2 : 4;
+	// Resolution (read once, at start): the march grid at a quarter (0), half (1) or the whole (2) of the screen size each way.
+	// UNOFFICIAL 2026-10-14 (user: "an option to make vol clouds higher res / more detailed"): 2 added; the older
+	// HalfResolution switch still means 1 when Resolution is 0.
+	int resolution = std::clamp(TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "Resolution"), 0, 2);
+	if (resolution == 0 && TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "HalfResolution")) resolution = 1;
+	const UINT divisor = resolution == 2 ? 1 : resolution == 1 ? 2 : 4;
 	lowWidth = (TheRenderManager->width + divisor - 1) / divisor;
 	lowHeight = (TheRenderManager->height + divisor - 1) / divisor;
 	blockWidth = (lowWidth + 1) / 2;
@@ -157,6 +164,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	Constants.March = D3DXVECTOR4((float)Settings.Steps, Settings.MaxDistance, (float)frame, Settings.HazeDistance);
 	Constants.Layout.w = Settings.Brightness;
 	Constants.Look = D3DXVECTOR4(Settings.EdgeSharpness, Settings.ShapeSmoothing, Settings.Turbulence, Settings.DetailSmoothness);
+	Constants.Detail = D3DXVECTOR4(Settings.FineDetail, Settings.FineDetailSize, 0.0f, 0.0f);
 
 	HideGameClouds = (Enabled && Effect && Settings.HideGameClouds && ShouldRender()) ? 1.0f : 0.0f;
 	HideGameCloudsInReflection = HideGameClouds > 0.0f && ReflectionWanted() ? 1.0f : 0.0f;

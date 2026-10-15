@@ -31,6 +31,8 @@ public:
 		float	WaterReflections;			// UNOFFICIAL: the clouds drawn into the game's water reflection (0 off)
 		bool	ShadowDebug;				// UNOFFICIAL: show the cloud shadow alone (white lit, black shaded)
 		int		ReflectionDebug;			// UNOFFICIAL: in the water reflection, red where it looks up (sky), blue where down
+		float	FineDetail;					// UNOFFICIAL: a second, finer layer of edge detail (0 off)
+		float	FineDetailSize;				// UNOFFICIAL: its size, metres per tile
 	};
 	SettingsStruct	Settings = {};
 
@@ -49,6 +51,7 @@ public:
 		D3DXMATRIX	ReflectInvVP;		// UNOFFICIAL: the reflection camera's clip space -> world direction
 		D3DXMATRIX	HistoryViewProj;	// UNOFFICIAL: the view-projection of the frame whose clouds are in the history
 		D3DXVECTOR4	ReflectData;		// UNOFFICIAL x: strength, yz: the reflection's size, w: the far plane's depth
+		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m)
 	};
 	ConstantsStruct	Constants = {};
 
