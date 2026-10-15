@@ -374,13 +374,18 @@ public:
 		void			SetValue(ConfigNode* Node);
 		void			CreateWeatherSection(const char* WeatherName, TESWeather* Weather);
 		tomlValue*		FindSection(tomlValue* table, StringList* keys);
+		void			SetValueIn(tomlValue& Target, ConfigNode* Node);
+		bool			IsMaxQualityKey(const char* Section, const char* Key);
+		static void		MergeTables(tomlValue& Into, const tomlValue& From);
 		tomlValue*		UserSection(const char* Section);
 		void			UpdateOldDefaults();
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;
 		tomlValue		MaxQualityConfig;
+		tomlValue		MaxQualityUser;
 		bool			MaxQualityActive = false;
+		bool			MaxQualityUserChanged = false;
 		bool			configLoaded;
 		char*			Config;
 		char*			ConfigB;

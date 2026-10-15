@@ -26,6 +26,7 @@ public:
 		D3DXVECTOR4		Night;           // x: DensityScale, y: AmountScale, z: HeightFalloffScale, w: MaxHeightOffset
 		D3DXVECTOR4		NightScatter;    // x: NoiseStrengthScale, y: WindSpeedScale, z: ExtinctionScale, w: InscatteringScale
 		D3DXVECTOR4		NightTint;       // xyz: multiplicative night fog color tint, w: NightAmbientStrength
+		D3DXVECTOR4		Sun;
 		D3DXVECTOR4		Legacy;
 		D3DXVECTOR4		LegacyLow;
 		D3DXVECTOR4		LegacyHigh;

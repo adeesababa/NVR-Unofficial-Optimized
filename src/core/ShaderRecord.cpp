@@ -128,6 +128,7 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
 
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
+	AppendDefine("POINT_SHADOW_SMOOTH", TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "SmoothEdges") ? "1" : "0");
 
 	AppendDefine("LIVE_CUBE", TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections") > 0.0f ||
 		TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f ? "1" : "0");

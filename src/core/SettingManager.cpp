@@ -62,21 +62,35 @@ void SettingManager::Configuration::Init() {
 	Logger::Log("Loading configs finished");
 
 	{
+		static int decided = -1;
 		ConfigNode node;
-		MaxQualityActive = false;
-		const bool wanted = FillNode(&node, "Main.Main.Quality", "MaxQuality") && node.BoolValue;
-		if (wanted) {
-			char MaxQualityFilename[MAX_PATH];
+		if (decided < 0) decided = FillNode(&node, "Main.Main.Quality", "MaxQuality") && node.BoolValue ? 1 : 0;
+		MaxQualityActive = decided == 1;
+		MaxQualityConfig = toml::table();
+		MaxQualityUser = toml::table();
+		MaxQualityUserChanged = false;
+		if (MaxQualityActive) {
+			char MaxQualityFilename[MAX_PATH], UserFilename[MAX_PATH];
 			BuildConfigPath(MaxQualityFilename, MaxQualitySettingsFile);
+			BuildConfigPath(UserFilename, MaxQualityUserSettingsFile);
 			try {
 				MaxQualityConfig = toml::parse<toml::discard_comments, std::map>((std::string_view)MaxQualityFilename).as_table();
 				Logger::Log("UNOFFICIAL Max Quality is ON: reduced-size effects run at full size, the settings in %s are used in place of yours (your file is not changed)", MaxQualityFilename);
 			}
 			catch (const std::exception& e) {
 				Logger::Log("[ERROR] Max Quality is on but %s could not be read (%s): reduced-size effects run at full size, your settings stay as they are", MaxQualityFilename, e.what());
-				MaxQualityConfig = toml::table();
 			}
-			MaxQualityActive = true;
+			if (GetFileAttributesA(UserFilename) != INVALID_FILE_ATTRIBUTES) {
+				try {
+					MaxQualityUser = toml::parse<toml::discard_comments, std::map>((std::string_view)UserFilename).as_table();
+					MergeTables(MaxQualityConfig, MaxQualityUser);
+					Logger::Log("UNOFFICIAL Max Quality: your own changes to it read from %s", UserFilename);
+				}
+				catch (const std::exception& e) {
+					Logger::Log("[ERROR] %s could not be read (%s): Max Quality's own values are used", UserFilename, e.what());
+					MaxQualityUser = toml::table();
+				}
+			}
 		}
 		MaxQuality::Active = MaxQualityActive;
 	}
@@ -91,6 +105,7 @@ void SettingManager::Configuration::Init() {
 bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Section, const char* Key) {
 	
 	//Logger::Log("Config.FillNode %s %s", Section, Key);
+	Node->MaxQuality = false;
 	std::string value; //at the moment settings are always stored as string. Should fix as it results in lots of conversions
 	char path[MAX_PATH] = "_";
 	strcat(path, Section);
@@ -214,10 +229,8 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 
 	//Logger::Log("FillNode %s.%s value: %s (from defaults? %i)", path, Key, value.c_str(), fromDefault);
 
-	// write the value in case it was obtained from defaults
-	if (fromDefault) SetValue(Node);
+	if (fromDefault) SetValueIn(TomlConfig, Node);
 
-	Node->MaxQuality = false;
 	if (MaxQualityActive) {
 		StringList overrideKeys;
 		SplitString(path, ".", &overrideKeys);
@@ -429,12 +442,40 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 }
 
 void SettingManager::Configuration::SetValue(ConfigNode* Node) {
+	if (MaxQualityActive && (Node->MaxQuality || IsMaxQualityKey(Node->Section, Node->Key))) {
+		SetValueIn(MaxQualityConfig, Node);
+		SetValueIn(MaxQualityUser, Node);
+		MaxQualityUserChanged = true;
+		return;
+	}
+	SetValueIn(TomlConfig, Node);
+}
+
+bool SettingManager::Configuration::IsMaxQualityKey(const char* Section, const char* Key) {
+	if (!MaxQualityActive) return false;
+	char path[256] = "_";
+	strcat(path, Section);
+	StringList keys;
+	SplitString(path, ".", &keys);
+	tomlValue* section = FindSection(&MaxQualityConfig, &keys);
+	return section && section->is_table() && section->as_table().count(Key) > 0;
+}
+
+void SettingManager::Configuration::MergeTables(tomlValue& Into, const tomlValue& From) {
+	if (!Into.is_table() || !From.is_table()) return;
+	for (const auto& [key, value] : From.as_table()) {
+		if (value.is_table() && Into.contains(key) && Into.at(key).is_table()) MergeTables(Into.at(key), value);
+		else Into[key] = value;
+	}
+}
+
+void SettingManager::Configuration::SetValueIn(tomlValue& Target, ConfigNode* Node) {
 	char path[256] = "_";
 	strcat(path, Node->Section);
 
 	StringList keys;
 	SplitString(path, ".", &keys);
-	tomlValue* section = FindSection(&TomlConfig, &keys);
+	tomlValue* section = FindSection(&Target, &keys);
 	SplitString(path, ".", &keys);
 	tomlValue* defaultSection = FindSection(&DefaultConfig, &keys);
 
@@ -445,7 +486,7 @@ void SettingManager::Configuration::SetValue(ConfigNode* Node) {
 		SplitString(path, ".", &keys);
 
 		// create the table
-		tomlValue* table = &TomlConfig;
+		tomlValue* table = &Target;
 		for (auto address : keys) {
 			// create table if not found
 			if (!table->contains(address)) (*table)[address] = toml::table();
@@ -947,6 +988,17 @@ void SettingManager::SaveSettings() {
 
 	ConfigurationFile << Config.TomlConfig << std::endl;
 	ConfigurationFile.close();
+
+	if (Config.MaxQualityUserChanged) {
+		char UserFilename[MAX_PATH];
+		BuildConfigPath(UserFilename, MaxQualityUserSettingsFile);
+		std::ofstream UserFile(UserFilename, std::ios::trunc | std::ios::binary);
+		UserFile << "# New Vegas Reloaded (UNOFFICIAL): your own changes to Max Quality's values, made in the menu while it was on.\n"
+			"# Read over NewVegasReloaded.dll.maxquality.toml. Delete this file to go back to Max Quality's own values.\n";
+		UserFile << Config.MaxQualityUser << std::endl;
+		UserFile.close();
+		Config.MaxQualityUserChanged = false;
+	}
 
 	hasUnsavedChanges = false;
 }

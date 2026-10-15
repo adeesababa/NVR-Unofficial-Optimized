@@ -101,11 +101,13 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 		Settings.ShadowMaps.Distance = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "Distance"), 100.0f);
 		Settings.ShadowMaps.CascadeLambda = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "CascadeLambda"), 0.0f, 1.0f);
+		Settings.ShadowMaps.SmoothFilter = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "SmoothFilter") != 0;
+		Constants.ShadowBlur.z = Settings.ShadowMaps.SmoothFilter ? 1.0f : 0.0f;
 		Settings.ShadowMaps.LimitFrequency = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "LimitFrequency");
 
 		// 0..5 -> 1024, 1536, 2048, 2560, 3072, 3584 per cascade. The atlas packs 2x2 cascades,
 		// so the texture is twice this in each dimension: index 5 is a 7168x7168 atlas.
-		int cascadeStep = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CascadeResolution"), 0, 5);
+		int cascadeStep = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CascadeResolution"), 0, 6);
 		ULONG cascadeRes = (ULONG)(cascadeStep + 2) * 512;
 
 		// Cap against what the device can actually create. InitTexture does not report failure,
@@ -422,6 +424,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
 	Settings.ContactHardening.MaxSoftness = max(min(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "MaxSoftness"), 32.0f), 1.0f);
+	Settings.ContactHardening.Smooth = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "Smooth") != 0;
 	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
 		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
 

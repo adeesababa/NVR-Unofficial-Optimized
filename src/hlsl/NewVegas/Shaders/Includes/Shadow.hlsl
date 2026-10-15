@@ -49,7 +49,7 @@ float4 TESR_ShadowData        : register(c128); // y: darkness (z is INTERIOR cu
 float4 TESR_ShadowFormatData  : register(c129); // x: mode (0 VSM, 1 EVSM2, 2 EVSM4), y: format bits
 float4 TESR_ShadowFade        : register(c130); // x: sunrise/sunset fade, y: shadow maps active
 float4 TESR_SmoothedSunDir    : register(c131);
-float4 TESR_ShadowBlur        : register(c132); // x: 1 / atlas resolution, y: lod cascade updated
+float4 TESR_ShadowBlur        : register(c132);
 float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is SUPPRESSED
 
 // Object templates top out at s7. Override BEFORE including for wider sampler arrays --
@@ -199,6 +199,23 @@ float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffse
     float texel = TESR_ShadowBlur.x;
     float2 lo = quadrantOffset + texel * 0.5f;
     float2 hi = quadrantOffset + 0.5f - texel * 0.5f;
+    [branch] if (TESR_ShadowBlur.z > 0.0f) {
+        float2 q = uv / texel - 0.5f;
+        float2 b = floor(q);
+        float2 t = q - b;
+        float2 t2 = t * t, t3 = t2 * t;
+        float4 cx = float4((1.0f - t.x) * (1.0f - t.x) * (1.0f - t.x), 3.0f * t3.x - 6.0f * t2.x + 4.0f, -3.0f * t3.x + 3.0f * t2.x + 3.0f * t.x + 1.0f, t3.x) / 6.0f;
+        float4 cy = float4((1.0f - t.y) * (1.0f - t.y) * (1.0f - t.y), 3.0f * t3.y - 6.0f * t2.y + 4.0f, -3.0f * t3.y + 3.0f * t2.y + 3.0f * t.y + 1.0f, t3.y) / 6.0f;
+        float cubicDepth = depth - 0.5f * ShadowSlopeBias;
+        float cubic = 0.0f;
+        [unroll] for (int cyi = 0; cyi < 4; cyi++) {
+            [unroll] for (int cxi = 0; cxi < 4; cxi++) {
+                float2 tapUV = clamp((b + float2(cxi - 1, cyi - 1) + 0.5f) * texel, lo, hi);
+                cubic += (cubicDepth <= tex2Dlod(atlas, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * cx[cxi] * cy[cyi];
+            }
+        }
+        return cubic;
+    }
     float2 p = uv / texel - 0.5f;
     float2 c = floor(p + 0.5f);
     float2 f = p - c;
@@ -404,14 +421,20 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         float distance = max(depth - casterSum / max(casters, 1.0f), 0.0f) * worldPerDepth;
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
     }
-    float lit;
-    [branch] if (radius <= texel) lit = ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
-    else {
+    float w3 = TESR_ContactHardeningData.z > 0.0f ? saturate(2.0f - radius / texel) : (radius <= texel ? 1.0f : 0.0f);
+    float lit = 0.0f;
+    [branch] if (w3 > 0.0f) lit = w3 * ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
+    [branch] if (w3 < 1.0f) {
         float discDepth = depth - ShadowSlopeBias * (radius / texel + 1.0f);
-        lit = ShadowPCF2x2Clamped(uv, discDepth, lo, hi);
-        [unroll] for (int i = 0; i < 8; i++)
-            lit += ShadowPCF2x2Clamped(uv + ContactDisc8[i] * radius, discDepth, lo, hi);
-        lit /= 9.0f;
+        float2 turn = float2(1.0f, 0.0f);
+        [branch] if (TESR_ContactHardeningData.z > 0.0f)
+            sincos(6.2831853f * frac(52.9829189f * frac(dot(floor(uv / texel * 3.0f), float2(0.06711056f, 0.00583715f)))), turn.y, turn.x);
+        float disc = ShadowPCF2x2Clamped(uv, discDepth, lo, hi);
+        [unroll] for (int i = 0; i < 8; i++) {
+            float2 o = ContactDisc8[i];
+            disc += ShadowPCF2x2Clamped(uv + float2(o.x * turn.x - o.y * turn.y, o.x * turn.y + o.y * turn.x) * radius, discDepth, lo, hi);
+        }
+        lit += (1.0f - w3) * disc / 9.0f;
     }
     return lit;
 #elif SHADOW_FIXED_MODE != 2

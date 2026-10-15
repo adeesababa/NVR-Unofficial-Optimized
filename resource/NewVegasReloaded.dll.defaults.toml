@@ -902,7 +902,7 @@ Sharp = false                        # UNOFFICIAL: sharper, steadier contact sha
 [_Shaders.ShadowsExteriors.ShadowMaps]
 Mode = 3							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
 Format = 0							 # Texture format, higher means higher quality, but higher bandwidth cost. 0: 16 bit, 1: 32 bit
-CascadeResolution = 1				 # Resolution used for shadow cascades. 0: 1024, 1: 1536, 2: 2048,
+CascadeResolution = 1				 # Resolution used for shadow cascades. 0: 1024, 1: 1536, 2: 2048, 3: 2560, 4: 3072, 5: 3584, 6: 4096 (UNOFFICIAL; 6 needs about 256 MB of video memory with PCF shadows, Max Quality uses it).
                                      # 3: 2560, 4: 3072, 5: 3584. The atlas holds 2x2 cascades, so
                                      # VRAM and shadow-pass bandwidth scale with the square of this:
                                      # 3 is ~2.6x the cost of 2, and 5 is ~5x. Clamped down if it
@@ -913,6 +913,7 @@ Mipmaps = false						 # DISABLED. Enable mipmaps for the shadow maps.
 Anisotropy = 0						 # DISABLED. Anisotropic filteric for mipmaps, 0: disabled, 1: 8x, 2: 16x
 Distance = 6000                      # Distance to render shadows for. The unit is the same as the game uses for i.e. fog values. 
 CascadeLambda = 0.9					 # [0.0-1.0] Controls how cascades are split, higher value means nearer cascades get higher resolution.
+SmoothFilter = false					 # UNOFFICIAL (2026-10-15), PCF shadows (Mode 3): a smoother, slightly wider filter on the sun shadow maps (a 4 x 4 cubic B-spline instead of 3 x 3). Rounds off the stair steps that show where one shadow-map texel covers several pixels: shadows on your character in third person, a low sun across steep surfaces. Costs a little (16 compares per lookup instead of 9).
 LimitFrequency = true				 # Limit the update frequency of the furthest cascade (once per four frames).
 LodSkipLoaded = true				 # Distant-object LOD inside the loaded cells casts no shadow: the full objects there already do. Removes doubled shadows and ghost shadows of swapped or removed objects, and saves drawing them twice. false: the old behaviour.
 
@@ -967,6 +968,7 @@ NormalOffset = 0.0                   # [0.0-4.0] Another cure for speckles, push
 FirstPerson = true                   # Shadows on your weapon and arms too.
 KeepDarkening = true                 # Keep the old darkening of what no tracked lamp reaches (rooms keep their mood). Off = brighter unlit corners, and about 0.8 ms saved.
 DarkeningBlur = false                # Blur that darkening as the old pass did (about 0.9 ms more).
+SmoothEdges = true                       # UNOFFICIAL (2026-10-15), needs a restart: smoother lamp shadow edges indoors. The shadow maps are read so each edge fades over one of their texels instead of stepping along them (the blocky look, worst with ContactHardening). Adds about 50 instructions to the 4-lamp object shaders (compiled in only when on). Off: the plain, blockier edges.
 LampSwitchMargin = 0.2               # [0.0-0.9] Only so many lamps can cast shadows at once (LightPoints); they are picked by distance. A lamp that already has a shadow keeps it until another is this much nearer (0.2 = 20%), and while it is a little behind you, so shadows stop popping on and off as you walk and turn. 0 = pick purely by distance, as before.
 FadeIn = 0.0                         # [0.0-2.0] Seconds a lamp's shadow takes to fade in when the lamp gets one, instead of popping in. 0 = at once, as before.
 LampRanking = 1                      # 1: lamps get shadows by how much of the scene they light (brightness x reach / distance), so a big room lamp is not pushed out by small bulbs near you as you move. 0 = the nearest lamps, as before.
@@ -999,6 +1001,7 @@ Enabled = false                     # UNOFFICIAL, optional: one bounce of indire
 [_Shaders.ContactHardening.Main]
 SunSize = 1.0                        # UNOFFICIAL, optional: how soft far shadow edges get, as a multiple of the real sun's size (1 = realistic). Higher values can show aliasing.
 MaxSoftness = 4.0                    # Cap on the blur, in shadow map texels (1-32). Higher allows softer edges under tall objects but costs more and can show aliasing.
+Smooth = true                        # UNOFFICIAL (2026-10-15), PCF shadows (Mode 3): smoother contact-hardening edges. Narrow and wide penumbrae blend instead of switching along a line, and the soft-edge samples are turned a little differently at each spot on the ground, so wide penumbrae show a fine even grain instead of stair-steps and bands. Costs a little in penumbrae only.
 
 [_Shaders.ContactHardening.Status]
 Enabled = true                       # UNOFFICIAL, optional: sun shadows sharp where an object meets the ground and softer the further they fall from it. Needs a game RESTART the first time it is turned on (compiled into the shaders only then, so off costs nothing); after that the switch works live. Needs ForwardShadows.
@@ -1524,6 +1527,7 @@ WindSpeed = 0.3                     # Speed of the fog's density noise animation
 NoiseScale = 1.0                    # World-space frequency of the procedural 3D density noise.
 NoiseStrength = 0.7                 # How much the procedural noise modulates density (0 = flat, 1 = fully noise-driven).
 PhaseAsymmetry = 0.6                # Henyey-Greenstein scattering asymmetry toward the sun (higher = stronger "silver lining" look facing the sun).
+SunGlow = 0.25                         # UNOFFICIAL (2026-10-15) [0-2]: the fog's bright glow round the sun (strongest with a low sun and distant fog toward it). 0.25 keeps a soft glow about as bright as the sun without fog; 1 = as in NVR before (the sun looked blown out with the fog on). 0: no glow.
 ShadowStrength = 1.0                # Blend of the shadow-cascade visibility term on the sun's in-scattered light (0 = skip shadow sampling entirely, cheaper).
 RainyDisablesSkyFilter = true       # In Rainy weather, stop excluding the sky dome from the fog composite, so fog blends fully into the overcast sky instead of masking it out. Does not affect NVR's own density, noise/wind animation, or the sunrise/sunset boost -- those stay active in every weather. Since FNV has no distinct "Foggy" weather type, an actual fog weather is almost always authored as Cloudy, not Rainy -- see CloudyDisablesSkyFilter below for the one that matters for that.
 CloudyDisablesSkyFilter = true      # Same as above, but for Cloudy weather -- which is what most fog weathers are actually authored as. Turn off if you prefer a sharp fog/sky boundary even under overcast/foggy skies.

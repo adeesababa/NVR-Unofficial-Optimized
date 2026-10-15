@@ -83,6 +83,7 @@ void VolumetricFogEffect::UpdateSettings(){
 
 		Constants.Scatter.x = TheSettingManager->GetSettingF(SettingCategory, "PhaseAsymmetry");
 		Constants.Scatter.y = TheSettingManager->GetSettingF(SettingCategory, "ShadowStrength");
+		Constants.Sun.x = std::clamp(TheSettingManager->GetSettingF(SettingCategory, "SunGlow"), 0.0f, 2.0f);
 
 		Constants.Aerial.x = TheSettingManager->GetSettingF(SettingCategory, "AerialStrength");
 		Constants.Aerial.y = TheSettingManager->GetSettingF(SettingCategory, "AerialRangeStart");
@@ -111,6 +112,7 @@ void VolumetricFogEffect::UpdateSettings(){
 
 		Constants.Scatter.x = 0.0f;
 		Constants.Scatter.y = 0.0f;
+		Constants.Sun.x = 0.0f;
 
 		Constants.Aerial = D3DXVECTOR4(0, 0, 0, 0);
 		Constants.AerialTintColor = D3DXVECTOR4(0, 0, 0, 0);
@@ -203,6 +205,7 @@ void VolumetricFogEffect::RegisterConstants(){
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogNight", &Constants.Night);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogNightScatter", &Constants.NightScatter);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogNightTint", &Constants.NightTint);
+	TheShaderManager->RegisterConstant("TESR_VolumetricFogSun", &Constants.Sun);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogLow", &Constants.LegacyLow);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogHigh", &Constants.LegacyHigh);
 	TheShaderManager->RegisterConstant("TESR_VolumetricFogSimple", &Constants.LegacySimple);

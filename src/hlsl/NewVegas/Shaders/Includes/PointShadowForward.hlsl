@@ -4,6 +4,10 @@
 
 #if INTERIOR_SHADOWS
 
+#ifndef POINT_SHADOW_SMOOTH
+    #define POINT_SHADOW_SMOOTH 0
+#endif
+
 float4 NVR_PointShadowLight[6]  : register(c174);
 float4 NVR_PointShadowParams    : register(c180);
 
@@ -70,7 +74,12 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
+#if POINT_SHADOW_SMOOTH
+        float invRamp = 1.0f / max(threshold - min(min(stored.x, stored.y), min(stored.z, stored.w)), 0.0001f);
+        float4 blocked = saturate((threshold - stored) * invRamp) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+#else
         float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+#endif
         [branch] if (NVR_PointShadowDebug.w > 1.5f) {
             float sum = dot(blocked, 1.0f) + PointShadowRing(cube, dir, s, threshold, light.w);
             float taps = 10.0f;

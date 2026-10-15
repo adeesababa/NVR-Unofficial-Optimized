@@ -112,6 +112,7 @@ public:
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;
+		bool				SmoothFilter;
 	};
 
 	struct OrthoStruct {
@@ -165,6 +166,7 @@ public:
 		bool				Enabled;
 		float				SunSize;
 		float				MaxSoftness;
+		bool				Smooth;
 	};
 
 	struct ScreenSpaceStruct {
