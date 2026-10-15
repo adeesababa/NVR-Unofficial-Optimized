@@ -43,7 +43,7 @@ float4 TESR_CloudsBlocks;      // xy: one march texel (a 2 x 2 block) in UV, zw:
 float4 TESR_CloudsLook;        // x: edge sharpness (1 = soft .. 8 = hard), y: shape noise mip bias (0 = full detail),
                                // z: turbulence (distortion of the noise lookups), w: share of smooth noise in the detail
 float4x4 TESR_CloudsPrevViewProj; // last frame's view-projection, for the history
-float4 TESR_CloudsDetail;      // UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m)
+float4 TESR_CloudsDetail;      // UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size
 float4 TESR_CloudsExtra;       // UNOFFICIAL x: shadow strength (0 off), y: shadow map width (m), z: 1 = reflection debug view, w: 1 = shadow debug view
 float4x4 TESR_CloudsReflectInvVP;    // UNOFFICIAL: the water reflection camera's clip space -> world direction (no translation)
 float4x4 TESR_CloudsHistoryViewProj; // UNOFFICIAL: the view-projection the history in TESR_CloudHistory was made with
@@ -328,7 +328,7 @@ float4 CatmullRom(float2 uv) {
 // ---- UNOFFICIAL 2026-10-12: cloud shadows and the clouds on water ----
 static const float ShadowStrength = TESR_CloudsExtra.x;
 static const float ShadowRange = max(TESR_CloudsExtra.y, 1000.0);
-static const float ShadowMapSize = 256.0;
+static const float ShadowMapSize = max(TESR_CloudsDetail.z, 256.0);   // UNOFFICIAL: ShadowResolution (was always 256)
 
 // The shadow map's centre (metres, on the cloud base): the camera, snapped to whole texels.
 float2 ShadowCentre() {

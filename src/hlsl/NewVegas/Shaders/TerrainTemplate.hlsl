@@ -66,7 +66,7 @@ struct VS_OUTPUT {
     float4 sPosition : POSITION;
     float2 uv : TEXCOORD0;
     float3 vertex_color : TEXCOORD1;
-    float3 lPosition : TEXCOORD2;
+    float4 lPosition : TEXCOORD2;   // w: the view depth (terrain blending)
     float3 tangent : TEXCOORD3;
     float3 binormal : TEXCOORD4;
     float3 normal : TEXCOORD5;
@@ -94,6 +94,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.uv.xy = IN.uv.xy;
     OUT.vertex_color.xyz = clamp(IN.vertex_color.rgb, 0.0f, 1.0f);
     OUT.lPosition.xyz = IN.position.xyz;
+    OUT.lPosition.w = posPS.w;   // UNOFFICIAL: the view depth, for terrain blending (clip w is the depth along the view)
     OUT.tangent.xyz = IN.tangent.xyz;
     OUT.binormal.xyz = IN.binormal.xyz;
     OUT.normal.xyz = IN.normal.xyz;
@@ -111,8 +112,8 @@ struct PS_INPUT
     float3 vertex_color : TEXCOORD1_centroid;
 #if TERRAIN_BLEND_ACTIVE
     // Not centroid with terrain blending: it takes this position's screen derivatives, which centroid sampling spoils at
-    // triangle edges (with anti-aliasing) by moving the sample point there.
-    float3 lPosition : TEXCOORD2;
+    // triangle edges (with anti-aliasing) by moving the sample point there. w: the view depth, likewise not centroid.
+    float4 lPosition : TEXCOORD2;
 #else
     float3 lPosition : TEXCOORD2_centroid;
 #endif
@@ -168,11 +169,12 @@ float4 TESR_TerrainBlendShape : register(c178); // x: ground width, y: height bl
 sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 // View depth of a depth-buffer value through the camera's inverse projection: only its z and w columns depend on the
-// depth (the jitter and the screen position live in x and y). Used for the land and the scene alike, so both match.
+// depth (the jitter and the screen position live in x and y). For the scene behind the land; the land's own comes from its
+// vertex shader (clip w), the same distance along the view.
 float terrainBlendViewDepth(float depth) {
     float2 zw = depth * float2(TESR_InvProjectionTransform[2][2], TESR_InvProjectionTransform[2][3]) +
         float2(TESR_InvProjectionTransform[3][2], TESR_InvProjectionTransform[3][3]);
-    return zw.x / zw.y;
+    return abs(zw.x / zw.y);   // positive, as the land's clip w it is compared with
 }
 
 // UNOFFICIAL 2026-10-14: ported from mrfury97's NVR fork (commit 0a7cbdc5, "band below the surface, constant ground width",
@@ -285,7 +287,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     float terrainKeep = -1.0f;
     // (The derivatives at the top level: every pixel of the 2 x 2 quad.)
     float3 blendLandPos = IN.lPosition.xyz;
-    float blendViewDepth = terrainBlendViewDepth(IN.projectionPosition.z / IN.projectionPosition.w);
+    // UNOFFICIAL 2026-10-14 (user: white lines on the land after the terrain blending update, with the game's anti-aliasing
+    // on): the land's view depth from the vertex shader (lPosition.w), not centroid, as in mrfury97's commit. It was worked
+    // out from projectionPosition, which is centroid sampled: at triangle edges its screen derivatives jump, the gap's
+    // width and angle came out wrong along every edge of the land's mesh, and the fade cut lines there.
+    float blendViewDepth = IN.lPosition.w;
     float3 blendNormal = normalize(IN.normal.xyz);
     TerrainBlendGap blendGap = terrainBlendGap(IN.screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
         ddx(blendViewDepth), ddy(blendViewDepth), IN.viewPosition.xyz, blendNormal);

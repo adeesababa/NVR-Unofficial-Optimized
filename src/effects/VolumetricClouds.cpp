@@ -76,7 +76,11 @@ void VolumetricCloudsEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("NVR_CloudHistory1", &Textures.HistoryTexture[1], &Textures.HistorySurface[1], lowWidth, lowHeight, D3DFMT_A16B16G16R16F);
 	Textures.HistoryRead = Textures.HistoryTexture[0];
 	TheTextureManager->RegisterTexture("TESR_CloudHistory", (IDirect3DBaseTexture9**)&Textures.HistoryRead);
-	TheTextureManager->InitTexture("TESR_CloudShadow", &Textures.ShadowTexture, &Textures.ShadowSurface, 256, 256, D3DFMT_A16B16G16R16F);
+	// UNOFFICIAL 2026-10-14 ShadowResolution (read once, at start): the cloud shadow map's size, 256 (as before) to 2048. Over the
+	// same ShadowRange a bigger map gives crisper cloud shadow edges; its cost grows with the texel count (it is drawn every frame).
+	const int shadowResolution = TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "ShadowResolution");
+	shadowMapSize = shadowResolution >= 2048 ? 2048 : shadowResolution >= 1024 ? 1024 : shadowResolution >= 512 ? 512 : 256;
+	TheTextureManager->InitTexture("TESR_CloudShadow", &Textures.ShadowTexture, &Textures.ShadowSurface, shadowMapSize, shadowMapSize, D3DFMT_A16B16G16R16F);
 	Constants.Layout.x = 1.0f / lowWidth;
 	Constants.Layout.y = 1.0f / lowHeight;
 	Constants.Blocks.x = 1.0f / blockWidth;
@@ -164,7 +168,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	Constants.March = D3DXVECTOR4((float)Settings.Steps, Settings.MaxDistance, (float)frame, Settings.HazeDistance);
 	Constants.Layout.w = Settings.Brightness;
 	Constants.Look = D3DXVECTOR4(Settings.EdgeSharpness, Settings.ShapeSmoothing, Settings.Turbulence, Settings.DetailSmoothness);
-	Constants.Detail = D3DXVECTOR4(Settings.FineDetail, Settings.FineDetailSize, 0.0f, 0.0f);
+	Constants.Detail = D3DXVECTOR4(Settings.FineDetail, Settings.FineDetailSize, (float)shadowMapSize, 0.0f);
 
 	HideGameClouds = (Enabled && Effect && Settings.HideGameClouds && ShouldRender()) ? 1.0f : 0.0f;
 	HideGameCloudsInReflection = HideGameClouds > 0.0f && ReflectionWanted() ? 1.0f : 0.0f;

@@ -51,7 +51,7 @@ public:
 		D3DXMATRIX	ReflectInvVP;		// UNOFFICIAL: the reflection camera's clip space -> world direction
 		D3DXMATRIX	HistoryViewProj;	// UNOFFICIAL: the view-projection of the frame whose clouds are in the history
 		D3DXVECTOR4	ReflectData;		// UNOFFICIAL x: strength, yz: the reflection's size, w: the far plane's depth
-		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m)
+		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size (texels)
 	};
 	ConstantsStruct	Constants = {};
 
@@ -65,6 +65,7 @@ public:
 		IDirect3DSurface9* ShadowSurface = nullptr;
 	};
 	TexturesStruct	Textures;
+	UINT	shadowMapSize = 256;	// UNOFFICIAL: ShadowResolution, read once at start
 
 	float	HideGameClouds = 0.0f;	// 1 while these clouds replace the game's, for SetShadersHook
 	float	HideGameCloudsInReflection = 0.0f;	// UNOFFICIAL: 1 while these clouds are drawn into the water's reflection too
