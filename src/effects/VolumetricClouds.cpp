@@ -20,7 +20,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.SunStrength = std::clamp(TheSettingManager->GetSettingF(section, "SunStrength"), 0.0f, 10.0f);
 	Settings.AmbientStrength = std::clamp(TheSettingManager->GetSettingF(section, "AmbientStrength"), 0.0f, 10.0f);
 	Settings.Forward = std::clamp(TheSettingManager->GetSettingF(section, "ForwardScattering"), 0.0f, 0.95f);
-	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 128);
+	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 1280);	// UNOFFICIAL 2026-10-15: was 128 (and the shader stopped at 64)
 	Settings.MaxDistance = std::clamp(TheSettingManager->GetSettingF(section, "MaxDistance"), 5000.0f, 200000.0f);
 	Settings.HazeDistance = std::clamp(TheSettingManager->GetSettingF(section, "HazeDistance"), 1000.0f, 200000.0f);
 	Settings.WindSpeed = std::clamp(TheSettingManager->GetSettingF(section, "WindSpeed"), 0.0f, 20.0f);
@@ -40,7 +40,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
-	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 1.0f);
+	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);	// UNOFFICIAL 2026-10-15: was 0-1
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	coverage = -1.0f;	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change)
 }
@@ -68,11 +68,13 @@ void VolumetricCloudsEffect::RegisterTextures() {
 	// Resolution (read once, at start): the march grid at a quarter (0), half (1) or the whole (2) of the screen size each way.
 	// UNOFFICIAL 2026-10-14 (user: "an option to make vol clouds higher res / more detailed"): 2 added; the older
 	// HalfResolution switch still means 1 when Resolution is 0.
-	int resolution = std::clamp(TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "Resolution"), 0, 2);
+	// UNOFFICIAL 2026-10-15: 3-5 larger than the screen (1.5, 2 and 3 times each way; the composite averages what each pixel
+	// covers). Heavy on video memory: at 2560 x 1440, 5 is two histories of 7680 x 4320 half floats, about 600 MB in all.
+	int resolution = std::clamp(TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "Resolution"), 0, 5);
 	if (resolution == 0 && TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "HalfResolution")) resolution = 1;
-	const UINT divisor = resolution == 2 ? 1 : resolution == 1 ? 2 : 4;
-	lowWidth = (TheRenderManager->width + divisor - 1) / divisor;
-	lowHeight = (TheRenderManager->height + divisor - 1) / divisor;
+	static const float scales[6] = { 0.25f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f };
+	lowWidth = (UINT)ceilf(TheRenderManager->width * scales[resolution]);
+	lowHeight = (UINT)ceilf(TheRenderManager->height * scales[resolution]);
 	blockWidth = (lowWidth + 1) / 2;
 	blockHeight = (lowHeight + 1) / 2;
 	TheTextureManager->InitTexture("TESR_CloudCurrent", &Textures.CurrentTexture, &Textures.CurrentSurface, blockWidth, blockHeight, D3DFMT_A16B16G16R16F);
