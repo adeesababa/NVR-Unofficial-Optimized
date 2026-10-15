@@ -230,7 +230,7 @@ float4 FilterPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 // ---- 1: Trace, half resolution ----
 float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 uv = (vpos + 0.5) * LowTexel;
-	float2 pixelUV = uv - 0.5 * TESR_ReciprocalResolution.xy;   // a pixel centre in the block
+	float2 pixelUV = uv - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy);   // a pixel centre in the block
 	float depth = readDepthLod(pixelUV);
 	float3 N = ViewNormal(pixelUV);
 	float roughness;
@@ -324,7 +324,7 @@ float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 uv = (vpos + 0.5) * LowTexel;
 	float4 current = tex2Dlod(TESR_ReflectionsTrace, float4(uv, 0, 0));
-	float depth = readDepthLod(uv - 0.5 * TESR_ReciprocalResolution.xy);
+	float depth = readDepthLod(uv - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));
 
 	float4 low = current, high = current;
 	[unroll] for (int y = -1; y <= 1; y++) {
@@ -349,7 +349,7 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 	float2 uv = (vpos + 0.5) * LowTexel;
 	float4 centre = tex2Dlod(source, float4(uv, 0, 0));
-	float2 pixelUV = uv - 0.5 * TESR_ReciprocalResolution.xy;
+	float2 pixelUV = uv - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy);
 	float depth = readDepthLod(pixelUV);
 	float roughness;
 	float amount = Reflectivity(pixelUV, depth, ViewNormal(pixelUV), roughness);
@@ -365,7 +365,7 @@ float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 	[unroll] for (int i = 1; i <= 8; i++) {
 		float gauss = i <= radius ? exp(falloff * i * i) : 0.0;
 		float2 ua = uv + axis * i * LowTexel, ub = uv - axis * i * LowTexel;
-		float da = readDepthLod(ua - 0.5 * TESR_ReciprocalResolution.xy), db = readDepthLod(ub - 0.5 * TESR_ReciprocalResolution.xy);
+		float da = readDepthLod(ua - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy)), db = readDepthLod(ub - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));
 		float wa = gauss / (1.0 + abs(da - depth) / tolerance);
 		float wb = gauss / (1.0 + abs(db - depth) / tolerance);
 		sum += tex2Dlod(source, float4(ua, 0, 0)) * wa + tex2Dlod(source, float4(ub, 0, 0)) * wb;
@@ -403,7 +403,7 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
 			float2 at = (base + float2(x, y) + 0.5) * LowTexel;
-			float tapDepth = readDepthLod(at - 0.5 * TESR_ReciprocalResolution.xy);
+			float tapDepth = readDepthLod(at - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0 + abs(tapDepth - depth) / tolerance;
 			reflection += tex2Dlod(TESR_ReflectionsBuffer, float4(at, 0, 0)) * weight;

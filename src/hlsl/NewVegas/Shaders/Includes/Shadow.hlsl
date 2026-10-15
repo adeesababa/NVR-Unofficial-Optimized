@@ -468,8 +468,11 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     }
     return lit;
 #elif SHADOW_FIXED_MODE != 2
-    return SampleShadowAtlas(lightSpace, quadrantOffset, bias, bleedReduction);
+    // UNOFFICIAL 2026-10-15: lightSpace computed here too (it moved into the Mode 3 function above, and Modes 0-2 with
+    // contact hardening on stopped compiling: 217 game shaders fell back to the game's own).
+    return SampleShadowAtlas(mul(float4(position, 1.0f), lightTransform), quadrantOffset, bias, bleedReduction);
 #else
+    float4 lightSpace = mul(float4(position, 1.0f), lightTransform);
     lightSpace.xyz /= lightSpace.w;
     float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f) * 0.5f + quadrantOffset;
     float depth = lightSpace.z;

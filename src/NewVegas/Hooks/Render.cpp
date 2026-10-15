@@ -500,6 +500,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();	// UNOFFICIAL, diagnostic: LampPassTestSkip
 #endif
+	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): the scattering target is cleared on the frame's first skin draw;
+	// interior faces take SkinShader's own passes while it is on (Shaders.cpp UpdateFaceGenInteriorFlag).
+	if (SkinShaders::NewSkinEnabled()) {
+		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->BeginFrame();
+		UpdateFaceGenInteriorFlag();
+	}
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -2092,7 +2098,15 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		BarrelHaze::Reset();
 		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();
+		// UNOFFICIAL Conor's skin shader: its scattering target is bound only for skin drawn inside the world scene.
+		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		// UNOFFICIAL Conor's skin shader: the SkinShader hooks unbind the target after every skin draw; this only guarantees
+		// nothing after the world scene ever draws into it.
+		if (TheShaderManager->Effects.SkinScattering) {
+			TheShaderManager->Effects.SkinScattering->InWorldScene = false;
+			TheShaderManager->Effects.SkinScattering->Unbind();
+		}
 		BarrelHeat::EndWorldProbe();
 		BarrelHeat::EndContext();
 		HiddenObjectCulling::EndWorld();
@@ -2141,6 +2155,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL Conor's skin shader
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::EndContext();
 	ShaderSplit::EndContext();
@@ -2214,6 +2229,7 @@ bool bDoneRender_LockPickMenu = false;
 
 void(__cdecl* ProcessImageSpaceShaders)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*) = (void(__cdecl*)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*))Hooks::ProcessImageSpaceShaders;
 void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTexture* SourceTarget, BSRenderedTexture* DestinationTarget) {
+	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL Conor's skin shader
 	bool bLiveRenderedMenu = false; // FORenderedMenu, FOPipBoyManager
 	bool bLive3DMenu = false; // Normal menus, but 3D, lockpick etc
 	if (TESMain::IsMenuBackgroundReady() && TheGameMenuManager->IsLiveMenu && InterfaceManager->currentMode != 1) {
@@ -2314,6 +2330,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);	// UNOFFICIAL, diagnostic
 		SettingShots::Capture(OutputSurface);	// UNOFFICIAL, test only
 #endif
+		ReShadeIntegration::RenderEffects(OutputSurface);	// UNOFFICIAL: with ReShade loaded, its effects here (before the HUD) on NVR's depth
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 		ReflectionProbe::EndFrame();
 	}

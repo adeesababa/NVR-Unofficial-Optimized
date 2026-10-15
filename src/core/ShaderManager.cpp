@@ -52,6 +52,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
 	TheShaderManager->RegisterEffect<AmbientLightEffect>(&TheShaderManager->Effects.AmbientLight);
 	TheShaderManager->RegisterEffect<AmbientOcclusionEffect>(&TheShaderManager->Effects.AmbientOcclusion);
+	TheShaderManager->RegisterEffect<SkinScatteringEffect>(&TheShaderManager->Effects.SkinScattering);	// UNOFFICIAL Conor's skin shader
 	TheShaderManager->RegisterEffect<BloodLensEffect>(&TheShaderManager->Effects.BloodLens);
 	TheShaderManager->RegisterEffect<BloomEffect>(&TheShaderManager->Effects.Bloom);
 	TheShaderManager->RegisterEffect<BloomLegacyEffect>(&TheShaderManager->Effects.BloomLegacy);
@@ -1155,6 +1156,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (!Chain.Begin(RenderTarget))
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
+	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): screen-space skin scattering first, on the scene exactly as
+	// drawn: it recognises skin by comparing each pixel with the colour the skin shader wrote, which any effect before it would
+	// change. Shadows, AO and fog then apply to the scattered skin like everything else. Nothing runs with the setting off.
+	if (Effects.SkinScattering && SkinShaders::NewSkinEnabled()) {	// Render checks the rest (ShouldRender resolves the targets: once)
+		static GpuTimer skinScatterTimer("Skin scattering");
+		GpuProfileScope gpu(skinScatterTimer, Device);
+		Effects.SkinScattering->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);	// pass 2 reads the unblurred scene
+	}
 	// Composite apply: the exterior sun-shadow composite and the AO combine are per-pixel
 	// operations on the scene, applied just before fog. When no effect that normally runs between
 	// them would render this frame, the fog reconstruct applies them in the same pass (same maths,

@@ -832,7 +832,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	PathRead = PathTexture[PathIndex];
 	device->SetRenderTarget(0, PathSurface[write]);
 	// (The path texture is smaller than the game's depth-stencil, which is legal; without ReShadeDepthCompat it is unbound.)
-	if (!TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) device->SetDepthStencilSurface(nullptr);
+	if (!ReShadeIntegration::KeepDepthBound()) device->SetDepthStencilSurface(nullptr);
 	Effect->SetTechnique(probe);
 	SetCT();
 	UINT passes = 0;

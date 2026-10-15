@@ -48,6 +48,7 @@ float4 TESR_CloudsExtra;       // UNOFFICIAL x: shadow strength (0 off), y: shad
 float4x4 TESR_CloudsReflectInvVP;    // UNOFFICIAL: the water reflection camera's clip space -> world direction (no translation)
 float4x4 TESR_CloudsHistoryViewProj; // UNOFFICIAL: the view-projection the history in TESR_CloudHistory was made with
 float4 TESR_CloudsReflectData;       // UNOFFICIAL x: strength in the reflection, yz: its size (texels), w: the depth of the far plane
+float4 TESR_CloudsMotion;       // UNOFFICIAL 2026-10-15 xy: the cloud pattern's move this frame (m), w: sharpness 0..1
 float4 TESR_WaterSettings;     // x: height of the water in view (game units)
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
@@ -75,6 +76,9 @@ float4 TESR_PhysSky;        // x: share of the physical sky, y: brightness (the 
 float4 TESR_PhysSkySun;     // xyz: the sun's real direction
 sampler2D TESR_SkyViewLUT : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 #endif
+// UNOFFICIAL 2026-10-15 weather sync: one of the game's cloud layer textures, bound by hand (VolumetricClouds.cpp ProbeLayer),
+// last in register order so no TESR_ sampler moves.
+sampler2D NVR_CloudLayerProbe : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float Base = TESR_CloudsShape.x;
@@ -93,6 +97,7 @@ static const float Steps = max(TESR_CloudsMarch.x, 4.0);
 static const float MaxDistance = TESR_CloudsMarch.y;
 static const float HazeDistance = max(TESR_CloudsMarch.w, 1.0);
 static const float2 LowTexel = TESR_CloudsLayout.xy;
+static const float Sharpness = saturate(TESR_CloudsMotion.w);
 
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
@@ -222,7 +227,7 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
 		float3 p = float3(camera.xy + dir.xy * t, altitude) + wind;
-		float lod = saturate(t / 40000.0) * 2.0;              // far away, smoother noise: less shimmer
+		float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * Sharpness);   // far away, smoother noise: less shimmer (Sharpness: less of it)
 		float density = CloudDensity(p, h, lod, false);
 		[branch] if (density > 0.0) {
 			// light reaching this point: six samples toward the light, each twice as far as the last
@@ -272,32 +277,6 @@ float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	return MarchRay(normalize(toWorld(uv)), jitter, 1.0);
 }
 
-// ---- 2: Temporal, quarter resolution ----
-float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
-	float2 uv = (vpos + 0.5) * LowTexel;
-	float2 block = floor(vpos * 0.5);
-	float2 blockUV = (block + 0.5) * TESR_CloudsBlocks.xy;
-	float4 current = tex2Dlod(TESR_CloudCurrent, float4(blockUV, 0, 0));
-	float4 lo = current, hi = current;
-	[unroll] for (int y = -1; y <= 1; y++) {
-		[unroll] for (int x = -1; x <= 1; x++) {
-			float4 n = tex2Dlod(TESR_CloudCurrent, float4(blockUV + float2(x, y) * TESR_CloudsBlocks.xy, 0, 0));
-			lo = min(lo, n); hi = max(hi, n);
-		}
-	}
-	bool fresh = all(vpos - block * 2.0 == TESR_CloudsBlocks.zw);
-	// the same direction last frame: the clouds are kilometres away, so only the camera's turn moves them on screen
-	float3 dir = normalize(toWorld(uv));
-	float4 clip = mul(float4(dir, 0.0), TESR_CloudsPrevViewProj);
-	float weight = TESR_CloudsLayout.z;
-	[branch] if (clip.w <= 0.0 || weight <= 0.0) return current;
-	float2 previous = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
-	if (any(previous < 0.0) || any(previous > 1.0)) return current;
-	float4 history = clamp(tex2Dlod(TESR_CloudHistory, float4(previous, 0, 0)), lo, hi);
-	return fresh ? lerp(current, history, weight) : history;
-}
-
-// ---- 0: Composite, full resolution ----
 // Catmull-Rom upsampling of the quarter-resolution history in nine bilinear taps (the sharp bicubic: plain bilinear
 // smears each cloud texel over 4 x 4 screen pixels). It can overshoot a little at hard edges: clamped.
 float4 CatmullRom(float2 uv) {
@@ -325,7 +304,54 @@ float4 CatmullRom(float2 uv) {
 	return float4(max(result.rgb, 0.0), saturate(result.a));
 }
 
+// UNOFFICIAL 2026-10-15 Sharpness: the history read back sharp (Catmull-Rom) instead of bilinear, which blurs it a little more
+// every frame the view or the clouds move, then held within the four texels around the point (no ringing that builds up).
+float4 SharpHistory(float2 uv) {
+	float2 size = 1.0 / LowTexel;
+	float2 corner = (floor(uv * size - 0.5) + 0.5) * LowTexel;
+	float4 a = tex2Dlod(TESR_CloudHistory, float4(corner, 0, 0));
+	float4 b = tex2Dlod(TESR_CloudHistory, float4(corner + float2(LowTexel.x, 0.0), 0, 0));
+	float4 c = tex2Dlod(TESR_CloudHistory, float4(corner + float2(0.0, LowTexel.y), 0, 0));
+	float4 d = tex2Dlod(TESR_CloudHistory, float4(corner + LowTexel, 0, 0));
+	return clamp(CatmullRom(uv), min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
+}
+
+// ---- 2: Temporal, quarter resolution ----
+float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 uv = (vpos + 0.5) * LowTexel;
+	float2 block = floor(vpos * 0.5);
+	float2 blockUV = (block + 0.5) * TESR_CloudsBlocks.xy;
+	float4 current = tex2Dlod(TESR_CloudCurrent, float4(blockUV, 0, 0));
+	float4 lo = current, hi = current;
+	[unroll] for (int y = -1; y <= 1; y++) {
+		[unroll] for (int x = -1; x <= 1; x++) {
+			float4 n = tex2Dlod(TESR_CloudCurrent, float4(blockUV + float2(x, y) * TESR_CloudsBlocks.xy, 0, 0));
+			lo = min(lo, n); hi = max(hi, n);
+		}
+	}
+	bool fresh = all(vpos - block * 2.0 == TESR_CloudsBlocks.zw);
+	// the same direction last frame: the clouds are kilometres away, so only the camera's turn moves them on screen
+	float3 dir = normalize(toWorld(uv));
+	float3 previousDir = dir;
+	[branch] if (Sharpness > 0.0) {
+		// UNOFFICIAL 2026-10-15: and the wind. The cloud seen here was last frame where the pattern's move puts it back (taken at
+		// a typical depth into the layer): without this, each pixel kept last frame's cloud until its turn to be marched came
+		// round (one frame in four), so drifting clouds crept in small steps and trailed.
+		float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
+		float reach = ShellDistance(dir.z, max(Base + 0.4 * Thickness - camera.z, 50.0));
+		previousDir = dir * reach + float3(TESR_CloudsMotion.xy, 0.0);
+	}
+	float4 clip = mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj);
+	float weight = TESR_CloudsLayout.z;
+	[branch] if (clip.w <= 0.0 || weight <= 0.0) return current;
+	float2 previous = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
+	if (any(previous < 0.0) || any(previous > 1.0)) return current;
+	float4 history = clamp(Sharpness > 0.0 ? SharpHistory(previous) : tex2Dlod(TESR_CloudHistory, float4(previous, 0, 0)), lo, hi);
+	return fresh ? lerp(current, history, weight) : history;
+}
+
 // ---- UNOFFICIAL 2026-10-12: cloud shadows and the clouds on water ----
+
 static const float ShadowStrength = TESR_CloudsExtra.x;
 static const float ShadowRange = max(TESR_CloudsExtra.y, 1000.0);
 static const float ShadowMapSize = max(TESR_CloudsDetail.z, 256.0);   // UNOFFICIAL: ShadowResolution (was always 256)
@@ -370,6 +396,7 @@ float CloudShadowAt(float3 world) {
 	return lerp(1.0, tex2Dlod(TESR_CloudShadow, float4(suv, 0, 0)).r, inside);
 }
 
+// ---- 0: Composite, full resolution ----
 float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
@@ -403,6 +430,17 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		return color;
 	}
 	float4 clouds = CatmullRom(uv);
+	[branch] if (Sharpness > 0.0) {
+		// UNOFFICIAL 2026-10-15 Sharpness: contrast-adaptive sharpening of the clouds against their four neighbours a march texel
+		// away, held within what those show (crisper edges and inner detail, no dark or bright halos).
+		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(LowTexel.x, 0.0), 0, 0));
+		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(LowTexel.x, 0.0), 0, 0));
+		float4 n2 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(0.0, LowTexel.y), 0, 0));
+		float4 n3 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(0.0, LowTexel.y), 0, 0));
+		float4 lo = min(min(min(n0, n1), min(n2, n3)), clouds), hi = max(max(max(n0, n1), max(n2, n3)), clouds);
+		float4 sharpened = clouds + (clouds - 0.25 * (n0 + n1 + n2 + n3)) * (1.5 * Sharpness);
+		clouds = clamp(sharpened, lo, hi);
+	}
 	float3 lin = linearize(max(color.rgb, 0.0)) * clouds.a + clouds.rgb * TESR_CloudsLayout.w;
 	return float4(delinearize(max(lin, 0.0)), color.a);
 }
@@ -443,6 +481,17 @@ float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	return float4(delinearize(max(own, 0.0)) * coverage, 1.0 - coverage);   // blended ONE, SRCALPHA: own over the sky
 }
 
+// ---- 5: LayerProbe (UNOFFICIAL 2026-10-15), into a 1 x 1 target: how much of a game cloud texture is cloud ----
+// The mean alpha of the bound layer texture, from 16 x 16 reads at the mip about 16 texels across (TESR_CloudsMotion.z). The
+// game's textures sit in video memory, where the CPU cannot read them: this pixel is read back once per texture.
+float4 LayerProbePS(VSOUT IN) : COLOR0 {
+	float sum = 0.0;
+	[loop] for (float y = 0.5; y < 16.0; y += 1.0) {
+		[loop] for (float x = 0.5; x < 16.0; x += 1.0) sum += tex2Dlod(NVR_CloudLayerProbe, float4(x / 16.0, y / 16.0, 0.0, TESR_CloudsMotion.z)).a;
+	}
+	return (sum / 256.0).xxxx;
+}
+
 technique Composite {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
@@ -477,5 +526,12 @@ technique ShadowMap {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ShadowMapPS();
 		Texture[10] = <NoTexture>;   // writes the shadow map
+	}
+}
+
+technique LayerProbe {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 LayerProbePS();
 	}
 }

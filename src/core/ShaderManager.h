@@ -139,6 +139,7 @@ public:
 		
 	struct	EffectsStruct {
 		AmbientOcclusionEffect*	AmbientOcclusion;
+		SkinScatteringEffect*	SkinScattering;	// UNOFFICIAL Conor's skin shader: screen-space skin scattering ([Shaders.Skin.NewSkin])
 		AvgLumaEffect*			AvgLuma;
 		SkyViewEffect*			SkyView;	// UNOFFICIAL: the physical sky's table ([Shaders.Sky.Physical])
 		AmbientLightEffect*		AmbientLight;	// UNOFFICIAL: AO and bounce light in one pass (replaces both while on)

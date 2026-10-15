@@ -10,12 +10,12 @@ void AmbientOcclusionEffect::RegisterConstants() {
 }
 
 void AmbientOcclusionEffect::RegisterTextures() {
-	const int width = (TheRenderManager->width + 1) / 2;
-	const int height = (TheRenderManager->height + 1) / 2;
+	const int width = MaxQuality::Reduced(TheRenderManager->width, 2);
+	const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
 	TheTextureManager->InitTexture("NVR_AOBuffer0", &aoTexture[0], &aoSurface[0], width, height, D3DFMT_G16R16F);
 	TheTextureManager->InitTexture("NVR_AOBuffer1", &aoTexture[1], &aoSurface[1], width, height, D3DFMT_G16R16F);
-	const int lowWidth = (TheRenderManager->width + 3) / 4;
-	const int lowHeight = (TheRenderManager->height + 3) / 4;
+	const int lowWidth = MaxQuality::Reduced(TheRenderManager->width, 4);
+	const int lowHeight = MaxQuality::Reduced(TheRenderManager->height, 4);
 	TheTextureManager->InitTexture("NVR_AOBufferLow0", &aoTextureLow[0], &aoSurfaceLow[0], lowWidth, lowHeight, D3DFMT_G16R16F);
 	TheTextureManager->InitTexture("NVR_AOBufferLow1", &aoTextureLow[1], &aoSurfaceLow[1], lowWidth, lowHeight, D3DFMT_G16R16F);
 }
@@ -51,7 +51,7 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	if (!combineOnly) lastLowRes = UseLowRes();
 	IDirect3DTexture9* const* textures = lastLowRes ? aoTextureLow : aoTexture;
 	IDirect3DSurface9* const* surfaces = lastLowRes ? aoSurfaceLow : aoSurface;
-	const UINT divisor = lastLowRes ? 4 : 2;
+	const UINT divisor = MaxQuality::Divisor(lastLowRes ? 4 : 2);	// UNOFFICIAL: 1 with Max Quality
 	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedAO");
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_AOLayout");
 	D3DXTECHNIQUE_DESC description = {};
@@ -92,7 +92,7 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	HRESULT result = scene ? Device->GetDepthStencilSurface(&depthSurface) : E_FAIL;
 	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (a single smaller target is legal with it).
-	if (SUCCEEDED(result) && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) result = Device->SetDepthStencilSurface(nullptr);
+	if (SUCCEEDED(result) && !ReShadeIntegration::KeepDepthBound()) result = Device->SetDepthStencilSurface(nullptr);
 	if (FAILED(result)) {
 		if (depthSurface) depthSurface->Release();
 		return;

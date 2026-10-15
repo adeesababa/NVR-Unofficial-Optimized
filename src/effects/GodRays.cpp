@@ -31,12 +31,12 @@ void GodRaysEffect::RegisterConstants() {
 }
 
 void GodRaysEffect::RegisterTextures() {
-	const int width = (TheRenderManager->width + 1) / 2;
-	const int height = (TheRenderManager->height + 1) / 2;
+	const int width = MaxQuality::Reduced(TheRenderManager->width, 2);
+	const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
 	TheTextureManager->InitTexture("NVR_GodRaysBuffer0", &raysTexture[0], &raysSurface[0], width, height, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_GodRaysBuffer1", &raysTexture[1], &raysSurface[1], width, height, D3DFMT_A16B16G16R16F);
-	const int lowWidth = (TheRenderManager->width + 3) / 4;
-	const int lowHeight = (TheRenderManager->height + 3) / 4;
+	const int lowWidth = MaxQuality::Reduced(TheRenderManager->width, 4);
+	const int lowHeight = MaxQuality::Reduced(TheRenderManager->height, 4);
 	TheTextureManager->InitTexture("NVR_GodRaysBufferLow0", &raysTextureLow[0], &raysSurfaceLow[0], lowWidth, lowHeight, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_GodRaysBufferLow1", &raysTextureLow[1], &raysSurfaceLow[1], lowWidth, lowHeight, D3DFMT_A16B16G16R16F);
 }
@@ -60,7 +60,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		raysTextureLow[0] && raysTextureLow[1] && raysSurfaceLow[0] && raysSurfaceLow[1];
 	IDirect3DTexture9** textures = lowRes ? raysTextureLow : raysTexture;
 	IDirect3DSurface9** surfaces = lowRes ? raysSurfaceLow : raysSurface;
-	const UINT divisor = lowRes ? 4 : 2;
+	const UINT divisor = MaxQuality::Divisor(lowRes ? 4 : 2);	// UNOFFICIAL: 1 with Max Quality
 	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedGodRays");
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_GodRaysLayout");
 	D3DXTECHNIQUE_DESC description = {};
@@ -91,7 +91,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	HRESULT result = Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorEnabled);
 	if (SUCCEEDED(result)) result = Device->GetDepthStencilSurface(&depthSurface);
 	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (a single smaller target is legal with it).
-	if (SUCCEEDED(result) && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) result = Device->SetDepthStencilSurface(nullptr);
+	if (SUCCEEDED(result) && !ReShadeIntegration::KeepDepthBound()) result = Device->SetDepthStencilSurface(nullptr);
 	if (FAILED(result)) {
 		if (depthSurface) depthSurface->Release();
 		dedicatedRenderFailed = true;

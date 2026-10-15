@@ -1010,7 +1010,7 @@ struct FogTermsOut
 FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy)
 {
 	FogTermsOut OUT;
-	float2 h = 0.5 * TESR_ReciprocalResolution.xy;
+	float2 h = 0.5 * (NVR_FogLayout.zw - TESR_ReciprocalResolution.xy);	// UNOFFICIAL: half a pixel at half size, 0 at full size (Max Quality)
 	float2 best = IN.UVCoord - h;
 	float bestDepth = readDepthLod(best);
 	const float2 others[3] = { float2(h.x, -h.y), float2(-h.x, h.y), float2(h.x, h.y) };

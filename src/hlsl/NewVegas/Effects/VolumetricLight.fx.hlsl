@@ -126,7 +126,7 @@ float MarchShadow(float3 position) {
 // ---- 1: March, half resolution ----
 float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 uv = (vpos + 0.5) * LowTexel;                                  // this block's centre on screen
-	float depth = readDepthLod(uv - 0.5 * TESR_ReciprocalResolution.xy);   // a pixel centre in the block, not an edge
+	float depth = readDepthLod(uv - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));   // a pixel centre in the block, not an edge (the pixel itself at full size)
 	float isSky = depth >= farZ * 0.996 ? 1.0 : 0.0;
 	float planar = isSky > 0.0 ? MarchDistance : min(depth, MarchDistance);
 

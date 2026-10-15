@@ -56,6 +56,16 @@ void AttachHooks() {
 
 	// Vanilla shader specific hooks.
 	kSkyShaderConstantsDetour.ReplaceVirtualFunc(0x10AFE94, SkyShader__UpdateConstants);
+	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin] Enabled at startup, Shaders.cpp): SkinShader's per-draw slots bind the
+	// skin scattering targets and mute the engine's second skin highlights, and interior faces take SkinShader's own passes.
+	// Off: nothing is hooked or patched.
+	if (SkinShaders::NewSkinEnabled()) {
+		kSkinPrepareGeometryDetour.ReplaceVirtualFunc(0x10BB980 + 27 * 4, SkinShader__PrepareGeometryForRendering);
+		kSkinPostGeometryDetour.ReplaceVirtualFunc(0x10BB980 + 35 * 4, SkinShader__PostGeometry);
+		InstallFaceGenInteriorPatch();
+		Logger::Log("UNOFFICIAL NewSkin: Conor's skin shader on (SkinTemplate.hlsl + SkinScattering)%s",
+			GetModuleHandle(L"VanillaPlusSkin.dll") ? "; it replaces Vanilla Plus Skin's shaders" : "");
+	}
 
 	// UNOFFICIAL KeepLampsInView (PointShadowForward.h): the game's one lamp view test call, with forward shadows, unless another
 	// plugin has taken it.

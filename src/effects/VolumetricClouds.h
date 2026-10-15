@@ -1,9 +1,13 @@
 #pragma once
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 // UNOFFICIAL: volumetric clouds (Effects\VolumetricClouds.fx.hlsl) -- a layer of 3D clouds marched and lit by the sun, in
 // place of the game's flat cloud layers. Each frame: a march of one pixel in four of a quarter-resolution grid, a
 // temporal pass that keeps the other three from earlier frames, then a full-resolution composite over the sky at the
-// start of the HDR chain. Coverage follows the game's weather type; the light follows its sun, moon and sky colours.
+// start of the HDR chain. Coverage follows the game's current weather (its own cloud textures, or its type), so console
+// weather commands and weather mods drive these clouds too; the light follows its sun, moon and sky colours.
 // The game's cloud layers are hidden (SKYTEX.pso, TESR_CloudsHide) except in the water's reflection.
 class VolumetricCloudsEffect : public EffectRecord
 {
@@ -33,6 +37,8 @@ public:
 		int		ReflectionDebug;			// UNOFFICIAL: in the water reflection, red where it looks up (sky), blue where down
 		float	FineDetail;					// UNOFFICIAL: a second, finer layer of edge detail (0 off)
 		float	FineDetailSize;				// UNOFFICIAL: its size, metres per tile
+		float	Sharpness;					// UNOFFICIAL: 0 the old soft look .. 1 crisp (sharper history, sharpened composite, finer noise far off)
+		float	FromWeatherTextures;		// UNOFFICIAL: share of the coverage taken from the weather's own cloud textures (0: its type alone)
 	};
 	SettingsStruct	Settings = {};
 
@@ -52,6 +58,7 @@ public:
 		D3DXMATRIX	HistoryViewProj;	// UNOFFICIAL: the view-projection of the frame whose clouds are in the history
 		D3DXVECTOR4	ReflectData;		// UNOFFICIAL x: strength, yz: the reflection's size, w: the far plane's depth
 		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size (texels)
+		D3DXVECTOR4	Motion;			// UNOFFICIAL xy: the cloud pattern's move this frame (m), w: sharpness 0..1
 	};
 	ConstantsStruct	Constants = {};
 
@@ -63,6 +70,8 @@ public:
 		IDirect3DTexture9* HistoryRead = nullptr;	// the slot TESR_CloudHistory follows
 		IDirect3DTexture9* ShadowTexture = nullptr;	// UNOFFICIAL: the cloud shadow map (256 x 256)
 		IDirect3DSurface9* ShadowSurface = nullptr;
+		IDirect3DTexture9* ProbeTexture = nullptr;	// UNOFFICIAL: the layer probe's 1 x 1 target
+		IDirect3DSurface9* ProbeSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 	UINT	shadowMapSize = 256;	// UNOFFICIAL: ShadowResolution, read once at start
@@ -88,11 +97,12 @@ public:
 private:
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;	// eased toward the weather's
 	D3DXVECTOR3	wind = D3DXVECTOR3(0, 0, 0);
+	double		windX = 0.0, windY = 0.0, windZ = 0.0;	// UNOFFICIAL: the wind offset, kept in doubles (wind holds it as floats for the shader)
 	D3DXMATRIX	lastViewProj;
 	UINT		frame = 0, read = 0;
 	double		lastRenderTime = -1.0;	// TheFrameRateManager->Time of the last frame drawn
 	UINT		lowWidth = 0, lowHeight = 0, blockWidth = 0, blockHeight = 0;
-	double		lastCloudTime = -1.0;	// UNOFFICIAL GameTime: the game's clock, in seconds at the normal time scale, last frame
+	double		lastCloudTime = -1.0;	// UNOFFICIAL GameTime: the clouds' own smooth clock, in seconds at the normal time scale, held to the game's
 	IDirect3DSurface9*	reflectTarget = nullptr;	// UNOFFICIAL: this reflection pass's target and depth buffer (held until drawn)
 	IDirect3DSurface9*	reflectDepth = nullptr;
 	D3DXMATRIX	reflectView, reflectProj;
@@ -100,4 +110,17 @@ private:
 	bool		reflectLogged = false;
 	bool		reflectNoted = false;	// UNOFFICIAL: this pass's target is noted (only its first)
 	bool		ReflectionWanted() const;
+	// UNOFFICIAL 2026-10-15 weather sync: how much of the sky each weather's own cloud layers fill (0-1), read from the
+	// game's loaded cloud textures the first time that weather is shown; a weather not shown yet is not in the map.
+	std::unordered_map<TESWeather*, float>	weatherFill;
+	std::unordered_map<std::string, float>	textureFill;	// per texture path (lower case): its mean alpha; -1 no alpha, -2 being measured
+	TESWeather*	lastWeather = nullptr;		// the sky's current weather last frame
+	int			learnTries = 0;				// frames the current weather's cloud textures were not found in the sky
+	float		snapWait = -1.0f;			// >= 0: a forced weather change (console fw) waits this long for its fill, then snaps
+	void		LearnWeatherFill(Sky* sky);
+	struct ProbeJob { std::string path; IDirect3DBaseTexture9* texture; float lod; UINT width, height; };
+	std::vector<ProbeJob>	probeQueue;		// game cloud textures waiting to be measured (held with a reference)
+	IDirect3DSurface9*	probeReadback = nullptr;	// the probe's 1 x 1 copy in system memory
+	void		ProbeLayer(IDirect3DDevice9* Device);
+	void		WeatherLook(TESWeather* weather, float& coverage, float& rain, float& bias);
 };

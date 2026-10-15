@@ -85,7 +85,7 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 		}
 	}
 	// UNOFFICIAL ReShadeDepthCompat: keep the game's depth-stencil bound and clear its stencil, as before P78.
-	const bool ownStencil = Textures.StencilSurface != nullptr && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat;
+	const bool ownStencil = Textures.StencilSurface != nullptr && !ReShadeIntegration::KeepDepthBound();
 	if (ownStencil) {
 		if (FAILED(Device->GetDepthStencilSurface(&previousDepth))) previousDepth = nullptr;	// none bound
 		Device->SetDepthStencilSurface(Textures.StencilSurface);

@@ -56,16 +56,16 @@ void BounceLightEffect::RegisterTextures() {
 void BounceLightEffect::EnsureBuffers(bool quarter) {
 	if (quarter && !quarterTried) {
 		quarterTried = true;
-		const int width = (TheRenderManager->width + 3) / 4;
-		const int height = (TheRenderManager->height + 3) / 4;
+		const int width = MaxQuality::Reduced(TheRenderManager->width, 4);
+		const int height = MaxQuality::Reduced(TheRenderManager->height, 4);
 		TheTextureManager->InitTexture("NVR_BounceBufferQuarter0", &quarterTexture[0], &quarterSurface[0], width, height, D3DFMT_A16B16G16R16F);
 		TheTextureManager->InitTexture("NVR_BounceBufferQuarter1", &quarterTexture[1], &quarterSurface[1], width, height, D3DFMT_A16B16G16R16F);
 		TheTextureManager->InitTexture("NVR_BouncePrepQuarter", &quarterPrepTexture, &quarterPrepSurface, width, height, D3DFMT_A32B32G32R32F);
 	}
 	if (!quarter && !halfTried) {
 		halfTried = true;
-		const int width = (TheRenderManager->width + 1) / 2;
-		const int height = (TheRenderManager->height + 1) / 2;
+		const int width = MaxQuality::Reduced(TheRenderManager->width, 2);
+		const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
 		TheTextureManager->InitTexture("NVR_BounceBuffer0", &halfTexture[0], &halfSurface[0], width, height, D3DFMT_A16B16G16R16F);
 		TheTextureManager->InitTexture("NVR_BounceBuffer1", &halfTexture[1], &halfSurface[1], width, height, D3DFMT_A16B16G16R16F);
 		TheTextureManager->InitTexture("NVR_BouncePrep", &halfPrepTexture, &halfPrepSurface, width, height, D3DFMT_A32B32G32R32F);
@@ -78,8 +78,8 @@ void BounceLightEffect::EnsureHistory(bool quarter) {
 	bool& tried = quarter ? quarterHistoryTried : halfHistoryTried;
 	if (tried) return;
 	tried = true;
-	const int width = quarter ? (TheRenderManager->width + 3) / 4 : (TheRenderManager->width + 1) / 2;
-	const int height = quarter ? (TheRenderManager->height + 3) / 4 : (TheRenderManager->height + 1) / 2;
+	const int width = quarter ? MaxQuality::Reduced(TheRenderManager->width, 4) : MaxQuality::Reduced(TheRenderManager->width, 2);
+	const int height = quarter ? MaxQuality::Reduced(TheRenderManager->height, 4) : MaxQuality::Reduced(TheRenderManager->height, 2);
 	IDirect3DTexture9** textures = quarter ? quarterHistory : halfHistory;
 	IDirect3DSurface9** surfaces = quarter ? quarterHistorySurface : halfHistorySurface;
 	TheTextureManager->InitTexture(quarter ? "NVR_BounceHistoryQuarter0" : "NVR_BounceHistory0", &textures[0], &surfaces[0], width, height, D3DFMT_A16B16G16R16F);
@@ -117,8 +117,8 @@ bool BounceLightEffect::EnsureSpill() {
 		static const char* memories[2][2] = { { "NVR_BounceSpillMemory0", "NVR_BounceSpillMemory1" },
 			{ "NVR_BounceSpillMemoryQuarter0", "NVR_BounceSpillMemoryQuarter1" } };
 		for (int q = 0; q < 2; q++) {
-			const int memoryWidth = q ? (TheRenderManager->width + 3) / 4 : (TheRenderManager->width + 1) / 2;
-			const int memoryHeight = q ? (TheRenderManager->height + 3) / 4 : (TheRenderManager->height + 1) / 2;
+			const int memoryWidth = q ? MaxQuality::Reduced(TheRenderManager->width, 4) : MaxQuality::Reduced(TheRenderManager->width, 2);
+			const int memoryHeight = q ? MaxQuality::Reduced(TheRenderManager->height, 4) : MaxQuality::Reduced(TheRenderManager->height, 2);
 			for (int i = 0; i < 2; i++) {
 				TheTextureManager->InitTexture(memories[q][i], &spillMemoryTexture[q][i], &spillMemorySurface[q][i], memoryWidth, memoryHeight, D3DFMT_A16B16G16R16F);
 				if (spillMemorySurface[q][i]) TheRenderManager->device->ColorFill(spillMemorySurface[q][i], NULL, D3DCOLOR_ARGB(0, 0, 0, 0));
@@ -405,7 +405,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	IDirect3DSurface9* depthSurface = nullptr;
 	Device->GetDepthStencilSurface(&depthSurface);
 	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (single smaller targets are legal with it).
-	if (!TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) Device->SetDepthStencilSurface(nullptr);
+	if (!ReShadeIntegration::KeepDepthBound()) Device->SetDepthStencilSurface(nullptr);
 
 	// deferCombine: passes 0-3 only (the combine is SpecularEffect::RenderWithBounce's); combineOnly: pass 4 only, from them.
 	const bool onlyCombine = combineOnly && deferredReady && deferredTexture == lowTexture[0];

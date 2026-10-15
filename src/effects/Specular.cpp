@@ -11,7 +11,7 @@ void SpecularEffect::UpdateConstants() {
 	Constants.Data.w = std::lerp(dry.DistanceFade, wet.DistanceFade, rain);
 	Constants.EffectStrength.x = std::lerp(dry.SpecularAA, wet.SpecularAA, rain);
 	Constants.EffectStrength.y = std::lerp(dry.Reflectance, wet.Reflectance, rain);
-	Constants.EffectStrength.z = 0.0f;
+	Constants.EffectStrength.z = (float)MaxQuality::Divisor(4);	// UNOFFICIAL 2026-10-15: the buffers' scale (4, or 1 with Max Quality)
 	Constants.EffectStrength.w = 0.0f;
 }
 
@@ -34,7 +34,7 @@ void SpecularEffect::RegisterConstants() {
 }
 
 void SpecularEffect::RegisterTextures() {
-	const UINT w = (TheRenderManager->width + 3) / 4, h = (TheRenderManager->height + 3) / 4;
+	const UINT w = MaxQuality::Reduced(TheRenderManager->width, 4), h = MaxQuality::Reduced(TheRenderManager->height, 4);
 	TheTextureManager->InitTexture("TESR_SpecularNormals", &Textures.NormalsTexture, &Textures.NormalsSurface, w, h, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("TESR_SpecularBuffer", &Textures.LightTexture, &Textures.LightSurface, w, h, D3DFMT_A16B16G16R16F);
 }

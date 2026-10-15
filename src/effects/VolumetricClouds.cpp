@@ -40,6 +40,9 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
+	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 1.0f);
+	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
+	coverage = -1.0f;	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change)
 }
 
 void VolumetricCloudsEffect::RegisterConstants() {
@@ -58,6 +61,7 @@ void VolumetricCloudsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudsReflectInvVP", (D3DXVECTOR4*)&Constants.ReflectInvVP);
 	TheShaderManager->RegisterConstant("TESR_CloudsHistoryViewProj", (D3DXVECTOR4*)&Constants.HistoryViewProj);
 	TheShaderManager->RegisterConstant("TESR_CloudsReflectData", &Constants.ReflectData);
+	TheShaderManager->RegisterConstant("TESR_CloudsMotion", &Constants.Motion);
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
@@ -81,6 +85,9 @@ void VolumetricCloudsEffect::RegisterTextures() {
 	const int shadowResolution = TheSettingManager->GetSettingI("Shaders.VolumetricClouds.Main", "ShadowResolution");
 	shadowMapSize = shadowResolution >= 2048 ? 2048 : shadowResolution >= 1024 ? 1024 : shadowResolution >= 512 ? 512 : 256;
 	TheTextureManager->InitTexture("TESR_CloudShadow", &Textures.ShadowTexture, &Textures.ShadowSurface, shadowMapSize, shadowMapSize, D3DFMT_A16B16G16R16F);
+	// UNOFFICIAL 2026-10-15 weather sync: the layer probe's 1 x 1 target and its copy the CPU can read
+	TheTextureManager->InitTexture("NVR_CloudProbe", &Textures.ProbeTexture, &Textures.ProbeSurface, 1, 1, D3DFMT_A8R8G8B8);
+	TheRenderManager->device->CreateOffscreenPlainSurface(1, 1, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &probeReadback, nullptr);
 	Constants.Layout.x = 1.0f / lowWidth;
 	Constants.Layout.y = 1.0f / lowHeight;
 	Constants.Blocks.x = 1.0f / blockWidth;
@@ -99,6 +106,134 @@ static int WeatherIndex(TESWeather* weather) {
 	}
 }
 
+// UNOFFICIAL 2026-10-15 weather sync. The weather type alone is a poor guide: weather mods often mark overcast skies
+// "pleasant" (DNWeathers' DNBlackMountain3: a layer 0.78 full) and light ones "cloudy". The weather's own cloud layers say
+// how cloudy its sky really is, so the coverage is taken from those textures: how much of each is cloud (mean alpha),
+// with the layers stacked (1 - the product of what each leaves clear). Measured with the shipped data: vanilla clear
+// skies 0.13 (NVCloudlight), the overcast layer 0.81, sky\alpha.dds (the empty layer) 0.
+
+static std::string NormalTexturePath(const char* path) {
+	std::string s = path ? path : "";
+	for (char& c : s) c = c == '/' ? '\\' : (char)tolower((unsigned char)c);
+	if (s.rfind("data\\", 0) == 0) s.erase(0, 5);
+	if (s.rfind("textures\\", 0) == 0) s.erase(0, 9);
+	return s;
+}
+
+// A texture format with an alpha channel: an opaque one (a painted sky with no alpha) says nothing about how cloudy it is.
+static bool HasAlpha(D3DFORMAT format) {
+	switch (format) {
+	case D3DFMT_DXT1: case D3DFMT_X8R8G8B8: case D3DFMT_R8G8B8: case D3DFMT_R5G6B5: case D3DFMT_X1R5G5B5: case D3DFMT_L8: return false;
+	default: return true;
+	}
+}
+
+// Notes the current weather's fill once its cloud textures are loaded in the sky (each of its layers matched by path to
+// one of the sky's cloud textures; the empty sky\alpha.dds counts 0 even when not loaded).
+// The sky's cloud layer j: its texture and that texture's path, from the layer's sky shader property (the game keeps the
+// current textures there; Clouds' own texture slots hold the outgoing weather's only while a change blends).
+static SkyShaderProperty* CloudLayer(Sky* sky, int j) {
+	NiGeometry* layer = (NiGeometry*)sky->clouds->layers[j];
+	if (!layer) return nullptr;
+	SkyShaderProperty* property = layer->propertyState.GetShadeProperty<SkyShaderProperty>();
+	return property && property->eSkyObjectType == SkyShaderProperty::SO_CLOUDS ? property : nullptr;
+}
+
+void VolumetricCloudsEffect::LearnWeatherFill(Sky* sky) {
+	TESWeather* weather = sky ? sky->firstWeather : nullptr;
+	if (!weather || !sky->clouds || weatherFill.count(weather)) return;
+	float layers[4] = { 0, 0, 0, 0 };
+	float clear = 1.0f;
+	bool unreadable = false;
+	for (int i = 0; i < 4; i++) {
+		const std::string path = NormalTexturePath(weather->textureLayers[i].ddsPath.m_data);
+		if (path.empty() || path == "sky\\alpha.dds") continue;
+		auto cached = textureFill.find(path);
+		if (cached == textureFill.end()) {
+			NiTexture* match = nullptr;
+			for (int j = 0; j < 4 && !match; j++) {
+				SkyShaderProperty* layer = CloudLayer(sky, j);
+				if (!layer || !layer->spBaseTexture || !layer->strTextureName.m_data) continue;
+				NiTexture* texture = layer->spBaseTexture;
+				const std::string loaded = NormalTexturePath(layer->strTextureName.m_data);
+				const size_t start = loaded.size() - path.size();
+				if (loaded.size() >= path.size() && loaded.compare(start, path.size(), path) == 0 && (start == 0 || loaded[start - 1] == '\\')) match = texture;
+			}
+			if (!match || !match->rendererData || !match->rendererData->dTexture) {
+				// not loaded yet: try again next frame. After about two seconds without it, the paths are logged once (what the
+				// weather asks for, what the sky holds), so a mismatch can be seen in the log; its type decides meanwhile.
+				if (++learnTries == 120) {
+					Logger::Log("UNOFFICIAL VolumetricClouds: weather %08X: its cloud layer '%s' is not among the sky's loaded cloud textures yet:", weather->refID, path.c_str());
+					for (int j = 0; j < 4; j++) {
+						SkyShaderProperty* layer = CloudLayer(sky, j);
+						NiTexture* texture = layer ? layer->spBaseTexture : nullptr;
+						Logger::Log("UNOFFICIAL VolumetricClouds:   sky cloud layer %d: %s%s", j, layer && layer->strTextureName.m_data ? layer->strTextureName.m_data : "(none)",
+							layer && !(texture && texture->rendererData && texture->rendererData->dTexture) ? " (no texture yet)" : "");
+					}
+					for (int k = 0; k < 4; k++) Logger::Log("UNOFFICIAL VolumetricClouds:   weather layer %d: %s", k, weather->textureLayers[k].ddsPath.m_data ? weather->textureLayers[k].ddsPath.m_data : "(none)");
+				}
+				return;
+			}
+			// The game's textures sit in video memory (the CPU cannot read them): measured on the GPU (ProbeLayer, next cloud
+			// frame); -2 marks it waiting.
+			D3DSURFACE_DESC desc = {};
+			IDirect3DBaseTexture9* base = match->rendererData->dTexture;
+			if (base->GetType() != D3DRTYPE_TEXTURE || FAILED(((IDirect3DTexture9*)base)->GetLevelDesc(0, &desc)) || !HasAlpha(desc.Format)) {
+				textureFill.emplace(path, -1.0f);
+				Logger::Log("UNOFFICIAL VolumetricClouds: cloud texture %s: no alpha (format %u): left out", path.c_str(), (UINT)desc.Format);
+				continue;
+			}
+			const UINT size = (std::max)(desc.Width, desc.Height);
+			float lod = 0.0f;
+			while ((size >> (UINT)(lod + 1.0f)) >= 16 && lod + 1.0f < (float)base->GetLevelCount()) lod += 1.0f;
+			base->AddRef();
+			probeQueue.push_back({ path, base, lod, desc.Width, desc.Height });
+			textureFill.emplace(path, -2.0f);
+			return;
+		}
+		if (cached->second == -2.0f) return;	// still being measured
+		if (cached->second < 0.0f) { unreadable = true; continue; }	// no alpha: left out
+		layers[i] = cached->second;
+		clear *= 1.0f - cached->second;
+	}
+	const float fill = 1.0f - clear;
+	weatherFill[weather] = unreadable && fill == 0.0f ? -1.0f : fill;	// only unreadable layers: its type decides
+	float coverage, rain, bias;
+	WeatherLook(weather, coverage, rain, bias);
+	const char* name = weather->GetEditorName();
+	static const char* types[4] = { "pleasant", "cloudy", "rainy", "snow" };
+	Logger::Log("UNOFFICIAL VolumetricClouds: weather %s (%08X, %s): the game's cloud layers fill %.2f %.2f %.2f %.2f, sky %.2f -> coverage %.2f",
+		name && *name ? name : "(no editor id)", weather->refID, types[WeatherIndex(weather)], layers[0], layers[1], layers[2], layers[3], fill, coverage);
+}
+
+static float Piecewise(float x, const float (*points)[2], int count) {
+	if (x <= points[0][0]) return points[0][1];
+	for (int i = 1; i < count; i++)
+		if (x <= points[i][0]) return std::lerp(points[i - 1][1], points[i][1], (x - points[i - 1][0]) / (points[i][0] - points[i - 1][0]));
+	return points[count - 1][1];
+}
+
+// One weather's coverage, rain darkening and cloud type: from its type, then moved toward what its own cloud layers show
+// (FromWeatherTextures). The four coverage settings keep their meaning: an empty game sky gives half the fair-weather
+// value, vanilla's clear sky (0.13 full) the fair-weather value, a half-full sky the cloudy one, an overcast one (0.85)
+// the rainy one. Rain and snow never get less than their own setting (no rain from a clear sky).
+void VolumetricCloudsEffect::WeatherLook(TESWeather* weather, float& coverage, float& rain, float& bias) {
+	const int type = WeatherIndex(weather);
+	coverage = Settings.Coverage[type];
+	rain = type == 2 || type == 3 ? 1.0f : 0.0f;
+	bias = Settings.TypeBias[type];
+	auto found = weather ? weatherFill.find(weather) : weatherFill.end();
+	if (found == weatherFill.end() || found->second < 0.0f || Settings.FromWeatherTextures <= 0.0f) return;
+	const float fill = found->second;
+	const float coveragePoints[4][2] = { { 0.0f, Settings.Coverage[0] * 0.5f }, { 0.13f, Settings.Coverage[0] }, { 0.5f, Settings.Coverage[1] }, { 0.85f, Settings.Coverage[2] } };
+	const float biasPoints[3][2] = { { 0.13f, Settings.TypeBias[0] }, { 0.5f, Settings.TypeBias[1] }, { 0.85f, Settings.TypeBias[2] } };
+	float fromTextures = Piecewise(fill, coveragePoints, 4);
+	float biasFromTextures = Piecewise(fill, biasPoints, 3);
+	if (rain > 0.0f) { fromTextures = (std::max)(fromTextures, coverage); biasFromTextures = (std::min)(biasFromTextures, bias); }
+	coverage = std::lerp(coverage, fromTextures, Settings.FromWeatherTextures);
+	bias = std::lerp(bias, biasFromTextures, Settings.FromWeatherTextures);
+}
+
 void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
 	// UNOFFICIAL 2026-10-13: once a frame, at the tuned rate (FrameClock.h: UpdateConstants runs twice a frame).
@@ -107,16 +242,38 @@ void VolumetricCloudsEffect::UpdateConstants() {
 
 	// The weather's coverage, blended across a weather change as the game blends its own (weatherPercent: 1 = the new
 	// weather in full), then eased so a change of weather builds or clears the clouds over about a minute.
-	float targetCoverage = Settings.Coverage[0], targetRain = 0.0f, targetType = Settings.TypeBias[0];
-	if (sky && sky->firstWeather) {
-		const int now = WeatherIndex(sky->firstWeather);
-		const int before = sky->secondWeather ? WeatherIndex(sky->secondWeather) : now;
-		const float t = sky->secondWeather ? std::clamp(sky->weatherPercent, 0.0f, 1.0f) : 1.0f;
-		targetCoverage = std::lerp(Settings.Coverage[before], Settings.Coverage[now], t);
-		targetRain = std::lerp(before == 2 || before == 3 ? 1.0f : 0.0f, now == 2 || now == 3 ? 1.0f : 0.0f, t);
-		targetType = std::lerp(Settings.TypeBias[before], Settings.TypeBias[now], t);
+	// UNOFFICIAL 2026-10-15: each weather's look comes from its own cloud layers where known (WeatherLook), and a forced
+	// change (the console's fw, or a mod forcing a weather: the new weather in full at once) snaps to it, as the game's
+	// own sky does, instead of easing in over a minute. A change the game blends in (sw, the climate's own changes)
+	// still follows the game's blend.
+	if (dt > 0.0f) LearnWeatherFill(sky);
+	TESWeather* current = sky ? sky->firstWeather : nullptr;
+	if (current != lastWeather) {
+		learnTries = 0;
+		if (lastWeather && current && (!sky->secondWeather || sky->weatherPercent >= 0.99f)) snapWait = 1.0f;
+		lastWeather = current;
 	}
-	if (coverage < 0.0f || TheShaderManager->GameState.isCellChanged) { coverage = targetCoverage; rain = targetRain; typeBias = targetType; }
+	float targetCoverage = Settings.Coverage[0], targetRain = 0.0f, targetType = Settings.TypeBias[0];
+	if (current) {
+		float nowCoverage, nowRain, nowBias;
+		WeatherLook(current, nowCoverage, nowRain, nowBias);
+		targetCoverage = nowCoverage; targetRain = nowRain; targetType = nowBias;
+		if (sky->secondWeather && sky->secondWeather != current) {
+			float beforeCoverage, beforeRain, beforeBias;
+			WeatherLook(sky->secondWeather, beforeCoverage, beforeRain, beforeBias);
+			const float t = std::clamp(sky->weatherPercent, 0.0f, 1.0f);
+			targetCoverage = std::lerp(beforeCoverage, nowCoverage, t);
+			targetRain = std::lerp(beforeRain, nowRain, t);
+			targetType = std::lerp(beforeBias, nowBias, t);
+		}
+	}
+	bool snap = coverage < 0.0f || TheShaderManager->GameState.isCellChanged;
+	if (snapWait >= 0.0f) {
+		// wait (up to a second) for the new weather's cloud textures to load, so it snaps once, to its own look
+		snapWait -= dt;
+		if (snapWait < 0.0f || weatherFill.count(current)) { snap = true; snapWait = -1.0f; }
+	}
+	if (snap) { coverage = targetCoverage; rain = targetRain; typeBias = targetType; }
 	const float ease = 1.0f - expf(-dt / 20.0f);
 	coverage += (targetCoverage - coverage) * ease;
 	rain += (targetRain - rain) * ease;
@@ -139,26 +296,53 @@ void VolumetricCloudsEffect::UpdateConstants() {
 		const double scale = clock && clock->TimeScale && clock->TimeScale->data > 0.0f ? (double)clock->TimeScale->data : 30.0;
 		if (days >= 0.0) {
 			const double now = days * 86400.0 / scale;
-			const double step = now - lastCloudTime;
-			if (lastCloudTime < 0.0 || step < 0.0 || step > 30.0 * 86400.0) {
+			// UNOFFICIAL 2026-10-15 (user: the clouds hitch and move in tiny increments): the game keeps its day count in a
+			// float, so after many days it only moves in coarse steps (300 days in: about 2.6 game seconds, 0.09 s of play, so
+			// the clouds jumped every five or six frames and stood still between). The clouds now run on their own smooth clock,
+			// the frame time, held to the game's clock: never more than a little ahead of it (a pause or a menu stops them
+			// within that), caught up gently when behind, and moved on at once by a wait, sleep or travel.
+			const float dayCount = (float)days;
+			const double quantum = (double)(nextafterf(dayCount, FLT_MAX) - dayCount) * 86400.0 / scale;
+			const double lead = (std::max)(0.25, 2.0 * quantum);
+			static bool toldQuantum = false;
+			if (!toldQuantum) { toldQuantum = true; Logger::Log("UNOFFICIAL VolumetricClouds: game day %.3f: the game's clock moves in steps of %.3f s of play here; the clouds run smoothly between them", days, quantum); }
+			if (lastCloudTime < 0.0 || now < lastCloudTime - 60.0 - lead || now - lastCloudTime > 30.0 * 86400.0) {
 				// from the date: the wind as it stands now, carried over the whole time since the game began
 				const double total = fmod(now, 1.0e7);
-				wind.x = (float)fmod(cos((double)windAngle) * speed * total, 900000.0);
-				wind.y = (float)fmod(sin((double)windAngle) * speed * total, 900000.0);
-				wind.z = (float)fmod(Settings.Evolution * total, 900000.0);
+				windX = fmod(cos((double)windAngle) * speed * total, 900000.0);
+				windY = fmod(sin((double)windAngle) * speed * total, 900000.0);
+				windZ = fmod(Settings.Evolution * total, 900000.0);
+				lastCloudTime = now;
 				advance = 0.0f;
 			}
-			else {
-				advance = (float)step;
+			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt) {
+				const double step = now - lastCloudTime;
 				if (step > 120.0) Logger::Log("UNOFFICIAL VolumetricClouds: the game clock moved %.2f hours at once (wait, sleep, travel): the clouds move on with it (%.0f m).", step * scale / 3600.0, step * speed);
+				advance = (float)step;
+				lastCloudTime = now;
 			}
-			lastCloudTime = now;
+			else {
+				double next = lastCloudTime + dt;
+				if (next > now + lead) next = (std::max)(lastCloudTime, now + lead);	// paused (or the clock is slower): hold
+				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * dt);	// behind: catch up gently
+				advance = (float)(next - lastCloudTime);
+				lastCloudTime = next;
+			}
 		}
 	}
-	// wrapped at 900 km, a whole number of tiles of every noise texture, so the wrap never shows
-	wind.x = fmodf(wind.x + cosf(windAngle) * speed * advance, 900000.0f);
-	wind.y = fmodf(wind.y + sinf(windAngle) * speed * advance, 900000.0f);
-	wind.z = fmodf(wind.z + Settings.Evolution * advance, 900000.0f);
+	// wrapped at 900 km, a whole number of tiles of every noise texture, so the wrap never shows. UNOFFICIAL 2026-10-15: kept
+	// in doubles (a float near 900 km rounds each frame's half-metre move to 6 cm steps: uneven motion).
+	const double lastX = windX, lastY = windY;
+	windX = fmod(windX + cos((double)windAngle) * speed * advance, 900000.0);
+	windY = fmod(windY + sin((double)windAngle) * speed * advance, 900000.0);
+	windZ = fmod(windZ + Settings.Evolution * advance, 900000.0);
+	wind = D3DXVECTOR3((float)windX, (float)windY, (float)windZ);
+	// UNOFFICIAL 2026-10-15: this frame's move of the cloud pattern, for the history's reprojection (a wrap is not a move)
+	double moveX = windX - lastX, moveY = windY - lastY;
+	if (fabs(moveX) > 450000.0) moveX -= copysign(900000.0, moveX);
+	if (fabs(moveY) > 450000.0) moveY -= copysign(900000.0, moveY);
+	if (dt > 0.0f) { Constants.Motion.x = (float)moveX; Constants.Motion.y = (float)moveY; }	// the frame's first call (the second moves nothing)
+	Constants.Motion.w = Settings.Sharpness;
 	Constants.Extra = D3DXVECTOR4(Textures.ShadowSurface ? Settings.Shadows : 0.0f, Settings.ShadowRange, (float)Settings.ReflectionDebug, Settings.ShadowDebug ? 1.0f : 0.0f);
 
 	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness, coverage, Settings.Density);
@@ -180,6 +364,33 @@ bool VolumetricCloudsEffect::ShouldRender() {
 		Textures.CurrentSurface && Textures.HistorySurface[0] && Textures.HistorySurface[1];
 }
 
+// UNOFFICIAL 2026-10-15 weather sync: measures one queued game cloud texture (LayerProbe, technique 5): its mean alpha into a
+// 1 x 1 target, read back to the CPU. Once per texture per session; the read back waits for the GPU once (a millisecond or so).
+void VolumetricCloudsEffect::ProbeLayer(IDirect3DDevice9* Device) {
+	if (probeQueue.empty() || !Textures.ProbeSurface || !probeReadback) return;
+	ProbeJob job = probeQueue.front();
+	probeQueue.erase(probeQueue.begin());
+	float fill = -1.0f;
+	Device->SetTexture(12, job.texture);
+	TheRenderManager->renderState->NoteDeviceTexture(12, job.texture);
+	const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP},
+		{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_LINEAR} };
+	for (const auto& state : states) TheRenderManager->SetSamplerState(12, (D3DSAMPLERSTATETYPE)state[0], state[1]);	// as VolumetricFog's stage 9
+	Constants.Motion.z = job.lod;
+	TheShaderManager->RenderEffectToRT(Textures.ProbeSurface, this, false, 5);
+	Device->SetTexture(12, nullptr);
+	TheRenderManager->renderState->NoteDeviceTexture(12, nullptr);
+	D3DLOCKED_RECT locked;
+	if (SUCCEEDED(Device->GetRenderTargetData(Textures.ProbeSurface, probeReadback)) && SUCCEEDED(probeReadback->LockRect(&locked, nullptr, D3DLOCK_READONLY))) {
+		fill = (float)(*(const UInt32*)locked.pBits >> 24) / 255.0f;
+		probeReadback->UnlockRect();
+	}
+	job.texture->Release();
+	textureFill[job.path] = fill;
+	Logger::Log("UNOFFICIAL VolumetricClouds: cloud texture %s (%ux%u, read at mip %.0f): %.0f%% cloud%s", job.path.c_str(), job.width, job.height,
+		job.lod, fill * 100.0f, fill < 0.0f ? " (could not be read: left out)" : "");
+}
+
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
 	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
@@ -195,6 +406,7 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	Constants.March.z = (float)frame;
 
 	Textures.HistoryRead = Textures.HistoryTexture[read];
+	ProbeLayer(Device);
 	// UNOFFICIAL 2026-10-13: F10 timers per pass.
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
 		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");

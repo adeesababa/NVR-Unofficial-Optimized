@@ -8,7 +8,7 @@ void FlashlightBeamEffect::RegisterTextures() {
 	// Half resolution: the march is the expensive part and the shaft has no fine detail.
 	// The Flashlight Combine pass reads it through a bilinear sampler, which upsamples it.
 	TheTextureManager->InitTexture("TESR_VolumetricBuffer", &Textures.VolumetricTexture, &Textures.VolumetricSurface,
-		TheRenderManager->width / 2, TheRenderManager->height / 2, D3DFMT_A16B16G16R16F);
+		MaxQuality::Reduced(TheRenderManager->width, 2), MaxQuality::Reduced(TheRenderManager->height, 2), D3DFMT_A16B16G16R16F);	// UNOFFICIAL: full with Max Quality
 }
 
 void FlashlightBeamEffect::UpdateSettings() {

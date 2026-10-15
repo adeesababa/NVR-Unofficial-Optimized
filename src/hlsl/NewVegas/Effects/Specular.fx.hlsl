@@ -12,7 +12,7 @@
 
 float4 TESR_ReciprocalResolution;
 float4 TESR_SpecularData;       // x: sun highlight strength, y: roughness (0 mirror .. 1 matte), z: sky reflection strength, w: fade-out distance
-float4 TESR_SpecularEffects;    // x: specular anti-aliasing (0 .. 1), y: reflectance at normal incidence (0.04 typical)
+float4 TESR_SpecularEffects;    // x: specular anti-aliasing (0 .. 1), y: reflectance at normal incidence (0.04 typical), z: buffer scale
 float4 TESR_SunDirection;       // toward the sun
 float4 TESR_SunColor;
 float4 TESR_SkyColor;
@@ -43,7 +43,7 @@ static const float DrawDistance = TESR_SpecularData.w;
 static const float AAStrength = TESR_SpecularEffects.x;
 static const float F0 = TESR_SpecularEffects.y;
 static const float PI = 3.14159265;
-static const float LowScale = 4.0;   // TESR_SpecularBuffer is a quarter of the resolution each way
+static const float LowScale = TESR_SpecularEffects.z > 0.0 ? TESR_SpecularEffects.z : 4.0;   // TESR_SpecularBuffer: a quarter of the resolution each way (UNOFFICIAL: the full one with Max Quality)
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };

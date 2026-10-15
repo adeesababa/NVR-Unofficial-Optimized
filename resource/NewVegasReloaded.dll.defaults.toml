@@ -92,8 +92,13 @@ CompositeApply = true       # UNOFFICIAL: apply exterior sun shadows and ambient
 ChainUsesGameTexture = true # UNOFFICIAL: use the game's own frame as one of the effect chain's two buffers, avoiding whole-frame copies at the start and end of each chain. Needs FrameChain. Applies immediately.
 MergedDepthNormals = false  # UNOFFICIAL, EXPERIMENTAL, keep off: reconstruct normals in the depth pass instead of a separate full-screen pass. On a GTX 1070 (native D3D9) the driver silently skips this draw, so depth and normals stop updating (wrong AO, fog, god rays, SMAA). Since P40 it checks itself the first time it runs: the log line 'UNOFFICIAL merged depth/normals check' says whether the driver really drew it, and if it did not, the switch turns itself off until the game is restarted (separate passes, correct image). Applies immediately.
 SlimDepthBuffer = true      # UNOFFICIAL: store the effects' depth buffer as one 32-bit channel instead of two (the second is recomputed exactly), halving depth reads in every effect. Requires a game restart.
-ReShadeDepthCompat = false  # UNOFFICIAL (2026-10-11), for ReShade users: keep the game's depth buffer attached while NVR's effects draw (they normally detach it briefly), and give up the two speedups that need it detached (the low-resolution two-target fog pass and SMAA's own stencil). Try it if ReShade's Generic Depth finds no depth buffer. Applies immediately.
+ReShadeDepthCompat = false  # UNOFFICIAL (2026-10-11), for ReShade users: keep the game's depth buffer attached while NVR's effects draw (they normally detach it briefly), and give up the two speedups that need it detached (the low-resolution two-target fog pass and SMAA's own stencil). Turns itself on while ReShade is loaded, whatever this says; set it only to try it without ReShade. Applies immediately.
+ReShadeNVRDepth = true      # UNOFFICIAL (2026-10-15), only does something with ReShade loaded (as d3d9.dll): ReShade's depth buffer becomes a copy of NVR's, which holds your first-person gun and arms as well as the world (the game's own depth buffer loses them before they are drawn, so ReShade's depth effects shaded and blurred across them). Same direction as the game's depth buffer, so your RESHADE_DEPTH_INPUT settings stay as they are. Off: ReShade's Generic Depth picks the game's depth buffer as before. Applies immediately.
+ReShadeBeforeHUD = true     # UNOFFICIAL (2026-10-15), only does something with ReShade loaded (as d3d9.dll): ReShade's effects are drawn right after NVR's, before the HUD, Pip-Boy and menus, instead of over them. Off: ReShade draws at the end of the frame as before. Applies immediately.
 WorldSceneGuard = true      # UNOFFICIAL: if the game stops rendering the world scene for 10 frames in a row (seen once after loading a save directly into an interior, where the image comes out almost black), skip NVR's effects until it starts again instead of running them on a stale depth buffer. Applies immediately.
+
+[_Main.Main.Quality]
+MaxQuality = false        # UNOFFICIAL (2026-10-15), FOR SCREENSHOTS, needs a restart: every effect normally worked out at half or a quarter of the screen size runs at the full size, every reduced-quality shortcut is off, and quality settings go to their highest reasonable values (the list is in NewVegasReloaded.dll.maxquality.toml, which you can edit). Expect a much lower frame rate (often half or less). Your own settings are never changed: turn it off and restart to get them back exactly.
 
 [_Main.Main.ReducedQuality]
 GodRaysLowRes = false       # UNOFFICIAL, CHANGES THE IMAGE: compute god rays at quarter instead of half resolution (4x fewer pixels). Rays get softer; thin shafts through foliage may shimmer when moving. Applies immediately.
@@ -1079,7 +1084,7 @@ Enabled = true                         # Sky dither: hides the banding in the sk
 [_Shaders.VolumetricClouds.Main]
 CloudBase = 1500.0                     # [200-8000] Height of the bottom of the cloud layer, in metres (70 game units each).
 Thickness = 1800.0                     # [100-6000] How deep the cloud layer is, in metres. Deeper: taller heaped clouds, darker undersides.
-CoveragePleasant = 0.4                 # [0-1] How much of the sky the clouds fill in fair weather (the game's weather type decides which of these four applies; weather changes blend between them over about a minute).
+CoveragePleasant = 0.4                 # [0-1] How much of the sky the clouds fill in fair weather. These four follow the game's current weather, so console weather commands (fw, sw) and weather mods change the clouds too: a weather forced with fw shows at once, other changes blend as the game blends its own sky. With FromWeatherTextures they are read against how cloudy the weather's own cloud textures are (this value = vanilla's clear sky, Cloudy = a half-full sky, Rainy = overcast).
 CoverageCloudy = 0.7                   # [0-1] The same in cloudy weather.
 CoverageRainy = 0.95                   # [0-1] The same in rain: also flatter, greyer clouds.
 CoverageSnow = 0.9                     # [0-1] The same in snow.
@@ -1100,6 +1105,8 @@ ForwardScattering = 0.6                # [0-0.95] How strongly the clouds glow w
 Steps = 48                             # [8-128] Samples along each view ray. Fewer is faster but grainier; more gives finer, steadier detail (cost grows with it).
 FineDetail = 0.0                       # UNOFFICIAL [0-1]: a second, finer layer of wisps and curls on the cloud edges, so they keep detail close up instead of one size of lump. 0: off (no cost). One more texture read per sample when on; best with Resolution 1 or 2.
 FineDetailSize = 140.0                 # UNOFFICIAL [10-5000]: size of that finer layer, in metres. Smaller: finer grain.
+Sharpness = 0.5                        # UNOFFICIAL [0-1]: how crisp the clouds look. Higher: the clouds' history is kept sharp as they and the view move (instead of softening a little every frame), the finished clouds get edge-aware sharpening without halos, and far-off cloud detail stays finer. It also keeps drifting clouds moving smoothly (each pixel follows the wind between its refreshes). 0: the older, softer look. Costs a little at Resolution 2, almost nothing at 0.
+FromWeatherTextures = 1.0              # UNOFFICIAL [0-1]: how much the coverage follows the current weather's own cloud textures (how much of the sky the game's cloud layers would fill) instead of only its type (pleasant, cloudy, rainy, snow). Weather mods often give overcast skies a 'pleasant' type; with 1 they still get heavy clouds. Rain and snow never get fewer clouds than their own setting. 0: the type alone, as before. Each weather is logged once (NewVegasReloaded.log) with what it measured.
 MaxDistance = 80000.0                  # [5000-200000] How far away clouds are still drawn, in metres.
 HazeDistance = 30000.0                 # [1000-200000] Distance, in metres, at which far clouds have mostly thinned out into the sky.
 WindSpeed = 1.0                        # [0-20] How fast the clouds drift with the game's wind: 1 is about 15 m/s in calm weather to 60 m/s in a gale (faster than real, so you can see them move).
@@ -1300,6 +1307,54 @@ MaterialThickness = 0.12
 RimScalar = 0.5
 SpecularPower = 0.78
 
+[_Shaders.Skin.NewSkin]
+Enabled = false                     # WORK IN PROGRESS (WIP), UNOFFICIAL: Conor's skin shader (from his NVR testbed, by mrfury97). Still being finished: expect rough edges. Light spreads under the skin (softer, warmer faces), red light shows through ears, nostrils and fingers against the light, two-layer skin highlights, sky light and sky sheen, wet skin in the rain, and screen-space subsurface scattering ([Shaders.Skin.Scattering]). Replaces this build's skin shaders and the settings in [Shaders.Skin.Main]; overrides Vanilla Plus Skin. Restart the game after switching it.
+SpecularStrength = 1.0              # Skin highlight strength (two lobes: oily sheen plus pore haze). 1 reads a 50% specular mask as real skin.
+Roughness = 0.45                    # Skin roughness. Lower is oilier.
+VanillaMatchedHighlights = 0.0      # 1 makes skin highlights as strong as vanilla's own face highlights (same physically based shape); 0 is physical. Mostly matters at high Roughness.
+ShadowScatter = 1.0                 # Light bleeding red into shadow edges, and the red glow kept past the shadow line on side-lit skin. 0 disables both.
+Translucency = 0.5                  # Red light glowing through ears, nostrils and fingers against the light. 0 disables.
+FillLight = 1.0                     # UNOFFICIAL: extra soft light on skin as the game's own skin shaders give it (light wrapping past the shadow line, and a rim where light comes from behind). 0 is Conor's physically based look (darker, especially indoors under lamps); 1 matches the old skin's brightness. 0-2.
+SkyReflectionScale = 1.0            # Sky reflections on skin (sheen at glancing angles). 0 disables. Exteriors only.
+RainWetness = 0.5                   # How wet and glossy skin gets in the rain. 0 disables.
+MuteGameHighlights = false          # UNOFFICIAL: true switches the game's own face highlight passes off (Conor's choice: his skin draws its own). False keeps them: lamp-lit faces then come out about as bright as with the old skin shaders. They are switched off anyway while the screen-space blur runs (it would blur them).
+
+[_Shaders.Skin.Scattering]
+ScreenSpace = true                  # With NewSkin on: screen-space subsurface scattering, light spreads under the skin across the screen (separable SSS, the ENB look). Off falls back to per-pixel diffusion. Needs the game's MSAA off: with MSAA on, D3D9 drivers (NVIDIA at least) draw nothing while its extra targets are bound, so it switches itself off and per-pixel diffusion is used.
+Width = 8.0                         # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier.
+DepthFollow = 1.0                   # How sharply the blur stops at depth edges (nose against cheek, chin against neck).
+AlbedoDetail = 1.0                  # How much skin texture detail (freckles, pores, brows, stubble) stays sharp: 1 diffuses only the light, 0 blurs the texture with it (the waxy look).
+StrengthRed = 0.48                  # How much of each colour scatters. Red scatters most, which gives skin its warmth.
+StrengthGreen = 0.41
+StrengthBlue = 0.28
+FalloffRed = 1.0                    # How wide each colour spreads within the blur, 0-1 (above 1 is clamped: it breaks the blur into dots). Use Width to spread further.
+FalloffGreen = 0.37
+FalloffBlue = 0.3
+PerPixelWidth = 1.0                 # Per-pixel diffusion from curvature, used only where the screen-space blur cannot reach (first-person arms, reflections, fading actors) or when ScreenSpace is off. 0 is plain shading.
+
+[_Shaders.Skin.Interiors]
+SpecularStrength = 1.0              # With NewSkin on, indoors: skin highlight strength.
+Roughness = 0.45                    # Indoors: skin roughness. Lower is oilier.
+VanillaMatchedHighlights = 0.0      # Indoors: 1 makes highlights as strong as vanilla's; 0 is physical.
+ShadowScatter = 1.0                 # Indoors: light bleeding red into shadow edges.
+Translucency = 0.5                  # Indoors: red glow through ears, nostrils and fingers against a lamp.
+FillLight = 1.0                     # Indoors: extra soft light as the game's own skin shaders give it. 0 is Conor's physical look, 1 matches the old skin.
+ScreenSpace = true                  # Indoors: screen-space subsurface scattering.
+Width = 8.0                         # Indoors: how far light spreads under the skin on screen.
+DepthFollow = 1.0                   # Indoors: how sharply the blur stops at depth edges.
+AlbedoDetail = 1.0                  # Indoors: how much skin texture detail stays sharp (1 sharpest).
+StrengthRed = 0.48                  # Indoors: how much of each colour scatters.
+StrengthGreen = 0.41
+StrengthBlue = 0.28
+FalloffRed = 1.0                    # Indoors: how wide each colour spreads within the blur, 0-1.
+FalloffGreen = 0.37
+FalloffBlue = 0.3
+PerPixelWidth = 1.0                 # Indoors: per-pixel diffusion where the screen-space blur cannot reach.
+
+[_Shaders.Skin.Debug]
+DebugView = 0                       # With NewSkin on: skin diagnostics, indoors and out. 0 off. 1 which pass drew the skin: green one full pass, cyan one full pass with several lamps, yellow a light-only pass the game multiplies by the texture afterwards, red added for every extra lamp pass on top. 2 which settings are in use: blue Interiors, orange outdoors; bright where the screen-space blur takes the skin, dark where per-pixel diffusion stands in. 3 direct light (sun and lamps) on white skin. 4 ambient and sky light on white skin. 5 highlights alone. 6 material: red roughness, green highlight strength, blue the VanillaMatchedHighlights boost. 7 curvature: red per-pixel diffusion (PerPixelWidth), green thin features for Translucency. 8 the screen-space blur's skin test: green blurred, red rejected by distance, blue rejected by colour. 9 scene brightness against the skin's own pass: green equal, red brighter (extra lamp passes), blue darker. 10 what the blur changed: dark nothing, bright a lot.
+LogDraws = 0                        # Diagnostic: logs the first this-many skin draws of the world scene (pass, shader, blend). 0 off. Read at startup.
+BindFaceGenMaps = true              # Diagnostic: Conor's FaceGen map binding in the light-only face passes (used to divide the face colour out of highlights). Switch off to compare.
 [_Shaders.Skin.Status]
 Enabled = true                      # Replaces the skin shaders: forward sun shadow and light terminator band. Real scattering is PerPixelDiffusion in [Shaders.Skin.Main].
 
@@ -1328,7 +1383,7 @@ UseNormals = false                  # EXPERIMENTAL-Uses the R & G channels of th
 SphericalNormals = false            # EXPERIMENTAL-Uses this setting if the normals of the clouds point to the center of the panoramic texture
 Transparency = 1.0                  # Clouds base transparency
 Brightness = 1.0                    # Clouds base brightness
-Volumetric = 0                      # [0-1] UNOFFICIAL (from Physically-Based-Reloaded). 1 draws the clouds as a thick slab lit by the sun: bright silver edges when the sun is behind them, darker undersides, and sunset colour. Above about 9 degrees the slab replaces the flat shading, UseNormals included. The game's cloud textures still decide where the clouds are. 0 draws the flat clouds as before.
+Volumetric = 0                      # [0-1] UNOFFICIAL (from Physically-Based-Reloaded). 1 draws the clouds as a thick slab lit by the sun: bright silver edges when the sun is behind them, darker undersides, and sunset colour. Above about 9 degrees the slab replaces the flat shading, UseNormals included. The game's cloud textures still decide where the clouds are. 0 draws the flat clouds as before. Runs only while the Volumetric Clouds effect is on (2026-10-15: with that effect off it marched the game's own cloud layers at ~3 ms outdoors on a GTX 1070); with Volumetric Clouds' HideGameClouds on (its default) the layers are hidden and this does nothing.
 Steps = 8                           # [2-16] Samples through the cloud layer for each pixel. 16 gives smoother edges at about twice the cost.
 CloudHeight = 6000.0                # [500-20000] Height of the base of the cloud layer above the camera, in game units (one cell is 4096 units across). The game's cloud texture is laid on this base. The height only changes the scale of the erosion noise (higher gives finer wisps). The depth of the layer comes from CloudThickness and UVScale.
 CloudThickness = 2500.0             # [100-10000] Depth of the cloud layer in game units. Thicker clouds are more opaque when you look through them.

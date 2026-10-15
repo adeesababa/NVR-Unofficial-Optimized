@@ -26,6 +26,7 @@ class QueuedModelLoader;	extern QueuedModelLoader*		ModelLoader;
 class ShadowSceneNode;		extern ShadowSceneNode*			SceneNode;
 
 #include "../Core/RenderManager.h"
+#include "../Core/MaxQuality.h"
 #include "../Core/SettingManager.h"
 #include "../Core/CommandManager.h"
 #include "../Core/PresetManager.h"

@@ -10,7 +10,7 @@ public:
 	SpecularEffect() : EffectRecord("Specular") {};
 
 	struct SpecularStruct {
-		D3DXVECTOR4		EffectStrength;	// x: specular anti-aliasing, y: reflectance at normal incidence (F0)
+		D3DXVECTOR4		EffectStrength;	// x: specular anti-aliasing, y: reflectance at normal incidence (F0), z: buffer scale (4, 1 with Max Quality)
 		D3DXVECTOR4		Data;			// x: sun highlight strength, y: roughness, z: sky reflection strength, w: fade-out distance
 	};
 	SpecularStruct	Constants;

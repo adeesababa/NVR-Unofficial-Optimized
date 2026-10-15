@@ -1456,6 +1456,9 @@ static void RevertToSnapshot() {
 				lut->LoadLUT(slot, value.c_str());
 				continue;
 			}
+			// UNOFFICIAL 2026-10-15: a value Max Quality sets is its own, not the user's: never written back to their file
+			SettingManager::Configuration::ConfigNode current;
+			if (TheSettingManager->Config.FillNode(&current, section.c_str(), key.c_str()) && current.MaxQuality) continue;
 			TheSettingManager->SetSettingS(const_cast<char*>(section.c_str()),
 			                               const_cast<char*>(key.c_str()),
 			                               const_cast<char*>(value.c_str()));
@@ -2249,7 +2252,9 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Revert to value at session start");
 	};
 
-	bool inert = IsInertSetting(node.Section, node.Key);
+	// UNOFFICIAL 2026-10-15: a value Max Quality sets is shown greyed (the user's own comes back when it is turned off)
+	const bool maxLocked = node.MaxQuality;
+	bool inert = IsInertSetting(node.Section, node.Key) || maxLocked;
 	if (inert) ImGui::BeginDisabled();
 
 	// Hover state of the *primary* widget for each case, captured immediately
@@ -2267,9 +2272,11 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->LoadSettings();
 		}
 		mainHovered = ImGui::IsItemHovered();
-		if (inert && mainHovered)
-			ImGui::SetTooltip("Disabled: has no effect. Mipmaps/anisotropy are commented out in "
+		if (inert && mainHovered) {
+			if (maxLocked) ImGui::SetTooltip("Set by Max Quality while it is on (NewVegasReloaded.dll.maxquality.toml). Your own value comes back when you turn it off.");
+			else ImGui::SetTooltip("Disabled: has no effect. Mipmaps/anisotropy are commented out in "
 				"ShadowsExterior.cpp (deferred shadows produce artifacted derivatives).");
+		}
 		RevertBtn();
 		break;
 	}
@@ -2338,9 +2345,11 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			if (ImGui::DragInt(node.Key, &newVal, 1.0f)) {}
 		}
 		mainHovered = ImGui::IsItemHovered();
-		if (inert && mainHovered)
-			ImGui::SetTooltip("Disabled: has no effect. Mipmaps/anisotropy are commented out in "
+		if (inert && mainHovered) {
+			if (maxLocked) ImGui::SetTooltip("Set by Max Quality while it is on (NewVegasReloaded.dll.maxquality.toml). Your own value comes back when you turn it off.");
+			else ImGui::SetTooltip("Disabled: has no effect. Mipmaps/anisotropy are commented out in "
 				"ShadowsExterior.cpp (deferred shadows produce artifacted derivatives).");
+		}
 		if (newVal != val) {
 			TheSettingManager->SetSetting(node.Section, node.Key, newVal);
 			TheSettingManager->LoadSettings();
@@ -2739,7 +2748,7 @@ void ImGuiManager::BuildUI() {
 		return;
 	}
 
-	// Toolbar row 1: FX toggle | title/status | Revert / Disk / Save Copy / Save
+	// Toolbar row 1: FX toggle | Max Quality toggle | title/status | Revert / Disk / Save Copy / Save
 	{
 		bool renderFX = TheSettingManager->SettingsMain.Main.RenderEffects;
 		ImGui::PushStyleColor(ImGuiCol_Button, renderFX
@@ -2753,6 +2762,32 @@ void ImGuiManager::BuildUI() {
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Toggle all NVR effects (hotkey: modifier + %s)",
 				DikToName(TheSettingManager->SettingsMain.Menu.KeyEnable));
+	}
+
+	// UNOFFICIAL 2026-10-15 Max Quality: a toggle button next to FX, red while on, its warning in the tooltip. Read once at
+	// start (MaxQuality::Active), so a change needs Save and a restart; the note after the button says so until then.
+	{
+		const bool wanted = TheSettingManager->GetSettingI("Main.Main.Quality", "MaxQuality") != 0;
+		ImGui::SameLine();
+		ImGui::PushStyleColor(ImGuiCol_Button, wanted
+			? ImVec4(0.60f, 0.12f, 0.12f, 1.0f)
+			: ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
+		if (ImGui::Button(wanted ? "MAX QUALITY ON" : "MAX QUALITY OFF")) {
+			TheSettingManager->SetSetting("Main.Main.Quality", "MaxQuality", !wanted);
+			TheSettingManager->LoadSettings();
+		}
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Max Quality: for screenshots, not for playing.\n"
+				"Runs every reduced-resolution effect at full resolution, turns off every reduced-quality shortcut and\n"
+				"pushes quality settings to their maximum. Expect a much lower frame rate (often half or less).\n"
+				"Your own settings are kept: turn it off and restart to get them back exactly.\n"
+				"Takes effect after Save and a game restart.%s",
+				MaxQuality::Active ? "\nIt is ON now: greyed values in the menu are its own (NewVegasReloaded.dll.maxquality.toml), not yours." : "");
+		if (wanted != MaxQuality::Active) {
+			ImGui::SameLine();
+			ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Save + restart to turn it %s", wanted ? "on" : "off");
+		}
 	}
 
 	ImGui::SameLine();

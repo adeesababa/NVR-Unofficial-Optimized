@@ -61,6 +61,30 @@ void SettingManager::Configuration::Init() {
 	configLoaded = true;
 	Logger::Log("Loading configs finished");
 
+	// UNOFFICIAL 2026-10-15 Max Quality ([Main.Main.Quality] MaxQuality, read once here: it needs a restart). For screenshots:
+	// every effect worked out at a reduced size runs at the full size (MaxQuality.h) and the settings listed in
+	// NewVegasReloaded.dll.maxquality.toml are read in place of the user's, never written to their file: turned off, their own
+	// settings are back as they were.
+	{
+		ConfigNode node;
+		MaxQualityActive = false;
+		const bool wanted = FillNode(&node, "Main.Main.Quality", "MaxQuality") && node.BoolValue;
+		if (wanted) {
+			char MaxQualityFilename[MAX_PATH];
+			BuildConfigPath(MaxQualityFilename, MaxQualitySettingsFile);
+			try {
+				MaxQualityConfig = toml::parse<toml::discard_comments, std::map>((std::string_view)MaxQualityFilename).as_table();
+				Logger::Log("UNOFFICIAL Max Quality is ON: reduced-size effects run at full size, the settings in %s are used in place of yours (your file is not changed)", MaxQualityFilename);
+			}
+			catch (const std::exception& e) {
+				Logger::Log("[ERROR] Max Quality is on but %s could not be read (%s): reduced-size effects run at full size, your settings stay as they are", MaxQualityFilename, e.what());
+				MaxQualityConfig = toml::table();
+			}
+			MaxQualityActive = true;
+		}
+		MaxQuality::Active = MaxQualityActive;
+	}
+
 	// Before anything reads a setting: the effects read theirs while they register, which is before the first
 	// LoadSettings, and a read of a section the user config lacks writes the defaults into it -- so a migration that
 	// fills a new section from the user's old one (P63's Interiors) would find it already there and skip it.
@@ -199,6 +223,35 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 
 	// write the value in case it was obtained from defaults
 	if (fromDefault) SetValue(Node);
+
+	// UNOFFICIAL 2026-10-15 Max Quality: its value in place of the user's, after the write above so it never reaches their file.
+	Node->MaxQuality = false;
+	if (MaxQualityActive) {
+		StringList overrideKeys;
+		SplitString(path, ".", &overrideKeys);
+		if (tomlValue* overrideSection = FindSection(&MaxQualityConfig, &overrideKeys)) {
+			auto found = overrideSection->as_table().find(Key);
+			if (found != overrideSection->as_table().end()) {
+				const tomlValue& forced = found->second;
+				bool applied = true;
+				if (Node->Type == NodeType::Integer && forced.is_integer()) {
+					Node->IntValue = (int)forced.as_integer(); Node->FloatValue = (float)Node->IntValue; Node->BoolValue = Node->IntValue != 0;
+					strcpy(Node->Value, toml::format(forced).c_str());
+				}
+				else if (Node->Type == NodeType::Float && (forced.is_floating() || forced.is_integer())) {
+					Node->FloatValue = forced.is_floating() ? (float)forced.as_floating() : (float)forced.as_integer();
+					Node->IntValue = (int)Node->FloatValue; Node->BoolValue = Node->FloatValue != 0.0f;
+					strcpy(Node->Value, ToString<float>(Node->FloatValue).c_str());
+				}
+				else if (Node->Type == NodeType::Boolean && forced.is_boolean()) {
+					Node->BoolValue = forced.as_boolean(); Node->IntValue = Node->BoolValue ? 1 : 0; Node->FloatValue = (float)Node->IntValue;
+					strcpy(Node->Value, ToString<bool>(Node->BoolValue).c_str());
+				}
+				else applied = false;
+				Node->MaxQuality = applied;
+			}
+		}
+	}
 
 	return true;
 }
@@ -577,6 +630,8 @@ void SettingManager::LoadSettings() {
 	}
 	SettingsMain.Main.LampScissor = boolSetting(performance, "LampScissor", true);
 	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
+	SettingsMain.Main.ReShadeNVRDepth = boolSetting(performance, "ReShadeNVRDepth", true);
+	SettingsMain.Main.ReShadeBeforeHUD = boolSetting(performance, "ReShadeBeforeHUD", true);
 	{
 		Configuration::ConfigNode node;
 		const int age = Config.FillNode(&node, performance, "HiddenObjectCullingMaxAge") ? node.IntValue : 4;

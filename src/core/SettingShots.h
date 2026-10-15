@@ -16,6 +16,9 @@
 //   console <command>                            a console command, run at the start of the shot's first frame (set GameHour to 13,
 //                                                player.setangle x -30, fw 0015BD42, ...). NOT undone: it stays for the later shots,
 //                                                and the place check allows a move during a shot that runs one.
+//   final                                        (2026-10-15) every picture is the back buffer at ReShade's end of the frame
+//                                                (after ReShade's effects and the HUD) instead of NVR's picture before the HUD;
+//                                                needs ReShade's D3D9 runtime (ReShadeIntegration.cpp calls CaptureFinal).
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <atomic>
 #include <fstream>
@@ -49,6 +52,8 @@ namespace SettingShots {
 	inline TESObjectCELL* Cell = nullptr;
 	inline std::vector<std::string> Commands;	// this shot's console commands, run at the start of its first frame
 	inline bool Moves = false;					// this shot ran console commands: the player may change place
+	inline bool FinalPicture = false;			// 'final': pictures from the back buffer at ReShade's present
+	inline bool WantFinal = false;				// the shot's frames are done: the next CaptureFinal takes it
 
 	inline bool Requested() { return GetFileAttributesA(RequestFile) != INVALID_FILE_ATTRIBUTES; }
 
@@ -60,7 +65,7 @@ namespace SettingShots {
 	inline void Request(NVSEMessagingInterface* messaging, UInt32 handle) { Messaging = messaging; Handle = handle; Pending = true; }
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120;
+		List.clear(); Frames = 120; FinalPicture = false; WantFinal = false;
 		std::ifstream in(RequestFile);
 		if (!in) { error = "the shot list could not be read"; return false; }
 		std::string line;
@@ -74,6 +79,7 @@ namespace SettingShots {
 			if (!(words >> command)) continue;
 			if (command == "frames") { words >> Frames; Frames = std::clamp(Frames, 2, 1200); }
 			else if (command == "profile") GpuTimer::Enabled = true;	// UNOFFICIAL 2026-10-13: the F10 GPU profile, on for the whole run
+			else if (command == "final") FinalPicture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
@@ -200,9 +206,7 @@ namespace SettingShots {
 		Frame++;
 	}
 
-	// Render.cpp, the finished picture before the HUD (where the neon self-test takes its Final shots).
-	inline void Capture(IDirect3DSurface9* surface) {
-		if (!Running || Frame < Frames || !surface) return;
+	inline void TakeShot(IDirect3DSurface9* surface) {
 		const Shot& shot = List[Index];
 		Job* job = new (std::nothrow) Job();
 		if (job && Reader.Read(TheRenderManager->device, surface, job->bgra, job->width, job->height)) {
@@ -221,5 +225,22 @@ namespace SettingShots {
 		Frame = 0;
 		if (Index < List.size()) Apply(List[Index]);
 		else { Running = false; AllQueued = true; }
+	}
+
+	// Render.cpp, the finished picture before the HUD (where the neon self-test takes its Final shots).
+	inline void Capture(IDirect3DSurface9* surface) {
+		if (!Running || Frame < Frames || !surface) return;
+		if (FinalPicture) { WantFinal = true; return; }	// taken at the present instead, the settings still the shot's
+		TakeShot(surface);
+	}
+
+	// ReShadeIntegration.cpp, ReShade's reshade_present event: the frame as presented (ReShade's effects and the HUD in it).
+	inline void CaptureFinal() {
+		if (!Running || !WantFinal) return;
+		WantFinal = false;
+		IDirect3DSurface9* backBuffer = nullptr;
+		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a final picture"); return; }
+		TakeShot(backBuffer);
+		backBuffer->Release();
 	}
 }

@@ -30,7 +30,9 @@ struct SettingsMainStruct {
         bool    SkinnedShadowFaceTest; // [Main.Main.Performance] SkinnedShadowFaceTest (ShadowManager.cpp: skeleton bounds for animated casters in lamp cube maps), live
         bool    HiddenObjectCulling; // [Main.Main.Performance] HiddenObjectCulling (HiddenObjectCulling.h: skip the extra passes of objects hidden a few frames ago), live
         int     HiddenObjectCullingMaxAge; // [Main.Main.Performance] HiddenObjectCullingMaxAge (oldest visibility answer used, 1-7 frames), live
-        bool    ReShadeDepthCompat; // [Main.Main.Performance] ReShadeDepthCompat (keep the game's depth-stencil bound through NVR's passes, for ReShade), live
+        bool    ReShadeDepthCompat; // [Main.Main.Performance] ReShadeDepthCompat (keep the game's depth-stencil bound through NVR's passes, for ReShade; also on while ReShade is loaded, ReShadeIntegration::KeepDepthBound), live
+        bool    ReShadeNVRDepth; // [Main.Main.Performance] ReShadeNVRDepth (ReShadeIntegration.cpp: ReShade's DEPTH = NVR's combined depth, world + first-person model), live
+        bool    ReShadeBeforeHUD; // [Main.Main.Performance] ReShadeBeforeHUD (ReShadeIntegration.cpp: ReShade's effects drawn after NVR's, before the HUD), live
         bool    LampScissor; // [Main.Main.Performance] LampScissor (LampScissor.h: lamp-only passes drawn only inside their lamps' screen rectangle), live
         bool    NeonSpillSelfTest;    // [Shaders.BounceLight.Main] NeonSpillSelfTest (EffectSelfTest.h, DIAGNOSTIC: ticking it runs one in-game A/B test of the neon spill), live
         int     LampPassTestSkip; // [Main.Main.Performance] LampPassTestSkip (LampPassTest.h, DIAGNOSTIC: skip the passes a merged light pass would replace; 0 off), live
@@ -349,6 +351,7 @@ public:
 			std::string Description;
 			bool		Reboot;
 			UInt32		Type;
+			bool		MaxQuality = false;	// UNOFFICIAL 2026-10-15: this value is Max Quality's, not the user's (shown greyed in the menu)
 
 			// Typed value, kept in sync with Value above. Populated for every node
 			// regardless of Type (e.g. a Boolean node also gets IntValue/FloatValue)
@@ -376,6 +379,8 @@ public:
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;
+		tomlValue		MaxQualityConfig;	// UNOFFICIAL 2026-10-15: Max Quality's settings (NewVegasReloaded.dll.maxquality.toml), read over the user's while it is on
+		bool			MaxQualityActive = false;
 		bool			configLoaded;
 		char*			Config;
 		char*			ConfigB;
