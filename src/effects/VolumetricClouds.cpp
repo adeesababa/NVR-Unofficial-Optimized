@@ -20,7 +20,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.SunStrength = std::clamp(TheSettingManager->GetSettingF(section, "SunStrength"), 0.0f, 10.0f);
 	Settings.AmbientStrength = std::clamp(TheSettingManager->GetSettingF(section, "AmbientStrength"), 0.0f, 10.0f);
 	Settings.Forward = std::clamp(TheSettingManager->GetSettingF(section, "ForwardScattering"), 0.0f, 0.95f);
-	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 1280);	// UNOFFICIAL 2026-10-15: was 128 (and the shader stopped at 64)
+	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 64);	// UNOFFICIAL 2026-10-15: the shader stops at 64 (the game's compiler unrolls the loop)
 	Settings.MaxDistance = std::clamp(TheSettingManager->GetSettingF(section, "MaxDistance"), 5000.0f, 200000.0f);
 	Settings.HazeDistance = std::clamp(TheSettingManager->GetSettingF(section, "HazeDistance"), 1000.0f, 200000.0f);
 	Settings.WindSpeed = std::clamp(TheSettingManager->GetSettingF(section, "WindSpeed"), 0.0f, 20.0f);

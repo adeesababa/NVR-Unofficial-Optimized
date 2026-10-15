@@ -221,13 +221,10 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float3 scattered = 0.0;
 	float transmittance = 1.0;
 	float depthSum = 0.0, depthWeight = 0.0;
-	// UNOFFICIAL 2026-10-15: up to 1280 steps (Steps). One ps_3_0 loop runs at most 255 times, so two nested; the old single loop
-	// stopped at 64 whatever Steps said.
-	bool marching = true;
-	[loop] for (float outer = 0.0; outer < 6.0 && marching; outer += 1.0) {
-	[loop] for (float inner = 0.0; inner < 255.0; inner += 1.0) {
-		float i = outer * 255.0 + inner;
-		if (i >= steps || transmittance < 0.01) { marching = false; break; }
+	// UNOFFICIAL 2026-10-15: at most 64 steps (Steps). The game's own compiler (D3DX) unrolls this loop: at 255 (or 1280 in two
+	// nested loops) it took minutes at startup and the game hung on a black screen.
+	[loop] for (float i = 0.0; i < 64.0; i += 1.0) {
+		if (i >= steps || transmittance < 0.01) break;
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
@@ -265,7 +262,6 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 			depthWeight += transmittance * (1.0 - stepTransmittance);
 			transmittance *= stepTransmittance;
 		}
-	}
 	}
 	// far clouds thin out into the sky (the sky's own colour is the haze): they hold near and fade quickly far off,
 	// before the horizon squeezes them into slivers thinner than the march's texels
