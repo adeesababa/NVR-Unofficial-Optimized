@@ -28,7 +28,7 @@ static const float DrawDistance = TESR_SpecularData.w;
 static const float AAStrength = TESR_SpecularEffects.x;
 static const float F0 = TESR_SpecularEffects.y;
 static const float PI = 3.14159265;
-static const float LowScale = 4.0;
+static const float LowScale = TESR_SpecularEffects.z > 0.0 ? TESR_SpecularEffects.z : 4.0;
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };

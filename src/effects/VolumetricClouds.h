@@ -1,4 +1,7 @@
 #pragma once
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 class VolumetricCloudsEffect : public EffectRecord
 {
@@ -28,6 +31,8 @@ public:
 		int		ReflectionDebug;
 		float	FineDetail;
 		float	FineDetailSize;
+		float	Sharpness;
+		float	FromWeatherTextures;
 	};
 	SettingsStruct	Settings = {};
 
@@ -47,6 +52,7 @@ public:
 		D3DXMATRIX	HistoryViewProj;
 		D3DXVECTOR4	ReflectData;
 		D3DXVECTOR4	Detail;
+		D3DXVECTOR4	Motion;
 	};
 	ConstantsStruct	Constants = {};
 
@@ -58,6 +64,8 @@ public:
 		IDirect3DTexture9* HistoryRead = nullptr;
 		IDirect3DTexture9* ShadowTexture = nullptr;
 		IDirect3DSurface9* ShadowSurface = nullptr;
+		IDirect3DTexture9* ProbeTexture = nullptr;
+		IDirect3DSurface9* ProbeSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 	UINT	shadowMapSize = 256;
@@ -80,6 +88,7 @@ public:
 private:
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;
 	D3DXVECTOR3	wind = D3DXVECTOR3(0, 0, 0);
+	double		windX = 0.0, windY = 0.0, windZ = 0.0;
 	D3DXMATRIX	lastViewProj;
 	UINT		frame = 0, read = 0;
 	double		lastRenderTime = -1.0;
@@ -92,4 +101,15 @@ private:
 	bool		reflectLogged = false;
 	bool		reflectNoted = false;
 	bool		ReflectionWanted() const;
+	std::unordered_map<TESWeather*, float>	weatherFill;
+	std::unordered_map<std::string, float>	textureFill;
+	TESWeather*	lastWeather = nullptr;
+	int			learnTries = 0;
+	float		snapWait = -1.0f;
+	void		LearnWeatherFill(Sky* sky);
+	struct ProbeJob { std::string path; IDirect3DBaseTexture9* texture; float lod; UINT width, height; };
+	std::vector<ProbeJob>	probeQueue;
+	IDirect3DSurface9*	probeReadback = nullptr;
+	void		ProbeLayer(IDirect3DDevice9* Device);
+	void		WeatherLook(TESWeather* weather, float& coverage, float& rain, float& bias);
 };

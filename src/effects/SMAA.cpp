@@ -80,7 +80,7 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 			Logger::Log("UNOFFICIAL SMAA: no depth-stencil surface of its own; uses the bound one as before");
 		}
 	}
-	const bool ownStencil = Textures.StencilSurface != nullptr && !TheSettingManager->SettingsMain.Main.ReShadeDepthCompat;
+	const bool ownStencil = Textures.StencilSurface != nullptr && !ReShadeIntegration::KeepDepthBound();
 	if (ownStencil) {
 		if (FAILED(Device->GetDepthStencilSurface(&previousDepth))) previousDepth = nullptr;
 		Device->SetDepthStencilSurface(Textures.StencilSurface);

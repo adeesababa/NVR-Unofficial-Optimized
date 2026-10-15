@@ -733,7 +733,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	const int write = 1 - PathIndex;
 	PathRead = PathTexture[PathIndex];
 	device->SetRenderTarget(0, PathSurface[write]);
-	if (!TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) device->SetDepthStencilSurface(nullptr);
+	if (!ReShadeIntegration::KeepDepthBound()) device->SetDepthStencilSurface(nullptr);
 	Effect->SetTechnique(probe);
 	SetCT();
 	UINT passes = 0;

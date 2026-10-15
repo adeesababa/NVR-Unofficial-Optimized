@@ -31,6 +31,8 @@ struct SettingsMainStruct {
         bool    HiddenObjectCulling;
         int     HiddenObjectCullingMaxAge;
         bool    ReShadeDepthCompat;
+        bool    ReShadeNVRDepth;
+        bool    ReShadeBeforeHUD;
         bool    LampScissor;
         bool    NeonSpillSelfTest;
         int     LampPassTestSkip;
@@ -349,6 +351,7 @@ public:
 			std::string Description;
 			bool		Reboot;
 			UInt32		Type;
+			bool		MaxQuality = false;
 
 			// Typed value, kept in sync with Value above. Populated for every node
 			// regardless of Type (e.g. a Boolean node also gets IntValue/FloatValue)
@@ -376,6 +379,8 @@ public:
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;
+		tomlValue		MaxQualityConfig;
+		bool			MaxQualityActive = false;
 		bool			configLoaded;
 		char*			Config;
 		char*			ConfigB;

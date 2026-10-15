@@ -1,5 +1,7 @@
 #include "Sky.h"
 
+static float CloudsVolumetricSetting = 0.0f;
+
 void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_CloudData", &Constants.CloudData);
@@ -108,6 +110,12 @@ static D3DXVECTOR3 EvalSky(const D3DXVECTOR3& dir, const D3DXVECTOR4& sunPos, co
 }
 
 void SkyShaders::UpdateConstants() {
+	if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) {
+		if (!clouds->Enabled) clouds->HideGameClouds = clouds->HideGameCloudsInReflection = 0.0f;
+		Constants.CloudVolumeData.x = clouds->Enabled ? CloudsVolumetricSetting : 0.0f;
+	}
+	else Constants.CloudVolumeData.x = 0.0f;
+
 	if (TheShaderManager->Shaders.Tonemapping->Enabled)
 		Constants.SunsetColor.w = TheShaderManager->GetTransitionValue(Settings.SkyMultiplierDay, Settings.SkyMultiplierNight, 1.0);
 	else
@@ -279,7 +287,8 @@ void SkyShaders::UpdateSettings() {
 	PhysicalSettings.Haze = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Haze"), 0.0f, 10.0f);
 	lastProjectionValid = false;
 
-	Constants.CloudVolumeData.x = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Volumetric");
+	CloudsVolumetricSetting = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Volumetric");
+	Constants.CloudVolumeData.x = CloudsVolumetricSetting;
 	Constants.CloudVolumeData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Steps"), 1.0f, 16.0f);
 	Constants.CloudVolumeData.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "CloudHeight"), 0.0f);
 	Constants.CloudVolumeData.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "CloudThickness"), 0.0f);

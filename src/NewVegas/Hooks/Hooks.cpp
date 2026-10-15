@@ -51,6 +51,13 @@ void AttachHooks() {
 
 	// Vanilla shader specific hooks.
 	kSkyShaderConstantsDetour.ReplaceVirtualFunc(0x10AFE94, SkyShader__UpdateConstants);
+	if (SkinShaders::NewSkinEnabled()) {
+		kSkinPrepareGeometryDetour.ReplaceVirtualFunc(0x10BB980 + 27 * 4, SkinShader__PrepareGeometryForRendering);
+		kSkinPostGeometryDetour.ReplaceVirtualFunc(0x10BB980 + 35 * 4, SkinShader__PostGeometry);
+		InstallFaceGenInteriorPatch();
+		Logger::Log("UNOFFICIAL NewSkin: Conor's skin shader on (SkinTemplate.hlsl + SkinScattering)%s",
+			GetModuleHandle(L"VanillaPlusSkin.dll") ? "; it replaces Vanilla Plus Skin's shaders" : "");
+	}
 
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled")) {
 		const UInt32 site = PointShadowForward::kTestFrustumCallSite;

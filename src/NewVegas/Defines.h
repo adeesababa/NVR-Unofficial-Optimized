@@ -3,6 +3,7 @@
 #define SettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.config"
 #define TomlSettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.toml"
 #define DefaultsSettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.defaults.toml"
+#define MaxQualitySettingsFile "\\Data\\NVSE\\Plugins\\NewVegasReloaded.dll.maxquality.toml"
 #define ShadersPath "Data\\Shaders\\NewVegasReloaded\\Shaders\\"
 #define EffectsPath "Data\\Shaders\\NewVegasReloaded\\Effects\\"
 #define RenderStateArgs 0, 0

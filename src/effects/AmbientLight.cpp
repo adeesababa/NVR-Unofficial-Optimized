@@ -27,8 +27,8 @@ void AmbientLightEffect::UpdateSettings() {
 void AmbientLightEffect::EnsureBuffers() {
 	if (buffersTried) return;
 	buffersTried = true;
-	const int width = (TheRenderManager->width + 1) / 2;
-	const int height = (TheRenderManager->height + 1) / 2;
+	const int width = MaxQuality::Reduced(TheRenderManager->width, 2);
+	const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
 	TheTextureManager->InitTexture("NVR_AmbientLightPrep", &prepTexture, &prepSurface, width, height, D3DFMT_A32B32G32R32F);
 	TheTextureManager->InitTexture("NVR_AmbientLight0", &bufferTexture[0], &bufferSurface[0], width, height, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_AmbientLight1", &bufferTexture[1], &bufferSurface[1], width, height, D3DFMT_A16B16G16R16F);
@@ -298,7 +298,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	D3DXVECTOR4 layout((float)half.Width / original.Width, (float)half.Height / original.Height, 1.0f / half.Width, 1.0f / half.Height);
 	IDirect3DSurface9* depthSurface = nullptr;
 	Device->GetDepthStencilSurface(&depthSurface);
-	if (!TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) Device->SetDepthStencilSurface(nullptr);
+	if (!ReShadeIntegration::KeepDepthBound()) Device->SetDepthStencilSurface(nullptr);
 
 	const bool gridOn = gridBounce > 0.0f;
 	if (gridOn) {

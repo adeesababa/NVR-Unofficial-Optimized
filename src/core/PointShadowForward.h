@@ -122,6 +122,7 @@ namespace PointShadowForward {
 
 	inline bool Eligible(const char* name, const ShaderTemplate& t) {
 		if (!name || !strstr(name, ".pso")) return false;
+		if (t.Name && !strcmp(t.Name, "SkinTemplate")) return strcmp(name, "SKIN2000.pso") && strcmp(name, "SKIN2001.pso");
 		if (t.Name) return !strcmp(t.Name, "ObjectTemplate") || !strcmp(t.Name, "SkinVPSTemplate");
 		return !strcmp(name, "SKIN2002.pso") || !strcmp(name, "SKIN2006.pso") || !strcmp(name, "SM3002.pso") ||
 			!strcmp(name, "SM3003.pso") || !strcmp(name, "SM3005.pso") || !strcmp(name, "SM3007.pso");

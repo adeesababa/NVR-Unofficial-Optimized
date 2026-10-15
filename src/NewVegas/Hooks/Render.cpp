@@ -454,6 +454,10 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();
 #endif
+	if (SkinShaders::NewSkinEnabled()) {
+		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->BeginFrame();
+		UpdateFaceGenInteriorFlag();
+	}
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -1888,7 +1892,12 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		BarrelHaze::Reset();
 		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();
+		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		if (TheShaderManager->Effects.SkinScattering) {
+			TheShaderManager->Effects.SkinScattering->InWorldScene = false;
+			TheShaderManager->Effects.SkinScattering->Unbind();
+		}
 		BarrelHeat::EndWorldProbe();
 		BarrelHeat::EndContext();
 		HiddenObjectCulling::EndWorld();
@@ -1934,6 +1943,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::EndContext();
 	ShaderSplit::EndContext();
@@ -2005,6 +2015,7 @@ bool bDoneRender_LockPickMenu = false;
 
 void(__cdecl* ProcessImageSpaceShaders)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*) = (void(__cdecl*)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*))Hooks::ProcessImageSpaceShaders;
 void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTexture* SourceTarget, BSRenderedTexture* DestinationTarget) {
+	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();
 	bool bLiveRenderedMenu = false; // FORenderedMenu, FOPipBoyManager
 	bool bLive3DMenu = false; // Normal menus, but 3D, lockpick etc
 	if (TESMain::IsMenuBackgroundReady() && TheGameMenuManager->IsLiveMenu && InterfaceManager->currentMode != 1) {
@@ -2103,6 +2114,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);
 		SettingShots::Capture(OutputSurface);
 #endif
+		ReShadeIntegration::RenderEffects(OutputSurface);
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 		ReflectionProbe::EndFrame();
 	}

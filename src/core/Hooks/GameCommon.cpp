@@ -6,6 +6,7 @@ NiDX9Renderer* __fastcall InitializeRendererHook(NiDX9Renderer* This, UInt32 edx
 	TheRenderManager = (RenderManager*)(*InitializeRenderer)(This);
 	TheRenderManager->Initialize();
 	InitializeManagers();
+	ReShadeIntegration::Initialize();
 
 	// Vanilla Plus Skin detection has to happen here, not in NVSE's kMessage_DeferredInit --
 	// the game creates every SKIN20xx shader (via the CreateVertexShader/CreatePixelShader

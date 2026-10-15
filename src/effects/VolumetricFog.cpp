@@ -218,8 +218,8 @@ bool VolumetricFogEffect::ShouldRender()
 };
 
 void VolumetricFogEffect::RegisterTextures() {
-	const int width = (TheRenderManager->width + 1) / 2;
-	const int height = (TheRenderManager->height + 1) / 2;
+	const int width = MaxQuality::Reduced(TheRenderManager->width, 2);
+	const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
 	TheTextureManager->InitTexture("NVR_FogBuffer0", &fogTexture[0], &fogSurface[0], width, height, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_FogBuffer1", &fogTexture[1], &fogSurface[1], width, height, D3DFMT_A16B16G16R16F);
 }
@@ -301,7 +301,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface) {
 	if (dedicatedFogFailed) return false;
-	if (TheSettingManager->SettingsMain.Main.ReShadeDepthCompat) return false;
+	if (ReShadeIntegration::KeepDepthBound()) return false;
 	const bool composite = compositeShadow || (compositeAO && compositeAOTexture);
 	D3DXHANDLE technique = composite ? CompositeTechnique() : DedicatedTechnique();
 	D3DXHANDLE flagsHandle = composite ? ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") : NULL;
@@ -322,7 +322,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		original.X || original.Y ||
 		original.Width != target.Width || original.Height != target.Height ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
-		fog.Width != (target.Width + 1) / 2 || fog.Height != (target.Height + 1) / 2 ||
+		fog.Width != MaxQuality::Reduced(target.Width, 2) || fog.Height != MaxQuality::Reduced(target.Height, 2) ||
 		fogAdd.Width != fog.Width || fogAdd.Height != fog.Height || fogAdd.Format != fog.Format ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE)
 		return false;

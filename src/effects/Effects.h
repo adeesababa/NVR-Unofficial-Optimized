@@ -54,6 +54,7 @@
 #include "Tonemapping.h"
 #include "Sky.h"
 #include "Skin.h"
+#include "SkinScattering.h"
 #include "POM.h"
 #include "PBR.h"
 #include "Terrain.h"

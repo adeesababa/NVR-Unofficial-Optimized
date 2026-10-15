@@ -52,6 +52,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
 	TheShaderManager->RegisterEffect<AmbientLightEffect>(&TheShaderManager->Effects.AmbientLight);
 	TheShaderManager->RegisterEffect<AmbientOcclusionEffect>(&TheShaderManager->Effects.AmbientOcclusion);
+	TheShaderManager->RegisterEffect<SkinScatteringEffect>(&TheShaderManager->Effects.SkinScattering);
 	TheShaderManager->RegisterEffect<BloodLensEffect>(&TheShaderManager->Effects.BloodLens);
 	TheShaderManager->RegisterEffect<BloomEffect>(&TheShaderManager->Effects.Bloom);
 	TheShaderManager->RegisterEffect<BloomLegacyEffect>(&TheShaderManager->Effects.BloomLegacy);
@@ -1090,6 +1091,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (!Chain.Begin(RenderTarget))
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
+	if (Effects.SkinScattering && SkinShaders::NewSkinEnabled()) {
+		static GpuTimer skinScatterTimer("Skin scattering");
+		GpuProfileScope gpu(skinScatterTimer, Device);
+		Effects.SkinScattering->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
 	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
 	if (Effects.SkyView && Effects.SkyView->ShouldRender()) {
 		static GpuTimer skyViewTimer("Physical sky table");

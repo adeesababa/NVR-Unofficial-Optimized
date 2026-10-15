@@ -43,12 +43,12 @@ foreach ($entry in $folders.GetEnumerator()) {
 	}
 }
 
-$allowed = 'COPYING.txt', 'License.md', 'README.md', 'NVSE', 'Shaders', 'Textures', 'Meshes', 'GunFX-README.txt'
+$allowed = 'COPYING.txt', 'License.md', 'README.md', 'NVSE', 'Shaders', 'Textures', 'Meshes', 'GunFX-README.txt', "Optional - Author's settings"
 foreach ($item in Get-ChildItem $pkg) {
 	if ($allowed -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 }
 foreach ($item in Get-ChildItem (Join-Path $pkg 'NVSE\Plugins')) {
-	if ('NewVegasReloaded.dll', 'NewVegasReloaded.pdb', 'NewVegasReloaded.dll.defaults.toml', 'NewVegasReloaded.dll.materials.txt', 'GunFX.dll', 'GunFX.pdb', 'GunFX.ini.defaults' -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
+	if ('NewVegasReloaded.dll', 'NewVegasReloaded.pdb', 'NewVegasReloaded.dll.defaults.toml', 'NewVegasReloaded.dll.materials.txt', 'NewVegasReloaded.dll.maxquality.toml', 'GunFX.dll', 'GunFX.pdb', 'GunFX.ini.defaults' -notcontains $item.Name) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
 }
 foreach ($file in 'COPYING.txt', 'License.md', 'README.md') {
 	if (!(Test-Path (Join-Path $pkg $file))) { Write-Host "MISSING  $file"; $problems++ }
@@ -64,6 +64,16 @@ if ((Text (Join-Path $plugins 'NewVegasReloaded.dll.defaults.toml')) -ne (Text (
 }
 if ((Text (Join-Path $plugins 'NewVegasReloaded.dll.materials.txt')) -ne (Text (Join-Path $repo 'resource\NewVegasReloaded.dll.materials.txt'))) {
 	Write-Host "STALE    NVSE\Plugins\NewVegasReloaded.dll.materials.txt"; $problems++
+}
+if ((Text (Join-Path $plugins 'NewVegasReloaded.dll.maxquality.toml')) -ne (Text (Join-Path $repo 'resource\NewVegasReloaded.dll.maxquality.toml'))) {
+	Write-Host "STALE    NVSE\Plugins\NewVegasReloaded.dll.maxquality.toml"; $problems++
+}
+$optional = Join-Path $pkg "Optional - Author's settings"
+if (Test-Path $optional) {
+	foreach ($item in Get-ChildItem $optional -Recurse -File) {
+		$relative = $item.FullName.Substring($optional.Length + 1)
+		if ('NVSE\Plugins\NewVegasReloaded.dll.toml', "README - author's settings.txt" -notcontains $relative) { Write-Host "EXTRA    $($item.FullName)"; $problems++ }
+	}
 }
 
 if ((Get-FileHash (Join-Path $plugins 'GunFX.dll')).Hash -ne (Get-FileHash (Join-Path $repo 'GunFX\build\GunFX.dll')).Hash) {

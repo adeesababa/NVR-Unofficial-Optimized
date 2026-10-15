@@ -118,6 +118,7 @@ public:
 		
 	struct	EffectsStruct {
 		AmbientOcclusionEffect*	AmbientOcclusion;
+		SkinScatteringEffect*	SkinScattering;
 		AvgLumaEffect*			AvgLuma;
 		SkyViewEffect*			SkyView;
 		AmbientLightEffect*		AmbientLight;

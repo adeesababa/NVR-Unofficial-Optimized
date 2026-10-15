@@ -32,6 +32,8 @@ namespace SettingShots {
 	inline TESObjectCELL* Cell = nullptr;
 	inline std::vector<std::string> Commands;
 	inline bool Moves = false;
+	inline bool FinalPicture = false;
+	inline bool WantFinal = false;
 
 	inline bool Requested() { return GetFileAttributesA(RequestFile) != INVALID_FILE_ATTRIBUTES; }
 
@@ -42,7 +44,7 @@ namespace SettingShots {
 	inline void Request(NVSEMessagingInterface* messaging, UInt32 handle) { Messaging = messaging; Handle = handle; Pending = true; }
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120;
+		List.clear(); Frames = 120; FinalPicture = false; WantFinal = false;
 		std::ifstream in(RequestFile);
 		if (!in) { error = "the shot list could not be read"; return false; }
 		std::string line;
@@ -56,6 +58,7 @@ namespace SettingShots {
 			if (!(words >> command)) continue;
 			if (command == "frames") { words >> Frames; Frames = std::clamp(Frames, 2, 1200); }
 			else if (command == "profile") GpuTimer::Enabled = true;
+			else if (command == "final") FinalPicture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
@@ -179,8 +182,7 @@ namespace SettingShots {
 		Frame++;
 	}
 
-	inline void Capture(IDirect3DSurface9* surface) {
-		if (!Running || Frame < Frames || !surface) return;
+	inline void TakeShot(IDirect3DSurface9* surface) {
 		const Shot& shot = List[Index];
 		Job* job = new (std::nothrow) Job();
 		if (job && Reader.Read(TheRenderManager->device, surface, job->bgra, job->width, job->height)) {
@@ -199,5 +201,20 @@ namespace SettingShots {
 		Frame = 0;
 		if (Index < List.size()) Apply(List[Index]);
 		else { Running = false; AllQueued = true; }
+	}
+
+	inline void Capture(IDirect3DSurface9* surface) {
+		if (!Running || Frame < Frames || !surface) return;
+		if (FinalPicture) { WantFinal = true; return; }
+		TakeShot(surface);
+	}
+
+	inline void CaptureFinal() {
+		if (!Running || !WantFinal) return;
+		WantFinal = false;
+		IDirect3DSurface9* backBuffer = nullptr;
+		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a final picture"); return; }
+		TakeShot(backBuffer);
+		backBuffer->Release();
 	}
 }

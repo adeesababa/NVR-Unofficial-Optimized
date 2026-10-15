@@ -19,6 +19,7 @@ float4 TESR_CloudsExtra;
 float4x4 TESR_CloudsReflectInvVP;
 float4x4 TESR_CloudsHistoryViewProj;
 float4 TESR_CloudsReflectData;
+float4 TESR_CloudsMotion;
 float4 TESR_WaterSettings;
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -40,6 +41,7 @@ float4 TESR_PhysSky;
 float4 TESR_PhysSkySun;
 sampler2D TESR_SkyViewLUT : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 #endif
+sampler2D NVR_CloudLayerProbe : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 texture NoTexture;
 
 static const float Base = TESR_CloudsShape.x;
@@ -58,6 +60,7 @@ static const float Steps = max(TESR_CloudsMarch.x, 4.0);
 static const float MaxDistance = TESR_CloudsMarch.y;
 static const float HazeDistance = max(TESR_CloudsMarch.w, 1.0);
 static const float2 LowTexel = TESR_CloudsLayout.xy;
+static const float Sharpness = saturate(TESR_CloudsMotion.w);
 
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
@@ -165,7 +168,7 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
 		float3 p = float3(camera.xy + dir.xy * t, altitude) + wind;
-		float lod = saturate(t / 40000.0) * 2.0;
+		float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * Sharpness);
 		float density = CloudDensity(p, h, lod, false);
 		[branch] if (density > 0.0) {
 			float opticalDepth = 0.0;
@@ -209,29 +212,6 @@ float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	return MarchRay(normalize(toWorld(uv)), jitter, 1.0);
 }
 
-float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
-	float2 uv = (vpos + 0.5) * LowTexel;
-	float2 block = floor(vpos * 0.5);
-	float2 blockUV = (block + 0.5) * TESR_CloudsBlocks.xy;
-	float4 current = tex2Dlod(TESR_CloudCurrent, float4(blockUV, 0, 0));
-	float4 lo = current, hi = current;
-	[unroll] for (int y = -1; y <= 1; y++) {
-		[unroll] for (int x = -1; x <= 1; x++) {
-			float4 n = tex2Dlod(TESR_CloudCurrent, float4(blockUV + float2(x, y) * TESR_CloudsBlocks.xy, 0, 0));
-			lo = min(lo, n); hi = max(hi, n);
-		}
-	}
-	bool fresh = all(vpos - block * 2.0 == TESR_CloudsBlocks.zw);
-	float3 dir = normalize(toWorld(uv));
-	float4 clip = mul(float4(dir, 0.0), TESR_CloudsPrevViewProj);
-	float weight = TESR_CloudsLayout.z;
-	[branch] if (clip.w <= 0.0 || weight <= 0.0) return current;
-	float2 previous = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
-	if (any(previous < 0.0) || any(previous > 1.0)) return current;
-	float4 history = clamp(tex2Dlod(TESR_CloudHistory, float4(previous, 0, 0)), lo, hi);
-	return fresh ? lerp(current, history, weight) : history;
-}
-
 float4 CatmullRom(float2 uv) {
 	float2 size = 1.0 / LowTexel;
 	float2 position = uv * size;
@@ -255,6 +235,45 @@ float4 CatmullRom(float2 uv) {
 	result += tex2Dlod(TESR_CloudHistory, float4(t12.x, t3.y, 0, 0)) * w12.x * w3.y;
 	result += tex2Dlod(TESR_CloudHistory, float4(t3.x, t3.y, 0, 0)) * w3.x * w3.y;
 	return float4(max(result.rgb, 0.0), saturate(result.a));
+}
+
+float4 SharpHistory(float2 uv) {
+	float2 size = 1.0 / LowTexel;
+	float2 corner = (floor(uv * size - 0.5) + 0.5) * LowTexel;
+	float4 a = tex2Dlod(TESR_CloudHistory, float4(corner, 0, 0));
+	float4 b = tex2Dlod(TESR_CloudHistory, float4(corner + float2(LowTexel.x, 0.0), 0, 0));
+	float4 c = tex2Dlod(TESR_CloudHistory, float4(corner + float2(0.0, LowTexel.y), 0, 0));
+	float4 d = tex2Dlod(TESR_CloudHistory, float4(corner + LowTexel, 0, 0));
+	return clamp(CatmullRom(uv), min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
+}
+
+float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 uv = (vpos + 0.5) * LowTexel;
+	float2 block = floor(vpos * 0.5);
+	float2 blockUV = (block + 0.5) * TESR_CloudsBlocks.xy;
+	float4 current = tex2Dlod(TESR_CloudCurrent, float4(blockUV, 0, 0));
+	float4 lo = current, hi = current;
+	[unroll] for (int y = -1; y <= 1; y++) {
+		[unroll] for (int x = -1; x <= 1; x++) {
+			float4 n = tex2Dlod(TESR_CloudCurrent, float4(blockUV + float2(x, y) * TESR_CloudsBlocks.xy, 0, 0));
+			lo = min(lo, n); hi = max(hi, n);
+		}
+	}
+	bool fresh = all(vpos - block * 2.0 == TESR_CloudsBlocks.zw);
+	float3 dir = normalize(toWorld(uv));
+	float3 previousDir = dir;
+	[branch] if (Sharpness > 0.0) {
+		float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
+		float reach = ShellDistance(dir.z, max(Base + 0.4 * Thickness - camera.z, 50.0));
+		previousDir = dir * reach + float3(TESR_CloudsMotion.xy, 0.0);
+	}
+	float4 clip = mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj);
+	float weight = TESR_CloudsLayout.z;
+	[branch] if (clip.w <= 0.0 || weight <= 0.0) return current;
+	float2 previous = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
+	if (any(previous < 0.0) || any(previous > 1.0)) return current;
+	float4 history = clamp(Sharpness > 0.0 ? SharpHistory(previous) : tex2Dlod(TESR_CloudHistory, float4(previous, 0, 0)), lo, hi);
+	return fresh ? lerp(current, history, weight) : history;
 }
 
 static const float ShadowStrength = TESR_CloudsExtra.x;
@@ -321,6 +340,15 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		return color;
 	}
 	float4 clouds = CatmullRom(uv);
+	[branch] if (Sharpness > 0.0) {
+		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(LowTexel.x, 0.0), 0, 0));
+		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(LowTexel.x, 0.0), 0, 0));
+		float4 n2 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(0.0, LowTexel.y), 0, 0));
+		float4 n3 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(0.0, LowTexel.y), 0, 0));
+		float4 lo = min(min(min(n0, n1), min(n2, n3)), clouds), hi = max(max(max(n0, n1), max(n2, n3)), clouds);
+		float4 sharpened = clouds + (clouds - 0.25 * (n0 + n1 + n2 + n3)) * (1.5 * Sharpness);
+		clouds = clamp(sharpened, lo, hi);
+	}
 	float3 lin = linearize(max(color.rgb, 0.0)) * clouds.a + clouds.rgb * TESR_CloudsLayout.w;
 	return float4(delinearize(max(lin, 0.0)), color.a);
 }
@@ -352,6 +380,14 @@ float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float coverage = 1.0 - pow(transmittance, 0.4545);
 	float3 own = clouds.rgb * strength * TESR_CloudsLayout.w / max(1.0 - transmittance, 1e-3);
 	return float4(delinearize(max(own, 0.0)) * coverage, 1.0 - coverage);
+}
+
+float4 LayerProbePS(VSOUT IN) : COLOR0 {
+	float sum = 0.0;
+	[loop] for (float y = 0.5; y < 16.0; y += 1.0) {
+		[loop] for (float x = 0.5; x < 16.0; x += 1.0) sum += tex2Dlod(NVR_CloudLayerProbe, float4(x / 16.0, y / 16.0, 0.0, TESR_CloudsMotion.z)).a;
+	}
+	return (sum / 256.0).xxxx;
 }
 
 technique Composite {
@@ -388,5 +424,12 @@ technique ShadowMap {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ShadowMapPS();
 		Texture[10] = <NoTexture>;
+	}
+}
+
+technique LayerProbe {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 LayerProbePS();
 	}
 }

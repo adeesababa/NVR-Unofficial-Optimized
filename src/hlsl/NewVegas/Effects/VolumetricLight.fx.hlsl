@@ -88,7 +88,7 @@ float MarchShadow(float3 position) {
 
 float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float2 uv = (vpos + 0.5) * LowTexel;
-	float depth = readDepthLod(uv - 0.5 * TESR_ReciprocalResolution.xy);
+	float depth = readDepthLod(uv - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));
 	float isSky = depth >= farZ * 0.996 ? 1.0 : 0.0;
 	float planar = isSky > 0.0 ? MarchDistance : min(depth, MarchDistance);
 
