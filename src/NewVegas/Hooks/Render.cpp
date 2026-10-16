@@ -2289,6 +2289,10 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 #if NVR_TEST_TOOLS
 	EffectSelfTest::BeginFrame();	// UNOFFICIAL, diagnostic: NeonSpillSelfTest (sets its configuration after the settings are read)
 	SettingShots::BeginFrame();		// UNOFFICIAL, test only: the auto-test's A/B shots (SettingShots.h)
+	if (SettingShots::WorldCapture && SourceTarget) {	// UNOFFICIAL, test only: 'world' shots, the game's scene buffer before NVR's effects
+		IDirect3DSurface9* scene = nullptr;
+		if (SUCCEEDED(SourceTarget->GetD3DTexture(0)->GetSurfaceLevel(0, &scene)) && scene) { SettingShots::CaptureWorld(Device, scene); scene->Release(); }
+	}
 #endif
 
 	if (SourceTarget && TheSettingManager->SettingsMain.Main.RenderPreTonemapping) {

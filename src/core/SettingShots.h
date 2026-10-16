@@ -19,6 +19,7 @@
 //   final                                        (2026-10-15) every picture is the back buffer at ReShade's end of the frame
 //                                                (after ReShade's effects and the HUD) instead of NVR's picture before the HUD;
 //                                                needs ReShade's D3D9 runtime (ReShadeIntegration.cpp calls CaptureFinal).
+//   world                                        (2026-10-16) each shot also saves the world scene's HDR target raw (.world, CaptureWorld)
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <atomic>
 #include <fstream>
@@ -64,8 +65,14 @@ namespace SettingShots {
 	// The link's start, when the request file is there (EffectSelfTest::AutoTestMessage).
 	inline void Request(NVSEMessagingInterface* messaging, UInt32 handle) { Messaging = messaging; Handle = handle; Pending = true; }
 
+	inline bool WorldCapture = false;			// 'world' (2026-10-16): each shot also saves the world scene's HDR target (CaptureWorld)
+	inline size_t WorldTaken = (size_t)-1;		// the shot whose world target is saved already
+	inline IDirect3DSurface9* WorldResolve = nullptr;
+	inline IDirect3DSurface9* WorldReadback = nullptr;
+	inline D3DSURFACE_DESC WorldDesc = {};
+
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WantFinal = false;
+		List.clear(); Frames = 120; FinalPicture = false; WantFinal = false; WorldCapture = false; WorldTaken = (size_t)-1;
 		std::ifstream in(RequestFile);
 		if (!in) { error = "the shot list could not be read"; return false; }
 		std::string line;
@@ -80,6 +87,7 @@ namespace SettingShots {
 			if (command == "frames") { words >> Frames; Frames = std::clamp(Frames, 2, 1200); }
 			else if (command == "profile") GpuTimer::Enabled = true;	// UNOFFICIAL 2026-10-13: the F10 GPU profile, on for the whole run
 			else if (command == "final") FinalPicture = true;
+			else if (command == "world") WorldCapture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
@@ -171,11 +179,62 @@ namespace SettingShots {
 		return 0;
 	}
 
+	inline void ReleaseWorld() {
+		if (WorldResolve) { WorldResolve->Release(); WorldResolve = nullptr; }
+		if (WorldReadback) { WorldReadback->Release(); WorldReadback = nullptr; }
+		WorldDesc = {};
+	}
+
+	// UNOFFICIAL 2026-10-16 'world' (foundations study: how big the lamp-pass error is): Render.cpp calls this at the start of the
+	// game's image space, right after BeginFrame, with the game's scene buffer (fp16): the finished world and first-person draw,
+	// before NVR's effects and the tonemapper. In the frame whose picture is the shot, it is saved raw next to the picture:
+	// NeonSelfTest_<run>_ab_<NN>_<slug>.world = "NVRW", then width, height, D3DFORMAT and bytes per pixel (UInt32 each), then the
+	// rows. A test-only stall (the GPU is waited for); nothing of it runs in normal play.
+	inline void CaptureWorld(IDirect3DDevice9* device, IDirect3DSurface9* target) {
+		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < Frames) return;
+		WorldTaken = Index;
+		const char* slug = List[Index].slug.c_str();
+		target->AddRef();
+		D3DSURFACE_DESC d = {};
+		target->GetDesc(&d);
+		const UInt32 bpp = d.Format == D3DFMT_A16B16G16R16F ? 8 : d.Format == D3DFMT_A32B32G32R32F ? 16 :
+			(d.Format == D3DFMT_A8R8G8B8 || d.Format == D3DFMT_X8R8G8B8 || d.Format == D3DFMT_A2R10G10B10 || d.Format == D3DFMT_A2B10G10R10) ? 4 : 0;
+		bool ok = bpp != 0;
+		if (ok && (!WorldReadback || WorldDesc.Width != d.Width || WorldDesc.Height != d.Height || WorldDesc.Format != d.Format || WorldDesc.MultiSampleType != d.MultiSampleType)) {
+			ReleaseWorld();
+			ok = (d.MultiSampleType == D3DMULTISAMPLE_NONE || SUCCEEDED(device->CreateRenderTarget(d.Width, d.Height, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &WorldResolve, NULL))) &&
+				SUCCEEDED(device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &WorldReadback, NULL));
+			if (ok) WorldDesc = d;
+		}
+		IDirect3DSurface9* source = target;
+		if (ok && WorldResolve) { ok = SUCCEEDED(device->StretchRect(target, NULL, WorldResolve, NULL, D3DTEXF_NONE)); source = WorldResolve; }
+		ok = ok && SUCCEEDED(device->GetRenderTargetData(source, WorldReadback));
+		D3DLOCKED_RECT lock = {};
+		ok = ok && SUCCEEDED(WorldReadback->LockRect(&lock, NULL, D3DLOCK_READONLY));
+		char path[MAX_PATH];
+		sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s.world", Run, (unsigned)Index, slug);
+		bool saved = false;
+		if (ok) {
+			FILE* f = nullptr;
+			if (!fopen_s(&f, path, "wb") && f) {
+				const UInt32 header[5] = { 0x5752564E, d.Width, d.Height, (UInt32)d.Format, bpp };	// "NVRW"
+				saved = fwrite(header, sizeof(header), 1, f) == 1;
+				for (UInt32 y = 0; saved && y < d.Height; y++) saved = fwrite((const unsigned char*)lock.pBits + (size_t)y * lock.Pitch, (size_t)d.Width * bpp, 1, f) == 1;
+				fclose(f);
+			}
+			WorldReadback->UnlockRect();
+		}
+		target->Release();
+		Logger::Log("SETTING SHOTS %s: shot '%s': world target %ux%u format %u msaa %u -> %s %s", Run, slug, d.Width, d.Height, (unsigned)d.Format,
+			(unsigned)d.MultiSampleType, path, saved ? "saved" : "NOT saved");
+	}
+
 	// Render.cpp, right after ShaderManager::UpdateConstants and EffectSelfTest::BeginFrame.
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
 			AllQueued = false;
 			Reader.Release();
+			ReleaseWorld();
 			Logger::Log("SETTING SHOTS %s: done, every picture written", Run);
 			Notify(kLinkPictures, Run);
 		}
@@ -202,7 +261,7 @@ namespace SettingShots {
 		}
 		if (Moves && Player) Cell = Player->parentCell;
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
-		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); Stop("the device was lost"); return; }
+		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
 		Frame++;
 	}
 
