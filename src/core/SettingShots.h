@@ -102,7 +102,7 @@ namespace SettingShots {
 			else { error = "line " + std::to_string(number) + ": unknown command '" + command + "'"; return false; }
 		}
 		if (List.empty()) { error = "no shots in the list"; return false; }
-		if (List.size() > 40) { error = "more than 40 shots"; return false; }
+		if (List.size() > 80) { error = "more than 80 shots"; return false; }
 		return true;
 	}
 
