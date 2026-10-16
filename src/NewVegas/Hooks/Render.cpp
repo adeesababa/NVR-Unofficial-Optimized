@@ -2483,7 +2483,9 @@ void __fastcall MuzzleLightCullingFix(MuzzleFlash* This) {
 }
 
 BSFogProperty* __cdecl ShadowSceneNode__GetFogPropertyEx(UInt32 aeType) {
-	if (TheShaderManager->Effects.VolumetricFog->Enabled && !TheShaderManager->GameState.isUnderwater) {
+	// The master switch counts too: with RenderEffects off NVR's fog is not drawn, so the game's must stay (2026-10-16 vanilla
+	// check: "NVR all off" showed no distance fog at all).
+	if (TheSettingManager->SettingsMain.Main.RenderEffects && TheShaderManager->Effects.VolumetricFog->Enabled && !TheShaderManager->GameState.isUnderwater) {
 		aeType = 1;  // Use UI scene node and thus render no fog.
 	}
 
