@@ -1,4 +1,5 @@
 #include "ShadowsExterior.h"
+#include "../core/TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 
 void ShadowsExteriorEffect::UpdateConstants() {
 
@@ -381,6 +382,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
 	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;	// UNOFFICIAL 2026-10-16
+#if NVR_TEST_TOOLS
+	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 2);
+#else
+	Settings.Exteriors.SkipWhenFadedCheck = 0;
+#endif
 	Settings.Exteriors.UsePointShadowsDay = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsDay");
 	Settings.Exteriors.UsePointShadowsNight = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsNight");
 
@@ -526,6 +532,9 @@ bool ShadowsExteriorEffect::ShouldRender() {
 * flow, wet world, underwater, the debug view.
 */
 bool ShadowsExteriorEffect::FadedContactUnread() {
+#if NVR_TEST_TOOLS
+	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;	// DIAGNOSTIC: the readers ignored (positive control)
+#endif
 	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
 	return SunFaded && Constants.ShadowFade.z == 0.0f && Settings.Exteriors.Darkness >= 0.0f &&
 		!draws(TheShaderManager->Effects.BloodFlow) && !draws(TheShaderManager->Effects.WetWorld) &&
@@ -540,6 +549,9 @@ bool ShadowsExteriorEffect::FadedContactUnread() {
 * and with ForwardShadows off the deferred lookup in SunShadows.fx whenever the contact passes run.
 */
 bool ShadowsExteriorEffect::FadedCascadesUnread() {
+#if NVR_TEST_TOOLS
+	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;	// DIAGNOSTIC: the readers ignored (positive control)
+#endif
 	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
 	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
 	const bool fogReads = draws(fog) && fog->Constants.Scatter.y > 0.0f;

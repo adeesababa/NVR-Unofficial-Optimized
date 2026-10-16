@@ -133,6 +133,7 @@ public:
 		float				Darkness;
 		float				NightMinDarkness;
 		bool				SkipWhenFaded;	// UNOFFICIAL 2026-10-16: no sun-shadow work while the fade is 1 (UpdateConstants SunFaded)
+		int					SkipWhenFadedCheck;	// UNOFFICIAL 2026-10-16, DIAGNOSTIC (NVR_TEST_TOOLS): 1 poison what is skipped, 2 also skip ignoring the readers
 	};
 
 	struct InteriorsStruct {

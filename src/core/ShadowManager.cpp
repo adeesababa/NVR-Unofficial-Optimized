@@ -2,6 +2,7 @@
 #include "ShadowFaceCull.h"
 #include "PointShadowSchedule.h"
 #include "PointShadowForward.h"
+#include "TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 
 // UNOFFICIAL SkinnedShadowFaceTest ([Main.Main.Performance], default on, 2026-10-07). An animated (skinned) mesh's own
 // world bound is stale, so skinned casters used to be drawn into all six faces of every lamp cube map near them; with a
@@ -1263,6 +1264,15 @@ void ShadowManager::RenderShadowMaps() {
 		if (skipCascades) {
 			SunCascadesSkipped = true;
 			if (SunDir.z > 0.0f) ShadowData->z = 0;	// as the cascade pass leaves it
+#if NVR_TEST_TOOLS
+			if (Shadows->Settings.Exteriors.SkipWhenFadedCheck && Shadows->ShadowAtlasSurface) {
+				// DIAGNOSTIC SkipWhenFadedCheck: the skipped atlas set to 0 (depth 0 / zero moments: everything in shadow), so a
+				// reader the checks missed changes the picture. (The render target and depth are put back at the end.)
+				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+				Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+#endif
 		}
 		else if (SunCascadesSkipped) {
 			ForceAllCascades = true;

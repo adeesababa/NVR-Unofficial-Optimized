@@ -1149,6 +1149,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
 				sunShadows->Constants.ForwardData.x = forwardWas;
 			}
+#if NVR_TEST_TOOLS
+			else if (sunShadows->Settings.Exteriors.SkipWhenFadedCheck) {
+				// DIAGNOSTIC SkipWhenFadedCheck: the skipped passes' buffer set to 0 (full shadow, no lamp light), so a reader the
+				// checks missed changes the picture.
+				Device->SetRenderTarget(0, sunShadows->Textures.ShadowPassSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+#endif
 		}
 	}
 	else {
