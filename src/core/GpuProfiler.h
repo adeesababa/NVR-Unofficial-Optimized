@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cfloat>
 #include <vector>
 #include "FrameTimeStats.h"
@@ -103,6 +104,7 @@ private:
 	double SumMs = 0.0;
 	double MinMs = DBL_MAX;
 	double MaxMs = 0.0;
+	std::vector<float> WindowMs; // this window's samples, for the middle value and the spread (p10 / p90)
 	bool Unavailable = false;
 	bool QueriesCreated = false;
 	bool DisjointBroken = false;   // GetData on the disjoint query failed: stop consulting it
@@ -233,18 +235,24 @@ private:
 			SumMs += ms;
 			MinMs = MinMs < ms ? MinMs : ms;
 			MaxMs = MaxMs > ms ? MaxMs : ms;
+			WindowMs.push_back((float)ms);
 			WindowSamples++;
 			TotalSamples++;
 			if (end == start) ZeroTickSamples++;
 
 			if (WindowSamples >= ReportSamples) {
+				// The middle value and the spread: one slow frame moves the average but not these (2026-10-16).
+				std::sort(WindowMs.begin(), WindowMs.end());
+				const size_t n = WindowMs.size();
+				const double p50 = n ? WindowMs[n / 2] : 0.0, p10 = n ? WindowMs[n / 10] : 0.0, p90 = n ? WindowMs[(n * 9) / 10] : 0.0;
 #ifdef NVR_GPU_PROFILER_TEST
-				std::printf("GPU PROFILE %-24s avg %.4f ms  min %.4f  max %.4f  (%u samples, %u zero)\n",
-					Name, SumMs / WindowSamples, MinMs, MaxMs, WindowSamples, ZeroTickSamples);
+				std::printf("GPU PROFILE %-24s avg %.4f ms  min %.4f  max %.4f  (%u samples, %u zero) | p50 %.4f  p10 %.4f  p90 %.4f\n",
+					Name, SumMs / WindowSamples, MinMs, MaxMs, WindowSamples, ZeroTickSamples, p50, p10, p90);
 #else
-				Logger::Log("GPU PROFILE %-24s avg %.4f ms  min %.4f  max %.4f  (%u samples, %u zero)",
-					Name, SumMs / WindowSamples, MinMs, MaxMs, WindowSamples, ZeroTickSamples);
+				Logger::Log("GPU PROFILE %-24s avg %.4f ms  min %.4f  max %.4f  (%u samples, %u zero) | p50 %.4f  p10 %.4f  p90 %.4f",
+					Name, SumMs / WindowSamples, MinMs, MaxMs, WindowSamples, ZeroTickSamples, p50, p10, p90);
 #endif
+				WindowMs.clear();
 				WindowSamples = 0;
 				SumMs = 0.0;
 				MinMs = DBL_MAX;
