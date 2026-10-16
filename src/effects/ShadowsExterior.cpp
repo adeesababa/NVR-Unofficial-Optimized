@@ -388,7 +388,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
 	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;	// UNOFFICIAL 2026-10-16
 #if NVR_TEST_TOOLS
-	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 3);
+	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 4);
 #else
 	Settings.Exteriors.SkipWhenFadedCheck = 0;
 #endif

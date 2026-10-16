@@ -1415,6 +1415,16 @@ void ShadowManager::RenderShadowMaps() {
 			if (Shadows->Settings.ShadowMaps.Mipmaps)
 				Shadows->ShadowAtlasTexture->GenerateMipSubLevels();
 		}
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC SkipWhenFadedCheck 4: the atlas set to 0 at any hour, nothing skipped (shows that the poison of 1 and 2
+		// reaches the shaders that read the maps: by day everything in the cascades' reach turns to shadow).
+		if (Shadows->Settings.Exteriors.SkipWhenFadedCheck == 4 && Shadows->ShadowAtlasSurface) {
+			Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+			Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+			Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			ForceAllCascades = true;	// redrawn in full once the check is off
+		}
+#endif
 
 		// render ortho map if one of the effects using ortho is active
 		if (TheShaderManager->orthoRequired) {
