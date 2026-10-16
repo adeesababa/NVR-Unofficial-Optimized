@@ -8,7 +8,7 @@ float4 TESR_LightColor[24];
 // (whole units) x 8 + the weight luma(colour) x dimmer. w 0 ends the list.
 float4 TESR_ExtraLights[16];
 float4 TESR_ShadowFade;
-float4 TESR_PointShadowNear; // UNOFFICIAL x: NearFade, world units (0 off); y: EdgeFade (0 off); z: LampReachMask, 1 / LightRadiusMult (0 off)
+float4 TESR_PointShadowNear; // UNOFFICIAL x: NearFade, world units (0 off); y: EdgeFade (0 off); z: LampReachMask, 1 / LightRadiusMult (0 off); w: 1 MaskSkipFar
 float4 TESR_SpotLightPosition;
 float4 TESR_SpotLightDirection;
 float4 TESR_SpotLightColor;
@@ -164,7 +164,9 @@ float4 Shadow( VSOUT IN, uniform bool batch ) : COLOR0 {
 	for (int i = 0; i< 12 && !batch; i++){
 		[branch] if (TESR_LightPosition[i].w) {
 			float4 light = GetPointLightDistance(world_pos, TESR_LightPosition[i]);
-			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
+			// UNOFFICIAL 2026-10-16 (MaskSkipFar, TESR_PointShadowNear.w): beyond its radius a lamp gives exactly 0 (as ShadowedLight).
+			[branch] if (light.w < 1.0f || TESR_PointShadowNear.w < 0.5f)
+				Shadow += saturate(LampAmount(light.xyz, light.w, normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w) * EdgeWindow(light.w);
 		}
 	}
 
@@ -174,7 +176,8 @@ float4 Shadow( VSOUT IN, uniform bool batch ) : COLOR0 {
 		float radius = floor(TESR_ExtraLights[e].w * 0.125f);
 		float weight = TESR_ExtraLights[e].w - radius * 8.0f;
 		float4 light = GetPointLightDistance(world_pos, float4(TESR_ExtraLights[e].xyz, radius));
-		Shadow += saturate(LampAmount(light.xyz, light.w, normal) * weight) * EdgeWindow(light.w);
+		[branch] if (light.w < 1.0f || TESR_PointShadowNear.w < 0.5f)	// (MaskSkipFar)
+			Shadow += saturate(LampAmount(light.xyz, light.w, normal) * weight) * EdgeWindow(light.w);
 	}
 
 	Shadow = saturate(Shadow);

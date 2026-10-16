@@ -387,6 +387,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// UNOFFICIAL EdgeFade: each lamp's lit disc (and the shadows in it) fades out over this fraction of its radius instead of
 	// ending on a hard circle where the clamped light amount drops (PointShadows.fx EdgeWindow).
 	Constants.PointShadowNear.y = (std::min)((std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "EdgeFade"), 0.0f), 0.9f);
+	// UNOFFICIAL 2026-10-16 MaskSkipFar (PointShadows.fx Shadow()): lamps skip the pixels beyond their radius (exact: they give 0 there).
+	Constants.PointShadowNear.w = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "MaskSkipFar") ? 1.0f : 0.0f;
 	// UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS).
 	const char* interiorMain = "Shaders.ShadowsInteriors.Main";
 	const float contactDistance = std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactDistance"), 200.0f, 20000.0f);
