@@ -1581,6 +1581,14 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	// The drips run on a wall or a slope (none on level ground), most of the way in the first few seconds.
 	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(age - 0.3, 0.0) / 4.0));	// (from about 3 degrees; full by about 20)
 	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05) / R;
+	// UNOFFICIAL 2026-10-16 (cheaper, the picture unchanged): nothing of the shape reaches past 0.96 + 3.12 x SplatReach radii from
+	// the centre (the longest spray line: the core's edge, at most 0.96, plus 2.4 x 1.3 x reach; the arms, their droplets and the
+	// mist stop sooner) but the drips, which hang below by at most run x max(1.26, 2.4 x reach) (an arm's tip drip; the curtain)
+	// and a bead. Pixels farther out -- most of a splat's box seen at an angle -- skip the arm and spray loops.
+	float reachMax = 1.15 + 3.12 * TESR_BloodFlowSplat.y + 2.0 * aa;
+	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
+	float2 qq = float2(q.x, q.y > 0.0 ? max(q.y - dripMax, 0.0) : q.y);
+	if (dot(qq, qq) > reachMax * reachMax) discard;
 	// The arms with a real stream (the probe found one: its row's end code is not 'none') draw no drip of their own.
 	float armDrip[6];
 	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = PathTexel(0.0, slot * Streams + ai).w < -0.5 ? 1.0 : 0.0;
