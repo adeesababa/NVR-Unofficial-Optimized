@@ -183,6 +183,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     OUT.color_0.rgb = result;
     OUT.color_0.a = baseTex.a * MatAlpha.x;
+#if NVR_SHADOW_TEST_MASK && FORWARD_SHADOWS
+    OUT.color_0.rgb = sunShadow.xxx;
+#endif
 
     // No texkill. baseTex.a fades smoothly from opaque core to fully transparent at strand
     // tips/edges; clip() at MatAlpha.y's mid-range threshold discarded that entire soft

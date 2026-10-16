@@ -318,6 +318,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // treats light0 as a point light, see the branch just below) gets this; PROJ_SHADOW above is
     // vanilla's own per-object projected actor shadow and is unrelated.
     #if FORWARD_SHADOWS && !defined(DIFFUSE)
+        SHADOW_TEST_SET_SMOOTH_NDOTL(dot(vertexNormal, normalize(LightData[0].xyz)));
         float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
         float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                          ? GetSunShadow(IN.shadowWorldPos.xyz, sunShadowNormal)
@@ -393,6 +394,14 @@ PS_OUTPUT main(PS_INPUT IN) {
         OUT.color.a = baseColor.a * AmbientColor.a;
     #endif
 
+#if NVR_SHADOW_TEST_MASK
+    #if defined(DIFFUSE)
+        OUT.color = 0.0f;
+    #else
+        OUT.color.rgb = sunShadow.xxx;
+    #endif
+#endif
+
     return OUT;
 }
 
@@ -454,6 +463,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // NVR forward sun shadow -- light0 here is always the sun (no DIFFUSE variant exists in
     // this >=4-lights family).
     #if FORWARD_SHADOWS
+        SHADOW_TEST_SET_SMOOTH_NDOTL(dot(normalize(IN.normal.xyz), normalize(LightData[0].xyz)));
         float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
         float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                          ? GetSunShadow(IN.shadowWorldPos.xyz, sunShadowNormal)
@@ -500,6 +510,10 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     OUT.color.rgb = finalColor.rgb;
     OUT.color.a = baseColor.a * AmbientColor.a;
+
+#if NVR_SHADOW_TEST_MASK
+    OUT.color.rgb = sunShadow.xxx;
+#endif
 
     return OUT;
 }

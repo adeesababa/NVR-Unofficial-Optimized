@@ -131,6 +131,40 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
 #endif
 
 // ---------------------------------------------------------------------------
+// TEMPORARY player-shadow diagnostics. Test branch only, never ship. Change the number on the
+// #define line below, save, restart the game. 0 renders normally.
+//   1  Shadow mask: object, skin and hair shaders draw only the forward sun-shadow term
+//      (white = lit, black = shadowed). Passes that add point lights or specular draw nothing.
+//      Anything still in normal colours has no forward sun shadow (terrain, grass, trees...).
+//   2  Smooth bias: GetSunShadow's slope bias and normal offset use N.L of the interpolated
+//      vertex normal (as the shading sees it) instead of the flat triangle normal from
+//      ddx/ddy. Callers that do not supply one keep the flat normal.
+//   3  Wide terminator: the minimum normal offset is 3 texels instead of 1.5.
+//   4  = 1 + 2 (mask with smooth bias)
+//   5  = 1 + 3 (mask with wide terminator)
+// ---------------------------------------------------------------------------
+#ifndef NVR_SHADOW_TEST
+    #define NVR_SHADOW_TEST 0
+#endif
+#define NVR_SHADOW_TEST_MASK   (NVR_SHADOW_TEST == 1 || NVR_SHADOW_TEST == 4 || NVR_SHADOW_TEST == 5)
+#define NVR_SHADOW_TEST_SMOOTH (NVR_SHADOW_TEST == 2 || NVR_SHADOW_TEST == 4)
+#define NVR_SHADOW_TEST_WIDE   (NVR_SHADOW_TEST == 3 || NVR_SHADOW_TEST == 5)
+
+#if NVR_SHADOW_TEST_WIDE
+    #define SHADOW_TEST_MIN_OFFSET_TEXELS 3.0f
+#else
+    #define SHADOW_TEST_MIN_OFFSET_TEXELS 1.5f
+#endif
+
+#if NVR_SHADOW_TEST_SMOOTH
+// Set by the caller immediately before GetSunShadow. Above 1 means "not supplied".
+static float ShadowTestSmoothNdotL = 2.0f;
+    #define SHADOW_TEST_SET_SMOOTH_NDOTL(v) ShadowTestSmoothNdotL = (v)
+#else
+    #define SHADOW_TEST_SET_SMOOTH_NDOTL(v)
+#endif
+
+// ---------------------------------------------------------------------------
 // VSM / EVSM evaluation. Mirrors Effects/Includes/Shadows.hlsl, duplicated because the two
 // trees compile independently.
 // ---------------------------------------------------------------------------
@@ -305,7 +339,7 @@ float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, fl
     float4 texelWorld = 4.0f * radii * max(TESR_ShadowBlur.x, 1.0f / 16384.0f);
     float4 offsetDistance = offsetScale * SHADOW_NORMAL_BIAS_TEXELS * texelWorld;
 #if SHADOW_FIXED_MODE == 3
-    offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
+    offsetDistance = max(offsetDistance, offsetScale * SHADOW_TEST_MIN_OFFSET_TEXELS * texelWorld);
 #endif
     const float blend = 0.9f;
     float4 distances = float4(
@@ -555,6 +589,9 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
 
     // Push the sample along the normal, scaled by how grazing the sun is.
     float NdotL = dot(worldNormal, TESR_SmoothedSunDir.xyz);
+#if NVR_SHADOW_TEST_SMOOTH
+    if (ShadowTestSmoothNdotL <= 1.0f) NdotL = ShadowTestSmoothNdotL;
+#endif
     float offsetScale = saturate(1.0f - NdotL);
 
     float4 radii = float4(TESR_ShadowNearCenter.w, TESR_ShadowMiddleCenter.w,
@@ -568,7 +605,7 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     float4 texelWorld = 4.0f * radii * max(TESR_ShadowBlur.x, 1.0f / 16384.0f);
     float4 offsetDistance = offsetScale * SHADOW_NORMAL_BIAS_TEXELS * texelWorld;
 #if SHADOW_FIXED_MODE == 3
-    offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
+    offsetDistance = max(offsetDistance, offsetScale * SHADOW_TEST_MIN_OFFSET_TEXELS * texelWorld);
     ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
 #endif
 

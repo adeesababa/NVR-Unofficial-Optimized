@@ -777,6 +777,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
+        SHADOW_TEST_SET_SMOOTH_NDOTL(normalize(IN.lightDir.xyz).z);
         sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                   ? GetSunShadow(IN.shadowWorldPos.xyz, shadowGeometricNormal)
                   : 1.0f;
@@ -993,6 +994,18 @@ PS_OUTPUT main(PS_INPUT IN) {
         OUT.color.a = baseColor.a * AmbientColor.a;
     #endif
 
+#if NVR_SHADOW_TEST_MASK
+    // Additive passes (point lights, specular layer) draw nothing. ONLY_LIGHT is multiplied
+    // by the albedo afterwards, so divide it back out, as ApplyBarrelHeat does.
+    #if defined(DIFFUSE) || defined(POINT) || defined(ONLY_SPECULAR)
+        OUT.color = 0.0f;
+    #elif defined(ONLY_LIGHT)
+        OUT.color.rgb = sunShadow.xxx / heatMaterialFactor;
+    #else
+        OUT.color.rgb = sunShadow.xxx;
+    #endif
+#endif
+
     return OUT;
 }
 
@@ -1171,6 +1184,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
+        SHADOW_TEST_SET_SMOOTH_NDOTL(normalize(IN.lightDir.xyz).z);
         sunShadow = SHADOW_WP_VALID(IN)
                   ? GetSunShadow(sunShadowWorldPos, sunShadowNormal)
                   : 1.0f;
@@ -1231,6 +1245,10 @@ PS_OUTPUT main(PS_INPUT IN) {
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
     #endif
     OUT.color.a = baseColor.a * AmbientColor.a;
+
+#if NVR_SHADOW_TEST_MASK && !defined(OPT)
+    OUT.color.rgb = sunShadow.xxx;
+#endif
 
     return OUT;
 }

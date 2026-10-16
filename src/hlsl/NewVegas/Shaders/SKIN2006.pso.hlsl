@@ -122,6 +122,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
 #if FORWARD_SHADOWS
+    SHADOW_TEST_SET_SMOOTH_NDOTL(normalize(IN.texcoord_1.xyz).z);
     // ddx/ddy must stay at top level, outside dynamic flow control.
     float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                     ? GetSunShadow(IN.shadowWorldPos.xyz, shadowNormal)
@@ -148,6 +149,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Was a debug override: selectColor(TESR_DebugVar.x, ...) emitted a flat light colour
     // unless the dev var was zero. Kept only the real result.
     OUT.color_0.rgba = float4(LinEncode(r6), 1);
+#if NVR_SHADOW_TEST_MASK && FORWARD_SHADOWS
+    OUT.color_0.rgb = sunShadow.xxx;
+#endif
     return OUT;
 };
 

@@ -74,6 +74,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
 #if FORWARD_SHADOWS
+    SHADOW_TEST_SET_SMOOTH_NDOTL(lightDirection.z);
     // Forward sun shadow. Scales the SUN terms only; ambient-driven terms are untouched.
     // ddx/ddy must stay at top level, outside dynamic flow control.
     float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
@@ -96,6 +97,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     color.rgb = ApplyFog(finalColor, IN.color_1, Toggles);
     color.a = baseColor.a * AmbientColor.a;
 
+#if NVR_SHADOW_TEST_MASK && FORWARD_SHADOWS
+    color.rgb = sunShadow.xxx;
+#endif
     OUT.color_0 = color;
     return OUT;
 };
