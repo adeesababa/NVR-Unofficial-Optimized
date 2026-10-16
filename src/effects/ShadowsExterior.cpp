@@ -13,6 +13,7 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			// at night time, fade based on moonphase
 			// moonphase goes from 0 to 8
 			float MoonPhase = (fmod(DaysPassed, 8 * Tes->sky->firstClimate->phaseLength & 0x3F)) / (Tes->sky->firstClimate->phaseLength & 0x3F);
+			const float moonPhaseDays = MoonPhase;	// UNOFFICIAL 2026-10-16: for the NIGHT STATE line below
 
 			float PI = 3.1416f; // use cos curve to fade moon light shadows strength
 			MoonPhase = std::lerp(-PI, PI, MoonPhase / 8) - PI / 4; // map moonphase to 1/2PI/2PI + 1/2
@@ -21,6 +22,18 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			float nightMinDarkness = 1 - Settings.Exteriors.NightMinDarkness;
 			float MoonVisibility = std::lerp((float)0.0, nightMinDarkness, (float)(cos(MoonPhase) * 0.5 + 0.5));
 			Constants.ShadowFade.x = std::lerp(MoonVisibility, (float)1.0, Constants.ShadowFade.x);
+
+			// UNOFFICIAL 2026-10-16 (night cost study): what the night skips (ShadowsAtNight, ContactHardening AtNight) run
+			// under, logged when it changes: the moon phase sets how strong the moon's shadows are (ShadowFade.x, 1 = none).
+			static float loggedFade = -1.0f, loggedDayLight = -1.0f;
+			if (fabsf(Constants.ShadowFade.x - loggedFade) > 0.01f || (TheShaderManager->GameState.dayLight <= 0.0f) != (loggedDayLight <= 0.0f)) {
+				Logger::Log("NIGHT STATE: days passed %.2f, moon phase %.2f of 8 (phase length %d days), sun shadow fade %.3f (1 = none), dayLight %.2f, sun colour %.3f %.3f %.3f",
+					DaysPassed, moonPhaseDays, (int)(Tes->sky->firstClimate->phaseLength & 0x3F), Constants.ShadowFade.x,
+					TheShaderManager->GameState.dayLight, TheShaderManager->ShaderConst.sunColor.x, TheShaderManager->ShaderConst.sunColor.y,
+					TheShaderManager->ShaderConst.sunColor.z);
+				loggedFade = Constants.ShadowFade.x;
+				loggedDayLight = TheShaderManager->GameState.dayLight;
+			}
 		}
 
 		// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant
