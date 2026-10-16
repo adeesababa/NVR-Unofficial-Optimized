@@ -193,7 +193,7 @@ float4 NormalBlurRChannel(VSOUT IN, uniform float2 OffsetMask, uniform float blu
 
     for (int i = 0; i < cKernelSize; i++)
     {
-		float2 uvOff = (BlurOffsets[i] * OffsetMask) * blurRadius/depth;
+		float2 uvOff = (BlurOffsets[i] * OffsetMask) * blurRadius / max(depth, 1e-6);	// UNOFFICIAL 2026-10-16: 0 at the far plane (as the other blurs guard)
 		float4 color2 = tex2D(TESR_RenderedBuffer, IN.UVCoord + uvOff).r;
 		float depth2 = readDepth(IN.UVCoord + uvOff);
 		float3 normal2 = GetNormal(IN.UVCoord + uvOff);

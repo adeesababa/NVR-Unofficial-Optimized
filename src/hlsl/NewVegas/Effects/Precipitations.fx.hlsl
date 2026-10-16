@@ -94,7 +94,9 @@ float4 Rain( VSOUT IN ) : COLOR0
 
 		// creating the noise with magic
 		float3 m = float3(floor(noiseSurfacePosition), i); // places the drops at the same distance from the camera?
-		float3 mp = m/frac(mul(p, m)); // bayer matrix? grid of grey values stretch depending on the world positions
+		float3 mp = m/max(frac(mul(p, m)), 1e-4); // bayer matrix? grid of grey values stretch depending on the world positions
+		// UNOFFICIAL 2026-10-16: every row of p is the same, so mul(p, m) = 30.32 x (m.x + m.y + m.z) and frac() is exactly 0 in the
+		// cells where that sum is 0 (reachable: the x offset above can go negative): a divide by 0 (inf/NaN drops). Guarded.
 		float3 rainNoise = frac(mp); //r.x is a random generated grid of different darknesses
 
         // determin drop shape

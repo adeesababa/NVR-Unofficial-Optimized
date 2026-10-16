@@ -19,7 +19,7 @@
 #define pows(a, b)          (pow(abs(a), b) * sign(a)) // no more pow/abs warning!
 #define reconstructZ(normal)  (normalize(float3(normal.xy, sqrt(1 - saturate(dot(normal.xy, normal.xy)))))) // derives the Z component of a normal
 #define bend(a, b)           (a * (1 + b) / (1 + a * b)) //bends the response curve in a symetric way 
-#define scaledReinhard(a, b) (a * b) / (1 + a * b)) // curve that reaches a maximum of 1 with a speed b
+#define scaledReinhard(a, b) ((a * b) / (1 + a * b)) // curve that reaches a maximum of 1 with a speed b (UNOFFICIAL 2026-10-16: unbalanced bracket fixed, as Effects\Includes\Helpers.hlsl)
 
 #define PI 3.1415926538
 #define white     float4 (1, 1, 1, 1)

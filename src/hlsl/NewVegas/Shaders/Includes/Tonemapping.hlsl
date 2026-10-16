@@ -65,7 +65,8 @@ float3 ReinhardJodie(float3 v)
 float3 change_luminance(float3 c_in, float l_out)
 {
     float l_in = luma(c_in);
-    return c_in * (l_out / l_in);
+    // UNOFFICIAL 2026-10-16: at black l_in = l_out = 0 (was 0/0 = NaN); the ratio's limit there is 1.
+    return c_in * (abs(l_in) > 1e-8 ? l_out / l_in : 1.0);
 }
 float3 ReinhardExtended(float3 v, float whitepoint)
 {
@@ -181,7 +182,7 @@ float3 agx(float3 val)
     val = mul(agx_mat, val);
   
   // Log2 space encoding
-    val = clamp(log2(val), min_ev, max_ev);
+    val = clamp(log2(max(val, 1e-6)), min_ev, max_ev);	// UNOFFICIAL 2026-10-16: negative input gave log2 < 0 = NaN (1e-6 is below min_ev anyway)
     val = (val - min_ev) / (max_ev - min_ev);
   
   // Apply sigmoid function approximation
@@ -380,6 +381,7 @@ float3 tonemap(float3 color)
     }
     else if (TESR_HDRData.x == 7)
     {
+        color = max(0.0, color);	// UNOFFICIAL 2026-10-16: as modes 1, 2 and 8 (the curve's denominator is 0 at about -0.12)
         return Uncharted2Tonemap(color, TESR_LotteData.y, TESR_HDRBloomData.w);
     }
     else if (TESR_HDRData.x == 8)

@@ -42,6 +42,13 @@ float GetLuminance( const float3 rgb )
     return dot( XYZ_RGB[1], rgb );
 }
 
+// UNOFFICIAL 2026-10-16: the S-curve, normalised so 0 and 1 stay put; k = 0 is no change (the formula is 0/0 there).
+float ColoringCurve(float x, float k)
+{
+	float y0 = 1.0 / (1.0 + exp(k / 2.0));
+	return abs(k) < 1e-4 ? x : (1.0 / (1.0 + exp(-k * (x - 0.5))) - y0) / (1.0 - 2.0 * y0);
+}
+
 float4 ColorGrade(float3 color)
 {
 	float3 H = 0.01;
@@ -57,15 +64,12 @@ float4 ColorGrade(float3 color)
 	color = pow(abs(color), TESR_ColoringValues.w) * sign(color); // same as our "pows()" helper function
 	color = lerp(H, color, TESR_ColoringData.w);
 
-	float y = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.y / 2.0));
-	float z = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.z / 2.0));
-	float w = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.w / 2.0));
-	float v = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.x / 2.0));
-	
+	// UNOFFICIAL 2026-10-16: a curve slider at 0 made every pixel 0/0 = NaN (the S-curve's normalisation is 1 - 2 x 0.5); its limit
+	// there is no change at all, so ColoringCurve() returns the input unchanged then (the same values as before otherwise).
 	float3 luminance = GetLuminance(color);
-	luminance.r = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.y * (luminance.r - 0.5))) - y) / (1.0 - 2.0 * y);
-	luminance.g = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.z * (luminance.g - 0.5))) - z) / (1.0 - 2.0 * z);
-	luminance.b = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.w * (luminance.b - 0.5))) - w) / (1.0 - 2.0 * w);
+	luminance.r = ColoringCurve(luminance.r, TESR_ColoringColorCurve.y);
+	luminance.g = ColoringCurve(luminance.g, TESR_ColoringColorCurve.z);
+	luminance.b = ColoringCurve(luminance.b, TESR_ColoringColorCurve.w);
 	luminance = pow(max(luminance, 0), 1.0 / TESR_ColoringEffectGamma.x);
 
 	float3 luminancei = 1.0 - luminance;
@@ -80,20 +84,20 @@ float4 ColorGrade(float3 color)
 	if (luminance.r < 0.5)
 		color2.r = (2.0 * luminance.r - 1.0) * (color.r - color.r * color.r) + color.r;
 	else
-		color2.r = (2.0 * luminance.r - 1.0) * (sqrt(color.r) - color.r) + color.r;
+		color2.r = (2.0 * luminance.r - 1.0) * (sqrt(max(color.r, 0)) - color.r) + color.r;	// (UNOFFICIAL 2026-10-16: as color4 below)
 
 	if (luminance.g < 0.5)
 		color2.g = (2.0 * luminance.g - 1.0) * (color.g - color.g * color.g) + color.g;
 	else
-		color2.g = (2.0 * luminance.g - 1.0) * (sqrt(color.g) - color.g) + color.g;
+		color2.g = (2.0 * luminance.g - 1.0) * (sqrt(max(color.g, 0)) - color.g) + color.g;
 
 	if (luminance.b < 0.5)
 		color2.b = (2.0 * luminance.b - 1.0) * (color.b - color.b * color.b) + color.b;
 	else
-		color2.b = (2.0 * luminance.b - 1.0) * (sqrt(color.b) - color.b) + color.b;
+		color2.b = (2.0 * luminance.b - 1.0) * (sqrt(max(color.b, 0)) - color.b) + color.b;
 
 	float3 color3 = lerp(color, color2, TESR_ColoringData.x);
-	color3 = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.x * (color3 - 0.5))) - v) / (1.0 - 2.0 * v);
+	color3 = float3(ColoringCurve(color3.r, TESR_ColoringColorCurve.x), ColoringCurve(color3.g, TESR_ColoringColorCurve.x), ColoringCurve(color3.b, TESR_ColoringColorCurve.x));
 
 	float r2R = 1.0 - TESR_ColoringValues.x;
 	float g2R = 0.0 + TESR_ColoringValues.x;
