@@ -1265,20 +1265,45 @@ void ShadowManager::RenderShadowMaps() {
 		if (skipCascades) {
 			SunCascadesSkipped = true;
 			if (SunDir.z > 0.0f) ShadowData->z = 0;	// as the cascade pass leaves it
-#if NVR_TEST_TOOLS
-			if (Shadows->Settings.Exteriors.SkipWhenFadedCheck && Shadows->ShadowAtlasSurface) {
-				// DIAGNOSTIC SkipWhenFadedCheck: the skipped atlas set to 0 (depth 0 / zero moments: everything in shadow), so a
-				// reader the checks missed changes the picture. (The render target and depth are put back at the end.)
-				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
-				Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
-				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
-			}
-#endif
 		}
 		else if (SunCascadesSkipped) {
 			ForceAllCascades = true;
 			SunCascadesSkipped = false;
 		}
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC SkipWhenFadedCheck: while the cascades are skipped the atlas is set to 0 (depth 0 / zero moments: everything
+		// in shadow), so a reader the checks missed changes the picture. The real atlas is kept in a copy and put back when the
+		// skip ends (the sun is below the horizon in the fade-1 window: no pass would redraw it). The render target and depth are
+		// put back at the end of this function.
+		{
+			static IDirect3DTexture9* kept = nullptr;
+			static IDirect3DSurface9* keptSurface = nullptr;
+			static bool poisoned = false;
+			const bool poison = skipCascades && Shadows->Settings.Exteriors.SkipWhenFadedCheck && Shadows->ShadowAtlasSurface;
+			if (poison && !poisoned) {
+				D3DSURFACE_DESC desc = {}, keptDesc = {};
+				Shadows->ShadowAtlasSurface->GetDesc(&desc);
+				if (keptSurface && (FAILED(keptSurface->GetDesc(&keptDesc)) || keptDesc.Width != desc.Width || keptDesc.Height != desc.Height ||
+					keptDesc.Format != desc.Format)) {
+					keptSurface->Release(); kept->Release(); keptSurface = nullptr; kept = nullptr;
+				}
+				if (!kept && SUCCEEDED(Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &kept, NULL)))
+					kept->GetSurfaceLevel(0, &keptSurface);
+				poisoned = keptSurface && SUCCEEDED(Device->StretchRect(Shadows->ShadowAtlasSurface, NULL, keptSurface, NULL, D3DTEXF_NONE));
+				Logger::Log("SkipWhenFadedCheck: shadow atlas %s", poisoned ? "kept and poisoned while skipped" : "could not be kept: not poisoned");
+			}
+			if (poison && poisoned) {
+				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+				Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+			else if (!poison && poisoned) {
+				const bool back = SUCCEEDED(Device->StretchRect(keptSurface, NULL, Shadows->ShadowAtlasSurface, NULL, D3DTEXF_NONE));
+				Logger::Log("SkipWhenFadedCheck: shadow atlas %s", back ? "put back" : "could NOT be put back");
+				poisoned = false;
+			}
+		}
+#endif
 		static int loggedSkip = -1;
 		const int skipState = skipCascades ? 2 : Shadows->SunFaded && ExteriorEnabled ? 1 : 0;
 		if (skipState != loggedSkip) {
