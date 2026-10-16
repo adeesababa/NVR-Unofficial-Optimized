@@ -1284,6 +1284,7 @@ DebugView = 0                          # 1: always fully bloodied (to see it wit
 Enabled = false                        # Blood on the first-person weapon and gloves. Read at startup (compiled into the object shaders; off = the shaders exactly as before; on costs about 3-5% of lit-object shading).
 
 [_Shaders.BloodFlow.Main]
+CheapGather = true                   # UNOFFICIAL (2026-10-16): read the game's decals and bodies once a frame, only blood decals, cached skeleton walks, blood off screen not worked out (no picture change). Off: the old way. Applies immediately
 Splats = true                          # The game's blood splats grow streams that run down whatever they are on the way gravity pulls (straight down a wall, slantwise across a slope, round a rock), slowing as they go. A stream that reaches a ledge or the floor gathers in a small puddle; one that reaches an edge with nothing under it hangs in a drop that falls and leaves a stain where it lands. Wet while fresh, then darker and browner as it dries (thin trails first).
 Pools = true                           # A pool of blood spreads under a body after death; on a slope it slides downhill and trickles run off its low side, gathering where the ground levels out. Wet at first, drying to a dark stain. Not under robots.
 DripLength = 40.0                      # [0-120] Longest stream, in game units (about 1.4 cm each), measured along the surface. 0: no streams.

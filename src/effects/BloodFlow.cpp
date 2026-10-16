@@ -204,9 +204,22 @@ namespace {
 		return nodes ? seen : 0;
 	}
 
+	// UNOFFICIAL 2026-10-16 (cheaper): a body's skeleton walk (up to 256 nodes) ran for every dead body at every call, twice a
+	// frame. It is kept per body and redone only when the body moves (its bound by more than half a unit), loses a limb, or every
+	// half second (ragdolls settle). The walk's results are exactly what a new walk at that moment gave.
+	struct WalkCache { float Center[3], Radius; UInt16 Dismembered; double Time; RawActor Result; };
+	bool BloodFlowCheap = true;	// Settings.CheapGather (read in UpdateSettings)
+	std::unordered_map<UInt32, WalkCache> Walks;
+	double WalksPruned = 0.0;
+
 	// The actors in the high and middle-high process levels: alive ones (refID and state only, for telling a fresh death
 	// from a body that was already there) and dead or dying ones with their body's position.
 	int ReadActors(RawActor* out, int max) {
+		const double now = TheFrameRateManager->Time;
+		if (now - WalksPruned > 10.0) {
+			WalksPruned = now;
+			for (auto it = Walks.begin(); it != Walks.end();) { if (now - it->second.Time > 10.0) it = Walks.erase(it); else ++it; }
+		}
 		int n = 0;
 		__try {
 			UInt8* lists = (UInt8*)ProcessListsAddress;
@@ -241,8 +254,26 @@ namespace {
 							const float boundAt[3] = { bound->Center.x, bound->Center.y, bound->Center.z };
 							if (BSExtraData* cut = actor->extraDataList.GetExtraData(BSExtraData::ExtraDataType::kExtraData_DismemberedLimbs))
 								a.Dismembered = *(UInt16*)((UInt8*)cut + 0x0C);
-							a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
-								a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
+							WalkCache* cached = nullptr;
+							auto known = Walks.find(a.RefID);
+							if (known != Walks.end()) {
+								WalkCache& w = known->second;
+								const float dx = w.Center[0] - boundAt[0], dy = w.Center[1] - boundAt[1], dz = w.Center[2] - boundAt[2];
+								if (BloodFlowCheap && w.Dismembered == a.Dismembered && dx * dx + dy * dy + dz * dz < 0.25f && fabsf(w.Radius - bound->Radius) < 0.5f &&
+									now - w.Time < 0.5) cached = &w;
+							}
+							if (cached) {
+								const UInt32 refID = a.RefID, lifeState = a.LifeState;
+								a = cached->Result;
+								a.RefID = refID; a.LifeState = lifeState;
+							}
+							else {
+								a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
+									a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
+								WalkCache& w = Walks[a.RefID];
+								w.Center[0] = boundAt[0]; w.Center[1] = boundAt[1]; w.Center[2] = boundAt[2];
+								w.Radius = bound->Radius; w.Dismembered = a.Dismembered; w.Time = now; w.Result = a;
+							}
 						}
 					}
 					n++;
@@ -400,6 +431,8 @@ int BloodFlowEffect::SlotFor(UInt64 key) {
 void BloodFlowEffect::UpdateSettings() {
 	const char* section = "Shaders.BloodFlow.Main";
 	Settings.Splats = TheSettingManager->GetSettingI(section, "Splats") != 0;
+	Settings.CheapGather = TheSettingManager->GetSettingI(section, "CheapGather") != 0;
+	BloodFlowCheap = Settings.CheapGather;
 	Settings.Pools = TheSettingManager->GetSettingI(section, "Pools") != 0;
 	Settings.DripLength = std::clamp(TheSettingManager->GetSettingF(section, "DripLength"), 0.0f, 200.0f);
 	// UNOFFICIAL 2026-10-13 rewrite: FlowSpeed (was DripSpeed), Viscosity, BloodAmount.
@@ -445,11 +478,31 @@ void BloodFlowEffect::UpdateSettings() {
 void BloodFlowEffect::GatherSplats() {
 	static RawSplat raw[1024];
 	const int fromTemp = ReadSplats(ProcessListsAddress + 0x58, raw, 0, 1024);
-	const int total = ReadSplats(DecalListAddress, raw, fromTemp, 1024);
+	int total = ReadSplats(DecalListAddress, raw, fromTemp, 1024);
 	if (LoggedLists < 10 && total > 0) {
 		LoggedLists++;
 		Logger::Log("BloodFlow: %d splats in the game's lists (%d temp effects, %d decals)", total, fromTemp, total - fromTemp);
 	}
+	// UNOFFICIAL 2026-10-16 (cheaper): only blood decals go on (the game's lists hold every decal: bullet holes, scorch marks...);
+	// they used to be aged and tracked before the blood test.
+	int bloodTotal = 0;
+	for (int i = 0; i < total; i++) {
+		RawSplat& s = raw[i];
+		if (!s.TextureSet) continue;
+		auto found = BloodTextureSets.find(s.TextureSet);
+		if (found == BloodTextureSets.end()) {
+			char path[260];
+			ReadTexturePath(s.TextureSet, path, sizeof(path));
+			const bool blood = strstr(path, "blood") != nullptr;
+			found = BloodTextureSets.emplace(s.TextureSet, blood).first;
+			if (LoggedTextures < 24) {
+				LoggedTextures++;
+				Logger::Log("BloodFlow: decal texture '%s' -> %s", path, blood ? "blood" : "not blood");
+			}
+		}
+		if (found->second) { if (bloodTotal != i) raw[bloodTotal] = s; bloodTotal++; }
+	}
+	if (Settings.CheapGather) total = bloodTotal;	// (off: every decal is aged and tracked, as before)
 	// Ages: splats seen for the first time now are new, unless the effect has just started (or come back after a pause or
 	// a load) or many appear at once (a cell or save loading): those are old, already dried.
 	const bool resumed = Clock - LastSplatGather > 1.0;
@@ -753,13 +806,33 @@ void BloodFlowEffect::GatherPools() {
 void BloodFlowEffect::UpdateConstants() {
 	// UNOFFICIAL 2026-10-13: once a frame (UpdateConstants runs twice a frame), at the rate the look was tuned at (FrameClock.h):
 	// the blood's clock and its time settings run at twice real time, as they always did.
-	static double lastFrameTime = -1.0;
+	static double lastFrameTime = -1.0, lastGatherTime = -1.0;
+	static CpuTimer gatherTimer("Blood gather (CPU)");	// UNOFFICIAL 2026-10-16: the per-frame CPU cost of reading the game's lists
+	CpuProfileScope cpu(gatherTimer);
 	Clock += ElapsedOncePerFrame(lastFrameTime) * TunedClockRate;
-	Frame++;
-	Count = 0;
-	if (TheShaderManager->GameState.isUnderwater) return;
-	if (Settings.Splats) GatherSplats();
-	if (Settings.Pools) GatherPools();
+	if (TheShaderManager->GameState.isUnderwater) { Count = 0; return; }
+	// UNOFFICIAL 2026-10-16 (cheaper): the game's lists are read once a frame; the second call of the frame (before the post
+	// effects) keeps the first call's items (same frame, same decals and bodies).
+	if (TheFrameRateManager->Time != lastGatherTime || !Settings.CheapGather) {
+		lastGatherTime = TheFrameRateManager->Time;
+		Frame++;
+		Count = 0;
+		if (Settings.Splats) GatherSplats();
+		if (Settings.Pools) GatherPools();
+	}
+	// UNOFFICIAL 2026-10-16 (cheaper): which items' boxes touch the screen (both calls: the second has this frame's camera).
+	// Off-screen ones are not probed and do not make the effect run (nor keep the shadow/AO/fog composite off).
+	{
+		const D3DXVECTOR4& c = TheRenderManager->CameraPosition;
+		const D3DXVECTOR3 eye(c.x, c.y, c.z);
+		const D3DXMATRIX& inv = TheRenderManager->InvViewMatrix;
+		const D3DXVECTOR3 origin(inv._41, inv._42, inv._43);
+		OnScreenCount = 0;
+		for (int i = 0; i < Count; i++) {
+			Items[i].Visible = !Settings.CheapGather || BloodFlowBoxes::OnScreen(Items[i], Settings.DripLength, Settings.MaxFall, eye, origin, TheRenderManager->ViewProjMatrix);
+			OnScreenCount += Items[i].Visible ? 1 : 0;
+		}
+	}
 	// UNOFFICIAL 2026-10-13: with F10 on, how many it draws (next to the Blood timers), every 240 frames.
 	if (GpuTimer::Enabled && ++ItemLogTick >= 240) {
 		ItemLogTick = 0;
@@ -787,7 +860,7 @@ void BloodFlowEffect::UpdateConstants() {
 }
 
 bool BloodFlowEffect::ShouldRender() {
-	return Count > 0;
+	return Count > 0 && OnScreenCount > 0;	// UNOFFICIAL 2026-10-16: only blood on screen
 }
 
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
@@ -847,7 +920,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		Effect->EndPass();
 		Effect->End();
 	}
-	for (int i = 0; i < Count; i++) Slots[Items[i].Slot].WrittenPass = ProbePasses;
+	for (int i = 0; i < Count; i++) if (Items[i].Visible) Slots[Items[i].Slot].WrittenPass = ProbePasses;	// (off screen: fresh when back)
 	ProbePasses++;
 	PathIndex = write;
 	PathRead = PathTexture[PathIndex];

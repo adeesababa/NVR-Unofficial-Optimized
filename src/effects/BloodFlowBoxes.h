@@ -36,6 +36,7 @@ namespace BloodFlowBoxes {
 		D3DXVECTOR3	DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 		int			DecalCode = 0;
 		float		Tint = 0.0f;
+		bool		Visible = true;	// UNOFFICIAL 2026-10-16: its box touches the screen (OnScreen); off-screen items are not probed
 	};
 
 	inline float Length(const D3DXVECTOR3& v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
@@ -64,6 +65,56 @@ namespace BloodFlowBoxes {
 	// of every box on screen; the vertex shader (BloodFlow.fx.hlsl, CutBox) cuts the box down to the item's real bounds
 	// (the bounds pass, just drawn), keeps the faces past the eye and projects them. The splats' triangles come first:
 	// splatTriangles gets how many (the wet beads are drawn over those only).
+	// How far an item's blood can reach from its centre: along the surface (reach), below (low) and above it (high).
+	inline void Extent(const Item& item, float dripLength, float maxFall, float& reach, float& low, float& high) {
+		const float r = item.Radius;
+		if (item.Pool) {
+			reach = r * 4.6f + 8.0f;					// the pool (up to 1.45 r) and trickles running off it (about 3 r more)
+			low = 8.0f + r * 2.5f;
+			high = 5.0f + 0.3f * r;
+		}
+		else if (fabsf(item.Normal.z) > 0.9f) {
+			// Thrown straight down (or up): most likely on a floor, where it stays; a slope there runs a little.
+			reach = r + dripLength * 0.5f + 6.0f;
+			low = r + dripLength * 0.5f + 8.0f;
+			high = r + 6.0f;
+		}
+		else {
+			reach = r + dripLength + 6.0f;
+			low = r + dripLength + maxFall + 8.0f;
+			high = r + 6.0f;
+		}
+		// UNOFFICIAL 2026-10-14: room for the splat's own shape (SplatPS: arms and spray out to a few radii, its drips below);
+		// the other passes cut their boxes to the real bounds on the GPU.
+		if (!item.Pool) {
+			reach = (std::max)(reach, r * 8.0f + 4.0f);
+			low = (std::max)(low, r * 8.0f + 4.0f);
+			high = (std::max)(high, r * 1.0f + 6.0f);
+		}
+	}
+
+	// UNOFFICIAL 2026-10-16 (cheaper): does the item's box (as Build makes it) touch the screen? Off-screen items are not probed.
+	inline bool OnScreen(const Item& item, float dripLength, float maxFall, const D3DXVECTOR3& eye, const D3DXVECTOR3& origin, const D3DXMATRIX& viewProj) {
+		float reach, low, high;
+		Extent(item, dripLength, maxFall, reach, low, high);
+		const D3DXVECTOR3 center = item.Center - eye;
+		int outside[6] = {};
+		for (int k = 0; k < 8; k++) {
+			const D3DXVECTOR3 p = center + D3DXVECTOR3((k & 1) ? reach : -reach, (k & 2) ? reach : -reach, (k & 4) ? high : -low) + origin;
+			const D3DXVECTOR4 p4(p.x, p.y, p.z, 1.0f);
+			D3DXVECTOR4 c;
+			D3DXVec4Transform(&c, &p4, &viewProj);
+			if (c.x < -c.w) outside[0]++;
+			if (c.x > c.w) outside[1]++;
+			if (c.y < -c.w) outside[2]++;
+			if (c.y > c.w) outside[3]++;
+			if (c.w <= 0.0f) outside[4]++;
+			if (c.z > c.w) outside[5]++;
+		}
+		for (int f = 0; f < 6; f++) if (outside[f] == 8) return false;
+		return true;
+	}
+
 	inline int Build(const Item* items, int count, float dripLength, float maxFall, const D3DXVECTOR3& eye, const D3DXVECTOR3& origin,
 		const D3DXMATRIX& viewProj, VolumetricSmokeQuads::Vertex* out, float bounds[4], int* splatTriangles = nullptr) {
 		float minU = 1.0f, minV = 1.0f, maxU = 0.0f, maxV = 0.0f;
@@ -76,30 +127,7 @@ namespace BloodFlowBoxes {
 			const Item& item = items[i % count];
 			if (item.Pool != (i >= count)) continue;
 			float reach, low, high;
-			const float r = item.Radius;
-			if (item.Pool) {
-				reach = r * 4.6f + 8.0f;					// the pool (up to 1.45 r) and trickles running off it (about 3 r more)
-				low = 8.0f + r * 2.5f;
-				high = 5.0f + 0.3f * r;
-			}
-			else if (fabsf(item.Normal.z) > 0.9f) {
-				// Thrown straight down (or up): most likely on a floor, where it stays; a slope there runs a little.
-				reach = r + dripLength * 0.5f + 6.0f;
-				low = r + dripLength * 0.5f + 8.0f;
-				high = r + 6.0f;
-			}
-			else {
-				reach = r + dripLength + 6.0f;
-				low = r + dripLength + maxFall + 8.0f;
-				high = r + 6.0f;
-			}
-			// UNOFFICIAL 2026-10-14: room for the splat's own shape (SplatPS: arms and spray out to a few radii, its drips below);
-			// the other passes cut their boxes to the real bounds on the GPU.
-			if (!item.Pool) {
-				reach = (std::max)(reach, r * 8.0f + 4.0f);
-				low = (std::max)(low, r * 8.0f + 4.0f);
-				high = (std::max)(high, r * 1.0f + 6.0f);
-			}
+			Extent(item, dripLength, maxFall, reach, low, high);
 			const float u0 = -reach, u1 = reach, d0 = -reach, d1 = reach, n0 = -low, n1 = high;
 			const D3DXVECTOR3 center = item.Center - eye;   // eye-relative
 			D3DXVECTOR3 corner[8];
@@ -158,7 +186,7 @@ namespace BloodFlowBoxes {
 		int triangles = 0;
 		for (int i = 0; i < count; i++) {
 			const Item& item = items[i];
-			if (item.Slot < 0 || (item.Slot + 1) * rowsPerItem > rows) continue;
+			if (item.Slot < 0 || (item.Slot + 1) * rowsPerItem > rows || !item.Visible) continue;	// (off screen: not probed, starts afresh when back)
 			VolumetricSmokeQuads::Vertex data = {};
 			ItemData(item, item.Center - eye, dripLength, data);
 			// D3D9 puts pixel centres on whole screen coordinates: the quad from row r0 to r1 covers rows r0 .. r1 - 1.

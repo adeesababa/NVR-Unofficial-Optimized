@@ -22,6 +22,7 @@ public:
 
 	struct BloodFlowSettingsStruct {
 		bool	Splats;			// drips and drying on the game's wall splats
+		bool	CheapGather;	// UNOFFICIAL 2026-10-16: once a frame, blood-only, cached skeleton walks, off-screen culled (false: the old way, for A/B)
 		bool	Pools;			// pools under bodies
 		float	DripLength;		// longest drip, in game units
 		float	FlowSpeed;		// how fast the blood runs and creeps (1 = normal)
@@ -86,6 +87,7 @@ public:
 	static const int	PathRows = ItemMax * BloodFlowBoxes::Streams;
 	Item				Items[ItemMax];
 	int					Count = 0;
+	int					OnScreenCount = 0;	// UNOFFICIAL 2026-10-16: items whose box touches the screen (BloodFlowBoxes::OnScreen)
 	VolumetricSmokeQuads::Vertex Vertices[ItemMax * 36];
 	VolumetricSmokeQuads::Vertex ProbeVertices[ItemMax * 6];
 	VolumetricSmokeQuads::Vertex BoundsVertices[ItemMax * 6];
