@@ -66,6 +66,11 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		// read first there, returns that 1 without the cascade lookups. No shader changes.
 		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
 		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC SkipWhenFadedCheck 3: the lookups off at any hour (what they cost; by day the sun shadows leave the lit
+		// shaders, so the picture changes).
+		if (Settings.Exteriors.SkipWhenFadedCheck == 3) Constants.ForwardData.x = 1.0f;
+#endif
 
 		// UNOFFICIAL 2026-10-16: logged when it changes, with the game hours the fade is 1 in (ShaderManager's dayLight ramps:
 		// sunrise from an hour before the climate's sunrise to an hour before its end, sunset an hour after; fade 1 = dayLight
@@ -383,7 +388,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
 	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;	// UNOFFICIAL 2026-10-16
 #if NVR_TEST_TOOLS
-	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 2);
+	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 3);
 #else
 	Settings.Exteriors.SkipWhenFadedCheck = 0;
 #endif
