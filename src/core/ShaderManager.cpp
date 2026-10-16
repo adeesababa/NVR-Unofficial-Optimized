@@ -716,6 +716,8 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 
 	// Creating list of lights in order of distance to the player
 	while (Entry) {
+		// UNOFFICIAL 2026-10-16 (bug hunt): an entry without a light (the loop below checks the same) was dereferenced.
+		if (!Entry->data || !Entry->data->sourceLight) { Entry = Entry->next; continue; }
 		NiPointLight* Light = Entry->data->sourceLight;
 		D3DXVECTOR4 LightPosition = Light->m_worldTransform.pos.toD3DXVEC4();
 
