@@ -1268,6 +1268,13 @@ void ShadowManager::RenderShadowMaps() {
 			ForceAllCascades = true;
 			SunCascadesSkipped = false;
 		}
+		static int loggedSkip = -1;
+		const int skipState = skipCascades ? 2 : Shadows->SunFaded && ExteriorEnabled ? 1 : 0;
+		if (skipState != loggedSkip) {
+			Logger::Log("SUN FADE STATE: sun cascade maps %s", skipState == 2 ? "SKIPPED" : skipState == 1 ?
+				"drawn (read this frame: the volumetric fog's sun glow, the volumetric light or the deferred lookup; or no full draw yet)" : "drawn");
+			loggedSkip = skipState;
+		}
 		if (ExteriorEnabled && SunDir.z > 0.0f && !skipCascades) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);

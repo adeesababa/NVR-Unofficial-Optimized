@@ -1134,7 +1134,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost): while the sun's shadows are fully faded and nothing reads these
 			// passes (ShadowsExteriorEffect::FadedContactUnread), they are skipped; the buffer keeps the lamps' pass above.
 			ShadowsExteriorEffect* sunShadows = Effects.ShadowsExteriors;
-			if (!sunShadows->FadedContactUnread()) {
+			const bool skipContact = sunShadows->FadedContactUnread();
+			static int loggedSkip = -1;
+			if ((int)skipContact != loggedSkip) {
+				Logger::Log("SUN FADE STATE: contact shadows %s", skipContact ? "SKIPPED" : sunShadows->SunFaded ?
+					"drawn (an effect reads them: lamp shadows outdoors, blood flow, wet world, underwater or the debug view)" : "drawn");
+				loggedSkip = skipContact;
+			}
+			if (!skipContact) {
 				// The stock technique's last pass (no fused technique in an old SunShadows.fx) would take the cascades over while
 				// the forward lookups are off for the fade: it gets the forward value, as without the switch.
 				const float forwardWas = sunShadows->Constants.ForwardData.x;

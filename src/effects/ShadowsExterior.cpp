@@ -65,6 +65,24 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		// read first there, returns that 1 without the cascade lookups. No shader changes.
 		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
 		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
+
+		// UNOFFICIAL 2026-10-16: logged when it changes, with the game hours the fade is 1 in (ShaderManager's dayLight ramps:
+		// sunrise from an hour before the climate's sunrise to an hour before its end, sunset an hour after; fade 1 = dayLight
+		// 0.4-0.6 of either ramp).
+		const int fadeState = (Constants.ShadowFade.x >= 1.0f ? 1 : 0) | (SunFaded ? 2 : 0);
+		static int loggedFadeState = -1;
+		if (fadeState != loggedFadeState && Tes && Tes->sky) {
+			Sky* sky = Tes->sky;
+			const float riseBegin = sky->GetSunriseBegin(), riseEnd = sky->GetSunriseEnd(), setBegin = sky->GetSunsetBegin(), setEnd = sky->GetSunsetEnd();
+			TimeGlobals* time = TimeGlobals::Get();
+			Logger::Log("SUN FADE STATE: game hour %.3f, dayLight %.3f, sun shadow fade %.4f (1 = none), SkipWhenFaded %s: sun shadow lookups %s. "
+				"The fade is 1 from %.2f to %.2f (dawn) and %.2f to %.2f (dusk), game hours.",
+				time && time->GameHour ? fmod(time->GameHour->data, 24.0f) : -1.0f, TheShaderManager->GameState.dayLight, Constants.ShadowFade.x,
+				Settings.Exteriors.SkipWhenFaded ? "on" : "off", SunFaded ? "SKIPPED" : "run",
+				riseBegin - 1.0f + 0.4f * (riseEnd - riseBegin), riseBegin - 1.0f + 0.6f * (riseEnd - riseBegin),
+				setEnd + 1.0f - 0.6f * (setEnd - setBegin), setEnd + 1.0f - 0.4f * (setEnd - setBegin));
+			loggedFadeState = fadeState;
+		}
 	}
 	else {
 		SunFaded = false;	// UNOFFICIAL 2026-10-16 SkipWhenFaded: nothing to skip indoors
