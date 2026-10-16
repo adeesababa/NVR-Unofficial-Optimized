@@ -25,6 +25,9 @@ inline float3 operator-(float3 a) { return { -a.x, -a.y, -a.z }; }
 // PBR.hlsl compares a float3 that holds one value in all lanes (LdotR = dot(...)): the x lane decides.
 inline bool operator<(float3 a, float b) { return a.x < b; }
 
+struct float4 { float x, y, z, w; };   // shader constants (TESR_PBRMath): the harness sets them
+inline float rsqrt(float v) { return 1.0f / std::sqrt(v); }
+
 inline float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline float length(float3 a) { return std::sqrt(dot(a, a)); }
 inline float3 normalize(float3 a) { const float r = 1.0f / std::sqrt(dot(a, a)); return a * r; }  // rsq(0) = inf -> 0*inf = NaN
