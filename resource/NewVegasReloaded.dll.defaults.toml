@@ -465,7 +465,7 @@ ScaleZ = 1.0
 Enabled = true                        # Replaces the grass shaders.
 
 [_Shaders.GodRays.Main]
-SkipEmpty = true                      # UNOFFICIAL (2026-10-16): when nothing bright enough to cast rays is on screen this frame, the ray passes stop early. The picture is exactly the same (they would add nothing); about 0.2-0.3 ms saved then. Applies immediately
+SkipEmpty = false                     # UNOFFICIAL (2026-10-16), DROPPED (off): skip the god rays' blurs when the light mask is empty. Measured in game: the mask is never empty in daylight, so it only added a 0.07 ms check. Applies immediately
 DayMultiplier = 1.0                   # Strength of godrays during the day.
 LightShaftPasses = 8                  # Not used.
 Luminance = 0.8                       # Treshold for minimum luminosity of areas casting rays. Lower means more of the sky will cast rays.
