@@ -24,6 +24,29 @@ float SpecularAA(float3 normal, float roughness) {
     return sqrt(saturate(roughness * roughness + kernel_roughness));
 }
 
+// UNOFFICIAL 2026-10-16 EnergySplit ([Shaders.PBR.Main], PBR.cpp; live). c223: clear of every other pixel shader constant
+// NVR sets. Zero (not set) = off.
+float4 TESR_PBRMath : register(c223); // x: EnergySplit (1 = on)
+
+// EnergySplit. The full pass and the sun pass give the diffuse part (1 - F(L.H)) of the light. For a white surface that adds up to
+// MORE light than the surface receives: up to +8.9% on smooth surfaces seen at a low angle (roughness 0.07-0.45, N.V 0.06-0.58;
+// white furnace, tests\furnace). This is that measured excess as a function of roughness and N.V (fitted to the furnace tables to
+// +-0.4%, bench\foundations\REPORT.md) and the diffuse part keeps the rest: surfaces that did not gain keep exactly their light.
+// It depends on the view and the roughness only, so the shader works it out once per pixel (SetDiffuseEnergyKeep, before its
+// lighting calls) and every lamp reuses it; shaders that do not call it keep the old split (1). 0.95: the diffuse share there.
+float DiffuseEnergyKeep(float NdotV, float roughness) {
+    const float t = saturate((NdotV - 0.055f) * (1.0f / 0.525f));
+    const float x = saturate((0.53f - roughness) * (1.0f / 0.461f));
+    const float lowEnd = saturate((roughness - 0.02f) * (1.0f / 0.05f));
+    const float u = 1.0f - t;
+    const float excess = x * lowEnd * t * u * u * ((0.10380582f + 0.69366243f * x) + t * (0.27762281f - 0.88561283f * x));
+    return TESR_PBRMath.x > 0.5f ? 1.0f - excess * (1.0f / 0.95f) : 1.0f;
+}
+static float PBRDiffuseKeep = 1.0f;
+void SetDiffuseEnergyKeep(float3 normal, float3 eyeDir, float roughness) {
+    PBRDiffuseKeep = DiffuseEnergyKeep(max(shades(normalize(normal), normalize(eyeDir)), 0.00001), roughness);
+}
+
 // Fresnel
 // Schlick approximation
 float3 Fresnel(float3 f0, float3 f90, float cosine) {
@@ -132,7 +155,7 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel);
+    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
     
     const float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
 
@@ -202,7 +225,7 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel);
+    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
     
     const float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
 

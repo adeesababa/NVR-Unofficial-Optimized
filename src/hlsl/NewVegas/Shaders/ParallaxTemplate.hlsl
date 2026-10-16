@@ -488,6 +488,7 @@ PS_OUTPUT main(PS_INPUT IN)
             RmaosRead(offsetUV.xy);	// UNOFFICIAL _rmaos map (Object.hlsl)
         #endif
         float roughness = getRoughness(normal.a);
+        SetDiffuseEnergyKeep(normal.xyz, IN.viewDir.xyz, roughness);	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl): once per pixel, every lamp reuses it
     
         #if !defined(DIFFUSE) && !defined(POINT)
             if (TESR_ParallaxData.y)

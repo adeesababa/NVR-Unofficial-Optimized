@@ -10,6 +10,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
+	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
 	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
 	TheShaderManager->RegisterConstant("TESR_MaterialRule", &MaterialRule);
 	TheShaderManager->RegisterConstant("TESR_MaterialRough", &MaterialRough);
@@ -63,6 +64,10 @@ void PBRShaders::UpdateSettings() {
 		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
 	Constants.Linear.x = linearGamma;
 	Constants.Linear.y = 1.0f / linearGamma;
+
+	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl DiffuseEnergyKeep): white surfaces no longer send back more light than
+	// they receive in the full and sun passes. Live.
+	Constants.Math.x = TheSettingManager->GetSettingI("Shaders.PBR.Main", "EnergySplit") ? 1.0f : 0.0f;
 
 	// UNOFFICIAL material rules (Render.cpp MaterialRulesDraw), live; the table itself is read once at startup.
 	MaterialRulesSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") != 0;

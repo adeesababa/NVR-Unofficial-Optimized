@@ -760,6 +760,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.xyz = HandBloodNormal(normal.xyz);
     roughness = HudRainRoughness(roughness);	// UNOFFICIAL: the rain drops, wet and rounded
     normal.xyz = HudRainNormal(normal.xyz);
+    SetDiffuseEnergyKeep(normal.xyz, IN.viewDir.xyz, roughness);	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl): once per pixel, every lamp reuses it
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -1198,6 +1199,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.xyz = HandBloodNormal(normal.xyz);
     roughness = HudRainRoughness(roughness);	// UNOFFICIAL: the rain drops, wet and rounded
     normal.xyz = HudRainNormal(normal.xyz);
+    SetDiffuseEnergyKeep(normal.xyz, float3(IN.lightDir.w, IN.light2.w, IN.light3.w), roughness);	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl): once per pixel, every lamp reuses it (view packed in .w)
     baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
     const float3 albedoStored = baseColor.rgb;	// UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant
     baseColor.rgb = LinColor(baseColor.rgb);
