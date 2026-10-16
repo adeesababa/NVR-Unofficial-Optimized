@@ -438,6 +438,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
 	Settings.ContactHardening.MaxSoftness = max(min(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "MaxSoftness"), 32.0f), 1.0f);
 	Settings.ContactHardening.Smooth = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "Smooth") != 0;
+	Settings.ContactHardening.AtNight = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "AtNight") != 0;
 	// UNOFFICIAL LampReachMask (PointShadows.fx LampReach): z = 1 / LightRadiusMult, the game radius as a share of the cube
 	// map's radius, so a lamp counts in full out to its game radius and fades over the rest; 0 = off (the old falloff).
 	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?

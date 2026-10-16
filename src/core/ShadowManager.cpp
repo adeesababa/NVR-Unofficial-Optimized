@@ -1231,14 +1231,20 @@ void ShadowManager::RenderShadowMaps() {
 		// 0.0093 world units per unit between the thing casting it and the ground; SunSize scales that.
 		if (ContactHardeningCompiled) {
 			// (The settings are read by ShadowsExteriorEffect::UpdateSettings when they change, not by name every frame.)
-			const bool on = Shadows->Settings.ContactHardening.Enabled;
+			// UNOFFICIAL 2026-10-16 (night cost study, work/bench/foundations/nightcost): at full night (dayLight 0) the
+			// shadows are the moon's, faded and dim, and their soft edges did not show: off there, the night test spot
+			// changed fewer pixels than two identical frames differ by, and the world scene took 0.8-1.0 ms less (GTX 1070,
+			// 1440p). AtNight keeps it.
+			const bool night = TheShaderManager->GameState.dayLight <= 0.0f && !Shadows->Settings.ContactHardening.AtNight;
+			const bool on = Shadows->Settings.ContactHardening.Enabled && !night;
 			ContactHardeningData.x = on ? 0.00925f * Shadows->Settings.ContactHardening.SunSize : 0.0f;
 			ContactHardeningData.y = Shadows->Settings.ContactHardening.MaxSoftness;
 			ContactHardeningData.z = Shadows->Settings.ContactHardening.Smooth ? 1.0f : 0.0f;	// UNOFFICIAL 2026-10-15 Smooth
 			static float logged = -1.0f;
 			if (ContactHardeningData.x != logged) {
-				Logger::Log("UNOFFICIAL contact hardening %s (penumbra %.4f per unit of distance, max %.0f texels)",
-					on ? "ON" : "OFF", ContactHardeningData.x, ContactHardeningData.y);
+				Logger::Log("UNOFFICIAL contact hardening %s%s (penumbra %.4f per unit of distance, max %.0f texels)",
+					on ? "ON" : "OFF", night && Shadows->Settings.ContactHardening.Enabled ? " for the night (AtNight off)" : "",
+					ContactHardeningData.x, ContactHardeningData.y);
 				logged = ContactHardeningData.x;
 			}
 		}

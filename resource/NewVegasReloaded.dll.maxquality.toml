@@ -108,6 +108,7 @@ SmoothEdges = true
 
 [_Shaders.ContactHardening.Main]
 Smooth = true
+AtNight = true
 
 # Twice the default reach of the effects not listed above.
 [_Shaders.ShadowsExteriors.Main]
