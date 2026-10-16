@@ -514,6 +514,21 @@ bool ShadowsExteriorEffect::FadedContactUnread() {
 		!draws(TheShaderManager->Effects.Underwater) && !draws(TheShaderManager->Effects.Debug);
 }
 
+/*
+* UNOFFICIAL 2026-10-16 SkipWhenFaded: while SunFaded, whether anything reads the sun's cascade maps this frame. The forward
+* lookups are off (ForwardData.x; the skin's second lookup runs only where the first found shadow), and Specular multiplies
+* its lookup by 1 - fade = 0. Still reading them: the volumetric fog's sun glow (GetFogShadowVisibility, NOT faded, with its
+* ShadowStrength above 0, the default: so by default the maps stay), the volumetric light (it stops itself at fade 0.999),
+* and with ForwardShadows off the deferred lookup in SunShadows.fx whenever the contact passes run.
+*/
+bool ShadowsExteriorEffect::FadedCascadesUnread() {
+	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
+	const bool fogReads = draws(fog) && fog->Constants.Scatter.y > 0.0f;
+	const bool deferredReads = !Settings.Exteriors.ForwardShadows && !FadedContactUnread();
+	return SunFaded && !fogReads && !deferredReads && !draws(TheShaderManager->Effects.VolumetricLight);
+}
+
 void ShadowsExteriorEffect::clearShadowsBuffer() {
 	// clear shadows buffer
 	IDirect3DSurface9* currentRT;

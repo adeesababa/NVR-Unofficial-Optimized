@@ -67,6 +67,7 @@ public:
 	bool					ShadowShadersLoaded;
 	int						FrameCounter;
 	bool					ForceAllCascades = true; // next frame refreshes every cascade (fresh or recreated atlas)
+	bool					SunCascadesSkipped = false; // UNOFFICIAL 2026-10-16 SkipWhenFaded: the cascades were not drawn last frame
 	// ReducedQuality CachedDistantShadows: characters near the player this frame (bound centre, radius), and per sun
 	// cascade where the camera was at its last redraw and whether a character was inside it then.
 	std::vector<D3DXVECTOR4>	FrameMovers;

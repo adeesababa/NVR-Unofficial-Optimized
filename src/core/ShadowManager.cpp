@@ -1255,7 +1255,20 @@ void ShadowManager::RenderShadowMaps() {
 				hinted = true;
 			}
 		}
-		if (ExteriorEnabled && SunDir.z > 0.0f) {
+		// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): while the sun's shadows are
+		// fully faded and nothing reads the cascade maps (ShadowsExteriorEffect::FadedCascadesUnread), they are not drawn.
+		// Only once they hold a full draw (not while ForceAllCascades waits), and the first frame after the skip redraws every
+		// cascade, so no reader ever sees a map that missed frames.
+		const bool skipCascades = ExteriorEnabled && Shadows->SunFaded && !ForceAllCascades && Shadows->FadedCascadesUnread();
+		if (skipCascades) {
+			SunCascadesSkipped = true;
+			if (SunDir.z > 0.0f) ShadowData->z = 0;	// as the cascade pass leaves it
+		}
+		else if (SunCascadesSkipped) {
+			ForceAllCascades = true;
+			SunCascadesSkipped = false;
+		}
+		if (ExteriorEnabled && SunDir.z > 0.0f && !skipCascades) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);
 

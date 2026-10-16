@@ -209,6 +209,7 @@ public:
 	// sunrise and sunset) and the switch is on, so the forward lookups are off (ForwardData.x). Set by UpdateConstants.
 	bool					SunFaded = false;
 	bool					FadedContactUnread();	// while SunFaded: nothing this frame reads the contact shadows (ShaderManager skips them)
+	bool					FadedCascadesUnread();	// while SunFaded: nothing this frame reads the cascade maps (ShadowManager skips them)
 
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;

@@ -797,7 +797,7 @@ ForwardShadows = true                # Evaluate sun shadows per-object in the li
                                      # out entirely, so turning it on then needs a restart.
 Darkness = 0.75                      # Darkness of shadows.
 NightMinDarkness = 0.35              # Darkness of shadows during dark moon phase. Set to 0 to disable shadows completely when there is no moon.
-SkipWhenFaded = true                 # UNOFFICIAL: around sunrise and sunset the sun's shadows are faded out completely; while they are, the lit shaders skip their shadow lookups and the screen-space contact shadows are skipped when nothing reads them (the result is the same: no shadow). false: they run anyway.
+SkipWhenFaded = true                 # UNOFFICIAL: around sunrise and sunset the sun's shadows are faded out completely; while they are, the lit shaders skip their shadow lookups, and the screen-space contact shadows and the shadow maps are not drawn when nothing reads them (the volumetric fog's sun glow reads the shadow maps, so with the fog on they are kept). The picture is the same. false: everything runs anyway.
 OrthoMapResolution = 256             # Resolution of the texture used to store the ortho map.
 OrthoRadius = 8000                   # Max distance for rendering of ortho map.
 UsePointShadowsDay = false           # Whether to cast shadows from point lights. Requires a slight darkening of the entire screen.
