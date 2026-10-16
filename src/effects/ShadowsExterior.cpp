@@ -58,8 +58,17 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		// not sun shadows enabled), so the sun-shadow path can't share it. See the interior
 		// branch below.
 		Constants.FormatData.z = 1.0f;
+
+		// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): around sunrise and sunset
+		// (dayLight 0.4-0.6) the fade above is exactly 1, and every lit shader's sun shadow comes out as exactly 1 whatever
+		// the cascades hold (Shadow.hlsl GetSunShadow ends with lerp(shadow, 1, fade)). The forward path's own off switch,
+		// read first there, returns that 1 without the cascade lookups. No shader changes.
+		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
+		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
 	}
 	else {
+		SunFaded = false;	// UNOFFICIAL 2026-10-16 SkipWhenFaded: nothing to skip indoors
+		Constants.ForwardData.x = Settings.Exteriors.ForwardShadows ? 0.0f : 1.0f;
 		// pass the enabled/disabled property of the shadow maps to the shadowfade constant
 		Constants.ShadowFade.y = TheShaderManager->Effects.ShadowsInteriors->Enabled;
 		Constants.ShadowFade.z = 1; // z enables point lights
@@ -353,6 +362,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
+	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;	// UNOFFICIAL 2026-10-16
 	Settings.Exteriors.UsePointShadowsDay = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsDay");
 	Settings.Exteriors.UsePointShadowsNight = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsNight");
 

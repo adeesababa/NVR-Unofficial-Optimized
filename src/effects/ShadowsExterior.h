@@ -132,6 +132,7 @@ public:
 		int					Quality;
 		float				Darkness;
 		float				NightMinDarkness;
+		bool				SkipWhenFaded;	// UNOFFICIAL 2026-10-16: no sun-shadow work while the fade is 1 (UpdateConstants SunFaded)
 	};
 
 	struct InteriorsStruct {
@@ -204,6 +205,9 @@ public:
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
 	ShadowMapSettings		ShadowMaps[5];
+	// UNOFFICIAL 2026-10-16 SkipWhenFaded: outdoors, this frame's sun shadows are fully faded out (ShadowFade.x 1, around
+	// sunrise and sunset) and the switch is on, so the forward lookups are off (ForwardData.x). Set by UpdateConstants.
+	bool					SunFaded = false;
 
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;
