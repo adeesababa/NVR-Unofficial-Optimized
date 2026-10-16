@@ -14,6 +14,7 @@ public:
 		Animator		PuddlesAnimator;
 		D3DXVECTOR4		Coeffs;
 		D3DXVECTOR4		Data;
+		D3DXVECTOR4		Look = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL x: KeepHighlights (1 = the wet pass clamps only below 0)
 	};
 	WetWorldStruct	Constants;
 

@@ -1661,6 +1661,7 @@ Viscosity = 0.05
 Enabled = true                      # Short refraction water drop animation on the lens when exiting water.
 
 [_Shaders.WetWorld.Main]
+KeepHighlights = true               # UNOFFICIAL (2026-10-16): in rain the wet pass no longer cuts the picture at full white before the tonemapper (sun, bright sky and wet highlights keep their soft roll-off). Off = the old clamp. Applies immediately
 HudDrops = 1.0                       # [0.0-1.0] UNOFFICIAL: rain drops on your first-person weapon while you stand in the rain (not under cover), drying off afterwards (after mrfury97's HUD raindrops). Each drop is a little lens: it magnifies the surface under it, focuses the sun into a bright spot and catches a glint. 0: off (restart to switch on or off: it is compiled into the object shaders).
 HudDropSize = 0.6                    # [0.05-20] Size of a drop's cell in game units (the biggest drops are about three quarters of it across).
 HudDropDensity = 0.6                 # [0.0-1.0] How many drops gather at full wetness.

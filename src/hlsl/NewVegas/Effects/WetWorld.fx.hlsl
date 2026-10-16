@@ -20,6 +20,11 @@ float4 TESR_OrthoData;
 float4 TESR_WetWorldCoeffs;
 float4 TESR_WaterSettings;
 float4 TESR_WetWorldData;
+// UNOFFICIAL 2026-10-16 x: KeepHighlights. This pass writes every pixel while it rains (the sky too, through the far branch) into
+// the HDR scene before the tonemapper; saturate() cut everything brighter than 1 (sun, bright sky, lit wet highlights). On: only
+// negative values are cut, so what this pass does not change reaches the tonemapper as it was.
+float4 TESR_WetWorldLook;
+float3 WetOut(float3 c) { return TESR_WetWorldLook.x > 0.5f ? max(c, 0.0f) : saturate(c); }
 float4 TESR_SunPosition;
 float4 TESR_SkyData;
 float4 TESR_SkyLowColor;
@@ -634,7 +639,7 @@ float4 Wet(VSOUT IN) : COLOR0
     (worldPos.z < TESR_WaterSettings.x + waterThreshold);
 
     if (depth > DrawD || isWaterSurface)
-        return float4(saturate(baseColor.rgb + splashAdd), baseColor.a);
+        return float4(WetOut(baseColor.rgb + splashAdd), baseColor.a);
 
     float LODfade = smoothstep(DrawD, 0, depth);
 
@@ -808,7 +813,7 @@ float4 Wet(VSOUT IN) : COLOR0
         float vmRippleBlend = saturate(LODfade * rippleMask) * viewRefr;
         float3 vmWetLin = lerp(baseLin, vmRefrLin, vmRippleBlend);
         float3 vmWetRGB = delinearize(float4(vmWetLin, 1.0f)).rgb;
-        return float4(saturate(vmWetRGB + splashAdd), baseColor.a);
+        return float4(WetOut(vmWetRGB + splashAdd), baseColor.a);
     }
 
     // Puddle sky lighting
@@ -996,7 +1001,7 @@ float4 Wet(VSOUT IN) : COLOR0
         float3 wetLinear = linearize(float4(wetRGB, 1.0f)).rgb;
         wetRGB = delinearize(float4(wetLinear + streakLighting * LODfade, 1.0f)).rgb;
     }
-    return float4(saturate(wetRGB + splashAdd), 1.0f);
+    return float4(WetOut(wetRGB + splashAdd), 1.0f);
 }
 
 // UNOFFICIAL 2026-10-14 (HudDrops, Shaders/Includes/HudRain.hlsl): is the camera under cover? One pixel, kept (counted by an

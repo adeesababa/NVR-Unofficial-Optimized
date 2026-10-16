@@ -28,11 +28,15 @@ void WetWorldEffect::UpdateSettings() {
 	Constants.Coeffs.z = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "PuddleCoeff_B");
 	Constants.Coeffs.w = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "PuddleSpecularMultiplier");
 	Constants.Data.w = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "Amount");
+	// UNOFFICIAL 2026-10-16 KeepHighlights: the wet pass writes every pixel in rain, the sky included; it clamped them to 1.0 before
+	// the tonemapper (sun, bright sky and lit wet highlights lost their roll-off). On: clamped only below 0.
+	Constants.Look.x = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "KeepHighlights") ? 1.0f : 0.0f;
 }
 
 void WetWorldEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WetWorldCoeffs", &Constants.Coeffs);
 	TheShaderManager->RegisterConstant("TESR_WetWorldData", &Constants.Data);
+	TheShaderManager->RegisterConstant("TESR_WetWorldLook", &Constants.Look);
 }
 
 void WetWorldEffect::RegisterTextures() {
