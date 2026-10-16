@@ -411,7 +411,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.LightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LightPoints"), ShadowCubeMapsMax));
 	Settings.Interiors.ExteriorLightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ExteriorLightPoints"), ExteriorBatchedMax));
 	Settings.Interiors.TorchesCastShadows = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TorchesCastShadows");
-	Settings.Interiors.ShadowCubeMapSize = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ShadowCubeMapSize");
+	// UNOFFICIAL 2026-10-16 (bug hunt): clamped -- 12 R32F cubes at 4096 are about 4.8 GB, and the size sets every cube's memory.
+	Settings.Interiors.ShadowCubeMapSize = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ShadowCubeMapSize"), 64, 2048);
 	Settings.Interiors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "Darkness");
 	Settings.Interiors.LightRadiusMult = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "LightRadiusMult");
 	Settings.Interiors.DrawDistance = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "DrawDistance");
@@ -600,8 +601,14 @@ void ShadowsExteriorEffect::RegisterTextures() {
 		Textures.ShadowCubeMapStaticTexture[i] = nullptr;
 		for (int j = 0; j < 6; j++) Textures.ShadowCubeMapSurface[i][j] = Textures.ShadowCubeMapStaticSurface[i][j] = nullptr;
 		if (i >= ShadowCubeMapsScreen) continue;
-		TheRenderManager->device->CreateCubeTexture(ShadowCubeMapSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &Textures.ShadowCubeMapTexture[i], NULL);
-		for (int j = 0; j < 6; j++) {
+		// UNOFFICIAL 2026-10-16 (bug hunt): a failed create (video memory) left a null texture that was used at once; now the slot
+		// stays empty, as EnsureCubeMap does (the shadow passes skip it).
+		if (FAILED(TheRenderManager->device->CreateCubeTexture(ShadowCubeMapSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT,
+			&Textures.ShadowCubeMapTexture[i], NULL)) || !Textures.ShadowCubeMapTexture[i]) {
+			Textures.ShadowCubeMapTexture[i] = nullptr;
+			Logger::Log("UNOFFICIAL point shadows: could not create the cube map for slot %d (%d x %d; video memory?)", i, (int)ShadowCubeMapSize, (int)ShadowCubeMapSize);
+		}
+		else for (int j = 0; j < 6; j++) {
 			Textures.ShadowCubeMapTexture[i]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[i][j]);
 		}
 		std::string textureName = "TESR_ShadowCubeMapBuffer" + std::to_string(i);
