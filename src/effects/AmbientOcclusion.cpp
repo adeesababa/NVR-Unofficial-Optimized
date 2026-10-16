@@ -1,12 +1,18 @@
 #include "AmbientOcclusion.h"
 #include "../core/GpuProfiler.h"
 
+// UNOFFICIAL 2026-10-16 GTAO ([Shaders.AmbientOcclusion.GTAO]; AmbientOcclusion.fx.hlsl GTAOValue): x 1 on (the DedicatedGTAO
+// technique instead of DedicatedAO), w largest search radius in pixels. Kept out of AmbientOcclusion.h.
+static D3DXVECTOR4 GTAOData(0.0f, 0.0f, 0.0f, 64.0f);
+static EffectRecord::CachedHandle techGTAO;
+
 void AmbientOcclusionEffect::UpdateConstants() {
 }
 
 void AmbientOcclusionEffect::RegisterConstants() {
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionAOData"] = &Constants.AOData;
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionData"] = &Constants.Data;
+	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionGTAO"] = &GTAOData;
 }
 
 void AmbientOcclusionEffect::RegisterTextures() {
@@ -37,6 +43,8 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	Constants.Data.y = TheSettingManager->GetSettingF(sectionName, "LumThreshold");
 	Constants.Data.z = TheSettingManager->GetSettingF(sectionName, "BlurDropThreshold");
 	Constants.Data.w = TheSettingManager->GetSettingF(sectionName, "BlurRadiusMultiplier");
+	GTAOData.x = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.GTAO", "Enabled") ? 1.0f : 0.0f;
+	GTAOData.w = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.GTAO", "MaxRadius"), 4.0f, 256.0f);
 }
 
 bool AmbientOcclusionEffect::ShouldRender() {
@@ -53,6 +61,10 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DSurface9* const* surfaces = lastLowRes ? aoSurfaceLow : aoSurface;
 	const UINT divisor = MaxQuality::Divisor(lastLowRes ? 4 : 2);	// UNOFFICIAL: 1 with Max Quality
 	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedAO");
+	if (GTAOData.x > 0.5f) {	// UNOFFICIAL 2026-10-16: the same passes with the GTAO estimate, when the effect file has them
+		D3DXHANDLE gtao = TechniqueHandle(techGTAO, "DedicatedGTAO");
+		if (gtao) technique = gtao;
+	}
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_AOLayout");
 	D3DXTECHNIQUE_DESC description = {};
 	D3DVIEWPORT9 original = {};

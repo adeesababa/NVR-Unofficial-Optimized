@@ -9,6 +9,7 @@ float4 NVR_AOLayout; // packed extent xy, inverse low-resolution dimensions zw
 
 float4 TESR_AmbientOcclusionAOData;
 float4 TESR_AmbientOcclusionData;
+float4 TESR_AmbientOcclusionGTAO;	// UNOFFICIAL 2026-10-16 ([Shaders.AmbientOcclusion.GTAO]; the GTAO techniques at the end): w largest radius (pixels)
 float4 TESR_ReciprocalResolution;
 float4 TESR_FogData; // x: fog start, y: fog end, z: sun glare, w: fog power
 float4 TESR_FogColor;
@@ -314,6 +315,76 @@ float2 PackedSSAOValues(float2 uv)
 	return lerp(values, 1, saturate(invlerp(startFade, endFade, origin.z)));
 }
 
+// UNOFFICIAL 2026-10-16 GTAO: ground-truth based ambient occlusion (Jimenez, Wu, Pesce, Jarabo 2016, "Practical Real-Time
+// Strategies for Accurate Indirect Occlusion"; written from the paper's equations, Intel's XeGTAO (MIT licence) read as a
+// reference). In 2 screen-space slices per pixel, the highest horizon on each side is searched (4 depth reads a side), and the
+// cosine-weighted visibility between the two horizons is integrated exactly. Flat open ground stays unoccluded (the SSAO's
+// random points dip below a surface and grey it), corners and creases darken by how closed they really are, and things far
+// in front (past the radius) fade out instead of leaving a halo. Same radius, strength, fog and fade as the SSAO.
+float3 GTAOPosition(float2 uv)
+{
+	// (On a depth texel's centre: the linear filter would blend a silhouette's two depths into a surface that is not there.)
+	return reconstructPosition((floor(uv / TESR_ReciprocalResolution.xy) + 0.5) * TESR_ReciprocalResolution.xy);
+}
+
+float GTAOValue(float2 uv)
+{
+	float3 P = reconstructPosition(uv);
+	if (P.z > endFade) return 1.0;
+	float3 V = normalize(-P);
+	float3 N = normalize(GetNormal(uv));
+	N = dot(N, V) < 0.0 ? -N : N;
+	float radius = abs(AOrange);
+	// The radius on screen (uv per unit of slice direction), capped at w pixels.
+	float2 radiusUV = radius / P.z * 0.5 * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]);
+	radiusUV *= min(1.0, TESR_AmbientOcclusionGTAO.w * TESR_ReciprocalResolution.x / max(radiusUV.x, 1e-6));
+	float3 noise = random(uv);
+	// Falloff (as XeGTAO): samples past 0.385 x radius count less, none past the radius.
+	float falloffMul = -1.0 / (0.615 * radius);
+	float falloffAdd = (1.0 - 0.615) / 0.615 + 1.0;
+	float visibility = 0.0;
+	[unroll] for (int slice = 0; slice < 2; slice++) {
+		float phi = (slice + noise.x) * (PI / 2.0);
+		float2 omega = float2(cos(phi), sin(phi));
+		float3 direction = float3(omega, 0.0);		// view space: x right, y up
+		float2 stepUV = float2(omega.x, -omega.y) * radiusUV;	// (screen v runs down)
+		float3 orthoDirection = direction - dot(direction, V) * V;
+		float3 axis = normalize(cross(orthoDirection, V));
+		float3 projectedN = N - axis * dot(N, axis);
+		float projectedLength = length(projectedN);
+		float cosN = saturate(dot(projectedN, V) / max(projectedLength, 1e-4));
+		float n = (dot(orthoDirection, projectedN) < 0.0 ? -1.0 : 1.0) * acos(cosN);
+		float low0 = cos(n + PI / 2.0);		// the tangent plane: the lowest each side's horizon can be
+		float low1 = cos(n - PI / 2.0);
+		float horizon0 = low0, horizon1 = low1;
+		[unroll] for (int j = 0; j < 4; j++) {
+			float t = (j + noise.y) / 4.0;
+			t *= t;		// more samples near the pixel
+			float2 offset = stepUV * t + float2(omega.x, -omega.y) * TESR_ReciprocalResolution.xy * 2.0;	// at least one (half-res) texel out
+			float3 s0 = GTAOPosition(uv + offset) - P;
+			float3 s1 = GTAOPosition(uv - offset) - P;
+			float l0 = length(s0), l1 = length(s1);
+			horizon0 = max(horizon0, lerp(low0, dot(s0, V) / max(l0, 1e-4), saturate(l0 * falloffMul + falloffAdd)));
+			horizon1 = max(horizon1, lerp(low1, dot(s1, V) / max(l1, 1e-4), saturate(l1 * falloffMul + falloffAdd)));
+		}
+		float h0 = n + clamp(-acos(horizon1) - n, -PI / 2.0, PI / 2.0);	// against omega
+		float h1 = n + clamp(acos(horizon0) - n, -PI / 2.0, PI / 2.0);	// along omega
+		float sinN = sin(n);
+		visibility += projectedLength * ((cosN + 2.0 * h0 * sinN - cos(2.0 * h0 - n)) + (cosN + 2.0 * h1 * sinN - cos(2.0 * h1 - n))) * 0.25;
+	}
+	visibility *= 0.5;
+	float darkness = saturate(1.0 - (1.0 - saturate(visibility)) * AOstrength);
+	float fogColor = luma(TESR_FogColor.rgb);
+	darkness = clamp(lerp(darkness, fogColor, fogCoeff(P.z)), darkness, 1.0);
+	return lerp(darkness, 1.0, saturate(invlerp(startFade, endFade, P.z)));
+}
+
+// The estimate pass of the GTAO techniques: the same outputs as PackedEstimate (AO, depth).
+float4 GTAOEstimate(VSOUT IN) : COLOR0
+{
+	return float4(GTAOValue(IN.UVCoord), min(readDepth(IN.UVCoord), (float)endFade), 0, 1);
+}
+
 float4 PackedEstimate(VSOUT IN) : COLOR0
 {
 	// Same two five-sample kernels, evaluated together without duplicate setup/noise reads.
@@ -433,6 +504,23 @@ float4 DedicatedCombine(VSOUT IN) : COLOR0
 technique DedicatedAO
 {
 	pass Estimate { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 PackedEstimate(); }
+	pass BlurX { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlur(io.xy); }
+	pass BlurY { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlur(io.yx); }
+	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
+}
+
+// UNOFFICIAL 2026-10-16: the same two techniques with the GTAO estimate (AmbientOcclusion.cpp picks them with the switch on).
+technique PackedGTAO
+{
+	pass Estimate { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 GTAOEstimate(); }
+	pass BlurX { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 PackedBlur(io.xy); }
+	pass BlurY { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 PackedBlur(io.yx); }
+	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 PackedCombine(); }
+}
+
+technique DedicatedGTAO
+{
+	pass Estimate { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 GTAOEstimate(); }
 	pass BlurX { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlur(io.xy); }
 	pass BlurY { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlur(io.yx); }
 	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }

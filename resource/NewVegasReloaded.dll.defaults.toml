@@ -198,6 +198,10 @@ Range = 30.0                            # Distance for sampling. Larger values c
 Samples = 5                             # Not used (currently hardcoded).
 StrengthMultiplier = 1.0                # Global AO strength/darkness multiplier.
 
+[_Shaders.AmbientOcclusion.GTAO]
+Enabled = false                      # UNOFFICIAL (2026-10-16): ground-truth ambient occlusion (GTAO, Jimenez et al. 2016) instead of the old SSAO: open flat ground is no longer greyed, corners and creases darken by how closed they really are, no halo round things in front. Uses the same Range, strength and fade settings. Applies immediately
+MaxRadius = 64.0                     # [4-256] Largest search radius on screen, in pixels (close up the Range would cover half the screen)
+
 [_Shaders.AmbientOcclusion.Status]
 Enabled = true                          # Shadows based on object proximity/creases for more realistic light contribution.
 
