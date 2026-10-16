@@ -117,6 +117,7 @@ void TerrainShaders::UpdateSettings() {
 	ParallaxSettings.Enabled = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Enabled");
 	ParallaxSettings.HighQuality = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "HighQuality");
 	ParallaxSettings.Shadows = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Shadows");
+	ParallaxSettings.ShadowsAtNight = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "ShadowsAtNight") != 0;
 	ParallaxSettings.HeightBlend = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "HeightBlend");
 	ParallaxSettings.MaxDistance = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "MaxDistance");
 	ParallaxSettings.Height = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Height");
@@ -216,7 +217,11 @@ void TerrainShaders::UpdateConstants() {
 		TheShaderManager->GetTransitionValue(Settings.Rain.AmbientScale, Settings.NightRain.AmbientScale, 0.0), rainFactor);
 
 	ParallaxConstants.Data.x = ParallaxSettings.Enabled;
-	ParallaxConstants.Data.y = ParallaxSettings.Shadows;
+	// UNOFFICIAL 2026-10-16 (night cost study, work/bench/foundations/nightcost): the parallax self-shadows darken only the
+	// sun's light, and at full night (dayLight 0: from an hour after sunset to an hour before sunrise) that is the moon's,
+	// too weak for them to show: switched off there they changed no pixel beyond two identical frames' noise, and saved
+	// 0.9-1.0 ms of land shading at the night test spot (GTX 1070, 1440p). ShadowsAtNight keeps them.
+	ParallaxConstants.Data.y = ParallaxSettings.Shadows && (ParallaxSettings.ShadowsAtNight || TheShaderManager->GameState.dayLight > 0.0f);
 	ParallaxConstants.Data.z = ParallaxSettings.HeightBlend;
 	// .w: 0 = 8 steps, 1 = 16 (HighQuality), 2 = [Main.Main.ReducedQuality] ParallaxLite (Parallax.hlsl), which
 	// replaces both.

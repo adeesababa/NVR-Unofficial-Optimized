@@ -74,6 +74,7 @@ Steps = 16
 
 [_Shaders.Terrain.Parallax]
 HighQuality = true
+ShadowsAtNight = true
 MaxDistance = 4096
 
 [_Shaders.BloodFlow.Main]

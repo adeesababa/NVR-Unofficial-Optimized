@@ -1481,6 +1481,7 @@ TerrainSaturation = 1.0             # Control terrain saturation.
 [_Shaders.Terrain.Parallax]
 Enabled = true                      # Turn on parallax occlusion mapping for terrain.
 Shadows = true						# Turn on height based self shadowing.
+ShadowsAtNight = false              # UNOFFICIAL: keep the self shadowing at night too. Off (default): skipped while the sun is down, where the moon is too dim for it to show (measured: no changed pixels at a night test spot, about 1 ms faster there at 1440p).
 HeightBlend = true                  # Turn on height based texture blending.
 HighQuality = true                  # Turn on high quality. Double the number of steps, higher performance impact.
 MaxDistance = 2048                  # Controls the maximum distance for the parallax and shadow effects.
