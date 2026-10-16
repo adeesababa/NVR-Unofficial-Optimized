@@ -208,6 +208,7 @@ public:
 	// UNOFFICIAL 2026-10-16 SkipWhenFaded: outdoors, this frame's sun shadows are fully faded out (ShadowFade.x 1, around
 	// sunrise and sunset) and the switch is on, so the forward lookups are off (ForwardData.x). Set by UpdateConstants.
 	bool					SunFaded = false;
+	bool					FadedContactUnread();	// while SunFaded: nothing this frame reads the contact shadows (ShaderManager skips them)
 
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;

@@ -498,6 +498,22 @@ bool ShadowsExteriorEffect::ShouldRender() {
 	return false;
 }
 
+/*
+* UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): while the sun's shadows are fully
+* faded (SunFaded), whether anything reads the contact shadows' passes. Their red channel is read only through the fade,
+* which makes it exactly 1 whatever it holds (the shadow apply and its copies in the fog's composite and AmbientLight, snow),
+* or times 1 - fade = 0 (Specular). Their green channel, the lamps' light (PointShadows.fx), which the passes also blur and
+* raise to the Intensity power, counts only with lamp shadows on outdoors (ShadowFade.z): without them the apply's
+* 1 + green comes out at 1 whatever green is (Darkness 0 or more). Effects that read the buffer without the fade: blood
+* flow, wet world, underwater, the debug view.
+*/
+bool ShadowsExteriorEffect::FadedContactUnread() {
+	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	return SunFaded && Constants.ShadowFade.z == 0.0f && Settings.Exteriors.Darkness >= 0.0f &&
+		!draws(TheShaderManager->Effects.BloodFlow) && !draws(TheShaderManager->Effects.WetWorld) &&
+		!draws(TheShaderManager->Effects.Underwater) && !draws(TheShaderManager->Effects.Debug);
+}
+
 void ShadowsExteriorEffect::clearShadowsBuffer() {
 	// clear shadows buffer
 	IDirect3DSurface9* currentRT;

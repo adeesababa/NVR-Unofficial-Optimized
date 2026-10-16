@@ -1131,8 +1131,17 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
 			const bool sharpContact = fusedForwardContact && Effects.ShadowsExteriors->Settings.ScreenSpace.Sharp && sharpTechnique != NULL &&
 				Effects.SunShadows->Effect->GetTechnique(2) == sharpTechnique;
-			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface,
-				Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
+			// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost): while the sun's shadows are fully faded and nothing reads these
+			// passes (ShadowsExteriorEffect::FadedContactUnread), they are skipped; the buffer keeps the lamps' pass above.
+			ShadowsExteriorEffect* sunShadows = Effects.ShadowsExteriors;
+			if (!sunShadows->FadedContactUnread()) {
+				// The stock technique's last pass (no fused technique in an old SunShadows.fx) would take the cascades over while
+				// the forward lookups are off for the fade: it gets the forward value, as without the switch.
+				const float forwardWas = sunShadows->Constants.ForwardData.x;
+				if (sunShadows->SunFaded && sunShadows->Settings.Exteriors.ForwardShadows) sunShadows->Constants.ForwardData.x = 0.0f;
+				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
+				sunShadows->Constants.ForwardData.x = forwardWas;
+			}
 		}
 	}
 	else {
