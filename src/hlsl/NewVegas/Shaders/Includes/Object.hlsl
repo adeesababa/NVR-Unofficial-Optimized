@@ -22,6 +22,7 @@
 #define LinSky(c) LinColor(c)
 
 float4 TESR_PBRData : register(c32);
+float4 TESR_PassRedirect : register(c210);	// UNOFFICIAL ExactPassSums (core/PassSums.h): x 1 = this added pass draws into NVR's buffer, linear
 float4 TESR_PBRExtraData : register(c33);
 
 // UNOFFICIAL material rules ([Shaders.PBR.MaterialRules], core/MaterialRules.h): the class of the texture being drawn, from

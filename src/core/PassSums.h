@@ -1,0 +1,207 @@
+#pragma once
+
+// UNOFFICIAL 2026-10-16 ExactPassSums ([Shaders.PBR.Linear] ExactPassSums, live; bench\foundations\REPORT.md "Fix candidate:
+// exact linear sums for the extra passes").
+//
+// With linear lighting on, an object lit by more lamps than its first pass holds is drawn as a light-only pass, extra lamp
+// passes ADDED on top (ONE+ONE), a texture pass that MULTIPLIES, and highlight passes ADDED after it. Each added pass was
+// encoded on its own (x^(1/g)), so the frame held enc(A) + enc(B) instead of enc(A + B): measured up to 3.7x too bright in
+// linear light, 83% of the Ultra-Luxe frame. The game draws all extra lamp passes of the world as ONE run, and all highlight
+// passes as ONE run (measured, LampPassOrderLog). So: while a run is drawn, its passes go into a separate fp16 buffer (same
+// depth buffer) and output their LINEAR light (ObjectTemplate.hlsl, TESR_PassRedirect); when the run ends, one full-screen step
+// writes scene = (scene^g + buffer)^(1/g) wherever the buffer is not 0 (the rest is discarded, untouched). Lamps are folded in
+// before the texture pass multiplies them, highlights before the fog. Mode 1 highlights, 2 lamps, 3 both. World scene only.
+// With the game's MSAA (iMultiSample) the world target is multisampled: the buffer is too (it shares the depth buffer), both are
+// resolved for reading, and the step ADDS the difference (scene^g + buffer)^(1/g) - scene to every sample, so the edges keep
+// their anti-aliasing (exact inside surfaces; at an object's edge the difference of the pixel's average is used).
+#include <d3dx9.h>
+#include "GpuProfiler.h"
+
+namespace PassSums {
+
+	inline D3DXVECTOR4 Redirect = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// TESR_PassRedirect (c210): x 1 = this pass draws into the buffer, linear
+	inline float Gamma = 1.0f;					// the gamma LinEncode uses (PBR.cpp: [Shaders.PBR.Linear] Gamma when linear lighting is on, else 1)
+
+	enum Kind { None = 0, Lamps = 1, Highlights = 2 };
+	inline int Mode = 0;							// the setting, read once a frame
+	inline Kind Active = None;						// the run being redirected now
+	inline int Runs[3] = { 0, 0, 0 };				// runs started this frame per kind (at most 2 each: a third keeps the game's passes)
+	inline IDirect3DSurface9* Scene = nullptr;		// the render target the run replaced (the game's scene buffer)
+	inline IDirect3DTexture9* AccTex = nullptr;   inline IDirect3DSurface9* Acc = nullptr;
+	inline IDirect3DSurface9* AccMS = nullptr;		// the multisampled buffer drawn into when the world target is multisampled
+	inline IDirect3DTexture9* CopyTex = nullptr;  inline IDirect3DSurface9* Copy = nullptr;
+	inline IDirect3DPixelShader9* ComposePS = nullptr;
+	inline D3DSURFACE_DESC Made = {};
+	inline bool Failed = false;
+	inline UInt32 Composes = 0, Frames = 0;
+	inline int LogFrames = 0;						// frames left whose runs are logged (set when the mode changes)
+	inline UInt32 RunPasses = 0;	inline UInt16 RunFirst = 0, RunLast = 0;
+	inline int LastMode = 0;
+
+	inline Kind KindOf(UInt16 e) {
+		if ((e >= 0x132 && e <= 0x13C && e != 0x137) || (e >= 0x13E && e <= 0x148 && e != 0x143)) return Lamps;	// as LampPassTest
+		switch (e) {
+		case 0x15A: case 0x15C: case 0x15D: case 0x160: case 0x162: case 0x163:
+		case 0x166: case 0x168: case 0x169: case 0x16C: case 0x16E: case 0x16F:
+		case 0x172: case 0x174: case 0x175:
+			return Highlights;
+		}
+		return None;
+	}
+
+	inline void Release() {
+		for (IUnknown** p : { (IUnknown**)&AccMS, (IUnknown**)&Acc, (IUnknown**)&AccTex, (IUnknown**)&Copy, (IUnknown**)&CopyTex })
+			if (*p) { (*p)->Release(); *p = nullptr; }
+		Made = {};
+	}
+
+	inline bool Make(IDirect3DDevice9* device, const D3DSURFACE_DESC& d) {
+		if (AccTex && Made.Width == d.Width && Made.Height == d.Height && Made.Format == d.Format && Made.MultiSampleType == d.MultiSampleType &&
+			Made.MultiSampleQuality == d.MultiSampleQuality) return true;
+		Release();
+		if (d.MultiSampleType != D3DMULTISAMPLE_NONE &&
+			FAILED(device->CreateRenderTarget(d.Width, d.Height, d.Format, d.MultiSampleType, d.MultiSampleQuality, FALSE, &AccMS, NULL))) {
+			Logger::Log("ExactPassSums: no multisampled buffer (%ux%u, msaa %u): off", d.Width, d.Height, (unsigned)d.MultiSampleType);
+			return false;
+		}
+		if (FAILED(device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &AccTex, NULL)) ||
+			FAILED(AccTex->GetSurfaceLevel(0, &Acc)) ||
+			FAILED(device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &CopyTex, NULL)) ||
+			FAILED(CopyTex->GetSurfaceLevel(0, &Copy))) {
+			Logger::Log("ExactPassSums: could not make its buffers (%ux%u format %u): off", d.Width, d.Height, (unsigned)d.Format);
+			Release();
+			return false;
+		}
+		if (!ComposePS) {
+			static const char* kPS =
+				"sampler2D SceneS : register(s0); sampler2D AccS : register(s1); float4 G : register(c0);"
+				"float4 main(float2 uv : TEXCOORD0) : COLOR0 {"
+				"  float3 a = tex2D(AccS, uv).rgb;"
+				"  clip(max(a.r, max(a.g, a.b)) - 1e-10);"
+				"  float3 s = max(tex2D(SceneS, uv).rgb, 0.0);"
+				"  return float4(pow(pow(s, G.x) + max(a, 0.0), G.y) - s, 1.0); }";
+			ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
+			if (FAILED(D3DXCompileShader(kPS, (UINT)strlen(kPS), NULL, NULL, "main", "ps_3_0", 0, &code, &errors, NULL)) || !code ||
+				FAILED(device->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &ComposePS))) {
+				Logger::Log("ExactPassSums: compose shader failed: %s", errors ? (const char*)errors->GetBufferPointer() : "?");
+				if (errors) errors->Release();
+				if (code) code->Release();
+				Release();
+				return false;
+			}
+			code->Release();
+		}
+		Made = d;
+		Logger::Log("ExactPassSums: buffers made (%ux%u format %u msaa %u)", d.Width, d.Height, (unsigned)d.Format, (unsigned)d.MultiSampleType);
+		return true;
+	}
+
+	inline void SetFlag(IDirect3DDevice9* device, float v) {
+		Redirect.x = v;
+		device->SetPixelShaderConstantF(210, (const float*)&Redirect, 1);	// the bound shader too; the next binds upload it themselves
+	}
+
+	inline void Begin(IDirect3DDevice9* device, Kind kind) {
+		IDirect3DSurface9* target = nullptr;
+		if (FAILED(device->GetRenderTarget(0, &target)) || !target) return;
+		D3DSURFACE_DESC d = {};
+		target->GetDesc(&d);
+		if (!Make(device, d)) { target->Release(); Failed = true; return; }
+		static GpuTimer timer("  Pass sums (clear)");
+		GpuProfileScope gpu(timer, device);
+		Scene = target;	// keeps the reference until End
+		device->SetRenderTarget(0, AccMS ? AccMS : Acc);
+		DWORD scissor = FALSE;
+		device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissor);
+		if (scissor) device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+		device->Clear(0, NULL, D3DCLEAR_TARGET, 0, 0.0f, 0);
+		if (scissor) device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+		SetFlag(device, 1.0f);
+		Active = kind;
+		Runs[kind]++;
+		RunPasses = 0;
+	}
+
+	// Every state the fold-in sets (recorded once into a state block to restore them after, then set for real).
+	inline void RecordFoldStates(IDirect3DDevice9* device) {
+		const float g = Gamma > 0.0f ? Gamma : 1.0f;
+		const float G[4] = { g, 1.0f / g, 0.0f, 0.0f };
+		device->SetVertexShader(NULL);
+		device->SetPixelShader(ComposePS);
+		device->SetPixelShaderConstantF(0, G, 1);
+		device->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+		for (DWORD s = 0; s < 2; s++) {
+			device->SetTexture(s, s ? (IDirect3DBaseTexture9*)AccTex : (IDirect3DBaseTexture9*)CopyTex);
+			device->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_POINT); device->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			device->SetSamplerState(s, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+			device->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP); device->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+			device->SetSamplerState(s, D3DSAMP_SRGBTEXTURE, FALSE);
+		}
+		const DWORD rs[][2] = { { D3DRS_ZENABLE, FALSE }, { D3DRS_ZWRITEENABLE, FALSE }, { D3DRS_ALPHABLENDENABLE, TRUE },
+			{ D3DRS_SRCBLEND, D3DBLEND_ONE }, { D3DRS_DESTBLEND, D3DBLEND_ONE }, { D3DRS_BLENDOP, D3DBLENDOP_ADD },
+			{ D3DRS_SEPARATEALPHABLENDENABLE, FALSE },
+			{ D3DRS_ALPHATESTENABLE, FALSE }, { D3DRS_STENCILENABLE, FALSE }, { D3DRS_SCISSORTESTENABLE, FALSE },
+			{ D3DRS_CULLMODE, D3DCULL_NONE }, { D3DRS_COLORWRITEENABLE, 7 }, { D3DRS_FILLMODE, D3DFILL_SOLID },
+			{ D3DRS_SRGBWRITEENABLE, FALSE }, { D3DRS_FOGENABLE, FALSE } };
+		for (auto& r : rs) device->SetRenderState((D3DRENDERSTATETYPE)r[0], r[1]);
+	}
+
+	// The run is over: the scene back as the target, and the buffer folded into it in linear light.
+	inline void End(IDirect3DDevice9* device) {
+		if (Active == None) return;
+		Active = None;
+		SetFlag(device, 0.0f);
+		static GpuTimer timer("  Pass sums (fold in)");
+		GpuProfileScope gpu(timer, device);
+		device->SetRenderTarget(0, Scene);
+		IDirect3DStateBlock9* saved = nullptr;
+		if (SUCCEEDED(device->BeginStateBlock())) {	// records only the states the fold-in sets (cheaper than capturing all)
+			RecordFoldStates(device);
+			device->EndStateBlock(&saved);
+			if (saved) saved->Capture();
+		}
+		if (saved && SUCCEEDED(device->StretchRect(Scene, NULL, Copy, NULL, D3DTEXF_NONE)) &&
+			(!AccMS || SUCCEEDED(device->StretchRect(AccMS, NULL, Acc, NULL, D3DTEXF_NONE)))) {
+			RecordFoldStates(device);
+			const float w = (float)Made.Width, h = (float)Made.Height;
+			const float quad[4][6] = { { -0.5f, -0.5f, 0, 1, 0, 0 }, { w - 0.5f, -0.5f, 0, 1, 1, 0 },
+				{ -0.5f, h - 0.5f, 0, 1, 0, 1 }, { w - 0.5f, h - 0.5f, 0, 1, 1, 1 } };
+			device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0]));
+			saved->Apply();
+			Composes++;
+		}
+		else Logger::Log("ExactPassSums: fold-in skipped (state block or copy failed): this frame's run keeps its separate sums wrong way");
+		if (saved) saved->Release();
+		Scene->Release();
+		Scene = nullptr;
+	}
+
+	// Render.cpp, once a frame (image space), and before every world pass.
+	inline void BeginFrame(int mode) {
+		if (mode != LastMode) { LastMode = mode; LogFrames = 3; } else if (LogFrames > 0) LogFrames--;
+		Mode = Failed ? 0 : mode;
+		Runs[0] = Runs[1] = Runs[2] = 0;
+		if (Mode && ++Frames >= 600) { Logger::Log("ExactPassSums (mode %d): %.2f fold-ins per frame", Mode, Composes / (float)Frames); Frames = Composes = 0; }
+		if (!Mode && AccTex) Release();
+	}
+
+	inline void BeforePass(const void* pass, bool world, IDirect3DDevice9* device) {
+		if (!Mode || !pass || !device) return;
+		if (!world) { if (Active) End(device); return; }
+		const UInt16 e = *(const UInt16*)((const UInt8*)pass + 0x04);
+		const Kind k = KindOf(e);
+		if (k == Active) { RunPasses++; RunLast = e; return; }
+		if (Active) {
+			if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d, %u passes (%03X..%03X), ended by pass %03X", (int)Active, RunPasses, RunFirst, RunLast, e);
+			End(device);
+		}
+		if (k != None && (Mode & k) && Runs[k] >= 2 && LogFrames > 0) Logger::Log("ExactPassSums: pass %03X of kind %d NOT redirected (third run this frame)", e, (int)k);
+		if (k != None && (Mode & k) && Runs[k] < 2) { Begin(device, k); RunPasses = 1; RunFirst = RunLast = e; }
+	}
+
+	inline void EndWorld(IDirect3DDevice9* device) {
+		if (!Active || !device) return;
+		if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d, %u passes (%03X..%03X), ended by the world's end", (int)Active, RunPasses, RunFirst, RunLast);
+		End(device);
+	}
+}

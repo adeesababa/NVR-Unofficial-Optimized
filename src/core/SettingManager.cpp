@@ -674,7 +674,7 @@ void SettingManager::LoadSettings() {
 	{
 		Configuration::ConfigNode node;
 		const int mode = Config.FillNode(&node, performance, "LampPassTestSkip") ? node.IntValue : 0;
-		SettingsMain.Main.LampPassTestSkip = max(0, min(mode, 3));
+		SettingsMain.Main.LampPassTestSkip = max(0, min(mode, 7));	// 4 (2026-10-16): also the passes after the highlights (fog)
 	}
 	{
 		Configuration::ConfigNode node;

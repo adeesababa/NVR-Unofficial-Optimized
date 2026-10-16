@@ -999,6 +999,12 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += PSLightColor[0].rgb * shadowMultiplier * baseColor.rgb * HudRainLens(IN.lightDir.xyz).y;
     #endif
     float3 finalColor = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space
+    #if defined(ONLY_LIGHT)
+        // UNOFFICIAL 2026-10-16 ExactPassSums (core/PassSums.h): while NVR redirects this run of added passes into its own buffer,
+        // (the extra lamp passes use the DIFFUSE and the plain light-only shaders; the flag is set only during a redirected run)
+        // the pass gives its LINEAR light; the buffer is folded into the frame once, in linear light, when the run ends.
+        [flatten] if (TESR_PassRedirect.x > 0.5f) finalColor = max(lighting.rgb, 0.0f);
+    #endif
     finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
     finalColor = RmaosDebug(finalColor, albedoStored);           // UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
 

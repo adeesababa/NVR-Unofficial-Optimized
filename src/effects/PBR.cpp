@@ -1,4 +1,5 @@
 #include "PBR.h"
+#include "../core/PassSums.h"
 
 void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRData", &Constants.Data);
@@ -11,6 +12,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
+	TheShaderManager->RegisterConstant("TESR_PassRedirect", &PassSums::Redirect);	// UNOFFICIAL ExactPassSums (core/PassSums.h)
 	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
 	TheShaderManager->RegisterConstant("TESR_MaterialRule", &MaterialRule);
 	TheShaderManager->RegisterConstant("TESR_MaterialRough", &MaterialRough);
@@ -64,6 +66,7 @@ void PBRShaders::UpdateSettings() {
 		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
 	Constants.Linear.x = linearGamma;
 	Constants.Linear.y = 1.0f / linearGamma;
+	PassSums::Gamma = linearGamma;	// UNOFFICIAL ExactPassSums: the fold-in decodes with the same gamma
 
 	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl DiffuseEnergyKeep): white surfaces no longer send back more light than
 	// they receive in the full and sun passes. Live.
