@@ -831,6 +831,7 @@ void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cub
 	// schedule would otherwise leave freshly created cascades uninitialised for several frames.
 	TheShadowManager->FrameCounter = 0;
 	TheShadowManager->ForceAllCascades = true;
+	TheShadowManager->SunAtlasDrawn = false;	// UNOFFICIAL SkipWhenFaded: no skip until the new atlas holds a full draw
 }
 
 

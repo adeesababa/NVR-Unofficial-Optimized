@@ -1258,9 +1258,10 @@ void ShadowManager::RenderShadowMaps() {
 		}
 		// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): while the sun's shadows are
 		// fully faded and nothing reads the cascade maps (ShadowsExteriorEffect::FadedCascadesUnread), they are not drawn.
-		// Only once they hold a full draw (not while ForceAllCascades waits), and the first frame after the skip redraws every
-		// cascade, so no reader ever sees a map that missed frames.
-		const bool skipCascades = ExteriorEnabled && Shadows->SunFaded && !ForceAllCascades && Shadows->FadedCascadesUnread();
+		// Only once they hold a full draw since the atlas was made (SunAtlasDrawn), and the first frame the cascades are drawn
+		// after a skip redraws every one, so no reader ever sees a map that missed frames. While the sun is below the horizon
+		// (the whole fade-1 window in the Mojave's climate) nothing redraws them anyway.
+		const bool skipCascades = ExteriorEnabled && Shadows->SunFaded && SunAtlasDrawn && Shadows->FadedCascadesUnread();
 		if (skipCascades) {
 			SunCascadesSkipped = true;
 			if (SunDir.z > 0.0f) ShadowData->z = 0;	// as the cascade pass leaves it
@@ -1354,6 +1355,7 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			if (ForceAllCascades) SunAtlasDrawn = true;	// UNOFFICIAL SkipWhenFaded: every cascade was drawn this frame
 			ForceAllCascades = false;
 			LogSunShadowStats(cachedDistant);
 			}
