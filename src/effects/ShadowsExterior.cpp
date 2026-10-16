@@ -5,6 +5,14 @@
 static D3DXVECTOR4 LampContact(0.0f, 40.0f, 12.0f, 0.5f), LampContactFade(25.0f, 0.05f, 3000.0f, 1.0f / 900.0f),
 	LampContactBias(0.3f, 0.002f, 0.001f, 0.2f), LampContactNoise(0.0f, 0.0f, 52.9829189f, 0.0f);
 float LampContactStrength() { return LampContact.x; }
+// UNOFFICIAL 2026-10-16 MaskHalfRes ([Shaders.ShadowsInteriors.Forward]): the lamp mask at half resolution (PointShadows.fx
+// LampMaskHalf + LampMaskUpsample; ShaderManager draws them). R = mask, G = depth.
+static bool MaskHalfResOn = false;
+static IDirect3DTexture9* MaskHalfTexture = nullptr;
+static IDirect3DSurface9* MaskHalfSurface = nullptr;
+bool LampMaskHalfRes() { return MaskHalfResOn && MaskHalfTexture && MaskHalfSurface; }
+IDirect3DTexture9* LampMaskHalfTexture() { return MaskHalfTexture; }
+IDirect3DSurface9* LampMaskHalfSurface() { return MaskHalfSurface; }
 
 void ShadowsExteriorEffect::UpdateConstants() {
 
@@ -389,6 +397,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.PointShadowNear.y = (std::min)((std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "EdgeFade"), 0.0f), 0.9f);
 	// UNOFFICIAL 2026-10-16 MaskSkipFar (PointShadows.fx Shadow()): lamps skip the pixels beyond their radius (exact: they give 0 there).
 	Constants.PointShadowNear.w = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "MaskSkipFar") ? 1.0f : 0.0f;
+	MaskHalfResOn = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "MaskHalfRes") != 0;	// UNOFFICIAL 2026-10-16
 	// UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS).
 	const char* interiorMain = "Shaders.ShadowsInteriors.Main";
 	const float contactDistance = std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactDistance"), 200.0f, 20000.0f);
@@ -624,6 +633,7 @@ void ShadowsExteriorEffect::RegisterTextures() {
 
 	// Initialize shadow buffer
 	TheTextureManager->InitTexture("TESR_PointShadowBuffer", &Textures.ShadowPassTexture, &Textures.ShadowPassSurface, TheRenderManager->width, TheRenderManager->height, D3DFMT_G16R16);
+	TheTextureManager->InitTexture("NVR_LampMaskHalf", &MaskHalfTexture, &MaskHalfSurface, (TheRenderManager->width + 1) / 2, (TheRenderManager->height + 1) / 2, D3DFMT_G16R16F);	// UNOFFICIAL MaskHalfRes
 
 	texturesInitialized = true;
 }

@@ -35,6 +35,11 @@ samplerCUBE TESR_ShadowCubeMapBuffer8 : register(s10) = sampler_state { ADDRESSU
 samplerCUBE TESR_ShadowCubeMapBuffer9 : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 samplerCUBE TESR_ShadowCubeMapBuffer10 : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
+// UNOFFICIAL 2026-10-16 MaskHalfRes (LampMaskHalf/LampMaskUpsample below): the half-resolution mask (R) and its depth (G), bound
+// by ShaderManager to stage 13 (an NVR_ name: not bound by declaration order).
+sampler2D NVR_LampMaskHalf : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 TESR_ReciprocalResolution;
+
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
@@ -283,5 +288,58 @@ technique LampContact {
 		BlendOp = ADD;
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 LampContactPS();
+	}
+}
+
+// UNOFFICIAL 2026-10-16 MaskHalfRes ([Shaders.ShadowsInteriors.Forward]; only with forward lamp shadows, where the mask holds
+// the lamps' unshadowed reach, a smooth function of position and normal): the mask at half resolution, then a depth-aware
+// upsample (as the AO's DedicatedCombine). Not exact at silhouettes and creases.
+// Each half-resolution pixel reads the full-resolution pixel at its top-left (as the AO's PackedVS).
+VSOUT HalfMaskVS(VSIN IN)
+{
+	VSOUT OUT = FrameVS(IN);
+	OUT.UVCoord += 0.5 * TESR_ReciprocalResolution.xy;
+	return OUT;
+}
+
+float4 LampMaskHalfPS(VSOUT IN) : COLOR0
+{
+	return float4(Shadow(IN, false).r, readDepth(IN.UVCoord), 0.0f, 1.0f);
+}
+
+float4 LampMaskUpsamplePS(VSOUT IN) : COLOR0
+{
+	float2 lowRR = 2.0f * TESR_ReciprocalResolution.xy;
+	float2 position = IN.UVCoord / lowRR - 0.5f;
+	float2 base = floor(position);
+	float2 fraction = frac(position);
+	float depth = readDepth(IN.UVCoord);
+	float tolerance = 1.0f + 0.01f * depth;
+	float sum = 0.0f, weights = 0.0f;
+	[unroll] for (int y = 0; y < 2; ++y) {
+		[unroll] for (int x = 0; x < 2; ++x) {
+			float2 sample = tex2D(NVR_LampMaskHalf, (base + float2(x, y) + 0.5f) * lowRR).rg;
+			float weight = (x ? fraction.x : 1.0f - fraction.x) * (y ? fraction.y : 1.0f - fraction.y) + 1e-4f;
+			float gap = abs(sample.y - depth) / tolerance;
+			weight /= 1.0f + gap * gap * 16.0f;
+			sum += sample.x * weight;
+			weights += weight;
+		}
+	}
+	float mask = sum / max(weights, 1e-6f);
+	return float4(mask, mask, mask, 1.0f);
+}
+
+technique LampMaskHalf {
+	pass {
+		VertexShader = compile vs_3_0 HalfMaskVS();
+		PixelShader = compile ps_3_0 LampMaskHalfPS();
+	}
+}
+
+technique LampMaskUpsample {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 LampMaskUpsamplePS();
 	}
 }

@@ -1030,6 +1030,9 @@ bool ShaderManager::ShouldRenderShadowMaps() {
 * Renders a given effect to an arbitrary render target
 */
 float LampContactStrength();	// UNOFFICIAL 2026-10-16 (effects\ShadowsExterior.cpp)
+bool LampMaskHalfRes();	// UNOFFICIAL 2026-10-16 MaskHalfRes (effects\ShadowsExterior.cpp)
+IDirect3DTexture9* LampMaskHalfTexture();
+IDirect3DSurface9* LampMaskHalfSurface();
 
 void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
@@ -1114,7 +1117,22 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			GpuProfileScope gpu(pointShadowTimer, Device);
 			const float pointShadowsWere = Effects.ShadowsExteriors->Constants.ShadowFade.z;
 			if (forwardInterior) Effects.ShadowsExteriors->Constants.ShadowFade.z = 0.0f;
-			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
+			// UNOFFICIAL 2026-10-16 MaskHalfRes: with forward lamp shadows the mask is only the lamps' reach (smooth): drawn at half
+			// resolution (PointShadows.fx technique 3, mask + depth) and upsampled depth-aware into the buffer (technique 4).
+			static EffectRecord::CachedHandle halfCache, upCache;
+			const bool halfMask = forwardInterior && LampMaskHalfRes() &&
+				Effects.PointShadows->TechniqueHandle(halfCache, "LampMaskHalf") == Effects.PointShadows->Effect->GetTechnique(3) &&
+				Effects.PointShadows->TechniqueHandle(upCache, "LampMaskUpsample") == Effects.PointShadows->Effect->GetTechnique(4) &&
+				Effects.PointShadows->Effect->GetTechnique(4) != NULL;
+			if (halfMask) {
+				RenderEffectToRT(LampMaskHalfSurface(), Effects.PointShadows, true, 3);
+				Device->SetTexture(13, LampMaskHalfTexture());
+				TheRenderManager->renderState->NoteDeviceTexture(13, LampMaskHalfTexture());
+				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, false, 4);
+				Device->SetTexture(13, nullptr);
+				TheRenderManager->renderState->NoteDeviceTexture(13, nullptr);
+			}
+			else RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
 			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();	// UNOFFICIAL ExteriorLightPoints
 			// The stock/custom shader remains compatible: it has no named merged
 			// technique, so lights 6-11 still take the original second pass.

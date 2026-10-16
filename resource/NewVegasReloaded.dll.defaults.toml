@@ -1001,6 +1001,7 @@ NormalOffset = 0.0                   # [0.0-4.0] Another cure for speckles, push
 FirstPerson = true                   # Shadows on your weapon and arms too.
 KeepDarkening = true                 # Keep the old darkening of what no tracked lamp reaches (rooms keep their mood). Off = brighter unlit corners, and about 0.8 ms saved.
 DarkeningBlur = false                # Blur that darkening as the old pass did (about 0.9 ms more).
+MaskHalfRes = false                  # UNOFFICIAL (2026-10-16): work out the room darkening's lamp reach at half resolution (cheaper; edges of objects a little softer). Applies immediately
 SmoothEdges = true                       # UNOFFICIAL (2026-10-15), needs a restart: smoother lamp shadow edges indoors. The shadow maps are read so each edge fades over one of their texels instead of stepping along them (the blocky look, worst with ContactHardening). Adds about 50 instructions to the 4-lamp object shaders (compiled in only when on). Off: the plain, blockier edges.
 LampSwitchMargin = 0.2               # [0.0-0.9] Only so many lamps can cast shadows at once (LightPoints); they are picked by distance. A lamp that already has a shadow keeps it until another is this much nearer (0.2 = 20%), and while it is a little behind you, so shadows stop popping on and off as you walk and turn. 0 = pick purely by distance, as before.
 FadeIn = 0.0                         # [0.0-2.0] Seconds a lamp's shadow takes to fade in when the lamp gets one, instead of popping in. 0 = at once, as before.
