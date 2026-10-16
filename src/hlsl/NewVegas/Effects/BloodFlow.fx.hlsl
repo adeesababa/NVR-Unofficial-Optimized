@@ -55,6 +55,10 @@ float4 TESR_BloodFlowDryRatio;
 float4 TESR_BloodFlowBeads;		// UNOFFICIAL 2026-10-13: x wet beads' strength (0 off), y a drops tile's size in game units	// rgb: dried over fresh colour (linear, from the settings)
 float4 TESR_BloodFlowShape;		// UNOFFICIAL 2026-10-13: xyz where NVR's camera-centred space puts the eye (the inverse view's translation);
 							// w: 1 the vertex shader reads the bounds texture (BloodFlowBoundsVS bound, the card can)
+// UNOFFICIAL 2026-10-16 (GroundFit, user: blood never clipping with the ground): x 1 the cuts that keep blood on its own surface
+// fade out softly and follow the surface's slope (0: the hard cuts as before); y the fade's least width in pixels (as Terrain
+// blending's MinPixels); w 1 (test only) pools act as if the probe never found the ground round them.
+float4 TESR_BloodFlowGround;
 float4x4 TESR_ViewProjectionTransform;
 
 // (Declared in register order: the samplers bind by the order they are declared in.)
@@ -663,13 +667,16 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 		// The pool, moved and stretched downhill (see BloodPS), on the ground's plane.
 		float4 groundHead = PathTexel(0.0, firstRow + Streams - 1.0);
 		float4 ground = PathTexel(1.0, firstRow + Streams - 1.0);
-		bool known = groundHead.y >= 5.0;
+		bool known = groundHead.y >= 5.0 && TESR_BloodFlowGround.w < 0.5;
 		float3 gN = known ? ground.xyz : float3(0.0, 0.0, 1.0);
 		slope = length(gN.xy) / max(gN.z, 0.3);
 		float reach = R * (1.45 * PoolStretch(slope) + PoolShift(slope)) + 2.0;
 		float gz = known ? ground.w : 0.0;
-		lo = float3(-reach, -reach, gz - reach * slope - 8.0 - 0.45 * reach);
-		hi = float3(reach, reach, gz + reach * slope + 5.0 + 0.25 * reach);
+		// UNOFFICIAL 2026-10-16 (GroundFit): with the ground round it not found, room for a slope up to about 30 degrees (BloodPS
+		// then follows the surface's own slope), and for the soft edge.
+		float unsure = TESR_BloodFlowGround.x > 0.5 && !known ? reach * 0.6 + 3.0 : 0.0;
+		lo = float3(-reach, -reach, gz - reach * slope - 8.0 - 0.45 * reach - unsure);
+		hi = float3(reach, reach, gz + reach * slope + 5.0 + 0.25 * reach + unsure);
 		count = 2.0;
 	}
 	else {
@@ -1015,12 +1022,13 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	p.air = 0.0;
 	p.debug = 0.0;
 	float rim = 0.0;
+	float poolShape = 0.0, poolKeep = 1.0;	// (debug view 2)
 
 	[branch] if (pool > 0.5) {
 		// The ground round the pool (from the probe): on a slope the pool moves downhill and stretches that way.
 		float4 groundHead = PathTexel(0.0, firstRow + Streams - 1.0);
 		float4 ground = PathTexel(1.0, firstRow + Streams - 1.0);
-		bool known = fresh < 0.5 && groundHead.y >= 5.0;
+		bool known = fresh < 0.5 && groundHead.y >= 5.0 && TESR_BloodFlowGround.w < 0.5;
 		float3 gN = known ? ground.xyz : float3(0.0, 0.0, 1.0);
 		float slope = length(gN.xy) / max(gN.z, 0.3);
 		float2 downhill = slope > 1e-3 ? normalize(gN.xy) : float2(1.0, 0.0);
@@ -1033,8 +1041,26 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		float fromCentre = length(shaped);
 		// On the ground near the plane the probe found (a little more leeway further out).
 		float groundZ = (known ? ground.w : 0.0) - (gN.x * pp.x + gN.y * pp.y) / max(gN.z, 0.3);
-		bool onGround = fromCentre < R * 1.45 && pp.z < groundZ + 5.0 + 0.15 * fromCentre && pp.z > groundZ - (8.0 + 0.3 * fromCentre);
-		[branch] if (onGround && radius > 0.05 && normalize(GetWorldNormalLod(uv)).z > 0.6) {
+		float3 Nw = normalize(GetWorldNormalLod(uv));
+		float keep;
+		[branch] if (TESR_BloodFlowGround.x > 0.5) {
+			// UNOFFICIAL 2026-10-16 (GroundFit, after Terrain blending's soft edge): the pool fades out over a few pixels where
+			// the surface leaves the ground instead of stopping on a hard line, and faces are judged against the ground's own
+			// slope, not straight up. The height over the ground: the probe's plane when it found the ground round the pool;
+			// else (the ring hidden, by the body, grass or the screen's edge) the surface here, its plane carried to the
+			// pool's centre: on even ground that is the same height at every pixel, whatever the slope (the old fallback, a
+			// level plane through the body's lowest bone, cut a straight line across the pool's uphill side).
+			bool sure = known;
+			float h = sure ? pp.z - groundZ : dot(pp, Nw) / max(Nw.z, 0.3);
+			float3 up = sure ? normalize(float3(gN.xy, max(gN.z, 0.3))) : float3(0.0, 0.0, 1.0);
+			float fade = max(aa * TESR_BloodFlowGround.y, 1.5);
+			keep = saturate((5.0 + 0.15 * fromCentre + fade - h) / fade) * saturate((8.0 + 0.3 * fromCentre + fade + h) / fade)
+				* saturate((dot(Nw, up) - 0.45) / 0.25);
+			groundZ = pp.z - h;		// (the hollows below read the same height)
+		}
+		else keep = (pp.z < groundZ + 5.0 + 0.15 * fromCentre && pp.z > groundZ - (8.0 + 0.3 * fromCentre) && Nw.z > 0.6) ? 1.0 : 0.0;
+		poolKeep = keep;
+		[branch] if (fromCentre < R * 1.45 && radius > 0.05 && (keep > 0.0 || TESR_BloodFlowInfo.y > 1.5)) {
 			// A main body and a lobe off one side, joined smoothly, with a ragged edge from noise fixed to the ground.
 			float angle = seed * 6.2832;
 			float2 lobeWay = float2(cos(angle), sin(angle));
@@ -1054,6 +1080,8 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 				T = Splatter(shaped / (radius * 2.2), seed, aa / (radius * 2.2)) * 1.25 - 0.1 + RaggedCore(shaped, radius * 0.55, seed)
 					- clamp(pp.z - groundZ, -radius * 0.4, radius * 0.4) * 0.72 / max(radius, 0.5);
 			float cover = Shows(T, aa * 0.9 / max(radius, 0.5));
+			poolShape = cover;
+			cover *= keep;
 			float inward = (T - 1.0 + TESR_BloodFlowFlow.z) * max(radius, 0.5) / 0.9;	// units inside its shown edge
 			rim = saturate(1.0 - inward / max(radius * 0.12, 0.8)) * cover;
 			float deep = saturate(inward / max(radius * 0.5, 0.5));
@@ -1090,6 +1118,12 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		p.cover *= 1.0 - 0.6 * splat * step(p.thick, 0.5);	// where a trail starts inside the splat, the splat shows
 	}
 
+	[branch] if (TESR_BloodFlowInfo.y > 1.5) {
+		// UNOFFICIAL 2026-10-16 debug view 2 (the cuts): where the pool's shape has blood, magenta if the ground test takes it
+		// away, orange if it only thins it (a soft edge), yellow if it shows.
+		if (poolShape > 0.5) return poolKeep < 0.05 ? float4(1, 0, 1, 0.9) : poolKeep < 0.95 ? float4(1, 0.5, 0, 0.9) : float4(1, 0.9, 0, 0.85);
+		discard;
+	}
 	if (TESR_BloodFlowInfo.y > 0.5) {
 		// Debug view. Red: trails; yellow: puddles and pools; blue: a drop at an edge; cyan: where drops land; white:
 		// falling drops; green: the rest of the area it looks at; white rings every 10 units round the item's centre.
@@ -1261,6 +1295,24 @@ technique BloodFlow
 	}
 }
 
+// UNOFFICIAL 2026-10-16 (GroundFit): how much of a splat's blood a pixel keeps, by how far its surface lies off the splat's plane
+// (normal n, through the centre): a thin slab, so blood never lands on something in front of or behind the splat. Soft (a fade
+// of at least a few pixels), and as the surface here tilts away from the plane the slab widens with the distance along it (a
+// surface at angle a to the plane lies |q| tan a off it at |q| from the centre; counted up to 60 degrees), so a splat running
+// onto a slope or round a bend is not cut on a line. GroundFit 0: the hard cut as before, at base, and none where the surface
+// faces the splat's way less than minFacing.
+float SlabKeep(float3 pp, float3 n, float3 N, float base, float aaUnits, float minFacing) {
+	float off = abs(dot(pp, n));
+	float c = dot(N, n);
+	[branch] if (TESR_BloodFlowGround.x > 0.5) {
+		float along = length(pp - n * dot(pp, n));
+		float tilt = sqrt(saturate(1.0 - c * c)) / max(c, 0.5);
+		float fade = max(aaUnits * TESR_BloodFlowGround.y, 1.5);
+		return saturate((base + along * tilt + fade - off) / fade) * saturate((c - minFacing + 0.15) / 0.25);
+	}
+	return off > base || c < minFacing ? 0.0 : 1.0;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // UNOFFICIAL 2026-10-13 (user: wet beads on the splats): over each of the game's own blood splats, glossy domed drops of blood
 // (BloodDrops.dds), laid out on the splat exactly as the game laid its decal (VSIN d, c.z: BloodFlow.cpp DecalLayout), only
@@ -1279,7 +1331,9 @@ float4 BeadsPS(PSIN IN) : COLOR0 {
 	float3 rel = toWorld(uv) * depth;
 	float3 pp = rel - IN.a.xyz;
 	float3 n = normalize(IN.b.xyz);
-	if (abs(dot(pp, n)) > IN.b.w * 0.5 + 4.0) discard;	// off the splat's surface (something in front, or behind)
+	float3 N = normalize(GetWorldNormalLod(uv));
+	float slab = SlabKeep(pp, n, N, IN.b.w * 0.5 + 4.0, max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05), -2.0);
+	if (slab <= 0.0) discard;	// off the splat's surface (something in front, or behind)
 	// The decal's own texture coordinates (DecalCover's layout), and where on the splatter atlas they are.
 	float code = floor(floor(IN.c.z + 0.5) / 4096.0);
 	float quarter = fmod(code, 5.0);
@@ -1299,12 +1353,11 @@ float4 BeadsPS(PSIN IN) : COLOR0 {
 	float tiles = max(width / max(TESR_BloodFlowBeads.y, 1.0), 1.0);
 	float4 drop = tex2Dlod(TESR_BloodDrops, float4(local * tiles, 0.0, log2(max(aa / width * tiles * 1024.0, 1.0))));
 	float wet = 1.0 - smoothstep(0.0, TESR_BloodFlowDry.w * 0.8, IN.c.x);
-	float show = saturate((wet * 1.1 - drop.a) * 6.0) * saturate(blood * 1.6 - 0.4);
+	float show = saturate((wet * 1.1 - drop.a) * 6.0) * saturate(blood * 1.6 - 0.4) * slab;
 	float h = drop.r * show;
 	if (h < 0.01) discard;
 	float2 slope = (drop.gb * 2.0 - 1.0) * show;
 	// Its surface: the wall's normal tilted along the drop's slope (texture x along u; y up the texture image = against v).
-	float3 N = normalize(GetWorldNormalLod(uv));
 	float3 T = normalize(IN.d.xyz) * (mirrored ? -1.0 : 1.0);
 	float3 B = normalize(vAxis);
 	float3 Nb = normalize(N + (T * slope.x - B * slope.y) * 1.5);
@@ -1568,7 +1621,9 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	float R = max(IN.b.w, 1.0);
 	float3 n = normalize(IN.b.xyz);
 	float3 N = normalize(GetWorldNormalLod(uv));
-	if (abs(dot(pp, n)) > R * 0.6 + 4.0 || dot(N, n) < 0.3) discard;	// off the splat's surface
+	float keep = SlabKeep(pp, n, N, R * 0.6 + 4.0, max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05), 0.3);
+	bool cutView = TESR_BloodFlowInfo.y > 1.5;
+	if (keep <= 0.0 && !cutView) discard;	// off the splat's surface
 	// The splat's plane: down the surface (+y), across it (+x).
 	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
 	float steep = length(down);
@@ -1594,6 +1649,15 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = PathTexel(0.0, slot * Streams + ai).w < -0.5 ? 1.0 : 0.0;
 	float T = SplatThickness(q, seed, grow, run, armDrip);
 	float cover = saturate(T / max(aa * 2.0, 0.02) + 0.5) * saturate(T * 4.0 + 0.6);
+	[branch] if (cutView) {
+		// UNOFFICIAL 2026-10-16 debug view 2 (the cuts): where the splat's shape has blood, red above the top of the box it had
+		// before GroundFit (its centre + radius + 6 units: arms and spray thrown up a wall were cut flat there), magenta where
+		// the slab takes it away, orange where it only thins it, yellow where it shows.
+		if (cover < 0.5) discard;
+		if (TESR_BloodFlowGround.x < 0.5 && pp.z > R + 6.0) return float4(1, 0, 0, 0.9);
+		return keep < 0.05 ? float4(1, 0, 1, 0.9) : keep < 0.95 ? float4(1, 0.5, 0, 0.9) : float4(1, 0.9, 0, 0.85);
+	}
+	cover *= keep;
 	if (cover < 0.004) discard;
 	float thick = saturate(T * 0.6);
 

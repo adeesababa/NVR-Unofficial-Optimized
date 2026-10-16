@@ -388,6 +388,12 @@ bool BloodFlowLastTint(float out[3]) {
 // the vertex shader cuts the boxes to the blood's bounds (BloodFlow.fx.hlsl, CutBox). Kept here, not in BloodFlow.h's
 // constants (a widely included header: changing it needs a clean build).
 static D3DXVECTOR4 BloodFlowShape(0.0f, 0.0f, 0.0f, 0.0f);
+// UNOFFICIAL 2026-10-16 (GroundFit, user: blood never clipping with the ground): TESR_BloodFlowGround (BloodFlow.fx.hlsl): x 1 soft
+// cuts that follow the surface's slope, y the fades' least width in pixels, w 1 (test only) pools act as if the ground round them
+// was never found. GroundFit 0: the hard cuts as before. Kept out of BloodFlow.h for the same reason as BloodFlowShape.
+static D3DXVECTOR4 BloodFlowGround(1.0f, 3.0f, 0.0f, 0.0f);
+static bool BloodFlowGroundFit = true;
+static bool BloodFlowGroundUnseen = false;
 
 void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFresh", &Constants.Fresh);
@@ -396,6 +402,7 @@ void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowBeads", &Constants.Beads);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowSplat", &Constants.Splat);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowShape", &BloodFlowShape);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowGround", &BloodFlowGround);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDry", &Constants.Dry);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowInfo", &Constants.Info);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowPool", &Constants.Pool);
@@ -433,6 +440,8 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.Splats = TheSettingManager->GetSettingI(section, "Splats") != 0;
 	Settings.CheapGather = TheSettingManager->GetSettingI(section, "CheapGather") != 0;
 	BloodFlowCheap = Settings.CheapGather;
+	BloodFlowGroundFit = TheSettingManager->GetSettingI(section, "GroundFit") != 0;
+	BloodFlowGroundUnseen = TheSettingManager->GetSettingI(section, "GroundTestUnseen") != 0;
 	Settings.Pools = TheSettingManager->GetSettingI(section, "Pools") != 0;
 	Settings.DripLength = std::clamp(TheSettingManager->GetSettingF(section, "DripLength"), 0.0f, 200.0f);
 	// UNOFFICIAL 2026-10-13 rewrite: FlowSpeed (was DripSpeed), Viscosity, BloodAmount.
@@ -856,6 +865,10 @@ void BloodFlowEffect::UpdateConstants() {
 	Constants.DryRatio.w = 0.0f;
 	Constants.Beads = D3DXVECTOR4(Settings.Beads, Settings.BeadSize, 0.0f, 0.0f);
 	Constants.Splat = D3DXVECTOR4(Settings.Splat, Settings.SplatReach, Settings.SplatSpray, Settings.SplatDrips);
+	BloodFlowGround = D3DXVECTOR4(BloodFlowGroundFit ? 1.0f : 0.0f, 3.0f, 0.0f, BloodFlowGroundUnseen ? 1.0f : 0.0f);
+	// The boxes' tops (BloodFlowBoxes.h): as tall as the shapes with GroundFit, and in debug view 2 (which shows what the old top cut).
+	BloodFlowBoxes::SplatUp() = BloodFlowGroundFit || Settings.DebugView == 2 ? 1.2f + 2.4f * Settings.SplatReach : 1.0f;
+	BloodFlowBoxes::PoolUp() = BloodFlowGroundFit ? 1.25f : 0.3f;
 	Constants.Flow = D3DXVECTOR4(Settings.FlowSpeed, Settings.Viscosity, Settings.BloodAmount, (float)fmod(Clock, 1023.0));
 }
 

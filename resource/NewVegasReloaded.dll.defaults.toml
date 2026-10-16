@@ -1289,6 +1289,8 @@ Enabled = false                        # Blood on the first-person weapon and gl
 
 [_Shaders.BloodFlow.Main]
 CheapGather = true                   # UNOFFICIAL (2026-10-16): read the game's decals and bodies once a frame, only blood decals, cached skeleton walks, blood off screen not worked out (no picture change). Off: the old way. Applies immediately
+GroundFit = true                     # UNOFFICIAL (2026-10-16): blood stays on its own surface without hard cut lines: pools fade out softly where the ground leaves them and follow a slope even when the ground round the body cannot be seen; splats and their arms and spray are no longer cut flat at the top on walls or along a line on slopes and bends. Off: the hard cuts as before. Applies immediately
+GroundTestUnseen = false             # Test only: pools act as if the ground round them was never found (to check the fallback). Applies immediately
 Splats = true                          # The game's blood splats grow streams that run down whatever they are on the way gravity pulls (straight down a wall, slantwise across a slope, round a rock), slowing as they go. A stream that reaches a ledge or the floor gathers in a small puddle; one that reaches an edge with nothing under it hangs in a drop that falls and leaves a stain where it lands. Wet while fresh, then darker and browner as it dries (thin trails first).
 Pools = true                           # A pool of blood spreads under a body after death; on a slope it slides downhill and trickles run off its low side, gathering where the ground levels out. Wet at first, drying to a dark stain. Not under robots.
 DripLength = 40.0                      # [0-120] Longest stream, in game units (about 1.4 cm each), measured along the surface. 0: no streams.
@@ -1323,7 +1325,7 @@ GibPools = 0.8                         # [0-3] A pool of its own grows under eac
 MaxDistance = 3000.0                   # [500-10000] No streams or pools further than this (game units); they fade out over the last fifth.
 MaxSplats = 48                         # [0-96] Most splats drawn at once (the nearest).
 MaxPools = 12                          # [0-32] Most pools drawn at once (the nearest).
-DebugView = 0                          # 1: what each splat and pool covers in green (white rings every 10 units round it), streams red, puddles and pools yellow, a drop at an edge blue, where drops land cyan, falling drops white.
+DebugView = 0                          # 2 (UNOFFICIAL 2026-10-16): the cuts -- where a splat's or pool's shape has blood, yellow if it shows, orange if a soft edge thins it, magenta if the test that keeps it on its own surface takes it away, red (GroundFit off) above the top of the old splat box. 1: what each splat and pool covers in green (white rings every 10 units round it), streams red, puddles and pools yellow, a drop at an edge blue, where drops land cyan, falling drops white.
 
 [_Shaders.BloodFlow.Status]
 Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.

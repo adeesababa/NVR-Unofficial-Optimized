@@ -65,13 +65,20 @@ namespace BloodFlowBoxes {
 	// of every box on screen; the vertex shader (BloodFlow.fx.hlsl, CutBox) cuts the box down to the item's real bounds
 	// (the bounds pass, just drawn), keeps the faces past the eye and projects them. The splats' triangles come first:
 	// splatTriangles gets how many (the wet beads are drawn over those only).
+	// UNOFFICIAL 2026-10-16 (GroundFit, BloodFlow.cpp): how far above a splat's centre its box reaches, in radii (+6 units). 1
+	// before: the arms and spray thrown up a wall were cut flat there; with GroundFit, as far as the shape reaches (1.2 + 2.4 x
+	// SplatReach). PoolUp: a pool's box above its centre, in radii (+5 units): 0.3 before; with GroundFit room for an unseen
+	// slope (the GPU bounds cut it back to the ground the probe found).
+	inline float& SplatUp() { static float v = 1.0f; return v; }
+	inline float& PoolUp() { static float v = 0.3f; return v; }
+
 	// How far an item's blood can reach from its centre: along the surface (reach), below (low) and above it (high).
 	inline void Extent(const Item& item, float dripLength, float maxFall, float& reach, float& low, float& high) {
 		const float r = item.Radius;
 		if (item.Pool) {
 			reach = r * 4.6f + 8.0f;					// the pool (up to 1.45 r) and trickles running off it (about 3 r more)
 			low = 8.0f + r * 2.5f;
-			high = 5.0f + 0.3f * r;
+			high = 5.0f + PoolUp() * r;
 		}
 		else if (fabsf(item.Normal.z) > 0.9f) {
 			// Thrown straight down (or up): most likely on a floor, where it stays; a slope there runs a little.
@@ -89,7 +96,7 @@ namespace BloodFlowBoxes {
 		if (!item.Pool) {
 			reach = (std::max)(reach, r * 8.0f + 4.0f);
 			low = (std::max)(low, r * 8.0f + 4.0f);
-			high = (std::max)(high, r * 1.0f + 6.0f);
+			high = (std::max)(high, r * SplatUp() + 6.0f);
 		}
 	}
 
