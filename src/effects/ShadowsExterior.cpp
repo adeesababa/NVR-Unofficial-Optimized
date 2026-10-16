@@ -723,6 +723,9 @@ bool ShadowsExteriorEffect::EnsureStaticCubeMap(int slot) {
 
 void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cubemaps) {
 	if (cascades) {
+		// UNOFFICIAL 2026-10-16 SkipWhenFaded: no skip until the new atlas holds a full draw. (Only here: this function also
+		// runs, without remaking anything, on every settings change.)
+		TheShadowManager->SunAtlasDrawn = false;
 		if (ShadowAtlasSurface) {
 			ShadowAtlasSurface->Release();
 			ShadowAtlasSurface = nullptr;
@@ -831,7 +834,6 @@ void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cub
 	// schedule would otherwise leave freshly created cascades uninitialised for several frames.
 	TheShadowManager->FrameCounter = 0;
 	TheShadowManager->ForceAllCascades = true;
-	TheShadowManager->SunAtlasDrawn = false;	// UNOFFICIAL SkipWhenFaded: no skip until the new atlas holds a full draw
 }
 
 
