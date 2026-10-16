@@ -111,9 +111,11 @@ float4 ColorGrade(float3 color)
 	float g2B = (0.0 + TESR_ColoringData.z) + TESR_ColoringValues.x;
 	float b2B = (1.0 - TESR_ColoringData.z) - TESR_ColoringValues.x;
 
-	color3.r = (color3.r * r2R + color3.g * g2R + color3.b * b2R);
-	color3.g = (color3.r * r2G + color3.g * g2G + color3.b * b2G);
-	color3.b = (color3.r * r2B + color3.g * g2B + color3.b * b2B);
+	// UNOFFICIAL 2026-10-16: the mix reads the colour before it (it overwrote red, then read the new red for green and blue).
+	float3 mixIn = color3;
+	color3.r = (mixIn.r * r2R + mixIn.g * g2R + mixIn.b * b2R);
+	color3.g = (mixIn.r * r2G + mixIn.g * g2G + mixIn.b * b2G);
+	color3.b = (mixIn.r * r2B + mixIn.g * g2B + mixIn.b * b2B);
 
 	float luminance2 = GetLuminance(color3);
 	float3 color4 = color3;
