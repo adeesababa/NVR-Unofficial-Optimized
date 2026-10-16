@@ -155,7 +155,10 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
     
     const float3 LdotR = dot(lightDir, reflectDir);
     const float3 closestPoint = reflectDir - LdotR * lightDir;
-    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + normalize(closestPoint) * radius) : reflectDir;
+    // UNOFFICIAL 2026-10-16: closestPoint is zero when the sun is exactly along the normal; normalize() of it was NaN. Elsewhere
+    // the same normalize() as before, so the result is bit for bit the old one.
+    const float3 closestDir = dot(closestPoint, closestPoint) > 1e-12f ? normalize(closestPoint) : 0.0f;
+    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + closestDir * radius) : reflectDir;
     
     const float3 halfway = normalize(eyeDir + sunDir);
     const float NdotS = max(shades(normal, sunDir), 0.00001);
@@ -185,7 +188,10 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
     
     const float3 LdotR = dot(lightDir, reflectDir);
     const float3 closestPoint = reflectDir - LdotR * lightDir;
-    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + normalize(closestPoint) * radius) : reflectDir;
+    // UNOFFICIAL 2026-10-16: closestPoint is zero when the sun is exactly along the normal; normalize() of it was NaN. Elsewhere
+    // the same normalize() as before, so the result is bit for bit the old one.
+    const float3 closestDir = dot(closestPoint, closestPoint) > 1e-12f ? normalize(closestPoint) : 0.0f;
+    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + closestDir * radius) : reflectDir;
     
     const float3 halfway = normalize(eyeDir + sunDir);
     const float NdotS = max(shades(normal, sunDir), 0.00001);
