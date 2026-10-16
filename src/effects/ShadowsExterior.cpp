@@ -1,5 +1,11 @@
 #include "ShadowsExterior.h"
 
+// UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS, technique 2; drawn by ShaderManager after the lamp
+// pass): every number the shader needs (see the constants' comments there). Kept out of ShadowsExterior.h (widely included).
+static D3DXVECTOR4 LampContact(0.0f, 40.0f, 12.0f, 0.5f), LampContactFade(25.0f, 0.05f, 3000.0f, 1.0f / 900.0f),
+	LampContactBias(0.3f, 0.002f, 0.001f, 0.2f), LampContactNoise(0.0f, 0.0f, 52.9829189f, 0.0f);
+float LampContactStrength() { return LampContact.x; }
+
 void ShadowsExteriorEffect::UpdateConstants() {
 
 	Constants.ShadowFade.x = 0; // Fade 1.0 == no shadows
@@ -381,6 +387,15 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// UNOFFICIAL EdgeFade: each lamp's lit disc (and the shadows in it) fades out over this fraction of its radius instead of
 	// ending on a hard circle where the clamped light amount drops (PointShadows.fx EdgeWindow).
 	Constants.PointShadowNear.y = (std::min)((std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "EdgeFade"), 0.0f), 0.9f);
+	// UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS).
+	const char* interiorMain = "Shaders.ShadowsInteriors.Main";
+	const float contactDistance = std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactDistance"), 200.0f, 20000.0f);
+	LampContact = D3DXVECTOR4(std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactShadows"), 0.0f, 1.0f),
+		std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactLength"), 4.0f, 200.0f),
+		std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactThickness"), 1.0f, 100.0f), 0.5f);
+	LampContactFade = D3DXVECTOR4(25.0f, 1.0f / 20.0f, contactDistance, 1.0f / (0.3f * contactDistance));	// in past the weapon over 25-45 units; out over the last 30%
+	// Interleaved gradient noise (Jimenez 2014): frac(52.98 x frac(dot(pixel, (0.06711056, 0.00583715)))), pixel = uv x screen size.
+	LampContactNoise = D3DXVECTOR4(0.06711056f * (float)(std::max)(TheRenderManager->width, (UInt32)1), 0.00583715f * (float)(std::max)(TheRenderManager->height, (UInt32)1), 52.9829189f, TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "DarkeningBlur") ? 1.0f : 0.0f);
 	Settings.Interiors.Forms.AlphaEnabled = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "AlphaEnabled");
 	Settings.Interiors.Forms.Activators = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Activators");
 	Settings.Interiors.Forms.Actors = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Actors");
@@ -495,6 +510,10 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
 	TheShaderManager->RegisterConstant("TESR_PointShadowNear", &Constants.PointShadowNear);
+	TheShaderManager->RegisterConstant("TESR_LampContact", &LampContact);
+	TheShaderManager->RegisterConstant("TESR_LampContactFade", &LampContactFade);
+	TheShaderManager->RegisterConstant("TESR_LampContactBias", &LampContactBias);
+	TheShaderManager->RegisterConstant("TESR_LampContactNoise", &LampContactNoise);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
 	TheShaderManager->RegisterConstant("TESR_ShadowViewProjTransform", (D3DXVECTOR4*)&Constants.ShadowViewProj);
 	TheShaderManager->RegisterConstant("TESR_ShadowNearCenter", &ShadowMaps[MapNear].ShadowMapCascadeCenterRadius);

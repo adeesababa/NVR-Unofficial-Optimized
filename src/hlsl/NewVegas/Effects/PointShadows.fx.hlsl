@@ -12,6 +12,12 @@ float4 TESR_PointShadowNear; // UNOFFICIAL x: NearFade, world units (0 off); y: 
 float4 TESR_SpotLightPosition;
 float4 TESR_SpotLightDirection;
 float4 TESR_SpotLightColor;
+// UNOFFICIAL 2026-10-16 lamp contact shadows ([Shaders.ShadowsInteriors.Main] Contact*; LampContactPS below):
+float4 TESR_LampContact;		// x strength (0 off), y ray length, z thickness (world units), w normal offset (units)
+float4 TESR_LampContactFade;	// x fade-in start (units from the camera, past the weapon), y 1 / its range, z fade-out end, w 1 / its range
+float4 TESR_LampContactBias;	// x depth bias, y bias per unit of depth, z normal offset per unit of depth, w least share of the lamp light the traced lamp must give (0.2)
+float4 TESR_LampContactNoise;	// xy interleaved gradient noise's factors times the screen size, z its multiplier, w 1 noise on (only
+							// with the darkening blurred: [Shaders.ShadowsInteriors.Forward] DarkeningBlur), 0 even steps
 
 
 //sampler_state removed to avoid a artifact. TODO investigate
@@ -176,6 +182,74 @@ float4 Shadow( VSOUT IN, uniform bool batch ) : COLOR0 {
 	return float4(Shadow, Shadow, Shadow, 1.0f);
 }
 
+// UNOFFICIAL 2026-10-16 lamp contact shadows (after Bend Studio's screen-space shadows, which NVR has for the sun only,
+// SunShadows.fx): the lamps' cube maps (512 px, filtered) lose the small dark lines where a prop meets the floor or a table the
+// wall. A pass of its own (technique 2, ShaderManager), drawn over the lamp mask with a multiply: Shadow() above is at the
+// ps_3_0 limit of 224 constant registers once the effect compiler has worked out its per-lamp values (preshader), so nothing
+// could be added there.
+// ContactProject undoes toWorld (Depth.hlsl): a camera-relative point -> its screen position and view depth (the view matrix's
+// rotation: columns right, up, forward, as toWorld reads them).
+float3 ContactProject(float3 r) {
+	float3 v = mul(r, (float3x3)TESR_ViewTransform);
+	return float3((v.x / v.z * TESR_ProjectionTransform[0][0]) * 0.5f + 0.5f, (v.y / v.z * TESR_ProjectionTransform[1][1]) * -0.5f + 0.5f, v.z);
+}
+
+// How open the way from this pixel toward a lamp is over the first TESR_LampContact.y units (at most half way to it; 1 open,
+// 0 blocked right at the pixel): 6 steps through the depth buffer; a step behind a surface by less than the thickness is
+// blocked. A blocker met further along shades less (1 - t), so the shadow fades out instead of ending on a line. With the
+// darkening blurred the steps start at a per-pixel offset (interleaved gradient noise, Jimenez 2014); unblurred (the default) at
+// the middle of each sixth, which would otherwise show as grain.
+float ContactOpen(float3 r0, float3 worldPos, float3 n, float3 lampWorld, float2 uv, float pixelDepth) {
+	float3 toLamp = lampWorld - worldPos;
+	float dist = length(toLamp);
+	float3 dir = toLamp / dist;		// (a lamp that lights this pixel is never at it)
+	// Facing away from the lamp (or along): its own lighting shades that side; a ray from there runs straight into the surface
+	// it starts on (seen in the Ultra-Luxe: the fountain's stem, lamps inside it, darkened all over).
+	[branch] if (dot(dir, n) < 0.1f) return 1.0f;
+	float len = min(TESR_LampContact.y, dist * 0.5f);
+	float jitter = lerp(0.5f, frac(TESR_LampContactNoise.z * frac(dot(uv, TESR_LampContactNoise.xy))), TESR_LampContactNoise.w);	// (w 0: even steps)
+	float3 start = r0 + n * (TESR_LampContact.w + pixelDepth * TESR_LampContactBias.z);
+	float occ = 0.0f;
+	[loop] for (int i = 0; i < 6; i++) {
+		float t = (i + jitter) / 6.0f;
+		float3 s = ContactProject(start + dir * (len * t));
+		[branch] if (s.z < 1.0f || any(s.xy < 0.0f) || any(s.xy > 1.0f)) break;
+		float delta = s.z - readDepthLod(s.xy);
+		occ = max(occ, (delta > TESR_LampContactBias.x + s.z * TESR_LampContactBias.y && delta < TESR_LampContact.z) ? 1.0f - t : 0.0f);
+	}
+	return 1.0f - occ;
+}
+
+// The mask's multiplier: the shadowed lamp that gives this pixel the most is traced toward (one: two cost twice as much for
+// little more); the mask drops by the share of the shadowed lamps' light here that it loses (a hole in one lamp of a saturated
+// sum would otherwise not show). Lamps weighed by distance and colour alone (cheaper than Shadow()'s amounts; the facing test is
+// in ContactOpen). Faded in past the first-person weapon and out far away.
+float4 LampContactPS(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float depth = readDepth(uv);
+	float fade = saturate((depth - TESR_LampContactFade.x) * TESR_LampContactFade.y) * saturate((TESR_LampContactFade.z - depth) * TESR_LampContactFade.w);
+	float keep = 1.0f;
+	[branch] if (fade > 0.0f) {
+		float3 camera_vector = toWorld(uv) * depth;
+		float3 world_pos = TESR_CameraPosition.xyz + camera_vector;
+		float total = 0.0f, b1 = 0.0f;
+		float3 L1 = 0.0f;
+		[unroll] for (int i = 0; i < 11; i++) {
+			float4 lp = TESR_ShadowLightPosition[i];
+			float3 lightDir = lp.xyz - world_pos;
+			float s2 = saturate(dot(lightDir, lightDir) / max(lp.w * lp.w, 1.0f));
+			float a = lp.w > 0.0f ? (1.0f - s2) * (1.0f - s2) * luma(TESR_LightColor[i].rgb) * TESR_LightColor[i].w : 0.0f;
+			total += a;
+			if (a > b1) { b1 = a; L1 = lp.xyz; }
+		}
+		[branch] if (b1 > TESR_LampContactBias.w * total && b1 > 0.0f) {
+			float blocked = b1 * (1.0f - ContactOpen(camera_vector, world_pos, GetWorldNormal(uv), L1, uv, depth));
+			keep = 1.0f - TESR_LampContact.x * fade * saturate(blocked / total);
+		}
+	}
+	return float4(keep, keep, keep, 1.0f);
+}
+
 technique MergedPointShadows {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
@@ -194,5 +268,17 @@ technique AddShadowedLamps {
 		BlendOp = ADD;
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 Shadow(true);
+	}
+}
+
+// UNOFFICIAL 2026-10-16 lamp contact shadows (LampContactPS): the lamp mask multiplied by the contact term.
+technique LampContact {
+	pass {
+		AlphaBlendEnable = true;
+		SrcBlend = ZERO;
+		DestBlend = SRCCOLOR;
+		BlendOp = ADD;
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 LampContactPS();
 	}
 }

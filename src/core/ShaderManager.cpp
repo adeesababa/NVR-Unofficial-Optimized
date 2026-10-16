@@ -1027,6 +1027,8 @@ bool ShaderManager::ShouldRenderShadowMaps() {
 /*
 * Renders a given effect to an arbitrary render target
 */
+float LampContactStrength();	// UNOFFICIAL 2026-10-16 (effects\ShadowsExterior.cpp)
+
 void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	Device->SetRenderTarget(0, RenderTarget);
@@ -1119,6 +1121,18 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
 			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;
+		}
+		// UNOFFICIAL 2026-10-16 lamp contact shadows ([Shaders.ShadowsInteriors.Main] ContactShadows): PointShadows.fx technique 2
+		// (LampContact) multiplies the lamp mask just written by the contact term. Indoors; only with that technique there (a
+		// custom PointShadows.fx without it draws nothing more).
+		if (!GameState.isExterior && LampContactStrength() > 0.0f) {
+			static EffectRecord::CachedHandle contactCache;
+			D3DXHANDLE contactTechnique = Effects.PointShadows->TechniqueHandle(contactCache, "LampContact");
+			if (contactTechnique && Effects.PointShadows->Effect->GetTechnique(2) == contactTechnique) {
+				static GpuTimer lampContactTimer("Lamp contact shadows");
+				GpuProfileScope gpu(lampContactTimer, Device);
+				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, false, 2);
+			}
 		}
 		if (GameState.isExterior) {
 			GpuProfileScope gpu(sunContactTimer, Device);
