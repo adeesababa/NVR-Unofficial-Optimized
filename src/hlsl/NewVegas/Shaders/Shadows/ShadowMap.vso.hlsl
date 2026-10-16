@@ -1,5 +1,12 @@
 
 #include "../includes/Speedtree.hlsl"
+// UNOFFICIAL 2026-10-16 cloth wind (../includes/ClothWind.hlsl): cloth's shadow moves with it (position only).
+#ifndef CLOTH_WIND_ON
+    #define CLOTH_WIND_ON 0
+#endif
+#if CLOTH_WIND_ON
+    #include "../includes/ClothWind.hlsl"
+#endif
 
 row_major float4x4 TESR_ShadowWorldTransform : register(c0);
 row_major float4x4 TESR_ShadowViewProjTransform : register(c4);
@@ -25,6 +32,9 @@ struct VS_INPUT {
     float4 texcoord_1 : TEXCOORD1;  // Terrain LOD, no idea what it represents.
     float4 blendweight : BLENDWEIGHT;
     float4 blendindexes : BLENDINDICES;
+#if CLOTH_WIND_ON
+    float4 color : COLOR0;	// cloth wind mask (red)
+#endif
 };
 
 struct VS_OUTPUT {
@@ -84,6 +94,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
+#if CLOTH_WIND_ON
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, IN.color);	// UNOFFICIAL cloth wind (normal and skinned geometry)
+#endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);
 	

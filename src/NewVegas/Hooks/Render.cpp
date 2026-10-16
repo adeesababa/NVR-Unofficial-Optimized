@@ -17,6 +17,7 @@
 #include "../../core/LampScissor.h"
 #include "../../core/LampPassTest.h"
 #include "../../core/PassSums.h"
+#include "../../core/ClothWind.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
 
@@ -499,6 +500,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: HiddenObjectCulling
 	LampScissor::BeginFrame();	// UNOFFICIAL: LampScissor
 	PassSums::BeginFrame(TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums"));	// UNOFFICIAL ExactPassSums
+	ClothWind::BeginFrame(TheShaderManager->ShaderConst.GameTime.x / 1000.0, Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL cloth wind
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();	// UNOFFICIAL, diagnostic: LampPassTestSkip
 #endif
@@ -1833,6 +1835,9 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting vertex shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	// UNOFFICIAL cloth wind: which objects drew with a vanilla vertex shader (they must not get cloth: see ClothWind.h SAFETY)
+	ClothWind::NoteShaders(Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
+		ClothWind::CapableName(VertexShader->Name));
 	if (PixelShader) {
 		PixelShader->SetupShader(ForcePixelConstants ? nullptr : PixelShader2);
 		ForcePixelConstants = false;
@@ -2014,6 +2019,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL cloth wind
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
@@ -2038,6 +2044,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL cloth wind
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules

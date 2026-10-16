@@ -764,6 +764,25 @@ Occlusion = 1.0                      # [0.0-1.0] How much the maps' ambient occl
 DebugView = 0                        # [0-4] 1: the maps' roughness in grey; 2: metal; 3: occlusion; 4: objects that have a map in green, others dim grey. 0: normal picture.
 LogMatches = false                   # Writes each texture to the log the first time it is drawn, with its map or "none" ("[Rmaos] <texture> -> <file>"): which textures a place uses.
 
+[_Shaders.Cloth.Main]
+Enabled = false                      # UNOFFICIAL (2026-10-16): cloth (capes, dusters, flags, banners, curtains) moves in the wind, done in the vertex shader (no physics). Turning it on or off needs a restart; the values below apply immediately
+Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent"   # Textures whose path holds one of these words are cloth
+MaskMode = 2                         # 0: the mesh's vertex colour RED says how loose each part is (1 loose ends, 0 pinned) -- for meshes authored with such a mask; 1: the whole mesh moves; 2: by height, pinned at the top (works with unauthored meshes)
+HeightTop = 95.0                     # Mask 2 on worn clothing: where it is pinned (units above the actor's feet; ~waist)
+HeightBottom = 25.0                  # Mask 2 on worn clothing: where it is loosest
+UseGameWind = true                   # Take direction and strength from the weather's wind (the values below still scale it)
+Interiors = false                    # Cloth moves indoors too (no wind indoors, so off)
+WindDirX = 1.0                       # Wind direction (world, used when UseGameWind is off)
+WindDirY = 0.0
+WindDirZ = 0.0
+WindSpeed = 220.0                    # How fast the billow travels along the wind (units per second)
+WindIntensity = 6.0                  # How far loose cloth moves (units; 6 is about 9 cm)
+Wavelength = 260.0                   # Length of one billow (units)
+FlutterSpeed = 3.0                   # High-frequency flutter (cycles per second)
+FlutterAmount = 0.35                 # Flutter strength (0-1)
+RippleAmount = 0.5                   # Billow out of the cloth's plane (0-1)
+RippleScale = 0.012                  # Size of the small ripples (cycles per unit)
+
 [_Shaders.PBR.Linear]
 ExactPassSums = 0                    # UNOFFICIAL TEST (2026-10-16): objects lit in several passes add them up in linear light (the extra lamp passes and the highlight passes were each added in the stored curve: up to 3.7x too bright indoors). 0 off, 1 highlights, 2 lamps, 3 both. Applies immediately
 Enabled = true                       # UNOFFICIAL: linear lighting on objects and the ground. The game adds light up in gamma space, so lit sides drop off too fast into shade, two lamps add up too dark and coloured light tints too little. On, colours are decoded to linear, lit, and encoded back: softer, fuller light falloff and truer colour mixing. Changes the look (brighter mid-tones and ambient), so the exposure and ambient may want retuning. Switching it on or off needs a restart (off, the shaders are exactly as before and cost nothing).

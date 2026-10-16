@@ -1,4 +1,5 @@
 #include "RenderPass.h"
+#include "ClothWind.h"
 #include "ShadowBoneUpload.h"
 
 
@@ -41,6 +42,7 @@ void RenderPass::RenderAccum() {
 		UpdateConstants(Geo);
 		PixelShader->SetCT();
 		VertexShader->SetCT();
+		ClothWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL cloth wind: the cloth's shadow moves with it
 
 		RenderGeometry(Geo);
 	}

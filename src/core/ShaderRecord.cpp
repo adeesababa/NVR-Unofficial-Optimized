@@ -178,6 +178,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-13 blood on the first-person weapon and gloves (Includes/HandBlood.hlsl, HandBlood.cpp): compiled in only
 	// when on at startup, like TERRAIN_BLEND (the per-draw switch alone cost every lit object 2-5 %).
 	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
+	// UNOFFICIAL 2026-10-16 cloth wind (Includes/ClothWind.hlsl, core/ClothWind.h): the vertex shaders get it only when on at startup.
+	AppendDefine("CLOTH_WIND_ON", TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") ? "1" : "0");
 
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
