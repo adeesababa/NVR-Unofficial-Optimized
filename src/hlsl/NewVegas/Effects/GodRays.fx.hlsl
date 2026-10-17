@@ -214,3 +214,111 @@ technique
 		Pixelshader = compile ps_3_0 Combine();
 	}
 }
+
+float4 NVR_GodRaysLayout;
+sampler2D NVR_GodRaysBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+VSOUT HalfVS(VSIN IN) {
+	VSOUT OUT = FrameVS(IN);
+	OUT.UVCoord += 0.5 * (NVR_GodRaysLayout.zw - TESR_ReciprocalResolution.xy);
+	return OUT;
+}
+
+float3 reconstructPositionFromDepth(float2 uv, float linearDepth01)
+{
+	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, projectedDepthFromLinear(linearDepth01), 1.0f), TESR_InvProjectionTransform);
+	viewSpace /= viewSpace.w;
+	return viewSpace.xyz;
+}
+
+float4 DedicatedSkyMask(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+
+	float rawDepth = tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x;
+	float depth = ((rawDepth * farZ) / farZ) > 0.9;
+	float horizon = smoothstep(0, 0.01, sunHeight);
+	[branch] if (depth * horizon == 0.0f) return float4(0.0f, 0.0f, 0.0f, 1.0f);
+
+	float sunset = pows(sunHeight, 8);
+	float3 sunColor = linearize(TESR_SunColor).rgb + lerp(linearize(TESR_SunsetColor.rgb), 0, sunset);
+	float glarePower = lerp(0.1, 8.0, sunset);
+
+	float3 sunGlare = pows(dot(TESR_ViewSpaceLightDir.xyz, normalize(reconstructPositionFromDepth(uv, rawDepth))), 180) * glarePower;
+	float3 color = linearize(tex2Dlod(TESR_RenderedBuffer, float4(uv, 0.0f, 0.0f))).rgb;
+	color = (color + sunGlare * sunColor) * depth * horizon;
+
+	return float4(color, 1.0f);
+}
+
+float4 DedicatedLightMask(VSOUT IN) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float2 texel = NVR_GodRaysLayout.zw;
+	float3 color = tex2D(NVR_GodRaysBuffer, uv).rgb;
+	color += tex2D(NVR_GodRaysBuffer, uv + float2(-1, -1) * texel).rgb;
+	color += tex2D(NVR_GodRaysBuffer, uv + float2(-1, 1) * texel).rgb;
+	color += tex2D(NVR_GodRaysBuffer, uv + float2(1, -1) * texel).rgb;
+	color += tex2D(NVR_GodRaysBuffer, uv + float2(1, 1) * texel).rgb;
+	color /= 5;
+
+	float treshold = lerp(2.0, 0.0, pow(abs(sunHeight), 8));
+	float bloom = smoothstep(treshold, treshold + lumTreshold * 15, luma(color));
+	color = saturate(bloom * color * 100 * intensity);
+
+	return float4(color.rgb, 1.0f);
+}
+
+float4 DedicatedRadialBlur(VSOUT IN, uniform float step) : COLOR0 {
+	float2 uv = IN.UVCoord - 0.5 * TESR_ReciprocalResolution.xy;
+
+	float2 sunPos = projectPosition(TESR_ViewSpaceLightDir.xyz * farZ).xy;
+	float2 blurDirection = (sunPos.xy - uv) * float2(1.0f, raspect);
+	float distance = length(blurDirection);
+	float2 dir = blurDirection / max(distance, 0.000001f);
+	float stepSize = step * stepLengthMult;
+
+	float2 samplePos = uv;
+	float4 color = float4(0, 0, 0, 1);
+	float total = 1;
+	for (float i=0; i < samples; i++){
+		float sampleDistance = stepSize * i;
+		samplePos = uv + (dir * sampleDistance / float2(1, raspect));
+		[branch] if (sampleDistance <= distance && samplePos.x > 0 && samplePos.y > 0 && samplePos.x < 1 && samplePos.y < 1) {
+			color += tex2Dlod(NVR_GodRaysBuffer, float4(samplePos, 0, 0));
+			total += 1;
+		}
+	}
+	color /= total;
+
+	return float4(color.rgb, 1);
+}
+
+float4 DedicatedCombine(VSOUT IN) : COLOR0
+{
+	float4 color = linearize(tex2D(TESR_RenderedBuffer, IN.UVCoord));
+	float4 rays = tex2D(NVR_GodRaysBuffer, IN.UVCoord);
+
+	float3 sunColor = GetSunColor(shade(TESR_SunDirection.xyz, blue.xyz), 1, TESR_SunAmount.x, TESR_SunColor.rgb, TESR_SunsetColor.rgb);
+	float3 godRayColor = linearize(TESR_GodRaysRayColor).rgb;
+
+	float3 eyeDir = normalize(reconstructPosition(IN.UVCoord));
+	float heightAttenuation = TESR_GodRaysData.w?lerp(0.2, 4.0, pows(sunHeight, 4)):1.0;
+	float glareAttenuation = 1.0;
+	float attenuation = pow(compress(shade(TESR_ViewSpaceLightDir.xyz, eyeDir)), 2.5) * glareAttenuation * heightAttenuation * (sunHeight < 1);
+
+	rays.rgb *= multiplier * lerp(sunColor, godRayColor, TESR_GodRaysRayColor.w);
+	rays.rgb *= attenuation;
+
+	color += max(rays, 0) * 5 * color + max(rays, 0) * 0.2;
+	color = delinearize(color);
+	return float4(color.rgb, 1);
+}
+
+technique DedicatedGodRays
+{
+	pass SkyMask { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedSkyMask(); }
+	pass LightMask { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedLightMask(); }
+	pass Blur1 { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedRadialBlur(stepLength); }
+	pass Blur2 { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedRadialBlur(stepLength * stepLength); }
+	pass Blur3 { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedRadialBlur(stepLength * stepLength * stepLength); }
+	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
+}

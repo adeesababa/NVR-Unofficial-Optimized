@@ -18,5 +18,6 @@ public:
 	bool						LoadTexture(TextureRecordType Type, const char* TexturePath);
 
 	IDirect3DBaseTexture9*		Texture;
+	IDirect3DBaseTexture9**		TextureRef = nullptr;
 	DWORD						SamplerStates[SamplerStatesMax];
 };

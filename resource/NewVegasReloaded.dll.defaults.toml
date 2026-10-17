@@ -56,6 +56,17 @@ ReplaceIntro = false        # Controls rendering of the main menu custom video.
 ScreenshotKey = 87          # Keycode for custom screenshot hotkey (removes HUD and saves as jpg).
 HDRScreenshot = false       # Save screenshots in fbx (use with DXVK HDR)
 
+[_Main.Main.Performance]
+FrameChain = true           # Same picture, faster: effects hand the image to the next effect without copying the whole frame after every pass. false = the original copies.
+ChainUsesGameTexture = true # Same picture: the game's own HDR image is one of the two buffers the effects alternate between (saves a full-frame copy). false = two separate buffers.
+SlimDepthBuffer = true      # Same picture up to rounding: the effects' depth buffer keeps one 32-bit value per pixel instead of two (the second is recomputed), halving depth reads. Needs a restart.
+DedicatedAO = true          # Same picture up to rounding: ambient occlusion at full resolution as before, but in its own small buffers, with its two sampling passes done in one; the image is not copied around it.
+CompositeFog = true         # Same picture up to rounding: when nothing renders in between, the sun-shadow blend and the AO blend are done inside the fog pass instead of two extra full-screen passes (needs FrameChain and DedicatedAO).
+MergedPointShadows = true   # Same picture up to rounding: the shadows of all twelve lamps are worked out in one full-screen pass instead of two.
+CubeMapFaceCulling = true   # Same picture: when drawing a lamp's shadow map, objects that cannot reach a side of it are skipped for that side.
+SkipUnusedCubeMap = true    # Same picture: the 12th lamp's shadow map is never used by the shaders, so it is not drawn.
+DedicatedGodRays = true     # Same picture: god rays work in their own half-resolution buffers (the resolution they always used) instead of a corner of full-size ones, without the copies. false = the original path.
+
 [_Main.Main.Precipitations]
 RemovePrecipitations = false   # Disables vanilla rain and other precipitations.
 

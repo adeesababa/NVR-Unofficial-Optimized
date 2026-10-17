@@ -208,6 +208,8 @@
     <ClInclude Include="..\src\core\ShaderManager.h" />
     <ClInclude Include="..\src\core\ShaderRecord.h" />
     <ClInclude Include="..\src\core\ShadowManager.h" />
+    <ClInclude Include="..\src\core\ShadowFaceCull.h" />
+    <ClInclude Include="..\src\core\ShadowBoneUpload.h" />
     <ClInclude Include="..\src\core\TextureManager.h" />
     <ClInclude Include="..\src\core\TextureRecord.h" />
     <ClInclude Include="..\src\effects\AmbientOcclusion.h" />

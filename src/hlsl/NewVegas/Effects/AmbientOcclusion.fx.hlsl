@@ -170,7 +170,7 @@ float4 NormalBlurRChannel(VSOUT IN, uniform float2 OffsetMask, uniform float blu
 	float WeightSum = 0.114725602f;
 	float4 color1 = tex2D(TESR_RenderedBuffer, IN.UVCoord) * WeightSum;
 	float3 normal = GetNormal(IN.UVCoord);
-	float depth = tex2D(TESR_DepthBuffer, IN.UVCoord).y;
+	float depth = projectedDepthFromLinear(tex2D(TESR_DepthBuffer, IN.UVCoord).x);
 	
     if (invertedDepth) {
         depth = 1 - depth;
@@ -240,4 +240,134 @@ technique
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 Combine();
 	}
+}
+
+
+sampler2D NVR_AOBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+float SSAOKernelDarkness(float2 uv, float3 origin, float3 normal, float3x3 tbn, float uRadius, float bias, uniform float2 OffsetMask)
+{
+	float occlusion = 0.0;
+	[unroll]
+	for (int i = 0; i < kernelSize; ++i) {
+		float3 rand = random(uv + i * TESR_ReciprocalResolution.x);
+		float3 sampleVector = float3 (expand(rand.xy), rand.z) * float3(OffsetMask, 1);
+		sampleVector = mul(normalize(sampleVector), tbn);
+
+		sampleVector *= random(uv * i/2);
+		float scale = 1 + float(i) / float(kernelSize);
+		scale = lerp(bias, 1.0f, scale * scale);
+		sampleVector *= scale;
+
+		sampleVector *= dot(normal, sampleVector) < 0.0 ? -1.0 : 1.0;
+		float3 samplePoint = origin + sampleVector * uRadius;
+
+		float3 screenSpaceSample = projectPosition (samplePoint);
+		float sampleDepth = readDepth(screenSpaceSample.xy);
+		float actualDepth = samplePoint.z;
+
+		float distance = abs(actualDepth - sampleDepth);
+		float rangeCheck = distance < uRadius ? 1.0 : 0.0;
+		float influence = (sampleDepth < actualDepth ? 1.0 : 0.0 ) * rangeCheck;
+
+		influence *= lerp(1.0 - distance * distance/(uRadius * uRadius), 1.0 - distance /uRadius, i < kernelSize / 4);
+		occlusion += influence;
+	}
+
+	occlusion = 1.0 - occlusion/kernelSize * AOstrength;
+
+	float fogColor = luma(TESR_FogColor.rgb);
+	float darkness = clamp(lerp(occlusion, fogColor, fogCoeff(origin.z)), occlusion, 1.0);
+
+	return lerp(darkness, 1.0, saturate(invlerp(startFade, endFade, origin.z)));
+}
+
+float4 DedicatedSSAO(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord.xy;
+
+	float uRadius = abs(AOrange);
+	float bias = saturate(AOangleBias);
+
+	float3 origin = reconstructPosition(uv);
+	if (origin.z > endFade) return 1.0;
+
+	float3 normal = GetNormal(uv);
+
+	float angle = -random(uv).x / 2 * PI;
+	float3 kernelRotation = float3( -sin(angle), cos(angle), 0);
+	float3 tangent = normalize(kernelRotation - normal * dot(kernelRotation, normal));
+	float3 bitangent = cross(normal, tangent);
+	float3x3 tbn = float3x3(tangent, bitangent, normal);
+
+	float darkness = SSAOKernelDarkness(uv, origin, normal, tbn, uRadius, bias, io.xy);
+	darkness = SSAOKernelDarkness(uv, origin, normal, tbn, uRadius, bias, io.yx) * darkness;
+
+	return float2(darkness, 1.0).xxxy;
+}
+
+float4 DedicatedBlurR(VSOUT IN, uniform float2 OffsetMask, uniform float blurRadius, uniform float depthDrop, uniform float endFade) : COLOR0
+{
+	float4 center = tex2Dlod(NVR_AOBuffer, float4(IN.UVCoord, 0, 0));
+	float depth1 = readDepthLod(IN.UVCoord);
+	[branch] if (endFade - depth1 < 0) return center;
+
+	float WeightSum = 0.114725602f;
+	float4 color1 = center * WeightSum;
+	float3 normal = tex2Dlod(TESR_NormalsBuffer, float4(IN.UVCoord, 0, 0)).xyz * 2 - 1;
+	float depth = projectedDepthFromLinear(tex2Dlod(TESR_DepthBuffer, float4(IN.UVCoord, 0, 0)).x);
+
+    if (invertedDepth) {
+        depth = 1 - depth;
+    }
+
+	float normalCoeff = (0.5 + 2 * compress(dot(normal, float3(0, 0, 1))));
+
+    for (int i = 0; i < cKernelSize; i++)
+    {
+		float2 uvOff = (BlurOffsets[i] * OffsetMask) * blurRadius/depth;
+		float4 color2 = tex2Dlod(NVR_AOBuffer, float4(IN.UVCoord + uvOff, 0, 0)).r;
+		float depth2 = readDepthLod(IN.UVCoord + uvOff);
+
+		float diff = abs(depth1 - depth2);
+
+		int useForBlur = (diff <= depthDrop * normalCoeff);
+		color1.r += BlurWeights[i] * color2.r * useForBlur;
+		WeightSum += BlurWeights[i] * useForBlur;
+    }
+
+	color1.r /= WeightSum;
+    return float4(color1.rgb, 1);
+}
+
+float4 CombineAO(float3 color, float aoTerm)
+{
+	color = pows(color,2.2);
+	float ao = lerp(AOclamp, 1.0, aoTerm);
+
+	float luminance = luma(color);
+	float lt = luminance - AOlumThreshold;
+	luminance = saturate(lt * 3.0);
+	ao = lerp(ao, 1.0, luminance);
+	color *= ao;
+
+    #if viewao
+		return float4(ao, ao, ao, 1.0f);
+	#endif
+
+	color.rgb = pows(color.rgb,1.0/2.2);
+	return float4(color.rgb, 1.0f);
+}
+
+float4 DedicatedCombine(VSOUT IN) : COLOR0
+{
+	return CombineAO(tex2D(TESR_RenderedBuffer, IN.UVCoord).rgb, tex2D(NVR_AOBuffer, IN.UVCoord).r);
+}
+
+technique DedicatedAO
+{
+	pass Estimate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedSSAO(); }
+	pass BlurH { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedBlurR(io.xy, blurRadius, blurDrop, endFade); }
+	pass BlurV { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedBlurR(io.yx, blurRadius, blurDrop, endFade); }
+	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
 }

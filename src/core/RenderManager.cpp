@@ -269,6 +269,17 @@ bool getDXVKPresent() {
 	return false;
 }
 
+const char* RenderManager::D3D9RuntimeDescription() {
+	static char text[MAX_PATH + 64] = {};
+	if (!text[0]) {
+		char path[MAX_PATH] = {};
+		HMODULE module = GetModuleHandleA("d3d9.dll");
+		if (module) GetModuleFileNameA(module, path, MAX_PATH);
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%s (%s)", getDXVKPresent() ? "DXVK" : "system Direct3D 9 or another wrapper", path[0] ? path : "path unknown");
+	}
+	return text;
+}
+
 void RenderManager::Initialize() {
 
 	IDirect3D9* D3D = NULL;
@@ -283,17 +294,22 @@ void RenderManager::Initialize() {
 	device->GetDirect3D(&D3D);
 	D3D->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &currentDisplayMode);
 	RESZ = D3D->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, currentDisplayMode.Format, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE, (D3DFORMAT)MAKEFOURCC('R','E','S','Z')) == D3D_OK;
+	D3DADAPTER_IDENTIFIER9 adapter = {};
+	if (SUCCEEDED(D3D->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapter)))
+		Logger::Log("Graphics adapter: %s (vendor %04lX, device %04lX)", adapter.Description, adapter.VendorId, adapter.DeviceId);
+	D3D->Release();
 	DXVK = false;
 
 	if (RESZ) {
-		Logger::Log("AMD/Intel detected: RESZ supported.");
 		DXVK = getDXVKPresent();
+		Logger::Log("Depth resolve: RESZ (%s).", DXVK ? "DXVK, any GPU brand" : "AMD/Intel driver");
 		if (DXVK) Logger::Log("DXVK found");
 	}
 	else if (NvAPI_Initialize() == NVAPI_OK)
-		Logger::Log("NVIDIA detected: NVAPI supported.");
+		Logger::Log("Depth resolve: NVAPI (NVIDIA driver).");
 	else
 		Logger::Log("ERROR: Cannot initialize the render manager. Graphics device not supported.");
+	Logger::Log("D3D9 runtime: %s", D3D9RuntimeDescription());
 	if (TheSettingManager->SettingsMain.Main.AnisotropicFilter >= 2) device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, TheSettingManager->SettingsMain.Main.AnisotropicFilter);
 	BackBuffer = CreateHDRRenderTarget();
 }
@@ -347,6 +363,9 @@ void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {
 		
 		if (pCurrTX) pCurrTX->Release();
 		if (pCurrVX) pCurrVX->Release();
+		if (pCurrVS) pCurrVS->Release();
+		if (pCurrPS) pCurrPS->Release();
+		if (pCurrDecl) pCurrDecl->Release();
 	}
 	else {
 		if (!TheTextureManager->DepthSurface) {

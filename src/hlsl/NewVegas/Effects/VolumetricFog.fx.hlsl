@@ -21,10 +21,19 @@ float4 TESR_VolumetricFogSimple; // Simple Fog
 float4 TESR_VolumetricFogBlend; // Blend factor for each Fog
 float4 TESR_VolumetricFogHeight; // Height of each Fog
 float4 TESR_VolumetricFogData; // General shader settings
+float4 TESR_WaterSettings;
+float4 TESR_ShadowData;
+float4 TESR_ShadowFade;
+float4 TESR_AmbientOcclusionAOData;
+float4 TESR_AmbientOcclusionData;
+float4 NVR_CompositeFlags;
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_RenderedBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_PointShadowBuffer : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_NormalsBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CompositeAO : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 /*Height-based fog settings*/
 static const float FOG_GROUND =	-10000;
@@ -72,6 +81,7 @@ static const float SimpleFogBlend = TESR_VolumetricFogBlend.w;
 #include "Includes/Depth.hlsl"
 #include "Includes/Helpers.hlsl"
 #include "Includes/Sky.hlsl"
+#include "Includes/Normals.hlsl"
 
 
 struct VSOUT
@@ -246,5 +256,165 @@ technique
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader  = compile ps_3_0 VolumetricFog();
+	}
+}
+
+
+float4 CompositeSunShadow(float2 uv, float4 color)
+{
+	[branch] if (TESR_WaterSettings.z == 1) {
+		float depth = readDepthLod(uv);
+		float3 camera_vector = toWorld(uv) * depth;
+		float4 world_pos = float4(TESR_CameraPosition.xyz + camera_vector, 1.0f);
+		float3 world_normal = GetWorldNormalLod(uv);
+		if (world_pos.z < (TESR_WaterSettings.x + 2) && world_pos.z > (TESR_WaterSettings.x - 2) && dot(world_normal, float3(0, 0, -1)) > 0.999) return color;
+	}
+
+	float DARKNESS = max(0.0,1-TESR_ShadowData.y);
+	float2 Shadow = tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0, 0)).rg;
+	Shadow.r = lerp(TESR_ShadowFade.x, 1.0f, Shadow.r);
+
+	float ambient = lerp(1, luma(TESR_SunAmbient), DARKNESS * TESR_ShadowFade.z);
+	Shadow.r = lerp(0, ambient, Shadow.r);
+	Shadow.r += Shadow.g;
+
+	Shadow.r = lerp(DARKNESS, 1.0, Shadow.r);
+
+	Shadow.r = saturate(Shadow.r);
+
+    color.rgb = pows(color.rgb, 2.2);
+    float4 skyColor = float4(pows(TESR_SkyColor.rgb, 2.2),TESR_SkyColor.w);
+	float4 colorShadow = luma(color.rgb) * Shadow.r * skyColor;
+	colorShadow.rgb = lerp(colorShadow, color * Shadow.r, saturate(Shadow.r + 0.5)).rgb;
+    colorShadow.rgb = pows(max(0.0,colorShadow.rgb), 1.0/2.2);
+	return float4(colorShadow.rgb, 1.0);
+}
+
+float4 CompositeAO(float4 inputColor, float aoTerm)
+{
+	float AOclamp = TESR_AmbientOcclusionAOData.z;
+	float AOlumThreshold = TESR_AmbientOcclusionData.y;
+	float3 color = inputColor.rgb;
+	color = pows(color,2.2);
+	float ao = lerp(AOclamp, 1.0, aoTerm);
+
+	float luminance = luma(color);
+	float lt = luminance - AOlumThreshold;
+	luminance = saturate(lt * 3.0);
+	ao = lerp(ao, 1.0, luminance);
+	color *= ao;
+
+	color.rgb = pows(color.rgb,1.0/2.2);
+	return float4(color.rgb, 1.0f);
+}
+
+float getSkyFromColor(float2 uv, float4 color) {
+
+	float distance = 0.5 * TESR_ReciprocalResolution.xy;
+	distance *= 1;
+
+	float3 coeffs = float3(float2(1, -1) * distance, 0.9961);
+    float depth = readDepth(uv) / farZ >= coeffs.z;
+    float depth1 = readDepth(uv + coeffs.xx) / farZ >= coeffs.z;
+    float depth2 = readDepth(uv + coeffs.xy) / farZ >= coeffs.z;
+    float depth3 = readDepth(uv + coeffs.yx) / farZ >= coeffs.z;
+    float depth4 = readDepth(uv + coeffs.yy) / farZ >= coeffs.z;
+
+	float total = (depth || depth1 || depth2 || depth3 || depth4) * luma(color);
+
+	return saturate(total);
+}
+
+
+float4 VolumetricFogOnColor(float2 uv, float4 inputColor) 
+{
+	float4 color = linearize(inputColor);
+	float4 pureFogColor = linearize(TESR_FogColor);
+
+    float depth = readDepth(uv);
+    float isDayTime = smoothstep(0.4, 0.8, TESR_SunAmount.x);
+    float isDayTimeFog = smoothstep(0.1, 0.6, TESR_SunAmount.x);
+	float SunsetFog = sin(TESR_SunAmount.x * PI) * 0.001 * isExterior;
+
+	float3 eyeVector = toWorld(uv);
+	float3 eyeDirection = normalize(eyeVector);
+	eyeVector *= depth;
+	float3 worldPos = eyeVector + TESR_CameraPosition.xyz;
+    float pointHeight = worldPos.z;
+	
+	float normalizedDepth = length(eyeVector) / farZ;
+	float fogPower = lerp(1, FogPower, saturate(WeatherImpact)) / lerp(HeightFogRolloff, 1/FogNight, (1 - isDayTimeFog) * isExterior);
+	float fogDepth = pows(normalizedDepth, fogPower);
+	fogDepth = fogDepth * farZ / (HeightFogDist * lerp(0.005, 1, isExterior));
+
+	float strength = pows((saturate(1 - farFog/farZ) + saturate(1 - nearFog/farZ)) / 2, 2) / (FogPower + 1);
+	strength = BaseFogStrength + max(WeatherImpact, 0) * strength + SunsetFog;
+	float heightFade = exp( -pointHeight / (80000 * SimpleFogHeight));
+   
+	float isSky, distantFog, distantHeightFade = 0.0; 
+	float4 skyColor = pureFogColor;
+	float inScattering = Inscattering;
+	float extinction = Extinction;
+	float4 sun = black;
+	float4 finalColor = color;
+
+	if (isExterior){
+		float3 up = blue.xyz;
+		float sunHeight = shade(TESR_SunPosition.xyz, up);
+		float sunDir = dot(eyeDirection, TESR_SunPosition.xyz);
+		float sunInfluence = pows(compress(sunDir), SUNINFLUENCE);
+		float4 sunColor = float4(GetSunColor(sunHeight, 1, TESR_SunAmount.x, TESR_SunDiskColor.rgb, TESR_SunsetColor.rgb), 1);
+		sunColor *= isDayTime * isExterior;
+
+		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+
+		float sunStrength = SunGlare / (1 + 2 * strength);
+		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
+
+		float sunScattering = pows(compress(sunDir), 2 + sunStrength);
+		sunScattering *= pow(1 - sunHeight, 2) * isDayTimeFog * SunGlare;
+		sun = sunColor * sunScattering * SunPower * 100; 
+
+		isSky = getSkyFromColor(uv, color);
+
+		distantFog = pows(smoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
+		distantHeightFade = (DistantFogHeight == 0) ? (!isSky) : exp( -pointHeight / (80000 * DistantFogHeight));
+
+		isSky = 0;
+		inScattering = inScattering * lerp(1, 0.5, isSky) + SunsetFog;
+		extinction *= (!isSky) * (1 - distantFog * isDayTimeFog);
+	}
+
+	float4 simpleFogColor = fogColor(skyColor, pureFogColor, strength, SimpleFogSkyColor, black, FogSaturation);
+	float3 simpleFog = mixFog(finalColor.rgb, simpleFogColor.rgb, extinction, inScattering, fogDepth, strength * heightFade);
+	finalColor = lerp(finalColor, float4(simpleFog, 1), saturate(SimpleFogBlend) * (1 - isSky));
+
+	finalColor = lerp (finalColor, skyColor, distantFog * saturate(DistantFogBlend) * distantHeightFade * isExterior);
+
+	float4 heightFogColor = fogColor(skyColor, pureFogColor, strength, HeightFogSkyColor, sun, FogSaturation);
+	float3 heightFog = mixHeightFog(finalColor.rgb, heightFogColor.rgb, extinction, inScattering, fogDepth, strength * HeightFogDensity, 1.5 / (fogPower * HeightFogFalloff), worldPos, HeightFogHeight);
+	finalColor = lerp(finalColor, float4(heightFog, 1), saturate(HeightFogBlend));
+
+    finalColor = max(lerp(color, finalColor, FogAmount), 0.0f);
+
+	return delinearize(finalColor);
+}
+
+
+float4 CompositeFogPS(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord;
+	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
+	[branch] if (NVR_CompositeFlags.x) color = CompositeSunShadow(uv, color);
+	[branch] if (NVR_CompositeFlags.y) color = CompositeAO(color, tex2Dlod(NVR_CompositeAO, float4(uv, 0, 0)).r);
+	return VolumetricFogOnColor(uv, color);
+}
+
+technique CompositeFog
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader  = compile ps_3_0 CompositeFogPS();
 	}
 }

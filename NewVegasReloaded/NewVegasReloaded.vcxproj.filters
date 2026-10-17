@@ -280,6 +280,12 @@
     <ClInclude Include="..\src\core\ShadowManager.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\ShadowFaceCull.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\core\ShadowBoneUpload.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\TextureManager.h">
       <Filter>Core</Filter>
     </ClInclude>

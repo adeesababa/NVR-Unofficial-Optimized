@@ -682,10 +682,10 @@ bool ShaderManager::ShouldRenderShadowMaps() {
 /*
 * Renders a given effect to an arbitrary render target
 */
-void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget) {
+void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	Device->SetRenderTarget(0, RenderTarget);
-	Effect->Render(Device, RenderTarget, RenderTarget, 0, clearRenderTarget, RenderTarget);
+	Effect->Render(Device, RenderTarget, RenderTarget, techniqueIndex, clearRenderTarget, RenderTarget);
 };
 
 
@@ -710,31 +710,76 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 
 	// render a shadow pass for point lights
 	if ((GameState.isExterior && Effects.ShadowsExteriors->Enabled) || (!GameState.isExterior && Effects.ShadowsInteriors->Enabled)) {
-		// separate lights in 2 batches
-		RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
-		if (Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6) RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
+		IDirect3DSurface9* pointShadowSurface = Effects.ShadowsExteriors->Textures.ShadowPassSurface;
+		const bool morePointLights = Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6;
+		D3DXHANDLE mergedTechnique = morePointLights && TheSettingManager->SettingsMain.Main.MergedPointShadows && Effects.PointShadows->Effect ?
+			Effects.PointShadows->Effect->GetTechniqueByName("MergedPointShadows") : NULL;
+		const bool mergedPointShadows = mergedTechnique && mergedTechnique == Effects.PointShadows->Effect->GetTechnique(1);
+		RenderEffectToRT(pointShadowSurface, Effects.PointShadows, true, mergedPointShadows ? 1 : 0);
+		if (morePointLights && !mergedPointShadows) RenderEffectToRT(pointShadowSurface, Effects.PointShadows2, false);
 		if (GameState.isExterior) RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.SunShadows, false);
 	}
 
 	Device->SetRenderTarget(0, RenderTarget);
 
-	// copy the source render target to both the rendered and source textures (rendered gets updated after every pass, source once per effect)
-	Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
-	Device->StretchRect(RenderTarget, NULL, SourceSurface, NULL, D3DTEXF_NONE);
+	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
+	if (!Chain.Begin(RenderTarget))
+		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
-	if (GameState.isExterior) 
-		Effects.ShadowsExteriors->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	else 
-		Effects.ShadowsInteriors->Render(Device, RenderTarget, RenderedSurface, 0, true, SourceSurface);
+	auto wouldRender = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
+	VolumetricFogEffect* Fog = Effects.VolumetricFog;
+	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
+	const bool aoApplies = wouldRender(AO);
+	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) ||
+		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater);
+	bool composite = (shadowApplies || aoApplies) && !effectsBetween && Fog->CanComposite() && (!aoApplies || AO->CanDedicate());
+	AO->deferredReady = false;
 
-	Effects.SnowAccumulation->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.AmbientOcclusion->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.WetWorld->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.Flashlight->Render(Device, RenderTarget, RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface);
-	Effects.Specular->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.Underwater->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.VolumetricFog->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.GodRays->Render(Device, RenderTarget, RenderedSurface, 0, true, SourceSurface);
+	if (GameState.isExterior) {
+		if (!(composite && shadowApplies))
+			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	else
+		Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
+
+	Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+
+	AO->deferCombine = composite && aoApplies;
+	AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	AO->deferCombine = false;
+	if (composite && aoApplies && !AO->deferredReady) {
+		composite = false;
+		if (shadowApplies)
+			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+
+	Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface);
+	Effects.Specular->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.Underwater->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+
+	Fog->compositeShadow = composite && shadowApplies;
+	Fog->compositeAO = composite && AO->deferredReady;
+	Fog->compositeAOTexture = AO->ResultTexture();
+	Fog->compositeApplied = false;
+	Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	const bool compositeApplied = Fog->compositeApplied;
+	Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
+	if (composite && !compositeApplied) {
+		if (shadowApplies)
+			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (AO->deferredReady) {
+			AO->combineOnly = true;
+			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			AO->combineOnly = false;
+		}
+		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	}
+	AO->deferredReady = false;
+
+	Effects.GodRays->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
 
 	// calculate average luma for use by shaders
 	if (avglumaRequired) {
@@ -742,10 +787,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Device->SetRenderTarget(0, RenderTarget); 	// restore device used for effects
 	}
 
-	Effects.Exposure->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	Effects.Bloom->RenderBloomBuffer(RenderTarget);
 
-	Effects.Lens->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.Lens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	timer.LogTime("ShaderManager::RenderEffectsPreTonemapping");
 }
@@ -775,38 +820,49 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// prepare device for effects
 	Device->SetRenderTarget(0, RenderTarget);
 
-	// copy the source render target to both the rendered and source textures (rendered gets updated after every pass, source once per effect)
-	Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
-	Device->StretchRect(RenderTarget, NULL, SourceSurface, NULL, D3DTEXF_NONE);
+	if (!Chain.Begin(RenderTarget))
+		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
+	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
 
-	Effects.Rain->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.Snow->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	{
+		EffectRecord* const order[] = {
+			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.Coloring, Effects.DepthOfField,
+			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF,
+			Effects.SMAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Debug };
+		EffectRecord* last = nullptr;
+		for (EffectRecord* effect : order)
+			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender()) last = effect;
+		Chain.SetFinalEffect(last);
+	}
+
+	Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	//Effects.Linearization->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.BloomLegacy->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	// screenspace coloring/blurring effects get rendered last
-	Effects.Coloring->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.DepthOfField->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.MotionBlur->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.Coloring->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.DepthOfField->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.MotionBlur->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	// lens effects
-	Effects.BloodLens->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.WaterLens->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	Effects.LowHF->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.BloodLens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.WaterLens->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	Effects.LowHF->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
-	Effects.SMAA->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.SMAA->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
-	Effects.Sharpening->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.Sharpening->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	// cinema effect gets rendered very last because of vignetting/letterboxing
-	Effects.Cinema->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.Cinema->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	// final adjustments
-	Effects.ImageAdjust->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.ImageAdjust->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	// debug shader allows to display some of the buffers
-	Effects.Debug->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 
 	timer.LogTime("ShaderManager::RenderEffects");
 }
@@ -857,4 +913,130 @@ void ShaderManager::SwitchShaderStatus(const char* Name) {
 void ShaderManager::SetCustomConstant(const char* Name, D3DXVECTOR4 Value) {
 	CustomConstants::iterator v = CustomConst.find(std::string(Name));
 	if (v != CustomConst.end()) v->second = Value;
+}
+
+
+bool FrameChain::Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface) {
+	const bool owns = Active && renderTarget == GameTarget && renderedSurface == TheTextureManager->RenderedSurface;
+	if (owns) ReclaimFinal();
+	return owns;
+}
+
+void FrameChain::ReclaimFinal() {
+	if (!FinalWritten) return;
+	TheRenderManager->device->StretchRect(GameTarget, NULL, Surf[Current], NULL, D3DTEXF_NONE);
+	FinalWritten = false;
+	FinalEffect = nullptr;
+}
+
+void FrameChain::Publish() {
+	TheTextureManager->RenderedTexture = Tex[Current];
+	TheTextureManager->RenderedSurface = Surf[Current];
+}
+
+bool FrameChain::EnsureTexture(Pair& pair, int slot) {
+	if (pair.Texture[slot]) return true;
+	if (FAILED(TheRenderManager->device->CreateTexture(pair.Width, pair.Height, 1, D3DUSAGE_RENDERTARGET, pair.Format,
+		D3DPOOL_DEFAULT, &pair.Texture[slot], NULL)) || FAILED(pair.Texture[slot]->GetSurfaceLevel(0, &pair.Surface[slot]))) {
+		if (pair.Surface[slot]) { pair.Surface[slot]->Release(); pair.Surface[slot] = nullptr; }
+		if (pair.Texture[slot]) { pair.Texture[slot]->Release(); pair.Texture[slot] = nullptr; }
+		Logger::Log("[ERROR] Frame chain: could not create a %ux%u target (format %u); using copies.", pair.Width, pair.Height, pair.Format);
+		return false;
+	}
+	return true;
+}
+
+bool FrameChain::Begin(IDirect3DSurface9* gameTarget) {
+	if (Active) End();
+	FinalEffect = nullptr;
+	FinalWritten = false;
+	if (!gameTarget || !TheSettingManager->SettingsMain.Main.FrameChain) return false;
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	D3DSURFACE_DESC desc = {};
+	if (FAILED(gameTarget->GetDesc(&desc)) || desc.MultiSampleType != D3DMULTISAMPLE_NONE) return false;
+
+	int index = -1;
+	for (int i = 0; i < 2 && index < 0; i++) {
+		const Pair& pair = Pairs[i];
+		if (pair.Format == desc.Format && pair.Width == desc.Width && pair.Height == desc.Height) index = i;
+	}
+	for (int i = 0; i < 2 && index < 0; i++) {
+		if (Pairs[i].Format == D3DFMT_UNKNOWN) {
+			Pairs[i].Format = desc.Format;
+			Pairs[i].Width = desc.Width;
+			Pairs[i].Height = desc.Height;
+			index = i;
+		}
+	}
+	if (index < 0) return false;
+	Pair& pair = Pairs[index];
+
+	IDirect3DTexture9* gameTexture = nullptr;
+	const bool useGameTexture = TheSettingManager->SettingsMain.Main.ChainUsesGameTexture &&
+		SUCCEEDED(gameTarget->GetContainer(IID_IDirect3DTexture9, (void**)&gameTexture)) && gameTexture &&
+		gameTexture->GetLevelCount() == 1;
+	if (useGameTexture) {
+		if (!EnsureTexture(pair, 0)) { gameTexture->Release(); return false; }
+		Tex[0] = gameTexture;	Surf[0] = gameTarget;
+		Tex[1] = pair.Texture[0]; Surf[1] = pair.Surface[0];
+		GameTexture = gameTexture;
+	}
+	else {
+		if (gameTexture) { gameTexture->Release(); gameTexture = nullptr; }
+		if (!EnsureTexture(pair, 0) || !EnsureTexture(pair, 1)) return false;
+		if (FAILED(Device->StretchRect(gameTarget, NULL, pair.Surface[0], NULL, D3DTEXF_NONE))) return false;
+		Tex[0] = pair.Texture[0]; Surf[0] = pair.Surface[0];
+		Tex[1] = pair.Texture[1]; Surf[1] = pair.Surface[1];
+	}
+
+	static bool reported[2][2] = {};
+	if (!reported[index][useGameTexture]) {
+		Logger::Log("Frame chain: %ux%u format %u, %s.", desc.Width, desc.Height, desc.Format,
+			useGameTexture ? "game target used as a chain buffer (no seed copy)" : "two NVR buffers (seed copy)");
+		reported[index][useGameTexture] = true;
+	}
+
+	Current = 0;
+	SavedTexture = TheTextureManager->RenderedTexture;
+	SavedSurface = TheTextureManager->RenderedSurface;
+	GameTarget = gameTarget;
+	Active = true;
+	Publish();
+	return true;
+}
+
+void FrameChain::Commit() {
+	if (!Active) return;
+	Current ^= 1;
+	Publish();
+}
+
+void FrameChain::Sync() {
+	if (!Active) return;
+	ReclaimFinal();
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	if (Surf[Current] == GameTarget) {
+		Device->StretchRect(GameTarget, NULL, Surf[Current ^ 1], NULL, D3DTEXF_NONE);
+		Current ^= 1;
+		Publish();
+	}
+	else
+		Device->StretchRect(Surf[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
+}
+
+void FrameChain::End() {
+	if (!Active) return;
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	if (Surf[Current] != GameTarget && !FinalWritten)
+		Device->StretchRect(Surf[Current], NULL, GameTarget, NULL, D3DTEXF_NONE);
+	FinalEffect = nullptr;
+	FinalWritten = false;
+	Device->SetRenderTarget(0, GameTarget);
+	TheTextureManager->RenderedTexture = SavedTexture;
+	TheTextureManager->RenderedSurface = SavedSurface;
+	if (GameTexture) { GameTexture->Release(); GameTexture = nullptr; }
+	Tex[0] = Tex[1] = nullptr;
+	Surf[0] = Surf[1] = nullptr;
+	Active = false;
+	GameTarget = nullptr;
 }

@@ -1,4 +1,16 @@
 #define ShadowMapFarPlane 32768;
+#include "ShadowFaceCull.h"
+
+static bool TouchesShadowFace(NiAVObject* object, const NiPoint3* light,
+                              const D3DXVECTOR3& direction) {
+	NiGeometry* geometry = object->IsGeometry() ? static_cast<NiGeometry*>(object) : nullptr;
+	if (geometry && geometry->skinInstance) return true;
+	NiBound* bound = object->m_kWorldBound;
+	if (!bound) return true;
+	return ShadowSphereTouchesFace(bound->Center.x - light->x,
+		bound->Center.y - light->y, bound->Center.z - light->z, bound->Radius,
+		direction.x, direction.y, direction.z);
+}
 
 /*
 * Initializes the Shadow Manager by grabbing the relevant settings and shaders, and setting up map sizes.
@@ -454,6 +466,9 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 				if (!shaderProp)
 					continue;
 
+				if (TheSettingManager->SettingsMain.Main.CubeMapFaceCulling && shaderProp->IsLightingProperty() && !TouchesShadowFace(geo, LightPos, CameraDirection))
+					continue;
+
 				// Skip refraction and fire refraction.
 				if (!CheckShaderFlags(geo))
 					continue;
@@ -461,7 +476,7 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 				bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);
 				bool isThirdPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kThirdPerson);
 
-				// Skip objects if they are barely visible. 
+				// Skip objects if they are barely visible.
 				if ((matProp && matProp->fAlpha < 0.05f))
 					continue;
 
@@ -776,8 +791,9 @@ void ShadowManager::RenderShadowMaps() {
 
 	auto shadowMapTimer = TimeLogger();
 	if ((isExterior && usePointLights) || (!isExterior && InteriorEnabled)) {
-		// render the cubemaps for each light
-		for (int i = 0; i < ShadowsInteriors->LightPoints; i++) {
+		const int cubeMapsDrawn = TheSettingManager->SettingsMain.Main.SkipUnusedCubeMap ?
+			min(ShadowsInteriors->LightPoints, (int)ShadowCubeMapsSampled) : ShadowsInteriors->LightPoints;
+		for (int i = 0; i < cubeMapsDrawn; i++) {
 
 			// Render targets set in function due to rendering multiple faces.
 			RenderShadowCubeMap(ShadowLights, i);

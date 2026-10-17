@@ -71,6 +71,15 @@ IDirect3DBaseTexture9* TextureManager::GetCachedTexture(std::string& pathS) {
 }
 
 
+IDirect3DBaseTexture9** TextureManager::GetTextureSlotByName(std::string& Name) {
+	TexturePointersList::iterator t = TextureNames.find(Name);
+	if (t == TextureNames.end()) {
+		Logger::Log("[ERROR] Texture %s not found.", Name.c_str());
+		return nullptr;
+	}
+	return t->second;
+}
+
 /*
 * Gets a game dynamic texture by the sampler name
 */

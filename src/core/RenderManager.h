@@ -11,6 +11,7 @@ public:
 	void				CheckAndTakeScreenShot(IDirect3DSurface9* RenderTarget, bool HDR);
     float               GetObjectDistance(NiBound* Bound);
 	bool				IsReversedDepth();
+	const char*			D3D9RuntimeDescription();
 	D3DXMATRIX			WorldViewProjMatrix;
 	D3DXMATRIX			ViewProjMatrix;
 	D3DXMATRIX			InvViewProjMatrix;

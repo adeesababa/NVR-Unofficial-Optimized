@@ -379,6 +379,15 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkipFog = GetSettingI("Main.Main.Misc", "SkipFog");
 	SettingsMain.Main.RenderEffects = GetSettingI("Main.Main.Misc", "RenderEffects");
 	SettingsMain.Main.RenderPreTonemapping = GetSettingI("Main.Main.Misc", "RenderPreTonemapping");
+	SettingsMain.Main.FrameChain = GetSettingI("Main.Main.Performance", "FrameChain");
+	SettingsMain.Main.ChainUsesGameTexture = GetSettingI("Main.Main.Performance", "ChainUsesGameTexture");
+	SettingsMain.Main.DedicatedGodRays = GetSettingI("Main.Main.Performance", "DedicatedGodRays");
+	SettingsMain.Main.SlimDepthBuffer = GetSettingI("Main.Main.Performance", "SlimDepthBuffer");
+	SettingsMain.Main.DedicatedAO = GetSettingI("Main.Main.Performance", "DedicatedAO");
+	SettingsMain.Main.CompositeFog = GetSettingI("Main.Main.Performance", "CompositeFog");
+	SettingsMain.Main.MergedPointShadows = GetSettingI("Main.Main.Performance", "MergedPointShadows");
+	SettingsMain.Main.CubeMapFaceCulling = GetSettingI("Main.Main.Performance", "CubeMapFaceCulling");
+	SettingsMain.Main.SkipUnusedCubeMap = GetSettingI("Main.Main.Performance", "SkipUnusedCubeMap");
 
 	SettingsMain.FrameRate.SmartControl = GetSettingI("Main.FrameRate.SmartControl", "SmartControl");
 	SettingsMain.FrameRate.SmartControlFPS = GetSettingI("Main.FrameRate.SmartControl", "SmartControlFPS");

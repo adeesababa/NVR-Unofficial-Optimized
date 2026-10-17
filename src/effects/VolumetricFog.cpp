@@ -69,7 +69,68 @@ void VolumetricFogEffect::RegisterConstants(){
 }
 
 
-bool VolumetricFogEffect::ShouldRender() 
+bool VolumetricFogEffect::ShouldRender()
 {
 	return !TheShaderManager->GameState.isUnderwater;
 };
+
+
+bool VolumetricFogEffect::CanComposite() {
+	return !compositeFailed && TheSettingManager->SettingsMain.Main.CompositeFog && Enabled && Effect && ShouldRender() &&
+		Effect->GetTechniqueByName("CompositeFog") && Effect->GetParameterByName(NULL, "NVR_CompositeFlags") &&
+		TheShaderManager->Chain.IsActive();
+}
+
+void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (!compositeShadow && !compositeAO) {
+		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
+		return;
+	}
+	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
+
+	FrameChain& chain = TheShaderManager->Chain;
+	D3DXHANDLE technique = Effect->GetTechniqueByName("CompositeFog");
+	D3DXHANDLE flagsHandle = Effect->GetParameterByName(NULL, "NVR_CompositeFlags");
+	if (compositeFailed || !technique || !flagsHandle || (compositeAO && !compositeAOTexture) || !chain.Owns(RenderTarget, RenderedSurface))
+		return;
+
+	auto timer = TimeLogger();
+	D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, compositeAO ? 1.0f : 0.0f, 0.0f, 0.0f);
+	HRESULT result = Effect->SetTechnique(technique);
+	if (SUCCEEDED(result)) {
+		SetCT();
+		result = Effect->SetVector(flagsHandle, &flags);
+	}
+	UINT passes = 0;
+	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
+	if (SUCCEEDED(result)) {
+		Device->SetTexture(5, nullptr);
+		result = Device->SetRenderTarget(0, chain.Output());
+		if (SUCCEEDED(result)) result = Effect->BeginPass(0);
+		if (SUCCEEDED(result)) {
+			RebindSlotTextures();
+			Device->SetTexture(5, compositeAO ? compositeAOTexture : nullptr);
+			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			HRESULT endResult = Effect->EndPass();
+			if (SUCCEEDED(result)) result = endResult;
+		}
+		Effect->End();
+	}
+	Device->SetTexture(5, nullptr);
+	Device->SetRenderTarget(0, RenderTarget);
+	if (FAILED(result)) {
+		compositeFailed = true;
+		Logger::Log("Composite fog failed (%08lx); shadows, AO and fog use their own passes until restart.", result);
+		return;
+	}
+	chain.Commit();
+	compositeApplied = true;
+
+	static bool reported = false;
+	if (!reported) {
+		Logger::Log("Composite fog active: the sun-shadow composite and the AO combine are applied in the fog pass.");
+		reported = true;
+	}
+	renderTime = timer.LogTime("VolumetricFog::Composite");
+}

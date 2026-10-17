@@ -29,6 +29,114 @@ void GodRaysEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GodRaysData", &Constants.Data);
 }
 
+void GodRaysEffect::RegisterTextures() {
+	const int width = (TheRenderManager->width + 1) / 2;
+	const int height = (TheRenderManager->height + 1) / 2;
+	TheTextureManager->InitTexture("NVR_GodRaysBuffer0", &raysTexture[0], &raysSurface[0], width, height, D3DFMT_A16B16G16R16F);
+	TheTextureManager->InitTexture("NVR_GodRaysBuffer1", &raysTexture[1], &raysSurface[1], width, height, D3DFMT_A16B16G16R16F);
+}
+
 bool GodRaysEffect::ShouldRender() {
 	return TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater && TheShaderManager->GameState.dayLight > 0.5;
+}
+
+bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
+	IDirect3DSurface9* RenderedSurface) {
+	if (dedicatedRenderFailed || !TheSettingManager->SettingsMain.Main.DedicatedGodRays) return false;
+	IDirect3DTexture9** textures = raysTexture;
+	IDirect3DSurface9** surfaces = raysSurface;
+	const UINT divisor = 2;
+	D3DXHANDLE technique = Effect->GetTechniqueByName("DedicatedGodRays");
+	D3DXHANDLE layoutHandle = Effect->GetParameterByName(NULL, "NVR_GodRaysLayout");
+	D3DXTECHNIQUE_DESC description = {};
+	D3DVIEWPORT9 original = {};
+	D3DSURFACE_DESC target = {}, scratch = {}, rays = {};
+	if (!technique || !layoutHandle || FAILED(Effect->GetTechniqueDesc(technique, &description)) ||
+		description.Passes != 6 || !RenderedSurface || !textures[0] || !textures[1] ||
+		!surfaces[0] || !surfaces[1] ||
+		FAILED(Device->GetViewport(&original)) || FAILED(RenderTarget->GetDesc(&target)) ||
+		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(surfaces[0]->GetDesc(&rays)) ||
+		original.X || original.Y ||
+		original.Width != target.Width || original.Height != target.Height ||
+		scratch.Width != target.Width || scratch.Height != target.Height ||
+		rays.Width != (target.Width + divisor - 1) / divisor || rays.Height != (target.Height + divisor - 1) / divisor ||
+		target.MultiSampleType != D3DMULTISAMPLE_NONE)
+		return false;
+
+	FrameChain& chain = TheShaderManager->Chain;
+	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
+	IDirect3DSurface9* finalTarget = chained ? chain.Output() : RenderTarget;
+	D3DVIEWPORT9 reduced = original;
+	reduced.Width = rays.Width;
+	reduced.Height = rays.Height;
+	D3DXVECTOR4 layout((float)reduced.Width / original.Width,
+		(float)reduced.Height / original.Height, 1.0f / reduced.Width, 1.0f / reduced.Height);
+	IDirect3DSurface9* depthSurface = nullptr;
+	DWORD oldScissorEnabled = FALSE;
+	HRESULT result = Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorEnabled);
+	if (SUCCEEDED(result)) result = Device->GetDepthStencilSurface(&depthSurface);
+	if (SUCCEEDED(result)) result = Device->SetDepthStencilSurface(nullptr);
+	if (FAILED(result)) {
+		if (depthSurface) depthSurface->Release();
+		dedicatedRenderFailed = true;
+		return false;
+	}
+
+	Effect->SetTechnique(technique);
+	SetCT();
+	Effect->SetVector(layoutHandle, &layout);
+	UINT passes = 0;
+	result = Effect->Begin(&passes, 0);
+	if (SUCCEEDED(result)) {
+		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
+			const bool combine = p == passes - 1;
+			Device->SetTexture(5, nullptr);
+			result = Device->SetRenderTarget(0, combine ? finalTarget : surfaces[p & 1]);
+			if (SUCCEEDED(result)) result = Device->SetViewport(combine ? &original : &reduced);
+			if (SUCCEEDED(result)) result = Device->SetRenderState(D3DRS_SCISSORTESTENABLE, combine ? oldScissorEnabled : FALSE);
+			if (FAILED(result)) break;
+			result = Effect->BeginPass(p);
+			if (FAILED(result)) break;
+			if (p > 0) Device->SetTexture(5, textures[combine ? 0 : (p - 1) & 1]);
+			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			HRESULT endResult = Effect->EndPass();
+			if (SUCCEEDED(result)) result = endResult;
+		}
+		Effect->End();
+	}
+	Device->SetTexture(5, nullptr);
+	Device->SetRenderTarget(0, RenderTarget);
+	Device->SetViewport(&original);
+	Device->SetRenderState(D3DRS_SCISSORTESTENABLE, oldScissorEnabled);
+	Device->SetDepthStencilSurface(depthSurface);
+	if (depthSurface) depthSurface->Release();
+	if (SUCCEEDED(result)) {
+		if (chained) chain.Commit();
+		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
+	}
+	if (FAILED(result)) {
+		if (!chained) Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
+		dedicatedRenderFailed = true;
+		Logger::Log("Dedicated god rays failed (%08lx); using the original path until restart.", result);
+		return false;
+	}
+	static bool reported = false;
+	if (!reported) {
+		Logger::Log("Dedicated god rays active: %ux%u A16B16G16R16F ping-pong, six passes.", reduced.Width, reduced.Height);
+		reported = true;
+	}
+	return true;
+}
+
+void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
+	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
+	IDirect3DSurface9* SourceBuffer) {
+	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
+
+	auto timer = TimeLogger();
+	if (RenderDedicated(Device, RenderTarget, RenderedSurface)) {
+		renderTime = timer.LogTime("GodRays::DedicatedRender");
+		return;
+	}
+	EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 }

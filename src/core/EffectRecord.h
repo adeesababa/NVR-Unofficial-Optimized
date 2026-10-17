@@ -20,6 +20,9 @@ public:
 
 	bool 					IsLoaded();
 	bool					Enabled;
+	bool					usesSourceBuffer = true;
+	bool					needsPrefill = true;
+	void					RebindSlotTextures();
 	float					renderTime;
 	float					constantUpdateTime;
 

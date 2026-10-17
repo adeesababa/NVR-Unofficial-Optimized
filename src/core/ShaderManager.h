@@ -49,6 +49,45 @@ typedef std::map<std::string, D3DXVECTOR4> CustomConstants;
 
 struct		FrameVS { float x, y, z, u, v; };
 
+class FrameChain {
+public:
+	bool					Begin(IDirect3DSurface9* gameTarget);
+	void					End();
+	bool					IsActive() const { return Active; }
+	bool					Owns(IDirect3DSurface9* renderTarget, IDirect3DSurface9* renderedSurface);
+	IDirect3DSurface9*		Output() const { return Surf[Current ^ 1]; }
+	void					Commit();
+	void					Sync();
+
+	void					SetFinalEffect(const void* effect) { FinalEffect = effect; }
+	bool					IsDirectFinal(const void* effect) const { return Active && !GameTexture && GameTarget && FinalEffect == effect; }
+	IDirect3DSurface9*		FinalSurface() const { return GameTarget; }
+	void					CommitFinal() { FinalWritten = true; }
+
+private:
+	void					ReclaimFinal();
+	struct Pair {
+		D3DFORMAT			Format = D3DFMT_UNKNOWN;
+		UINT				Width = 0, Height = 0;
+		IDirect3DTexture9*	Texture[2] = {};
+		IDirect3DSurface9*	Surface[2] = {};
+	};
+	bool					EnsureTexture(Pair& pair, int slot);
+	void					Publish();
+
+	Pair					Pairs[2];
+	IDirect3DTexture9*		Tex[2] = {};
+	IDirect3DSurface9*		Surf[2] = {};
+	IDirect3DTexture9*		GameTexture = nullptr;
+	int						Current = 0;
+	bool					Active = false;
+	IDirect3DSurface9*		GameTarget = nullptr;
+	IDirect3DTexture9*		SavedTexture = nullptr;
+	IDirect3DSurface9*		SavedSurface = nullptr;
+	const void*				FinalEffect = nullptr;
+	bool					FinalWritten = false;
+};
+
 __declspec(align(16)) class ShaderManager : public ShaderManagerBase { // Never disposed
 public:
 	static void Initialize();
@@ -72,7 +111,7 @@ public:
 	bool					ShouldRenderShadowMaps();
 	void					RenderEffects(IDirect3DSurface9* RenderTarget);
 	void					RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget);
-	void					RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget);
+	void					RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex = 0);
 	void					SwitchShaderStatus(const char* Name);
 	void					SetCustomConstant(const char* Name, D3DXVECTOR4 Value);
 		
@@ -150,6 +189,7 @@ public:
 	CustomConstants			CustomConst;
 	std::map<std::string, D3DXVECTOR4*>	ConstantsTable;
 	IDirect3DVertexBuffer9*	FrameVertex;
+	FrameChain				Chain;
 	NiD3DVertexShader*		WaterVertexShaders[51];
 	NiD3DPixelShader*		WaterPixelShaders[51];
     TESObjectCELL*          PreviousCell;

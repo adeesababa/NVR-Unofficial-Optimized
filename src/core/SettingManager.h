@@ -17,6 +17,15 @@ struct SettingsMainStruct {
         bool    SkipFog;
         bool    RenderEffects;
         bool    RenderPreTonemapping;
+		bool	FrameChain;
+		bool	ChainUsesGameTexture;
+		bool	DedicatedGodRays;
+		bool	SlimDepthBuffer;
+		bool	DedicatedAO;
+		bool	CompositeFog;
+		bool	MergedPointShadows;
+		bool	CubeMapFaceCulling;
+		bool	SkipUnusedCubeMap;
 		UInt8	AnisotropicFilter;
 		UInt16	ScreenshotKey;
 		bool	HDRScreenshot;
