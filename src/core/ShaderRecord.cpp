@@ -3,6 +3,7 @@
 #include "PointShadowForward.h"
 #include "ShaderPrecompile.h"
 #include <unordered_set>
+#include "GpuProfiler.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -692,6 +693,24 @@ void __fastcall NiD3DVertexShaderEx::Free(NiD3DVertexShaderEx* shader) {
 * Hook - Function to replace shader handles during pass initialisation.
 */
 void NiD3DPixelShaderEx::SetupShader(IDirect3DPixelShader9* CurrentPixelHandle) {
+
+	// UNOFFICIAL 2026-10-17 grass study, diagnostic (only while the F10 GPU profile is on, a few lines a run): the device's
+	// states when a grass pixel shader is set up, to know how the game draws grass (alpha test, blend, depth, culling, coverage)
+	// before its shader is changed. Read only.
+	if (GpuTimer::Enabled && Name && !memcmp(Name, "GRASS", 5)) {
+		static unsigned binds = 0;
+		if (binds < 8 || (binds % 5000 == 0 && binds <= 50000)) {
+			IDirect3DDevice9* d = TheRenderManager->device;
+			DWORD s[13] = {};
+			const D3DRENDERSTATETYPE k[13] = { D3DRS_ALPHATESTENABLE, D3DRS_ALPHAREF, D3DRS_ALPHAFUNC, D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND,
+				D3DRS_DESTBLEND, D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ZFUNC, D3DRS_CULLMODE, D3DRS_COLORWRITEENABLE, D3DRS_ADAPTIVETESS_Y,
+				D3DRS_MULTISAMPLEANTIALIAS };
+			for (int i = 0; i < 13; i++) d->GetRenderState(k[i], &s[i]);
+			Logger::Log("GRASS PROBE bind %u %s: alphatest %u ref %u func %u | blend %u src %u dst %u | z %u zwrite %u zfunc %u | cull %u colorwrite 0x%X | atoc 0x%08X msaa %u",
+				binds, Name, s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12]);
+		}
+		binds++;
+	}
 
 	if (!Enabled || !TheSettingManager->SettingsMain.Main.RenderEffects) {
 		ShaderHandle = (IDirect3DPixelShader9*)ShaderHandleBackup;
