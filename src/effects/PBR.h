@@ -143,6 +143,7 @@ public:
 		D3DXVECTOR4		MetalLook;	// UNOFFICIAL TESR_PBRMetalLook: x bare metal roughness, y polished, z sky reflections, w debug view
 		D3DXVECTOR4		Env;		// UNOFFICIAL TESR_PBREnv (EnvTemplate.hlsl): x Lighting, y Strength, z WithMetal
 		D3DXVECTOR4		Math = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_PBRMath (Includes/PBR.hlsl, c223): x EnergySplit on
+		D3DXVECTOR4		LinearScales = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 0.0f);	// UNOFFICIAL TESR_LinearScales (Object.hlsl, c168): LinearPreDecode
 		D3DXVECTOR4		LampPassTrim;	// UNOFFICIAL TESR_LampPassTrim (ObjectTemplate.hlsl lamp passes): x TrimLampPasses on
 		D3DXVECTOR4		Translucency = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_Translucency (Grass23x00*.vso, STLEAF00*.vso): x Translucency, y Power, z SunGate; zero is off
 		D3DXVECTOR4		SharpSky;	// UNOFFICIAL TESR_SharpSky (SkyAmbient.hlsl): x [Shaders.PBR.Metal] SharpSky, 0 = the plain sky

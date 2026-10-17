@@ -192,6 +192,14 @@
 #endif
 #if defined(PS) && LINEAR_LIGHTING_ON
     #define LINEAR_LIGHTING
+    // UNOFFICIAL 2026-10-17 LinearPreDecode ([Shaders.PBR.Linear] PreDecode, restart: LIN_PREDECODE_ON from ShaderRecord): the
+    // game's per-draw colour constants (AmbientColor c1, PSLightColor c3-c12) are read from decoded copies in c64 / c66-c75 (NVR
+    // decodes them on the CPU as the game uploads them, core/LinearPreDecode.h) and the strength settings come decoded in
+    // TESR_LinearScales (Object.hlsl), instead of every pixel decoding the same constants again (pow per colour: ~80% of linear
+    // lighting's cost indoors, measured in replay). Off: exactly as before.
+    #if defined(LIN_PREDECODE_ON) && LIN_PREDECODE_ON
+        #define LIN_PREDECODED
+    #endif
 #endif
 #include "includes/Object.hlsl"
 // UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
@@ -218,6 +226,40 @@
         #define HUD_RAIN 1
     #endif
     #include "includes/HudRain.hlsl"
+
+    // UNOFFICIAL 2026-10-17 UnlitShadowSkip ([Shaders.PBR.Main], restart: UNLIT_SHADOW_SKIP from ShaderRecord::BuildDefines): the
+    // forward sun-shadow lookups (contact hardening's blocker search + 3 x 3 PCF, 14+ shadow-map reads) only where the sun can
+    // light the pixel. The sun's light is getSunLighting(lightDir, colour x shadow, ..., normal): its diffuse part is
+    // saturate(N.L) x colour, exactly 0 where the bumped normal faces away from the sun (dot(normal, lightDir) <= 0: normalize
+    // keeps the sign), whatever the shadow, so the lookup is skipped there. In the SPECULAR variants PBRSun keeps N.S >= 1e-5, a
+    // tail of the order of 1e-4 of the sun's colour on back-facing pixels (no difference measured: evidence\objects-LOG.md).
+    // The HudRain drops' sun caustic follows the geometric face, not the bumped normal, so pixels under a drop always look up.
+    // Compile time: a live switch costs its branch structure even when off. Off: the shaders exactly as before.
+    #ifndef UNLIT_SHADOW_SKIP
+        #define UNLIT_SHADOW_SKIP 0
+    #endif
+    bool SunShadowWanted(float3 normalTS, float3 lightTS) {
+        bool wanted = dot(normalTS, lightTS) > 0.0f;
+        #if HUD_RAIN
+            wanted = wanted || hudRainCover > 0.0f;
+        #endif
+        return wanted;
+    }
+    // UNOFFICIAL 2026-10-17 LampReachSkip ([Shaders.PBR.Main], restart: LAMP_REACH_SKIP from ShaderRecord::BuildDefines): a lamp's
+    // light is att x (...) and att (vanillaAtt / vanillaAttSq = 1 - saturate(...)) is exactly 0 beyond its radius, where the term
+    // adds exactly 0; LAMP_IF(att) puts the term in a branch on att > 0 so its PBR math is skipped there. Compile time, not live:
+    // a live test made the lamp terms branches even when off and cost 0.6 ms indoors (evidence\objects-LOG.md L-O5). Not in
+    // the DIFFUSE passes (TrimLampPasses already drops their pixels out of every lamp's reach; the branches measured slower there),
+    // nor the ONLY_SPECULAR lamp passes (the same: in game +0.05 ms, though the frame replay showed a gain: evidence L-O6),
+    // nor in the 6-lamp OPT specular 4+ shader (SLS2035), which the driver refuses to create past ~3600-3870 slots.
+    #ifndef LAMP_REACH_SKIP
+        #define LAMP_REACH_SKIP 0
+    #endif
+    #if LAMP_REACH_SKIP && !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !(defined(OPT) && defined(SPECULAR) && LIGHTS > 3 && SPECULAR_LAMPS6)
+        #define LAMP_IF(att) [branch] if ((att) > 0.0f)
+    #else
+        #define LAMP_IF(att)
+    #endif
 #endif
 
 // GunFX barrel glow (P67). Heat bridge from GunFX.dll. Coordinates are local to the drawn gun mesh, so
@@ -690,6 +732,10 @@ struct PS_OUTPUT {
     #endif
     float4 PSLightColorIn[10] : register(c3);
     static float4 PSLightColor[10];	// UNOFFICIAL linear lighting: PSLightColorIn decoded (rgb; .a as it is), at the start of main
+    #ifdef LIN_PREDECODED
+        float4 AmbientColorDec : register(c64);		// UNOFFICIAL LinearPreDecode: c1 decoded on the CPU (core/LinearPreDecode.h)
+        float4 PSLightColorDec[10] : register(c66);	// c3-c12 decoded on the CPU
+    #endif
 #else
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         float4 AmbientColor : register(c1);
@@ -733,10 +779,18 @@ PS_OUTPUT main(PS_INPUT IN) {
     
 #ifdef LINEAR_LIGHTING
     // UNOFFICIAL linear lighting: the light colours decoded.
+    #ifdef LIN_PREDECODED	// UNOFFICIAL LinearPreDecode: decoded on the CPU
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++) PSLightColor[lightIndex] = float4(PSLightColorDec[lightIndex].rgb, PSLightColorIn[lightIndex].a);	// (.a from the game's register: keeps it reserved)
+    #else
     [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
         PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        #ifdef LIN_PREDECODED
+            AmbientColor = float4(AmbientColorDec.rgb, AmbientColorIn.a);
+        #else
         AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+        #endif
     #endif
 #endif
 
@@ -854,9 +908,15 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
+        #if UNLIT_SHADOW_SKIP
+        // UNOFFICIAL 2026-10-17 UnlitShadowSkip: no shadow-map lookups where the sun cannot light the pixel (SunShadowWanted).
+        [branch] if (SHADOW_VS_PRESENT(IN.shadowWorldPos.w) && SunShadowWanted(normal.xyz, IN.lightDir.xyz))
+            sunShadow = GetSunShadow(IN.shadowWorldPos.xyz, shadowGeometricNormal);
+        #else
         sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                   ? GetSunShadow(IN.shadowWorldPos.xyz, shadowGeometricNormal)
                   : 1.0f;
+        #endif
         #endif
         shadowMultiplier *= sunShadow;
     #endif
@@ -927,10 +987,12 @@ PS_OUTPUT main(PS_INPUT IN) {
                                                        IN.shadowWorldPos.xyz, shadowGeometricNormal);
             }
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+                LAMP_IF(att2)   // UNOFFICIAL LampReachSkip
+                    lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+                LAMP_IF(att3)   // UNOFFICIAL LampReachSkip
+                    lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #endif
         }
         else {
@@ -940,10 +1002,12 @@ PS_OUTPUT main(PS_INPUT IN) {
             #endif
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, shadowGeometricNormal, skyValid);
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                LAMP_IF(att2)   // UNOFFICIAL LampReachSkip
+                    lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                LAMP_IF(att3)   // UNOFFICIAL LampReachSkip
+                    lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
             #endif
         }
     #else
@@ -955,11 +1019,16 @@ PS_OUTPUT main(PS_INPUT IN) {
         // length is only correct if the TBN basis is orthonormal.
         float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-            pointWeight += weight(lighting);
-            lighting *= POINT_SHADOW(0, att0);
+            float3 lighting = 0.0f;
+            LAMP_IF(att0) {   // UNOFFICIAL LampReachSkip
+                lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                pointWeight += weight(lighting);
+                lighting *= POINT_SHADOW(0, att0);
+            }
         #else
-            float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            float3 lighting = 0.0f;
+            LAMP_IF(att0)   // UNOFFICIAL LampReachSkip
+                lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
     #endif
     
@@ -980,22 +1049,28 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-            pointWeight += weight(light2Term);
-            lighting += light2Term * POINT_SHADOW(1, att2);
+            LAMP_IF(att2) {   // UNOFFICIAL LampReachSkip
+                float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                pointWeight += weight(light2Term);
+                lighting += light2Term * POINT_SHADOW(1, att2);
+            }
         #else
-            lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, SHADOWED(PSLightColor[1].rgb, 1, att2), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            LAMP_IF(att2)   // UNOFFICIAL LampReachSkip
+                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, SHADOWED(PSLightColor[1].rgb, 1, att2), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
         float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-            pointWeight += weight(light3Term);
-            lighting += light3Term * POINT_SHADOW(2, att3);
+            LAMP_IF(att3) {   // UNOFFICIAL LampReachSkip
+                float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                pointWeight += weight(light3Term);
+                lighting += light3Term * POINT_SHADOW(2, att3);
+            }
         #else
-            lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            LAMP_IF(att3)   // UNOFFICIAL LampReachSkip
+                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
     #endif
 
@@ -1166,6 +1241,10 @@ sampler2D NormalMap : register(s1);
     static float4 AmbientColor;	// UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant
     float4 PSLightColorIn[10] : register(c3);
     static float4 PSLightColor[10];
+    #ifdef LIN_PREDECODED
+        float4 AmbientColorDec : register(c64);		// UNOFFICIAL LinearPreDecode, as in the LIGHTS < 4 variant
+        float4 PSLightColorDec[10] : register(c66);
+    #endif
 #else
     float4 AmbientColor : register(c1);
     float4 PSLightColor[10] : register(c3);
@@ -1192,9 +1271,17 @@ PS_OUTPUT main(PS_INPUT IN) {
 
 #ifdef LINEAR_LIGHTING
     // UNOFFICIAL linear lighting: as in the LIGHTS < 4 variant.
+    #ifdef LIN_PREDECODED	// UNOFFICIAL LinearPreDecode: decoded on the CPU
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++) PSLightColor[lightIndex] = float4(PSLightColorDec[lightIndex].rgb, PSLightColorIn[lightIndex].a);	// (.a from the game's register: keeps it reserved)
+    #else
     [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
         PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #endif
+    #ifdef LIN_PREDECODED
+        AmbientColor = float4(AmbientColorDec.rgb, AmbientColorIn.a);
+    #else
     AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+    #endif
 #endif
 
     HudRain(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));	// UNOFFICIAL: rain drops, before the textures are read
@@ -1293,9 +1380,15 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
+        #if UNLIT_SHADOW_SKIP
+        // UNOFFICIAL 2026-10-17 UnlitShadowSkip (SunShadowWanted), as in the LIGHTS < 4 variant.
+        [branch] if (SHADOW_WP_VALID(IN) && SunShadowWanted(normal.xyz, IN.lightDir.xyz))
+            sunShadow = GetSunShadow(sunShadowWorldPos, sunShadowNormal);
+        #else
         sunShadow = SHADOW_WP_VALID(IN)
                   ? GetSunShadow(sunShadowWorldPos, sunShadowNormal)
                   : 1.0f;
+        #endif
         #endif
     #endif
 

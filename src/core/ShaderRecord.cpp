@@ -4,6 +4,7 @@
 #include "ShaderPrecompile.h"
 #include <unordered_set>
 #include "GpuProfiler.h"
+#include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -171,6 +172,15 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL MoreLampsPerObject (Hooks.cpp patches the game's cap to match): the specular many-lamp object shaders take
 	// 6 lamps instead of 3. Read at startup, like the engine patch.
 	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
+	// UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl LAMP_IF, ManyLightsDirect.hlsl): each lamp's light term in a branch on
+	// its attenuation, skipped where the lamp cannot reach (it adds exactly 0 there). Compile time (a live switch cost 0.6 ms indoors).
+	AppendDefine("LAMP_REACH_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampReachSkip") ? "1" : "0");
+	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
+	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
+	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
+	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
+	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
+	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
 
 	// UNOFFICIAL terrain blending (TerrainTemplate.hlsl, from Physically-Based-Reloaded): compiled in only when on at startup,
 	// like LIVE_CUBE, so that otherwise the land shaders are exactly what they were. TextureManager makes its depth copy
@@ -383,6 +393,16 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				
 				if (SUCCEEDED(createResult)) {
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
+					// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): ObjectTemplate pixel shaders compiled with linear lighting
+					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.
+					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
+						bool linear = false, predecode = false;
+						for (int d = 0; d < 30 && Template.Defines[d].Name; d++) {
+							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+						}
+						if (linear && predecode) LinearPreDecode::Register(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+					}
 					Logger::Log("Shader loaded: %s", ShaderCompiledPath);
 				}
 				else {
@@ -785,6 +805,7 @@ ShaderRecordPixel::~ShaderRecordPixel() {
 
 	// UNOFFICIAL 2026-10-13: none when the driver refused the shader (LoadShader deletes the record then): releasing
 	// nothing crashed the game at startup instead of falling back to the game's own shader.
+	LinearPreDecode::Unregister(ShaderHandle);	// UNOFFICIAL 2026-10-17 LinearPreDecode
 	if (ShaderHandle) ShaderHandle->Release();
 
 }

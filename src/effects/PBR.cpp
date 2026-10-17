@@ -1,5 +1,6 @@
 #include "PBR.h"
 #include "../core/PassSums.h"
+#include "../core/LinearPreDecode.h"
 
 void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRData", &Constants.Data);
@@ -12,6 +13,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
+	TheShaderManager->RegisterConstant("TESR_LinearScales", &Constants.LinearScales);	// UNOFFICIAL LinearPreDecode (Object.hlsl)
 	TheShaderManager->RegisterConstant("TESR_PassRedirect", &PassSums::Redirect);	// UNOFFICIAL ExactPassSums (core/PassSums.h)
 	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
 	TheShaderManager->RegisterConstant("TESR_MaterialRule", &MaterialRule);
@@ -67,6 +69,7 @@ void PBRShaders::UpdateSettings() {
 	Constants.Linear.x = linearGamma;
 	Constants.Linear.y = 1.0f / linearGamma;
 	PassSums::Gamma = linearGamma;	// UNOFFICIAL ExactPassSums: the fold-in decodes with the same gamma
+	LinearPreDecode::Gamma = linearGamma;	// UNOFFICIAL 2026-10-17 LinearPreDecode: the colours decoded on the CPU, the same gamma
 
 	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl DiffuseEnergyKeep): white surfaces no longer send back more light than
 	// they receive in the full and sun passes. Live.
@@ -191,4 +194,10 @@ void PBRShaders::UpdateConstants() {
 		TheShaderManager->GetTransitionValue(Settings.Rain.LightScale, Settings.NightRain.LightScale, Settings.Interiors.LightScale), rainFactor);
 	Constants.Data.w = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.AmbientScale, Settings.Night.AmbientScale, Settings.Interiors.AmbientScale),
 		TheShaderManager->GetTransitionValue(Settings.Rain.AmbientScale, Settings.NightRain.AmbientScale, Settings.Default.AmbientScale), rainFactor);
+
+	// UNOFFICIAL 2026-10-17 LinearPreDecode (Object.hlsl TESR_LinearScales): the strengths LinScale decoded per pixel, decoded here once
+	// (LinScale: pow(max(s, 0), gamma) when gamma > 1).
+	const float gamma = Constants.Linear.x;
+	auto linScale = [gamma](float s) { return gamma > 1.0f ? powf(s > 0.0f ? s : 0.0f, gamma) : s; };
+	Constants.LinearScales = D3DXVECTOR4(linScale(Constants.Data.z), linScale(Constants.Data.w), linScale(Constants.ExtraData.y), 0.0f);
 };

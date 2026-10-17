@@ -18,6 +18,8 @@
 //    after the first loading screen.
 // Hooked on the function bodies (Detours), not in the device's vtable: the native D3D9 runtime rewrites the vtable
 // every frame (measuring build's lesson).
+#include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17 LinearPreDecode: decodes the lit objects' colour constants here
+
 namespace ConstantFilter {
 
 	typedef HRESULT(STDMETHODCALLTYPE* SetConstantsFn)(IDirect3DDevice9*, UINT, const float*, UINT);
@@ -25,6 +27,7 @@ namespace ConstantFilter {
 	typedef HRESULT(STDMETHODCALLTYPE* DeviceFn)(IDirect3DDevice9*);
 	typedef HRESULT(STDMETHODCALLTYPE* EndStateBlockFn)(IDirect3DDevice9*, IDirect3DStateBlock9**);
 	typedef HRESULT(STDMETHODCALLTYPE* ApplyFn)(IDirect3DStateBlock9*);
+	typedef HRESULT(STDMETHODCALLTYPE* SetPixelShaderFn)(IDirect3DDevice9*, IDirect3DPixelShader9*);
 
 	enum { Registers = 256 };
 	struct Copy {
@@ -47,6 +50,7 @@ namespace ConstantFilter {
 	inline DeviceFn OrigBeginStateBlock = nullptr;
 	inline EndStateBlockFn OrigEndStateBlock = nullptr;
 	inline ApplyFn OrigApply = nullptr;
+	inline SetPixelShaderFn OrigSetPixelShader = nullptr;
 	inline unsigned StatFrames = 0;
 	inline double StatVertexCalls = 0, StatVertexSkipped = 0, StatPixelCalls = 0, StatPixelSkipped = 0, StatWipes = 0;
 	inline unsigned StatPauses = 0;		// times another thread paused it (since start)
@@ -98,7 +102,8 @@ namespace ConstantFilter {
 		return OrigVertex(self, start, data, count);
 	}
 
-	inline HRESULT STDMETHODCALLTYPE HookPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
+	// The filter and the upload (HookPixel's body before LinearPreDecode).
+	inline HRESULT SendPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
 		const int use = Use();
 		if (use > 0) {
 			if (GpuTimer::Enabled) StatPixelCalls += 1;
@@ -108,11 +113,92 @@ namespace ConstantFilter {
 		return OrigPixel(self, start, data, count);
 	}
 
+	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): true on the frame thread outside state-block recording.
+	inline bool PreDecodeThread() { return !Recording && Thread && GetCurrentThreadId() == Thread; }
+
+	// The decoded copy of game value v (register r: c1, c3-c12) into c(63 + r), unless the copy there was made from exactly v.
+	inline void PreDecodeCopy(IDirect3DDevice9* self, UINT r, const float* v) {
+		using namespace LinearPreDecode;
+		if (CopiesValid && CopyGamma == Gamma && SourceKnown[r] && !memcmp(Source[r], v, sizeof(float) * 4)) return;
+		float d[4];
+		Decode(d, v, Gamma);
+		SendPixel(self, CopyBase + r, d, 1);
+		memcpy(Source[r], v, sizeof(float) * 4);
+		SourceKnown[r] = true;
+		StatCopies++;
+	}
+
+	// A LIN_PREDECODED shader is now bound: read the game's c1-c12 back from the device (the runtime's own copy, so it is the
+	// truth whatever wrote them: the game, a state block, anyone) and remake every copy that does not match.
+	inline void PreDecodeRefresh(IDirect3DDevice9* self) {
+		using namespace LinearPreDecode;
+		float game[(Last + 1) * 4];
+		if (FAILED(self->GetPixelShaderConstantF(0, game, Last + 1))) { StatReadFailures++; return; }
+		if (!CopiesValid || CopyGamma != Gamma) for (UINT r = 0; r <= Last; r++) SourceKnown[r] = false;
+		CopiesValid = true;	// (before the copies: PreDecodeCopy compares against the sources only while valid)
+		CopyGamma = Gamma;
+		for (UINT r = 1; r <= Last; r++) if (Decodes(r)) PreDecodeCopy(self, r, game + r * 4);
+		StatRefreshes++;
+	}
+
+	// After a state block or a reset: the bound shader may have changed, the copies may be stale.
+	inline void PreDecodeResync(IDirect3DDevice9* device) {
+		LinearPreDecode::CopiesValid = false;
+		LinearPreDecode::Active = false;
+		IDirect3DPixelShader9* shader = nullptr;
+		if (device && SUCCEEDED(device->GetPixelShader(&shader)) && shader) {
+			LinearPreDecode::Active = LinearPreDecode::Is(shader);
+			shader->Release();
+		}
+		if (LinearPreDecode::Active) PreDecodeRefresh(device);
+	}
+
+	inline HRESULT STDMETHODCALLTYPE HookPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
+		const HRESULT result = SendPixel(self, start, data, count);
+		// UNOFFICIAL LinearPreDecode: while a LIN_PREDECODED shader is bound, the game's new values of c1 and c3-c12 get their
+		// decoded copies at once. A write into c64-c75 by anything else makes the copies stale (remade at the next bind).
+		if (data && count && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
+			if (start <= LinearPreDecode::CopyLast && start + count > LinearPreDecode::CopyFirst) LinearPreDecode::CopiesValid = false;
+			if (LinearPreDecode::Active && start <= LinearPreDecode::Last) {
+				if (!LinearPreDecode::CopiesValid) PreDecodeRefresh(self);	// (reads back what this call just set too)
+				else for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++)
+					if (LinearPreDecode::Decodes(start + i)) PreDecodeCopy(self, start + i, data + i * 4);
+			}
+		}
+		return result;
+	}
+
+	// F10 self-check (only while the GPU profile runs): when a LIN_PREDECODED shader is about to be replaced, its draws are done:
+	// every copy in c64-c75 must equal the decode of the game's register it stands for, as the device holds both now.
+	inline void PreDecodeCheck(IDirect3DDevice9* self) {
+		using namespace LinearPreDecode;
+		float game[(CopyLast + 1) * 4];
+		if (FAILED(self->GetPixelShaderConstantF(0, game, CopyLast + 1))) { StatReadFailures++; return; }
+		StatChecks++;
+		for (UINT r = 1; r <= Last; r++) {
+			if (!Decodes(r)) continue;
+			float d[4];
+			Decode(d, game + r * 4, Gamma);
+			if (memcmp(d, game + (CopyBase + r) * 4, sizeof(d))) { StatMismatches++; break; }
+		}
+	}
+
+	inline HRESULT STDMETHODCALLTYPE HookSetPixelShader(IDirect3DDevice9* self, IDirect3DPixelShader9* shader) {
+		if (GpuTimer::Enabled && LinearPreDecode::Active && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) PreDecodeCheck(self);
+		const HRESULT result = OrigSetPixelShader(self, shader);
+		if (SUCCEEDED(result) && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
+			LinearPreDecode::Active = LinearPreDecode::Is(shader);
+			if (LinearPreDecode::Active) PreDecodeRefresh(self);
+		}
+		return result;
+	}
+
 	inline HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* parameters) {
 		if (GetCurrentThreadId() != Thread) { InterlockedIncrement(&ForeignTick); return OrigReset(self, parameters); }
 		Wipe();
 		const HRESULT result = OrigReset(self, parameters);
 		Wipe();
+		PreDecodeResync(self);	// UNOFFICIAL LinearPreDecode
 		return result;
 	}
 
@@ -126,13 +212,20 @@ namespace ConstantFilter {
 		Recording = false;
 		if (GetCurrentThreadId() == Thread) Wipe();	// in case the runtime applied what it recorded
 		else InterlockedIncrement(&ForeignTick);
-		return OrigEndStateBlock(self, block);
+		const HRESULT result = OrigEndStateBlock(self, block);
+		if (GetCurrentThreadId() == Thread) PreDecodeResync(self);	// UNOFFICIAL LinearPreDecode
+		return result;
 	}
 
 	inline HRESULT STDMETHODCALLTYPE HookApply(IDirect3DStateBlock9* self) {
 		if (GetCurrentThreadId() == Thread) Wipe();	// it may set any constant without going through the calls above
 		else InterlockedIncrement(&ForeignTick);
-		return OrigApply(self);
+		const HRESULT result = OrigApply(self);
+		if (GetCurrentThreadId() == Thread) {	// UNOFFICIAL LinearPreDecode: it may also have set the pixel shader
+			IDirect3DDevice9* device = nullptr;
+			if (SUCCEEDED(self->GetDevice(&device)) && device) { PreDecodeResync(device); device->Release(); }
+		}
+		return result;
 	}
 
 	// Once, with the device (Render.cpp, at the start of a frame). Detours the bodies the device's vtable points at now.
@@ -145,6 +238,7 @@ namespace ConstantFilter {
 		OrigEndStateBlock = (EndStateBlockFn)vtable[61];
 		OrigVertex = (SetConstantsFn)vtable[94];
 		OrigPixel = (SetConstantsFn)vtable[109];
+		OrigSetPixelShader = (SetPixelShaderFn)vtable[107];	// UNOFFICIAL LinearPreDecode
 		IDirect3DStateBlock9* block = nullptr;
 		if (SUCCEEDED(device->CreateStateBlock(D3DSBT_PIXELSTATE, &block)) && block) {
 			OrigApply = (ApplyFn)(*(void***)block)[5];
@@ -152,6 +246,7 @@ namespace ConstantFilter {
 		}
 		if (!OrigApply) {
 			Logger::Log("UNOFFICIAL SkipRedundantConstants: no state block to hook; filter not installed.");
+			if (!LinearPreDecode::Shaders.empty()) Logger::Log("ERROR: LinearPreDecode needs the constant hooks: lit objects' light colours will be wrong; set [Shaders.PBR.Linear] PreDecode = false.");
 			return;
 		}
 		DetourTransactionBegin();
@@ -162,10 +257,12 @@ namespace ConstantFilter {
 		DetourAttach(&(PVOID&)OrigApply, (PVOID)&HookApply);
 		DetourAttach(&(PVOID&)OrigVertex, (PVOID)&HookVertex);
 		DetourAttach(&(PVOID&)OrigPixel, (PVOID)&HookPixel);
+		DetourAttach(&(PVOID&)OrigSetPixelShader, (PVOID)&HookSetPixelShader);
 		const LONG result = DetourTransactionCommit();
 		if (result != NO_ERROR) {
 			Broken = true;
 			Logger::Log("UNOFFICIAL SkipRedundantConstants: detours failed (%ld); filter off.", result);
+			if (!LinearPreDecode::Shaders.empty()) Logger::Log("ERROR: LinearPreDecode needs the constant hooks: lit objects' light colours will be wrong; set [Shaders.PBR.Linear] PreDecode = false.");
 			return;
 		}
 		Wipe();
@@ -177,6 +274,8 @@ namespace ConstantFilter {
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
+		// UNOFFICIAL LinearPreDecode: the gamma changed (live setting): the copies are remade at the next bind of such a shader.
+		if (LinearPreDecode::CopyGamma != LinearPreDecode::Gamma) LinearPreDecode::CopiesValid = false;
 		const bool enabled = TheSettingManager->SettingsMain.Main.SkipRedundantConstants;	// read by SettingManager::LoadSettings, not by name each frame
 		if (enabled && !Enabled) Wipe();
 		Enabled = enabled;
@@ -199,6 +298,12 @@ namespace ConstantFilter {
 				Broken ? "OFF (detours failed)" : !Enabled ? "off" : Foreign ? "paused (another thread)" : "on", StatPixelCalls * perFrame, StatPixelSkipped * perFrame,
 				StatPixelCalls > 0 ? 100.0 * StatPixelSkipped / StatPixelCalls : 0.0, StatVertexCalls * perFrame, StatVertexSkipped * perFrame,
 				StatVertexCalls > 0 ? 100.0 * StatVertexSkipped / StatVertexCalls : 0.0, StatWipes * perFrame, StatPauses);
+			if (!LinearPreDecode::Shaders.empty())	// UNOFFICIAL LinearPreDecode
+				Logger::Log("LINEAR PREDECODE: %u shaders, %.0f decoded copies and %.0f copy refreshes per frame (gamma %.2f), %u read-back failures | self-check: %u of %u finished draw runs had a stale copy",
+					(unsigned)LinearPreDecode::Shaders.size(), LinearPreDecode::StatCopies * perFrame, LinearPreDecode::StatRefreshes * perFrame, LinearPreDecode::Gamma,
+					LinearPreDecode::StatReadFailures, LinearPreDecode::StatMismatches, LinearPreDecode::StatChecks);
+			LinearPreDecode::StatMismatches = LinearPreDecode::StatChecks = 0;
+			LinearPreDecode::StatCopies = LinearPreDecode::StatRefreshes = 0;
 			StatFrames = 0;
 			StatVertexCalls = StatVertexSkipped = StatPixelCalls = StatPixelSkipped = StatWipes = 0;
 		}

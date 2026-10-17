@@ -692,6 +692,8 @@ Enabled = false                      # UNOFFICIAL, optional: lights blood, smoke
 
 [_Shaders.PBR.Main]
 EnergySplit = false                  # UNOFFICIAL (2026-10-16), SHELVED (off): smooth surfaces seen at a low angle no longer send back more light than they receive (up to 8.9% too bright, white-furnace test). Correct, but invisible in game on every real surface tested (incl. the Ultra-Luxe floor), so off. Applies immediately
+UnlitShadowSkip = true               # UNOFFICIAL (2026-10-17), needs a restart: outdoors, objects skip the sun-shadow lookups on the parts that face away from the sun (the sun adds no light there, so the shadow cannot change them). Same picture; measured: lit objects -0.14 ms in the river city morning view, nothing to skip under a high sun. Off: the shaders exactly as before.
+LampReachSkip = true                 # UNOFFICIAL (2026-10-17), needs a restart: objects lit by several lamps skip each lamp's lighting math on the pixels that lamp cannot reach (it adds nothing there). Same picture. Off: the shaders exactly as before.
 Roughness = 1.0                      # Roughness scale.
 Metallicness = 0.0                   # Metalicness scale - unused, no metalic maps yet.
 AmbientScale = 0.5                   # Ambient lighting scale.
@@ -797,6 +799,7 @@ RippleScale = 0.012                  # Size of the small ripples (cycles per uni
 [_Shaders.PBR.Linear]
 ExactPassSums = 0                    # UNOFFICIAL TEST (2026-10-16): objects lit in several passes add them up in linear light (the extra lamp passes and the highlight passes were each added in the stored curve: up to 3.7x too bright indoors). 0 off, 1 highlights, 2 lamps, 3 both. Applies immediately
 Enabled = true                       # UNOFFICIAL: linear lighting on objects and the ground. The game adds light up in gamma space, so lit sides drop off too fast into shade, two lamps add up too dark and coloured light tints too little. On, colours are decoded to linear, lit, and encoded back: softer, fuller light falloff and truer colour mixing. Changes the look (brighter mid-tones and ambient), so the exposure and ambient may want retuning. Switching it on or off needs a restart (off, the shaders are exactly as before and cost nothing).
+PreDecode = true                     # UNOFFICIAL (2026-10-17), needs a restart: with linear lighting on, the light and ambient colours of each object are converted to linear once (on the CPU, as the game sends them) instead of again in every pixel. Same picture; measured indoors: lit objects up to -0.47 ms. Off: as before.
 Gamma = 2.2                          # [1.0-3.0] The gamma the colours are decoded with, live. 2.2 is standard; 1.0 looks the same as off.
 
 [_Shaders.PBR.Status]

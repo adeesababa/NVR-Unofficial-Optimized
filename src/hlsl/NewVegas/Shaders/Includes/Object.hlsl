@@ -24,6 +24,18 @@
 float4 TESR_PBRData : register(c32);
 float4 TESR_PassRedirect : register(c210);	// UNOFFICIAL ExactPassSums (core/PassSums.h): x 1 = this added pass draws into NVR's buffer, linear
 float4 TESR_PBRExtraData : register(c33);
+// UNOFFICIAL 2026-10-17 LinearPreDecode (ObjectTemplate.hlsl LIN_PREDECODED): the strengths LinScale would decode per pixel, decoded
+// once per frame on the CPU (PBR.cpp); otherwise the same LinScale calls as before.
+#ifdef LIN_PREDECODED
+float4 TESR_LinearScales : register(c168); // x LinScale(TESR_PBRData.z), y LinScale(TESR_PBRData.w), z LinScale(TESR_PBRExtraData.y)
+#define LIN_SCALE_LIGHT TESR_LinearScales.x
+#define LIN_SCALE_AMBIENT TESR_LinearScales.y
+#define LIN_SCALE_SKY TESR_LinearScales.z
+#else
+#define LIN_SCALE_LIGHT LinScale(TESR_PBRData.z)
+#define LIN_SCALE_AMBIENT LinScale(TESR_PBRData.w)
+#define LIN_SCALE_SKY LinScale(SKY_AMBIENT_STRENGTH)
+#endif
 
 // UNOFFICIAL material rules ([Shaders.PBR.MaterialRules], core/MaterialRules.h): the class of the texture being drawn, from
 // the editable table NewVegasReloaded.dll.materials.txt, written by NVR before each object (Render.cpp MaterialRulesDraw).
@@ -147,7 +159,7 @@ float3 getVanillaLightingAtt(float3 lightDir, float att, float3 lightColor, floa
 
 // PBR
 float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness) {
-    lightColor = lightColor * LinScale(TESR_PBRData.z);
+    lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
     
     float att = vanillaAtt(lightDir, radius);
@@ -163,7 +175,7 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
 
 // UNOFFICIAL: metallic, the share of the pixel that is metal (getDerivedMetallic below; 0 everywhere else).
 float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
-    lightColor = lightColor * LinScale(TESR_PBRData.z);
+    lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
 
     #if defined(ONLY_SPECULAR)
@@ -180,7 +192,7 @@ float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, f
 }
 
 float3 getSunLighting(float3 lightDir, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
-    lightColor = lightColor * LinScale(TESR_PBRData.z);
+    lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
 
     #if defined(ONLY_SPECULAR)
@@ -209,16 +221,16 @@ float4 TESR_DebugVar : register(c135);
 #define SKY_AMBIENT_STRENGTH  (TESR_PBRExtraData.y)      // scale on skyUpper at w = 1
 
 float3 getAmbientLighting(float3 ambient, float3 albedo) {
-    return ambient * LinScale(TESR_PBRData.w) * albedo * RmaosAmbient();
+    return ambient * LIN_SCALE_AMBIENT * albedo * RmaosAmbient();
 }
 
 float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, float worldNormalValid) {
-    float3 flatAmbient = ambient * LinScale(TESR_PBRData.w);
+    float3 flatAmbient = ambient * LIN_SCALE_AMBIENT;
 
     // AmbientScale (TESR_PBRData.w) scales the weather ambient above but not this: the sky is a
     // second, independent light source, so SkylightingScale is its only strength knob and it
     // survives AmbientScale = 0.
-    float3 skyTerm = LinSky(SkyAmbientRadiance(worldNormal, TESR_PBRExtraData.z)) * LinScale(SKY_AMBIENT_STRENGTH);
+    float3 skyTerm = LinSky(SkyAmbientRadiance(worldNormal, TESR_PBRExtraData.z)) * LIN_SCALE_SKY;
 
     // worldNormalValid is 0 under a vanilla VS, where the carried world position is undefined.
     return (flatAmbient + skyTerm * worldNormalValid) * albedo * RmaosAmbient();
@@ -352,7 +364,7 @@ float3 getMetalAmbient(float3 ambient, float3 f0, float roughness, float NdotV, 
     float3 sky = SkyAmbientElevation(upReflect);
     [branch] if (TESR_SharpSky.x > 0.0f && skyValid > 0.0f)
         sky = SkyAmbientSharpened(getMetalSkyDirection(worldPos, worldNormal, upReflect), sky);
-    float3 env = ambient * LinScale(TESR_PBRData.w) + LinSky(sky) * LinScale(SKY_AMBIENT_STRENGTH) * skyValid;
+    float3 env = ambient * LIN_SCALE_AMBIENT + LinSky(sky) * LIN_SCALE_SKY * skyValid;
     // UNOFFICIAL CubeReflections ([Shaders.PBR.Metal], ObjectTemplate defines NVR_LIVE_CUBE): what the camera saw round it
     // along the reflected view (includes/LiveCube.hlsl) in place of the ambient and sky, as far as the cube has seen that
     // direction. Needs the direction, so only where the sky is known (skyValid).
