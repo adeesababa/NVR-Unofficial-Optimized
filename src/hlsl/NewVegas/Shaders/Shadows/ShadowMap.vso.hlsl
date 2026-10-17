@@ -34,6 +34,7 @@ struct VS_INPUT {
     float4 blendindexes : BLENDINDICES;
 #if CLOTH_WIND_ON
     float4 color : COLOR0;	// cloth wind mask (red)
+    float3 normal : NORMAL;	// cloth wind (2026-10-17): the displacement has a part along the normal (billow, flutter): the shadow needs it too
 #endif
 };
 
@@ -70,6 +71,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 	float4 r4;
 	float4 r5;
 	float4 r0 = IN.position;
+#if CLOTH_WIND_ON
+	float3 clothNormal = IN.normal;	// the vertex's normal in the space r0 ends in (model space; skinned: the bones' space)
+#endif
 	
 	if (TESR_ShadowData.x == 1.0f) { // Skinned (Actors)
 		offset.xyzw = IN.blendindexes.zyxw * const_0.y;
@@ -81,6 +85,16 @@ VS_OUTPUT main(VS_INPUT IN) {
 		q4.xyz = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), q0.xyzw);
 		q7.xyz = (IN.blendweight.z * q6.xyz) + ((IN.blendweight.x * q5.xyz) + (q4.xyz * IN.blendweight.y));
 		r0.xyz = ((1 - weight(IN.blendweight.xyz)) * q8.xyz) + q7.xyz;
+#if CLOTH_WIND_ON
+		{	// the same blend of the bones' rotations for the normal (the rows' xyz; w = 0 drops the translation)
+			const float4 nw = float4(IN.normal, 0);
+			const float3 n8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), nw);
+			const float3 n6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), nw);
+			const float3 n5 = mul(float3x4(Bones[0 + offset.x].xyzw, Bones[1 + offset.x].xyzw, Bones[2 + offset.x].xyzw), nw);
+			const float3 n4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), nw);
+			clothNormal = ((1 - weight(IN.blendweight.xyz)) * n8) + (IN.blendweight.z * n6) + (IN.blendweight.x * n5) + (n4 * IN.blendweight.y);
+		}
+#endif
 	}
 	else if (TESR_ShadowData.x == 2.0f) { // Leaves (Speedtrees)
         r0.xyzw = SpeedTreeTransform(BillboardUp, BillboardRight, RockParams, RustleParams, WindMatrices, LeafBase, IN.blendindexes, r0);
@@ -95,7 +109,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
 #if CLOTH_WIND_ON
-    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, IN.color);	// UNOFFICIAL cloth wind (normal and skinned geometry)
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color);	// UNOFFICIAL cloth wind (normal and skinned geometry)
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);

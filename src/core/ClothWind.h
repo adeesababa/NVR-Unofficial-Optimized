@@ -9,6 +9,10 @@
 // vertex shader constants c248-c251 (strength 0 for everything else, so other objects run no wind code at all).
 // The wind: the settings' direction and speed, or the game's own (the sky's wind speed and direction, UseGameWind).
 // Phases are worked out here in double precision and wrapped, so the motion never jitters after long play.
+// 2026-10-17 (cloth round 2): the phases are INTEGRATED from the game's clock (a pause or menu stops them, the time scale does not
+// change the speed) instead of being a speed times the hour of the day: that clock was in game seconds / 1000, i.e. 30x too slow in
+// play (the billow crept at 6 units/s, the 3 Hz flutter at 0.09 Hz), it jumped back at midnight, and every change of the weather's
+// wind speed made the phase jump (time x new speed). Test knob TimeOffset (seconds) shifts the pattern for time-step pictures.
 // The vertex shader works in the object's space for static meshes (the wind is turned into it with the object's rotation and
 // scale); for skinned ones in the skin root's space in the game's passes and in world space in NVR's shadow pass (its own bones).
 // SAFETY: every pass of an object must move it the same way (lamp passes test depth EQUAL). Some passes use the game's own
@@ -36,6 +40,7 @@ namespace ClothWind {
 		float FlutterAmount = 0.35f;
 		float Ripple = 0.5f;
 		float RippleScale = 0.012f;		// ripple cycles per unit
+		float TimeOffset = 0.0f;		// test only: seconds the pattern is ahead
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 	};
 
@@ -45,6 +50,11 @@ namespace ClothWind {
 	inline std::unordered_map<const void*, std::pair<std::string, bool>> ByTexture;
 	inline float WorldDir[3] = { 1.0f, 0.0f, 0.0f };
 	inline float Phase[4] = {};			// main wave, gust, flutter 1, flutter 2 (cycles, wrapped)
+	inline double Cycles[4] = {};		// the same, integrated, plus the rate each runs at now (cycles per second)
+	inline double Rate[4] = {};
+	inline double ClockSeconds = 0.0;	// seconds of play at the normal time scale (stops in a pause, not scaled by the time scale)
+	inline float LastHour = -1.0f;
+	inline double RealStart = -1.0, ClockStart = 0.0;
 	inline float SpeedNow = 220.0f, IntensityNow = 6.0f;
 	inline bool NonZeroSent = false;	// the device's c248 last held a cloth draw's values
 	inline UInt32 ClothDraws = 0, Frames = 0;
@@ -89,7 +99,20 @@ namespace ClothWind {
 	}
 
 	// Once a frame (Render.cpp, image space): the settings (live), the wind and the phases.
-	inline void BeginFrame(double gameSeconds, const Sky* sky, bool exterior) {
+	inline void AdvanceClock() {
+		TimeGlobals* g = TimeGlobals::Get();
+		if (!g || !g->GameHour) return;
+		const float hour = g->GameHour->data;
+		const double scale = g->TimeScale && g->TimeScale->data > 0.0f ? (double)g->TimeScale->data : 30.0;
+		if (LastHour >= 0.0f) {
+			double dh = (double)hour - (double)LastHour;
+			if (dh < -12.0) dh += 24.0;		// past midnight
+			if (dh > 0.0) ClockSeconds += (std::min)(dh * 3600.0 / scale, 0.1);	// a wait or sleep moves on by at most a frame's worth
+		}
+		LastHour = hour;
+	}
+
+	inline void BeginFrame(const Sky* sky, bool exterior) {
 		Exterior = exterior || TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Interiors") != 0;	// (named Exterior: 'cloth may move here')
 		SeenLast.swap(SeenNow); SeenNow.clear(); VanillaLast.swap(VanillaNow); VanillaNow.clear();
 		// The shaders were compiled with Enabled as it was at startup (CLOTH_WIND_ON, ShaderRecord::BuildDefines): read once.
@@ -134,13 +157,24 @@ namespace ClothWind {
 		const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 		for (int i = 0; i < 3; i++) WorldDir[i] = len > 1e-4f ? d[i] / len : (i == 0 ? 1.0f : 0.0f);
 		SpeedNow = speed; IntensityNow = intensity;
-		const double t = gameSeconds;
-		auto wrap = [](double cycles) { return (float)(cycles - floor(cycles)); };
-		Phase[0] = wrap(t * speed / S.Wavelength);
-		Phase[1] = wrap(t * 0.061 * (0.5 + speed / 300.0));
-		Phase[2] = wrap(t * S.Flutter);
-		Phase[3] = wrap(t * S.Flutter * 1.31);
-		if (++Frames >= 600) { Logger::Log("Cloth wind: %.1f cloth draws per frame", ClothDraws / (float)Frames); Frames = ClothDraws = 0; }
+		// The clock runs only while cloth is on (BeginFrame returns above when off); the phases are integrated.
+		const double before = ClockSeconds;
+		AdvanceClock();
+		const double dt = ClockSeconds - before;
+		S.TimeOffset = TheSettingManager->GetSettingF(section, "TimeOffset");
+		Rate[0] = speed / S.Wavelength; Rate[1] = 0.061 * (0.5 + speed / 300.0); Rate[2] = S.Flutter; Rate[3] = S.Flutter * 1.31;
+		for (int i = 0; i < 4; i++) {
+			Cycles[i] += dt * Rate[i]; Cycles[i] -= floor(Cycles[i]);
+			const double c = Cycles[i] + (double)S.TimeOffset * Rate[i];
+			Phase[i] = (float)(c - floor(c));
+		}
+		if (RealStart < 0.0 && TheFrameRateManager) { RealStart = TheFrameRateManager->Time; ClockStart = ClockSeconds; }
+		if (++Frames >= 600) {
+			const double real = TheFrameRateManager ? TheFrameRateManager->Time - RealStart : 0.0;
+			Logger::Log("Cloth wind: %.1f cloth draws per frame; clock %.2f s of wind per second of real time (1 = normal play, 0 = paused)", ClothDraws / (float)Frames, real > 0.0 ? (ClockSeconds - ClockStart) / real : 0.0);
+			RealStart = TheFrameRateManager ? TheFrameRateManager->Time : -1.0; ClockStart = ClockSeconds;
+			Frames = ClothDraws = 0;
+		}
 	}
 
 	inline void Zero(IDirect3DDevice9* device) {
@@ -165,7 +199,10 @@ namespace ClothWind {
 		bool cloth;
 		auto known = ByTexture.find(diffuse);
 		if (known != ByTexture.end() && known->second.first == diffuse->ddsPath1) cloth = known->second.second;
-		else { cloth = IsClothTexture(diffuse->ddsPath1); ByTexture[diffuse] = { std::string(diffuse->ddsPath1), cloth }; if (cloth) Logger::Log("Cloth wind: %s", diffuse->ddsPath1); }
+		else {
+			if (ByTexture.size() >= 4096) ByTexture.clear();	// 2026-10-17: entries are per texture object and were never dropped; the answer is worked out again on demand (same result)
+			cloth = IsClothTexture(diffuse->ddsPath1); ByTexture[diffuse] = { std::string(diffuse->ddsPath1), cloth }; if (cloth) Logger::Log("Cloth wind: %s", diffuse->ddsPath1);
+		}
 		// The vertex colour is the mask: without colours in the mesh, only the whole-mesh mode applies.
 		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { Zero(device); return; }
 		// Into the vertex shader's space: world for skinned meshes, the object's own for the rest.

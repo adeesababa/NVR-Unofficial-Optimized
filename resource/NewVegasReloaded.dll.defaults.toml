@@ -795,6 +795,7 @@ FlutterSpeed = 3.0                   # High-frequency flutter (cycles per second
 FlutterAmount = 0.35                 # Flutter strength (0-1)
 RippleAmount = 0.5                   # Billow out of the cloth's plane (0-1)
 RippleScale = 0.012                  # Size of the small ripples (cycles per unit)
+TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
 
 [_Shaders.PBR.Linear]
 ExactPassSums = 0                    # UNOFFICIAL TEST (2026-10-16): objects lit in several passes add them up in linear light (the extra lamp passes and the highlight passes were each added in the stored curve: up to 3.7x too bright indoors). 0 off, 1 highlights, 2 lamps, 3 both. Applies immediately

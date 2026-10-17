@@ -65,9 +65,14 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
     }
 }
 
-// Shadow maps: position only (their vertex shader has no normals: the push along the wind and its billow).
-float3 ClothWindPosition(float3 p, float4 vertexColor) {
-    [branch] if (ClothA.x > 0.0f) p += ClothMask(vertexColor, p) * ClothDisplacement(p, 0.0f);
+// Shadow maps: position only, but the same displacement as the lit passes (2026-10-17: it used n = 0 and so left out the part along
+// the normal -- up to ~0.85 of the intensity -- and the shadow caster sat off the cloth, which then shadowed itself in patches).
+// The normal is in the same space as p and need not be unit (a missing one reads as zero: the push along the wind only).
+float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor) {
+    [branch] if (ClothA.x > 0.0f) {
+        const float l = length(n);
+        p += ClothMask(vertexColor, p) * ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f);
+    }
     return p;
 }
 
