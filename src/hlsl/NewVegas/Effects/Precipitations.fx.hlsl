@@ -6,7 +6,7 @@ float4x4 TESR_ShadowCameraToLightTransformOrtho;
 float4 TESR_ReciprocalResolution;
 float4 TESR_GameTime;
 float4 TESR_RainData; // x:rain amount, set by weather (0 to 1), y: vertical scale, z: speed of rainfall w: opacity
-float4 TESR_RainAspect; // x:refraction amount, y: base color
+float4 TESR_RainAspect; // x:refraction amount, y: base color, w: UNOFFICIAL SkipHiddenLayers (1: on)
 float4 TESR_FogColor;
 float4 TESR_SunDirection;
 float4 TESR_SunColor;
@@ -64,7 +64,8 @@ float GetOrtho(float4 OrthoPos) {
  
     OrthoPos.x = OrthoPos.x *  0.5f + 0.5f;
     OrthoPos.y = OrthoPos.y * -0.5f + 0.5f;
-	float Ortho = tex2D(TESR_OrthoMapBuffer, OrthoPos.xy).r;
+	// UNOFFICIAL 2026-10-17: level 0 explicitly (the ortho map has only that level), so the read may sit in Rain()'s per-layer branch.
+	float Ortho = tex2Dlod(TESR_OrthoMapBuffer, float4(OrthoPos.xy, 0, 0)).r;
 	return (Ortho > OrthoPos.z - 0.0001) * (1 - outofbounds); 
 }
 
@@ -89,6 +90,9 @@ float4 Rain( VSOUT IN ) : COLOR0
 
 	[unroll]
 	for (int i = 1; i < iterations; i++){
+		// UNOFFICIAL 2026-10-17 SkipHiddenLayers (TESR_RainAspect.w): a layer behind the pixel adds exactly 0 (the drop is multiplied
+		// by (depth > DEPTH * i) below), so its work is skipped. Off: every layer is worked out as before.
+		[branch] if (depth > DEPTH * i || TESR_RainAspect.w < 0.5f) {
 		float2 noiseSurfacePosition = uv * (1.0f + i * DEPTH); // scale cylinder coordinates with iterations
 		noiseSurfacePosition += float2(noiseSurfacePosition.y * (fmod(i * 107.238917f, 1.0f) - 0.5f), SPEED * timetick); // animate y offset, not sure what x does?
 
@@ -109,6 +113,7 @@ float4 Rain( VSOUT IN ) : COLOR0
 		float drop = smoothstep(edge, -edge, dropGradient) * (rainNoise.x / (1.0f + 0.2f * i)); // fade opacity with each iteration
 		drop *= GetOrtho(orthoStart + step * i) * (depth > DEPTH * i); // depth and ortho check for rain
 		totalRain += drop;
+		}
 	}
 
 	// a rain tint color that scales with the sun direction

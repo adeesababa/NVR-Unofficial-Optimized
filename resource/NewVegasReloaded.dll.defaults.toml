@@ -815,6 +815,7 @@ Opacity = 1.0                        # Opacity of the drops.
 Refraction = 1.0                     # Distance of the refraction of the screen image by the droplets.
 Speed = 3.0                          # Multiplier for the rain speed.
 VerticalScale = 1.6                  # Multiplier for the length of the drops/streaks.
+SkipHiddenLayers = true              # UNOFFICIAL: skips the rain layers that lie behind walls and ground (they add nothing): same picture, less work. Off = as before.
 
 [_Shaders.Precipitations.Status]
 Enabled = true                       # Rain effect that is blocked by objects above and refracts light.

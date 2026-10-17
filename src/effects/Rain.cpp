@@ -23,6 +23,9 @@ void RainEffect::UpdateSettings() {
 	Constants.Aspect.x = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Refraction");
 	Constants.Aspect.y = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Coloring");
 	Constants.Aspect.z = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Bloom");
+	// UNOFFICIAL 2026-10-17 (Precipitations.fx.hlsl): skip the rain layers behind each pixel (they add exactly 0). A key missing
+	// from an older settings file reads 0 = off.
+	Constants.Aspect.w = TheSettingManager->GetSettingI("Shaders.Precipitations.Main", "SkipHiddenLayers") != 0 ? 1.0f : 0.0f;
 }
 
 void RainEffect::RegisterConstants() {
