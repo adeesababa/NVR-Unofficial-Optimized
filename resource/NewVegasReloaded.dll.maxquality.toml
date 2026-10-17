@@ -76,6 +76,7 @@ Steps = 16
 HighQuality = true
 ShadowsAtNight = true
 MaxDistance = 4096
+IsoHeightTaps = false
 
 [_Shaders.BloodFlow.Main]
 MaxSplats = 96

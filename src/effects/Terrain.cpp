@@ -11,6 +11,7 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainSkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
+	TheShaderManager->RegisterConstant("TESR_TerrainParallaxIso", &ParallaxConstants.IsoData);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendExtra", &BlendingConstants.Extra);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendShape", &BlendingConstants.Shape);
@@ -122,6 +123,8 @@ void TerrainShaders::UpdateSettings() {
 	ParallaxSettings.MaxDistance = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "MaxDistance");
 	ParallaxSettings.Height = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Height");
 	ParallaxSettings.ShadowsIntensity = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "ShadowsIntensity");
+	// UNOFFICIAL 2026-10-17 IsoHeightTaps (Parallax.hlsl TESR_TerrainParallaxIso): one trilinear tap per parallax height lookup.
+	ParallaxSettings.IsoHeightTaps = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "IsoHeightTaps") != 0;
 
 	// [Main.Main.ReducedQuality] ParallaxLite suggests a shorter terrain parallax reach: 1024 units at 1440p, where the user
 	// saw no difference from 2048 in a rocky desert view and it saved 0.8 ms on top of the lite search. Scaled with the
@@ -231,6 +234,7 @@ void TerrainShaders::UpdateConstants() {
 	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;
 	ParallaxConstants.ExtraData.z = ParallaxSettings.ShadowsIntensity;
+	ParallaxConstants.IsoData.x = ParallaxSettings.IsoHeightTaps ? 1.0f : 0.0f;
 
 	// [Main.Main.ReducedQuality] CheapUnderwaterTerrain: ground below the water surface skips parallax and its shadows
 	// (TerrainTemplate.hlsl). .w is the camera-relative height below which terrain counts as under water: the level of

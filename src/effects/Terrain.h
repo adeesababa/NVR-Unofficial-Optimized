@@ -61,6 +61,7 @@ public:
 		float MaxDistance;
 		float Height;
 		float ShadowsIntensity;
+		bool IsoHeightTaps;		// UNOFFICIAL 2026-10-17: single isotropic tap per parallax height lookup (Parallax.hlsl)
 	};
 	struct LODSettingsStruct {
 		float NoiseScale;
@@ -87,6 +88,7 @@ public:
 	struct ParallaxStruct {
 		D3DXVECTOR4     Data;
 		D3DXVECTOR4     ExtraData;
+		D3DXVECTOR4     IsoData;      // UNOFFICIAL x: IsoHeightTaps (TESR_TerrainParallaxIso, c94)
 	};
 	ParallaxStruct  ParallaxConstants;
 
