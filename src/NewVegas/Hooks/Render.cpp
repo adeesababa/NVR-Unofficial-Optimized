@@ -121,7 +121,51 @@ namespace ShaderSplit {
 		return -1;
 	}
 
+	// UNOFFICIAL 2026-10-16 (night cost study): lamps in use by the land shaders with point lights (TerrainTemplate.hlsl,
+	// SLS2092-2146: every second number, in fours per texture count: none, 6, 12, 24 lamp slots). The game sets
+	// PointLightCount (c88) after binding the shader; read back at the next bind in the same pass, like the objects' above.
+	static unsigned TerrainLampSlots(const char* name) {
+		if (!name || strncmp(name, "SLS", 3)) return 0;
+		const int number = atoi(name + 3);
+		if (number < 2092 || number > 2146 || (number & 1)) return 0;
+		static const unsigned slots[4] = { 0, 6, 12, 24 };
+		return slots[((number - 2092) / 2) % 4];
+	}
+	static unsigned TerrainLamps[3][26] = {};	// [6 / 12 / 24 slots][lamps in use; 25 = more than 24]
+	static unsigned TerrainLampsFailures = 0;
+	static int PendingTerrainSlots = -1;
+	static unsigned char PendingTerrainContext = Outside;
+
+	static void SampleTerrainLamps(unsigned char context) {
+		const int pending = PendingTerrainSlots;
+		PendingTerrainSlots = -1;
+		if (pending < 0 || context != PendingTerrainContext) return;
+		float count[4];
+		if (FAILED(TheRenderManager->device->GetPixelShaderConstantF(88, count, 1))) { TerrainLampsFailures++; return; }
+		const unsigned used = count[0] < 0.5f ? 0 : count[0] > 24.5f ? 25 : (unsigned)(count[0] + 0.5f);
+		TerrainLamps[pending][used]++;
+	}
+
+	static void ReportTerrainLamps() {
+		static const char* const names[3] = { "6", "12", "24" };
+		for (unsigned v = 0; v < 3; ++v) {
+			char line[512] = {};
+			size_t used = 0;
+			unsigned draws = 0;
+			for (unsigned n = 0; n < 26; ++n) {
+				if (!TerrainLamps[v][n]) continue;
+				draws += TerrainLamps[v][n];
+				Append(line, sizeof(line), used, " %u%s x%u", n, n == 25 ? "+" : "", TerrainLamps[v][n]);
+			}
+			if (draws) Logger::Log("TERRAIN LAMPS in use per draw, %s-lamp land shaders, %u draws (lamps x draws):%s", names[v], draws, line);
+		}
+		if (TerrainLampsFailures) Logger::Log("TERRAIN LAMPS: the device did not return shader constants %u times", TerrainLampsFailures);
+		memset(TerrainLamps, 0, sizeof(TerrainLamps));
+		TerrainLampsFailures = 0;
+	}
+
 	static void SampleLightsInUse(unsigned char context) {
+		SampleTerrainLamps(context);
 		const int pending = PendingMultiLight;
 		PendingMultiLight = -1;
 		if (pending < 0 || context != PendingMultiLightContext) return;
@@ -178,7 +222,13 @@ namespace ShaderSplit {
 		const char* source = shader ? shader->Name : nullptr;
 		const char* terrain = source && TheShaderManager->Shaders.Terrain ? TheShaderManager->Shaders.Terrain->GetTemplate(source).Name : nullptr;
 		if (!source) strcpy_s(name, "(no shader)");
-		else if (terrain) strcpy_s(name, !strcmp(terrain, "TerrainLODTemplate") ? "TERRAIN LOD" : !strcmp(terrain, "TerrainFadeTemplate") ? "TERRAIN FADE" : "TERRAIN");
+		else if (terrain && !strcmp(terrain, "TerrainTemplate")) {
+			// UNOFFICIAL 2026-10-16: the land shaders by lamp slots (night cost study), "TERRAIN" = no point lights.
+			const unsigned slots = TerrainLampSlots(source);
+			if (slots) sprintf_s(name, "TERRAIN %uL", slots);
+			else strcpy_s(name, "TERRAIN");
+		}
+		else if (terrain) strcpy_s(name, !strcmp(terrain, "TerrainLODTemplate") ? "TERRAIN LOD" : "TERRAIN FADE");
 		else if (!strncmp(source, "SLS", 3) && source[3] >= '0' && source[3] <= '9') strcpy_s(name, SlsGroup(source));
 		else if (!strncmp(source, "SM3", 3)) strcpy_s(name, "SM3");
 		else if (!strncmp(source, "SKY", 3)) strcpy_s(name, "SKY");
@@ -261,6 +311,7 @@ namespace ShaderSplit {
 		Logger::Log("SHADER BINDS   CPU inside SetShaders avg %.3f ms max %.3f per frame | first shader uses %u in these frames, %u this session",
 			Window.HookMs / n, WindowMaxHookMs, Window.FirstUses, FirstUsesSession);
 		ReportLightsInUse();
+		ReportTerrainLamps();
 	}
 
 	static void BeginFrame(IDirect3DDevice9* device) {
@@ -275,6 +326,7 @@ namespace ShaderSplit {
 		CurrentKey = GpuTimeline::NoKey;
 		Frame = {};
 		PendingMultiLight = -1;
+		PendingTerrainSlots = -1;
 		LastBind = { "(frame start)", Outside, false, false };
 		MaxGapBind = {};
 		MaxGapMs = 0.0;
@@ -348,6 +400,8 @@ namespace ShaderSplit {
 		SampleLightsInUse(context);
 		const int multiLight = context != Outside ? MultiLightIndex(shader ? shader->Name : nullptr) : -1;
 		if (multiLight >= 0) { PendingMultiLight = multiLight; PendingMultiLightContext = context; }
+		const unsigned terrainSlots = context != Outside && nvr ? TerrainLampSlots(shader ? shader->Name : nullptr) : 0;
+		if (terrainSlots) { PendingTerrainSlots = terrainSlots == 6 ? 0 : terrainSlots == 12 ? 1 : 2; PendingTerrainContext = context; }
 
 		if (context == Outside || !Timeline.InFrame()) return;
 		const unsigned char key = KeyOf(context, LabelFor(shader), nvr);

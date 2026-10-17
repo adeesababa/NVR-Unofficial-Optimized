@@ -56,6 +56,7 @@ public:
 		bool Enabled;
 		bool HighQuality;
 		bool Shadows;
+		bool ShadowsAtNight;	// UNOFFICIAL 2026-10-16: false = no parallax self-shadows while the sun is down (UpdateConstants)
 		bool HeightBlend;
 		float MaxDistance;
 		float Height;
