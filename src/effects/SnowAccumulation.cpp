@@ -1,6 +1,14 @@
 #include "SnowAccumulation.h"
 
+static bool TestForceSnow = false;	// UNOFFICIAL 2026-10-16, checking only: full snow cover at once without a snow weather (UpdateSettings)
+
 void SnowAccumulationEffect::UpdateConstants() {
+
+	if (TestForceSnow) {
+		Constants.Data.w = 1.0f;
+		TheShaderManager->orthoRequired = true;
+		return;
+	}
 
 	// Snow Accumulation
 	if (TheShaderManager->GameState.isSnow && !Constants.SnowAccumulationAnimator.switched) {
@@ -29,6 +37,9 @@ void SnowAccumulationEffect::UpdateSettings(){
 	Constants.Color.x = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorR");
 	Constants.Color.y = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorG");
 	Constants.Color.z = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorB");
+	// UNOFFICIAL 2026-10-16: SmoothFacets in metres -> game units (70 per metre); 0 = the per-pixel normal, as before
+	Constants.Color.w = std::clamp(TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SmoothFacets"), 0.0f, 5.0f) * 70.0f;
+	TestForceSnow = TheSettingManager->GetSettingI("Shaders.SnowAccumulation.Main", "TestForceSnow") != 0;
 }
 
 void SnowAccumulationEffect::RegisterConstants() {

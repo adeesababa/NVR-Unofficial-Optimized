@@ -1433,6 +1433,7 @@ SphericalNormals = false            # EXPERIMENTAL-Uses this setting if the norm
 Transparency = 1.0                  # Clouds base transparency
 Brightness = 1.0                    # Clouds base brightness
 Volumetric = 0                      # [0-1] UNOFFICIAL (from Physically-Based-Reloaded). 1 draws the clouds as a thick slab lit by the sun: bright silver edges when the sun is behind them, darker undersides, and sunset colour. Above about 9 degrees the slab replaces the flat shading, UseNormals included. The game's cloud textures still decide where the clouds are. 0 draws the flat clouds as before. Runs only while the Volumetric Clouds effect is on (2026-10-15: with that effect off it marched the game's own cloud layers at ~3 ms outdoors on a GTX 1070); with Volumetric Clouds' HideGameClouds on (its default) the layers are hidden and this does nothing.
+PanoramaSky = false                 # UNOFFICIAL (2026-10-16): turn on if your sky mod uses 360-degree panorama cloud textures (usually with its own sky.nif). Volumetric slides the cloud texture as if it were a flat sheet overhead, which warps a panorama; this stops the sliding (the same as UVScale 0) and keeps the volumetric lighting. If your panorama has the sky itself painted in (no see-through parts), set Volumetric to 0 instead.
 Steps = 8                           # [2-16] Samples through the cloud layer for each pixel. 16 gives smoother edges at about twice the cost.
 CloudHeight = 6000.0                # [500-20000] Height of the base of the cloud layer above the camera, in game units (one cell is 4096 units across). The game's cloud texture is laid on this base. The height only changes the scale of the erosion noise (higher gives finer wisps). The depth of the layer comes from CloudThickness and UVScale.
 CloudThickness = 2500.0             # [100-10000] Depth of the cloud layer in game units. Thicker clouds are more opaque when you look through them.
@@ -1464,6 +1465,8 @@ SunPower = 1.0                      # Multiplier for the lighting strength
 SnowColorR = 0.9                    # Red chanel for the color of snow coverage
 SnowColorG = 0.9                    # Green chanel for the color of snow coverage
 SnowColorB = 0.8                    # Blue chanel for the color of snow coverage
+SmoothFacets = 1.5                  # UNOFFICIAL (2026-10-16) [0-5]: size in metres of the patch the snow follows the ground's shape over. Low-poly rocks otherwise get snow in hard triangles (only the triangles facing up), because NVR works the surface direction out from depth, one flat triangle at a time. Larger: rounder snow caps over whole rocks. 0: the triangle look, as before. Almost no cost.
+TestForceSnow = false               # UNOFFICIAL (2026-10-16), for checking only: full snow cover at once, as if it were snowing, in any weather (outdoors).
 
 [_Shaders.SnowAccumulation.Status]
 Enabled = false                      # Snow accumulation on the floor during snowstorms.
