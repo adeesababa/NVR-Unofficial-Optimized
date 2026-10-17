@@ -10,6 +10,8 @@ float4 NVR_AOLayout; // packed extent xy, inverse low-resolution dimensions zw
 float4 TESR_AmbientOcclusionAOData;
 float4 TESR_AmbientOcclusionData;
 float4 TESR_AmbientOcclusionGTAO;	// UNOFFICIAL 2026-10-16 ([Shaders.AmbientOcclusion.GTAO]; the GTAO techniques at the end): w largest radius (pixels)
+float4 TESR_AmbientOcclusionSky;	// UNOFFICIAL 2026-10-17 Skylighting ([Shaders.AmbientOcclusion.Skylighting]): x 1 on (exteriors), y strength, z ray length (units), w depth slack (ortho map units)
+float4x4 TESR_ShadowCameraToLightTransformOrtho;	// camera-relative world position -> the top-down ortho map (as WetWorld)
 float4 TESR_ReciprocalResolution;
 float4 TESR_FogData; // x: fog start, y: fog end, z: sun glare, w: fog power
 float4 TESR_FogColor;
@@ -20,6 +22,10 @@ sampler2D TESR_SourceBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; A
 sampler2D TESR_BlueNoiseSampler : register(s3) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = NONE; MINFILTER = NONE; MIPFILTER = NONE; };
 sampler2D TESR_NormalsBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = NONE; MINFILTER = NONE; MIPFILTER = NONE; };
 sampler2D NVR_AOBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-17 Skylighting: the top-down depth map NVR renders for rain (ShadowManager, MapOrtho), bound by hand to stage 6
+// in AmbientOcclusionEffect::Render (an NVR_ name: TESR_ samplers are bound by their order among the TESR_ ones, and stage 5 is the
+// hand-bound NVR_AOBuffer).
+sampler2D NVR_OrthoMap : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 static const float AOsamples = TESR_AmbientOcclusionAOData.x;
 static const float AOstrength = TESR_AmbientOcclusionAOData.y;
@@ -379,10 +385,50 @@ float GTAOValue(float2 uv)
 	return lerp(darkness, 1.0, saturate(invlerp(startFade, endFade, P.z)));
 }
 
+// UNOFFICIAL 2026-10-17 Skylighting ([Shaders.AmbientOcclusion.Skylighting], exteriors): how much of the sky a point sees, from the
+// top-down ortho map (the highest surface over each spot, rendered for rain). A height-field test: straight up and 6 rays on two
+// rings (60 and 30 degrees up, turned per pixel by the blue noise; the AO blur smooths it), each probed at a third and at the full
+// ray length; a ray is open when, at both probes, nothing in the map lies above it. Open rays count by their cosine to the
+// surface normal. Outside the map counts as open sky. Written from the idea of Community Shaders' Skylighting (sky occlusion from
+// a precipitation-occlusion map; research\skylighting-map.md), not from its code. Only tex2Dlod: it runs behind a branch.
+float SkyOpen(float3 relativeWorld)
+{
+	float4 o = mul(float4(relativeWorld, 1.0f), TESR_ShadowCameraToLightTransformOrtho);
+	o.xyz /= o.w;
+	if (abs(o.x) > 1.0f || abs(o.y) > 1.0f || o.z < 0.0f || o.z > 1.0f) return 1.0f;
+	float top = tex2Dlod(NVR_OrthoMap, float4(o.x * 0.5f + 0.5f, o.y * -0.5f + 0.5f, 0.0f, 0.0f)).r;
+	return top > o.z - TESR_AmbientOcclusionSky.w ? 1.0f : 0.0f;
+}
+
+float SkyVisibility(float3 viewPosition, float3 viewNormal, float turn)
+{
+	float3 p = mul(float4(viewPosition, 0.0f), TESR_InvViewTransform).xyz;
+	float3 n = normalize(mul(float4(viewNormal, 0.0f), TESR_InvViewTransform).xyz);
+	p += n * 16.0f;	// off the surface's own texel of the map
+	float reach = TESR_AmbientOcclusionSky.z;
+	float up = max(n.z, 0.0f);
+	float open = up * SkyOpen(p + float3(0.0f, 0.0f, reach / 3.0f)) * SkyOpen(p + float3(0.0f, 0.0f, reach));
+	float total = up;
+	[unroll] for (int i = 0; i < 6; i++) {
+		float a = turn + i * (PI / 3.0f);
+		float e = fmod((float)i, 2.0f) > 0.5f ? 0.5236f : 1.0472f;	// 30 or 60 degrees up
+		float3 dir = float3(cos(a) * cos(e), sin(a) * cos(e), sin(e));
+		float w = max(dot(dir, n), 0.0f);
+		open += w * SkyOpen(p + dir * (reach / 3.0f)) * SkyOpen(p + dir * reach);
+		total += w;
+	}
+	return lerp(1.0f, total > 1.0e-4f ? open / total : 1.0f, TESR_AmbientOcclusionSky.y);
+}
+
 // The estimate pass of the GTAO techniques: the same outputs as PackedEstimate (AO, depth).
 float4 GTAOEstimate(VSOUT IN) : COLOR0
 {
-	return float4(GTAOValue(IN.UVCoord), min(readDepth(IN.UVCoord), (float)endFade), 0, 1);
+	float ao = GTAOValue(IN.UVCoord);
+	float3 skyOrigin = reconstructPosition(IN.UVCoord);
+	float3 skyNormal = GetNormal(IN.UVCoord);
+	float skyTurn = random(IN.UVCoord).y * 2.0f * PI;
+	[branch] if (TESR_AmbientOcclusionSky.x > 0.0f && skyOrigin.z < endFade) ao *= SkyVisibility(skyOrigin, skyNormal, skyTurn);	// UNOFFICIAL Skylighting
+	return float4(ao, min(readDepth(IN.UVCoord), (float)endFade), 0, 1);
 }
 
 float4 PackedEstimate(VSOUT IN) : COLOR0
@@ -390,6 +436,11 @@ float4 PackedEstimate(VSOUT IN) : COLOR0
 	// Same two five-sample kernels, evaluated together without duplicate setup/noise reads.
 	float2 values = PackedSSAOValues(IN.UVCoord);
 	float ao = values.x * values.y;
+	// UNOFFICIAL 2026-10-17 Skylighting: the reads that need gradients at top level, the map test behind the branch.
+	float3 skyOrigin = reconstructPosition(IN.UVCoord);
+	float3 skyNormal = GetNormal(IN.UVCoord);
+	float skyTurn = random(IN.UVCoord).y * 2.0f * PI;
+	[branch] if (TESR_AmbientOcclusionSky.x > 0.0f && skyOrigin.z < endFade) ao *= SkyVisibility(skyOrigin, skyNormal, skyTurn);
 	return float4(ao, min(readDepth(IN.UVCoord), (float)endFade), 0, 1);
 }
 

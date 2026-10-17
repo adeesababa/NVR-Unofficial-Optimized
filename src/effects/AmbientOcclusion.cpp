@@ -5,14 +5,21 @@
 // technique instead of DedicatedAO), w largest search radius in pixels. Kept out of AmbientOcclusion.h.
 static D3DXVECTOR4 GTAOData(0.0f, 0.0f, 0.0f, 64.0f);
 static EffectRecord::CachedHandle techGTAO;
+// UNOFFICIAL 2026-10-17 Skylighting ([Shaders.AmbientOcclusion.Skylighting]; AmbientOcclusion.fx.hlsl SkyVisibility): x 1 on (exteriors
+// only, set each frame), y strength, z ray length in units, w depth slack in ortho map units. Needs the ortho map, which is asked for here.
+static D3DXVECTOR4 SkyData(0.0f, 1.0f, 600.0f, 0.0001f);
+static bool SkyEnabled = false;
 
 void AmbientOcclusionEffect::UpdateConstants() {
+	SkyData.x = SkyEnabled && TheShaderManager->GameState.isExterior ? 1.0f : 0.0f;
+	if (SkyData.x > 0.0f && Constants.Enabled) TheShaderManager->orthoRequired = true;	// UNOFFICIAL Skylighting reads the ortho map
 }
 
 void AmbientOcclusionEffect::RegisterConstants() {
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionAOData"] = &Constants.AOData;
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionData"] = &Constants.Data;
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionGTAO"] = &GTAOData;
+	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky"] = &SkyData;
 }
 
 void AmbientOcclusionEffect::RegisterTextures() {
@@ -45,6 +52,9 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	Constants.Data.w = TheSettingManager->GetSettingF(sectionName, "BlurRadiusMultiplier");
 	GTAOData.x = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.GTAO", "Enabled") ? 1.0f : 0.0f;
 	GTAOData.w = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.GTAO", "MaxRadius"), 4.0f, 256.0f);
+	SkyEnabled = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Enabled");
+	SkyData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "Strength"), 0.0f, 1.0f);
+	SkyData.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "Distance"), 64.0f, 4000.0f);
 }
 
 bool AmbientOcclusionEffect::ShouldRender() {
@@ -112,6 +122,10 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
+	// UNOFFICIAL 2026-10-17 Skylighting: the ortho map on stage 6 (NVR_OrthoMap in the effect) for the estimate pass.
+	IDirect3DTexture9* orthoMap = SkyData.x > 0.0f && TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr;
+	Device->SetTexture(6, orthoMap);
+	TheRenderManager->renderState->NoteDeviceTexture(6, orthoMap);
 	UINT passes = 0;
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
@@ -145,6 +159,7 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		Effect->End();
 	}
 	Device->SetTexture(5, nullptr);
+	if (orthoMap) { Device->SetTexture(6, nullptr); TheRenderManager->renderState->NoteDeviceTexture(6, nullptr); }
 	Device->SetTexture(2, TheTextureManager->SourceTexture);
 	Device->SetRenderTarget(0, RenderTarget);
 	Device->SetViewport(&original);

@@ -202,6 +202,11 @@ StrengthMultiplier = 1.0                # Global AO strength/darkness multiplier
 Enabled = false                      # UNOFFICIAL (2026-10-16): ground-truth ambient occlusion (GTAO, Jimenez et al. 2016) instead of the old SSAO: open flat ground is no longer greyed, corners and creases darken by how closed they really are, no halo round things in front. Uses the same Range, strength and fade settings. Applies immediately
 MaxRadius = 64.0                     # [4-256] Largest search radius on screen, in pixels (close up the Range would cover half the screen)
 
+[_Shaders.AmbientOcclusion.Skylighting]
+Enabled = false                        # UNOFFICIAL (2026-10-17, new): outdoors, the sky's light is taken away where something above blocks the sky: under roofs, porches, bridges, overhangs and at the foot of cliffs. Uses the top-down map NVR draws for rain and goes through the ambient occlusion (needs it on), so directly lit spots stay as they were.
+Strength = 1.0                         # [0.0-1.0] How much of the blocked sky light is taken away.
+Distance = 600.0                       # [64-4000] How far (game units) to look for something above. Larger: big overhangs and cliffs count from further away; smaller: only close cover.
+
 [_Shaders.AmbientOcclusion.Status]
 Enabled = true                          # Shadows based on object proximity/creases for more realistic light contribution.
 
