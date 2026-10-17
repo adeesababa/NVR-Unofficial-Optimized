@@ -2,6 +2,7 @@
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
 #include "ShaderPrecompile.h"
+#include <unordered_set>
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -593,7 +594,10 @@ void ShaderRecord::SetCT() {
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
 		Sampler = &TextureShaderValues[c];
 		if (Sampler->Texture->Texture == nullptr) {
-			Sampler->Texture->BindTexture(Sampler->Name);
+			// UNOFFICIAL 2026-10-17: a texture that is registered but empty for now (TESR_ReflectionsEnv while the Reflections
+			// cube is off -- the shader never reads it then) is re-read from its slot, not looked up by name on every draw.
+			if (Sampler->Texture->TextureRef) Sampler->Texture->Texture = *Sampler->Texture->TextureRef;
+			else Sampler->Texture->BindTexture(Sampler->Name);
 
 			if (Sampler->Texture->Texture) Logger::Log("%s : Texture %s Successfully bound", Name, Sampler->Name);
 			//else Logger::Log("[ERROR] : Could not bind texture %s for shader %s", Sampler->Name, Name);
@@ -608,7 +612,11 @@ void ShaderRecord::SetCT() {
 			}
 		}
 		else {
-			Logger::Log("%s : Texture %s was not bound", Name, Sampler->Name);
+			// UNOFFICIAL 2026-10-17: once per shader and texture, not on every draw (each line is flushed to disk: a player's
+			// log reached 450 MB, 1.5 million lines of TESR_ReflectionsEnv in 47 minutes; 95% of our own test logs).
+			static std::unordered_set<const void*> warned;
+			if (warned.insert(Sampler).second)
+				Logger::Log("%s : Texture %s was not bound (said once; it binds by itself if it appears later)", Name, Sampler->Name);
 		}
 	}
 
