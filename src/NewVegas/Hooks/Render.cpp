@@ -1845,6 +1845,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);	// UNOFFICIAL 2026-10-17 grass lighting fix
 	// Diagnostic (P57): the water reflection with the game's own shaders. NVR's replacements take constants made for
 	// the main camera; the reflection camera sits mirrored below the water. SetupShader picks the handle the game
 	// binds next, so switching it here keeps the game's state tracking right; the next bind picks NVR's again.

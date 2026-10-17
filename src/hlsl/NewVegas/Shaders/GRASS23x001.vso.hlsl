@@ -21,6 +21,10 @@ float4 FogParam     : register(c15);
 // UNOFFICIAL: backlit translucency settings (PBR.cpp, [Shaders.Foliage.Main]). c18 is free: nothing else here uses it and
 // InstanceData starts at c20.
 float4 TESR_Translucency : register(c18);
+// UNOFFICIAL 2026-10-17: which pixel shader reads this one, written per draw by GrassShaders::SetForDraw (SetShadersHook); c19 is
+// free (the game writes none of c16-c19 for grass). x 1 = NVR's grass PS (GRASS23x000TMS.pso, used with transparency
+// multisampling), 0 = the game's own GRASS23x000.pso (no transparency multisampling, the INI default). Never written reads 0.
+float4 GrassPairing : register(c19);
 
 #ifndef GRASS_INSTANCE_COUNT
     #define GRASS_INSTANCE_COUNT 228
@@ -89,7 +93,10 @@ VS_OUTPUT main(VS_INPUT IN) {
     float NdotL = saturate(dot(DiffuseDir, IN.normal));
 
     // UNOFFICIAL: backlit translucency joins the sun term, so the PS shadow applies to it too. Skipped at Translucency 0.
-    float3 shadowWorldPos = GetShadowWorldPos(OUT.position);
+    // UNOFFICIAL 2026-10-17: the game's grass PS reads no shadow position: skip its two matrix transforms unless NVR's PS or the
+    // translucency needs it.
+    float3 shadowWorldPos = 0.0f;
+    [branch] if (GrassPairing.x > 0.5f || TESR_Translucency.x > 0.0f) shadowWorldPos = GetShadowWorldPos(OUT.position);
     [branch] if (TESR_Translucency.x > 0.0f) {
         NdotL += FoliageTranslucency(IN.normal, DiffuseDir, shadowWorldPos, DiffuseDir);
     }
@@ -97,8 +104,17 @@ VS_OUTPUT main(VS_INPUT IN) {
     // UNOFFICIAL linear lighting (2026-10-14): colours and plain numbers apart. The PS decodes the colours (sun, vertex colour,
     // ambient) to linear; the blade's light scale and the sun's angle are already plain amounts, and decoding them too (they
     // used to be multiplied in here) squared them darker: the grass came out about half as bright as it should.
-    OUT.ambient = AmbientColor;
-    OUT.sun.xyz = IN.color.rgb * DiffuseColor;
+    if (GrassPairing.x > 0.5f) {
+        OUT.ambient = AmbientColor;
+        OUT.sun.xyz = IN.color.rgb * DiffuseColor;
+    }
+    else {
+        // FIX 2026-10-17: the game's own grass PS just adds TEXCOORD4 and TEXCOORD5 and multiplies by the texture, so it needs the
+        // amounts inside them, as the game's VS (and P79) wrote them. Since P80 (2026-10-14) it got the bare colours: every blade
+        // in full sun on every side (too bright, flat), for everyone without transparency multisampling.
+        OUT.ambient = lightScale * AmbientColor;
+        OUT.sun.xyz = ((lightScale * IN.color.rgb) * DiffuseColor) * NdotL * AddlParams.x;
+    }
     OUT.amount = float2(lightScale, lightScale * NdotL * AddlParams.x);
 
     float fogDist = length(float3(OUT.position.xy, OUT.position.w - OUT.position.z));
