@@ -1,13 +1,7 @@
 #ifdef TERRAIN
 float4 TESR_TerrainParallaxData : register(c91);
 float4 TESR_TerrainParallaxExtraData : register(c92);
-// UNOFFICIAL 2026-10-17 (deep roadmap, IsoHeightTaps): x = 1 -> the parallax HEIGHT taps (march and self-shadow) use one
-// isotropic footprint the size of the pixel's shorter axis, so each tap is a single trilinear lookup even with anisotropic
-// filtering on (the game's iMaxAnisotropy applies to the land maps); the colour and normal taps keep the real gradients.
-// Same mip as anisotropic filtering picks, without its extra taps along the long axis. Harness (real land maps, aniso 15):
-// -21..-23% terrain time at 5-7 layers, mean change 0.07-0.16/255. After Wronski, "AC4: Road to Next-Gen Graphics", GDC 2014
-// ("turn off aniso filtering on heightmaps"). c94: free in every land variant (the game's land constants end at c93).
-float4 TESR_TerrainParallaxIso : register(c94);
+// TESR_TerrainParallaxIso (IsoHeightTaps, SkipEmptyLayers): declared in Terrain.hlsl, which every land template includes first.
 #else
 float4 TESR_ParallaxData : register(c35);
 #endif

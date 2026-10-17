@@ -1534,6 +1534,7 @@ MaxDistance = 2048                  # Controls the maximum distance for the para
 Height = 0.1						# Controls the height. Changing can break the visuals, especially with low max steps.
 ShadowsIntensity = 2.0              # Intensity of self shadowing.
 IsoHeightTaps = true                # UNOFFICIAL: the parallax height lookups take one plain filtered sample each (at the same detail level) instead of the anisotropic filtering the game's iMaxAnisotropy puts on the land maps; colour and normals keep it. Measured at noon: ground 4.0 -> 2.4 ms, a change below the frame-to-frame flicker. Off = the old lookups.
+SkipEmptyLayers = true              # UNOFFICIAL: skip the colour and normal lookups of ground layers that have no weight at a pixel (they add exactly nothing). Same picture (largest difference 3e-7); measured at noon: ground -0.36 ms on top of IsoHeightTaps.
 
 [_Shaders.Terrain.Blending]
 Enabled = false                     # UNOFFICIAL, needs a game restart to turn ON (off works at once): blend objects into the ground where they meet it (from the Physically-Based-Reloaded fork, after Community Shaders' Terrain Blending). The land fades out over the part of a rock, wall or prop just below it, so it sinks softly into the terrain instead of ending in a hard line. Exteriors only. Smooth (below) fades it without needing TAA. Costs one depth copy a frame plus a little on the land. Not with SunSmoothing CrossFade (no sampler left on the land shaders).

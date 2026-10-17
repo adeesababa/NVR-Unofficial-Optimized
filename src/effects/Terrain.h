@@ -62,6 +62,7 @@ public:
 		float Height;
 		float ShadowsIntensity;
 		bool IsoHeightTaps;		// UNOFFICIAL 2026-10-17: single isotropic tap per parallax height lookup (Parallax.hlsl)
+		bool SkipEmptyLayers;	// UNOFFICIAL 2026-10-17: no colour/normal lookups for zero-weight layers (Terrain.hlsl)
 	};
 	struct LODSettingsStruct {
 		float NoiseScale;
@@ -88,7 +89,7 @@ public:
 	struct ParallaxStruct {
 		D3DXVECTOR4     Data;
 		D3DXVECTOR4     ExtraData;
-		D3DXVECTOR4     IsoData;      // UNOFFICIAL x: IsoHeightTaps (TESR_TerrainParallaxIso, c94)
+		D3DXVECTOR4     IsoData;      // UNOFFICIAL x: IsoHeightTaps, y: SkipEmptyLayers (TESR_TerrainParallaxIso, c94)
 	};
 	ParallaxStruct  ParallaxConstants;
 

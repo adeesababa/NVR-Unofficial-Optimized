@@ -347,7 +347,8 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float gloss = 0.0f;
     float specExponent = 0.0f;
-    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
+    float2 odx = ddx(offsetUV), ody = ddy(offsetUV);	// UNOFFICIAL SkipEmptyLayers: the gradients tex2D took implicitly
+    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
 #if TERRAIN_BLEND_ACTIVE
     // The land texture's height shapes the blend's edge (HeightBlend); the dither, if used, cuts on the shaped edge.
     [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y > 0.0f)
@@ -355,7 +356,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
         clip(terrainKeep - terrainBlendNoise(IN.screenPos));
 #endif
-    float3 combinedNormal = blendNormalMaps(offsetUV, texCount, NormalMap, weights, spec, gloss, specExponent);
+    float3 combinedNormal = blendNormalMaps(offsetUV, odx, ody, texCount, NormalMap, weights, spec, gloss, specExponent);
 
     float3 lightTS = mul(tbn, SunDir.xyz);
     float parallaxShadowMultiplier = 1.0;

@@ -125,6 +125,8 @@ void TerrainShaders::UpdateSettings() {
 	ParallaxSettings.ShadowsIntensity = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "ShadowsIntensity");
 	// UNOFFICIAL 2026-10-17 IsoHeightTaps (Parallax.hlsl TESR_TerrainParallaxIso): one trilinear tap per parallax height lookup.
 	ParallaxSettings.IsoHeightTaps = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "IsoHeightTaps") != 0;
+	// UNOFFICIAL 2026-10-17 SkipEmptyLayers (Terrain.hlsl): no colour/normal lookups for layers with weight exactly 0.
+	ParallaxSettings.SkipEmptyLayers = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "SkipEmptyLayers") != 0;
 
 	// [Main.Main.ReducedQuality] ParallaxLite suggests a shorter terrain parallax reach: 1024 units at 1440p, where the user
 	// saw no difference from 2048 in a rocky desert view and it saved 0.8 ms on top of the lite search. Scaled with the
@@ -235,6 +237,7 @@ void TerrainShaders::UpdateConstants() {
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;
 	ParallaxConstants.ExtraData.z = ParallaxSettings.ShadowsIntensity;
 	ParallaxConstants.IsoData.x = ParallaxSettings.IsoHeightTaps ? 1.0f : 0.0f;
+	ParallaxConstants.IsoData.y = ParallaxSettings.SkipEmptyLayers ? 1.0f : 0.0f;
 
 	// [Main.Main.ReducedQuality] CheapUnderwaterTerrain: ground below the water surface skips parallax and its shadows
 	// (TerrainTemplate.hlsl). .w is the camera-relative height below which terrain counts as under water: the level of
