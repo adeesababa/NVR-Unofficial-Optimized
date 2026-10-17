@@ -1,4 +1,4 @@
-# New Vegas Reloaded 4.4.1 - UNOFFICIAL Optimized (side build)
+# New Vegas Reloaded 4.4.1 - UNOFFICIAL Boutique (side build)
 
 **The official New Vegas Reloaded 4.4.1, made faster, with the same picture.**
 
@@ -13,7 +13,7 @@ It is for people who want to stay on 4.4.1 - its effects, its fog, its menu, its
 - **4.4.1's own menu**, unchanged. The new options are under **Main > Main > Performance**, all on by default; each can
   be switched off live (SlimDepthBuffer needs a restart) to get the original 4.4.1 behaviour back.
 
-What changed, in short (details: [docs/UNOFFICIAL-4.4.1-OPTIMIZED.md](docs/UNOFFICIAL-4.4.1-OPTIMIZED.md)):
+What changed, in short (details: [docs/UNOFFICIAL-4.4.1-BOUTIQUE.md](docs/UNOFFICIAL-4.4.1-BOUTIQUE.md)):
 effects pass the image to each other without copying the whole frame after every pass; ambient occlusion keeps its
 term in small buffers and does its two sampling passes in one; when nothing renders in between, the sun-shadow blend
 and the AO blend are done inside the fog pass (the 4.4.1 fog itself is unchanged); god rays and the interior shadow

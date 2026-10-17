@@ -1,4 +1,4 @@
-# NVR 4.4.1 UNOFFICIAL Optimized - technical notes
+# NVR 4.4.1 UNOFFICIAL Boutique - technical notes
 
 Base: the official New Vegas Reloaded 4.4.1 source (pr0bability/TESReloaded10 `86ce118a`, checked against the 4.4.1
 release archive: same version, same shaders, same settings file). The optimizations come from NVR UNOFFICIAL Optimized
@@ -52,7 +52,7 @@ Always on (no switch):
 
 GTX 1070, 2560x1440, native Direct3D 9, 4.4.1 default settings; two sessions per build, alternating:
 
-| Scene | 4.4.1 | 4.4.1 UNOFFICIAL Optimized |
+| Scene | 4.4.1 | 4.4.1 UNOFFICIAL Boutique |
 |---|---|---|
 | Lamp-lit casino interior | 24.7 ms (40.5 FPS) | 15.8 ms (63.1 FPS) |
 | Desert at noon | 27.8 ms (36.0 FPS) | 19.7 ms (50.7 FPS) |
