@@ -135,17 +135,73 @@ float GetPointLightContribution(float4 worldPos, float4 LightPos, float4 normal)
 }
 
 
+// UNOFFICIAL 2026-10-16: SmoothFacets. The normals buffer is rebuilt from depth, so every triangle of a low-poly rock is
+// perfectly flat, and the snow's "faces up" test cut such rocks into white and bare triangles (user report, snowy mod
+// area). With SmoothFacets on, the coverage pass also averages the surface direction over a patch facetRadius game units
+// across (samples more than twice that away in 3D are left out, so a rock does not take the direction of the ground
+// behind it) and stores it in g/b; the two blur passes soften it together with the coverage, and Snow() places and lights
+// the snow with it. 0: the per-pixel normal, as before.
+static const float facetRadius = TESR_SnowAccumulationColor.w;
+
+static const float2 FacetTaps[12] =
+{
+	float2( 0.5,    0.0), float2( 0.25,  0.433), float2(-0.25,  0.433),
+	float2(-0.5,    0.0), float2(-0.25, -0.433), float2( 0.25, -0.433),
+	float2( 0.866,  0.5), float2( 0.0,   1.0),   float2(-0.866,  0.5),
+	float2(-0.866, -0.5), float2( 0.0,  -1.0),   float2( 0.866, -0.5),
+};
+
+float3 ViewNormalLod(float2 uv)
+{
+	return tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0, 0.0)).xyz * 2 - 1;
+}
+
+// explicit-LOD reads: it runs behind a [branch]
+float3 SmoothedWorldNormal(float2 uv)
+{
+	float depth = readDepthLod(uv);
+	float3 center = toWorld(uv) * depth;
+	float2 uvRadius = min(0.5 * facetRadius / max(depth, 1.0) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]), 0.1);
+
+	// Neighbours count by distance and by how alike they face: facets of one rock (a few tens of degrees apart) merge, but the
+	// flat ground round a small rock (about 90 degrees from its sides) is left out, or it buried the rock (first test).
+	float3 n0 = ViewNormalLod(uv);
+	float3 sum = n0;
+	[unroll]
+	for (int i = 0; i < 12; i++) {
+		float2 uv2 = uv + FacetTaps[i] * uvRadius;
+		float3 p = toWorld(uv2) * readDepthLod(uv2);
+		float3 n = ViewNormalLod(uv2);
+		sum += n * (saturate(2.0 - length(p - center) / facetRadius) * smoothstep(0.4, 0.85, dot(n0, n)));
+	}
+	return mul(TESR_ViewTransform, float4(normalize(sum), 1)).xyz; // view to world, as GetWorldNormal
+}
+
+// Kept on the upper half so Snow() can rebuild z as the positive root: a surface facing down is stored as facing
+// sideways, which gets no snow either way.
+float2 EncodeSnowNormal(float3 n)
+{
+	if (n.z < 0) {
+		float l = length(n.xy);
+		n.xy = l > 0.001 ? n.xy / l : float2(1, 0);
+	}
+	return n.xy * 0.5 + 0.5;
+}
+
 // Compute the areas of the screen that must be covered with snow
 float4 SnowCoverage( VSOUT IN ) : COLOR0
 {
 	// compute at quarter scale
     float2 uv = IN.UVCoord * 4;
 	if (uv.x > 1 || uv.y > 1) return white;
-	
+
     float depth;
     float4 world = reconstructWorldPosition(uv, depth);
 
-	if (depth > TESR_OrthoData.x) return white; // early out for the sky pixels
+	float2 facets = float2(0.5, 0.5);
+	[branch] if (facetRadius > 0) facets = EncodeSnowNormal(SmoothedWorldNormal(uv));
+
+	if (depth > TESR_OrthoData.x) return float4(1, facets, 1); // early out for the sky pixels
 
 	// sample an average ortho
     float ortho = GetOrtho(world);
@@ -167,7 +223,7 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
     ortho = lerp(ortho, 1, smoothstep(0.6 * TESR_OrthoData.x, TESR_OrthoData.x, depth)); // fade out ortho with distance
 
 
-	return float4(ortho.xxx, 1);
+	return float4(ortho, facets, 1);
 }
 
 
@@ -181,8 +237,16 @@ float4 Snow( VSOUT IN ) : COLOR0
 	float3 eyeDirection = -1 * normalize(world);
 	float4 worldPos = float4(TESR_CameraPosition.xyz + camera_vector, 1.0f);
 
-	float ortho = tex2D(TESR_RenderedBuffer, IN.UVCoord).x;
+	float4 mask = tex2D(TESR_RenderedBuffer, IN.UVCoord);
+	float ortho = mask.x;
 	float3 norm = GetWorldNormal(IN.UVCoord);
+
+	// UNOFFICIAL 2026-10-16: the smoothed direction from the coverage pass (SmoothFacets); the water test keeps the pixel's own
+	float3 shapeNorm = norm;
+	[branch] if (facetRadius > 0) {
+		float2 xy = mask.yz * 2 - 1;
+		shapeNorm = float3(xy, sqrt(saturate(1 - dot(xy, xy))));
+	}
 
 	// early out for the character gun, water surfaces/areas and surfaces above the ortho map (such as actors)
 	float waterTreshold = (depth/farZ) * 200;
@@ -194,7 +258,7 @@ float4 Snow( VSOUT IN ) : COLOR0
 
 	float2 uv = worldPos.xy / 200.0f;
 	float3 localNorm = expand(tex2D(TESR_SnowNormSampler, uv).xyz);
-	float3 surfaceNormal = normalize(float3(localNorm.xy + norm.xy, localNorm.z * norm.z));
+	float3 surfaceNormal = normalize(float3(localNorm.xy + shapeNorm.xy, localNorm.z * shapeNorm.z));
 	float4 normal =  float4(surfaceNormal, 1);
 
 	float3 snow_tex = TESR_SnowAccumulationColor.rgb;
@@ -226,7 +290,7 @@ float4 Snow( VSOUT IN ) : COLOR0
 	// create a noisy pattern of accumulation over time
 	float coverage = saturate(pows(noise(worldPos.xyz / (noiseSize * 0.5)) * noise(worldPos.xyz / (noiseSize * 3)) * noise(worldPos.xyz / noiseSize), 2 - 2 * TESR_SnowAccumulationParams.w));
 	coverage = saturate(smoothstep(0.2, 0.4, coverage));
-	float vertical = smoothstep(0.5, 0.8, shade(float3(0, 0, 1), norm));
+	float vertical = smoothstep(0.5, 0.8, shade(float3(0, 0, 1), shapeNorm));
 
 	color = lerp(color, snowColor, coverage * min(vertical, ortho));
 	color.a = 1;

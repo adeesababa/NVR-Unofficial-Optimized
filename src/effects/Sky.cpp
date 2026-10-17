@@ -320,6 +320,9 @@ void SkyShaders::UpdateSettings() {
 	Constants.CloudVolumeData2.y = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Absorption"), 0.0f);
 	Constants.CloudVolumeData2.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "DetailScale"), 0.0f) * 0.001f;
 	Constants.CloudVolumeData2.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "UVScale"), 0.0f) * 0.001f;
+	// UNOFFICIAL 2026-10-16: PanoramaSky. The slab slides the cloud texture as if it were a flat sheet overhead, which warps a
+	// 360-degree panorama on a custom sky.nif (user report); the toggle is UVScale 0 without having to know that.
+	if (TheSettingManager->GetSettingI("Shaders.Sky.Clouds", "PanoramaSky") != 0) Constants.CloudVolumeData2.w = 0.0f;
 	Constants.CloudVolumeLight.x = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Scattering"), 0.0f, 0.9f);
 	Constants.CloudVolumeLight.y = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "SilverLining"), 0.0f);
 	Constants.CloudVolumeLight.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "AmbientStrength"), 0.0f);
