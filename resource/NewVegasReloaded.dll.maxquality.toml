@@ -75,6 +75,7 @@ Steps = 16
 [_Shaders.Terrain.Parallax]
 HighQuality = true
 MaxDistance = 4096
+IsoHeightTaps = false
 
 [_Shaders.BloodFlow.Main]
 MaxSplats = 96
