@@ -166,7 +166,11 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
 
     #ifdef TERRAIN
         // UNOFFICIAL IsoHeightTaps (see TESR_TerrainParallaxIso): only the height taps below see these gradients.
+        // (Not with terrain blending at 7 layers: there the branch takes the shader past ps_3_0's 32 temporary registers and the
+        // game falls back to its own shader. Those draws keep the anisotropic height lookups.)
+#if !(TERRAIN_BLEND && !SUN_CROSSFADE && TEX_COUNT >= 7)
         [branch] if (TESR_TerrainParallaxIso.x > 0.5f) { float L = sqrt(min(dot(dx, dx), dot(dy, dy))); dx = float2(L, 0); dy = float2(0, L); }
+#endif
         // Fix for angles.
         viewDirTS.z = ((viewDirTS.z * 0.7) + 0.3);
         viewDirTS.xy /= viewDirTS.z;
@@ -336,7 +340,9 @@ float getParallaxShadowMultipler(float distance, float2 coords, float2 dx, float
     
     if (quality > 0.0)
     {
+#if !(TERRAIN_BLEND && !SUN_CROSSFADE && TEX_COUNT >= 7)   // as in getParallaxCoords
         [branch] if (TESR_TerrainParallaxIso.x > 0.5f) { float L = sqrt(min(dot(dx, dx), dot(dy, dy))); dx = float2(L, 0); dy = float2(0, L); }  // UNOFFICIAL IsoHeightTaps
+#endif
         float weights[7] = { 0, 0, 0, 0, 0, 0, 0 };
         float sh0 = getTerrainHeight(coords, dx, dy, quality, texCount, tex, blends, status, weights);
 
