@@ -41,6 +41,7 @@ namespace ClothWind {
 		float Ripple = 0.5f;
 		float RippleScale = 0.012f;		// ripple cycles per unit
 		float TimeOffset = 0.0f;		// test only: seconds the pattern is ahead
+		bool  HeightFromFeet = true;	// mask 2 on worn clothing: heights from the actor's feet (the node the mesh hangs from), not the skin root
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 	};
 
@@ -123,6 +124,7 @@ namespace ClothWind {
 		S.MaskMode = std::clamp(TheSettingManager->GetSettingI(section, "MaskMode"), 0, 2);
 		S.HeightTop = TheSettingManager->GetSettingF(section, "HeightTop");
 		S.HeightBottom = TheSettingManager->GetSettingF(section, "HeightBottom");
+		S.HeightFromFeet = TheSettingManager->GetSettingI(section, "HeightFromFeet") != 0;
 		S.UseGameWind = TheSettingManager->GetSettingI(section, "UseGameWind") != 0;
 		S.Dir[0] = TheSettingManager->GetSettingF(section, "WindDirX"); S.Dir[1] = TheSettingManager->GetSettingF(section, "WindDirY");
 		S.Dir[2] = TheSettingManager->GetSettingF(section, "WindDirZ");
@@ -222,15 +224,27 @@ namespace ClothWind {
 		else {	// worn clothing: from the actor's waist down to near the ground
 			const NiAVObject* root = geometry->skinInstance->RootParent ? geometry->skinInstance->RootParent : geometry;
 			const float range = S.HeightTop > S.HeightBottom ? S.HeightTop - S.HeightBottom : 1.0f;
+			// 2026-10-17 (round 2, the Ranger Patrol test: shoulders moved as much as the hem, only the head stood still): the skin root
+			// is the skeleton's own root (Bip01, at the hips), NOT the actor's feet, so 'units above the root' put HeightTop 95 units above
+			// the hips. The feet are the origin of the node the mesh hangs from (the geometry's own world transform: its local transform
+			// is the identity); the root's height above them is taken off. A reading outside 0..140 units (not an actor-like rig) falls
+			// back to the old way. UNVERIFIED in game: the first run with it logs "Cloth wind: skinned ...: root N above the feet".
+			float rootAbove = 0.0f;
+			if (S.HeightFromFeet) {
+				const float d = root->m_worldTransform.pos.z - geometry->m_worldTransform.pos.z;
+				if (d > -20.0f && d < 140.0f) rootAbove = d;
+				static int told = 0;
+				if (told < 6) { told++; Logger::Log("Cloth wind: skinned %s: skin root %.1f above the mesh node's origin (%s)", diffuse->ddsPath1, d, rootAbove != 0.0f || d == 0.0f ? "used as the feet" : "out of range: root taken as the feet"); }
+			}
 			if (shadowPass) {	// NVR's shadow pass skins into world space
-				top = root->m_worldTransform.pos.z + S.HeightTop;
+				top = root->m_worldTransform.pos.z - rootAbove + S.HeightTop;
 				invRange = 1.0f / range;
 			}
-			else {	// the game's passes: the skin root's space (z up from the actor's feet)
+			else {	// the game's passes: the skin root's space (z up; the feet are rootAbove below the root's origin)
 				const NiTransform& w = root->m_worldTransform;
 				scale = w.scale > 1e-4f ? w.scale : 1.0f;
 				for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
-				top = S.HeightTop / scale;
+				top = (S.HeightTop - rootAbove) / scale;
 				invRange = scale / range;
 			}
 		}

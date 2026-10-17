@@ -783,6 +783,7 @@ Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,t
 MaskMode = 2                         # 0: the mesh's vertex colour RED says how loose each part is (1 loose ends, 0 pinned) -- for meshes authored with such a mask; 1: the whole mesh moves; 2: by height, pinned at the top (works with unauthored meshes)
 HeightTop = 95.0                     # Mask 2 on worn clothing: where it is pinned (units above the actor's feet; ~waist)
 HeightBottom = 25.0                  # Mask 2 on worn clothing: where it is loosest
+HeightFromFeet = true                # Mask 2 on worn clothing: measure those heights from the actor's feet (true) or from the skeleton's root, which is at the hips (false: the old way, shoulders moved too)
 UseGameWind = true                   # Take direction and strength from the weather's wind (the values below still scale it)
 Interiors = false                    # Cloth moves indoors too (no wind indoors, so off)
 WindDirX = 1.0                       # Wind direction (world, used when UseGameWind is off)
