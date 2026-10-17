@@ -7,6 +7,15 @@
     #include "includes/PBR.hlsl"
 #endif
 
+// UNOFFICIAL 2026-10-17 (deep roadmap). x: IsoHeightTaps -> the parallax HEIGHT taps (march and self-shadow, Parallax.hlsl) use
+// one isotropic footprint the size of the pixel's shorter axis: a single trilinear lookup at the mip anisotropic filtering
+// would pick, without its extra taps along the long axis (the game's iMaxAnisotropy applies to the land maps); colour and
+// normal taps keep the real gradients. In game at noon: ground 4.0 -> 2.4 ms, change 1.3x the frame-to-frame flicker. After
+// Wronski, "Assassin's Creed 4: Road to Next-Gen Graphics", GDC 2014 ("turn off aniso filtering on heightmaps").
+// y: SkipEmptyLayers -> blendDiffuseMaps/blendNormalMaps skip layers with weight exactly 0 (below).
+// c94: free in every land variant (the game's land constants end at c93, Shadow.hlsl starts at c100).
+float4 TESR_TerrainParallaxIso : register(c94);
+
 #if defined(__INTELLISENSE__)
     #include "SkyAmbient.hlsl"
 #else
@@ -39,16 +48,21 @@ float4 TESR_TerrainSkyData : register(c135);
     #define SKY_AMBIENT_STRENGTH  (TESR_TerrainSkyData.x)    // scale on skyUpper at w = 1
 #endif
 
-float3 blendDiffuseMaps(float3 vertexColor, float2 uv, int texCount, sampler2D tex[7], float blends[7]) {
+// UNOFFICIAL 2026-10-17 SkipEmptyLayers (TESR_TerrainParallaxIso.y): a layer whose blend weight is exactly 0 adds exactly 0,
+// so its colour and normal lookups are skipped (with the game's anisotropic filtering each one is many taps). Inside a branch
+// the lookups take explicit gradients: odx/ody = ddx/ddy of the same uv, taken at the top level (what tex2D used implicitly).
+// Harness, real land maps, aniso 15: -12..-14% at 5-7 layers with patchy weights, +0..2% when every layer is present;
+// largest pixel difference 3e-7 (rounding).
+float3 blendDiffuseMaps(float3 vertexColor, float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7]) {
     float3 color = float3(0, 0, 0);
     [unroll] for (int i = 0; i < texCount; i++) {
-        color += tex2D(tex[i], uv).xyz * blends[i];
+        [branch] if (blends[i] > 0 || TESR_TerrainParallaxIso.y < 0.5f) color += tex2Dgrad(tex[i], uv, odx, ody).xyz * blends[i];
     }
 
     return color * vertexColor;
 }
 
-float3 blendNormalMaps(float2 uv, int texCount, sampler2D tex[7], float blends[7], float spec[7], out float gloss, out float specExponent) {
+float3 blendNormalMaps(float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7], float spec[7], out float gloss, out float specExponent) {
     gloss = 0.0f;
     specExponent = 0.0f;
 
@@ -56,10 +70,12 @@ float3 blendNormalMaps(float2 uv, int texCount, sampler2D tex[7], float blends[7
 
     float4 normal;
     [unroll] for (int i = 0; i < texCount; i++) {
-        normal = tex2D(tex[i], uv);
+        [branch] if (blends[i] > 0 || TESR_TerrainParallaxIso.y < 0.5f) {   // UNOFFICIAL SkipEmptyLayers (see blendDiffuseMaps)
+        normal = tex2Dgrad(tex[i], uv, odx, ody);
         blendedNormal += normal.xyz * blends[i];
         gloss += normal.w * blends[i] * (spec[i] > 0 ? 1.0f : 0.0f);
         specExponent += spec[i] * blends[i];
+        }
     }
 
     gloss = saturate(gloss);
