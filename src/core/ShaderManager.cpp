@@ -1482,7 +1482,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 		{
 			GpuProfileScope gpuExposure(exposureTimer, Device);
-			Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			// UNOFFICIAL (postchain): with MaxBrightness 0 (the Night default) the pass returns delinearize(linearize(c)), which is c
+			// again at the buffer's precision (c is a half float; the round trip's 1e-6 error rounds back to it): a full-screen
+			// read and write for nothing. Skipped, the image is left where it is (no chain commit).
+			if (!(TheSettingManager->SettingsMain.Main.SkipIdentityExposure && Effects.Exposure->Constants.Data.y == 0.0f))
+				Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		{
 			GpuProfileScope gpuBloom(bloomTimer, Device);
