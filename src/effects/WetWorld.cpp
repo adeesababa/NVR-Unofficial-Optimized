@@ -31,6 +31,7 @@ void WetWorldEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-16 KeepHighlights: the wet pass writes every pixel in rain, the sky included; it clamped them to 1.0 before
 	// the tonemapper (sun, bright sky and lit wet highlights lost their roll-off). On: clamped only below 0.
 	Constants.Look.x = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "KeepHighlights") ? 1.0f : 0.0f;
+	fastPaths = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "FastPaths") != 0;
 }
 
 void WetWorldEffect::RegisterConstants() {

@@ -1359,7 +1359,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Effects.WetWorld->RenderCoverTest(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.WetWorld->MainTechnique(), false, SourceSurface);
 		// Beam march first, into its own half res buffer, so the Flashlight Combine pass can
 		// read it. Control.x already folds the effect toggle, the per view toggle and the
 		// strength together, so this one test gates the whole thing.

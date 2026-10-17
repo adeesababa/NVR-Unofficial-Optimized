@@ -36,4 +36,10 @@ public:
 	void	RegisterConstants();
 	void	UpdateSettings();
 	bool	ShouldRender();
+
+	// UNOFFICIAL 2026-10-17 FastPaths ([Shaders.WetWorld.Main] FastPaths): technique 2 of WetWorld.fx is the same picture with
+	// the wet pass's early returns and lamp loop as real branches (the compiler had flattened them: every pixel, sky included,
+	// ran the whole pass). Off, or a shader file without technique 2: technique 0, the original.
+	bool	fastPaths = false;
+	UINT	MainTechnique() const { return fastPaths && Effect && Effect->GetTechnique(2) ? 2 : 0; }
 };
