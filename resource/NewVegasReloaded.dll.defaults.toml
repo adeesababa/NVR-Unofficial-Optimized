@@ -831,6 +831,8 @@ ForwardShadows = true                # Evaluate sun shadows per-object in the li
                                      # out entirely, so turning it on then needs a restart.
 Darkness = 0.75                      # Darkness of shadows.
 NightMinDarkness = 0.35              # Darkness of shadows during dark moon phase. Set to 0 to disable shadows completely when there is no moon.
+SkipWhenFaded = true                 # UNOFFICIAL: around sunrise and sunset the sun's shadows are faded out completely; while they are, the lit shaders skip their shadow lookups, and the screen-space contact shadows and the shadow maps are not drawn when nothing reads them (the volumetric fog's sun glow reads the shadow maps, so with the fog on they are kept). The picture is the same. false: everything runs anyway.
+SkipWhenFadedCheck = 0               # UNOFFICIAL, DIAGNOSTIC (development builds only, release builds ignore it): leave 0. 1 = what SkipWhenFaded skips is filled with "full shadow", so anything still reading it would show; 2 = the same, skipping even what is still read (a test that the checks matter: the picture changes); 3 = the lit shaders' sun shadow lookups off at any hour (to measure their cost: by day the sun shadows disappear); 4 = the shadow maps filled with 'full shadow' at any hour, nothing skipped (shows that 1 and 2 reach the shaders).
 OrthoMapResolution = 256             # Resolution of the texture used to store the ortho map.
 OrthoRadius = 8000                   # Max distance for rendering of ortho map.
 UsePointShadowsDay = false           # Whether to cast shadows from point lights. Requires a slight darkening of the entire screen.
@@ -1039,6 +1041,7 @@ HardEdges = true                   # UNOFFICIAL: the bounce light never crosses 
 Enabled = false                     # UNOFFICIAL, optional: one bounce of indirect light from what is on screen (colour bleeding, more natural shading). About 1 ms GPU at 1440p when on (F10 'Bounce light'); nothing when off.
 
 [_Shaders.ContactHardening.Main]
+AtNight = false                      # UNOFFICIAL: keep contact hardening at night too. Off (default): plain shadow edges while the sun is down, where the moon's faded shadows show no difference (measured at a night test spot: no changed pixels, about 1 ms faster at 1440p).
 SunSize = 1.0                        # UNOFFICIAL, optional: how soft far shadow edges get, as a multiple of the real sun's size (1 = realistic). Higher values can show aliasing.
 MaxSoftness = 4.0                    # Cap on the blur, in shadow map texels (1-32). Higher allows softer edges under tall objects but costs more and can show aliasing.
 Smooth = true                        # UNOFFICIAL (2026-10-15), PCF shadows (Mode 3): smoother contact-hardening edges. Narrow and wide penumbrae blend instead of switching along a line, and the soft-edge samples are turned a little differently at each spot on the ground, so wide penumbrae show a fine even grain instead of stair-steps and bands. Costs a little in penumbrae only.
@@ -1524,6 +1527,7 @@ TerrainSaturation = 1.0             # Control terrain saturation.
 [_Shaders.Terrain.Parallax]
 Enabled = true                      # Turn on parallax occlusion mapping for terrain.
 Shadows = true						# Turn on height based self shadowing.
+ShadowsAtNight = false              # UNOFFICIAL: keep the self shadowing at night too. Off (default): skipped while the sun is down, where the moon is too dim for it to show (measured: no changed pixels at a night test spot, about 1 ms faster there at 1440p).
 HeightBlend = true                  # Turn on height based texture blending.
 HighQuality = true                  # Turn on high quality. Double the number of steps, higher performance impact.
 MaxDistance = 2048                  # Controls the maximum distance for the parallax and shadow effects.

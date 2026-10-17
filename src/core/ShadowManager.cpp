@@ -2,6 +2,7 @@
 #include "ShadowFaceCull.h"
 #include "PointShadowSchedule.h"
 #include "PointShadowForward.h"
+#include "TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 
 // UNOFFICIAL SkinnedShadowFaceTest ([Main.Main.Performance], default on, 2026-10-07). An animated (skinned) mesh's own
 // world bound is stale, so skinned casters used to be drawn into all six faces of every lamp cube map near them; with a
@@ -1231,14 +1232,20 @@ void ShadowManager::RenderShadowMaps() {
 		// 0.0093 world units per unit between the thing casting it and the ground; SunSize scales that.
 		if (ContactHardeningCompiled) {
 			// (The settings are read by ShadowsExteriorEffect::UpdateSettings when they change, not by name every frame.)
-			const bool on = Shadows->Settings.ContactHardening.Enabled;
+			// UNOFFICIAL 2026-10-16 (night cost study, work/bench/foundations/nightcost): at full night (dayLight 0) the
+			// shadows are the moon's, faded and dim, and their soft edges did not show: off there, the night test spot
+			// changed fewer pixels than two identical frames differ by, and the world scene took 0.8-1.0 ms less (GTX 1070,
+			// 1440p). AtNight keeps it.
+			const bool night = TheShaderManager->GameState.dayLight <= 0.0f && !Shadows->Settings.ContactHardening.AtNight;
+			const bool on = Shadows->Settings.ContactHardening.Enabled && !night;
 			ContactHardeningData.x = on ? 0.00925f * Shadows->Settings.ContactHardening.SunSize : 0.0f;
 			ContactHardeningData.y = Shadows->Settings.ContactHardening.MaxSoftness;
 			ContactHardeningData.z = Shadows->Settings.ContactHardening.Smooth ? 1.0f : 0.0f;	// UNOFFICIAL 2026-10-15 Smooth
 			static float logged = -1.0f;
 			if (ContactHardeningData.x != logged) {
-				Logger::Log("UNOFFICIAL contact hardening %s (penumbra %.4f per unit of distance, max %.0f texels)",
-					on ? "ON" : "OFF", ContactHardeningData.x, ContactHardeningData.y);
+				Logger::Log("UNOFFICIAL contact hardening %s%s (penumbra %.4f per unit of distance, max %.0f texels)",
+					on ? "ON" : "OFF", night && Shadows->Settings.ContactHardening.Enabled ? " for the night (AtNight off)" : "",
+					ContactHardeningData.x, ContactHardeningData.y);
 				logged = ContactHardeningData.x;
 			}
 		}
@@ -1249,7 +1256,62 @@ void ShadowManager::RenderShadowMaps() {
 				hinted = true;
 			}
 		}
-		if (ExteriorEnabled && SunDir.z > 0.0f) {
+		// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): while the sun's shadows are
+		// fully faded and nothing reads the cascade maps (ShadowsExteriorEffect::FadedCascadesUnread), they are not drawn.
+		// Only once they hold a full draw since the atlas was made (SunAtlasDrawn), and the first frame the cascades are drawn
+		// after a skip redraws every one, so no reader ever sees a map that missed frames. While the sun is below the horizon
+		// (the whole fade-1 window in the Mojave's climate) nothing redraws them anyway.
+		const bool skipCascades = ExteriorEnabled && Shadows->SunFaded && SunAtlasDrawn && Shadows->FadedCascadesUnread();
+		if (skipCascades) {
+			SunCascadesSkipped = true;
+			if (SunDir.z > 0.0f) ShadowData->z = 0;	// as the cascade pass leaves it
+		}
+		else if (SunCascadesSkipped) {
+			ForceAllCascades = true;
+			SunCascadesSkipped = false;
+		}
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC SkipWhenFadedCheck: while the cascades are skipped the atlas is set to 0 (depth 0 / zero moments: everything
+		// in shadow), so a reader the checks missed changes the picture. The real atlas is kept in a copy and put back when the
+		// skip ends (the sun is below the horizon in the fade-1 window: no pass would redraw it). The render target and depth are
+		// put back at the end of this function.
+		{
+			static IDirect3DTexture9* kept = nullptr;
+			static IDirect3DSurface9* keptSurface = nullptr;
+			static bool poisoned = false;
+			const bool poison = skipCascades && Shadows->Settings.Exteriors.SkipWhenFadedCheck && Shadows->ShadowAtlasSurface;
+			if (poison && !poisoned) {
+				D3DSURFACE_DESC desc = {}, keptDesc = {};
+				Shadows->ShadowAtlasSurface->GetDesc(&desc);
+				if (keptSurface && (FAILED(keptSurface->GetDesc(&keptDesc)) || keptDesc.Width != desc.Width || keptDesc.Height != desc.Height ||
+					keptDesc.Format != desc.Format)) {
+					keptSurface->Release(); kept->Release(); keptSurface = nullptr; kept = nullptr;
+				}
+				if (!kept && SUCCEEDED(Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &kept, NULL)))
+					kept->GetSurfaceLevel(0, &keptSurface);
+				poisoned = keptSurface && SUCCEEDED(Device->StretchRect(Shadows->ShadowAtlasSurface, NULL, keptSurface, NULL, D3DTEXF_NONE));
+				Logger::Log("SkipWhenFadedCheck: shadow atlas %s", poisoned ? "kept and poisoned while skipped" : "could not be kept: not poisoned");
+			}
+			if (poison && poisoned) {
+				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+				Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+			else if (!poison && poisoned) {
+				const bool back = SUCCEEDED(Device->StretchRect(keptSurface, NULL, Shadows->ShadowAtlasSurface, NULL, D3DTEXF_NONE));
+				Logger::Log("SkipWhenFadedCheck: shadow atlas %s", back ? "put back" : "could NOT be put back");
+				poisoned = false;
+			}
+		}
+#endif
+		static int loggedSkip = -1;
+		const int skipState = skipCascades ? 2 : Shadows->SunFaded && ExteriorEnabled ? 1 : 0;
+		if (skipState != loggedSkip) {
+			Logger::Log("SUN FADE STATE: sun cascade maps %s", skipState == 2 ? "SKIPPED" : skipState == 1 ?
+				"drawn (read this frame: the volumetric fog's sun glow, the volumetric light or the deferred lookup; or no full draw yet)" : "drawn");
+			loggedSkip = skipState;
+		}
+		if (ExteriorEnabled && SunDir.z > 0.0f && !skipCascades) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);
 
@@ -1318,6 +1380,7 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			if (ForceAllCascades) SunAtlasDrawn = true;	// UNOFFICIAL SkipWhenFaded: every cascade was drawn this frame
 			ForceAllCascades = false;
 			LogSunShadowStats(cachedDistant);
 			}
@@ -1352,6 +1415,16 @@ void ShadowManager::RenderShadowMaps() {
 			if (Shadows->Settings.ShadowMaps.Mipmaps)
 				Shadows->ShadowAtlasTexture->GenerateMipSubLevels();
 		}
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC SkipWhenFadedCheck 4: the atlas set to 0 at any hour, nothing skipped (shows that the poison of 1 and 2
+		// reaches the shaders that read the maps: by day everything in the cascades' reach turns to shadow).
+		if (Shadows->Settings.Exteriors.SkipWhenFadedCheck == 4 && Shadows->ShadowAtlasSurface) {
+			Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+			Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+			Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			ForceAllCascades = true;	// redrawn in full once the check is off
+		}
+#endif
 
 		// render ortho map if one of the effects using ortho is active
 		if (TheShaderManager->orthoRequired) {

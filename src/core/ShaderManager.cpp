@@ -1165,8 +1165,32 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
 			const bool sharpContact = fusedForwardContact && Effects.ShadowsExteriors->Settings.ScreenSpace.Sharp && sharpTechnique != NULL &&
 				Effects.SunShadows->Effect->GetTechnique(2) == sharpTechnique;
-			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface,
-				Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
+			// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost): while the sun's shadows are fully faded and nothing reads these
+			// passes (ShadowsExteriorEffect::FadedContactUnread), they are skipped; the buffer keeps the lamps' pass above.
+			ShadowsExteriorEffect* sunShadows = Effects.ShadowsExteriors;
+			const bool skipContact = sunShadows->FadedContactUnread();
+			static int loggedSkip = -1;
+			if ((int)skipContact != loggedSkip) {
+				Logger::Log("SUN FADE STATE: contact shadows %s", skipContact ? "SKIPPED" : sunShadows->SunFaded ?
+					"drawn (an effect reads them: lamp shadows outdoors, blood flow, wet world, underwater or the debug view)" : "drawn");
+				loggedSkip = skipContact;
+			}
+			if (!skipContact) {
+				// The stock technique's last pass (no fused technique in an old SunShadows.fx) would take the cascades over while
+				// the forward lookups are off for the fade: it gets the forward value, as without the switch.
+				const float forwardWas = sunShadows->Constants.ForwardData.x;
+				if (sunShadows->SunFaded && sunShadows->Settings.Exteriors.ForwardShadows) sunShadows->Constants.ForwardData.x = 0.0f;
+				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
+				sunShadows->Constants.ForwardData.x = forwardWas;
+			}
+#if NVR_TEST_TOOLS
+			else if (sunShadows->Settings.Exteriors.SkipWhenFadedCheck) {
+				// DIAGNOSTIC SkipWhenFadedCheck: the skipped passes' buffer set to 0 (full shadow, no lamp light), so a reader the
+				// checks missed changes the picture.
+				Device->SetRenderTarget(0, sunShadows->Textures.ShadowPassSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+#endif
 		}
 	}
 	else {

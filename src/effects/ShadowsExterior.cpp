@@ -1,4 +1,5 @@
 #include "ShadowsExterior.h"
+#include "../core/TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 
 // UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS, technique 2; drawn by ShaderManager after the lamp
 // pass): every number the shader needs (see the constants' comments there). Kept out of ShadowsExterior.h (widely included).
@@ -27,6 +28,7 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			// at night time, fade based on moonphase
 			// moonphase goes from 0 to 8
 			float MoonPhase = (fmod(DaysPassed, 8 * Tes->sky->firstClimate->phaseLength & 0x3F)) / (Tes->sky->firstClimate->phaseLength & 0x3F);
+			const float moonPhaseDays = MoonPhase;	// UNOFFICIAL 2026-10-16: for the NIGHT STATE line below
 
 			float PI = 3.1416f; // use cos curve to fade moon light shadows strength
 			MoonPhase = std::lerp(-PI, PI, MoonPhase / 8) - PI / 4; // map moonphase to 1/2PI/2PI + 1/2
@@ -35,6 +37,18 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			float nightMinDarkness = 1 - Settings.Exteriors.NightMinDarkness;
 			float MoonVisibility = std::lerp((float)0.0, nightMinDarkness, (float)(cos(MoonPhase) * 0.5 + 0.5));
 			Constants.ShadowFade.x = std::lerp(MoonVisibility, (float)1.0, Constants.ShadowFade.x);
+
+			// UNOFFICIAL 2026-10-16 (night cost study): what the night skips (ShadowsAtNight, ContactHardening AtNight) run
+			// under, logged when it changes: the moon phase sets how strong the moon's shadows are (ShadowFade.x, 1 = none).
+			static float loggedFade = -1.0f, loggedDayLight = -1.0f;
+			if (fabsf(Constants.ShadowFade.x - loggedFade) > 0.01f || (TheShaderManager->GameState.dayLight <= 0.0f) != (loggedDayLight <= 0.0f)) {
+				Logger::Log("NIGHT STATE: days passed %.2f, moon phase %.2f of 8 (phase length %d days), sun shadow fade %.3f (1 = none), dayLight %.2f, sun colour %.3f %.3f %.3f",
+					DaysPassed, moonPhaseDays, (int)(Tes->sky->firstClimate->phaseLength & 0x3F), Constants.ShadowFade.x,
+					TheShaderManager->GameState.dayLight, TheShaderManager->ShaderConst.sunColor.x, TheShaderManager->ShaderConst.sunColor.y,
+					TheShaderManager->ShaderConst.sunColor.z);
+				loggedFade = Constants.ShadowFade.x;
+				loggedDayLight = TheShaderManager->GameState.dayLight;
+			}
 		}
 
 		// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant
@@ -59,8 +73,40 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		// not sun shadows enabled), so the sun-shadow path can't share it. See the interior
 		// branch below.
 		Constants.FormatData.z = 1.0f;
+
+		// UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): around sunrise and sunset
+		// (dayLight 0.4-0.6) the fade above is exactly 1, and every lit shader's sun shadow comes out as exactly 1 whatever
+		// the cascades hold (Shadow.hlsl GetSunShadow ends with lerp(shadow, 1, fade)). The forward path's own off switch,
+		// read first there, returns that 1 without the cascade lookups. No shader changes.
+		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
+		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC SkipWhenFadedCheck 3: the lookups off at any hour (what they cost; by day the sun shadows leave the lit
+		// shaders, so the picture changes).
+		if (Settings.Exteriors.SkipWhenFadedCheck == 3) Constants.ForwardData.x = 1.0f;
+#endif
+
+		// UNOFFICIAL 2026-10-16: logged when it changes, with the game hours the fade is 1 in (ShaderManager's dayLight ramps:
+		// sunrise from an hour before the climate's sunrise to an hour before its end, sunset an hour after; fade 1 = dayLight
+		// 0.4-0.6 of either ramp).
+		const int fadeState = (Constants.ShadowFade.x >= 1.0f ? 1 : 0) | (SunFaded ? 2 : 0);
+		static int loggedFadeState = -1;
+		if (fadeState != loggedFadeState && Tes && Tes->sky) {
+			Sky* sky = Tes->sky;
+			const float riseBegin = sky->GetSunriseBegin(), riseEnd = sky->GetSunriseEnd(), setBegin = sky->GetSunsetBegin(), setEnd = sky->GetSunsetEnd();
+			TimeGlobals* time = TimeGlobals::Get();
+			Logger::Log("SUN FADE STATE: game hour %.3f, dayLight %.3f, sun shadow fade %.4f (1 = none), SkipWhenFaded %s: sun shadow lookups %s. "
+				"The fade is 1 from %.2f to %.2f (dawn) and %.2f to %.2f (dusk), game hours.",
+				time && time->GameHour ? fmod(time->GameHour->data, 24.0f) : -1.0f, TheShaderManager->GameState.dayLight, Constants.ShadowFade.x,
+				Settings.Exteriors.SkipWhenFaded ? "on" : "off", SunFaded ? "SKIPPED" : "run",
+				riseBegin - 1.0f + 0.4f * (riseEnd - riseBegin), riseBegin - 1.0f + 0.6f * (riseEnd - riseBegin),
+				setEnd + 1.0f - 0.6f * (setEnd - setBegin), setEnd + 1.0f - 0.4f * (setEnd - setBegin));
+			loggedFadeState = fadeState;
+		}
 	}
 	else {
+		SunFaded = false;	// UNOFFICIAL 2026-10-16 SkipWhenFaded: nothing to skip indoors
+		Constants.ForwardData.x = Settings.Exteriors.ForwardShadows ? 0.0f : 1.0f;
 		// pass the enabled/disabled property of the shadow maps to the shadowfade constant
 		Constants.ShadowFade.y = TheShaderManager->Effects.ShadowsInteriors->Enabled;
 		Constants.ShadowFade.z = 1; // z enables point lights
@@ -354,6 +400,12 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
+	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;	// UNOFFICIAL 2026-10-16
+#if NVR_TEST_TOOLS
+	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 4);
+#else
+	Settings.Exteriors.SkipWhenFadedCheck = 0;
+#endif
 	Settings.Exteriors.UsePointShadowsDay = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsDay");
 	Settings.Exteriors.UsePointShadowsNight = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsNight");
 
@@ -465,6 +517,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
 	Settings.ContactHardening.MaxSoftness = max(min(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "MaxSoftness"), 32.0f), 1.0f);
 	Settings.ContactHardening.Smooth = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "Smooth") != 0;
+	Settings.ContactHardening.AtNight = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "AtNight") != 0;
 	// UNOFFICIAL LampReachMask (PointShadows.fx LampReach): z = 1 / LightRadiusMult, the game radius as a share of the cube
 	// map's radius, so a lamp counts in full out to its game radius and fades over the rest; 0 = off (the old falloff).
 	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
@@ -499,6 +552,43 @@ bool ShadowsExteriorEffect::ShouldRender() {
 		reported = true;
 	}
 	return false;
+}
+
+/*
+* UNOFFICIAL 2026-10-16 SkipWhenFaded (dawn cost study, work/bench/foundations/dawncost): while the sun's shadows are fully
+* faded (SunFaded), whether anything reads the contact shadows' passes. Their red channel is read only through the fade,
+* which makes it exactly 1 whatever it holds (the shadow apply and its copies in the fog's composite and AmbientLight, snow),
+* or times 1 - fade = 0 (Specular). Their green channel, the lamps' light (PointShadows.fx), which the passes also blur and
+* raise to the Intensity power, counts only with lamp shadows on outdoors (ShadowFade.z): without them the apply's
+* 1 + green comes out at 1 whatever green is (Darkness 0 or more). Effects that read the buffer without the fade: blood
+* flow, wet world, underwater, the debug view.
+*/
+bool ShadowsExteriorEffect::FadedContactUnread() {
+#if NVR_TEST_TOOLS
+	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;	// DIAGNOSTIC: the readers ignored (positive control)
+#endif
+	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	return SunFaded && Constants.ShadowFade.z == 0.0f && Settings.Exteriors.Darkness >= 0.0f &&
+		!draws(TheShaderManager->Effects.BloodFlow) && !draws(TheShaderManager->Effects.WetWorld) &&
+		!draws(TheShaderManager->Effects.Underwater) && !draws(TheShaderManager->Effects.Debug);
+}
+
+/*
+* UNOFFICIAL 2026-10-16 SkipWhenFaded: while SunFaded, whether anything reads the sun's cascade maps this frame. The forward
+* lookups are off (ForwardData.x; the skin's second lookup runs only where the first found shadow), and Specular multiplies
+* its lookup by 1 - fade = 0. Still reading them: the volumetric fog's sun glow (GetFogShadowVisibility, NOT faded, with its
+* ShadowStrength above 0, the default: so by default the maps stay), the volumetric light (it stops itself at fade 0.999),
+* and with ForwardShadows off the deferred lookup in SunShadows.fx whenever the contact passes run.
+*/
+bool ShadowsExteriorEffect::FadedCascadesUnread() {
+#if NVR_TEST_TOOLS
+	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;	// DIAGNOSTIC: the readers ignored (positive control)
+#endif
+	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
+	const bool fogReads = draws(fog) && fog->Constants.Scatter.y > 0.0f;
+	const bool deferredReads = !Settings.Exteriors.ForwardShadows && !FadedContactUnread();
+	return SunFaded && !fogReads && !deferredReads && !draws(TheShaderManager->Effects.VolumetricLight);
 }
 
 void ShadowsExteriorEffect::clearShadowsBuffer() {
@@ -676,6 +766,9 @@ bool ShadowsExteriorEffect::EnsureStaticCubeMap(int slot) {
 
 void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cubemaps) {
 	if (cascades) {
+		// UNOFFICIAL 2026-10-16 SkipWhenFaded: no skip until the new atlas holds a full draw. (Only here: this function also
+		// runs, without remaking anything, on every settings change.)
+		TheShadowManager->SunAtlasDrawn = false;
 		if (ShadowAtlasSurface) {
 			ShadowAtlasSurface->Release();
 			ShadowAtlasSurface = nullptr;

@@ -132,6 +132,8 @@ public:
 		int					Quality;
 		float				Darkness;
 		float				NightMinDarkness;
+		bool				SkipWhenFaded;	// UNOFFICIAL 2026-10-16: no sun-shadow work while the fade is 1 (UpdateConstants SunFaded)
+		int					SkipWhenFadedCheck;	// UNOFFICIAL 2026-10-16, DIAGNOSTIC (NVR_TEST_TOOLS): 1 poison what is skipped, 2 also skip ignoring the readers, 3 lookups off at any hour
 	};
 
 	struct InteriorsStruct {
@@ -171,6 +173,7 @@ public:
 		float				SunSize;		// at least 0
 		float				MaxSoftness;	// 1..32
 		bool				Smooth;			// UNOFFICIAL 2026-10-15: smooth penumbra edges (Includes/Shadow.hlsl, PCF Mode 3)
+		bool				AtNight;		// UNOFFICIAL 2026-10-16: false = plain filtering while the sun is down (ShadowManager)
 	};
 
 	struct ScreenSpaceStruct {
@@ -203,6 +206,11 @@ public:
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
 	ShadowMapSettings		ShadowMaps[5];
+	// UNOFFICIAL 2026-10-16 SkipWhenFaded: outdoors, this frame's sun shadows are fully faded out (ShadowFade.x 1, around
+	// sunrise and sunset) and the switch is on, so the forward lookups are off (ForwardData.x). Set by UpdateConstants.
+	bool					SunFaded = false;
+	bool					FadedContactUnread();	// while SunFaded: nothing this frame reads the contact shadows (ShaderManager skips them)
+	bool					FadedCascadesUnread();	// while SunFaded: nothing this frame reads the cascade maps (ShadowManager skips them)
 
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;
