@@ -133,8 +133,9 @@ namespace ClothWind {
 		S.FlutterAmount = std::clamp(TheSettingManager->GetSettingF(section, "FlutterAmount"), 0.0f, 1.0f);
 		S.Ripple = std::clamp(TheSettingManager->GetSettingF(section, "RippleAmount"), 0.0f, 1.0f);
 		S.RippleScale = (std::max)(TheSettingManager->GetSettingF(section, "RippleScale"), 0.0f);
-		char wordsBuffer[512] = "";
-		const char* words = TheSettingManager->GetSettingS(section, "Keywords", wordsBuffer);
+		// (the whole text: GetSettingS goes through the node's 80-byte Value, which a longer list overflowed -- the game crashed)
+		SettingManager::Configuration::ConfigNode wordsNode;
+		const char* words = TheSettingManager->Config.FillNode(&wordsNode, section, "Keywords") ? wordsNode.LongValue.c_str() : nullptr;
 		if (words && WordsFrom != words) {
 			WordsFrom = words; Words.clear(); ByTexture.clear();
 			std::string w;

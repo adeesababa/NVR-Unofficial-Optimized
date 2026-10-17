@@ -210,6 +210,7 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 
 			Node->Type = NodeType::String;
 			value = setting.as_string();
+			Node->LongValue = value;
 		}
 		else {
 			// Key was not included in defaults, ignore
@@ -224,7 +225,10 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 	// populate node fields
 	strcpy(Node->Section, Section);
 	strcpy(Node->Key, Key);
-	strcpy(Node->Value, value.c_str());
+	// UNOFFICIAL 2026-10-17: bounded (Value is 80 bytes: a keyword list of 80+ characters in [Shaders.Cloth.Main] overflowed it and the
+	// game died with a stack-buffer-overrun fast fail right after the load); String settings keep their whole text in LongValue.
+	strncpy(Node->Value, value.c_str(), sizeof(Node->Value) - 1); Node->Value[sizeof(Node->Value) - 1] = 0;
+	if (Node->Type != NodeType::String) Node->LongValue.clear();
 	Node->Reboot = 0;
 
 	// Find midsection (usually the shader name)
@@ -255,7 +259,7 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 				bool applied = true;
 				if (Node->Type == NodeType::Integer && forced.is_integer()) {
 					Node->IntValue = (int)forced.as_integer(); Node->FloatValue = (float)Node->IntValue; Node->BoolValue = Node->IntValue != 0;
-					strcpy(Node->Value, toml::format(forced).c_str());
+					strncpy(Node->Value, toml::format(forced).c_str(), sizeof(Node->Value) - 1); Node->Value[sizeof(Node->Value) - 1] = 0;
 				}
 				else if (Node->Type == NodeType::Float && (forced.is_floating() || forced.is_integer())) {
 					Node->FloatValue = forced.is_floating() ? (float)forced.as_floating() : (float)forced.as_integer();

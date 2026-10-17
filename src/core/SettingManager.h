@@ -348,7 +348,8 @@ public:
 			char		Section[40];
 			char		Key[40];
 			char		MidSection[80];
-			char		Value[80];		// formatted text representation; still read directly by the UI layer
+			char		Value[80];		// formatted text representation; still read directly by the UI layer (cut at 79 characters)
+			std::string	LongValue;		// UNOFFICIAL 2026-10-17: a String setting's whole text (Value cuts it at 79: a longer one overflowed Value and crashed the game)
 			std::string Description;
 			bool		Reboot;
 			UInt32		Type;
