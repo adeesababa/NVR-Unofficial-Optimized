@@ -366,6 +366,54 @@ namespace ShaderSplit {
 }
 
 // ---- Which of the game's render entry points ran this frame ----
+// UNOFFICIAL 2026-10-17 terrain study, DIAGNOSTIC (only while the F10 GPU profile is on): how many land passes each piece of
+// ground gets in the world scene (each pass re-runs the whole terrain shader: parallax, sun shadow, lighting) and which land
+// passes they are. Land pass IDs 0x93-0x94 and 0x1EF-0x230 (research\grass-draw-order.md, from WallSoGB's map). Logged every
+// 240 frames as TERRAIN PROBE.
+namespace TerrainProbe {
+	static std::unordered_map<const void*, unsigned> PassesThisFrame;
+	static std::unordered_map<UInt16, unsigned long long> ByPass;
+	static std::unordered_map<UInt16, std::string> ShadersOfPass;	// pass -> "pixel shader / vertex shader" first seen with it
+	static const char* LastPixel = nullptr;	// set in SetShadersHook
+	static const char* LastVertex = nullptr;
+	static unsigned long long PerGeometry[9] = {}, Geometries = 0, Passes = 0;
+	static unsigned Frames = 0;
+
+	static void Note(const PointShadowForward::RenderPassView* pass) {
+		if (!GpuTimer::Enabled || ShaderSplit::CurrentContext != ShaderSplit::World || !pass) return;
+		const UInt16 e = pass->passEnum;
+		if (!((e >= 0x93 && e <= 0x94) || (e >= 0x1EF && e <= 0x230))) return;
+		PassesThisFrame[pass->geometry]++;
+		ByPass[e]++;
+		if (ShadersOfPass.find(e) == ShadersOfPass.end()) ShadersOfPass[e] = std::string(LastPixel ? LastPixel : "?") + "/" + (LastVertex ? LastVertex : "?");
+		Passes++;
+	}
+
+	static void NewFrame() {
+		if (!GpuTimer::Enabled) { PassesThisFrame.clear(); return; }
+		for (auto& g : PassesThisFrame) { PerGeometry[g.second < 8 ? g.second : 8]++; Geometries++; }
+		PassesThisFrame.clear();
+		if (++Frames < 240) return;
+		if (Geometries) {
+			char line[512]; int n = 0;
+			for (int k = 1; k <= 8; k++) n += sprintf_s(line + n, sizeof(line) - n, " %d%s:%.1f%%", k, k == 8 ? "+" : "", 100.0 * PerGeometry[k] / Geometries);
+			Logger::Log("TERRAIN PROBE %u frames: %.1f land pieces and %.1f land passes a frame; pieces by pass count:%s",
+				Frames, (double)Geometries / Frames, (double)Passes / Frames, line);
+			std::vector<std::pair<unsigned long long, UInt16>> top;
+			for (auto& b : ByPass) top.push_back({ b.second, b.first });
+			std::sort(top.rbegin(), top.rend());
+			n = 0;
+			for (size_t i = 0; i < top.size() && i < 10; i++)
+				n += sprintf_s(line + n, sizeof(line) - n, " %s:%.1f", Pointers::Functions::GetPassDescription(top[i].second), (double)top[i].first / Frames);
+			Logger::Log("TERRAIN PROBE passes a frame by kind:%s", line);
+			for (size_t i = 0; i < top.size() && i < 10; i++)
+				Logger::Log("TERRAIN PROBE   %s drawn with %s", Pointers::Functions::GetPassDescription(top[i].second), ShadersOfPass[top[i].second].c_str());
+		}
+		Frames = 0; Geometries = Passes = 0; ByPass.clear();
+		for (auto& c : PerGeometry) c = 0;
+	}
+}
+
 // The depth buffers NVR's effects read are refreshed only inside RenderWorldSceneGraphHook. After a save is
 // loaded straight into an interior the game has been seen to render frames without entering it at all
 // (the F10 log then shows no 'World scene (game)' / 'Depth resolves' samples and 'Pre-scene' equal to the
@@ -495,6 +543,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	PreSceneTimerActive = PreSceneTimer.Begin(TheRenderManager->device);
 	WorldRenderedThisFrame = false;
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
+	TerrainProbe::NewFrame();	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 	FrameWorldArgsKnown = false;
 	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: HiddenObjectCulling
@@ -1846,6 +1895,8 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);	// UNOFFICIAL 2026-10-17 grass lighting fix
+	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
+	TerrainProbe::LastVertex = VertexShader ? VertexShader->Name : nullptr;
 	// Diagnostic (P57): the water reflection with the game's own shaders. NVR's replacements take constants made for
 	// the main camera; the reflection camera sits mirrored below the water. SetupShader picks the handle the game
 	// binds next, so switching it here keeps the game's state tracking right; the next bind picks NVR's again.
@@ -2016,6 +2067,7 @@ static void ForwardShadowsForPass(void* Pass) {
 }
 
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	TerrainProbe::Note((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 #if NVR_TEST_TOOLS
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
