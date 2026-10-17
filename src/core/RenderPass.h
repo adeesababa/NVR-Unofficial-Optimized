@@ -1,4 +1,5 @@
 #pragma once
+#include <unordered_set>
 
 class RenderPass {
 public:
@@ -19,6 +20,15 @@ public:
 	// UNOFFICIAL 2026-10-14: while the light grid's sun map is drawn (ShadowManager, ShadowGridColor.pso), each caster's diffuse
 	// texture is bound at s0 so the map records its colour; TESR_ShadowData.w says whether one was bound.
 	static inline bool BindDiffuse = false;
+	// UNOFFICIAL 2026-10-17 (TB-1, terrain blending shadow band): while Terrain Blending is on, the land is drawn into the sun
+	// shadow maps LandDrop game units lower than it is (ShadowManager::RenderShadowMap sets it to BlendDistance * ShadowDrop;
+	// 0 = off, nothing changes). The land fades away over the part of an object it covers by less than BlendDistance; with the
+	// land at its true height that part sits in the land's own shadow, so the fade revealed a darkened strip. A plane lowered
+	// by d moves its sun-map depth by d / sin(sun elevation), exactly what a point buried by d is behind the surface. The
+	// shader is untouched: the offset is in the caster's world matrix (UpdateShadowWorld).
+	static inline float LandDrop = 0.0f;
+	static inline std::unordered_set<NiGeometry*> LandSet;	// this map's land geometry (filled while its cells' land is accumulated)
+	static void UpdateShadowWorld(NiGeometry* Geo);
 	static void BindDiffuseOf(NiGeometry* Geo);
 
 	std::stack<NiGeometry*>	GeometryList;

@@ -1547,6 +1547,7 @@ SlopeBlend = 1.0                    # [0-2] BlendDistance multiplier on steep la
 MinPixels = 3.0                     # [0-8] The fade is at least this many pixels wide on screen, so distant blends don't shimmer.
 DebugView = 0                       # 0 off. 1 the blend band magenta. 2 how much land is kept (white: all). 3 how deep the object is below the surface (black at the surface, white at four times BlendDistance; dark blue: nothing behind the land). 4 how deep the fade reaches (white: the full BlendDistance, grey: a shallow object's seam, black: none).
 MaxDistance = 4096.0                # [256.0-16384.0] Blending stops beyond this distance from the camera (fading back to a hard edge over the last quarter).
+ShadowDrop = 1.0                    # [0.0-4.0] UNOFFICIAL: with Forward Shadows, the part of an object the faded land reveals sat in the land's own sun shadow (a dark strip along the seam). The land is drawn into the sun shadow maps BlendDistance times this lower, so only what is buried deeper than the blend band stays shadowed by it. 0 = off (the old shadows). Works at once.
 Debug = false                       # Old switch, kept for old settings files: true = DebugView 1.
 
 [_Shaders.Terrain.LOD]

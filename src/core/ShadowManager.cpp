@@ -401,6 +401,10 @@ bool ShadowManager::CheckShaderFlags(NiGeometry* Geometry) {
 }
 
 
+// UNOFFICIAL 2026-10-17 (TB-1): true while a cell's land is being accumulated (AccumExteriorCell), so its geometry is noted
+// in RenderPass::LandSet for the Terrain Blending shadow drop.
+static bool AccumulatingLand = false;
+
 // Detect which pass the object must be added to
 void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLODLand) {
 	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
@@ -417,7 +421,7 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 	else if (speedTreePass->AccumObject(geo)) {}
 	else if (Forms->Lod && isLODLand && terrainLODPass->AccumObject(geo)) {}
 	else if (Forms->AlphaEnabled && alphaPass->AccumObject(geo)) {}
-	else geometryPass->AccumObject(geo);
+	else if (geometryPass->AccumObject(geo) && AccumulatingLand && RenderPass::LandDrop > 0.0f) RenderPass::LandSet.insert(geo);
 }
 
 
@@ -539,6 +543,15 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	RenderState->SetRenderState(D3DRS_DEPTHBIAS, (DWORD)0.0f, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, (DWORD)0.0f, RenderStateArgs);
 
+	// UNOFFICIAL 2026-10-17 (TB-1): with Terrain Blending on, the land goes into the sun map BlendDistance * ShadowDrop lower
+	// (RenderPass::LandDrop), so the part of an object the faded land reveals is not in the land's own shadow.
+	{
+		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+		const bool drop = terrain && terrain->BlendingSettings.Enabled && TheTextureManager->TerrainBlendDepthTexture;
+		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop : 0.0f;
+		RenderPass::LandSet.clear();
+	}
+
 	if (ShadowMap->Forms.Lod) {
 		AccumChildren(BGSTerrainManager::GetRootLandLODNode(), &ShadowMap->Forms, true, true, &ShadowMap->ShadowMapFrustumPlanes);
 		AccumChildren(BGSTerrainManager::GetRootObjectLODNode(), &ShadowMap->Forms, false, true, &ShadowMap->ShadowMapFrustumPlanes);
@@ -565,6 +578,8 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	RenderPass::TwoSided = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "TwoSidedCasters") != 0;	// UNOFFICIAL
 	RenderAccums();
 	RenderPass::TwoSided = false;
+	RenderPass::LandDrop = 0.0f;
+	RenderPass::LandSet.clear();
 }
 
 
@@ -572,8 +587,11 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 	if (!Cell || Cell->IsInterior())
 		return;
 
-	if (ShadowMap->Forms.Terrain)
+	if (ShadowMap->Forms.Terrain) {
+		AccumulatingLand = true;
 		AccumChildren(Cell->GetChildNode(TESObjectCELL::kCellNode_Land), &ShadowMap->Forms, true, false, &ShadowMap->ShadowMapFrustumPlanes);
+		AccumulatingLand = false;
+	}
 
 	TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First;
 	while (Entry) {

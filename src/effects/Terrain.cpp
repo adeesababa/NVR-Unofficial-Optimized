@@ -169,6 +169,7 @@ void TerrainShaders::UpdateSettings() {
 	BlendingSettings.HeightBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "HeightBlend"), 0.0f, 2.0f);
 	BlendingSettings.SlopeBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "SlopeBlend"), 0.0f, 2.0f);
 	BlendingSettings.MinPixels = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MinPixels"), 0.0f, 8.0f);
+	BlendingSettings.ShadowDrop = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "ShadowDrop"), 0.0f, 4.0f);
 	BlendingSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "DebugView"), 0, 4);
 	if (BlendingSettings.Debug && BlendingSettings.DebugView == 0) BlendingSettings.DebugView = 1;	// the old switch
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;

@@ -107,6 +107,7 @@ public:
 		float	MinPixels;		// the fade's minimum width on screen
 		int		DebugView;		// 1 band magenta, 2 land kept, 3 depth below the surface, 4 fade depth
 		float	MaxDistance;
+		float	ShadowDrop;		// UNOFFICIAL 2026-10-17 (TB-1): the land is lowered by BlendDistance * this in the sun shadow maps (0 = off)
 	};
 	BlendingSettingsStruct BlendingSettings = {};
 
