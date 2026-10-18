@@ -1,4 +1,5 @@
 #pragma once
+#include "PhysSkyModel.h"
 
 class SkyShaders : public ShaderCollection
 {
@@ -29,14 +30,16 @@ public:
 		D3DXVECTOR4		PhysSkySun = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);	// xyz: the sun's real direction
 	};
 	// UNOFFICIAL [Shaders.Sky.Physical]
-	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; };
-	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f };
+	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; };
+	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f, false, false, 0.3f };
+	// UNOFFICIAL 2026-10-18 ExactSunlight / MultipleScattering: the CPU twin of the sky-view tables (PhysSkyModel.h), built when the settings need it
+	PhysSky::Tables physTables;
 	SkyStruct Constants;
 	bool useSunDiskColor;
 	// UNOFFICIAL: the spherical-harmonic projection in UpdateConstants (512 samples of the sky model, and UpdateConstants
 	// runs twice a frame) is redone only when something it reads has changed: these are the last run's inputs. The sun's
 	// direction counts as changed when it has turned by more than a tenth of a degree (it creeps every frame outdoors).
-	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; };
+	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; D3DXVECTOR4 physicalMS; };
 	ProjectionInputs lastProjection = {};
 	bool lastProjectionValid = false;
 

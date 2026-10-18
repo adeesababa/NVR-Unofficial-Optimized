@@ -262,6 +262,7 @@
     <ClInclude Include="..\src\effects\Animator.h" />
     <ClInclude Include="..\src\effects\AvgLuma.h" />
     <ClInclude Include="..\src\effects\SkyView.h" />
+    <ClInclude Include="..\src\effects\PhysSkyModel.h" />
     <ClInclude Include="..\src\effects\AmbientLight.h" />
     <ClInclude Include="..\src\effects\BloodLens.h" />
     <ClInclude Include="..\src\effects\Bloom.h" />

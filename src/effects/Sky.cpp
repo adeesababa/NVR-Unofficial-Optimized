@@ -147,6 +147,12 @@ void SkyShaders::UpdateConstants() {
 	// old form factor exactly: a floor sees the full dome, a wall half of it, a ceiling none.
 	// UNOFFICIAL: skip the projection when nothing it reads has moved since the last run (Sky.h). Every input but the sun
 	// direction must match exactly; the sun may have turned by up to 0.1 degrees (the sun disc itself is half a degree).
+	// UNOFFICIAL 2026-10-18 [Shaders.Sky.Physical] ExactSunlight / MultipleScattering (SkyView.fx.hlsl techniques 3 and 4): the sky-view table takes
+	// the sun's light from a transmittance table and, with MultipleScattering, adds the light scattered more than once. This function's sky model
+	// (the brightness match and the sky light on objects) then runs on the CPU twin of the same tables (PhysSkyModel.h); with both off nothing
+	// below changes (PhysAtmosphere, the closed form, as before).
+	const bool physMs = PhysicalSettings.Enabled && PhysicalSettings.MultipleScattering;
+	const bool physExact = PhysicalSettings.Enabled && (PhysicalSettings.ExactSunlight || PhysicalSettings.MultipleScattering);
 	{
 		PBRShaders* pbrForKey = TheShaderManager->Shaders.PBR;
 		ProjectionInputs inputs = { TheShaderManager->ShaderConst.SunPosition, TheShaderManager->ShaderConst.skyColor,
@@ -154,7 +160,8 @@ void SkyShaders::UpdateConstants() {
 			TheShaderManager->ShaderConst.sunDiskColor, Constants.SunsetColor,
 			D3DXVECTOR4(PhysicalSettings.Enabled ? 1.0f : 0.0f, PhysicalSettings.Brightness, PhysicalSettings.WeatherTint, PhysicalSettings.Haze),
 			TheShaderManager->ShaderConst.SunAmount.x,
-			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f };
+			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f,
+			D3DXVECTOR4(physExact ? 1.0f : 0.0f, physMs ? 1.0f : 0.0f, PhysicalSettings.GroundAlbedo, 0.0f) };
 		inputs.sunsetColor.w = 0.0f;	// only rgb is read below
 		const bool sunStill = lastProjectionValid &&
 			inputs.sunPos.x * lastProjection.sunPos.x + inputs.sunPos.y * lastProjection.sunPos.y + inputs.sunPos.z * lastProjection.sunPos.z >= 0.9999985f;
@@ -199,13 +206,15 @@ void SkyShaders::UpdateConstants() {
 		share = share * share * (3.0f - 2.0f * share);
 		if (!PhysicalSettings.Enabled || !TheShaderManager->GameState.isExterior) share = 0.0f;
 		Constants.PhysSky = D3DXVECTOR4(share, 1.0f, PhysicalSettings.WeatherTint, PhysicalSettings.Haze);
-		Constants.PhysSkySun = D3DXVECTOR4(realSun.x, realSun.y, realSun.z, 0.0f);
+		Constants.PhysSkySun = D3DXVECTOR4(realSun.x, realSun.y, realSun.z, physMs ? PhysicalSettings.GroundAlbedo : 0.0f);	// w: the ground's albedo for SkyView.fx.hlsl's SkyMS table
 	}
 	const bool physical = Constants.PhysSky.x > 0.0f;
 	// The air is worked out on a grid half as fine each way (one sample per 2 x 2 of the projection's: 128 rays of 12 steps,
 	// about a quarter of a millisecond, redone only when the sun has moved or a setting changed); plenty for the brightness
 	// match and the smooth sky light.
 	static D3DXVECTOR3 physSamples[(16 / 2) * (32 / 2)];
+	if (physical && physExact && !physTables.Matches(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs))
+		physTables.Build(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs);	// about 60 ms, once, when a setting changed
 	if (physical) {
 		const D3DXVECTOR3 realSun(Constants.PhysSkySun.x, Constants.PhysSkySun.y, Constants.PhysSkySun.z);
 		for (int i = 0; i < STEPS_T / 2; i++) {
@@ -214,7 +223,11 @@ void SkyShaders::UpdateConstants() {
 				const float phi = (2 * j + 1) * dPhi;
 				D3DXVECTOR3 physDir(st * cosf(phi), st * sinf(phi), (std::max)(ct, 0.002f));
 				D3DXVec3Normalize(&physDir, &physDir);
-				physSamples[i * (STEPS_P / 2) + j] = PhysAtmosphere::Radiance(physDir, realSun, 300.0f, PhysicalSettings.Haze);
+				if (physExact) {
+					const PhysSky::V3 v = physTables.Radiance(PhysSky::V3(physDir.x, physDir.y, physDir.z), PhysSky::V3(realSun.x, realSun.y, realSun.z), 300.0f, PhysicalSettings.Haze, physMs);
+					physSamples[i * (STEPS_P / 2) + j] = D3DXVECTOR3(v.x, v.y, v.z);
+				}
+				else physSamples[i * (STEPS_P / 2) + j] = PhysAtmosphere::Radiance(physDir, realSun, 300.0f, PhysicalSettings.Haze);
 			}
 		}
 		float gameSum = 0.0f, physSum = 0.0f;
@@ -307,6 +320,9 @@ void SkyShaders::UpdateSettings() {
 	PhysicalSettings.Brightness = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Brightness"), 0.0f, 4.0f);
 	PhysicalSettings.WeatherTint = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "WeatherTint"), 0.0f, 1.0f);
 	PhysicalSettings.Haze = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Haze"), 0.0f, 10.0f);
+	PhysicalSettings.ExactSunlight = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "ExactSunlight") != 0;		// UNOFFICIAL 2026-10-18
+	PhysicalSettings.MultipleScattering = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "MultipleScattering") != 0;
+	PhysicalSettings.GroundAlbedo = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "GroundAlbedo"), 0.0f, 1.0f);
 	lastProjectionValid = false;
 
 	// UNOFFICIAL (from Physically-Based-Reloaded, Fable): volumetric clouds (SKYTEX.pso.hlsl). DetailScale and UVScale
