@@ -219,6 +219,9 @@ MoveRefresh = 200.0                    # [1-100000] Version 2: how far (game uni
 SoftWidth = 40.0                       # [1-500] Version 2: how soft (game units) the edge of cover is in the test (against hard steps).
 DebugView = 0                          # Version 2, test views: 1 sky visibility, 2 the sky's share of the light, 3 the final darkening, 4 'covered' (something above the point in the map). 0 = off.
 
+[_Shaders.AmbientOcclusion.FastPaths]
+Enabled = false                        # UNOFFICIAL (2026-10-17): the same ambient occlusion for less GPU time outdoors: sky and distant pixels really skip the occlusion samples and both blurs (the shader compiler had turned that early exit into work every pixel did). Off = the original passes. Applies immediately
+
 [_Shaders.AmbientOcclusion.Status]
 Enabled = true                          # Shadows based on object proximity/creases for more realistic light contribution.
 
@@ -952,6 +955,7 @@ Enabled = true                       # Wether to render screen space contact/det
 RenderDistance = 180000              # Max distance at which to compute screen space shadows
 Intensity = 0.315                    # Rescale the intensity of screenspace shadows, to combat jitter and blur making them very faint even at maximum brightness.
 Sharp = false                        # UNOFFICIAL: sharper, steadier contact shadows for less: the ray toward the sun followed in 16 even steps instead of 4 random ones smoothed by two big blurs (about a third of the cost). With forward shadows (the default). BlurRadius is not used with it on.
+FastPaths = false                    # UNOFFICIAL (2026-10-17): the same contact shadows for less GPU time: the march's early exits (too far, surface turned away from the sun) really skip work (the shader compiler had turned them into work every pixel did). Off = the original pass. Applies immediately
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
 Mode = 3							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
@@ -1172,6 +1176,7 @@ FineDetail = 0.0                       # UNOFFICIAL [0-1]: a second, finer layer
 FineDetailSize = 140.0                 # UNOFFICIAL [10-5000]: size of that finer layer, in metres. Smaller: finer grain.
 Sharpness = 0.5                        # UNOFFICIAL [0-3]: how crisp the clouds look. Higher: the clouds' history is kept sharp as they and the view move (instead of softening a little every frame), the finished clouds get edge-aware sharpening without halos, and far-off cloud detail stays finer. It also keeps drifting clouds moving smoothly (each pixel follows the wind between its refreshes). 0: the older, softer look. Costs a little at Resolution 2, almost nothing at 0.
 FromWeatherTextures = 1.0              # UNOFFICIAL [0-1]: how much the coverage follows the current weather's own cloud textures (how much of the sky the game's cloud layers would fill) instead of only its type (pleasant, cloudy, rainy, snow). Weather mods often give overcast skies a 'pleasant' type; with 1 they still get heavy clouds. Rain and snow never get fewer clouds than their own setting. 0: the type alone, as before. Each weather is logged once (NewVegasReloaded.log) with what it measured.
+FixedMarchExit = false                 # UNOFFICIAL (2026-10-17): the cloud march stops after Steps samples and when the cloud is opaque, as it was written to (the shader compiler had killed that exit, so every ray took 64 steps and ran past the horizon cap). Slightly different look near the horizon, a little faster. Off = as before.
 MaxDistance = 80000.0                  # [5000-200000] How far away clouds are still drawn, in metres.
 HazeDistance = 30000.0                 # [1000-200000] Distance, in metres, at which far clouds have mostly thinned out into the sky.
 WindSpeed = 1.0                        # [0-20] How fast the clouds drift with the game's wind: 1 is about 15 m/s in calm weather to 60 m/s in a gale (faster than real, so you can see them move).

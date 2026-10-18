@@ -682,4 +682,97 @@ technique DedicatedGTAO
 	pass BlurY { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlur(io.yx); }
 	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
 }
+// UNOFFICIAL 2026-10-17 FastPaths ([Shaders.AmbientOcclusion.FastPaths] Enabled; AmbientOcclusion.cpp picks DedicatedAOFast):
+// the same picture, the far-pixel early returns made real. The game's effect compiler (D3DX 9.43) cannot branch around reads that
+// need screen derivatives (tex2D), so it had turned 'if (origin.z > endFade) return 1' (estimate) and 'if (center.y >= endFade)
+// return' (both blurs) into selects at the end: every pixel, sky and distant land included, ran the whole 10-sample kernel and the
+// whole blur. Here the reads at the pixel itself stay tex2D in uniform flow (the same reads as before), and the reads behind the
+// branch are tex2Dlod level 0 on single-level targets (depth, AO ping-pong, normals) or the point-sampled, no-mip blue noise: the
+// same texels and weights. Arithmetic is the original's, line for line.
+float3 randomLod(float2 seed)
+{
+	return tex2Dlod(TESR_BlueNoiseSampler, float4((seed/256 + 0.5) / TESR_ReciprocalResolution.xy, 0, 0)).xyz;
+}
+
+float2 PackedSSAOValuesFast(float2 uv, float3 origin, float3 normal)
+{
+	float uRadius = abs(AOrange);
+	float bias = saturate(AOangleBias);
+	float angle = -randomLod(uv).x / 2 * PI;
+	float3 kernelRotation = float3(-sin(angle), cos(angle), 0);
+	float3 tangent = normalize(kernelRotation - normal * dot(kernelRotation, normal));
+	float3 bitangent = cross(normal, tangent);
+	float3x3 tbn = float3x3(tangent, bitangent, normal);
+	float2 occlusion = 0;
+
+	[unroll] for (int i = 0; i < kernelSize; ++i) {
+		float3 rand = randomLod(uv + i * TESR_ReciprocalResolution.x);
+		float3 raw = float3(expand(rand.xy), rand.z);
+		float3 sampleX = mul(normalize(raw * float3(1, 0, 1)), tbn);
+		float3 sampleY = mul(normalize(raw * float3(0, 1, 1)), tbn);
+		float3 randomScale = randomLod(uv * i / 2);
+		sampleX *= randomScale;
+		sampleY *= randomScale;
+		float scale = lerp(bias, 1.0f, pows(1 + float(i) / float(kernelSize), 2));
+		sampleX *= scale * (dot(normal, sampleX) < 0 ? -1 : 1);
+		sampleY *= scale * (dot(normal, sampleY) < 0 ? -1 : 1);
+
+		float3 pointX = origin + sampleX * uRadius;
+		float3 pointY = origin + sampleY * uRadius;
+		float2 sampleDepth = float2(readDepthLod(projectPosition(pointX).xy), readDepthLod(projectPosition(pointY).xy));
+		float2 actualDepth = float2(pointX.z, pointY.z);
+		float2 distance = abs(actualDepth - sampleDepth);
+		float2 influence = (sampleDepth < actualDepth) * (distance < uRadius);
+		influence *= lerp(1 - distance * distance / (uRadius * uRadius), 1 - distance / uRadius, i < kernelSize / 4);
+		occlusion += influence;
+	}
+
+	float2 values = 1 - occlusion / kernelSize * AOstrength;
+	float fogColor = luma(TESR_FogColor.rgb);
+	values = clamp(lerp(values, fogColor, fogCoeff(origin.z)), values, 1);
+	return lerp(values, 1, saturate(invlerp(startFade, endFade, origin.z)));
+}
+
+float4 PackedEstimateFast(VSOUT IN) : COLOR0
+{
+	float3 skyOrigin = reconstructPosition(IN.UVCoord);
+	float3 skyNormal = GetNormal(IN.UVCoord);
+	float skyTurn = random(IN.UVCoord).y * 2.0f * PI;
+	float storedDepth = min(readDepth(IN.UVCoord), (float)endFade);
+	float ao = 1.0f;
+	[branch] if (!(skyOrigin.z > endFade)) {
+		float2 values = PackedSSAOValuesFast(IN.UVCoord, skyOrigin, skyNormal);
+		ao = values.x * values.y;
+	}
+	[branch] if (TESR_AmbientOcclusionSky.x > 0.0f && skyOrigin.z < endFade) ao *= SkyVisibility(skyOrigin, skyNormal, skyTurn);
+	return float4(ao, storedDepth, 0, 1);
+}
+
+float4 DedicatedBlurFast(VSOUT IN, uniform float2 axis) : COLOR0
+{
+	float2 center = tex2D(NVR_AOBuffer, DedicatedUV(IN.UVCoord)).rg;
+	[branch] if (center.y >= endFade) return float4(1, center.y, 0, 1);
+	float rawDepth = projectedDepthFromLinear(tex2Dlod(TESR_DepthBuffer, float4(IN.UVCoord, 0, 0)).x);
+	if (invertedDepth) rawDepth = 1 - rawDepth;
+	float depthTolerance = blurDrop * (0.5 + 2 * compress((tex2Dlod(TESR_NormalsBuffer, float4(IN.UVCoord, 0, 0)).xyz * 2 - 1).z));
+	float sum = center.x * 0.114725602f;
+	float weights = 0.114725602f;
+	[unroll] for (int i = 0; i < cKernelSize; ++i) {
+		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * blurRadius / max(rawDepth, 1.0e-6);
+		float2 sample = tex2Dlod(NVR_AOBuffer, float4(DedicatedUV(uv), 0, 0)).rg;
+		float weight = BlurWeights[i] * (abs(center.y - sample.y) <= depthTolerance);
+		sum += sample.x * weight;
+		weights += weight;
+	}
+	return float4(sum / weights, center.y, 0, 1);
+}
+
+technique DedicatedAOFast
+{
+	pass Estimate { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 PackedEstimateFast(); }
+	pass BlurX { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlurFast(io.xy); }
+	pass BlurY { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlurFast(io.yx); }
+	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
+}
+
 #endif

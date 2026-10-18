@@ -11,6 +11,10 @@ void SunShadowsEffect::SetCT() {
 	}
 }
 
+void SunShadowsEffect::UpdateSettings() {
+	fastPaths = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "FastPaths") != 0;
+}
+
 void SunShadowsEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("NVR_ShadowPassScratch0", &scratchTexture[0], &scratchSurface[0],
 		TheRenderManager->width, TheRenderManager->height, D3DFMT_G16R16);
@@ -28,6 +32,8 @@ void SunShadowsEffect::RegisterTextures() {
 void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
+	// UNOFFICIAL 2026-10-17 FastPaths: techniques 0/1 -> their copies 3/4 with the real early returns (when the file has them).
+	if (fastPaths && techniqueIndex <= 1 && Effect->GetTechnique(techniqueIndex + 3)) techniqueIndex += 3;
 
 	IDirect3DTexture9* shadowTexture = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture;
 	IDirect3DSurface9* shadowSurface = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassSurface;

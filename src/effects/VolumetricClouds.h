@@ -39,6 +39,7 @@ public:
 		float	FineDetailSize;				// UNOFFICIAL: its size, metres per tile
 		float	Sharpness;					// UNOFFICIAL: 0 the old soft look .. 1 crisp (sharper history, sharpened composite, finer noise far off)
 		float	FromWeatherTextures;		// UNOFFICIAL: share of the coverage taken from the weather's own cloud textures (0: its type alone)
+		bool	FixedMarchExit;				// UNOFFICIAL 2026-10-17: technique 6 (MarchFixedExit): the march stops at Steps / when opaque (the compiler had killed the exit)
 	};
 	SettingsStruct	Settings = {};
 

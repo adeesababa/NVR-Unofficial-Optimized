@@ -174,7 +174,7 @@ float Phase(float cosT, float g) {
 // ---- 1: March, quarter resolution ----
 // The clouds along one world direction from the camera: rgb the light they send toward it (linear), a how much of the sky
 // behind still shows. stepScale < 1 marches with fewer steps (the reflection's fallback).
-float4 MarchRay(float3 dir, float jitter, float stepScale) {
+float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = false) {
 	float steps = max(Steps * stepScale, 4.0);
 	float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
 	float baseAbove = max(Base - camera.z, 50.0);
@@ -223,8 +223,12 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float depthSum = 0.0, depthWeight = 0.0;
 	// UNOFFICIAL 2026-10-15: at most 64 steps (Steps). The game's own compiler (D3DX) unrolls this loop: at 255 (or 1280 in two
 	// nested loops) it took minutes at startup and the game hung on a black screen.
-	[loop] for (float i = 0.0; i < 64.0; i += 1.0) {
-		if (i >= steps || transmittance < 0.01) break;
+	// UNOFFICIAL 2026-10-17 FixedMarchExit (fixedExit, technique MarchFixedExit): in the March technique the game's compiler wrote
+	// this 'break' as 'break_ne -c, -c' (the same value on both sides: never taken), so every ray ran all 64 steps (16 past
+	// Steps = 48, i.e. past the end of the layer or the horizon cap) and kept integrating after it was opaque. The same test as
+	// the loop's condition compiles to a real exit. Changes the look slightly (flat rays stop at the cap), so it is an option.
+	[loop] for (float i = 0.0; i < 64.0 && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+		if (!fixedExit && (i >= steps || transmittance < 0.01)) break;
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
@@ -272,11 +276,11 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	return float4(scattered, transmittance);
 }
 
-float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+float4 MarchPS(VSOUT IN, float2 vpos : VPOS, uniform bool fixedExit) : COLOR0 {
 	float2 pixel = vpos * 2.0 + TESR_CloudsBlocks.zw;          // this frame's quarter-resolution pixel of the block
 	float2 uv = (pixel + 0.5) * LowTexel;
 	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
-	return MarchRay(normalize(toWorld(uv)), jitter, 1.0);
+	return MarchRay(normalize(toWorld(uv)), jitter, 1.0, fixedExit);
 }
 
 // Catmull-Rom upsampling of the quarter-resolution history in nine bilinear taps (the sharp bicubic: plain bilinear
@@ -512,7 +516,7 @@ technique Composite {
 technique March {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 MarchPS();
+		PixelShader = compile ps_3_0 MarchPS(false);
 		Texture[6] = <NoTexture>;
 	}
 }
@@ -543,5 +547,14 @@ technique LayerProbe {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 LayerProbePS();
+	}
+}
+
+// UNOFFICIAL 2026-10-17 FixedMarchExit ([Shaders.VolumetricClouds.Main] FixedMarchExit): technique 6 = March with the working exit.
+technique MarchFixedExit {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 MarchPS(true);
+		Texture[6] = <NoTexture>;
 	}
 }

@@ -42,6 +42,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);	// UNOFFICIAL 2026-10-15: was 0-1
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
+	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
 	coverage = -1.0f;	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change)
 }
 
@@ -412,7 +413,7 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	// UNOFFICIAL 2026-10-13: F10 timers per pass.
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
 		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, 1); }				// march
+	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, Settings.FixedMarchExit && Effect && Effect->GetTechnique(6) ? 6 : 1); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit)
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
 	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }	// UNOFFICIAL: cloud shadow map
 	read = 1 - read;

@@ -28,6 +28,11 @@ static float LinearLuma(const D3DXVECTOR4& c) {
 }
 
 bool AmbientOcclusionEffect::SkyV2Active() { return SkyData2.x > 0.0f; }
+// UNOFFICIAL 2026-10-17 FastPaths ([Shaders.AmbientOcclusion.FastPaths] Enabled): the DedicatedAOFast technique = DedicatedAO with
+// its far-pixel early returns made real (the effect compiler had flattened them: sky and distant land ran the whole kernel and
+// both blurs). Same picture. Off, GTAO on, or an effect file without the technique: DedicatedAO / DedicatedGTAO as before.
+static bool FastPaths = false;
+static EffectRecord::CachedHandle techFast;
 
 void AmbientOcclusionEffect::UpdateConstants() {
 	const bool sky = SkyEnabled && TheShaderManager->GameState.isExterior && Constants.Enabled;
@@ -86,6 +91,7 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	GTAOData.x = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.GTAO", "Enabled") ? 1.0f : 0.0f;
 	GTAOData.w = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.GTAO", "MaxRadius"), 4.0f, 256.0f);
 	SkyEnabled = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Enabled");
+	FastPaths = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.FastPaths", "Enabled") != 0;
 	SkyData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "Strength"), 0.0f, 1.0f);
 	SkyData.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "Distance"), 64.0f, 4000.0f);
 	SkyVersion = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Version") == 1 ? 1 : 2;
@@ -171,6 +177,10 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DSurface9* const* surfaces = lastLowRes ? aoSurfaceLow : aoSurface;
 	const UINT divisor = MaxQuality::Divisor(lastLowRes ? 4 : 2);	// UNOFFICIAL: 1 with Max Quality
 	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedAO");
+	if (FastPaths) {	// UNOFFICIAL 2026-10-17 FastPaths (above)
+		D3DXHANDLE fast = TechniqueHandle(techFast, "DedicatedAOFast");
+		if (fast) technique = fast;
+	}
 	if (GTAOData.x > 0.5f) {	// UNOFFICIAL 2026-10-16: the same passes with the GTAO estimate, when the effect file has them
 		D3DXHANDLE gtao = TechniqueHandle(techGTAO, "DedicatedGTAO");
 		if (gtao) technique = gtao;
