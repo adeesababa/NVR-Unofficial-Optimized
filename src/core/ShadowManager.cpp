@@ -554,6 +554,8 @@ void ShadowManager::RenderAccums() {
 }
 
 
+static float SunLandDropScale = 0.0f;	// UNOFFICIAL fixes-b #9: set by the sun cascade loop around its RenderShadowMap call, 0 elsewhere
+
 void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj) {
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 
@@ -580,7 +582,10 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	{
 		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
 		const bool drop = terrain && terrain->BlendingSettings.Enabled && TheTextureManager->TerrainBlendDepthTexture;
-		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop : 0.0f;
+		// fixes-b #9: only the sun cascades drop the land (SunLandDropScale > 0 only around their RenderShadowMap call: not the
+		// rain / ortho map or the light grid's sun map), and less at a low sun: a lowered ridge casts a shadow shorter by
+		// drop / tan(elevation), so the drop fades x min(1, 2 sin(elevation)) (full above 30 degrees).
+		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop * SunLandDropScale : 0.0f;
 		RenderPass::LandSet.clear();
 	}
 
@@ -1417,7 +1422,9 @@ void ShadowManager::RenderShadowMaps() {
 				if (update) {
 					updatedCascades |= 1u << i;
 					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
+					SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));	// SunDir is a unit vector: z = sin(elevation)
 					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+					SunLandDropScale = 0.0f;
 					CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
 					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
 				}
