@@ -27,6 +27,11 @@ float4 LeafData[48]   : register(c34);
 // UNOFFICIAL: backlit translucency settings (PBR.cpp, [Shaders.Foliage.Main]). c82 is the first register past LeafData; the
 // engine's uploads stop at c81, and the compiler keeps its literal constants off this one.
 float4 TESR_Translucency : register(c82);
+// UNOFFICIAL 2026-10-18 sandport: the sandstorm's wind on the leaves (SandstormEffect, TESR_LeafStorm; ported from
+// Physically-Based-Reloaded's TESR_WindBoost, Balebandro / Alejandro Martinez, GPL-3.0): x the swing scale (1 no storm),
+// y the flutter amount (0 no storm), z the flutter phase (rad). c134: past the shadow constants (c100-c133) and the
+// translucency (c82); the compiler's literals sit low (c4, c7, c12) or just past c82.
+float4 TESR_LeafStorm : register(c134);
 
 struct VS_INPUT {
     float4 position     : POSITION;
@@ -66,13 +71,22 @@ VS_OUTPUT main(VS_INPUT IN) {
     float4 v3 = IN.blendIndices;
 
     float a = WrapPi(v3.z * 0.020833334f + WindB.y, 0.499999583f);
-    a = WrapPi(sin(a) * WindB.z * WindB.x, 0.159154937f);
+    float bStorm = WrapPi(v3.z * 0.020833334f + WindA.y, 0.499999583f);
+    float swingA = sin(a) * WindB.z * WindB.x;
+    float swingB = sin(bStorm) * WindA.z * WindA.x;
+    // UNOFFICIAL 2026-10-18 sandport: in a sandstorm the leaves swing harder and flutter fast. With no storm (y 0) the
+    // branch is not taken and this is the game's motion exactly.
+    [branch] if (TESR_LeafStorm.y > 0.0f) {
+        float flutter = TESR_LeafStorm.y * sin(TESR_LeafStorm.z + v3.z * 1.7f);
+        swingA = swingA * TESR_LeafStorm.x + flutter;
+        swingB = swingB * TESR_LeafStorm.x + flutter * 0.7f;
+    }
+    a = WrapPi(swingA, 0.159154937f);
     // xy rotation of the camera basis. Identity at zero wind: offset = p*Right + q*Up.
     float3 axis1 = float3(cos(a), -sin(a), 0.0f);
     float3 tan1  = float3(sin(a),  cos(a), 0.0f);
 
-    float b = WrapPi(v3.z * 0.020833334f + WindA.y, 0.499999583f);
-    b = WrapPi(sin(b) * WindA.z * WindA.x, 0.159154937f);
+    float b = WrapPi(swingB, 0.159154937f);
     float3 axis2 = float3(0.0f, cos(b), -sin(b));
     float3 tan2  = float3(0.0f, sin(b), cos(b));
 

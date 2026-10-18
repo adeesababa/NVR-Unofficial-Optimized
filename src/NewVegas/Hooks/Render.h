@@ -19,6 +19,8 @@ extern float LampReachMargin;
 
 extern void(__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8);
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4);
+extern void(__thiscall* RenderBlended)(void*, UInt32);
+void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg);	// UNOFFICIAL sandport: Sandstorm ThroughBlended
 
 extern void(__thiscall* RenderFirstPerson)(Main*, NiDX9Renderer*, NiGeometry*, Sun*, BSRenderedTexture*);
 void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Renderer, NiGeometry* Geo, Sun* SkySun, BSRenderedTexture* RenderedTexture);

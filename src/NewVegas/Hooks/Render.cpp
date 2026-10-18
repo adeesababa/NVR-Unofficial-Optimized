@@ -2522,6 +2522,112 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 // the texture's contents were lost); RenderFirstPersonHook, which writes real data into that texture, resets the count.
 static unsigned ViewModelDepthClearedFrames = 0;
 
+// UNOFFICIAL 2026-10-18 sandport: glass in a sandstorm ([Shaders.Sandstorm.Main] ThroughBlended). Ported from
+// Physically-Based-Reloaded (Balebandro, Alejandro Martinez), GPL-3.0: their RenderBlendedHook (commit ebcf3c03). The sandstorm
+// measures each pixel's dust to the depth there; glass wrote its own, so the world seen through a window (blended in before the
+// storm is drawn) kept only the dust between the camera and the glass, and stayed clear. While the storm blows, in the world
+// scene's blended stage (0xB650C0, BSShaderAccumulator's back-to-front lists after every opaque group), see-through surfaces draw
+// without writing depth: alpha blended, and not cut out by an alpha test of any strength (fences, wire and torn sheets keep their
+// depth). Water keeps its own (the water effects read its surface), except seen from underwater.
+// Changed here: the world's depth surface is noted by this code itself (theirs used terrain blending's), and DrawIndexedPrimitive
+// (device table slot 82) is hooked only for the length of the stage and put back after it: the native runtime has been seen to
+// put its own entries back into the table (VolumetricClouds), and nothing stays in the table while no storm blows.
+namespace SandstormGlass {
+	static bool InWorldScene = false;
+	static IDirect3DSurface9* WorldDepth = nullptr;	// the depth surface bound as the world scene starts, while the storm hides glass depth (compared only)
+	static bool InBlendedStage = false;
+	typedef HRESULT (STDMETHODCALLTYPE* DrawIndexedPrimitiveFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
+	static DrawIndexedPrimitiveFn Next = nullptr;
+	static unsigned HiddenDraws = 0;	// see-through draws that wrote no depth (logged)
+
+	static bool IsSeeThroughPass(IDirect3DDevice9* Device) {
+		DWORD blend = FALSE, zwrite = FALSE, test = FALSE, reference = 0;
+		Device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+		Device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
+		if (!blend || !zwrite) return false;
+		Device->GetRenderState(D3DRS_ALPHATESTENABLE, &test);
+		Device->GetRenderState(D3DRS_ALPHAREF, &reference);
+		if (test && reference >= 32) return false;   // a cut-out (some glass tests at a near-zero reference)
+		void* pass = *(void**)0x011F91E0;   // BSShaderManager::pCurrentRenderPass; its first member is the geometry
+		NiGeometry* geometry = pass ? *(NiGeometry**)pass : nullptr;
+		// Water keeps its depth, the water effects read its surface; except from underwater, where the world above is seen
+		// through it as through glass and must get the dust of its own distance.
+		SandstormEffect* sandstorm = TheShaderManager->Effects.Sandstorm;
+		if (geometry && !(sandstorm && sandstorm->Underwater))
+			if (NiShadeProperty* shade = (NiShadeProperty*)geometry->GetProperty(NiProperty::kType_Shade))
+				if (shade->m_eShaderType == NiShadeProperty::kProp_Water) return false;
+		return true;
+	}
+
+	static HRESULT STDMETHODCALLTYPE DrawHook(IDirect3DDevice9* Device, D3DPRIMITIVETYPE Type, INT Base, UINT MinIndex, UINT Vertices, UINT Start, UINT Count) {
+		if (InBlendedStage && IsSeeThroughPass(Device)) {
+			HiddenDraws++;
+			Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);   // set back at once: the render state cache never sees it
+			const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+			Device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+			return result;
+		}
+		return Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+	}
+
+	static void BeginWorld() {
+		InWorldScene = true;
+		WorldDepth = nullptr;
+		SandstormEffect* sandstorm = TheShaderManager->Effects.Sandstorm;
+		if (!sandstorm || !sandstorm->HidesBlendedDepth()) return;
+		IDirect3DSurface9* depth = nullptr;
+		TheRenderManager->device->GetDepthStencilSurface(&depth);
+		WorldDepth = depth;
+		if (depth) depth->Release();
+	}
+
+	static void EndWorld() {
+		InWorldScene = false;
+		WorldDepth = nullptr;
+	}
+}
+
+void (__thiscall* RenderBlended)(void*, UInt32) = (void (__thiscall*)(void*, UInt32))Hooks::RenderBlended;
+void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg) {
+	using namespace SandstormGlass;
+	bool hide = false;
+	if (InWorldScene && WorldDepth) {
+		// The world's own depth surface, not a reflection's or cube map's.
+		IDirect3DSurface9* depth = nullptr;
+		TheRenderManager->device->GetDepthStencilSurface(&depth);
+		hide = depth && depth == WorldDepth;
+		if (depth) depth->Release();
+	}
+	if (!hide) { RenderBlended(This, Arg); return; }
+	void** table = *(void***)TheRenderManager->device;
+	bool hooked = false;
+	if (table[82] != (void*)&DrawHook) {
+		DWORD old = 0;
+		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+			Next = (DrawIndexedPrimitiveFn)table[82];
+			table[82] = (void*)&DrawHook;
+			VirtualProtect(&table[82], sizeof(void*), old, &old);
+			hooked = true;
+		}
+	}
+	const unsigned before = HiddenDraws;
+	InBlendedStage = table[82] == (void*)&DrawHook;
+	RenderBlended(This, Arg);
+	InBlendedStage = false;
+	if (hooked && table[82] == (void*)&DrawHook) {
+		DWORD old = 0;
+		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+			table[82] = (void*)Next;
+			VirtualProtect(&table[82], sizeof(void*), old, &old);
+		}
+	}
+	static unsigned logged = 0;
+	if (logged < 3 && HiddenDraws > before) {
+		logged++;
+		Logger::Log("UNOFFICIAL Sandstorm ThroughBlended: %u see-through blended draws wrote no depth in this world scene's blended stage", HiddenDraws - before);
+	}
+}
+
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
 	EndPreSceneTimer();
@@ -2548,7 +2654,9 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		BarrelHeat::BeginWorldProbe();
 		// UNOFFICIAL Conor's skin shader: its scattering target is bound only for skin drawn inside the world scene.
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
+		SandstormGlass::BeginWorld();	// UNOFFICIAL sandport: ThroughBlended (RenderBlendedHook)
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		SandstormGlass::EndWorld();
 		PassSums::EndWorld(TheRenderManager->device);	// UNOFFICIAL ExactPassSums: a run still open at the world's end is folded in here
 		// UNOFFICIAL Conor's skin shader: the SkinShader hooks unbind the target after every skin draw; this only guarantees
 		// nothing after the world scene ever draws into it.

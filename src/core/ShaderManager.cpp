@@ -506,6 +506,10 @@ void ShaderManager::UpdateConstants() {
 	// these constants stay current whether or not the PBR collection is enabled.
 	if (!Shaders.PBR->Enabled) Shaders.PBR->UpdateConstants();
 
+	// UNOFFICIAL 2026-10-18 sandport: the grass and leaf shaders read the sandstorm's wind whether or not it is on: off (or not
+	// loaded), there is no storm, and they sway exactly as the game's.
+	if (!Effects.Sandstorm->Enabled || !Effects.Sandstorm->Effect) Effects.Sandstorm->ClearWind();
+
 	// Underwater effect uses constants from the water shader
 	if (Effects.Underwater->Enabled && !Shaders.Water->Enabled) Shaders.Water->UpdateConstants();
 	if (!Effects.ShadowsExteriors->Enabled && Effects.ShadowsInteriors->Enabled) Effects.ShadowsExteriors->UpdateConstants(); // Interior and exterior shadows share settings
@@ -1665,10 +1669,18 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->gridTexture = nullptr;
 	}
 	{
-		// UNOFFICIAL (from Physically-Based-Reloaded, Fable): dust storms, in HDR before exposure and bloom, so the dust is
-		// lit and blooms with the scene. Nothing is drawn outside a storm (SandstormEffect::ShouldRender).
+		// UNOFFICIAL (from Physically-Based-Reloaded, Balebandro / Alejandro Martinez; ported again 2026-10-18, sandport): dust
+		// storms, after the fog (which it thickens into dust), in HDR before the god rays, exposure and bloom, so the sun shafts shine
+		// through and the dust is lit and blooms with the scene. Nothing is drawn outside a storm (SandstormEffect::ShouldRender).
 		GpuProfileScope gpu(sandstormTimer, Device);
-		Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		// UNOFFICIAL 2026-10-18 (sandfast): FastPath (the default) draws the dust grid and the half-resolution streaks and glow into
+		// the effect's own buffers, then its composite (technique 5) in the chain; otherwise the full-resolution original (technique 0).
+		if (wouldRender(Effects.Sandstorm) && Effects.Sandstorm->UseFastPath()) {
+			Effects.Sandstorm->RenderBuffers(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+			Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 5, false, SourceSurface);
+		}
+		else Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(godRaysTimer, Device);

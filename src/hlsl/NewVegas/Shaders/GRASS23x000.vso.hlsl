@@ -24,6 +24,7 @@ float4 TESR_Translucency : register(c18);
 // UNOFFICIAL 2026-10-17: which pixel shader reads this one, written per draw by GrassShaders::SetForDraw (SetShadersHook); c19 is
 // free (the game writes none of c16-c19 for grass). x 1 = NVR's grass PS (GRASS23x000TMS.pso, used with transparency
 // multisampling), 0 = the game's own GRASS23x000.pso (no transparency multisampling, the INI default). Never written reads 0.
+// UNOFFICIAL 2026-10-18 sandport: y and z carry the sandstorm's wind (SandstormEffect::GrassStorm; 0 = no storm).
 float4 GrassPairing : register(c19);
 
 #ifndef GRASS_INSTANCE_COUNT
@@ -90,7 +91,18 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;
     phase = frac(phase * 0.159154937f + 0.5f) * 6.28318548f - 3.14159274f;
-    float sway = sin(phase) * WindData.z * (IN.color.w * IN.color.w);
+    float swing = sin(phase);
+    // UNOFFICIAL 2026-10-18 sandstorm wind (sandport; ported from Physically-Based-Reloaded, Balebandro / Alejandro Martinez,
+    // GPL-3.0): in a sandstorm the grass sways harder, leans downwind in gusts that travel across the field with the wind, and
+    // flutters. c19.y (GrassPairing.y, written by GrassShaders::SetForDraw from SandstormEffect): the extra sway S, 0 with no
+    // storm (the branch is not taken: the game's sway exactly). c19.z: the gust clock u (0..8 pi), gusts at u / 4, flutter at u.
+    // No literal is added: this shader's free registers are full of them, and one more spills past c255 (shader refused).
+    [branch] if (GrassPairing.y > 0.0f) {
+        float gust = 0.75f + 0.25f * sin(GrassPairing.z * 0.25f - dot(inst.xy, WindData.xy) * 0.0078125f);
+        float flutter = sin(GrassPairing.z + (inst.x - inst.y) * 0.0078125f);
+        swing = swing * (1.0f + GrassPairing.y) + 1.5f * GrassPairing.y * (0.75f * gust + 0.25f * flutter);
+    }
+    float sway = swing * WindData.z * (IN.color.w * IN.color.w);
 
     float3 scale = (0.01f * inst.w) * ScaleMask.xyz + 1.0f;
     float3 pos = IN.position.xyz * scale + float3(sway * WindData.xy, 0.0f);

@@ -178,7 +178,7 @@ public:
 		WetWorldEffect*			WetWorld;
 		BarrelHazeEffect*		BarrelHaze;
 		HeatHazeEffect*			HeatHaze;	// UNOFFICIAL: from Physically-Based-Reloaded
-		SandstormEffect*		Sandstorm;	// UNOFFICIAL: from Physically-Based-Reloaded (Fable)
+		SandstormEffect*		Sandstorm;	// UNOFFICIAL: from Physically-Based-Reloaded (Balebandro / Alejandro Martinez), GPL-3.0
 		VolumetricLightEffect*	VolumetricLight;	// UNOFFICIAL: sun shafts from the shadow maps
 		ReflectionsEffect*		Reflections;		// UNOFFICIAL: screen-space reflections on the ground
 		BodycamEffect*			Bodycam;			// UNOFFICIAL, testbed: police body-camera look

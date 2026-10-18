@@ -33,7 +33,12 @@ void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShade
 
 	const bool NVRPixel = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
 	// w: GrassFirst's part (DrawPart; Render.cpp namespace GrassFirst): 0 every tuft, 1 the near tufts, 2 the fading ones.
-	const float Pairing[4] = { NVRPixel || !GameShaderFix ? 1.0f : 0.0f, 0.0f, 0.0f, (float)DrawPart };
+	// UNOFFICIAL 2026-10-18 sandport: y, z the sandstorm's wind (SandstormEffect::GrassStorm: the extra sway and the gust clock;
+	// 0, 0 with no storm or the effect off, and the grass VS then sways exactly as the game's). GrassFirst's re-writes of c19 keep
+	// them (LastPairing).
+	const SandstormEffect* Sandstorm = TheShaderManager->Effects.Sandstorm;
+	const float Pairing[4] = { NVRPixel || !GameShaderFix ? 1.0f : 0.0f, Sandstorm ? Sandstorm->GrassStorm[0] : 0.0f,
+		Sandstorm ? Sandstorm->GrassStorm[1] : 0.0f, (float)DrawPart };
 	TheRenderManager->device->SetVertexShaderConstantF(19, Pairing, 1);
 	for (int i = 0; i < 4; i++) LastPairing[i] = Pairing[i];
 }

@@ -23,6 +23,7 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)Render, &RenderHook);
 	DetourAttach(&(PVOID&)ProcessImageSpaceShaders, &ProcessImageSpaceShadersHook);
 	DetourAttach(&(PVOID&)RenderWorldSceneGraph, &RenderWorldSceneGraphHook);
+	DetourAttach(&(PVOID&)RenderBlended, &RenderBlendedHook);   // UNOFFICIAL sandport: glass writes no depth in a sandstorm (ThroughBlended)
 	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
