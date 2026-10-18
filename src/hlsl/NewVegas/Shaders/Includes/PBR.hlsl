@@ -34,13 +34,49 @@ float4 TESR_PBRMath : register(c223); // x: EnergySplit (1 = on)
 // +-0.4%, bench\foundations\REPORT.md) and the diffuse part keeps the rest: surfaces that did not gain keep exactly their light.
 // It depends on the view and the roughness only, so the shader works it out once per pixel (SetDiffuseEnergyKeep, before its
 // lighting calls) and every lamp reuses it; shaders that do not call it keep the old split (1). 0.95: the diffuse share there.
+#ifndef PBR_SMITH_CORRELATED
+    #define PBR_SMITH_CORRELATED 0
+#endif
+#if PBR_SMITH_CORRELATED
+// UNOFFICIAL 2026-10-18 SmithCorrelated (see BRDF below; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0, commit 4e64984b).
+// With the exact masking term the highlight keeps its energy at grazing angles, and the (1 - F(L.H)) diffuse, which does not give
+// that energy up, made a white dielectric send back up to 1.65x the light it receives (full pass, roughness 0.07, N.V 0.07; the
+// lossy Karis term had kept the old total at 1.08). OpenPBR, which their fork follows, scales the diffuse by (1 - the highlight's
+// albedo for the view), read from its split-sum table; NVR has no free sampler in the object shaders, so this is the share of the
+// diffuse that leaves the total at 1, measured on the real PBR.hlsl (white furnace, tests\furnace\hckeep_table.cpp) and fitted
+// (bench\deep-roadmap\evidence\pbrport\fit_keep2.py: 2D polynomial in roughness and sqrt(N.V), GGX's clamp below roughness 0.056
+// modelled as its loss 1 - (1 - min(1e5 r^4, 1))^2). Furnace with it: 0.972-1.019 for roughness 0.05-1, N.V 0.05-1 (was up to
+// 1.652). Always on with SmithCorrelated: it is that term's energy balance, not the EnergySplit switch.
+float SmithCorrelatedKeep(float NdotV, float roughness) {
+    const float r = max(roughness, 0.056f);
+    const float s = sqrt(clamp(NdotV, 0.02f, 1.0f));
+    const float p0 = 0.8720785f + s * (2.377077f + s * (-15.78768f + s * (20.7581f + s * (-8.469884f + s * (0.2183369f)))));
+    const float p1 = -2.350215f + s * (6.164611f + s * (12.53951f + s * (-24.69559f + s * (9.321004f))));
+    const float p2 = -4.584592f + s * (-17.91134f + s * (14.6047f + s * (0.8975321f)));
+    const float p3 = 20.67309f + s * (6.171803f + s * (-8.573712f));
+    const float p4 = -22.05094f + s * (2.260031f);
+    const float p5 = 7.527356f;
+    const float excess = p0 + r * (p1 + r * (p2 + r * (p3 + r * (p4 + r * p5))));
+    const float clampLoss = 1.0f - min(1e5f * roughness * roughness * roughness * roughness, 1.0f);
+    return 1.0f - saturate(excess * (1.0f - clampLoss * clampLoss));
+}
+#endif
+
 float DiffuseEnergyKeep(float NdotV, float roughness) {
+#if PBR_SMITH_CORRELATED == 2
+    // TEST mode ([Shaders.PBR.Main] SmithCorrelated = 2, for one-launch A/B tests only): blended in by SmithCorrelatedTest (TESR_PBRMath.x,
+    // PBR.cpp; EnergySplit, which uses that lane otherwise, is not compiled in here). 0 = the old split exactly (EnergySplit off: 1).
+    return 1.0f + (SmithCorrelatedKeep(NdotV, roughness) - 1.0f) * TESR_PBRMath.x;
+#elif PBR_SMITH_CORRELATED
+    return SmithCorrelatedKeep(NdotV, roughness);
+#else
     const float t = saturate((NdotV - 0.055f) * (1.0f / 0.525f));
     const float x = saturate((0.53f - roughness) * (1.0f / 0.461f));
     const float lowEnd = saturate((roughness - 0.02f) * (1.0f / 0.05f));
     const float u = 1.0f - t;
     const float excess = x * lowEnd * t * u * u * ((0.10380582f + 0.69366243f * x) + t * (0.27762281f - 0.88561283f * x));
     return TESR_PBRMath.x > 0.5f ? 1.0f - excess * (1.0f / 0.95f) : 1.0f;
+#endif
 }
 static float PBRDiffuseKeep = 1.0f;
 void SetDiffuseEnergyKeep(float3 normal, float3 eyeDir, float roughness) {
@@ -97,11 +133,36 @@ float3 FresnelShlick(float3 reflectance, float3 halfway, float3 eyeDir) {
     return reflectance + (1 - reflectance) * pow(1 - shades(halfway, eyeDir), 5.0);
 }
 
+// UNOFFICIAL 2026-10-18 SmithCorrelated ([Shaders.PBR.Main], restart: SMITH_CORRELATED_ON from ShaderRecord::BuildDefines; the object
+// templates map it to PBR_SMITH_CORRELATED, so terrain, skin and water keep the old term). The idea is from Physically-Based-Reloaded
+// (Balebandro), GPL-3.0, commit 4e64984b 'OpenPBR: exact split-sum table and height-correlated Smith masking'; the code is NVR's.
+// The masking-shadowing term above is Karis 2013 ('Real Shading in UE4'): separable Schlick-Smith with k = (r + 1)^2 / 8, a remap
+// for analytic lights that keeps k >= 0.125 even for a mirror, so smooth surfaces seen or lit at a low angle lose most of their
+// highlight (white furnace, F0 = 1: 0.18 of the light at roughness 0.2, N.V 0.1, where the microfacet model keeps 0.93). This is the
+// exact height-correlated Smith term for GGX instead (Heitz 2014, 'Understanding the Masking-Shadowing Function in Microfacet-Based
+// BRDFs', eq. 99), written as the visibility V = G2 / (4 N.V N.L) (Hammon 2017; Filament):
+//   V = 0.5 / (N.L sqrt(N.V^2 (1 - a^2) + a^2) + N.V sqrt(N.L^2 (1 - a^2) + a^2)),  a = roughness^2 (GGX's alpha, as GGX() above).
+// Face-on (N.V = N.L = 1) both give 1; off-normal highlights are brighter (about 1.45x at 45 degrees for roughness 0.3-0.65).
+// A look change: off by default. Off, BRDF is exactly the old code (the preprocessor removes this). SmithCorrelated = 2 is a TEST mode:
+// both terms, blended by SmithCorrelatedTest (TESR_PBRMath.x), so one launch can show off (0, the old picture exactly) and on (1).
 // BRDF
 float3 BRDF(float roughness, float3 fresnel, float NdotV, float NdotL, float NdotH){
+#if PBR_SMITH_CORRELATED
+    // The callers clamp N.V and N.L to 1e-5 and roughness >= 0.02, so the sum below is >= 8e-9: never a division by zero.
+    const float a2 = pow(roughness, 4);
+    const float lambdaV = NdotL * sqrt(NdotV * NdotV * (1 - a2) + a2);
+    const float lambdaL = NdotV * sqrt(NdotL * NdotL * (1 - a2) + a2);
+    #if PBR_SMITH_CORRELATED == 2
+        const float3 oldTerm = GGX(NdotH, roughness) * GeometryShadowing(roughness, NdotV, NdotL) * fresnel / (4.0 * NdotV * NdotL);
+        return oldTerm + (GGX(NdotH, roughness) * (0.5 / (lambdaV + lambdaL)) * fresnel - oldTerm) * TESR_PBRMath.x;
+    #else
+        return GGX(NdotH, roughness) * (0.5 / (lambdaV + lambdaL)) * fresnel;
+    #endif
+#else
     float3 num = GGX(NdotH, roughness) * GeometryShadowing(roughness, NdotV, NdotL) * fresnel;
     float denom = 4.0 * NdotV * NdotL;
     return num/denom;
+#endif
 }
 
 float3 PBRDiffuse(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {

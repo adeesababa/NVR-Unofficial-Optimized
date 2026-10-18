@@ -111,11 +111,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 28 && Template.Defines[i].Name != NULL) {
+		while (i < 34 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
 			i++;
 		}
-		if (i >= 28) return;  // out of room; silently skip rather than overrun
+		if (i >= 34) return;  // out of room (Defines[36]: 34 entries and the terminator); silently skip rather than overrun
 		Template.Defines[i] = { Name, Definition };
 		Template.Defines[i + 1] = { NULL, NULL };
 	};
@@ -178,6 +178,14 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
 	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
+	// UNOFFICIAL 2026-10-18 SmithCorrelated (Includes/PBR.hlsl BRDF + SmithCorrelatedKeep; idea from Physically-Based-Reloaded (Balebandro),
+	// GPL-3.0): the object and parallax pixel shaders take the exact height-correlated Smith masking term (Heitz 2014) and the coupled
+	// diffuse it needs. A look change, compiled in only when on at startup, so that off the shaders are exactly what they were.
+	// 2 = a test mode (both terms, blended live by SmithCorrelatedTest) for one-launch A/B tests.
+	{
+		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
+		AppendDefine("SMITH_CORRELATED_ON", smith == 2 ? "2" : smith ? "1" : "0");
+	}
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
@@ -397,7 +405,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
 						bool linear = false, predecode = false;
-						for (int d = 0; d < 30 && Template.Defines[d].Name; d++) {
+						for (int d = 0; d < 36 && Template.Defines[d].Name; d++) {
 							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 						}

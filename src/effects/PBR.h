@@ -126,6 +126,10 @@ public:
 		float SkylightingScale;
 		float SkylightingDirectionality;
 		float SkylightingSaturation; // UNOFFICIAL, applied to the sky irradiance on the CPU (Sky.cpp)
+		// UNOFFICIAL 2026-10-18 for materials with an _rmaos map only (idea from Physically-Based-Reloaded (Balebandro), GPL-3.0, c1415cb8):
+		float RmaosMetalnessScale;	// MetalnessScale 0-1: the map's metal (G) times this
+		float RmaosAOScale;			// AOScale 0-1: share of the map's occlusion (B), times [Shaders.PBR.Rmaos] Occlusion
+		float RmaosRoughnessScale;	// RoughnessScale 1-2: the map's roughness (R) times this, at most 1 (rougher only)
 	};
 	struct PBRSettingsStruct {
 		PBRSettings Default;
@@ -178,6 +182,7 @@ public:
 	struct RmaosSettingsStruct {
 		bool On = false;
 		float Occlusion = 1.0f;	// share of the map's occlusion applied to the ambient light
+		float OcclusionNow = 1.0f;	// UNOFFICIAL 2026-10-18: Occlusion x the weather's AOScale, this frame (PBRShaders::UpdateConstants; RmaosDraw sends it in c220.y)
 		int DebugView = 0;		// 1 roughness, 2 metal, 3 occlusion, 4 which objects have a map
 		bool LogMatches = false;
 	};

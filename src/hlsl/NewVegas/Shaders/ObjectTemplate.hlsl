@@ -201,6 +201,12 @@
         #define LIN_PREDECODED
     #endif
 #endif
+// UNOFFICIAL 2026-10-18 SmithCorrelated ([Shaders.PBR.Main], restart: SMITH_CORRELATED_ON from ShaderRecord::BuildDefines): the object
+// pixel shaders take the exact height-correlated Smith masking term and its coupled diffuse (Includes/PBR.hlsl BRDF and
+// SmithCorrelatedKeep; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0). Off: the shaders exactly as before.
+#if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
+    #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON	// 1 on, 2 the test mode (PBR.hlsl)
+#endif
 #include "includes/Object.hlsl"
 // UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
 // shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow

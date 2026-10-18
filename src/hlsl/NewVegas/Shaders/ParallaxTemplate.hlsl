@@ -120,6 +120,10 @@
 #if defined(PS) && RMAOS_ON && !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
     #define RMAOS
 #endif
+// UNOFFICIAL 2026-10-18 SmithCorrelated: as ObjectTemplate.hlsl (Includes/PBR.hlsl). Off: exactly as before.
+#if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
+    #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON	// 1 on, 2 the test mode (PBR.hlsl)
+#endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
 

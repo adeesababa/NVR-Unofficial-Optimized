@@ -60,9 +60,17 @@ sampler2D NVR_RmaosMap : register(s2);
 static float4 RmaosValue = float4(1.0f, 0.0f, 1.0f, 1.0f);
 #define RMAOS_ACTIVE (NVR_Rmaos.x > 0.5f)
 
+// UNOFFICIAL 2026-10-18 per-weather RoughnessScale / MetalnessScale for the maps ([Shaders.PBR.Main/Rain/Night/NightRain/Interiors],
+// PBRShaders::UpdateConstants; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0, commit c1415cb8). TESR_PBRMath (PBR.hlsl)
+// z = MetalnessScale - 1, w = RoughnessScale - 1, so a register never written (0) and the neutral 1.0 defaults leave the map's
+// values exactly as read (x + x * 0 = x); the map's own values are in 0-1, so the saturate changes nothing there either.
+// RoughnessScale is 1-2 (rougher only, never above 1), MetalnessScale 0-1. AOScale needs no shader change (c220.y, RmaosDraw).
 void RmaosRead(float2 uv) {
     float2 dx = ddx(uv), dy = ddy(uv);
-    [branch] if (RMAOS_ACTIVE) RmaosValue = tex2Dgrad(NVR_RmaosMap, uv, dx, dy);
+    [branch] if (RMAOS_ACTIVE) {
+        RmaosValue = tex2Dgrad(NVR_RmaosMap, uv, dx, dy);
+        RmaosValue.rg = saturate(RmaosValue.rg + RmaosValue.rg * TESR_PBRMath.wz);
+    }
 }
 
 // The ambient light's share the map's occlusion leaves (1 without a map).

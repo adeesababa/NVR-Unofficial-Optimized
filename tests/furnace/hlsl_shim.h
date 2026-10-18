@@ -36,6 +36,7 @@ inline float saturate(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 inline float3 saturate(float3 v) { return { saturate(v.x), saturate(v.y), saturate(v.z) }; }
 inline float max(float a, float b) { return a > b ? a : b; }
 inline float min(float a, float b) { return a < b ? a : b; }
+inline float clamp(float v, float a, float b) { return v < a ? a : v > b ? b : v; }	// 2026-10-18 pbrport: SmithCorrelatedKeep
 inline float3 pow(float3 a, float b) { return { std::pow(a.x, b), std::pow(a.y, b), std::pow(a.z, b) }; }
 inline float3 lerp(float3 a, float3 b, float t) { return a + (b - a) * t; }
 inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
