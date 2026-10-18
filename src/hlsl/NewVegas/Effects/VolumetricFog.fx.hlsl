@@ -23,6 +23,10 @@ float4 TESR_SunsetColor; // color boost for sun when near the horizon
 float4 TESR_SunAmount; // x: isDaytime
 float4 TESR_PBRData; // z: direct light scale, w: ambient scale -- shared with objects for tonal consistency
 float4 TESR_SkyIrradiance[9]; // order-2 SH sky irradiance, linear radiance (Sky.cpp, only fresh while Shaders.Sky is enabled)
+// UNOFFICIAL 2026-10-18 ClassicLook ([Shaders.VolumetricFog.Main]): the same projection of the game's own sky alone, as the
+// original NVR fog (upstream master ab16e86c) had it; TESR_SkyIrradiance above also carries the physical sky when that is on.
+// Only the *Classic techniques and FogReference read it, and only in their preshaders (no shader constant registers).
+float4 TESR_SkyIrradianceGame[9];
 
 // sun shadow cascade data -- registered globally by ShadowsExteriorEffect, same constants
 // SunShadows.fx.hlsl consumes. Declared here independently since each .fx effect compiles on
@@ -293,6 +297,22 @@ float3 SkyIrradianceLinear(float3 worldNormal)
 		 + TESR_SkyIrradiance[6].rgb * (3.0f * n.z * n.z - 1.0f)
 		 + TESR_SkyIrradiance[7].rgb * (n.x * n.z)
 		 + TESR_SkyIrradiance[8].rgb * (n.x * n.x - n.y * n.y);
+	return max(irradiance, 0.0f);
+}
+
+// UNOFFICIAL 2026-10-18 ClassicLook: SkyIrradianceLinear on the game's own sky (TESR_SkyIrradianceGame), as master read it.
+float3 SkyIrradianceGameLinear(float3 worldNormal)
+{
+	float3 n = worldNormal;
+	float3 irradiance = TESR_SkyIrradianceGame[0].rgb
+		 + TESR_SkyIrradianceGame[1].rgb * n.y
+		 + TESR_SkyIrradianceGame[2].rgb * n.z
+		 + TESR_SkyIrradianceGame[3].rgb * n.x
+		 + TESR_SkyIrradianceGame[4].rgb * (n.x * n.y)
+		 + TESR_SkyIrradianceGame[5].rgb * (n.y * n.z)
+		 + TESR_SkyIrradianceGame[6].rgb * (3.0f * n.z * n.z - 1.0f)
+		 + TESR_SkyIrradianceGame[7].rgb * (n.x * n.z)
+		 + TESR_SkyIrradianceGame[8].rgb * (n.x * n.x - n.y * n.y);
 	return max(irradiance, 0.0f);
 }
 
@@ -653,7 +673,15 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 // depend only on depth, the sky mask and constants -- never on scene detail beyond getSky's
 // luma gate -- which lets the dedicated path evaluate them at half resolution and apply them
 // to the full-resolution scene instead of reconstructing the scene itself from half resolution.
-void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false)
+//
+// UNOFFICIAL 2026-10-18 ClassicLook ([Shaders.VolumetricFog.Main] ClassicLook; classic is a compile-time constant, one per
+// technique: the *Classic techniques): the look of the original NVR fog, upstream master ab16e86c, exactly: its density noise
+// (procedural fbm3 at the pixel's surface point, not the 3D noise texture averaged along the view or the froxel grid's fog
+// volume), its sun shadow on the in-scattering (the cascades at the surface point, not the froxel grid's lit share), its sky
+// colour and sky ambient (the game's own sky, not the physical sky) and its glow round the sun (SunGlow 1). Everything else is
+// master's maths as it was; the speed work stays (half-resolution coefficients with the full-resolution apply, the shadow and
+// AO applies folded in, the closed-form height fog).
+void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false, bool classic = false)
 {
 	VSOUT IN = (VSOUT)0;
 	IN.UVCoord = uv;
@@ -727,6 +755,9 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		noiseVal *= 0.25;
 	}
 	noiseVal = saturate((noiseVal - 0.5) * 1.8 + 0.5);
+	// ClassicLook: master's noise instead, read once at the surface the pixel shows (patches 'painted' on the scene, as in the
+	// original NVR fog). (In the *Classic techniques everything above is then unused and compiled out, texture reads included.)
+	if (classic) noiseVal = fbm3((worldPos + windOffset) / (1500 * NoiseScale));
 	float nightNoiseStrength = NoiseStrength * lerp(1.0, NightNoiseStrengthScale, nightFactor);
 
 	// Zero the noise's contribution to density on true sky pixels via isSkyDome (a hard depth
@@ -757,11 +788,12 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	float shadowVisibility = 1.0;
 	[branch]
 	if (isExterior > 0.5 && ShadowStrength > 0.0 && TESR_ShadowFade.y > 0.5) {
-		[branch] if (fogVolume.g > 1.0e-6) {
+		// (ClassicLook: always the last case, master's shadow at the surface point.)
+		[branch] if (!classic && fogVolume.g > 1.0e-6) {
 			// UNOFFICIAL fog volume: the sun's share of the fog along the view, weighed by the fog's density.
 			shadowVisibility = lerp(1.0, saturate(fogVolume.a / fogVolume.g), ShadowStrength);
 		}
-		else if (NVR_FogGridFlags.x > 0.5) {
+		else if (!classic && NVR_FogGridFlags.x > 0.5) {
 			// UNOFFICIAL froxel grid: the sun's share of the air along the view (see FogGridAir).
 			float2 air = FogGridAir(IN.UVCoord, depth);
 			shadowVisibility = lerp(1.0, air.y > 1.0e-6 ? saturate(air.x / air.y) : 1.0, ShadowStrength);
@@ -788,7 +820,9 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
 #if PHYSICAL_SKY_ON
-		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
+		if (!classic) {	// (ClassicLook: the game's sky colour, as master)
+			[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
+		}
 #endif
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
@@ -799,15 +833,17 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 		sunScattering *= pow(1 - sunHeight, 2) * isDayTimeFog * TESR_FogData.z;
 		// UNOFFICIAL 2026-10-15 SunGlow: this glow (inherited from NVR, up to 100 times the sun's colour where the fog lies
 		// toward a low sun) blew the sun out with the fog on; SunGlow scales it (1 = as it was).
-		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100 * TESR_VolumetricFogSun.x;
+		// (ClassicLook: 1, as master.)
+		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100 * (classic ? 1.0 : TESR_VolumetricFogSun.x);
 
 		distantFog = pows(smoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
 		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : exp(-worldPos.z / (80000 * DistantFogHeight));
 	}
 
 	// ---- sky ambient in-scattering (SH-reconstructed, or flat fallback), unshadowed ----
+	// (ClassicLook: the game's own sky, as master; without the physical sky the two are the same.)
 	float3 ambientColor = SkyAmbientAvailable > 0.5
-		? SkyIrradianceLinear(float3(0, 0, 1))
+		? (classic ? SkyIrradianceGameLinear(float3(0, 0, 1)) : SkyIrradianceLinear(float3(0, 0, 1)))
 		: linearize(TESR_SkyColor).rgb;
 	ambientColor *= TESR_PBRData.w;
 
@@ -908,21 +944,22 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	nightAmountOut = nightAmount;
 }
 
-// Legacy fog (custom build) or the current fog: legacy is a compile-time constant, one per technique.
-void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy, bool interior = false)
+// Legacy fog (custom build) or the current fog: legacy is a compile-time constant, one per technique. So is classic
+// (UNOFFICIAL 2026-10-18 ClassicLook, the *Classic techniques; see ModernFogTerms).
+void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy, bool interior = false, bool classic = false)
 {
 	if (legacy)
 		LegacyFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior);
 	else
-		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior);
+		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior, classic);
 }
 
-float4 VolumetricFog(VSOUT IN, uniform bool legacy) : COLOR0
+float4 VolumetricFog(VSOUT IN, uniform bool legacy, uniform bool classic = false) : COLOR0
 {
 	float4 color = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord));
 	float3 fogMul, fogAdd;
 	float nightAmount;
-	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount, legacy);
+	FogTerms(IN.UVCoord, fogMul, fogAdd, nightAmount, legacy, false, classic);
 	float4 finalColor = max(float4(color.rgb * fogMul + fogAdd, lerp(color.a, 1.0, nightAmount)), 0.0f);
 	return delinearize(finalColor);
 }
@@ -1016,7 +1053,7 @@ struct FogTermsOut
 // The nearest pixel wins so thin things in front, which may cover only one pixel of a block, always get a sample of their
 // own; the sky or ground behind them is covered by the neighbouring blocks or, where none of those is at their distance
 // either (a gap in foliage), by FogApply working the fog out for that pixel itself.
-FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy, uniform bool interior = false)
+FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy, uniform bool interior = false, uniform bool classic = false)
 {
 	FogTermsOut OUT;
 	float2 h = 0.5 * (NVR_FogLayout.zw - TESR_ReciprocalResolution.xy);	// UNOFFICIAL: half a pixel at half size, 0 at full size (Max Quality)
@@ -1030,7 +1067,7 @@ FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy, uniform bool int
 	}
 	float3 fogMul, fogAdd;
 	float nightAmount;
-	FogTerms(best, fogMul, fogAdd, nightAmount, legacy, interior);
+	FogTerms(best, fogMul, fogAdd, nightAmount, legacy, interior, classic);
 	OUT.mulDepth = float4(fogMul, saturate(bestDepth / farZ));
 	OUT.add = float4(fogAdd, 1);
 	return OUT;
@@ -1046,7 +1083,7 @@ VSOUT HalfVS(VSIN IN)
 }
 
 // Depth-aware upsample of the half-resolution fog coefficients, applied to a gamma-space colour.
-float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false)
+float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false, bool classic = false)
 {
 	float2 texel = NVR_FogLayout.zw;
 	float2 position = uv / texel - 0.5;
@@ -1081,16 +1118,16 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false
 	float bestDifference = min(min(difference.x, difference.y), min(difference.z, difference.w));
 	[branch] if (bestDifference > 3.0) {
 		float nightAmount;
-		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, interior);
+		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, interior, classic);
 	}
 
 	float3 color = linearize(gammaColor);
 	return delinearize(max(color * fogMul + fogAdd, 0.0f));
 }
 
-float4 DedicatedFogCombine(VSOUT IN, uniform bool legacy) : COLOR0
+float4 DedicatedFogCombine(VSOUT IN, uniform bool legacy, uniform bool classic = false) : COLOR0
 {
-	float3 color = FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy);
+	float3 color = FogApply(tex2D(TESR_SourceBuffer, IN.UVCoord).rgb, IN.UVCoord, legacy, false, classic);
 	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
 	return float4(color, 1);
 }
@@ -1166,7 +1203,7 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	return linearColor * ao;
 }
 
-float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy) : COLOR0
+float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy, uniform bool classic = false) : COLOR0
 {
 	float3 color = tex2D(TESR_SourceBuffer, IN.UVCoord).rgb;
 	// Shadows and AO both use gamma 2.2: retain their shared linear value until
@@ -1175,7 +1212,7 @@ float4 DedicatedFogComposite(VSOUT IN, uniform bool legacy) : COLOR0
 	[branch] if (NVR_CompositeFlags.x > 0.5) color = CompositeSunShadow(color, IN.UVCoord);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	color = FogApply(color, IN.UVCoord, legacy);
+	color = FogApply(color, IN.UVCoord, legacy, false, classic);
 	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
 	return float4(color, 1);
 }
@@ -1342,14 +1379,14 @@ float4 InteriorStoredColor(float2 uv)
 	return float4(InteriorStoreRound(ApplyInteriorShadowLod(uv, scene, tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0, 0)).r).rgb), scene.a);
 }
 
-float4 DedicatedFogCompositeInterior(VSOUT IN, uniform bool legacy) : COLOR0
+float4 DedicatedFogCompositeInterior(VSOUT IN, uniform bool legacy, uniform bool classic = false) : COLOR0
 {
 	float3 color = InteriorStoreRound(ApplyInteriorShadow(IN.UVCoord, tex2D(TESR_SourceBuffer, IN.UVCoord), tex2D(TESR_PointShadowBuffer, IN.UVCoord).r).rgb);
 	// From here as DedicatedFogComposite (no sun shadows indoors); the fog's sky test reads the darkened scene (getSky).
 	color = pows(color, 2.2);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	color = FogApply(color, IN.UVCoord, legacy, true);
+	color = FogApply(color, IN.UVCoord, legacy, true, classic);
 	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
 	return float4(color, 1);
 }
@@ -1411,5 +1448,232 @@ technique CompositeFogInteriorLegacy
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 DedicatedFogCompositeInterior(true);
+	}
+}
+
+// ---- ClassicLook (UNOFFICIAL 2026-10-18, [Shaders.VolumetricFog.Main] ClassicLook) ----
+// The look of the original NVR fog (upstream master ab16e86c; see ModernFogTerms), with the same speed work as the techniques
+// above. VolumetricFog.cpp picks these when ClassicLook is on (and LegacyFog is off). ClassicLook 2 = VolumetricFogClassic only:
+// every pixel worked out at full resolution in one pass, as master drew it (no half-resolution coefficients).
+technique VolumetricFogClassic
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader  = compile ps_3_0 VolumetricFog(false, true);
+	}
+}
+
+technique DedicatedFogClassic
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false, false, true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogCombine(false, true);
+	}
+}
+
+technique CompositeFogClassic
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false, false, true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogComposite(false, true);
+	}
+}
+
+technique CompositeFogInteriorClassic
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false, true, true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogCompositeInterior(false, true);
+	}
+}
+
+// ---- FogReference (UNOFFICIAL 2026-10-18, DIAGNOSTIC: [Main.Main.Performance] FogReferenceTest, development builds only) ----
+// The original NVR fog's pixel shader, upstream master ab16e86c VolumetricFog.fx.hlsl VolumetricFog(), copied line for line, so
+// ClassicLook can be compared with master's own maths on the very same frame (same inputs, same launch). Drawn at full resolution
+// in one pass with the shadow and AO applies as passes of their own, as master drew it. Three differences from the copy, all
+// forced by what changed around it: the 32-step height fog loop is master's (MasterHeightFog, below; the techniques above use
+// its closed form); the sky ambient reads the game's own sky (TESR_SkyIrradianceGame, which is what master's TESR_SkyIrradiance
+// held: ours also carries the physical sky); and the cascade shadow lookup (GetFogShadowValue) takes the PCF branch when the
+// sun shadows are in Mode 3, whose atlas master's VSM/EVSM lookup cannot read. Never used in normal play.
+float MasterHeightFog(float distance, float falloff, float3 worldPos, float heightOffset){
+	float3 eyeVector = worldPos - TESR_CameraPosition.xyz;
+	float3 step = eyeVector / stepnum;
+	float stepDist = length(step);
+
+	float3 pos = TESR_CameraPosition.xyz - float3(0, 0, FOG_GROUND + heightOffset * 1000);
+	float fog = 0;
+	[unroll]
+	for (int i = 0; i < stepnum; i++){
+		pos += step;
+		fog += exp(-falloff * pos.z) * stepDist;
+	}
+	float distanceModifier = saturate(distance / max(length(eyeVector), 0.0001));
+	return fog * distanceModifier;
+}
+
+void MasterHeightFogTerms(float distance, float3 extinctionColor, float3 inscatteringColor, float density, float falloff, float3 worldPos, float offset, out float3 extColor, out float3 insColor){
+	float fog = density * 0.00001 * MasterHeightFog(distance, falloff * 0.0001, worldPos, offset);
+	extColor = 1 - exp(-fog * extinctionColor);
+	insColor = 1 - exp(-fog * inscatteringColor);
+}
+
+float4 MasterReferenceFog(VSOUT IN) : COLOR0
+{
+	float4 color = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord));
+	float4 pureFogColor = linearize(TESR_FogColor);
+
+	float depth = readDepth(IN.UVCoord);
+	float isDayTime = smoothstep(0.4, 0.8, TESR_SunAmount.x);
+	float isDayTimeFog = smoothstep(0.1, 0.6, TESR_SunAmount.x);
+	float nightFactor = isExterior * (1 - isDayTime);
+
+	float3 eyeVector = toWorld(IN.UVCoord);
+	float3 eyeDirection = normalize(eyeVector);
+	eyeVector *= depth;
+	float3 worldPos = eyeVector + TESR_CameraPosition.xyz;
+
+	float normalizedDepth = length(eyeVector) / farZ; // make sure depth is the same at the center and edges of the screen
+	float fogPower = lerp(1, FogPower, saturate(WeatherImpact));
+	float fogDepth = pows(normalizedDepth, fogPower) * farZ;
+
+	float isSky = getSky(IN.UVCoord);
+	float skyMaskFactor = lerp(1.0, 1.0 - isSky, WeatherFilterBlend); // weather can disable the sky exclusion so fog blends fully into an overcast sky
+	skyMaskFactor = lerp(skyMaskFactor, 1.0, nightFactor * NightDisableSkyMask);
+
+	float isSkyDome = depth / farZ >= 0.9961;
+
+	// ---- vanilla-anchored density, derived from the active weather's own authored fog shape ----
+	float vanillaStrength = pows((saturate(1 - farFog / farZ) + saturate(1 - nearFog / farZ)) / 2, 2) / (FogPower + 1);
+
+	// ---- NVR-driven density: time-of-day curve, sunrise/sunset boost, animated 3D noise ----
+	float sunsetBump = sin(saturate(TESR_SunAmount.x) * PI) * isExterior;
+	float noonTrough = 1 - saturate(abs(TESR_GameTime.y - 12) / 6); // 0 at 6am/6pm, 1 at solar noon
+	float timeOfDayScale = lerp(1.0, lerp(1.0, 1.0 - MorningFogDip, noonTrough), isExterior);
+	float nightDensityScale = lerp(1.0, NightDensityScale, nightFactor);
+
+	float nightWindSpeed = WindSpeed * lerp(1.0, NightWindSpeedScale, nightFactor);
+	float3 windOffset = float3(WindDirection * nightWindSpeed * TESR_GameTime.x * 0.002, 0);
+	float noiseVal = fbm3((worldPos + windOffset) / (1500 * NoiseScale));
+	float nightNoiseStrength = NoiseStrength * lerp(1.0, NightNoiseStrengthScale, nightFactor);
+
+	float noiseSkyMask = 1 - isSkyDome;
+	float nvrDensity = BaseDensity * timeOfDayScale * nightDensityScale * lerp(1.0, noiseVal, nightNoiseStrength * noiseSkyMask);
+	nvrDensity += SunriseSunsetBoost * sunsetBump;
+
+	float strength = max(0, nvrDensity + WeatherImpact * vanillaStrength);
+
+	// ---- shadow-coupled sun in-scattering, sampled once per pixel at the fog's terminating point ----
+	float3 worldNormal = GetWorldNormal(IN.UVCoord);
+	float shadowVisibility = 1.0;
+	[branch]
+	if (isExterior > 0.5 && ShadowStrength > 0.0 && TESR_ShadowFade.y > 0.5) {
+		shadowVisibility = lerp(1.0, GetFogShadowVisibility(float4(worldPos, 1.0), worldNormal), ShadowStrength);
+	}
+
+	// default values used by interiors
+	float distantFog = 0.0, distantHeightFade = 0.0;
+	float4 skyColor = pureFogColor;
+	float4 sun = black;
+
+	// sun/sky/distant fog coloring specific to exteriors
+	if (isExterior){
+		float3 up = blue.xyz;
+		float sunHeight = shade(TESR_SunPosition.xyz, up);
+		float sunDir = dot(eyeDirection, TESR_SunPosition.xyz);
+		float sunInfluence = pows(compress(sunDir), SUNINFLUENCE);
+		float4 sunColorV = float4(GetSunColor(sunHeight, 1, TESR_SunAmount.x, TESR_SunDiskColor.rgb, TESR_SunsetColor.rgb), 1);
+		sunColorV *= isDayTime * isExterior;
+
+		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+
+		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
+		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
+		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
+
+		float sunScattering = pows(compress(sunDir), lerp(8.0, 1.0, PhaseAsymmetry) + sunStrength);
+		sunScattering *= pow(1 - sunHeight, 2) * isDayTimeFog * TESR_FogData.z;
+		sun = sunColorV * sunScattering * shadowVisibility * TESR_PBRData.z * 100;
+
+		distantFog = pows(smoothstep(DistantFogRange, 1.0, normalizedDepth), 0.5);
+		distantHeightFade = (DistantFogHeight == 0) ? (1.0 - isSky) : exp(-worldPos.z / (80000 * DistantFogHeight));
+	}
+
+	// ---- sky ambient in-scattering (SH-reconstructed, or flat fallback), unshadowed ----
+	float3 ambientColor = SkyAmbientAvailable > 0.5
+		? SkyIrradianceGameLinear(float3(0, 0, 1))
+		: linearize(TESR_SkyColor).rgb;
+	ambientColor *= TESR_PBRData.w;
+
+	float3 nightAmbient = linearize(TESR_SunAmbient).rgb * MoonVisibility * NightAmbientStrength * nightFactor;
+	ambientColor = max(ambientColor, nightAmbient);
+
+	float4 ambientSkyColor = float4(lerp(ambientColor, skyColor.rgb, saturate(WeatherImpact)), 1);
+
+	float4 fogColorFinal = fogColor(ambientSkyColor, pureFogColor, strength, FogSkyColorCoeff, sun, FogSaturation);
+	fogColorFinal.rgb *= lerp(float3(1, 1, 1), NightTint, nightFactor);
+
+	float nightExtinction = Extinction * lerp(1.0, NightExtinctionScale, nightFactor);
+	float nightInscattering = Inscattering * lerp(1.0, NightInscatteringScale, nightFactor);
+	float nightHeightFalloff = HeightFalloff * lerp(1.0, NightHeightFalloffScale, nightFactor);
+	float nightMaxHeight = MaxHeight + NightMaxHeightOffset * nightFactor;
+
+	float3 flatExt, flatIns, heightExt, heightIns;
+	getFlatFogTerms(fogDepth, nightExtinction, nightInscattering, strength, flatExt, flatIns);
+	float falloffArg = 1.5 / (fogPower * nightHeightFalloff);
+	MasterHeightFogTerms(fogDepth, nightExtinction, nightInscattering, strength, falloffArg, worldPos, nightMaxHeight, heightExt, heightIns);
+
+	float3 blendedExt = lerp(flatExt, heightExt, HeightInfluence);
+	float3 blendedIns = lerp(flatIns, heightIns, HeightInfluence);
+
+	float3 finalExt = max(blendedExt, flatExt * MinDensityFloor);
+	float3 finalIns = max(blendedIns, flatIns * MinDensityFloor);
+
+	float3 fogged = color.rgb * saturate(1 - finalExt) + fogColorFinal.rgb * saturate(finalIns);
+	float4 finalColor = float4(lerp(color.rgb, fogged, skyMaskFactor), 1);
+
+	// ---- aerial perspective: mid-to-far distance tint on non-sky terrain ----
+	float aerialDayFade = smoothstep(0.1, AerialDayFadeStart, TESR_SunAmount.x);
+	float aerialFactor = smoothstep(AerialRangeStart, 1.0, normalizedDepth) * (1.0 - isSkyDome) * isExterior;
+	float3 aerialTint = lerp(ambientColor, linearize(TESR_VolumetricFogAerialTint).rgb, AerialTintBlend);
+
+	float3 aerialTintClamped = saturate(aerialTint);
+	finalColor.rgb = lerp(finalColor.rgb, finalColor.rgb * aerialTintClamped, aerialFactor * AerialStrength * skyMaskFactor * aerialDayFade);
+
+	// ---- distant fog: horizon Z-fighting/sky-seam matte ----
+	finalColor = lerp(finalColor, skyColor, distantFog * saturate(DistantFogBlend) * distantHeightFade * isExterior);
+
+	finalColor.rgb = lerp(finalColor.rgb, skyColor.rgb, isSky * EdgeAA * isExterior);
+
+	float nightAmount = FogAmount * lerp(1.0, NightAmountScale, nightFactor);
+	finalColor = max(lerp(color, finalColor, nightAmount), 0.0f);
+
+	return delinearize(finalColor);
+}
+
+technique FogReference
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader  = compile ps_3_0 MasterReferenceFog();
 	}
 }

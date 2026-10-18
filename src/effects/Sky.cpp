@@ -10,6 +10,7 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudVolumeLight", &Constants.CloudVolumeLight);
 	TheShaderManager->RegisterConstant("TESR_SunsetColor", &Constants.SunsetColor);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradiance", &Constants.Irradiance[0]);
+	TheShaderManager->RegisterConstant("TESR_SkyIrradianceGame", &Constants.IrradianceGame[0]);	// UNOFFICIAL 2026-10-18 ClassicLook
 	TheShaderManager->RegisterConstant("TESR_PhysSky", &Constants.PhysSky);
 	TheShaderManager->RegisterConstant("TESR_PhysSkySun", &Constants.PhysSkySun);
 }
@@ -192,8 +193,8 @@ void SkyShaders::UpdateConstants() {
 	const float dTheta = (D3DX_PI * 0.5f) / STEPS_T;
 	const float dPhi = (2.0f * D3DX_PI) / STEPS_P;
 
-	D3DXVECTOR3 sh[9];
-	for (int i = 0; i < 9; i++) sh[i] = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+	D3DXVECTOR3 sh[9], shGame[9];	// (shGame: UNOFFICIAL ClassicLook, filled only while the physical sky blends in)
+	for (int i = 0; i < 9; i++) sh[i] = shGame[i] = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 
 	// UNOFFICIAL physical sky ([Shaders.Sky.Physical]): its share fades in from just below the horizon to just above it,
 	// so the game's own twilight and night stay; outdoors only. Its brightness is matched to the weather's sky: the
@@ -273,7 +274,20 @@ void SkyShaders::UpdateConstants() {
 			// down hardest.
 			D3DXVECTOR3 L = EvalSky(d, sunPos, Constants.SkyData, skyC, skyLowC, horizonC,
 				sunColor, sunHeight, isDayTime);
-			if (physical) L = PhysAtmosphere::Blend(L, physSamples[(i / 2) * (STEPS_P / 2) + j / 2] * Constants.PhysSky.y, Constants.PhysSky);	// UNOFFICIAL physical sky
+			if (physical) {
+				// UNOFFICIAL 2026-10-18 ClassicLook: the game's own sky projected as well (IrradianceGame), as the original NVR had it.
+				const D3DXVECTOR3 G = L * dOmega;
+				shGame[0] += G * 0.282095f;
+				shGame[1] += G * (0.488603f * d.y);
+				shGame[2] += G * (0.488603f * d.z);
+				shGame[3] += G * (0.488603f * d.x);
+				shGame[4] += G * (1.092548f * d.x * d.y);
+				shGame[5] += G * (1.092548f * d.y * d.z);
+				shGame[6] += G * (0.315392f * (3.0f * d.z * d.z - 1.0f));
+				shGame[7] += G * (1.092548f * d.x * d.z);
+				shGame[8] += G * (0.546274f * (d.x * d.x - d.y * d.y));
+				L = PhysAtmosphere::Blend(L, physSamples[(i / 2) * (STEPS_P / 2) + j / 2] * Constants.PhysSky.y, Constants.PhysSky);	// UNOFFICIAL physical sky
+			}
 			L *= dOmega;
 
 			sh[0] += L * 0.282095f;
@@ -303,6 +317,10 @@ void SkyShaders::UpdateConstants() {
 	const float saturation = pbr ? max(pbr->SkylightSaturation, 0.0f) : 1.0f;
 	for (int i = 0; i < 9; i++) {
 		D3DXVECTOR3 c = sh[i] * (band[i] * basis[i]);
+		// UNOFFICIAL 2026-10-18 ClassicLook: the original NVR's coefficients (the game's sky, unsaturated); without the physical sky
+		// blending in, the same projection as below.
+		const D3DXVECTOR3 g = physical ? shGame[i] * (band[i] * basis[i]) : c;
+		Constants.IrradianceGame[i] = D3DXVECTOR4(g.x, g.y, g.z, 0.0f);
 		if (saturation != 1.0f) {
 			const float luminance = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 			c = D3DXVECTOR3(luminance, luminance, luminance) + (c - D3DXVECTOR3(luminance, luminance, luminance)) * saturation;
