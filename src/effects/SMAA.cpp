@@ -145,9 +145,11 @@ void SMAAEffect::EdgesDetectionPass(Input input) {
         break;
     case INPUT_LUMADEPTH:
         // UNOFFICIAL aastab: the de-dithered / predicated variant only when one of its options is on; otherwise the original pass.
-        if (Settings.Main.Predication || Settings.Main.DeDither)
-            Effect->SetTechnique(TechniqueHandle(techLumaDepthStable, "LumaDepthEdgeDetectionStable"));
-        else
+        if (Settings.Main.Predication || Settings.Main.DeDither) {
+            // fixes-a #33: an older SMAA.fx has no Stable technique: fall back to the original pass instead of drawing nothing.
+            D3DXHANDLE stable = TechniqueHandle(techLumaDepthStable, "LumaDepthEdgeDetectionStable");
+            Effect->SetTechnique(stable ? stable : TechniqueHandle(techLumaDepth, "LumaDepthEdgeDetection"));
+        } else
             Effect->SetTechnique(TechniqueHandle(techLumaDepth, "LumaDepthEdgeDetection"));
         break;
     default:
