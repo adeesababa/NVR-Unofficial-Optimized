@@ -135,6 +135,10 @@ static const float PuddleSSRSurfaceBias = 3.0f;
 static const float PuddleSSRNormalInfluence = 0.25f;
 static const int PuddleSSRRefinementSteps = 2;
 static const float PuddleSSRRefinementTolerance = 12.0f;
+// UNOFFICIAL 2026-10-17 FixedReflectionTrace: settings of the corrected hit test (see TraceWetReflection)
+static const float PuddleSSRThickness = 24.0f;			// game units a hit may lie behind the depth surface (plus 30% of the step bracket)
+static const float PuddleSSRThicknessPerStep = 0.30f;
+static const float PuddleSSREdgeFade = 0.05f;			// the reflection fades to nothing over this share of the screen at its borders
 
 // Shader types
 struct VSOUT
@@ -495,6 +499,96 @@ float3 TraceWetReflection(float2 sourceUV, float3 waterNormal)
     return selectedHit;
 }
 
+// UNOFFICIAL 2026-10-17 FixedReflectionTrace (setting [Shaders.WetWorld.Main] FixedReflectionTrace, off by default; compiled as
+// separate techniques so the original program stays what it was).
+// FOUND IN GAME (puddlessr debug maps, 2026-10-17): in the original trace above, none of the break / return statements inside the
+// march loop stops anything on the real GPU path (the D3DX listing writes every exit as 'break_ne -c, -c', a comparison of a value with
+// itself, i.e. never taken; the early 'return float3(0,0,0)' is therefore a flag that later iterations overwrite). The march always
+// runs all steps, samples past the screen border as if they were hits (clamped depth), keeps the LAST bracket it finds instead of
+// the first, and the edge / distance fade and the 'return no reflection' never act: puddles show hard-edged full-strength copies of
+// the screen (clamped border pixels where the ray left it), which flip under any recompile.
+// This version has no break / return inside a loop: a done flag guards each step, the refinement always runs both halvings, and
+// the result is written once. Hit test: first depth crossing, thickness bound (McGuire and Mara, Efficient GPU Screen-Space Ray
+// Tracing, JCGT 2014: a ray that passed behind a thin occluder is not a hit; the allowance grows with the step bracket because the
+// 2-step refinement only locates the surface to a quarter of it), fade to nothing towards the screen border and with distance
+// (Stachowiak, Stochastic Screen-Space Reflections, SIGGRAPH 2015). xy = hit UV, z = visibility (a weight, 0 = miss: the puddle
+// keeps its analytic sky/cloud colour as before).
+float3 TraceWetReflectionFixed(float2 sourceUV, float3 waterNormal)
+{
+    float3 result = float3(0, 0, 0);
+    float3 origin = GetSSRViewPosition(sourceUV);
+    float4 sourceClip = mul(float4(origin, 1.0f), TESR_ProjectionTransform);
+    float viewSign = origin.z < 0.0f ? -1.0f : 1.0f;
+    float clipSign = sourceClip.w < 0.0f ? -1.0f : 1.0f;
+    float3 viewNormal = normalize(mul(float4(waterNormal, 0.0f), TESR_ViewTransform).xyz);
+    if (dot(viewNormal, origin) > 0.0f) viewNormal = -viewNormal;
+    float3 rayDirection = normalize(reflect(normalize(origin), viewNormal));
+    origin += viewNormal * PuddleSSRSurfaceBias;
+    float4 projectedOrigin = mul(float4(origin, 1.0f), TESR_ProjectionTransform);
+    float4 projectedDirection = mul(float4(rayDirection, 0.0f), TESR_ProjectionTransform);
+    float previousDelta = -PuddleSSRRefinementTolerance;
+    float previousTravel = 0.0f;
+    bool done = abs(sourceClip.w) < 0.0001f || abs(origin.z) < 0.0001f;
+    [loop]
+    for (int ssrStep = 1; ssrStep <= PuddleSSRSteps; ssrStep++)
+    {
+        float fraction = (float)ssrStep / (float)PuddleSSRSteps;
+        float travel = 8.0f + PuddleSSRMaxDistance * fraction * fraction;
+        float3 probe = origin + rayDirection * travel;
+        float4 projected = projectedOrigin + projectedDirection * travel;
+        float2 hitUV = projected.xy / max(abs(projected.w), 0.0001f) * float2(0.5f, -0.5f) + 0.5f;
+        bool onScreen = projected.w * clipSign > 0.0001f && probe.z * viewSign > 0.0001f
+            && hitUV.x > 0.001f && hitUV.x < 0.999f && hitUV.y > 0.001f && hitUV.y < 0.999f;
+        float4 depthSample = tex2Dlod(TESR_DepthBuffer, float4(hitUV, 0, 0));
+        float delta = probe.z * viewSign - depthSample.x * farZ;
+        // one branch per step; 'done' (a hit was taken, or the ray left the screen) replaces the loop exits that do not work
+        [branch]
+        if (!done && onScreen && depthSample.x > 0.0f && depthSample.x < 0.99999f && delta >= 0.0f && previousDelta < 0.0f)
+        {
+            float lowerTravel = previousTravel;
+            float upperTravel = travel;
+            [unroll]
+            for (int refinement = 0; refinement < PuddleSSRRefinementSteps; refinement++)
+            {
+                float midTravel = (lowerTravel + upperTravel) * 0.5f;
+                float3 midProbe = origin + rayDirection * midTravel;
+                float4 midClip = projectedOrigin + projectedDirection * midTravel;
+                float2 midUV = midClip.xy / midClip.w * float2(0.5f, -0.5f) + 0.5f;
+                float midZ = tex2Dlod(TESR_DepthBuffer, float4(midUV, 0, 0)).x * farZ;
+                bool behind = midProbe.z * viewSign - midZ >= 0.0f;
+                upperTravel = behind ? midTravel : upperTravel;
+                lowerTravel = behind ? lowerTravel : midTravel;
+            }
+            float3 hitProbe = origin + rayDirection * upperTravel;
+            float4 hitClip = projectedOrigin + projectedDirection * upperTravel;
+            float2 refinedUV = hitClip.xy / hitClip.w * float2(0.5f, -0.5f) + 0.5f;
+            float hitDepth = tex2Dlod(TESR_DepthBuffer, float4(refinedUV, 0, 0)).x;
+            float hitDelta = hitProbe.z * viewSign - hitDepth * farZ;
+            float vmHitDepth = tex2Dlod(TESR_DepthBufferViewModel, float4(refinedUV, 0, 0)).x;
+            bool hitViewModel = (TESR_DepthConstants.z == 0 && vmHitDepth < 0.9f)
+            || (TESR_DepthConstants.z > 0 && vmHitDepth > 0.01f);
+            float2 pixelSeparation = (refinedUV - sourceUV) / TESR_ReciprocalResolution.xy;
+            bool validHitDepth = hitDepth > 0.0f && hitDepth < 0.99999f;
+            bool separatedHit = dot(pixelSeparation, pixelSeparation) >= 16.0f;
+            float thickness = PuddleSSRThickness + PuddleSSRThicknessPerStep * (travel - previousTravel);
+            float edge = min(min(refinedUV.x, 1.0f - refinedUV.x), min(refinedUV.y, 1.0f - refinedUV.y));
+            float edgeVisibility = smoothstep(0.0f, PuddleSSREdgeFade, edge);
+            float distanceVisibility = max(1.0f - smoothstep(PuddleSSRMaxDistance * 0.65f,
+                PuddleSSRMaxDistance, upperTravel), 0.25f);
+            float visibility = edgeVisibility * distanceVisibility;
+            if (hitDelta >= 0.0f && hitDelta <= thickness && validHitDepth && !hitViewModel && separatedHit && visibility > 0.0f)
+            {
+                result = float3(refinedUV, visibility);
+                done = true;
+            }
+        }
+        done = done || !onScreen;
+        previousDelta = delta;
+        previousTravel = travel;
+    }
+    return result;
+}
+
 // Vertex shader
 VSOUT FrameVS(VSIN IN)
 {
@@ -601,7 +695,7 @@ void AddLampHighlightFast(float4 lightPos, float3 c, float3 worldPos, float3 V, 
 // Every texture read of the original (all tex2D with implicit derivatives: ripples, puddle normals, cloud, refraction,
 // first-person mask, shadow buffer, puddle exclusion) still runs, the same way, on every pixel before the first new branch;
 // the branches only skip arithmetic (and the SSR trace, which was already a branch).
-float4 Wet(VSOUT IN, uniform bool fast) : COLOR0
+float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
 {
     // Surface reconstruction and weather
     float4 baseColor = tex2D(TESR_SourceBuffer, IN.UVCoord);
@@ -985,6 +1079,9 @@ float4 Wet(VSOUT IN, uniform bool fast) : COLOR0
             && ssrTraceOpacity > PuddleSSRMinTraceOpacity)
         {
             float3 ssrNormal = normalize(lerp(baseN, N, saturate(PuddleSSRNormalInfluence)));
+            if (fixTrace)
+            ssrHit = TraceWetReflectionFixed(IN.UVCoord, ssrNormal);
+        else
             ssrHit = TraceWetReflection(IN.UVCoord, ssrNormal);
         }
         float ssrCoverage = saturate(ssrHit.z * ssrMask * LODfade) * ssrOpacity;
@@ -1076,7 +1173,7 @@ float4 Wet(VSOUT IN, uniform bool fast) : COLOR0
 
         float3 wetRGB = lerp(baseColor.rgb, outCol.rgb, LODfade * wetMask);
 
-        if (ssrHit.z > 0.5f && PuddleSSRCandidateBlend > 0.0f)
+        if (ssrHit.z > (fixTrace ? 0.001f : 0.5f) && PuddleSSRCandidateBlend > 0.0f)
         {
             float3 reflectionRGB = tex2Dlod(TESR_SourceBuffer, float4(ssrHit.xy, 0, 0)).rgb;
             float reflectionBlend = saturate(PuddleSSRCandidateBlend) * ssrCoverage;
@@ -1135,7 +1232,10 @@ float4 Wet(VSOUT IN, uniform bool fast) : COLOR0
         && ssrTraceOpacity > PuddleSSRMinTraceOpacity)
     {
         float3 ssrNormal = normalize(lerp(baseN, N, saturate(PuddleSSRNormalInfluence)));
-        ssrHit = TraceWetReflection(IN.UVCoord, ssrNormal);
+        if (fixTrace)
+            ssrHit = TraceWetReflectionFixed(IN.UVCoord, ssrNormal);
+        else
+            ssrHit = TraceWetReflection(IN.UVCoord, ssrNormal);
     }
     float ssrCoverage = saturate(ssrHit.z * ssrMask * LODfade) * ssrOpacity;
 
@@ -1255,7 +1355,7 @@ float4 Wet(VSOUT IN, uniform bool fast) : COLOR0
         wetRGB = lerp(baseColor.rgb, outCol.rgb, wetWeight);
     }
 
-    if (ssrHit.z > 0.5f && PuddleSSRCandidateBlend > 0.0f)
+    if (ssrHit.z > (fixTrace ? 0.001f : 0.5f) && PuddleSSRCandidateBlend > 0.0f)
     {
         float3 reflectionRGB = tex2Dlod(TESR_SourceBuffer, float4(ssrHit.xy, 0, 0)).rgb;
         float reflectionBlend = saturate(PuddleSSRCandidateBlend) * ssrCoverage;
@@ -1310,7 +1410,7 @@ technique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(false);
+        PixelShader  = compile ps_3_0 Wet(false, false);
     }
 }
 
@@ -1344,6 +1444,56 @@ technique FastPathsTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(true);
+        PixelShader  = compile ps_3_0 Wet(true, false);
+    }
+}
+
+// UNOFFICIAL 2026-10-17 FixedReflectionTrace ([Shaders.WetWorld.Main]): techniques 3 (the original pass) and 4 (FastPaths) with the
+// corrected puddle reflection hit test. The C++ side picks the technique (WetWorldEffect::MainTechnique).
+technique FixedTraceTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(false, true);
+    }
+}
+
+technique FixedTraceFastPathsTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, true);
     }
 }

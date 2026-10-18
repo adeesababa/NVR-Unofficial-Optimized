@@ -32,6 +32,7 @@ void WetWorldEffect::UpdateSettings() {
 	// the tonemapper (sun, bright sky and lit wet highlights lost their roll-off). On: clamped only below 0.
 	Constants.Look.x = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "KeepHighlights") ? 1.0f : 0.0f;
 	fastPaths = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "FastPaths") != 0;
+	fixedTrace = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "FixedReflectionTrace") != 0;
 }
 
 void WetWorldEffect::RegisterConstants() {
