@@ -2556,8 +2556,9 @@ static unsigned ViewModelDepthClearedFrames = 0;
 // without writing depth: alpha blended, and not cut out by an alpha test of any strength (fences, wire and torn sheets keep their
 // depth). Water keeps its own (the water effects read its surface), except seen from underwater.
 // Changed here: the world's depth surface is noted by this code itself (theirs used terrain blending's), and DrawIndexedPrimitive
-// (device table slot 82) is hooked only for the length of the stage and put back after it: the native runtime has been seen to
-// put its own entries back into the table (VolumetricClouds), and nothing stays in the table while no storm blows.
+// (device table slot 82) is detoured once, the first time a storm hides glass depth (fixes-b #30; the native runtime has been seen to
+// put its own entries back into the table, VolumetricClouds, so the body is detoured as ConstantFilter.h does), and DrawHook passes
+// straight on unless the world scene's blended stage is running. Nothing is hooked in a session without a storm.
 namespace SandstormGlass {
 	static bool InWorldScene = false;
 	static IDirect3DSurface9* WorldDepth = nullptr;	// the depth surface bound as the world scene starts, while the storm hides glass depth (compared only)
@@ -2625,28 +2626,26 @@ void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg) {
 		if (depth) depth->Release();
 	}
 	if (!hide) { RenderBlended(This, Arg); return; }
-	void** table = *(void***)TheRenderManager->device;
-	bool hooked = false;
-	if (table[82] != (void*)&DrawHook) {
-		DWORD old = 0;
-		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
-			Next = (DrawIndexedPrimitiveFn)table[82];
-			table[82] = (void*)&DrawHook;
-			VirtualProtect(&table[82], sizeof(void*), old, &old);
-			hooked = true;
-		}
+	// fixes-b #30: DrawIndexedPrimitive is detoured ONCE (the body slot 82 points at, like ConstantFilter.h: the native runtime
+	// rewrites the table itself), the first time a storm hides glass depth. DrawHook passes straight on unless the stage flag is set.
+	// (Before: the table entry was patched and put back every storm frame; a third-party hook chaining slot 82 in between could recurse.)
+	static bool drawHooked = false, drawHookFailed = false;
+	if (!drawHooked && !drawHookFailed) {
+		void** table = *(void***)TheRenderManager->device;
+		Next = (DrawIndexedPrimitiveFn)table[82];
+		DetourTransactionBegin();
+		DetourUpdateThread(GetCurrentThread());
+		DetourAttach(&(PVOID&)Next, (PVOID)&DrawHook);
+		const LONG attached = DetourTransactionCommit();
+		drawHooked = attached == NO_ERROR;
+		drawHookFailed = !drawHooked;
+		if (!drawHooked) Logger::Log("UNOFFICIAL Sandstorm ThroughBlended: the draw hook failed (%ld); glass keeps its depth", attached);
 	}
+	if (!drawHooked) { RenderBlended(This, Arg); return; }
 	const unsigned before = HiddenDraws;
-	InBlendedStage = table[82] == (void*)&DrawHook;
+	InBlendedStage = true;
 	RenderBlended(This, Arg);
 	InBlendedStage = false;
-	if (hooked && table[82] == (void*)&DrawHook) {
-		DWORD old = 0;
-		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
-			table[82] = (void*)Next;
-			VirtualProtect(&table[82], sizeof(void*), old, &old);
-		}
-	}
 	static unsigned logged = 0;
 	if (logged < 3 && HiddenDraws > before) {
 		logged++;
