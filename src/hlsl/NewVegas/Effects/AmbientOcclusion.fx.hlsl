@@ -694,11 +694,12 @@ float3 randomLod(float2 seed)
 	return tex2Dlod(TESR_BlueNoiseSampler, float4((seed/256 + 0.5) / TESR_ReciprocalResolution.xy, 0, 0)).xyz;
 }
 
-float2 PackedSSAOValuesFast(float2 uv, float3 origin, float3 normal)
+float2 PackedSSAOValuesFast(float2 uv, float3 origin, float3 normal, float3 noise0)
 {
+	// noise0 = random(uv), read at the top (the original's compile shares that read for the angle, i = 0 and i = 2's scale)
 	float uRadius = abs(AOrange);
 	float bias = saturate(AOangleBias);
-	float angle = -randomLod(uv).x / 2 * PI;
+	float angle = -noise0.x / 2 * PI;
 	float3 kernelRotation = float3(-sin(angle), cos(angle), 0);
 	float3 tangent = normalize(kernelRotation - normal * dot(kernelRotation, normal));
 	float3 bitangent = cross(normal, tangent);
@@ -706,11 +707,11 @@ float2 PackedSSAOValuesFast(float2 uv, float3 origin, float3 normal)
 	float2 occlusion = 0;
 
 	[unroll] for (int i = 0; i < kernelSize; ++i) {
-		float3 rand = randomLod(uv + i * TESR_ReciprocalResolution.x);
+		float3 rand = i == 0 ? noise0 : randomLod(uv + i * TESR_ReciprocalResolution.x);
 		float3 raw = float3(expand(rand.xy), rand.z);
 		float3 sampleX = mul(normalize(raw * float3(1, 0, 1)), tbn);
 		float3 sampleY = mul(normalize(raw * float3(0, 1, 1)), tbn);
-		float3 randomScale = randomLod(uv * i / 2);
+		float3 randomScale = i == 2 ? noise0 : randomLod(uv * i / 2);	// (i = 2: uv * 2 / 2 = uv, the same read)
 		sampleX *= randomScale;
 		sampleY *= randomScale;
 		float scale = lerp(bias, 1.0f, pows(1 + float(i) / float(kernelSize), 2));
@@ -737,11 +738,12 @@ float4 PackedEstimateFast(VSOUT IN) : COLOR0
 {
 	float3 skyOrigin = reconstructPosition(IN.UVCoord);
 	float3 skyNormal = GetNormal(IN.UVCoord);
-	float skyTurn = random(IN.UVCoord).y * 2.0f * PI;
+	float3 noise0 = random(IN.UVCoord);
+	float skyTurn = noise0.y * 2.0f * PI;
 	float storedDepth = min(readDepth(IN.UVCoord), (float)endFade);
 	float ao = 1.0f;
 	[branch] if (!(skyOrigin.z > endFade)) {
-		float2 values = PackedSSAOValuesFast(IN.UVCoord, skyOrigin, skyNormal);
+		float2 values = PackedSSAOValuesFast(IN.UVCoord, skyOrigin, skyNormal, noise0);
 		ao = values.x * values.y;
 	}
 	[branch] if (TESR_AmbientOcclusionSky.x > 0.0f && skyOrigin.z < endFade) ao *= SkyVisibility(skyOrigin, skyNormal, skyTurn);
