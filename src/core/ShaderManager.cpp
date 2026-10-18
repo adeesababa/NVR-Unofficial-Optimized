@@ -1036,6 +1036,147 @@ bool LampMaskHalfRes();	// UNOFFICIAL 2026-10-16 MaskHalfRes (effects\ShadowsExt
 IDirect3DTexture9* LampMaskHalfTexture();
 IDirect3DSurface9* LampMaskHalfSurface();
 
+/*
+* UNOFFICIAL 2026-10-18 LampMaskScissor (contribution audit, work\bench\deep-roadmap\evidence\contrib-LOG.md). The lamp mask
+* (PointShadows.fx Shadow(), technique MergedPointShadows) is the sum of the lamps' light at each pixel's reconstructed position
+* world_pos = TESR_CameraPosition + toWorld(uv) * depth. Every lamp term is exactly 0 where that position is not inside the
+* lamp's sphere (its radius = the .w the shader divides by): a shadowed slot returns 0 when !(distance < 1) (w 0 included: the
+* distance is then INF or NaN), slot 11 and the tracked lamps go through GetPointLightAtten / LampReach, both exactly 0 from
+* distance 1 on, the flashlight's attenuation is saturate((1 - s)^2 / (1 + 5 s)) = 0 at s = 1, and saturate(0) = 0. Since
+* world_pos lies on the pixel's own view ray (toWorld uses the view matrix's axes and 1 / P00, 1 / P11, exactly what is read
+* here), a pixel whose ray misses every lamp's sphere is written 0. So: the screen rectangle holding the projections of the lamps'
+* spheres (each sphere's world-aligned bounding box, widened by 2 % + 2 units, its 8 corners projected, +-1 pixel) is the only
+* place the pass can write anything but 0. No lamp (or none on screen): the target is just cleared (the pass's own first step);
+* otherwise cleared, then the pass drawn with the scissor test on that rectangle. A box reaching behind the camera, a lamp list
+* this does not cover (the extra lamps), an unusual radius or camera: the whole pass, as before.
+* Returns 0 = draw as before, 1 = nothing to draw (clear only), 2 = draw inside 'rect'.
+*/
+static int LampMaskRect(RECT& rect, int& lampCount) {
+	lampCount = 0;
+	if (TheShaderManager->ExtraLights[0].w != 0.0f) return 0;	// (the extra lamps: forward shadows indoors only; not covered)
+	D3DXVECTOR4 lamps[ShadowCubeMapsScreen + TrackedLightsMax + 1];
+	for (int i = 0; i < ShadowCubeMapsScreen; i++)
+		if (TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowLightPosition[i].w != 0.0f) lamps[lampCount++] = TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowLightPosition[i];
+	for (int i = 0; i < TrackedLightsMax; i++)
+		if (TheShaderManager->LightPosition[i].w != 0.0f) lamps[lampCount++] = TheShaderManager->LightPosition[i];
+	if (TheShaderManager->SpotLightPosition[0].w != 0.0f) lamps[lampCount++] = TheShaderManager->SpotLightPosition[0];
+	if (lampCount == 0) return 1;
+	// The camera as the shader sees it, read from the same memory its constants are uploaded from at this moment
+	// (TESR_ViewTransform = viewMatrix, TESR_ProjectionTransform = projMatrix, TESR_CameraPosition). The effect gets the matrices
+	// as stored (Depth.hlsl's projectPosition multiplies a row vector by TESR_ProjectionTransform, D3D style, and works), so
+	// toWorld's TESR_ViewTransform[0..2][2] is the view matrix's third column, the camera's forward axis (right, up: columns 1, 2).
+	const D3DXMATRIX& V = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& P = TheRenderManager->projMatrix;
+	const D3DXVECTOR3 R(V._11, V._21, V._31), U(V._12, V._22, V._32), F(V._13, V._23, V._33);
+	// Sanity: a rotation (unit, orthogonal axes) and a perspective projection; anything else draws the pass whole.
+	if (fabsf(D3DXVec3Length(&F) - 1.0f) > 1e-3f || fabsf(D3DXVec3Length(&R) - 1.0f) > 1e-3f || fabsf(D3DXVec3Length(&U) - 1.0f) > 1e-3f ||
+		fabsf(D3DXVec3Dot(&F, &R)) > 1e-3f || fabsf(D3DXVec3Dot(&F, &U)) > 1e-3f || !(P._11 > 0.0f) || !(P._22 > 0.0f) || P._44 != 0.0f) {
+		static bool reported = false;
+		if (!reported) { reported = true; Logger::Log("LAMP MASK SCISSOR: unusual camera matrices (forward %.4f %.4f %.4f, P44 %.3f): the pass is drawn whole", F.x, F.y, F.z, P._44); }
+		return 0;
+	}
+	{	// once: the forward axis next to the camera's (InvViewMatrix, the world camera) for the record
+		static bool logged = false;
+		const D3DXMATRIX& I = TheRenderManager->InvViewMatrix;
+		if (!logged) { logged = true; Logger::Log("LAMP MASK SCISSOR: view forward %.4f %.4f %.4f, world camera forward %.4f %.4f %.4f, P00 %.4f P11 %.4f", F.x, F.y, F.z, I._31, I._32, I._33, P._11, P._22); }
+	}
+	const float W = (float)TheRenderManager->width, H = (float)TheRenderManager->height;
+	const D3DXVECTOR3 C(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+	float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
+	bool any = false;
+	for (int k = 0; k < lampCount; k++) {
+		const float radius = lamps[k].w;
+		if (!(radius > 0.0f) || radius > 1e6f) return 0;
+		const float reach = radius * 1.02f + 2.0f;
+		float lx0 = 1e30f, ly0 = 1e30f, lx1 = -1e30f, ly1 = -1e30f;
+		for (int corner = 0; corner < 8; corner++) {
+			const D3DXVECTOR3 p(lamps[k].x + ((corner & 1) ? reach : -reach) - C.x, lamps[k].y + ((corner & 2) ? reach : -reach) - C.y,
+				lamps[k].z + ((corner & 4) ? reach : -reach) - C.z);
+			const float z = D3DXVec3Dot(&p, &F);
+			if (z < 1.0f) return 0;	// the box reaches behind (or right at) the camera: whole pass
+			const float u = (D3DXVec3Dot(&p, &R) / z * P._11 + 1.0f) * 0.5f * W;	// toWorld inverted: 2u - 1 = (x / z) * P00
+			const float v = (1.0f - D3DXVec3Dot(&p, &U) / z * P._22) * 0.5f * H;	// 2v - 1 = -(y / z) * P11
+			lx0 = (std::min)(lx0, u); lx1 = (std::max)(lx1, u); ly0 = (std::min)(ly0, v); ly1 = (std::max)(ly1, v);
+		}
+		if (lx1 < -1.0f || ly1 < -1.0f || lx0 > W + 1.0f || ly0 > H + 1.0f) continue;	// off screen: no pixel's ray meets it
+		any = true;
+		minX = (std::min)(minX, lx0); maxX = (std::max)(maxX, lx1); minY = (std::min)(minY, ly0); maxY = (std::max)(maxY, ly1);
+	}
+	if (!any) return 1;
+	rect.left = (LONG)(std::max)(0.0f, floorf(minX) - 1.0f);
+	rect.top = (LONG)(std::max)(0.0f, floorf(minY) - 1.0f);
+	rect.right = (LONG)(std::min)(W, ceilf(maxX) + 1.0f);
+	rect.bottom = (LONG)(std::min)(H, ceilf(maxY) + 1.0f);
+	if (rect.right <= rect.left || rect.bottom <= rect.top) return 1;
+	if (rect.left == 0 && rect.top == 0 && rect.right == (LONG)W && rect.bottom == (LONG)H) return 0;	// the whole screen anyway
+	return 2;
+}
+
+#if NVR_TEST_TOOLS
+/*
+* DIAGNOSTIC [Main.Main.Performance] LampMaskScissorCheck 1 (development builds only; release builds leave it out): every 8th
+* frame in which LampMaskScissor cleared or scissored the lamp mask, that buffer is read back, the whole pass is drawn over it
+* as without the switch, read back too, and the two are compared texel by texel (G16R16). The frame then goes on with the whole
+* pass's buffer, so the picture is the old one. Exact in any scene, moving or not (both from the same frame's inputs). A
+* test-only GPU stall.
+*/
+static void LampMaskSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* surface, int maskMode, const RECT& rect) {
+	static int check = 0;
+	static unsigned frame = 0, checks = 0, checksCleared = 0, diffInside = 0, diffOutside = 0, maxDiff = 0, reported = 0;
+	if ((frame % 60) == 0) check = TheSettingManager->GetSettingI("Main.Main.Performance", "LampMaskScissorCheck");
+	frame++;
+	if (check <= 0 || (frame % 8) != 0) return;
+	static IDirect3DSurface9* readA = nullptr;
+	static IDirect3DSurface9* readB = nullptr;
+	static D3DSURFACE_DESC have = {};
+	D3DSURFACE_DESC d = {};
+	if (FAILED(surface->GetDesc(&d)) || d.Format != D3DFMT_G16R16) return;
+	if (!readA || d.Width != have.Width || d.Height != have.Height) {
+		if (readA) { readA->Release(); readA = nullptr; }
+		if (readB) { readB->Release(); readB = nullptr; }
+		if (FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readA, NULL)) ||
+			FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readB, NULL))) {
+			Logger::Log("LAMP MASK CHECK: could not create the read-back surfaces");
+			if (readA) { readA->Release(); readA = nullptr; }
+			return;
+		}
+		have = d;
+	}
+	if (FAILED(Device->GetRenderTargetData(surface, readA))) return;
+	TheShaderManager->RenderEffectToRT(surface, TheShaderManager->Effects.PointShadows, true);	// the whole pass, as before
+	if (FAILED(Device->GetRenderTargetData(surface, readB))) return;
+	D3DLOCKED_RECT la = {}, lb = {};
+	if (FAILED(readA->LockRect(&la, NULL, D3DLOCK_READONLY))) return;
+	if (FAILED(readB->LockRect(&lb, NULL, D3DLOCK_READONLY))) { readA->UnlockRect(); return; }
+	unsigned inside = 0, outside = 0, worst = 0, firstX = 0, firstY = 0;
+	for (UINT y = 0; y < d.Height; y++) {
+		const UInt16* pa = (const UInt16*)((const UInt8*)la.pBits + (size_t)y * la.Pitch);
+		const UInt16* pb = (const UInt16*)((const UInt8*)lb.pBits + (size_t)y * lb.Pitch);
+		for (UINT x = 0; x < d.Width * 2; x++) {
+			if (pa[x] == pb[x]) continue;
+			const unsigned diff = pa[x] > pb[x] ? pa[x] - pb[x] : pb[x] - pa[x];
+			const bool in = maskMode == 2 && (LONG)(x / 2) >= rect.left && (LONG)(x / 2) < rect.right && (LONG)y >= rect.top && (LONG)y < rect.bottom;
+			if (!inside && !outside) { firstX = x / 2; firstY = y; }
+			if (in) inside++; else outside++;
+			if (diff > worst) worst = diff;
+		}
+	}
+	readB->UnlockRect();
+	readA->UnlockRect();
+	checks++;
+	if (maskMode == 1) checksCleared++;
+	diffInside += inside; diffOutside += outside; maxDiff = (std::max)(maxDiff, worst);
+	if ((inside || outside) && reported < 10) {
+		reported++;
+		Logger::Log("LAMP MASK CHECK: DIFFERENCE, mode %d rect %d %d %d %d: %u values inside, %u outside, max %u (16-bit units), first at %u %u",
+			maskMode, (int)rect.left, (int)rect.top, (int)rect.right, (int)rect.bottom, inside, outside, worst, firstX, firstY);
+	}
+	if (checks % 30 == 0)
+		Logger::Log("LAMP MASK CHECK: %u checks (%u cleared only, %u scissored), differing values: %u inside the rectangles, %u outside, max %u",
+			checks, checksCleared, checks - checksCleared, diffInside, diffOutside, maxDiff);
+}
+#endif
+
 void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	Device->SetRenderTarget(0, RenderTarget);
@@ -1129,7 +1270,63 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				Effects.PointShadows->TechniqueHandle(halfCache, "LampMaskHalf") == Effects.PointShadows->Effect->GetTechnique(3) &&
 				Effects.PointShadows->TechniqueHandle(upCache, "LampMaskUpsample") == Effects.PointShadows->Effect->GetTechnique(4) &&
 				Effects.PointShadows->Effect->GetTechnique(4) != NULL;
-			if (halfMask) {
+			// The stock/custom shader remains compatible: it has no named merged
+			// technique, so lights 6-11 still take the original second pass.
+			static EffectRecord::CachedHandle mergedTechnique;	// UNOFFICIAL: looked up once per loaded effect
+			const bool mergedPointShadows = Effects.PointShadows->TechniqueHandle(mergedTechnique, "MergedPointShadows") != NULL;
+			// UNOFFICIAL 2026-10-18 LampMaskScissor ([Main.Main.Performance], LampMaskRect above): the mask is drawn only inside the
+			// screen rectangle its lamps' spheres can reach (nothing at all with no lamp on screen); every other pixel keeps the
+			// clear's 0, which is what the pass writes there. Only on the plain path (not MaskHalfRes, not the outdoor batches,
+			// merged technique present, the effect drawing).
+			RECT maskRect = {};
+			int lampCount = 0, maskMode = 0;
+			if (TheSettingManager->SettingsMain.Main.LampMaskScissor && !halfMask && mergedPointShadows &&
+				!PointShadowForward::ExteriorBatched(GameState.isExterior) &&
+				Effects.PointShadows->Enabled && Effects.PointShadows->Effect && Effects.PointShadows->ShouldRender())
+				maskMode = LampMaskRect(maskRect, lampCount);
+			static int loggedMaskMode = -1;
+			if (maskMode != loggedMaskMode) {
+				Logger::Log("LAMP MASK STATE: %s (%d lamps in its lists)", maskMode == 1 ? "SKIPPED, no lamp reaches the screen: the buffer cleared to 0, as the pass would write" :
+					maskMode == 2 ? "SCISSORED to the lamps' screen rectangle" : "drawn whole", lampCount);
+				loggedMaskMode = maskMode;
+			}
+			if (GpuTimer::Enabled) {	// a line every 240 frames with the profile on: how often each case ran
+				static unsigned frames = 0, skipped = 0, scissored = 0, lampsSum = 0;
+				static double area = 0.0;
+				frames++; lampsSum += lampCount;
+				if (maskMode == 1) skipped++;
+				if (maskMode == 2) { scissored++; area += (double)(maskRect.right - maskRect.left) * (maskRect.bottom - maskRect.top) / ((double)TheRenderManager->width * TheRenderManager->height); }
+				if (frames >= 240) {
+					Logger::Log("LAMP MASK SCISSOR %s: %u frames, %u cleared only, %u scissored (average %.1f%% of the screen), %u whole; %.1f lamps per frame in its lists",
+						TheSettingManager->SettingsMain.Main.LampMaskScissor ? "on" : "off", frames, skipped, scissored, scissored ? 100.0 * area / scissored : 0.0,
+						frames - skipped - scissored, (double)lampsSum / frames);
+					frames = skipped = scissored = lampsSum = 0; area = 0.0;
+				}
+			}
+			if (maskMode != 0) {
+				// The pass's own clear, on the whole target (the scissor test off: a clear honours it). SetRenderTarget resets the
+				// scissor rectangle to the whole target, as RenderEffectToRT leaves it.
+				IDirect3DSurface9* maskSurface = Effects.ShadowsExteriors->Textures.ShadowPassSurface;
+				DWORD scissorWas = FALSE;
+				Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissorWas);
+				Device->SetRenderTarget(0, maskSurface);
+				Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);	// (EffectRecord::Render's clear)
+				if (maskMode == 2) {
+					// The pass itself, unchanged, inside the rectangle: RenderEffectToRT without its SetRenderTarget (which would reset
+					// the rectangle). Its target is not the frame chain's, so EffectRecord::Render takes the plain path (no target
+					// switch); no technique state touches the scissor, and the effect's Begin/End restores what its passes change.
+					Device->SetScissorRect(&maskRect);
+					Device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+					Effects.PointShadows->Render(Device, maskSurface, maskSurface, 0, false, maskSurface);
+					Device->SetRenderTarget(0, maskSurface);	// the rectangle back to the whole target
+				}
+				Device->SetRenderState(D3DRS_SCISSORTESTENABLE, scissorWas);
+#if NVR_TEST_TOOLS
+				LampMaskSelfCheck(Device, maskSurface, maskMode, maskRect);	// DIAGNOSTIC LampMaskScissorCheck (off: returns at once)
+#endif
+			}
+			else if (halfMask) {
 				RenderEffectToRT(LampMaskHalfSurface(), Effects.PointShadows, true, 3);
 				Device->SetTexture(13, LampMaskHalfTexture());
 				TheRenderManager->renderState->NoteDeviceTexture(13, LampMaskHalfTexture());
@@ -1139,10 +1336,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			}
 			else RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
 			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();	// UNOFFICIAL ExteriorLightPoints
-			// The stock/custom shader remains compatible: it has no named merged
-			// technique, so lights 6-11 still take the original second pass.
-			static EffectRecord::CachedHandle mergedTechnique;	// UNOFFICIAL: looked up once per loaded effect
-			const bool mergedPointShadows = Effects.PointShadows->TechniqueHandle(mergedTechnique, "MergedPointShadows") != NULL;
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
 			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;

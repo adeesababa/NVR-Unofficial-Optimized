@@ -25,6 +25,7 @@ struct SettingsMainStruct {
         bool    DisableChainGameTexture; // ![Main.Main.Performance] ChainUsesGameTexture
         bool    DisableMergedNormals; // ![Main.Main.Performance] MergedDepthNormals
         bool    SkipIdentityExposure; // [Main.Main.Performance] SkipIdentityExposure (no exposure pass while MaxBrightness is 0: it then leaves the picture as it is), live
+        bool    LampMaskScissor; // [Main.Main.Performance] LampMaskScissor (the lamp-mask pass drawn only inside its lamps' screen rectangle, not at all with none on screen; exact), live
         bool    SlimDepthBuffer; // [Main.Main.Performance] SlimDepthBuffer (read once at startup)
         bool    SkipRedundantConstants; // [Main.Main.Performance] SkipRedundantConstants (ConstantFilter.h), live
         bool    ShaderWarmUp; // [Main.Main.Performance] ShaderWarmUp (ShaderWarmUp.h: the driver compiles NVR shaders at the main menu)
