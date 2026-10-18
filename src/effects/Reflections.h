@@ -1,4 +1,5 @@
 #pragma once
+#include "../core/TemporalHistoryStats.h"
 
 // UNOFFICIAL: screen-space reflections on the ground (Effects\Reflections.fx.hlsl): wet streets mirroring the neon and the
 // sky in the rain, an optional dry sheen on outdoor ground and on interior floors. Half-resolution trace, history and
@@ -78,13 +79,16 @@ public:
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;
-	UINT		frame = 0;
-	UINT		lastRenderedFrame = 0;
+	UINT		lastRenderedFrame = 0;	// TheFrameRateManager->FrameNumber of the last frame this effect drew (UNOFFICIAL 2026-10-18: it counted
+										// UpdateConstants calls, two a frame, so last frame's history and cube were never kept)
 	bool		haveHistory = false;
+	TemporalHistoryStats	stats;		// the trace's history use, for the log
+	UINT		cubeSteps = 0, cubeEmptied = 0;	// for the log: cube updates, and how many of them started from an empty cube
+	void		ReportHistory(const char* when);
 	int			captureIndex = 0;		// Cubes.Capture[captureIndex] holds the latest capture
 	bool		cubeValid = false;
 	void*		cubeCell = nullptr;		// the cell the cube was captured in
-	UINT		cubeFrame = 0;			// frame of the last cube update
+	UINT		cubeFrame = 0;			// FrameNumber of the last cube update
 	D3DXMATRIX	cubeInvView;			// the camera at the last cube update (for the jump test)
 	bool		cubeOnly = false;		// RenderCubeOnly is drawing (ShouldRender lets its passes through)
 	void	CubeStep(IDirect3DDevice9* Device);

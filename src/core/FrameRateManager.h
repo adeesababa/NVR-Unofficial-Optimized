@@ -16,4 +16,5 @@ public:
 	double			ElapsedTime;
 	double			SmartControlMPF;
 	double			LastPerformance;
+	unsigned int	FrameNumber;	// UNOFFICIAL 2026-10-18: rendered frames, advanced once per Main::Render (UpdatePerformance); NOT per UpdateConstants, which runs twice a frame
 };

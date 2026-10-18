@@ -10,6 +10,7 @@ static void ReadLook(const char* section, VolumetricLightEffect::LookStruct& loo
 }
 
 void VolumetricLightEffect::UpdateSettings() {
+	ReportHistory("settings changed");	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced
 	const char* section = "Shaders.VolumetricLight.Main";
 	ReadLook(section, Settings.Day);
 	ReadLook("Shaders.VolumetricLight.Night", Settings.Night);
@@ -47,9 +48,16 @@ void VolumetricLightEffect::RegisterTextures() {
 	Constants.GridLayout = D3DXVECTOR4((float)gw, (float)gh, 1.0f / (gw * 8), 1.0f / (gh * 8));
 }
 
-void VolumetricLightEffect::UpdateConstants() {
-	frame++;
+// UNOFFICIAL 2026-10-18: one line on what the march's history did since the last report (only when it drew; the froxel grid has none).
+void VolumetricLightEffect::ReportHistory(const char* when) {
+	if (!stats.drawn) return;
+	char text[256];
+	stats.Describe(text, sizeof(text));
+	Logger::Log("UNOFFICIAL VolumetricLight temporal history (%s, Temporal %.2f): %s", when, Settings.Temporal, text);
+	stats.Reset();
+}
 
+void VolumetricLightEffect::UpdateConstants() {
 	// Day and night looks, blended by the time of day (GameState.isDayTime: 1 day, 0 night, smooth through dawn/dusk).
 	const float day = std::clamp(TheShaderManager->GameState.isDayTime, 0.0f, 1.0f);
 	const LookStruct& d = Settings.Day;
@@ -120,7 +128,7 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		gridPass(Textures.GridTempSurface, 6);
 		gridPass(Textures.GridSurface, 7);
 		haveHistory = false;	// the march's history is stale when it is switched back
-		lastRenderedFrame = frame;
+		lastRenderedFrame = TheFrameRateManager->FrameNumber;
 		return;
 	}
 	const bool temporal = Settings.Temporal > 0.0f;
@@ -128,12 +136,17 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;
 
 	// Last frame's result is usable if this effect drew it, and the camera did not jump (load, fast travel, a cut).
-	bool usable = temporal && haveHistory && lastRenderedFrame + 1 == frame;
+	// UNOFFICIAL 2026-10-18: counted in rendered frames (FrameNumber), not UpdateConstants calls (two a frame, which made this never pass).
+	const UINT now = TheFrameRateManager->FrameNumber;
+	const bool drewLastFrame = lastRenderedFrame + 1 == now;
+	bool usable = temporal && haveHistory && drewLastFrame;
 	if (usable) {
 		const double dx = (double)invView._41 - lastInvView._41, dy = (double)invView._42 - lastInvView._42,
 			dz = (double)invView._43 - lastInvView._43;
 		usable = dx * dx + dy * dy + dz * dz < 500.0 * 500.0;
 	}
+	stats.Note(temporal, haveHistory, drewLastFrame, usable);
+	if (GpuTimer::Enabled && stats.drawn >= 240) ReportHistory("240 frames");
 	if (usable) {
 		// Camera-relative world position p -> last frame's view: (p + cameraNow - cameraLast) * Rlast, then last frame's
 		// projection. Worked out round the two camera positions in double precision (the Mojave's coordinates run past
@@ -151,7 +164,7 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		D3DXMatrixMultiply(&Constants.Reproject, &toLastView, &lastProj);
 	}
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
-	Constants.Data2.w = temporal ? (float)(frame % 64) : 0.0f;
+	Constants.Data2.w = temporal ? (float)(now % 64) : 0.0f;
 
 	// UNOFFICIAL 2026-10-13: F10 timers per pass (technique 1 march, 3 temporal, 2 / 4 blur).
 	static GpuTimer passTimers[5] = { GpuTimer("  VL composite"), GpuTimer("  VL march (half)"), GpuTimer("  VL blur X (half)"),
@@ -172,7 +185,7 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	pass(Textures.BlurSurface, 4);
 
 	haveHistory = temporal;
-	lastRenderedFrame = frame;
+	lastRenderedFrame = now;
 	lastView = view;
 	lastInvView = invView;
 	lastProj = TheRenderManager->projMatrix;

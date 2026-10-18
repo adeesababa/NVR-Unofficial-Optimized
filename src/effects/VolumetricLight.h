@@ -1,4 +1,5 @@
 #pragma once
+#include "../core/TemporalHistoryStats.h"
 
 // UNOFFICIAL: volumetric sun light (Effects\VolumetricLight.fx.hlsl) -- shafts of sunlight through the air, shaded by the
 // sun's cascaded shadow maps. A half-resolution march (noise-dithered start points), an optional history blend and a
@@ -67,7 +68,9 @@ public:
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;
-	UINT		frame = 0;
-	UINT		lastRenderedFrame = 0;
+	UINT		lastRenderedFrame = 0;	// TheFrameRateManager->FrameNumber of the last frame this effect drew (UNOFFICIAL 2026-10-18: it counted
+										// UpdateConstants calls, two a frame, so last frame's history was never accepted)
 	bool		haveHistory = false;
+	TemporalHistoryStats	stats;		// the march path's history use, for the log
+	void		ReportHistory(const char* when);
 };

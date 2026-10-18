@@ -10,6 +10,7 @@ void FrameRateManager::Initialize() {
 	TheFrameRateManager->LastTime = 0.0;
 	TheFrameRateManager->ElapsedTime = 0.0;
 	TheFrameRateManager->LastPerformance = 0.0;
+	TheFrameRateManager->FrameNumber = 0;
 	TheFrameRateManager->SmartControlMPF = 1000.0 / TheSettingManager->SettingsMain.FrameRate.SmartControlFPS;
 	QueryPerformanceFrequency(&Frequency); TheFrameRateManager->PerformanceFrequency = Frequency.QuadPart;
 	QueryPerformanceCounter(&PerformanceCounter); TheFrameRateManager->PerformanceCounterStart = PerformanceCounter.QuadPart;
@@ -19,6 +20,7 @@ void FrameRateManager::Initialize() {
 void FrameRateManager::UpdatePerformance() {
 	
 	LARGE_INTEGER PerformanceCounterEnd;
+	FrameNumber++;	// UNOFFICIAL 2026-10-18: once per rendered frame, before the frame's first UpdateConstants
 	
 	QueryPerformanceCounter(&PerformanceCounterEnd);
 	Time = (double)(PerformanceCounterEnd.QuadPart - PerformanceCounterStart) / (double)PerformanceFrequency;
