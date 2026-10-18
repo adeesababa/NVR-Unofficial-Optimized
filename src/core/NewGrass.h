@@ -70,7 +70,7 @@ namespace NewGrass {
 	// The colour ramp of a grass type (per texture, read from a small mip; refreshed every 60 s in case the address is reused).
 	// C: colour per height band (root -> tip); Fill: alpha coverage per band; Radius: the band's mean |u - 0.5| x 2 (0..1 of the card's half
 	// width); Top: the highest opaque row (0..1 of the card's height) = the plant's top. The shape of the plant on the card, for the blades.
-	struct Ramp { float C[4][4] = {}; float Fill[4] = {}, Radius[4] = {}; float Top = 1.0f; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; char Info[200] = ""; };
+	struct Ramp { float C[4][4] = {}; float Fill[4] = {}, Radius[4] = {}; float Top = 1.0f; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; char Info[384] = ""; };
 	inline std::unordered_map<const void*, Ramp> Ramps;
 	// The GPU reduction for textures the CPU cannot lock (D3DPOOL_DEFAULT, the case in game: launch 1): a 4x1 target, one pixel per band.
 	inline IDirect3DVertexShader9* RampVS = nullptr;
@@ -370,7 +370,7 @@ namespace NewGrass {
 		r.Read = false;
 		const float fallback[4][4] = { { 0.26f, 0.30f, 0.12f, 1.0f }, { 0.34f, 0.40f, 0.16f, 1.0f }, { 0.44f, 0.50f, 0.22f, 1.0f }, { 0.55f, 0.58f, 0.30f, 1.0f } };
 		memcpy(r.C, fallback, sizeof(fallback));
-		if (!base || base->GetType() != D3DRTYPE_TEXTURE) { strcpy_s(r.Info, "no 2D texture at stage 0"); r.Cutout = false; return r; }
+		if (!base || base->GetType() != D3DRTYPE_TEXTURE) { strcpy_s(r.Info, sizeof(r.Info), "no 2D texture at stage 0"); r.Cutout = false; return r; }
 		IDirect3DTexture9* tex = (IDirect3DTexture9*)base;
 		D3DSURFACE_DESC d0 = {}, d = {};
 		tex->GetLevelDesc(0, &d0);
@@ -384,7 +384,8 @@ namespace NewGrass {
 		if (!ok) { how = "NOT READ (default ramp)"; r.Read = false; memcpy(r.C, fallback, sizeof(fallback)); r.Coverage = 1.0f; }
 		r.Cutout = r.Read ? r.Coverage < 0.97f : (d0.Format == D3DFMT_DXT3 || d0.Format == D3DFMT_DXT5 || d0.Format == D3DFMT_A8R8G8B8 || d0.Format == D3DFMT_A8B8G8R8);
 		const char* fmt = d0.Format == D3DFMT_DXT1 ? "DXT1" : d0.Format == D3DFMT_DXT3 ? "DXT3" : d0.Format == D3DFMT_DXT5 ? "DXT5" : d0.Format == D3DFMT_A8R8G8B8 ? "A8R8G8B8" : "other";
-		sprintf_s(r.Info, "%ux%u %s pool %u, mip %u (%ux%u) %s, alpha coverage %.0f%%: root %.2f %.2f %.2f, mid %.2f %.2f %.2f, tip %.2f %.2f %.2f; shape: top %.2f, fill %.2f %.2f %.2f %.2f, radius %.2f %.2f %.2f %.2f",
+		// _TRUNCATE: a line longer than the buffer is cut, never a CRT fail-fast (launch 5 crashed with 0xC0000409 on exactly that: Info[200]).
+		_snprintf_s(r.Info, sizeof(r.Info), _TRUNCATE, "%ux%u %s pool %u, mip %u (%ux%u) %s, alpha coverage %.0f%%: root %.2f %.2f %.2f, mid %.2f %.2f %.2f, tip %.2f %.2f %.2f; shape: top %.2f, fill %.2f %.2f %.2f %.2f, radius %.2f %.2f %.2f %.2f",
 			d0.Width, d0.Height, fmt, (unsigned)d0.Pool, level, d.Width, d.Height, how, r.Coverage * 100.0f, r.C[0][0], r.C[0][1], r.C[0][2], r.C[2][0], r.C[2][1], r.C[2][2],
 			r.C[3][0], r.C[3][1], r.C[3][2], r.Top, r.Fill[0], r.Fill[1], r.Fill[2], r.Fill[3], r.Radius[0], r.Radius[1], r.Radius[2], r.Radius[3]);
 		if (first) Logger::Log("UNOFFICIAL NewGrass: texture %p: %s -> %s", base, r.Info, r.Cutout ? "cut-out card" : "no cut-out (kept the game's)");
