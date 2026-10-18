@@ -59,6 +59,7 @@ void SettingManager::Configuration::Init() {
 	}
 
 	configLoaded = true;
+	DefaultsGeneration++;	// UNOFFICIAL 2026-10-18: the defaults file was read again
 	Logger::Log("Loading configs finished");
 
 	// UNOFFICIAL 2026-10-15 Max Quality ([Main.Main.Quality] MaxQuality, read once here: it needs a restart). For screenshots:
@@ -625,6 +626,7 @@ void SettingManager::Initialize() {
 
 void SettingManager::LoadSettings() {
 
+	SettingsRevision++;
 	auto timer = TimeLogger();
 	Config.UpdateOldDefaults();
 
@@ -1242,6 +1244,7 @@ void SettingManager::SetSettingF(const char* Section, const char* Key, float Val
 */
 void SettingManager::SetSetting(Configuration::ConfigNode* Node) {
 	hasUnsavedChanges = true;
+	SettingsRevision++;
 
 	Config.SetValue(Node);
 }

@@ -23,6 +23,7 @@ HWND    ImGuiManager::GameWindow      = nullptr;
 WNDPROC ImGuiManager::OriginalWndProc = nullptr;
 
 static std::string SelectedSection;
+static void NewPatchRebuild();	// UNOFFICIAL 2026-10-18: the "New in this patch" list (defined above RenderContent)
 
 // ---- DirectInput mouse block (zeros lX/lY/lZ deltas + buttons) ---------------
 // xNVSE has no public API to block mouse movement deltas, so we patch the
@@ -1517,6 +1518,8 @@ void ImGuiManager::Initialize() {
 
 	GameWindow = hwnd;
 
+	NewPatchRebuild();	// UNOFFICIAL 2026-10-18: build the "New in this patch" list once (logs how many settings it holds)
+
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 
@@ -1914,13 +1917,15 @@ void ImGuiManager::Render() {
 // ---- Menu UI -----------------------------------------------------------------
 
 static bool ShouldHideSection(const std::string& name) {
-	return name == "WeatherMode" || name == "Status";
+	return name == "WeatherMode" || name == "Status" || name == "NewInPatch";
 }
 
 static bool ShouldHideKey(const char* key) {
 	if (strncmp(key, "TextColor", 9) == 0 || strncmp(key, "TextShadow", 10) == 0) return true;
 	// LUT filenames are rendered as cycle pickers, not raw InputText
 	if (strcmp(key, "DayLUT") == 0 || strcmp(key, "NightLUT") == 0 || strcmp(key, "InteriorLUT") == 0) return true;
+	// UNOFFICIAL 2026-10-18: the data of the "New in this patch" tab ([Main.Menu.NewInPatch]) is not a setting to edit
+	if (strcmp(key, "NewSince") == 0 || strcmp(key, "NewInclude") == 0 || strcmp(key, "NewExclude") == 0 || strcmp(key, "NewDiagnostics") == 0) return true;
 	return false;
 }
 
@@ -2410,7 +2415,323 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	ImGui::PopID();
 }
 
+// ---- "New in this patch" tab ---------------------------------------------------------------------
+// UNOFFICIAL 2026-10-18 (user: "a tab at the top that has all new settings in it for that specific patch for easy testing. it
+// shouldn't replace the settings that exist in the menus where they originate from"). A first entry in the sidebar that lists
+// the settings new in the current patch, grouped by the section they live in. Every entry is the very same setting drawn by the
+// same RenderSetting as in its own section (same storage, same Save, same tooltip, same revert button): the original menus are
+// untouched. Which settings count is decided from the defaults file alone, never from the user's settings:
+//   - the description (the comment next to the key) holds a date tag ("(2026-10-17)") on or after [Main.Menu.NewInPatch] NewSince
+//     (the latest date in the text counts, so an old setting whose text gained a newer date is listed too), or
+//   - the key is in NewInclude ("Section.Key" or "Section.*", comma separated, for keys whose text has no date), and
+//   - not in NewExclude.
+// Diagnostic keys (names ending in Check / Log / Probe / DebugView, descriptions that say diagnostic or test only, or NewDiagnostics)
+// go in a collapsed Diagnostics group at the bottom. The list is built once (at start and after "Disk" reloads the defaults) and
+// each entry's value is re-read only when a setting changed (SettingManager::SettingsRevision) or every 30 frames.
+static const char* const kNewTabId = "@NewInPatch";
+
+struct NewEntry {
+	std::string Section, Key, Date;
+	bool        Diagnostic = false;
+	bool        Status     = false;	// Shaders.<Name>.Status Enabled: the shader's on/off switch (drawn like the sidebar's checkbox)
+	std::string ShaderName;
+	bool        Valid = false;
+	SettingManager::Configuration::ConfigNode Node;
+};
+struct NewGroup { std::string Section, Display; size_t Begin, End; };
+
+static std::vector<NewEntry> s_newMain, s_newDiag;	// sorted by section, then key (the same order as the section's own menu)
+static std::vector<NewGroup> s_newMainGroups, s_newDiagGroups;
+static std::string s_newSince;
+static UInt32      s_newGeneration = 0xFFFFFFFFu;	// DefaultsGeneration the list was built from
+static UInt32      s_newRevision   = 0xFFFFFFFFu;	// SettingsRevision the values were read at
+static int         s_newFrames     = 0;
+
+static const tomlValue* NewFind(const tomlValue* table, const char* name) {
+	if (!table || !table->is_table()) return nullptr;
+	const auto& map = table->as_table();
+	auto it = map.find(name);
+	return it == map.end() ? nullptr : &it->second;
+}
+
+// A hidden string from [Main.Menu.NewInPatch], read from the defaults file only ("" if the section, the key or its text is missing).
+static std::string NewMeta(const char* key) {
+	try {
+		const tomlValue* section = NewFind(NewFind(NewFind(&TheSettingManager->Config.DefaultConfig, "_Main"), "Menu"), "NewInPatch");
+		const tomlValue* value = NewFind(section, key);
+		if (value && value->is_string()) return value->as_string();
+	} catch (...) {}
+	return std::string();
+}
+
+static void NewSplitList(const std::string& text, std::vector<std::string>& out) {
+	std::string cur;
+	for (size_t i = 0; i <= text.size(); i++) {
+		const char c = i < text.size() ? text[i] : ',';
+		if (c == ',' || c == ';' || c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+			if (!cur.empty()) out.push_back(cur);
+			cur.clear();
+		} else cur += c;
+	}
+}
+
+// "Section.Key" is that setting; "Section.*" is every setting of that section and of the sections below it.
+static bool NewListMatches(const std::vector<std::string>& list, const std::string& section, const std::string& key) {
+	for (const std::string& p : list) {
+		if (p.size() > 2 && p.compare(p.size() - 2, 2, ".*") == 0) {
+			const std::string base = p.substr(0, p.size() - 2);
+			if (section == base || (section.size() > base.size() && section.compare(0, base.size(), base) == 0 && section[base.size()] == '.')) return true;
+		} else {
+			const size_t dot = p.rfind('.');
+			if (dot != std::string::npos && dot > 0 && dot == section.size() && p.compare(0, dot, section) == 0 && p.compare(dot + 1, std::string::npos, key) == 0) return true;
+		}
+	}
+	return false;
+}
+
+// The latest YYYY-MM-DD (20xx, month 1-12, day 1-31, not part of a longer number) in the text, or "" if none.
+static std::string NewLatestDate(const std::string& s) {
+	std::string best;
+	auto dig = [](char c) { return c >= '0' && c <= '9'; };
+	for (size_t i = 0; i + 10 <= s.size(); i++) {
+		const char* p = s.c_str() + i;
+		if (!(p[0] == '2' && p[1] == '0' && dig(p[2]) && dig(p[3]) && p[4] == '-' && dig(p[5]) && dig(p[6]) && p[7] == '-' && dig(p[8]) && dig(p[9]))) continue;
+		if (i > 0 && dig(s[i - 1])) continue;
+		if (i + 10 < s.size() && dig(s[i + 10])) continue;
+		const int month = (p[5] - '0') * 10 + (p[6] - '0'), day = (p[8] - '0') * 10 + (p[9] - '0');
+		if (month < 1 || month > 12 || day < 1 || day > 31) continue;
+		const std::string date(p, 10);
+		if (date > best) best = date;
+	}
+	return best;
+}
+
+static bool NewEndsWith(const std::string& s, const char* suffix) {
+	const size_t n = strlen(suffix);
+	return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+static bool NewIsDiagnostic(const std::string& key, const std::string& description, const std::vector<std::string>& extra, const std::string& section) {
+	if (NewListMatches(extra, section, key)) return true;
+	static const char* const suffixes[] = { "Check", "Log", "DebugView", "Probe", "ProbeDump", "ProbeLog", "Dump", "TestSkip", "OrderLog" };
+	for (const char* suffix : suffixes) if (NewEndsWith(key, suffix)) return true;
+	if (key.compare(0, 5, "Debug") == 0) return true;
+	std::string lower = description;
+	for (char& c : lower) c = (char)tolower((unsigned char)c);
+	static const char* const words[] = { "diagnostic", "test only", "testing", "debugging", "test views", "development builds only", "no effect:" };
+	for (const char* word : words) if (lower.find(word) != std::string::npos) return true;
+	return false;
+}
+
+struct NewWalkContext {
+	std::string Since;
+	std::vector<std::string> Include, Exclude, Diagnostics;
+};
+
+static void NewWalk(const tomlValue& table, const std::string& path, NewWalkContext& ctx) {
+	for (const auto& [name, value] : table.as_table()) {
+		if (value.is_table()) {
+			const std::string child = path.empty() ? (name.compare(0, 1, "_") == 0 ? name.substr(1) : name) : path + "." + name;
+			if (child == "Weathers" || child.compare(0, 9, "Weathers.") == 0) continue;
+			NewWalk(value, child, ctx);
+			continue;
+		}
+		if (path.empty()) continue;	// a setting outside any section
+		if (path == "Main.Menu.NewInPatch") continue;	// this tab's own data
+		if (!(value.is_boolean() || value.is_integer() || value.is_floating() || value.is_string())) continue;	// the menu cannot show it either
+		if (("." + path + ".").find(".WeatherMode.") != std::string::npos) continue;	// hidden in the menu (ShouldHideSection)
+		const bool status = NewEndsWith(path, ".Status");
+		if (status && !(path.compare(0, 8, "Shaders.") == 0 && name == "Enabled")) continue;	// Status sections are hidden in the menu; only a shader's own switch has a place
+		if (ShouldHideKey(name.c_str())) continue;
+
+		std::string description;
+		for (const std::string& c : value.comments()) { description += c; description += ' '; }
+		const std::string date = NewLatestDate(description);
+		bool isNew = !ctx.Since.empty() && !date.empty() && date >= ctx.Since;
+		if (NewListMatches(ctx.Include, path, name)) isNew = true;
+		if (NewListMatches(ctx.Exclude, path, name)) isNew = false;
+		if (!isNew) continue;
+
+		NewEntry entry;
+		entry.Section = path;
+		entry.Key = name;
+		entry.Date = date;
+		entry.Diagnostic = NewIsDiagnostic(name, description, ctx.Diagnostics, path);
+		if (status) {
+			entry.Status = true;
+			const size_t dot = path.find('.', 8);
+			entry.ShaderName = path.substr(8, dot == std::string::npos ? std::string::npos : dot - 8);
+			if (entry.ShaderName.empty()) continue;
+		}
+		(entry.Diagnostic ? s_newDiag : s_newMain).push_back(std::move(entry));
+	}
+}
+
+static void NewMakeGroups(const std::vector<NewEntry>& entries, std::vector<NewGroup>& groups) {
+	groups.clear();
+	for (size_t i = 0; i < entries.size(); i++) {
+		if (groups.empty() || groups.back().Section != entries[i].Section) {
+			std::string display;
+			for (char c : entries[i].Section) display += (c == '.') ? std::string(" > ") : std::string(1, c);
+			groups.push_back({ entries[i].Section, display, i, i + 1 });
+		} else groups.back().End = i + 1;
+	}
+}
+
+static void NewPatchRebuild() {
+	s_newMain.clear();
+	s_newDiag.clear();
+	s_newMainGroups.clear();
+	s_newDiagGroups.clear();
+	s_newRevision = 0xFFFFFFFFu;
+	s_newGeneration = TheSettingManager->Config.DefaultsGeneration;
+	try {
+		NewWalkContext ctx;
+		ctx.Since = NewMeta("NewSince");
+		s_newSince = ctx.Since;
+		NewSplitList(NewMeta("NewInclude"), ctx.Include);
+		NewSplitList(NewMeta("NewExclude"), ctx.Exclude);
+		NewSplitList(NewMeta("NewDiagnostics"), ctx.Diagnostics);
+		if (TheSettingManager->Config.DefaultConfig.is_table()) NewWalk(TheSettingManager->Config.DefaultConfig, std::string(), ctx);
+	} catch (const std::exception& e) {
+		Logger::Log("[ERROR] NEW IN THIS PATCH: the list could not be built (%s)", e.what());
+		s_newMain.clear();
+		s_newDiag.clear();
+	} catch (...) {
+		s_newMain.clear();
+		s_newDiag.clear();
+	}
+	// A table that holds both settings and sub-sections can interleave them: keep every section's settings together.
+	const auto bySection = [](const NewEntry& a, const NewEntry& b) { return a.Section < b.Section; };
+	std::stable_sort(s_newMain.begin(), s_newMain.end(), bySection);
+	std::stable_sort(s_newDiag.begin(), s_newDiag.end(), bySection);
+	NewMakeGroups(s_newMain, s_newMainGroups);
+	NewMakeGroups(s_newDiag, s_newDiagGroups);
+	Logger::Log("NEW IN THIS PATCH: %u settings since %s (%u to test, %u diagnostics)", (UInt32)(s_newMain.size() + s_newDiag.size()),
+		s_newSince.empty() ? "(no NewSince)" : s_newSince.c_str(), (UInt32)s_newMain.size(), (UInt32)s_newDiag.size());
+}
+
+static size_t NewPatchCount() { return s_newMain.size() + s_newDiag.size(); }
+static void NewPatchEnsure() { if (s_newGeneration != TheSettingManager->Config.DefaultsGeneration) NewPatchRebuild(); }	// the defaults were read again ("Disk")
+
+static void NewRefreshNodes(std::vector<NewEntry>& entries) {
+	for (NewEntry& e : entries)
+		e.Valid = TheSettingManager->Config.FillNode(&e.Node, e.Section.c_str(), e.Key.c_str());
+}
+
+// Same colour-picker grouping as the section menus (a prefix with R, G and B keys) when all three are in this group.
+static void NewRenderRun(std::vector<NewEntry>& entries, const NewGroup& group) {
+	const bool isShader = group.Section.compare(0, 7, "Shaders") == 0;
+	std::unordered_set<std::string> handled;
+	for (size_t i = group.Begin; i < group.End; i++) {
+		NewEntry& e = entries[i];
+		if (!e.Valid || handled.count(e.Key)) continue;
+
+		if (e.Status) {
+			ImGui::PushID(e.Key.c_str());
+			bool enabled = TheSettingManager->GetMenuShaderEnabled(e.ShaderName.c_str());
+			const bool forced = TheSettingManager->IsShaderForced(e.ShaderName.c_str());
+			ImGui::BeginDisabled(forced);
+			const std::string label = e.ShaderName + " (shader on / off)";
+			if (ImGui::Checkbox(label.c_str(), &enabled)) {
+				TheShaderManager->SwitchShaderStatus(e.ShaderName.c_str());
+				TheSettingManager->LoadSettings();
+			}
+			ImGui::EndDisabled();
+			if (ImGui::IsItemHovered()) {
+				ImGui::BeginTooltip();
+				ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+				if (!e.Node.Description.empty()) { ImGui::TextUnformatted(e.Node.Description.c_str()); ImGui::Spacing(); }
+				ImGui::TextDisabled("The same switch as the checkbox next to %s in the Shaders list.", e.ShaderName.c_str());
+				ImGui::PopTextWrapPos();
+				ImGui::EndTooltip();
+			}
+			ImGui::PopID();
+			continue;
+		}
+
+		const std::string& key = e.Key;
+		if (isShader && key.size() > 1 && (key.back() == 'R' || key.back() == 'G' || key.back() == 'B')) {
+			const std::string pfx = key.substr(0, key.size() - 1);
+			const bool isColorCurve = (pfx == "ColorCurve" && group.Section.find("Shaders.Coloring") != std::string::npos);
+			NewEntry *r = nullptr, *g = nullptr, *b = nullptr;
+			for (size_t j = group.Begin; j < group.End; j++) {
+				if (entries[j].Key == pfx + "R") r = &entries[j];
+				else if (entries[j].Key == pfx + "G") g = &entries[j];
+				else if (entries[j].Key == pfx + "B") b = &entries[j];
+			}
+			if (!isColorCurve && r && g && b && r->Valid && g->Valid && b->Valid) {
+				handled.insert(r->Key); handled.insert(g->Key); handled.insert(b->Key);
+				RenderColorTriple(r->Node, g->Node, b->Node, pfx);
+				continue;
+			}
+		}
+		RenderSetting(e.Node, isShader);
+	}
+}
+
+static void NewRenderGroups(std::vector<NewEntry>& entries, const std::vector<NewGroup>& groups, bool diagnostics) {
+	for (const NewGroup& group : groups) {
+		ImGui::PushID(group.Section.c_str());
+		if (diagnostics) {
+			ImGui::TextDisabled("%s", group.Display.c_str());
+			ImGui::Indent();
+			NewRenderRun(entries, group);
+			ImGui::Unindent();
+			ImGui::Spacing();
+		} else {
+			const std::string header = group.Display + "##newgroup";
+			if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+				NewRenderRun(entries, group);
+		}
+		ImGui::PopID();
+	}
+}
+
+static void RenderNewInPatch() {
+	NewPatchEnsure();
+
+	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "New in this patch");
+	ImGui::SameLine();
+	ImGui::TextDisabled("%u settings%s%s", (UInt32)NewPatchCount(), s_newSince.empty() ? "" : " since ", s_newSince.c_str());
+	ImGui::Separator();
+	ImGui::Spacing();
+	if (NewPatchCount() == 0) {
+		ImGui::TextDisabled("Nothing is marked as new in this patch.");
+		return;
+	}
+
+	// Values are re-read when a setting changed or every 30 frames (a hotkey, a console command or a preset changes them too).
+	if (s_newRevision != TheSettingManager->SettingsRevision || ++s_newFrames >= 30) {
+		s_newFrames = 0;
+		s_newRevision = TheSettingManager->SettingsRevision;
+		NewRefreshNodes(s_newMain);
+		NewRefreshNodes(s_newDiag);
+	}
+
+	ImGui::PushTextWrapPos(0.0f);
+	ImGui::TextDisabled("Each of these is the same setting as in the menu named above it: change it here or there, it is one value "
+		"(saved by Save, undone by the ~ button, shown in red while Max Quality sets it). Hover for what it does.");
+	ImGui::PopTextWrapPos();
+	ImGui::Spacing();
+
+	NewRenderGroups(s_newMain, s_newMainGroups, false);
+
+	if (!s_newDiag.empty()) {
+		ImGui::Spacing();
+		const std::string header = "Diagnostics (" + std::to_string(s_newDiag.size()) + ")##newdiag";
+		if (ImGui::CollapsingHeader(header.c_str())) {
+			ImGui::TextDisabled("Test switches for development builds; leave them at their defaults when playing.");
+			NewRenderGroups(s_newDiag, s_newDiagGroups, true);
+		}
+	}
+}
+
 static void RenderContent() {
+	if (SelectedSection == kNewTabId) {
+		RenderNewInPatch();
+		return;
+	}
 	if (SelectedSection.empty()) {
 		ImGui::TextDisabled("Select a section from the left panel.");
 		return;
@@ -2648,6 +2969,21 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 }
 
 static void RenderSidebar() {
+	// UNOFFICIAL 2026-10-18: "New in this patch" first. The menu opens on it (and "Disk" returns to it) when nothing is selected.
+	NewPatchEnsure();
+	if (NewPatchCount() > 0) {
+		if (SelectedSection.empty()) SelectedSection = kNewTabId;
+		const bool selected = (SelectedSection == kNewTabId);
+		ImGui::PushID(kNewTabId);
+		ImGui::PushStyleColor(ImGuiCol_Text, selected ? ImVec4(1.0f, 0.85f, 0.45f, 1.0f) : ImVec4(0.90f, 0.75f, 0.40f, 1.0f));
+		const std::string label = "New in this patch (" + std::to_string(NewPatchCount()) + ")";
+		if (ImGui::Selectable(label.c_str(), selected)) SelectedSection = kNewTabId;
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Every setting that is new in this patch, in one place, to test. They are the same settings as in their own menus.");
+		ImGui::PopID();
+		ImGui::Separator();
+	}
 	StringList topSections;
 	TheSettingManager->FillMenuSections(&topSections, nullptr);
 	// The active theme's global IndentSpacing is 0 (tight layout for the
