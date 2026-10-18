@@ -318,17 +318,21 @@ void VolumetricCloudsEffect::UpdateConstants() {
 				lastCloudTime = now;
 				advance = 0.0f;
 			}
-			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt) {
+			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt / TunedClockRate) {
 				const double step = now - lastCloudTime;
 				if (step > 120.0) Logger::Log("UNOFFICIAL VolumetricClouds: the game clock moved %.2f hours at once (wait, sleep, travel): the clouds move on with it (%.0f m).", step * scale / 3600.0, step * speed);
 				advance = (float)step;
 				lastCloudTime = now;
 			}
 			else {
-				double next = lastCloudTime + dt;
+				// UNOFFICIAL fixes-b #44 (LOOK CHANGE, clouds off by default): the hold / catch-up runs in REAL seconds (dt is the frame time
+				// x TunedClockRate, but the game's clock `now` runs at 1x: holding a 2x clock at now + lead made the clouds move at half
+				// the tuned speed, and in coarse steps on a late save). The move itself is then multiplied by the tuned rate.
+				const double realDt = dt / TunedClockRate;
+				double next = lastCloudTime + realDt;
 				if (next > now + lead) next = (std::max)(lastCloudTime, now + lead);	// paused (or the clock is slower): hold
-				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * dt);	// behind: catch up gently
-				advance = (float)(next - lastCloudTime);
+				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * realDt);	// behind: catch up gently
+				advance = (float)((next - lastCloudTime) * TunedClockRate);
 				lastCloudTime = next;
 			}
 		}
@@ -413,7 +417,11 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	// UNOFFICIAL 2026-10-13: F10 timers per pass.
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
 		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, Settings.FixedMarchExit && Effect && Effect->GetTechnique(6) ? 6 : 1); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit)
+	// fixes-b #19: technique 6 only if it is the one NAMED MarchFixedExit (an older effect file with another technique 6 stays on March)
+	static CachedHandle fixedExitCache;
+	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
+		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
+	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, fixedExit ? 6 : 1); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit)
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
 	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }	// UNOFFICIAL: cloud shadow map
 	read = 1 - read;

@@ -1130,10 +1130,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     finalColor.rgb = float3(1.0f, 0.0f, 1.0f);   // unconditional: proves this shader ran
 #endif
 
+    // fixes-b #57: the barrel glow is worked out only where the GunFX glow is on (BarrelHeatMuzzle.w > 0, first-person gun draws): a real
+    // branch. Before, the mask and the glow ran on every object pixel and a select at the end threw them away (~40 slots).
+    OUT.color.rgb = finalColor.rgb;
 #if defined(ONLY_LIGHT) && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-    OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)), heatMaterialFactor);
+    [branch] if (BarrelHeatMuzzle.w > 0.0f) OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)), heatMaterialFactor);
 #else
-    OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)));
+    [branch] if (BarrelHeatMuzzle.w > 0.0f) OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(float3(IN.uv.zw, IN.viewDir.w)));
 #endif
 
 #if INTERIOR_SHADOWS
@@ -1451,7 +1454,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     finalColor.rgb = float3(1.0f, 0.0f, 1.0f);   // unconditional: proves this shader ran
 #endif
 
-    OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(IN.lPosition.xyz));
+    OUT.color.rgb = finalColor.rgb;	// fixes-b #57: the glow only where it is on (see the other ApplyBarrelHeat call)
+    [branch] if (BarrelHeatMuzzle.w > 0.0f) OUT.color.rgb = ApplyBarrelHeat(finalColor.rgb, BarrelHeatMask(IN.lPosition.xyz));
     #if INTERIOR_SHADOWS
         // UNOFFICIAL DebugView 3 (PointShadowForward.hlsl PointShadowTrace).
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);

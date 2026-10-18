@@ -411,9 +411,11 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
 #if NVR_TEST_TOOLS
 	OP_LAND(0);								// land diagnostics (OrthoProbe::LandCount): 0 geometry reached
-	if (!geo->shader) OP_LAND(1);			// 1 no shader
-	else if (!CheckShaderFlags(geo)) OP_LAND(2);	// 2 shader flags (decal, refraction) or no shader property
-	else if (!geometryPass->TestObject(geo)) OP_LAND(3);	// 3 the opaque pass refuses it (no buffer data / not a lighting property)
+	if (OrthoProbe::Recording && OrthoProbe::CurrentLand) {	// UNOFFICIAL fixes-b #2: these checks do real work, run them only while recording
+		if (!geo->shader) OP_LAND(1);			// 1 no shader
+		else if (!CheckShaderFlags(geo)) OP_LAND(2);	// 2 shader flags (decal, refraction) or no shader property
+		else if (!geometryPass->TestObject(geo)) OP_LAND(3);	// 3 the opaque pass refuses it (no buffer data / not a lighting property)
+	}
 #endif
 	if (!geo->shader) return; // skip Geometry without a shader
 
@@ -523,14 +525,14 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 				BSMultiBoundNode* multibound = child->IsMultiBoundNode();
 
 #if NVR_TEST_TOOLS
-				if (isLand && !isLOD) { if (multibound) OP_LAND(8); if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) OP_LAND(9); }	// 8 multibound, 9 outside
+				if (OrthoProbe::Recording && isLand && !isLOD) { if (multibound) OP_LAND(8); if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) OP_LAND(9); }	// 8 multibound, 9 outside
 #endif
 				if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) continue;
 			}
 			else if (arPlanes && !child->WithinFrustum(arPlanes)) continue;
 
 #if NVR_TEST_TOOLS
-			if (isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);	// 10 faded
+			if (OrthoProbe::Recording && isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);	// 10 faded
 #endif
 			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue; // object LOD inside the loaded cells
@@ -551,6 +553,8 @@ void ShadowManager::RenderAccums() {
 	speedTreePass->RenderAccum();
 }
 
+
+static float SunLandDropScale = 0.0f;	// UNOFFICIAL fixes-b #9: set by the sun cascade loop around its RenderShadowMap call, 0 elsewhere
 
 void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj) {
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
@@ -578,7 +582,10 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	{
 		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
 		const bool drop = terrain && terrain->BlendingSettings.Enabled && TheTextureManager->TerrainBlendDepthTexture;
-		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop : 0.0f;
+		// fixes-b #9: only the sun cascades drop the land (SunLandDropScale > 0 only around their RenderShadowMap call: not the
+		// rain / ortho map or the light grid's sun map), and less at a low sun: a lowered ridge casts a shadow shorter by
+		// drop / tan(elevation), so the drop fades x min(1, 2 sin(elevation)) (full above 30 degrees).
+		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop * SunLandDropScale : 0.0f;
 		RenderPass::LandSet.clear();
 	}
 
@@ -1415,7 +1422,9 @@ void ShadowManager::RenderShadowMaps() {
 				if (update) {
 					updatedCascades |= 1u << i;
 					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
+					SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));	// SunDir is a unit vector: z = sin(elevation)
 					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+					SunLandDropScale = 0.0f;
 					CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
 					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
 				}
@@ -1570,7 +1579,8 @@ void ShadowManager::RenderShadowMaps() {
 				}
 #endif
 				// UNOFFICIAL Skylighting v2 CleanMap: alpha-tested casters with their test (leaves, fences), no blended-only geometry.
-				const bool clean = TheShaderManager->orthoSkyRequired && Shadows->Settings.OrthoMap.SkyCleanMap;
+				// fixes-b #4: only the sky's own map (skyOnly): a map the rain or snow effect also reads stays as it was before v2 (solid casters), or the rain would fall through leaves and fences
+				const bool clean = skyOnly && Shadows->Settings.OrthoMap.SkyCleanMap;
 				const bool alphaWas = ShadowMap->Forms.AlphaEnabled;
 				if (clean) { ShadowMap->Forms.AlphaEnabled = true; OrthoSkipBlendOnly = true; }
 				RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);

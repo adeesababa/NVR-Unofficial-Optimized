@@ -49,14 +49,15 @@ float4 TESR_TerrainSkyData : register(c135);
 #endif
 
 // UNOFFICIAL 2026-10-17 SkipEmptyLayers (TESR_TerrainParallaxIso.y): a layer whose blend weight is exactly 0 adds exactly 0,
-// so its colour and normal lookups are skipped (with the game's anisotropic filtering each one is many taps). Inside a branch
+// so its colour and normal lookups are skipped (fixes-b #10: tested != 0, not > 0, so a slightly NEGATIVE weight at an MSAA edge pixel
+// still adds its texel, exactly as with the option off) (with the game's anisotropic filtering each one is many taps). Inside a branch
 // the lookups take explicit gradients: odx/ody = ddx/ddy of the same uv, taken at the top level (what tex2D used implicitly).
 // Harness, real land maps, aniso 15: -12..-14% at 5-7 layers with patchy weights, +0..2% when every layer is present;
 // largest pixel difference 3e-7 (rounding).
 float3 blendDiffuseMaps(float3 vertexColor, float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7]) {
     float3 color = float3(0, 0, 0);
     [unroll] for (int i = 0; i < texCount; i++) {
-        [branch] if (blends[i] > 0 || TESR_TerrainParallaxIso.y < 0.5f) color += tex2Dgrad(tex[i], uv, odx, ody).xyz * blends[i];
+        [branch] if (blends[i] != 0 || TESR_TerrainParallaxIso.y < 0.5f) color += tex2Dgrad(tex[i], uv, odx, ody).xyz * blends[i];
     }
 
     return color * vertexColor;
@@ -70,7 +71,7 @@ float3 blendNormalMaps(float2 uv, float2 odx, float2 ody, int texCount, sampler2
 
     float4 normal;
     [unroll] for (int i = 0; i < texCount; i++) {
-        [branch] if (blends[i] > 0 || TESR_TerrainParallaxIso.y < 0.5f) {   // UNOFFICIAL SkipEmptyLayers (see blendDiffuseMaps)
+        [branch] if (blends[i] != 0 || TESR_TerrainParallaxIso.y < 0.5f) {   // UNOFFICIAL SkipEmptyLayers (see blendDiffuseMaps)
         normal = tex2Dgrad(tex[i], uv, odx, ody);
         blendedNormal += normal.xyz * blends[i];
         gloss += normal.w * blends[i] * (spec[i] > 0 ? 1.0f : 0.0f);
