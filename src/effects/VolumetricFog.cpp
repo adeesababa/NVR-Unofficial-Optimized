@@ -1,5 +1,6 @@
 #include "VolumetricFog.h"
 #include "../core/GpuProfiler.h"
+#include "../core/TestTools.h"	// NVR_TEST_TOOLS (FogReferenceTest)
 
 // UNOFFICIAL 2026-10-17 Skylighting v2: the quarter-resolution sky visibility on stage 12 (NVR_SkyVis), point sampled (the shader
 // does its own depth-aware upsample). Not a TESR_ sampler: those bind by their order in the file.
@@ -65,6 +66,17 @@ void VolumetricFogEffect::UpdateSettings(){
 	// Custom build: one switch for exteriors and interiors, in Main.
 	Constants.Legacy.x = TheSettingManager->GetSettingI("Shaders.VolumetricFog.Main", "LegacyFog") ? 1.0f : 0.0f;
 	if (Constants.Legacy.x > 0.5f) UpdateLegacySettings(SettingCategory);
+	// UNOFFICIAL 2026-10-18 ClassicLook: also one switch for both, in Main (the *Classic techniques, see the header).
+	const int classicWas = classicLook;
+	const bool referenceWas = referenceTest;
+	classicLook = std::clamp(TheSettingManager->GetSettingI("Shaders.VolumetricFog.Main", "ClassicLook"), 0, 2);
+#if NVR_TEST_TOOLS
+	referenceTest = TheSettingManager->GetSettingI("Main.Main.Performance", "FogReferenceTest") != 0;
+#endif
+	if (classicLook != classicWas || referenceTest != referenceWas)
+		Logger::Log("VOLUMETRIC FOG: %s", referenceTest ? "REFERENCE TEST, the original NVR fog's own shader (FogReference), full resolution, shadow and AO applies as their own passes" :
+			IsLegacy() ? "legacy fog (LegacyFog on; ClassicLook does not apply)" : classicLook == 2 ? "ClassicLook 2, the original look, full resolution in one pass" :
+			classicLook == 1 ? "ClassicLook 1, the original look with the half-resolution coefficients" : "ClassicLook off (today's fog)");
 
 	Constants.Global.x = TheSettingManager->GetSettingF(SettingCategory, "Amount");
 	Constants.Weather.w = TheSettingManager->GetSettingF(SettingCategory, "FogSaturation");
@@ -258,7 +270,7 @@ void VolumetricFogEffect::RegisterTextures() {
 * those passes are skipped, so a later failure is exceptional.
 */
 bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
-	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] ||
+	if (!Enabled || !Effect || !ShouldRender() || dedicatedFogFailed || !fogSurface[0] || PlainOnly() ||
 		TheSettingManager->SettingsMain.Main.DisableCompositeApply ||
 		!CompositeTechnique() || !ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags"))
 		return false;
@@ -351,7 +363,7 @@ int VolumetricFogEffect::HalfStoreMode(IDirect3DDevice9* Device) {
 }
 
 bool VolumetricFogEffect::CanApplyShadowAO() {
-	return Enabled && Effect && !TheSettingManager->SettingsMain.Main.DisableCompositeApply &&
+	return Enabled && Effect && !TheSettingManager->SettingsMain.Main.DisableCompositeApply && !referenceTest &&	// (reference: two passes, as master)
 		TechniqueHandle(techApplyShadowAO, "ApplyShadowAO") && ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") &&
 		ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
 }
@@ -589,14 +601,16 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 * name), otherwise the caller's.
 */
 UINT VolumetricFogEffect::PlainTechniqueIndex(UINT techniqueIndex) {
-	if (!IsLegacy() || !Effect) return techniqueIndex;
+	// UNOFFICIAL 2026-10-18: FogReference (diagnostic) and VolumetricFogClassic (ClassicLook) the same way.
+	const char* name = referenceTest ? "FogReference" : IsLegacy() ? "VolumetricFogLegacy" : IsClassic() ? "VolumetricFogClassic" : nullptr;
+	if (!name || !Effect) return techniqueIndex;
 	D3DXEFFECT_DESC effect = {};
 	if (FAILED(Effect->GetDesc(&effect))) return techniqueIndex;
 	for (UINT t = 0; t < effect.Techniques; t++) {
 		D3DXTECHNIQUE_DESC description = {};
 		D3DXHANDLE technique = Effect->GetTechnique(t);
 		if (technique && SUCCEEDED(Effect->GetTechniqueDesc(technique, &description)) && description.Name &&
-			!strcmp(description.Name, "VolumetricFogLegacy"))
+			!strcmp(description.Name, name))
 			return t;
 	}
 	return techniqueIndex;
@@ -644,6 +658,13 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		}
 		~SkyViewBinding() { if (bound) { device->SetTexture(10, nullptr); TheRenderManager->renderState->NoteDeviceTexture(10, nullptr); } }
 	} skyViewBinding(Device);
+
+	// UNOFFICIAL 2026-10-18: ClassicLook 2 and the FogReference diagnostic draw every pixel in one full-resolution pass, as master
+	// did (no composite was set up for them: CanComposite and CanCompositeInterior say no).
+	if (PlainOnly() && !(compositeShadow || compositeAO || compositeInteriorShadow)) {
+		EffectRecord::Render(Device, RenderTarget, RenderedSurface, PlainTechniqueIndex(techniqueIndex), ClearRenderTarget, SourceBuffer);
+		return;
+	}
 
 	{
 		auto timer = TimeLogger();

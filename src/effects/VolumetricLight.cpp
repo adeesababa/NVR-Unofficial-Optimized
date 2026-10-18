@@ -82,7 +82,8 @@ void VolumetricLightEffect::UpdateConstants() {
 	const float depth = Constants.Data.z * Constants.Data.w;
 	Constants.GridData.y = depth > 1.0e-4f ? 1.0f / (1.0f - expf(-depth)) : 1.0f;
 	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
-	Constants.GridData.x = Settings.FogVolume && fog && fog->Enabled && !fog->IsLegacy() ? 1.0f : 0.0f;
+	// (UNOFFICIAL 2026-10-18: not with ClassicLook or the FogReference diagnostic either: that fog reads none of the fog volume.)
+	Constants.GridData.x = Settings.FogVolume && fog && fog->Enabled && !fog->IsLegacy() && !fog->IsClassic() && !fog->referenceTest ? 1.0f : 0.0f;
 }
 
 bool VolumetricLightEffect::ShouldRender() {

@@ -60,12 +60,24 @@ public:
 	// Custom build: the same techniques with the legacy fog, used while LegacyFog is on.
 	CachedHandle techCompositeFogLegacy, techDedicatedFogLegacy, techPackedFogLegacy;
 	bool	IsLegacy() const { return Constants.Legacy.x > 0.5f; }
-	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
-	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
-	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : TechniqueHandle(techPackedFog, "PackedFog"); }
+	// UNOFFICIAL 2026-10-18 ClassicLook ([Shaders.VolumetricFog.Main] ClassicLook): the look of the original NVR fog (upstream
+	// master ab16e86c) with today's speed work, the *Classic techniques. 0 off (today's fog), 1 on, 2 on and worked out per
+	// pixel at full resolution in one pass, as master drew it (VolumetricFogClassic; the shadow and AO applies then run as
+	// their own passes). LegacyFog wins over it.
+	int		classicLook = 0;
+	bool	IsClassic() const { return classicLook > 0 && !IsLegacy(); }
+	// DIAGNOSTIC (development builds only; [Main.Main.Performance] FogReferenceTest): technique FogReference, master's own fog
+	// shader, full resolution, one pass, with the shadow and AO applies as their own passes, as master drew it.
+	bool	referenceTest = false;
+	bool	PlainOnly() const { return referenceTest || (IsClassic() && classicLook == 2); }
+	CachedHandle techCompositeFogClassic, techDedicatedFogClassic, techCompositeFogInteriorClassic;
+	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : IsClassic() ? TechniqueHandle(techCompositeFogClassic, "CompositeFogClassic") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
+	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : IsClassic() ? TechniqueHandle(techDedicatedFogClassic, "DedicatedFogClassic") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
+	// (ClassicLook: no packed technique; a failed dedicated path falls straight to the full-resolution VolumetricFogClassic.)
+	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : IsClassic() ? NULL : TechniqueHandle(techPackedFog, "PackedFog"); }
 	// UNOFFICIAL 2026-10-18 InteriorShadowFold: the composite with the interior darkening in place of the sun shadows.
 	CachedHandle techCompositeFogInterior, techCompositeFogInteriorLegacy;
-	D3DXHANDLE	CompositeInteriorTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogInteriorLegacy, "CompositeFogInteriorLegacy") : TechniqueHandle(techCompositeFogInterior, "CompositeFogInterior"); }
+	D3DXHANDLE	CompositeInteriorTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogInteriorLegacy, "CompositeFogInteriorLegacy") : IsClassic() ? TechniqueHandle(techCompositeFogInteriorClassic, "CompositeFogInteriorClassic") : TechniqueHandle(techCompositeFogInterior, "CompositeFogInterior"); }
 	UINT	PlainTechniqueIndex(UINT techniqueIndex);
 	// [0]: fog multiply + depth, [1]: fog add -- written together as MRTs by the estimate pass
 	IDirect3DTexture9* fogTexture[2] = {};
@@ -94,7 +106,7 @@ public:
 	bool	gridApplied = false;
 	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
-	bool	CanCompositeInterior() { return CompositeInteriorTechnique() != NULL; }
+	bool	CanCompositeInterior() { return !PlainOnly() && CompositeInteriorTechnique() != NULL; }
 	// How this GPU stores a float in a 16-bit float render target: 0 round to nearest even, 2 round toward zero, -1 neither
 	// (or not measurable). Measured once (technique HalfStoreProbe), the first time the interior composite could run.
 	int		HalfStoreMode(IDirect3DDevice9* Device);
