@@ -31,6 +31,7 @@ float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
 float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass)
+float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: 1 / GridScreenStrength when the screen memory fed the grid, else 1
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
 float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
 float4 TESR_WaterSettings;      // x: water height, z: camera underwater
@@ -555,6 +556,22 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 	return irradiance * colour * fade;
 }
 
+// UNOFFICIAL 2026-10-18 (ambfix; user: interiors washed purple/blue and orange): the surface's own colour, as far as one picture can
+// tell it (there is no albedo buffer): the pixel's light over the light the scene gives every surface (NVR_ALScene: its ambient). A
+// surface only the ambient lights comes out as its own colour, without the ambient's tint (the Tops: a purple-blue ambient, XCLL
+// 57 55 85); one brighter than the ambient can explain (a lamp or the sun on it) is capped at a bright surface's reflectance and its
+// hue counts less (it is the lamp's as much as the surface's). The old stand-in (the pixel's hue scaled to 0.6 at its brightest
+// channel) made every surface, dark or light, send back 0.6 of the bounce in the colour of the light already on it.
+static const float MaxReflectance = 0.8f;
+float3 SurfaceColour(float3 lin) {
+	float3 ambient = max(NVR_ALScene.rgb, 0.25f * luma(NVR_ALScene.rgb) + 1.0e-4f);
+	float3 raw = max(lin, 0.0f) / ambient;
+	float level = luma(raw);
+	float3 hue = raw / max(level, 1.0e-4f);
+	float trust = saturate(MaxReflectance / max(level, 1.0e-4f));
+	return min(level, MaxReflectance) * min(lerp(1.0f, hue, trust), 3.0f);
+}
+
 // Pass 5: upsample and apply.
 float4 Apply(VSOUT IN) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
@@ -603,6 +620,11 @@ float4 Apply(VSOUT IN) : COLOR0 {
 		float3 normal = normalize(GetWorldNormalLod(IN.UVCoord));
 		gridBounce = GridBounce(cameraRelative, normal) * (NVR_GridData.x * ao);
 	}
+	// UNOFFICIAL 2026-10-18 (ambfix) candidates (test): 11 the bounce on SurfaceColour, 12 the same with the screen memory at 1 / GridScreenStrength.
+	[branch] if (DebugView > 10.5f) return delinearize(float4(lin * ao + gridBounce * (DebugView > 11.5f ? NVR_ALScene.w : 1.0f) * SurfaceColour(lin), color.a));
+	// UNOFFICIAL 2026-10-18 (ambfix) diagnostics: 9 the grid's light on the surface (strength and occlusion included, before the
+	// surface colour), 10 the surface colour the apply multiplies it by; both linear, display-encoded.
+	[branch] if (DebugView > 8.5f) return delinearize(float4(DebugView < 9.5f ? gridBounce : albedo, 1.0f));
 	// 8 (diagnostic): the screen memory in the pixel's own cell, unspread (r: its light x 4, g: cell seen at all, b: grid colour
 	// light x 4), NVR_GridWave's stage bound to the memory for it.
 	[branch] if (DebugView > 7.5f) {

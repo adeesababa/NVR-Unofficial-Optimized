@@ -14,7 +14,7 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
-	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 8);
+	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 12);
 	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 	gridBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBounce"), 0.0f, 10.0f);
 	gridCell = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridCellSize"), 50.0f, 800.0f);
@@ -262,6 +262,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 	if (SUCCEEDED(result)) {
 		gridAccumIndex = accum;
 		gridColorValid = colour;
+		gridFromScreen = screen && !sun;
 		for (int i = 0; i < 3; i++) gridOrigin[i] = gridPendingOrigin[i];
 		gridValid = true;
 		static bool logged = false;
@@ -286,6 +287,23 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	IDirect3DSurface9* SourceBuffer) {
 	if (!ShouldRender()) { renderTime = 0; historyValid = false; return; }
 	EnsureBuffers();
+	// UNOFFICIAL 2026-10-18 (ambfix): the scene's own light (the cell's ambient and directional colours indoors, the sky's ambient and
+	// the sun's colour outdoors), logged when it changes: the apply's tint is judged against it.
+	{
+		D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient, direct = TheShaderManager->ShaderConst.sunColor;
+		const bool interior = !TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() && Player->parentCell->lighting;
+		if (interior) { ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4(); direct = Player->parentCell->lighting->directional.toD3DXVECTOR4(); }
+		static D3DXVECTOR4 loggedAmbient(-1.0f, -1.0f, -1.0f, -1.0f), loggedDirect(-1.0f, -1.0f, -1.0f, -1.0f);
+		if (ambient != loggedAmbient || direct != loggedDirect) {
+			loggedAmbient = ambient; loggedDirect = direct;
+			Logger::Log("UNOFFICIAL AmbientLight: scene light (%s): ambient %.4f %.4f %.4f, %s %.4f %.4f %.4f", interior ? "cell" : "sky",
+				ambient.x, ambient.y, ambient.z, interior ? "directional" : "sun", direct.x, direct.y, direct.z);
+		}
+		// The light every surface gets (linear, on a white surface): the ambient, indoors plus half the cell's directional light.
+		auto linear = [](float c) { c = (std::max)(c, 0.0f); return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); };
+		const float half = interior ? 0.5f : 0.0f;
+		sceneLight = D3DXVECTOR4(linear(ambient.x + half * direct.x), linear(ambient.y + half * direct.y), linear(ambient.z + half * direct.z), 1.0f);
+	}
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_ALLayout");
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
 	D3DXTECHNIQUE_DESC description = {};
@@ -342,6 +360,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			D3DXVECTOR4 origin((float)(gridOrigin[0] - camera.x), (float)(gridOrigin[1] - camera.y), (float)(gridOrigin[2] - camera.z), gridCell);
 			if (D3DXHANDLE h = ParameterHandle(paramGridOrigin, "NVR_GridOrigin")) Effect->SetVector(h, &origin);
 		}
+	}
+	if (D3DXHANDLE h = ParameterHandle(paramScene, "NVR_ALScene")) {
+		D3DXVECTOR4 scene(sceneLight.x, sceneLight.y, sceneLight.z, gridFromScreen ? 1.0f / (std::max)(gridScreenStrength, 0.01f) : 1.0f);
+		Effect->SetVector(h, &scene);
 	}
 	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
 	const bool shadow = foldShadow && flagsHandle;

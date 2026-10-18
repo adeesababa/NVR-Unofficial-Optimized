@@ -20,6 +20,9 @@ public:
 	IDirect3DSurface9*	bufferSurface[2] = {};
 	bool				buffersTried = false;
 	CachedHandle		paramLayout, paramFlags, paramTemporal, paramReproject;
+	CachedHandle		paramScene;					// UNOFFICIAL 2026-10-18 (ambfix): NVR_ALScene, the scene's own light
+	bool				gridFromScreen = false;		// UNOFFICIAL 2026-10-18 (ambfix): the finished grid was fed by the screen memory
+	D3DXVECTOR4			sceneLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);	// the light every surface gets (linear; Render)
 	// UNOFFICIAL 2026-10-14 Temporal: the bounce kept from frame to frame (rgb bounce, a view depth; A16B16G16R16F), one read
 	// while the other is written, and last frame's camera to find each spot in it.
 	IDirect3DTexture9*	historyTexture[2] = {};

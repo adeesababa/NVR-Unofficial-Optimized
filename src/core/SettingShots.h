@@ -21,6 +21,8 @@
 //                                                needs ReShade's D3D9 runtime (ReShadeIntegration.cpp calls CaptureFinal), or
 //                                                (2026-10-18) its Vulkan runtime under DXVK (capture_screenshot there).
 //   world                                        (2026-10-16) each shot also saves the world scene's HDR target raw (.world, CaptureWorld)
+//   stage                                        (2026-10-18) each shot also saves the HDR picture right after the AmbientLight step
+//                                                (whether it ran or not) raw, as <slug>-al.world (CaptureStage; the same file format)
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <atomic>
 #include <fstream>
@@ -72,12 +74,14 @@ namespace SettingShots {
 
 	inline bool WorldCapture = false;			// 'world' (2026-10-16): each shot also saves the world scene's HDR target (CaptureWorld)
 	inline size_t WorldTaken = (size_t)-1;		// the shot whose world target is saved already
+	inline bool StageCapture = false;			// 'stage' (2026-10-18): each shot also saves the picture after the AmbientLight step
+	inline size_t StageTaken = (size_t)-1;		// the shot whose stage picture is saved already
 	inline IDirect3DSurface9* WorldResolve = nullptr;
 	inline IDirect3DSurface9* WorldReadback = nullptr;
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
 		std::ifstream in(RequestFile);
@@ -95,6 +99,7 @@ namespace SettingShots {
 			else if (command == "profile") GpuTimer::Enabled = true;	// UNOFFICIAL 2026-10-13: the F10 GPU profile, on for the whole run
 			else if (command == "final") FinalPicture = true;
 			else if (command == "world") WorldCapture = true;
+			else if (command == "stage") StageCapture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
@@ -200,9 +205,20 @@ namespace SettingShots {
 	// before NVR's effects and the tonemapper. In the frame whose picture is the shot, it is saved raw next to the picture:
 	// NeonSelfTest_<run>_ab_<NN>_<slug>.world = "NVRW", then width, height, D3DFORMAT and bytes per pixel (UInt32 each), then the
 	// rows. A test-only stall (the GPU is waited for); nothing of it runs in normal play.
+	inline void SaveTarget(IDirect3DDevice9* device, IDirect3DSurface9* target, const char* suffix);
 	inline void CaptureWorld(IDirect3DDevice9* device, IDirect3DSurface9* target) {
 		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < Frames) return;
 		WorldTaken = Index;
+		SaveTarget(device, target, "");
+	}
+	// UNOFFICIAL 2026-10-18 'stage' (ambfix: the AmbientLight tint measured in linear light): ShaderManager calls this right after the
+	// AmbientLight step with the current picture (TextureManager::RenderedSurface); saved as <slug>-al.world in the shot's last frame.
+	inline void CaptureStage(IDirect3DDevice9* device, IDirect3DSurface9* target) {
+		if (!Running || !StageCapture || !device || !target || Index >= List.size() || StageTaken == Index || Frame < Frames) return;
+		StageTaken = Index;
+		SaveTarget(device, target, "-al");
+	}
+	inline void SaveTarget(IDirect3DDevice9* device, IDirect3DSurface9* target, const char* suffix) {
 		const char* slug = List[Index].slug.c_str();
 		target->AddRef();
 		D3DSURFACE_DESC d = {};
@@ -222,7 +238,7 @@ namespace SettingShots {
 		D3DLOCKED_RECT lock = {};
 		ok = ok && SUCCEEDED(WorldReadback->LockRect(&lock, NULL, D3DLOCK_READONLY));
 		char path[MAX_PATH];
-		sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s.world", Run, (unsigned)Index, slug);
+		sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s%s.world", Run, (unsigned)Index, slug, suffix);
 		bool saved = false;
 		if (ok) {
 			FILE* f = nullptr;

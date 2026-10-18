@@ -1729,6 +1729,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied)
 			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+#if NVR_TEST_TOOLS
+	SettingShots::CaptureStage(Device, TheTextureManager->RenderedSurface);	// UNOFFICIAL, test only: 'stage' shots (ambfix 2026-10-18)
+#endif
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		// UNOFFICIAL, optional: one bounce of screen-space indirect light, on the shadowed and AO'd scene.
