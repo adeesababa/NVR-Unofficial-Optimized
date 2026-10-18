@@ -34,6 +34,13 @@ void PBRShaders::EndFirstPerson(IDirect3DDevice9* Device) {
 }
 
 
+// fixes-a #23: MetalnessScale / AOScale read 0 when the key is missing (a DLL used with an older defaults toml), which switched every
+// _rmaos metal and AO off. A missing key now means 1.0 (the shipped default), like boolSetting's fallback.
+static float RmaosScaleOr1(const char* Section, const char* Key) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, Section, Key) ? node.FloatValue : 1.0f;
+}
+
 void PBRShaders::UpdateSettings() {
 	// UNOFFICIAL metal (Object.hlsl): strengths per pass, the guess and the finish.
 	// MetalOn: the metal's own switch (the panel's Enabled button switches all of the PBR shaders).
@@ -107,8 +114,8 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Default.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Main", "SkylightingScale");
 	Settings.Default.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Main", "SkylightingDirectionality");
 	Settings.Default.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Main", "SkylightingSaturation");
-	Settings.Default.RmaosMetalnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
-	Settings.Default.RmaosAOScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "AOScale"), 0.0f, 1.0f);
+	Settings.Default.RmaosMetalnessScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Main", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
+	Settings.Default.RmaosAOScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Main", "AOScale"), 0.0f, 1.0f);
 	Settings.Default.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.Rain.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "Saturation");
@@ -119,8 +126,8 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Rain.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "SkylightingScale");
 	Settings.Rain.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "SkylightingDirectionality");
 	Settings.Rain.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "SkylightingSaturation");
-	Settings.Rain.RmaosMetalnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Rain", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
-	Settings.Rain.RmaosAOScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Rain", "AOScale"), 0.0f, 1.0f);
+	Settings.Rain.RmaosMetalnessScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Rain", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
+	Settings.Rain.RmaosAOScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Rain", "AOScale"), 0.0f, 1.0f);
 	Settings.Rain.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Rain", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.Night.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Night", "Saturation");
@@ -131,8 +138,8 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Night.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Night", "SkylightingScale");
 	Settings.Night.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Night", "SkylightingDirectionality");
 	Settings.Night.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Night", "SkylightingSaturation");
-	Settings.Night.RmaosMetalnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Night", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
-	Settings.Night.RmaosAOScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Night", "AOScale"), 0.0f, 1.0f);
+	Settings.Night.RmaosMetalnessScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Night", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
+	Settings.Night.RmaosAOScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Night", "AOScale"), 0.0f, 1.0f);
 	Settings.Night.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Night", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.NightRain.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "Saturation");
@@ -143,8 +150,8 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.NightRain.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "SkylightingScale");
 	Settings.NightRain.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "SkylightingDirectionality");
 	Settings.NightRain.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "SkylightingSaturation");
-	Settings.NightRain.RmaosMetalnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
-	Settings.NightRain.RmaosAOScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "AOScale"), 0.0f, 1.0f);
+	Settings.NightRain.RmaosMetalnessScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.NightRain", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
+	Settings.NightRain.RmaosAOScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.NightRain", "AOScale"), 0.0f, 1.0f);
 	Settings.NightRain.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.Interiors.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "Saturation");
@@ -155,8 +162,8 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Interiors.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "SkylightingScale");
 	Settings.Interiors.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "SkylightingDirectionality");
 	Settings.Interiors.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "SkylightingSaturation");
-	Settings.Interiors.RmaosMetalnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
-	Settings.Interiors.RmaosAOScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "AOScale"), 0.0f, 1.0f);
+	Settings.Interiors.RmaosMetalnessScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Interiors", "MetalnessScale"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-18 (_rmaos maps)
+	Settings.Interiors.RmaosAOScale = std::clamp(TheSettingManager->RmaosScaleOr1("Shaders.PBR.Interiors", "AOScale"), 0.0f, 1.0f);
 	Settings.Interiors.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "RoughnessScale"), 1.0f, 2.0f);
 }
 
