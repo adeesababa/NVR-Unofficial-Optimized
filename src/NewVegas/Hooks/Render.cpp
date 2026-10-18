@@ -17,6 +17,7 @@
 #include "../../core/LampScissor.h"
 #include "../../core/LampPassTest.h"
 #include "../../core/PassSums.h"
+#include "../../core/LampsInOnePass.h"
 #include "../../core/ClothWind.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
@@ -606,6 +607,10 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL cloth wind
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();	// UNOFFICIAL, diagnostic: LampPassTestSkip
+#endif
+	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
+#if NVR_TEST_TOOLS
+	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
 #endif
 	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): the scattering target is cleared on the frame's first skin draw;
 	// interior faces take SkinShader's own passes while it is on (Shaders.cpp UpdateFaceGenInteriorFlag).
@@ -2282,6 +2287,9 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);	// UNOFFICIAL 2026-10-17 grass lighting fix
 	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 	TerrainProbe::LastVertex = VertexShader ? VertexShader->Name : nullptr;
+#if NVR_TEST_TOOLS
+	LampsInOnePass::Census::OnBind(PassIndex, PixelShader ? PixelShader->Name : nullptr, VertexShader ? VertexShader->Name : nullptr);	// UNOFFICIAL, diagnostic
+#endif
 	// Diagnostic (P57): the water reflection with the game's own shaders. NVR's replacements take constants made for
 	// the main camera; the reflection camera sits mirrored below the water. SetupShader picks the handle the game
 	// binds next, so switching it here keeps the game's state tracking right; the next bind picks NVR's again.
@@ -2454,6 +2462,7 @@ static void ForwardShadowsForPass(void* Pass) {
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
 	TerrainProbe::Note((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 #if NVR_TEST_TOOLS
+	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic (F10 only)
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
@@ -2479,6 +2488,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
 #if NVR_TEST_TOOLS
+	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic (F10 only)
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
