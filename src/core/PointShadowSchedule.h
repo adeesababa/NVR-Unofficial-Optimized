@@ -17,6 +17,7 @@ struct PointShadowSlotState {
 	float radius = 0;               // light radius as used for the cubemap
 	unsigned long long casterHash = 0; // static caster pointers/transforms/visibility/material state
 	bool staticCasters = false;      // complete geometry list, with no skinned or wind-animated geometry
+	bool partial = false;            // UNOFFICIAL CubeFaceViewCull: faces out of view were not drawn (never kept as final)
 	bool valid = false;             // the slot has been drawn at least once
 };
 
@@ -37,6 +38,7 @@ enum class PointShadowRedraw {
 	Moved,        // the light moved
 	Resized,      // the light's radius changed
 	CastersChanged, // a fully static caster set changed, or changed between static and dynamic
+	Partial,      // UNOFFICIAL CubeFaceViewCull: the last draw left out faces that were out of view
 	Scheduled,    // nothing changed: the regular every-N-frames refresh (every frame at interval 1)
 	Count
 };
@@ -52,6 +54,7 @@ inline PointShadowRedraw PointShadowRedrawReason(const PointShadowSlotState& las
 	if (last.radius != now.radius) return PointShadowRedraw::Resized;
 	if (last.staticCasters != now.staticCasters) return PointShadowRedraw::CastersChanged;
 	if (now.staticCasters && last.casterHash != now.casterHash) return PointShadowRedraw::CastersChanged;
+	if (last.partial) return PointShadowRedraw::Partial;
 	// A complete, unchanged static caster set is camera-independent, so its existing cubemap is final.
 	// Dynamic/unknown sets keep the existing PointShadowInterval schedule unchanged.
 	if (now.staticCasters) return PointShadowRedraw::None;

@@ -678,6 +678,7 @@ void SettingManager::LoadSettings() {
 		SettingsMain.Main.InteriorShadowFoldRound = max(0, min(mode, 3));
 	}
 	SettingsMain.Main.CubeFaceCopySkip = boolSetting(performance, "CubeFaceCopySkip", false);
+	SettingsMain.Main.CubeFaceViewCull = boolSetting(performance, "CubeFaceViewCull", false);
 	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
 	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);

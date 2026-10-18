@@ -81,6 +81,9 @@ public:
 	// the sun shadows (technique CompositeFogInterior); compositeRound: NVR_CompositeFlags.w there (InteriorShadowFoldRound).
 	bool	compositeInteriorShadow = false;
 	float	compositeRound = 0.0f;
+	// DIAGNOSTIC InteriorShadowFoldCheck: the dedicated pass reads this scene and writes this target (no chain, no copy, no fallback).
+	IDirect3DTexture9* sceneOverride = nullptr;
+	IDirect3DSurface9* targetOverride = nullptr;
 	// UNOFFICIAL 2026-10-17 Skylighting v2: this frame's sky visibility (AmbientOcclusionEffect::SkyTexture), applied to the sky's
 	// share with the AO (stage 12, NVR_SkyVis; NVR_CompositeFlags.z). Null = nothing changes.
 	IDirect3DTexture9* compositeSkyTexture = nullptr;

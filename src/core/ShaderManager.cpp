@@ -1181,6 +1181,104 @@ static void LampMaskSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* surfa
 }
 #endif
 
+#if NVR_TEST_TOOLS
+/*
+* DIAGNOSTIC [Main.Main.Performance] InteriorShadowFoldCheck N (development builds only): every Nth frame in which InteriorShadowFold
+* would apply, the frame takes the old path (the separate ShadowsInteriors pass, then the fog), and the scene as it was before that
+* pass is kept (FoldCheckScene). After the fog the result is read back, the folded fog pass is drawn from the kept scene into a spare
+* target with the same AO / sky inputs (VolumetricFogEffect sceneOverride / targetOverride), read back too, and the two are compared
+* bit for bit (16-bit float RGB). The frame goes on with the old result. Exact in any scene, moving or not (same frame, same inputs).
+*/
+static IDirect3DTexture9* FoldCheckSceneTexture = nullptr;
+static IDirect3DSurface9* FoldCheckSceneSurface = nullptr;
+static IDirect3DTexture9* FoldCheckOutTexture = nullptr;
+static IDirect3DSurface9* FoldCheckOutSurface = nullptr;
+static IDirect3DSurface9* FoldCheckReadA = nullptr;
+static IDirect3DSurface9* FoldCheckReadB = nullptr;
+static bool FoldCheckSurfaces(IDirect3DDevice9* Device, IDirect3DSurface9* like) {
+	D3DSURFACE_DESC d = {}, have = {};
+	if (!like || FAILED(like->GetDesc(&d)) || d.Format != D3DFMT_A16B16G16R16F) return false;
+	if (FoldCheckSceneSurface && SUCCEEDED(FoldCheckSceneSurface->GetDesc(&have)) && have.Width == d.Width && have.Height == d.Height) return true;
+	IUnknown* old[] = { FoldCheckSceneSurface, FoldCheckSceneTexture, FoldCheckOutSurface, FoldCheckOutTexture, FoldCheckReadA, FoldCheckReadB };
+	for (IUnknown* o : old) if (o) o->Release();
+	FoldCheckSceneSurface = FoldCheckOutSurface = FoldCheckReadA = FoldCheckReadB = nullptr;
+	FoldCheckSceneTexture = FoldCheckOutTexture = nullptr;
+	if (FAILED(Device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &FoldCheckSceneTexture, NULL)) ||
+		FAILED(FoldCheckSceneTexture->GetSurfaceLevel(0, &FoldCheckSceneSurface)) ||
+		FAILED(Device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &FoldCheckOutTexture, NULL)) ||
+		FAILED(FoldCheckOutTexture->GetSurfaceLevel(0, &FoldCheckOutSurface)) ||
+		FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &FoldCheckReadA, NULL)) ||
+		FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &FoldCheckReadB, NULL))) {
+		Logger::Log("INTERIOR SHADOW FOLD CHECK: could not create its surfaces");
+		FoldCheckSceneSurface = nullptr;	// (leaked on purpose: test only)
+		return false;
+	}
+	return true;
+}
+
+static void InteriorFoldSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* SourceSurface,
+	bool ao, IDirect3DTexture9* aoTexture, IDirect3DTexture9* skyTexture) {
+	static unsigned checks = 0, differing = 0, failed = 0, reported = 0;
+	static unsigned long long differingPixels = 0;
+	static unsigned worst = 0;
+	VolumetricFogEffect* Fog = TheShaderManager->Effects.VolumetricFog;
+	IDirect3DSurface9* result = TheTextureManager->RenderedSurface;
+	if (!FoldCheckSceneSurface || !result || FAILED(Device->GetRenderTargetData(result, FoldCheckReadA))) { failed++; return; }
+	const int foldRound = TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound;
+	Fog->compositeShadow = false;
+	Fog->compositeInteriorShadow = true;
+	Fog->compositeRound = foldRound == 1 ? 1.0f : foldRound == 2 ? 2.0f : foldRound == 3 ? 0.0f : Fog->halfStoreMode == 2 ? 2.0f : 0.0f;
+	Fog->compositeAO = ao;
+	Fog->compositeAOTexture = aoTexture;
+	Fog->compositeSkyTexture = ao ? skyTexture : nullptr;
+	Fog->compositeApplied = false;
+	Fog->gridTexture = nullptr;
+	Fog->sceneOverride = FoldCheckSceneTexture;
+	Fog->targetOverride = FoldCheckOutSurface;
+	Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	const bool applied = Fog->compositeApplied;
+	Fog->sceneOverride = nullptr;
+	Fog->targetOverride = nullptr;
+	Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = Fog->compositeInteriorShadow = false;
+	Fog->compositeSkyTexture = nullptr;
+	Device->SetRenderTarget(0, RenderTarget);
+	if (!applied || FAILED(Device->GetRenderTargetData(FoldCheckOutSurface, FoldCheckReadB))) { failed++; return; }
+	D3DSURFACE_DESC d = {};
+	FoldCheckReadA->GetDesc(&d);
+	D3DLOCKED_RECT la = {}, lb = {};
+	if (FAILED(FoldCheckReadA->LockRect(&la, NULL, D3DLOCK_READONLY))) { failed++; return; }
+	if (FAILED(FoldCheckReadB->LockRect(&lb, NULL, D3DLOCK_READONLY))) { FoldCheckReadA->UnlockRect(); failed++; return; }
+	unsigned pixels = 0, frameWorst = 0, firstX = 0, firstY = 0;
+	for (UINT y = 0; y < d.Height; y++) {
+		const UInt16* pa = (const UInt16*)((const UInt8*)la.pBits + (size_t)y * la.Pitch);
+		const UInt16* pb = (const UInt16*)((const UInt8*)lb.pBits + (size_t)y * lb.Pitch);
+		for (UINT x = 0; x < d.Width; x++) {
+			bool differs = false;
+			for (int c = 0; c < 3; c++) {
+				const UInt16 a = pa[x * 4 + c], b = pb[x * 4 + c];
+				if (a == b) continue;
+				differs = true;
+				const unsigned diff = a > b ? a - b : b - a;	// in 16-bit float steps (same sign)
+				if (diff > frameWorst) frameWorst = diff;
+			}
+			if (differs) { if (!pixels) { firstX = x; firstY = y; } pixels++; }
+		}
+	}
+	FoldCheckReadB->UnlockRect();
+	FoldCheckReadA->UnlockRect();
+	checks++;
+	if (pixels) { differing++; differingPixels += pixels; worst = (std::max)(worst, frameWorst); }
+	if (pixels && reported < 12) {
+		reported++;
+		Logger::Log("INTERIOR SHADOW FOLD CHECK: DIFFERENCE, %u of %u pixels differ (max %u 16-bit float steps), first at %u %u",
+			pixels, d.Width * d.Height, frameWorst, firstX, firstY);
+	}
+	if (checks % 10 == 0 || (checks < 10 && !pixels))
+		Logger::Log("INTERIOR SHADOW FOLD CHECK: %u frames compared (old separate pass vs folded fog pass, same frame), %u differ (%llu pixels in all, max %u steps); %u checks could not run",
+			checks, differing, (unsigned long long)differingPixels, worst, failed);
+}
+#endif
+
 void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	Device->SetRenderTarget(0, RenderTarget);
@@ -1463,11 +1561,24 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// 16-bit float as that pass's target stored it (VolumetricFog.fx CompositeFogInterior), when nothing between them reads the
 	// picture: the effects above, and the Reflections surroundings cube, whose capture (RenderCubeOnly, below) reads the scene
 	// even when no floor reflects. Only where that pass would take its dedicated path (the generic one blurs).
-	const bool interiorApplies = !GameState.isExterior && keepDarkening && forwardInterior &&
+	const bool interiorFoldable = !GameState.isExterior && keepDarkening && forwardInterior &&
 		!Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur && TheSettingManager->SettingsMain.Main.InteriorShadowFold &&
 		!(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) &&
 		Effects.ShadowsInteriors->DedicatedUsable(RenderTarget, TheTextureManager->RenderedSurface) && Fog->CanCompositeInterior() &&
 		(TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound != 0 || Fog->HalfStoreMode(Device) >= 0);	// (measured once)
+	// DIAGNOSTIC InteriorShadowFoldCheck (test builds): on a check frame the old path runs and the fold is compared with it.
+	bool foldCheckFrame = false;
+#if NVR_TEST_TOOLS
+	{
+		static unsigned frame = 0;
+		static int every = 0;
+		if ((frame % 60) == 0) every = TheSettingManager->GetSettingI("Main.Main.Performance", "InteriorShadowFoldCheck");
+		frame++;
+		foldCheckFrame = every > 0 && interiorFoldable && (frame % (unsigned)every) == 0 && !effectsBetween &&
+			Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr) && FoldCheckSurfaces(Device, TheTextureManager->RenderedSurface);
+	}
+#endif
+	const bool interiorApplies = interiorFoldable && !foldCheckFrame;
 	bool composite = (shadowApplies || aoApplies || interiorApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	auto interiorApply = [&]() {	// the separate pass, as it ran before (and still runs when the fold cannot)
@@ -1477,7 +1588,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	};
 	if (!GameState.isExterior) {
 		static int loggedFold = -1;
-		const int fold = composite && interiorApplies ? 1 : 0;
+		const int fold = (composite && interiorApplies) || foldCheckFrame ? 1 : 0;	// (a check frame draws the old way on purpose)
 		if (fold != loggedFold) {
 			loggedFold = fold;
 			Logger::Log("INTERIOR SHADOW FOLD: %s", fold ? "on, the lamp darkening is applied inside the fog composite (no separate pass)" :
@@ -1508,6 +1619,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 		else if (keepDarkening && !(composite && interiorApplies)) {
 			// With forward shadows on, the darkening alone: unblurred unless DarkeningBlur.
+#if NVR_TEST_TOOLS
+			if (foldCheckFrame) Device->StretchRect(TheTextureManager->RenderedSurface, NULL, FoldCheckSceneSurface, NULL, D3DTEXF_NONE);	// the scene before it
+#endif
 			interiorApply();
 		}
 	}
@@ -1672,6 +1786,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Fog->compositeSkyTexture = nullptr;
 		const bool applied = Fog->compositeApplied;
+#if NVR_TEST_TOOLS
+		const bool checkAO = Fog->compositeAO && applied;
+		IDirect3DTexture9* checkAOTexture = Fog->compositeAOTexture;
+		IDirect3DTexture9* checkSky = checkAO ? AO->SkyTexture() : nullptr;
+#endif
 		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = Fog->compositeInteriorShadow = false;
 		if (composite && !applied) {
 			// Failed composite fog leaves the scene untouched. Restore shadows -> AO -> fog.
@@ -1685,6 +1804,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			}
 			Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
+#if NVR_TEST_TOOLS
+		if (foldCheckFrame && (composite ? applied : !aoApplies)) InteriorFoldSelfCheck(Device, RenderTarget, SourceSurface, checkAO, checkAOTexture, checkSky);
+#endif
 		AO->deferredReady = false;
 	}
 	{

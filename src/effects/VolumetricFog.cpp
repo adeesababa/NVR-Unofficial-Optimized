@@ -433,7 +433,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {}, fog = {}, fogAdd = {};
 	const D3DCAPS9* caps = TheRenderManager->DeviceCaps();	// UNOFFICIAL: fetched once, not per frame
-	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
+	IDirect3DTexture9* scene = sceneOverride ? sceneOverride : TheTextureManager->RenderedTexture;	// (override: InteriorShadowFoldCheck)
 	if (!technique || !layoutHandle || FAILED(Effect->GetTechniqueDesc(technique, &description)) ||
 		description.Passes != 2 || !RenderedSurface || !scene ||
 		!fogTexture[0] || !fogTexture[1] || !fogSurface[0] || !fogSurface[1] ||
@@ -450,8 +450,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		return false;
 
 	FrameChain& chain = TheShaderManager->Chain;
-	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
-	IDirect3DSurface9* finalTarget = chained ? chain.Output() : RenderTarget;
+	const bool chained = !targetOverride && chain.Owns(RenderTarget, RenderedSurface);
+	IDirect3DSurface9* finalTarget = targetOverride ? targetOverride : chained ? chain.Output() : RenderTarget;
 	D3DVIEWPORT9 reduced = original;
 	reduced.Width = fog.Width;
 	reduced.Height = fog.Height;
@@ -552,6 +552,10 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
+	if (targetOverride) {	// DIAGNOSTIC InteriorShadowFoldCheck: nothing to commit or copy, nothing to undo
+		compositeApplied = SUCCEEDED(result) && composite;
+		return SUCCEEDED(result);
+	}
 	if (SUCCEEDED(result)) {
 		if (chained) chain.Commit();
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);

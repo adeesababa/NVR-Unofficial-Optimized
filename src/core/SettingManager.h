@@ -28,6 +28,7 @@ struct SettingsMainStruct {
         bool    LampMaskScissor; // [Main.Main.Performance] LampMaskScissor (the lamp-mask pass drawn only inside its lamps' screen rectangle, not at all with none on screen; exact), live
         bool    InteriorShadowFold; // [Main.Main.Performance] InteriorShadowFold (indoors the unblurred lamp darkening applied in the fog composite, not its own pass), live
         int     InteriorShadowFoldRound; // [Main.Main.Performance] InteriorShadowFoldRound (DIAGNOSTIC: 0 as this GPU stores 16-bit floats (HalfStoreMode), 1 none, 2 toward zero, 3 nearest even), live
+        bool    CubeFaceViewCull; // [Main.Main.Performance] CubeFaceViewCull (lamp cube faces no on-screen pixel can look up are not drawn while the lamp is redrawn every frame anyway), live
         bool    CubeFaceCopySkip; // [Main.Main.Performance] CubeFaceCopySkip (RedrawActorsOnly: a lamp cube face nobody moves in is not copied again while it still holds its static copy), live
         bool    SlimDepthBuffer; // [Main.Main.Performance] SlimDepthBuffer (read once at startup)
         bool    SkipRedundantConstants; // [Main.Main.Performance] SkipRedundantConstants (ConstantFilter.h), live
