@@ -6,6 +6,7 @@ void SMAAEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SMAAResolution", &Constants.Resolution);
 	TheShaderManager->RegisterConstant("TESR_SMAAData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_SMAADepthData", &Constants.DepthData);
+	TheShaderManager->RegisterConstant("TESR_SMAAPred", &Constants.Pred);
 };
 
 void SMAAEffect::RegisterTextures() {
@@ -35,6 +36,13 @@ void SMAAEffect::UpdateSettings() {
 	Settings.Main.DepthOffset = std::clamp(TheSettingManager->GetSettingF("Shaders.SMAA.Main", "DepthOffset"), -2.0f, 2.0f);
 	float localContrast = TheSettingManager->GetSettingF("Shaders.SMAA.Main", "LocalContrast");
 	Settings.Main.LocalContrast = localContrast > 0.0f ? std::clamp(localContrast, 1.0f, 20.0f) : 2.0f;
+	// UNOFFICIAL aastab. A missing key reads as 0 / false: predication and de-dither stay off, the scale and strength fall back to the SMAA reference values.
+	Settings.Main.Predication = TheSettingManager->GetSettingI("Shaders.SMAA.Main", "Predication") != 0;
+	const float predScale = TheSettingManager->GetSettingF("Shaders.SMAA.Main", "PredicationScale");
+	Settings.Main.PredicationScale = predScale > 0.0f ? std::clamp(predScale, 1.0f, 8.0f) : 2.0f;
+	const float predStrength = TheSettingManager->GetSettingF("Shaders.SMAA.Main", "PredicationStrength");
+	Settings.Main.PredicationStrength = std::clamp(predStrength > 0.0f ? predStrength : 0.4f, 0.0f, 1.0f);
+	Settings.Main.DeDither = TheSettingManager->GetSettingI("Shaders.SMAA.Main", "DeDither") != 0;
 };
 
 void SMAAEffect::UpdateConstants() {
@@ -59,6 +67,7 @@ void SMAAEffect::UpdateConstants() {
 	Constants.DepthData.y = Settings.Main.LocalContrast;
 	Constants.DepthData.z = 0.0f;
 	Constants.DepthData.w = 0.0f;
+	Constants.Pred = D3DXVECTOR4(Settings.Main.Predication ? 1.0f : 0.0f, Settings.Main.PredicationScale, Settings.Main.PredicationStrength, Settings.Main.DeDither ? 1.0f : 0.0f);
 };
 
 /*
@@ -135,7 +144,11 @@ void SMAAEffect::EdgesDetectionPass(Input input) {
         Effect->SetTechnique(TechniqueHandle(techDepth, "DepthEdgeDetection"));
         break;
     case INPUT_LUMADEPTH:
-        Effect->SetTechnique(TechniqueHandle(techLumaDepth, "LumaDepthEdgeDetection"));
+        // UNOFFICIAL aastab: the de-dithered / predicated variant only when one of its options is on; otherwise the original pass.
+        if (Settings.Main.Predication || Settings.Main.DeDither)
+            Effect->SetTechnique(TechniqueHandle(techLumaDepthStable, "LumaDepthEdgeDetectionStable"));
+        else
+            Effect->SetTechnique(TechniqueHandle(techLumaDepth, "LumaDepthEdgeDetection"));
         break;
     default:
 		return;

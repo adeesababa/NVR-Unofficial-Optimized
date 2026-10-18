@@ -11,6 +11,7 @@ public:
 	struct SettingsStruct {
 		float	Strength;		// noise size, in steps of the 256 brightness levels
 		bool	SkyOnly;		// only where the sky shows
+		int		Pattern;		// UNOFFICIAL aastab: 0 = a new noise pattern every frame, 1 = one fixed pattern (no frame-to-frame change)
 	};
 	SettingsStruct	Settings;
 

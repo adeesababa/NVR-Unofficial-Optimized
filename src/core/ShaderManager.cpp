@@ -1753,7 +1753,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	{
 		GpuProfileScope gpu(ditherTimer, Device);
-		Effects.DitherBuster->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.DitherBuster->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.DitherBuster->TechniqueIndex(), false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(smaaTimer, Device);

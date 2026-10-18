@@ -20,7 +20,8 @@ void TonemappingShaders::UpdateConstants() {
 	SkyDitherEffect* dither = TheShaderManager->Effects.SkyDither;
 	const bool toneMapDither = dither && dither->Enabled && TheSettingManager->GetSettingI("Shaders.SkyDither.Main", "AtToneMap");
 	Constants.Clip.y = toneMapDither ? dither->Settings.Strength / 255.0f : 0.0f;
-	Constants.Clip.z = (float)(((int)Constants.Clip.z + 1) % 64);
+	// UNOFFICIAL aastab: [Shaders.SkyDither.Main] Pattern 1 = one fixed pattern, so the dither no longer changes from frame to frame.
+	Constants.Clip.z = (dither && dither->Settings.Pattern == 1) ? 0.0f : (float)(((int)Constants.Clip.z + 1) % 64);
 
 	if (TheSettingManager->SettingsChanged || TheShaderManager->GameState.isDayTimeChanged) {
 		// Point light multiplier disabled for now

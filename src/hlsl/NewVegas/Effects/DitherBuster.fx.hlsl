@@ -13,6 +13,8 @@
 
 float4 TESR_ReciprocalResolution;
 float4 TESR_DitherBusterData;   // x: Strength (0-1), y: MaskPower, z: DitherThreshold, w: Radius
+float4 TESR_DitherBusterGate;   // UNOFFICIAL aastab: x: gate softness (0 = the hard gate), y: 1 = judge on the picture without the tonemap dither, z: debug view
+float4 TESR_ToneMappingClip;    // UNOFFICIAL aastab: y: tonemap dither size, z: its frame (Includes/DitherNoise.hlsl)
 
 //-----------------------------------------//
 // Samplers:
@@ -50,6 +52,7 @@ VSOUT FrameVS(VSIN IN)
 //-----------------------------------------//
 
 #include "Includes/Helpers.hlsl"
+#include "Includes/DitherNoise.hlsl"
 
 //-----------------------------------------//
 // Options:
@@ -281,11 +284,72 @@ half4 DitherOnly(VSOUT IN) : COLOR0
 
 
 
+// UNOFFICIAL aastab: DitherOnly with a soft gate and/or de-dithered judging (see TESR_DitherBusterGate). Used only when one of them is on
+// ([Shaders.DitherBuster.Main] GateSoftness / DeDither / DebugView); with all off the original DitherOnly above runs, untouched.
+half4 DitherOnlyStable(VSOUT IN, float2 vpos : VPOS) : COLOR0
+{
+    half3 center = tex2D(TESR_RenderedBuffer, IN.UVCoord).rgb;
+    half3 colorW = GetBufferOffset(TESR_RenderedBuffer, half2(-1.0f, 0.0f)).rgb;
+    half3 colorE = GetBufferOffset(TESR_RenderedBuffer, half2(1.0f, 0.0f)).rgb;
+    half3 colorN = GetBufferOffset(TESR_RenderedBuffer, half2(0.0f, 1.0f)).rgb;
+    half3 colorS = GetBufferOffset(TESR_RenderedBuffer, half2(0.0f, -1.0f)).rgb;
+    static const half3 LumaWeights = half3(0.2126f, 0.7152f, 0.0722f);
+    half lumaC = dot(center, LumaWeights);
+    half lumaW = dot(colorW, LumaWeights);
+    half lumaE = dot(colorE, LumaWeights);
+    half lumaN = dot(colorN, LumaWeights);
+    half lumaS = dot(colorS, LumaWeights);
+    // UNOFFICIAL aastab: the isolation test judges the picture without the tonemap's dither noise (decisions only; the blend below
+    // still uses, and the pass still writes, the dithered pixels). The +-1 step noise moves 'isolation' by up to ~4 steps, enough to
+    // flip the gate at pixels that sit near the threshold - at high-contrast thin features (wires, grass blades), where the 5-tap
+    // mean differs from the pixel by 10-70 steps: that was most of the picture's frame-to-frame twinkle.
+    [branch] if (TESR_DitherBusterGate.y > 0.5f) {
+        lumaC = LumaWithoutDither(lumaC, vpos);
+        lumaW = LumaWithoutDither(lumaW, vpos + float2(-1.0f, 0.0f));
+        lumaE = LumaWithoutDither(lumaE, vpos + float2(1.0f, 0.0f));
+        lumaN = LumaWithoutDither(lumaN, vpos + float2(0.0f, 1.0f));
+        lumaS = LumaWithoutDither(lumaS, vpos + float2(0.0f, -1.0f));
+    }
+    half2 gradient = half2(lumaS - lumaN, lumaE - lumaW) * 0.5f;
+    half spike = abs(lumaC - lumaN) + abs(lumaC - lumaS) +
+                 abs(lumaC - lumaE) + abs(lumaC - lumaW);
+    half isolation = max(0.0f, spike - 4.0f * length(gradient));
+
+    // Debug view 1: the picture with the recomputed noise taken out (SMAA off to see it): must match the same frame rendered with the
+    // dither off to within the rounding step. Proves the noise is recomputed at the right pixel and frame.
+    [branch] if (TESR_DitherBusterGate.z > 0.5f)
+        return half4(saturate(center - TonemapDitherAt(vpos) * saturate(center * 128.0f)), 1.0f);
+
+    // The gate. 0 softness = a hard step at DitherThreshold (the original). Above 0 the blend weight rises smoothly over
+    // DitherThreshold * (1 -+ softness): a noise change of a few steps then moves the weight a little instead of 0 <-> 1
+    // (Jimenez et al., 2011/2012 make the same argument for soft thresholds in morphological AA).
+    half gate = isolation > TESR_DitherBusterData.z ? 1.0f : 0.0f;
+    [branch] if (TESR_DitherBusterGate.x > 0.0f)
+        gate = smoothstep(TESR_DitherBusterData.z * (1.0f - TESR_DitherBusterGate.x), TESR_DitherBusterData.z * (1.0f + TESR_DitherBusterGate.x), isolation);
+
+    if (TESR_DitherBusterData.z > 0.0f && gate > 0.0f) {
+        half3 neighbourhood = (center + colorN + colorS + colorE + colorW) * 0.2f;
+        center = lerp(center, neighbourhood, saturate(TESR_DitherBusterData.x) * gate);
+    }
+    return half4(center, 1.0f);
+}
+
+
+
 technique POST_PROCESS_ANTI_ALIASING
 {
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader = compile ps_3_0 DitherOnly();
+    }
+}
+
+technique POST_PROCESS_ANTI_ALIASING_STABLE
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader = compile ps_3_0 DitherOnlyStable();
     }
 }

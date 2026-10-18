@@ -15,6 +15,10 @@ public:
 		float SubpixelShift;
 		float DepthOffset;
 		float LocalContrast;
+		bool Predication;					// UNOFFICIAL aastab: predicated luma threshold (EdgeDetection 3)
+		float PredicationScale;
+		float PredicationStrength;
+		bool DeDither;							// UNOFFICIAL aastab: luma edges judged without the tonemap's dither noise (EdgeDetection 3)
 	};
 	struct SMAASettingsStruct {
 		SMAASettings	Main;
@@ -25,6 +29,7 @@ public:
 		D3DXVECTOR4		Resolution;
 		D3DXVECTOR4		Data;	// x edge threshold, y relative depth threshold, z max search steps, w subpixel shift
 		D3DXVECTOR4		DepthData;	// x depth buffer texel offset
+		D3DXVECTOR4		Pred;			// UNOFFICIAL aastab: x predication on, y scale, z strength, w de-dither
 	};
 	SMAAStruct Constants;
 
@@ -37,7 +42,7 @@ public:
 		bool StencilFailed = false;
 	};
 	SMAATexturesStruct	Textures;
-	CachedHandle techLuma, techColor, techDepth, techLumaDepth, techBlend, techNeighborhood;	// UNOFFICIAL: looked up once per loaded effect
+	CachedHandle techLuma, techColor, techDepth, techLumaDepth, techLumaDepthStable, techBlend, techNeighborhood;	// UNOFFICIAL: looked up once per loaded effect
 
 	void	UpdateConstants();
 	void	RegisterConstants();

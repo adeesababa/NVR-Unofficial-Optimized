@@ -3,6 +3,7 @@
 void SkyDitherEffect::UpdateSettings() {
 	Settings.Strength = std::clamp(TheSettingManager->GetSettingF("Shaders.SkyDither.Main", "Strength"), 0.0f, 4.0f);
 	Settings.SkyOnly = TheSettingManager->GetSettingI("Shaders.SkyDither.Main", "SkyOnly") != 0;
+	Settings.Pattern = TheSettingManager->GetSettingI("Shaders.SkyDither.Main", "Pattern") != 0 ? 1 : 0;
 }
 
 void SkyDitherEffect::RegisterConstants() {
@@ -12,6 +13,7 @@ void SkyDitherEffect::RegisterConstants() {
 void SkyDitherEffect::UpdateConstants() {
 	// A new noise pattern every frame: at the frame rate the eye averages it into a smooth gradient, where a still
 	// pattern could itself be seen as a fine grain stuck to the screen.
-	frame = (frame + 1) % 64;
+	// UNOFFICIAL aastab: Pattern 1 keeps one pattern (frame 0): nothing for the anti-aliasing to twinkle on with a still camera.
+	frame = Settings.Pattern == 1 ? 0 : (frame + 1) % 64;
 	Constants.Data = D3DXVECTOR4(Settings.Strength / 255.0f, Settings.SkyOnly ? 1.0f : 0.0f, (float)frame, 0.0f);
 }
