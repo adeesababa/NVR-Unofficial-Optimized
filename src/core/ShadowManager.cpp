@@ -209,8 +209,8 @@ static NiPoint3* CubeEyeOverride = nullptr;
 // model's own field of view) lies wholly outside the view is never read this frame and need not be drawn. Only for lamps that are
 // redrawn every frame anyway (moving casters in reach at PointShadowInterval 1, or the lamp itself moved); such a draw is marked
 // partial (PointShadowSlotState), so a lamp that turns still is redrawn in full before its cube map is kept. Static layers
-// (RedrawActorsOnly) are always drawn in full. DIAGNOSTIC CubeFaceViewCullCheck: the left-out faces are filled with distance 0
-// ("all in shadow"), so a face that is read after all shows as a dark patch.
+// (RedrawActorsOnly) are always drawn in full. DIAGNOSTIC CubeFaceViewCullCheck: the left-out faces are filled with distance 0.1
+// (a blocker at a tenth of the reach: all beyond in shadow; 0 would mean no data), so a face read after all shows as a dark patch.
 static bool CubeCullAllowed = false;	// set by RenderShadowMaps around one lamp's draws
 static bool CubeCulledAny = false;		// RenderShadowCubeMap left a face out
 static unsigned statFacesCulled[3] = {};
@@ -1104,7 +1104,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 				Device->SetRenderTarget(0, Shadows->Textures.ShadowCubeMapSurface[LightIndex][face]);
 				Device->SetDepthStencilSurface(Shadows->Textures.ShadowCubeMapDepthSurface);
 				Device->SetViewport(&ShadowCubeMapViewPort);
-				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DXCOLOR(0.0f, 0.0f, 0.0f, 0.0f), 1.0f, 0L);
+				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DXCOLOR(0.1f, 0.1f, 0.1f, 0.1f), 1.0f, 0L);	// 0.1: a blocker at a tenth of the reach (0 would read as no data)
 			}
 		}
 #endif
