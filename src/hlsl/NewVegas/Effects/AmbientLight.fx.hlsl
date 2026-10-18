@@ -19,7 +19,7 @@
 //        does not smear). With it the estimate's noise turns every frame, so the frames average out. rgb = bounce, a = view depth
 //        (next frame's match). Off ([Shaders.AmbientLight.Main] Temporal) or after a break: this frame's bounce as it is.
 // Pass 6 Apply (full): depth-aware upsample; the scene darkened by the occlusion (less on bright surfaces, as the old AO) and the
-//        bounce added, tinted by the surface's own hue (as BounceLight: there is no albedo buffer).
+//        bounce added, times the surface's own colour as one picture tells it (SurfaceColour; there is no albedo buffer).
 //
 // UNOFFICIAL 2026-10-14 cheaper: outdoors, the sun-shadow apply (ShadowsExteriors.fx.hlsl, a full-resolution pass of its own while
 // this effect is on) is done here instead (NVR_ALFlags.x): in Apply before the occlusion, and in Prepare on the colour the bounce
@@ -31,7 +31,7 @@ float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
 float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass)
-float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: 1 / GridScreenStrength when the screen memory fed the grid, else 1
+float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: share of the grid light's colour kept (GridColour)
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
 float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
 float4 TESR_WaterSettings;      // x: water height, z: camera underwater
@@ -544,7 +544,11 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
 		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
 		float4 c = lerp(ca, cb, fz);
-		colour = c.a > 1e-5f ? c.rgb / c.a : 1.0f;
+		// UNOFFICIAL 2026-10-18 (ambfix): only GridColour of it (0.25). Until today the colour never arrived (the alphas of targets 1-3 were
+		// dropped, see AmbientLight.cpp RenderGrid), so the bounce was white; at full strength it takes the colour of the brightest
+		// emitters in reach (Gomorrah: the flames, rgb/luma 2.32 0.70 0.04) and fire-lit rooms turned orange (Lab: bright areas |dab|
+		// ~11 vs 2.8 for the old picture); a quarter keeps a warm room warm without painting it.
+		colour = c.a > 1e-5f ? lerp(1.0f, c.rgb / c.a, NVR_ALScene.w) : 1.0f;
 	}
 	// The light arriving over the hemisphere round the normal; / pi so that a surface ringed by the bounce of ground lit with
 	// colour C gets about C x the share of the view the ground fills (test 1: x 1 washed the picture out).
@@ -561,8 +565,10 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 // surface only the ambient lights comes out as its own colour, without the ambient's tint (the Tops: a purple-blue ambient, XCLL
 // 57 55 85); one brighter than the ambient can explain (a lamp or the sun on it) is capped at a bright surface's reflectance and its
 // hue counts less (it is the lamp's as much as the surface's). The old stand-in (the pixel's hue scaled to 0.6 at its brightest
-// channel) made every surface, dark or light, send back 0.6 of the bounce in the colour of the light already on it.
-static const float MaxReflectance = 0.8f;
+// channel) made every surface, dark or light, send back 0.6 of the bounce in the colour of the light already on it: dark corners lit
+// by a tinted ambient came out as bright pastel copies of that tint (measured, Gomorrah at GridBounce 2: the picture's median
+// brightness x 3.0, local contrast halved; with this: x 1.3, contrast kept).
+static const float MaxReflectance = 0.6f;	// the old stand-in's level; 92 % of Gomorrah's pixels come out below it
 float3 SurfaceColour(float3 lin) {
 	float3 ambient = max(NVR_ALScene.rgb, 0.25f * luma(NVR_ALScene.rgb) + 1.0e-4f);
 	float3 raw = max(lin, 0.0f) / ambient;
@@ -611,8 +617,7 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	float bendY = abs(readDepthLod(IN.UVCoord + float2(0.0f, px.y)) + readDepthLod(IN.UVCoord - float2(0.0f, px.y)) - 2.0f * depth);
 	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
 	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
-	float peak = max(max(lin.r, lin.g), max(lin.b, 0.0001f));
-	float3 albedo = lin / peak * 0.6f;                                  // the surface's hue stands in for its colour (as BounceLight)
+	float3 albedo = SurfaceColour(lin);                                  // UNOFFICIAL 2026-10-18 (ambfix): was lin / max channel * 0.6
 	// UNOFFICIAL 2026-10-14: the light grid's bounce (GridBounce), darkened by the occlusion as light from round about is.
 	float3 gridBounce = 0.0f;
 	[branch] if (NVR_GridData.x > 0.0f) {
@@ -620,8 +625,6 @@ float4 Apply(VSOUT IN) : COLOR0 {
 		float3 normal = normalize(GetWorldNormalLod(IN.UVCoord));
 		gridBounce = GridBounce(cameraRelative, normal) * (NVR_GridData.x * ao);
 	}
-	// UNOFFICIAL 2026-10-18 (ambfix) candidates (test): 11 the bounce on SurfaceColour, 12 the same with the screen memory at 1 / GridScreenStrength.
-	[branch] if (DebugView > 10.5f) return delinearize(float4(lin * ao + gridBounce * (DebugView > 11.5f ? NVR_ALScene.w : 1.0f) * SurfaceColour(lin), color.a));
 	// UNOFFICIAL 2026-10-18 (ambfix) diagnostics: 9 the grid's light on the surface (strength and occlusion included, before the
 	// surface colour), 10 the surface colour the apply multiplies it by; both linear, display-encoded.
 	[branch] if (DebugView > 8.5f) return delinearize(float4(DebugView < 9.5f ? gridBounce : albedo, 1.0f));

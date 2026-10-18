@@ -14,7 +14,7 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
-	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 12);
+	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 10);
 	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 	gridBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBounce"), 0.0f, 10.0f);
 	gridCell = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridCellSize"), 50.0f, 800.0f);
@@ -22,6 +22,7 @@ void AmbientLightEffect::UpdateSettings() {
 	gridSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridSpread"), 0.0f, 0.6f);
 	gridBlocking = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBlocking"), 0.0f, 4.0f);
 	gridScreenStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridScreenStrength"), 0.0f, 40.0f);
+	gridColour = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridColour"), 0.0f, 1.0f);
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -195,6 +196,20 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 	auto clearStages = [&]() {
 		for (int s = 5; s <= 14; s++) if (s != 11) Device->SetTexture(s, nullptr);
 	};
+	// UNOFFICIAL 2026-10-18 (ambfix): targets 1-3 have their own colour write masks, and the game leaves them without alpha (0x7, as
+	// BounceLight found for target 1): every alpha the grid stores in them was lost - the colour's light (so the bounce came out grey,
+	// whatever lit the room), the screen memory's colour weight and the cells' cover (GridBlocking did nothing). All four channels here.
+	DWORD writeMask[3] = { 0xF, 0xF, 0xF };
+	for (int i = 0; i < 3; i++) {
+		Device->GetRenderState((D3DRENDERSTATETYPE)(D3DRS_COLORWRITEENABLE1 + i), &writeMask[i]);
+		Device->SetRenderState((D3DRENDERSTATETYPE)(D3DRS_COLORWRITEENABLE1 + i), 0xF);
+	}
+	static bool maskLogged = false;
+	if (!maskLogged) {
+		maskLogged = true;
+		Logger::Log("UNOFFICIAL AmbientLight: light grid: write masks of targets 1-3 were 0x%X 0x%X 0x%X (all four channels while the grid is made).",
+			(unsigned)writeMask[0], (unsigned)writeMask[1], (unsigned)writeMask[2]);
+	}
 	UINT passes = 0;
 	HRESULT result = Effect->Begin(&passes, 0);
 	int wave = 0, accum = 0;
@@ -256,13 +271,13 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderTarget(2, nullptr);
 	Device->SetRenderTarget(3, nullptr);
+	for (int i = 0; i < 3; i++) Device->SetRenderState((D3DRENDERSTATETYPE)(D3DRS_COLORWRITEENABLE1 + i), writeMask[i]);
 	clearStages();
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
 	Device->SetViewport(&original);
 	if (SUCCEEDED(result)) {
 		gridAccumIndex = accum;
 		gridColorValid = colour;
-		gridFromScreen = screen && !sun;
 		for (int i = 0; i < 3; i++) gridOrigin[i] = gridPendingOrigin[i];
 		gridValid = true;
 		static bool logged = false;
@@ -362,7 +377,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		}
 	}
 	if (D3DXHANDLE h = ParameterHandle(paramScene, "NVR_ALScene")) {
-		D3DXVECTOR4 scene(sceneLight.x, sceneLight.y, sceneLight.z, gridFromScreen ? 1.0f / (std::max)(gridScreenStrength, 0.01f) : 1.0f);
+		D3DXVECTOR4 scene(sceneLight.x, sceneLight.y, sceneLight.z, gridColour);
 		Effect->SetVector(h, &scene);
 	}
 	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
@@ -391,6 +406,9 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	static GpuTimer passTimers[6] = { GpuTimer("  Ambient light prepare (half)"), GpuTimer("  Ambient light estimate (half)"),
 		GpuTimer("  Ambient light blur X (half)"), GpuTimer("  Ambient light blur Y (half)"), GpuTimer("  Ambient light accumulate (half)"),
 		GpuTimer("  Ambient light apply (full)") };
+	DWORD writeMask1 = 0xF;	// UNOFFICIAL 2026-10-18 (ambfix): Accumulate's second target, all four channels (see RenderGrid)
+	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &writeMask1);
+	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
 	UINT passes = 0;
 	HRESULT result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
@@ -439,6 +457,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetTexture(15, nullptr);
 	Device->SetTexture(8, nullptr);
 	Device->SetRenderTarget(1, nullptr);
+	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
 	// UNOFFICIAL Temporal: this frame's history is next frame's "last frame".
 	if (SUCCEEDED(result)) {
