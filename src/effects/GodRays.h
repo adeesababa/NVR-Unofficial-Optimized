@@ -33,6 +33,23 @@ public:
 	UINT maxWidth[2][4] = {}, maxHeight[2][4] = {};
 	int maxSteps[2] = {};
 	bool RunReduce(IDirect3DDevice9* Device, IDirect3DTexture9* source, UINT width, UINT height, int set);
+	// UNOFFICIAL 2026-10-18 SkipIdle (look option): see GodRays.cpp IdleGuard.
+	bool skipIdle = false;
+	bool idleEmptyKnown = false;	// the last finished check found the sky mask's maximum under idleLimit
+	bool idleCheckFrame = false, idleCheckSkipped = false;
+	int idleSinceCheck = 0, idleAge = 0, probeLevel = 0;	// frames since the last check was issued; age of the unanswered query; [Shaders.GodRays.Main] ProbeLog
+	bool idlePending = false, idleQueryBroken = false;	// a query is out and not answered yet; the device has no occlusion queries
+	float idleLimit = 0.0f, idleTruth = -1.0f, idleLimitAtIssue = 0.0f;
+	DWORD idleLastPixels = 0;
+	IDirect3DQuery9* idleQuery = nullptr;	// occlusion query around the 1 x 1 test draw (GodRaysIdleTest)
+	CachedHandle techIdle;
+	unsigned idleWindow = 0, idleSkipped = 0, idleChecks = 0, idleCheckOnly = 0, idleFull = 0, idleGuardRefused = 0, idleValidated = 0, idleValidateBad = 0, idleValidateBright = 0, idleValidateTick = 0;
+	bool IdleGuard() const;
+	void IdlePoll();
+	bool IdleIssue(IDirect3DDevice9* Device, IDirect3DTexture9* skyMask, UINT width, UINT height, int set);
+	void IdleStats();
+	// DIAGNOSTIC (grnoon 2026-10-18, development builds only): [Shaders.GodRays.Main] ProbeLog 1 logs the largest sky-mask and light-mask values
+	bool Probe(IDirect3DDevice9* Device, IDirect3DTexture9* const* textures, UINT width, UINT height, int set, bool lowRes);
 	IDirect3DTexture9* raysTexture[2] = {};
 	IDirect3DSurface9* raysSurface[2] = {};
 	// Quarter-resolution pair, used instead when [Main.Main.ReducedQuality] GodRaysLowRes is on.

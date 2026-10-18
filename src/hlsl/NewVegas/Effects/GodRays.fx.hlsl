@@ -227,7 +227,7 @@ sampler2D NVR_GodRaysBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; A
 // the blurs. Every blur pixel averages the mask (or the blur before it) along its ray, so when the whole mask is 0 every blur pixel
 // is exactly black and the combine adds nothing: the blurs then return black at once instead of reading ten taps each. A maximum,
 // not an average: one bright pixel averaged over a million would round to 0 in 16-bit float and the skip would no longer be exact.
-float4 NVR_GodRaysSkip;	// x: 1 = SkipEmpty on and the reduction ran this frame
+float4 NVR_GodRaysSkip;	// x: 1 = SkipEmpty on and the reduction ran this frame; y: 1 = SkipIdle on (exact combine); z: SkipIdle's limit for GodRaysIdleTest
 float4 NVR_GodRaysReduce;	// xy: 1 / the size of this reduction step's source
 sampler2D NVR_GodRaysMax : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
@@ -334,8 +334,13 @@ float4 DedicatedRadialBlur(VSOUT IN, uniform float step, uniform float storeAtte
 
 float4 DedicatedCombine(VSOUT IN) : COLOR0
 {
-	float4 color = linearize(tex2D(TESR_RenderedBuffer, IN.UVCoord));
+	float4 source = tex2D(TESR_RenderedBuffer, IN.UVCoord);
 	float4 rays = tex2D(NVR_GodRaysBuffer, IN.UVCoord);
+	// UNOFFICIAL 2026-10-18 SkipIdle: where the rays are exactly 0 this pass adds exactly nothing, but delinearize(linearize(c)) is not c on the GPU
+	// (measured texel by texel in game: 55-66 % of the texels come back one fp16 ulp lower). With SkipIdle on the input is returned as it is there,
+	// so a frame the effect skips and a frame it draws with an empty mask are the same picture.
+	[branch] if (NVR_GodRaysSkip.y > 0.5f && !any(rays.rgb)) return float4(source.rgb, 1.0f);
+	float4 color = linearize(source);
 
 	float3 sunColor = GetSunColor(shade(TESR_SunDirection.xyz, blue.xyz), 1, TESR_SunAmount.x, TESR_SunColor.rgb, TESR_SunsetColor.rgb);
 	float3 godRayColor = linearize(TESR_GodRaysRayColor).rgb;
@@ -362,4 +367,18 @@ technique DedicatedGodRays
 technique GodRaysMaxReduce
 {
 	pass Reduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 MaxReduce(); }
+}
+
+// UNOFFICIAL 2026-10-18 SkipIdle: one pixel, drawn inside an occlusion query (GodRays.cpp IdleIssue). It survives only when the sky mask's
+// largest value (the 1 x 1 reduction in NVR_GodRaysMax) is at least the limit (NVR_GodRaysSkip.z) - or is NaN (clip does not discard a NaN) -
+// so a query count of 0 means 'every sky pixel is below the limit', and anything unexpected reads as 'not empty'. The query is read a frame
+// later without waiting, which a texture read-back cannot do on this driver (it blocks the CPU until the GPU is idle).
+float4 IdleTest(VSOUT IN) : COLOR0 {
+	clip(tex2Dlod(NVR_GodRaysMax, float4(0.5f, 0.5f, 0.0f, 0.0f)).r - NVR_GodRaysSkip.z);
+	return float4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+technique GodRaysIdleTest
+{
+	pass Test { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 IdleTest(); }
 }
