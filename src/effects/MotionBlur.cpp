@@ -1,6 +1,15 @@
 #include "MotionBlur.h"
 
 void MotionBlurEffect::UpdateConstants() {
+	// UNOFFICIAL fixes-b #42 (LOOK CHANGE, MotionBlur is off by default): UpdateConstants runs twice a rendered frame. The turn history
+	// (oldAngle, oldAmount, oldoldAmount) used to shift on both calls, so the second call saw no turn and the blur the frame
+	// rendered with was about 1/3 of the intended 3-frame mean, with no smoothing. Now it shifts once per frame (FrameNumber);
+	// the second call keeps the constants the first made. The blur of a steady turn is therefore about 3 times stronger than
+	// before at the same settings (BlurScale defaults left as they are).
+	static unsigned lastFrame = ~0u;
+	if (TheFrameRateManager->FrameNumber == lastFrame) return;
+	lastFrame = TheFrameRateManager->FrameNumber;
+
 	ValuesStruct category = Settings.FirstPerson;
 	if (!TheCameraManager->IsFirstPerson()) category = Settings.ThirdPerson;
 
