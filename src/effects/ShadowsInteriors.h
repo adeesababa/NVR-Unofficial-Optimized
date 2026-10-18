@@ -21,6 +21,7 @@ public:
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 
+	bool	DedicatedUsable(IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface);
 	bool	dedicatedFailed = false;
 	CachedHandle techDedicated;	// UNOFFICIAL: looked up once per loaded effect
 };

@@ -26,6 +26,9 @@ struct SettingsMainStruct {
         bool    DisableMergedNormals; // ![Main.Main.Performance] MergedDepthNormals
         bool    SkipIdentityExposure; // [Main.Main.Performance] SkipIdentityExposure (no exposure pass while MaxBrightness is 0: it then leaves the picture as it is), live
         bool    LampMaskScissor; // [Main.Main.Performance] LampMaskScissor (the lamp-mask pass drawn only inside its lamps' screen rectangle, not at all with none on screen; exact), live
+        bool    InteriorShadowFold; // [Main.Main.Performance] InteriorShadowFold (indoors the unblurred lamp darkening applied in the fog composite, not its own pass), live
+        int     InteriorShadowFoldRound; // [Main.Main.Performance] InteriorShadowFoldRound (DIAGNOSTIC: 0 round to nearest even as the 16-bit frame stores, 1 none, 2 toward zero), live
+        bool    CubeFaceCopySkip; // [Main.Main.Performance] CubeFaceCopySkip (RedrawActorsOnly: a lamp cube face nobody moves in is not copied again while it still holds its static copy), live
         bool    SlimDepthBuffer; // [Main.Main.Performance] SlimDepthBuffer (read once at startup)
         bool    SkipRedundantConstants; // [Main.Main.Performance] SkipRedundantConstants (ConstantFilter.h), live
         bool    ShaderWarmUp; // [Main.Main.Performance] ShaderWarmUp (ShaderWarmUp.h: the driver compiles NVR shaders at the main menu)

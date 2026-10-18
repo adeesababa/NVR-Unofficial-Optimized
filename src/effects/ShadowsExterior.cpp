@@ -704,6 +704,7 @@ void ShadowsExteriorEffect::RegisterTextures() {
 
 	// initialize point lights cubemaps (UNOFFICIAL: the screen-space passes' 12 here; the rest on first use, EnsureCubeMap)
 	CubeMapSizeCreated = ShadowCubeMapSize;
+	CubeGeneration++;
 	for (int i = 0; i < ShadowCubeMapsMax; i++) {
 		Textures.ShadowCubeMapTexture[i] = nullptr;
 		Textures.ShadowCubeMapStaticTexture[i] = nullptr;
@@ -750,6 +751,7 @@ bool ShadowsExteriorEffect::EnsureCubeMap(int slot) {
 		return false;
 	}
 	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[slot][j]);
+	CubeGeneration++;
 	Logger::Log("UNOFFICIAL point shadows: cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
 	return true;
 }
@@ -767,6 +769,7 @@ bool ShadowsExteriorEffect::EnsureStaticCubeMap(int slot) {
 		return false;
 	}
 	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapStaticTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapStaticSurface[slot][j]);
+	CubeGeneration++;
 	Logger::Log("UNOFFICIAL RedrawActorsOnly: static cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
 	return true;
 }

@@ -1456,8 +1456,38 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) || wouldRender(Effects.BloodFlow) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
 		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections) || ambientLight; // must see the scene with its shadows and AO applied
-	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
+	// UNOFFICIAL 2026-10-18 InteriorShadowFold ([Main.Main.Performance]; evidence\intshadow-LOG.md): indoors with the forward lamp
+	// shadows, the darkening of what no tracked lamp reaches (KeepDarkening) was its own full-resolution pass below, unblurred
+	// (no DarkeningBlur): ShadowsInteriors' dedicated last pass, a per-pixel function of the scene, the lamp mask and the depth.
+	// The fog composite now does it first, with the same function (Includes/InteriorShadowApply.hlsl) and its result rounded to
+	// 16-bit float as that pass's target stored it (VolumetricFog.fx CompositeFogInterior), when nothing between them reads the
+	// picture: the effects above, and the Reflections surroundings cube, whose capture (RenderCubeOnly, below) reads the scene
+	// even when no floor reflects. Only where that pass would take its dedicated path (the generic one blurs).
+	const bool interiorApplies = !GameState.isExterior && keepDarkening && forwardInterior &&
+		!Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur && TheSettingManager->SettingsMain.Main.InteriorShadowFold &&
+		!(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) &&
+		Effects.ShadowsInteriors->DedicatedUsable(RenderTarget, TheTextureManager->RenderedSurface) && Fog->CanCompositeInterior();
+	bool composite = (shadowApplies || aoApplies || interiorApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
+	auto interiorApply = [&]() {	// the separate pass, as it ran before (and still runs when the fold cannot)
+		Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
+		Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
+		Effects.ShadowsInteriors->skipBlur = false;
+	};
+	if (!GameState.isExterior) {
+		static int loggedFold = -1;
+		const int fold = composite && interiorApplies ? 1 : 0;
+		if (fold != loggedFold) {
+			loggedFold = fold;
+			Logger::Log("INTERIOR SHADOW FOLD: %s", fold ? "on, the lamp darkening is applied inside the fog composite (no separate pass)" :
+				!TheSettingManager->SettingsMain.Main.InteriorShadowFold ? "off (setting)" : !keepDarkening ? "off (no darkening drawn: KeepDarkening off)" :
+				!forwardInterior ? "off (no forward lamp shadows this frame: the old blurred pass)" :
+				Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur ? "off (DarkeningBlur)" :
+				effectsBetween ? "off (an effect between it and the fog reads the picture)" :
+				(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) ? "off (the Reflections surroundings cube reads the picture)" :
+				"off (the dedicated pass or the fog composite is unavailable)");
+		}
+	}
 	// UNOFFICIAL: when effects between keep the composite out of the fog pass, the shadow and AO applies still run
 	// together, in one pass right after the AO (nothing reads the scene between them unless snow accumulates).
 	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
@@ -1475,11 +1505,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
-		else if (keepDarkening) {
+		else if (keepDarkening && !(composite && interiorApplies)) {
 			// With forward shadows on, the darkening alone: unblurred unless DarkeningBlur.
-			Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
-			Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
-			Effects.ShadowsInteriors->skipBlur = false;
+			interiorApply();
 		}
 	}
 
@@ -1519,6 +1547,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			composite = false;
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			if (interiorApplies) interiorApply();	// UNOFFICIAL InteriorShadowFold: left to the fog, so run in its place
 			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 	}
@@ -1632,6 +1661,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	{
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
+		Fog->compositeInteriorShadow = composite && interiorApplies;	// UNOFFICIAL InteriorShadowFold
+		Fog->compositeRound = (float)TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound;
 		Fog->compositeAO = composite && AO->deferredReady;
 		Fog->compositeAOTexture = AO->ResultTexture();
 		Fog->compositeSkyTexture = Fog->compositeAO ? AO->SkyTexture() : nullptr;	// UNOFFICIAL Skylighting v2 (null unless on)
@@ -1639,11 +1670,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Fog->compositeSkyTexture = nullptr;
 		const bool applied = Fog->compositeApplied;
-		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
+		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = Fog->compositeInteriorShadow = false;
 		if (composite && !applied) {
 			// Failed composite fog leaves the scene untouched. Restore shadows -> AO -> fog.
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			if (interiorApplies) interiorApply();
 			if (AO->deferredReady) {
 				AO->combineOnly = true;
 				AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);

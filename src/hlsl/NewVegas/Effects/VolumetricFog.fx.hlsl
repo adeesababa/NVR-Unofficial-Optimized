@@ -1275,3 +1275,88 @@ technique ApplyShadowAO
 		PixelShader = compile ps_3_0 ShadowAOApply();
 	}
 }
+
+// ---- Interior composite (UNOFFICIAL 2026-10-18, [Main.Main.Performance] InteriorShadowFold) ----
+// Indoors with the forward lamp shadows on, the darkening of what no tracked lamp reaches (KeepDarkening, unblurred: no
+// DarkeningBlur) was ShadowsInteriors.fx's own full-resolution pass (DedicatedInteriorShadows, last pass: the scene times the
+// lamp mask, read straight from TESR_PointShadowBuffer), written to the 16-bit float frame and read back here. It is now done
+// here, before the AO and the fog, the way the exterior composite does the sun shadows: the same function
+// (Includes/InteriorShadowApply.hlsl, one source for both), on the same inputs, and its result rounded to 16-bit float exactly
+// as that pass's render target stored it (RoundToHalf), so every following step sees the very value it read before. The
+// picture is meant to stay bit for bit the same; the pass and its read and write of the whole HDR frame are saved.
+// NVR_CompositeFlags here: y AO, z sky factor (as above), w (diagnostic InteriorShadowFoldRound) 0 round to nearest even, 1 no
+// rounding, 2 round toward zero.
+static const float InteriorShadowMaxDistance = TESR_ShadowFade.w;
+#define INTERIOR_SHADOW_MAXDISTANCE InteriorShadowMaxDistance
+#include "Includes/InteriorShadowApply.hlsl"
+
+// A value as a 16-bit float render target stores it (A16B16G16R16F: 10 mantissa bits, exponents down to -14, smaller values
+// in steps of 2^-24), round to nearest, ties to even. Every step is exact in 32-bit float: the scales are powers of two, and
+// the exponent from log2 is corrected against exp2 of itself (log2 may be a hair off at powers of two).
+float3 HalfExponent(float3 a)
+{
+	float3 e = floor(log2(a));
+	float3 p = exp2(e);
+	e += (a >= 2 * p);
+	e -= (a < p);
+	return max(e, -14);
+}
+
+float3 RoundToHalf(float3 x)
+{
+	float3 a = abs(x);
+	float3 e = HalfExponent(a);
+	float3 q = a * exp2(10 - e);	// the value in units of its 16-bit step
+	float3 r = floor(q + 0.5);
+	r -= ((r - q) == 0.5) * (frac(r * 0.5) != 0);	// a tie goes to the even step
+	return sign(x) * (r * exp2(e - 10));
+}
+
+float3 TruncateToHalf(float3 x)
+{
+	float3 a = abs(x);
+	float3 e = HalfExponent(a);
+	return sign(x) * (floor(a * exp2(10 - e)) * exp2(e - 10));
+}
+
+float4 DedicatedFogCompositeInterior(VSOUT IN, uniform bool legacy) : COLOR0
+{
+	float3 color = ApplyInteriorShadow(IN.UVCoord, tex2D(TESR_SourceBuffer, IN.UVCoord), tex2D(TESR_PointShadowBuffer, IN.UVCoord).r).rgb;
+	[branch] if (NVR_CompositeFlags.w < 0.5) color = RoundToHalf(color);
+	else if (NVR_CompositeFlags.w > 1.5) color = TruncateToHalf(color);
+	// From here as DedicatedFogComposite (no sun shadows indoors).
+	color = pows(color, 2.2);
+	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
+	color = pows(color, 1.0 / 2.2);
+	color = FogApply(color, IN.UVCoord, legacy);
+	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
+	return float4(color, 1);
+}
+
+technique CompositeFogInterior
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogCompositeInterior(false);
+	}
+}
+
+technique CompositeFogInteriorLegacy
+{
+	pass Estimate
+	{
+		VertexShader = compile vs_3_0 HalfVS();
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(true);
+	}
+	pass Reconstruct
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DedicatedFogCompositeInterior(true);
+	}
+}

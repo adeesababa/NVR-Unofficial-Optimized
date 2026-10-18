@@ -63,6 +63,9 @@ public:
 	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
 	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
 	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : TechniqueHandle(techPackedFog, "PackedFog"); }
+	// UNOFFICIAL 2026-10-18 InteriorShadowFold: the composite with the interior darkening in place of the sun shadows.
+	CachedHandle techCompositeFogInterior, techCompositeFogInteriorLegacy;
+	D3DXHANDLE	CompositeInteriorTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogInteriorLegacy, "CompositeFogInteriorLegacy") : TechniqueHandle(techCompositeFogInterior, "CompositeFogInterior"); }
 	UINT	PlainTechniqueIndex(UINT techniqueIndex);
 	// [0]: fog multiply + depth, [1]: fog add -- written together as MRTs by the estimate pass
 	IDirect3DTexture9* fogTexture[2] = {};
@@ -74,6 +77,10 @@ public:
 	bool	compositeShadow = false;
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
+	// UNOFFICIAL 2026-10-18 InteriorShadowFold: indoors, the interior darkening (ShadowsInteriors' unblurred apply) instead of
+	// the sun shadows (technique CompositeFogInterior); compositeRound: NVR_CompositeFlags.w there (InteriorShadowFoldRound).
+	bool	compositeInteriorShadow = false;
+	float	compositeRound = 0.0f;
 	// UNOFFICIAL 2026-10-17 Skylighting v2: this frame's sky visibility (AmbientOcclusionEffect::SkyTexture), applied to the sky's
 	// share with the AO (stage 12, NVR_SkyVis; NVR_CompositeFlags.z). Null = nothing changes.
 	IDirect3DTexture9* compositeSkyTexture = nullptr;
@@ -84,6 +91,7 @@ public:
 	bool	gridApplied = false;
 	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
+	bool	CanCompositeInterior() { return CompositeInteriorTechnique() != NULL; }
 	// The shadow and AO applies in one pass of their own (technique ApplyShadowAO), for frames where effects between them
 	// and the fog keep them out of the fog pass. Returns false, leaving the scene untouched, if it could not.
 	bool	CanApplyShadowAO();

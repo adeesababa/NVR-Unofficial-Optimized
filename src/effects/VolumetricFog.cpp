@@ -345,8 +345,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	// UNOFFICIAL ReShadeDepthCompat: this two-target pass must unbind the game's depth-stencil (a GTX 1070 drops it
 	// otherwise), so the plain full-resolution fog runs instead, as in the original NVR.
 	if (ReShadeIntegration::KeepDepthBound()) return false;
-	const bool composite = compositeShadow || (compositeAO && compositeAOTexture);
-	D3DXHANDLE technique = composite ? CompositeTechnique() : DedicatedTechnique();
+	const bool composite = compositeShadow || compositeInteriorShadow || (compositeAO && compositeAOTexture);
+	D3DXHANDLE technique = composite ? (compositeInteriorShadow ? CompositeInteriorTechnique() : CompositeTechnique()) : DedicatedTechnique();
 	D3DXHANDLE flagsHandle = composite ? ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") : NULL;
 	if (composite && !flagsHandle) return false;
 	D3DXHANDLE layoutHandle = ParameterHandle(paramFogLayout, "NVR_FogLayout");
@@ -394,7 +394,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Effect->SetVector(layoutHandle, &layout);
 	if (composite) {
 		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f,
-			(compositeAO && compositeAOTexture && compositeSkyTexture) ? 1.0f : 0.0f, 0.0f);	// z: UNOFFICIAL Skylighting v2
+			(compositeAO && compositeAOTexture && compositeSkyTexture) ? 1.0f : 0.0f,	// z: UNOFFICIAL Skylighting v2
+			compositeInteriorShadow ? compositeRound : 0.0f);	// w: UNOFFICIAL InteriorShadowFold rounding (interior technique only)
 		Effect->SetVector(flagsHandle, &flags);
 		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
 		D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
@@ -488,7 +489,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	static bool reportedComposite = false;
 	if (composite && !reportedComposite) {
 		Logger::Log("UNOFFICIAL composite apply active: sun shadows %s, AO %s folded into the fog pass.",
-			compositeShadow ? "yes" : "no", (compositeAO && compositeAOTexture) ? "yes" : "no");
+			compositeShadow ? "yes" : compositeInteriorShadow ? "no (the interior darkening instead)" : "no", (compositeAO && compositeAOTexture) ? "yes" : "no");
 		reportedComposite = true;
 	}
 	static bool reported = false;
@@ -570,7 +571,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	}
 
 	// The caller must apply deferred shadows/AO before retrying ordinary fog.
-	if (compositeShadow || compositeAO) return;
+	if (compositeShadow || compositeAO || compositeInteriorShadow) return;
 
 	D3DXHANDLE technique = PackedTechnique();
 	D3DXTECHNIQUE_DESC description = {};
