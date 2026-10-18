@@ -45,9 +45,10 @@ namespace NewGrass {
 		float	FillRef = 0.15f;			// a card with this alpha coverage gets every blade; sparser cards fewer (down to half)
 		bool	ReceiveShadows = false;
 		float	ShadowLift = 10.0f;			// units above the blade the cascade lookup is taken (the land casts at its own height)
-		float	Wrap = 0.3f, TipLift = 0.3f, Variation = 0.2f;
-		float	NormalBlend = 0.7f;			// the sun term: 0 the blade's normal, 1 the ground normal the cards are lit with
+		float	Wrap = 0.0f, TipLift = 0.3f, Variation = 0.2f;
+		float	NormalBlend = 1.0f;			// the sun term: 0 the blade's normal, 1 the ground normal the cards are lit with
 		float	SkyLight = 0.0f;			// NVR's sky ambient share on the blades (the game's card path has none)
+		bool	GameLighting = true;		// round 6: lit exactly as the game's own grass pixel shader lights the cards (gamma space, no PBR scales)
 		int		Log = 0;					// 1 = a line per draw for 3 frames (diagnostic)
 	};
 	inline SettingsStruct S;
@@ -529,7 +530,7 @@ namespace NewGrass {
 		float psc[24];
 		memcpy(psc, S.KeepCards ? ramp.Bright : ramp.C, sizeof(ramp.C));	// the strands wear the card's bright twig colour
 		psc[16] = S.ShadowLift; psc[17] = S.Wrap; psc[18] = S.TipLift; psc[19] = S.Variation;
-		psc[20] = S.NormalBlend; psc[21] = S.SkyLight; psc[22] = 0.0f; psc[23] = 0.0f;
+		psc[20] = S.NormalBlend; psc[21] = S.SkyLight; psc[22] = S.GameLighting ? 1.0f : 0.0f; psc[23] = 0.0f;
 		device->SetPixelShaderConstantF(20, psc, 6);
 		device->SetVertexDeclaration(Decl);
 		device->SetStreamSource(0, v.VB, 0, 4);
@@ -650,6 +651,7 @@ namespace NewGrass {
 		S.ShadowLift = TheSettingManager->GetSettingF(s, "ShadowLift");
 		S.NormalBlend = TheSettingManager->GetSettingF(s, "NormalBlend");
 		S.SkyLight = TheSettingManager->GetSettingF(s, "SkyLight");
+		S.GameLighting = TheSettingManager->GetSettingI(s, "GameLighting") != 0;
 		S.Wrap = TheSettingManager->GetSettingF(s, "Wrap");
 		S.TipLift = TheSettingManager->GetSettingF(s, "TipLift");
 		S.Variation = TheSettingManager->GetSettingF(s, "Variation");

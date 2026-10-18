@@ -18,7 +18,7 @@ float4 NG_Ramp1 : register(c21);
 float4 NG_Ramp2 : register(c22);
 float4 NG_Ramp3 : register(c23);   // tip colour
 float4 NG_PS    : register(c24);   // x shadow lift (units above the blade the cascade lookup is taken: no acne from the land), y light wrap, z tip lift, w per-blade brightness variation
-float4 NG_PS2   : register(c25);   // x NormalBlend (0 the blade's normal, 1 the ground normal the cards are lit with), y SkyLight (NVR's sky ambient share; the cards get none)
+float4 NG_PS2   : register(c25);   // x NormalBlend (0 the blade's normal, 1 the ground normal the cards are lit with), y SkyLight (NVR's sky ambient share; the cards get none), z GameLighting (1 = lit exactly as the game's own grass pixel shader lights the cards)
 
 struct PS_INPUT {
     float4 clip     : TEXCOORD0_centroid;
@@ -65,6 +65,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     // as much as asked (the game's card path has none of it).
     float3 lighting = PBRLight(IN.sun.rgb) * sunAmount + PBRAmbient(IN.ambient.rgb) * IN.params.w + SkyAmbient(N, 1.0f) * NG_PS2.y;
     float3 lit = LinEncode(lighting * LinColor(albedo));
+    // GameLighting (round 6): the cards are drawn by the game's own grass pixel shader, (ambient x light scale + sun x NdotL x dimmer x
+    // light scale) x texture in gamma space, no PBR scales and no sky term; lit the same way the strands take the bush's own colour.
+    float3 litGame = (IN.ambient.rgb * IN.params.w + IN.sun.rgb * sunAmount) * albedo;
+    lit = NG_PS2.z > 0.5f ? litGame : lit;
 
     OUT.color.rgb = lerp(lit, IN.fog.rgb, IN.fog.w);
     OUT.color.a = 1.0f;

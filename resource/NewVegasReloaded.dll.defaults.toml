@@ -518,9 +518,10 @@ Bend = 0.5                             # the curve of a strand on its way out to
 Flutter = 0.15                         # sideways flutter in the wind on top of the game's sway.
 ReceiveShadows = false                 # the sun's cascade shadows fall on the strands (the game's cards get none). Costs about 0.15 ms at density 80 with the hybrid's near strands, 0.6 ms in a dense field of blades.
 ShadowLift = 10.0                      # the shadow is looked up this many units above the blade (the ground itself casts a shadow at its own height; 0 = blades at the ground are in it).
-NormalBlend = 0.7                      # how the sun lights a blade: 0 = by the blade's own facing (sideways: darker, more varied), 1 = by the ground's facing as the game's cards are lit (every blade in full sun at noon).
+NormalBlend = 1.0                      # how the sun lights a strand: 0 = by the strand's own facing (sideways: darker, more varied), 1 = by the ground's facing as the game's cards are lit (every strand in full sun at noon).
+GameLighting = true                    # true = the strands are lit exactly as the game's own grass pixel shader lights the cards (gamma space, no PBR light scales, no sky light): the bush's own gold. false = NVR's linear PBR lighting (the round-5 look, a little paler and bluer).
 SkyLight = 0.0                         # how much of the sky's light (blue-ish, NVR's sky ambient) the blades get on top of the game's ambient; the game's cards get none.
-Wrap = 0.3                             # how far the sun's light wraps round a blade (thin leaves let light through); 0 = hard shading.
+Wrap = 0.0                             # how far the sun's light wraps round a strand (thin leaves let light through); 0 = as the cards.
 TipLift = 0.3                          # a warm lift of the colour toward the tip.
 Variation = 0.2                        # per-strand brightness variation (+-): the fizz of the twigs.
 Log = 0                                # DIAGNOSTIC: 1 = one log line per replaced draw for the first 3 frames.
