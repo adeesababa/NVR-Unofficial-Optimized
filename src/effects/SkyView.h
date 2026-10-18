@@ -6,8 +6,8 @@
 //
 // UNOFFICIAL 2026-10-18: with ExactSunlight or MultipleScattering on, the table is drawn by technique 3 or 4, which read two
 // small STATIC tables drawn by techniques 1 (sun transmittance, 256 x 64) and 2 (multiple scattering Psi_ms, 32 x 32). They depend
-// only on Haze and GroundAlbedo, so they are drawn when those change or a switch is first turned on, and refreshed every 256 frames
-// (cheap insurance against lost render targets). With both switches off none of this runs and technique 0 draws as before.
+// only on Haze and GroundAlbedo, so they are drawn when those change or a switch is first turned on (fixes-a #48: no periodic refresh; the render targets
+// are never lost in a running session). With both switches off none of this runs and technique 0 draws as before.
 class SkyViewEffect : public EffectRecord
 {
 public:
@@ -31,5 +31,4 @@ public:
 private:
 	bool	transBuilt = false, msBuilt = false;
 	float	builtHaze = -1.0f, builtAlbedo = -1.0f;
-	int		framesSinceBuild = 0;
 };
