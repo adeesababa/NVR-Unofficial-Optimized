@@ -1958,6 +1958,7 @@ namespace GrassFirst {
 	static std::vector<Record> Records;
 	static bool GameVertexShader[kGrassLastId - kGrassFirstId + 1] = {};	// learned: this grass pass binds the game's VS (no split)
 	static unsigned Frames = 0, StatEarly = 0, StatLate = 0, StatWhole = 0, StatUnsplit = 0;
+	static unsigned RecordedFrame = ~0u;	// TheFrameRateManager->FrameNumber when Records was filled
 
 	static void(__cdecl* RenderPassImmediately)(void*, UInt32, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32, UInt32))kRenderPassImmediately;
 
@@ -1973,6 +1974,14 @@ namespace GrassFirst {
 			lists[i] = renderer ? (PassIdNode*)(renderer + 0x2C) : nullptr;
 		}
 		return true;
+	}
+
+	// fixes-b #29: true if any renderer's pass-ID list holds a grass ID (a grass pass is queued in this accumulator).
+	static bool AnyGrass(PassIdNode* const* lists, unsigned count) {
+		for (unsigned i = 0; i < count; i++)
+			for (const PassIdNode* p = lists[i]; p; p = p->next)
+				if (IsGrass(p->id)) return true;
+		return false;
 	}
 
 	// Rewrites the values of one list in place: grass IDs first (keeping their order), or everything ascending again.
@@ -2122,6 +2131,9 @@ namespace GrassFirst {
 			PassIdNode* lists[2] = {};
 			unsigned count = 0;
 			bool ok = Lists(accumulator, lists, count);
+			// fixes-b #29: no grass pass queued in this accumulator (interiors, bare land): nothing to draw first, so no device
+			// work at all (the state save / restore reads back ~500 constants and ~250 states) -- the game's own calls run as is.
+			if (ok && !AnyGrass(lists, count)) { ThisCall(kRenderBatches, accumulator, first, last, arg3, group); return; }
 			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
 			if (ok) {
 				Records.clear();
@@ -2137,6 +2149,7 @@ namespace GrassFirst {
 				((void(__cdecl*)())kEndPass)();
 				Restore();
 				ActiveAccumulator = accumulator;
+				RecordedFrame = TheFrameRateManager->FrameNumber;	// fixes-b #29: the late part replays these pass pointers in this frame only
 			}
 			for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);	// ascending again, whatever happened
 		}
@@ -2146,6 +2159,12 @@ namespace GrassFirst {
 	// The game's RenderBatches(0x25C, 0x287) call: the fading tufts of the grass drawn early, and whole the grass passes that were
 	// not drawn early, in their recorded order; then the game's call (which normally finds nothing left).
 	static void __fastcall GrassListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
+		if (ActiveAccumulator && ActiveAccumulator == accumulator && first == kGrassFirstId && last == kGrassLastId &&
+			RecordedFrame != TheFrameRateManager->FrameNumber) {
+			// fixes-b #29: records from an earlier frame (the pass objects may be gone): never replayed
+			ActiveAccumulator = nullptr;
+			Records.clear();
+		}
 		if (ActiveAccumulator && ActiveAccumulator == accumulator && first == kGrassFirstId && last == kGrassLastId) {
 			ActiveAccumulator = nullptr;
 			NiDX9RenderState* state = TheRenderManager->renderState;
@@ -2156,6 +2175,9 @@ namespace GrassFirst {
 				if (want != part) { ((void(__cdecl*)())kEndPass)(); part = want; GrassShaders::DrawPart = want; }	// re-bind: c19.w
 				state->SetRenderState(D3DRS_CULLMODE, r.cull, RenderStateArgs);
 				state->SetRenderState(D3DRS_ALPHATESTENABLE, r.alphaTest, RenderStateArgs);
+				// fixes-b #28: alpha-to-coverage (transparency multisampling) needs no restore here: BSBatchRenderer::RenderPassImmediately
+				// 0x00B994F0 itself calls BSRenderState::SetAlphaToCoverageEnable(pass wants it, 0) for every pass when the game's
+				// TMS flag (0x011F9421) is set (Ghidra dump of the exe, psycho-master graphics_fnv_atmosphere_alpha_coverage_state_followup).
 				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
 				if (r.drawnEarly) StatLate++; else StatWhole++;
 			}
