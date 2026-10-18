@@ -544,8 +544,8 @@ void SettingManager::Configuration::SetValueIn(tomlValue& Target, ConfigNode* No
 	} else if (Node->Type == NodeType::Float) {
 		(*section)[Node->Key] = Node->FloatValue;
 	} else if (Node->Type == NodeType::String) {
-		char* value = Node->Value;
-		(*section)[Node->Key] = value;
+		// fixes-a #22: save the whole text (Value is cut at 79 characters), not the cut one
+		(*section)[Node->Key] = Node->LongValue.empty() ? std::string(Node->Value) : Node->LongValue;
 	} else if (Node->Type == NodeType::Boolean) {
 		(*section)[Node->Key] = Node->BoolValue;
 	}
@@ -1158,7 +1158,10 @@ void SettingManager::SetSettingS(const char* Section, const char* Key, const cha
 	Configuration::ConfigNode Node;
 
 	Config.FillNode(&Node, Section, Key);
-	strcpy(Node.Value, Value);
+	// fixes-a #22: bounded copy (Value is 80 bytes; a preset or console string of 80+ characters overflowed it); the full text of a
+	// String setting goes to LongValue, which is what the config file and the String readers use.
+	strncpy(Node.Value, Value, sizeof(Node.Value) - 1); Node.Value[sizeof(Node.Value) - 1] = 0;
+	if (Node.Type == Configuration::NodeType::String) Node.LongValue = Value;
 
 	// SetSettingS is a text-in API (used e.g. for reverting to a snapshotted
 	// string, or for genuine string settings), so it's the one legitimate place
@@ -1578,7 +1581,9 @@ void SettingManager::CreateNode(Configuration::ConfigNode* Node, const char* Sec
 void SettingManager::CreateNodeS(Configuration::ConfigNode* Node, const char* Section, const char* Key, const char* Value, bool Reboot) {
 	strcpy(Node->Section, Section);
 	strcpy(Node->Key, Key);
-	strcpy(Node->Value, Value);
+	// fixes-a #22: bounded copy; the whole text goes to LongValue
+	strncpy(Node->Value, Value, sizeof(Node->Value) - 1); Node->Value[sizeof(Node->Value) - 1] = 0;
+	Node->LongValue = Value;
 	Node->Reboot = Reboot;
 	Node->Type = Configuration::NodeType::String;
 }
