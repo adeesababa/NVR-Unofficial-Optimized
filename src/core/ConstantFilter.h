@@ -159,10 +159,13 @@ namespace ConstantFilter {
 		// decoded copies at once. A write into c64-c75 by anything else makes the copies stale (remade at the next bind).
 		if (data && count && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
 			if (start <= LinearPreDecode::CopyLast && start + count > LinearPreDecode::CopyFirst) LinearPreDecode::CopiesValid = false;
-			if (LinearPreDecode::Active && start <= LinearPreDecode::Last) {
+			// fixes-b #39: stale copies are remade AT ONCE while such a shader is bound (a write into c64-c75 alone used to only flag
+			// them, and the draws that followed used the overwritten values until the next shader bind).
+			if (LinearPreDecode::Active) {
 				if (!LinearPreDecode::CopiesValid) PreDecodeRefresh(self);	// (reads back what this call just set too)
-				else for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++)
-					if (LinearPreDecode::Decodes(start + i)) PreDecodeCopy(self, start + i, data + i * 4);
+				else if (start <= LinearPreDecode::Last)
+					for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++)
+						if (LinearPreDecode::Decodes(start + i)) PreDecodeCopy(self, start + i, data + i * 4);
 			}
 		}
 		return result;
@@ -287,6 +290,9 @@ namespace ConstantFilter {
 			SeenForeignTick = foreignTick;
 			Foreign = true;
 			QuietFrames = 0;
+			// fixes-b #39: another thread (the loading screen) may have written the device's constants, c64-c75 included, without
+			// this thread seeing it: re-sync the decoded copies from the device.
+			if (!LinearPreDecode::Shaders.empty()) PreDecodeResync(device);
 		}
 		else if (Foreign && ++QuietFrames >= 30) {
 			Foreign = false;
