@@ -1466,7 +1466,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool interiorApplies = !GameState.isExterior && keepDarkening && forwardInterior &&
 		!Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur && TheSettingManager->SettingsMain.Main.InteriorShadowFold &&
 		!(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) &&
-		Effects.ShadowsInteriors->DedicatedUsable(RenderTarget, TheTextureManager->RenderedSurface) && Fog->CanCompositeInterior();
+		Effects.ShadowsInteriors->DedicatedUsable(RenderTarget, TheTextureManager->RenderedSurface) && Fog->CanCompositeInterior() &&
+		(TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound != 0 || Fog->HalfStoreMode(Device) >= 0);	// (measured once)
 	bool composite = (shadowApplies || aoApplies || interiorApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
 	auto interiorApply = [&]() {	// the separate pass, as it ran before (and still runs when the fold cannot)
@@ -1485,7 +1486,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur ? "off (DarkeningBlur)" :
 				effectsBetween ? "off (an effect between it and the fog reads the picture)" :
 				(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) ? "off (the Reflections surroundings cube reads the picture)" :
-				"off (the dedicated pass or the fog composite is unavailable)");
+				"off (the dedicated pass or the fog composite is unavailable, or this GPU's 16-bit rounding is unknown)");
 		}
 	}
 	// UNOFFICIAL: when effects between keep the composite out of the fog pass, the shadow and AO applies still run
@@ -1662,7 +1663,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
 		Fog->compositeInteriorShadow = composite && interiorApplies;	// UNOFFICIAL InteriorShadowFold
-		Fog->compositeRound = (float)TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound;
+		const int foldRound = TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound;	// 0: as this GPU stores (HalfStoreMode)
+		Fog->compositeRound = foldRound == 1 ? 1.0f : foldRound == 2 ? 2.0f : foldRound == 3 ? 0.0f : Fog->halfStoreMode == 2 ? 2.0f : 0.0f;
 		Fog->compositeAO = composite && AO->deferredReady;
 		Fog->compositeAOTexture = AO->ResultTexture();
 		Fog->compositeSkyTexture = Fog->compositeAO ? AO->SkyTexture() : nullptr;	// UNOFFICIAL Skylighting v2 (null unless on)

@@ -271,6 +271,85 @@ bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	return true;
 }
 
+/*
+* UNOFFICIAL 2026-10-18 InteriorShadowFold: the interior composite rounds the darkened colour to 16-bit float exactly as the separate
+* pass's render target stored it, and GPUs differ in how they do that (round to nearest even, or toward zero: the GTX 1070,
+* evidence\intshadow\fp16test). One draw of technique HalfStoreProbe into a small A16B16G16R16F target, read back once, says which
+* of the two functions this GPU's store matches for every value; if neither, the fold is not used. All state it touches is put back.
+*/
+int VolumetricFogEffect::HalfStoreMode(IDirect3DDevice9* Device) {
+	if (halfStoreMode != -2) return halfStoreMode;
+	halfStoreMode = -1;
+	D3DXHANDLE technique = Effect ? Effect->GetTechniqueByName("HalfStoreProbe") : NULL;
+	if (!technique || !Device) { Logger::Log("INTERIOR SHADOW FOLD: no HalfStoreProbe technique in VolumetricFog.fx: the fold stays off"); return halfStoreMode; }
+	const UINT W = 64, H = 16;
+	IDirect3DTexture9* texture = nullptr;
+	IDirect3DSurface9* surface = nullptr;
+	IDirect3DSurface9* readback = nullptr;
+	IDirect3DSurface9* oldTarget0 = nullptr;
+	IDirect3DSurface9* oldTarget1 = nullptr;
+	IDirect3DVertexDeclaration9* oldDeclaration = nullptr;
+	DWORD oldFVF = 0;
+	D3DVIEWPORT9 oldViewport = {};
+	unsigned nearest = 0, toward = 0, total = 0;
+	HRESULT hr = Device->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &texture, NULL);
+	if (SUCCEEDED(hr)) hr = texture->GetSurfaceLevel(0, &surface);
+	if (SUCCEEDED(hr)) hr = Device->CreateOffscreenPlainSurface(W, H, D3DFMT_A16B16G16R16F, D3DPOOL_SYSTEMMEM, &readback, NULL);
+	if (SUCCEEDED(hr)) {
+		Device->GetRenderTarget(0, &oldTarget0);
+		Device->GetRenderTarget(1, &oldTarget1);
+		Device->GetVertexDeclaration(&oldDeclaration);
+		Device->GetFVF(&oldFVF);
+		Device->GetViewport(&oldViewport);
+		if (oldTarget1) Device->SetRenderTarget(1, nullptr);
+		hr = Device->SetRenderTarget(0, surface);
+		UINT passes = 0;
+		if (SUCCEEDED(hr)) hr = Effect->SetTechnique(technique);
+		if (SUCCEEDED(hr)) hr = Effect->Begin(&passes, 0);
+		if (SUCCEEDED(hr)) {
+			hr = Effect->BeginPass(0);
+			if (SUCCEEDED(hr)) {
+				struct Vertex { float x, y, z, w, u, v; };
+				const Vertex quad[4] = { { -1, 1, 0, 1, 0, 0 }, { 1, 1, 0, 1, 1, 0 }, { -1, -1, 0, 1, 0, 1 }, { 1, -1, 0, 1, 1, 1 } };
+				Device->SetFVF(D3DFVF_XYZW | D3DFVF_TEX1);
+				hr = Device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
+				Effect->EndPass();
+			}
+			Effect->End();
+		}
+		if (SUCCEEDED(hr)) hr = Device->GetRenderTargetData(surface, readback);
+		D3DLOCKED_RECT locked = {};
+		if (SUCCEEDED(hr) && SUCCEEDED(hr = readback->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
+			for (UINT y = 0; y < H; y++) {
+				const UInt16* row = (const UInt16*)((const UInt8*)locked.pBits + (size_t)y * locked.Pitch);
+				for (UINT x = 0; x < W; x++, total++) {
+					if (row[x * 4] == row[x * 4 + 1]) nearest++;
+					if (row[x * 4] == row[x * 4 + 2]) toward++;
+				}
+			}
+			readback->UnlockRect();
+		}
+		// put back what was bound
+		Device->SetRenderTarget(0, oldTarget0);
+		if (oldTarget1) Device->SetRenderTarget(1, oldTarget1);
+		if (oldDeclaration) Device->SetVertexDeclaration(oldDeclaration);
+		else if (oldFVF) Device->SetFVF(oldFVF);
+		Device->SetViewport(&oldViewport);
+	}
+	if (oldTarget0) oldTarget0->Release();
+	if (oldTarget1) oldTarget1->Release();
+	if (oldDeclaration) oldDeclaration->Release();
+	if (readback) readback->Release();
+	if (surface) surface->Release();
+	if (texture) texture->Release();
+	if (total == W * H && nearest == total && toward != total) halfStoreMode = 0;
+	else if (total == W * H && toward == total && nearest != total) halfStoreMode = 2;
+	Logger::Log("INTERIOR SHADOW FOLD: this GPU stores 16-bit floats %s (probe %08lx: %u of %u values as round to nearest even, %u as round toward zero)",
+		halfStoreMode == 0 ? "rounding to nearest even" : halfStoreMode == 2 ? "rounding toward zero" : "in neither way: the fold stays off",
+		(unsigned long)hr, nearest, total, toward);
+	return halfStoreMode;
+}
+
 bool VolumetricFogEffect::CanApplyShadowAO() {
 	return Enabled && Effect && !TheSettingManager->SettingsMain.Main.DisableCompositeApply &&
 		TechniqueHandle(techApplyShadowAO, "ApplyShadowAO") && ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") &&

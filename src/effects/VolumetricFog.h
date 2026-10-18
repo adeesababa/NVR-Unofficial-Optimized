@@ -92,6 +92,10 @@ public:
 	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
 	bool	CanCompositeInterior() { return CompositeInteriorTechnique() != NULL; }
+	// How this GPU stores a float in a 16-bit float render target: 0 round to nearest even, 2 round toward zero, -1 neither
+	// (or not measurable). Measured once (technique HalfStoreProbe), the first time the interior composite could run.
+	int		HalfStoreMode(IDirect3DDevice9* Device);
+	int		halfStoreMode = -2;	// -2: not measured yet
 	// The shadow and AO applies in one pass of their own (technique ApplyShadowAO), for frames where effects between them
 	// and the fog keep them out of the fog pass. Returns false, leaving the scene untouched, if it could not.
 	bool	CanApplyShadowAO();

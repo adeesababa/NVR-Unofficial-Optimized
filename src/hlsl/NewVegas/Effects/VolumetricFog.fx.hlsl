@@ -1282,10 +1282,12 @@ technique ApplyShadowAO
 // lamp mask, read straight from TESR_PointShadowBuffer), written to the 16-bit float frame and read back here. It is now done
 // here, before the AO and the fog, the way the exterior composite does the sun shadows: the same function
 // (Includes/InteriorShadowApply.hlsl, one source for both), on the same inputs, and its result rounded to 16-bit float exactly
-// as that pass's render target stored it (RoundToHalf), so every following step sees the very value it read before. The
-// picture is meant to stay bit for bit the same; the pass and its read and write of the whole HDR frame are saved.
-// NVR_CompositeFlags here: y AO, z sky factor (as above), w (diagnostic InteriorShadowFoldRound) 0 round to nearest even, 1 no
-// rounding, 2 round toward zero.
+// as that pass's render target stored it, so every following step sees the very value it read before. How a GPU rounds a float
+// into a 16-bit float target is its own choice (the GTX 1070 truncates: evidence\intshadow\fp16test, 1,048,576 of 1,048,576 values),
+// so VolumetricFogEffect::HalfStoreMode measures it once with technique HalfStoreProbe (below) and picks RoundToHalf or
+// TruncateToHalf; neither matching = no fold. The picture stays bit for bit the same; the pass and its read and write of the whole
+// HDR frame are saved.
+// NVR_CompositeFlags here: y AO, z sky factor (as above), w 0 round to nearest even, 1 no rounding (diagnostic), 2 round toward zero.
 static const float InteriorShadowMaxDistance = TESR_ShadowFade.w;
 #define INTERIOR_SHADOW_MAXDISTANCE InteriorShadowMaxDistance
 #include "Includes/InteriorShadowApply.hlsl"
@@ -1344,6 +1346,38 @@ technique CompositeFogInterior
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 DedicatedFogCompositeInterior(false);
+	}
+}
+
+// One draw into a 64x16 A16B16G16R16F target, read back once (HalfStoreMode): r = the value as the GPU stores it, g = RoundToHalf,
+// b = TruncateToHalf of it. The values sit exactly halfway between two 16-bit steps after an odd step (nearest-even rounds up,
+// truncation down) or three quarters of the way (nearest rounds up), at exponents -12..11, half of them negative.
+float4 HalfStoreProbePS(float2 vpos : VPOS) : COLOR0
+{
+	float i = floor(vpos.x) + 64 * floor(vpos.y);	// 0..1023
+	float k = fmod(i, 256);
+	float e = fmod(floor(i / 8), 24) - 12;
+	float steps = fmod(i, 2) < 0.5 ? 2 * k + 1.5 : 2 * k + 0.75;
+	float v = (1 + steps / 1024) * exp2(e);
+	v = fmod(floor(i / 4), 2) < 0.5 ? v : -v;
+	return float4(v, RoundToHalf(v.xxx).x, TruncateToHalf(v.xxx).x, 1);
+}
+
+technique HalfStoreProbe
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 HalfStoreProbePS();
+		ZEnable = false;
+		ZWriteEnable = false;
+		StencilEnable = false;
+		CullMode = none;
+		AlphaBlendEnable = false;
+		AlphaTestEnable = false;
+		SRGBWriteEnable = false;
+		ColorWriteEnable = 0xF;
+		ScissorTestEnable = false;
 	}
 }
 
