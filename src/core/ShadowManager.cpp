@@ -411,9 +411,11 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
 #if NVR_TEST_TOOLS
 	OP_LAND(0);								// land diagnostics (OrthoProbe::LandCount): 0 geometry reached
-	if (!geo->shader) OP_LAND(1);			// 1 no shader
-	else if (!CheckShaderFlags(geo)) OP_LAND(2);	// 2 shader flags (decal, refraction) or no shader property
-	else if (!geometryPass->TestObject(geo)) OP_LAND(3);	// 3 the opaque pass refuses it (no buffer data / not a lighting property)
+	if (OrthoProbe::Recording && OrthoProbe::CurrentLand) {	// UNOFFICIAL fixes-b #2: these checks do real work, run them only while recording
+		if (!geo->shader) OP_LAND(1);			// 1 no shader
+		else if (!CheckShaderFlags(geo)) OP_LAND(2);	// 2 shader flags (decal, refraction) or no shader property
+		else if (!geometryPass->TestObject(geo)) OP_LAND(3);	// 3 the opaque pass refuses it (no buffer data / not a lighting property)
+	}
 #endif
 	if (!geo->shader) return; // skip Geometry without a shader
 
@@ -523,14 +525,14 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 				BSMultiBoundNode* multibound = child->IsMultiBoundNode();
 
 #if NVR_TEST_TOOLS
-				if (isLand && !isLOD) { if (multibound) OP_LAND(8); if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) OP_LAND(9); }	// 8 multibound, 9 outside
+				if (OrthoProbe::Recording && isLand && !isLOD) { if (multibound) OP_LAND(8); if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) OP_LAND(9); }	// 8 multibound, 9 outside
 #endif
 				if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) continue;
 			}
 			else if (arPlanes && !child->WithinFrustum(arPlanes)) continue;
 
 #if NVR_TEST_TOOLS
-			if (isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);	// 10 faded
+			if (OrthoProbe::Recording && isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);	// 10 faded
 #endif
 			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue; // object LOD inside the loaded cells
