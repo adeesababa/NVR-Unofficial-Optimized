@@ -26,6 +26,12 @@
 // BSShaderManager::iEnabledPasses 0x011F91D8, BSShaderPPLightingProperty::GetRenderPasses 0x00B67BE0); every switch flips bit
 // 0x10000000 of iEnabledPasses -- read nowhere else (all readers mask 0x10, 0x20 or 0xF) -- so every object rebuilds its passes
 // on the next frame, the way the game's own console 'SetLightingPasses opt' does it with bit 0x100.
+// MEASURED 2026-10-18 (bench\deep-roadmap\evidence\lightcap-LOG.md, same-launch pairs, frames 224): it works as designed
+// (Ultra-Luxe: shiny multi-pass objects with 3-5 lamps 305 -> 0 a frame, world draws 3,836 -> 2,243, no lamp dropped; frame
+// area with extra passes 83% -> 20%, FLIP to the exact-sum reference 0.39 -> 0.20) but it is SLOWER where it matters: Ultra-Luxe
+// world scene +1.08 ms [+1.06, +1.13] (the one many-lamp pass costs +4.6 ms, the passes it replaces -3.2 ms); casino no
+// measurable change (-0.05 ms world, one pair). Kept OFF: a look/accuracy option, not a speed-up, until the many-lamp shader
+// is made cheaper.
 namespace LampsInOnePass {
 
 	constexpr UInt32 kCompareSite = 0x00BE00E0;		// ADD EAX,2 (83 C0 02) in GetRenderPasses_2x
@@ -119,8 +125,12 @@ namespace LampsInOnePass {
 		inline const void* SeenKey[kSeen] = {};
 		inline unsigned SeenFrame[kSeen] = {};
 		inline unsigned FrameId = 1;
-		inline const PassView* PendingOpt = nullptr;
-		inline bool PendingOptSkipCompare = false;
+		// The shaders of the last bind (SetShadersHook). The game binds about once per run of same-enum passes (Ultra-Luxe: 321
+		// binds for 3,836 world draws a frame), and matching each OPT draw with a bind made after it found none (run 20261018-105643):
+		// the bind comes before the run's draws (inferred), so a pass is matched with the last bind of its enum. (Not yet run in game.)
+		inline UInt32 BoundPass = 0xFFFFFFFF;
+		inline const char* BoundPS = nullptr;
+		inline const char* BoundVS = nullptr;
 
 		inline bool SkipsCompare(const NiGeometry* geometry, UInt32 flags0) {
 			const NiAlphaProperty* alpha = geometry ? geometry->propertyState.m_spAlphaProperty : nullptr;
@@ -167,7 +177,6 @@ namespace LampsInOnePass {
 
 		inline void NewFrame() {
 			FrameId++;
-			PendingOpt = nullptr;
 			if (!GpuTimer::Enabled) { if (Frames) Reset(); return; }
 			if (Frames && WindowState != Applied) Report();	// the switch changed: close the old state's window
 			WindowState = Applied;
@@ -176,7 +185,6 @@ namespace LampsInOnePass {
 
 		// Before a world pass is drawn (RenderPassStandardHook / RenderPassSkinnedHook).
 		inline void Note(const void* passPtr, bool world) {
-			PendingOpt = nullptr;
 			if (!world || !passPtr || !GpuTimer::Enabled) return;
 			const PassView* pass = (const PassView*)passPtr;
 			const UInt16 e = pass->passEnum;
@@ -194,7 +202,12 @@ namespace LampsInOnePass {
 					Dropped += pass->maxLights - pass->numLights; DroppedDraws++;
 					if (skips) DroppedSkipCompare += pass->maxLights - pass->numLights;
 				}
-				PendingOpt = pass;	// its shader's light slots are checked at the bind (OnBind)
+				if (BoundPass == e) {	// its shaders: the last bind of this enum (OnBind), and their light slots
+					if (ShaderOf[i].empty()) ShaderOf[i] = std::string(BoundPS ? BoundPS : "?") + "/" + (BoundVS ? BoundVS : "?");
+					const unsigned slots = ShaderSlots(BoundPS);
+					const unsigned used = FirstLightIsLamp(e) ? (pass->numLights ? pass->numLights - 1u : 0u) : pass->numLights;
+					if (slots && used > slots) { OverSlots += used - slots; OverSlotDraws++; }
+				}
 				return;
 			}
 			const bool lamp = IsLampPass(e), highlight = !lamp && IsHighlightPass(e);
@@ -221,17 +234,8 @@ namespace LampsInOnePass {
 			if (flags0 & 2) ShinySkinned++;
 		}
 
-		// After the game bound the pass's shaders (SetShadersHook): the shader names of each OPT pass, and its light slots.
-		inline void OnBind(UInt32 passIndex, const char* ps, const char* vs) {
-			const PassView* pass = PendingOpt;
-			PendingOpt = nullptr;
-			if (!pass || pass->passEnum != passIndex || !IsOptPass(pass->passEnum)) return;
-			const unsigned i = pass->passEnum - 0xC3;
-			if (ShaderOf[i].empty()) ShaderOf[i] = std::string(ps ? ps : "?") + "/" + (vs ? vs : "?");
-			const unsigned slots = ShaderSlots(ps);
-			const unsigned used = FirstLightIsLamp(pass->passEnum) ? (pass->numLights ? pass->numLights - 1u : 0u) : pass->numLights;
-			if (slots && used > slots) { OverSlots += used - slots; OverSlotDraws++; }
-		}
+		// After the game bound a pass's shaders (SetShadersHook; once per run of same-enum passes, before its first draw).
+		inline void OnBind(UInt32 passIndex, const char* ps, const char* vs) { BoundPass = passIndex; BoundPS = ps; BoundVS = vs; }
 	}
 #endif
 }
