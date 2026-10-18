@@ -35,14 +35,14 @@ namespace NewGrass {
 		bool	Enabled = false;
 		bool	KeepCards = true;			// round 5 HYBRID: the game's card stays (drawn after our strands); false = the blades replace it (round 4)
 		float	BladeDistance = 7000.0f;	// pieces whose nearest tuft is farther stay the game's cards
-		int		Blades = 24;				// strands (blades) per tuft near the player (1-32)
-		float	LodNear = 1000.0f, LodFar = 3000.0f, WidenDistance = 5000.0f;	// hybrid: strands fall from Blades at LodNear to NONE at LodFar (pure cards far)
+		int		Blades = 12;				// strands (blades) per tuft near the player (1-32)
+		float	LodNear = 1000.0f, LodFar = 1500.0f, WidenDistance = 5000.0f;	// hybrid: strands fall from Blades at LodNear to NONE at LodFar (pure cards far)
 		float	HeightScale = 1.0f, WidthRatio = 0.02f, Spread = 0.15f, Bend = 0.3f, Flutter = 0.15f;
 		float	TipReach = 1.6f;			// strand tips at this many times the band's mean alpha radius (1.6 = on / just past the card's edge)
 		float	LengthMin = 0.5f;			// the shortest strand as a share of the plant's height (the short ones at the edge make the dome)
 		float	Droop = 0.5f;				// how far a blade leaning out to the clump's edge drops its tip
 		float	FillRef = 0.15f;			// a card with this alpha coverage gets every blade; sparser cards fewer (down to half)
-		bool	ReceiveShadows = true;
+		bool	ReceiveShadows = false;
 		float	ShadowLift = 10.0f;			// units above the blade the cascade lookup is taken (the land casts at its own height)
 		float	Wrap = 0.3f, TipLift = 0.5f, Variation = 0.12f;
 		float	NormalBlend = 0.7f;			// the sun term: 0 the blade's normal, 1 the ground normal the cards are lit with

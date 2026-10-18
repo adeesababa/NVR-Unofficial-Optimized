@@ -502,9 +502,9 @@ DrawFirstCull = true                   # UNOFFICIAL (2026-10-17): with DrawFirst
 Enabled = false                        # UNOFFICIAL (2026-10-18) NEW GRASS, a LOOK CHANGE (off): real blade geometry built from the game's own grass placement (same tufts, same density, same grass types per region; each type's colour and shape read from its own card texture). With KeepCards (the default, the 'hybrid') the game's card stays as the dense core of every clump and thin strands are added around its silhouette near the player: real volume from every angle, anti-aliased edges, strands that bend and sway one by one, the sun's shadows on them; far grass is the cards alone. KeepCards = false replaces the cards by blades. Needs DrawFirst. Live. The look is the user's call; cost in the bench log (newgrass-LOG.md).
 KeepCards = true                       # true = the hybrid (the game's card is drawn as well, the strands around it); false = the blades replace the cards.
 BladeDistance = 7000.0                 # grass pieces whose nearest tuft is farther than this (units) stay the game's cards, a whole piece at a time. 7000 = everything before the default fade start is blades.
-Blades = 24                            # strands per tuft near the player (1-32; a sparse grass type gets fewer, see FillRef); fewer with distance (none at LodFar with KeepCards, one without).
+Blades = 12                            # strands per tuft near the player (1-32; a sparse grass type gets fewer, see FillRef); fewer with distance (none at LodFar with KeepCards, one without).
 LodNear = 1000.0                       # up to this distance every tuft has all its blades and the most detailed blade shape.
-LodFar = 3000.0                        # from here on the cards alone (KeepCards) or one blade per tuft with the simplest shape (a triangle).
+LodFar = 1500.0                        # from here on the cards alone (KeepCards) or one blade per tuft with the simplest shape (a triangle).
 WidenDistance = 5000.0                 # blades grow wider with distance (twice as wide at this distance) so fewer of them keep the far field covered.
 HeightScale = 1.0                      # blade height relative to the plant's height on its card (the card's opaque top, read from its texture).
 WidthRatio = 0.02                      # strand width at the root as a share of the plant's height (0.02 = about 1.5 units: thin).
@@ -515,7 +515,7 @@ Droop = 0.5                            # how far a blade leaning out to the clum
 FillRef = 0.15                         # a grass type whose card is this opaque (alpha coverage) gets every blade; sparser cards fewer, down to half.
 Bend = 0.3                             # the curve of a blade on its way out to its tip (0 = a straight line to the tip, 0.3 = bowed outward).
 Flutter = 0.15                         # sideways flutter in the wind on top of the game's sway.
-ReceiveShadows = true                  # the sun's cascade shadows fall on the blades (the game's cards get none). Costs about 0.6 ms in a dense field.
+ReceiveShadows = false                 # the sun's cascade shadows fall on the strands (the game's cards get none). Costs about 0.15 ms at density 80 with the hybrid's near strands, 0.6 ms in a dense field of blades.
 ShadowLift = 10.0                      # the shadow is looked up this many units above the blade (the ground itself casts a shadow at its own height; 0 = blades at the ground are in it).
 NormalBlend = 0.7                      # how the sun lights a blade: 0 = by the blade's own facing (sideways: darker, more varied), 1 = by the ground's facing as the game's cards are lit (every blade in full sun at noon).
 SkyLight = 0.0                         # how much of the sky's light (blue-ish, NVR's sky ambient) the blades get on top of the game's ambient; the game's cards get none.
