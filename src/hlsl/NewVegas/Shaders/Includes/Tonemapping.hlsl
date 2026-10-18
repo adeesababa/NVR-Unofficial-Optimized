@@ -132,7 +132,7 @@ float3 agxEotf(float3 val)
 {
     
   // Inverse input transform (outset)
-    val = mul(agx_mat_inv, val);
+    val = mul(val, agx_mat_inv);	// UNOFFICIAL 2026-10-18: row vector x matrix (the GLSL source fills matrices by columns); mul(M, v) applied the transpose = pink cast. Fix by Conor (testbed)
   
   // sRGB IEC 61966-2-1 2.2 Exponent Reference EOTF Display
   // NOTE: We're linearizing the output here. Comment/adjust when
@@ -179,7 +179,7 @@ float3 agx(float3 val)
     float max_ev = 4.026069f;
 
   // Input transform (inset)
-    val = mul(agx_mat, val);
+    val = mul(val, agx_mat);	// UNOFFICIAL 2026-10-18: see agxEotf (fix by Conor)
   
   // Log2 space encoding
     val = clamp(log2(max(val, 1e-6)), min_ev, max_ev);	// UNOFFICIAL 2026-10-16: negative input gave log2 < 0 = NaN (1e-6 is below min_ev anyway)
