@@ -56,6 +56,9 @@ NiPoint2* __fastcall WaterFogRemover(NiPoint2* point, void*, float x, float y);
 
 bool __fastcall NiDX9Renderer__Do_EndFrame(NiDX9Renderer* apThis, void*);
 
+void AttachGrassFirstRenderPassHook();	// UNOFFICIAL 2026-10-17 GrassFirst ([Shaders.Grass.Main] DrawFirst), inside the Detours transaction
+void InstallGrassFirstHooks();			// after it
+
 void DetectorWindowDumpAttributes(HWND TreeView, UInt32 Msg, WPARAM wParam, LPTVINSERTSTRUCTA lParam);
 
 void DetectorWindowSetNodeName(char* Buffer, int Size, char* Format, char* ClassName, char* Name, float LPosX, float LPosY, float LPosZ);

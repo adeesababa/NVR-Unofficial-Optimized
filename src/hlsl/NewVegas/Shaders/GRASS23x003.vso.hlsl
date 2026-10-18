@@ -78,6 +78,16 @@ VS_OUTPUT main(VS_INPUT IN) {
     float instDist = length(float4(instClip.xy, instClip.w - instClip.z, instClip.w));
 #endif
     OUT.sun.w = 1.0f - saturate((instDist - AlphaParam.z) / AlphaParam.w);
+    // UNOFFICIAL 2026-10-17 GrassFirst ([Shaders.Grass.Main] DrawFirst, Render.cpp namespace GrassFirst): the grass in two parts,
+    // c19.w (GrassPairing.w, written by GrassShaders::SetForDraw): 1 = only the tufts before the fade start (fully opaque), drawn
+    // BEFORE the land so the land's pixel shader skips the pixels they cover; 2 = only the fading tufts, drawn at the game's place
+    // after the land (they blend over it, as before). Same test on the same numbers in both: every tuft is in exactly one part.
+    // 0 (never written) = every tuft, the game's order. A dropped tuft is folded into one point outside the view (no pixels).
+    [branch] if (GrassPairing.w > 0.5f && ((instDist > AlphaParam.z) == (GrassPairing.w < 1.5f))) {
+        VS_OUTPUT gone = (VS_OUTPUT)0;
+        gone.position = float4(2.0f, 2.0f, 0.5f, 1.0f);
+        return gone;
+    }
 
     float4 f = frac(inst);
     float3 orient = (f.xyz - 0.5f) * 2.0f;

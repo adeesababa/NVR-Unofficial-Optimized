@@ -1912,6 +1912,333 @@ namespace HudRain {
 	}
 }
 
+// UNOFFICIAL 2026-10-17 GrassFirst ([Shaders.Grass.Main] DrawFirst, live, ON by default since grassfirst3): the grass drawn BEFORE
+// the land, so the land's pixel shader (parallax, 4-7 layers: the heaviest pass of an outdoor frame) is skipped by the depth test
+// under the grass.
+// Measured first in the frame replay (bench\deep-roadmap\evidence\grassfirst-LOG.md): noon, moving the grass before the land
+// cut the land 4.03 -> 3.04 ms. Engine facts (WallSoGB's map of FalloutNV.exe + the Ghidra dump; credit WallSoGB):
+//  - BSShaderAccumulator::FinishAccumulating_Standard_PreResolveDepth 0x00B65AE0 draws the main opaque list with
+//    RenderBatches(1, 0x25B) at 0x00B65BED (objects and land, by pass ID) and the HDR grass later with RenderBatches(0x25C, 0x287)
+//    at 0x00B65C2B.
+//  - RenderBatches 0x00B63770 -> BSBatchRenderer::PrepareNextRenderPass_SetNextPass 0x00B99900 walks each renderer's sorted list
+//    of pass IDs (BSSimpleList<UInt16> at renderer +0x2C; renderers at accumulator +0x174, count +0x18C) to the first ID in range
+//    but then removes the list's HEAD: it assumes the ranges come in ascending order. A plain early grass call (the 'DrawFirst'
+//    test of the morning, run 20261017-071126) therefore threw away one land/object ID per grass pass, and those never came back
+//    (BSBatchRenderer::RegisterPass 0x00B99C90 re-inserts an ID only while its group is empty) = land and buildings gone.
+//    Here the ID values inside the list are rewritten so the grass IDs come first (no node is added or freed), the grass range
+//    is drawn, and the values are sorted back into ascending order; any grass ID not drawn goes back to its place and the game's
+//    own later call draws it.
+//  - Grass blends (no transparency multisampling, the INI default) and every pixel past its alpha test (ref 10/255) writes depth.
+//    Drawn first, the tufts in the distance fade blended over the empty background and hid the land behind them: halos along
+//    the far edge of each field (replay 'move'). So the grass is drawn in two parts, each tuft exactly once: NVR's grass vertex
+//    shaders keep, by c19.w (GrassShaders::DrawPart), only the tufts before the fade start (fully opaque) in the early part and
+//    only the fading tufts in the late part, at the game's place after the land. The late part re-issues the same RenderPass
+//    objects through the engine's own BSBatchRenderer::RenderPassImmediately 0x00B994F0 (cdecl, recorded during the early call)
+//    with the cull / alpha-test state of their bucket. A grass pass whose vertex shader is the game's (it cannot split) is not
+//    drawn early at all: it is drawn whole at the late place, as before.
+//  - Only in the world scene (not the water reflection or water depth: accumulator +0x164 / +0x165, mode +0x19C = 0), and not with
+//    terrain blending on (its depth copy at the first land draw would then contain the grass).
+//  - Picture check (grassfirst3, bench\deep-roadmap\evidence\grassfirst3-LOG.md): the 'far power line' and blade-edge 'speckle'
+//    left after the c19 and sampler restores were the TEST, not this code: two shots next to each other in a shot list differ at
+//    alpha-tested edges (the far wire 12-20/255, grass blades ~0.1% of the frame) whatever the settings (two states alternating
+//    with the shot's place), and the old lists put every on shot next to its off shot. With on and off two places apart (list
+//    grassfirst-p) on/off = off/off: wire max 4-8 vs 4-8, speckle +0.001 pt (d30 noon x2, night, dusk), frame -1.07 ms at d30.
+namespace GrassFirst {
+	static const UInt32 kMainListCallSite = 0x00B65BED, kGrassCallSite = 0x00B65C2B, kRenderBatches = 0x00B63770;
+	static const UInt32 kRenderPassImmediately = 0x00B994F0, kEndPass = 0x00B988E0;
+	static const UInt16 kGrassFirstId = 0x25C, kGrassLastId = 0x287;	// GRASS_DIRONLY 0x25C-0x26F, GRASS_1POINT 0x270-0x283, GRASS_SHADOW 0x284-0x287
+	static const UInt16 kSplitLastId = 0x283;	// GRASS_SHADOW passes are never drawn early
+
+	struct PassIdNode { UInt16 id; UInt16 pad; PassIdNode* next; };	// BSSimpleList<unsigned short>
+	struct Record { void* pass; UInt32 passId, a3, a4, a5, cull, alphaTest; bool drawnEarly; };
+
+	static bool Installed = false;
+	static bool Recording = false;
+	static void* ActiveAccumulator = nullptr;	// set by the early part, consumed by the late part of the same accumulator call
+	static std::vector<Record> Records;
+	static bool GameVertexShader[kGrassLastId - kGrassFirstId + 1] = {};	// learned: this grass pass binds the game's VS (no split)
+	static unsigned Frames = 0, StatEarly = 0, StatLate = 0, StatWhole = 0, StatUnsplit = 0;
+
+	static void(__cdecl* RenderPassImmediately)(void*, UInt32, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32, UInt32))kRenderPassImmediately;
+
+	static inline bool IsGrass(UInt32 id) { return id >= kGrassFirstId && id <= kGrassLastId; }
+
+	// Each renderer's pass-ID list, or false if anything is not as expected (then nothing is touched).
+	static bool Lists(void* accumulator, PassIdNode** lists, unsigned& count) {
+		const UInt8* a = (const UInt8*)accumulator;
+		count = *(const UInt32*)(a + 0x18C);
+		if (count > 2) return false;	// the inline array at +0x174 holds 2
+		for (unsigned i = 0; i < count; i++) {
+			UInt8* renderer = *(UInt8* const*)(a + 0x174 + 4 * i);
+			lists[i] = renderer ? (PassIdNode*)(renderer + 0x2C) : nullptr;
+		}
+		return true;
+	}
+
+	// Rewrites the values of one list in place: grass IDs first (keeping their order), or everything ascending again.
+	static bool Rewrite(PassIdNode* head, bool grassFirst) {
+		if (!head || (!head->next && !head->id)) return true;	// empty
+		UInt16 values[1024];
+		unsigned n = 0;
+		for (PassIdNode* p = head; p; p = p->next) {
+			if (n == 1024) return false;	// cannot happen (IDs are unique, < 0x300); then leave the list alone
+			values[n++] = p->id;
+		}
+		if (grassFirst) std::stable_partition(values, values + n, [](UInt16 id) { return IsGrass(id); });
+		else std::sort(values, values + n);
+		unsigned i = 0;
+		for (PassIdNode* p = head; p; p = p->next) p->id = values[i++];
+		return true;
+	}
+
+	// The device state the draws after the early part must see as before it (round 2, 2026-10-17 evening): in game a far power
+	// line drawn in the main list changed at its edges (up to 25/255) with DrawFirst on; the shader constants alone did not
+	// explain it. Everything the grass passes set is put back: float constants (device), render states, sampler states, texture
+	// stage states and textures (through the game's state cache, so its idea of the device stays right). Streams, shaders and
+	// declarations are set by every pass itself. [Shaders.Grass.Main] DrawFirstRestore picks the parts (diagnostic bit mask:
+	// 1 constants, 2 render states, 4 sampler states, 8 texture stage states, 16 textures; default 5). The single-shot mask tests
+	// of 21:00-21:14 flipped between 4 and 15/255 at the power line for the same mask; most of that was the shot-parity effect of
+	// the test (see above), but the cache-only restores did leave a real wobble (ON shots differing among themselves by 7-10/255 in
+	// runs 20261017-203716 / -211133). With samplers also written to the device (mask 5) every same-parity pair is at the floor.
+	static const unsigned char kRenderStates[] = { 7, 8, 9, 14, 15, 16, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 34, 35, 36, 37, 38, 48,
+		52, 53, 54, 55, 56, 57, 58, 59, 60, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148,
+		151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 165, 166, 167, 168, 170, 171, 172, 173, 174, 175, 176, 178, 179, 180,
+		181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207,
+		208, 209 };	// the render states D3D9 defines (d3d9types.h), as the frame recorder's list
+	static const unsigned char kStageStates[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 22, 23, 24, 26, 27, 28, 32 };
+	struct Snapshot {
+		bool constants = false;
+		float vs[256][4], ps[224][4];
+		DWORD rs[sizeof(kRenderStates)];
+		DWORD ss[16][14];
+		DWORD tss[8][sizeof(kStageStates)];
+		IDirect3DBaseTexture9* tex[16];
+	};
+	static Snapshot Saved;
+	static unsigned RestoreMask = 5;
+	static unsigned StatRestored = 0;
+
+	static void Save() {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		Saved.constants = (RestoreMask & 1) && SUCCEEDED(device->GetVertexShaderConstantF(0, &Saved.vs[0][0], 256)) &&
+			SUCCEEDED(device->GetPixelShaderConstantF(0, &Saved.ps[0][0], 224));
+		if (RestoreMask & 2) for (unsigned i = 0; i < sizeof(kRenderStates); i++) Saved.rs[i] = state->GetRenderState((D3DRENDERSTATETYPE)kRenderStates[i]);
+		if (RestoreMask & 4) for (DWORD s = 0; s < 16; s++) for (DWORD t = 1; t < 14; t++) {
+			DWORD v = 0;
+			device->GetSamplerState(s, (D3DSAMPLERSTATETYPE)t, &v);	// the device: some sampler states bypass the cache (SetSamplerStateHook)
+			Saved.ss[s][t] = v;
+		}
+		if (RestoreMask & 8) for (UInt32 s = 0; s < 8; s++) for (unsigned i = 0; i < sizeof(kStageStates); i++)
+			Saved.tss[s][i] = state->GetTextureStageState(s, (D3DTEXTURESTAGESTATETYPE)kStageStates[i]);
+		if (RestoreMask & 16) for (UInt32 s = 0; s < 16; s++) Saved.tex[s] = state->GetTexture(s);
+	}
+
+	static void Restore() {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		if (Saved.constants) {
+			device->SetVertexShaderConstantF(0, &Saved.vs[0][0], 256);
+			device->SetPixelShaderConstantF(0, &Saved.ps[0][0], 224);
+		}
+		if (RestoreMask & 2) for (unsigned i = 0; i < sizeof(kRenderStates); i++) {
+			const D3DRENDERSTATETYPE rs = (D3DRENDERSTATETYPE)kRenderStates[i];
+			if (state->GetRenderState(rs) != Saved.rs[i]) { state->SetRenderState(rs, Saved.rs[i], RenderStateArgs); StatRestored++; }
+		}
+		if (RestoreMask & 4) for (DWORD s = 0; s < 16; s++) for (DWORD t = 1; t < 14; t++) {
+			DWORD v = 0;
+			device->GetSamplerState(s, (D3DSAMPLERSTATETYPE)t, &v);
+			if (v != Saved.ss[s][t]) {
+				// Through the game's cache (so it knows) AND straight to the device: some sampler states reach the device past the
+				// cache (SetSamplerStateHook), so the cache can already hold the old value and skip the write. Seen in game 21:11:
+				// sampler 0's filter left by the grass (linear, not anisotropic) reached the far power line's alpha-tested draws
+				// (replay: MINFILTER LINEAR or MAXANISOTROPY 1 on actions 755-818 of the noon capture = the same 14/255 edge change).
+				state->SetSamplerState(s, (D3DSAMPLERSTATETYPE)t, Saved.ss[s][t], 0);
+				device->SetSamplerState(s, (D3DSAMPLERSTATETYPE)t, Saved.ss[s][t]);
+				StatRestored++;
+			}
+		}
+		if (RestoreMask & 8) for (UInt32 s = 0; s < 8; s++) for (unsigned i = 0; i < sizeof(kStageStates); i++) {
+			const D3DTEXTURESTAGESTATETYPE t = (D3DTEXTURESTAGESTATETYPE)kStageStates[i];
+			if (state->GetTextureStageState(s, t) != Saved.tss[s][i]) { state->SetTextureStageState(s, t, Saved.tss[s][i], 0); StatRestored++; }
+		}
+		if (RestoreMask & 16) for (UInt32 s = 0; s < 16; s++)
+			if (state->GetTexture(s) != Saved.tex[s]) { state->SetTexture(s, Saved.tex[s]); StatRestored++; }
+	}
+
+	// Round 2: whole grass draws that are all before the fade start or all in it need only one part. From the draw's world bound
+	// (centre C, radius r; NiAVObject world bound of the pass's geometry) and the camera: the VS fade distance of a tuft is
+	// length(clip.x, clip.y, clip.w) (REVERSED_DEPTH), which is at least its view depth w >= dot(C - cam, forward) - r, and at most
+	// K x its distance <= K (|C - cam| + r), K = max(1, 1 / tan(smaller FOV / 2)). The fade start (AlphaParam.z, c5) is read from
+	// the device after an early grass draw. A margin of 64 units and 3% keeps it on the safe side; misjudged 'all fading' only
+	// draws that draw whole after the land (the game's own way); 'all near' is the side that must be right.
+	enum { kMixed = 0, kAllNear = 1, kAllFading = 2 };
+	static bool CullDraws = true;
+	static float FadeStart = 0.0f, FadeSeenMin = 0.0f, FadeSeenMax = 0.0f;
+	static unsigned StatAllNear = 0, StatAllFading = 0;
+	static int Classify(void* pass) {
+		if (!CullDraws || FadeStart <= 0.0f) return kMixed;
+		NiAVObject* geometry = *(NiAVObject**)pass;
+		if (!geometry) return kMixed;
+		const NiBound* bound = geometry->GetWorldBound();
+		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return kMixed;
+		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		const D3DXVECTOR4& fwd = TheRenderManager->CameraForward;
+		const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y, dz = bound->Center.z - cam.z;
+		const float r = bound->Radius + 64.0f;
+		const float depth = dx * fwd.x + dy * fwd.y + dz * fwd.z;
+		if (depth - r > FadeStart * 1.03f) return kAllFading;
+		const float fovY = TheRenderManager->FOVData.w, fovX = TheRenderManager->FOVData.z;
+		const float fov = (std::min)(fovX, fovY);
+		if (!(fov > 0.05f && fov < 3.0f)) return kMixed;
+		const float k = (std::max)(1.0f, 1.0f / tanf(fov * 0.5f)) * 1.03f;
+		if (k * (sqrtf(dx * dx + dy * dy + dz * dz) + r) <= FadeStart) return kAllNear;
+		return kMixed;
+	}
+
+	static bool Allowed(void* accumulator) {
+		GrassShaders* grass = TheShaderManager->Shaders.Grass;
+		if (!Installed || !grass || !grass->Enabled || !grass->DrawFirst) return false;
+		if (ShaderSplit::CurrentContext != ShaderSplit::World) return false;
+		const UInt8* a = (const UInt8*)accumulator;
+		if (*(const UInt32*)(a + 0x19C) != 0 || a[0x164] || a[0x165]) return false;
+		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+		if (terrain && terrain->BlendingSettings.Enabled) {
+			static bool told = false;
+			if (!told) { told = true; Logger::Log("UNOFFICIAL GrassFirst: off while terrain blending is on (its depth copy would contain the grass)"); }
+			return false;
+		}
+		return true;
+	}
+
+	// The game's RenderBatches(1, 0x25B) call: the near grass first, then the main list as the game does it.
+	static void __fastcall MainListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
+		ActiveAccumulator = nullptr;
+		if (first == 1 && last == 0x25B && group < 0 && Allowed(accumulator)) {
+			PassIdNode* lists[2] = {};
+			unsigned count = 0;
+			bool ok = Lists(accumulator, lists, count);
+			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
+			if (ok) {
+				Records.clear();
+				// The draws after this early part see the device state they saw before it (Save / Restore above).
+				RestoreMask = (unsigned)TheShaderManager->Shaders.Grass->DrawFirstRestore;
+				CullDraws = TheShaderManager->Shaders.Grass->DrawFirstCull;
+				Save();
+				GrassShaders::DrawPart = 1;
+				Recording = true;
+				ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
+				Recording = false;
+				GrassShaders::DrawPart = 0;
+				((void(__cdecl*)())kEndPass)();
+				Restore();
+				ActiveAccumulator = accumulator;
+			}
+			for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);	// ascending again, whatever happened
+		}
+		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
+	}
+
+	// The game's RenderBatches(0x25C, 0x287) call: the fading tufts of the grass drawn early, and whole the grass passes that were
+	// not drawn early, in their recorded order; then the game's call (which normally finds nothing left).
+	static void __fastcall GrassListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
+		if (ActiveAccumulator && ActiveAccumulator == accumulator && first == kGrassFirstId && last == kGrassLastId) {
+			ActiveAccumulator = nullptr;
+			NiDX9RenderState* state = TheRenderManager->renderState;
+			((void(__cdecl*)())kEndPass)();
+			int part = -1;
+			for (const Record& r : Records) {
+				const int want = r.drawnEarly ? 2 : 0;
+				if (want != part) { ((void(__cdecl*)())kEndPass)(); part = want; GrassShaders::DrawPart = want; }	// re-bind: c19.w
+				state->SetRenderState(D3DRS_CULLMODE, r.cull, RenderStateArgs);
+				state->SetRenderState(D3DRS_ALPHATESTENABLE, r.alphaTest, RenderStateArgs);
+				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
+				if (r.drawnEarly) StatLate++; else StatWhole++;
+			}
+			((void(__cdecl*)(char, int))0x00B98540)(0, 0);	// BSRenderState::SetAlphaToCoverageEnable(0, 0), as RenderNextRenderPass after a bucket
+			((void(__cdecl*)())kEndPass)();
+			GrassShaders::DrawPart = 0;
+			// What the game's grass call leaves in c19 without GrassFirst: the last grass bind's value, w = 0.
+			if (!Records.empty()) {
+				const float leave[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 0.0f };
+				TheRenderManager->device->SetVertexShaderConstantF(19, leave, 1);
+			}
+			Records.clear();
+			if (++Frames <= 3 || Frames % 3600 == 0)
+				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned); fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
+					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
+			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = 0;
+			FadeSeenMin = FadeSeenMax = 0.0f;
+		}
+		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
+	}
+
+	// BSBatchRenderer::RenderPassImmediately: while the early grass call runs, each grass pass is recorded, and drawn now (near
+	// tufts) only if its vertex shader is NVR's.
+	static void __cdecl RenderPassImmediatelyHook(void* pass, UInt32 passId, UInt32 a3, UInt32 a4, UInt32 a5) {
+		if (!Recording || !IsGrass(passId)) { RenderPassImmediately(pass, passId, a3, a4, a5); return; }
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		Record r = { pass, passId, a3, a4, a5, state->GetRenderState(D3DRS_CULLMODE), state->GetRenderState(D3DRS_ALPHATESTENABLE), false };
+		bool& gameVS = GameVertexShader[passId - kGrassFirstId];
+		if (passId <= kSplitLastId && !gameVS) {
+			const int kind = Classify(pass);
+			if (kind == kAllFading) { StatAllFading++; Records.push_back(r); return; }	// drawn whole after the land (as the game)
+			if (kind == kAllNear) {	// every tuft, now (c19.w = 0): if the bound test were ever wrong, a tuft is drawn early, never lost
+				GrassShaders::DrawPart = 0;
+				const float all[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 0.0f };
+				TheRenderManager->device->SetVertexShaderConstantF(19, all, 1);
+			}
+			RenderPassImmediately(pass, passId, a3, a4, a5);
+			if (kind == kAllNear) {
+				GrassShaders::DrawPart = 1;
+				const float nearOnly[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 1.0f };
+				TheRenderManager->device->SetVertexShaderConstantF(19, nearOnly, 1);
+			}
+			if (GrassShaders::LastBindNVR) {
+				float alpha[4] = {};	// AlphaParam (c5) of NVR's grass VS: z = fade start, for the next draws' Classify
+				if (SUCCEEDED(TheRenderManager->device->GetVertexShaderConstantF(5, alpha, 1)) && alpha[2] > 0.0f) {
+					FadeStart = alpha[2];
+					FadeSeenMin = FadeSeenMin > 0.0f ? (std::min)(FadeSeenMin, alpha[2]) : alpha[2];
+					FadeSeenMax = (std::max)(FadeSeenMax, alpha[2]);
+				}
+				StatEarly++;
+				if (kind == kAllNear) { StatAllNear++; return; }	// every tuft drawn now: no late part
+				r.drawnEarly = true;
+			}
+			else {	// drawn whole with the game's VS (first time only): not again
+				gameVS = true;
+				StatUnsplit++;
+				return;
+			}
+		}
+		Records.push_back(r);
+	}
+}
+
+void InstallGrassFirstHooks() {
+	auto isCall = [](UInt32 site) { return *(UInt8*)site == 0xE8 && site + 5 + *(SInt32*)(site + 1) == GrassFirst::kRenderBatches; };
+	if (!GrassFirst::Installed) {
+		Logger::Log("UNOFFICIAL GrassFirst: the render pass hook is not in (another plugin?); [Shaders.Grass.Main] DrawFirst does nothing");
+		return;
+	}
+	if (isCall(GrassFirst::kMainListCallSite) && isCall(GrassFirst::kGrassCallSite)) {
+		WriteRelCall(GrassFirst::kMainListCallSite, (UInt32)&GrassFirst::MainListHook);
+		WriteRelCall(GrassFirst::kGrassCallSite, (UInt32)&GrassFirst::GrassListHook);
+		Logger::Log("UNOFFICIAL GrassFirst: hooked (inactive unless [Shaders.Grass.Main] DrawFirst = true)");
+	}
+	else {
+		GrassFirst::Installed = false;
+		Logger::Log("UNOFFICIAL GrassFirst: the calls at %08X / %08X are not the game's (another plugin?); not hooked", GrassFirst::kMainListCallSite, GrassFirst::kGrassCallSite);
+	}
+}
+
+// Inside AttachHooks' Detours transaction.
+void AttachGrassFirstRenderPassHook() {
+	const UInt8* code = (const UInt8*)GrassFirst::kRenderPassImmediately;
+	if (code[0] == 0x56 && code[1] == 0x8B && code[2] == 0x74 && code[3] == 0x24 && code[4] == 0x08)	// PUSH ESI; MOV ESI,[ESP+8]
+		GrassFirst::Installed = DetourAttach(&(PVOID&)GrassFirst::RenderPassImmediately, &GrassFirst::RenderPassImmediatelyHook) == NO_ERROR;
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;

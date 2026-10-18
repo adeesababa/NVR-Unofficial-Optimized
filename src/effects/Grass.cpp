@@ -13,6 +13,9 @@ void GrassShaders::UpdateSettings() {
 	Constants.Scale.y = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleY");
 	Constants.Scale.z = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleZ");
 	GameShaderFix = TheSettingManager->GetSettingI("Shaders.Grass.Main", "GameShaderFix");
+	DrawFirst = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirst");
+	DrawFirstRestore = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstRestore");
+	DrawFirstCull = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstCull");
 }
 
 void GrassShaders::UpdateConstants() {}
@@ -24,9 +27,13 @@ void GrassShaders::UpdateConstants() {}
 // gives the P80 behaviour (the bare colours to the game's shader: too bright) for A/B tests.
 void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShaderEx* PixelShader) {
 	if (!Enabled || !VertexShader || !VertexShader->Name || memcmp(VertexShader->Name, "GRASS", 5)) return;
+	LastBindNVR = false;
 	if (!VertexShader->ShaderHandleBackup || VertexShader->ShaderHandle == VertexShader->ShaderHandleBackup) return;	// the game's own VS
+	LastBindNVR = true;
 
 	const bool NVRPixel = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
-	const float Pairing[4] = { NVRPixel || !GameShaderFix ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+	// w: GrassFirst's part (DrawPart; Render.cpp namespace GrassFirst): 0 every tuft, 1 the near tufts, 2 the fading ones.
+	const float Pairing[4] = { NVRPixel || !GameShaderFix ? 1.0f : 0.0f, 0.0f, 0.0f, (float)DrawPart };
 	TheRenderManager->device->SetVertexShaderConstantF(19, Pairing, 1);
+	for (int i = 0; i < 4; i++) LastPairing[i] = Pairing[i];
 }

@@ -26,6 +26,7 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
+	AttachGrassFirstRenderPassHook();	// UNOFFICIAL 2026-10-17 GrassFirst (Render.cpp): pass-through unless DrawFirst is on
 	LampReachMargin = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.Misc", "LampReachMargin"));
 	if (LampReachMargin > 0.0f) {	// UNOFFICIAL, Render.cpp
 		const LONG attached = DetourAttach(&(PVOID&)BoundWithinLightRadius, &BoundWithinLightRadiusHook);
@@ -78,6 +79,7 @@ void AttachHooks() {
 		else Logger::Log("UNOFFICIAL KeepLampsInView: the call at %08X is not the game's lamp view test (another plugin?); not hooked", site);
 	}
 
+	InstallGrassFirstHooks();	// UNOFFICIAL 2026-10-17 GrassFirst (Render.cpp): pass-through unless [Shaders.Grass.Main] DrawFirst = true
 	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
 	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);
 	SafeWrite32(0x00E7624D, sizeof(RenderManager));
