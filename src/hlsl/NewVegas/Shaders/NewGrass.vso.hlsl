@@ -33,8 +33,8 @@ float4 NG_Lod   : register(c248); // x LodNear (units), y 1 / (LodFar - LodNear)
 float4 NG_Shape : register(c249); // x the plant's height (the card's opaque top, units, before the tuft's size step), y the card's half width, z width / height, w Bend (the curve's outward share)
 float4 NG_Misc  : register(c250); // x 1 = blades grow along the slope normal (LFS variant), y blades per tuft, z height scale, w tufts in this draw
 float4 NG_Var   : register(c251); // x 1 / (levels - 1), y 1 = only the tufts before the fade start (GrassFirst part 1 of a mixed draw), z flutter, w LengthMin
-float4 NG_Prof  : register(c254); // the card's silhouette: mean radius of its alpha per height band, bottom to top (share of the half width)
-float4 NG_Prof2 : register(c255); // x Spread: how far from the clump's centre a strand's root may stand (share of the half width); y 1 = hybrid (the card stays: the strands thin out to NONE at LodFar); z TipReach: tips at this many times the band's mean alpha radius
+float4 NG_Prof  : register(c254); // the card's silhouette per height band, bottom to top (share of the half width): the alpha EDGE in the hybrid, the mean alpha radius for replacing blades
+float4 NG_Prof2 : register(c255); // x Spread: how far from the clump's centre a strand's root may stand (share of the half width); y 1 = hybrid (the card stays: the strands thin out to NONE at LodFar); z TipReach: tips between half of and this many times the silhouette radius; w Kink: a sideways wobble along the strand (share of its width)
 
 struct VS_INPUT {
     float4 packed : TEXCOORD0;   // UBYTE4: x tuft, y blade, z level, w side
@@ -105,12 +105,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     float halfW = NG_Shape.y * scale.x;
     float len = lerp(NG_Var.w, 1.0f, h1);
     float height = plantH * len * keep;
-    // The tip lands on the card's own silhouette at that height: the mean radius of the card's alpha at the blade's band times TipReach
-    // (1 = inside the shape, round 4; ~1.8 in the hybrid = from the middle out to just past the card's edge), so the strands fill the
-    // card's shape and reach no farther (the bare ground between clumps stays bare).
+    // The tip lands inside the card's own silhouette at that height: between half of and TipReach times the silhouette radius of the
+    // blade's band (the alpha edge in the hybrid, TipReach 1 = never past the card's outline), so the strands fill the card's shape and
+    // reach no farther (the bare ground between clumps stays bare).
     float hb = len * 4.0f - 0.5f;
     float rsil = hb < 1.0f ? lerp(NG_Prof.x, NG_Prof.y, saturate(hb)) : hb < 2.0f ? lerp(NG_Prof.y, NG_Prof.z, hb - 1.0f) : lerp(NG_Prof.z, NG_Prof.w, saturate(hb - 2.0f));
-    float rTip = halfW * rsil * NG_Prof2.z * (0.6f + 0.6f * h3);
+    float rTip = halfW * rsil * NG_Prof2.z * (0.5f + 0.5f * h3);
     // The blade radiates from near the clump's centre (Spread of the half width) in its own direction, its face turned outward.
     float ang = h2 * 6.2831853f;
     float3 away = float3(cos(ang), sin(ang), 0.0f);
@@ -137,9 +137,10 @@ VS_OUTPUT main(VS_INPUT IN) {
     float3 tangent = normalize(2.0f * u * (p1 - p0) + 2.0f * t * (p2 - p1));
 
     // Width: a share of the plant's height (a short blade is as wide at its root as a long one), tapering to the tip, growing with
-    // distance (fewer, wider blades keep the far coverage).
+    // distance (fewer, wider blades keep the far coverage). Kink: a sideways wobble from level to level, so a strand zigzags like a
+    // dry twig instead of running smooth.
     float width = plantH * NG_Shape.z * (0.6f + 0.6f * h4) * (1.0f + depth * NG_Lod.z) * (1.0f - t * t) * keep;
-    pos += sideVec * (side * 0.5f * width);
+    pos += sideVec * (side * 0.5f * width + NG_Prof2.w * width * sin(t * 9.0f + h2 * 6.2831853f) * (0.5f + 0.5f * h3));
 
     float3 normal = normalize(cross(sideVec, tangent));
     normal = normalize(normal + sideVec * (side * 0.3f));   // a rounded blade: the normal tilts toward each side

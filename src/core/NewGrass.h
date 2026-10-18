@@ -37,14 +37,15 @@ namespace NewGrass {
 		float	BladeDistance = 7000.0f;	// pieces whose nearest tuft is farther stay the game's cards
 		int		Blades = 12;				// strands (blades) per tuft near the player (1-32)
 		float	LodNear = 1000.0f, LodFar = 1500.0f, WidenDistance = 5000.0f;	// hybrid: strands fall from Blades at LodNear to NONE at LodFar (pure cards far)
-		float	HeightScale = 1.0f, WidthRatio = 0.02f, Spread = 0.15f, Bend = 0.3f, Flutter = 0.15f;
-		float	TipReach = 1.6f;			// strand tips at this many times the band's mean alpha radius (1.6 = on / just past the card's edge)
-		float	LengthMin = 0.5f;			// the shortest strand as a share of the plant's height (the short ones at the edge make the dome)
+		float	HeightScale = 0.8f, WidthRatio = 0.015f, Spread = 0.15f, Bend = 0.5f, Flutter = 0.15f;
+		float	TipReach = 1.0f;			// strand tips between half of and this many times the card's alpha EDGE radius at their height (1 = never past the card's outline)
+		float	Kink = 0.5f;				// a sideways wobble along the strand (share of its width per level): twig-like kinks, 0 = smooth
+		float	LengthMin = 0.4f;			// the shortest strand as a share of the plant's height (the short ones at the edge make the dome)
 		float	Droop = 0.5f;				// how far a blade leaning out to the clump's edge drops its tip
 		float	FillRef = 0.15f;			// a card with this alpha coverage gets every blade; sparser cards fewer (down to half)
 		bool	ReceiveShadows = false;
 		float	ShadowLift = 10.0f;			// units above the blade the cascade lookup is taken (the land casts at its own height)
-		float	Wrap = 0.3f, TipLift = 0.5f, Variation = 0.12f;
+		float	Wrap = 0.3f, TipLift = 0.3f, Variation = 0.2f;
 		float	NormalBlend = 0.7f;			// the sun term: 0 the blade's normal, 1 the ground normal the cards are lit with
 		float	SkyLight = 0.0f;			// NVR's sky ambient share on the blades (the game's card path has none)
 		int		Log = 0;					// 1 = a line per draw for 3 frames (diagnostic)
@@ -67,13 +68,15 @@ namespace NewGrass {
 	inline Variant Variants[3];					// 4, 3, 2 levels along the blade (7 / 5 / 3 vertices, 5 / 3 / 1 triangles)
 
 	// What a grass model is (per NiGeometryData, learned once).
-	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; float Rect[4] = { 0.0f, 0.0f, 1.0f, 1.0f }; };	// Rect: the model's own part of its texture (u0 v0 du dv)
+	// Rects: the tiles of its texture the model's cards use (u0 v0 du dv each; the vertex texture coordinates clustered), up to 4.
+	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; float Rects[4][4] = { { 0.0f, 0.0f, 1.0f, 1.0f } }; unsigned RectCount = 1; };
 	inline std::unordered_map<const void*, Model> Models;
 	// The colour ramp of a grass type (per texture, read from a small mip; refreshed every 60 s in case the address is reused).
 	// C: colour per height band (root -> tip); Fill: alpha coverage per band; Radius: the band's mean |u - 0.5| x 2 (0..1 of the card's half
 	// width); Top: the highest opaque row (0..1 of the card's height) = the plant's top. The shape of the plant on the card, for the blades.
 	// Bright: the bright-weighted mean colour per band (alpha x luma^4: the bright twigs), what the strands wear in the hybrid.
-	struct Ramp { float C[4][4] = {}; float Bright[4][4] = {}; float Fill[4] = {}, Radius[4] = {}; float Top = 1.0f; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; const void* Texture = nullptr; char Info[384] = ""; };
+	// Edge: the band's outermost texel with alpha > 0.15, as a share of the half width (the card's outline the strand tips keep to).
+	struct Ramp { float C[4][4] = {}; float Bright[4][4] = {}; float Fill[4] = {}, Radius[4] = {}, Edge[4] = {}; float Top = 1.0f; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; const void* Texture = nullptr; char Info[384] = ""; };
 	inline std::unordered_map<const void*, Ramp> Ramps;	// per model (its own rectangle of its texture)
 	// The GPU reduction for textures the CPU cannot lock (D3DPOOL_DEFAULT, the case in game: launch 1): a 4x1 target, one pixel per band.
 	inline IDirect3DVertexShader9* RampVS = nullptr;
@@ -192,34 +195,58 @@ namespace NewGrass {
 		}
 		if (!(m.Height > 1.0f)) m.Height = 1.0f;
 		if (!(m.Width > 1.0f)) m.Width = 1.0f;
-		// Round 5: the grass models share one atlas texture; this model's own rectangle of it is the range of its cards' texture coordinates.
+		// Round 6: the grass models share one atlas texture; the tiles this model's cards use are the clusters of its vertex texture
+		// coordinates (points closer than 0.3 in u and v belong to one tile; a card's corners always do). Up to 4 tiles, else the union.
 		if (gd->m_pkTexture && vpm) {
-			float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
-			for (unsigned i = 0; i < vpm; i++) { const NiPoint2& t = gd->m_pkTexture[i]; u0 = (std::min)(u0, t.x); v0 = (std::min)(v0, t.y); u1 = (std::max)(u1, t.x); v1 = (std::max)(v1, t.y); }
-			if (u1 - u0 > 0.01f && v1 - v0 > 0.01f && u0 >= -0.01f && v0 >= -0.01f && u1 <= 1.01f && v1 <= 1.01f) {
-				m.Rect[0] = (std::max)(u0, 0.0f); m.Rect[1] = (std::max)(v0, 0.0f); m.Rect[2] = (std::min)(u1, 1.0f) - m.Rect[0]; m.Rect[3] = (std::min)(v1, 1.0f) - m.Rect[1];
+			float box[8][4]; unsigned n = 0;	// u0 v0 u1 v1
+			for (unsigned i = 0; i < vpm; i++) {
+				const NiPoint2& t = gd->m_pkTexture[i];
+				if (!(t.x >= -0.01f && t.x <= 1.01f && t.y >= -0.01f && t.y <= 1.01f)) continue;
+				unsigned k = 0;
+				for (; k < n; k++) if (t.x >= box[k][0] - 0.3f && t.x <= box[k][2] + 0.3f && t.y >= box[k][1] - 0.3f && t.y <= box[k][3] + 0.3f) break;
+				if (k < n) { box[k][0] = (std::min)(box[k][0], t.x); box[k][1] = (std::min)(box[k][1], t.y); box[k][2] = (std::max)(box[k][2], t.x); box[k][3] = (std::max)(box[k][3], t.y); }
+				else if (n < 8) { box[n][0] = box[n][2] = t.x; box[n][1] = box[n][3] = t.y; n++; }
 			}
+			// merge boxes that grew into each other, then keep the 4 largest
+			for (bool merged = true; merged;) {
+				merged = false;
+				for (unsigned a = 0; a < n && !merged; a++) for (unsigned b = a + 1; b < n && !merged; b++)
+					if (box[a][0] <= box[b][2] + 0.05f && box[b][0] <= box[a][2] + 0.05f && box[a][1] <= box[b][3] + 0.05f && box[b][1] <= box[a][3] + 0.05f) {
+						box[a][0] = (std::min)(box[a][0], box[b][0]); box[a][1] = (std::min)(box[a][1], box[b][1]); box[a][2] = (std::max)(box[a][2], box[b][2]); box[a][3] = (std::max)(box[a][3], box[b][3]);
+						for (unsigned c = b; c + 1 < n; c++) memcpy(box[c], box[c + 1], sizeof(box[c]));
+						n--; merged = true;
+					}
+			}
+			m.RectCount = 0;
+			for (unsigned k = 0; k < n && m.RectCount < 4; k++) {
+				const float u0 = (std::max)(box[k][0], 0.0f), v0 = (std::max)(box[k][1], 0.0f), u1 = (std::min)(box[k][2], 1.0f), v1 = (std::min)(box[k][3], 1.0f);
+				if (u1 - u0 < 0.01f || v1 - v0 < 0.01f) continue;
+				m.Rects[m.RectCount][0] = u0; m.Rects[m.RectCount][1] = v0; m.Rects[m.RectCount][2] = u1 - u0; m.Rects[m.RectCount][3] = v1 - v0; m.RectCount++;
+			}
+			if (m.RectCount == 0) { m.Rects[0][0] = m.Rects[0][1] = 0.0f; m.Rects[0][2] = m.Rects[0][3] = 1.0f; m.RectCount = 1; }
 		}
 		m.Card = vpm <= 64;	// vanilla tufts are clusters of crossed cards: 13, 18 and 40 vertices per tuft seen in the noon field (launch 1)
-		Logger::Log("UNOFFICIAL NewGrass: model %p: %u vertices, %u per tuft (%u tufts), height %.1f width %.1f%s, texture rectangle %.2f %.2f + %.2f %.2f -> %s", gd, m.Total, vpm, m.Capacity,
-			m.Height, m.Width, m.FromBound ? " (from the bound)" : "", m.Rect[0], m.Rect[1], m.Rect[2], m.Rect[3], m.Card ? "card" : "NOT a card (kept the game's)");
+		Logger::Log("UNOFFICIAL NewGrass: model %p: %u vertices, %u per tuft (%u tufts), height %.1f width %.1f%s, %u texture tile(s): %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f -> %s",
+			gd, m.Total, vpm, m.Capacity, m.Height, m.Width, m.FromBound ? " (from the bound)" : "", m.RectCount,
+			m.Rects[0][0], m.Rects[0][1], m.Rects[0][2], m.Rects[0][3], m.Rects[1][0], m.Rects[1][1], m.Rects[1][2], m.Rects[1][3],
+			m.Rects[2][0], m.Rects[2][1], m.Rects[2][2], m.Rects[2][3], m.Rects[3][0], m.Rects[3][1], m.Rects[3][2], m.Rects[3][3], m.Card ? "card" : "NOT a card (kept the game's)");
 		return m;
 	}
 
 	// Band sums (colour x alpha, alpha; 0 = root band, 3 = tip) into the ramp; a band without opaque texels takes its neighbour's colour.
 	// fill: the band's coverage (0..1), radius: alpha-weighted mean |u - 0.5| x 2 (0..1), top: the highest opaque row of all (0..1).
-	inline void FinishRamp(Ramp& r, const double sum[4][3], const double alpha[4], float coverage, const float fill[4], const float radius[4], float top, const float bright[4][3]) {
+	inline void FinishRamp(Ramp& r, const double sum[4][3], const double alpha[4], float coverage, const float fill[4], const float radius[4], float top, const float bright[4][3], const float edge[4]) {
 		r.Coverage = coverage;
 		int last = -1;
 		for (int b = 0; b < 4; b++) {
 			r.Fill[b] = fill[b];
 			if (alpha[b] > 0.0) {
 				for (int k = 0; k < 3; k++) { r.C[b][k] = (float)(sum[b][k] / alpha[b]); r.Bright[b][k] = bright[b][k]; }
-				r.C[b][3] = r.Bright[b][3] = 1.0f; r.Radius[b] = radius[b]; last = b;
+				r.C[b][3] = r.Bright[b][3] = 1.0f; r.Radius[b] = radius[b]; r.Edge[b] = edge[b]; last = b;
 			}
-			else if (last >= 0) { memcpy(r.C[b], r.C[last], sizeof(r.C[b])); memcpy(r.Bright[b], r.Bright[last], sizeof(r.Bright[b])); r.Radius[b] = r.Radius[last] * 0.5f; }
+			else if (last >= 0) { memcpy(r.C[b], r.C[last], sizeof(r.C[b])); memcpy(r.Bright[b], r.Bright[last], sizeof(r.Bright[b])); r.Radius[b] = r.Radius[last] * 0.5f; r.Edge[b] = r.Edge[last] * 0.5f; }
 		}
-		for (int b = 2; b >= 0; b--) if (alpha[b] <= 0.0 && alpha[b + 1] > 0.0) { memcpy(r.C[b], r.C[b + 1], sizeof(r.C[b])); memcpy(r.Bright[b], r.Bright[b + 1], sizeof(r.Bright[b])); r.Radius[b] = r.Radius[b + 1]; }
+		for (int b = 2; b >= 0; b--) if (alpha[b] <= 0.0 && alpha[b + 1] > 0.0) { memcpy(r.C[b], r.C[b + 1], sizeof(r.C[b])); memcpy(r.Bright[b], r.Bright[b + 1], sizeof(r.Bright[b])); r.Radius[b] = r.Radius[b + 1]; r.Edge[b] = r.Edge[b + 1]; }
 		r.Top = (std::min)((std::max)(top, 0.25f), 1.0f);
 		r.Read = last >= 0;
 	}
@@ -235,7 +262,7 @@ namespace NewGrass {
 		bool ok = false;
 		if (SUCCEEDED(hr)) {
 			double sum[4][3] = {}, alpha[4] = {}, rad[4] = {}, cover = 0.0, all = 0.0, bandAll[4] = {}, bandCover[4] = {}, bsum[4][3] = {}, bw[4] = {};
-			float top = 0.0f;
+			float top = 0.0f, edge[4] = {};
 			const UINT x0 = (UINT)(rect[0] * d.Width), x1 = (std::max)(x0 + 1, (UINT)((rect[0] + rect[2]) * d.Width));
 			const UINT y0 = (UINT)(rect[1] * d.Height), y1 = (std::max)(y0 + 1, (UINT)((rect[1] + rect[3]) * d.Height));
 			for (UINT y = y0; y < y1 && y < d.Height; y++) {
@@ -245,7 +272,7 @@ namespace NewGrass {
 				for (UINT x = x0; x < x1 && x < d.Width; x++) {
 					const double a = row[x * 4 + 3] / 255.0;
 					all += 1.0; cover += a; bandAll[band] += 1.0; bandCover[band] += a;
-					if (a > 0.15) top = (std::max)(top, 1.0f - q);
+					if (a > 0.15) { top = (std::max)(top, 1.0f - q); edge[band] = (std::max)(edge[band], (float)fabs((x - x0 + 0.5) / (x1 - x0) - 0.5) * 2.0f); }
 					if (a <= 0.02) continue;
 					const double c[3] = { row[x * 4 + 2] / 255.0, row[x * 4 + 1] / 255.0, row[x * 4 + 0] / 255.0 };
 					for (int k = 0; k < 3; k++) sum[band][k] += c[k] * a;
@@ -262,7 +289,7 @@ namespace NewGrass {
 				fill[b] = bandAll[b] > 0.0 ? (float)(bandCover[b] / bandAll[b]) : 0.0f; radius[b] = alpha[b] > 0.0 ? (float)(rad[b] / alpha[b]) : 0.0f;
 				for (int k = 0; k < 3; k++) bright[b][k] = bw[b] > 0.0 ? (float)(bsum[b][k] / bw[b]) : 0.0f;
 			}
-			FinishRamp(r, sum, alpha, all > 0.0 ? (float)(cover / all) : 1.0f, fill, radius, top, bright);
+			FinishRamp(r, sum, alpha, all > 0.0 ? (float)(cover / all) : 1.0f, fill, radius, top, bright, edge);
 			ok = r.Read;
 		}
 		if (dst) dst->Release();
@@ -284,14 +311,15 @@ namespace NewGrass {
 			"sampler2D S : register(s0); float4 P : register(c0); float4 R : register(c1);"
 			"float4 main(float2 uv : TEXCOORD0) : COLOR0 {"
 			"  float b = floor(uv.x * 12.0 + 0.25); float g = floor(b * 0.25); float band = b - 4.0 * g; float v0 = (3.0 - band) * 0.25;"
-			"  float4 acc = 0; float3 bright = 0; float bw = 0; float rad = 0; float top = 0;"
+			"  float4 acc = 0; float3 bright = 0; float bw = 0; float rad = 0; float top = 0; float edge = 0;"
 			"  for (int j = 0; j < 8; j++) for (int i = 0; i < 16; i++) {"
 			"    float2 q = float2((i + 0.5) / 16.0, v0 + (j + 0.5) / 32.0);"
 			"    float4 c = tex2Dlod(S, float4(R.xy + R.zw * q, 0, P.x));"
-			"    acc += float4(c.rgb * c.a, c.a); rad += c.a * abs(q.x - 0.5) * 2.0; top = max(top, c.a > 0.15 ? 1.0 - q.y : 0.0);"
+			"    float radial = abs(q.x - 0.5) * 2.0;"
+			"    acc += float4(c.rgb * c.a, c.a); rad += c.a * radial; top = max(top, c.a > 0.15 ? 1.0 - q.y : 0.0); edge = max(edge, c.a > 0.15 ? radial : 0.0);"
 			"    float l = dot(c.rgb, 0.3333); float w = c.a * l * l * l * l; bright += c.rgb * w; bw += w; }"
 			"  if (g < 0.5) return float4(acc.rgb / max(acc.a, 1e-4), acc.a / 128.0);"
-			"  if (g < 1.5) return float4(acc.a / 128.0, rad / max(acc.a, 1e-4), top, 1.0);"
+			"  if (g < 1.5) return float4(acc.a / 128.0, rad / max(acc.a, 1e-4), top, edge);"
 			"  return float4(bright / max(bw, 1e-6), acc.a / 128.0); }";
 		ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
 		if (FAILED(D3DXCompileShader(kVS, (UINT)strlen(kVS), NULL, NULL, "main", "vs_3_0", 0, &code, &errors, NULL)) || !code ||
@@ -369,12 +397,12 @@ namespace NewGrass {
 		if (SUCCEEDED(device->GetRenderTargetData(RampSurf, RampSys)) && SUCCEEDED(RampSys->LockRect(&lr, NULL, D3DLOCK_READONLY))) {
 			const unsigned char* px = (const unsigned char*)lr.pBits;
 			double sum[4][3] = {}, alpha[4] = {}, cover = 0.0;
-			float fill[4] = {}, radius[4] = {}, top = 0.0f, bright[4][3] = {};
+			float fill[4] = {}, radius[4] = {}, top = 0.0f, bright[4][3] = {}, edge[4] = {};
 			for (int b = 0; b < 4; b++) {
 				const double a = px[b * 4 + 3] / 255.0;
 				cover += a / 4.0;
-				const unsigned char* q = px + (4 + b) * 4;	// the band's shape pixel (BGRA in memory): coverage in r, radius in g, top in b
-				fill[b] = q[2] / 255.0f; radius[b] = q[1] / 255.0f; top = (std::max)(top, q[0] / 255.0f);
+				const unsigned char* q = px + (4 + b) * 4;	// the band's shape pixel (BGRA in memory): coverage in r, radius in g, top in b, edge in a
+				fill[b] = q[2] / 255.0f; radius[b] = q[1] / 255.0f; top = (std::max)(top, q[0] / 255.0f); edge[b] = q[3] / 255.0f;
 				const unsigned char* w = px + (8 + b) * 4;	// the band's bright colour
 				bright[b][0] = w[2] / 255.0f; bright[b][1] = w[1] / 255.0f; bright[b][2] = w[0] / 255.0f;
 				if (a <= 0.005) continue;
@@ -382,14 +410,15 @@ namespace NewGrass {
 				alpha[b] = a;
 			}
 			RampSys->UnlockRect();
-			FinishRamp(r, sum, alpha, (float)cover, fill, radius, top, bright);
+			FinishRamp(r, sum, alpha, (float)cover, fill, radius, top, bright, edge);
 			ok = r.Read;
 		}
 		return ok;
 	}
 
 	// The grass type's colours and shape: 4 bands (root -> tip) from a mip (<= 32 wide) of its card texture, over the model's own rectangle.
-	inline const Ramp& GetRamp(IDirect3DDevice9* device, IDirect3DBaseTexture9* base, const void* modelKey, const float rect[4]) {
+	inline const Ramp& GetRamp(IDirect3DDevice9* device, IDirect3DBaseTexture9* base, const void* modelKey, const Model& model) {
+		const float* rect = model.Rects[0];
 		Ramp& r = Ramps[modelKey];
 		const ULONGLONG now = GetTickCount64();
 		if (r.When && r.Texture == base && now - r.When < 300000) return r;
@@ -408,16 +437,49 @@ namespace NewGrass {
 		for (; level + 1 < levels; level++) { tex->GetLevelDesc(level, &d); if (d.Width <= 32 && d.Height <= 32) break; }
 		tex->GetLevelDesc(level, &d);
 		const char* how = "CPU copy";
-		bool ok = d0.Pool != D3DPOOL_DEFAULT && ReadRampCPU(device, tex, level, d, rect, r);
-		if (!ok) { how = "GPU reduction"; ok = ReadRampGPU(device, tex, level, rect, r); }
-		if (!ok) { how = "NOT READ (default ramp)"; r.Read = false; memcpy(r.C, fallback, sizeof(fallback)); memcpy(r.Bright, fallback, sizeof(fallback)); r.Coverage = 1.0f; }
+		// Round 6: every tile the model uses is read on its own and the tiles are combined, each band weighted by the tile's fill there,
+		// so a cluster of cards from several tiles gets the colour of ITS tiles, not the whole atlas.
+		bool ok = false;
+		Ramp tiles[4];
+		unsigned nTiles = 0;
+		for (unsigned k = 0; k < model.RectCount; k++) {
+			Ramp& t = tiles[k];
+			bool got = d0.Pool != D3DPOOL_DEFAULT && ReadRampCPU(device, tex, level, d, model.Rects[k], t);
+			if (!got) { how = "GPU reduction"; got = ReadRampGPU(device, tex, level, model.Rects[k], t); }
+			if (got) nTiles++; else t.Read = false;
+		}
+		if (nTiles) {
+			ok = true;
+			double cover = 0.0;
+			r.Top = 0.0f;
+			for (int b = 0; b < 4; b++) {
+				double w = 0.0, c[3] = {}, br[3] = {}, rad = 0.0, ed = 0.0, fill = 0.0;
+				for (unsigned k = 0; k < model.RectCount; k++) {
+					const Ramp& t = tiles[k];
+					if (!t.Read) continue;
+					const double wk = (double)t.Fill[b] + 1e-4;
+					w += wk; fill += t.Fill[b];
+					for (int i = 0; i < 3; i++) { c[i] += t.C[b][i] * wk; br[i] += t.Bright[b][i] * wk; }
+					rad += t.Radius[b] * wk; ed += t.Edge[b] * wk;
+				}
+				for (int i = 0; i < 3; i++) { r.C[b][i] = (float)(c[i] / w); r.Bright[b][i] = (float)(br[i] / w); }
+				r.C[b][3] = r.Bright[b][3] = 1.0f;
+				r.Radius[b] = (float)(rad / w); r.Edge[b] = (float)(ed / w); r.Fill[b] = (float)(fill / nTiles);
+				cover += r.Fill[b] / 4.0;
+			}
+			for (unsigned k = 0; k < model.RectCount; k++) if (tiles[k].Read) r.Top = (std::max)(r.Top, tiles[k].Top);
+			r.Top = (std::min)((std::max)(r.Top, 0.25f), 1.0f);
+			r.Coverage = (float)cover;
+			r.Read = true;
+		}
+		if (!ok) { how = "NOT READ (default ramp)"; r.Read = false; memcpy(r.C, fallback, sizeof(fallback)); memcpy(r.Bright, fallback, sizeof(fallback)); r.Coverage = 1.0f; for (int b = 0; b < 4; b++) r.Edge[b] = 0.8f; }
 		r.Cutout = r.Read ? r.Coverage < 0.97f : (d0.Format == D3DFMT_DXT3 || d0.Format == D3DFMT_DXT5 || d0.Format == D3DFMT_A8R8G8B8 || d0.Format == D3DFMT_A8B8G8R8);
 		const char* fmt = d0.Format == D3DFMT_DXT1 ? "DXT1" : d0.Format == D3DFMT_DXT3 ? "DXT3" : d0.Format == D3DFMT_DXT5 ? "DXT5" : d0.Format == D3DFMT_A8R8G8B8 ? "A8R8G8B8" : "other";
 		// _TRUNCATE: a line longer than the buffer is cut, never a CRT fail-fast (launch 5 crashed with 0xC0000409 on exactly that: Info[200]).
-		_snprintf_s(r.Info, sizeof(r.Info), _TRUNCATE, "%ux%u %s pool %u, mip %u (%ux%u) rect %.2f %.2f + %.2f %.2f, %s, alpha coverage %.0f%%: mean root %.2f %.2f %.2f, tip %.2f %.2f %.2f; bright root %.2f %.2f %.2f, mid %.2f %.2f %.2f, tip %.2f %.2f %.2f; shape: top %.2f, fill %.2f %.2f %.2f %.2f, radius %.2f %.2f %.2f %.2f",
-			d0.Width, d0.Height, fmt, (unsigned)d0.Pool, level, d.Width, d.Height, rect[0], rect[1], rect[2], rect[3], how, r.Coverage * 100.0f, r.C[0][0], r.C[0][1], r.C[0][2],
-			r.C[3][0], r.C[3][1], r.C[3][2], r.Bright[0][0], r.Bright[0][1], r.Bright[0][2], r.Bright[2][0], r.Bright[2][1], r.Bright[2][2], r.Bright[3][0], r.Bright[3][1], r.Bright[3][2],
-			r.Top, r.Fill[0], r.Fill[1], r.Fill[2], r.Fill[3], r.Radius[0], r.Radius[1], r.Radius[2], r.Radius[3]);
+		_snprintf_s(r.Info, sizeof(r.Info), _TRUNCATE, "%ux%u %s pool %u, mip %u (%ux%u), %u tile(s) (first %.2f %.2f + %.2f %.2f), %s, alpha coverage %.0f%%: bright root %.2f %.2f %.2f, mid %.2f %.2f %.2f, tip %.2f %.2f %.2f (mean mid %.2f %.2f %.2f); shape: top %.2f, fill %.2f %.2f %.2f %.2f, mean radius %.2f %.2f %.2f %.2f, edge %.2f %.2f %.2f %.2f",
+			d0.Width, d0.Height, fmt, (unsigned)d0.Pool, level, d.Width, d.Height, model.RectCount, rect[0], rect[1], rect[2], rect[3], how, r.Coverage * 100.0f,
+			r.Bright[0][0], r.Bright[0][1], r.Bright[0][2], r.Bright[2][0], r.Bright[2][1], r.Bright[2][2], r.Bright[3][0], r.Bright[3][1], r.Bright[3][2], r.C[2][0], r.C[2][1], r.C[2][2],
+			r.Top, r.Fill[0], r.Fill[1], r.Fill[2], r.Fill[3], r.Radius[0], r.Radius[1], r.Radius[2], r.Radius[3], r.Edge[0], r.Edge[1], r.Edge[2], r.Edge[3]);
 		if (first) Logger::Log("UNOFFICIAL NewGrass: model %p texture %p: %s -> %s", modelKey, base, r.Info, r.Cutout ? "cut-out card" : "no cut-out (kept the game's)");
 		return r;
 	}
@@ -459,8 +521,10 @@ namespace NewGrass {
 			LastVariant == '2' ? 1.0f : 0.0f, (float)blades, S.HeightScale, (float)tufts,
 			1.0f / (float)(v.Levels - 1), (float)ArmPart, S.Flutter, (std::min)((std::max)(S.LengthMin, 0.1f), 1.0f) };
 		device->SetVertexShaderConstantF(248, vsc, 4);
-		const float prof[8] = { (std::min)(ramp.Radius[0] * 1.1f, 1.0f), (std::min)(ramp.Radius[1] * 1.1f, 1.0f), (std::min)(ramp.Radius[2] * 1.1f, 1.0f), (std::min)(ramp.Radius[3] * 1.1f, 1.0f),
-			S.Spread, S.KeepCards ? 1.0f : 0.0f, S.KeepCards ? S.TipReach : 1.0f, 0.0f };
+		// The outline the tips keep to: the card's alpha EDGE per band in the hybrid (round 6), the mean radius for the replacing blades.
+		const float* prof0 = S.KeepCards ? ramp.Edge : ramp.Radius;
+		const float prof[8] = { (std::min)(prof0[0] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[1] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[2] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[3] * (S.KeepCards ? 1.0f : 1.1f), 1.0f),
+			S.Spread, S.KeepCards ? 1.0f : 0.0f, S.KeepCards ? S.TipReach : 1.0f, S.Kink };
 		device->SetVertexShaderConstantF(254, prof, 2);
 		float psc[24];
 		memcpy(psc, S.KeepCards ? ramp.Bright : ramp.C, sizeof(ramp.C));	// the strands wear the card's bright twig colour
@@ -494,7 +558,7 @@ namespace NewGrass {
 		const Ramp* ramp = nullptr;
 		if (ok) {
 			IDirect3DBaseTexture9* texture = TheRenderManager->renderState->GetTexture(0);
-			ramp = &GetRamp(device, texture, geometry->geomData, model->Rect);
+			ramp = &GetRamp(device, texture, geometry->geomData, *model);
 			if (!ramp->Cutout) { ok = false; StatNotCard++; }
 		}
 		if (!ok) { StatLetThrough++; Armed = false; return Next(device, type, base, minIndex, numVertices, start, count); }
@@ -568,6 +632,7 @@ namespace NewGrass {
 		S.Enabled = TheSettingManager->GetSettingI(s, "Enabled") != 0;
 		S.KeepCards = TheSettingManager->GetSettingI(s, "KeepCards") != 0;
 		S.TipReach = TheSettingManager->GetSettingF(s, "TipReach");
+		S.Kink = TheSettingManager->GetSettingF(s, "Kink");
 		S.BladeDistance = TheSettingManager->GetSettingF(s, "BladeDistance");
 		S.Blades = TheSettingManager->GetSettingI(s, "Blades");
 		S.LodNear = TheSettingManager->GetSettingF(s, "LodNear");
