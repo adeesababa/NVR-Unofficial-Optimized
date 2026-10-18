@@ -107,19 +107,12 @@ float HudRainRoughness(float roughness) {
 // focused into a bright spot on its side away from the sun, its rim darker where it bends the light away. Returns the
 // factor for the surface's colour (rim) in x and the caustic's strength (times the sun's light and the surface colour) in y.
 float2 HudRainLens(float3 lightTS) {
-	// fixes-b #57: with no drop here (hudRainCover = 0, which is every pixel but the first-person weapon in rain) the maths below
-	// gives exactly (1, 0) -- rim and caustic are products with hudRainCover -- so it is skipped. A real branch (the compiler had
-	// computed it on every object pixel and thrown it away).
-	float2 lens = float2(1.0f, 0.0f);
-	[branch] if (hudRainCover > 0.0f) {
-		float r = length(hudRainLocal);
-		float rim = smoothstep(0.55f, 0.95f, r) * hudRainCover * 0.45f;
-		float2 spot = hudRainLocal + normalize(lightTS).xy * 0.45f;	// the focus lies opposite the light
-		float caustic = saturate(1.0f - length(spot) * 2.2f);
-		caustic = caustic * caustic * hudRainCover * saturate(lightTS.z * 2.0f) * 1.5f;
-		lens = float2(1.0f - rim, caustic);
-	}
-	return lens;
+	float r = length(hudRainLocal);
+	float rim = smoothstep(0.55f, 0.95f, r) * hudRainCover * 0.45f;
+	float2 spot = hudRainLocal + normalize(lightTS).xy * 0.45f;	// the focus lies opposite the light
+	float caustic = saturate(1.0f - length(spot) * 2.2f);
+	caustic = caustic * caustic * hudRainCover * saturate(lightTS.z * 2.0f) * 1.5f;
+	return float2(1.0f - rim, caustic);
 }
 
 #else

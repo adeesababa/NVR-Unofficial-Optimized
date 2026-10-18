@@ -70,17 +70,12 @@ float DiffuseEnergyKeep(float NdotV, float roughness) {
 #elif PBR_SMITH_CORRELATED
     return SmithCorrelatedKeep(NdotV, roughness);
 #else
-    // fixes-b #57: EnergySplit off (TESR_PBRMath.x <= 0.5, the default) keeps exactly 1.0: the polynomial is only worked out when on.
-    float keep = 1.0f;
-    [branch] if (TESR_PBRMath.x > 0.5f) {
-        const float t = saturate((NdotV - 0.055f) * (1.0f / 0.525f));
-        const float x = saturate((0.53f - roughness) * (1.0f / 0.461f));
-        const float lowEnd = saturate((roughness - 0.02f) * (1.0f / 0.05f));
-        const float u = 1.0f - t;
-        const float excess = x * lowEnd * t * u * u * ((0.10380582f + 0.69366243f * x) + t * (0.27762281f - 0.88561283f * x));
-        keep = 1.0f - excess * (1.0f / 0.95f);
-    }
-    return keep;
+    const float t = saturate((NdotV - 0.055f) * (1.0f / 0.525f));
+    const float x = saturate((0.53f - roughness) * (1.0f / 0.461f));
+    const float lowEnd = saturate((roughness - 0.02f) * (1.0f / 0.05f));
+    const float u = 1.0f - t;
+    const float excess = x * lowEnd * t * u * u * ((0.10380582f + 0.69366243f * x) + t * (0.27762281f - 0.88561283f * x));
+    return TESR_PBRMath.x > 0.5f ? 1.0f - excess * (1.0f / 0.95f) : 1.0f;
 #endif
 }
 static float PBRDiffuseKeep = 1.0f;
