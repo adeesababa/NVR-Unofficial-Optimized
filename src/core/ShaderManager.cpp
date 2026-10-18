@@ -1093,14 +1093,39 @@ static int LampMaskRect(RECT& rect, int& lampCount) {
 		if (!(radius > 0.0f) || radius > 1e6f) return 0;
 		const float reach = radius * 1.02f + 2.0f;
 		float lx0 = 1e30f, ly0 = 1e30f, lx1 = -1e30f, ly1 = -1e30f;
+		// fixes-a #14: the box's corners in camera space (x right, y up, z forward). A pixel's reconstructed position has z = its depth,
+		// which is never behind the near plane, so only the part of the box with z >= kNearClip can meet a pixel: a box entirely behind
+		// that costs nothing (the lamp is skipped), and a box that straddles it is clipped to it (the 12 edges that cross the plane
+		// give the new vertices; the hull of a convex polygon's projection is the hull of its vertices' projections). The old code
+		// drew the whole pass for either, so one lamp behind the camera switched the scissor off. kNearClip is a tenth of the world
+		// near plane NVR sets (2.5, CameraManager.cpp), so nothing visible is cut (the in-game LampMaskScissorCheck compares it).
+		const float kNearClip = 0.25f;
+		D3DXVECTOR3 cam[8];
+		bool front[8];
+		int inFront = 0;
 		for (int corner = 0; corner < 8; corner++) {
 			const D3DXVECTOR3 p(lamps[k].x + ((corner & 1) ? reach : -reach) - C.x, lamps[k].y + ((corner & 2) ? reach : -reach) - C.y,
 				lamps[k].z + ((corner & 4) ? reach : -reach) - C.z);
-			const float z = D3DXVec3Dot(&p, &F);
-			if (z < 1.0f) return 0;	// the box reaches behind (or right at) the camera: whole pass
-			const float u = (D3DXVec3Dot(&p, &R) / z * P._11 + 1.0f) * 0.5f * W;	// toWorld inverted: 2u - 1 = (x / z) * P00
-			const float v = (1.0f - D3DXVec3Dot(&p, &U) / z * P._22) * 0.5f * H;	// 2v - 1 = -(y / z) * P11
+			cam[corner] = D3DXVECTOR3(D3DXVec3Dot(&p, &R), D3DXVec3Dot(&p, &U), D3DXVec3Dot(&p, &F));
+			front[corner] = cam[corner].z >= kNearClip;
+			if (front[corner]) inFront++;
+		}
+		if (inFront == 0) continue;	// the whole box is behind the camera: this lamp reaches no pixel
+		auto grow = [&](float x, float y, float z) {
+			const float u = (x / z * P._11 + 1.0f) * 0.5f * W;	// toWorld inverted: 2u - 1 = (x / z) * P00
+			const float v = (1.0f - y / z * P._22) * 0.5f * H;	// 2v - 1 = -(y / z) * P11
 			lx0 = (std::min)(lx0, u); lx1 = (std::max)(lx1, u); ly0 = (std::min)(ly0, v); ly1 = (std::max)(ly1, v);
+		};
+		for (int corner = 0; corner < 8; corner++) {
+			if (!front[corner]) continue;
+			grow(cam[corner].x, cam[corner].y, cam[corner].z);
+			if (inFront == 8) continue;
+			for (int bit = 1; bit < 8; bit <<= 1) {	// an edge from this corner to one behind the plane: its crossing point
+				const int other = corner ^ bit;
+				if (front[other]) continue;
+				const float t = (kNearClip - cam[corner].z) / (cam[other].z - cam[corner].z);
+				grow(cam[corner].x + (cam[other].x - cam[corner].x) * t, cam[corner].y + (cam[other].y - cam[corner].y) * t, kNearClip);
+			}
 		}
 		if (lx1 < -1.0f || ly1 < -1.0f || lx0 > W + 1.0f || ly0 > H + 1.0f) continue;	// off screen: no pixel's ray meets it
 		any = true;
@@ -1290,8 +1315,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				maskMode = LampMaskRect(maskRect, lampCount);
 			static int loggedMaskMode = -1;
 			if (maskMode != loggedMaskMode) {
-				Logger::Log("LAMP MASK STATE: %s (%d lamps in its lists)", maskMode == 1 ? "SKIPPED, no lamp reaches the screen: the buffer cleared to 0, as the pass would write" :
-					maskMode == 2 ? "SCISSORED to the lamps' screen rectangle" : "drawn whole", lampCount);
+				// fixes-a #51: the first 20 switches only (it was a line per switch, ~380 an hour while turning); more with the F10 profile
+				static int stateLines = 0;
+				if (stateLines < 20 || GpuTimer::Enabled) {
+					Logger::Log("LAMP MASK STATE: %s (%d lamps in its lists)", maskMode == 1 ? "SKIPPED, no lamp reaches the screen: the buffer cleared to 0, as the pass would write" :
+						maskMode == 2 ? "SCISSORED to the lamps' screen rectangle" : "drawn whole", lampCount);
+					if (++stateLines == 20 && !GpuTimer::Enabled) Logger::Log("LAMP MASK STATE: no more lines (20 logged; the F10 profile logs them all)");
+				}
 				loggedMaskMode = maskMode;
 			}
 			if (GpuTimer::Enabled) {	// a line every 240 frames with the profile on: how often each case ran
@@ -1312,7 +1342,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				// scissor rectangle to the whole target, as RenderEffectToRT leaves it.
 				IDirect3DSurface9* maskSurface = Effects.ShadowsExteriors->Textures.ShadowPassSurface;
 				DWORD scissorWas = FALSE;
+				RECT scissorRectWas = {};	// fixes-a #15: saved and restored like LampScissor.h (it no longer relies on SetRenderTarget's reset)
 				Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissorWas);
+				const bool haveRectWas = SUCCEEDED(Device->GetScissorRect(&scissorRectWas));
 				Device->SetRenderTarget(0, maskSurface);
 				Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
 				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);	// (EffectRecord::Render's clear)
@@ -1326,6 +1358,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 					Device->SetRenderTarget(0, maskSurface);	// the rectangle back to the whole target
 				}
 				Device->SetRenderState(D3DRS_SCISSORTESTENABLE, scissorWas);
+				if (haveRectWas) Device->SetScissorRect(&scissorRectWas);
 #if NVR_TEST_TOOLS
 				LampMaskSelfCheck(Device, maskSurface, maskMode, maskRect);	// DIAGNOSTIC LampMaskScissorCheck (off: returns at once)
 #endif
