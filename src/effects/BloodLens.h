@@ -16,6 +16,7 @@ public:
 	BloodLensStruct	Constants;
 
 	float effectTime;
+	float intensity = 0.0f;	// UNOFFICIAL fixes-b #45: [Shaders.BloodLens.Main] Intensity, applied to Params.w every frame
 
 	void	UpdateConstants();
 	void	RegisterConstants();
