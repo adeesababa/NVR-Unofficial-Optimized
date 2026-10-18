@@ -299,9 +299,19 @@ void ShaderManager::UpdateConstants() {
 	if (!currentCell) return; // if no cell is present, we skip update to avoid trying to access values that don't exist
 	
 	GameState.isExterior = !currentCell->IsInterior();// || Player->parentCell->flags0 & TESObjectCELL::kFlags0_BehaveLikeExterior; // < use exterior flag, broken for now
-	GameState.isCellChanged = currentCell != PreviousCell;
-	PreviousCell = currentCell;
-	if (GameState.isCellChanged) {
+	// fixes-a #43: UpdateConstants runs twice a rendered frame; the second call used to see the cell already stored and clear the
+	// flag, so every reader after it (TAA's history reset, AmbientLight, BounceLight, clouds) never saw a change. The change is
+	// worked out once per frame (FrameNumber) and held for the whole frame; the one-time work below still runs once.
+	static unsigned int cellFrame = ~0u;
+	static bool cellChangedThisFrame = false;
+	const bool firstCallOfFrame = TheFrameRateManager->FrameNumber != cellFrame;
+	if (firstCallOfFrame) {
+		cellFrame = TheFrameRateManager->FrameNumber;
+		cellChangedThisFrame = currentCell != PreviousCell;
+		PreviousCell = currentCell;
+	}
+	GameState.isCellChanged = cellChangedThisFrame;
+	if (firstCallOfFrame && GameState.isCellChanged) {
 		TheSettingManager->SettingsChanged = true; // force update constants during cell transition
 		// Preset resolve+apply as early in this function as possible -- before
 		// anything below reads SettingsMain, so nothing this frame observes a
