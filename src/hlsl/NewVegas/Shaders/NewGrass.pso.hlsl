@@ -17,7 +17,8 @@ float4 NG_Ramp0 : register(c20);   // root colour (as stored in the texture, gam
 float4 NG_Ramp1 : register(c21);
 float4 NG_Ramp2 : register(c22);
 float4 NG_Ramp3 : register(c23);   // tip colour
-float4 NG_PS    : register(c24);   // x unused, y light wrap (thin leaves let light round), z tip lift, w per-blade brightness variation
+float4 NG_PS    : register(c24);   // x shadow lift (units above the blade the cascade lookup is taken: no acne from the land), y light wrap, z tip lift, w per-blade brightness variation
+float4 NG_PS2   : register(c25);   // x NormalBlend (0 the blade's normal, 1 the ground normal the cards are lit with), y SkyLight (NVR's sky ambient share; the cards get none)
 
 struct PS_INPUT {
     float4 clip     : TEXCOORD0_centroid;
@@ -26,6 +27,7 @@ struct PS_INPUT {
     float4 sunDir   : TEXCOORD3;
     float4 ambient  : TEXCOORD4_centroid;
     float4 sun      : TEXCOORD5_centroid;
+    float4 up       : TEXCOORD6_centroid;   // xyz the tuft's ground normal
     float4 fog      : COLOR0;
 };
 
@@ -49,15 +51,19 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 N = normalize(IN.normal.xyz);
     N = dot(N, -camRel) < 0.0f ? -N : N;
 
-    // Thin blades let light round their edge: a wrapped sun term instead of a hard Lambert.
-    float ndl = saturate((dot(N, IN.sunDir.xyz) + NG_PS.y) / (1.0f + NG_PS.y));
+    // The sun term: the cards are lit by their ground normal (about up: every card in full sun at noon); a blade's own normal faces
+    // sideways and would get half of that. Blend toward the ground normal (NormalBlend), then a little wrap (thin leaves let light round).
+    float3 Nlit = normalize(lerp(N, normalize(IN.up.xyz), NG_PS2.x));
+    float ndl = saturate((dot(Nlit, IN.sunDir.xyz) + NG_PS.y) / (1.0f + NG_PS.y));
     float sunAmount = ndl * IN.params.w * IN.normal.w;
 #if FORWARD_SHADOWS && NEWGRASS_SHADOWS
-    sunAmount *= GetSunShadow(camRel, N);
+    // Looked up a little above the blade: the land is a caster in the cascades at its own height, so a point on a blade's foot is in it.
+    sunAmount *= GetSunShadow(camRel + float3(0.0f, 0.0f, NG_PS.x), N);
 #endif
 
-    // As GRASS23x000TMS.pso: the colours decoded (PBRLight / PBRAmbient), the plain amounts outside, the sky's light by the normal.
-    float3 lighting = PBRLight(IN.sun.rgb) * sunAmount + PBRAmbient(IN.ambient.rgb) * IN.params.w + SkyAmbient(N, 1.0f);
+    // As GRASS23x000TMS.pso: the colours decoded (PBRLight / PBRAmbient), the plain amounts outside; the sky's light by the normal only
+    // as much as asked (the game's card path has none of it).
+    float3 lighting = PBRLight(IN.sun.rgb) * sunAmount + PBRAmbient(IN.ambient.rgb) * IN.params.w + SkyAmbient(N, 1.0f) * NG_PS2.y;
     float3 lit = LinEncode(lighting * LinColor(albedo));
 
     OUT.color.rgb = lerp(lit, IN.fog.rgb, IN.fog.w);

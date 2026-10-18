@@ -46,6 +46,7 @@ struct VS_OUTPUT {
     float4 sunDir   : TEXCOORD3;   // xyz the sun direction the game lights the grass with
     float4 ambient  : TEXCOORD4;   // the game's grass ambient colour
     float4 sun      : TEXCOORD5;   // the game's grass sun colour
+    float4 up       : TEXCOORD6;   // xyz the tuft's up (the ground normal the cards are lit with)
     float4 fog      : COLOR0;      // rgb fog colour, w fog amount (as the game's grass VS)
 };
 
@@ -136,6 +137,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.sunDir = float4(DiffuseDir, 0.0f);
     OUT.ambient = float4(AmbientColor.rgb, 1.0f);
     OUT.sun = float4(DiffuseColor, 1.0f);
+    // The cards' sun term uses the packed ground normal (orient) whatever the variant: the PS blends it with the blade's own normal.
+    OUT.up = float4(orient, 0.0f);
 
     float fogDist = length(float3(OUT.position.xy, OUT.position.w - OUT.position.z));
     float fogStrength = 1.0f - saturate((FogParam.x - fogDist) / FogParam.y);

@@ -34,16 +34,19 @@ namespace NewGrass {
 	struct SettingsStruct {
 		bool	Enabled = false;
 		float	BladeDistance = 7000.0f;	// pieces whose nearest tuft is farther stay the game's cards
-		int		Blades = 8;					// blades per tuft near the player (1-8)
-		float	LodNear = 1200.0f, LodFar = 4500.0f, WidenDistance = 2500.0f;
-		float	HeightScale = 1.0f, WidthRatio = 0.09f, Spread = 0.8f, Bend = 0.35f, Flutter = 0.15f;
+		int		Blades = 10;				// blades per tuft near the player (1-12)
+		float	LodNear = 1000.0f, LodFar = 4500.0f, WidenDistance = 5000.0f;
+		float	HeightScale = 1.0f, WidthRatio = 0.035f, Spread = 0.8f, Bend = 0.35f, Flutter = 0.15f;
 		bool	ReceiveShadows = true;
+		float	ShadowLift = 10.0f;			// units above the blade the cascade lookup is taken (the land casts at its own height)
 		float	Wrap = 0.3f, TipLift = 0.5f, Variation = 0.12f;
+		float	NormalBlend = 0.7f;			// the sun term: 0 the blade's normal, 1 the ground normal the cards are lit with
+		float	SkyLight = 0.0f;			// NVR's sky ambient share on the blades (the game's card path has none)
 		int		Log = 0;					// 1 = a line per draw for 3 frames (diagnostic)
 	};
 	inline SettingsStruct S;
 
-	inline const unsigned kTufts = 228, kMaxBlades = 8;
+	inline const unsigned kTufts = 228, kMaxBlades = 12;
 	inline bool Active = false;					// this early call replaces draws (settings + resources OK)
 	inline bool Hooked = false;
 	typedef HRESULT(STDMETHODCALLTYPE* DrawIndexedPrimitiveFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
@@ -397,10 +400,11 @@ namespace NewGrass {
 			LastVariant == '2' ? 1.0f : 0.0f, (float)blades, S.HeightScale, (float)tufts,
 			1.0f / (float)(v.Levels - 1), (float)ArmPart, S.Flutter, 0.0f };
 		device->SetVertexShaderConstantF(248, vsc, 4);
-		float psc[20];
+		float psc[24];
 		memcpy(psc, ramp.C, sizeof(ramp.C));
-		psc[16] = 0.0f; psc[17] = S.Wrap; psc[18] = S.TipLift; psc[19] = S.Variation;
-		device->SetPixelShaderConstantF(20, psc, 5);
+		psc[16] = S.ShadowLift; psc[17] = S.Wrap; psc[18] = S.TipLift; psc[19] = S.Variation;
+		psc[20] = S.NormalBlend; psc[21] = S.SkyLight; psc[22] = 0.0f; psc[23] = 0.0f;
+		device->SetPixelShaderConstantF(20, psc, 6);
 		device->SetVertexDeclaration(Decl);
 		device->SetStreamSource(0, v.VB, 0, 4);
 		device->SetIndices(v.IB);
@@ -509,6 +513,9 @@ namespace NewGrass {
 		S.Bend = TheSettingManager->GetSettingF(s, "Bend");
 		S.Flutter = TheSettingManager->GetSettingF(s, "Flutter");
 		S.ReceiveShadows = TheSettingManager->GetSettingI(s, "ReceiveShadows") != 0;
+		S.ShadowLift = TheSettingManager->GetSettingF(s, "ShadowLift");
+		S.NormalBlend = TheSettingManager->GetSettingF(s, "NormalBlend");
+		S.SkyLight = TheSettingManager->GetSettingF(s, "SkyLight");
 		S.Wrap = TheSettingManager->GetSettingF(s, "Wrap");
 		S.TipLift = TheSettingManager->GetSettingF(s, "TipLift");
 		S.Variation = TheSettingManager->GetSettingF(s, "Variation");
