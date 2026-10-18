@@ -393,6 +393,7 @@ public:
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;
+		UInt32			DefaultsGeneration = 0;	// UNOFFICIAL 2026-10-18: counts the loads of the defaults file (Init); the menu's "New in this patch" list is rebuilt when it changes
 		tomlValue		MaxQualityConfig;	// UNOFFICIAL 2026-10-15: Max Quality's settings (NewVegasReloaded.dll.maxquality.toml), read over the user's while it is on
 		tomlValue		MaxQualityUser;		// UNOFFICIAL: the user's own changes to those (NewVegasReloaded.dll.maxquality.user.toml, also in MaxQualityConfig)
 		bool			MaxQualityActive = false;
@@ -444,6 +445,7 @@ public:
 	template <typename T> static void			FillFromString(const char* String, const char* Delimiter, T* Values);
 
 	Configuration					Config;
+	UInt32							SettingsRevision = 0;	// UNOFFICIAL 2026-10-18: bumped by every SetSetting / LoadSettings; the menu's "New in this patch" list re-reads its values when it changes
 	bool							GameLoading;
 	bool							SettingsChanged;
 	bool							hasUnsavedChanges;
