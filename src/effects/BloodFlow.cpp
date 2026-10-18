@@ -481,7 +481,12 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.SplatSpray = std::clamp(TheSettingManager->GetSettingF(section, "SplatSpray"), 0.0f, 2.0f);
 	Settings.SplatDrips = std::clamp(TheSettingManager->GetSettingF(section, "SplatDrips"), 0.0f, 3.0f);
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
-	Logger::Log("BloodFlow: splatter decals for pools and puddles: %s", Settings.SplatterAtlas ? "Textures\\decals\\fxbloodsplatterdecals01.dds" : "none (no loose file), drawn shapes");
+	// UNOFFICIAL fixes-b #53: this runs at every settings refresh (every cell change): log only the first time and when the answer changes
+	static int loggedAtlas = -1;
+	if (loggedAtlas != (Settings.SplatterAtlas ? 1 : 0)) {
+		loggedAtlas = Settings.SplatterAtlas ? 1 : 0;
+		Logger::Log("BloodFlow: splatter decals for pools and puddles: %s", Settings.SplatterAtlas ? "Textures\\decals\\fxbloodsplatterdecals01.dds" : "none (no loose file), drawn shapes");
+	}
 }
 
 void BloodFlowEffect::GatherSplats() {

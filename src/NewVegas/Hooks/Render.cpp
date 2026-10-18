@@ -2168,7 +2168,7 @@ namespace GrassFirst {
 				TheRenderManager->device->SetVertexShaderConstantF(19, leave, 1);
 			}
 			Records.clear();
-			if (++Frames <= 3 || Frames % 3600 == 0)
+			if (++Frames <= 3 || (Frames % 3600 == 0 && Frames <= 3600 * 17))	// UNOFFICIAL fixes-b #53: at most 20 lines per session
 				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned); fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
 					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
 			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = 0;
