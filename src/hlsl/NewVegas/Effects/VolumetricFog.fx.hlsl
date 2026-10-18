@@ -381,10 +381,16 @@ void getFlatFogTerms(float distance, float3 extinctionColor, float3 inscattering
 }
 
 
-float getSky(float2 uv) {
+// UNOFFICIAL 2026-10-18 InteriorShadowFold: in the interior composite the scene here is the one before the darkening; the sky test
+// below reads its luma (where a pixel lies at the far plane), so there it takes the darkened colour the separate pass would have
+// stored at that pixel instead (InteriorStoredColor, below). interior is a compile-time constant (false: as before).
+float4 InteriorStoredColor(float2 uv);
+float getSky(float2 uv, bool interior = false) {
 	// Explicit-LOD reads throughout (FogTerms can run inside a dynamic branch, see FogApply); these buffers have one
 	// mip level, so they read exactly what tex2D did.
-	float4 color = linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0, 0)));
+	float4 scene = tex2Dlod(TESR_SourceBuffer, float4(uv, 0, 0));
+	if (interior) scene = InteriorStoredColor(uv);
+	float4 color = linearize(scene);
 
 	float distance = 0.5 * TESR_ReciprocalResolution.xy;
 	distance *= 1;
@@ -554,7 +560,7 @@ float getLegacyHeightFog(float distance, float falloff, float3 worldPos, float h
 	return fog * (length(eyeVector) / max(distance, 0.0001));
 }
 
-void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut)
+void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false)
 {
 	float4 pureFogColor = linearize(TESR_FogColor);
 
@@ -607,7 +613,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 
 		distantFog = pows(smoothstep(LegacyDistantFogRange, 1.0, normalizedDepth), 0.5);
 		// The old shader's sky mask (only read here when DistantFogHeight is 0); it then set isSky to 0 for the rest.
-		[branch] if (LegacyDistantFogHeight == 0) distantHeightFade = 1.0 - (getSky(uv) > 0);
+		[branch] if (LegacyDistantFogHeight == 0) distantHeightFade = 1.0 - (getSky(uv, interior) > 0);
 		else distantHeightFade = exp(-pointHeight / (80000 * LegacyDistantFogHeight));
 
 		inScattering += SunsetFog;
@@ -647,7 +653,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 // depend only on depth, the sky mask and constants -- never on scene detail beyond getSky's
 // luma gate -- which lets the dedicated path evaluate them at half resolution and apply them
 // to the full-resolution scene instead of reconstructing the scene itself from half resolution.
-void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut)
+void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool interior = false)
 {
 	VSOUT IN = (VSOUT)0;
 	IN.UVCoord = uv;
@@ -670,7 +676,7 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 	float fogPower = lerp(1, FogPower, saturate(WeatherImpact));
 	float fogDepth = pows(normalizedDepth, fogPower) * farZ;
 
-	float isSky = getSky(IN.UVCoord);
+	float isSky = getSky(IN.UVCoord, interior);
 	// getSky's 5-tap test also lights up on pixels bordering the sky depth threshold, so this
 	// doubles as an edge-dilated mask usable for anti-aliasing that boundary further down.
 	float skyMaskFactor = lerp(1.0, 1.0 - isSky, WeatherFilterBlend); // weather can disable the sky exclusion so fog blends fully into an overcast sky
@@ -903,12 +909,12 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 }
 
 // Legacy fog (custom build) or the current fog: legacy is a compile-time constant, one per technique.
-void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy)
+void FogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float nightAmountOut, bool legacy, bool interior = false)
 {
 	if (legacy)
-		LegacyFogTerms(uv, fogMul, fogAdd, nightAmountOut);
+		LegacyFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior);
 	else
-		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut);
+		ModernFogTerms(uv, fogMul, fogAdd, nightAmountOut, interior);
 }
 
 float4 VolumetricFog(VSOUT IN, uniform bool legacy) : COLOR0
@@ -1010,7 +1016,7 @@ struct FogTermsOut
 // The nearest pixel wins so thin things in front, which may cover only one pixel of a block, always get a sample of their
 // own; the sky or ground behind them is covered by the neighbouring blocks or, where none of those is at their distance
 // either (a gap in foliage), by FogApply working the fog out for that pixel itself.
-FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy)
+FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy, uniform bool interior = false)
 {
 	FogTermsOut OUT;
 	float2 h = 0.5 * (NVR_FogLayout.zw - TESR_ReciprocalResolution.xy);	// UNOFFICIAL: half a pixel at half size, 0 at full size (Max Quality)
@@ -1024,7 +1030,7 @@ FogTermsOut DedicatedFogEstimate(VSOUT IN, uniform bool legacy)
 	}
 	float3 fogMul, fogAdd;
 	float nightAmount;
-	FogTerms(best, fogMul, fogAdd, nightAmount, legacy);
+	FogTerms(best, fogMul, fogAdd, nightAmount, legacy, interior);
 	OUT.mulDepth = float4(fogMul, saturate(bestDepth / farZ));
 	OUT.add = float4(fogAdd, 1);
 	return OUT;
@@ -1040,7 +1046,7 @@ VSOUT HalfVS(VSIN IN)
 }
 
 // Depth-aware upsample of the half-resolution fog coefficients, applied to a gamma-space colour.
-float3 FogApply(float3 gammaColor, float2 uv, bool legacy)
+float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false)
 {
 	float2 texel = NVR_FogLayout.zw;
 	float2 position = uv / texel - 0.5;
@@ -1075,7 +1081,7 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy)
 	float bestDifference = min(min(difference.x, difference.y), min(difference.z, difference.w));
 	[branch] if (bestDifference > 3.0) {
 		float nightAmount;
-		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy);
+		FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, interior);
 	}
 
 	float3 color = linearize(gammaColor);
@@ -1321,16 +1327,29 @@ float3 TruncateToHalf(float3 x)
 	return sign(x) * (floor(a * exp2(10 - e)) * exp2(e - 10));
 }
 
-float4 DedicatedFogCompositeInterior(VSOUT IN, uniform bool legacy) : COLOR0
+// As the separate pass's render target stores it (NVR_CompositeFlags.w: the GPU's rounding, HalfStoreMode).
+float3 InteriorStoreRound(float3 color)
 {
-	float3 color = ApplyInteriorShadow(IN.UVCoord, tex2D(TESR_SourceBuffer, IN.UVCoord), tex2D(TESR_PointShadowBuffer, IN.UVCoord).r).rgb;
 	[branch] if (NVR_CompositeFlags.w < 0.5) color = RoundToHalf(color);
 	else if (NVR_CompositeFlags.w > 1.5) color = TruncateToHalf(color);
-	// From here as DedicatedFogComposite (no sun shadows indoors).
+	return color;
+}
+
+// What the separate pass stored at this pixel (for the fog's sky test, getSky): explicit-LOD reads, it runs in dynamic branches.
+float4 InteriorStoredColor(float2 uv)
+{
+	float4 scene = tex2Dlod(TESR_SourceBuffer, float4(uv, 0, 0));
+	return float4(InteriorStoreRound(ApplyInteriorShadowLod(uv, scene, tex2Dlod(TESR_PointShadowBuffer, float4(uv, 0, 0)).r).rgb), scene.a);
+}
+
+float4 DedicatedFogCompositeInterior(VSOUT IN, uniform bool legacy) : COLOR0
+{
+	float3 color = InteriorStoreRound(ApplyInteriorShadow(IN.UVCoord, tex2D(TESR_SourceBuffer, IN.UVCoord), tex2D(TESR_PointShadowBuffer, IN.UVCoord).r).rgb);
+	// From here as DedicatedFogComposite (no sun shadows indoors); the fog's sky test reads the darkened scene (getSky).
 	color = pows(color, 2.2);
 	[branch] if (NVR_CompositeFlags.y > 0.5) color = CompositeAO(color, IN.UVCoord);
 	color = pows(color, 1.0 / 2.2);
-	color = FogApply(color, IN.UVCoord, legacy);
+	color = FogApply(color, IN.UVCoord, legacy, true);
 	[branch] if (NVR_FogGridFlags.y > 0.5) color = FogGridLight(color, IN.UVCoord);	// UNOFFICIAL froxel grid
 	return float4(color, 1);
 }
@@ -1340,7 +1359,7 @@ technique CompositeFogInterior
 	pass Estimate
 	{
 		VertexShader = compile vs_3_0 HalfVS();
-		PixelShader = compile ps_3_0 DedicatedFogEstimate(false);
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(false, true);
 	}
 	pass Reconstruct
 	{
@@ -1386,7 +1405,7 @@ technique CompositeFogInteriorLegacy
 	pass Estimate
 	{
 		VertexShader = compile vs_3_0 HalfVS();
-		PixelShader = compile ps_3_0 DedicatedFogEstimate(true);
+		PixelShader = compile ps_3_0 DedicatedFogEstimate(true, true);
 	}
 	pass Reconstruct
 	{

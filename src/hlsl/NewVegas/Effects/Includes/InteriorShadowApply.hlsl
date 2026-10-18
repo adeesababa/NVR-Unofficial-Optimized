@@ -5,9 +5,9 @@
 // INTERIOR_SHADOW_MAXDISTANCE defined (the distance where the shadows have faded out: TESR_ShadowFade.w).
 
 // Applies the blurred shadow term to the scene colour. Shared by both techniques of ShadowsInteriors.fx.
-float4 ApplyInteriorShadow(float2 uv, float4 color, float shadowSample) {
+// (depth: readDepth(uv); the Lod form below reads it with tex2Dlod, the same texel, for use inside dynamic branches)
+float4 ApplyInteriorShadowDepth(float2 uv, float4 color, float shadowSample, float depth) {
     color.rgb = pows(color.rgb, 2.2); // linearise
-	float depth = readDepth(uv);
 	float3 eyeDir = toWorld(uv);
 	float uniformDepth = length(depth * eyeDir);
 
@@ -28,4 +28,12 @@ float4 ApplyInteriorShadow(float2 uv, float4 color, float shadowSample) {
     finalColor.rgb = pows(finalColor.rgb, 1.0/2.2); // delinearise
 
 	return float4(finalColor.rgb, 1);
+}
+
+float4 ApplyInteriorShadow(float2 uv, float4 color, float shadowSample) {
+	return ApplyInteriorShadowDepth(uv, color, shadowSample, readDepth(uv));
+}
+
+float4 ApplyInteriorShadowLod(float2 uv, float4 color, float shadowSample) {
+	return ApplyInteriorShadowDepth(uv, color, shadowSample, readDepthLod(uv));
 }

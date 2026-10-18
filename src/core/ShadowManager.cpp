@@ -212,6 +212,7 @@ static NiPoint3* CubeEyeOverride = nullptr;
 // (RedrawActorsOnly) are always drawn in full. DIAGNOSTIC CubeFaceViewCullCheck: the left-out faces are filled with distance 0.1
 // (a blocker at a tenth of the reach: all beyond in shadow; 0 would mean no data), so a face read after all shows as a dark patch.
 static bool CubeCullAllowed = false;	// set by RenderShadowMaps around one lamp's draws
+static bool ForwardWasActive = false;	// PointShadowForward::Active as Publish left it last frame (Begin clears it before the loop)
 static bool CubeCulledAny = false;		// RenderShadowCubeMap left a face out
 static unsigned statFacesCulled[3] = {};
 
@@ -1893,7 +1894,7 @@ void ShadowManager::RenderShadowMaps() {
 			bool anchored = false;
 			{
 				const float tolerance = TheSettingManager->SettingsMain.Main.LampShadowMoveTolerance;
-				if (tolerance > 0.0f && !isExterior && PointShadowForward::UsesAllSlots(isExterior) && PointShadowForward::Active &&
+				if (tolerance > 0.0f && !isExterior && PointShadowForward::UsesAllSlots(isExterior) && ForwardWasActive &&
 					slots[i].valid && slots[i].light == shadowLight && slots[i].cell == now.cell && slots[i].radius == now.radius) {
 					const float dx = now.x - slots[i].x, dy = now.y - slots[i].y, dz = now.z - slots[i].z;
 					if ((dx != 0.0f || dy != 0.0f || dz != 0.0f) && dx * dx + dy * dy + dz * dz <= tolerance * tolerance) {
@@ -1949,8 +1950,9 @@ void ShadowManager::RenderShadowMaps() {
 			const PointShadowDraw draw = PointShadowDrawPlan(split && hasList, staticSlots[i], staticNow, moving);
 			CubeEyeOverride = anchored ? &anchor : nullptr;	// UNOFFICIAL LampShadowMoveTolerance: draw from the kept point
 			// UNOFFICIAL CubeFaceViewCull: only for a lamp redrawn every frame anyway (above RenderShadowCubeMap)
+			// (Any reader of the cube maps indoors -- the forward lookups or the screen-space lamp mask -- reads them for pixels in view.)
 			CubeCullAllowed = TheSettingManager->SettingsMain.Main.CubeFaceViewCull && interval <= 1 && !isExterior &&
-				PointShadowForward::UsesAllSlots(isExterior) && PointShadowForward::Active && (moving || why == PointShadowRedraw::Moved);
+				(moving || why == PointShadowRedraw::Moved);
 			CubeCulledAny = false;
 			struct EyeReset { ~EyeReset() { CubeEyeOverride = nullptr; CubeCullAllowed = false; } } eyeReset;
 			// UNOFFICIAL 2026-10-18 diagnostic (intshadow): GPU time per lamp of each kind of draw (avg per lamp; the counts per frame
@@ -1991,6 +1993,7 @@ void ShadowManager::RenderShadowMaps() {
 		// UNOFFICIAL interior forward point-light shadows: the lights whose cube map is theirs this frame.
 		if (!isExterior) {
 			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
+			ForwardWasActive = PointShadowForward::Active;
 			PointShadowForward::FrameStats();
 		}
 
