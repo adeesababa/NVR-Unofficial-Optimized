@@ -175,7 +175,9 @@ void TerrainShaders::UpdateSettings() {
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
 	BlendingConstants.Data.w = (float)BlendingSettings.DebugView;
-	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
+	// UNOFFICIAL 2026-10-17 HeightEdge 1 (community submission): the height-weighted edge, sent as a negative HeightBlend.
+	const bool heightEdge = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "HeightEdge") != 0;
+	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, heightEdge ? -BlendingSettings.HeightBlend : BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
 	// UNOFFICIAL 2026-10-13 (user: blend so it does not need TAA): Smooth (on by default) fades the land by blending; off, the dither.
 	BlendingConstants.Extra.w = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Smooth") ? 1.0f : 0.0f;
 }

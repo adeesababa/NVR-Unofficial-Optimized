@@ -266,6 +266,17 @@ float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
 // over the object, where it is low a little less. Strongest mid-fade, none at either end. height 0-1.
 float terrainBlendEdge(float keep, float height) {
     if (keep >= 1.0f || keep < 0.0f) return keep;
+    // UNOFFICIAL 2026-10-17 HeightEdge 1 (community submission, sent to the user): the land and the object weighed like the
+    // land's own layers in getTerrainHeight (coverage^(1+s) x (0.001 + height^(4s)), the object at a neutral height 0.5), so
+    // the edge follows the land texture's height map: sand fills the gaps between pebbles, crisper than the nudge below.
+    // Sent as a negative HeightBlend (TESR_TerrainBlendShape.y < 0; Terrain.cpp), so no new constant is needed.
+    [branch] if (TESR_TerrainBlendShape.y < 0.0f) {
+        const float strength = -TESR_TerrainBlendShape.y;
+        const float coveragePower = 1.0f + strength, heightPower = 4.0f * strength;
+        const float terrainWeight = pow(keep, coveragePower) * (0.001f + pow(saturate(height), heightPower));
+        const float meshWeight = pow(1.0f - keep, coveragePower) * (0.001f + pow(0.5f, heightPower));
+        return terrainWeight / max(terrainWeight + meshWeight, 0.000001f);
+    }
     return saturate(keep + (height - 0.5f) * TESR_TerrainBlendShape.y * 4.0f * keep * (1.0f - keep));
 }
 
@@ -351,7 +362,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
 #if TERRAIN_BLEND_ACTIVE
     // The land texture's height shapes the blend's edge (HeightBlend); the dither, if used, cuts on the shaped edge.
-    [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y > 0.0f)
+    [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y != 0.0f)   // < 0: HeightEdge 1
         terrainKeep = terrainBlendEdge(terrainKeep, terrainBlendHeight(offsetUV, dx, dy, texCount, BaseMap, weights, heightStatus));
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
         clip(terrainKeep - terrainBlendNoise(IN.screenPos));
