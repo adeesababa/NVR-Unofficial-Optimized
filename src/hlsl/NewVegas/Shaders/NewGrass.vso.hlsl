@@ -73,9 +73,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // Blades per tuft fall with distance (LodNear -> LodFar: all -> one); the blade past the budget shrinks away over one blade of
     // budget (no popping as the camera moves), then is folded to a point outside the view (no raster work).
+    // (Round 4's first build still had round 1's far-fade line here, keyed on NG_Lod.w, which now carries Droop: every blade folded.)
     float budget = lerp(NG_Misc.y, 1.0f, saturate((depth - NG_Lod.x) * NG_Lod.y));
     float keep = saturate(budget - blade);
-    if (NG_Lod.w > 0.0f) keep *= saturate((NG_Lod.w - depth) / (0.15f * NG_Lod.w));
     bool gone = IN.packed.x >= NG_Misc.w || keep <= 0.0f || (NG_Var.y > 0.5f && instDist > AlphaParam.z);
     [branch] if (gone) {
         VS_OUTPUT none = (VS_OUTPUT)0;
