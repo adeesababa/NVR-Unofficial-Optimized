@@ -33,7 +33,12 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
 	// UNOFFICIAL 2026-10-17 FastPaths: techniques 0/1 -> their copies 3/4 with the real early returns (when the file has them).
-	if (fastPaths && techniqueIndex <= 1 && Effect->GetTechnique(techniqueIndex + 3)) techniqueIndex += 3;
+	// fixes-b #19: the copy is looked up by NAME (an older SunShadows.fx with other techniques at 3/4 is left alone).
+	if (fastPaths && techniqueIndex <= 1) {
+		static CachedHandle fastCache[2];
+		D3DXHANDLE fast = TechniqueHandle(fastCache[techniqueIndex], techniqueIndex == 0 ? "ContactFast" : "ForwardContactShadowsFast");
+		if (fast && Effect->GetTechnique(techniqueIndex + 3) == fast) techniqueIndex += 3;
+	}
 
 	IDirect3DTexture9* shadowTexture = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture;
 	IDirect3DSurface9* shadowSurface = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassSurface;
