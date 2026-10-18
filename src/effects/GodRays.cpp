@@ -225,10 +225,18 @@ bool GodRaysEffect::IdleGuard() const {
 	const float x = c.ViewSpaceLightDir.x, y = c.ViewSpaceLightDir.y, z = c.ViewSpaceLightDir.z;
 	if (!std::isfinite(x + y + z) || !std::isfinite(c.SunPosition.z) || !(P._11 > 0.01f) || !(P._22 > 0.01f)) return false;
 	if (c.SunPosition.z < 0.342f) return false;	// sin 20 degrees
-	const float margin = 0.2094f;	// 12 degrees
-	const float halfX = atanf(1.0f / P._11), halfY = atanf(1.0f / P._22);	// the frustum's half angles
-	// angles of the sun direction in the view's horizontal and vertical planes (z = forward; behind the camera they pass 90 degrees)
-	return atan2f(fabsf(x), z) >= halfX + margin || atan2f(fabsf(y), z) >= halfY + margin;
+	// fixes-a #56: the sun direction (unit length: ViewSpaceLightDir is not, 0.707 at 45 degrees) must lie 12 degrees outside at least one
+	// of the frustum's side planes. For a unit direction d the angle to a side plane is asin(|x| cos(h) - z sin(h)) (right/left,
+	// h = the horizontal half angle; y with the vertical half angle for top/bottom), so the test is |x| cos h - z sin h >= sin 12.
+	// The old test took the angle in each view plane separately, which is only ~8 degrees at the frustum's corners; this one is
+	// the true distance (never looser: it accepts a subset of what the old test accepted).
+	const float length = sqrtf(x * x + y * y + z * z);
+	if (!(length > 1e-4f)) return false;
+	const float sinMargin = 0.20791f;	// sin 12 degrees
+	const float nx = fabsf(x) / length, ny = fabsf(y) / length, nz = z / length;
+	const float hx = 1.0f / sqrtf(1.0f + P._11 * P._11), cx = P._11 * hx;	// sin and cos of the horizontal half angle (tan h = 1 / P11)
+	const float hy = 1.0f / sqrtf(1.0f + P._22 * P._22), cy = P._22 * hy;
+	return nx * cx - nz * hx >= sinMargin || ny * cy - nz * hy >= sinMargin;
 }
 
 // The last check's answer, when it has arrived (never waits): updates idleEmptyKnown. The query counts the pixels of the 1 x 1 test draw
@@ -243,7 +251,9 @@ void GodRaysEffect::IdlePoll() {
 	}
 	idlePending = false;
 	if (result != S_OK) { idleEmptyKnown = false; return; }
-	idleEmptyKnown = pixels == 0;
+	// fixes-a #54: an answer that sat unread (the effect did not run: interior, night, a toggle, a loading screen) describes another
+	// place or hour: more than 8 rendered frames since it was issued = unknown, so the first frame back does a fresh check.
+	idleEmptyKnown = pixels == 0 && TheFrameRateManager->FrameNumber - idleIssueFrame <= 8;
 	idleLastPixels = pixels;
 #if NVR_TEST_TOOLS
 	if (idleTruth >= 0.0f) {	// ProbeLog 3: the read-back truth taken when the check was issued
@@ -301,6 +311,7 @@ bool GodRaysEffect::IdleIssue(IDirect3DDevice9* Device, IDirect3DTexture9* skyMa
 	idlePending = true;
 	idleAge = 0;
 	idleSinceCheck = 0;
+	idleIssueFrame = TheFrameRateManager->FrameNumber;
 	return true;
 }
 
@@ -415,7 +426,9 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		// A check frame of an idle sky stops here: nothing else is drawn and the picture is left as it is.
 		if (idleCheckFrame) {
 			idleChecks++;
-			IdleIssue(Device, textures[0], reduced.Width, reduced.Height, set);
+			// fixes-a #55: a check that could not be issued, with nothing pending to answer later, must not leave 'sky empty' standing
+			const bool issued = IdleIssue(Device, textures[0], reduced.Width, reduced.Height, set);
+			if (!issued && !idlePending) idleEmptyKnown = false;
 			if (checkOnly) { heavySkipped = true; break; }
 		}
 		combineCheck = Probe(Device, textures, reduced.Width, reduced.Height, set, lowRes);	// DIAGNOSTIC (off: returns at once)
@@ -457,7 +470,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
-	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; idleEmptyKnown = false; return; }
+	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; idleEmptyKnown = false; idleSinceCheck = 4; return; }	// (#54: the first frame back checks before any skip)
 
 	// UNOFFICIAL SkipIdle (see IdleGuard): with the sun well outside the view and the sky known empty, draw nothing (the 'effect off'
 	// picture, no chain commit), except every 4th frame, which re-checks the sky (sky mask + its maximum, 0.15 ms).
@@ -476,7 +489,7 @@ void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 			if (probeLevel >= 3 && (++idleValidateTick % 8) == 0) idleCheckFrame = true;	// DIAGNOSTIC validation: checks (not used) where the guard refuses
 		}
 	}
-	else idleEmptyKnown = false;
+	else { idleEmptyKnown = false; idleSinceCheck = 4; }
 
 	{
 		auto timer = TimeLogger();
