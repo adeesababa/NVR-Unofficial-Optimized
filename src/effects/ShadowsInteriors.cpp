@@ -14,6 +14,23 @@ void ShadowsInteriorsEffect::RegisterConstants() {}
 * and only its last pass writes the HDR frame, reading the untouched scene from TESR_RenderedBuffer
 * and the blurred term from sampler s4. TESR_PointShadowBuffer is not modified, as before.
 */
+// Whether Render below takes the dedicated path (else the generic one). UNOFFICIAL 2026-10-18 InteriorShadowFold: the fog's
+// interior composite is that path's last pass, so it may stand in for it only when this holds.
+bool ShadowsInteriorsEffect::DedicatedUsable(IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface) {
+	if (!Enabled || !Effect || !ShouldRender()) return false;
+	SunShadowsEffect* scratch = TheShaderManager->Effects.SunShadows;
+	IDirect3DTexture9* shadowTexture = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture;
+	D3DXHANDLE technique = dedicatedFailed ? NULL : TechniqueHandle(techDedicated, "DedicatedInteriorShadows");
+	D3DXTECHNIQUE_DESC description = {};
+	D3DSURFACE_DESC target = {}, blur = {};
+	return !(!technique || !scratch || !shadowTexture || !scratch->scratchTexture[0] || !scratch->scratchTexture[1] ||
+		!scratch->scratchSurface[0] || !scratch->scratchSurface[1] || !RenderedSurface || !RenderTarget ||
+		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 3 ||
+		FAILED(RenderTarget->GetDesc(&target)) || FAILED(scratch->scratchSurface[0]->GetDesc(&blur)) ||
+		blur.Width != target.Width || blur.Height != target.Height ||
+		!TheShaderManager->Chain.Owns(RenderTarget, RenderedSurface));
+}
+
 void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 	UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
@@ -21,18 +38,11 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	FrameChain& chain = TheShaderManager->Chain;
 	SunShadowsEffect* scratch = TheShaderManager->Effects.SunShadows;
 	IDirect3DTexture9* shadowTexture = TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture;
-	D3DXHANDLE technique = dedicatedFailed ? NULL : TechniqueHandle(techDedicated, "DedicatedInteriorShadows");
-	D3DXTECHNIQUE_DESC description = {};
-	D3DSURFACE_DESC target = {}, blur = {};
-	if (!technique || !scratch || !shadowTexture || !scratch->scratchTexture[0] || !scratch->scratchTexture[1] ||
-		!scratch->scratchSurface[0] || !scratch->scratchSurface[1] || !RenderedSurface ||
-		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 3 ||
-		FAILED(RenderTarget->GetDesc(&target)) || FAILED(scratch->scratchSurface[0]->GetDesc(&blur)) ||
-		blur.Width != target.Width || blur.Height != target.Height ||
-		!chain.Owns(RenderTarget, RenderedSurface)) {
+	if (!DedicatedUsable(RenderTarget, RenderedSurface)) {
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 		return;
 	}
+	D3DXHANDLE technique = TechniqueHandle(techDedicated, "DedicatedInteriorShadows");
 
 	auto timer = TimeLogger();
 	HRESULT result = Effect->SetTechnique(technique);

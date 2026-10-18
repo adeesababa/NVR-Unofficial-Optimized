@@ -271,6 +271,85 @@ bool VolumetricFogEffect::CanComposite(IDirect3DSurface9* aoSurface) {
 	return true;
 }
 
+/*
+* UNOFFICIAL 2026-10-18 InteriorShadowFold: the interior composite rounds the darkened colour to 16-bit float exactly as the separate
+* pass's render target stored it, and GPUs differ in how they do that (round to nearest even, or toward zero: the GTX 1070,
+* evidence\intshadow\fp16test). One draw of technique HalfStoreProbe into a small A16B16G16R16F target, read back once, says which
+* of the two functions this GPU's store matches for every value; if neither, the fold is not used. All state it touches is put back.
+*/
+int VolumetricFogEffect::HalfStoreMode(IDirect3DDevice9* Device) {
+	if (halfStoreMode != -2) return halfStoreMode;
+	halfStoreMode = -1;
+	D3DXHANDLE technique = Effect ? Effect->GetTechniqueByName("HalfStoreProbe") : NULL;
+	if (!technique || !Device) { Logger::Log("INTERIOR SHADOW FOLD: no HalfStoreProbe technique in VolumetricFog.fx: the fold stays off"); return halfStoreMode; }
+	const UINT W = 64, H = 16;
+	IDirect3DTexture9* texture = nullptr;
+	IDirect3DSurface9* surface = nullptr;
+	IDirect3DSurface9* readback = nullptr;
+	IDirect3DSurface9* oldTarget0 = nullptr;
+	IDirect3DSurface9* oldTarget1 = nullptr;
+	IDirect3DVertexDeclaration9* oldDeclaration = nullptr;
+	DWORD oldFVF = 0;
+	D3DVIEWPORT9 oldViewport = {};
+	unsigned nearest = 0, toward = 0, total = 0;
+	HRESULT hr = Device->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &texture, NULL);
+	if (SUCCEEDED(hr)) hr = texture->GetSurfaceLevel(0, &surface);
+	if (SUCCEEDED(hr)) hr = Device->CreateOffscreenPlainSurface(W, H, D3DFMT_A16B16G16R16F, D3DPOOL_SYSTEMMEM, &readback, NULL);
+	if (SUCCEEDED(hr)) {
+		Device->GetRenderTarget(0, &oldTarget0);
+		Device->GetRenderTarget(1, &oldTarget1);
+		Device->GetVertexDeclaration(&oldDeclaration);
+		Device->GetFVF(&oldFVF);
+		Device->GetViewport(&oldViewport);
+		if (oldTarget1) Device->SetRenderTarget(1, nullptr);
+		hr = Device->SetRenderTarget(0, surface);
+		UINT passes = 0;
+		if (SUCCEEDED(hr)) hr = Effect->SetTechnique(technique);
+		if (SUCCEEDED(hr)) hr = Effect->Begin(&passes, 0);
+		if (SUCCEEDED(hr)) {
+			hr = Effect->BeginPass(0);
+			if (SUCCEEDED(hr)) {
+				struct Vertex { float x, y, z, w, u, v; };
+				const Vertex quad[4] = { { -1, 1, 0, 1, 0, 0 }, { 1, 1, 0, 1, 1, 0 }, { -1, -1, 0, 1, 0, 1 }, { 1, -1, 0, 1, 1, 1 } };
+				Device->SetFVF(D3DFVF_XYZW | D3DFVF_TEX1);
+				hr = Device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
+				Effect->EndPass();
+			}
+			Effect->End();
+		}
+		if (SUCCEEDED(hr)) hr = Device->GetRenderTargetData(surface, readback);
+		D3DLOCKED_RECT locked = {};
+		if (SUCCEEDED(hr) && SUCCEEDED(hr = readback->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
+			for (UINT y = 0; y < H; y++) {
+				const UInt16* row = (const UInt16*)((const UInt8*)locked.pBits + (size_t)y * locked.Pitch);
+				for (UINT x = 0; x < W; x++, total++) {
+					if (row[x * 4] == row[x * 4 + 1]) nearest++;
+					if (row[x * 4] == row[x * 4 + 2]) toward++;
+				}
+			}
+			readback->UnlockRect();
+		}
+		// put back what was bound
+		Device->SetRenderTarget(0, oldTarget0);
+		if (oldTarget1) Device->SetRenderTarget(1, oldTarget1);
+		if (oldDeclaration) Device->SetVertexDeclaration(oldDeclaration);
+		else if (oldFVF) Device->SetFVF(oldFVF);
+		Device->SetViewport(&oldViewport);
+	}
+	if (oldTarget0) oldTarget0->Release();
+	if (oldTarget1) oldTarget1->Release();
+	if (oldDeclaration) oldDeclaration->Release();
+	if (readback) readback->Release();
+	if (surface) surface->Release();
+	if (texture) texture->Release();
+	if (total == W * H && nearest == total && toward != total) halfStoreMode = 0;
+	else if (total == W * H && toward == total && nearest != total) halfStoreMode = 2;
+	Logger::Log("INTERIOR SHADOW FOLD: this GPU stores 16-bit floats %s (probe %08lx: %u of %u values as round to nearest even, %u as round toward zero)",
+		halfStoreMode == 0 ? "rounding to nearest even" : halfStoreMode == 2 ? "rounding toward zero" : "in neither way: the fold stays off",
+		(unsigned long)hr, nearest, total, toward);
+	return halfStoreMode;
+}
+
 bool VolumetricFogEffect::CanApplyShadowAO() {
 	return Enabled && Effect && !TheSettingManager->SettingsMain.Main.DisableCompositeApply &&
 		TechniqueHandle(techApplyShadowAO, "ApplyShadowAO") && ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") &&
@@ -345,8 +424,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	// UNOFFICIAL ReShadeDepthCompat: this two-target pass must unbind the game's depth-stencil (a GTX 1070 drops it
 	// otherwise), so the plain full-resolution fog runs instead, as in the original NVR.
 	if (ReShadeIntegration::KeepDepthBound()) return false;
-	const bool composite = compositeShadow || (compositeAO && compositeAOTexture);
-	D3DXHANDLE technique = composite ? CompositeTechnique() : DedicatedTechnique();
+	const bool composite = compositeShadow || compositeInteriorShadow || (compositeAO && compositeAOTexture);
+	D3DXHANDLE technique = composite ? (compositeInteriorShadow ? CompositeInteriorTechnique() : CompositeTechnique()) : DedicatedTechnique();
 	D3DXHANDLE flagsHandle = composite ? ParameterHandle(paramCompositeFlags, "NVR_CompositeFlags") : NULL;
 	if (composite && !flagsHandle) return false;
 	D3DXHANDLE layoutHandle = ParameterHandle(paramFogLayout, "NVR_FogLayout");
@@ -354,7 +433,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	D3DVIEWPORT9 original = {};
 	D3DSURFACE_DESC target = {}, scratch = {}, fog = {}, fogAdd = {};
 	const D3DCAPS9* caps = TheRenderManager->DeviceCaps();	// UNOFFICIAL: fetched once, not per frame
-	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
+	IDirect3DTexture9* scene = sceneOverride ? sceneOverride : TheTextureManager->RenderedTexture;	// (override: InteriorShadowFoldCheck)
 	if (!technique || !layoutHandle || FAILED(Effect->GetTechniqueDesc(technique, &description)) ||
 		description.Passes != 2 || !RenderedSurface || !scene ||
 		!fogTexture[0] || !fogTexture[1] || !fogSurface[0] || !fogSurface[1] ||
@@ -371,8 +450,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		return false;
 
 	FrameChain& chain = TheShaderManager->Chain;
-	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
-	IDirect3DSurface9* finalTarget = chained ? chain.Output() : RenderTarget;
+	const bool chained = !targetOverride && chain.Owns(RenderTarget, RenderedSurface);
+	IDirect3DSurface9* finalTarget = targetOverride ? targetOverride : chained ? chain.Output() : RenderTarget;
 	D3DVIEWPORT9 reduced = original;
 	reduced.Width = fog.Width;
 	reduced.Height = fog.Height;
@@ -394,7 +473,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Effect->SetVector(layoutHandle, &layout);
 	if (composite) {
 		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f,
-			(compositeAO && compositeAOTexture && compositeSkyTexture) ? 1.0f : 0.0f, 0.0f);	// z: UNOFFICIAL Skylighting v2
+			(compositeAO && compositeAOTexture && compositeSkyTexture) ? 1.0f : 0.0f,	// z: UNOFFICIAL Skylighting v2
+			compositeInteriorShadow ? compositeRound : 0.0f);	// w: UNOFFICIAL InteriorShadowFold rounding (interior technique only)
 		Effect->SetVector(flagsHandle, &flags);
 		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
 		D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
@@ -472,6 +552,10 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
+	if (targetOverride) {	// DIAGNOSTIC InteriorShadowFoldCheck: nothing to commit or copy, nothing to undo
+		compositeApplied = SUCCEEDED(result) && composite;
+		return SUCCEEDED(result);
+	}
 	if (SUCCEEDED(result)) {
 		if (chained) chain.Commit();
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
@@ -488,7 +572,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	static bool reportedComposite = false;
 	if (composite && !reportedComposite) {
 		Logger::Log("UNOFFICIAL composite apply active: sun shadows %s, AO %s folded into the fog pass.",
-			compositeShadow ? "yes" : "no", (compositeAO && compositeAOTexture) ? "yes" : "no");
+			compositeShadow ? "yes" : compositeInteriorShadow ? "no (the interior darkening instead)" : "no", (compositeAO && compositeAOTexture) ? "yes" : "no");
 		reportedComposite = true;
 	}
 	static bool reported = false;
@@ -570,7 +654,7 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	}
 
 	// The caller must apply deferred shadows/AO before retrying ordinary fog.
-	if (compositeShadow || compositeAO) return;
+	if (compositeShadow || compositeAO || compositeInteriorShadow) return;
 
 	D3DXHANDLE technique = PackedTechnique();
 	D3DXTECHNIQUE_DESC description = {};

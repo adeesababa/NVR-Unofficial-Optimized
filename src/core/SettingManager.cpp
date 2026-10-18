@@ -671,6 +671,14 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
 	SettingsMain.Main.SkipIdentityExposure = boolSetting(performance, "SkipIdentityExposure", true);
 	SettingsMain.Main.LampMaskScissor = boolSetting(performance, "LampMaskScissor", true);
+	SettingsMain.Main.InteriorShadowFold = boolSetting(performance, "InteriorShadowFold", false);	// off: not bit-exact next to the void (intshadow-LOG.md)
+	{
+		Configuration::ConfigNode node;
+		const int mode = Config.FillNode(&node, performance, "InteriorShadowFoldRound") ? node.IntValue : 0;
+		SettingsMain.Main.InteriorShadowFoldRound = max(0, min(mode, 3));
+	}
+	SettingsMain.Main.CubeFaceCopySkip = boolSetting(performance, "CubeFaceCopySkip", false);
+	SettingsMain.Main.CubeFaceViewCull = boolSetting(performance, "CubeFaceViewCull", true);
 	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
 	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
@@ -710,6 +718,8 @@ void SettingManager::LoadSettings() {
 		Configuration::ConfigNode node;
 		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 1;
 		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
+		const float tolerance = Config.FillNode(&node, reducedQuality, "LampShadowMoveTolerance") ? node.FloatValue : 0.0f;
+		SettingsMain.Main.LampShadowMoveTolerance = tolerance > 64.0f ? 64.0f : tolerance > 0.0f ? tolerance : 0.0f;
 	}
 	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
 	SettingsMain.Main.CheapUnderwaterTerrain = boolSetting(reducedQuality, "CheapUnderwaterTerrain", false);

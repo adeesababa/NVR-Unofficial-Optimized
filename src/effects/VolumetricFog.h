@@ -63,6 +63,9 @@ public:
 	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
 	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
 	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : TechniqueHandle(techPackedFog, "PackedFog"); }
+	// UNOFFICIAL 2026-10-18 InteriorShadowFold: the composite with the interior darkening in place of the sun shadows.
+	CachedHandle techCompositeFogInterior, techCompositeFogInteriorLegacy;
+	D3DXHANDLE	CompositeInteriorTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogInteriorLegacy, "CompositeFogInteriorLegacy") : TechniqueHandle(techCompositeFogInterior, "CompositeFogInterior"); }
 	UINT	PlainTechniqueIndex(UINT techniqueIndex);
 	// [0]: fog multiply + depth, [1]: fog add -- written together as MRTs by the estimate pass
 	IDirect3DTexture9* fogTexture[2] = {};
@@ -74,6 +77,13 @@ public:
 	bool	compositeShadow = false;
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
+	// UNOFFICIAL 2026-10-18 InteriorShadowFold: indoors, the interior darkening (ShadowsInteriors' unblurred apply) instead of
+	// the sun shadows (technique CompositeFogInterior); compositeRound: NVR_CompositeFlags.w there (InteriorShadowFoldRound).
+	bool	compositeInteriorShadow = false;
+	float	compositeRound = 0.0f;
+	// DIAGNOSTIC InteriorShadowFoldCheck: the dedicated pass reads this scene and writes this target (no chain, no copy, no fallback).
+	IDirect3DTexture9* sceneOverride = nullptr;
+	IDirect3DSurface9* targetOverride = nullptr;
 	// UNOFFICIAL 2026-10-17 Skylighting v2: this frame's sky visibility (AmbientOcclusionEffect::SkyTexture), applied to the sky's
 	// share with the AO (stage 12, NVR_SkyVis; NVR_CompositeFlags.z). Null = nothing changes.
 	IDirect3DTexture9* compositeSkyTexture = nullptr;
@@ -84,6 +94,11 @@ public:
 	bool	gridApplied = false;
 	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
+	bool	CanCompositeInterior() { return CompositeInteriorTechnique() != NULL; }
+	// How this GPU stores a float in a 16-bit float render target: 0 round to nearest even, 2 round toward zero, -1 neither
+	// (or not measurable). Measured once (technique HalfStoreProbe), the first time the interior composite could run.
+	int		HalfStoreMode(IDirect3DDevice9* Device);
+	int		halfStoreMode = -2;	// -2: not measured yet
 	// The shadow and AO applies in one pass of their own (technique ApplyShadowAO), for frames where effects between them
 	// and the fog keep them out of the fog pass. Returns false, leaving the scene untouched, if it could not.
 	bool	CanApplyShadowAO();

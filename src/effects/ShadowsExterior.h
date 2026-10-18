@@ -267,6 +267,7 @@ public:
 	bool		EnsureCubeMap(int slot);
 	bool		EnsureStaticCubeMap(int slot);	// UNOFFICIAL RedrawActorsOnly
 	UINT		CubeMapSizeCreated = 0;
+	unsigned	CubeGeneration = 0;	// UNOFFICIAL 2026-10-18 CubeFaceCopySkip: counts lamp cube map creations (a new texture may reuse an old address)
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();
 	// UNOFFICIAL sun glide (SunSmoothing GlideSeconds): the quantized step being slid over.

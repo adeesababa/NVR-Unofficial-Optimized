@@ -178,6 +178,116 @@ static void AdoptStaticCubeMap(ShadowsExteriorEffect* shadows, PointShadowSlotSt
 }
 
 /*
+* UNOFFICIAL 2026-10-18 CubeFaceCopySkip ([Main.Main.Performance]; work\bench\deep-roadmap\evidence\intshadow-LOG.md). With
+* RedrawActorsOnly a lamp with people in reach is refreshed by copying its static cube map (walls and furniture) into the live one,
+* all six faces, then drawing the moving casters over it (min blend). A face no moving caster's bound reaches gets nothing drawn: it
+* ends up a plain copy of the static face. If the live face already holds exactly that copy -- it was last written by such a
+* copy-only refresh, of the same static texture with the same contents (StaticCubeSerials, bumped at every static-layer draw),
+* into the same live texture (CubeGeneration guards against a new texture at an old address), and nothing has drawn into it since
+* (a whole redraw or a refresh with people on that face clears the record) -- the copy is skipped: the face keeps the same bits.
+* DIAGNOSTIC CubeFaceCopySkipCheck (test builds): reads such faces back and compares them with the static face.
+*/
+struct LiveFaceRecord { const void* live = nullptr; const void* staticTex = nullptr; unsigned serial = 0, generation = 0; bool pure = false; };
+static LiveFaceRecord LiveFaces[ShadowCubeMapsMax][6];
+static std::unordered_map<const void*, unsigned> StaticCubeSerials;
+static unsigned StaticCubeSerialNext = 0;
+static unsigned statFacesSkipped = 0, statFacesCopied = 0, statFacesDrawn = 0, statFacesOldPath = 0;
+
+static void ForgetLiveFaces(int slot) {
+	for (int f = 0; f < 6; f++) LiveFaces[slot][f].pure = false;
+}
+
+// UNOFFICIAL 2026-10-18 LampShadowMoveTolerance ([Main.Main.ReducedQuality], CHANGES THE IMAGE, off at 0): the point the cube map
+// is drawn from when it is not the light's own position this frame (RenderShadowMaps sets it around the draw calls).
+static NiPoint3* CubeEyeOverride = nullptr;
+
+// UNOFFICIAL 2026-10-18 CubeFaceViewCull ([Main.Main.Performance]; evidence\intshadow-LOG.md). Indoors with the forward lamp shadows,
+// a lamp cube map is looked up only by the world pass and the first-person pass (PointShadowForward::SetForPass: never the water
+// reflection or another camera), i.e. by pixels inside the camera's view or close to the camera; the screen-space lamp mask
+// draws without cube lookups then. So a face whose pyramid (CubeFaceOutOfView: the lamp and its four corners at the cube radius,
+// widened 10% for filtering across the seams; points within 100 units of the camera always count as seen, for the first-person
+// model's own field of view) lies wholly outside the view is never read this frame and need not be drawn. Only for lamps that are
+// redrawn every frame anyway (moving casters in reach at PointShadowInterval 1, or the lamp itself moved); such a draw is marked
+// partial (PointShadowSlotState), so a lamp that turns still is redrawn in full before its cube map is kept. Static layers
+// (RedrawActorsOnly) are always drawn in full. DIAGNOSTIC CubeFaceViewCullCheck: the left-out faces are filled with distance 0.1
+// (a blocker at a tenth of the reach: all beyond in shadow; 0 would mean no data), so a face read after all shows as a dark patch.
+static bool CubeCullAllowed = false;	// set by RenderShadowMaps around one lamp's draws
+static bool ForwardWasActive = false;	// PointShadowForward::Active as Publish left it last frame (Begin clears it before the loop)
+static bool CubeCulledAny = false;		// RenderShadowCubeMap left a face out
+static unsigned statFacesCulled[3] = {};
+
+// UNOFFICIAL 2026-10-18 diagnostic (intshadow): a lamp cube face that no on-screen pixel can look up -- its pyramid (the lamp and
+// the face's four corners at the cube radius, widened 10% for filtering across the seams) lies wholly behind one side of the
+// camera's view (left, right, top, bottom, behind; the camera as LampMaskRect reads it). Counted only, nothing skipped.
+static unsigned statViewFaces[3] = {}, statViewFacesOut[3] = {};
+static bool CubeFaceOutOfView(const NiPoint3* light, float radius, const D3DXVECTOR3& direction) {
+	const D3DXMATRIX& V = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& P = TheRenderManager->projMatrix;
+	const D3DXVECTOR3 R(V._11, V._21, V._31), U(V._12, V._22, V._32), F(V._13, V._23, V._33);
+	const D3DXVECTOR3 planes[5] = { F, F + R * P._11, F - R * P._11, F + U * P._22, F - U * P._22 };
+	const D3DXVECTOR3 L(light->x - TheRenderManager->CameraPosition.x, light->y - TheRenderManager->CameraPosition.y, light->z - TheRenderManager->CameraPosition.z);
+	const D3DXVECTOR3 a = fabsf(direction.x) > 0.5f ? D3DXVECTOR3(0, 1, 0) : D3DXVECTOR3(1, 0, 0);
+	D3DXVECTOR3 b; D3DXVec3Cross(&b, &direction, &a);
+	D3DXVECTOR3 points[5] = { L, L, L, L, L };
+	for (int c = 0; c < 4; c++) points[c + 1] = L + radius * (direction + 1.1f * (((c & 1) ? a : -a) + ((c & 2) ? b : -b)));
+	for (const D3DXVECTOR3& n : planes) {
+		const float margin = -100.0f * D3DXVec3Length(&n);	// points within 100 units of the camera count as seen (first-person model)
+		bool allOut = true;
+		for (const D3DXVECTOR3& p : points) if (D3DXVec3Dot(&p, &n) >= margin) { allOut = false; break; }
+		if (allOut) return true;
+	}
+	return false;
+}
+
+#if NVR_TEST_TOOLS
+// DIAGNOSTIC CubeFaceCopySkipCheck N (test builds): every Nth frame, up to two faces that CubeFaceCopySkip left alone are read back
+// with the static face they should equal and compared bit for bit. Stalls the GPU.
+static void CubeFaceSkipSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* live, IDirect3DSurface9* still) {
+	static int every = 0;
+	static unsigned frameSeen = 0, checksThisFrame = 0, checks = 0, differing = 0, worstValues = 0;
+	if (frameSeen != SkinnedBoundFrame) {
+		frameSeen = SkinnedBoundFrame;
+		checksThisFrame = 0;
+		if ((SkinnedBoundFrame % 60) == 0 || every == 0) every = TheSettingManager->GetSettingI("Main.Main.Performance", "CubeFaceCopySkipCheck");
+	}
+	if (every <= 0 || (SkinnedBoundFrame % (unsigned)every) != 0 || checksThisFrame >= 2 || !live || !still) return;
+	checksThisFrame++;
+	static IDirect3DSurface9* readA = nullptr;
+	static IDirect3DSurface9* readB = nullptr;
+	static D3DSURFACE_DESC have = {};
+	D3DSURFACE_DESC d = {};
+	if (FAILED(live->GetDesc(&d)) || d.Format != D3DFMT_R32F) return;
+	if (!readA || d.Width != have.Width || d.Height != have.Height) {
+		if (readA) { readA->Release(); readA = nullptr; }
+		if (readB) { readB->Release(); readB = nullptr; }
+		if (FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readA, NULL)) ||
+			FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readB, NULL))) {
+			Logger::Log("CUBE FACE CHECK: could not create the read-back surfaces");
+			if (readA) { readA->Release(); readA = nullptr; }
+			return;
+		}
+		have = d;
+	}
+	if (FAILED(Device->GetRenderTargetData(live, readA)) || FAILED(Device->GetRenderTargetData(still, readB))) return;
+	D3DLOCKED_RECT la = {}, lb = {};
+	if (FAILED(readA->LockRect(&la, NULL, D3DLOCK_READONLY))) return;
+	if (FAILED(readB->LockRect(&lb, NULL, D3DLOCK_READONLY))) { readA->UnlockRect(); return; }
+	unsigned values = 0;
+	for (UINT y = 0; y < d.Height; y++) {
+		const UInt32* pa = (const UInt32*)((const UInt8*)la.pBits + (size_t)y * la.Pitch);
+		const UInt32* pb = (const UInt32*)((const UInt8*)lb.pBits + (size_t)y * lb.Pitch);
+		for (UINT x = 0; x < d.Width; x++) if (pa[x] != pb[x]) values++;
+	}
+	readB->UnlockRect();
+	readA->UnlockRect();
+	checks++;
+	if (values) { differing++; worstValues = (std::max)(worstValues, values); }
+	if (values && differing <= 10) Logger::Log("CUBE FACE CHECK: DIFFERENCE, a skipped face differs from its static face in %u of %u texels", values, d.Width * d.Height);
+	if (checks % 30 == 0) Logger::Log("CUBE FACE CHECK: %u skipped faces compared with their static face, %u differ (worst %u texels)", checks, differing, worstValues);
+}
+#endif
+
+/*
 * Initializes the Shadow Manager by grabbing the relevant settings and shaders, and setting up map sizes.
 */
 #include "GpuProfiler.h"
@@ -797,7 +907,14 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 	// UNOFFICIAL RedrawActorsOnly: the moving layer starts from the static cube map, copied face by face (same size and
 	// format). A failed copy draws nothing; the caller redraws the lamp whole.
-	if (Layer == CubeLayer::MovingOnto) {
+	// UNOFFICIAL CubeFaceCopySkip (above): the copies are made after the caster walk, face by face, where needed.
+	const bool cullFaces = CubeCullAllowed && Layer != CubeLayer::StaticOnly;	// UNOFFICIAL CubeFaceViewCull (above)
+	const bool faceSkip = Layer == CubeLayer::MovingOnto && (TheSettingManager->SettingsMain.Main.CubeFaceCopySkip || cullFaces);
+	const bool copySkip = TheSettingManager->SettingsMain.Main.CubeFaceCopySkip;
+	if (Layer == CubeLayer::StaticOnly)
+		StaticCubeSerials[Shadows->Textures.ShadowCubeMapStaticTexture[LightIndex]] = ++StaticCubeSerialNext;	// its contents change now
+	if (!faceSkip) ForgetLiveFaces(LightIndex);	// a whole redraw, or the copies and draws below without the records
+	if (Layer == CubeLayer::MovingOnto && !faceSkip) {
 		for (int Face = 0; Face < 6; Face++) {
 			IDirect3DSurface9* from = Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face];
 			IDirect3DSurface9* to = Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face];
@@ -812,7 +929,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 	NiPointLight* pNiLight = Lights[LightIndex]->sourceLight;
 
-	LightPos = &pNiLight->m_worldTransform.pos;
+	LightPos = CubeEyeOverride ? CubeEyeOverride : &pNiLight->m_worldTransform.pos;	// UNOFFICIAL LampShadowMoveTolerance (null: as before)
 	Radius = pNiLight->Spec.r * Shadows->Settings.Interiors.LightRadiusMult;
 #if defined(OBLIVION)
 	if (pNiLight->CanCarry)
@@ -831,6 +948,15 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	Shadows->Constants.ShadowCubeMapLightPosition.w = Radius;
 	Shadows->Constants.Data.z = Radius;
 	D3DXMatrixPerspectiveFovRH(&Proj, D3DXToRadian(90.0f), 1.0f, 0.1f, Radius);
+	// UNOFFICIAL CubeFaceViewCull: the faces that can be seen this frame (all six unless culling applies to this draw)
+	unsigned char viewFaces = 63;
+	if (cullFaces) {
+		static const D3DXVECTOR3 CullDirection[6] = { D3DXVECTOR3(1.0f, 0.0f, 0.0f), D3DXVECTOR3(-1.0f, 0.0f, 0.0f),
+			D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, -1.0f, 0.0f), D3DXVECTOR3(0.0f, 0.0f, -1.0f), D3DXVECTOR3(0.0f, 0.0f, 1.0f) };
+		for (int face = 0; face < 6; face++)
+			if (CubeFaceOutOfView(LightPos, Radius, CullDirection[face])) viewFaces &= (unsigned char)~(1 << face);
+		if (viewFaces != 63) CubeCulledAny = true;
+	}
 	D3DXVECTOR3 playerOffset;
 	const bool lampInsidePlayer = PlayerLampOffset(Lights[LightIndex], LightPos, playerOffset);	// UNOFFICIAL, see above
 
@@ -932,6 +1058,66 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 	}
 
+	// UNOFFICIAL CubeFaceCopySkip: the faces the moving casters reach are copied and drawn; the others are copied, unless they still
+	// hold the copy (above). A failed copy draws nothing more; the caller redraws the lamp whole (which forgets the records).
+	unsigned char drawFaces = 63;
+	if (faceSkip) {
+		drawFaces = 0;
+		for (const CubeCaster& caster : cubeCasters) drawFaces |= caster.faces;
+		const void* liveTex = Shadows->Textures.ShadowCubeMapTexture[LightIndex];
+		const void* staticTex = Shadows->Textures.ShadowCubeMapStaticTexture[LightIndex];
+		const auto serial = StaticCubeSerials.find(staticTex);
+		const unsigned staticSerial = serial != StaticCubeSerials.end() ? serial->second : 0;
+		for (int Face = 0; Face < 6; Face++) {
+			LiveFaceRecord& record = LiveFaces[LightIndex][Face];
+			const bool holdsCopy = record.pure && staticSerial && record.live == liveTex && record.staticTex == staticTex &&
+				record.serial == staticSerial && record.generation == Shadows->CubeGeneration;
+			const bool draws = (drawFaces >> Face) & 1;
+			if (!((viewFaces >> Face) & 1)) {	// UNOFFICIAL CubeFaceViewCull: out of view, left as it is (stale, never read)
+				record.pure = false;
+				continue;
+			}
+			if (!draws && holdsCopy && copySkip) {
+				statFacesSkipped++;
+#if NVR_TEST_TOOLS
+				CubeFaceSkipSelfCheck(Device, Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face], Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face]);
+#endif
+				continue;
+			}
+			IDirect3DSurface9* from = Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face];
+			IDirect3DSurface9* to = Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face];
+			record.pure = false;
+			if (!from || !to || !staticSerial || FAILED(Device->StretchRect(from, NULL, to, NULL, D3DTEXF_NONE))) { ForgetLiveFaces(LightIndex); return false; }
+			if (draws) statFacesDrawn++;
+			else {
+				statFacesCopied++;
+				record.live = liveTex; record.staticTex = staticTex; record.serial = staticSerial; record.generation = Shadows->CubeGeneration;
+				record.pure = true;
+			}
+		}
+	}
+	else if (Layer == CubeLayer::MovingOnto) statFacesOldPath += 6;
+	if (cullFaces) {
+		drawFaces &= viewFaces;
+		const int kind = Layer == CubeLayer::All ? 0 : 2;
+		for (int face = 0; face < 6; face++) if (!((viewFaces >> face) & 1)) statFacesCulled[kind]++;
+#if NVR_TEST_TOOLS
+		static int poison = 0;
+		static unsigned poisonFrame = 0;
+		if (poisonFrame != SkinnedBoundFrame && (SkinnedBoundFrame % 30) == 0) poison = TheSettingManager->GetSettingI("Main.Main.Performance", "CubeFaceViewCullCheck");
+		poisonFrame = SkinnedBoundFrame;
+		if (poison > 0) {	// DIAGNOSTIC CubeFaceViewCullCheck: the left-out faces say "all in shadow"
+			for (int face = 0; face < 6; face++) {
+				if ((viewFaces >> face) & 1) continue;
+				Device->SetRenderTarget(0, Shadows->Textures.ShadowCubeMapSurface[LightIndex][face]);
+				Device->SetDepthStencilSurface(Shadows->Textures.ShadowCubeMapDepthSurface);
+				Device->SetViewport(&ShadowCubeMapViewPort);
+				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DXCOLOR(0.1f, 0.1f, 0.1f, 0.1f), 1.0f, 0L);	// 0.1: a blocker at a tenth of the reach (0 would read as no data)
+			}
+		}
+#endif
+	}
+
 	// UNOFFICIAL RedrawActorsOnly: the moving casters go over the copied static distances; a min blend keeps the nearer.
 	if (Layer == CubeLayer::MovingOnto) {
 		RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE, RenderStateArgs);
@@ -998,6 +1184,12 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	}
 
 	for (int Face = 0; Face < 6; Face++) {
+		if (!((drawFaces >> Face) & 1)) continue;	// UNOFFICIAL CubeFaceCopySkip: nothing reaches it (it holds the static copy)
+		if (GpuTimer::Enabled) {	// UNOFFICIAL diagnostic (intshadow), see CubeFaceOutOfView
+			const int kind = Layer == CubeLayer::All ? 0 : Layer == CubeLayer::StaticOnly ? 1 : 2;
+			statViewFaces[kind]++;
+			if (CubeFaceOutOfView(LightPos, Radius, FaceDirection[Face])) statViewFacesOut[kind]++;
+		}
 		CameraDirection = FaceDirection[Face];
 		Up = FaceUp[Face];
 		At = Eye + CameraDirection;
@@ -1674,6 +1866,12 @@ void ShadowManager::RenderShadowMaps() {
 		// UNOFFICIAL RedrawActorsOnly (PointShadowSchedule.h PointShadowDrawPlan): what each slot's static cube map holds.
 		static PointShadowSlotState staticSlots[ShadowCubeMapsMax];
 		static unsigned statStaticDrawn = 0, statMovingOnly = 0, statWhole = 0;
+		static unsigned statMovedLamps = 0, statMovedWithPeople = 0, statAnchored = 0;	// UNOFFICIAL 2026-10-18 diagnostic (intshadow)
+		static float statMovedStep = 0.0f, statMovedStepMax = 0.0f, statMovedWander = 0.0f, statMovedRadius = 0.0f;
+		static unsigned statMovedResized = 0;
+		static float statMovedRadiusStep = 0.0f;
+		static const void* movedLight[ShadowCubeMapsMax] = {};
+		static float movedHome[ShadowCubeMapsMax][3] = {};
 		const bool split = ShadowsInteriors->RedrawActorsOnly && ActorsOnlySupported(Device);
 
 		// render the cubemaps for each light; the last slot's cubemap is never sampled (ShadowCubeMapsSampled), so it is not drawn
@@ -1698,11 +1896,53 @@ void ShadowManager::RenderShadowMaps() {
 #endif
 			PointShadowCasterState(shadowLight, now.casterHash, now.staticCasters);
 			now.valid = true;
+			// UNOFFICIAL 2026-10-18 LampShadowMoveTolerance ([Main.Main.ReducedQuality], CHANGES THE IMAGE, off at 0): a lamp that has
+			// moved less than this from where its cube map was drawn (a flickering light's jitter) keeps that point: its cube map is
+			// kept or refreshed from there, and the forward lookups use it (PointShadowForward::Publish takes the drawn position).
+			// Indoors with the forward shadows only (the screen-space pass looks up from the light's own position).
+			NiPoint3 anchor = { now.x, now.y, now.z };
+			bool anchored = false;
+			{
+				const float tolerance = TheSettingManager->SettingsMain.Main.LampShadowMoveTolerance;
+				if (tolerance > 0.0f && !isExterior && PointShadowForward::UsesAllSlots(isExterior) && ForwardWasActive &&
+					slots[i].valid && slots[i].light == shadowLight && slots[i].cell == now.cell && slots[i].radius == now.radius) {
+					const float dx = now.x - slots[i].x, dy = now.y - slots[i].y, dz = now.z - slots[i].z;
+					if ((dx != 0.0f || dy != 0.0f || dz != 0.0f) && dx * dx + dy * dy + dz * dz <= tolerance * tolerance) {
+						now.x = anchor.x = slots[i].x; now.y = anchor.y = slots[i].y; now.z = anchor.z = slots[i].z;
+						anchored = true;
+						if (GpuTimer::Enabled) statAnchored++;
+					}
+				}
+			}
 			if (GpuTimer::Enabled) statPresent++;
 			const PointShadowRedraw why = PointShadowRedrawReason(slots[i], now, scheduleFrame, i, interval);
 			if (why == PointShadowRedraw::None) {
 				if (GpuTimer::Enabled && now.staticCasters) statStaticReused++;
 				continue;
+			}
+			// UNOFFICIAL 2026-10-18 diagnostic (intshadow): lamps redrawn because they moved -- how far, and whether they wander or
+			// jitter round one place (a flickering light's movement) -- with the F10 profile on.
+			if (GpuTimer::Enabled && why == PointShadowRedraw::Moved) {
+				const float dx = now.x - slots[i].x, dy = now.y - slots[i].y, dz = now.z - slots[i].z;
+				const float step = sqrtf(dx * dx + dy * dy + dz * dz);
+				statMovedLamps++; statMovedStep += step; statMovedStepMax = (std::max)(statMovedStepMax, step); statMovedRadius += now.radius;
+				if (now.radius != slots[i].radius) {
+					statMovedResized++;
+					statMovedRadiusStep = (std::max)(statMovedRadiusStep, fabsf(now.radius - slots[i].radius) / (std::max)(now.radius, 1.0f));
+				}
+				if (!now.staticCasters && shadowLight->kGeometryList.start) statMovedWithPeople++;
+				if (movedLight[i] != shadowLight) { movedLight[i] = shadowLight; movedHome[i][0] = now.x; movedHome[i][1] = now.y; movedHome[i][2] = now.z; }
+				const float hx = now.x - movedHome[i][0], hy = now.y - movedHome[i][1], hz = now.z - movedHome[i][2];
+				statMovedWander = (std::max)(statMovedWander, sqrtf(hx * hx + hy * hy + hz * hz));
+				static std::unordered_map<const void*, bool> named;
+				static unsigned namedLines = 0;
+				if (namedLines < 16 && !named[shadowLight]) {
+					named[shadowLight] = true; namedLines++;
+					NiNode* parent = pointLight->m_parent;
+					Logger::Log("POINT SHADOWS MOVING LAMP %p '%s' (parent '%s') at %.1f %.1f %.1f, cube radius %.0f, step %.3f units, %s casters",
+						(const void*)shadowLight, pointLight->m_pcName ? pointLight->m_pcName : "", parent && parent->m_pcName ? parent->m_pcName : "",
+						now.x, now.y, now.z, now.radius, step, now.staticCasters ? "only still" : shadowLight->kGeometryList.start ? "moving" : "no listed");
+				}
 			}
 
 			// UNOFFICIAL RedrawActorsOnly: with people in reach, the walls and furniture come from the lamp's static cube map
@@ -1718,13 +1958,26 @@ void ShadowManager::RenderShadowMaps() {
 				staticNow.texture = Shadows->Textures.ShadowCubeMapStaticTexture[i];
 			}
 			const PointShadowDraw draw = PointShadowDrawPlan(split && hasList, staticSlots[i], staticNow, moving);
+			CubeEyeOverride = anchored ? &anchor : nullptr;	// UNOFFICIAL LampShadowMoveTolerance: draw from the kept point
+			// UNOFFICIAL CubeFaceViewCull: only for a lamp redrawn every frame anyway (above RenderShadowCubeMap)
+			// (Any reader of the cube maps indoors -- the forward lookups or the screen-space lamp mask -- reads them for pixels in view.)
+			CubeCullAllowed = TheSettingManager->SettingsMain.Main.CubeFaceViewCull && interval <= 1 && !isExterior &&
+				(moving || why == PointShadowRedraw::Moved);
+			CubeCulledAny = false;
+			struct EyeReset { ~EyeReset() { CubeEyeOverride = nullptr; CubeCullAllowed = false; } } eyeReset;
+			// UNOFFICIAL 2026-10-18 diagnostic (intshadow): GPU time per lamp of each kind of draw (avg per lamp; the counts per frame
+			// are in the POINT SHADOWS lines), F10 profile only.
+			static GpuTimer staticLayerTimer("  Cube static layer (1 lamp)", 480), movingOntoTimer("  Cube people onto copy (1 lamp)", 960),
+				wholeTimer("  Cube whole lamp (1 lamp)", 480);
 			if (draw == PointShadowDraw::StaticThenMoving) {
+				GpuProfileScope gpuLamp(staticLayerTimer, Device);
 				RenderShadowCubeMap(ShadowLights, i, CubeLayer::StaticOnly);
 				staticSlots[i] = staticNow;
 				if (GpuTimer::Enabled) statStaticDrawn++;
 			}
 			bool drawn = false;
 			if (draw != PointShadowDraw::All) {
+				GpuProfileScope gpuLamp(movingOntoTimer, Device);
 				drawn = RenderShadowCubeMap(ShadowLights, i, CubeLayer::MovingOnto);
 				if (drawn && GpuTimer::Enabled) statMovingOnly++;
 				if (!drawn) {
@@ -1734,9 +1987,11 @@ void ShadowManager::RenderShadowMaps() {
 			}
 			// Render targets set in function due to rendering multiple faces.
 			if (!drawn) {
+				GpuProfileScope gpuLamp(wholeTimer, Device);
 				RenderShadowCubeMap(ShadowLights, i);
 				if (GpuTimer::Enabled) statWhole++;
 			}
+			now.partial = CubeCulledAny;	// UNOFFICIAL CubeFaceViewCull: redrawn next frame whatever happens
 			slots[i] = now;
 			if (GpuTimer::Enabled) { statRedrawn++; statReasons[(int)why]++; }
 
@@ -1748,6 +2003,7 @@ void ShadowManager::RenderShadowMaps() {
 		// UNOFFICIAL interior forward point-light shadows: the lights whose cube map is theirs this frame.
 		if (!isExterior) {
 			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
+			ForwardWasActive = PointShadowForward::Active;
 			PointShadowForward::FrameStats();
 		}
 
@@ -1769,6 +2025,22 @@ void ShadowManager::RenderShadowMaps() {
 				if (entry.second.seen == SkinnedBoundFrame && entry.second.changed && SkinnedBoundFrame - entry.second.changed < MovingSettleFrames) rigidMoving++;
 			Logger::Log("POINT SHADOWS RedrawActorsOnly %s: per frame %.1f lamps redrawn whole, %.1f only their people (a copy of the walls and furniture, plus %.1f static layers drawn); %u rigid pieces moving now (held weapons, doors...)",
 				split ? "on" : (ShadowsInteriors->RedrawActorsOnly ? "unavailable" : "off"), statWhole * perFrame, statMovingOnly * perFrame, statStaticDrawn * perFrame, rigidMoving);
+			// UNOFFICIAL 2026-10-18 (intshadow): CubeFaceCopySkip's faces, and the lamps that moved.
+			Logger::Log("POINT SHADOWS CubeFaceCopySkip %s: per frame %.1f faces left as they were (still the static copy), %.1f copied only, %.1f copied and drawn on, %.1f by the old path (copy all six, draw all six)",
+				TheSettingManager->SettingsMain.Main.CubeFaceCopySkip ? "on" : "off", statFacesSkipped * perFrame, statFacesCopied * perFrame, statFacesDrawn * perFrame, statFacesOldPath * perFrame);
+			Logger::Log("POINT SHADOWS moved lamps: %.2f per frame (%.2f with moving casters), step per frame mean %.3f max %.3f units, furthest from where first seen %.2f units, cube radius mean %.0f",
+				statMovedLamps * perFrame, statMovedWithPeople * perFrame, statMovedLamps ? statMovedStep / statMovedLamps : 0.0f, statMovedStepMax, statMovedWander,
+				statMovedLamps ? statMovedRadius / statMovedLamps : 0.0f);
+			Logger::Log("POINT SHADOWS LampShadowMoveTolerance %.1f: %.2f lamps per frame kept their drawn point; view test (diagnostic): per frame faces drawn whole %.1f / static layer %.1f / people %.1f, of them wholly outside the view %.1f / %.1f / %.1f",
+				TheSettingManager->SettingsMain.Main.LampShadowMoveTolerance, statAnchored * perFrame, statViewFaces[0] * perFrame, statViewFaces[1] * perFrame, statViewFaces[2] * perFrame,
+				statViewFacesOut[0] * perFrame, statViewFacesOut[1] * perFrame, statViewFacesOut[2] * perFrame);
+			Logger::Log("POINT SHADOWS CubeFaceViewCull %s: per frame faces left out (out of view) %.1f of whole lamps, %.1f of people refreshes; partial redraws %.2f; moved lamps whose radius changed too %.2f per frame (largest change %.1f%%)",
+				TheSettingManager->SettingsMain.Main.CubeFaceViewCull ? "on" : "off", statFacesCulled[0] * perFrame, statFacesCulled[2] * perFrame,
+				statReasons[(int)PointShadowRedraw::Partial] * perFrame, statMovedResized * perFrame, 100.0f * statMovedRadiusStep);
+			statAnchored = 0; statMovedResized = 0; statMovedRadiusStep = 0.0f;
+			for (int k = 0; k < 3; k++) statViewFaces[k] = statViewFacesOut[k] = statFacesCulled[k] = 0;
+			statFacesSkipped = statFacesCopied = statFacesDrawn = statFacesOldPath = 0;
+			statMovedLamps = statMovedWithPeople = 0; statMovedStep = statMovedStepMax = statMovedWander = statMovedRadius = 0.0f;
 			statSkinnedCasters = statSkinnedFaces = statSkinnedOutOfRange = statSkinnedNoBound = 0;
 			statFrames = statPresent = statRedrawn = statStaticReused = 0;
 			statStaticDrawn = statMovingOnly = statWhole = 0;
