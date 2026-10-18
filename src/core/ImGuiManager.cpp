@@ -2191,6 +2191,9 @@ static const char* kShadowOrthoResolutionNames[] = {
 static const char* kEdgeDetectionNames[] = {
 	"0 - Luma", "1 - Color", "2 - Depth", "3 - Luma + Depth",
 };
+static const char* kOffOnRestartNames[] = {	// fixes-a #11
+	"0 - Off", "1 - On (needs a restart)",
+};
 static const char* kSmokeTestNames[] = {
 	"0 - Normal", "1 - Smoke in green", "2 - No muzzle flash light", "3 - Smoke not drawn", "4 - Nothing drawn at all",
 };
@@ -2212,6 +2215,7 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.ShadowsExteriors.Ortho.Resolution",             ENUM_OPT(kShadowOrthoResolutionNames) },
 	{ "Shaders.SMAA.Main.EdgeDetection",                       ENUM_OPT(kEdgeDetectionNames) },
 	{ "Main.GunFX.Main.VolumetricSmokeTest",                   ENUM_OPT(kSmokeTestNames) },
+	{ "Shaders.PBR.Main.SmithCorrelated",                      ENUM_OPT(kOffOnRestartNames) },
 };
 
 #undef ENUM_OPT
