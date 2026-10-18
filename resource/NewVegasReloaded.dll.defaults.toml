@@ -501,14 +501,17 @@ DrawFirstCull = true                   # UNOFFICIAL (2026-10-17): with DrawFirst
 [_Shaders.Grass.NewGrass]
 Enabled = false                        # UNOFFICIAL (2026-10-18) NEW GRASS, a LOOK CHANGE (off): the grass before the fade distance is drawn as real blades built from the game's own grass placement (same tufts, same density, same grass types per region; each blade's colour comes from that grass type's texture) instead of the game's flat alpha-tested cards: clean edges with the game's anti-aliasing, blades that bend and sway one by one, fewer blades far away (LOD), and the sun's shadows fall on them. The faraway fading grass stays the game's. Needs DrawFirst. Live. The look is the user's call; cost measured in the bench log (newgrass-LOG.md).
 BladeDistance = 7000.0                 # grass pieces whose nearest tuft is farther than this (units) stay the game's cards, a whole piece at a time. 7000 = everything before the default fade start is blades.
-Blades = 10                            # blades per tuft near the player (1-12); falls to 1 at LodFar.
-LodNear = 1000.0                       # up to this distance every tuft has all its blades and the most detailed blade shape.
+Blades = 8                             # blades per tuft near the player (1-12; a sparse grass type gets fewer, see FillRef); falls to 1 at LodFar.
+LodNear = 800.0                        # up to this distance every tuft has all its blades and the most detailed blade shape.
 LodFar = 4500.0                        # from here on one blade per tuft with the simplest shape (a triangle).
 WidenDistance = 5000.0                 # blades grow wider with distance (twice as wide at this distance) so fewer of them keep the far field covered.
-HeightScale = 1.0                      # blade height relative to the grass type's card height.
-WidthRatio = 0.035                     # blade width at the root as a share of its height.
-Spread = 0.8                           # how far the blades of a tuft spread around its place, relative to the card's half width.
-Bend = 0.35                            # how much a blade leans and curves (0 straight up).
+HeightScale = 1.0                      # blade height relative to the plant's height on its card (the card's opaque top, read from its texture).
+WidthRatio = 0.05                      # blade width at the root as a share of the plant's height.
+Spread = 0.15                          # how far from the clump's centre a blade's root may stand, as a share of the card's half width (the tips reach the card's own silhouette whatever this is).
+LengthMin = 0.45                       # the shortest blade of a clump as a share of the plant's height on the card; the short ones at the edge make the dome of a bush, 1.0 = every blade full height.
+Droop = 0.5                            # how far a blade leaning out to the clump's edge drops its tip (0 = straight to the silhouette).
+FillRef = 0.15                         # a grass type whose card is this opaque (alpha coverage) gets every blade; sparser cards fewer, down to half.
+Bend = 0.3                             # the curve of a blade on its way out to its tip (0 = a straight line to the tip, 0.3 = bowed outward).
 Flutter = 0.15                         # sideways flutter in the wind on top of the game's sway.
 ReceiveShadows = true                  # the sun's cascade shadows fall on the blades (the game's cards get none). Costs about 0.6 ms in a dense field.
 ShadowLift = 10.0                      # the shadow is looked up this many units above the blade (the ground itself casts a shadow at its own height; 0 = blades at the ground are in it).

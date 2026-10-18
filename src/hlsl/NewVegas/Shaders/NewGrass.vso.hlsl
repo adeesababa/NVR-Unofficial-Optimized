@@ -29,10 +29,12 @@ float4 FogParam     : register(c15);
 #endif
 float4 InstanceData[GRASS_INSTANCE_COUNT] : register(c20);
 
-float4 NG_Lod   : register(c248); // x LodNear (units), y 1 / (LodFar - LodNear), z 1 / WidenDistance, w far end of our blades (0 = none)
-float4 NG_Shape : register(c249); // x model height (units, before the tuft's size step), y tuft spread radius, z width / height, w bend
+float4 NG_Lod   : register(c248); // x LodNear (units), y 1 / (LodFar - LodNear), z 1 / WidenDistance, w Droop (a far-leaning blade's tip drops)
+float4 NG_Shape : register(c249); // x the plant's height (the card's opaque top, units, before the tuft's size step), y the card's half width, z width / height, w Bend (the curve's outward share)
 float4 NG_Misc  : register(c250); // x 1 = blades grow along the slope normal (LFS variant), y blades per tuft, z height scale, w tufts in this draw
-float4 NG_Var   : register(c251); // x 1 / (levels - 1), y 1 = only the tufts before the fade start (GrassFirst part 1 of a mixed draw), z flutter
+float4 NG_Var   : register(c251); // x 1 / (levels - 1), y 1 = only the tufts before the fade start (GrassFirst part 1 of a mixed draw), z flutter, w LengthMin
+float4 NG_Prof  : register(c254); // the card's silhouette: mean radius of its alpha per height band, bottom to top (share of the half width)
+float4 NG_Prof2 : register(c255); // x Spread: how far from the clump's centre a blade's root may stand (share of the half width)
 
 struct VS_INPUT {
     float4 packed : TEXCOORD0;   // UBYTE4: x tuft, y blade, z level, w side
@@ -88,24 +90,32 @@ VS_OUTPUT main(VS_INPUT IN) {
     float3 up = NG_Misc.x > 0.5f ? normalize(float3(0.0f, 0.0f, 1.0f) + orient) : float3(0.0f, 0.0f, 1.0f);
 
     // Per-blade variation from the tuft's place and the blade index.
-    float2 key = inst.xy * 0.03125f + blade * float2(7.13f, 3.71f);
+    // (Few distinct literals on purpose: the game's compiler packs them into the free registers and refuses a spill past c255.)
+    float2 key = inst.xy * 0.03125f + blade * float2(7.13f, 2.3f);
     float h1 = Hash(key);
     float h2 = Hash(key + 17.17f);
-    float h3 = Hash(key + 41.3f);
-    float h4 = Hash(key + 97.9f);
+    float h3 = Hash(key.yx + 17.17f);
+    float h4 = Hash(key.yx * 1.5f + 7.13f);
 
     // The tuft's size step, on the axes the grass scales (uniform or height only), as the game.
     float3 scale = (0.01f * inst.w) * ScaleMask.xyz + 1.0f;
-    float height = NG_Shape.x * scale.z * NG_Misc.z * (0.75f + 0.5f * h1) * keep;
-    float spread = NG_Shape.y * scale.x;
-
-    // Where the blade stands in the tuft (even over the disk) and which way it faces.
+    // The plant's height (the card's opaque top) and half width; a blade's length is a share of it (LengthMin..1): the short ones at
+    // the clump's edge make the dome of a bush, the long ones its centre. Nothing stands taller than the card's plant.
+    float plantH = NG_Shape.x * scale.z * NG_Misc.z;
+    float halfW = NG_Shape.y * scale.x;
+    float len = lerp(NG_Var.w, 1.0f, h1);
+    float height = plantH * len * keep;
+    // The tip lands on the card's own silhouette at that height: the mean radius of the card's alpha at the blade's band, between half
+    // and 1.2 times it, so the blades fill the card's shape and reach no farther (the bare ground between clumps stays bare).
+    float hb = len * 4.0f - 0.5f;
+    float rsil = hb < 1.0f ? lerp(NG_Prof.x, NG_Prof.y, saturate(hb)) : hb < 2.0f ? lerp(NG_Prof.y, NG_Prof.z, hb - 1.0f) : lerp(NG_Prof.z, NG_Prof.w, saturate(hb - 2.0f));
+    float rTip = halfW * rsil * (0.6f + 0.6f * h3);
+    // The blade radiates from near the clump's centre (Spread of the half width) in its own direction, its face turned outward.
     float ang = h2 * 6.2831853f;
-    float3 base = inst.xyz + float3(cos(ang), sin(ang), 0.0f) * (spread * sqrt(h3));
-    float fa = h4 * 6.2831853f;
-    float3 facing = float3(cos(fa), sin(fa), 0.0f);
-    float3 dir = normalize(facing - up * dot(facing, up));
-    float3 sideVec = cross(up, dir);
+    float3 away = float3(cos(ang), sin(ang), 0.0f);
+    float3 outDir = normalize(away - up * dot(away, up));
+    float3 base = inst.xyz + outDir * (halfW * NG_Prof2.x * h4);
+    float3 sideVec = cross(up, outDir);
 
     // Wind: the game's per-tuft phase and magnitude (the far cards sway with it), a little jitter per blade, a flutter across.
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;
@@ -114,25 +124,28 @@ VS_OUTPUT main(VS_INPUT IN) {
     float3 wind = float3(WindData.xy * (swing * WindData.z), 0.0f)
                 + sideVec * (sin(phase * 2.3f + h2 * 6.2831853f) * WindData.z * NG_Var.z);
 
-    // The blade: a quadratic Bezier from the root, leaning its facing way by the bend, the wind pulling the top.
-    float bend = NG_Shape.w * (0.6f + 0.8f * h3);
+    // The blade: a quadratic Bezier from its root up and outward to its tip on the silhouette, curving (Bend = the control point's
+    // outward share), a far-leaning blade dropping its tip (Droop), the wind pulling the top.
+    float lean = rTip / max(height, 1.0f);
+    float droop = NG_Lod.w * saturate(lean - 0.5f) * height;
     float3 p0 = base;
-    float3 p1 = base + up * (height * 0.55f) + dir * (height * bend * 0.25f) + wind * 0.3f;
-    float3 p2 = base + up * (height * (1.0f - 0.3f * bend)) + dir * (height * bend) + wind;
+    float3 p2 = base + up * (height - droop) + outDir * rTip + wind;
+    float3 p1 = base + up * (height * 0.6f) + outDir * (rTip * NG_Shape.w) + wind * 0.3f;
     float u = 1.0f - t;
     float3 pos = (u * u) * p0 + (2.0f * u * t) * p1 + (t * t) * p2;
     float3 tangent = normalize(2.0f * u * (p1 - p0) + 2.0f * t * (p2 - p1));
 
-    // Width tapers to the tip and grows with distance (fewer, wider blades keep the far coverage).
-    float width = height * NG_Shape.z * (1.0f + depth * NG_Lod.z) * (1.0f - t * t);
+    // Width: a share of the plant's height (a short blade is as wide at its root as a long one), tapering to the tip, growing with
+    // distance (fewer, wider blades keep the far coverage).
+    float width = plantH * NG_Shape.z * (0.6f + 0.6f * h4) * (1.0f + depth * NG_Lod.z) * (1.0f - t * t) * keep;
     pos += sideVec * (side * 0.5f * width);
 
     float3 normal = normalize(cross(sideVec, tangent));
-    normal = normalize(normal + sideVec * (side * 0.35f));   // a rounded blade: the normal tilts toward each side
+    normal = normalize(normal + sideVec * (side * 0.3f));   // a rounded blade: the normal tilts toward each side
 
     OUT.position = mul(ModelViewProj, float4(pos, 1.0f));
     OUT.clip = OUT.position;
-    OUT.params = float4(t, IN.packed.w, h4, lightScale);
+    OUT.params = float4(t * len, IN.packed.w, h4, lightScale);   // x: the height on the PLANT, so each blade shows the card's colour there
     OUT.normal = float4(normal, AddlParams.x);
     OUT.sunDir = float4(DiffuseDir, 0.0f);
     OUT.ambient = float4(AmbientColor.rgb, 1.0f);
