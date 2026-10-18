@@ -1561,6 +1561,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// 16-bit float as that pass's target stored it (VolumetricFog.fx CompositeFogInterior), when nothing between them reads the
 	// picture: the effects above, and the Reflections surroundings cube, whose capture (RenderCubeOnly, below) reads the scene
 	// even when no floor reflects. Only where that pass would take its dedicated path (the generic one blurs).
+	// OFF by default (2026-10-18): the same-frame check (InteriorShadowFoldCheck) still finds a few pixels a frame next to the void
+	// (ceiling gaps, the far plane: the fog's sky test) differing by a few 16-bit steps; everywhere else it matched bit for bit.
 	const bool interiorFoldable = !GameState.isExterior && keepDarkening && forwardInterior &&
 		!Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur && TheSettingManager->SettingsMain.Main.InteriorShadowFold &&
 		!(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) &&

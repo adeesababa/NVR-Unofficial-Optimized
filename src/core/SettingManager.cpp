@@ -671,14 +671,14 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
 	SettingsMain.Main.SkipIdentityExposure = boolSetting(performance, "SkipIdentityExposure", true);
 	SettingsMain.Main.LampMaskScissor = boolSetting(performance, "LampMaskScissor", true);
-	SettingsMain.Main.InteriorShadowFold = boolSetting(performance, "InteriorShadowFold", true);
+	SettingsMain.Main.InteriorShadowFold = boolSetting(performance, "InteriorShadowFold", false);	// off: not bit-exact next to the void (intshadow-LOG.md)
 	{
 		Configuration::ConfigNode node;
 		const int mode = Config.FillNode(&node, performance, "InteriorShadowFoldRound") ? node.IntValue : 0;
 		SettingsMain.Main.InteriorShadowFoldRound = max(0, min(mode, 3));
 	}
 	SettingsMain.Main.CubeFaceCopySkip = boolSetting(performance, "CubeFaceCopySkip", false);
-	SettingsMain.Main.CubeFaceViewCull = boolSetting(performance, "CubeFaceViewCull", false);
+	SettingsMain.Main.CubeFaceViewCull = boolSetting(performance, "CubeFaceViewCull", true);
 	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
 	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
