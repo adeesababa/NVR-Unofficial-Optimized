@@ -687,12 +687,9 @@ technique DedicatedGTAO
 // need screen derivatives (tex2D), so it had turned 'if (origin.z > endFade) return 1' (estimate) and 'if (center.y >= endFade)
 // return' (both blurs) into selects at the end: every pixel, sky and distant land included, ran the whole 10-sample kernel and the
 // whole blur. Here the reads at the pixel itself stay tex2D in uniform flow (the same reads as before), and the reads behind the
-// branch are tex2Dlod level 0 on single-level targets (depth, AO ping-pong, normals) or the point-sampled, no-mip blue noise: the
-// same texels and weights. Arithmetic is the original's, line for line.
-float3 randomLod(float2 seed)
-{
-	return tex2Dlod(TESR_BlueNoiseSampler, float4((seed/256 + 0.5) / TESR_ReciprocalResolution.xy, 0, 0)).xyz;
-}
+// branch are tex2Dlod level 0 on single-level targets (depth, AO ping-pong, normals): the same texels and weights. The kernel's
+// blue-noise reads are NOT behind the branch: they are made at the top of the estimate in uniform flow (tex2D, as the original) and
+// passed in. Arithmetic is the original's, line for line.
 
 float2 PackedSSAOValuesFast(float2 uv, float3 origin, float3 normal, float3 rnd[kernelSize], float3 scl[kernelSize])
 {

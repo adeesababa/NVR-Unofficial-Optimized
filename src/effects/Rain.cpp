@@ -24,7 +24,9 @@ void RainEffect::UpdateSettings() {
 	Constants.Aspect.y = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Coloring");
 	Constants.Aspect.z = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Bloom");
 	// UNOFFICIAL 2026-10-17 (Precipitations.fx.hlsl): skip the rain layers behind each pixel (they add exactly 0). A key missing
-	// from an older settings file reads 0 = off.
+	// from the user's settings file reads the shipped default (on); only a key missing from the DEFAULTS toml reads 0 = off.
+	// Note (fixes-b #37): GetOrtho samples with tex2Dlod level 0 whether this option is on or off (identical unless a driver
+	// anisotropic override acts in minification).
 	Constants.Aspect.w = TheSettingManager->GetSettingI("Shaders.Precipitations.Main", "SkipHiddenLayers") != 0 ? 1.0f : 0.0f;
 }
 

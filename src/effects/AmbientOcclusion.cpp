@@ -30,7 +30,8 @@ static float LinearLuma(const D3DXVECTOR4& c) {
 bool AmbientOcclusionEffect::SkyV2Active() { return SkyData2.x > 0.0f; }
 // UNOFFICIAL 2026-10-17 FastPaths ([Shaders.AmbientOcclusion.FastPaths] Enabled): the DedicatedAOFast technique = DedicatedAO with
 // its far-pixel early returns made real (the effect compiler had flattened them: sky and distant land ran the whole kernel and
-// both blurs). Same picture. Off, GTAO on, or an effect file without the technique: DedicatedAO / DedicatedGTAO as before.
+// both blurs). Same picture. With GTAO on it picks DedicatedGTAOFast instead. Off, or an effect file without the technique:
+// DedicatedAO / DedicatedGTAO as before.
 static bool FastPaths = false;
 static EffectRecord::CachedHandle techFast, techGTAOFast;
 
