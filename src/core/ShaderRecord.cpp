@@ -115,7 +115,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
 			i++;
 		}
-		if (i >= 34) return;  // out of room (Defines[36]: 34 entries and the terminator); silently skip rather than overrun
+		if (i >= 34) {  // out of room (Defines[36]: 34 entries and the terminator); skip rather than overrun
+			static bool warned = false;	// fixes-a #12: say so once (a dropped define = the shader compiled without that option)
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 34 shader defines, '%s' and any after it are dropped", Name); }
+			return;
+		}
 		Template.Defines[i] = { Name, Definition };
 		Template.Defines[i + 1] = { NULL, NULL };
 	};
@@ -181,10 +185,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-18 SmithCorrelated (Includes/PBR.hlsl BRDF + SmithCorrelatedKeep; idea from Physically-Based-Reloaded (Balebandro),
 	// GPL-3.0): the object and parallax pixel shaders take the exact height-correlated Smith masking term (Heitz 2014) and the coupled
 	// diffuse it needs. A look change, compiled in only when on at startup, so that off the shaders are exactly what they were.
-	// 2 = a test mode (both terms, blended live by SmithCorrelatedTest) for one-launch A/B tests.
+	// fixes-a #11: only 1 is on; any other value is off. The old test mode 2 (slow, and refused by the GPU in one indoor many-lamp
+	// shader) is no longer reachable from the menu or the config.
 	{
 		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
-		AppendDefine("SMITH_CORRELATED_ON", smith == 2 ? "2" : smith ? "1" : "0");
+		AppendDefine("SMITH_CORRELATED_ON", smith == 1 ? "1" : "0");
 	}
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.

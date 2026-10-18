@@ -81,7 +81,8 @@ public:
 
 	// While the storm blows (ThroughBlended), glass and other see-through blended surfaces leave the world's depth to what
 	// lies behind them, so the dust is measured to that (SandstormGlass in Render.cpp).
-	bool	HidesBlendedDepth() const { return Enabled && Effect && Settings.ThroughBlended && Intensity > 0.0f; }
+	// fixes-a #32: the same threshold the dust draws at (ShouldRender, > 0.001), so glass never goes without depth for a frame with no dust
+	bool	HidesBlendedDepth() { return Enabled && Effect && Settings.ThroughBlended && ShouldRender(); }
 	bool	Underwater = false;		// the camera is underwater (the storm only above the surface)
 
 	// UNOFFICIAL 2026-10-18 (sandfast): the fast path's buffers (made the first time it draws: nothing while the effect is off).
@@ -98,6 +99,7 @@ public:
 	};
 	TexturesStruct	Textures;
 	bool	TexturesTried = false;	// made once; if that failed the reference path draws
+	int		TexturesFailed = 0;		// fixes-a #5: failed attempts (a partial set is released; tried again, at most 3 times)
 	bool	UseFastPath();			// the fast path this frame (FastPath on, not underwater, its buffers there)
 	void	RenderBuffers(IDirect3DDevice9* Device);	// the grid, streaks and glow passes, before the composite (technique 5)
 	void	RegisterTextures();

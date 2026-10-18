@@ -37,6 +37,7 @@ public:
 	bool skipIdle = false;
 	bool idleEmptyKnown = false;	// the last finished check found the sky mask's maximum under idleLimit
 	bool idleCheckFrame = false, idleCheckSkipped = false;
+	unsigned idleIssueFrame = 0;	// fixes-a #54: FrameNumber when the pending query was issued (an answer more than 8 frames old is not trusted)
 	int idleSinceCheck = 0, idleAge = 0, probeLevel = 0;	// frames since the last check was issued; age of the unanswered query; [Shaders.GodRays.Main] ProbeLog
 	bool idlePending = false, idleQueryBroken = false;	// a query is out and not answered yet; the device has no occlusion queries
 	float idleLimit = 0.0f, idleTruth = -1.0f, idleLimitAtIssue = 0.0f;

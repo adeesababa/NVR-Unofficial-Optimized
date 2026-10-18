@@ -23,8 +23,12 @@ void SkyViewEffect::RenderTable(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	if (exact) {
 		const float haze = sky->Constants.PhysSky.w, albedo = sky->PhysicalSettings.GroundAlbedo;
 		const bool changed = !transBuilt || haze != builtHaze || (ms && (!msBuilt || albedo != builtAlbedo));
-		if (changed || ++framesSinceBuild >= 256) {
-			static GpuTimer buildTimer("Physical sky tables (static)");
+		// fixes-a #48: no 256-frame refresh any more (it cost ~0.45 ms on that frame with MS on and bought nothing: NVR's targets are
+		// D3DPOOL_DEFAULT render targets that are never released, so their contents cannot be lost in a running session; if a Reset
+		// path is ever added it must clear transBuilt and msBuilt).
+		if (changed) {
+			static GpuTimer buildTimer("Physical sky tables (static)", 1);
+			const bool firstDraw = !transBuilt || (ms && !msBuilt);	// fixes-a #50: log only when a table is first made, not on every drag step
 			GpuProfileScope gpu(buildTimer, Device);
 			TheShaderManager->RenderEffectToRT(Textures.TransSurface, this, false, 1);
 			transBuilt = true;
@@ -33,9 +37,11 @@ void SkyViewEffect::RenderTable(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 				msBuilt = true;
 				builtAlbedo = albedo;
 			}
+			// fixes-a #49: with MS off a Haze change redraws only the transmittance table; the MS table (drawn for the old haze)
+			// must be drawn again when MS is next turned on
+			if (!ms && haze != builtHaze) msBuilt = false;
 			builtHaze = haze;
-			framesSinceBuild = 0;
-			if (changed) Logger::Log("UNOFFICIAL physical sky: drew the %s table(s) (haze %.2f, ground albedo %.2f)", ms ? "sun transmittance and multiple scattering" : "sun transmittance", haze, albedo);
+			if (firstDraw) Logger::Log("UNOFFICIAL physical sky: drew the %s table(s) (haze %.2f, ground albedo %.2f)", ms ? "sun transmittance and multiple scattering" : "sun transmittance", haze, albedo);
 		}
 		technique = ms ? 4 : 3;
 	}

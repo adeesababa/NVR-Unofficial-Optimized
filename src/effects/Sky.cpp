@@ -213,8 +213,23 @@ void SkyShaders::UpdateConstants() {
 	// about a quarter of a millisecond, redone only when the sun has moved or a setting changed); plenty for the brightness
 	// match and the smooth sky light.
 	static D3DXVECTOR3 physSamples[(16 / 2) * (32 / 2)];
-	if (physical && physExact && !physTables.Matches(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs))
-		physTables.Build(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs);	// about 60 ms, once, when a setting changed
+	if (physical && physExact && !physTables.Matches(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs)) {
+		// fixes-a #50: the rebuild takes 65-73 ms on the render thread and a menu drag changes Haze or GroundAlbedo every frame, so
+		// when the old tables can stand in (built, and with the MS part if MS is wanted) it waits until the wanted values have held
+		// still for 10 rendered frames. The projection is asked to run again meanwhile (its change check would otherwise skip it).
+		static float wantHaze = -1.0f, wantAlbedo = -1.0f;
+		static bool wantMs = false;
+		static unsigned wantSince = 0;
+		const unsigned now = TheFrameRateManager->FrameNumber;
+		if (wantHaze != PhysicalSettings.Haze || wantAlbedo != PhysicalSettings.GroundAlbedo || wantMs != physMs) {
+			wantHaze = PhysicalSettings.Haze; wantAlbedo = PhysicalSettings.GroundAlbedo; wantMs = physMs; wantSince = now;
+		}
+		const bool oldTablesUsable = physTables.built && (!physMs || physTables.hasMs);
+		if (!oldTablesUsable || now - wantSince >= 10)
+			physTables.Build(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs);	// about 60 ms, once, when a setting changed
+		else
+			lastProjectionValid = false;
+	}
 	if (physical) {
 		const D3DXVECTOR3 realSun(Constants.PhysSkySun.x, Constants.PhysSkySun.y, Constants.PhysSkySun.z);
 		for (int i = 0; i < STEPS_T / 2; i++) {

@@ -54,7 +54,19 @@ bool SandstormEffect::UseFastPath() {
 		TheTextureManager->InitTexture("TESR_SandstormGlow", &Textures.GlowTexture, &Textures.GlowSurface, qw, qh, D3DFMT_A16B16G16R16F);
 		Constants.GridLayout = D3DXVECTOR4((float)gw, (float)gh, 1.0f / (gw * 8), 1.0f / (gh * 8));
 		Constants.LowLayout = D3DXVECTOR4(1.0f / w, 1.0f / h, 1.0f / qw, 1.0f / qh);
-		const bool ok = Textures.GridSurface && Textures.GridTempSurface && Textures.StreaksSurface && Textures.GlowSurface;
+		bool ok = Textures.GridSurface && Textures.GridTempSurface && Textures.StreaksSurface && Textures.GlowSurface;
+		if (!ok) {
+			// fixes-a #5: a partly made set used to stay (leaked, never tried again). Release what was made and try again later.
+			auto release = [](IDirect3DTexture9*& tex, IDirect3DSurface9*& surf) {
+				if (surf) { surf->Release(); surf = nullptr; }
+				if (tex) { tex->Release(); tex = nullptr; }
+			};
+			release(Textures.GridTexture, Textures.GridSurface);
+			release(Textures.GridTempTexture, Textures.GridTempSurface);
+			release(Textures.StreaksTexture, Textures.StreaksSurface);
+			release(Textures.GlowTexture, Textures.GlowSurface);
+			if (++TexturesFailed < 3) TexturesTried = false;
+		}
 		Logger::Log("UNOFFICIAL Sandstorm: fast path %s (dust grid %u x %u columns x 64 slices, streaks at %u x %u, glow at %u x %u)",
 			ok ? "on" : "FAILED to make its buffers, the full-resolution path draws instead", gw, gh, w, h, qw, qh);
 	}
@@ -81,9 +93,10 @@ void SandstormEffect::RenderBuffers(IDirect3DDevice9* Device) {
 
 void SandstormEffect::UpdateSettings() {
 	const char* main = "Shaders.Sandstorm.Main";
-	char keyword[MAX_PATH] = "";
-	TheSettingManager->GetSettingS(main, "Keyword", keyword);
-	std::string k = keyword;
+	// fixes-a #24: read the whole text from LongValue (GetSettingS cuts a String setting at 79 characters), like ClothWind.h.
+	SettingManager::Configuration::ConfigNode keywordNode;
+	std::string k;
+	if (TheSettingManager->Config.FillNode(&keywordNode, main, "Keyword")) k = keywordNode.LongValue.empty() ? std::string(keywordNode.Value) : keywordNode.LongValue;
 	k.erase(std::remove(k.begin(), k.end(), '"'), k.end());
 	if (k.empty()) k = "sandstorm,duststorm";
 	for (auto& c : k) c = (char)tolower((unsigned char)c);
