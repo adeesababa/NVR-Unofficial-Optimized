@@ -199,7 +199,7 @@ static void ForgetLiveFaces(int slot) {
 
 // UNOFFICIAL 2026-10-18 LampShadowMoveTolerance ([Main.Main.ReducedQuality], CHANGES THE IMAGE, off at 0): the point the cube map
 // is drawn from when it is not the light's own position this frame (RenderShadowMaps sets it around the draw calls).
-static const NiPoint3* CubeEyeOverride = nullptr;
+static NiPoint3* CubeEyeOverride = nullptr;
 
 // UNOFFICIAL 2026-10-18 diagnostic (intshadow): a lamp cube face that no on-screen pixel can look up -- its pyramid (the lamp and
 // the face's four corners at the cube radius, widened 10% for filtering across the seams) lies wholly behind one side of the

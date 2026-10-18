@@ -718,7 +718,7 @@ void SettingManager::LoadSettings() {
 		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 1;
 		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
 		const float tolerance = Config.FillNode(&node, reducedQuality, "LampShadowMoveTolerance") ? node.FloatValue : 0.0f;
-		SettingsMain.Main.LampShadowMoveTolerance = tolerance > 0.0f ? (std::min)(tolerance, 64.0f) : 0.0f;
+		SettingsMain.Main.LampShadowMoveTolerance = tolerance > 64.0f ? 64.0f : tolerance > 0.0f ? tolerance : 0.0f;
 	}
 	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
 	SettingsMain.Main.CheapUnderwaterTerrain = boolSetting(reducedQuality, "CheapUnderwaterTerrain", false);
