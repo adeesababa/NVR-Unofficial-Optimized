@@ -20,6 +20,7 @@
 #include "../../core/ClothWind.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
+#include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
 
@@ -2100,6 +2101,18 @@ namespace GrassFirst {
 		return kMixed;
 	}
 
+	// UNOFFICIAL 2026-10-18 NewGrass: how far the nearest point of a draw's world bound is from the camera (0 if unknown).
+	static float NearestDistance(void* pass) {
+		NiAVObject* geometry = *(NiAVObject**)pass;
+		if (!geometry) return 0.0f;
+		const NiBound* bound = geometry->GetWorldBound();
+		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return 0.0f;
+		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y, dz = bound->Center.z - cam.z;
+		const float d = sqrtf(dx * dx + dy * dy + dz * dz) - bound->Radius;
+		return d > 0.0f ? d : 0.0f;
+	}
+
 	static bool Allowed(void* accumulator) {
 		GrassShaders* grass = TheShaderManager->Shaders.Grass;
 		if (!Installed || !grass || !grass->Enabled || !grass->DrawFirst) return false;
@@ -2131,7 +2144,9 @@ namespace GrassFirst {
 				Save();
 				GrassShaders::DrawPart = 1;
 				Recording = true;
+				NewGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h)
 				ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
+				NewGrass::EndEarly(TheRenderManager->device, StatEarly);
 				Recording = false;
 				GrassShaders::DrawPart = 0;
 				((void(__cdecl*)())kEndPass)();
@@ -2192,7 +2207,10 @@ namespace GrassFirst {
 				const float all[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 0.0f };
 				TheRenderManager->device->SetVertexShaderConstantF(19, all, 1);
 			}
+			// UNOFFICIAL 2026-10-18 NewGrass: this pass's card draw may be replaced by blades (its first DrawIndexedPrimitive, core/NewGrass.h).
+			NewGrass::Arm(pass, kind == kAllNear ? 0 : 1, NearestDistance(pass));
 			RenderPassImmediately(pass, passId, a3, a4, a5);
+			NewGrass::Disarm();
 			if (kind == kAllNear) {
 				GrassShaders::DrawPart = 1;
 				const float nearOnly[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 1.0f };

@@ -498,6 +498,24 @@ DrawFirst = true                       # UNOFFICIAL (2026-10-17): the grass is d
 DrawFirstRestore = 5                   # UNOFFICIAL, diagnostic (2026-10-17): with DrawFirst, which device state is put back after the early grass (1 shader constants, 2 render states, 4 sampler states, 8 texture stage states, 16 textures). Leave at 5 (constants + sampler states).
 DrawFirstCull = true                   # UNOFFICIAL (2026-10-17): with DrawFirst, grass pieces that are all near or all in the distance fade are drawn once instead of twice. Same picture, less vertex work.
 
+[_Shaders.Grass.NewGrass]
+Enabled = false                        # UNOFFICIAL (2026-10-18) NEW GRASS, a LOOK CHANGE (off): the grass before the fade distance is drawn as real blades built from the game's own grass placement (same tufts, same density, same grass types per region; each blade's colour comes from that grass type's texture) instead of the game's flat alpha-tested cards: clean edges with the game's anti-aliasing, blades that bend and sway one by one, fewer blades far away (LOD), and the sun's shadows fall on them. The faraway fading grass stays the game's. Needs DrawFirst. Live. The look is the user's call; cost measured in the bench log (newgrass-LOG.md).
+BladeDistance = 7000.0                 # grass pieces whose nearest tuft is farther than this (units) stay the game's cards, a whole piece at a time. 7000 = everything before the default fade start is blades.
+Blades = 8                             # blades per tuft near the player (1-8); falls to 1 at LodFar.
+LodNear = 1200.0                       # up to this distance every tuft has all its blades and the most detailed blade shape.
+LodFar = 4500.0                        # from here on one blade per tuft with the simplest shape (a triangle).
+WidenDistance = 2500.0                 # blades grow wider with distance (twice as wide at this distance) so fewer of them keep the far field covered.
+HeightScale = 1.0                      # blade height relative to the grass type's card height.
+WidthRatio = 0.09                      # blade width at the root as a share of its height.
+Spread = 0.8                           # how far the blades of a tuft spread around its place, relative to the card's half width.
+Bend = 0.35                            # how much a blade leans and curves (0 straight up).
+Flutter = 0.15                         # sideways flutter in the wind on top of the game's sway.
+ReceiveShadows = true                  # the sun's cascade shadows fall on the blades (the game's cards get none). Costs a little.
+Wrap = 0.3                             # how far the sun's light wraps round a blade (thin leaves let light through); 0 = hard shading.
+TipLift = 0.5                          # a warm lift of the colour toward the tip.
+Variation = 0.12                       # per-blade brightness variation (+-).
+Log = 0                                # DIAGNOSTIC: 1 = one log line per replaced draw for the first 3 frames.
+
 [_Shaders.Grass.Status]
 Enabled = true                        # Replaces the grass shaders.
 

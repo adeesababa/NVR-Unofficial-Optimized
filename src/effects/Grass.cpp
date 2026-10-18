@@ -1,4 +1,5 @@
 #include "Grass.h"
+#include "../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass ([Shaders.Grass.NewGrass]): blade geometry in place of the near grass cards
 
 void GrassShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GrassScale", &Constants.Scale);
@@ -16,6 +17,7 @@ void GrassShaders::UpdateSettings() {
 	DrawFirst = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirst");
 	DrawFirstRestore = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstRestore");
 	DrawFirstCull = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstCull");
+	NewGrass::ReadSettings();	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h): live
 }
 
 void GrassShaders::UpdateConstants() {}
@@ -27,6 +29,9 @@ void GrassShaders::UpdateConstants() {}
 // gives the P80 behaviour (the bare colours to the game's shader: too bright) for A/B tests.
 void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShaderEx* PixelShader) {
 	if (!Enabled || !VertexShader || !VertexShader->Name || memcmp(VertexShader->Name, "GRASS", 5)) return;
+	// UNOFFICIAL 2026-10-18 NewGrass: which grass VS variant this pass binds ('GRASS23x00N': N = 0 LF, 1 LV, 2 LFS, 3 LVS; the card
+	// variants are 0 and 2, the others light real meshes by their normals and are never replaced by blades).
+	NewGrass::LastVariant = strlen(VertexShader->Name) >= 11 ? VertexShader->Name[10] : 0;
 	LastBindNVR = false;
 	if (!VertexShader->ShaderHandleBackup || VertexShader->ShaderHandle == VertexShader->ShaderHandleBackup) return;	// the game's own VS
 	LastBindNVR = true;
