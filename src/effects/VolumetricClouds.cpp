@@ -318,17 +318,21 @@ void VolumetricCloudsEffect::UpdateConstants() {
 				lastCloudTime = now;
 				advance = 0.0f;
 			}
-			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt) {
+			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt / TunedClockRate) {
 				const double step = now - lastCloudTime;
 				if (step > 120.0) Logger::Log("UNOFFICIAL VolumetricClouds: the game clock moved %.2f hours at once (wait, sleep, travel): the clouds move on with it (%.0f m).", step * scale / 3600.0, step * speed);
 				advance = (float)step;
 				lastCloudTime = now;
 			}
 			else {
-				double next = lastCloudTime + dt;
+				// UNOFFICIAL fixes-b #44 (LOOK CHANGE, clouds off by default): the hold / catch-up runs in REAL seconds (dt is the frame time
+				// x TunedClockRate, but the game's clock `now` runs at 1x: holding a 2x clock at now + lead made the clouds move at half
+				// the tuned speed, and in coarse steps on a late save). The move itself is then multiplied by the tuned rate.
+				const double realDt = dt / TunedClockRate;
+				double next = lastCloudTime + realDt;
 				if (next > now + lead) next = (std::max)(lastCloudTime, now + lead);	// paused (or the clock is slower): hold
-				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * dt);	// behind: catch up gently
-				advance = (float)(next - lastCloudTime);
+				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * realDt);	// behind: catch up gently
+				advance = (float)((next - lastCloudTime) * TunedClockRate);
 				lastCloudTime = next;
 			}
 		}
