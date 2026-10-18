@@ -566,8 +566,8 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 // 57 55 85); one brighter than the ambient can explain (a lamp or the sun on it) is capped at a bright surface's reflectance and its
 // hue counts less (it is the lamp's as much as the surface's). The old stand-in (the pixel's hue scaled to 0.6 at its brightest
 // channel) made every surface, dark or light, send back 0.6 of the bounce in the colour of the light already on it: dark corners lit
-// by a tinted ambient came out as bright pastel copies of that tint (measured, Gomorrah at GridBounce 2: the picture's median
-// brightness x 3.0, local contrast halved; with this: x 1.3, contrast kept).
+// by a tinted ambient came out as bright pastel copies of that tint (measured in game, Gomorrah at GridBounce 2: the picture's
+// median brightness x 2.2-3.2 and its local contrast x 0.74 (Lab); with this x 1.2-1.4 and x 1.06).
 static const float MaxReflectance = 0.6f;	// the old stand-in's level; 92 % of Gomorrah's pixels come out below it
 float3 SurfaceColour(float3 lin) {
 	float3 ambient = max(NVR_ALScene.rgb, 0.25f * luma(NVR_ALScene.rgb) + 1.0e-4f);
