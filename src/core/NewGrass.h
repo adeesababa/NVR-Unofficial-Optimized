@@ -62,8 +62,16 @@ namespace NewGrass {
 	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; };
 	inline std::unordered_map<const void*, Model> Models;
 	// The colour ramp of a grass type (per texture, read from a small mip; refreshed every 60 s in case the address is reused).
-	struct Ramp { float C[4][4] = {}; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; char Info[128] = ""; };
+	struct Ramp { float C[4][4] = {}; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; char Info[160] = ""; };
 	inline std::unordered_map<const void*, Ramp> Ramps;
+	// The GPU reduction for textures the CPU cannot lock (D3DPOOL_DEFAULT, the case in game: launch 1): a 4x1 target, one pixel per band.
+	inline IDirect3DVertexShader9* RampVS = nullptr;
+	inline IDirect3DPixelShader9* RampPS = nullptr;
+	inline IDirect3DVertexDeclaration9* RampDecl = nullptr;
+	inline IDirect3DTexture9* RampTex = nullptr;
+	inline IDirect3DSurface9* RampSurf = nullptr;
+	inline IDirect3DSurface9* RampSys = nullptr;
+	inline bool RampGpuFailed = false;
 
 	// The armed pass.
 	inline bool Armed = false, Replaced = false;
@@ -74,7 +82,6 @@ namespace NewGrass {
 
 	// Statistics (per early call = per frame).
 	inline unsigned StatReplaced = 0, StatLetThrough = 0, StatSwallowed = 0, StatTufts = 0, StatVerts = 0, StatTris = 0, StatFar = 0, StatNotCard = 0, StatNormals = 0, Frames = 0;
-	inline bool MatricesChecked = false;
 
 	inline bool CreateResources(IDirect3DDevice9* device) {
 		if (Decl) return true;
@@ -131,6 +138,11 @@ namespace NewGrass {
 		t.Name = "NewGrass.pso";
 		const D3DXMACRO noShadow[] = { { "NEWGRASS_SHADOWS", "0" }, { NULL, NULL } };
 		PSNoShadow = (ShaderRecordPixel*)ShaderRecord::LoadShader("NewGrassNoShadow.pso", NULL, t, NULL, noShadow);
+		// Launch 1 (2026-10-18 11:36): a pixel record's default ClearSamplers set every texture stage to null through the game's state
+		// cache before our draw, and the game's grass shader (which tracks its texture set itself) never re-bound stage 0: every card
+		// after ours drew with no texture = opaque black. Our shaders bind only the shadow atlas (s9, through the cache).
+		if (PS) PS->ClearSamplers = false;
+		if (PSNoShadow) PSNoShadow->ClearSamplers = false;
 		LoadFailed = !VS || !PS || !PSNoShadow;
 		Logger::Log("UNOFFICIAL NewGrass: shaders %s (VS %p, PS %p, PS without shadows %p)", LoadFailed ? "FAILED to load: off" : "loaded", VS, PS, PSNoShadow);
 		return !LoadFailed;
@@ -140,7 +152,8 @@ namespace NewGrass {
 	inline const Model& GetModel(NiGeometry* geometry) {
 		NiGeometryData* gd = geometry->geomData;
 		Model& m = Models[gd];
-		if (m.Total) return m;
+		if (m.Total && m.Total == gd->m_usVertices) return m;	// (a freed address reused by another model: learned again)
+		m = Model();
 		m.Total = gd->m_usVertices;
 		const unsigned uvSets = gd->m_usDataFlags & 0x3F;
 		unsigned vpm = 0;
@@ -168,17 +181,165 @@ namespace NewGrass {
 		}
 		if (!(m.Height > 1.0f)) m.Height = 1.0f;
 		if (!(m.Width > 1.0f)) m.Width = 1.0f;
-		m.Card = vpm <= 16;
+		m.Card = vpm <= 64;	// vanilla tufts are clusters of crossed cards: 13, 18 and 40 vertices per tuft seen in the noon field (launch 1)
 		Logger::Log("UNOFFICIAL NewGrass: model %p: %u vertices, %u per tuft (%u tufts), height %.1f width %.1f%s -> %s", gd, m.Total, vpm, m.Capacity,
 			m.Height, m.Width, m.FromBound ? " (from the bound)" : "", m.Card ? "card" : "NOT a card (kept the game's)");
 		return m;
+	}
+
+	// Band sums (colour x alpha, alpha; 0 = root band, 3 = tip) into the ramp; a band without opaque texels takes its neighbour's colour.
+	inline void FinishRamp(Ramp& r, const double sum[4][3], const double alpha[4], float coverage) {
+		r.Coverage = coverage;
+		int last = -1;
+		for (int b = 0; b < 4; b++) {
+			if (alpha[b] > 0.0) { for (int k = 0; k < 3; k++) r.C[b][k] = (float)(sum[b][k] / alpha[b]); r.C[b][3] = 1.0f; last = b; }
+			else if (last >= 0) memcpy(r.C[b], r.C[last], sizeof(r.C[b]));
+		}
+		for (int b = 2; b >= 0; b--) if (alpha[b] <= 0.0 && alpha[b + 1] > 0.0) memcpy(r.C[b], r.C[b + 1], sizeof(r.C[b]));
+		r.Read = last >= 0;
+	}
+
+	// CPU path: a system-memory copy of the mip (D3DX converts the format); works for MANAGED textures only.
+	inline bool ReadRampCPU(IDirect3DDevice9* device, IDirect3DTexture9* tex, DWORD level, const D3DSURFACE_DESC& d, Ramp& r) {
+		IDirect3DSurface9* src = nullptr; IDirect3DSurface9* dst = nullptr;
+		HRESULT hr = tex->GetSurfaceLevel(level, &src);
+		if (SUCCEEDED(hr)) hr = device->CreateOffscreenPlainSurface(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &dst, NULL);
+		if (SUCCEEDED(hr)) hr = D3DXLoadSurfaceFromSurface(dst, NULL, NULL, src, NULL, NULL, D3DX_FILTER_NONE, 0);
+		D3DLOCKED_RECT lr = {};
+		if (SUCCEEDED(hr)) hr = dst->LockRect(&lr, NULL, D3DLOCK_READONLY);
+		bool ok = false;
+		if (SUCCEEDED(hr)) {
+			double sum[4][3] = {}, alpha[4] = {}, cover = 0.0, all = 0.0;
+			for (UINT y = 0; y < d.Height; y++) {
+				const unsigned char* row = (const unsigned char*)lr.pBits + y * lr.Pitch;
+				const int band = 3 - (int)(y * 4 / d.Height);	// the top rows are the tip
+				for (UINT x = 0; x < d.Width; x++) {
+					const double a = row[x * 4 + 3] / 255.0;
+					all += 1.0; cover += a;
+					if (a <= 0.02) continue;
+					sum[band][0] += row[x * 4 + 2] / 255.0 * a; sum[band][1] += row[x * 4 + 1] / 255.0 * a; sum[band][2] += row[x * 4 + 0] / 255.0 * a;
+					alpha[band] += a;
+				}
+			}
+			dst->UnlockRect();
+			FinishRamp(r, sum, alpha, all > 0.0 ? (float)(cover / all) : 1.0f);
+			ok = r.Read;
+		}
+		if (dst) dst->Release();
+		if (src) src->Release();
+		return ok;
+	}
+
+	inline bool MakeRampResources(IDirect3DDevice9* device) {
+		if (RampTex) return true;
+		if (RampGpuFailed) return false;
+		RampGpuFailed = true;
+		static const char* kVS = "struct O { float4 p : POSITION; float2 uv : TEXCOORD0; }; O main(float4 p : POSITION, float2 uv : TEXCOORD0) { O o; o.p = p; o.uv = uv; return o; }";
+		// One pixel per band: 16 x 8 taps of the chosen mip over the band's quarter of the texture (top = tip), colour weighted by alpha;
+		// alpha out = the band's coverage. The band from the pixel's u (+0.25: right for either pixel-centre convention).
+		static const char* kPS =
+			"sampler2D S : register(s0); float4 P : register(c0);"
+			"float4 main(float2 uv : TEXCOORD0) : COLOR0 {"
+			"  float b = floor(uv.x * 4.0 + 0.25); float v0 = (3.0 - b) * 0.25; float4 acc = 0;"
+			"  for (int j = 0; j < 8; j++) for (int i = 0; i < 16; i++) {"
+			"    float4 c = tex2Dlod(S, float4((i + 0.5) / 16.0, v0 + (j + 0.5) / 32.0, 0, P.x));"
+			"    acc += float4(c.rgb * c.a, c.a); }"
+			"  return float4(acc.rgb / max(acc.a, 1e-4), acc.a / 128.0); }";
+		ID3DXBuffer* code = nullptr; ID3DXBuffer* errors = nullptr;
+		if (FAILED(D3DXCompileShader(kVS, (UINT)strlen(kVS), NULL, NULL, "main", "vs_3_0", 0, &code, &errors, NULL)) || !code ||
+			FAILED(device->CreateVertexShader((const DWORD*)code->GetBufferPointer(), &RampVS))) {
+			Logger::Log("UNOFFICIAL NewGrass: ramp vertex shader failed: %s", errors ? (const char*)errors->GetBufferPointer() : "?");
+			if (errors) errors->Release(); if (code) code->Release();
+			return false;
+		}
+		code->Release(); code = nullptr;
+		if (FAILED(D3DXCompileShader(kPS, (UINT)strlen(kPS), NULL, NULL, "main", "ps_3_0", 0, &code, &errors, NULL)) || !code ||
+			FAILED(device->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &RampPS))) {
+			Logger::Log("UNOFFICIAL NewGrass: ramp pixel shader failed: %s", errors ? (const char*)errors->GetBufferPointer() : "?");
+			if (errors) errors->Release(); if (code) code->Release();
+			return false;
+		}
+		code->Release();
+		D3DVERTEXELEMENT9 elements[] = { { 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+			{ 0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 }, D3DDECL_END() };
+		if (FAILED(device->CreateVertexDeclaration(elements, &RampDecl)) ||
+			FAILED(device->CreateTexture(4, 1, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &RampTex, NULL)) ||
+			FAILED(RampTex->GetSurfaceLevel(0, &RampSurf)) ||
+			FAILED(device->CreateOffscreenPlainSurface(4, 1, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &RampSys, NULL))) {
+			Logger::Log("UNOFFICIAL NewGrass: ramp target failed: textures that cannot be locked get the default ramp");
+			if (RampTex) { RampTex->Release(); RampTex = nullptr; }
+			return false;
+		}
+		RampGpuFailed = false;
+		return true;
+	}
+
+	// GPU path: the reduction drawn into the 4x1 target with everything put back after, then read (one stall per new texture).
+	inline bool ReadRampGPU(IDirect3DDevice9* device, IDirect3DTexture9* tex, DWORD level, Ramp& r) {
+		if (!MakeRampResources(device)) return false;
+		IDirect3DSurface9* oldRT = nullptr; IDirect3DSurface9* oldDS = nullptr; D3DVIEWPORT9 oldVP = {};
+		device->GetRenderTarget(0, &oldRT); device->GetDepthStencilSurface(&oldDS); device->GetViewport(&oldVP);
+		IDirect3DVertexShader9* oldVS = nullptr; IDirect3DPixelShader9* oldPS = nullptr; IDirect3DVertexDeclaration9* oldDecl = nullptr;
+		IDirect3DVertexBuffer9* oldVB = nullptr; UINT oldOffset = 0, oldStride = 0; IDirect3DBaseTexture9* oldTex = nullptr;
+		device->GetVertexShader(&oldVS); device->GetPixelShader(&oldPS); device->GetVertexDeclaration(&oldDecl);
+		device->GetStreamSource(0, &oldVB, &oldOffset, &oldStride); device->GetTexture(0, &oldTex);
+		const D3DSAMPLERSTATETYPE ss[6] = { D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER, D3DSAMP_SRGBTEXTURE };
+		const DWORD ssv[6] = { D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_POINT, 0 };
+		const D3DRENDERSTATETYPE rs[8] = { D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_CULLMODE, D3DRS_COLORWRITEENABLE, D3DRS_STENCILENABLE, D3DRS_SCISSORTESTENABLE };
+		const DWORD rsv[8] = { FALSE, FALSE, FALSE, FALSE, D3DCULL_NONE, 0xF, FALSE, FALSE };
+		DWORD oldSS[6] = {}, oldRS[8] = {};
+		for (int i = 0; i < 6; i++) device->GetSamplerState(0, ss[i], &oldSS[i]);
+		for (int i = 0; i < 8; i++) device->GetRenderState(rs[i], &oldRS[i]);
+		float oldC0[4] = {};
+		device->GetPixelShaderConstantF(0, oldC0, 1);
+
+		device->SetRenderTarget(0, RampSurf);
+		device->SetDepthStencilSurface(NULL);
+		D3DVIEWPORT9 vp = { 0, 0, 4, 1, 0.0f, 1.0f };
+		device->SetViewport(&vp);
+		device->SetVertexShader(RampVS); device->SetPixelShader(RampPS); device->SetVertexDeclaration(RampDecl);
+		device->SetTexture(0, tex);
+		for (int i = 0; i < 6; i++) device->SetSamplerState(0, ss[i], ssv[i]);
+		for (int i = 0; i < 8; i++) device->SetRenderState(rs[i], rsv[i]);
+		const float c0[4] = { (float)level, 0.0f, 0.0f, 0.0f };
+		device->SetPixelShaderConstantF(0, c0, 1);
+		struct V { float x, y, z, w, u, v; };
+		const V quad[4] = { { -1.0f, -1.0f, 0.5f, 1.0f, 0.0f, 1.0f }, { -1.0f, 1.0f, 0.5f, 1.0f, 0.0f, 0.0f }, { 1.0f, -1.0f, 0.5f, 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f, 0.5f, 1.0f, 1.0f, 0.0f } };
+		device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V));
+
+		device->SetRenderTarget(0, oldRT); device->SetDepthStencilSurface(oldDS); device->SetViewport(&oldVP);
+		device->SetVertexShader(oldVS); device->SetPixelShader(oldPS); device->SetVertexDeclaration(oldDecl);
+		device->SetStreamSource(0, oldVB, oldOffset, oldStride); device->SetTexture(0, oldTex);
+		for (int i = 0; i < 6; i++) device->SetSamplerState(0, ss[i], oldSS[i]);
+		for (int i = 0; i < 8; i++) device->SetRenderState(rs[i], oldRS[i]);
+		device->SetPixelShaderConstantF(0, oldC0, 1);
+		if (oldRT) oldRT->Release(); if (oldDS) oldDS->Release(); if (oldVS) oldVS->Release(); if (oldPS) oldPS->Release();
+		if (oldDecl) oldDecl->Release(); if (oldVB) oldVB->Release(); if (oldTex) oldTex->Release();
+
+		bool ok = false;
+		D3DLOCKED_RECT lr = {};
+		if (SUCCEEDED(device->GetRenderTargetData(RampSurf, RampSys)) && SUCCEEDED(RampSys->LockRect(&lr, NULL, D3DLOCK_READONLY))) {
+			const unsigned char* px = (const unsigned char*)lr.pBits;
+			double sum[4][3] = {}, alpha[4] = {}, cover = 0.0;
+			for (int b = 0; b < 4; b++) {
+				const double a = px[b * 4 + 3] / 255.0;
+				cover += a / 4.0;
+				if (a <= 0.005) continue;
+				sum[b][0] = px[b * 4 + 2] / 255.0 * a; sum[b][1] = px[b * 4 + 1] / 255.0 * a; sum[b][2] = px[b * 4 + 0] / 255.0 * a;
+				alpha[b] = a;
+			}
+			RampSys->UnlockRect();
+			FinishRamp(r, sum, alpha, (float)cover);
+			ok = r.Read;
+		}
+		return ok;
 	}
 
 	// The grass type's colours: 4 bands (root -> tip) of alpha-weighted mean colour from a mip of its card texture (<= 32 wide).
 	inline const Ramp& GetRamp(IDirect3DDevice9* device, IDirect3DBaseTexture9* base) {
 		Ramp& r = Ramps[base];
 		const ULONGLONG now = GetTickCount64();
-		if (r.When && now - r.When < 60000) return r;
+		if (r.When && now - r.When < 300000) return r;
 		const bool first = r.When == 0;
 		r.When = now;
 		r.Read = false;
@@ -192,40 +353,14 @@ namespace NewGrass {
 		const DWORD levels = tex->GetLevelCount();
 		for (; level + 1 < levels; level++) { tex->GetLevelDesc(level, &d); if (d.Width <= 32 && d.Height <= 32) break; }
 		tex->GetLevelDesc(level, &d);
-		IDirect3DSurface9* src = nullptr; IDirect3DSurface9* dst = nullptr;
-		HRESULT hr = tex->GetSurfaceLevel(level, &src);
-		if (SUCCEEDED(hr)) hr = device->CreateOffscreenPlainSurface(d.Width, d.Height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &dst, NULL);
-		if (SUCCEEDED(hr)) hr = D3DXLoadSurfaceFromSurface(dst, NULL, NULL, src, NULL, NULL, D3DX_FILTER_NONE, 0);
-		D3DLOCKED_RECT lr = {};
-		if (SUCCEEDED(hr)) hr = dst->LockRect(&lr, NULL, D3DLOCK_READONLY);
-		if (SUCCEEDED(hr)) {
-			double sum[4][4] = {}, alpha[4] = {}, cover = 0.0, all = 0.0;
-			for (UINT y = 0; y < d.Height; y++) {
-				const unsigned char* row = (const unsigned char*)lr.pBits + y * lr.Pitch;
-				const int band = 3 - (int)(y * 4 / d.Height);	// the top rows are the tip
-				for (UINT x = 0; x < d.Width; x++) {
-					const double a = row[x * 4 + 3] / 255.0;
-					all += 1.0; cover += a;
-					if (a <= 0.02) continue;
-					sum[band][0] += row[x * 4 + 2] * a; sum[band][1] += row[x * 4 + 1] * a; sum[band][2] += row[x * 4 + 0] * a;
-					alpha[band] += a;
-				}
-			}
-			dst->UnlockRect();
-			r.Coverage = all > 0.0 ? (float)(cover / all) : 1.0f;
-			// A band without opaque texels takes its neighbour's colour (the tip band of a short tuft, for instance).
-			int last = -1;
-			for (int b = 0; b < 4; b++) if (alpha[b] > 0.0) { for (int k = 0; k < 3; k++) r.C[b][k] = (float)(sum[b][k] / alpha[b] / 255.0); r.C[b][3] = 1.0f; last = b; }
-			else if (last >= 0) memcpy(r.C[b], r.C[last], sizeof(r.C[b]));
-			for (int b = 2; b >= 0; b--) if (alpha[b] <= 0.0 && alpha[b + 1] > 0.0) memcpy(r.C[b], r.C[b + 1], sizeof(r.C[b]));
-			r.Read = last >= 0;
-		}
-		if (dst) dst->Release();
-		if (src) src->Release();
+		const char* how = "CPU copy";
+		bool ok = d0.Pool != D3DPOOL_DEFAULT && ReadRampCPU(device, tex, level, d, r);
+		if (!ok) { how = "GPU reduction"; ok = ReadRampGPU(device, tex, level, r); }
+		if (!ok) { how = "NOT READ (default ramp)"; r.Read = false; memcpy(r.C, fallback, sizeof(fallback)); r.Coverage = 1.0f; }
 		r.Cutout = r.Read ? r.Coverage < 0.97f : (d0.Format == D3DFMT_DXT3 || d0.Format == D3DFMT_DXT5 || d0.Format == D3DFMT_A8R8G8B8 || d0.Format == D3DFMT_A8B8G8R8);
 		const char* fmt = d0.Format == D3DFMT_DXT1 ? "DXT1" : d0.Format == D3DFMT_DXT3 ? "DXT3" : d0.Format == D3DFMT_DXT5 ? "DXT5" : d0.Format == D3DFMT_A8R8G8B8 ? "A8R8G8B8" : "other";
-		sprintf_s(r.Info, "%ux%u %s pool %u, mip %u (%ux%u) %s, alpha coverage %.0f%%: root %.2f %.2f %.2f, tip %.2f %.2f %.2f", d0.Width, d0.Height, fmt, (unsigned)d0.Pool,
-			level, d.Width, d.Height, r.Read ? "read" : "COPY FAILED (default ramp)", r.Coverage * 100.0f, r.C[0][0], r.C[0][1], r.C[0][2], r.C[3][0], r.C[3][1], r.C[3][2]);
+		sprintf_s(r.Info, "%ux%u %s pool %u, mip %u (%ux%u) %s, alpha coverage %.0f%%: root %.2f %.2f %.2f, mid %.2f %.2f %.2f, tip %.2f %.2f %.2f", d0.Width, d0.Height, fmt,
+			(unsigned)d0.Pool, level, d.Width, d.Height, how, r.Coverage * 100.0f, r.C[0][0], r.C[0][1], r.C[0][2], r.C[2][0], r.C[2][1], r.C[2][2], r.C[3][0], r.C[3][1], r.C[3][2]);
 		if (first) Logger::Log("UNOFFICIAL NewGrass: texture %p: %s -> %s", base, r.Info, r.Cutout ? "cut-out card" : "no cut-out (kept the game's)");
 		return r;
 	}
@@ -282,22 +417,6 @@ namespace NewGrass {
 			tufts, ArmPart, ArmNearest, v.Levels, k, prims, LastVariant ? LastVariant : '?', m.Height, m.Width);
 	}
 
-	// Once: is the grass's ModelViewProj the camera's ViewProj (instance positions in world space)? Logged for the record.
-	inline void CheckMatrices(IDirect3DDevice9* device) {
-		if (MatricesChecked) return;
-		MatricesChecked = true;
-		float mvp[16] = {};
-		if (FAILED(device->GetVertexShaderConstantF(9, mvp, 4))) return;
-		const float* vp = (const float*)&TheRenderManager->ViewProjMatrix;
-		float worst = 0.0f, worstT = 0.0f;
-		for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
-			const float ref = fabsf(vp[r * 4 + c]) + 1e-3f;
-			worst = (std::max)(worst, fabsf(mvp[r * 4 + c] - vp[r * 4 + c]) / ref);
-			worstT = (std::max)(worstT, fabsf(mvp[r * 4 + c] - vp[c * 4 + r]) / ref);
-		}
-		Logger::Log("UNOFFICIAL NewGrass: grass ModelViewProj vs the camera's ViewProj: largest relative difference %.4f as stored, %.4f transposed (0 = the instance positions are world positions)", worst, worstT);
-	}
-
 	inline HRESULT STDMETHODCALLTYPE DrawHook(IDirect3DDevice9* device, D3DPRIMITIVETYPE type, INT base, UINT minIndex, UINT numVertices, UINT start, UINT count) {
 		if (!Armed) return Next(device, type, base, minIndex, numVertices, start, count);
 		if (Replaced) { StatSwallowed++; return D3D_OK; }
@@ -313,7 +432,6 @@ namespace NewGrass {
 			if (!ramp->Cutout) { ok = false; StatNotCard++; }
 		}
 		if (!ok) { StatLetThrough++; Armed = false; return Next(device, type, base, minIndex, numVertices, start, count); }
-		CheckMatrices(device);
 		unsigned tufts = 0;
 		if (TallGrassShader* shader = TallGrassShader::GetShader()) tufts = shader->ucInstanceCount;
 		const unsigned fromVertices = model->VertsPerModel ? numVertices / model->VertsPerModel : 0;
