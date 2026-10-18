@@ -977,7 +977,9 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
             && fTraceOpacity > PuddleSSRMinTraceOpacity;
 
         [branch]
-        if (vmMask <= 0.5f && !(wetWeight > 0.0f) && !(streakMask > 0.0f) && !fTraces)
+        // UNOFFICIAL 2026-10-18: without FixedReflectionTrace no trace runs (technique 0's returns 0 for every pixel), so a pixel that
+        // would only have traced ends exactly as this zero-weight exit.
+        if (vmMask <= 0.5f && !(wetWeight > 0.0f) && !(streakMask > 0.0f) && !(fixTrace && fTraces))
             return float4(WetOut(baseColor.rgb + splashAdd), 1.0f);
     }
 
@@ -1234,8 +1236,10 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
         float3 ssrNormal = normalize(lerp(baseN, N, saturate(PuddleSSRNormalInfluence)));
         if (fixTrace)
             ssrHit = TraceWetReflectionFixed(IN.UVCoord, ssrNormal);
-        else
-            ssrHit = TraceWetReflection(IN.UVCoord, ssrNormal);
+        // UNOFFICIAL 2026-10-18: no 'else' trace. Technique 0's TraceWetReflection returns (0,0,0) for every pixel (a hit whose refined
+        // UV is on screen returns 0, and refined UVs are always on screen). In this fast path the same code compiled with dead loop exits
+        // (break_ne -c,-c; evidence loopexits\disasm\WetWorld.txt 4611/4626/4654/4706) and kept the LAST bracket at full strength:
+        // grey patches on puddles at shallow angles that the original never showed. ssrHit = 0 is the original's result.
     }
     float ssrCoverage = saturate(ssrHit.z * ssrMask * LODfade) * ssrOpacity;
 
