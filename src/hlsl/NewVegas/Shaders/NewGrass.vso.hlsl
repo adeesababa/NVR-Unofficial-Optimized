@@ -34,7 +34,7 @@ float4 NG_Shape : register(c249); // x the plant's height (the card's opaque top
 float4 NG_Misc  : register(c250); // x 1 = blades grow along the slope normal (LFS variant), y blades per tuft, z height scale, w tufts in this draw
 float4 NG_Var   : register(c251); // x 1 / (levels - 1), y 1 = only the tufts before the fade start (GrassFirst part 1 of a mixed draw), z flutter, w LengthMin
 float4 NG_Prof  : register(c254); // the card's silhouette: mean radius of its alpha per height band, bottom to top (share of the half width)
-float4 NG_Prof2 : register(c255); // x Spread: how far from the clump's centre a blade's root may stand (share of the half width)
+float4 NG_Prof2 : register(c255); // x Spread: how far from the clump's centre a strand's root may stand (share of the half width); y 1 = hybrid (the card stays: the strands thin out to NONE at LodFar); z TipReach: tips at this many times the band's mean alpha radius
 
 struct VS_INPUT {
     float4 packed : TEXCOORD0;   // UBYTE4: x tuft, y blade, z level, w side
@@ -74,7 +74,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Blades per tuft fall with distance (LodNear -> LodFar: all -> one); the blade past the budget shrinks away over one blade of
     // budget (no popping as the camera moves), then is folded to a point outside the view (no raster work).
     // (Round 4's first build still had round 1's far-fade line here, keyed on NG_Lod.w, which now carries Droop: every blade folded.)
-    float budget = lerp(NG_Misc.y, 1.0f, saturate((depth - NG_Lod.x) * NG_Lod.y));
+    float budget = lerp(NG_Misc.y, NG_Prof2.y > 0.5f ? 0.0f : 1.0f, saturate((depth - NG_Lod.x) * NG_Lod.y));
     float keep = saturate(budget - blade);
     bool gone = IN.packed.x >= NG_Misc.w || keep <= 0.0f || (NG_Var.y > 0.5f && instDist > AlphaParam.z);
     [branch] if (gone) {
@@ -105,11 +105,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     float halfW = NG_Shape.y * scale.x;
     float len = lerp(NG_Var.w, 1.0f, h1);
     float height = plantH * len * keep;
-    // The tip lands on the card's own silhouette at that height: the mean radius of the card's alpha at the blade's band, between half
-    // and 1.2 times it, so the blades fill the card's shape and reach no farther (the bare ground between clumps stays bare).
+    // The tip lands on the card's own silhouette at that height: the mean radius of the card's alpha at the blade's band times TipReach
+    // (1 = inside the shape, round 4; ~1.8 in the hybrid = from the middle out to just past the card's edge), so the strands fill the
+    // card's shape and reach no farther (the bare ground between clumps stays bare).
     float hb = len * 4.0f - 0.5f;
     float rsil = hb < 1.0f ? lerp(NG_Prof.x, NG_Prof.y, saturate(hb)) : hb < 2.0f ? lerp(NG_Prof.y, NG_Prof.z, hb - 1.0f) : lerp(NG_Prof.z, NG_Prof.w, saturate(hb - 2.0f));
-    float rTip = halfW * rsil * (0.6f + 0.6f * h3);
+    float rTip = halfW * rsil * NG_Prof2.z * (0.6f + 0.6f * h3);
     // The blade radiates from near the clump's centre (Spread of the half width) in its own direction, its face turned outward.
     float ang = h2 * 6.2831853f;
     float3 away = float3(cos(ang), sin(ang), 0.0f);
