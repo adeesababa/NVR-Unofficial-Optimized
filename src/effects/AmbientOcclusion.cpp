@@ -68,8 +68,8 @@ void AmbientOcclusionEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("NVR_AOBufferLow0", &aoTextureLow[0], &aoSurfaceLow[0], lowWidth, lowHeight, D3DFMT_G16R16F);
 	TheTextureManager->InitTexture("NVR_AOBufferLow1", &aoTextureLow[1], &aoSurfaceLow[1], lowWidth, lowHeight, D3DFMT_G16R16F);
 	// UNOFFICIAL Skylighting v2: the factor at the AO's resolution (half, or quarter with AOLowRes); only written while v2 is on.
-	TheTextureManager->InitTexture("NVR_SkyVisBuffer", &skyTexture, &skySurface, width, height, D3DFMT_G16R16F);
-	TheTextureManager->InitTexture("NVR_SkyVisBufferLow", &skyTextureLow, &skySurfaceLow, lowWidth, lowHeight, D3DFMT_G16R16F);
+	// fixes-b #3: NOT created here (about 4.4 MiB, 17.6 MiB with Max Quality, for nothing while Skylighting is off): the one the
+	// first v2 draw needs is created in RenderSkyVisibility.
 }
 
 bool AmbientOcclusionEffect::UseLowRes() const {
@@ -114,8 +114,18 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	IDirect3DTexture9* orthoMap = TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr;
 	IDirect3DTexture9* sunMask = TheShaderManager->Effects.ShadowsExteriors && TheShaderManager->Effects.ShadowsExteriors->Enabled ?
 		TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture : nullptr;
-	IDirect3DSurface9* target = lastLowRes ? skySurfaceLow : skySurface;
 	D3DXHANDLE technique = TechniqueHandle(techSky, "SkyVisibilityV2");
+	// fixes-b #3: create this resolution's sky target on first use (once; a failure is logged once and v2 stays off)
+	static bool createTried[2] = { false, false };
+	const int which = lastLowRes ? 1 : 0;
+	if (technique && orthoMap && !createTried[which]) {
+		createTried[which] = true;
+		if (lastLowRes)
+			TheTextureManager->InitTexture("NVR_SkyVisBufferLow", &skyTextureLow, &skySurfaceLow, MaxQuality::Reduced(TheRenderManager->width, 4), MaxQuality::Reduced(TheRenderManager->height, 4), D3DFMT_G16R16F);
+		else
+			TheTextureManager->InitTexture("NVR_SkyVisBuffer", &skyTexture, &skySurface, MaxQuality::Reduced(TheRenderManager->width, 2), MaxQuality::Reduced(TheRenderManager->height, 2), D3DFMT_G16R16F);
+	}
+	IDirect3DSurface9* target = lastLowRes ? skySurfaceLow : skySurface;
 	D3DSURFACE_DESC desc = {};
 	if (!technique || !orthoMap || !target || FAILED(target->GetDesc(&desc))) return;
 	static GpuTimer skyTimer("  Sky visibility v2");

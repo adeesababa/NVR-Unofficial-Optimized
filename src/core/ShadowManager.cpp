@@ -1572,7 +1572,8 @@ void ShadowManager::RenderShadowMaps() {
 				}
 #endif
 				// UNOFFICIAL Skylighting v2 CleanMap: alpha-tested casters with their test (leaves, fences), no blended-only geometry.
-				const bool clean = TheShaderManager->orthoSkyRequired && Shadows->Settings.OrthoMap.SkyCleanMap;
+				// fixes-b #4: only the sky's own map (skyOnly): a map the rain or snow effect also reads stays as it was before v2 (solid casters), or the rain would fall through leaves and fences
+				const bool clean = skyOnly && Shadows->Settings.OrthoMap.SkyCleanMap;
 				const bool alphaWas = ShadowMap->Forms.AlphaEnabled;
 				if (clean) { ShadowMap->Forms.AlphaEnabled = true; OrthoSkipBlendOnly = true; }
 				RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
