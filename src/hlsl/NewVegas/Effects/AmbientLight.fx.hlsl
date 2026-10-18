@@ -3,6 +3,7 @@ float4 TESR_AmbientLightData2;
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;
 float4 NVR_ALFlags;
+float4 NVR_ALScene;
 float4 NVR_ALTemporal;
 float4x4 NVR_ALReproject;
 float4 TESR_WaterSettings;
@@ -428,10 +429,20 @@ float3 GridBounce(float3 cameraRelative, float3 normal) {
 		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
 		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
 		float4 c = lerp(ca, cb, fz);
-		colour = c.a > 1e-5f ? c.rgb / c.a : 1.0f;
+		colour = c.a > 1e-5f ? lerp(1.0f, c.rgb / c.a, NVR_ALScene.w) : 1.0f;
 	}
 	float irradiance = max(dot(sh, CosineLobe(-normal)), 0.0f) * 1.5f;
 	return irradiance * colour * fade;
+}
+
+static const float MaxReflectance = 0.6f;
+float3 SurfaceColour(float3 lin) {
+	float3 ambient = max(NVR_ALScene.rgb, 0.25f * luma(NVR_ALScene.rgb) + 1.0e-4f);
+	float3 raw = max(lin, 0.0f) / ambient;
+	float level = luma(raw);
+	float3 hue = raw / max(level, 1.0e-4f);
+	float trust = saturate(MaxReflectance / max(level, 1.0e-4f));
+	return min(level, MaxReflectance) * min(lerp(1.0f, hue, trust), 3.0f);
 }
 
 float4 Apply(VSOUT IN) : COLOR0 {
@@ -466,14 +477,14 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	float bendY = abs(readDepthLod(IN.UVCoord + float2(0.0f, px.y)) + readDepthLod(IN.UVCoord - float2(0.0f, px.y)) - 2.0f * depth);
 	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
 	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
-	float peak = max(max(lin.r, lin.g), max(lin.b, 0.0001f));
-	float3 albedo = lin / peak * 0.6f;
+	float3 albedo = SurfaceColour(lin);
 	float3 gridBounce = 0.0f;
 	[branch] if (NVR_GridData.x > 0.0f) {
 		float3 cameraRelative = toWorld(IN.UVCoord) * depth;
 		float3 normal = normalize(GetWorldNormalLod(IN.UVCoord));
 		gridBounce = GridBounce(cameraRelative, normal) * (NVR_GridData.x * ao);
 	}
+	[branch] if (DebugView > 8.5f) return delinearize(float4(DebugView < 9.5f ? gridBounce : albedo, 1.0f));
 	[branch] if (DebugView > 7.5f) {
 		float3 cameraRelative = toWorld(IN.UVCoord) * depth;
 		float3 c = floor((cameraRelative - NVR_GridOrigin.xyz) / NVR_GridOrigin.w);

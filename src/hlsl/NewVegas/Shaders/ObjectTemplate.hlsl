@@ -178,6 +178,12 @@
 #endif
 #if defined(PS) && LINEAR_LIGHTING_ON
     #define LINEAR_LIGHTING
+    #if defined(LIN_PREDECODE_ON) && LIN_PREDECODE_ON
+        #define LIN_PREDECODED
+    #endif
+#endif
+#if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
+    #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON
 #endif
 #include "includes/Object.hlsl"
 #ifdef VS
@@ -193,6 +199,25 @@
         #define HUD_RAIN 1
     #endif
     #include "includes/HudRain.hlsl"
+
+    #ifndef UNLIT_SHADOW_SKIP
+        #define UNLIT_SHADOW_SKIP 0
+    #endif
+    bool SunShadowWanted(float3 normalTS, float3 lightTS) {
+        bool wanted = dot(normalTS, lightTS) > 0.0f;
+        #if HUD_RAIN
+            wanted = wanted || hudRainCover > 0.0f;
+        #endif
+        return wanted;
+    }
+    #ifndef LAMP_REACH_SKIP
+        #define LAMP_REACH_SKIP 0
+    #endif
+    #if LAMP_REACH_SKIP && !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !(defined(OPT) && defined(SPECULAR) && LIGHTS > 3 && SPECULAR_LAMPS6)
+        #define LAMP_IF(att) [branch] if ((att) > 0.0f)
+    #else
+        #define LAMP_IF(att)
+    #endif
 #endif
 
 float4 BarrelHeatMuzzle : register(c171);
@@ -239,6 +264,14 @@ float3 ApplyBarrelHeat(float3 color, float mask) {
     #include "includes/SkinHelpers.hlsl"
 #endif
 
+#ifndef CLOTH_WIND_ON
+    #define CLOTH_WIND_ON 0
+#endif
+#if defined(VS) && CLOTH_WIND_ON
+    #define CLOTH_WIND
+    #include "includes/ClothWind.hlsl"
+#endif
+
 // Toggles.
 #define useVertexColor Toggles.x
 #define useFog Toggles.y
@@ -251,7 +284,7 @@ struct VS_INPUT {
     float3 binormal : BINORMAL;
     float3 normal : NORMAL;
     float4 uv : TEXCOORD0;
-#ifndef NO_VERTEX_COLOR
+#if !defined(NO_VERTEX_COLOR) || defined(CLOTH_WIND)
     float4 vertexColor : COLOR0;
 #endif
 #ifdef SKIN
@@ -335,6 +368,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
+        #ifdef CLOTH_WIND
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+        #endif
     
         OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
     #else
@@ -345,6 +381,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
+        #ifdef CLOTH_WIND
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+        #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif
@@ -504,6 +543,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
+    #ifdef CLOTH_WIND
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+    #endif
     
     OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
     #else
@@ -514,6 +556,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
+        #ifdef CLOTH_WIND
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+        #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif
     
@@ -629,6 +674,10 @@ struct PS_OUTPUT {
     #endif
     float4 PSLightColorIn[10] : register(c3);
     static float4 PSLightColor[10];
+    #ifdef LIN_PREDECODED
+        float4 AmbientColorDec : register(c64);
+        float4 PSLightColorDec[10] : register(c66);
+    #endif
 #else
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         float4 AmbientColor : register(c1);
@@ -671,10 +720,18 @@ PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
     
 #ifdef LINEAR_LIGHTING
+    #ifdef LIN_PREDECODED
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++) PSLightColor[lightIndex] = float4(PSLightColorDec[lightIndex].rgb, PSLightColorIn[lightIndex].a);
+    #else
     [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
         PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #endif
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
+        #ifdef LIN_PREDECODED
+            AmbientColor = float4(AmbientColorDec.rgb, AmbientColorIn.a);
+        #else
         AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+        #endif
     #endif
 #endif
 
@@ -715,6 +772,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.xyz = HandBloodNormal(normal.xyz);
     roughness = HudRainRoughness(roughness);
     normal.xyz = HudRainNormal(normal.xyz);
+    SetDiffuseEnergyKeep(normal.xyz, IN.viewDir.xyz, roughness);
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -777,9 +835,14 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
+        #if UNLIT_SHADOW_SKIP
+        [branch] if (SHADOW_VS_PRESENT(IN.shadowWorldPos.w) && SunShadowWanted(normal.xyz, IN.lightDir.xyz))
+            sunShadow = GetSunShadow(IN.shadowWorldPos.xyz, shadowGeometricNormal);
+        #else
         sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                   ? GetSunShadow(IN.shadowWorldPos.xyz, shadowGeometricNormal)
                   : 1.0f;
+        #endif
         #endif
         shadowMultiplier *= sunShadow;
     #endif
@@ -840,10 +903,12 @@ PS_OUTPUT main(PS_INPUT IN) {
                                                        IN.shadowWorldPos.xyz, shadowGeometricNormal);
             }
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+                LAMP_IF(att2)
+                    lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
+                LAMP_IF(att3)
+                    lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, metalRoughness, metallic);
             #endif
         }
         else {
@@ -853,10 +918,12 @@ PS_OUTPUT main(PS_INPUT IN) {
             #endif
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, shadowGeometricNormal, skyValid);
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                LAMP_IF(att2)
+                    lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, light2Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                LAMP_IF(att3)
+                    lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, light3Color, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
             #endif
         }
     #else
@@ -868,11 +935,16 @@ PS_OUTPUT main(PS_INPUT IN) {
         // length is only correct if the TBN basis is orthonormal.
         float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-            pointWeight += weight(lighting);
-            lighting *= POINT_SHADOW(0, att0);
+            float3 lighting = 0.0f;
+            LAMP_IF(att0) {
+                lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                pointWeight += weight(lighting);
+                lighting *= POINT_SHADOW(0, att0);
+            }
         #else
-            float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            float3 lighting = 0.0f;
+            LAMP_IF(att0)
+                lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
     #endif
     
@@ -893,22 +965,28 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-            pointWeight += weight(light2Term);
-            lighting += light2Term * POINT_SHADOW(1, att2);
+            LAMP_IF(att2) {
+                float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                pointWeight += weight(light2Term);
+                lighting += light2Term * POINT_SHADOW(1, att2);
+            }
         #else
-            lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, SHADOWED(PSLightColor[1].rgb, 1, att2), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            LAMP_IF(att2)
+                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, SHADOWED(PSLightColor[1].rgb, 1, att2), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
         float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
-            pointWeight += weight(light3Term);
-            lighting += light3Term * POINT_SHADOW(2, att3);
+            LAMP_IF(att3) {
+                float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                pointWeight += weight(light3Term);
+                lighting += light3Term * POINT_SHADOW(2, att3);
+            }
         #else
-            lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+            LAMP_IF(att3)
+                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, SHADOWED(PSLightColor[2].rgb, 2, att3), IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
     #endif
 
@@ -929,6 +1007,9 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += PSLightColor[0].rgb * shadowMultiplier * baseColor.rgb * HudRainLens(IN.lightDir.xyz).y;
     #endif
     float3 finalColor = LinEncode(lighting.rgb);
+    #if defined(ONLY_LIGHT)
+        [flatten] if (TESR_PassRedirect.x > 0.5f) finalColor = max(lighting.rgb, 0.0f);
+    #endif
     finalColor = MaterialRulesDebug(finalColor, albedoStored);
     finalColor = RmaosDebug(finalColor, albedoStored);
 
@@ -1062,6 +1143,10 @@ sampler2D NormalMap : register(s1);
     static float4 AmbientColor;
     float4 PSLightColorIn[10] : register(c3);
     static float4 PSLightColor[10];
+    #ifdef LIN_PREDECODED
+        float4 AmbientColorDec : register(c64);
+        float4 PSLightColorDec[10] : register(c66);
+    #endif
 #else
     float4 AmbientColor : register(c1);
     float4 PSLightColor[10] : register(c3);
@@ -1087,9 +1172,17 @@ PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
 
 #ifdef LINEAR_LIGHTING
+    #ifdef LIN_PREDECODED
+    [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++) PSLightColor[lightIndex] = float4(PSLightColorDec[lightIndex].rgb, PSLightColorIn[lightIndex].a);
+    #else
     [unroll] for (int lightIndex = 0; lightIndex < 10; lightIndex++)
         PSLightColor[lightIndex] = float4(LinColor(PSLightColorIn[lightIndex].rgb), PSLightColorIn[lightIndex].a);
+    #endif
+    #ifdef LIN_PREDECODED
+        AmbientColor = float4(AmbientColorDec.rgb, AmbientColorIn.a);
+    #else
     AmbientColor = float4(LinColor(AmbientColorIn.rgb), AmbientColorIn.a);
+    #endif
 #endif
 
     HudRain(IN.uv.xy, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN));
@@ -1118,6 +1211,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.xyz = HandBloodNormal(normal.xyz);
     roughness = HudRainRoughness(roughness);
     normal.xyz = HudRainNormal(normal.xyz);
+    SetDiffuseEnergyKeep(normal.xyz, float3(IN.lightDir.w, IN.light2.w, IN.light3.w), roughness);
     baseColor.rgb = HandBloodAlbedo(baseColor.rgb);
     const float3 albedoStored = baseColor.rgb;
     baseColor.rgb = LinColor(baseColor.rgb);
@@ -1171,9 +1265,14 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
+        #if UNLIT_SHADOW_SKIP
+        [branch] if (SHADOW_WP_VALID(IN) && SunShadowWanted(normal.xyz, IN.lightDir.xyz))
+            sunShadow = GetSunShadow(sunShadowWorldPos, sunShadowNormal);
+        #else
         sunShadow = SHADOW_WP_VALID(IN)
                   ? GetSunShadow(sunShadowWorldPos, sunShadowNormal)
                   : 1.0f;
+        #endif
         #endif
     #endif
 

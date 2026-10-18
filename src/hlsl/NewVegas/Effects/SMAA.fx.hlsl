@@ -39,6 +39,8 @@
 float4 TESR_SMAAResolution;
 float4 TESR_SMAAData; // x edge threshold, y relative depth threshold, z max search steps, w subpixel shift
 float4 TESR_SMAADepthData; // x depth buffer texel offset, y local contrast adaptation factor
+float4 TESR_SMAAPred;
+float4 TESR_ToneMappingClip;
 
 #ifndef SMAA_RT_METRICS
 #define SMAA_RT_METRICS TESR_SMAAResolution
@@ -66,6 +68,7 @@ float4 TESR_SMAADepthData; // x depth buffer texel offset, y local contrast adap
 #define SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR (TESR_SMAADepthData.y > 0.0 ? TESR_SMAADepthData.y : 2.0)
 
 #include "includes/SMAA.hlsl"
+#include "includes/DitherNoise.hlsl"
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; SRGBTEXTURE = FALSE; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; SRGBTEXTURE = FALSE; };
@@ -218,6 +221,43 @@ float4 DX9_SMAALumaDepthEdgeDetectionPS(float4 position : SV_POSITION,
     return float4(max(lumaEdges, depthEdges), 0.0, 0.0);
 }
 
+float SMAALumaTap(float2 uv, float2 pixel) {
+    float l = dot(SMAASamplePoint(TESR_RenderedBuffer, uv).rgb, float3(0.2126, 0.7152, 0.0722));
+    [branch] if (TESR_SMAAPred.w > 0.5)
+        l = LumaWithoutDither(l, pixel);
+    return l;
+}
+
+float4 DX9_SMAALumaDepthEdgeDetectionStablePS(float2 vpos : VPOS,
+                                        float2 texcoord : TEXCOORD0,
+                                        float4 offset[3] : TEXCOORD1) : COLOR {
+    float L = SMAALumaTap(texcoord, vpos);
+    float Lleft = SMAALumaTap(offset[0].xy, vpos + float2(-1.0, 0.0));
+    float Ltop = SMAALumaTap(offset[0].zw, vpos + float2(0.0, -1.0));
+    float2 delta = abs(L - float2(Lleft, Ltop));
+    float2 depthEdges = SMAADepthEdges(texcoord, offset);
+    float2 threshold = float2(SMAA_THRESHOLD, SMAA_THRESHOLD);
+    [branch] if (TESR_SMAAPred.x > 0.5)
+        threshold *= TESR_SMAAPred.y * (1.0 - TESR_SMAAPred.z * depthEdges);
+    float2 lumaEdges = step(threshold, delta);
+
+    if (dot(lumaEdges, float2(1.0, 1.0)) == 0.0) {
+        if (dot(depthEdges, float2(1.0, 1.0)) == 0.0)
+            discard;
+        return float4(depthEdges, 0.0, 0.0);
+    }
+
+    float Lright = SMAALumaTap(offset[1].xy, vpos + float2(1.0, 0.0));
+    float Lbottom = SMAALumaTap(offset[1].zw, vpos + float2(0.0, 1.0));
+    float2 maxDelta = max(delta, abs(L - float2(Lright, Lbottom)));
+    float Lleftleft = SMAALumaTap(offset[2].xy, vpos + float2(-2.0, 0.0));
+    float Ltoptop = SMAALumaTap(offset[2].zw, vpos + float2(0.0, -2.0));
+    maxDelta = max(maxDelta, abs(float2(Lleft, Ltop) - float2(Lleftleft, Ltoptop)));
+    lumaEdges *= step(max(maxDelta.x, maxDelta.y), SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR * delta);
+
+    return float4(max(lumaEdges, depthEdges), 0.0, 0.0);
+}
+
 float4 DX9_SMAABlendingWeightCalculationPS(float4 position : SV_POSITION,
                                            float2 texcoord : TEXCOORD0,
                                            float2 pixcoord : TEXCOORD1,
@@ -298,6 +338,23 @@ technique LumaDepthEdgeDetection {
         AlphaTestEnable = false;
 
         // We will be creating the stencil buffer for later usage.
+        StencilEnable = true;
+        StencilFunc = ALWAYS;
+        StencilPass = REPLACE;
+        StencilRef = 1;
+        StencilWriteMask = 0xFFFFFFFF;
+    }
+}
+
+technique LumaDepthEdgeDetectionStable {
+    pass LumaDepthEdgeDetectionStable {
+        VertexShader = compile vs_3_0 DX9_SMAAEdgeDetectionVS();
+        PixelShader = compile ps_3_0 DX9_SMAALumaDepthEdgeDetectionStablePS();
+        ZEnable = false;
+        SRGBWriteEnable = false;
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
         StencilEnable = true;
         StencilFunc = ALWAYS;
         StencilPass = REPLACE;

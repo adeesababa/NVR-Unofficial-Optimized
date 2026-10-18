@@ -119,6 +119,12 @@ public:
 		int					Resolution;
 		float				Distance;
 		bool				LimitFrequency;
+		int					ProbeDump = 0;
+		bool				SkyCleanMap = true;
+		int					SkyMapRefresh = 60;
+		float				SkyMoveRefresh = 200.0f;
+		int					SkySettingsGeneration = 0;
+		bool				SkyOwnProjection = true;
 	};
 
 	struct ExteriorsStruct {
@@ -129,6 +135,8 @@ public:
 		int					Quality;
 		float				Darkness;
 		float				NightMinDarkness;
+		bool				SkipWhenFaded;
+		int					SkipWhenFadedCheck;
 	};
 
 	struct InteriorsStruct {
@@ -167,6 +175,7 @@ public:
 		float				SunSize;
 		float				MaxSoftness;
 		bool				Smooth;
+		bool				AtNight;
 	};
 
 	struct ScreenSpaceStruct {
@@ -199,6 +208,9 @@ public:
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
 	ShadowMapSettings		ShadowMaps[5];
+	bool					SunFaded = false;
+	bool					FadedContactUnread();
+	bool					FadedCascadesUnread();
 
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;
@@ -244,6 +256,7 @@ public:
 	bool		EnsureCubeMap(int slot);
 	bool		EnsureStaticCubeMap(int slot);
 	UINT		CubeMapSizeCreated = 0;
+	unsigned	CubeGeneration = 0;
 
 	D3DXVECTOR3	CalculateSmoothedSunDir();
 	D3DXVECTOR3	SunGlideFrom = D3DXVECTOR3(0.0f, 0.0f, 1.0f);

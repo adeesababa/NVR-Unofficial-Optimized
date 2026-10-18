@@ -16,8 +16,12 @@
 #include "../../core/HiddenObjectCulling.h"
 #include "../../core/LampScissor.h"
 #include "../../core/LampPassTest.h"
+#include "../../core/PassSums.h"
+#include "../../core/LampsInOnePass.h"
+#include "../../core/ClothWind.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
+#include "../../core/NewGrass.h"
 
 namespace RmaosDraw { static void Upload(); }
 
@@ -98,7 +102,48 @@ namespace ShaderSplit {
 		return -1;
 	}
 
+	static unsigned TerrainLampSlots(const char* name) {
+		if (!name || strncmp(name, "SLS", 3)) return 0;
+		const int number = atoi(name + 3);
+		if (number < 2092 || number > 2146 || (number & 1)) return 0;
+		static const unsigned slots[4] = { 0, 6, 12, 24 };
+		return slots[((number - 2092) / 2) % 4];
+	}
+	static unsigned TerrainLamps[3][26] = {};
+	static unsigned TerrainLampsFailures = 0;
+	static int PendingTerrainSlots = -1;
+	static unsigned char PendingTerrainContext = Outside;
+
+	static void SampleTerrainLamps(unsigned char context) {
+		const int pending = PendingTerrainSlots;
+		PendingTerrainSlots = -1;
+		if (pending < 0 || context != PendingTerrainContext) return;
+		float count[4];
+		if (FAILED(TheRenderManager->device->GetPixelShaderConstantF(88, count, 1))) { TerrainLampsFailures++; return; }
+		const unsigned used = count[0] < 0.5f ? 0 : count[0] > 24.5f ? 25 : (unsigned)(count[0] + 0.5f);
+		TerrainLamps[pending][used]++;
+	}
+
+	static void ReportTerrainLamps() {
+		static const char* const names[3] = { "6", "12", "24" };
+		for (unsigned v = 0; v < 3; ++v) {
+			char line[512] = {};
+			size_t used = 0;
+			unsigned draws = 0;
+			for (unsigned n = 0; n < 26; ++n) {
+				if (!TerrainLamps[v][n]) continue;
+				draws += TerrainLamps[v][n];
+				Append(line, sizeof(line), used, " %u%s x%u", n, n == 25 ? "+" : "", TerrainLamps[v][n]);
+			}
+			if (draws) Logger::Log("TERRAIN LAMPS in use per draw, %s-lamp land shaders, %u draws (lamps x draws):%s", names[v], draws, line);
+		}
+		if (TerrainLampsFailures) Logger::Log("TERRAIN LAMPS: the device did not return shader constants %u times", TerrainLampsFailures);
+		memset(TerrainLamps, 0, sizeof(TerrainLamps));
+		TerrainLampsFailures = 0;
+	}
+
 	static void SampleLightsInUse(unsigned char context) {
+		SampleTerrainLamps(context);
 		const int pending = PendingMultiLight;
 		PendingMultiLight = -1;
 		if (pending < 0 || context != PendingMultiLightContext) return;
@@ -149,7 +194,12 @@ namespace ShaderSplit {
 		const char* source = shader ? shader->Name : nullptr;
 		const char* terrain = source && TheShaderManager->Shaders.Terrain ? TheShaderManager->Shaders.Terrain->GetTemplate(source).Name : nullptr;
 		if (!source) strcpy_s(name, "(no shader)");
-		else if (terrain) strcpy_s(name, !strcmp(terrain, "TerrainLODTemplate") ? "TERRAIN LOD" : !strcmp(terrain, "TerrainFadeTemplate") ? "TERRAIN FADE" : "TERRAIN");
+		else if (terrain && !strcmp(terrain, "TerrainTemplate")) {
+			const unsigned slots = TerrainLampSlots(source);
+			if (slots) sprintf_s(name, "TERRAIN %uL", slots);
+			else strcpy_s(name, "TERRAIN");
+		}
+		else if (terrain) strcpy_s(name, !strcmp(terrain, "TerrainLODTemplate") ? "TERRAIN LOD" : "TERRAIN FADE");
 		else if (!strncmp(source, "SLS", 3) && source[3] >= '0' && source[3] <= '9') strcpy_s(name, SlsGroup(source));
 		else if (!strncmp(source, "SM3", 3)) strcpy_s(name, "SM3");
 		else if (!strncmp(source, "SKY", 3)) strcpy_s(name, "SKY");
@@ -232,6 +282,7 @@ namespace ShaderSplit {
 		Logger::Log("SHADER BINDS   CPU inside SetShaders avg %.3f ms max %.3f per frame | first shader uses %u in these frames, %u this session",
 			Window.HookMs / n, WindowMaxHookMs, Window.FirstUses, FirstUsesSession);
 		ReportLightsInUse();
+		ReportTerrainLamps();
 	}
 
 	static void BeginFrame(IDirect3DDevice9* device) {
@@ -246,6 +297,7 @@ namespace ShaderSplit {
 		CurrentKey = GpuTimeline::NoKey;
 		Frame = {};
 		PendingMultiLight = -1;
+		PendingTerrainSlots = -1;
 		LastBind = { "(frame start)", Outside, false, false };
 		MaxGapBind = {};
 		MaxGapMs = 0.0;
@@ -315,6 +367,8 @@ namespace ShaderSplit {
 		SampleLightsInUse(context);
 		const int multiLight = context != Outside ? MultiLightIndex(shader ? shader->Name : nullptr) : -1;
 		if (multiLight >= 0) { PendingMultiLight = multiLight; PendingMultiLightContext = context; }
+		const unsigned terrainSlots = context != Outside && nvr ? TerrainLampSlots(shader ? shader->Name : nullptr) : 0;
+		if (terrainSlots) { PendingTerrainSlots = terrainSlots == 6 ? 0 : terrainSlots == 12 ? 1 : 2; PendingTerrainContext = context; }
 
 		if (context == Outside || !Timeline.InFrame()) return;
 		const unsigned char key = KeyOf(context, LabelFor(shader), nvr);
@@ -329,6 +383,50 @@ namespace ShaderSplit {
 		const double now = CpuTimer::NowMs();
 		Frame.HookMs += now - start;
 		LastBindEnd = now;
+	}
+}
+
+namespace TerrainProbe {
+	static std::unordered_map<const void*, unsigned> PassesThisFrame;
+	static std::unordered_map<UInt16, unsigned long long> ByPass;
+	static std::unordered_map<UInt16, std::string> ShadersOfPass;
+	static const char* LastPixel = nullptr;
+	static const char* LastVertex = nullptr;
+	static unsigned long long PerGeometry[9] = {}, Geometries = 0, Passes = 0;
+	static unsigned Frames = 0;
+
+	static void Note(const PointShadowForward::RenderPassView* pass) {
+		if (!GpuTimer::Enabled || ShaderSplit::CurrentContext != ShaderSplit::World || !pass) return;
+		const UInt16 e = pass->passEnum;
+		if (!((e >= 0x93 && e <= 0x94) || (e >= 0x1EF && e <= 0x230))) return;
+		PassesThisFrame[pass->geometry]++;
+		ByPass[e]++;
+		if (ShadersOfPass.find(e) == ShadersOfPass.end()) ShadersOfPass[e] = std::string(LastPixel ? LastPixel : "?") + "/" + (LastVertex ? LastVertex : "?");
+		Passes++;
+	}
+
+	static void NewFrame() {
+		if (!GpuTimer::Enabled) { PassesThisFrame.clear(); return; }
+		for (auto& g : PassesThisFrame) { PerGeometry[g.second < 8 ? g.second : 8]++; Geometries++; }
+		PassesThisFrame.clear();
+		if (++Frames < 240) return;
+		if (Geometries) {
+			char line[512]; int n = 0;
+			for (int k = 1; k <= 8; k++) n += sprintf_s(line + n, sizeof(line) - n, " %d%s:%.1f%%", k, k == 8 ? "+" : "", 100.0 * PerGeometry[k] / Geometries);
+			Logger::Log("TERRAIN PROBE %u frames: %.1f land pieces and %.1f land passes a frame; pieces by pass count:%s",
+				Frames, (double)Geometries / Frames, (double)Passes / Frames, line);
+			std::vector<std::pair<unsigned long long, UInt16>> top;
+			for (auto& b : ByPass) top.push_back({ b.second, b.first });
+			std::sort(top.rbegin(), top.rend());
+			n = 0;
+			for (size_t i = 0; i < top.size() && i < 10; i++)
+				n += sprintf_s(line + n, sizeof(line) - n, " %s:%.1f", Pointers::Functions::GetPassDescription(top[i].second), (double)top[i].first / Frames);
+			Logger::Log("TERRAIN PROBE passes a frame by kind:%s", line);
+			for (size_t i = 0; i < top.size() && i < 10; i++)
+				Logger::Log("TERRAIN PROBE   %s drawn with %s", Pointers::Functions::GetPassDescription(top[i].second), ShadersOfPass[top[i].second].c_str());
+		}
+		Frames = 0; Geometries = Passes = 0; ByPass.clear();
+		for (auto& c : PerGeometry) c = 0;
 	}
 }
 
@@ -447,12 +545,19 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	PreSceneTimerActive = PreSceneTimer.Begin(TheRenderManager->device);
 	WorldRenderedThisFrame = false;
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;
+	TerrainProbe::NewFrame();
 	FrameWorldArgsKnown = false;
 	ConstantFilter::BeginFrame(TheRenderManager->device);
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);
 	LampScissor::BeginFrame();
+	PassSums::BeginFrame(TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums"));
+	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();
+#endif
+	LampsInOnePass::BeginFrame();
+#if NVR_TEST_TOOLS
+	LampsInOnePass::Census::NewFrame();
 #endif
 	if (SkinShaders::NewSkinEnabled()) {
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->BeginFrame();
@@ -1478,7 +1583,7 @@ namespace RmaosDraw {
 		}
 		if (!Compiled) return;
 		PBRShaders* pbr = TheShaderManager->Shaders.PBR;
-		float values[4] = { 0.0f, pbr ? pbr->RmaosSettings.Occlusion : 1.0f, pbr ? (float)pbr->RmaosSettings.DebugView : 0.0f, 0.0f };
+		float values[4] = { 0.0f, pbr ? pbr->RmaosSettings.OcclusionNow : 1.0f, pbr ? (float)pbr->RmaosSettings.DebugView : 0.0f, 0.0f };
 		Map* map = nullptr;
 		NiGeometry* geometry = pass ? pass->geometry : nullptr;
 		BSShaderProperty* property = geometry ? (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade) : nullptr;
@@ -1639,6 +1744,304 @@ namespace HudRain {
 	}
 }
 
+namespace GrassFirst {
+	static const UInt32 kMainListCallSite = 0x00B65BED, kGrassCallSite = 0x00B65C2B, kRenderBatches = 0x00B63770;
+	static const UInt32 kRenderPassImmediately = 0x00B994F0, kEndPass = 0x00B988E0;
+	static const UInt16 kGrassFirstId = 0x25C, kGrassLastId = 0x287;
+	static const UInt16 kSplitLastId = 0x283;
+
+	struct PassIdNode { UInt16 id; UInt16 pad; PassIdNode* next; };
+	struct Record { void* pass; UInt32 passId, a3, a4, a5, cull, alphaTest; bool drawnEarly; };
+
+	static bool Installed = false;
+	static bool Recording = false;
+	static void* ActiveAccumulator = nullptr;
+	static std::vector<Record> Records;
+	static bool GameVertexShader[kGrassLastId - kGrassFirstId + 1] = {};
+	static unsigned Frames = 0, StatEarly = 0, StatLate = 0, StatWhole = 0, StatUnsplit = 0;
+	static unsigned RecordedFrame = ~0u;
+
+	static void(__cdecl* RenderPassImmediately)(void*, UInt32, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32, UInt32))kRenderPassImmediately;
+
+	static inline bool IsGrass(UInt32 id) { return id >= kGrassFirstId && id <= kGrassLastId; }
+
+	static bool Lists(void* accumulator, PassIdNode** lists, unsigned& count) {
+		const UInt8* a = (const UInt8*)accumulator;
+		count = *(const UInt32*)(a + 0x18C);
+		if (count > 2) return false;
+		for (unsigned i = 0; i < count; i++) {
+			UInt8* renderer = *(UInt8* const*)(a + 0x174 + 4 * i);
+			lists[i] = renderer ? (PassIdNode*)(renderer + 0x2C) : nullptr;
+		}
+		return true;
+	}
+
+	static bool AnyGrass(PassIdNode* const* lists, unsigned count) {
+		for (unsigned i = 0; i < count; i++)
+			for (const PassIdNode* p = lists[i]; p; p = p->next)
+				if (IsGrass(p->id)) return true;
+		return false;
+	}
+
+	static bool Rewrite(PassIdNode* head, bool grassFirst) {
+		if (!head || (!head->next && !head->id)) return true;
+		UInt16 values[1024];
+		unsigned n = 0;
+		for (PassIdNode* p = head; p; p = p->next) {
+			if (n == 1024) return false;
+			values[n++] = p->id;
+		}
+		if (grassFirst) std::stable_partition(values, values + n, [](UInt16 id) { return IsGrass(id); });
+		else std::sort(values, values + n);
+		unsigned i = 0;
+		for (PassIdNode* p = head; p; p = p->next) p->id = values[i++];
+		return true;
+	}
+
+	static const unsigned char kRenderStates[] = { 7, 8, 9, 14, 15, 16, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 34, 35, 36, 37, 38, 48,
+		52, 53, 54, 55, 56, 57, 58, 59, 60, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148,
+		151, 152, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 165, 166, 167, 168, 170, 171, 172, 173, 174, 175, 176, 178, 179, 180,
+		181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207,
+		208, 209 };
+	static const unsigned char kStageStates[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 22, 23, 24, 26, 27, 28, 32 };
+	struct Snapshot {
+		bool constants = false;
+		float vs[256][4], ps[224][4];
+		DWORD rs[sizeof(kRenderStates)];
+		DWORD ss[16][14];
+		DWORD tss[8][sizeof(kStageStates)];
+		IDirect3DBaseTexture9* tex[16];
+	};
+	static Snapshot Saved;
+	static unsigned RestoreMask = 5;
+	static unsigned StatRestored = 0;
+
+	static void Save() {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		Saved.constants = (RestoreMask & 1) && SUCCEEDED(device->GetVertexShaderConstantF(0, &Saved.vs[0][0], 256)) &&
+			SUCCEEDED(device->GetPixelShaderConstantF(0, &Saved.ps[0][0], 224));
+		if (RestoreMask & 2) for (unsigned i = 0; i < sizeof(kRenderStates); i++) Saved.rs[i] = state->GetRenderState((D3DRENDERSTATETYPE)kRenderStates[i]);
+		if (RestoreMask & 4) for (DWORD s = 0; s < 16; s++) for (DWORD t = 1; t < 14; t++) {
+			DWORD v = 0;
+			device->GetSamplerState(s, (D3DSAMPLERSTATETYPE)t, &v);
+			Saved.ss[s][t] = v;
+		}
+		if (RestoreMask & 8) for (UInt32 s = 0; s < 8; s++) for (unsigned i = 0; i < sizeof(kStageStates); i++)
+			Saved.tss[s][i] = state->GetTextureStageState(s, (D3DTEXTURESTAGESTATETYPE)kStageStates[i]);
+		if (RestoreMask & 16) for (UInt32 s = 0; s < 16; s++) Saved.tex[s] = state->GetTexture(s);
+	}
+
+	static void Restore() {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		if (Saved.constants) {
+			device->SetVertexShaderConstantF(0, &Saved.vs[0][0], 256);
+			device->SetPixelShaderConstantF(0, &Saved.ps[0][0], 224);
+		}
+		if (RestoreMask & 2) for (unsigned i = 0; i < sizeof(kRenderStates); i++) {
+			const D3DRENDERSTATETYPE rs = (D3DRENDERSTATETYPE)kRenderStates[i];
+			if (state->GetRenderState(rs) != Saved.rs[i]) { state->SetRenderState(rs, Saved.rs[i], RenderStateArgs); StatRestored++; }
+		}
+		if (RestoreMask & 4) for (DWORD s = 0; s < 16; s++) for (DWORD t = 1; t < 14; t++) {
+			DWORD v = 0;
+			device->GetSamplerState(s, (D3DSAMPLERSTATETYPE)t, &v);
+			if (v != Saved.ss[s][t]) {
+				state->SetSamplerState(s, (D3DSAMPLERSTATETYPE)t, Saved.ss[s][t], 0);
+				device->SetSamplerState(s, (D3DSAMPLERSTATETYPE)t, Saved.ss[s][t]);
+				StatRestored++;
+			}
+		}
+		if (RestoreMask & 8) for (UInt32 s = 0; s < 8; s++) for (unsigned i = 0; i < sizeof(kStageStates); i++) {
+			const D3DTEXTURESTAGESTATETYPE t = (D3DTEXTURESTAGESTATETYPE)kStageStates[i];
+			if (state->GetTextureStageState(s, t) != Saved.tss[s][i]) { state->SetTextureStageState(s, t, Saved.tss[s][i], 0); StatRestored++; }
+		}
+		if (RestoreMask & 16) for (UInt32 s = 0; s < 16; s++)
+			if (state->GetTexture(s) != Saved.tex[s]) { state->SetTexture(s, Saved.tex[s]); StatRestored++; }
+	}
+
+	enum { kMixed = 0, kAllNear = 1, kAllFading = 2 };
+	static bool CullDraws = true;
+	static float FadeStart = 0.0f, FadeSeenMin = 0.0f, FadeSeenMax = 0.0f;
+	static unsigned StatAllNear = 0, StatAllFading = 0;
+	static int Classify(void* pass) {
+		if (!CullDraws || FadeStart <= 0.0f) return kMixed;
+		NiAVObject* geometry = *(NiAVObject**)pass;
+		if (!geometry) return kMixed;
+		const NiBound* bound = geometry->GetWorldBound();
+		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return kMixed;
+		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		const D3DXVECTOR4& fwd = TheRenderManager->CameraForward;
+		const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y, dz = bound->Center.z - cam.z;
+		const float r = bound->Radius + 64.0f;
+		const float depth = dx * fwd.x + dy * fwd.y + dz * fwd.z;
+		if (depth - r > FadeStart * 1.03f) return kAllFading;
+		NiCamera* camera = WorldSceneGraph ? WorldSceneGraph->camera : nullptr;
+		if (!camera || camera->Frustum.Ortho) return kMixed;
+		const float fw = camera->Frustum.Right - camera->Frustum.Left, fh = camera->Frustum.Top - camera->Frustum.Bottom;
+		if (!(fw > 1e-4f && fh > 1e-4f)) return kMixed;
+		const float k = (std::max)(1.0f, (std::max)(2.0f / fw, 2.0f / fh)) * 1.03f;
+		if (k * (sqrtf(dx * dx + dy * dy + dz * dz) + r) <= FadeStart) return kAllNear;
+		return kMixed;
+	}
+
+	static float NearestDistance(void* pass) {
+		NiAVObject* geometry = *(NiAVObject**)pass;
+		if (!geometry) return 0.0f;
+		const NiBound* bound = geometry->GetWorldBound();
+		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return 0.0f;
+		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y, dz = bound->Center.z - cam.z;
+		const float d = sqrtf(dx * dx + dy * dy + dz * dz) - bound->Radius;
+		return d > 0.0f ? d : 0.0f;
+	}
+
+	static bool Allowed(void* accumulator) {
+		GrassShaders* grass = TheShaderManager->Shaders.Grass;
+		if (!Installed || !grass || !grass->Enabled || !grass->DrawFirst) return false;
+		if (ShaderSplit::CurrentContext != ShaderSplit::World) return false;
+		const UInt8* a = (const UInt8*)accumulator;
+		if (*(const UInt32*)(a + 0x19C) != 0 || a[0x164] || a[0x165]) return false;
+		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+		if (terrain && terrain->BlendingSettings.Enabled) {
+			static bool told = false;
+			if (!told) { told = true; Logger::Log("UNOFFICIAL GrassFirst: off while terrain blending is on (its depth copy would contain the grass)"); }
+			return false;
+		}
+		return true;
+	}
+
+	static void __fastcall MainListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
+		ActiveAccumulator = nullptr;
+		if (first == 1 && last == 0x25B && group < 0 && Allowed(accumulator)) {
+			PassIdNode* lists[2] = {};
+			unsigned count = 0;
+			bool ok = Lists(accumulator, lists, count);
+			if (ok && !AnyGrass(lists, count)) { ThisCall(kRenderBatches, accumulator, first, last, arg3, group); return; }
+			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
+			if (ok) {
+				Records.clear();
+				RestoreMask = (unsigned)TheShaderManager->Shaders.Grass->DrawFirstRestore;
+				CullDraws = TheShaderManager->Shaders.Grass->DrawFirstCull;
+				Save();
+				GrassShaders::DrawPart = 1;
+				Recording = true;
+				NewGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);
+				ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
+				NewGrass::EndEarly(TheRenderManager->device, StatEarly);
+				Recording = false;
+				GrassShaders::DrawPart = 0;
+				((void(__cdecl*)())kEndPass)();
+				Restore();
+				ActiveAccumulator = accumulator;
+				RecordedFrame = TheFrameRateManager->FrameNumber;
+			}
+			for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);
+		}
+		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
+	}
+
+	static void __fastcall GrassListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
+		if (ActiveAccumulator && ActiveAccumulator == accumulator && first == kGrassFirstId && last == kGrassLastId &&
+			RecordedFrame != TheFrameRateManager->FrameNumber) {
+			ActiveAccumulator = nullptr;
+			Records.clear();
+		}
+		if (ActiveAccumulator && ActiveAccumulator == accumulator && first == kGrassFirstId && last == kGrassLastId) {
+			ActiveAccumulator = nullptr;
+			NiDX9RenderState* state = TheRenderManager->renderState;
+			((void(__cdecl*)())kEndPass)();
+			int part = -1;
+			for (const Record& r : Records) {
+				const int want = r.drawnEarly ? 2 : 0;
+				if (want != part) { ((void(__cdecl*)())kEndPass)(); part = want; GrassShaders::DrawPart = want; }
+				state->SetRenderState(D3DRS_CULLMODE, r.cull, RenderStateArgs);
+				state->SetRenderState(D3DRS_ALPHATESTENABLE, r.alphaTest, RenderStateArgs);
+				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
+				if (r.drawnEarly) StatLate++; else StatWhole++;
+			}
+			((void(__cdecl*)(char, int))0x00B98540)(0, 0);
+			((void(__cdecl*)())kEndPass)();
+			GrassShaders::DrawPart = 0;
+			if (!Records.empty()) {
+				const float leave[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 0.0f };
+				TheRenderManager->device->SetVertexShaderConstantF(19, leave, 1);
+			}
+			Records.clear();
+			if (++Frames <= 3 || (Frames % 3600 == 0 && Frames <= 3600 * 17))
+				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned); fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
+					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
+			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = 0;
+			FadeSeenMin = FadeSeenMax = 0.0f;
+		}
+		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
+	}
+
+	static void __cdecl RenderPassImmediatelyHook(void* pass, UInt32 passId, UInt32 a3, UInt32 a4, UInt32 a5) {
+		if (!Recording || !IsGrass(passId)) { RenderPassImmediately(pass, passId, a3, a4, a5); return; }
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		Record r = { pass, passId, a3, a4, a5, state->GetRenderState(D3DRS_CULLMODE), state->GetRenderState(D3DRS_ALPHATESTENABLE), false };
+		bool& gameVS = GameVertexShader[passId - kGrassFirstId];
+		if (passId <= kSplitLastId && !gameVS) {
+			const int kind = Classify(pass);
+			if (kind == kAllFading) { StatAllFading++; Records.push_back(r); return; }
+			if (kind == kAllNear) {
+				GrassShaders::DrawPart = 0;
+				const float all[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 0.0f };
+				TheRenderManager->device->SetVertexShaderConstantF(19, all, 1);
+			}
+			NewGrass::Arm(pass, kind == kAllNear ? 0 : 1, NearestDistance(pass));
+			RenderPassImmediately(pass, passId, a3, a4, a5);
+			NewGrass::Disarm();
+			if (kind == kAllNear) {
+				GrassShaders::DrawPart = 1;
+				const float nearOnly[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 1.0f };
+				TheRenderManager->device->SetVertexShaderConstantF(19, nearOnly, 1);
+			}
+			if (GrassShaders::LastBindNVR) {
+				float alpha[4] = {};
+				if (SUCCEEDED(TheRenderManager->device->GetVertexShaderConstantF(5, alpha, 1)) && alpha[2] > 0.0f) {
+					FadeStart = alpha[2];
+					FadeSeenMin = FadeSeenMin > 0.0f ? (std::min)(FadeSeenMin, alpha[2]) : alpha[2];
+					FadeSeenMax = (std::max)(FadeSeenMax, alpha[2]);
+				}
+				StatEarly++;
+				if (kind == kAllNear) { StatAllNear++; return; }
+				r.drawnEarly = true;
+			}
+			else {
+				gameVS = true;
+				StatUnsplit++;
+				return;
+			}
+		}
+		Records.push_back(r);
+	}
+}
+
+void InstallGrassFirstHooks() {
+	auto isCall = [](UInt32 site) { return *(UInt8*)site == 0xE8 && site + 5 + *(SInt32*)(site + 1) == GrassFirst::kRenderBatches; };
+	if (!GrassFirst::Installed) {
+		Logger::Log("UNOFFICIAL GrassFirst: the render pass hook is not in (another plugin?); [Shaders.Grass.Main] DrawFirst does nothing");
+		return;
+	}
+	if (isCall(GrassFirst::kMainListCallSite) && isCall(GrassFirst::kGrassCallSite)) {
+		WriteRelCall(GrassFirst::kMainListCallSite, (UInt32)&GrassFirst::MainListHook);
+		WriteRelCall(GrassFirst::kGrassCallSite, (UInt32)&GrassFirst::GrassListHook);
+		Logger::Log("UNOFFICIAL GrassFirst: hooked (inactive unless [Shaders.Grass.Main] DrawFirst = true)");
+	}
+	else {
+		GrassFirst::Installed = false;
+		Logger::Log("UNOFFICIAL GrassFirst: the calls at %08X / %08X are not the game's (another plugin?); not hooked", GrassFirst::kMainListCallSite, GrassFirst::kGrassCallSite);
+	}
+}
+
+void AttachGrassFirstRenderPassHook() {
+	const UInt8* code = (const UInt8*)GrassFirst::kRenderPassImmediately;
+	if (code[0] == 0x56 && code[1] == 0x8B && code[2] == 0x74 && code[3] == 0x24 && code[4] == 0x08)
+		GrassFirst::Installed = DetourAttach(&(PVOID&)GrassFirst::RenderPassImmediately, &GrassFirst::RenderPassImmediatelyHook) == NO_ERROR;
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -1662,6 +2065,8 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting vertex shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	ClothWind::NoteShaders(Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
+		ClothWind::CapableName(VertexShader->Name));
 	if (PixelShader) {
 		PixelShader->SetupShader(ForcePixelConstants ? nullptr : PixelShader2);
 		ForcePixelConstants = false;
@@ -1669,6 +2074,12 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);
+	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;
+	TerrainProbe::LastVertex = VertexShader ? VertexShader->Name : nullptr;
+#if NVR_TEST_TOOLS
+	LampsInOnePass::Census::OnBind(PassIndex, PixelShader ? PixelShader->Name : nullptr, VertexShader ? VertexShader->Name : nullptr);
+#endif
 	if (TheSettingManager->SettingsMain.Main.GameShadersInReflections && ShaderSplit::CurrentContext == ShaderSplit::Reflections) {
 		if (VertexShader && VertexShader->ShaderHandleBackup) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
 		if (PixelShader && PixelShader->ShaderHandleBackup) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
@@ -1815,9 +2226,13 @@ static void ForwardShadowsForPass(void* Pass) {
 }
 
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	TerrainProbe::Note((const PointShadowForward::RenderPassView*)Pass);
 #if NVR_TEST_TOOLS
+	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 #endif
+	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
@@ -1829,6 +2244,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 		return;
 	}
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+#if NVR_TEST_TOOLS
+	LampPassTest::AfterDraw(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
+#endif
 	LampScissor::After();
 	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
@@ -1836,8 +2254,11 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
 #if NVR_TEST_TOOLS
+	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 #endif
+	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
@@ -1872,6 +2293,99 @@ HRESULT __fastcall SetSamplerStateHook(NiDX9RenderState* This, UInt32 edx, UInt3
 
 static unsigned ViewModelDepthClearedFrames = 0;
 
+namespace SandstormGlass {
+	static bool InWorldScene = false;
+	static IDirect3DSurface9* WorldDepth = nullptr;
+	static bool InBlendedStage = false;
+	typedef HRESULT (STDMETHODCALLTYPE* DrawIndexedPrimitiveFn)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
+	static DrawIndexedPrimitiveFn Next = nullptr;
+	static unsigned HiddenDraws = 0;
+
+	static bool IsSeeThroughPass(IDirect3DDevice9* Device) {
+		DWORD blend = FALSE, zwrite = FALSE, test = FALSE, reference = 0;
+		Device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+		Device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
+		if (!blend || !zwrite) return false;
+		Device->GetRenderState(D3DRS_ALPHATESTENABLE, &test);
+		Device->GetRenderState(D3DRS_ALPHAREF, &reference);
+		if (test && reference >= 32) return false;
+		void* pass = *(void**)0x011F91E0;
+		NiGeometry* geometry = pass ? *(NiGeometry**)pass : nullptr;
+		SandstormEffect* sandstorm = TheShaderManager->Effects.Sandstorm;
+		if (geometry && !(sandstorm && sandstorm->Underwater))
+			if (NiShadeProperty* shade = (NiShadeProperty*)geometry->GetProperty(NiProperty::kType_Shade))
+				if (shade->m_eShaderType == NiShadeProperty::kProp_Water) return false;
+		return true;
+	}
+
+	static HRESULT STDMETHODCALLTYPE DrawHook(IDirect3DDevice9* Device, D3DPRIMITIVETYPE Type, INT Base, UINT MinIndex, UINT Vertices, UINT Start, UINT Count) {
+		if (InBlendedStage && IsSeeThroughPass(Device)) {
+			HiddenDraws++;
+			Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+			const HRESULT result = Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+			Device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+			return result;
+		}
+		return Next(Device, Type, Base, MinIndex, Vertices, Start, Count);
+	}
+
+	static void BeginWorld() {
+		InWorldScene = true;
+		WorldDepth = nullptr;
+		SandstormEffect* sandstorm = TheShaderManager->Effects.Sandstorm;
+		if (!sandstorm || !sandstorm->HidesBlendedDepth()) return;
+		IDirect3DSurface9* depth = nullptr;
+		TheRenderManager->device->GetDepthStencilSurface(&depth);
+		WorldDepth = depth;
+		if (depth) depth->Release();
+	}
+
+	static void EndWorld() {
+		InWorldScene = false;
+		WorldDepth = nullptr;
+	}
+}
+
+void (__thiscall* RenderBlended)(void*, UInt32) = (void (__thiscall*)(void*, UInt32))Hooks::RenderBlended;
+void __fastcall RenderBlendedHook(void* This, UInt32 edx, UInt32 Arg) {
+	using namespace SandstormGlass;
+	bool hide = false;
+	if (InWorldScene && WorldDepth) {
+		IDirect3DSurface9* depth = nullptr;
+		TheRenderManager->device->GetDepthStencilSurface(&depth);
+		hide = depth && depth == WorldDepth;
+		if (depth) depth->Release();
+	}
+	if (!hide) { RenderBlended(This, Arg); return; }
+	void** table = *(void***)TheRenderManager->device;
+	bool hooked = false;
+	if (table[82] != (void*)&DrawHook) {
+		DWORD old = 0;
+		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+			Next = (DrawIndexedPrimitiveFn)table[82];
+			table[82] = (void*)&DrawHook;
+			VirtualProtect(&table[82], sizeof(void*), old, &old);
+			hooked = true;
+		}
+	}
+	const unsigned before = HiddenDraws;
+	InBlendedStage = table[82] == (void*)&DrawHook;
+	RenderBlended(This, Arg);
+	InBlendedStage = false;
+	if (hooked && table[82] == (void*)&DrawHook) {
+		DWORD old = 0;
+		if (VirtualProtect(&table[82], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+			table[82] = (void*)Next;
+			VirtualProtect(&table[82], sizeof(void*), old, &old);
+		}
+	}
+	static unsigned logged = 0;
+	if (logged < 3 && HiddenDraws > before) {
+		logged++;
+		Logger::Log("UNOFFICIAL Sandstorm ThroughBlended: %u see-through blended draws wrote no depth in this world scene's blended stage", HiddenDraws - before);
+	}
+}
+
 void (__thiscall* RenderWorldSceneGraph)(Main*, Sun*, UInt8, UInt8, UInt8) = (void (__thiscall*)(Main*, Sun*, UInt8, UInt8, UInt8))Hooks::RenderWorldSceneGraph;
 void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, UInt8 IsFirstPerson, UInt8 WireFrame, UInt8 Arg4) {
 	EndPreSceneTimer();
@@ -1893,7 +2407,10 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
+		SandstormGlass::BeginWorld();
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		SandstormGlass::EndWorld();
+		PassSums::EndWorld(TheRenderManager->device);
 		if (TheShaderManager->Effects.SkinScattering) {
 			TheShaderManager->Effects.SkinScattering->InWorldScene = false;
 			TheShaderManager->Effects.SkinScattering->Unbind();
@@ -2073,6 +2590,10 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 #if NVR_TEST_TOOLS
 	EffectSelfTest::BeginFrame();
 	SettingShots::BeginFrame();
+	if (SettingShots::WorldCapture && SourceTarget) {
+		IDirect3DSurface9* scene = nullptr;
+		if (SUCCEEDED(SourceTarget->GetD3DTexture(0)->GetSurfaceLevel(0, &scene)) && scene) { SettingShots::CaptureWorld(Device, scene); scene->Release(); }
+	}
 #endif
 
 	if (SourceTarget && TheSettingManager->SettingsMain.Main.RenderPreTonemapping) {
@@ -2267,7 +2788,7 @@ void __fastcall MuzzleLightCullingFix(MuzzleFlash* This) {
 }
 
 BSFogProperty* __cdecl ShadowSceneNode__GetFogPropertyEx(UInt32 aeType) {
-	if (TheShaderManager->Effects.VolumetricFog->Enabled && !TheShaderManager->GameState.isUnderwater) {
+	if (TheSettingManager->SettingsMain.Main.RenderEffects && TheShaderManager->Effects.VolumetricFog->Enabled && !TheShaderManager->GameState.isUnderwater) {
 		aeType = 1;  // Use UI scene node and thus render no fog.
 	}
 

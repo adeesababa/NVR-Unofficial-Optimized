@@ -1,4 +1,5 @@
 #pragma once
+#include "../core/TemporalHistoryStats.h"
 
 class VolumetricLightEffect : public EffectRecord
 {
@@ -61,7 +62,8 @@ public:
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;
-	UINT		frame = 0;
 	UINT		lastRenderedFrame = 0;
 	bool		haveHistory = false;
+	TemporalHistoryStats	stats;
+	void		ReportHistory(const char* when);
 };

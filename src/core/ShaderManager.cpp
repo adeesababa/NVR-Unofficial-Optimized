@@ -1,3 +1,4 @@
+#include "OrthoProbe.h"
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
@@ -272,6 +273,7 @@ void ShaderManager::UpdateConstants() {
 	const char* sectionName = NULL;
 	avglumaRequired = false; // toggle for rendering AvgLuma
 	orthoRequired = false; // toggle for rendering Ortho map
+	orthoSkyRequired = false;
 
 	if (Effects.Debug->Enabled) avglumaRequired = true;
 
@@ -297,9 +299,16 @@ void ShaderManager::UpdateConstants() {
 	if (!currentCell) return; // if no cell is present, we skip update to avoid trying to access values that don't exist
 	
 	GameState.isExterior = !currentCell->IsInterior();// || Player->parentCell->flags0 & TESObjectCELL::kFlags0_BehaveLikeExterior; // < use exterior flag, broken for now
-	GameState.isCellChanged = currentCell != PreviousCell;
-	PreviousCell = currentCell;
-	if (GameState.isCellChanged) {
+	static unsigned int cellFrame = ~0u;
+	static bool cellChangedThisFrame = false;
+	const bool firstCallOfFrame = TheFrameRateManager->FrameNumber != cellFrame;
+	if (firstCallOfFrame) {
+		cellFrame = TheFrameRateManager->FrameNumber;
+		cellChangedThisFrame = currentCell != PreviousCell;
+		PreviousCell = currentCell;
+	}
+	GameState.isCellChanged = cellChangedThisFrame;
+	if (firstCallOfFrame && GameState.isCellChanged) {
 		TheSettingManager->SettingsChanged = true; // force update constants during cell transition
 		// Preset resolve+apply as early in this function as possible -- before
 		// anything below reads SettingsMain, so nothing this frame observes a
@@ -504,6 +513,8 @@ void ShaderManager::UpdateConstants() {
 	// these constants stay current whether or not the PBR collection is enabled.
 	if (!Shaders.PBR->Enabled) Shaders.PBR->UpdateConstants();
 
+	if (!Effects.Sandstorm->Enabled || !Effects.Sandstorm->Effect) Effects.Sandstorm->ClearWind();
+
 	// Underwater effect uses constants from the water shader
 	if (Effects.Underwater->Enabled && !Shaders.Water->Enabled) Shaders.Water->UpdateConstants();
 	if (!Effects.ShadowsExteriors->Enabled && Effects.ShadowsInteriors->Enabled) Effects.ShadowsExteriors->UpdateConstants(); // Interior and exterior shadows share settings
@@ -690,6 +701,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 
 	// Creating list of lights in order of distance to the player
 	while (Entry) {
+		if (!Entry->data || !Entry->data->sourceLight) { Entry = Entry->next; continue; }
 		NiPointLight* Light = Entry->data->sourceLight;
 		D3DXVECTOR4 LightPosition = Light->m_worldTransform.pos.toD3DXVEC4();
 
@@ -969,7 +981,7 @@ void ShaderManager::RenderPointShadowBatches() {
 
 bool ShaderManager::ShouldRenderShadowMaps() {
 	if (GameState.isExterior)
-		return orthoRequired || (
+		return orthoRequired || orthoSkyRequired || (
 			Effects.ShadowsExteriors->Settings.Exteriors.Enabled &&
 			Effects.ShadowsExteriors->Enabled);
 	else
@@ -979,6 +991,235 @@ bool ShaderManager::ShouldRenderShadowMaps() {
 /*
 * Renders a given effect to an arbitrary render target
 */
+float LampContactStrength();
+bool LampMaskHalfRes();
+IDirect3DTexture9* LampMaskHalfTexture();
+IDirect3DSurface9* LampMaskHalfSurface();
+
+static int LampMaskRect(RECT& rect, int& lampCount) {
+	lampCount = 0;
+	if (TheShaderManager->ExtraLights[0].w != 0.0f) return 0;
+	D3DXVECTOR4 lamps[ShadowCubeMapsScreen + TrackedLightsMax + 1];
+	for (int i = 0; i < ShadowCubeMapsScreen; i++)
+		if (TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowLightPosition[i].w != 0.0f) lamps[lampCount++] = TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowLightPosition[i];
+	for (int i = 0; i < TrackedLightsMax; i++)
+		if (TheShaderManager->LightPosition[i].w != 0.0f) lamps[lampCount++] = TheShaderManager->LightPosition[i];
+	if (TheShaderManager->SpotLightPosition[0].w != 0.0f) lamps[lampCount++] = TheShaderManager->SpotLightPosition[0];
+	if (lampCount == 0) return 1;
+	const D3DXMATRIX& V = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& P = TheRenderManager->projMatrix;
+	const D3DXVECTOR3 R(V._11, V._21, V._31), U(V._12, V._22, V._32), F(V._13, V._23, V._33);
+	if (fabsf(D3DXVec3Length(&F) - 1.0f) > 1e-3f || fabsf(D3DXVec3Length(&R) - 1.0f) > 1e-3f || fabsf(D3DXVec3Length(&U) - 1.0f) > 1e-3f ||
+		fabsf(D3DXVec3Dot(&F, &R)) > 1e-3f || fabsf(D3DXVec3Dot(&F, &U)) > 1e-3f || !(P._11 > 0.0f) || !(P._22 > 0.0f) || P._44 != 0.0f) {
+		static bool reported = false;
+		if (!reported) { reported = true; Logger::Log("LAMP MASK SCISSOR: unusual camera matrices (forward %.4f %.4f %.4f, P44 %.3f): the pass is drawn whole", F.x, F.y, F.z, P._44); }
+		return 0;
+	}
+	{
+		static bool logged = false;
+		const D3DXMATRIX& I = TheRenderManager->InvViewMatrix;
+		if (!logged) { logged = true; Logger::Log("LAMP MASK SCISSOR: view forward %.4f %.4f %.4f, world camera forward %.4f %.4f %.4f, P00 %.4f P11 %.4f", F.x, F.y, F.z, I._31, I._32, I._33, P._11, P._22); }
+	}
+	const float W = (float)TheRenderManager->width, H = (float)TheRenderManager->height;
+	const D3DXVECTOR3 C(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+	float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
+	bool any = false;
+	for (int k = 0; k < lampCount; k++) {
+		const float radius = lamps[k].w;
+		if (!(radius > 0.0f) || radius > 1e6f) return 0;
+		const float reach = radius * 1.02f + 2.0f;
+		float lx0 = 1e30f, ly0 = 1e30f, lx1 = -1e30f, ly1 = -1e30f;
+		const float kNearClip = 0.25f;
+		D3DXVECTOR3 cam[8];
+		bool front[8];
+		int inFront = 0;
+		for (int corner = 0; corner < 8; corner++) {
+			const D3DXVECTOR3 p(lamps[k].x + ((corner & 1) ? reach : -reach) - C.x, lamps[k].y + ((corner & 2) ? reach : -reach) - C.y,
+				lamps[k].z + ((corner & 4) ? reach : -reach) - C.z);
+			cam[corner] = D3DXVECTOR3(D3DXVec3Dot(&p, &R), D3DXVec3Dot(&p, &U), D3DXVec3Dot(&p, &F));
+			front[corner] = cam[corner].z >= kNearClip;
+			if (front[corner]) inFront++;
+		}
+		if (inFront == 0) continue;
+		auto grow = [&](float x, float y, float z) {
+			const float u = (x / z * P._11 + 1.0f) * 0.5f * W;
+			const float v = (1.0f - y / z * P._22) * 0.5f * H;
+			lx0 = (std::min)(lx0, u); lx1 = (std::max)(lx1, u); ly0 = (std::min)(ly0, v); ly1 = (std::max)(ly1, v);
+		};
+		for (int corner = 0; corner < 8; corner++) {
+			if (!front[corner]) continue;
+			grow(cam[corner].x, cam[corner].y, cam[corner].z);
+			if (inFront == 8) continue;
+			for (int bit = 1; bit < 8; bit <<= 1) {
+				const int other = corner ^ bit;
+				if (front[other]) continue;
+				const float t = (kNearClip - cam[corner].z) / (cam[other].z - cam[corner].z);
+				grow(cam[corner].x + (cam[other].x - cam[corner].x) * t, cam[corner].y + (cam[other].y - cam[corner].y) * t, kNearClip);
+			}
+		}
+		if (lx1 < -1.0f || ly1 < -1.0f || lx0 > W + 1.0f || ly0 > H + 1.0f) continue;
+		any = true;
+		minX = (std::min)(minX, lx0); maxX = (std::max)(maxX, lx1); minY = (std::min)(minY, ly0); maxY = (std::max)(maxY, ly1);
+	}
+	if (!any) return 1;
+	rect.left = (LONG)(std::max)(0.0f, floorf(minX) - 1.0f);
+	rect.top = (LONG)(std::max)(0.0f, floorf(minY) - 1.0f);
+	rect.right = (LONG)(std::min)(W, ceilf(maxX) + 1.0f);
+	rect.bottom = (LONG)(std::min)(H, ceilf(maxY) + 1.0f);
+	if (rect.right <= rect.left || rect.bottom <= rect.top) return 1;
+	if (rect.left == 0 && rect.top == 0 && rect.right == (LONG)W && rect.bottom == (LONG)H) return 0;
+	return 2;
+}
+
+#if NVR_TEST_TOOLS
+static void LampMaskSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* surface, int maskMode, const RECT& rect) {
+	static int check = 0;
+	static unsigned frame = 0, checks = 0, checksCleared = 0, diffInside = 0, diffOutside = 0, maxDiff = 0, reported = 0;
+	if ((frame % 60) == 0) check = TheSettingManager->GetSettingI("Main.Main.Performance", "LampMaskScissorCheck");
+	frame++;
+	if (check <= 0 || (frame % 8) != 0) return;
+	static IDirect3DSurface9* readA = nullptr;
+	static IDirect3DSurface9* readB = nullptr;
+	static D3DSURFACE_DESC have = {};
+	D3DSURFACE_DESC d = {};
+	if (FAILED(surface->GetDesc(&d)) || d.Format != D3DFMT_G16R16) return;
+	if (!readA || d.Width != have.Width || d.Height != have.Height) {
+		if (readA) { readA->Release(); readA = nullptr; }
+		if (readB) { readB->Release(); readB = nullptr; }
+		if (FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readA, NULL)) ||
+			FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readB, NULL))) {
+			Logger::Log("LAMP MASK CHECK: could not create the read-back surfaces");
+			if (readA) { readA->Release(); readA = nullptr; }
+			return;
+		}
+		have = d;
+	}
+	if (FAILED(Device->GetRenderTargetData(surface, readA))) return;
+	TheShaderManager->RenderEffectToRT(surface, TheShaderManager->Effects.PointShadows, true);
+	if (FAILED(Device->GetRenderTargetData(surface, readB))) return;
+	D3DLOCKED_RECT la = {}, lb = {};
+	if (FAILED(readA->LockRect(&la, NULL, D3DLOCK_READONLY))) return;
+	if (FAILED(readB->LockRect(&lb, NULL, D3DLOCK_READONLY))) { readA->UnlockRect(); return; }
+	unsigned inside = 0, outside = 0, worst = 0, firstX = 0, firstY = 0;
+	for (UINT y = 0; y < d.Height; y++) {
+		const UInt16* pa = (const UInt16*)((const UInt8*)la.pBits + (size_t)y * la.Pitch);
+		const UInt16* pb = (const UInt16*)((const UInt8*)lb.pBits + (size_t)y * lb.Pitch);
+		for (UINT x = 0; x < d.Width * 2; x++) {
+			if (pa[x] == pb[x]) continue;
+			const unsigned diff = pa[x] > pb[x] ? pa[x] - pb[x] : pb[x] - pa[x];
+			const bool in = maskMode == 2 && (LONG)(x / 2) >= rect.left && (LONG)(x / 2) < rect.right && (LONG)y >= rect.top && (LONG)y < rect.bottom;
+			if (!inside && !outside) { firstX = x / 2; firstY = y; }
+			if (in) inside++; else outside++;
+			if (diff > worst) worst = diff;
+		}
+	}
+	readB->UnlockRect();
+	readA->UnlockRect();
+	checks++;
+	if (maskMode == 1) checksCleared++;
+	diffInside += inside; diffOutside += outside; maxDiff = (std::max)(maxDiff, worst);
+	if ((inside || outside) && reported < 10) {
+		reported++;
+		Logger::Log("LAMP MASK CHECK: DIFFERENCE, mode %d rect %d %d %d %d: %u values inside, %u outside, max %u (16-bit units), first at %u %u",
+			maskMode, (int)rect.left, (int)rect.top, (int)rect.right, (int)rect.bottom, inside, outside, worst, firstX, firstY);
+	}
+	if (checks % 30 == 0)
+		Logger::Log("LAMP MASK CHECK: %u checks (%u cleared only, %u scissored), differing values: %u inside the rectangles, %u outside, max %u",
+			checks, checksCleared, checks - checksCleared, diffInside, diffOutside, maxDiff);
+}
+#endif
+
+#if NVR_TEST_TOOLS
+static IDirect3DTexture9* FoldCheckSceneTexture = nullptr;
+static IDirect3DSurface9* FoldCheckSceneSurface = nullptr;
+static IDirect3DTexture9* FoldCheckOutTexture = nullptr;
+static IDirect3DSurface9* FoldCheckOutSurface = nullptr;
+static IDirect3DSurface9* FoldCheckReadA = nullptr;
+static IDirect3DSurface9* FoldCheckReadB = nullptr;
+static bool FoldCheckSurfaces(IDirect3DDevice9* Device, IDirect3DSurface9* like) {
+	D3DSURFACE_DESC d = {}, have = {};
+	if (!like || FAILED(like->GetDesc(&d)) || d.Format != D3DFMT_A16B16G16R16F) return false;
+	if (FoldCheckSceneSurface && SUCCEEDED(FoldCheckSceneSurface->GetDesc(&have)) && have.Width == d.Width && have.Height == d.Height) return true;
+	IUnknown* old[] = { FoldCheckSceneSurface, FoldCheckSceneTexture, FoldCheckOutSurface, FoldCheckOutTexture, FoldCheckReadA, FoldCheckReadB };
+	for (IUnknown* o : old) if (o) o->Release();
+	FoldCheckSceneSurface = FoldCheckOutSurface = FoldCheckReadA = FoldCheckReadB = nullptr;
+	FoldCheckSceneTexture = FoldCheckOutTexture = nullptr;
+	if (FAILED(Device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &FoldCheckSceneTexture, NULL)) ||
+		FAILED(FoldCheckSceneTexture->GetSurfaceLevel(0, &FoldCheckSceneSurface)) ||
+		FAILED(Device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &FoldCheckOutTexture, NULL)) ||
+		FAILED(FoldCheckOutTexture->GetSurfaceLevel(0, &FoldCheckOutSurface)) ||
+		FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &FoldCheckReadA, NULL)) ||
+		FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &FoldCheckReadB, NULL))) {
+		Logger::Log("INTERIOR SHADOW FOLD CHECK: could not create its surfaces");
+		FoldCheckSceneSurface = nullptr;
+		return false;
+	}
+	return true;
+}
+
+static void InteriorFoldSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* SourceSurface,
+	bool ao, IDirect3DTexture9* aoTexture, IDirect3DTexture9* skyTexture) {
+	static unsigned checks = 0, differing = 0, failed = 0, reported = 0;
+	static unsigned long long differingPixels = 0;
+	static unsigned worst = 0;
+	VolumetricFogEffect* Fog = TheShaderManager->Effects.VolumetricFog;
+	IDirect3DSurface9* result = TheTextureManager->RenderedSurface;
+	if (!FoldCheckSceneSurface || !result || FAILED(Device->GetRenderTargetData(result, FoldCheckReadA))) { failed++; return; }
+	const int foldRound = TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound;
+	Fog->compositeShadow = false;
+	Fog->compositeInteriorShadow = true;
+	Fog->compositeRound = foldRound == 1 ? 1.0f : foldRound == 2 ? 2.0f : foldRound == 3 ? 0.0f : Fog->halfStoreMode == 2 ? 2.0f : 0.0f;
+	Fog->compositeAO = ao;
+	Fog->compositeAOTexture = aoTexture;
+	Fog->compositeSkyTexture = ao ? skyTexture : nullptr;
+	Fog->compositeApplied = false;
+	Fog->gridTexture = nullptr;
+	Fog->sceneOverride = FoldCheckSceneTexture;
+	Fog->targetOverride = FoldCheckOutSurface;
+	Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+	const bool applied = Fog->compositeApplied;
+	Fog->sceneOverride = nullptr;
+	Fog->targetOverride = nullptr;
+	Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = Fog->compositeInteriorShadow = false;
+	Fog->compositeSkyTexture = nullptr;
+	Device->SetRenderTarget(0, RenderTarget);
+	if (!applied || FAILED(Device->GetRenderTargetData(FoldCheckOutSurface, FoldCheckReadB))) { failed++; return; }
+	D3DSURFACE_DESC d = {};
+	FoldCheckReadA->GetDesc(&d);
+	D3DLOCKED_RECT la = {}, lb = {};
+	if (FAILED(FoldCheckReadA->LockRect(&la, NULL, D3DLOCK_READONLY))) { failed++; return; }
+	if (FAILED(FoldCheckReadB->LockRect(&lb, NULL, D3DLOCK_READONLY))) { FoldCheckReadA->UnlockRect(); failed++; return; }
+	unsigned pixels = 0, frameWorst = 0, firstX = 0, firstY = 0;
+	for (UINT y = 0; y < d.Height; y++) {
+		const UInt16* pa = (const UInt16*)((const UInt8*)la.pBits + (size_t)y * la.Pitch);
+		const UInt16* pb = (const UInt16*)((const UInt8*)lb.pBits + (size_t)y * lb.Pitch);
+		for (UINT x = 0; x < d.Width; x++) {
+			bool differs = false;
+			for (int c = 0; c < 3; c++) {
+				const UInt16 a = pa[x * 4 + c], b = pb[x * 4 + c];
+				if (a == b) continue;
+				differs = true;
+				const unsigned diff = a > b ? a - b : b - a;
+				if (diff > frameWorst) frameWorst = diff;
+			}
+			if (differs) { if (!pixels) { firstX = x; firstY = y; } pixels++; }
+		}
+	}
+	FoldCheckReadB->UnlockRect();
+	FoldCheckReadA->UnlockRect();
+	checks++;
+	if (pixels) { differing++; differingPixels += pixels; worst = (std::max)(worst, frameWorst); }
+	if (pixels && reported < 12) {
+		reported++;
+		Logger::Log("INTERIOR SHADOW FOLD CHECK: DIFFERENCE, %u of %u pixels differ (max %u 16-bit float steps), first at %u %u",
+			pixels, d.Width * d.Height, frameWorst, firstX, firstY);
+	}
+	if (checks % 10 == 0 || (checks < 10 && !pixels))
+		Logger::Log("INTERIOR SHADOW FOLD CHECK: %u frames compared (old separate pass vs folded fog pass, same frame), %u differ (%llu pixels in all, max %u steps); %u checks could not run",
+			checks, differing, (unsigned long long)differingPixels, worst, failed);
+}
+#endif
+
 void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectRecord* Effect, bool clearRenderTarget, UINT techniqueIndex) {
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	Device->SetRenderTarget(0, RenderTarget);
@@ -1036,6 +1277,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!mergedNormals)
 			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 	}
+#if NVR_TEST_TOOLS
+	OrthoProbe::AfterCombine(Device);
+#endif
 
 	const bool forwardInterior = !GameState.isExterior && Effects.ShadowsInteriors->Enabled && PointShadowForward::Active &&
 		PointShadowForward::BoundThisFrame && Shaders.PBR && Shaders.PBR->Enabled;
@@ -1052,13 +1296,85 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			GpuProfileScope gpu(pointShadowTimer, Device);
 			const float pointShadowsWere = Effects.ShadowsExteriors->Constants.ShadowFade.z;
 			if (forwardInterior) Effects.ShadowsExteriors->Constants.ShadowFade.z = 0.0f;
-			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
-			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();
+			static EffectRecord::CachedHandle halfCache, upCache;
+			const bool halfMask = forwardInterior && LampMaskHalfRes() &&
+				Effects.PointShadows->TechniqueHandle(halfCache, "LampMaskHalf") == Effects.PointShadows->Effect->GetTechnique(3) &&
+				Effects.PointShadows->TechniqueHandle(upCache, "LampMaskUpsample") == Effects.PointShadows->Effect->GetTechnique(4) &&
+				Effects.PointShadows->Effect->GetTechnique(4) != NULL;
 			static EffectRecord::CachedHandle mergedTechnique;
 			const bool mergedPointShadows = Effects.PointShadows->TechniqueHandle(mergedTechnique, "MergedPointShadows") != NULL;
+			RECT maskRect = {};
+			int lampCount = 0, maskMode = 0;
+			if (TheSettingManager->SettingsMain.Main.LampMaskScissor && !halfMask && mergedPointShadows &&
+				!PointShadowForward::ExteriorBatched(GameState.isExterior) &&
+				Effects.PointShadows->Enabled && Effects.PointShadows->Effect && Effects.PointShadows->ShouldRender())
+				maskMode = LampMaskRect(maskRect, lampCount);
+			static int loggedMaskMode = -1;
+			if (maskMode != loggedMaskMode) {
+				static int stateLines = 0;
+				if (stateLines < 20 || GpuTimer::Enabled) {
+					Logger::Log("LAMP MASK STATE: %s (%d lamps in its lists)", maskMode == 1 ? "SKIPPED, no lamp reaches the screen: the buffer cleared to 0, as the pass would write" :
+						maskMode == 2 ? "SCISSORED to the lamps' screen rectangle" : "drawn whole", lampCount);
+					if (++stateLines == 20 && !GpuTimer::Enabled) Logger::Log("LAMP MASK STATE: no more lines (20 logged; the F10 profile logs them all)");
+				}
+				loggedMaskMode = maskMode;
+			}
+			if (GpuTimer::Enabled) {
+				static unsigned frames = 0, skipped = 0, scissored = 0, lampsSum = 0;
+				static double area = 0.0;
+				frames++; lampsSum += lampCount;
+				if (maskMode == 1) skipped++;
+				if (maskMode == 2) { scissored++; area += (double)(maskRect.right - maskRect.left) * (maskRect.bottom - maskRect.top) / ((double)TheRenderManager->width * TheRenderManager->height); }
+				if (frames >= 240) {
+					Logger::Log("LAMP MASK SCISSOR %s: %u frames, %u cleared only, %u scissored (average %.1f%% of the screen), %u whole; %.1f lamps per frame in its lists",
+						TheSettingManager->SettingsMain.Main.LampMaskScissor ? "on" : "off", frames, skipped, scissored, scissored ? 100.0 * area / scissored : 0.0,
+						frames - skipped - scissored, (double)lampsSum / frames);
+					frames = skipped = scissored = lampsSum = 0; area = 0.0;
+				}
+			}
+			if (maskMode != 0) {
+				IDirect3DSurface9* maskSurface = Effects.ShadowsExteriors->Textures.ShadowPassSurface;
+				DWORD scissorWas = FALSE;
+				RECT scissorRectWas = {};
+				Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissorWas);
+				const bool haveRectWas = SUCCEEDED(Device->GetScissorRect(&scissorRectWas));
+				Device->SetRenderTarget(0, maskSurface);
+				Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
+				if (maskMode == 2) {
+					Device->SetScissorRect(&maskRect);
+					Device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+					Effects.PointShadows->Render(Device, maskSurface, maskSurface, 0, false, maskSurface);
+					Device->SetRenderTarget(0, maskSurface);
+				}
+				Device->SetRenderState(D3DRS_SCISSORTESTENABLE, scissorWas);
+				if (haveRectWas) Device->SetScissorRect(&scissorRectWas);
+#if NVR_TEST_TOOLS
+				LampMaskSelfCheck(Device, maskSurface, maskMode, maskRect);
+#endif
+			}
+			else if (halfMask) {
+				RenderEffectToRT(LampMaskHalfSurface(), Effects.PointShadows, true, 3);
+				Device->SetTexture(13, LampMaskHalfTexture());
+				TheRenderManager->renderState->NoteDeviceTexture(13, LampMaskHalfTexture());
+				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, false, 4);
+				Device->SetTexture(13, nullptr);
+				TheRenderManager->renderState->NoteDeviceTexture(13, nullptr);
+			}
+			else RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
+			if (PointShadowForward::ExteriorBatched(GameState.isExterior)) RenderPointShadowBatches();
 			if (!mergedPointShadows && Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
 			Effects.ShadowsExteriors->Constants.ShadowFade.z = pointShadowsWere;
+		}
+		if (!GameState.isExterior && LampContactStrength() > 0.0f) {
+			static EffectRecord::CachedHandle contactCache;
+			D3DXHANDLE contactTechnique = Effects.PointShadows->TechniqueHandle(contactCache, "LampContact");
+			if (contactTechnique && Effects.PointShadows->Effect->GetTechnique(2) == contactTechnique) {
+				static GpuTimer lampContactTimer("Lamp contact shadows");
+				GpuProfileScope gpu(lampContactTimer, Device);
+				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, false, 2);
+			}
 		}
 		if (GameState.isExterior) {
 			GpuProfileScope gpu(sunContactTimer, Device);
@@ -1070,8 +1386,26 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
 			const bool sharpContact = fusedForwardContact && Effects.ShadowsExteriors->Settings.ScreenSpace.Sharp && sharpTechnique != NULL &&
 				Effects.SunShadows->Effect->GetTechnique(2) == sharpTechnique;
-			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface,
-				Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
+			ShadowsExteriorEffect* sunShadows = Effects.ShadowsExteriors;
+			const bool skipContact = sunShadows->FadedContactUnread();
+			static int loggedSkip = -1;
+			if ((int)skipContact != loggedSkip) {
+				Logger::Log("SUN FADE STATE: contact shadows %s", skipContact ? "SKIPPED" : sunShadows->SunFaded ?
+					"drawn (an effect reads them: lamp shadows outdoors, blood flow, wet world, underwater or the debug view)" : "drawn");
+				loggedSkip = skipContact;
+			}
+			if (!skipContact) {
+				const float forwardWas = sunShadows->Constants.ForwardData.x;
+				if (sunShadows->SunFaded && sunShadows->Settings.Exteriors.ForwardShadows) sunShadows->Constants.ForwardData.x = 0.0f;
+				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
+				sunShadows->Constants.ForwardData.x = forwardWas;
+			}
+#if NVR_TEST_TOOLS
+			else if (sunShadows->Settings.Exteriors.SkipWhenFadedCheck) {
+				Device->SetRenderTarget(0, sunShadows->Textures.ShadowPassSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+#endif
 		}
 	}
 	else {
@@ -1118,11 +1452,48 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool effectsBetween = wouldRender(Effects.SnowAccumulation) || wouldRender(Effects.WetWorld) || wouldRender(Effects.BloodFlow) ||
 		wouldRender(Effects.Flashlight) || wouldRender(Effects.Specular) || wouldRender(Effects.Underwater) ||
 		wouldRender(Effects.BounceLight) || wouldRender(Effects.Reflections) || ambientLight;
-	bool composite = (shadowApplies || aoApplies) && !effectsBetween &&
+	const bool interiorFoldable = !GameState.isExterior && keepDarkening && forwardInterior &&
+		!Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur && TheSettingManager->SettingsMain.Main.InteriorShadowFold &&
+		!(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) &&
+		Effects.ShadowsInteriors->DedicatedUsable(RenderTarget, TheTextureManager->RenderedSurface) && Fog->CanCompositeInterior() &&
+		(TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound != 0 || Fog->HalfStoreMode(Device) >= 0);
+	bool foldCheckFrame = false;
+#if NVR_TEST_TOOLS
+	{
+		static unsigned frame = 0;
+		static int every = 0;
+		if ((frame % 60) == 0) every = TheSettingManager->GetSettingI("Main.Main.Performance", "InteriorShadowFoldCheck");
+		frame++;
+		foldCheckFrame = every > 0 && interiorFoldable && (frame % (unsigned)every) == 0 && !effectsBetween &&
+			Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr) && FoldCheckSurfaces(Device, TheTextureManager->RenderedSurface);
+	}
+#endif
+	const bool interiorApplies = interiorFoldable && !foldCheckFrame;
+	bool composite = (shadowApplies || aoApplies || interiorApplies) && !effectsBetween &&
 		Fog->CanComposite(aoApplies ? AO->NextResultSurface() : nullptr);
+	auto interiorApply = [&]() {
+		Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
+		Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
+		Effects.ShadowsInteriors->skipBlur = false;
+	};
+	if (!GameState.isExterior) {
+		static int loggedFold = -1;
+		const int fold = (composite && interiorApplies) || foldCheckFrame ? 1 : 0;
+		if (fold != loggedFold) {
+			loggedFold = fold;
+			Logger::Log("INTERIOR SHADOW FOLD: %s", fold ? "on, the lamp darkening is applied inside the fog composite (no separate pass)" :
+				!TheSettingManager->SettingsMain.Main.InteriorShadowFold ? "off (setting)" : !keepDarkening ? "off (no darkening drawn: KeepDarkening off)" :
+				!forwardInterior ? "off (no forward lamp shadows this frame: the old blurred pass)" :
+				Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur ? "off (DarkeningBlur)" :
+				effectsBetween ? "off (an effect between it and the fog reads the picture)" :
+				(Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) ? "off (the Reflections surroundings cube reads the picture)" :
+				"off (the dedicated pass or the fog composite is unavailable, or this GPU's 16-bit rounding is unknown)");
+		}
+	}
 	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
 		Fog->CanApplyShadowAO();
 	AO->deferredReady = false;
+	AO->skyReady = false;
 	const bool shadowIntoAmbientLight = ambientLight && shadowApplies && !composite && !pairApply && !wouldRender(Effects.SnowAccumulation) &&
 		!TheSettingManager->SettingsMain.Main.DisableCompositeApply;
 
@@ -1132,10 +1503,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
-		else if (keepDarkening) {
-			Effects.ShadowsInteriors->skipBlur = forwardInterior && !Effects.ShadowsExteriors->Settings.Interiors.Forward.DarkeningBlur;
-			Effects.ShadowsInteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, true, SourceSurface);
-			Effects.ShadowsInteriors->skipBlur = false;
+		else if (keepDarkening && !(composite && interiorApplies)) {
+#if NVR_TEST_TOOLS
+			if (foldCheckFrame) Device->StretchRect(TheTextureManager->RenderedSurface, NULL, FoldCheckSceneSurface, NULL, D3DTEXF_NONE);
+#endif
+			interiorApply();
 		}
 	}
 
@@ -1153,7 +1525,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			bool merged = false;
 			if (AO->deferredReady) {
 				GpuProfileScope gpuMerged(mergedApplyTimer, Device);
+				Fog->compositeSkyTexture = AO->SkyTexture();
 				merged = Fog->RenderShadowAO(Device, RenderTarget, TheTextureManager->RenderedSurface, true, AO->ResultTexture());
+				Fog->compositeSkyTexture = nullptr;
 			}
 			if (!merged) {
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
@@ -1170,6 +1544,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			composite = false;
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			if (interiorApplies) interiorApply();
 			AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 	}
@@ -1187,6 +1562,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied)
 			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+#if NVR_TEST_TOOLS
+	SettingShots::CaptureStage(Device, TheTextureManager->RenderedSurface);
+#endif
 	Effects.BounceLight->deferredReady = false;
 	if (Effects.BounceLight->Enabled) {
 		static GpuTimer bounceLightTimer("Bounce light");
@@ -1207,7 +1585,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Effects.WetWorld->RenderCoverTest(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.WetWorld->MainTechnique(), false, SourceSurface);
 		// Beam march first, into its own half res buffer, so the Flashlight Combine pass can
 		// read it. Control.x already folds the effect toggle, the per view toggle and the
 		// strength together, so this one test gates the whole thing.
@@ -1265,15 +1643,26 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	{
 		GpuProfileScope gpu(fogTimer, Device);
 		Fog->compositeShadow = composite && shadowApplies;
+		Fog->compositeInteriorShadow = composite && interiorApplies;
+		const int foldRound = TheSettingManager->SettingsMain.Main.InteriorShadowFoldRound;
+		Fog->compositeRound = foldRound == 1 ? 1.0f : foldRound == 2 ? 2.0f : foldRound == 3 ? 0.0f : Fog->halfStoreMode == 2 ? 2.0f : 0.0f;
 		Fog->compositeAO = composite && AO->deferredReady;
 		Fog->compositeAOTexture = AO->ResultTexture();
+		Fog->compositeSkyTexture = Fog->compositeAO ? AO->SkyTexture() : nullptr;
 		Fog->compositeApplied = false;
 		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Fog->compositeSkyTexture = nullptr;
 		const bool applied = Fog->compositeApplied;
-		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
+#if NVR_TEST_TOOLS
+		const bool checkAO = Fog->compositeAO && applied;
+		IDirect3DTexture9* checkAOTexture = Fog->compositeAOTexture;
+		IDirect3DTexture9* checkSky = checkAO ? AO->SkyTexture() : nullptr;
+#endif
+		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = Fog->compositeInteriorShadow = false;
 		if (composite && !applied) {
 			if (shadowApplies)
 				Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			if (interiorApplies) interiorApply();
 			if (AO->deferredReady) {
 				AO->combineOnly = true;
 				AO->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
@@ -1281,6 +1670,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			}
 			Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
+#if NVR_TEST_TOOLS
+		if (foldCheckFrame && (composite ? applied : !aoApplies)) InteriorFoldSelfCheck(Device, RenderTarget, SourceSurface, checkAO, checkAOTexture, checkSky);
+#endif
 		AO->deferredReady = false;
 	}
 	{
@@ -1298,7 +1690,12 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(sandstormTimer, Device);
-		Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		if (wouldRender(Effects.Sandstorm) && Effects.Sandstorm->UseFastPath()) {
+			Effects.Sandstorm->RenderBuffers(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+			Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 5, false, SourceSurface);
+		}
+		else Effects.Sandstorm->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(godRaysTimer, Device);
@@ -1315,7 +1712,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 		{
 			GpuProfileScope gpuExposure(exposureTimer, Device);
-			Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			if (!(TheSettingManager->SettingsMain.Main.SkipIdentityExposure && Effects.Exposure->Constants.Data.y == 0.0f))
+				Effects.Exposure->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
 		{
 			GpuProfileScope gpuBloom(bloomTimer, Device);
@@ -1541,7 +1939,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	}
 	{
 		GpuProfileScope gpu(ditherTimer, Device);
-		Effects.DitherBuster->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.DitherBuster->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.DitherBuster->TechniqueIndex(), false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(smaaTimer, Device);

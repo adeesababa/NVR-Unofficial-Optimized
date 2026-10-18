@@ -15,6 +15,10 @@ public:
 		float SubpixelShift;
 		float DepthOffset;
 		float LocalContrast;
+		bool Predication;
+		float PredicationScale;
+		float PredicationStrength;
+		bool DeDither;
 	};
 	struct SMAASettingsStruct {
 		SMAASettings	Main;
@@ -25,6 +29,7 @@ public:
 		D3DXVECTOR4		Resolution;
 		D3DXVECTOR4		Data;	// x edge threshold, y relative depth threshold, z max search steps, w subpixel shift
 		D3DXVECTOR4		DepthData;	// x depth buffer texel offset
+		D3DXVECTOR4		Pred;
 	};
 	SMAAStruct Constants;
 
@@ -37,7 +42,7 @@ public:
 		bool StencilFailed = false;
 	};
 	SMAATexturesStruct	Textures;
-	CachedHandle techLuma, techColor, techDepth, techLumaDepth, techBlend, techNeighborhood;
+	CachedHandle techLuma, techColor, techDepth, techLumaDepth, techLumaDepthStable, techBlend, techNeighborhood;
 
 	void	UpdateConstants();
 	void	RegisterConstants();

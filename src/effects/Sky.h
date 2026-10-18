@@ -1,4 +1,5 @@
 #pragma once
+#include "PhysSkyModel.h"
 
 class SkyShaders : public ShaderCollection
 {
@@ -23,12 +24,14 @@ public:
 		D3DXVECTOR4		Irradiance[9];
 		D3DXVECTOR4		PhysSky = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 1.0f);
 		D3DXVECTOR4		PhysSkySun = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+		D3DXVECTOR4		IrradianceGame[9];
 	};
-	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; };
-	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f };
+	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; };
+	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f, false, false, 0.3f };
+	PhysSky::Tables physTables;
 	SkyStruct Constants;
 	bool useSunDiskColor;
-	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; };
+	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; D3DXVECTOR4 physicalMS; };
 	ProjectionInputs lastProjection = {};
 	bool lastProjectionValid = false;
 

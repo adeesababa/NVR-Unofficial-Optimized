@@ -24,6 +24,46 @@ float SpecularAA(float3 normal, float roughness) {
     return sqrt(saturate(roughness * roughness + kernel_roughness));
 }
 
+float4 TESR_PBRMath : register(c223);
+
+#ifndef PBR_SMITH_CORRELATED
+    #define PBR_SMITH_CORRELATED 0
+#endif
+#if PBR_SMITH_CORRELATED
+float SmithCorrelatedKeep(float NdotV, float roughness) {
+    const float r = max(roughness, 0.056f);
+    const float s = sqrt(clamp(NdotV, 0.02f, 1.0f));
+    const float p0 = 0.8720785f + s * (2.377077f + s * (-15.78768f + s * (20.7581f + s * (-8.469884f + s * (0.2183369f)))));
+    const float p1 = -2.350215f + s * (6.164611f + s * (12.53951f + s * (-24.69559f + s * (9.321004f))));
+    const float p2 = -4.584592f + s * (-17.91134f + s * (14.6047f + s * (0.8975321f)));
+    const float p3 = 20.67309f + s * (6.171803f + s * (-8.573712f));
+    const float p4 = -22.05094f + s * (2.260031f);
+    const float p5 = 7.527356f;
+    const float excess = p0 + r * (p1 + r * (p2 + r * (p3 + r * (p4 + r * p5))));
+    const float clampLoss = 1.0f - min(1e5f * roughness * roughness * roughness * roughness, 1.0f);
+    return 1.0f - saturate(excess * (1.0f - clampLoss * clampLoss));
+}
+#endif
+
+float DiffuseEnergyKeep(float NdotV, float roughness) {
+#if PBR_SMITH_CORRELATED == 2
+    return 1.0f + (SmithCorrelatedKeep(NdotV, roughness) - 1.0f) * TESR_PBRMath.x;
+#elif PBR_SMITH_CORRELATED
+    return SmithCorrelatedKeep(NdotV, roughness);
+#else
+    const float t = saturate((NdotV - 0.055f) * (1.0f / 0.525f));
+    const float x = saturate((0.53f - roughness) * (1.0f / 0.461f));
+    const float lowEnd = saturate((roughness - 0.02f) * (1.0f / 0.05f));
+    const float u = 1.0f - t;
+    const float excess = x * lowEnd * t * u * u * ((0.10380582f + 0.69366243f * x) + t * (0.27762281f - 0.88561283f * x));
+    return TESR_PBRMath.x > 0.5f ? 1.0f - excess * (1.0f / 0.95f) : 1.0f;
+#endif
+}
+static float PBRDiffuseKeep = 1.0f;
+void SetDiffuseEnergyKeep(float3 normal, float3 eyeDir, float roughness) {
+    PBRDiffuseKeep = DiffuseEnergyKeep(max(shades(normalize(normal), normalize(eyeDir)), 0.00001), roughness);
+}
+
 // Fresnel
 // Schlick approximation
 float3 Fresnel(float3 f0, float3 f90, float cosine) {
@@ -76,9 +116,21 @@ float3 FresnelShlick(float3 reflectance, float3 halfway, float3 eyeDir) {
 
 // BRDF
 float3 BRDF(float roughness, float3 fresnel, float NdotV, float NdotL, float NdotH){
+#if PBR_SMITH_CORRELATED
+    const float a2 = pow(roughness, 4);
+    const float lambdaV = NdotL * sqrt(NdotV * NdotV * (1 - a2) + a2);
+    const float lambdaL = NdotV * sqrt(NdotL * NdotL * (1 - a2) + a2);
+    #if PBR_SMITH_CORRELATED == 2
+        const float3 oldTerm = GGX(NdotH, roughness) * GeometryShadowing(roughness, NdotV, NdotL) * fresnel / (4.0 * NdotV * NdotL);
+        return oldTerm + (GGX(NdotH, roughness) * (0.5 / (lambdaV + lambdaL)) * fresnel - oldTerm) * TESR_PBRMath.x;
+    #else
+        return GGX(NdotH, roughness) * (0.5 / (lambdaV + lambdaL)) * fresnel;
+    #endif
+#else
     float3 num = GGX(NdotH, roughness) * GeometryShadowing(roughness, NdotV, NdotL) * fresnel;
     float denom = 4.0 * NdotV * NdotL;
     return num/denom;
+#endif
 }
 
 float3 PBRDiffuse(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
@@ -132,7 +184,7 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel);
+    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
     
     const float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
 
@@ -155,7 +207,8 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
     
     const float3 LdotR = dot(lightDir, reflectDir);
     const float3 closestPoint = reflectDir - LdotR * lightDir;
-    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + normalize(closestPoint) * radius) : reflectDir;
+    const float3 closestDir = dot(closestPoint, closestPoint) > 1e-12f ? normalize(closestPoint) : 0.0f;
+    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + closestDir * radius) : reflectDir;
     
     const float3 halfway = normalize(eyeDir + sunDir);
     const float NdotS = max(shades(normal, sunDir), 0.00001);
@@ -185,7 +238,8 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
     
     const float3 LdotR = dot(lightDir, reflectDir);
     const float3 closestPoint = reflectDir - LdotR * lightDir;
-    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + normalize(closestPoint) * radius) : reflectDir;
+    const float3 closestDir = dot(closestPoint, closestPoint) > 1e-12f ? normalize(closestPoint) : 0.0f;
+    const float3 sunDir = LdotR < dist ? normalize(dist * lightDir + closestDir * radius) : reflectDir;
     
     const float3 halfway = normalize(eyeDir + sunDir);
     const float NdotS = max(shades(normal, sunDir), 0.00001);
@@ -196,7 +250,7 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel);
+    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
     
     const float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
 

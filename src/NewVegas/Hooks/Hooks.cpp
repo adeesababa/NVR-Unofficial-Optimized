@@ -23,9 +23,11 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)Render, &RenderHook);
 	DetourAttach(&(PVOID&)ProcessImageSpaceShaders, &ProcessImageSpaceShadersHook);
 	DetourAttach(&(PVOID&)RenderWorldSceneGraph, &RenderWorldSceneGraphHook);
+	DetourAttach(&(PVOID&)RenderBlended, &RenderBlendedHook);
 	DetourAttach(&(PVOID&)RenderFirstPerson, &RenderFirstPersonHook);
 	DetourAttach(&(PVOID&)SetShaders, &SetShadersHook);
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
+	AttachGrassFirstRenderPassHook();
 	LampReachMargin = (std::max)(0.0f, TheSettingManager->GetSettingF("Main.Main.Misc", "LampReachMargin"));
 	if (LampReachMargin > 0.0f) {
 		const LONG attached = DetourAttach(&(PVOID&)BoundWithinLightRadius, &BoundWithinLightRadiusHook);
@@ -68,6 +70,7 @@ void AttachHooks() {
 		else Logger::Log("UNOFFICIAL KeepLampsInView: the call at %08X is not the game's lamp view test (another plugin?); not hooked", site);
 	}
 
+	InstallGrassFirstHooks();
 	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
 	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);
 	SafeWrite32(0x00E7624D, sizeof(RenderManager));

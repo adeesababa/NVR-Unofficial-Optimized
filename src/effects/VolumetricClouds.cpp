@@ -41,6 +41,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
+	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
 	coverage = -1.0f;
 }
 
@@ -267,17 +268,18 @@ void VolumetricCloudsEffect::UpdateConstants() {
 				lastCloudTime = now;
 				advance = 0.0f;
 			}
-			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt) {
+			else if (now - lastCloudTime > (std::max)(2.0, 4.0 * quantum) + dt / TunedClockRate) {
 				const double step = now - lastCloudTime;
 				if (step > 120.0) Logger::Log("UNOFFICIAL VolumetricClouds: the game clock moved %.2f hours at once (wait, sleep, travel): the clouds move on with it (%.0f m).", step * scale / 3600.0, step * speed);
 				advance = (float)step;
 				lastCloudTime = now;
 			}
 			else {
-				double next = lastCloudTime + dt;
+				const double realDt = dt / TunedClockRate;
+				double next = lastCloudTime + realDt;
 				if (next > now + lead) next = (std::max)(lastCloudTime, now + lead);
-				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * dt);
-				advance = (float)(next - lastCloudTime);
+				else if (next < now - lead) next += (now - lead - next) * (std::min)(1.0, 2.0 * realDt);
+				advance = (float)((next - lastCloudTime) * TunedClockRate);
 				lastCloudTime = next;
 			}
 		}
@@ -354,7 +356,10 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	ProbeLayer(Device);
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
 		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, 1); }
+	static CachedHandle fixedExitCache;
+	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
+		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
+	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, fixedExit ? 6 : 1); }
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }
 	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }
 	read = 1 - read;

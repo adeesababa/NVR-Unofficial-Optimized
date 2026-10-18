@@ -10,6 +10,7 @@ static void ReadLook(const char* section, VolumetricLightEffect::LookStruct& loo
 }
 
 void VolumetricLightEffect::UpdateSettings() {
+	ReportHistory("settings changed");
 	const char* section = "Shaders.VolumetricLight.Main";
 	ReadLook(section, Settings.Day);
 	ReadLook("Shaders.VolumetricLight.Night", Settings.Night);
@@ -45,9 +46,15 @@ void VolumetricLightEffect::RegisterTextures() {
 	Constants.GridLayout = D3DXVECTOR4((float)gw, (float)gh, 1.0f / (gw * 8), 1.0f / (gh * 8));
 }
 
-void VolumetricLightEffect::UpdateConstants() {
-	frame++;
+void VolumetricLightEffect::ReportHistory(const char* when) {
+	if (!stats.drawn) return;
+	char text[256];
+	stats.Describe(text, sizeof(text));
+	Logger::Log("UNOFFICIAL VolumetricLight temporal history (%s, Temporal %.2f): %s", when, Settings.Temporal, text);
+	stats.Reset();
+}
 
+void VolumetricLightEffect::UpdateConstants() {
 	const float day = std::clamp(TheShaderManager->GameState.isDayTime, 0.0f, 1.0f);
 	const LookStruct& d = Settings.Day;
 	const LookStruct& n = Settings.Night;
@@ -68,7 +75,7 @@ void VolumetricLightEffect::UpdateConstants() {
 	const float depth = Constants.Data.z * Constants.Data.w;
 	Constants.GridData.y = depth > 1.0e-4f ? 1.0f / (1.0f - expf(-depth)) : 1.0f;
 	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
-	Constants.GridData.x = Settings.FogVolume && fog && fog->Enabled && !fog->IsLegacy() ? 1.0f : 0.0f;
+	Constants.GridData.x = Settings.FogVolume && fog && fog->Enabled && !fog->IsLegacy() && !fog->IsClassic() && !fog->referenceTest ? 1.0f : 0.0f;
 }
 
 bool VolumetricLightEffect::ShouldRender() {
@@ -109,19 +116,23 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		gridPass(Textures.GridTempSurface, 6);
 		gridPass(Textures.GridSurface, 7);
 		haveHistory = false;
-		lastRenderedFrame = frame;
+		lastRenderedFrame = TheFrameRateManager->FrameNumber;
 		return;
 	}
 	const bool temporal = Settings.Temporal > 0.0f;
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;
 
-	bool usable = temporal && haveHistory && lastRenderedFrame + 1 == frame;
+	const UINT now = TheFrameRateManager->FrameNumber;
+	const bool drewLastFrame = lastRenderedFrame + 1 == now;
+	bool usable = temporal && haveHistory && drewLastFrame;
 	if (usable) {
 		const double dx = (double)invView._41 - lastInvView._41, dy = (double)invView._42 - lastInvView._42,
 			dz = (double)invView._43 - lastInvView._43;
 		usable = dx * dx + dy * dy + dz * dz < 500.0 * 500.0;
 	}
+	stats.Note(temporal, haveHistory, drewLastFrame, usable);
+	if (GpuTimer::Enabled && stats.drawn >= 240) ReportHistory("240 frames");
 	if (usable) {
 		const double move[3] = { (double)invView._41 - lastInvView._41, (double)invView._42 - lastInvView._42,
 			(double)invView._43 - lastInvView._43 };
@@ -136,7 +147,7 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		D3DXMatrixMultiply(&Constants.Reproject, &toLastView, &lastProj);
 	}
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
-	Constants.Data2.w = temporal ? (float)(frame % 64) : 0.0f;
+	Constants.Data2.w = temporal ? (float)(now % 64) : 0.0f;
 
 	static GpuTimer passTimers[5] = { GpuTimer("  VL composite"), GpuTimer("  VL march (half)"), GpuTimer("  VL blur X (half)"),
 		GpuTimer("  VL temporal (half)"), GpuTimer("  VL blur Y (half)") };
@@ -156,7 +167,7 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	pass(Textures.BlurSurface, 4);
 
 	haveHistory = temporal;
-	lastRenderedFrame = frame;
+	lastRenderedFrame = now;
 	lastView = view;
 	lastInvView = invView;
 	lastProj = TheRenderManager->projMatrix;

@@ -56,10 +56,13 @@ public:
 		bool Enabled;
 		bool HighQuality;
 		bool Shadows;
+		bool ShadowsAtNight;
 		bool HeightBlend;
 		float MaxDistance;
 		float Height;
 		float ShadowsIntensity;
+		bool IsoHeightTaps;
+		bool SkipEmptyLayers;
 	};
 	struct LODSettingsStruct {
 		float NoiseScale;
@@ -86,6 +89,7 @@ public:
 	struct ParallaxStruct {
 		D3DXVECTOR4     Data;
 		D3DXVECTOR4     ExtraData;
+		D3DXVECTOR4     IsoData;
 	};
 	ParallaxStruct  ParallaxConstants;
 
@@ -99,6 +103,7 @@ public:
 		float	MinPixels;
 		int		DebugView;
 		float	MaxDistance;
+		float	ShadowDrop;
 	};
 	BlendingSettingsStruct BlendingSettings = {};
 

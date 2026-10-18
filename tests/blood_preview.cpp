@@ -172,10 +172,11 @@ int main(int argc, char** argv) {
 	const std::string outDir = argv[2];
 	const bool close = argc > 3 && !strcmp(argv[3], "close");
 	TerrainMode = argc > 3 && !strcmp(argv[3], "terrain");
-	bool bars = false;
+	bool bars = false, cutsMode = false;
 	float amount = 0.75f, viscosity = 1.0f, flowSpeed = 1.0f;
 	for (int i = 3; i < argc; i++) {
 		bars |= !strcmp(argv[i], "bars");
+		cutsMode |= !strcmp(argv[i], "cuts");
 		if (!strcmp(argv[i], "norocks")) WithRocks = false;
 		sscanf_s(argv[i], "amount=%f", &amount); sscanf_s(argv[i], "visc=%f", &viscosity); sscanf_s(argv[i], "speed=%f", &flowSpeed);
 	}
@@ -302,6 +303,11 @@ int main(int argc, char** argv) {
 	vec("TESR_DepthConstants", 0, 0, 0, 1);
 	vec("TESR_CameraData", NearZ, FarZ, 0, 0);
 	vec("TESR_HorizonColor", 0.62f, 0.68f, 0.78f, 1);
+	const bool groundFit = !getenv("BLOOD_GROUND") || atoi(getenv("BLOOD_GROUND")) != 0;
+	const float poolDz = getenv("BLOOD_POOL_DZ") ? (float)atof(getenv("BLOOD_POOL_DZ")) : 0.0f;
+	vec("TESR_BloodFlowGround", groundFit ? 1.0f : 0.0f, 3.0f, 0.0f, getenv("BLOOD_UNSEEN") && atoi(getenv("BLOOD_UNSEEN")) ? 1.0f : 0.0f);
+	BloodFlowBoxes::SplatUp() = groundFit ? 1.2f + 2.4f * 1.0f : 1.0f;
+	BloodFlowBoxes::PoolUp() = groundFit ? 1.25f : 0.3f;
 
 	const D3DVERTEXELEMENT9 elements[] = {
 		{ 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -339,16 +345,17 @@ int main(int argc, char** argv) {
 	if (TerrainMode) {
 		BloodFlowBoxes::Item it = {};
 		it.Normal = D3DXVECTOR3(0, 0, 1); it.Fade = 1; it.Pool = true;
-		it.Center = D3DXVECTOR3(-80, 160, GroundZ(-80, 160) - 1.5f); it.Radius = 30; it.Seed = 0.31f; it.Slot = 10;
+		it.Center = D3DXVECTOR3(-80, 160, GroundZ(-80, 160) - 1.5f + poolDz); it.Radius = 30; it.Seed = 0.31f; it.Slot = 10;
 		items.push_back(it);
-		it.Center = D3DXVECTOR3(110, 90, GroundZ(110, 90) - 1.5f); it.Radius = 26; it.Seed = 0.77f; it.Slot = 11;
+		it.Center = D3DXVECTOR3(110, 90, GroundZ(110, 90) - 1.5f + poolDz); it.Radius = 26; it.Seed = 0.77f; it.Slot = 11;
 		items.push_back(it);
 	}
 	else {
 		BloodFlowBoxes::Item it = {};
-		it.Center = D3DXVECTOR3(-45, 228, 0); it.Normal = D3DXVECTOR3(0, 0, 1); it.Radius = 30; it.Seed = 0.31f; it.Fade = 1; it.Pool = true; it.Slot = 10;
+		it.Center = D3DXVECTOR3(-45, 228, poolDz); it.Normal = D3DXVECTOR3(0, 0, 1); it.Radius = 30; it.Seed = 0.31f; it.Fade = 1; it.Pool = true; it.Slot = 10;
 		items.push_back(it);
-		it.Center = D3DXVECTOR3(-170, 140, RampZ(Ramps[1], -170, 140) - 1.5f); it.Radius = 28; it.Seed = 0.77f; it.Slot = 11;
+		it.Center = D3DXVECTOR3(-170, 140, RampZ(Ramps[1], -170, 140) - 1.5f + poolDz); it.Radius = 28; it.Seed = 0.77f; it.Slot = 11;
+		if (getenv("BLOOD_POOL_STEEP") && atoi(getenv("BLOOD_POOL_STEEP"))) it.Center = D3DXVECTOR3(195, 175, RampZ(Ramps[0], 195, 175) - 1.5f + poolDz);
 		items.push_back(it);
 	}
 	int passes = 0, pathIndex = 0;
@@ -494,6 +501,30 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	if (cutsMode) {
+		const char* tag = getenv("BLOOD_TAG") ? getenv("BLOOD_TAG") : "x";
+		const bool nearCam = getenv("BLOOD_CAM") && !strcmp(getenv("BLOOD_CAM"), "near");
+		const Camera cam = !nearCam ? camA : TerrainMode ? MakeCamera(D3DXVECTOR3(95, 20, GroundZ(95, 20) + 75), 12.0f, 38.0f)
+			: MakeCamera(D3DXVECTOR3(-60, 170, 80), -15.0f, 8.0f);
+		if (nearCam) { if (renderScene(cam)) return 1; for (int i = 0; i < ItemMax; i++) written[i] = -10; for (int i = 0; i < 4; i++) if (frame(cam, 0.0f, 0, false)) return 1; }
+		for (int pass = 0; pass < 2; pass++) {
+			BloodFlowBoxes::SplatUp() = groundFit || pass ? 1.2f + 2.4f * 1.0f : 1.0f;
+			if (frame(cam, 12.0f, pass ? 2.0f : 0.0f, true)) return 1;
+			char name[512];
+			std::snprintf(name, sizeof(name), "%s\\cuts_%s%s_%s%s.png", outDir.c_str(), TerrainMode ? "terrain" : "room", nearCam ? "_near" : "", tag, pass ? "_debug" : "");
+			CHECK(D3DXSaveSurfaceToFileA(name, D3DXIFF_PNG, image, NULL, NULL));
+			std::printf("%s\n", name);
+		}
+		BloodFlowBoxes::SplatUp() = groundFit ? 1.2f + 2.4f * 1.0f : 1.0f;
+		if (stamp[0] && disjoint && frequency) {
+			for (int i = 0; i < 200; i++) if (frame(cam, 12.0f, 0, true)) return 1;
+			timing = true; probeMs = boxMs = 0.0;
+			for (int i = 0; i < 200; i++) if (frame(cam, 12.0f, 0, true)) return 1;
+			std::printf("CUTS COST %s: probe + bounds %.4f ms, boxes (paint, shapes) %.4f ms\n", tag, probeMs / 200.0, boxMs / 200.0);
+			timing = false;
+		}
+		return 0;
+	}
 	if (TerrainMode) {
 		int sloped = 0, running = 0;
 		for (const auto& it : items) {

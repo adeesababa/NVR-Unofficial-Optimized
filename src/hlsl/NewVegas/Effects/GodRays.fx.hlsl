@@ -213,6 +213,26 @@ technique
 float4 NVR_GodRaysLayout;
 sampler2D NVR_GodRaysBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
+float4 NVR_GodRaysSkip;
+float4 NVR_GodRaysReduce;
+sampler2D NVR_GodRaysMax : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+bool GodRaysEmpty() {
+	return NVR_GodRaysSkip.x > 0.5f && tex2Dlod(NVR_GodRaysMax, float4(0.5f, 0.5f, 0.0f, 0.0f)).r <= 0.0f;
+}
+
+float4 MaxReduce(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	const float2 origin = floor(vpos) * 8.0f + 0.5f;
+	float m = 0.0f;
+	[unroll] for (int y = 0; y < 8; y++) {
+		[unroll] for (int x = 0; x < 8; x++) {
+			const float3 c = tex2Dlod(NVR_GodRaysBuffer, float4((origin + float2(x, y)) * NVR_GodRaysReduce.xy, 0.0f, 0.0f)).rgb;
+			m = max(m, max(c.r, max(c.g, c.b)));
+		}
+	}
+	return float4(m, m, m, 1.0f);
+}
+
 VSOUT HalfVS(VSIN IN) {
 	VSOUT OUT = FrameVS(IN);
 	OUT.UVCoord += 0.5 * (NVR_GodRaysLayout.zw - TESR_ReciprocalResolution.xy);
@@ -263,6 +283,7 @@ float4 DedicatedLightMask(VSOUT IN) : COLOR0 {
 }
 
 float4 DedicatedRadialBlur(VSOUT IN, uniform float step, uniform float storeAttenuation) : COLOR0 {
+	[branch] if (GodRaysEmpty()) return float4(0.0f, 0.0f, 0.0f, 1.0f);
 	float2 uv = IN.UVCoord - 0.5 * TESR_ReciprocalResolution.xy;
 
 	float2 sunPos = projectPosition(TESR_ViewSpaceLightDir.xyz * farZ).xy;
@@ -289,8 +310,10 @@ float4 DedicatedRadialBlur(VSOUT IN, uniform float step, uniform float storeAtte
 
 float4 DedicatedCombine(VSOUT IN) : COLOR0
 {
-	float4 color = linearize(tex2D(TESR_RenderedBuffer, IN.UVCoord));
+	float4 source = tex2D(TESR_RenderedBuffer, IN.UVCoord);
 	float4 rays = tex2D(NVR_GodRaysBuffer, IN.UVCoord);
+	[branch] if (NVR_GodRaysSkip.y > 0.5f && !any(rays.rgb)) return float4(source.rgb, 1.0f);
+	float4 color = linearize(source);
 
 	float3 sunColor = GetSunColor(shade(TESR_SunDirection.xyz, blue.xyz), 1, TESR_SunAmount.x, TESR_SunColor.rgb, TESR_SunsetColor.rgb);
 	float3 godRayColor = linearize(TESR_GodRaysRayColor).rgb;
@@ -311,4 +334,19 @@ technique DedicatedGodRays
 	pass Blur2 { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedRadialBlur(stepLength * stepLength, 0); }
 	pass Blur3 { VertexShader = compile vs_3_0 HalfVS(); PixelShader = compile ps_3_0 DedicatedRadialBlur(stepLength * stepLength * stepLength, 1); }
 	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
+}
+
+technique GodRaysMaxReduce
+{
+	pass Reduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 MaxReduce(); }
+}
+
+float4 IdleTest(VSOUT IN) : COLOR0 {
+	clip(tex2Dlod(NVR_GodRaysMax, float4(0.5f, 0.5f, 0.0f, 0.0f)).r - NVR_GodRaysSkip.z);
+	return float4(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+technique GodRaysIdleTest
+{
+	pass Test { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 IdleTest(); }
 }

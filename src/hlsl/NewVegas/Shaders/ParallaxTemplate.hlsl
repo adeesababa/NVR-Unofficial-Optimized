@@ -116,6 +116,9 @@
 #if defined(PS) && RMAOS_ON && !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
     #define RMAOS
 #endif
+#if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
+    #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON
+#endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
 
@@ -483,6 +486,7 @@ PS_OUTPUT main(PS_INPUT IN)
             RmaosRead(offsetUV.xy);
         #endif
         float roughness = getRoughness(normal.a);
+        SetDiffuseEnergyKeep(normal.xyz, IN.viewDir.xyz, roughness);
     
         #if !defined(DIFFUSE) && !defined(POINT)
             if (TESR_ParallaxData.y)

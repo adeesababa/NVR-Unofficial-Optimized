@@ -17,6 +17,8 @@ public:
 	IDirect3DSurface9*	bufferSurface[2] = {};
 	bool				buffersTried = false;
 	CachedHandle		paramLayout, paramFlags, paramTemporal, paramReproject;
+	CachedHandle		paramScene;
+	D3DXVECTOR4			sceneLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
 	IDirect3DTexture9*	historyTexture[2] = {};
 	IDirect3DSurface9*	historySurface[2] = {};
 	IDirect3DTexture9*	occlusionHistory[2] = {};
@@ -39,6 +41,7 @@ public:
 	IDirect3DSurface9*	gridGeometrySurface = nullptr;
 	CachedHandle		paramGridStep, paramGridShift, paramGridScreen;
 	float				gridScreenStrength = 6.0f;
+	float				gridColour = 0.25f;
 	IDirect3DTexture9*	gridScreen[2] = {};
 	IDirect3DSurface9*	gridScreenSurface[2] = {};
 	IDirect3DTexture9*	gridScreenColor[2] = {};

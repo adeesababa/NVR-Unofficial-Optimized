@@ -120,7 +120,7 @@ float Phase(float cosT, float g) {
 	return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
 }
 
-float4 MarchRay(float3 dir, float jitter, float stepScale) {
+float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = false) {
 	float steps = max(Steps * stepScale, 4.0);
 	float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
 	float baseAbove = max(Base - camera.z, 50.0);
@@ -162,8 +162,8 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	float3 scattered = 0.0;
 	float transmittance = 1.0;
 	float depthSum = 0.0, depthWeight = 0.0;
-	[loop] for (float i = 0.0; i < 64.0; i += 1.0) {
-		if (i >= steps || transmittance < 0.01) break;
+	[loop] for (float i = 0.0; i < 64.0 && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+		if (!fixedExit && (i >= steps || transmittance < 0.01)) break;
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
@@ -205,11 +205,11 @@ float4 MarchRay(float3 dir, float jitter, float stepScale) {
 	return float4(scattered, transmittance);
 }
 
-float4 MarchPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+float4 MarchPS(VSOUT IN, float2 vpos : VPOS, uniform bool fixedExit) : COLOR0 {
 	float2 pixel = vpos * 2.0 + TESR_CloudsBlocks.zw;
 	float2 uv = (pixel + 0.5) * LowTexel;
 	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
-	return MarchRay(normalize(toWorld(uv)), jitter, 1.0);
+	return MarchRay(normalize(toWorld(uv)), jitter, 1.0, fixedExit);
 }
 
 float4 CatmullRom(float2 uv) {
@@ -406,7 +406,7 @@ technique Composite {
 technique March {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 MarchPS();
+		PixelShader = compile ps_3_0 MarchPS(false);
 		Texture[6] = <NoTexture>;
 	}
 }
@@ -437,5 +437,13 @@ technique LayerProbe {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 LayerProbePS();
+	}
+}
+
+technique MarchFixedExit {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 MarchPS(true);
+		Texture[6] = <NoTexture>;
 	}
 }

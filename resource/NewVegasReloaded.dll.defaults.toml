@@ -76,6 +76,7 @@ ScreenshotKey = 87          # Keycode for custom screenshot hotkey (removes HUD 
 HDRScreenshot = false       # Save screenshots in fbx (use with DXVK HDR)
 PresetManagerEnabled = false # Master toggle for automatic per-location Preset Manager resolution. Off = your own settings are authoritative; Save/Load/Delete in the Preset Manager panel still work. Defaults off: it silently wins the location-based settings that third-party tools like Cartographer -- which this feature supersedes -- also try to control, so turn it on deliberately once you're not running one of those alongside it.
 MoreLampsPerObject = true    # UNOFFICIAL (2026-10-13), needs a restart: the game lit most shiny surfaces indoors (anything with a specular map) with at most 2-3 lamps each and dropped the rest; which ones it kept changed as you moved, so lamp light popped on and off whole wall and floor pieces. On: up to 6, like the game's other many-lamp passes. A little more GPU time where many lamps overlap. Off = the game's limit.
+LampsInOnePass = false       # UNOFFICIAL, TEST (2026-10-18), live: shiny surfaces lit by 3-5 lamps (most lit walls and floors indoors) are drawn in ONE pass with all their lamps, as the game already does for 2 lamps, instead of 5-7 passes (base, extra lamps, texture, highlights, fog). With linear lighting each extra pass was added in the stored curve (too bright, a hazy look); in one pass the lamps add up exactly, so these surfaces come out darker and more contrasty. Far fewer draws, but measured SLOWER on the graphics card in the Ultra-Luxe (about +1 ms: the one many-lamp pass costs more than the passes it replaces); about the same in a casino. Needs MoreLampsPerObject (it holds the lamps; without it this stays off). Off = the game's choice.
 LampReachMargin = 16.0       # UNOFFICIAL, BUG FIX (2026-10-13), needs a restart: game units (about 70 to a metre). The game lights an object with a lamp only while the lamp's reach touches the object; fire lights flicker and move a few units, so a lamp at the edge of an object's reach switched on and off every frame and its light and shadow flickered over whole walls and floors. The object counts this much larger, so a lamp at the edge stays. Its light is already zero there, so nothing else changes. 0 = as before.
 
 [_Main.Main.Performance]
@@ -86,15 +87,33 @@ ShaderWarmUp = false        # UNOFFICIAL, EXPERIMENTAL (did not remove the hitch
 HiddenObjectCulling = false # UNOFFICIAL, EXPERIMENTAL (2026-10-11): indoors the game draws most objects several times (the base pass, then extra passes for more lamps and shine). An object that was completely covered by other things a few frames ago gets only its base pass; its extra passes are skipped. Mostly saves CPU (about 0.5 ms in the Rivet City hangar), so it shows most where the CPU limits the frame rate. Worst case: an object that has just come out from behind something misses its extra lamp light for a few frames; answers from before a fast camera turn or move are never used. Live: F10 logs a HIDDEN OBJECT CULLING line. Was FNVProbe's culling version 2.
 LampScissor = true          # UNOFFICIAL (2026-10-11): the passes that add an extra lamp's light to an object (indoors) are drawn only inside the screen rectangle that lamp's light can reach, instead of over the whole object. A lamp only lights up to its radius, so nothing outside the rectangle changes. Same picture, less work for the graphics card in lamp-lit interiors. Live: F10 logs a LAMP SCISSOR line. Turn off if lamp light ever looks cut off along a straight line.
 TrimLampPasses = true       # UNOFFICIAL (2026-10-11): indoors the game adds each extra lamp's light in its own pass over the whole object, even where that lamp cannot reach. Those pixels add exactly nothing; now they are dropped instead of being blended in. Same picture, less work for the graphics card in lamp-lit interiors. Live. Turn off if anything indoors ever looks different.
+LampPassTestSkip = 0        # UNOFFICIAL DIAGNOSTIC (test builds): skips the passes a merged lamp pass would replace, THE PICTURE IS WRONG while on. 1 the extra lamp passes, 2 the highlight passes, 3 both. Keep 0
+LampPassOrderLog = 0        # UNOFFICIAL DIAGNOSTIC (test builds): log the order of the world's draw passes for N frames. Keep 0
 HiddenObjectCullingMaxAge = 4 # UNOFFICIAL: how old (in frames, 1-7) a 'was it covered' answer from the graphics card may be and still be used by HiddenObjectCulling. The card answers 2-4 frames late when it is busy; lower = fewer skips but less chance of a late light. Live.
 FrameChain = true           # UNOFFICIAL: effects alternate between two buffers instead of copying the whole frame after every effect. Faster, identical image. Applies immediately.
 CompositeApply = true       # UNOFFICIAL: apply exterior sun shadows and ambient occlusion inside the fog pass instead of in their own full-screen passes (with AmbientLight on, the sun shadows inside its passes). Faster, same result. Applies immediately.
 ChainUsesGameTexture = true # UNOFFICIAL: use the game's own frame as one of the effect chain's two buffers, avoiding whole-frame copies at the start and end of each chain. Needs FrameChain. Applies immediately.
 MergedDepthNormals = false  # UNOFFICIAL, EXPERIMENTAL, keep off: reconstruct normals in the depth pass instead of a separate full-screen pass. On a GTX 1070 (native D3D9) the driver silently skips this draw, so depth and normals stop updating (wrong AO, fog, god rays, SMAA). Since P40 it checks itself the first time it runs: the log line 'UNOFFICIAL merged depth/normals check' says whether the driver really drew it, and if it did not, the switch turns itself off until the game is restarted (separate passes, correct image). Applies immediately.
+SkipIdentityExposure = true # UNOFFICIAL (2026-10-17): skip the exposure pass while its MaxBrightness is 0 (the Night default): the pass then hands the picture back unchanged (a full-screen read and write for nothing, 0.15 ms). Same picture. Applies immediately.
+LampMaskScissor = true   # UNOFFICIAL (2026-10-18), on: in-game check 330 scissored checks, 0 differing values in the skipped area, 28 inside at 1/65535 (same shader both ways): the lamp light mask (the point-shadow pass, run every frame outdoors and indoors) is drawn only inside the screen rectangle its lamps' light can reach, and not at all when no lamp reaches the screen (open country by day, lamps behind you); everywhere else it would write 0, which the buffer's clear already holds (up to about 0.15-0.37 ms at 1440p). Same picture. Applies immediately.
+InteriorShadowFold = false # UNOFFICIAL (2026-10-18), off: indoors with the lamp shadows drawn on each object (Shadows Interiors > Forward, KeepDarkening on, DarkeningBlur off), applies the darkening of what no tracked lamp reaches inside the fog pass instead of in its own full-screen pass (F10 'Interior shadow apply'): -0.24 ms in the casino, -0.33 ms pass in the Ultra-Luxe (the fog pass +0.07 / +0.15). Same function, rounded the way the separate pass's 16-bit frame stores it (measured once per GPU). Off because a same-frame check (InteriorShadowFoldCheck) still finds a few pixels next to the void (gaps in a ceiling, the far plane) differing by a few 16-bit steps: about 50 pixels a frame in the casino, invisible but not bit for bit. Not while an effect between them reads the picture. Applies immediately.
+InteriorShadowFoldRound = 0 # UNOFFICIAL DIAGNOSTIC: leave 0 (InteriorShadowFold rounds as this GPU stores 16-bit floats, measured once at the first interior: round toward zero on a GTX 1070). 1 = no rounding, 2 = round toward zero, 3 = round to nearest even: test only.
+CubeFaceCopySkip = false # UNOFFICIAL (2026-10-18, off): with RedrawActorsOnly, a lamp cube face no moving caster reaches that still holds its walls-and-furniture copy is not copied again. Exact, but it saved nothing in the casino (people and wind-moved plants reach almost every face: 0 faces skipped per frame). Applies immediately.
+CubeFaceCopySkipCheck = 0 # UNOFFICIAL DIAGNOSTIC (development builds only, release builds ignore it): leave 0. N = every Nth frame up to two lamp cube faces that CubeFaceCopySkip left alone are read back and compared bit for bit with the static face they should equal (logged as CUBE FACE CHECK). Stalls the GPU.
+CubeFaceViewCull = true # UNOFFICIAL (2026-10-18): indoors, a lamp whose shadow is redrawn every frame anyway (people or wind-moved plants in its reach, or a flickering light that moves) no longer draws the faces of its shadow cube map that no pixel on screen can look up (its reach wholly outside the view, with a margin; within 100 units of the camera always drawn). Those faces are drawn again as soon as they can be seen, and in full before the lamp's shadow is kept. Casino: F10 'Point shadow cubemaps' 2.04 -> 1.29 ms, frame -0.68 ms (-0.75 with people moving). Same picture (a test that fills the left-out faces with shadow showed nothing). Applies immediately.
+CubeFaceViewCullCheck = 0 # UNOFFICIAL DIAGNOSTIC (development builds only, release builds ignore it): leave 0. 1 = the faces CubeFaceViewCull leaves out are filled with "everything in shadow" instead of being left alone, so a face that is looked up after all shows as a dark area (test only: changes the picture where the culling would be wrong).
+InteriorShadowFoldCheck = 0 # UNOFFICIAL DIAGNOSTIC (development builds only, release builds ignore it): leave 0. N = every Nth frame in which InteriorShadowFold would apply, the frame is drawn the old way (separate pass) and the folded fog pass is drawn as well from the same input into a spare target; both are read back and compared bit for bit (logged as INTERIOR SHADOW FOLD CHECK). Stalls the GPU.
+FogReferenceTest = 0 # UNOFFICIAL DIAGNOSTIC (2026-10-18, development builds only, release builds ignore it): leave 0. 1 = the volumetric fog is drawn with the original NVR fog's own shader (upstream master, technique FogReference) at full resolution in one pass, with the sun shadow and AO applies as passes of their own, as the original drew it: to compare ClassicLook with it on the same frame.
+LampMaskScissorCheck = 0 # UNOFFICIAL DIAGNOSTIC (development builds only, release builds ignore it): leave 0. 1 = every 8th frame in which LampMaskScissor cut the lamp mask, the result is read back and compared with the whole pass drawn as before (logged as LAMP MASK CHECK; the frame then uses the whole pass). Stalls the GPU.
 SlimDepthBuffer = true      # UNOFFICIAL: store the effects' depth buffer as one 32-bit channel instead of two (the second is recomputed exactly), halving depth reads in every effect. Requires a game restart.
 ReShadeDepthCompat = false  # UNOFFICIAL (2026-10-11), for ReShade users: keep the game's depth buffer attached while NVR's effects draw (they normally detach it briefly), and give up the two speedups that need it detached (the low-resolution two-target fog pass and SMAA's own stencil). Turns itself on while ReShade is loaded, whatever this says; set it only to try it without ReShade. Applies immediately.
-ReShadeNVRDepth = true      # UNOFFICIAL (2026-10-15), only does something with ReShade loaded (as d3d9.dll): ReShade's depth buffer becomes a copy of NVR's, which holds your first-person gun and arms as well as the world (the game's own depth buffer loses them before they are drawn, so ReShade's depth effects shaded and blurred across them). Same direction as the game's depth buffer, so your RESHADE_DEPTH_INPUT settings stay as they are. Off: ReShade's Generic Depth picks the game's depth buffer as before. Applies immediately.
-ReShadeBeforeHUD = true     # UNOFFICIAL (2026-10-15), only does something with ReShade loaded (as d3d9.dll): ReShade's effects are drawn right after NVR's, before the HUD, Pip-Boy and menus, instead of over them. Off: ReShade draws at the end of the frame as before. Applies immediately.
+ReShadeNVRDepth = true      # UNOFFICIAL (2026-10-15; 2026-10-18 also with ReShade as a Vulkan layer under DXVK), only does something with ReShade loaded: ReShade's depth buffer becomes a copy of NVR's, which holds your first-person gun and arms as well as the world (the game's own depth buffer loses them before they are drawn, so ReShade's depth effects shaded and blurred across them). Same direction as the game's depth buffer, so your RESHADE_DEPTH_INPUT settings stay as they are. Off: ReShade's Generic Depth picks the game's depth buffer as before. Applies immediately.
+ReShadeBeforeHUD = true     # UNOFFICIAL (2026-10-15), only does something with ReShade loaded as d3d9.dll (not as a Vulkan layer): ReShade's effects are drawn right after NVR's, before the HUD, Pip-Boy and menus, instead of over them. Off: ReShade draws at the end of the frame as before. Applies immediately.
+ReShadeDepthNearRemap = true # UNOFFICIAL (2026-10-18), with ReShadeNVRDepth: your first-person gun and arms sit closer than the world's near plane, so in ReShade's depth they came out as values past the nearest possible depth, which ReShade's depth decoding turns into negative distances (depth effects then misread or ignore the gun). On: only the depth of things closer than about twice the near plane (the gun, arms, a wall right in front of your face) is folded back into the valid range, keeping its order; every other pixel of the world is handed over exactly as before. Off: handed over unchanged. Applies immediately. (Map adapted from NVR Depth Bridge, MIT.)
+ReShadeMenuGuard = false    # UNOFFICIAL (2026-10-18), for ReShade users: pause the ReShade effect files listed in ReShadeMenuGuardEffects while a menu or the Pip-Boy is open (for example lighting or depth-of-field effects that look wrong over menus). Only effects you have switched on are paused, they come back by themselves when the menu closes, and your ReShade preset is never changed. Applies immediately. (Idea from NVR Depth Bridge, MIT.)
+ReShadeMenuGuardEffects = "" # UNOFFICIAL (2026-10-18), for ReShadeMenuGuard: the ReShade effect file names to pause, separated by commas, exactly as ReShade lists them (for example "MXAO.fx, DisplayDepth.fx"). Empty: nothing is paused. Applies immediately.
+ReShadeMenuGuardVATS = false # UNOFFICIAL (2026-10-18), for ReShadeMenuGuard: also pause them in VATS. Off: VATS keeps them (the world is still shown there). Applies immediately.
+ReShadeDepthCheck = 0       # UNOFFICIAL DIAGNOSTIC (development builds only, release builds ignore it): leave 0. 1 = every 64th frame the depth handed to ReShade is made with and without ReShadeDepthNearRemap and both are compared in the log ('UNOFFICIAL ReShade depth check' lines; stalls the GPU). 2 = ReShadeMenuGuard acts as if a menu were open (for the auto-test, whose pictures cannot be taken in real menus). 3 = both.
 WorldSceneGuard = true      # UNOFFICIAL: if the game stops rendering the world scene for 10 frames in a row (seen once after loading a save directly into an interior, where the image comes out almost black), skip NVR's effects until it starts again instead of running them on a stale depth buffer. Applies immediately.
 
 [_Main.Main.Quality]
@@ -104,6 +123,7 @@ MaxQuality = false        # UNOFFICIAL (2026-10-15), FOR SCREENSHOTS, needs a re
 GodRaysLowRes = false       # UNOFFICIAL, CHANGES THE IMAGE: compute god rays at quarter instead of half resolution (4x fewer pixels). Rays get softer; thin shafts through foliage may shimmer when moving. Applies immediately.
 AOLowRes = false            # UNOFFICIAL, CHANGES THE IMAGE: compute ambient occlusion at quarter instead of half resolution (4x fewer pixels). Corner shading gets softer and loses small creases; may look blotchier. Applies immediately.
 PointShadowInterval = 1     # UNOFFICIAL, CHANGES THE IMAGE (only when above 1): redraw each point-light shadow cubemap (interiors, and exteriors with point shadows on) every N frames instead of every frame, 1-4. 1 = every frame, the original behaviour (the default since P49; earlier builds defaulted to 2). Each light's cubemap is redrawn at once when its light, position, radius or cell changes, and lights that only reach still objects keep their cubemap at any setting; in between, people and doors moving through the light cast shadows that lag up to N-1 frames, which can look like stuttering or flickering shadows on moving people. 2 cut the F10 'Point shadow cubemaps' timer by roughly 40% in one interior (about 1.2 ms GPU and 0.9 ms CPU, measured before P44 made still lights free). Applies immediately.
+LampShadowMoveTolerance = 0.0 # UNOFFICIAL, CHANGES THE IMAGE (only above 0), indoors with the per-object lamp shadows: a lamp that moves less than this many units from where its shadow cube map was drawn (flickering fire lights jitter by about 0.6 units a frame, up to ~16 from where they started) keeps that cube map and casts its shadows from that point, instead of redrawing the whole cube map every frame. Shadows of such lights then hold still while the light flickers. Casino at 16: 'Point shadow cubemaps' -0.47 ms, frame -0.37 ms (7 fire lights). 0 = off (as before). Applies immediately.
 CheapReflections = false    # UNOFFICIAL, CHANGES THE IMAGE: draw the water reflection map without NVR's per-object sun shadows and without terrain parallax, like the original game's reflections. Objects and ground seen IN the water lose their sun shadows and bumpy terrain detail; the game blurs the reflection, so the difference is usually small. Only matters where water is in view and the game reflects objects (bUseWaterReflections... in FalloutPrefs.ini). F10 timer: 'Water reflections (game)'. Applies immediately.
 CheapUnderwaterTerrain = false # CHANGES THE IMAGE: ground below the water surface (lake and river beds, and everything when you are underwater) is drawn without terrain parallax (the fake 3D bumps) and its small shadows; you see that ground through moving, murky water. Only near water; dry ground keeps full parallax. Removes most of the frame-rate drop when wading or swimming (the terrain shader measured 51-78% cheaper on submerged ground; in one test standing in the Potomac, terrain cost 5.6 ms). Applies immediately.
 ParallaxLite = false         # UNOFFICIAL, CHANGES THE IMAGE (slightly): cheaper parallax (the fake 3D bumps) on the ground and on objects that have it (many rocks, cliffs and walls). 8 search steps and one quick correction step at the found spot instead of 16 steps plus a second fine search; on the ground also 2 small-shadow samples instead of 4. The bumps can sit very slightly differently, most at grazing angles. In game (GTX 1070, 1440p): open desert terrain 3.7 -> 2.6 ms (about 81 -> 89 fps); rocky desert with many blended ground textures terrain 6.2 -> 4.1 ms (about 65 -> 73.5 fps). Switching it on also sets Shaders > Terrain > Parallax > MaxDistance once to 1024 units (about 15 m) at 1440p, 768 at 1080p, 1536 at 4K (only if it was longer), where the bumps are only a few pixels tall; that saved another 0.8 ms with no visible change. MaxDistance stays yours to change afterwards: raise it there for longer bumps and it is kept. Overrides HighQuality while on. Was TerrainParallaxLite in P60 (a saved value carries over). Applies immediately.
@@ -156,6 +176,12 @@ TextSize = 22                           # Font size for normal text.
 TextSizeStatus = 12                     # Font size for enabled/disabled text.
 TitleColumnSize = 850                   # Custom size for title column.
 
+[_Main.Menu.NewInPatch]
+NewSince = "2026-10-16"      # UNOFFICIAL, hidden in the menu and read from this file only (never saved to your own settings): the menu tab "New in this patch" lists every setting whose description in this file holds a date (like "(2026-10-17)") on or after this day. It is the day after the last release played (P80 update 3, 2026-10-15). Change it here when a new patch ships. Empty = no date rule.
+NewInclude = "Shaders.Grass.NewGrass.*, Shaders.AmbientOcclusion.GTAO.*, Shaders.AmbientOcclusion.Skylighting.*, Shaders.Cloth.Main.*, Shaders.Sandstorm.Main.*, Shaders.Sandstorm.Status.*, Main.Main.Performance.CubeFaceCopySkipCheck, Main.Main.Performance.CubeFaceViewCullCheck, Main.Main.Performance.InteriorShadowFoldCheck, Main.Main.Performance.InteriorShadowFoldRound, Main.Main.Performance.LampMaskScissorCheck, Main.Main.Performance.LampPassOrderLog, Main.Main.Performance.LampPassTestSkip, Main.Main.Performance.ReShadeDepthCheck, Main.Main.ReducedQuality.LampShadowMoveTolerance, Shaders.BloodFlow.Main.GroundTestUnseen, Shaders.ContactHardening.Main.AtNight, Shaders.DitherBuster.Main.DeDither, Shaders.DitherBuster.Main.DebugView, Shaders.DitherBuster.Main.GateSoftness, Shaders.GodRays.Main.ProbeLog, Shaders.GodRays.Main.SkipIdle, Shaders.PBR.Main.SmithCorrelatedTest, Shaders.Precipitations.Main.SkipHiddenLayers, Shaders.SMAA.Main.DeDither, Shaders.SMAA.Main.Predication, Shaders.SMAA.Main.PredicationScale, Shaders.SMAA.Main.PredicationStrength, Shaders.ShadowsExteriors.Main.SkipWhenFaded, Shaders.ShadowsExteriors.Main.SkipWhenFadedCheck, Shaders.ShadowsExteriors.Ortho.ProbeDump, Shaders.ShadowsInteriors.Main.ContactDistance, Shaders.ShadowsInteriors.Main.ContactLength, Shaders.ShadowsInteriors.Main.ContactThickness, Shaders.Sky.Physical.ExactSunlight, Shaders.Sky.Physical.GroundAlbedo, Shaders.Sky.Physical.MultipleScattering, Shaders.SkyDither.Main.Pattern, Shaders.Terrain.Blending.ShadowDrop, Shaders.Terrain.Parallax.IsoHeightTaps, Shaders.Terrain.Parallax.ShadowsAtNight, Shaders.Terrain.Parallax.SkipEmptyLayers" # UNOFFICIAL, hidden: settings that are new in this patch but whose description has no date. Section.Key, or Section.* for a whole section (comma separated). Rewrite it with NewSince for each patch.
+NewExclude = ""              # UNOFFICIAL, hidden: settings the date rule would list that should stay out of the tab (same format as NewInclude).
+NewDiagnostics = ""          # UNOFFICIAL, hidden: extra settings to put under the tab's collapsed Diagnostics group (same format). Keys ending in Check, Log, Probe, DebugView and descriptions that say diagnostic or test only go there already.
+
 [_Main.SleepingMode.Main]
 Enabled = false                         # Custom camera animation when player character goes to sleep.
 Mode = 0
@@ -196,6 +222,29 @@ Range = 30.0                            # Distance for sampling. Larger values c
 Samples = 5                             # Not used (currently hardcoded).
 StrengthMultiplier = 1.0                # Global AO strength/darkness multiplier.
 
+[_Shaders.AmbientOcclusion.GTAO]
+Enabled = false                      # UNOFFICIAL (2026-10-16): ground-truth ambient occlusion (GTAO, Jimenez et al. 2016) instead of the old SSAO: open flat ground is no longer greyed, corners and creases darken by how closed they really are, no halo round things in front. Uses the same Range, strength and fade settings. Applies immediately
+MaxRadius = 64.0                     # [4-256] Largest search radius on screen, in pixels (close up the Range would cover half the screen)
+
+[_Shaders.AmbientOcclusion.Skylighting]
+Enabled = false                        # UNOFFICIAL (2026-10-17, new): outdoors, the sky's light is taken away where something above blocks the sky: under roofs, porches, bridges, overhangs and at the foot of cliffs. Uses a top-down map of the world round you and needs the ambient occlusion on. Version 2 takes away only the sky's share of the light, so sunlit spots keep their sunlight.
+Version = 2                            # UNOFFICIAL 2026-10-17: 2 = the sky's share only, its own clean and rarely redrawn map, quarter resolution (about 0.1-0.2 ms); 1 = the first version (darkens through the ambient occlusion, whole pixel, map redrawn every 4th frame).
+Strength = 1.0                         # [0.0-1.0] How much of the blocked sky light is taken away.
+Distance = 800.0                       # [64-4000] How far (game units) to look for something above. Larger: big overhangs and cliffs count from further away; smaller: only close cover. (Version 1 was tuned at 600.)
+ShareApply = true                      # Version 2: take away only the sky's share of the light (false: the whole pixel, as a comparison).
+OpenThreshold = 0.85                   # [0.5-1.0] Version 2: a spot that sees at least this much of the sky counts as open (no change), so open ground next to buildings keeps its light. 1.0: every bit of blocked sky counts.
+DepthNormals = false                   # Version 2: work out the surface's slope from the depth (false: from the normals buffer, which is wrong on some road meshes and ground stains).
+OwnProjection = false                  # Version 2: draw its top-down map with its own straight-down projection round you (false: the rain map's projection).
+AmbientScale = 1.0                     # [0-10] Version 2: how strong the sky light is against the sun when the sky's share is worked out. Higher: sunlit surfaces under partial cover darken more.
+CleanMap = true                        # Version 2: the top-down map takes leaves and fences with their holes and leaves out see-through effects (dust devils, glass), which would block the sky over open ground.
+MapRefresh = 60                        # [1-100000] Version 2: frames between redraws of the top-down map while you stand still (cells that stream in). It is also redrawn when you move MoveRefresh units.
+MoveRefresh = 200.0                    # [1-100000] Version 2: how far (game units) you move before the top-down map is redrawn.
+SoftWidth = 40.0                       # [1-500] Version 2: how soft (game units) the edge of cover is in the test (against hard steps).
+DebugView = 0                          # Version 2, test views: 1 sky visibility, 2 the sky's share of the light, 3 the final darkening, 4 'covered' (something above the point in the map). 0 = off.
+
+[_Shaders.AmbientOcclusion.FastPaths]
+Enabled = true                         # UNOFFICIAL (2026-10-17): the same ambient occlusion for less GPU time outdoors: sky and distant pixels really skip the occlusion samples and both blurs (the shader compiler had turned that early exit into work every pixel did). Off = the original passes. Applies immediately
+
 [_Shaders.AmbientOcclusion.Status]
 Enabled = true                          # Shadows based on object proximity/creases for more realistic light contribution.
 
@@ -212,8 +261,9 @@ GridSteps = 8                       # [1-16] How many cells the light spreads fr
 GridSpread = 0.3                    # [0-0.6] How much light passes on from cell to cell each step.
 GridScreenStrength = 6.0            # [0-40] Indoors and at night (no sun): how strongly the light surfaces show on screen (lamps, neon, fire) feeds the grid. It remembers what it saw, so the bounce stays when you turn away.
 GridBlocking = 1.0                  # [0-4] How much walls and other surfaces stop the grid's light passing through them (0: light leaks through everything).
+GridColour = 0.25                   # [0-1] UNOFFICIAL (2026-10-18): how much of the colour of what lights the room the bounce light carries (1: all of it - a fire-lit room turns orange; 0: white light). Applies immediately.
 Temporal = true                     # UNOFFICIAL: keeps the occlusion from frame to frame (moved with the camera) and turns its sample pattern every frame, so its grain averages out instead of crawling. Off: each frame on its own.
-DebugView = 0                       # 7: the light grid's bounce alone. 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values).
+DebugView = 0                       # 7: the light grid's bounce alone. 0 off, 1 the occlusion alone (white open, black hidden), 2 the bounce light alone; 3-6 diagnostics (normal, depth, reach, raw values); 8 the grid's screen memory; 9 the grid's light before the surface colour; 10 the surface colour the bounce is multiplied by.
 
 [_Shaders.AmbientLight.Status]
 Enabled = false                     # UNOFFICIAL: ambient occlusion and bounce light worked out together in one pass (GTAO with horizon-based bounce light), at half resolution: occlusion that follows the shape of things (creases and the ground under objects, no halos on open ground) and bounce light that comes from what actually blocks the sky, for less than the two separate effects cost. While on it replaces the Ambient Occlusion and Bounce Light effects (their own settings are kept for when it is off).
@@ -460,11 +510,46 @@ SunGate = 4.0                        # [0-20] fades the glow out as the sun near
 ScaleX = 1.0
 ScaleY = 1.0
 ScaleZ = 1.0
+GameShaderFix = true                   # FIX (2026-10-17): without transparency multisampling (the INI default) grass is drawn with the game's own pixel shader, and since P80 it got its light without the sun angle and the blade's light scale: every blade fully sunlit on every side, too bright and flat. true = the game's values again (as P79). false = the P80 behaviour, for comparison only.
+DrawFirst = true                       # UNOFFICIAL (2026-10-17): the grass is drawn before the ground, so the ground's expensive shading is skipped under it (the faraway fading grass is still drawn after the ground, as before). Same picture (checked in game at noon, dusk and night), about 1 ms faster in a dense grass field. Live. false = the old order.
+DrawFirstRestore = 5                   # UNOFFICIAL, diagnostic (2026-10-17): with DrawFirst, which device state is put back after the early grass (1 shader constants, 2 render states, 4 sampler states, 8 texture stage states, 16 textures). Leave at 5 (constants + sampler states).
+DrawFirstCull = true                   # UNOFFICIAL (2026-10-17): with DrawFirst, grass pieces that are all near or all in the distance fade are drawn once instead of twice. Same picture, less vertex work.
+
+[_Shaders.Grass.NewGrass]
+Enabled = false                        # UNOFFICIAL (2026-10-18) NEW GRASS, a LOOK CHANGE (off): real blade geometry built from the game's own grass placement (same tufts, same density, same grass types per region; each type's colour and shape read from its own card texture). With KeepCards (the default, the 'hybrid') the game's card stays as the dense core of every clump and thin strands are added around its silhouette near the player: real volume from every angle, anti-aliased edges, strands that bend and sway one by one, the sun's shadows on them; far grass is the cards alone. KeepCards = false replaces the cards by blades. Needs DrawFirst. Live. The look is the user's call; cost in the bench log (newgrass-LOG.md).
+KeepCards = true                       # true = the hybrid (the game's card is drawn as well, the strands around it); false = the blades replace the cards.
+BladeDistance = 7000.0                 # grass pieces whose nearest tuft is farther than this (units) stay the game's cards, a whole piece at a time. 7000 = everything before the default fade start is blades.
+Blades = 12                            # strands per tuft near the player (1-32; a sparse grass type gets fewer, see FillRef); fewer with distance (none at LodFar with KeepCards, one without).
+LodNear = 1000.0                       # up to this distance every tuft has all its blades and the most detailed blade shape.
+LodFar = 1500.0                        # from here on the cards alone (KeepCards) or one blade per tuft with the simplest shape (a triangle).
+WidenDistance = 5000.0                 # blades grow wider with distance (twice as wide at this distance) so fewer of them keep the far field covered.
+HeightScale = 0.8                      # strand height relative to the plant's height on its card (the card's opaque top, read from its texture); 0.8 keeps every tip below the card's top.
+WidthRatio = 0.015                     # strand width at the root as a share of the plant's height (0.015 = about 1 unit: twig-thin).
+TipReach = 1.0                         # how far out the strands reach: tips between half of and this many times the card's alpha EDGE at their height (1.0 = never past the card's outline).
+Kink = 0.5                             # a sideways wobble along each strand (share of its width per segment) so it zigzags like a dry twig; 0 = smooth.
+Spread = 0.15                          # how far from the clump's centre a blade's root may stand, as a share of the card's half width (the tips reach the card's own silhouette whatever this is).
+LengthMin = 0.4                        # the shortest blade of a clump as a share of the plant's height on the card; the short ones at the edge make the dome of a bush, 1.0 = every blade full height.
+Droop = 0.5                            # how far a blade leaning out to the clump's edge drops its tip (0 = straight to the silhouette).
+FillRef = 0.15                         # a grass type whose card is this opaque (alpha coverage) gets every blade; sparser cards fewer, down to half.
+Bend = 0.5                             # the curve of a strand on its way out to its tip (0 = a straight line to the tip, 0.5 = bowed outward like the twigs).
+Flutter = 0.15                         # sideways flutter in the wind on top of the game's sway.
+ReceiveShadows = false                 # the sun's cascade shadows fall on the strands (the game's cards get none). Costs about 0.15 ms at density 80 with the hybrid's near strands, 0.6 ms in a dense field of blades.
+ShadowLift = 10.0                      # the shadow is looked up this many units above the blade (the ground itself casts a shadow at its own height; 0 = blades at the ground are in it).
+NormalBlend = 1.0                      # how the sun lights a strand: 0 = by the strand's own facing (sideways: darker, more varied), 1 = by the ground's facing as the game's cards are lit (every strand in full sun at noon).
+GameLighting = true                    # true = the strands are lit exactly as the game's own grass pixel shader lights the cards (gamma space, no PBR light scales, no sky light): the bush's own gold. false = NVR's linear PBR lighting (the round-5 look, a little paler and bluer).
+SkyLight = 0.0                         # how much of the sky's light (blue-ish, NVR's sky ambient) the blades get on top of the game's ambient; the game's cards get none.
+Wrap = 0.0                             # how far the sun's light wraps round a strand (thin leaves let light through); 0 = as the cards.
+TipLift = 0.3                          # a warm lift of the colour toward the tip.
+Variation = 0.2                        # per-strand brightness variation (+-): the fizz of the twigs.
+Log = 0                                # DIAGNOSTIC: 1 = one log line per replaced draw for the first 3 frames.
 
 [_Shaders.Grass.Status]
 Enabled = true                        # Replaces the grass shaders.
 
 [_Shaders.GodRays.Main]
+SkipEmpty = false                     # UNOFFICIAL (2026-10-16), DROPPED (off): skip the god rays' blurs when the light mask is empty. Measured in game: the mask is never empty in daylight, so it only added a 0.07 ms check. Applies immediately
+SkipIdle = true                       # PLAYTEST ON (2026-10-18; release default off): UNOFFICIAL, MAY CHANGE THE IMAGE: draw no god rays at all while the sun is high (20+ degrees up) and well outside the view (12+ degrees beyond the frame) and the sky is too dim to cast rays. Then the rays are exactly nothing and the picture is the one without them; every 4th frame a cheap check (sky mask + a 1-pixel occlusion query, ~0.15 ms, answered a frame later without waiting) tells whether the sky is still dim. Measured at game hours 8-16: the god rays cost ~0.45 ms, with this on ~0.04 ms on frames where the sun is not in view; nothing changes when the sun is in view (the full effect runs on that very frame). Not exact in one case: the sky turning bright within a few frames without the sun (a lightning flash): the rays then start up to ~8 frames late. Also makes the god rays pass return its input exactly where the rays are 0 (the old pass darkens most texels by one fp16 step, ~0.05 %). Needs occlusion queries, otherwise does nothing. Applies immediately
+ProbeLog = 0                          # UNOFFICIAL DIAGNOSTIC (development builds only, release builds ignore it): leave 0. 1 = every 8th frame the largest sky-mask and light-mask values are read back (a GPU stall) and logged as GODRAYS PROBE.
 DayMultiplier = 1.0                   # Strength of godrays during the day.
 LightShaftPasses = 8                  # Not used.
 Luminance = 0.8                       # Treshold for minimum luminosity of areas casting rays. Lower means more of the sky will cast rays.
@@ -553,6 +638,9 @@ Strength = 1.0                        # AA blend strength (0.0 = off, 1.0 = full
 MaskPower = 0.5                       # Edge detection sensitivity, as the exponent in pow(0.002, MaskPower). Because the base is below 1, RAISING this LOWERS the threshold and antialiases MORE edges - the opposite of what this line used to claim. 0.5 gives a threshold of 0.045, 1.0 gives 0.002.
 DitherThreshold = 0.08                # [0.0-1.0, 0 disables] Catches isolated pixels that disagree with all four neighbours at once - alpha test dither, which the edge mask above is mathematically blind to because central differences cancel on a checkerboard. Those pixels get an isotropic average instead of the directional pass. Lower catches more dither; too low and it will start averaging fine texture detail and thin geometry like wires.
 Radius = 1.0                          # [0.0-3.0] How far along the edge the directional samples reach, in texels. The samples were previously offset by the raw luma difference, which on an ordinary edge is a few hundredths of a texel - six samples of the same pixel, doing nothing. Normalising the direction and scaling it by this is what NFAA and BIAA do. 0 restores the old raw behaviour; above about 1.5 it starts to smear.
+GateSoftness = 0.0                    # [0.0-1.0] How sharply the isolated-pixel test switches on. 0 = the original hard step at DitherThreshold. Above 0 the blend weight rises smoothly over DitherThreshold x (1 - softness) .. (1 + softness) (0.5 = 0.04 to 0.12 at the default threshold). The hard step flipped on and off with the faint noise the tonemap adds for the sky (+-1 brightness step) at thin bright-and-dark features (wires, grass blades): a pixel switching between its own value and the 5-pixel average changes by 10-70 steps, frame after frame - a twinkle on a still picture, 0.12 % of the pixels in the grass scene. 0.5 cuts that 3.8x (0.25: 2.8x, 1.0: 4.2x) at no cost in time; the AA keeps its agreement with a supersampled reference (grass FLIP 0.1134 -> 0.1128, no AA 0.1202) and its edge sharpness (within 1.2 %). It is a look change, tiny: the picture differs from the hard step only at pixels the old step decided by a coin toss (FLIP 0.006, less than the same still scene differs by on its own a minute later). Recommended: 0.5. Off by default (it changes the look).
+DeDither = false                      # Judge the isolated-pixel test on the picture without the tonemap's dither noise (recomputed from the pixel position and frame; only the decision, the written picture keeps its dither). Cuts the noise the decision sees 2.7x, but the gain on top of GateSoftness is small (1.3x less twinkle) and it costs +0.05 ms: leave off. Needs Sky Dither with AtToneMap.
+DebugView = 0                         # 1 = show the picture with the recomputed dither noise taken out (turn SMAA off to see it): it must match the same frame with the dither off. Proves DeDither reads the right pixel and frame.
 
 [_Shaders.DitherBuster.Status]
 Enabled = true                        # Reduces dithering artifacts via luma-edge anti-aliasing.
@@ -565,6 +653,10 @@ MaxSearchSteps = 32                    # [4-112] How far along an edge the searc
 SubpixelShift = 0.0                    # [-2.0-2.0] Shifts SMAA's sampling relative to the pixel it writes, in texels. **0.0 is the technically correct value**: the game's fullscreen quad already puts texture coordinates on texel centres, so sampling is exact and any offset moves it onto texel boundaries, where every fetch becomes a bilinear average of two pixels - a half pixel blur, which also lowers contrast enough that SMAA finds fewer edges. Compared side by side it is simply a blur: the apparent gain in edge smoothness and in DXVK grass dither is the softening, not antialiasing, so it ships at 0.0. Raise it only if you deliberately want that softness.
 DepthOffset = 0.0                      # [-2.0-2.0] Shifts only the depth buffer lookups, in texels. **0.5 is the technically correct value**: the depth buffer is rendered separately from the colour buffer and the two sit half a texel apart, so at 0.0 depth found edges land slightly off from the colour edges being blended and look subtly distorted. It ships at 0.0 regardless, because that same misalignment suppresses DXVK's grass dithering far better than correct alignment does. Set 0.5 for cleaner, correctly placed depth edges and accept the dither returning. Affects EdgeDetection 2 and 3 only.
 LocalContrast = 2.0                    # [1.0-20.0] How willing SMAA is to call something an edge when its neighbourhood is already busy. The stock 2.0 rejects edges in high contrast areas. Raising it does find more of them, but it will not clean up alpha test dither: SMAA blends by matching edges against a line pattern, and a dither is a checkerboard with no line to match, so the extra edges get near zero weight. Worth raising if finely detailed geometry is being skipped; too high and it starts working on texture noise.
+Predication = false                   # Predicated thresholding (Jimenez et al., SMAA, Eurographics 2012): where the depth is flat the luma edge threshold is multiplied by PredicationScale, where there is a depth edge it stays (EdgeDetection 3 only; the depth edge is an edge anyway). Texture-contrast pairs near the threshold stop flipping with the faint tonemap dither noise (luma edge flips 3.5x fewer in a model), geometry edges are unchanged - but about half the texture edges SMAA used to smooth are no longer edges, and the second-difference energy rises 2-5 % (foliage, leaves). A LOOK change; alone it does little for the twinkle (1.08x). Off = every luma pair is judged at Threshold.
+PredicationScale = 2.0                # [1.0-8.0] Luma threshold multiplier where the depth is flat (the SMAA reference uses 2).
+PredicationStrength = 0.4             # [0.0-1.0] How much a depth edge lowers the threshold again (the SMAA reference uses 0.4). NOTE: this never changes the picture in practice: it only acts on pixels that are already edges, and with EdgeDetection 3 a depth edge is an edge anyway. A value of 0.0 reads as 0.4. Kept so older config files still load.
+DeDither = false                      # Judge the luma edges on the picture without the tonemap's dither noise (recomputed from the pixel position and frame; decisions only, the blend still reads the dithered picture). Luma edge flips between dither patterns 1.8x fewer (model); +0.01 ms. Together with GateSoftness 0.5 and DitherBuster DeDither (+ Predication) the grass scene's twinkle falls 9.7x. Needs Sky Dither with AtToneMap; EdgeDetection 3 only.
 
 [_Shaders.SMAA.Status]
 Enabled = true						  # Apply SMAA.
@@ -677,6 +769,11 @@ SunShare = 0.6                       # How much of the sun a particle catches ou
 Enabled = false                      # UNOFFICIAL, optional: lights blood, smoke, dust and debris particles and the blood decals on characters by the ambient, the sun (through the sun shadows) and nearby lamps, so they no longer glow in the shade, at night or indoors. Muzzle flashes, fire, sparks and glows stay as the game draws them. Off = exactly the game's own particle shaders.
 
 [_Shaders.PBR.Main]
+EnergySplit = false                  # UNOFFICIAL (2026-10-16), SHELVED (off): smooth surfaces seen at a low angle no longer send back more light than they receive (up to 8.9% too bright, white-furnace test). Correct, but invisible in game on every real surface tested (incl. the Ultra-Luxe floor), so off. Applies immediately. Has no effect while SmithCorrelated is 1 (that term does its own energy balance).
+UnlitShadowSkip = true               # UNOFFICIAL (2026-10-17), needs a restart: outdoors, objects skip the sun-shadow lookups on the parts that face away from the sun (the sun adds no light there, so the shadow cannot change them). Same picture; measured: lit objects -0.14 ms in the river city morning view, nothing to skip under a high sun. Off: the shaders exactly as before.
+LampReachSkip = true                 # UNOFFICIAL (2026-10-17), needs a restart: objects lit by several lamps skip each lamp's lighting math on the pixels that lamp cannot reach (it adds nothing there). Same picture. Off: the shaders exactly as before.
+SmithCorrelated = 0                  # UNOFFICIAL (2026-10-18), needs a restart, a LOOK OPTION (0 off, 1 on): highlights on objects use the exact masking term of the microfacet model (height-correlated Smith, Heitz 2014; idea from the Physically-Based-Reloaded fork) instead of the game-friendly approximation, which dims highlights seen or lit at a low angle (up to 80% on smooth surfaces). On: brighter, more mirror-like highlights at low angles and on edges; the diffuse light gives up what the highlight gains, so nothing sends back more light than it receives. Measured (2026-10-18): lit highlights in a lamp-lit casino about 6% brighter (72% of the picture brighter by 1 level or more), sun glints on smooth rubble at noon; no new sparkles; the shaders are 0-3% FASTER on. 0: the shaders exactly as before. Any value other than 1 counts as off. While on, EnergySplit has no effect (this term does its own energy balance).
+SmithCorrelatedTest = 1.0            # [0.0-1.0] No effect: it belonged to the SmithCorrelated = 2 test mode, which has been removed. Kept only so older config files still load.
 Roughness = 1.0                      # Roughness scale.
 Metallicness = 0.0                   # Metalicness scale - unused, no metalic maps yet.
 AmbientScale = 0.5                   # Ambient lighting scale.
@@ -686,6 +783,9 @@ SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 alo
 SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 0.725                # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
+MetalnessScale = 1.0                 # UNOFFICIAL (2026-10-18), materials with an _rmaos map only: [0.0-1.0] their metal (green channel) times this, in this weather/time (idea from the Physically-Based-Reloaded fork). Metal is lit almost only by what it reflects, so with little around to reflect (night) it goes dark: lower keeps some of its colour. 1.0 = the map as it is. Applies immediately.
+AOScale = 1.0                        # UNOFFICIAL (2026-10-18), _rmaos maps only: [0.0-1.0] how much of their ambient occlusion applies in this weather/time (times [Shaders.PBR.Rmaos] Occlusion). 1.0 = as authored.
+RoughnessScale = 1.0                 # UNOFFICIAL (2026-10-18), _rmaos maps only: [1.0-2.0] their roughness times this in this weather/time (rougher only, at most 1). 1.0 = the map as it is.
 
 [_Shaders.PBR.Rain]
 Roughness = 1.0                      # Roughness scale.
@@ -696,6 +796,9 @@ SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 alo
 SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
+MetalnessScale = 1.0                 # UNOFFICIAL (2026-10-18), materials with an _rmaos map only: [0.0-1.0] their metal (green channel) times this, in this weather/time (idea from the Physically-Based-Reloaded fork). Metal is lit almost only by what it reflects, so with little around to reflect (night) it goes dark: lower keeps some of its colour. 1.0 = the map as it is. Applies immediately.
+AOScale = 1.0                        # UNOFFICIAL (2026-10-18), _rmaos maps only: [0.0-1.0] how much of their ambient occlusion applies in this weather/time (times [Shaders.PBR.Rmaos] Occlusion). 1.0 = as authored.
+RoughnessScale = 1.0                 # UNOFFICIAL (2026-10-18), _rmaos maps only: [1.0-2.0] their roughness times this in this weather/time (rougher only, at most 1). 1.0 = the map as it is.
 
 [_Shaders.PBR.Night]
 Roughness = 1.0                      # Roughness scale.
@@ -706,6 +809,9 @@ SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 alo
 SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
+MetalnessScale = 1.0                 # UNOFFICIAL (2026-10-18), materials with an _rmaos map only: [0.0-1.0] their metal (green channel) times this, in this weather/time (idea from the Physically-Based-Reloaded fork). Metal is lit almost only by what it reflects, so with little around to reflect (night) it goes dark: lower keeps some of its colour. 1.0 = the map as it is. Applies immediately.
+AOScale = 1.0                        # UNOFFICIAL (2026-10-18), _rmaos maps only: [0.0-1.0] how much of their ambient occlusion applies in this weather/time (times [Shaders.PBR.Rmaos] Occlusion). 1.0 = as authored.
+RoughnessScale = 1.0                 # UNOFFICIAL (2026-10-18), _rmaos maps only: [1.0-2.0] their roughness times this in this weather/time (rougher only, at most 1). 1.0 = the map as it is.
 
 [_Shaders.PBR.NightRain]
 Roughness = 1.0                      # Roughness scale.
@@ -716,6 +822,9 @@ SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 alo
 SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
+MetalnessScale = 1.0                 # UNOFFICIAL (2026-10-18), materials with an _rmaos map only: [0.0-1.0] their metal (green channel) times this, in this weather/time (idea from the Physically-Based-Reloaded fork). Metal is lit almost only by what it reflects, so with little around to reflect (night) it goes dark: lower keeps some of its colour. 1.0 = the map as it is. Applies immediately.
+AOScale = 1.0                        # UNOFFICIAL (2026-10-18), _rmaos maps only: [0.0-1.0] how much of their ambient occlusion applies in this weather/time (times [Shaders.PBR.Rmaos] Occlusion). 1.0 = as authored.
+RoughnessScale = 1.0                 # UNOFFICIAL (2026-10-18), _rmaos maps only: [1.0-2.0] their roughness times this in this weather/time (rougher only, at most 1). 1.0 = the map as it is.
 
 [_Shaders.PBR.Interiors]
 Roughness = 1.0                      # Roughness scale.
@@ -726,6 +835,9 @@ SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 alo
 SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 1.0                  # Directional and point light scale.
 Saturation = 1.0                     # Color saturation.
+MetalnessScale = 1.0                 # UNOFFICIAL (2026-10-18), materials with an _rmaos map only: [0.0-1.0] their metal (green channel) times this, in this weather/time (idea from the Physically-Based-Reloaded fork). Metal is lit almost only by what it reflects, so with little around to reflect (night) it goes dark: lower keeps some of its colour. 1.0 = the map as it is. Applies immediately.
+AOScale = 1.0                        # UNOFFICIAL (2026-10-18), _rmaos maps only: [0.0-1.0] how much of their ambient occlusion applies in this weather/time (times [Shaders.PBR.Rmaos] Occlusion). 1.0 = as authored.
+RoughnessScale = 1.0                 # UNOFFICIAL (2026-10-18), _rmaos maps only: [1.0-2.0] their roughness times this in this weather/time (rougher only, at most 1). 1.0 = the map as it is.
 
 [_Shaders.PBR.Metal]
 MetalOn = true                       # UNOFFICIAL: switches the metal look below on and off (the Enabled button at the top of the panel switches ALL of the PBR shaders, not just this).
@@ -760,8 +872,31 @@ Occlusion = 1.0                      # [0.0-1.0] How much the maps' ambient occl
 DebugView = 0                        # [0-4] 1: the maps' roughness in grey; 2: metal; 3: occlusion; 4: objects that have a map in green, others dim grey. 0: normal picture.
 LogMatches = false                   # Writes each texture to the log the first time it is drawn, with its map or "none" ("[Rmaos] <texture> -> <file>"): which textures a place uses.
 
+[_Shaders.Cloth.Main]
+Enabled = false                      # UNOFFICIAL (2026-10-16): cloth (capes, dusters, flags, banners, curtains) moves in the wind, done in the vertex shader (no physics). Turning it on or off needs a restart; the values below apply immediately
+Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent"   # Textures whose path holds one of these words are cloth
+MaskMode = 2                         # 0: the mesh's vertex colour RED says how loose each part is (1 loose ends, 0 pinned) -- for meshes authored with such a mask; 1: the whole mesh moves; 2: by height, pinned at the top (works with unauthored meshes)
+HeightTop = 95.0                     # Mask 2 on worn clothing: where it is pinned (units above the actor's feet; ~waist)
+HeightBottom = 25.0                  # Mask 2 on worn clothing: where it is loosest
+HeightFromFeet = true                # Mask 2 on worn clothing: measure those heights from the actor's feet (true) or from the skeleton's root, which is at the hips (false: the old way, shoulders moved too)
+UseGameWind = true                   # Take direction and strength from the weather's wind (the values below still scale it)
+Interiors = false                    # Cloth moves indoors too (no wind indoors, so off)
+WindDirX = 1.0                       # Wind direction (world, used when UseGameWind is off)
+WindDirY = 0.0
+WindDirZ = 0.0
+WindSpeed = 220.0                    # How fast the billow travels along the wind (units per second)
+WindIntensity = 6.0                  # How far loose cloth moves (units; 6 is about 9 cm)
+Wavelength = 260.0                   # Length of one billow (units)
+FlutterSpeed = 3.0                   # High-frequency flutter (cycles per second)
+FlutterAmount = 0.35                 # Flutter strength (0-1)
+RippleAmount = 0.5                   # Billow out of the cloth's plane (0-1)
+RippleScale = 0.012                  # Size of the small ripples (cycles per unit)
+TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
+
 [_Shaders.PBR.Linear]
+ExactPassSums = 0                    # UNOFFICIAL TEST (2026-10-16): objects lit in several passes add them up in linear light (the extra lamp passes and the highlight passes were each added in the stored curve: up to 3.7x too bright indoors). 0 off, 1 highlights, 2 lamps, 3 both. Applies immediately
 Enabled = true                       # UNOFFICIAL: linear lighting on objects and the ground. The game adds light up in gamma space, so lit sides drop off too fast into shade, two lamps add up too dark and coloured light tints too little. On, colours are decoded to linear, lit, and encoded back: softer, fuller light falloff and truer colour mixing. Changes the look (brighter mid-tones and ambient), so the exposure and ambient may want retuning. Switching it on or off needs a restart (off, the shaders are exactly as before and cost nothing).
+PreDecode = true                     # UNOFFICIAL (2026-10-17), needs a restart: with linear lighting on, the light and ambient colours of each object are converted to linear once (on the CPU, as the game sends them) instead of again in every pixel. Same picture; measured indoors: lit objects up to -0.47 ms. Off: as before.
 Gamma = 2.2                          # [1.0-3.0] The gamma the colours are decoded with, live. 2.2 is standard; 1.0 looks the same as off.
 
 [_Shaders.PBR.Status]
@@ -780,6 +915,7 @@ Opacity = 1.0                        # Opacity of the drops.
 Refraction = 1.0                     # Distance of the refraction of the screen image by the droplets.
 Speed = 3.0                          # Multiplier for the rain speed.
 VerticalScale = 1.6                  # Multiplier for the length of the drops/streaks.
+SkipHiddenLayers = true              # UNOFFICIAL: skips the rain layers that lie behind walls and ground (they add nothing): same picture, less work. Off = as before.
 
 [_Shaders.Precipitations.Status]
 Enabled = true                       # Rain effect that is blocked by objects above and refracts light.
@@ -797,6 +933,8 @@ ForwardShadows = true                # Evaluate sun shadows per-object in the li
                                      # out entirely, so turning it on then needs a restart.
 Darkness = 0.75                      # Darkness of shadows.
 NightMinDarkness = 0.35              # Darkness of shadows during dark moon phase. Set to 0 to disable shadows completely when there is no moon.
+SkipWhenFaded = true                 # UNOFFICIAL: around sunrise and sunset the sun's shadows are faded out completely; while they are, the lit shaders skip their shadow lookups, and the screen-space contact shadows and the shadow maps are not drawn when nothing reads them (the volumetric fog's sun glow reads the shadow maps, so with the fog on they are kept). The picture is the same. false: everything runs anyway.
+SkipWhenFadedCheck = 0               # UNOFFICIAL, DIAGNOSTIC (development builds only, release builds ignore it): leave 0. 1 = what SkipWhenFaded skips is filled with "full shadow", so anything still reading it would show; 2 = the same, skipping even what is still read (a test that the checks matter: the picture changes); 3 = the lit shaders' sun shadow lookups off at any hour (to measure their cost: by day the sun shadows disappear); 4 = the shadow maps filled with 'full shadow' at any hour, nothing skipped (shows that 1 and 2 reach the shaders).
 OrthoMapResolution = 256             # Resolution of the texture used to store the ortho map.
 OrthoRadius = 8000                   # Max distance for rendering of ortho map.
 UsePointShadowsDay = false           # Whether to cast shadows from point lights. Requires a slight darkening of the entire screen.
@@ -898,6 +1036,7 @@ Enabled = true                       # Wether to render screen space contact/det
 RenderDistance = 180000              # Max distance at which to compute screen space shadows
 Intensity = 0.315                    # Rescale the intensity of screenspace shadows, to combat jitter and blur making them very faint even at maximum brightness.
 Sharp = false                        # UNOFFICIAL: sharper, steadier contact shadows for less: the ray toward the sun followed in 16 even steps instead of 4 random ones smoothed by two big blurs (about a third of the cost). With forward shadows (the default). BlurRadius is not used with it on.
+FastPaths = true                     # UNOFFICIAL (2026-10-17): the same contact shadows for less GPU time: the march's early exits (too far, surface turned away from the sun) really skip work (the shader compiler had turned them into work every pixel did). Off = the original pass. Applies immediately
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
 Mode = 3							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4, 3: PCF (UNOFFICIAL: plain depth compared at lookup: no blur pass and no light leaking under objects, crisper shadows; Prefilter and MSAA are ignored with it; Quality 4 (Custom) only; restart)
@@ -921,6 +1060,7 @@ LodSkipLoaded = true				 # Distant-object LOD inside the loaded cells casts no s
 Resolution = 2						 # Resolution of the texture used to store the ortho map. 0: 128, 1: 256, 2: 512, 3: 1024, 4: 2048
 Distance = 3000                      # Distance to render ortho for. The unit is the same as the game uses for i.e. fog values.
 LimitFrequency = true				 # Limit the update frequency of the ortho map (one per four frames).
+ProbeDump = 0                        # UNOFFICIAL, development builds only: a new non-zero value writes one dump of the ortho map with the object that drew each texel (for diagnosis; does nothing in release builds).
 
 [_Shaders.ShadowsExteriors.Status]
 Enabled = true                       # Post process sun and pointlights shadows in exteriors.
@@ -943,6 +1083,11 @@ MinRadius = 10.0                     # Wether to include objects with a radius o
 Misc = true                          # Wether to include objects with misc flags when rendering shadowmaps.
 NearFade = 0.0                       # UNOFFICIAL [0-128]: things within this many world units of a lamp (about 70 to a metre) cast less of a shadow from it, none at the lamp itself. Standing right at a lamp made your shadow fill the room, sharp and black, sometimes on several walls at once. A real lamp's shadow from that close is too blurred to see. 0 = as before.
 EdgeFade = 0.0                       # UNOFFICIAL [0-0.9], OFF (0 = exactly as before): fades each lamp's lit disc, and the shadows in it, out over this fraction of its radius instead of ending on the hard circle where a bright lamp's clamped light amount drops. 0.4 was tried on 2026-10-07 and darkened the ring round every lamp (with forward shadows on this mask is the room darkening), so it is off; see LampReachMask for the cure. Applies immediately.
+MaskSkipFar = true                   # UNOFFICIAL (2026-10-16): the lamp mask skips each lamp's maths where the lamp cannot reach (exactly the same picture; cheaper). Applies immediately
+ContactShadows = 0.0                 # UNOFFICIAL (2026-10-16) [0-1]: contact shadows from lamps indoors -- the small dark lines where a prop meets the floor or a table meets the wall, which the lamps' shadow maps are too coarse to show (NVR had them for the sun only). Strength; 0 off. Applies immediately
+ContactLength = 40.0                 # [4-200] How far toward the lamp the contact shadow looks, in world units (about 70 to a metre)
+ContactThickness = 12.0              # [1-100] How thick a surface is taken to be: thinner things in front do not cast a contact shadow
+ContactDistance = 3000.0             # [200-20000] Contact shadows fade out by this distance from the camera
 LampReachMask = false                # UNOFFICIAL, CHANGES THE IMAGE indoors (2026-10-07): the darkening pass faded each lamp out with its own falloff on top of the game's lamp lighting, which already fades, so the floor past a certain distance was darkened twice and a shadow on it seemed to stop at a circle. On: a lamp counts in full out to its game radius and fades over the rest of its LightRadiusMult reach (the game's own light does the fading), so its shadows show in full; the outer part of each lamp's reach is a little brighter than before. Applies immediately.
 PlayerInsideLamp = true           # UNOFFICIAL, BUG FIX: a lamp whose light point sits inside your body (or within PlayerLampMargin of it) leaves you out of its shadow cube map. A point inside a model is blocked on every side, so without this the player threw room-sized shadows onto every wall when walking through a light that has no fixture. Applies immediately.
 RedrawActorsOnly = true              # UNOFFICIAL: a lamp with people (or wind-blown leaves) in reach draws its walls and furniture into its shadow once and keeps them; each refresh copies that and redraws only the people on top. Off = the whole shadow is redrawn every refresh, as before. Same image either way.
@@ -968,6 +1113,7 @@ NormalOffset = 0.0                   # [0.0-4.0] Another cure for speckles, push
 FirstPerson = true                   # Shadows on your weapon and arms too.
 KeepDarkening = true                 # Keep the old darkening of what no tracked lamp reaches (rooms keep their mood). Off = brighter unlit corners, and about 0.8 ms saved.
 DarkeningBlur = false                # Blur that darkening as the old pass did (about 0.9 ms more).
+MaskHalfRes = false                  # UNOFFICIAL (2026-10-16): work out the room darkening's lamp reach at half resolution (cheaper; edges of objects a little softer). Applies immediately
 SmoothEdges = true                       # UNOFFICIAL (2026-10-15), needs a restart: smoother lamp shadow edges indoors. The shadow maps are read so each edge fades over one of their texels instead of stepping along them (the blocky look, worst with ContactHardening). Adds about 50 instructions to the 4-lamp object shaders (compiled in only when on). Off: the plain, blockier edges.
 LampSwitchMargin = 0.2               # [0.0-0.9] Only so many lamps can cast shadows at once (LightPoints); they are picked by distance. A lamp that already has a shadow keeps it until another is this much nearer (0.2 = 20%), and while it is a little behind you, so shadows stop popping on and off as you walk and turn. 0 = pick purely by distance, as before.
 FadeIn = 0.0                         # [0.0-2.0] Seconds a lamp's shadow takes to fade in when the lamp gets one, instead of popping in. 0 = at once, as before.
@@ -999,6 +1145,7 @@ HardEdges = true                   # UNOFFICIAL: the bounce light never crosses 
 Enabled = false                     # UNOFFICIAL, optional: one bounce of indirect light from what is on screen (colour bleeding, more natural shading). About 1 ms GPU at 1440p when on (F10 'Bounce light'); nothing when off.
 
 [_Shaders.ContactHardening.Main]
+AtNight = false                      # UNOFFICIAL: keep contact hardening at night too. Off (default): plain shadow edges while the sun is down, where the moon's faded shadows show no difference (measured at a night test spot: no changed pixels, about 1 ms faster at 1440p).
 SunSize = 1.0                        # UNOFFICIAL, optional: how soft far shadow edges get, as a multiple of the real sun's size (1 = realistic). Higher values can show aliasing.
 MaxSoftness = 4.0                    # Cap on the blur, in shadow map texels (1-32). Higher allows softer edges under tall objects but costs more and can show aliasing.
 Smooth = true                        # UNOFFICIAL (2026-10-15), PCF shadows (Mode 3): smoother contact-hardening edges. Narrow and wide penumbrae blend instead of switching along a line, and the soft-edge samples are turned a little differently at each spot on the ground, so wide penumbrae show a fine even grain instead of stair-steps and bands. Costs a little in penumbrae only.
@@ -1031,6 +1178,38 @@ CloudyScale = 0.35                     # [0.0-1.0] Heat in cloudy weather, as a 
 
 [_Shaders.HeatHaze.Status]
 Enabled = false                        # Heat haze: distant ground shimmers in the hot air near the horizon, strongest on clear afternoons, gone at night and in rain or snow.
+
+[_Shaders.Sandstorm.Main]
+Keyword = "sandstorm,duststorm"        # A weather whose editor ID holds one of these words (separated by commas), in any case (SandStorm, NVWastelandSandstorm, the game's own HVDustStorm in Hidden Valley...), is a sandstorm. The storm builds and settles with the weather's own transition. (Ported from Physically-Based-Reloaded, Balebandro.)
+Visibility = 2200.0                    # [200-30000] How far one sees through the full storm, in game units (a cell is 4096): about 95% of what lies this far is hidden.
+HeightFalloff = 2500.0                 # [200-50000] The dust thins with height above the camera over about this many units, so looking up shows a little more sky than looking ahead.
+Billowing = 0.7                        # [0.0-1.0] How much the dust gathers into rolling clouds: 0 an even haze, 1 thick clouds with clearer gaps between them.
+NoiseScale = 900.0                     # [100-10000] Size of the dust clouds, in game units.
+WindSpeed = 2000.0                     # [0-5000] The dust's speed at the weather's full wind, in units per second. It blows the way the weather's wind does.
+MinWindSpeed = 700.0                   # [0-5000] The dust's speed when the weather has no wind.
+StreakStrength = 1.0                   # [0.0-4.0] Thin streaks of sand blown past the camera. 0 off.
+DustColorR = 0.86                      # [0.0-1.0] The dust's colour (red), lit by the weather's fog colour, its ambient light and the sun.
+DustColorG = 0.68                      # [0.0-1.0] The dust's colour (green).
+DustColorB = 0.48                      # [0.0-1.0] The dust's colour (blue).
+SunScattering = 1.5                    # [0.0-10.0] How much brighter the dust glows looking toward the sun, as fine dust scatters light forward.
+Brightness = 1.0                       # [0.0-10.0] Overall light on the dust.
+FadeSpeed = 0.25                       # [0.01-10.0] How fast the storm builds and settles, as a share per second (0.25: about four seconds), on top of the weather's own transition.
+GrassWind = 3.0                        # [1.0-10.0] How much harder the grass sways at the storm's height: it also leans downwind in gusts that sweep across the field, and flutters. Builds and settles with the storm; 1 leaves the grass as the weather moves it.
+TreeWind = 2.5                         # [1.0-10.0] How much harder tree leaves swing at the storm's height, with a fast flutter. 1 leaves them as the weather moves them.
+LightScattering = 1.0                  # [0.0-20.0] How strongly lamps, fires, signs and other nearby lights glow through the dust, the way the sun does: a halo around each, dimmed by the dust between you and it, stopping at walls. 0 off.
+EmissiveThreshold = 3.0                # [0.0-50.0] Fire, sparks and other glowing effects are drawn without depth, so the storm would bury them as deep as whatever is behind them. A pixel this many times brighter than lit dust counts as glowing in front of it and only gets EmissiveDistance of dust. Lower catches dimmer effects (too low and bright sunlit walls pierce the storm too); 0 off.
+EmissiveDistance = 400.0               # [0-5000] How much dust, in game units, such a glowing pixel is still seen through.
+ThroughBlended = 1                     # [0-1] While the storm blows, glass and other see-through blended surfaces write no depth, so the world behind a window gets its own dust. Cut-outs (fences, wire, torn sheets) and water keep their depth. 0: the world behind a window stays clear.
+ForceStorm = 0                         # [0-1] Debugging: 1 shows the full storm outdoors in any weather.
+Steps = 12                             # [4-12] Speed (FastPath 0 only): how many steps the dust is marched in near you (the main cost). Fewer is faster and grainier.
+Octaves = 3                            # [1-3] Speed: detail layers in the dust clouds. Fewer is faster and smoother.
+SoftEdges = 1                          # [0-1] Speed: 1 blends the dust at the edges of hair, foliage and fences over a few pixels (9 depth reads per pixel); 0 reads one (faster, a darker rim can show).
+FineShelter = 1                        # [0-1] Speed: 1 tests 8 points upwind for each sand streak (walls and rocks stop them); 0 tests 4 (faster, coarser).
+FastPath = 1                           # [0-1] Speed: 1 works the dust out on a coarse 3D grid of the air (one ray per 16 x 16 pixels, 64 slices deep) and the sand streaks and lamp glow at half resolution: the same storm for about a tenth of the cost (measured at 2560x1440 on a GTX 1070: 17.6 ms -> 1.5 ms in the desert by day and at dusk, 11.1 -> 2.2 ms on the neon-lit Strip at night), without the march's grain. Steps is then not used. 0: every pixel marched at full resolution (the original, very heavy).
+FixedTime = -1.0                       # [-1.0-3600.0] Testing: 0 or more holds the dust still at that many seconds of its clock (to compare pictures); -1 lets it blow.
+
+[_Shaders.Sandstorm.Status]
+Enabled = false                        # Sandstorm: while the weather is a sandstorm (its editor ID holds Keyword), wind-driven dust fills the air: rolling clouds of it near you, a haze that swallows the distance and the sky, sand streaking past, lamps glowing through it, grass and trees whipped by the wind. Lit by the sun and the weather's own colours. Off by default (a look change).
 
 
 [_Shaders.VolumetricLight.Main]
@@ -1080,6 +1259,7 @@ Enabled = false                        # Screen-space reflections on the ground:
 Strength = 1.0                         # [0.0-4.0] Breaks up the bands in the sky's smooth gradients with a faint, ever-changing noise just before the picture goes to the screen. In steps of the screen's 256 brightness levels: 1 is enough to hide the bands; higher shows as grain.
 AtToneMap = true                       # Also where the game rounds the HDR picture to the screen's 256 levels (the tonemap), over the whole picture: the bands are made there, so the noise at the end alone can't remove them. Invisible on textured surfaces.
 SkyOnly = true                         # Only where the sky shows. Off: the whole picture (invisible on textured surfaces, can help smooth fog and dark gradients).
+Pattern = 0                           # 0 = a new noise pattern every frame (the eye averages it into a smooth gradient). 1 = one fixed pattern: the same 1-step grain at the same pixels every frame, so a still camera shows a perfectly still picture (the anti-aliasing has nothing to flicker on: twinkle 0.0001 % vs 0.12 %); the noise statistics and spectrum are identical, the grain sticks to the screen when the camera moves, at one brightness step. A look change, off by default.
 
 [_Shaders.SkyDither.Status]
 Enabled = true                         # Sky dither: hides the banding in the sky's gradients. Very cheap.
@@ -1110,6 +1290,7 @@ FineDetail = 0.0                       # UNOFFICIAL [0-1]: a second, finer layer
 FineDetailSize = 140.0                 # UNOFFICIAL [10-5000]: size of that finer layer, in metres. Smaller: finer grain.
 Sharpness = 0.5                        # UNOFFICIAL [0-3]: how crisp the clouds look. Higher: the clouds' history is kept sharp as they and the view move (instead of softening a little every frame), the finished clouds get edge-aware sharpening without halos, and far-off cloud detail stays finer. It also keeps drifting clouds moving smoothly (each pixel follows the wind between its refreshes). 0: the older, softer look. Costs a little at Resolution 2, almost nothing at 0.
 FromWeatherTextures = 1.0              # UNOFFICIAL [0-1]: how much the coverage follows the current weather's own cloud textures (how much of the sky the game's cloud layers would fill) instead of only its type (pleasant, cloudy, rainy, snow). Weather mods often give overcast skies a 'pleasant' type; with 1 they still get heavy clouds. Rain and snow never get fewer clouds than their own setting. 0: the type alone, as before. Each weather is logged once (NewVegasReloaded.log) with what it measured.
+FixedMarchExit = false                 # UNOFFICIAL (2026-10-17): the cloud march stops after Steps samples and when the cloud is opaque, as it was written to (the shader compiler had killed that exit, so every ray took 64 steps and ran past the horizon cap). Slightly different look near the horizon, a little faster. Off = as before.
 MaxDistance = 80000.0                  # [5000-200000] How far away clouds are still drawn, in metres.
 HazeDistance = 30000.0                 # [1000-200000] Distance, in metres, at which far clouds have mostly thinned out into the sky.
 WindSpeed = 1.0                        # [0-20] How fast the clouds drift with the game's wind: 1 is about 15 m/s in calm weather to 60 m/s in a gale (faster than real, so you can see them move).
@@ -1260,6 +1441,9 @@ DebugView = 0                          # 1: always fully bloodied (to see it wit
 Enabled = false                        # Blood on the first-person weapon and gloves. Read at startup (compiled into the object shaders; off = the shaders exactly as before; on costs about 3-5% of lit-object shading).
 
 [_Shaders.BloodFlow.Main]
+CheapGather = true                   # UNOFFICIAL (2026-10-16): read the game's decals and bodies once a frame, only blood decals, cached skeleton walks, blood off screen not worked out (no picture change). Off: the old way. Applies immediately
+GroundFit = true                     # UNOFFICIAL (2026-10-16): blood stays on its own surface without hard cut lines: pools fade out softly where the ground leaves them and follow a slope even when the ground round the body cannot be seen; splats and their arms and spray are no longer cut flat at the top on walls or along a line on slopes and bends. Off: the hard cuts as before. Applies immediately
+GroundTestUnseen = false             # Test only: pools act as if the ground round them was never found (to check the fallback). Applies immediately
 Splats = true                          # The game's blood splats grow streams that run down whatever they are on the way gravity pulls (straight down a wall, slantwise across a slope, round a rock), slowing as they go. A stream that reaches a ledge or the floor gathers in a small puddle; one that reaches an edge with nothing under it hangs in a drop that falls and leaves a stain where it lands. Wet while fresh, then darker and browner as it dries (thin trails first).
 Pools = true                           # A pool of blood spreads under a body after death; on a slope it slides downhill and trickles run off its low side, gathering where the ground levels out. Wet at first, drying to a dark stain. Not under robots.
 DripLength = 40.0                      # [0-120] Longest stream, in game units (about 1.4 cm each), measured along the surface. 0: no streams.
@@ -1294,7 +1478,7 @@ GibPools = 0.8                         # [0-3] A pool of its own grows under eac
 MaxDistance = 3000.0                   # [500-10000] No streams or pools further than this (game units); they fade out over the last fifth.
 MaxSplats = 48                         # [0-96] Most splats drawn at once (the nearest).
 MaxPools = 12                          # [0-32] Most pools drawn at once (the nearest).
-DebugView = 0                          # 1: what each splat and pool covers in green (white rings every 10 units round it), streams red, puddles and pools yellow, a drop at an edge blue, where drops land cyan, falling drops white.
+DebugView = 0                          # 2 (UNOFFICIAL 2026-10-16): the cuts -- where a splat's or pool's shape has blood, yellow if it shows, orange if a soft edge thins it, magenta if the test that keeps it on its own surface takes it away, red (GroundFit off) above the top of the old splat box. 1: what each splat and pool covers in green (white rings every 10 units round it), streams red, puddles and pools yellow, a drop at an edge blue, where drops land cyan, falling drops white.
 
 [_Shaders.BloodFlow.Status]
 Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.
@@ -1380,6 +1564,9 @@ Enabled = true                      # UNOFFICIAL: a physical sky. The sky's colo
 Brightness = 1.0                    # [0.0-4.0] Brightness against the weather's sky (1 = the same overall brightness).
 WeatherTint = 0.35                  # [0.0-1.0] How much of the weather's own sky colour to keep (0 = the air's colours only, 1 = the weather's colours with the air's light and shade).
 Haze = 1.0                          # [0.0-10.0] Dust and haze in the air: a wider, whiter glow round the sun and a paler horizon. Desert air is dusty: 1.5-3 looks hazier.
+ExactSunlight = false               # UNOFFICIAL, off by default (a precision fix that moves the picture at a low sun). The sun's light through the air is worked out exactly (a table) instead of by the closed-form estimate the physical sky started with, which is 5-17% short in air at a low sun (Hillaire 2020 / Bruneton 2008 method): sunsets and sunrises get redder at the horizon (blue-to-red ratio about -25% at 5 degrees of sun, -5% at 15), the brightness at 15 degrees and above changes under 1% and a high sun not at all to the eye. Live switch, a few ms once when it is turned on. Needs the physical sky on.
+MultipleScattering = false          # UNOFFICIAL, off by default (a look change). Adds the light that has scattered more than once in the air (Hillaire, EGSR 2020) and the light the ground sends back into it: the horizon is brighter and the sky bluer and softer, the zenith relatively darker; the weather's overall sky brightness is kept. Includes ExactSunlight. Live switch; the tables behind it are drawn once (and again when Haze or GroundAlbedo change). Needs the physical sky on.
+GroundAlbedo = 0.3                  # [0.0-1.0] With MultipleScattering: how much sunlight the ground reflects back into the air (0.3 = desert and soil, 0.1 dark rock, 0.8 fresh snow). Lifts the horizon most at a high sun.
 
 [_Shaders.Sky.Clouds]
 UseNormals = false                  # EXPERIMENTAL-Uses the R & G channels of the clouds texture to calculate normals for lighting. Requires special textures
@@ -1481,11 +1668,14 @@ TerrainSaturation = 1.0             # Control terrain saturation.
 [_Shaders.Terrain.Parallax]
 Enabled = true                      # Turn on parallax occlusion mapping for terrain.
 Shadows = true						# Turn on height based self shadowing.
+ShadowsAtNight = false              # UNOFFICIAL: keep the self shadowing at night too. Off (default): skipped while the sun is down, where the moon is too dim for it to show (measured: no changed pixels at a night test spot, about 1 ms faster there at 1440p).
 HeightBlend = true                  # Turn on height based texture blending.
 HighQuality = true                  # Turn on high quality. Double the number of steps, higher performance impact.
 MaxDistance = 2048                  # Controls the maximum distance for the parallax and shadow effects.
 Height = 0.1						# Controls the height. Changing can break the visuals, especially with low max steps.
 ShadowsIntensity = 2.0              # Intensity of self shadowing.
+IsoHeightTaps = true                # UNOFFICIAL: the parallax height lookups take one plain filtered sample each (at the same detail level) instead of the anisotropic filtering the game's iMaxAnisotropy puts on the land maps; colour and normals keep it. Measured at noon: ground 4.0 -> 2.4 ms, a change below the frame-to-frame flicker. Off = the old lookups.
+SkipEmptyLayers = true              # UNOFFICIAL: skip the colour and normal lookups of ground layers that have no weight at a pixel (they add exactly nothing). Same picture (largest difference 3e-7); measured at noon: ground -0.36 ms on top of IsoHeightTaps.
 
 [_Shaders.Terrain.Blending]
 Enabled = false                     # UNOFFICIAL, needs a game restart to turn ON (off works at once): blend objects into the ground where they meet it (from the Physically-Based-Reloaded fork, after Community Shaders' Terrain Blending). The land fades out over the part of a rock, wall or prop just below it, so it sinks softly into the terrain instead of ending in a hard line. Exteriors only. Smooth (below) fades it without needing TAA. Costs one depth copy a frame plus a little on the land. Not with SunSmoothing CrossFade (no sampler left on the land shaders).
@@ -1493,10 +1683,12 @@ Smooth = true                       # UNOFFICIAL: fade the land by blending it o
 BlendDistance = 10.0                # [0.5-20.0] How deep below the land surface an object still shows through, fading out (game units, 70 = 1 m). Larger = a wider, softer seam.
 GroundWidth = 24.0                  # [0-100] (ported from mrfury97's fork) The blend band's width across the ground, at most (game units): shallow objects such as road shoulders get a seam this wide instead of metres of see-through land, and meshes lying parallel just under the land get none.
 HeightBlend = 1.0                   # [0-2] How much the land texture's height map shapes the edge: sand between pebbles reaches further over the object. 0 gives a smooth fade.
+HeightEdge = 0                      # UNOFFICIAL (community submission, 2026-10-17): 1 = the edge follows the land texture's height map the way the land's own layers blend (crisper: sand between the pebbles), 0 = the softer height nudge (as before). Uses HeightBlend as its strength.
 SlopeBlend = 1.0                    # [0-2] BlendDistance multiplier on steep land (cliffs, hill sides). 1 keeps it the same everywhere.
 MinPixels = 3.0                     # [0-8] The fade is at least this many pixels wide on screen, so distant blends don't shimmer.
 DebugView = 0                       # 0 off. 1 the blend band magenta. 2 how much land is kept (white: all). 3 how deep the object is below the surface (black at the surface, white at four times BlendDistance; dark blue: nothing behind the land). 4 how deep the fade reaches (white: the full BlendDistance, grey: a shallow object's seam, black: none).
 MaxDistance = 4096.0                # [256.0-16384.0] Blending stops beyond this distance from the camera (fading back to a hard edge over the last quarter).
+ShadowDrop = 1.0                    # [0.0-4.0] UNOFFICIAL: with Forward Shadows, the part of an object the faded land reveals sat in the land's own sun shadow (a dark strip along the seam). The land is drawn into the sun shadow maps BlendDistance times this lower, so only what is buried deeper than the blend band stays shadowed by it. 0 = off (the old shadows). Works at once.
 Debug = false                       # Old switch, kept for old settings files: true = DebugView 1.
 
 [_Shaders.Terrain.LOD]
@@ -1510,6 +1702,7 @@ Enabled = true                      # Replaces shaders used by terrain, adding P
 Enabled = true                      # Post Process underwater fog/godrays/caustics effect.
 
 [_Shaders.VolumetricFog.Main]
+ClassicLook = 0                     # UNOFFICIAL (2026-10-18), outdoors and indoors, applies immediately: 1 = the fog looks as in the original NVR this build grew from (upstream master, September 2026): its drifting patches painted on the surfaces at their own spot (not averaged through the air along the view), its sunlight shaded by the sun's shadow at that spot, its sky colour and sky light from the game's own sky (not the physical sky), and the full glow round a low sun (SunGlow is ignored). Keeps this build's speed-ups. FogVolume does nothing while it is on. 2 = the same, every pixel worked out at full resolution in one pass, as the original drew it (exact, slower). 0 = the fog as it is now. LegacyFog wins over it.
 FogVolume = true                    # Outdoors, with the volumetric light's Froxels on: the fog's patches and its sunlight are worked out through the air along each view (its density, drifting noise and the sun's shadow on a 3D grid), instead of from four noise points and the shadow at the far end. Fog in shade stays dark, patches sit in the air. The fog's amount and colours are unchanged.
 Amount = 0.4                        # Global multiplier for the final fog strength in exteriors.
 FogSaturation = 1.7                 # Tune the saturation of the fog color.
@@ -1661,6 +1854,9 @@ Viscosity = 0.05
 Enabled = true                      # Short refraction water drop animation on the lens when exiting water.
 
 [_Shaders.WetWorld.Main]
+FastPaths = true                    # UNOFFICIAL (2026-10-17): the same rain picture for about 1 ms less GPU time (2560x1440): the wet pass's early exits (sky, distance, water, dry or roofed ground, your weapon), its puddle colour and its lamp loop really skip work (the shader compiler had turned them into work every pixel did). Measured: within the frame-to-frame rain flicker; the only place it can differ is the puddle reflection's rare screen-edge cases. Off = the original pass. Applies immediately
+FixedReflectionTrace = false        # UNOFFICIAL (2026-10-17): fixes the puddle reflection (the screen-space trace of WetWorld). Its loop exits never worked on the GPU, so it kept the last hit it found at full strength, ran past the screen border and flipped under any recompile. Fixed: the first hit counts, rays that pass behind a thin object are no hit, and the reflection fades out towards the screen borders and with distance. Looks slightly different (softer, no border patches), so it is off by default. Costs about 0.1-0.2 ms in rain. Applies immediately
+KeepHighlights = true               # UNOFFICIAL (2026-10-16): in rain the wet pass no longer cuts the picture at full white before the tonemapper (sun, bright sky and wet highlights keep their soft roll-off). Off = the old clamp. Applies immediately
 HudDrops = 1.0                       # [0.0-1.0] UNOFFICIAL: rain drops on your first-person weapon while you stand in the rain (not under cover), drying off afterwards (after mrfury97's HUD raindrops). Each drop is a little lens: it magnifies the surface under it, focuses the sun into a bright spot and catches a glint. 0: off (restart to switch on or off: it is compiled into the object shaders).
 HudDropSize = 0.6                    # [0.05-20] Size of a drop's cell in game units (the biggest drops are about three quarters of it across).
 HudDropDensity = 0.6                 # [0.0-1.0] How many drops gather at full wetness.

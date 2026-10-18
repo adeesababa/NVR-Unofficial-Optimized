@@ -2,6 +2,9 @@
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
 #include "ShaderPrecompile.h"
+#include <unordered_set>
+#include "GpuProfiler.h"
+#include "LinearPreDecode.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -102,11 +105,15 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 28 && Template.Defines[i].Name != NULL) {
+		while (i < 34 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;
 			i++;
 		}
-		if (i >= 28) return;  // out of room; silently skip rather than overrun
+		if (i >= 34) {
+			static bool warned = false;
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 34 shader defines, '%s' and any after it are dropped", Name); }
+			return;
+		}
 		Template.Defines[i] = { Name, Definition };
 		Template.Defines[i + 1] = { NULL, NULL };
 	};
@@ -144,10 +151,18 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("PHYSICAL_SKY_ON", TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0");
 
 	AppendDefine("SPECULAR_LAMPS6", TheSettingManager->GetSettingI("Main.Main.Misc", "MoreLampsPerObject") ? "1" : "0");
+	AppendDefine("LAMP_REACH_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampReachSkip") ? "1" : "0");
+	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
+	{
+		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
+		AppendDefine("SMITH_CORRELATED_ON", smith == 1 ? "1" : "0");
+	}
+	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
 
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
 
 	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
+	AppendDefine("CLOTH_WIND_ON", TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") ? "1" : "0");
 
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
@@ -348,6 +363,14 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				
 				if (SUCCEEDED(createResult)) {
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
+					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
+						bool linear = false, predecode = false;
+						for (int d = 0; d < 36 && Template.Defines[d].Name; d++) {
+							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+						}
+						if (linear && predecode) LinearPreDecode::Register(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+					}
 					Logger::Log("Shader loaded: %s", ShaderCompiledPath);
 				}
 				else {
@@ -557,7 +580,8 @@ void ShaderRecord::SetCT() {
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
 		Sampler = &TextureShaderValues[c];
 		if (Sampler->Texture->Texture == nullptr) {
-			Sampler->Texture->BindTexture(Sampler->Name);
+			if (Sampler->Texture->TextureRef) Sampler->Texture->Texture = *Sampler->Texture->TextureRef;
+			else Sampler->Texture->BindTexture(Sampler->Name);
 
 			if (Sampler->Texture->Texture) Logger::Log("%s : Texture %s Successfully bound", Name, Sampler->Name);
 			//else Logger::Log("[ERROR] : Could not bind texture %s for shader %s", Sampler->Name, Name);
@@ -572,7 +596,9 @@ void ShaderRecord::SetCT() {
 			}
 		}
 		else {
-			Logger::Log("%s : Texture %s was not bound", Name, Sampler->Name);
+			static std::unordered_set<const void*> warned;
+			if (warned.insert(Sampler).second)
+				Logger::Log("%s : Texture %s was not bound (said once; it binds by itself if it appears later)", Name, Sampler->Name);
 		}
 	}
 
@@ -649,6 +675,21 @@ void __fastcall NiD3DVertexShaderEx::Free(NiD3DVertexShaderEx* shader) {
 */
 void NiD3DPixelShaderEx::SetupShader(IDirect3DPixelShader9* CurrentPixelHandle) {
 
+	if (GpuTimer::Enabled && Name && !memcmp(Name, "GRASS", 5)) {
+		static unsigned binds = 0;
+		if (binds < 8 || (binds % 5000 == 0 && binds <= 50000)) {
+			IDirect3DDevice9* d = TheRenderManager->device;
+			DWORD s[13] = {};
+			const D3DRENDERSTATETYPE k[13] = { D3DRS_ALPHATESTENABLE, D3DRS_ALPHAREF, D3DRS_ALPHAFUNC, D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND,
+				D3DRS_DESTBLEND, D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ZFUNC, D3DRS_CULLMODE, D3DRS_COLORWRITEENABLE, D3DRS_ADAPTIVETESS_Y,
+				D3DRS_MULTISAMPLEANTIALIAS };
+			for (int i = 0; i < 13; i++) d->GetRenderState(k[i], &s[i]);
+			Logger::Log("GRASS PROBE bind %u %s: alphatest %u ref %u func %u | blend %u src %u dst %u | z %u zwrite %u zfunc %u | cull %u colorwrite 0x%X | atoc 0x%08X msaa %u",
+				binds, Name, s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12]);
+		}
+		binds++;
+	}
+
 	if (!Enabled || !TheSettingManager->SettingsMain.Main.RenderEffects) {
 		ShaderHandle = (IDirect3DPixelShader9*)ShaderHandleBackup;
 		return;
@@ -718,6 +759,7 @@ ShaderRecordPixel::ShaderRecordPixel(const char* shaderName) {
 
 ShaderRecordPixel::~ShaderRecordPixel() {
 
+	LinearPreDecode::Unregister(ShaderHandle);
 	if (ShaderHandle) ShaderHandle->Release();
 
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "../core/TemporalHistoryStats.h"
 
 class ReflectionsEffect : public EffectRecord
 {
@@ -74,9 +75,11 @@ public:
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;
-	UINT		frame = 0;
 	UINT		lastRenderedFrame = 0;
 	bool		haveHistory = false;
+	TemporalHistoryStats	stats;
+	UINT		cubeSteps = 0, cubeEmptied = 0;
+	void		ReportHistory(const char* when);
 	int			captureIndex = 0;
 	bool		cubeValid = false;
 	void*		cubeCell = nullptr;

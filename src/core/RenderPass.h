@@ -1,4 +1,5 @@
 #pragma once
+#include <unordered_set>
 
 class RenderPass {
 public:
@@ -13,6 +14,9 @@ public:
 
 	static inline bool TwoSided = false;
 	static inline bool BindDiffuse = false;
+	static inline float LandDrop = 0.0f;
+	static inline std::unordered_set<NiGeometry*> LandSet;
+	static void UpdateShadowWorld(NiGeometry* Geo);
 	static void BindDiffuseOf(NiGeometry* Geo);
 
 	std::stack<NiGeometry*>	GeometryList;

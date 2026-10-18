@@ -1,5 +1,11 @@
 
 #include "../includes/Speedtree.hlsl"
+#ifndef CLOTH_WIND_ON
+    #define CLOTH_WIND_ON 0
+#endif
+#if CLOTH_WIND_ON
+    #include "../includes/ClothWind.hlsl"
+#endif
 
 row_major float4x4 TESR_ShadowWorldTransform : register(c0);
 row_major float4x4 TESR_ShadowViewProjTransform : register(c4);
@@ -25,6 +31,10 @@ struct VS_INPUT {
     float4 texcoord_1 : TEXCOORD1;  // Terrain LOD, no idea what it represents.
     float4 blendweight : BLENDWEIGHT;
     float4 blendindexes : BLENDINDICES;
+#if CLOTH_WIND_ON
+    float4 color : COLOR0;
+    float3 normal : NORMAL;
+#endif
 };
 
 struct VS_OUTPUT {
@@ -60,6 +70,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 	float4 r4;
 	float4 r5;
 	float4 r0 = IN.position;
+#if CLOTH_WIND_ON
+	float3 clothNormal = IN.normal;
+#endif
 	
 	if (TESR_ShadowData.x == 1.0f) { // Skinned (Actors)
 		offset.xyzw = IN.blendindexes.zyxw * const_0.y;
@@ -71,6 +84,16 @@ VS_OUTPUT main(VS_INPUT IN) {
 		q4.xyz = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), q0.xyzw);
 		q7.xyz = (IN.blendweight.z * q6.xyz) + ((IN.blendweight.x * q5.xyz) + (q4.xyz * IN.blendweight.y));
 		r0.xyz = ((1 - weight(IN.blendweight.xyz)) * q8.xyz) + q7.xyz;
+#if CLOTH_WIND_ON
+		{
+			const float4 nw = float4(IN.normal, 0);
+			const float3 n8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), nw);
+			const float3 n6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), nw);
+			const float3 n5 = mul(float3x4(Bones[0 + offset.x].xyzw, Bones[1 + offset.x].xyzw, Bones[2 + offset.x].xyzw), nw);
+			const float3 n4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), nw);
+			clothNormal = ((1 - weight(IN.blendweight.xyz)) * n8) + (IN.blendweight.z * n6) + (IN.blendweight.x * n5) + (n4 * IN.blendweight.y);
+		}
+#endif
 	}
 	else if (TESR_ShadowData.x == 2.0f) { // Leaves (Speedtrees)
         r0.xyzw = SpeedTreeTransform(BillboardUp, BillboardRight, RockParams, RustleParams, WindMatrices, LeafBase, IN.blendindexes, r0);
@@ -84,6 +107,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
+#if CLOTH_WIND_ON
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color);
+#endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);
 	

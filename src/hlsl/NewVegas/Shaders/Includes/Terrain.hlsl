@@ -7,6 +7,8 @@
     #include "includes/PBR.hlsl"
 #endif
 
+float4 TESR_TerrainParallaxIso : register(c94);
+
 #if defined(__INTELLISENSE__)
     #include "SkyAmbient.hlsl"
 #else
@@ -37,16 +39,16 @@ float4 TESR_TerrainSkyData : register(c135);
     #define SKY_AMBIENT_STRENGTH  (TESR_TerrainSkyData.x)    // scale on skyUpper at w = 1
 #endif
 
-float3 blendDiffuseMaps(float3 vertexColor, float2 uv, int texCount, sampler2D tex[7], float blends[7]) {
+float3 blendDiffuseMaps(float3 vertexColor, float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7]) {
     float3 color = float3(0, 0, 0);
     [unroll] for (int i = 0; i < texCount; i++) {
-        color += tex2D(tex[i], uv).xyz * blends[i];
+        [branch] if (blends[i] != 0 || TESR_TerrainParallaxIso.y < 0.5f) color += tex2Dgrad(tex[i], uv, odx, ody).xyz * blends[i];
     }
 
     return color * vertexColor;
 }
 
-float3 blendNormalMaps(float2 uv, int texCount, sampler2D tex[7], float blends[7], float spec[7], out float gloss, out float specExponent) {
+float3 blendNormalMaps(float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7], float spec[7], out float gloss, out float specExponent) {
     gloss = 0.0f;
     specExponent = 0.0f;
 
@@ -54,10 +56,12 @@ float3 blendNormalMaps(float2 uv, int texCount, sampler2D tex[7], float blends[7
 
     float4 normal;
     [unroll] for (int i = 0; i < texCount; i++) {
-        normal = tex2D(tex[i], uv);
+        [branch] if (blends[i] != 0 || TESR_TerrainParallaxIso.y < 0.5f) {
+        normal = tex2Dgrad(tex[i], uv, odx, ody);
         blendedNormal += normal.xyz * blends[i];
         gloss += normal.w * blends[i] * (spec[i] > 0 ? 1.0f : 0.0f);
         specExponent += spec[i] * blends[i];
+        }
     }
 
     gloss = saturate(gloss);

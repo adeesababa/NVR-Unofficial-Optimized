@@ -19,6 +19,7 @@ row_major float4x4 ModelViewProj : register(c9);
 float4 FogColor     : register(c14);
 float4 FogParam     : register(c15);
 float4 TESR_Translucency : register(c18);
+float4 GrassPairing : register(c19);
 
 #ifndef GRASS_INSTANCE_COUNT
     #define GRASS_INSTANCE_COUNT 228
@@ -65,6 +66,11 @@ VS_OUTPUT main(VS_INPUT IN) {
     float instDist = length(float4(instClip.xy, instClip.w - instClip.z, instClip.w));
 #endif
     OUT.sun.w = 1.0f - saturate((instDist - AlphaParam.z) / AlphaParam.w);
+    [branch] if (GrassPairing.w > 0.5f && ((instDist > AlphaParam.z) == (GrassPairing.w < 1.5f))) {
+        VS_OUTPUT gone = (VS_OUTPUT)0;
+        gone.position = float4(2.0f, 2.0f, 0.5f, 1.0f);
+        return gone;
+    }
 
     float4 f = frac(inst);
     float3 orient = (f.xyz - 0.5f) * 2.0f;
@@ -87,19 +93,32 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;
     phase = frac(phase * 0.159154937f + 0.5f) * 6.28318548f - 3.14159274f;
-    float sway = sin(phase) * WindData.z * (IN.color.w * IN.color.w);
+    float swing = sin(phase);
+    [branch] if (GrassPairing.y > 0.0f) {
+        float gust = 0.75f + 0.25f * sin(GrassPairing.z * 0.25f - dot(inst.xy, WindData.xy) * 0.0078125f);
+        float flutter = sin(GrassPairing.z + (inst.x - inst.y) * 0.0078125f);
+        swing = swing * (1.0f + GrassPairing.y) + 1.5f * GrassPairing.y * (0.75f * gust + 0.25f * flutter);
+    }
+    float sway = swing * WindData.z * (IN.color.w * IN.color.w);
     pos.xy += sway * WindData.xy;
 
     float4 worldPos = float4(pos + inst.xyz, 1.0f);
     OUT.position = mul(ModelViewProj, worldPos);
 
-    float3 shadowWorldPos = GetShadowWorldPos(OUT.position);
+    float3 shadowWorldPos = 0.0f;
+    [branch] if (GrassPairing.x > 0.5f || TESR_Translucency.x > 0.0f) shadowWorldPos = GetShadowWorldPos(OUT.position);
     [branch] if (TESR_Translucency.x > 0.0f) {
         NdotL += FoliageTranslucency(N, DiffuseDir, shadowWorldPos, DiffuseDir);
     }
 
-    OUT.ambient = AmbientColor;
-    OUT.sun.xyz = IN.color.rgb * DiffuseColor;
+    if (GrassPairing.x > 0.5f) {
+        OUT.ambient = AmbientColor;
+        OUT.sun.xyz = IN.color.rgb * DiffuseColor;
+    }
+    else {
+        OUT.ambient = lightScale * AmbientColor;
+        OUT.sun.xyz = ((lightScale * IN.color.rgb) * NdotL) * DiffuseColor * AddlParams.x;
+    }
     OUT.amount = float2(lightScale, lightScale * NdotL * AddlParams.x);
 
     float fogDist = length(float3(OUT.position.xy, OUT.position.w - OUT.position.z));

@@ -57,9 +57,16 @@ public:
 	CachedHandle techCompositeFog, techDedicatedFog, techApplyShadowAO, techPackedFog, paramCompositeFlags, paramCompositeAOTexel, paramFogLayout;
 	CachedHandle techCompositeFogLegacy, techDedicatedFogLegacy, techPackedFogLegacy;
 	bool	IsLegacy() const { return Constants.Legacy.x > 0.5f; }
-	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
-	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
-	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : TechniqueHandle(techPackedFog, "PackedFog"); }
+	int		classicLook = 0;
+	bool	IsClassic() const { return classicLook > 0 && !IsLegacy(); }
+	bool	referenceTest = false;
+	bool	PlainOnly() const { return referenceTest || (IsClassic() && classicLook == 2); }
+	CachedHandle techCompositeFogClassic, techDedicatedFogClassic, techCompositeFogInteriorClassic;
+	D3DXHANDLE	CompositeTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogLegacy, "CompositeFogLegacy") : IsClassic() ? TechniqueHandle(techCompositeFogClassic, "CompositeFogClassic") : TechniqueHandle(techCompositeFog, "CompositeFog"); }
+	D3DXHANDLE	DedicatedTechnique() { return IsLegacy() ? TechniqueHandle(techDedicatedFogLegacy, "DedicatedFogLegacy") : IsClassic() ? TechniqueHandle(techDedicatedFogClassic, "DedicatedFogClassic") : TechniqueHandle(techDedicatedFog, "DedicatedFog"); }
+	D3DXHANDLE	PackedTechnique() { return IsLegacy() ? TechniqueHandle(techPackedFogLegacy, "PackedFogLegacy") : IsClassic() ? NULL : TechniqueHandle(techPackedFog, "PackedFog"); }
+	CachedHandle techCompositeFogInterior, techCompositeFogInteriorLegacy;
+	D3DXHANDLE	CompositeInteriorTechnique() { return IsLegacy() ? TechniqueHandle(techCompositeFogInteriorLegacy, "CompositeFogInteriorLegacy") : IsClassic() ? TechniqueHandle(techCompositeFogInteriorClassic, "CompositeFogInteriorClassic") : TechniqueHandle(techCompositeFogInterior, "CompositeFogInterior"); }
 	UINT	PlainTechniqueIndex(UINT techniqueIndex);
 	IDirect3DTexture9* fogTexture[2] = {};
 	IDirect3DSurface9* fogSurface[2] = {};
@@ -67,11 +74,19 @@ public:
 	bool	compositeShadow = false;
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
+	bool	compositeInteriorShadow = false;
+	float	compositeRound = 0.0f;
+	IDirect3DTexture9* sceneOverride = nullptr;
+	IDirect3DSurface9* targetOverride = nullptr;
+	IDirect3DTexture9* compositeSkyTexture = nullptr;
 	bool	compositeApplied = false;
 	IDirect3DTexture9* gridTexture = nullptr;
 	bool	gridApplied = false;
 	CachedHandle paramGridFlags;
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
+	bool	CanCompositeInterior() { return !PlainOnly() && CompositeInteriorTechnique() != NULL; }
+	int		HalfStoreMode(IDirect3DDevice9* Device);
+	int		halfStoreMode = -2;
 	bool	CanApplyShadowAO();
 	bool	RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		bool shadow, IDirect3DTexture9* aoTexture);

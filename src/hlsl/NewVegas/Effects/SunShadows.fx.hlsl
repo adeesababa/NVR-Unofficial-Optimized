@@ -283,6 +283,49 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
     return color;
 }
 
+float4 ScreenSpaceShadowFast(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord;
+	float4 color = tex2D(TESR_PointShadowBuffer, IN.UVCoord);
+	if (!TESR_ShadowScreenSpaceData.x) return float4(1.0, color.g, 0, 1);
+	float3 pos = reconstructPosition(uv);
+	bool far = pos.z > SSS_MAXDEPTH;
+	float NdotL = dot(GetNormal(uv), normalize(TESR_ViewSpaceLightDir.xyz));
+	float facing = saturate(NdotL * 8.0f);
+	float bias = max(0.01f, pos.z * 0.002f);
+	float3 random3 = random(uv);
+	float rand = lerp(min(0.8f, pos.z / SSS_MAXDEPTH), 1.0f, random3.r);
+	float depth = getHomogenousDepth(uv) / farZ;
+	float3 step = pows(depth, 0.6) * (SSS_DIST / SSS_STEPNUM) * TESR_ViewSpaceLightDir.xyz * rand;
+	float thickness = pows(depth, 0.6) * SSS_THICKNESS;
+	float4 result = float4(1.0, color.g, 0, 1);
+	[branch] if (!far && !(facing <= 0.0f)) {
+		float occlusion = 0.0;
+		float total = 0;
+		[unroll]
+		for (float i = 1; i < SSS_STEPNUM; i+=2){
+			float step1 = i;
+			float step2 = i + 1;
+			float3 pos1 = pos + step1 * step;
+			float3 pos2 = pos1 + step2 * step;
+			float2 depth = {pos1.z, pos2.z};
+			float2 depthCompare = {
+				readDepthLod(projectPosition(pos1).xy),
+				readDepthLod(projectPosition(pos2).xy),
+			};
+			float2 depthDelta = depth - depthCompare;
+			occlusion += (depthDelta.x > bias && depthDelta.x < SSS_THICKNESS)/step1;
+			occlusion += (depthDelta.y > bias && depthDelta.y < SSS_THICKNESS)/step2;
+			pos = pos2;
+			total += 1/step1 + 1/step2;
+		}
+		occlusion = pows(occlusion / total, 0.3) * facing;
+		color.r = lerp(1.0f - occlusion, 1.0, smoothstep(SSS_MAXDEPTH * 0.8, SSS_MAXDEPTH, pos.z));
+		result = color;
+	}
+	return result;
+}
+
 // returns a shadow value from darkness setting value (full shadow) to 1 (full light)
 float4 Shadow(VSOUT IN) : COLOR0
 {
@@ -431,5 +474,44 @@ technique ForwardContactSharp {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 SharpContactFinish();
+	}
+}
+
+technique ContactFast {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 ScreenSpaceShadowFast();
+	}
+
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+	 	PixelShader = compile ps_3_0 DepthBlurKeep(TESR_PointShadowBuffer, OffsetMaskH, TESR_ShadowScreenSpaceData.y, 3500, SSS_MAXDEPTH);
+	}
+
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+	 	PixelShader = compile ps_3_0 DepthBlurKeep(TESR_PointShadowBuffer, OffsetMaskV, TESR_ShadowScreenSpaceData.y, 3500, SSS_MAXDEPTH);
+	}
+
+    pass {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader = compile ps_3_0 Shadow();
+    }
+}
+
+technique ForwardContactShadowsFast {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 ScreenSpaceShadowFast();
+	}
+
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DepthBlurKeep(TESR_PointShadowBuffer, OffsetMaskH, TESR_ShadowScreenSpaceData.y, 3500, SSS_MAXDEPTH);
+	}
+
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 FinalContactBlur();
 	}
 }

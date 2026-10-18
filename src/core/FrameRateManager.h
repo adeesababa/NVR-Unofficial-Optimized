@@ -16,4 +16,5 @@ public:
 	double			ElapsedTime;
 	double			SmartControlMPF;
 	double			LastPerformance;
+	unsigned int	FrameNumber;
 };

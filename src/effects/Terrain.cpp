@@ -9,6 +9,7 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainSkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
+	TheShaderManager->RegisterConstant("TESR_TerrainParallaxIso", &ParallaxConstants.IsoData);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendExtra", &BlendingConstants.Extra);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendShape", &BlendingConstants.Shape);
@@ -105,10 +106,13 @@ void TerrainShaders::UpdateSettings() {
 	ParallaxSettings.Enabled = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Enabled");
 	ParallaxSettings.HighQuality = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "HighQuality");
 	ParallaxSettings.Shadows = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Shadows");
+	ParallaxSettings.ShadowsAtNight = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "ShadowsAtNight") != 0;
 	ParallaxSettings.HeightBlend = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "HeightBlend");
 	ParallaxSettings.MaxDistance = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "MaxDistance");
 	ParallaxSettings.Height = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "Height");
 	ParallaxSettings.ShadowsIntensity = TheSettingManager->GetSettingF("Shaders.Terrain.Parallax", "ShadowsIntensity");
+	ParallaxSettings.IsoHeightTaps = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "IsoHeightTaps") != 0;
+	ParallaxSettings.SkipEmptyLayers = TheSettingManager->GetSettingI("Shaders.Terrain.Parallax", "SkipEmptyLayers") != 0;
 
 	{
 		static bool seen = false, wasLite = false;
@@ -140,12 +144,14 @@ void TerrainShaders::UpdateSettings() {
 	BlendingSettings.HeightBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "HeightBlend"), 0.0f, 2.0f);
 	BlendingSettings.SlopeBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "SlopeBlend"), 0.0f, 2.0f);
 	BlendingSettings.MinPixels = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MinPixels"), 0.0f, 8.0f);
+	BlendingSettings.ShadowDrop = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "ShadowDrop"), 0.0f, 4.0f);
 	BlendingSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "DebugView"), 0, 4);
 	if (BlendingSettings.Debug && BlendingSettings.DebugView == 0) BlendingSettings.DebugView = 1;
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
 	BlendingConstants.Data.w = (float)BlendingSettings.DebugView;
-	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
+	const bool heightEdge = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "HeightEdge") != 0;
+	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, heightEdge ? -BlendingSettings.HeightBlend : BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
 	BlendingConstants.Extra.w = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Smooth") ? 1.0f : 0.0f;
 }
 
@@ -190,13 +196,15 @@ void TerrainShaders::UpdateConstants() {
 		TheShaderManager->GetTransitionValue(Settings.Rain.AmbientScale, Settings.NightRain.AmbientScale, 0.0), rainFactor);
 
 	ParallaxConstants.Data.x = ParallaxSettings.Enabled;
-	ParallaxConstants.Data.y = ParallaxSettings.Shadows;
+	ParallaxConstants.Data.y = ParallaxSettings.Shadows && (ParallaxSettings.ShadowsAtNight || TheShaderManager->GameState.dayLight > 0.0f);
 	ParallaxConstants.Data.z = ParallaxSettings.HeightBlend;
 	ParallaxConstants.Data.w = TheSettingManager->SettingsMain.Main.ParallaxLite ? 2.0f : ParallaxSettings.HighQuality;
 
 	ParallaxConstants.ExtraData.x = ParallaxSettings.MaxDistance;
 	ParallaxConstants.ExtraData.y = ParallaxSettings.Height;
 	ParallaxConstants.ExtraData.z = ParallaxSettings.ShadowsIntensity;
+	ParallaxConstants.IsoData.x = ParallaxSettings.IsoHeightTaps ? 1.0f : 0.0f;
+	ParallaxConstants.IsoData.y = ParallaxSettings.SkipEmptyLayers ? 1.0f : 0.0f;
 
 	static const float WaterlineMargin = 10.0f;
 	ParallaxConstants.ExtraData.w = -FLT_MAX;

@@ -1,4 +1,6 @@
 #include "PBR.h"
+#include "../core/PassSums.h"
+#include "../core/LinearPreDecode.h"
 
 void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRData", &Constants.Data);
@@ -10,6 +12,9 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
+	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
+	TheShaderManager->RegisterConstant("TESR_LinearScales", &Constants.LinearScales);
+	TheShaderManager->RegisterConstant("TESR_PassRedirect", &PassSums::Redirect);
 	TheShaderManager->RegisterConstant("TESR_Translucency", &Constants.Translucency);
 	TheShaderManager->RegisterConstant("TESR_MaterialRule", &MaterialRule);
 	TheShaderManager->RegisterConstant("TESR_MaterialRough", &MaterialRough);
@@ -26,6 +31,11 @@ void PBRShaders::EndFirstPerson(IDirect3DDevice9* Device) {
 	if (Device) Device->SetPixelShaderConstantF(34, (const float*)&Constants.Metal, 1);
 }
 
+
+static float RmaosScaleOr1(const char* Section, const char* Key) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, Section, Key) ? node.FloatValue : 1.0f;
+}
 
 void PBRShaders::UpdateSettings() {
 	const bool metalOn = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "MetalOn") != 0;
@@ -52,6 +62,13 @@ void PBRShaders::UpdateSettings() {
 		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
 	Constants.Linear.x = linearGamma;
 	Constants.Linear.y = 1.0f / linearGamma;
+	PassSums::Gamma = linearGamma;
+	LinearPreDecode::Gamma = linearGamma;
+
+	Constants.Math.x = TheSettingManager->GetSettingI("Shaders.PBR.Main", "EnergySplit") ? 1.0f : 0.0f;
+	static const int smithMode = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
+	if (smithMode == 2)
+		Constants.Math.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "SmithCorrelatedTest"), 0.0f, 1.0f);
 
 	MaterialRulesSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") != 0;
 	MaterialRulesSettings.DebugView = TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "DebugView") != 0;
@@ -76,6 +93,9 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Default.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Main", "SkylightingScale");
 	Settings.Default.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Main", "SkylightingDirectionality");
 	Settings.Default.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Main", "SkylightingSaturation");
+	Settings.Default.RmaosMetalnessScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Main", "MetalnessScale"), 0.0f, 1.0f);
+	Settings.Default.RmaosAOScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Main", "AOScale"), 0.0f, 1.0f);
+	Settings.Default.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.Rain.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "Saturation");
 	Settings.Rain.Metallicness = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "Metallicness");
@@ -85,6 +105,9 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Rain.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "SkylightingScale");
 	Settings.Rain.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "SkylightingDirectionality");
 	Settings.Rain.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Rain", "SkylightingSaturation");
+	Settings.Rain.RmaosMetalnessScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Rain", "MetalnessScale"), 0.0f, 1.0f);
+	Settings.Rain.RmaosAOScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Rain", "AOScale"), 0.0f, 1.0f);
+	Settings.Rain.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Rain", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.Night.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Night", "Saturation");
 	Settings.Night.Metallicness = TheSettingManager->GetSettingF("Shaders.PBR.Night", "Metallicness");
@@ -94,6 +117,9 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Night.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Night", "SkylightingScale");
 	Settings.Night.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Night", "SkylightingDirectionality");
 	Settings.Night.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Night", "SkylightingSaturation");
+	Settings.Night.RmaosMetalnessScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Night", "MetalnessScale"), 0.0f, 1.0f);
+	Settings.Night.RmaosAOScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Night", "AOScale"), 0.0f, 1.0f);
+	Settings.Night.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Night", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.NightRain.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "Saturation");
 	Settings.NightRain.Metallicness = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "Metallicness");
@@ -103,6 +129,9 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.NightRain.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "SkylightingScale");
 	Settings.NightRain.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "SkylightingDirectionality");
 	Settings.NightRain.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "SkylightingSaturation");
+	Settings.NightRain.RmaosMetalnessScale = std::clamp(RmaosScaleOr1("Shaders.PBR.NightRain", "MetalnessScale"), 0.0f, 1.0f);
+	Settings.NightRain.RmaosAOScale = std::clamp(RmaosScaleOr1("Shaders.PBR.NightRain", "AOScale"), 0.0f, 1.0f);
+	Settings.NightRain.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.NightRain", "RoughnessScale"), 1.0f, 2.0f);
 
 	Settings.Interiors.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "Saturation");
 	Settings.Interiors.Metallicness = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "Metallicness");
@@ -112,6 +141,9 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Interiors.SkylightingScale = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "SkylightingScale");
 	Settings.Interiors.SkylightingDirectionality = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "SkylightingDirectionality");
 	Settings.Interiors.SkylightingSaturation = TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "SkylightingSaturation");
+	Settings.Interiors.RmaosMetalnessScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Interiors", "MetalnessScale"), 0.0f, 1.0f);
+	Settings.Interiors.RmaosAOScale = std::clamp(RmaosScaleOr1("Shaders.PBR.Interiors", "AOScale"), 0.0f, 1.0f);
+	Settings.Interiors.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "RoughnessScale"), 1.0f, 2.0f);
 }
 
 void PBRShaders::UpdateConstants() {
@@ -160,4 +192,16 @@ void PBRShaders::UpdateConstants() {
 		TheShaderManager->GetTransitionValue(Settings.Rain.LightScale, Settings.NightRain.LightScale, Settings.Interiors.LightScale), rainFactor);
 	Constants.Data.w = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.AmbientScale, Settings.Night.AmbientScale, Settings.Interiors.AmbientScale),
 		TheShaderManager->GetTransitionValue(Settings.Rain.AmbientScale, Settings.NightRain.AmbientScale, Settings.Default.AmbientScale), rainFactor);
+
+	const float gamma = Constants.Linear.x;
+	auto linScale = [gamma](float s) { return gamma > 1.0f ? powf(s > 0.0f ? s : 0.0f, gamma) : s; };
+	Constants.LinearScales = D3DXVECTOR4(linScale(Constants.Data.z), linScale(Constants.Data.w), linScale(Constants.ExtraData.y), 0.0f);
+
+	auto weather = [&](float PBRSettings::* member) {
+		return std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.*member, Settings.Night.*member, Settings.Interiors.*member),
+			TheShaderManager->GetTransitionValue(Settings.Rain.*member, Settings.NightRain.*member, Settings.Interiors.*member), rainFactor);
+	};
+	Constants.Math.z = std::clamp(weather(&PBRSettings::RmaosMetalnessScale), 0.0f, 1.0f) - 1.0f;
+	Constants.Math.w = std::clamp(weather(&PBRSettings::RmaosRoughnessScale), 1.0f, 2.0f) - 1.0f;
+	RmaosSettings.OcclusionNow = RmaosSettings.Occlusion * std::clamp(weather(&PBRSettings::RmaosAOScale), 0.0f, 1.0f);
 };

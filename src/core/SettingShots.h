@@ -15,7 +15,7 @@ namespace SettingShots {
 
 	struct Change { bool effect = false, console = false; std::string section, key, value; };
 	struct Shot { std::string slug; std::vector<Change> changes; };
-	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; };
+	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
 	inline std::vector<Shot> List;
@@ -33,7 +33,8 @@ namespace SettingShots {
 	inline std::vector<std::string> Commands;
 	inline bool Moves = false;
 	inline bool FinalPicture = false;
-	inline bool WantFinal = false;
+	inline std::atomic<int> FinalState{ 0 };
+	inline Job* FinalJob = nullptr;
 
 	inline bool Requested() { return GetFileAttributesA(RequestFile) != INVALID_FILE_ATTRIBUTES; }
 
@@ -43,8 +44,18 @@ namespace SettingShots {
 
 	inline void Request(NVSEMessagingInterface* messaging, UInt32 handle) { Messaging = messaging; Handle = handle; Pending = true; }
 
+	inline bool WorldCapture = false;
+	inline size_t WorldTaken = (size_t)-1;
+	inline bool StageCapture = false;
+	inline size_t StageTaken = (size_t)-1;
+	inline IDirect3DSurface9* WorldResolve = nullptr;
+	inline IDirect3DSurface9* WorldReadback = nullptr;
+	inline D3DSURFACE_DESC WorldDesc = {};
+
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WantFinal = false;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1;
+		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
+		FinalState.store(0);
 		std::ifstream in(RequestFile);
 		if (!in) { error = "the shot list could not be read"; return false; }
 		std::string line;
@@ -59,6 +70,8 @@ namespace SettingShots {
 			if (command == "frames") { words >> Frames; Frames = std::clamp(Frames, 2, 1200); }
 			else if (command == "profile") GpuTimer::Enabled = true;
 			else if (command == "final") FinalPicture = true;
+			else if (command == "world") WorldCapture = true;
+			else if (command == "stage") StageCapture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
@@ -81,7 +94,7 @@ namespace SettingShots {
 			else { error = "line " + std::to_string(number) + ": unknown command '" + command + "'"; return false; }
 		}
 		if (List.empty()) { error = "no shots in the list"; return false; }
-		if (List.size() > 40) { error = "more than 40 shots"; return false; }
+		if (List.size() > 80) { error = "more than 80 shots"; return false; }
 		return true;
 	}
 
@@ -107,10 +120,12 @@ namespace SettingShots {
 				continue;
 			}
 			Undo u; u.section = c.section; u.key = c.key; u.type = node.Type; u.b = node.BoolValue; u.i = node.IntValue; u.f = node.FloatValue;
+			u.s = node.LongValue.empty() ? node.Value : node.LongValue;
 			Undos.push_back(u);
 			switch (node.Type) {
 			case SettingManager::Configuration::Boolean: TheSettingManager->SetSetting(c.section.c_str(), c.key.c_str(), Truthy(c.value)); break;
 			case SettingManager::Configuration::Integer: TheSettingManager->SetSetting(c.section.c_str(), c.key.c_str(), atoi(c.value.c_str())); break;
+			case SettingManager::Configuration::String: TheSettingManager->SetSettingS(c.section.c_str(), c.key.c_str(), c.value.substr(0, 79).c_str()); break;
 			default: TheSettingManager->SetSetting(c.section.c_str(), c.key.c_str(), (float)atof(c.value.c_str())); break;
 			}
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
@@ -124,6 +139,7 @@ namespace SettingShots {
 			switch (u->type) {
 			case SettingManager::Configuration::Boolean: TheSettingManager->SetSetting(u->section.c_str(), u->key.c_str(), u->b); break;
 			case SettingManager::Configuration::Integer: TheSettingManager->SetSetting(u->section.c_str(), u->key.c_str(), u->i); break;
+			case SettingManager::Configuration::String: TheSettingManager->SetSettingS(u->section.c_str(), u->key.c_str(), u->s.substr(0, 79).c_str()); break;
 			default: TheSettingManager->SetSetting(u->section.c_str(), u->key.c_str(), u->f); break;
 			}
 		}
@@ -148,10 +164,68 @@ namespace SettingShots {
 		return 0;
 	}
 
+	inline void ReleaseWorld() {
+		if (WorldResolve) { WorldResolve->Release(); WorldResolve = nullptr; }
+		if (WorldReadback) { WorldReadback->Release(); WorldReadback = nullptr; }
+		WorldDesc = {};
+	}
+
+	inline void SaveTarget(IDirect3DDevice9* device, IDirect3DSurface9* target, const char* suffix);
+	inline void CaptureWorld(IDirect3DDevice9* device, IDirect3DSurface9* target) {
+		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < Frames) return;
+		WorldTaken = Index;
+		SaveTarget(device, target, "");
+	}
+	inline void CaptureStage(IDirect3DDevice9* device, IDirect3DSurface9* target) {
+		if (!Running || !StageCapture || !device || !target || Index >= List.size() || StageTaken == Index || Frame < Frames) return;
+		StageTaken = Index;
+		SaveTarget(device, target, "-al");
+	}
+	inline void SaveTarget(IDirect3DDevice9* device, IDirect3DSurface9* target, const char* suffix) {
+		const char* slug = List[Index].slug.c_str();
+		target->AddRef();
+		D3DSURFACE_DESC d = {};
+		target->GetDesc(&d);
+		const UInt32 bpp = d.Format == D3DFMT_A16B16G16R16F ? 8 : d.Format == D3DFMT_A32B32G32R32F ? 16 :
+			(d.Format == D3DFMT_A8R8G8B8 || d.Format == D3DFMT_X8R8G8B8 || d.Format == D3DFMT_A2R10G10B10 || d.Format == D3DFMT_A2B10G10R10) ? 4 : 0;
+		bool ok = bpp != 0;
+		if (ok && (!WorldReadback || WorldDesc.Width != d.Width || WorldDesc.Height != d.Height || WorldDesc.Format != d.Format || WorldDesc.MultiSampleType != d.MultiSampleType)) {
+			ReleaseWorld();
+			ok = (d.MultiSampleType == D3DMULTISAMPLE_NONE || SUCCEEDED(device->CreateRenderTarget(d.Width, d.Height, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &WorldResolve, NULL))) &&
+				SUCCEEDED(device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &WorldReadback, NULL));
+			if (ok) WorldDesc = d;
+		}
+		IDirect3DSurface9* source = target;
+		if (ok && WorldResolve) { ok = SUCCEEDED(device->StretchRect(target, NULL, WorldResolve, NULL, D3DTEXF_NONE)); source = WorldResolve; }
+		ok = ok && SUCCEEDED(device->GetRenderTargetData(source, WorldReadback));
+		D3DLOCKED_RECT lock = {};
+		ok = ok && SUCCEEDED(WorldReadback->LockRect(&lock, NULL, D3DLOCK_READONLY));
+		char path[MAX_PATH];
+		sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s%s.world", Run, (unsigned)Index, slug, suffix);
+		bool saved = false;
+		if (ok) {
+			FILE* f = nullptr;
+			if (!fopen_s(&f, path, "wb") && f) {
+				const UInt32 header[5] = { 0x5752564E, d.Width, d.Height, (UInt32)d.Format, bpp };
+				saved = fwrite(header, sizeof(header), 1, f) == 1;
+				for (UInt32 y = 0; saved && y < d.Height; y++) saved = fwrite((const unsigned char*)lock.pBits + (size_t)y * lock.Pitch, (size_t)d.Width * bpp, 1, f) == 1;
+				fclose(f);
+			}
+			WorldReadback->UnlockRect();
+		}
+		target->Release();
+		Logger::Log("SETTING SHOTS %s: shot '%s': world target %ux%u format %u msaa %u -> %s %s", Run, slug, d.Width, d.Height, (unsigned)d.Format,
+			(unsigned)d.MultiSampleType, path, saved ? "saved" : "NOT saved");
+	}
+
+	inline void QueueJob(Job* job);
+	inline void NextShot();
+
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
 			AllQueued = false;
 			Reader.Release();
+			ReleaseWorld();
 			Logger::Log("SETTING SHOTS %s: done, every picture written", Run);
 			Notify(kLinkPictures, Run);
 		}
@@ -169,6 +243,14 @@ namespace SettingShots {
 			return;
 		}
 		if (!Running) return;
+		if (FinalState.load() == 3) {
+			Job* job = FinalJob;
+			FinalJob = nullptr;
+			FinalState.store(0);
+			QueueJob(job);
+			NextShot();
+			if (!Running) return;
+		}
 		if (!Commands.empty()) {
 			for (const std::string& line : Commands) {
 				Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
@@ -178,24 +260,20 @@ namespace SettingShots {
 		}
 		if (Moves && Player) Cell = Player->parentCell;
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
-		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); Stop("the device was lost"); return; }
+		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
 		Frame++;
 	}
 
-	inline void TakeShot(IDirect3DSurface9* surface) {
+	inline void QueueJob(Job* job) {
 		const Shot& shot = List[Index];
-		Job* job = new (std::nothrow) Job();
-		if (job && Reader.Read(TheRenderManager->device, surface, job->bgra, job->width, job->height)) {
-			sprintf_s(job->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s.png", Run, (unsigned)Index, shot.slug.c_str());
-			InFlight++;
-			HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
-			if (thread) CloseHandle(thread);
-			else { InFlight--; delete job; Logger::Log("SETTING SHOTS %s: shot '%s' not written: no thread", Run, shot.slug.c_str()); }
-		}
-		else {
-			Logger::Log("SETTING SHOTS %s: shot '%s' NOT taken: %s", Run, shot.slug.c_str(), Reader.error ? Reader.error : "no memory");
-			delete job;
-		}
+		sprintf_s(job->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s.png", Run, (unsigned)Index, shot.slug.c_str());
+		InFlight++;
+		HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
+		if (thread) CloseHandle(thread);
+		else { InFlight--; delete job; Logger::Log("SETTING SHOTS %s: shot '%s' not written: no thread", Run, shot.slug.c_str()); }
+	}
+
+	inline void NextShot() {
 		Revert();
 		Index++;
 		Frame = 0;
@@ -203,18 +281,35 @@ namespace SettingShots {
 		else { Running = false; AllQueued = true; }
 	}
 
+	inline void TakeShot(IDirect3DSurface9* surface) {
+		Job* job = new (std::nothrow) Job();
+		if (job && Reader.Read(TheRenderManager->device, surface, job->bgra, job->width, job->height)) QueueJob(job);
+		else {
+			Logger::Log("SETTING SHOTS %s: shot '%s' NOT taken: %s", Run, List[Index].slug.c_str(), Reader.error ? Reader.error : "no memory");
+			delete job;
+		}
+		NextShot();
+	}
+
 	inline void Capture(IDirect3DSurface9* surface) {
 		if (!Running || Frame < Frames || !surface) return;
-		if (FinalPicture) { WantFinal = true; return; }
+		if (FinalPicture) { int idle = 0; FinalState.compare_exchange_strong(idle, 1); return; }
 		TakeShot(surface);
 	}
 
 	inline void CaptureFinal() {
-		if (!Running || !WantFinal) return;
-		WantFinal = false;
+		int wanted = 1;
+		if (!Running || !FinalState.compare_exchange_strong(wanted, 0)) return;
 		IDirect3DSurface9* backBuffer = nullptr;
 		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a final picture"); return; }
 		TakeShot(backBuffer);
 		backBuffer->Release();
+	}
+
+	inline bool BeginFinalCapture() { int wanted = 1; return Running && FinalState.compare_exchange_strong(wanted, 2); }
+	inline void EndFinalCapture(Job* job) {
+		if (!job) { FinalState.store(1); return; }
+		FinalJob = job;
+		FinalState.store(3);
 	}
 }

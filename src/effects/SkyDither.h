@@ -8,6 +8,7 @@ public:
 	struct SettingsStruct {
 		float	Strength;
 		bool	SkyOnly;
+		int		Pattern;
 	};
 	SettingsStruct	Settings;
 

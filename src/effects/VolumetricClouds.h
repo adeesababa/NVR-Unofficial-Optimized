@@ -33,6 +33,7 @@ public:
 		float	FineDetailSize;
 		float	Sharpness;
 		float	FromWeatherTextures;
+		bool	FixedMarchExit;
 	};
 	SettingsStruct	Settings = {};
 

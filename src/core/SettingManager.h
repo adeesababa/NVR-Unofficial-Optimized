@@ -24,6 +24,12 @@ struct SettingsMainStruct {
         bool    DisableCompositeApply;
         bool    DisableChainGameTexture;
         bool    DisableMergedNormals;
+        bool    SkipIdentityExposure;
+        bool    LampMaskScissor;
+        bool    InteriorShadowFold;
+        int     InteriorShadowFoldRound;
+        bool    CubeFaceViewCull;
+        bool    CubeFaceCopySkip;
         bool    SlimDepthBuffer;
         bool    SkipRedundantConstants;
         bool    ShaderWarmUp;
@@ -33,6 +39,9 @@ struct SettingsMainStruct {
         bool    ReShadeDepthCompat;
         bool    ReShadeNVRDepth;
         bool    ReShadeBeforeHUD;
+        bool    ReShadeDepthNearRemap;
+        bool    ReShadeMenuGuard;
+        bool    ReShadeMenuGuardVATS;
         bool    LampScissor;
         bool    NeonSpillSelfTest;
         int     LampPassTestSkip;
@@ -40,6 +49,7 @@ struct SettingsMainStruct {
         bool    GodRaysLowRes;
         bool    AOLowRes;
         bool    FXAA;
+        float   LampShadowMoveTolerance;
         int     PointShadowInterval;
         bool    CheapReflections;
         bool    CheapUnderwaterTerrain;
@@ -347,7 +357,8 @@ public:
 			char		Section[40];
 			char		Key[40];
 			char		MidSection[80];
-			char		Value[80];		// formatted text representation; still read directly by the UI layer
+			char		Value[80];
+			std::string	LongValue;
 			std::string Description;
 			bool		Reboot;
 			UInt32		Type;
@@ -382,6 +393,7 @@ public:
 
 		tomlValue		TomlConfig;
 		tomlValue		DefaultConfig;
+		UInt32			DefaultsGeneration = 0;
 		tomlValue		MaxQualityConfig;
 		tomlValue		MaxQualityUser;
 		bool			MaxQualityActive = false;
@@ -433,6 +445,7 @@ public:
 	template <typename T> static void			FillFromString(const char* String, const char* Delimiter, T* Values);
 
 	Configuration					Config;
+	UInt32							SettingsRevision = 0;
 	bool							GameLoading;
 	bool							SettingsChanged;
 	bool							hasUnsavedChanges;

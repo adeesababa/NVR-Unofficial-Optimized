@@ -10,6 +10,7 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudVolumeLight", &Constants.CloudVolumeLight);
 	TheShaderManager->RegisterConstant("TESR_SunsetColor", &Constants.SunsetColor);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradiance", &Constants.Irradiance[0]);
+	TheShaderManager->RegisterConstant("TESR_SkyIrradianceGame", &Constants.IrradianceGame[0]);
 	TheShaderManager->RegisterConstant("TESR_PhysSky", &Constants.PhysSky);
 	TheShaderManager->RegisterConstant("TESR_PhysSkySun", &Constants.PhysSkySun);
 }
@@ -136,6 +137,8 @@ void SkyShaders::UpdateConstants() {
 	//
 	// Radiance below the horizon is ZERO -- no ground bounce is modelled. That reproduces the
 	// old form factor exactly: a floor sees the full dome, a wall half of it, a ceiling none.
+	const bool physMs = PhysicalSettings.Enabled && PhysicalSettings.MultipleScattering;
+	const bool physExact = PhysicalSettings.Enabled && (PhysicalSettings.ExactSunlight || PhysicalSettings.MultipleScattering);
 	{
 		PBRShaders* pbrForKey = TheShaderManager->Shaders.PBR;
 		ProjectionInputs inputs = { TheShaderManager->ShaderConst.SunPosition, TheShaderManager->ShaderConst.skyColor,
@@ -143,7 +146,8 @@ void SkyShaders::UpdateConstants() {
 			TheShaderManager->ShaderConst.sunDiskColor, Constants.SunsetColor,
 			D3DXVECTOR4(PhysicalSettings.Enabled ? 1.0f : 0.0f, PhysicalSettings.Brightness, PhysicalSettings.WeatherTint, PhysicalSettings.Haze),
 			TheShaderManager->ShaderConst.SunAmount.x,
-			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f };
+			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f,
+			D3DXVECTOR4(physExact ? 1.0f : 0.0f, physMs ? 1.0f : 0.0f, PhysicalSettings.GroundAlbedo, 0.0f) };
 		inputs.sunsetColor.w = 0.0f;
 		const bool sunStill = lastProjectionValid &&
 			inputs.sunPos.x * lastProjection.sunPos.x + inputs.sunPos.y * lastProjection.sunPos.y + inputs.sunPos.z * lastProjection.sunPos.z >= 0.9999985f;
@@ -174,8 +178,8 @@ void SkyShaders::UpdateConstants() {
 	const float dTheta = (D3DX_PI * 0.5f) / STEPS_T;
 	const float dPhi = (2.0f * D3DX_PI) / STEPS_P;
 
-	D3DXVECTOR3 sh[9];
-	for (int i = 0; i < 9; i++) sh[i] = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+	D3DXVECTOR3 sh[9], shGame[9];
+	for (int i = 0; i < 9; i++) sh[i] = shGame[i] = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 
 	{
 		D3DXVECTOR3 realSun(sunPos.x, sunPos.y, sunPos.z);
@@ -184,10 +188,24 @@ void SkyShaders::UpdateConstants() {
 		share = share * share * (3.0f - 2.0f * share);
 		if (!PhysicalSettings.Enabled || !TheShaderManager->GameState.isExterior) share = 0.0f;
 		Constants.PhysSky = D3DXVECTOR4(share, 1.0f, PhysicalSettings.WeatherTint, PhysicalSettings.Haze);
-		Constants.PhysSkySun = D3DXVECTOR4(realSun.x, realSun.y, realSun.z, 0.0f);
+		Constants.PhysSkySun = D3DXVECTOR4(realSun.x, realSun.y, realSun.z, physMs ? PhysicalSettings.GroundAlbedo : 0.0f);
 	}
 	const bool physical = Constants.PhysSky.x > 0.0f;
 	static D3DXVECTOR3 physSamples[(16 / 2) * (32 / 2)];
+	if (physical && physExact && !physTables.Matches(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs)) {
+		static float wantHaze = -1.0f, wantAlbedo = -1.0f;
+		static bool wantMs = false;
+		static unsigned wantSince = 0;
+		const unsigned now = TheFrameRateManager->FrameNumber;
+		if (wantHaze != PhysicalSettings.Haze || wantAlbedo != PhysicalSettings.GroundAlbedo || wantMs != physMs) {
+			wantHaze = PhysicalSettings.Haze; wantAlbedo = PhysicalSettings.GroundAlbedo; wantMs = physMs; wantSince = now;
+		}
+		const bool oldTablesUsable = physTables.built && (!physMs || physTables.hasMs);
+		if (!oldTablesUsable || now - wantSince >= 10)
+			physTables.Build(PhysicalSettings.Haze, PhysicalSettings.GroundAlbedo, physMs);
+		else
+			lastProjectionValid = false;
+	}
 	if (physical) {
 		const D3DXVECTOR3 realSun(Constants.PhysSkySun.x, Constants.PhysSkySun.y, Constants.PhysSkySun.z);
 		for (int i = 0; i < STEPS_T / 2; i++) {
@@ -196,7 +214,11 @@ void SkyShaders::UpdateConstants() {
 				const float phi = (2 * j + 1) * dPhi;
 				D3DXVECTOR3 physDir(st * cosf(phi), st * sinf(phi), (std::max)(ct, 0.002f));
 				D3DXVec3Normalize(&physDir, &physDir);
-				physSamples[i * (STEPS_P / 2) + j] = PhysAtmosphere::Radiance(physDir, realSun, 300.0f, PhysicalSettings.Haze);
+				if (physExact) {
+					const PhysSky::V3 v = physTables.Radiance(PhysSky::V3(physDir.x, physDir.y, physDir.z), PhysSky::V3(realSun.x, realSun.y, realSun.z), 300.0f, PhysicalSettings.Haze, physMs);
+					physSamples[i * (STEPS_P / 2) + j] = D3DXVECTOR3(v.x, v.y, v.z);
+				}
+				else physSamples[i * (STEPS_P / 2) + j] = PhysAtmosphere::Radiance(physDir, realSun, 300.0f, PhysicalSettings.Haze);
 			}
 		}
 		float gameSum = 0.0f, physSum = 0.0f;
@@ -227,7 +249,19 @@ void SkyShaders::UpdateConstants() {
 			// down hardest.
 			D3DXVECTOR3 L = EvalSky(d, sunPos, Constants.SkyData, skyC, skyLowC, horizonC,
 				sunColor, sunHeight, isDayTime);
-			if (physical) L = PhysAtmosphere::Blend(L, physSamples[(i / 2) * (STEPS_P / 2) + j / 2] * Constants.PhysSky.y, Constants.PhysSky);
+			if (physical) {
+				const D3DXVECTOR3 G = L * dOmega;
+				shGame[0] += G * 0.282095f;
+				shGame[1] += G * (0.488603f * d.y);
+				shGame[2] += G * (0.488603f * d.z);
+				shGame[3] += G * (0.488603f * d.x);
+				shGame[4] += G * (1.092548f * d.x * d.y);
+				shGame[5] += G * (1.092548f * d.y * d.z);
+				shGame[6] += G * (0.315392f * (3.0f * d.z * d.z - 1.0f));
+				shGame[7] += G * (1.092548f * d.x * d.z);
+				shGame[8] += G * (0.546274f * (d.x * d.x - d.y * d.y));
+				L = PhysAtmosphere::Blend(L, physSamples[(i / 2) * (STEPS_P / 2) + j / 2] * Constants.PhysSky.y, Constants.PhysSky);
+			}
 			L *= dOmega;
 
 			sh[0] += L * 0.282095f;
@@ -254,6 +288,8 @@ void SkyShaders::UpdateConstants() {
 	const float saturation = pbr ? max(pbr->SkylightSaturation, 0.0f) : 1.0f;
 	for (int i = 0; i < 9; i++) {
 		D3DXVECTOR3 c = sh[i] * (band[i] * basis[i]);
+		const D3DXVECTOR3 g = physical ? shGame[i] * (band[i] * basis[i]) : c;
+		Constants.IrradianceGame[i] = D3DXVECTOR4(g.x, g.y, g.z, 0.0f);
 		if (saturation != 1.0f) {
 			const float luminance = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 			c = D3DXVECTOR3(luminance, luminance, luminance) + (c - D3DXVECTOR3(luminance, luminance, luminance)) * saturation;
@@ -285,6 +321,9 @@ void SkyShaders::UpdateSettings() {
 	PhysicalSettings.Brightness = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Brightness"), 0.0f, 4.0f);
 	PhysicalSettings.WeatherTint = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "WeatherTint"), 0.0f, 1.0f);
 	PhysicalSettings.Haze = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "Haze"), 0.0f, 10.0f);
+	PhysicalSettings.ExactSunlight = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "ExactSunlight") != 0;
+	PhysicalSettings.MultipleScattering = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "MultipleScattering") != 0;
+	PhysicalSettings.GroundAlbedo = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "GroundAlbedo"), 0.0f, 1.0f);
 	lastProjectionValid = false;
 
 	CloudsVolumetricSetting = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Volumetric");

@@ -9,6 +9,7 @@ public:
 
 	struct BloodFlowSettingsStruct {
 		bool	Splats;
+		bool	CheapGather;
 		bool	Pools;
 		float	DripLength;
 		float	FlowSpeed;
@@ -71,6 +72,7 @@ public:
 	static const int	PathRows = ItemMax * BloodFlowBoxes::Streams;
 	Item				Items[ItemMax];
 	int					Count = 0;
+	int					OnScreenCount = 0;
 	VolumetricSmokeQuads::Vertex Vertices[ItemMax * 36];
 	VolumetricSmokeQuads::Vertex ProbeVertices[ItemMax * 6];
 	VolumetricSmokeQuads::Vertex BoundsVertices[ItemMax * 6];

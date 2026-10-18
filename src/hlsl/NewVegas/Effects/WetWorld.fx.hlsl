@@ -14,6 +14,8 @@ float4 TESR_OrthoData;
 float4 TESR_WetWorldCoeffs;
 float4 TESR_WaterSettings;
 float4 TESR_WetWorldData;
+float4 TESR_WetWorldLook;
+float3 WetOut(float3 c) { return TESR_WetWorldLook.x > 0.5f ? max(c, 0.0f) : saturate(c); }
 float4 TESR_SunPosition;
 float4 TESR_SkyData;
 float4 TESR_SkyLowColor;
@@ -116,6 +118,9 @@ static const float PuddleSSRSurfaceBias = 3.0f;
 static const float PuddleSSRNormalInfluence = 0.25f;
 static const int PuddleSSRRefinementSteps = 2;
 static const float PuddleSSRRefinementTolerance = 12.0f;
+static const float PuddleSSRThickness = 24.0f;
+static const float PuddleSSRThicknessPerStep = 0.30f;
+static const float PuddleSSREdgeFade = 0.05f;
 
 struct VSOUT
 {
@@ -464,6 +469,81 @@ float3 TraceWetReflection(float2 sourceUV, float3 waterNormal)
     return selectedHit;
 }
 
+float3 TraceWetReflectionFixed(float2 sourceUV, float3 waterNormal)
+{
+    float3 result = float3(0, 0, 0);
+    float3 origin = GetSSRViewPosition(sourceUV);
+    float4 sourceClip = mul(float4(origin, 1.0f), TESR_ProjectionTransform);
+    float viewSign = origin.z < 0.0f ? -1.0f : 1.0f;
+    float clipSign = sourceClip.w < 0.0f ? -1.0f : 1.0f;
+    float3 viewNormal = normalize(mul(float4(waterNormal, 0.0f), TESR_ViewTransform).xyz);
+    if (dot(viewNormal, origin) > 0.0f) viewNormal = -viewNormal;
+    float3 rayDirection = normalize(reflect(normalize(origin), viewNormal));
+    origin += viewNormal * PuddleSSRSurfaceBias;
+    float4 projectedOrigin = mul(float4(origin, 1.0f), TESR_ProjectionTransform);
+    float4 projectedDirection = mul(float4(rayDirection, 0.0f), TESR_ProjectionTransform);
+    float previousDelta = -PuddleSSRRefinementTolerance;
+    float previousTravel = 0.0f;
+    bool done = abs(sourceClip.w) < 0.0001f || abs(origin.z) < 0.0001f;
+    [loop]
+    for (int ssrStep = 1; ssrStep <= PuddleSSRSteps; ssrStep++)
+    {
+        float fraction = (float)ssrStep / (float)PuddleSSRSteps;
+        float travel = 8.0f + PuddleSSRMaxDistance * fraction * fraction;
+        float3 probe = origin + rayDirection * travel;
+        float4 projected = projectedOrigin + projectedDirection * travel;
+        float2 hitUV = projected.xy / max(abs(projected.w), 0.0001f) * float2(0.5f, -0.5f) + 0.5f;
+        bool onScreen = projected.w * clipSign > 0.0001f && probe.z * viewSign > 0.0001f
+            && hitUV.x > 0.001f && hitUV.x < 0.999f && hitUV.y > 0.001f && hitUV.y < 0.999f;
+        float4 depthSample = tex2Dlod(TESR_DepthBuffer, float4(hitUV, 0, 0));
+        float delta = probe.z * viewSign - depthSample.x * farZ;
+        [branch]
+        if (!done && onScreen && depthSample.x > 0.0f && depthSample.x < 0.99999f && delta >= 0.0f && previousDelta < 0.0f)
+        {
+            float lowerTravel = previousTravel;
+            float upperTravel = travel;
+            [unroll]
+            for (int refinement = 0; refinement < PuddleSSRRefinementSteps; refinement++)
+            {
+                float midTravel = (lowerTravel + upperTravel) * 0.5f;
+                float3 midProbe = origin + rayDirection * midTravel;
+                float4 midClip = projectedOrigin + projectedDirection * midTravel;
+                float2 midUV = midClip.xy / midClip.w * float2(0.5f, -0.5f) + 0.5f;
+                float midZ = tex2Dlod(TESR_DepthBuffer, float4(midUV, 0, 0)).x * farZ;
+                bool behind = midProbe.z * viewSign - midZ >= 0.0f;
+                upperTravel = behind ? midTravel : upperTravel;
+                lowerTravel = behind ? lowerTravel : midTravel;
+            }
+            float3 hitProbe = origin + rayDirection * upperTravel;
+            float4 hitClip = projectedOrigin + projectedDirection * upperTravel;
+            float2 refinedUV = hitClip.xy / hitClip.w * float2(0.5f, -0.5f) + 0.5f;
+            float hitDepth = tex2Dlod(TESR_DepthBuffer, float4(refinedUV, 0, 0)).x;
+            float hitDelta = hitProbe.z * viewSign - hitDepth * farZ;
+            float vmHitDepth = tex2Dlod(TESR_DepthBufferViewModel, float4(refinedUV, 0, 0)).x;
+            bool hitViewModel = (TESR_DepthConstants.z == 0 && vmHitDepth < 0.9f)
+            || (TESR_DepthConstants.z > 0 && vmHitDepth > 0.01f);
+            float2 pixelSeparation = (refinedUV - sourceUV) / TESR_ReciprocalResolution.xy;
+            bool validHitDepth = hitDepth > 0.0f && hitDepth < 0.99999f;
+            bool separatedHit = dot(pixelSeparation, pixelSeparation) >= 16.0f;
+            float thickness = PuddleSSRThickness + PuddleSSRThicknessPerStep * (travel - previousTravel);
+            float edge = min(min(refinedUV.x, 1.0f - refinedUV.x), min(refinedUV.y, 1.0f - refinedUV.y));
+            float edgeVisibility = smoothstep(0.0f, PuddleSSREdgeFade, edge);
+            float distanceVisibility = max(1.0f - smoothstep(PuddleSSRMaxDistance * 0.65f,
+                PuddleSSRMaxDistance, upperTravel), 0.25f);
+            float visibility = edgeVisibility * distanceVisibility;
+            if (hitDelta >= 0.0f && hitDelta <= thickness && validHitDepth && !hitViewModel && separatedHit && visibility > 0.0f)
+            {
+                result = float3(refinedUV, visibility);
+                done = true;
+            }
+        }
+        done = done || !onScreen;
+        previousDelta = delta;
+        previousTravel = travel;
+    }
+    return result;
+}
+
 VSOUT FrameVS(VSIN IN)
 {
     VSOUT OUT = (VSOUT)0.0f;
@@ -515,7 +595,42 @@ float4 BlurWetMap(VSOUT IN, uniform float2 OffsetMask, uniform float blurRadius)
     return float4(coverage, 1.0f);
 }
 
-float4 Wet(VSOUT IN) : COLOR0
+float2 GetPuddleCloudUV(float4 worldPosRelRoof, float3 combinedNormals)
+{
+    float3 cloudSurface = TESR_CameraPosition.xyz
+    + worldPosRelRoof.xyz;
+    float2 cloudUV = cloudSurface.xy / max(PuddleCloudWorldSize, 1.0f);
+    cloudUV += TESR_GameTime.z * PuddleCloudDrift;
+    cloudUV += combinedNormals.xy * PuddleCloudRippleDistortion;
+    return cloudUV;
+}
+
+void AddLampHighlightFast(float4 lightPos, float3 c, float3 worldPos, float3 V, float3 N, float specMask, float streakMask,
+    inout float3 pointSpecCol, inout float3 streakPointCol)
+{
+    float3 L = lightPos.xyz - worldPos;
+    float dist = length(L);
+    float d = dist / max(lightPos.w, 1e-4);
+    float att = saturate(1.0f - d);
+    att *= att;
+    att = lightPos.w > 0.0f ? att : 0.0f;
+    [branch]
+    if (att > 0.0f)
+    {
+        L /= max(dist, 1e-4);
+        float3 H = normalize(L - V);
+
+        float ndh = saturate(dot(N, H));
+        float specLobe = pow(ndh, 30.0f);
+        float spec = specLobe * specMask;
+
+        pointSpecCol += c * spec * att;
+        float streakSpec = specLobe * streakMask * StreakSpecularStrength;
+        streakPointCol += c * streakSpec * att;
+    }
+}
+
+float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
 {
     float4 baseColor = tex2D(TESR_SourceBuffer, IN.UVCoord);
 
@@ -599,8 +714,9 @@ float4 Wet(VSOUT IN) : COLOR0
     (worldPos.z > TESR_WaterSettings.x - waterThreshold) &&
     (worldPos.z < TESR_WaterSettings.x + waterThreshold);
 
-    if (depth > DrawD || isWaterSurface)
-        return float4(saturate(baseColor.rgb + splashAdd), baseColor.a);
+    if (!fast && (depth > DrawD || isWaterSurface))
+        return float4(WetOut(baseColor.rgb + splashAdd), baseColor.a);
+    float4 baseColorIn = baseColor;
 
     float LODfade = smoothstep(DrawD, 0, depth);
 
@@ -752,83 +868,259 @@ float4 Wet(VSOUT IN) : COLOR0
     float2 refrClamp = TESR_ReciprocalResolution.xy * (refractionScale * 0.75f);
     refrOff = clamp(refrOff, -refrClamp, refrClamp);
 
-    float3 refrLin = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord + refrOff)).rgb;
+    float4 cloudSample = float4(0, 0, 0, 0);
+    float wetWeight = LODfade * wetMask;
+    float3 refrLinPre = float3(0, 0, 0);
+    float vmSampleValidPre = 0.0f;
+    float4 shadowsPre = float4(0, 0, 0, 0);
+    if (fast)
+    {
+        cloudSample = tex2D(TESR_PuddleCloudSampler, GetPuddleCloudUV(worldPosRelRoof, combinedNormals));
+        refrLinPre = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord + refrOff)).rgb;
+        vmSampleValidPre = GetViewModelMask(saturate(IN.UVCoord + refrOff));
+        shadowsPre = tex2D(TESR_PointShadowBuffer, IN.UVCoord);
+
+        [branch]
+        if (depth > DrawD || isWaterSurface || shadowsPre.y < -1.0f)
+            return float4(WetOut(baseColorIn.rgb + splashAdd), baseColorIn.a);
+
+        float fLinger = puddleFade * flatCoverage;
+        float fSsrMask = saturate(max(rippleMask, max(fLinger, puddlemask)));
+        float fScreen = smoothstep(PuddleSSRScreenFadeStart, PuddleSSRScreenFadeFull, IN.UVCoord.y);
+        float fAngle = 1.0f - smoothstep(PuddleSSRFadeStart, PuddleSSRFadeFull, saturate(dot(-V, up)));
+        float fOpacity = fScreen * fAngle;
+        float fTraceOpacity = saturate(PuddleSSRCandidateBlend) * saturate(fSsrMask * LODfade) * fOpacity;
+        bool fTraces = fSsrMask > 0.001f && PuddleSSRCandidateBlend > 0.0f && fOpacity > 0.0f
+            && fTraceOpacity > PuddleSSRMinTraceOpacity;
+
+        [branch]
+        if (vmMask <= 0.5f && !(wetWeight > 0.0f) && !(streakMask > 0.0f) && !(fixTrace && fTraces))
+            return float4(WetOut(baseColor.rgb + splashAdd), 1.0f);
+    }
+
+    if (!fast)
+    {
+        float3 refrLin = linearize(tex2D(TESR_SourceBuffer, IN.UVCoord + refrOff)).rgb;
+
+        float3 baseLin = linearize(baseColor).rgb;
+        float3 rippleColor = lerp(baseLin, refrLin, viewRefr);
+
+        if (vmMask > 0.5f)
+        {
+            float2 vmRefrUV = saturate(IN.UVCoord + refrOff);
+            float vmSampleValid = GetViewModelMask(vmRefrUV);
+
+            float3 vmRefrLin = lerp(baseLin, refrLin, vmSampleValid);
+            float vmRippleBlend = saturate(LODfade * rippleMask) * viewRefr;
+            float3 vmWetLin = lerp(baseLin, vmRefrLin, vmRippleBlend);
+            float3 vmWetRGB = delinearize(float4(vmWetLin, 1.0f)).rgb;
+            return float4(WetOut(vmWetRGB + splashAdd), baseColor.a);
+        }
+
+        float sunAmbient = max(luma(linearize(TESR_SunAmbient)), 0.0001f);
+        float4 shadows = tex2D(TESR_PointShadowBuffer, IN.UVCoord);
+        float inShadow = saturate(pow((shadows.r + shadows.g) / sunAmbient, 5));
+
+        float sunHeight = shade(TESR_SunPosition.xyz, up);
+
+        float3 fresnelColor = GetSkyColor(
+            0, 0.5, sunHeight, 0.0f, TESR_SkyData.z,
+            TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, TESR_SunColor.rgb
+            );
+
+        float NdotV = saturate(dot(N, -V));
+        float F = PuddleSkyMinReflect + (1.0f - PuddleSkyMinReflect)
+        * pow(1.0f - NdotV, 5.0f);
+
+        float reflDist = 1.0f - smoothstep(600.0f, DrawD, depth);
+        float reflStrength = saturate(puddlemask * F * PuddleSkyStrength
+            * lerp(1.0f, 1.15f, rainVis) * reflDist);
+
+        float3 puddleBase = rippleColor.rgb * lerp(1.0f, 0.55f, TESR_WetWorldData.w);
+        puddleBase = lerp(rippleColor.rgb, puddleBase, puddlemask);
+
+        float3 waterTint = float3(0.92f, 0.97f, 1.05f);
+        puddleBase *= lerp(1.0f, waterTint, depthish * 0.25f);
+        puddleBase *= (1.0f - depthish * 0.18f);
+        puddleBase *= (1.0f - rimDark);
+
+        float reflMix = min(PuddleSkyMaxBlend, reflStrength * (1.0f + depthish * 0.20f + rimReflBoost));
+        reflMix *= smoothstep(0.03f, 0.12f, puddlemask);
+
+        float3 reflectionSky = max(fresnelColor, 0.0f.xxx);
+        float reflectionSkyLuma = max(luma(reflectionSky), 0.0f);
+        reflectionSky = lerp(reflectionSkyLuma.xxx, reflectionSky,
+            saturate(PuddleSkyTintInfluence));
+        float3 skyReflColor = reflectionSky * PuddleSkyBrightness;
+        float skyPeak = max(skyReflColor.r, max(skyReflColor.g, skyReflColor.b));
+        skyReflColor /= (1.0f + skyPeak);
+
+        float skyLuma = max(luma(skyReflColor), 0.0001f);
+        float skyLumaLimit = PuddleSkyLumaFloor + luma(baseLin) * PuddleSkyLumaScale;
+        skyReflColor *= min(1.0f, skyLumaLimit / skyLuma);
+
+        float3 cloudSurface = TESR_CameraPosition.xyz
+        + worldPosRelRoof.xyz;
+        float2 cloudUV = cloudSurface.xy / max(PuddleCloudWorldSize, 1.0f);
+        cloudUV += TESR_GameTime.z * PuddleCloudDrift;
+        cloudUV += combinedNormals.xy * PuddleCloudRippleDistortion;
+        cloudSample = tex2D(TESR_PuddleCloudSampler, cloudUV);
+
+        float3 cloudDetail = saturate((cloudSample.rgb - 0.5f) * PuddleCloudContrast + 0.5f);
+        float cloudAlpha = saturate((cloudSample.a - 0.5f) * PuddleCloudContrast + 0.5f);
+
+        float3 cloudLight = reflectionSky;
+        cloudLight /= (1.0f + max(cloudLight.r, max(cloudLight.g, cloudLight.b)));
+        cloudLight *= min(1.0f, skyLumaLimit / max(luma(cloudLight), 0.0001f));
+        float3 cloudReflection = cloudLight * PuddleCloudBrightness
+        * lerp(0.12f.xxx, 1.0f.xxx, cloudDetail);
+        float cloudCoverage = saturate(cloudAlpha * PuddleCloudStrength);
+        skyReflColor = lerp(skyReflColor, cloudReflection, cloudCoverage);
+        float3 puddleColor = lerp(puddleBase, skyReflColor, reflMix);
+
+        float lingeringReflectionMask = puddleFade * flatCoverage;
+        float ssrMask = saturate(max(rippleMask, max(lingeringReflectionMask, puddlemask)));
+        float ssrScreenOpacity = smoothstep(PuddleSSRScreenFadeStart,
+            PuddleSSRScreenFadeFull, IN.UVCoord.y);
+        float ssrDownAngle = saturate(dot(-V, up));
+        float ssrAngleOpacity = 1.0f - smoothstep(PuddleSSRFadeStart, PuddleSSRFadeFull, ssrDownAngle);
+        float ssrOpacity = ssrScreenOpacity * ssrAngleOpacity;
+        float ssrTraceOpacity = saturate(PuddleSSRCandidateBlend)
+            * saturate(ssrMask * LODfade) * ssrOpacity;
+        float3 ssrHit = float3(0, 0, 0);
+        if (ssrMask > 0.001f && PuddleSSRCandidateBlend > 0.0f && ssrOpacity > 0.0f
+            && ssrTraceOpacity > PuddleSSRMinTraceOpacity)
+        {
+            float3 ssrNormal = normalize(lerp(baseN, N, saturate(PuddleSSRNormalInfluence)));
+            if (fixTrace)
+            ssrHit = TraceWetReflectionFixed(IN.UVCoord, ssrNormal);
+        else
+            ssrHit = TraceWetReflection(IN.UVCoord, ssrNormal);
+        }
+        float ssrCoverage = saturate(ssrHit.z * ssrMask * LODfade) * ssrOpacity;
+
+        float3 Ls = normalize(TESR_SunDirection.xyz);
+        float3 Hs = normalize(Ls - V);
+
+        float sunNdotH   = saturate(dot(N, Hs));
+        float sunSpecPow = lerp(lerp(80.0f, 200.0f, specMask), 700.0f, puddlemask);
+        float sunSpec    = pow(sunNdotH, sunSpecPow) * specMask;
+
+        float sunSpecMul = lerp(0.25f, 0.70f, saturate(sunHeight));
+        float3 sunSpecCol = linearize(TESR_SunColor).rgb * sunSpec * sunSpecMul * inShadow
+        * lerp(1.0f, PuddleSunStrength, puddlemask);
+        float sunHighlightLimit = lerp(PuddleSunLimit, PuddleSunHighlightLimit, puddlemask);
+        sunSpecCol = min(sunSpecCol, sunHighlightLimit.xxx);
+
+        float3 streakSunCol = float3(0, 0, 0);
+        [branch]
+        if (streakMask > 0.0f)
+        {
+            float streakSunSpec = pow(sunNdotH, StreakSunSpecularPower)
+                * streakMask * StreakSpecularStrength;
+            streakSunCol = linearize(TESR_SunColor).rgb * streakSunSpec * sunSpecMul * inShadow;
+        }
+
+        float3 pointSpecCol = float3(0, 0, 0);
+        float3 streakPointCol = float3(0, 0, 0);
+
+        [unroll]
+        for (int i = 0; i < 12; i++)
+        {
+            if (TESR_ShadowLightPosition[i].w > 0.0f)
+            {
+                float3 L = TESR_ShadowLightPosition[i].xyz - worldPos.xyz;
+                float dist = length(L);
+                L /= max(dist, 1e-4);
+
+                float d = dist / max(TESR_ShadowLightPosition[i].w, 1e-4);
+                float att = saturate(1.0f - d);
+                att *= att;
+
+                float3 H = normalize(L - V);
+
+                float ndh = saturate(dot(N, H));
+                float specLobe = pow(ndh, 30.0f);
+                float spec = specLobe * specMask;
+
+                float3 c = TESR_LightColor[i].rgb;
+                pointSpecCol += c * spec * att;
+                float streakSpec = specLobe * streakMask * StreakSpecularStrength;
+                streakPointCol += c * streakSpec * att;
+            }
+
+            if (TESR_LightPosition[i].w > 0.0f)
+            {
+                float3 L = TESR_LightPosition[i].xyz - worldPos.xyz;
+                float dist = length(L);
+                L /= max(dist, 1e-4);
+
+                float d = dist / max(TESR_LightPosition[i].w, 1e-4);
+                float att = saturate(1.0f - d);
+                att *= att;
+
+                float3 H = normalize(L - V);
+
+                float ndh = saturate(dot(N, H));
+                float specLobe = pow(ndh, 30.0f);
+                float spec = specLobe * specMask;
+
+                float3 c = TESR_LightColor[i + 12].rgb;
+                pointSpecCol += c * spec * att;
+                float streakSpec = specLobe * streakMask * StreakSpecularStrength;
+                streakPointCol += c * streakSpec * att;
+            }
+        }
+
+        pointSpecCol *= lerp(1.0f, PuddleLightStrength, puddlemask);
+        float pointHighlightLimit = lerp(PuddleLightLimit, PuddlePointHighlightLimit, puddlemask);
+        pointSpecCol = min(pointSpecCol, pointHighlightLimit.xxx);
+
+        float3 finalPuddle = puddleColor + sunSpecCol + pointSpecCol;
+
+        float4 outCol = float4(finalPuddle, 1.0f);
+        outCol = delinearize(outCol);
+
+        float3 wetRGB = lerp(baseColor.rgb, outCol.rgb, LODfade * wetMask);
+
+        if (ssrHit.z > (fixTrace ? 0.001f : 0.5f) && PuddleSSRCandidateBlend > 0.0f)
+        {
+            float3 reflectionRGB = tex2Dlod(TESR_SourceBuffer, float4(ssrHit.xy, 0, 0)).rgb;
+            float reflectionBlend = saturate(PuddleSSRCandidateBlend) * ssrCoverage;
+            wetRGB = lerp(wetRGB, reflectionRGB, reflectionBlend);
+        }
+
+        [branch]
+        if (streakMask > 0.0f)
+        {
+            float3 streakLighting = min(streakSunCol + streakPointCol,
+                (StreakHighlightLimit * streakMask).xxx);
+            float3 wetLinear = linearize(float4(wetRGB, 1.0f)).rgb;
+            wetRGB = delinearize(float4(wetLinear + streakLighting * LODfade, 1.0f)).rgb;
+        }
+        return float4(WetOut(wetRGB + splashAdd), 1.0f);
+    }
 
     float3 baseLin = linearize(baseColor).rgb;
-    float3 rippleColor = lerp(baseLin, refrLin, viewRefr);
 
+    [branch]
     if (vmMask > 0.5f)
     {
-        float2 vmRefrUV = saturate(IN.UVCoord + refrOff);
-        float vmSampleValid = GetViewModelMask(vmRefrUV);
+        float3 vmRefrLinRaw = refrLinPre;
+        float vmSampleValid = vmSampleValidPre;
 
-        float3 vmRefrLin = lerp(baseLin, refrLin, vmSampleValid);
+        float3 vmRefrLin = lerp(baseLin, vmRefrLinRaw, vmSampleValid);
         float vmRippleBlend = saturate(LODfade * rippleMask) * viewRefr;
         float3 vmWetLin = lerp(baseLin, vmRefrLin, vmRippleBlend);
         float3 vmWetRGB = delinearize(float4(vmWetLin, 1.0f)).rgb;
-        return float4(saturate(vmWetRGB + splashAdd), baseColor.a);
+        return float4(WetOut(vmWetRGB + splashAdd), baseColor.a);
     }
 
     float sunAmbient = max(luma(linearize(TESR_SunAmbient)), 0.0001f);
-    float4 shadows = tex2D(TESR_PointShadowBuffer, IN.UVCoord);
+    float4 shadows = shadowsPre;
     float inShadow = saturate(pow((shadows.r + shadows.g) / sunAmbient, 5));
 
     float sunHeight = shade(TESR_SunPosition.xyz, up);
-
-    float3 fresnelColor = GetSkyColor(
-        0, 0.5, sunHeight, 0.0f, TESR_SkyData.z,
-        TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, TESR_SunColor.rgb
-        );
-
-    float NdotV = saturate(dot(N, -V));
-    float F = PuddleSkyMinReflect + (1.0f - PuddleSkyMinReflect)
-    * pow(1.0f - NdotV, 5.0f);
-
-    float reflDist = 1.0f - smoothstep(600.0f, DrawD, depth);
-    float reflStrength = saturate(puddlemask * F * PuddleSkyStrength
-        * lerp(1.0f, 1.15f, rainVis) * reflDist);
-
-    float3 puddleBase = rippleColor.rgb * lerp(1.0f, 0.55f, TESR_WetWorldData.w);
-    puddleBase = lerp(rippleColor.rgb, puddleBase, puddlemask);
-
-    float3 waterTint = float3(0.92f, 0.97f, 1.05f);
-    puddleBase *= lerp(1.0f, waterTint, depthish * 0.25f);
-    puddleBase *= (1.0f - depthish * 0.18f);
-    puddleBase *= (1.0f - rimDark);
-
-    float reflMix = min(PuddleSkyMaxBlend, reflStrength * (1.0f + depthish * 0.20f + rimReflBoost));
-    reflMix *= smoothstep(0.03f, 0.12f, puddlemask);
-
-    float3 reflectionSky = max(fresnelColor, 0.0f.xxx);
-    float reflectionSkyLuma = max(luma(reflectionSky), 0.0f);
-    reflectionSky = lerp(reflectionSkyLuma.xxx, reflectionSky,
-        saturate(PuddleSkyTintInfluence));
-    float3 skyReflColor = reflectionSky * PuddleSkyBrightness;
-    float skyPeak = max(skyReflColor.r, max(skyReflColor.g, skyReflColor.b));
-    skyReflColor /= (1.0f + skyPeak);
-
-    float skyLuma = max(luma(skyReflColor), 0.0001f);
-    float skyLumaLimit = PuddleSkyLumaFloor + luma(baseLin) * PuddleSkyLumaScale;
-    skyReflColor *= min(1.0f, skyLumaLimit / skyLuma);
-
-    float3 cloudSurface = TESR_CameraPosition.xyz
-    + worldPosRelRoof.xyz;
-    float2 cloudUV = cloudSurface.xy / max(PuddleCloudWorldSize, 1.0f);
-    cloudUV += TESR_GameTime.z * PuddleCloudDrift;
-    cloudUV += combinedNormals.xy * PuddleCloudRippleDistortion;
-    float4 cloudSample = tex2D(TESR_PuddleCloudSampler, cloudUV);
-
-    float3 cloudDetail = saturate((cloudSample.rgb - 0.5f) * PuddleCloudContrast + 0.5f);
-    float cloudAlpha = saturate((cloudSample.a - 0.5f) * PuddleCloudContrast + 0.5f);
-
-    float3 cloudLight = reflectionSky;
-    cloudLight /= (1.0f + max(cloudLight.r, max(cloudLight.g, cloudLight.b)));
-    cloudLight *= min(1.0f, skyLumaLimit / max(luma(cloudLight), 0.0001f));
-    float3 cloudReflection = cloudLight * PuddleCloudBrightness
-    * lerp(0.12f.xxx, 1.0f.xxx, cloudDetail);
-    float cloudCoverage = saturate(cloudAlpha * PuddleCloudStrength);
-    skyReflColor = lerp(skyReflColor, cloudReflection, cloudCoverage);
-    float3 puddleColor = lerp(puddleBase, skyReflColor, reflMix);
 
     float lingeringReflectionMask = puddleFade * flatCoverage;
     float ssrMask = saturate(max(rippleMask, max(lingeringReflectionMask, puddlemask)));
@@ -840,26 +1132,20 @@ float4 Wet(VSOUT IN) : COLOR0
     float ssrTraceOpacity = saturate(PuddleSSRCandidateBlend)
         * saturate(ssrMask * LODfade) * ssrOpacity;
     float3 ssrHit = float3(0, 0, 0);
+    [branch]
     if (ssrMask > 0.001f && PuddleSSRCandidateBlend > 0.0f && ssrOpacity > 0.0f
         && ssrTraceOpacity > PuddleSSRMinTraceOpacity)
     {
         float3 ssrNormal = normalize(lerp(baseN, N, saturate(PuddleSSRNormalInfluence)));
-        ssrHit = TraceWetReflection(IN.UVCoord, ssrNormal);
+        if (fixTrace)
+            ssrHit = TraceWetReflectionFixed(IN.UVCoord, ssrNormal);
     }
     float ssrCoverage = saturate(ssrHit.z * ssrMask * LODfade) * ssrOpacity;
 
     float3 Ls = normalize(TESR_SunDirection.xyz);
     float3 Hs = normalize(Ls - V);
-
     float sunNdotH   = saturate(dot(N, Hs));
-    float sunSpecPow = lerp(lerp(80.0f, 200.0f, specMask), 700.0f, puddlemask);
-    float sunSpec    = pow(sunNdotH, sunSpecPow) * specMask;
-
     float sunSpecMul = lerp(0.25f, 0.70f, saturate(sunHeight));
-    float3 sunSpecCol = linearize(TESR_SunColor).rgb * sunSpec * sunSpecMul * inShadow
-    * lerp(1.0f, PuddleSunStrength, puddlemask);
-    float sunHighlightLimit = lerp(PuddleSunLimit, PuddleSunHighlightLimit, puddlemask);
-    sunSpecCol = min(sunSpecCol, sunHighlightLimit.xxx);
 
     float3 streakSunCol = float3(0, 0, 0);
     [branch]
@@ -873,66 +1159,98 @@ float4 Wet(VSOUT IN) : COLOR0
     float3 pointSpecCol = float3(0, 0, 0);
     float3 streakPointCol = float3(0, 0, 0);
 
+    float anyLamp = 0.0f;
     [unroll]
-    for (int i = 0; i < 12; i++)
+    for (int j = 0; j < 12; j++)
+        anyLamp = max(anyLamp, max(TESR_ShadowLightPosition[j].w, TESR_LightPosition[j].w));
+    [branch]
+    if (anyLamp > 0.0f)
     {
-        if (TESR_ShadowLightPosition[i].w > 0.0f)
+        [unroll]
+        for (int i = 0; i < 12; i++)
         {
-            float3 L = TESR_ShadowLightPosition[i].xyz - worldPos.xyz;
-            float dist = length(L);
-            L /= max(dist, 1e-4);
-
-            float d = dist / max(TESR_ShadowLightPosition[i].w, 1e-4);
-            float att = saturate(1.0f - d);
-            att *= att;
-
-            float3 H = normalize(L - V);
-
-            float ndh = saturate(dot(N, H));
-            float specLobe = pow(ndh, 30.0f);
-            float spec = specLobe * specMask;
-
-            float3 c = TESR_LightColor[i].rgb;
-            pointSpecCol += c * spec * att;
-            float streakSpec = specLobe * streakMask * StreakSpecularStrength;
-            streakPointCol += c * streakSpec * att;
-        }
-
-        if (TESR_LightPosition[i].w > 0.0f)
-        {
-            float3 L = TESR_LightPosition[i].xyz - worldPos.xyz;
-            float dist = length(L);
-            L /= max(dist, 1e-4);
-
-            float d = dist / max(TESR_LightPosition[i].w, 1e-4);
-            float att = saturate(1.0f - d);
-            att *= att;
-
-            float3 H = normalize(L - V);
-
-            float ndh = saturate(dot(N, H));
-            float specLobe = pow(ndh, 30.0f);
-            float spec = specLobe * specMask;
-
-            float3 c = TESR_LightColor[i + 12].rgb;
-            pointSpecCol += c * spec * att;
-            float streakSpec = specLobe * streakMask * StreakSpecularStrength;
-            streakPointCol += c * streakSpec * att;
+            AddLampHighlightFast(TESR_ShadowLightPosition[i], TESR_LightColor[i].rgb, worldPos.xyz, V, N, specMask, streakMask,
+                pointSpecCol, streakPointCol);
+            AddLampHighlightFast(TESR_LightPosition[i], TESR_LightColor[i + 12].rgb, worldPos.xyz, V, N, specMask, streakMask,
+                pointSpecCol, streakPointCol);
         }
     }
 
-    pointSpecCol *= lerp(1.0f, PuddleLightStrength, puddlemask);
-    float pointHighlightLimit = lerp(PuddleLightLimit, PuddlePointHighlightLimit, puddlemask);
-    pointSpecCol = min(pointSpecCol, pointHighlightLimit.xxx);
+    float3 wetRGB = baseColor.rgb;
+    [branch]
+    if (wetWeight > 0.0f)
+    {
+        float3 refrLin = refrLinPre;
+        float3 rippleColor = lerp(baseLin, refrLin, viewRefr);
 
-    float3 finalPuddle = puddleColor + sunSpecCol + pointSpecCol;
+        float3 fresnelColor = GetSkyColor(
+            0, 0.5, sunHeight, 0.0f, TESR_SkyData.z,
+            TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, TESR_SunColor.rgb
+            );
 
-    float4 outCol = float4(finalPuddle, 1.0f);
-    outCol = delinearize(outCol);
+        float NdotV = saturate(dot(N, -V));
+        float F = PuddleSkyMinReflect + (1.0f - PuddleSkyMinReflect)
+        * pow(1.0f - NdotV, 5.0f);
 
-    float3 wetRGB = lerp(baseColor.rgb, outCol.rgb, LODfade * wetMask);
+        float reflDist = 1.0f - smoothstep(600.0f, DrawD, depth);
+        float reflStrength = saturate(puddlemask * F * PuddleSkyStrength
+            * lerp(1.0f, 1.15f, rainVis) * reflDist);
 
-    if (ssrHit.z > 0.5f && PuddleSSRCandidateBlend > 0.0f)
+        float3 puddleBase = rippleColor.rgb * lerp(1.0f, 0.55f, TESR_WetWorldData.w);
+        puddleBase = lerp(rippleColor.rgb, puddleBase, puddlemask);
+
+        float3 waterTint = float3(0.92f, 0.97f, 1.05f);
+        puddleBase *= lerp(1.0f, waterTint, depthish * 0.25f);
+        puddleBase *= (1.0f - depthish * 0.18f);
+        puddleBase *= (1.0f - rimDark);
+
+        float reflMix = min(PuddleSkyMaxBlend, reflStrength * (1.0f + depthish * 0.20f + rimReflBoost));
+        reflMix *= smoothstep(0.03f, 0.12f, puddlemask);
+
+        float3 reflectionSky = max(fresnelColor, 0.0f.xxx);
+        float reflectionSkyLuma = max(luma(reflectionSky), 0.0f);
+        reflectionSky = lerp(reflectionSkyLuma.xxx, reflectionSky,
+            saturate(PuddleSkyTintInfluence));
+        float3 skyReflColor = reflectionSky * PuddleSkyBrightness;
+        float skyPeak = max(skyReflColor.r, max(skyReflColor.g, skyReflColor.b));
+        skyReflColor /= (1.0f + skyPeak);
+
+        float skyLuma = max(luma(skyReflColor), 0.0001f);
+        float skyLumaLimit = PuddleSkyLumaFloor + luma(baseLin) * PuddleSkyLumaScale;
+        skyReflColor *= min(1.0f, skyLumaLimit / skyLuma);
+
+        float3 cloudDetail = saturate((cloudSample.rgb - 0.5f) * PuddleCloudContrast + 0.5f);
+        float cloudAlpha = saturate((cloudSample.a - 0.5f) * PuddleCloudContrast + 0.5f);
+
+        float3 cloudLight = reflectionSky;
+        cloudLight /= (1.0f + max(cloudLight.r, max(cloudLight.g, cloudLight.b)));
+        cloudLight *= min(1.0f, skyLumaLimit / max(luma(cloudLight), 0.0001f));
+        float3 cloudReflection = cloudLight * PuddleCloudBrightness
+        * lerp(0.12f.xxx, 1.0f.xxx, cloudDetail);
+        float cloudCoverage = saturate(cloudAlpha * PuddleCloudStrength);
+        skyReflColor = lerp(skyReflColor, cloudReflection, cloudCoverage);
+        float3 puddleColor = lerp(puddleBase, skyReflColor, reflMix);
+
+        float sunSpecPow = lerp(lerp(80.0f, 200.0f, specMask), 700.0f, puddlemask);
+        float sunSpec    = pow(sunNdotH, sunSpecPow) * specMask;
+        float3 sunSpecCol = linearize(TESR_SunColor).rgb * sunSpec * sunSpecMul * inShadow
+        * lerp(1.0f, PuddleSunStrength, puddlemask);
+        float sunHighlightLimit = lerp(PuddleSunLimit, PuddleSunHighlightLimit, puddlemask);
+        sunSpecCol = min(sunSpecCol, sunHighlightLimit.xxx);
+
+        pointSpecCol *= lerp(1.0f, PuddleLightStrength, puddlemask);
+        float pointHighlightLimit = lerp(PuddleLightLimit, PuddlePointHighlightLimit, puddlemask);
+        pointSpecCol = min(pointSpecCol, pointHighlightLimit.xxx);
+
+        float3 finalPuddle = puddleColor + sunSpecCol + pointSpecCol;
+
+        float4 outCol = float4(finalPuddle, 1.0f);
+        outCol = delinearize(outCol);
+
+        wetRGB = lerp(baseColor.rgb, outCol.rgb, wetWeight);
+    }
+
+    if (ssrHit.z > (fixTrace ? 0.001f : 0.5f) && PuddleSSRCandidateBlend > 0.0f)
     {
         float3 reflectionRGB = tex2Dlod(TESR_SourceBuffer, float4(ssrHit.xy, 0, 0)).rgb;
         float reflectionBlend = saturate(PuddleSSRCandidateBlend) * ssrCoverage;
@@ -947,7 +1265,7 @@ float4 Wet(VSOUT IN) : COLOR0
         float3 wetLinear = linearize(float4(wetRGB, 1.0f)).rgb;
         wetRGB = delinearize(float4(wetLinear + streakLighting * LODfade, 1.0f)).rgb;
     }
-    return float4(saturate(wetRGB + splashAdd), 1.0f);
+    return float4(WetOut(wetRGB + splashAdd), 1.0f);
 }
 
 float4 CoverTest(VSOUT IN) : COLOR0
@@ -981,7 +1299,7 @@ technique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet();
+        PixelShader  = compile ps_3_0 Wet(false, false);
     }
 }
 
@@ -991,5 +1309,77 @@ technique CoverTestTechnique
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader  = compile ps_3_0 CoverTest();
+    }
+}
+
+technique FastPathsTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, false);
+    }
+}
+
+technique FixedTraceTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(false, true);
+    }
+}
+
+technique FixedTraceFastPathsTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, true);
     }
 }

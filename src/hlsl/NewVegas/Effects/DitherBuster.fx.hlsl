@@ -13,6 +13,8 @@
 
 float4 TESR_ReciprocalResolution;
 float4 TESR_DitherBusterData;   // x: Strength (0-1), y: MaskPower, z: DitherThreshold, w: Radius
+float4 TESR_DitherBusterGate;
+float4 TESR_ToneMappingClip;
 
 //-----------------------------------------//
 // Samplers:
@@ -50,6 +52,7 @@ VSOUT FrameVS(VSIN IN)
 //-----------------------------------------//
 
 #include "Includes/Helpers.hlsl"
+#include "Includes/DitherNoise.hlsl"
 
 //-----------------------------------------//
 // Options:
@@ -276,11 +279,61 @@ half4 DitherOnly(VSOUT IN) : COLOR0
 
 
 
+half4 DitherOnlyStable(VSOUT IN, float2 vpos : VPOS) : COLOR0
+{
+    half3 center = tex2D(TESR_RenderedBuffer, IN.UVCoord).rgb;
+    half3 colorW = GetBufferOffset(TESR_RenderedBuffer, half2(-1.0f, 0.0f)).rgb;
+    half3 colorE = GetBufferOffset(TESR_RenderedBuffer, half2(1.0f, 0.0f)).rgb;
+    half3 colorN = GetBufferOffset(TESR_RenderedBuffer, half2(0.0f, 1.0f)).rgb;
+    half3 colorS = GetBufferOffset(TESR_RenderedBuffer, half2(0.0f, -1.0f)).rgb;
+    static const half3 LumaWeights = half3(0.2126f, 0.7152f, 0.0722f);
+    half lumaC = dot(center, LumaWeights);
+    half lumaW = dot(colorW, LumaWeights);
+    half lumaE = dot(colorE, LumaWeights);
+    half lumaN = dot(colorN, LumaWeights);
+    half lumaS = dot(colorS, LumaWeights);
+    [branch] if (TESR_DitherBusterGate.y > 0.5f) {
+        lumaC = LumaWithoutDither(lumaC, vpos);
+        lumaW = LumaWithoutDither(lumaW, vpos + float2(-1.0f, 0.0f));
+        lumaE = LumaWithoutDither(lumaE, vpos + float2(1.0f, 0.0f));
+        lumaN = LumaWithoutDither(lumaN, vpos + float2(0.0f, 1.0f));
+        lumaS = LumaWithoutDither(lumaS, vpos + float2(0.0f, -1.0f));
+    }
+    half2 gradient = half2(lumaS - lumaN, lumaE - lumaW) * 0.5f;
+    half spike = abs(lumaC - lumaN) + abs(lumaC - lumaS) +
+                 abs(lumaC - lumaE) + abs(lumaC - lumaW);
+    half isolation = max(0.0f, spike - 4.0f * length(gradient));
+
+    [branch] if (TESR_DitherBusterGate.z > 0.5f)
+        return half4(saturate(center - TonemapDitherAt(vpos) * saturate(center * 128.0f)), 1.0f);
+
+    half gate = isolation > TESR_DitherBusterData.z ? 1.0f : 0.0f;
+    [branch] if (TESR_DitherBusterGate.x > 0.0f)
+        gate = smoothstep(TESR_DitherBusterData.z * (1.0f - TESR_DitherBusterGate.x), TESR_DitherBusterData.z * (1.0f + TESR_DitherBusterGate.x), isolation);
+
+    if (TESR_DitherBusterData.z > 0.0f && gate > 0.0f) {
+        half3 neighbourhood = (center + colorN + colorS + colorE + colorW) * 0.2f;
+        center = lerp(center, neighbourhood, saturate(TESR_DitherBusterData.x) * gate);
+    }
+    return half4(center, 1.0f);
+}
+
+
+
 technique POST_PROCESS_ANTI_ALIASING
 {
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
         PixelShader = compile ps_3_0 DitherOnly();
+    }
+}
+
+technique POST_PROCESS_ANTI_ALIASING_STABLE
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader = compile ps_3_0 DitherOnlyStable();
     }
 }

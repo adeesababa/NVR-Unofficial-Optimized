@@ -23,6 +23,7 @@ void RainEffect::UpdateSettings() {
 	Constants.Aspect.x = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Refraction");
 	Constants.Aspect.y = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Coloring");
 	Constants.Aspect.z = TheSettingManager->GetSettingF("Shaders.Precipitations.Main", "Bloom");
+	Constants.Aspect.w = TheSettingManager->GetSettingI("Shaders.Precipitations.Main", "SkipHiddenLayers") != 0 ? 1.0f : 0.0f;
 }
 
 void RainEffect::RegisterConstants() {

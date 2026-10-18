@@ -18,6 +18,7 @@ public:
 	void					AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLand, bool isLOD, NiFrustumPlanes* arPlanes = nullptr);
 	bool					IsRefracting(TESObjectREFR* Ref);
 	void					AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLODLand);
+	bool					OrthoSkipBlendOnly = false;
 	void					RenderAccums();
 	void					RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj);
 	void					AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);
@@ -61,6 +62,8 @@ public:
 	bool					ShadowShadersLoaded;
 	int						FrameCounter;
 	bool					ForceAllCascades = true;
+	bool					SunCascadesSkipped = false;
+	bool					SunAtlasDrawn = false;
 	std::vector<D3DXVECTOR4>	FrameMovers;
 	D3DXVECTOR3				CascadeRefreshCamera[4] = {};
 	bool					CascadeHadMover[4] = {};

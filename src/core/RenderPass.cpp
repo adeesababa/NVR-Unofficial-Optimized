@@ -1,5 +1,7 @@
 #include "RenderPass.h"
+#include "ClothWind.h"
 #include "ShadowBoneUpload.h"
+#include "OrthoProbe.h"
 
 
 void RenderPass::BindDiffuseOf(NiGeometry* Geo) {
@@ -22,6 +24,12 @@ void RenderPass::BindDiffuseOf(NiGeometry* Geo) {
 }
 
 
+void RenderPass::UpdateShadowWorld(NiGeometry* Geo) {
+	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+	if (LandDrop > 0.0f && LandSet.count(Geo)) TheShaderManager->ShaderConst.ShadowWorld._43 -= LandDrop;
+}
+
+
 void RenderPass::RenderAccum() {
 	if (GeometryList.empty()) return;
 
@@ -39,6 +47,10 @@ void RenderPass::RenderAccum() {
 		UpdateConstants(Geo);
 		PixelShader->SetCT();
 		VertexShader->SetCT();
+		ClothWind::ForGeometry(TheRenderManager->device, Geo, true);
+#if NVR_TEST_TOOLS
+		if (OrthoProbe::Recording) OrthoProbe::OnDraw(this, Geo);
+#endif
 
 		RenderGeometry(Geo);
 	}
@@ -150,7 +162,7 @@ void ShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	ShadowsExteriorEffect::ShadowStruct* ShadowConstants = &TheShaderManager->Effects.ShadowsExteriors->Constants;
 	ShadowConstants->Data.x = 0.0f; // Type of geo (0 normal, 1 actors (skinned), 2 speedtree leaves)
 	ShadowConstants->Data.y = 0.0f; // Alpha Control
-	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+	UpdateShadowWorld(Geo);
 	BindDiffuseOf(Geo);
 }
 
@@ -190,7 +202,7 @@ void AlphaShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	ShadowsExteriorEffect::ShadowStruct* ShadowConstants = &TheShaderManager->Effects.ShadowsExteriors->Constants;
 	ShadowConstants->Data.x = 0.0f; // Type of geo (0 normal, 1 actors (skinned), 2 speedtree leaves)
 	ShadowConstants->Data.y = 0.0f; // Alpha Control
-	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+	UpdateShadowWorld(Geo);
 
 	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
 	NiTexture* Texture = *((BSShaderPPLightingProperty*)ShaderProperty)->ppTextures[0];

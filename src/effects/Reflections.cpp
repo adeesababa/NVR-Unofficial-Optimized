@@ -1,6 +1,8 @@
 #include "Reflections.h"
+#include "../core/GpuProfiler.h"
 
 void ReflectionsEffect::UpdateSettings() {
+	ReportHistory("settings changed");
 	const char* section = "Shaders.Reflections.Main";
 	Settings.GroundSheen = std::clamp(TheSettingManager->GetSettingF(section, "GroundSheen"), 0.0f, 2.0f);
 	Settings.RainWetness = std::clamp(TheSettingManager->GetSettingF(section, "RainWetness"), 0.0f, 2.0f);
@@ -57,8 +59,16 @@ void ReflectionsEffect::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_ReflectionsEnv", &Cubes.EnvSlot);
 }
 
+void ReflectionsEffect::ReportHistory(const char* when) {
+	if (!stats.drawn && !cubeSteps) return;
+	char text[256];
+	stats.Describe(text, sizeof(text));
+	Logger::Log("UNOFFICIAL Reflections temporal history (%s, Temporal %.2f): %s; cube: %u updates, %u emptied first", when, Settings.Temporal, text, cubeSteps, cubeEmptied);
+	stats.Reset();
+	cubeSteps = cubeEmptied = 0;
+}
+
 void ReflectionsEffect::UpdateConstants() {
-	frame++;
 	const bool exterior = TheShaderManager->GameState.isExterior;
 
 	float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
@@ -91,10 +101,14 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
 	const D3DXMATRIX& invView = TheRenderManager->InvViewMatrix;
 
-	bool usable = temporal && haveHistory && lastRenderedFrame + 1 == frame;
+	const UINT now = TheFrameRateManager->FrameNumber;
+	const bool drewLastFrame = lastRenderedFrame + 1 == now;
+	bool usable = temporal && haveHistory && drewLastFrame;
 	const double move[3] = { (double)invView._41 - lastInvView._41, (double)invView._42 - lastInvView._42,
 		(double)invView._43 - lastInvView._43 };
 	if (usable) usable = move[0] * move[0] + move[1] * move[1] + move[2] * move[2] < 500.0 * 500.0;
+	stats.Note(temporal, haveHistory, drewLastFrame, usable);
+	if (GpuTimer::Enabled && stats.drawn >= 240) ReportHistory("240 frames");
 	if (usable) {
 		D3DXMATRIX toLastView;
 		for (int i = 0; i < 3; i++) {
@@ -107,7 +121,7 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		D3DXMatrixMultiply(&Constants.Reproject, &toLastView, &lastProj);
 	}
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
-	Constants.Data2.w = temporal ? (float)(frame % 64) : 0.0f;
+	Constants.Data2.w = temporal ? (float)(now % 64) : 0.0f;
 
 	CubeStep(Device);
 
@@ -126,7 +140,7 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	pass(Textures.BufferSurface, 4);
 
 	haveHistory = temporal;
-	lastRenderedFrame = frame;
+	lastRenderedFrame = now;
 	lastView = view;
 	lastInvView = invView;
 	lastProj = TheRenderManager->projMatrix;
@@ -137,7 +151,7 @@ bool ReflectionsEffect::CubeWanted() {
 }
 
 bool ReflectionsEffect::CubeReady() const {
-	return Enabled && cubeValid && frame - cubeFrame <= 1;
+	return Enabled && cubeValid && TheFrameRateManager->FrameNumber - cubeFrame <= 1;
 }
 
 void ReflectionsEffect::RenderCubeOnly(IDirect3DDevice9* Device) {
@@ -155,10 +169,14 @@ void ReflectionsEffect::CubeStep(IDirect3DDevice9* Device) {
 		dz = (double)invView._43 - cubeInvView._43;
 	void* cell = Player ? Player->parentCell : nullptr;
 	const bool jumped = dx * dx + dy * dy + dz * dz > 1000.0 * 1000.0;
-	RenderCube(Device, !cubeValid || cubeFrame + 1 != frame || cell != cubeCell || jumped);
+	const UINT now = TheFrameRateManager->FrameNumber;
+	const bool empty = !cubeValid || cubeFrame + 1 != now || cell != cubeCell || jumped;
+	cubeSteps++;
+	if (empty) cubeEmptied++;
+	RenderCube(Device, empty);
 	cubeCell = cell;
 	cubeValid = true;
-	cubeFrame = frame;
+	cubeFrame = now;
 	cubeInvView = invView;
 }
 

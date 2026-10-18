@@ -19,7 +19,9 @@ public:
 
 	void	UpdateConstants() {};
 	void	RegisterConstants() {};
-	void	UpdateSettings() {};
+	void	UpdateSettings();
+
+	bool	fastPaths = false;
 
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;

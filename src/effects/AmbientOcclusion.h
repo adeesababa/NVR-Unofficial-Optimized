@@ -16,6 +16,15 @@ public:
 	IDirect3DSurface9* aoSurfaceLow[2] = {};
 	bool lastLowRes = false;
 	CachedHandle techDedicated, paramLayout;
+	IDirect3DTexture9* skyTexture = nullptr;
+	IDirect3DSurface9* skySurface = nullptr;
+	IDirect3DTexture9* skyTextureLow = nullptr;
+	IDirect3DSurface9* skySurfaceLow = nullptr;
+	bool skyReady = false;
+	CachedHandle techSky;
+	static bool SkyV2Active();
+	IDirect3DTexture9* SkyTexture() const { return skyReady ? (lastLowRes ? skyTextureLow : skyTexture) : nullptr; }
+	void RenderSkyVisibility(IDirect3DDevice9* Device);
 
 	bool	UseLowRes() const;
 	IDirect3DSurface9* NextResultSurface() const { return UseLowRes() ? aoSurfaceLow[0] : aoSurface[0]; }

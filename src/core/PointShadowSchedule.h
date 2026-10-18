@@ -8,6 +8,7 @@ struct PointShadowSlotState {
 	float radius = 0;
 	unsigned long long casterHash = 0;
 	bool staticCasters = false;
+	bool partial = false;
 	bool valid = false;
 };
 
@@ -25,6 +26,7 @@ enum class PointShadowRedraw {
 	Moved,
 	Resized,
 	CastersChanged,
+	Partial,
 	Scheduled,
 	Count
 };
@@ -40,6 +42,7 @@ inline PointShadowRedraw PointShadowRedrawReason(const PointShadowSlotState& las
 	if (last.radius != now.radius) return PointShadowRedraw::Resized;
 	if (last.staticCasters != now.staticCasters) return PointShadowRedraw::CastersChanged;
 	if (now.staticCasters && last.casterHash != now.casterHash) return PointShadowRedraw::CastersChanged;
+	if (last.partial) return PointShadowRedraw::Partial;
 	if (now.staticCasters) return PointShadowRedraw::None;
 	if (interval <= 1 || (frame + slot) % interval == 0) return PointShadowRedraw::Scheduled;
 	return PointShadowRedraw::None;

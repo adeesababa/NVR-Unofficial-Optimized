@@ -1,6 +1,10 @@
 #include "MotionBlur.h"
 
 void MotionBlurEffect::UpdateConstants() {
+	static unsigned lastFrame = ~0u;
+	if (TheFrameRateManager->FrameNumber == lastFrame) return;
+	lastFrame = TheFrameRateManager->FrameNumber;
+
 	ValuesStruct category = Settings.FirstPerson;
 	if (!TheCameraManager->IsFirstPerson()) category = Settings.ThirdPerson;
 

@@ -74,7 +74,9 @@ Steps = 16
 
 [_Shaders.Terrain.Parallax]
 HighQuality = true
+ShadowsAtNight = true
 MaxDistance = 4096
+IsoHeightTaps = false
 
 [_Shaders.BloodFlow.Main]
 MaxSplats = 96
@@ -107,6 +109,7 @@ SmoothEdges = true
 
 [_Shaders.ContactHardening.Main]
 Smooth = true
+AtNight = true
 
 # Twice the default reach of the effects not listed above.
 [_Shaders.ShadowsExteriors.Main]

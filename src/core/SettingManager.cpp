@@ -59,6 +59,7 @@ void SettingManager::Configuration::Init() {
 	}
 
 	configLoaded = true;
+	DefaultsGeneration++;
 	Logger::Log("Loading configs finished");
 
 	{
@@ -198,6 +199,7 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 
 			Node->Type = NodeType::String;
 			value = setting.as_string();
+			Node->LongValue = value;
 		}
 		else {
 			// Key was not included in defaults, ignore
@@ -212,7 +214,8 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 	// populate node fields
 	strcpy(Node->Section, Section);
 	strcpy(Node->Key, Key);
-	strcpy(Node->Value, value.c_str());
+	strncpy(Node->Value, value.c_str(), sizeof(Node->Value) - 1); Node->Value[sizeof(Node->Value) - 1] = 0;
+	if (Node->Type != NodeType::String) Node->LongValue.clear();
 	Node->Reboot = 0;
 
 	// Find midsection (usually the shader name)
@@ -241,7 +244,7 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 				bool applied = true;
 				if (Node->Type == NodeType::Integer && forced.is_integer()) {
 					Node->IntValue = (int)forced.as_integer(); Node->FloatValue = (float)Node->IntValue; Node->BoolValue = Node->IntValue != 0;
-					strcpy(Node->Value, toml::format(forced).c_str());
+					strncpy(Node->Value, toml::format(forced).c_str(), sizeof(Node->Value) - 1); Node->Value[sizeof(Node->Value) - 1] = 0;
 				}
 				else if (Node->Type == NodeType::Float && (forced.is_floating() || forced.is_integer())) {
 					Node->FloatValue = forced.is_floating() ? (float)forced.as_floating() : (float)forced.as_integer();
@@ -503,8 +506,7 @@ void SettingManager::Configuration::SetValueIn(tomlValue& Target, ConfigNode* No
 	} else if (Node->Type == NodeType::Float) {
 		(*section)[Node->Key] = Node->FloatValue;
 	} else if (Node->Type == NodeType::String) {
-		char* value = Node->Value;
-		(*section)[Node->Key] = value;
+		(*section)[Node->Key] = Node->LongValue.empty() ? std::string(Node->Value) : Node->LongValue;
 	} else if (Node->Type == NodeType::Boolean) {
 		(*section)[Node->Key] = Node->BoolValue;
 	}
@@ -584,6 +586,7 @@ void SettingManager::Initialize() {
 
 void SettingManager::LoadSettings() {
 
+	SettingsRevision++;
 	auto timer = TimeLogger();
 	Config.UpdateOldDefaults();
 
@@ -622,6 +625,16 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.DisableCompositeApply = !boolSetting(performance, "CompositeApply", true);
 	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
+	SettingsMain.Main.SkipIdentityExposure = boolSetting(performance, "SkipIdentityExposure", true);
+	SettingsMain.Main.LampMaskScissor = boolSetting(performance, "LampMaskScissor", true);
+	SettingsMain.Main.InteriorShadowFold = boolSetting(performance, "InteriorShadowFold", false);
+	{
+		Configuration::ConfigNode node;
+		const int mode = Config.FillNode(&node, performance, "InteriorShadowFoldRound") ? node.IntValue : 0;
+		SettingsMain.Main.InteriorShadowFoldRound = max(0, min(mode, 3));
+	}
+	SettingsMain.Main.CubeFaceCopySkip = boolSetting(performance, "CubeFaceCopySkip", false);
+	SettingsMain.Main.CubeFaceViewCull = boolSetting(performance, "CubeFaceViewCull", true);
 	SettingsMain.Main.SlimDepthBuffer = boolSetting(performance, "SlimDepthBuffer", true);
 	SettingsMain.Main.SkipRedundantConstants = boolSetting(performance, "SkipRedundantConstants", true);
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
@@ -631,7 +644,7 @@ void SettingManager::LoadSettings() {
 	{
 		Configuration::ConfigNode node;
 		const int mode = Config.FillNode(&node, performance, "LampPassTestSkip") ? node.IntValue : 0;
-		SettingsMain.Main.LampPassTestSkip = max(0, min(mode, 3));
+		SettingsMain.Main.LampPassTestSkip = max(0, min(mode, 7));
 	}
 	{
 		Configuration::ConfigNode node;
@@ -641,6 +654,13 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
 	SettingsMain.Main.ReShadeNVRDepth = boolSetting(performance, "ReShadeNVRDepth", true);
 	SettingsMain.Main.ReShadeBeforeHUD = boolSetting(performance, "ReShadeBeforeHUD", true);
+	SettingsMain.Main.ReShadeDepthNearRemap = boolSetting(performance, "ReShadeDepthNearRemap", true);
+	SettingsMain.Main.ReShadeMenuGuard = boolSetting(performance, "ReShadeMenuGuard", false);
+	SettingsMain.Main.ReShadeMenuGuardVATS = boolSetting(performance, "ReShadeMenuGuardVATS", false);
+	{
+		Configuration::ConfigNode node;
+		ReShadeIntegration::SetMenuGuardEffects(Config.FillNode(&node, performance, "ReShadeMenuGuardEffects") ? (node.LongValue.empty() ? node.Value : node.LongValue.c_str()) : "");
+	}
 	{
 		Configuration::ConfigNode node;
 		const int age = Config.FillNode(&node, performance, "HiddenObjectCullingMaxAge") ? node.IntValue : 4;
@@ -654,6 +674,8 @@ void SettingManager::LoadSettings() {
 		Configuration::ConfigNode node;
 		const int interval = Config.FillNode(&node, reducedQuality, "PointShadowInterval") ? node.IntValue : 1;
 		SettingsMain.Main.PointShadowInterval = max(1, min(interval, 4));
+		const float tolerance = Config.FillNode(&node, reducedQuality, "LampShadowMoveTolerance") ? node.FloatValue : 0.0f;
+		SettingsMain.Main.LampShadowMoveTolerance = tolerance > 64.0f ? 64.0f : tolerance > 0.0f ? tolerance : 0.0f;
 	}
 	SettingsMain.Main.CheapReflections = boolSetting(reducedQuality, "CheapReflections", false);
 	SettingsMain.Main.CheapUnderwaterTerrain = boolSetting(reducedQuality, "CheapUnderwaterTerrain", false);
@@ -1101,7 +1123,8 @@ void SettingManager::SetSettingS(const char* Section, const char* Key, const cha
 	Configuration::ConfigNode Node;
 
 	Config.FillNode(&Node, Section, Key);
-	strcpy(Node.Value, Value);
+	strncpy(Node.Value, Value, sizeof(Node.Value) - 1); Node.Value[sizeof(Node.Value) - 1] = 0;
+	if (Node.Type == Configuration::NodeType::String) Node.LongValue = Value;
 
 	// SetSettingS is a text-in API (used e.g. for reverting to a snapshotted
 	// string, or for genuine string settings), so it's the one legitimate place
@@ -1172,6 +1195,7 @@ void SettingManager::SetSettingF(const char* Section, const char* Key, float Val
 */
 void SettingManager::SetSetting(Configuration::ConfigNode* Node) {
 	hasUnsavedChanges = true;
+	SettingsRevision++;
 
 	Config.SetValue(Node);
 }
@@ -1521,7 +1545,8 @@ void SettingManager::CreateNode(Configuration::ConfigNode* Node, const char* Sec
 void SettingManager::CreateNodeS(Configuration::ConfigNode* Node, const char* Section, const char* Key, const char* Value, bool Reboot) {
 	strcpy(Node->Section, Section);
 	strcpy(Node->Key, Key);
-	strcpy(Node->Value, Value);
+	strncpy(Node->Value, Value, sizeof(Node->Value) - 1); Node->Value[sizeof(Node->Value) - 1] = 0;
+	Node->LongValue = Value;
 	Node->Reboot = Reboot;
 	Node->Type = Configuration::NodeType::String;
 }

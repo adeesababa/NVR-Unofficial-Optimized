@@ -22,6 +22,7 @@ namespace BloodFlowBoxes {
 		D3DXVECTOR3	DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 		int			DecalCode = 0;
 		float		Tint = 0.0f;
+		bool		Visible = true;
 	};
 
 	inline float Length(const D3DXVECTOR3& v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
@@ -35,6 +36,54 @@ namespace BloodFlowBoxes {
 		memcpy(data.a, a, 16); memcpy(data.b, b, 16); memcpy(data.c, c, 16); memcpy(data.d, d, 16);
 	}
 
+	inline float& SplatUp() { static float v = 1.0f; return v; }
+	inline float& PoolUp() { static float v = 0.3f; return v; }
+
+	inline void Extent(const Item& item, float dripLength, float maxFall, float& reach, float& low, float& high) {
+		const float r = item.Radius;
+		if (item.Pool) {
+			reach = r * 4.6f + 8.0f;
+			low = 8.0f + r * 2.5f;
+			high = 5.0f + PoolUp() * r;
+		}
+		else if (fabsf(item.Normal.z) > 0.9f) {
+			reach = r + dripLength * 0.5f + 6.0f;
+			low = r + dripLength * 0.5f + 8.0f;
+			high = r + 6.0f;
+		}
+		else {
+			reach = r + dripLength + 6.0f;
+			low = r + dripLength + maxFall + 8.0f;
+			high = r + 6.0f;
+		}
+		if (!item.Pool) {
+			reach = (std::max)(reach, r * 8.0f + 4.0f);
+			low = (std::max)(low, r * 8.0f + 4.0f);
+			high = (std::max)(high, r * SplatUp() + 6.0f);
+		}
+	}
+
+	inline bool OnScreen(const Item& item, float dripLength, float maxFall, const D3DXVECTOR3& eye, const D3DXVECTOR3& origin, const D3DXMATRIX& viewProj) {
+		float reach, low, high;
+		Extent(item, dripLength, maxFall, reach, low, high);
+		const D3DXVECTOR3 center = item.Center - eye;
+		int outside[6] = {};
+		for (int k = 0; k < 8; k++) {
+			const D3DXVECTOR3 p = center + D3DXVECTOR3((k & 1) ? reach : -reach, (k & 2) ? reach : -reach, (k & 4) ? high : -low) + origin;
+			const D3DXVECTOR4 p4(p.x, p.y, p.z, 1.0f);
+			D3DXVECTOR4 c;
+			D3DXVec4Transform(&c, &p4, &viewProj);
+			if (c.x < -c.w) outside[0]++;
+			if (c.x > c.w) outside[1]++;
+			if (c.y < -c.w) outside[2]++;
+			if (c.y > c.w) outside[3]++;
+			if (c.w <= 0.0f) outside[4]++;
+			if (c.z > c.w) outside[5]++;
+		}
+		for (int f = 0; f < 6; f++) if (outside[f] == 8) return false;
+		return true;
+	}
+
 	inline int Build(const Item* items, int count, float dripLength, float maxFall, const D3DXVECTOR3& eye, const D3DXVECTOR3& origin,
 		const D3DXMATRIX& viewProj, VolumetricSmokeQuads::Vertex* out, float bounds[4], int* splatTriangles = nullptr) {
 		float minU = 1.0f, minV = 1.0f, maxU = 0.0f, maxV = 0.0f;
@@ -46,27 +95,7 @@ namespace BloodFlowBoxes {
 			const Item& item = items[i % count];
 			if (item.Pool != (i >= count)) continue;
 			float reach, low, high;
-			const float r = item.Radius;
-			if (item.Pool) {
-				reach = r * 4.6f + 8.0f;
-				low = 8.0f + r * 2.5f;
-				high = 5.0f + 0.3f * r;
-			}
-			else if (fabsf(item.Normal.z) > 0.9f) {
-				reach = r + dripLength * 0.5f + 6.0f;
-				low = r + dripLength * 0.5f + 8.0f;
-				high = r + 6.0f;
-			}
-			else {
-				reach = r + dripLength + 6.0f;
-				low = r + dripLength + maxFall + 8.0f;
-				high = r + 6.0f;
-			}
-			if (!item.Pool) {
-				reach = (std::max)(reach, r * 8.0f + 4.0f);
-				low = (std::max)(low, r * 8.0f + 4.0f);
-				high = (std::max)(high, r * 1.0f + 6.0f);
-			}
+			Extent(item, dripLength, maxFall, reach, low, high);
 			const float u0 = -reach, u1 = reach, d0 = -reach, d1 = reach, n0 = -low, n1 = high;
 			const D3DXVECTOR3 center = item.Center - eye;
 			D3DXVECTOR3 corner[8];
@@ -120,7 +149,7 @@ namespace BloodFlowBoxes {
 		int triangles = 0;
 		for (int i = 0; i < count; i++) {
 			const Item& item = items[i];
-			if (item.Slot < 0 || (item.Slot + 1) * rowsPerItem > rows) continue;
+			if (item.Slot < 0 || (item.Slot + 1) * rowsPerItem > rows || !item.Visible) continue;
 			VolumetricSmokeQuads::Vertex data = {};
 			ItemData(item, item.Center - eye, dripLength, data);
 			const float y0 = 1.0f - 2.0f * (float)(item.Slot * rowsPerItem) / (float)rows;

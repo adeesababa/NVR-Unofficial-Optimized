@@ -28,11 +28,15 @@ void WetWorldEffect::UpdateSettings() {
 	Constants.Coeffs.z = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "PuddleCoeff_B");
 	Constants.Coeffs.w = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "PuddleSpecularMultiplier");
 	Constants.Data.w = TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "Amount");
+	Constants.Look.x = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "KeepHighlights") ? 1.0f : 0.0f;
+	fastPaths = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "FastPaths") != 0;
+	fixedTrace = TheSettingManager->GetSettingI("Shaders.WetWorld.Main", "FixedReflectionTrace") != 0;
 }
 
 void WetWorldEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WetWorldCoeffs", &Constants.Coeffs);
 	TheShaderManager->RegisterConstant("TESR_WetWorldData", &Constants.Data);
+	TheShaderManager->RegisterConstant("TESR_WetWorldLook", &Constants.Look);
 }
 
 void WetWorldEffect::RegisterTextures() {

@@ -65,7 +65,7 @@ float3 ReinhardJodie(float3 v)
 float3 change_luminance(float3 c_in, float l_out)
 {
     float l_in = luma(c_in);
-    return c_in * (l_out / l_in);
+    return c_in * (abs(l_in) > 1e-8 ? l_out / l_in : 1.0);
 }
 float3 ReinhardExtended(float3 v, float whitepoint)
 {
@@ -131,7 +131,7 @@ float3 agxEotf(float3 val)
 {
     
   // Inverse input transform (outset)
-    val = mul(agx_mat_inv, val);
+    val = mul(val, agx_mat_inv);
   
   // sRGB IEC 61966-2-1 2.2 Exponent Reference EOTF Display
   // NOTE: We're linearizing the output here. Comment/adjust when
@@ -178,10 +178,10 @@ float3 agx(float3 val)
     float max_ev = 4.026069f;
 
   // Input transform (inset)
-    val = mul(agx_mat, val);
+    val = mul(val, agx_mat);
   
   // Log2 space encoding
-    val = clamp(log2(val), min_ev, max_ev);
+    val = clamp(log2(max(val, 1e-6)), min_ev, max_ev);
     val = (val - min_ev) / (max_ev - min_ev);
   
   // Apply sigmoid function approximation
@@ -380,6 +380,7 @@ float3 tonemap(float3 color)
     }
     else if (TESR_HDRData.x == 7)
     {
+        color = max(0.0, color);
         return Uncharted2Tonemap(color, TESR_LotteData.y, TESR_HDRBloomData.w);
     }
     else if (TESR_HDRData.x == 8)

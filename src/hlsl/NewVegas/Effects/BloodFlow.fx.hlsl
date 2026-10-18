@@ -16,6 +16,7 @@ float4 TESR_BloodFlowMatch;
 float4 TESR_BloodFlowDryRatio;
 float4 TESR_BloodFlowBeads;
 float4 TESR_BloodFlowShape;
+float4 TESR_BloodFlowGround;
 float4x4 TESR_ViewProjectionTransform;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -512,13 +513,14 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 	if (pool > 0.5) {
 		float4 groundHead = PathTexel(0.0, firstRow + Streams - 1.0);
 		float4 ground = PathTexel(1.0, firstRow + Streams - 1.0);
-		bool known = groundHead.y >= 5.0;
+		bool known = groundHead.y >= 5.0 && TESR_BloodFlowGround.w < 0.5;
 		float3 gN = known ? ground.xyz : float3(0.0, 0.0, 1.0);
 		slope = length(gN.xy) / max(gN.z, 0.3);
 		float reach = R * (1.45 * PoolStretch(slope) + PoolShift(slope)) + 2.0;
 		float gz = known ? ground.w : 0.0;
-		lo = float3(-reach, -reach, gz - reach * slope - 8.0 - 0.45 * reach);
-		hi = float3(reach, reach, gz + reach * slope + 5.0 + 0.25 * reach);
+		float unsure = TESR_BloodFlowGround.x > 0.5 && !known ? reach * 0.6 + 3.0 : 0.0;
+		lo = float3(-reach, -reach, gz - reach * slope - 8.0 - 0.45 * reach - unsure);
+		hi = float3(reach, reach, gz + reach * slope + 5.0 + 0.25 * reach + unsure);
 		count = 2.0;
 	}
 	else {
@@ -798,11 +800,12 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	p.air = 0.0;
 	p.debug = 0.0;
 	float rim = 0.0;
+	float poolShape = 0.0, poolKeep = 1.0;
 
 	[branch] if (pool > 0.5) {
 		float4 groundHead = PathTexel(0.0, firstRow + Streams - 1.0);
 		float4 ground = PathTexel(1.0, firstRow + Streams - 1.0);
-		bool known = fresh < 0.5 && groundHead.y >= 5.0;
+		bool known = fresh < 0.5 && groundHead.y >= 5.0 && TESR_BloodFlowGround.w < 0.5;
 		float3 gN = known ? ground.xyz : float3(0.0, 0.0, 1.0);
 		float slope = length(gN.xy) / max(gN.z, 0.3);
 		float2 downhill = slope > 1e-3 ? normalize(gN.xy) : float2(1.0, 0.0);
@@ -814,8 +817,20 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		float2 shaped = float2(alongQ / (alongQ > 0.0 ? PoolStretch(slope) : 1.0), dot(q, float2(-downhill.y, downhill.x)));
 		float fromCentre = length(shaped);
 		float groundZ = (known ? ground.w : 0.0) - (gN.x * pp.x + gN.y * pp.y) / max(gN.z, 0.3);
-		bool onGround = fromCentre < R * 1.45 && pp.z < groundZ + 5.0 + 0.15 * fromCentre && pp.z > groundZ - (8.0 + 0.3 * fromCentre);
-		[branch] if (onGround && radius > 0.05 && normalize(GetWorldNormalLod(uv)).z > 0.6) {
+		float3 Nw = normalize(GetWorldNormalLod(uv));
+		float keep;
+		[branch] if (TESR_BloodFlowGround.x > 0.5) {
+			bool sure = known;
+			float h = sure ? pp.z - groundZ : dot(pp, Nw) / max(Nw.z, 0.3);
+			float3 up = sure ? normalize(float3(gN.xy, max(gN.z, 0.3))) : float3(0.0, 0.0, 1.0);
+			float fade = max(aa * TESR_BloodFlowGround.y, 1.5);
+			keep = saturate((5.0 + 0.15 * fromCentre + fade - h) / fade) * saturate((8.0 + 0.3 * fromCentre + fade + h) / fade)
+				* saturate((dot(Nw, up) - 0.45) / 0.25);
+			groundZ = pp.z - h;
+		}
+		else keep = (pp.z < groundZ + 5.0 + 0.15 * fromCentre && pp.z > groundZ - (8.0 + 0.3 * fromCentre) && Nw.z > 0.6) ? 1.0 : 0.0;
+		poolKeep = keep;
+		[branch] if (fromCentre < R * 1.45 && radius > 0.05 && (keep > 0.0 || TESR_BloodFlowInfo.y > 1.5)) {
 			float angle = seed * 6.2832;
 			float2 lobeWay = float2(cos(angle), sin(angle));
 			float dMain = fromCentre - radius;
@@ -830,6 +845,8 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 				T = Splatter(shaped / (radius * 2.2), seed, aa / (radius * 2.2)) * 1.25 - 0.1 + RaggedCore(shaped, radius * 0.55, seed)
 					- clamp(pp.z - groundZ, -radius * 0.4, radius * 0.4) * 0.72 / max(radius, 0.5);
 			float cover = Shows(T, aa * 0.9 / max(radius, 0.5));
+			poolShape = cover;
+			cover *= keep;
 			float inward = (T - 1.0 + TESR_BloodFlowFlow.z) * max(radius, 0.5) / 0.9;
 			rim = saturate(1.0 - inward / max(radius * 0.12, 0.8)) * cover;
 			float deep = saturate(inward / max(radius * 0.5, 0.5));
@@ -863,6 +880,10 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		p.cover *= 1.0 - 0.6 * splat * step(p.thick, 0.5);
 	}
 
+	[branch] if (TESR_BloodFlowInfo.y > 1.5) {
+		if (poolShape > 0.5) return poolKeep < 0.05 ? float4(1, 0, 1, 0.9) : poolKeep < 0.95 ? float4(1, 0.5, 0, 0.9) : float4(1, 0.9, 0, 0.85);
+		discard;
+	}
 	if (TESR_BloodFlowInfo.y > 0.5) {
 		if (p.air > 0.5) return float4(1, 1, 1, 0.9);
 		if (p.cover > 0.5) {
@@ -989,6 +1010,18 @@ technique BloodFlow
 	}
 }
 
+float SlabKeep(float3 pp, float3 n, float3 N, float base, float aaUnits, float minFacing) {
+	float off = abs(dot(pp, n));
+	float c = dot(N, n);
+	[branch] if (TESR_BloodFlowGround.x > 0.5) {
+		float along = length(pp - n * dot(pp, n));
+		float tilt = sqrt(saturate(1.0 - c * c)) / max(c, 0.5);
+		float fade = max(aaUnits * TESR_BloodFlowGround.y, 1.5);
+		return saturate((base + along * tilt + fade - off) / fade) * saturate((c - minFacing + 0.15) / 0.25);
+	}
+	return off > base || c < minFacing ? 0.0 : 1.0;
+}
+
 float4 BeadsPS(PSIN IN) : COLOR0 {
 	float2 uv = (IN.vpos + 0.5) * TESR_ReciprocalResolution.xy;
 	float slot, pool, fresh;
@@ -1001,7 +1034,9 @@ float4 BeadsPS(PSIN IN) : COLOR0 {
 	float3 rel = toWorld(uv) * depth;
 	float3 pp = rel - IN.a.xyz;
 	float3 n = normalize(IN.b.xyz);
-	if (abs(dot(pp, n)) > IN.b.w * 0.5 + 4.0) discard;
+	float3 N = normalize(GetWorldNormalLod(uv));
+	float slab = SlabKeep(pp, n, N, IN.b.w * 0.5 + 4.0, max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05), -2.0);
+	if (slab <= 0.0) discard;
 	float code = floor(floor(IN.c.z + 0.5) / 4096.0);
 	float quarter = fmod(code, 5.0);
 	float ratio = exp2(floor(code / 20.0) / 31.5 - 1.0);
@@ -1018,11 +1053,10 @@ float4 BeadsPS(PSIN IN) : COLOR0 {
 	float tiles = max(width / max(TESR_BloodFlowBeads.y, 1.0), 1.0);
 	float4 drop = tex2Dlod(TESR_BloodDrops, float4(local * tiles, 0.0, log2(max(aa / width * tiles * 1024.0, 1.0))));
 	float wet = 1.0 - smoothstep(0.0, TESR_BloodFlowDry.w * 0.8, IN.c.x);
-	float show = saturate((wet * 1.1 - drop.a) * 6.0) * saturate(blood * 1.6 - 0.4);
+	float show = saturate((wet * 1.1 - drop.a) * 6.0) * saturate(blood * 1.6 - 0.4) * slab;
 	float h = drop.r * show;
 	if (h < 0.01) discard;
 	float2 slope = (drop.gb * 2.0 - 1.0) * show;
-	float3 N = normalize(GetWorldNormalLod(uv));
 	float3 T = normalize(IN.d.xyz) * (mirrored ? -1.0 : 1.0);
 	float3 B = normalize(vAxis);
 	float3 Nb = normalize(N + (T * slope.x - B * slope.y) * 1.5);
@@ -1251,7 +1285,9 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	float R = max(IN.b.w, 1.0);
 	float3 n = normalize(IN.b.xyz);
 	float3 N = normalize(GetWorldNormalLod(uv));
-	if (abs(dot(pp, n)) > R * 0.6 + 4.0 || dot(N, n) < 0.3) discard;
+	float keep = SlabKeep(pp, n, N, R * 0.6 + 4.0, max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05), 0.3);
+	bool cutView = TESR_BloodFlowInfo.y > 1.5;
+	if (keep <= 0.0 && !cutView) discard;
 	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
 	float steep = length(down);
 	down = steep > 0.05 ? down / steep : float3(1.0, 0.0, 0.0);
@@ -1262,10 +1298,20 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	float grow = smoothstep(0.0, 1.0, saturate(age / 0.12));
 	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(age - 0.3, 0.0) / 4.0));
 	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05) / R;
+	float reachMax = 1.15 + 3.12 * TESR_BloodFlowSplat.y + 2.0 * aa;
+	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
+	float2 qq = float2(q.x, q.y > 0.0 ? max(q.y - dripMax, 0.0) : q.y);
+	if (dot(qq, qq) > reachMax * reachMax) discard;
 	float armDrip[6];
 	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = PathTexel(0.0, slot * Streams + ai).w < -0.5 ? 1.0 : 0.0;
 	float T = SplatThickness(q, seed, grow, run, armDrip);
 	float cover = saturate(T / max(aa * 2.0, 0.02) + 0.5) * saturate(T * 4.0 + 0.6);
+	[branch] if (cutView) {
+		if (cover < 0.5) discard;
+		if (TESR_BloodFlowGround.x < 0.5 && pp.z > R + 6.0) return float4(1, 0, 0, 0.9);
+		return keep < 0.05 ? float4(1, 0, 1, 0.9) : keep < 0.95 ? float4(1, 0.5, 0, 0.9) : float4(1, 0.9, 0, 0.85);
+	}
+	cover *= keep;
 	if (cover < 0.004) discard;
 	float thick = saturate(T * 0.6);
 

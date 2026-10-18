@@ -160,7 +160,17 @@ namespace {
 		return nodes ? seen : 0;
 	}
 
+	struct WalkCache { float Center[3], Radius; UInt16 Dismembered; double Time; RawActor Result; };
+	bool BloodFlowCheap = true;
+	std::unordered_map<UInt32, WalkCache> Walks;
+	double WalksPruned = 0.0;
+
 	int ReadActors(RawActor* out, int max) {
+		const double now = TheFrameRateManager->Time;
+		if (now - WalksPruned > 10.0) {
+			WalksPruned = now;
+			for (auto it = Walks.begin(); it != Walks.end();) { if (now - it->second.Time > 10.0) it = Walks.erase(it); else ++it; }
+		}
 		int n = 0;
 		__try {
 			UInt8* lists = (UInt8*)ProcessListsAddress;
@@ -195,8 +205,26 @@ namespace {
 							const float boundAt[3] = { bound->Center.x, bound->Center.y, bound->Center.z };
 							if (BSExtraData* cut = actor->extraDataList.GetExtraData(BSExtraData::ExtraDataType::kExtraData_DismemberedLimbs))
 								a.Dismembered = *(UInt16*)((UInt8*)cut + 0x0C);
-							a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
-								a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
+							WalkCache* cached = nullptr;
+							auto known = Walks.find(a.RefID);
+							if (known != Walks.end()) {
+								WalkCache& w = known->second;
+								const float dx = w.Center[0] - boundAt[0], dy = w.Center[1] - boundAt[1], dz = w.Center[2] - boundAt[2];
+								if (BloodFlowCheap && w.Dismembered == a.Dismembered && dx * dx + dy * dy + dz * dz < 0.25f && fabsf(w.Radius - bound->Radius) < 0.5f &&
+									now - w.Time < 0.5) cached = &w;
+							}
+							if (cached) {
+								const UInt32 refID = a.RefID, lifeState = a.LifeState;
+								a = cached->Result;
+								a.RefID = refID; a.LifeState = lifeState;
+							}
+							else {
+								a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
+									a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
+								WalkCache& w = Walks[a.RefID];
+								w.Center[0] = boundAt[0]; w.Center[1] = boundAt[1]; w.Center[2] = boundAt[2];
+								w.Radius = bound->Radius; w.Dismembered = a.Dismembered; w.Time = now; w.Result = a;
+							}
 						}
 					}
 					n++;
@@ -298,6 +326,9 @@ bool BloodFlowLastTint(float out[3]) {
 }
 
 static D3DXVECTOR4 BloodFlowShape(0.0f, 0.0f, 0.0f, 0.0f);
+static D3DXVECTOR4 BloodFlowGround(1.0f, 3.0f, 0.0f, 0.0f);
+static bool BloodFlowGroundFit = true;
+static bool BloodFlowGroundUnseen = false;
 
 void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFresh", &Constants.Fresh);
@@ -306,6 +337,7 @@ void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowBeads", &Constants.Beads);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowSplat", &Constants.Splat);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowShape", &BloodFlowShape);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowGround", &BloodFlowGround);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDry", &Constants.Dry);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowInfo", &Constants.Info);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowPool", &Constants.Pool);
@@ -339,6 +371,10 @@ int BloodFlowEffect::SlotFor(UInt64 key) {
 void BloodFlowEffect::UpdateSettings() {
 	const char* section = "Shaders.BloodFlow.Main";
 	Settings.Splats = TheSettingManager->GetSettingI(section, "Splats") != 0;
+	Settings.CheapGather = TheSettingManager->GetSettingI(section, "CheapGather") != 0;
+	BloodFlowCheap = Settings.CheapGather;
+	BloodFlowGroundFit = TheSettingManager->GetSettingI(section, "GroundFit") != 0;
+	BloodFlowGroundUnseen = TheSettingManager->GetSettingI(section, "GroundTestUnseen") != 0;
 	Settings.Pools = TheSettingManager->GetSettingI(section, "Pools") != 0;
 	Settings.DripLength = std::clamp(TheSettingManager->GetSettingF(section, "DripLength"), 0.0f, 200.0f);
 	Settings.FlowSpeed = std::clamp(TheSettingManager->GetSettingF(section, "FlowSpeed"), 0.05f, 10.0f);
@@ -374,17 +410,39 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.SplatSpray = std::clamp(TheSettingManager->GetSettingF(section, "SplatSpray"), 0.0f, 2.0f);
 	Settings.SplatDrips = std::clamp(TheSettingManager->GetSettingF(section, "SplatDrips"), 0.0f, 3.0f);
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
-	Logger::Log("BloodFlow: splatter decals for pools and puddles: %s", Settings.SplatterAtlas ? "Textures\\decals\\fxbloodsplatterdecals01.dds" : "none (no loose file), drawn shapes");
+	static int loggedAtlas = -1;
+	if (loggedAtlas != (Settings.SplatterAtlas ? 1 : 0)) {
+		loggedAtlas = Settings.SplatterAtlas ? 1 : 0;
+		Logger::Log("BloodFlow: splatter decals for pools and puddles: %s", Settings.SplatterAtlas ? "Textures\\decals\\fxbloodsplatterdecals01.dds" : "none (no loose file), drawn shapes");
+	}
 }
 
 void BloodFlowEffect::GatherSplats() {
 	static RawSplat raw[1024];
 	const int fromTemp = ReadSplats(ProcessListsAddress + 0x58, raw, 0, 1024);
-	const int total = ReadSplats(DecalListAddress, raw, fromTemp, 1024);
+	int total = ReadSplats(DecalListAddress, raw, fromTemp, 1024);
 	if (LoggedLists < 10 && total > 0) {
 		LoggedLists++;
 		Logger::Log("BloodFlow: %d splats in the game's lists (%d temp effects, %d decals)", total, fromTemp, total - fromTemp);
 	}
+	int bloodTotal = 0;
+	for (int i = 0; i < total; i++) {
+		RawSplat& s = raw[i];
+		if (!s.TextureSet) continue;
+		auto found = BloodTextureSets.find(s.TextureSet);
+		if (found == BloodTextureSets.end()) {
+			char path[260];
+			ReadTexturePath(s.TextureSet, path, sizeof(path));
+			const bool blood = strstr(path, "blood") != nullptr;
+			found = BloodTextureSets.emplace(s.TextureSet, blood).first;
+			if (LoggedTextures < 24) {
+				LoggedTextures++;
+				Logger::Log("BloodFlow: decal texture '%s' -> %s", path, blood ? "blood" : "not blood");
+			}
+		}
+		if (found->second) { if (bloodTotal != i) raw[bloodTotal] = s; bloodTotal++; }
+	}
+	if (Settings.CheapGather) total = bloodTotal;
 	const bool resumed = Clock - LastSplatGather > 1.0;
 	LastSplatGather = Clock;
 	int appeared = 0;
@@ -662,13 +720,29 @@ void BloodFlowEffect::GatherPools() {
 }
 
 void BloodFlowEffect::UpdateConstants() {
-	static double lastFrameTime = -1.0;
+	static double lastFrameTime = -1.0, lastGatherTime = -1.0;
+	static CpuTimer gatherTimer("Blood gather (CPU)");
+	CpuProfileScope cpu(gatherTimer);
 	Clock += ElapsedOncePerFrame(lastFrameTime) * TunedClockRate;
-	Frame++;
-	Count = 0;
-	if (TheShaderManager->GameState.isUnderwater) return;
-	if (Settings.Splats) GatherSplats();
-	if (Settings.Pools) GatherPools();
+	if (TheShaderManager->GameState.isUnderwater) { Count = 0; return; }
+	if (TheFrameRateManager->Time != lastGatherTime || !Settings.CheapGather) {
+		lastGatherTime = TheFrameRateManager->Time;
+		Frame++;
+		Count = 0;
+		if (Settings.Splats) GatherSplats();
+		if (Settings.Pools) GatherPools();
+	}
+	{
+		const D3DXVECTOR4& c = TheRenderManager->CameraPosition;
+		const D3DXVECTOR3 eye(c.x, c.y, c.z);
+		const D3DXMATRIX& inv = TheRenderManager->InvViewMatrix;
+		const D3DXVECTOR3 origin(inv._41, inv._42, inv._43);
+		OnScreenCount = 0;
+		for (int i = 0; i < Count; i++) {
+			Items[i].Visible = !Settings.CheapGather || BloodFlowBoxes::OnScreen(Items[i], Settings.DripLength, Settings.MaxFall, eye, origin, TheRenderManager->ViewProjMatrix);
+			OnScreenCount += Items[i].Visible ? 1 : 0;
+		}
+	}
 	if (GpuTimer::Enabled && ++ItemLogTick >= 240) {
 		ItemLogTick = 0;
 		int pools = 0;
@@ -687,11 +761,14 @@ void BloodFlowEffect::UpdateConstants() {
 	Constants.DryRatio.w = 0.0f;
 	Constants.Beads = D3DXVECTOR4(Settings.Beads, Settings.BeadSize, 0.0f, 0.0f);
 	Constants.Splat = D3DXVECTOR4(Settings.Splat, Settings.SplatReach, Settings.SplatSpray, Settings.SplatDrips);
+	BloodFlowGround = D3DXVECTOR4(BloodFlowGroundFit ? 1.0f : 0.0f, 3.0f, 0.0f, BloodFlowGroundUnseen ? 1.0f : 0.0f);
+	BloodFlowBoxes::SplatUp() = BloodFlowGroundFit || Settings.DebugView == 2 ? 1.2f + 2.4f * Settings.SplatReach : 1.0f;
+	BloodFlowBoxes::PoolUp() = BloodFlowGroundFit ? 1.25f : 0.3f;
 	Constants.Flow = D3DXVECTOR4(Settings.FlowSpeed, Settings.Viscosity, Settings.BloodAmount, (float)fmod(Clock, 1023.0));
 }
 
 bool BloodFlowEffect::ShouldRender() {
-	return Count > 0;
+	return Count > 0 && OnScreenCount > 0;
 }
 
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
@@ -747,7 +824,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		Effect->EndPass();
 		Effect->End();
 	}
-	for (int i = 0; i < Count; i++) Slots[Items[i].Slot].WrittenPass = ProbePasses;
+	for (int i = 0; i < Count; i++) if (Items[i].Visible) Slots[Items[i].Slot].WrittenPass = ProbePasses;
 	ProbePasses++;
 	PathIndex = write;
 	PathRead = PathTexture[PathIndex];

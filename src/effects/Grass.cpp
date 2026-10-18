@@ -1,4 +1,5 @@
 #include "Grass.h"
+#include "../core/NewGrass.h"
 
 void GrassShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GrassScale", &Constants.Scale);
@@ -12,6 +13,26 @@ void GrassShaders::UpdateSettings() {
 	Constants.Scale.x = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleX");
 	Constants.Scale.y = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleY");
 	Constants.Scale.z = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleZ");
+	GameShaderFix = TheSettingManager->GetSettingI("Shaders.Grass.Main", "GameShaderFix");
+	DrawFirst = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirst");
+	DrawFirstRestore = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstRestore");
+	DrawFirstCull = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstCull");
+	NewGrass::ReadSettings();
 }
 
 void GrassShaders::UpdateConstants() {}
+
+void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShaderEx* PixelShader) {
+	if (!Enabled || !VertexShader || !VertexShader->Name || memcmp(VertexShader->Name, "GRASS", 5)) return;
+	NewGrass::LastVariant = strlen(VertexShader->Name) >= 11 ? VertexShader->Name[10] : 0;
+	LastBindNVR = false;
+	if (!VertexShader->ShaderHandleBackup || VertexShader->ShaderHandle == VertexShader->ShaderHandleBackup) return;
+	LastBindNVR = true;
+
+	const bool NVRPixel = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
+	const SandstormEffect* Sandstorm = TheShaderManager->Effects.Sandstorm;
+	const float Pairing[4] = { NVRPixel || !GameShaderFix ? 1.0f : 0.0f, Sandstorm ? Sandstorm->GrassStorm[0] : 0.0f,
+		Sandstorm ? Sandstorm->GrassStorm[1] : 0.0f, (float)DrawPart };
+	TheRenderManager->device->SetVertexShaderConstantF(19, Pairing, 1);
+	for (int i = 0; i < 4; i++) LastPairing[i] = Pairing[i];
+}

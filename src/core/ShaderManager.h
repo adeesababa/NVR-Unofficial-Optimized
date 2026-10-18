@@ -217,6 +217,8 @@ public:
     TESObjectCELL*          PreviousCell;
     bool                    IsMenuSwitch;
     bool                    orthoRequired;
+    bool                    orthoSkyRequired = false;
+    bool                    orthoSkyFresh = false;
     bool                    avglumaRequired;
 	bool					EffectReloadQueued;
 	D3DXVECTOR4				SpotLightPosition[SpotLightsMax];

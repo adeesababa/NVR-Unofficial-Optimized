@@ -14,6 +14,7 @@ public:
 		Animator		PuddlesAnimator;
 		D3DXVECTOR4		Coeffs;
 		D3DXVECTOR4		Data;
+		D3DXVECTOR4		Look = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);
 	};
 	WetWorldStruct	Constants;
 
@@ -32,4 +33,11 @@ public:
 	void	RegisterConstants();
 	void	UpdateSettings();
 	bool	ShouldRender();
+
+	bool	fastPaths = false;
+	bool	fixedTrace = false;
+	UINT	MainTechnique() const {
+		if (fixedTrace && Effect && Effect->GetTechnique(fastPaths ? 4 : 3)) return fastPaths ? 4 : 3;
+		return fastPaths && Effect && Effect->GetTechnique(2) ? 2 : 0;
+	}
 };

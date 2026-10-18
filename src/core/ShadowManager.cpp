@@ -2,6 +2,8 @@
 #include "ShadowFaceCull.h"
 #include "PointShadowSchedule.h"
 #include "PointShadowForward.h"
+#include "TestTools.h"
+#include "OrthoProbe.h"
 
 struct SkinnedBoundEntry { UInt32 frame; bool ok; NiBound bound; };
 static std::unordered_map<NiGeometry*, SkinnedBoundEntry> SkinnedBounds;
@@ -148,6 +150,89 @@ static void AdoptStaticCubeMap(ShadowsExteriorEffect* shadows, PointShadowSlotSt
 		return;
 	}
 }
+
+struct LiveFaceRecord { const void* live = nullptr; const void* staticTex = nullptr; unsigned serial = 0, generation = 0; bool pure = false; };
+static LiveFaceRecord LiveFaces[ShadowCubeMapsMax][6];
+static std::unordered_map<const void*, unsigned> StaticCubeSerials;
+static unsigned StaticCubeSerialNext = 0;
+static unsigned statFacesSkipped = 0, statFacesCopied = 0, statFacesDrawn = 0, statFacesOldPath = 0;
+
+static void ForgetLiveFaces(int slot) {
+	for (int f = 0; f < 6; f++) LiveFaces[slot][f].pure = false;
+}
+
+static NiPoint3* CubeEyeOverride = nullptr;
+
+static bool CubeCullAllowed = false;
+static bool ForwardWasActive = false;
+static bool CubeCulledAny = false;
+static unsigned statFacesCulled[3] = {};
+
+static unsigned statViewFaces[3] = {}, statViewFacesOut[3] = {};
+static bool CubeFaceOutOfView(const NiPoint3* light, float radius, const D3DXVECTOR3& direction) {
+	const D3DXMATRIX& V = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& P = TheRenderManager->projMatrix;
+	const D3DXVECTOR3 R(V._11, V._21, V._31), U(V._12, V._22, V._32), F(V._13, V._23, V._33);
+	const D3DXVECTOR3 planes[5] = { F, F + R * P._11, F - R * P._11, F + U * P._22, F - U * P._22 };
+	const D3DXVECTOR3 L(light->x - TheRenderManager->CameraPosition.x, light->y - TheRenderManager->CameraPosition.y, light->z - TheRenderManager->CameraPosition.z);
+	const D3DXVECTOR3 a = fabsf(direction.x) > 0.5f ? D3DXVECTOR3(0, 1, 0) : D3DXVECTOR3(1, 0, 0);
+	D3DXVECTOR3 b; D3DXVec3Cross(&b, &direction, &a);
+	D3DXVECTOR3 points[5] = { L, L, L, L, L };
+	for (int c = 0; c < 4; c++) points[c + 1] = L + radius * (direction + 1.1f * (((c & 1) ? a : -a) + ((c & 2) ? b : -b)));
+	for (const D3DXVECTOR3& n : planes) {
+		const float margin = -100.0f * D3DXVec3Length(&n);
+		bool allOut = true;
+		for (const D3DXVECTOR3& p : points) if (D3DXVec3Dot(&p, &n) >= margin) { allOut = false; break; }
+		if (allOut) return true;
+	}
+	return false;
+}
+
+#if NVR_TEST_TOOLS
+static void CubeFaceSkipSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* live, IDirect3DSurface9* still) {
+	static int every = 0;
+	static unsigned frameSeen = 0, checksThisFrame = 0, checks = 0, differing = 0, worstValues = 0;
+	if (frameSeen != SkinnedBoundFrame) {
+		frameSeen = SkinnedBoundFrame;
+		checksThisFrame = 0;
+		if ((SkinnedBoundFrame % 60) == 0 || every == 0) every = TheSettingManager->GetSettingI("Main.Main.Performance", "CubeFaceCopySkipCheck");
+	}
+	if (every <= 0 || (SkinnedBoundFrame % (unsigned)every) != 0 || checksThisFrame >= 2 || !live || !still) return;
+	checksThisFrame++;
+	static IDirect3DSurface9* readA = nullptr;
+	static IDirect3DSurface9* readB = nullptr;
+	static D3DSURFACE_DESC have = {};
+	D3DSURFACE_DESC d = {};
+	if (FAILED(live->GetDesc(&d)) || d.Format != D3DFMT_R32F) return;
+	if (!readA || d.Width != have.Width || d.Height != have.Height) {
+		if (readA) { readA->Release(); readA = nullptr; }
+		if (readB) { readB->Release(); readB = nullptr; }
+		if (FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readA, NULL)) ||
+			FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readB, NULL))) {
+			Logger::Log("CUBE FACE CHECK: could not create the read-back surfaces");
+			if (readA) { readA->Release(); readA = nullptr; }
+			return;
+		}
+		have = d;
+	}
+	if (FAILED(Device->GetRenderTargetData(live, readA)) || FAILED(Device->GetRenderTargetData(still, readB))) return;
+	D3DLOCKED_RECT la = {}, lb = {};
+	if (FAILED(readA->LockRect(&la, NULL, D3DLOCK_READONLY))) return;
+	if (FAILED(readB->LockRect(&lb, NULL, D3DLOCK_READONLY))) { readA->UnlockRect(); return; }
+	unsigned values = 0;
+	for (UINT y = 0; y < d.Height; y++) {
+		const UInt32* pa = (const UInt32*)((const UInt8*)la.pBits + (size_t)y * la.Pitch);
+		const UInt32* pb = (const UInt32*)((const UInt8*)lb.pBits + (size_t)y * lb.Pitch);
+		for (UINT x = 0; x < d.Width; x++) if (pa[x] != pb[x]) values++;
+	}
+	readB->UnlockRect();
+	readA->UnlockRect();
+	checks++;
+	if (values) { differing++; worstValues = (std::max)(worstValues, values); }
+	if (values && differing <= 10) Logger::Log("CUBE FACE CHECK: DIFFERENCE, a skipped face differs from its static face in %u of %u texels", values, d.Width * d.Height);
+	if (checks % 30 == 0) Logger::Log("CUBE FACE CHECK: %u skipped faces compared with their static face, %u differ (worst %u texels)", checks, differing, worstValues);
+}
+#endif
 
 /*
 * Initializes the Shadow Manager by grabbing the relevant settings and shaders, and setting up map sizes.
@@ -349,13 +434,32 @@ bool ShadowManager::CheckShaderFlags(NiGeometry* Geometry) {
 }
 
 
+static bool AccumulatingLand = false;
+
 // Detect which pass the object must be added to
 void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLODLand) {
 	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
+#if NVR_TEST_TOOLS
+	OP_LAND(0);
+	if (OrthoProbe::Recording && OrthoProbe::CurrentLand) {
+		if (!geo->shader) OP_LAND(1);
+		else if (!CheckShaderFlags(geo)) OP_LAND(2);
+		else if (!geometryPass->TestObject(geo)) OP_LAND(3);
+	}
+#endif
 	if (!geo->shader) return; // skip Geometry without a shader
 
 	if (!CheckShaderFlags(geo))
 		return;
+#if NVR_TEST_TOOLS
+	OrthoProbe::NoteGeometry(geo);
+#endif
+
+	if (OrthoSkipBlendOnly) {
+		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
+		if (alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))
+			return;
+	}
 
 #if defined(OBLIVION)
 	if (geo->m_pcName && !memcmp(geo->m_pcName, "Torch", 5)) return; // No torch geo, it is too near the light and a bad square is rendered.
@@ -365,7 +469,7 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 	else if (speedTreePass->AccumObject(geo)) {}
 	else if (Forms->Lod && isLODLand && terrainLODPass->AccumObject(geo)) {}
 	else if (Forms->AlphaEnabled && alphaPass->AccumObject(geo)) {}
-	else geometryPass->AccumObject(geo);
+	else if (geometryPass->AccumObject(geo) && AccumulatingLand && RenderPass::LandDrop > 0.0f) RenderPass::LandSet.insert(geo);
 }
 
 
@@ -409,6 +513,9 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 		if (!object) continue;
 
 		Node = object->IsNiNode();
+#if NVR_TEST_TOOLS
+		if (isLand && !isLOD) { OP_LAND(4); if (Node && (Node->m_flags & NiAVObject::NiFlags::APP_CULLED)) OP_LAND(5); }
+#endif
     	if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling containers
 		if (!isLand && Node->GetWorldBoundRadius() < Forms->MinRadius) continue;
 
@@ -430,6 +537,9 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 
 		for (int i = 0; i < Node->m_children.end; i++) {
 			child = Node->m_children.data[i];
+#if NVR_TEST_TOOLS
+			if (isLand && !isLOD) { OP_LAND(6); if (child && (child->m_flags & NiAVObject::NiFlags::APP_CULLED)) OP_LAND(7); }
+#endif
 			if (!child || child->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling children
 			if (!isLand && child->GetWorldBoundRadius() < Forms->MinRadius) continue;
 
@@ -437,10 +547,16 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 			if (arPlanes && (isLand || isLOD)) {
 				BSMultiBoundNode* multibound = child->IsMultiBoundNode();
 
+#if NVR_TEST_TOOLS
+				if (OrthoProbe::Recording && isLand && !isLOD) { if (multibound) OP_LAND(8); if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) OP_LAND(9); }
+#endif
 				if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) continue;
 			}
 			else if (arPlanes && !child->WithinFrustum(arPlanes)) continue;
 
+#if NVR_TEST_TOOLS
+			if (OrthoProbe::Recording && isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);
+#endif
 			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
 			if (!child->IsGeometry())
@@ -460,6 +576,8 @@ void ShadowManager::RenderAccums() {
 	speedTreePass->RenderAccum();
 }
 
+
+static float SunLandDropScale = 0.0f;
 
 void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj) {
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
@@ -481,6 +599,13 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 
 	RenderState->SetRenderState(D3DRS_DEPTHBIAS, (DWORD)0.0f, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, (DWORD)0.0f, RenderStateArgs);
+
+	{
+		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+		const bool drop = terrain && terrain->BlendingSettings.Enabled && TheTextureManager->TerrainBlendDepthTexture;
+		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop * SunLandDropScale : 0.0f;
+		RenderPass::LandSet.clear();
+	}
 
 	if (ShadowMap->Forms.Lod) {
 		AccumChildren(BGSTerrainManager::GetRootLandLODNode(), &ShadowMap->Forms, true, true, &ShadowMap->ShadowMapFrustumPlanes);
@@ -508,6 +633,8 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	RenderPass::TwoSided = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "TwoSidedCasters") != 0;
 	RenderAccums();
 	RenderPass::TwoSided = false;
+	RenderPass::LandDrop = 0.0f;
+	RenderPass::LandSet.clear();
 }
 
 
@@ -515,8 +642,18 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 	if (!Cell || Cell->IsInterior())
 		return;
 
-	if (ShadowMap->Forms.Terrain)
+	if (ShadowMap->Forms.Terrain) {
+		AccumulatingLand = true;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentLand = true; OrthoProbe::CurrentRef = nullptr;
+		if (OrthoProbe::Recording) { OrthoProbe::LandCount[11]++; if (!Cell->GetChildNode(TESObjectCELL::kCellNode_Land)) OrthoProbe::LandCount[12]++; }
+#endif
 		AccumChildren(Cell->GetChildNode(TESObjectCELL::kCellNode_Land), &ShadowMap->Forms, true, false, &ShadowMap->ShadowMapFrustumPlanes);
+		AccumulatingLand = false;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentLand = false;
+#endif
+	}
 
 	TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First;
 	while (Entry) {
@@ -527,8 +664,15 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 			continue;
 		}
 
-		if (RefNode->WithinFrustum(&ShadowMap->ShadowMapFrustumPlanes) && !IsRefracting(Entry->item))
+		if (RefNode->WithinFrustum(&ShadowMap->ShadowMapFrustumPlanes) && !IsRefracting(Entry->item)) {
+#if NVR_TEST_TOOLS
+			OrthoProbe::CurrentRef = Entry->item;
+#endif
 			AccumChildren(RefNode, &ShadowMap->Forms, false, false, &ShadowMap->ShadowMapFrustumPlanes);
+#if NVR_TEST_TOOLS
+			OrthoProbe::CurrentRef = nullptr;
+#endif
+		}
 
 		Entry = Entry->next;
 	}
@@ -657,7 +801,13 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
 
-	if (Layer == CubeLayer::MovingOnto) {
+	const bool cullFaces = CubeCullAllowed && Layer != CubeLayer::StaticOnly;
+	const bool faceSkip = Layer == CubeLayer::MovingOnto && (TheSettingManager->SettingsMain.Main.CubeFaceCopySkip || cullFaces);
+	const bool copySkip = TheSettingManager->SettingsMain.Main.CubeFaceCopySkip;
+	if (Layer == CubeLayer::StaticOnly)
+		StaticCubeSerials[Shadows->Textures.ShadowCubeMapStaticTexture[LightIndex]] = ++StaticCubeSerialNext;
+	if (!faceSkip) ForgetLiveFaces(LightIndex);
+	if (Layer == CubeLayer::MovingOnto && !faceSkip) {
 		for (int Face = 0; Face < 6; Face++) {
 			IDirect3DSurface9* from = Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face];
 			IDirect3DSurface9* to = Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face];
@@ -672,7 +822,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 	NiPointLight* pNiLight = Lights[LightIndex]->sourceLight;
 
-	LightPos = &pNiLight->m_worldTransform.pos;
+	LightPos = CubeEyeOverride ? CubeEyeOverride : &pNiLight->m_worldTransform.pos;
 	Radius = pNiLight->Spec.r * Shadows->Settings.Interiors.LightRadiusMult;
 #if defined(OBLIVION)
 	if (pNiLight->CanCarry)
@@ -687,6 +837,14 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	Shadows->Constants.ShadowCubeMapLightPosition.w = Radius;
 	Shadows->Constants.Data.z = Radius;
 	D3DXMatrixPerspectiveFovRH(&Proj, D3DXToRadian(90.0f), 1.0f, 0.1f, Radius);
+	unsigned char viewFaces = 63;
+	if (cullFaces) {
+		static const D3DXVECTOR3 CullDirection[6] = { D3DXVECTOR3(1.0f, 0.0f, 0.0f), D3DXVECTOR3(-1.0f, 0.0f, 0.0f),
+			D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, -1.0f, 0.0f), D3DXVECTOR3(0.0f, 0.0f, -1.0f), D3DXVECTOR3(0.0f, 0.0f, 1.0f) };
+		for (int face = 0; face < 6; face++)
+			if (CubeFaceOutOfView(LightPos, Radius, CullDirection[face])) viewFaces &= (unsigned char)~(1 << face);
+		if (viewFaces != 63) CubeCulledAny = true;
+	}
 	D3DXVECTOR3 playerOffset;
 	const bool lampInsidePlayer = PlayerLampOffset(Lights[LightIndex], LightPos, playerOffset);
 
@@ -774,6 +932,64 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 	}
 
+	unsigned char drawFaces = 63;
+	if (faceSkip) {
+		drawFaces = 0;
+		for (const CubeCaster& caster : cubeCasters) drawFaces |= caster.faces;
+		const void* liveTex = Shadows->Textures.ShadowCubeMapTexture[LightIndex];
+		const void* staticTex = Shadows->Textures.ShadowCubeMapStaticTexture[LightIndex];
+		const auto serial = StaticCubeSerials.find(staticTex);
+		const unsigned staticSerial = serial != StaticCubeSerials.end() ? serial->second : 0;
+		for (int Face = 0; Face < 6; Face++) {
+			LiveFaceRecord& record = LiveFaces[LightIndex][Face];
+			const bool holdsCopy = record.pure && staticSerial && record.live == liveTex && record.staticTex == staticTex &&
+				record.serial == staticSerial && record.generation == Shadows->CubeGeneration;
+			const bool draws = (drawFaces >> Face) & 1;
+			if (!((viewFaces >> Face) & 1)) {
+				record.pure = false;
+				continue;
+			}
+			if (!draws && holdsCopy && copySkip) {
+				statFacesSkipped++;
+#if NVR_TEST_TOOLS
+				CubeFaceSkipSelfCheck(Device, Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face], Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face]);
+#endif
+				continue;
+			}
+			IDirect3DSurface9* from = Shadows->Textures.ShadowCubeMapStaticSurface[LightIndex][Face];
+			IDirect3DSurface9* to = Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face];
+			record.pure = false;
+			if (!from || !to || !staticSerial || FAILED(Device->StretchRect(from, NULL, to, NULL, D3DTEXF_NONE))) { ForgetLiveFaces(LightIndex); return false; }
+			if (draws) statFacesDrawn++;
+			else {
+				statFacesCopied++;
+				record.live = liveTex; record.staticTex = staticTex; record.serial = staticSerial; record.generation = Shadows->CubeGeneration;
+				record.pure = true;
+			}
+		}
+	}
+	else if (Layer == CubeLayer::MovingOnto) statFacesOldPath += 6;
+	if (cullFaces) {
+		drawFaces &= viewFaces;
+		const int kind = Layer == CubeLayer::All ? 0 : 2;
+		for (int face = 0; face < 6; face++) if (!((viewFaces >> face) & 1)) statFacesCulled[kind]++;
+#if NVR_TEST_TOOLS
+		static int poison = 0;
+		static unsigned poisonFrame = 0;
+		if (poisonFrame != SkinnedBoundFrame && (SkinnedBoundFrame % 30) == 0) poison = TheSettingManager->GetSettingI("Main.Main.Performance", "CubeFaceViewCullCheck");
+		poisonFrame = SkinnedBoundFrame;
+		if (poison > 0) {
+			for (int face = 0; face < 6; face++) {
+				if ((viewFaces >> face) & 1) continue;
+				Device->SetRenderTarget(0, Shadows->Textures.ShadowCubeMapSurface[LightIndex][face]);
+				Device->SetDepthStencilSurface(Shadows->Textures.ShadowCubeMapDepthSurface);
+				Device->SetViewport(&ShadowCubeMapViewPort);
+				Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DXCOLOR(0.1f, 0.1f, 0.1f, 0.1f), 1.0f, 0L);
+			}
+		}
+#endif
+	}
+
 	if (Layer == CubeLayer::MovingOnto) {
 		RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE, RenderStateArgs);
 		RenderState->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_MIN, RenderStateArgs);
@@ -833,6 +1049,12 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	}
 
 	for (int Face = 0; Face < 6; Face++) {
+		if (!((drawFaces >> Face) & 1)) continue;
+		if (GpuTimer::Enabled) {
+			const int kind = Layer == CubeLayer::All ? 0 : Layer == CubeLayer::StaticOnly ? 1 : 2;
+			statViewFaces[kind]++;
+			if (CubeFaceOutOfView(LightPos, Radius, FaceDirection[Face])) statViewFacesOut[kind]++;
+		}
 		CameraDirection = FaceDirection[Face];
 		Up = FaceUp[Face];
 		At = Eye + CameraDirection;
@@ -1026,7 +1248,7 @@ void ShadowManager::RenderShadowMaps() {
 	bool InteriorEnabled = !isExterior && TheShaderManager->Effects.ShadowsInteriors->Enabled;
 
 	// early out in case shadow rendering is not required
-	if (!ExteriorEnabled && !InteriorEnabled && !TheShaderManager->orthoRequired || !ShadowShadersLoaded) {
+	if (!ExteriorEnabled && !InteriorEnabled && !TheShaderManager->orthoRequired && !TheShaderManager->orthoSkyRequired || !ShadowShadersLoaded) {
 		return;
 	}
 	if (!Player->parentCell) return;
@@ -1101,7 +1323,7 @@ void ShadowManager::RenderShadowMaps() {
 	// Quantize sun direction angle to reduce shimmer by a large factor.
 	D3DXVECTOR3 SunDir = Shadows->CalculateSmoothedSunDir();
 
-	if (isExterior && (ExteriorEnabled || TheShaderManager->orthoRequired)) {
+	if (isExterior && (ExteriorEnabled || TheShaderManager->orthoRequired || TheShaderManager->orthoSkyRequired)) {
 
 		// Update cascade depths based on current camera.
 		Shadows->GetCascadeDepths();
@@ -1118,14 +1340,16 @@ void ShadowManager::RenderShadowMaps() {
 		terrainLODPass->PixelShader = ShadowMapOpaquePixel;
 
 		if (ContactHardeningCompiled) {
-			const bool on = Shadows->Settings.ContactHardening.Enabled;
+			const bool night = TheShaderManager->GameState.dayLight <= 0.0f && !Shadows->Settings.ContactHardening.AtNight;
+			const bool on = Shadows->Settings.ContactHardening.Enabled && !night;
 			ContactHardeningData.x = on ? 0.00925f * Shadows->Settings.ContactHardening.SunSize : 0.0f;
 			ContactHardeningData.y = Shadows->Settings.ContactHardening.MaxSoftness;
 			ContactHardeningData.z = Shadows->Settings.ContactHardening.Smooth ? 1.0f : 0.0f;
 			static float logged = -1.0f;
 			if (ContactHardeningData.x != logged) {
-				Logger::Log("UNOFFICIAL contact hardening %s (penumbra %.4f per unit of distance, max %.0f texels)",
-					on ? "ON" : "OFF", ContactHardeningData.x, ContactHardeningData.y);
+				Logger::Log("UNOFFICIAL contact hardening %s%s (penumbra %.4f per unit of distance, max %.0f texels)",
+					on ? "ON" : "OFF", night && Shadows->Settings.ContactHardening.Enabled ? " for the night (AtNight off)" : "",
+					ContactHardeningData.x, ContactHardeningData.y);
 				logged = ContactHardeningData.x;
 			}
 		}
@@ -1136,7 +1360,53 @@ void ShadowManager::RenderShadowMaps() {
 				hinted = true;
 			}
 		}
-		if (ExteriorEnabled && SunDir.z > 0.0f) {
+		const bool skipCascades = ExteriorEnabled && Shadows->SunFaded && SunAtlasDrawn && Shadows->FadedCascadesUnread();
+		if (skipCascades) {
+			SunCascadesSkipped = true;
+			if (SunDir.z > 0.0f) ShadowData->z = 0;
+		}
+		else if (SunCascadesSkipped) {
+			ForceAllCascades = true;
+			SunCascadesSkipped = false;
+		}
+#if NVR_TEST_TOOLS
+		{
+			static IDirect3DTexture9* kept = nullptr;
+			static IDirect3DSurface9* keptSurface = nullptr;
+			static bool poisoned = false;
+			const bool poison = skipCascades && Shadows->Settings.Exteriors.SkipWhenFadedCheck && Shadows->ShadowAtlasSurface;
+			if (poison && !poisoned) {
+				D3DSURFACE_DESC desc = {}, keptDesc = {};
+				Shadows->ShadowAtlasSurface->GetDesc(&desc);
+				if (keptSurface && (FAILED(keptSurface->GetDesc(&keptDesc)) || keptDesc.Width != desc.Width || keptDesc.Height != desc.Height ||
+					keptDesc.Format != desc.Format)) {
+					keptSurface->Release(); kept->Release(); keptSurface = nullptr; kept = nullptr;
+				}
+				if (!kept && SUCCEEDED(Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &kept, NULL)))
+					kept->GetSurfaceLevel(0, &keptSurface);
+				poisoned = keptSurface && SUCCEEDED(Device->StretchRect(Shadows->ShadowAtlasSurface, NULL, keptSurface, NULL, D3DTEXF_NONE));
+				Logger::Log("SkipWhenFadedCheck: shadow atlas %s", poisoned ? "kept and poisoned while skipped" : "could not be kept: not poisoned");
+			}
+			if (poison && poisoned) {
+				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+				Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+				Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			}
+			else if (!poison && poisoned) {
+				const bool back = SUCCEEDED(Device->StretchRect(keptSurface, NULL, Shadows->ShadowAtlasSurface, NULL, D3DTEXF_NONE));
+				Logger::Log("SkipWhenFadedCheck: shadow atlas %s", back ? "put back" : "could NOT be put back");
+				poisoned = false;
+			}
+		}
+#endif
+		static int loggedSkip = -1;
+		const int skipState = skipCascades ? 2 : Shadows->SunFaded && ExteriorEnabled ? 1 : 0;
+		if (skipState != loggedSkip) {
+			Logger::Log("SUN FADE STATE: sun cascade maps %s", skipState == 2 ? "SKIPPED" : skipState == 1 ?
+				"drawn (read this frame: the volumetric fog's sun glow, the volumetric light or the deferred lookup; or no full draw yet)" : "drawn");
+			loggedSkip = skipState;
+		}
+		if (ExteriorEnabled && SunDir.z > 0.0f && !skipCascades) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);
 
@@ -1174,7 +1444,9 @@ void ShadowManager::RenderShadowMaps() {
 				if (update) {
 					updatedCascades |= 1u << i;
 					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
+					SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));
 					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+					SunLandDropScale = 0.0f;
 					CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
 					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
 				}
@@ -1197,6 +1469,7 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			if (ForceAllCascades) SunAtlasDrawn = true;
 			ForceAllCascades = false;
 			LogSunShadowStats(cachedDistant);
 			}
@@ -1231,23 +1504,104 @@ void ShadowManager::RenderShadowMaps() {
 			if (Shadows->Settings.ShadowMaps.Mipmaps)
 				Shadows->ShadowAtlasTexture->GenerateMipSubLevels();
 		}
+#if NVR_TEST_TOOLS
+		if (Shadows->Settings.Exteriors.SkipWhenFadedCheck == 4 && Shadows->ShadowAtlasSurface) {
+			Device->SetRenderTarget(0, Shadows->ShadowAtlasSurface);
+			Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
+			Device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+			ForceAllCascades = true;
+		}
+#endif
 
 		// render ortho map if one of the effects using ortho is active
-		if (TheShaderManager->orthoRequired) {
+		if (TheShaderManager->orthoRequired || TheShaderManager->orthoSkyRequired) {
 			GpuProfileScope gpu(orthoMapTimer, Device);
 			auto shadowMapTimer = TimeLogger();
 
 			ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[MapOrtho];
 
-			if (!Shadows->Settings.OrthoMap.LimitFrequency || !((FrameCounter + 2) % 4)) {
+			bool draw = !Shadows->Settings.OrthoMap.LimitFrequency || !((FrameCounter + 2) % 4);
+			static D3DXVECTOR3 skyLastDrawPos(0.0f, 0.0f, 0.0f);
+			static int skyFramesSinceDraw = 1 << 20;
+			static int skySettingsSeen = -1;
+			static bool skyLastDrawSkyOnly = false;
+			const bool skyOnly = TheShaderManager->orthoSkyRequired && !TheShaderManager->orthoRequired;
+			const D3DXVECTOR3 cameraNow = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+			if (skyOnly) {
+				const D3DXVECTOR3 moved = cameraNow - skyLastDrawPos;
+				const float moveRefresh = Shadows->Settings.OrthoMap.SkyMoveRefresh;
+				draw = skyFramesSinceDraw >= Shadows->Settings.OrthoMap.SkyMapRefresh || TheShaderManager->orthoSkyFresh || !skyLastDrawSkyOnly ||
+					D3DXVec3LengthSq(&moved) > moveRefresh * moveRefresh || skySettingsSeen != Shadows->Settings.OrthoMap.SkySettingsGeneration;
+			}
+			if (draw) {
 				Device->SetRenderTarget(0, Shadows->ShadowMapOrthoSurface);
 				Device->SetDepthStencilSurface(Shadows->ShadowMapOrthoDepthSurface);
 
 				ShadowData->z = 1; // identify ortho map in shader constant
 				D3DXVECTOR3 OrthoDir = D3DXVECTOR3(0.05f, 0.05f, 1.0f);
-				Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &OrthoDir);
+				const float orthoNearWas = ShadowMap->ShadowMapNear, orthoRadiusWas = ShadowMap->ShadowMapRadius;
+				if (skyOnly && Shadows->Settings.OrthoMap.SkyOwnProjection) {
+					NiCamera* sceneCamera = WorldSceneGraph->camera;
+					const float R = Shadows->Settings.OrthoMap.Distance, H = Shadows->Settings.OrthoMap.Distance;
+					D3DXVECTOR3 eye(0.0f, 0.0f, H), at(0.0f, 0.0f, 0.0f), up(0.0f, 1.0f, 0.0f);
+					D3DXMATRIX view, proj;
+					D3DXMatrixLookAtRH(&view, &eye, &at, &up);
+					D3DXMatrixOrthoOffCenterRH(&proj, -R, R, -R, R, 0.0f, 2.0f * H);
+					D3DXMATRIX viewProj = view * proj;
+					const float mapSize = ShadowMap->ShadowMapResolution;
+					D3DXVECTOR4 origin(-sceneCamera->m_worldTransform.pos.x, -sceneCamera->m_worldTransform.pos.y, -sceneCamera->m_worldTransform.pos.z, 1.0f);
+					D3DXVec4Transform(&origin, &origin, &viewProj);
+					const float ox = origin.x * mapSize * 0.5f, oy = origin.y * mapSize * 0.5f;
+					proj._41 += (floorf(ox + 0.5f) - ox) * 2.0f / mapSize;
+					proj._42 += (floorf(oy + 0.5f) - oy) * 2.0f / mapSize;
+					viewProj = view * proj;
+					NiFrustum frustum(-R, R, R, -R, 0.0f, 2.0f * H, true);
+					TheCameraManager->SetFrustumPlanes(&ShadowMap->ShadowMapFrustumPlanes, &viewProj, eye, frustum);
+					ShadowMap->ShadowMapFrustumPlanes.SetActivePlaneState(62);
+					ShadowMap->ShadowMapCascadeCenterRadius = D3DXVECTOR4(0.0f, 0.0f, 0.0f, R);
+					ShadowMap->Forms.MinRadius = ShadowMap->Forms.OrigMinRadius * R * ShadowMap->ShadowMapInverseResolution;
+					ShadowMap->CameraTranslation = sceneCamera->m_worldTransform.pos.toD3DXVEC3();
+					Shadows->Constants.ShadowViewProj = viewProj;
+				}
+				else {
+					if (skyOnly) { ShadowMap->ShadowMapRadius = orthoRadiusWas * (2.0f / 3.0f); ShadowMap->ShadowMapNear = -ShadowMap->ShadowMapRadius; }
+					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &OrthoDir);
+				}
+				ShadowMap->ShadowMapNear = orthoNearWas;
+				ShadowMap->ShadowMapRadius = orthoRadiusWas;
 
+#if NVR_TEST_TOOLS
+				const int probeValue = Shadows->Settings.OrthoMap.ProbeDump;
+				const bool probe = probeValue != 0 && probeValue != OrthoProbe::LastValue && OrthoProbe::Prepare(Device, (UINT)Shadows->Settings.OrthoMap.Resolution);
+				DWORD probeWrite1 = 0;
+				if (probe) {
+					OrthoProbe::Owners.clear(); OrthoProbe::Drawn.clear(); OrthoProbe::Recording = true;
+					for (int& n : OrthoProbe::LandCount) n = 0;
+					Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &probeWrite1);
+					Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+					Device->SetRenderTarget(1, OrthoProbe::IdSurface);
+				}
+#endif
+				const bool clean = skyOnly && Shadows->Settings.OrthoMap.SkyCleanMap;
+				const bool alphaWas = ShadowMap->Forms.AlphaEnabled;
+				if (clean) { ShadowMap->Forms.AlphaEnabled = true; OrthoSkipBlendOnly = true; }
 				RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+				ShadowMap->Forms.AlphaEnabled = alphaWas;
+				OrthoSkipBlendOnly = false;
+				skyLastDrawPos = cameraNow;
+				skyFramesSinceDraw = 0;
+				skyLastDrawSkyOnly = skyOnly;
+				skySettingsSeen = Shadows->Settings.OrthoMap.SkySettingsGeneration;
+#if NVR_TEST_TOOLS
+				if (probe) {
+					OrthoProbe::Recording = false;
+					Device->SetRenderTarget(1, nullptr);
+					Device->SetRenderState(D3DRS_COLORWRITEENABLE1, probeWrite1);
+					OrthoProbe::Dump(Device, Shadows->ShadowMapOrthoSurface, ShadowMap->ShadowCameraToLight, probeValue);
+					OrthoProbe::LastValue = probeValue;
+					OrthoProbe::Owners.clear(); OrthoProbe::Drawn.clear();
+				}
+#endif
 			}
 			else {
 				D3DXVECTOR3 newCameraTranslation = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
@@ -1256,6 +1610,7 @@ void ShadowManager::RenderShadowMaps() {
 				D3DXMatrixTranslation(&translationMatrix, difference.x, difference.y, difference.z);
 				ShadowMap->ShadowCameraToLight = translationMatrix * ShadowMap->ShadowCameraToLight;
 				ShadowMap->CameraTranslation = newCameraTranslation;
+				++skyFramesSinceDraw;
 			}
 
 			OrthoData->x = Shadows->Settings.OrthoMap.Distance * 2;
@@ -1314,6 +1669,12 @@ void ShadowManager::RenderShadowMaps() {
 		const unsigned interval = (unsigned)TheSettingManager->SettingsMain.Main.PointShadowInterval;
 		static PointShadowSlotState staticSlots[ShadowCubeMapsMax];
 		static unsigned statStaticDrawn = 0, statMovingOnly = 0, statWhole = 0;
+		static unsigned statMovedLamps = 0, statMovedWithPeople = 0, statAnchored = 0;
+		static float statMovedStep = 0.0f, statMovedStepMax = 0.0f, statMovedWander = 0.0f, statMovedRadius = 0.0f;
+		static unsigned statMovedResized = 0;
+		static float statMovedRadiusStep = 0.0f;
+		static const void* movedLight[ShadowCubeMapsMax] = {};
+		static float movedHome[ShadowCubeMapsMax][3] = {};
 		const bool split = ShadowsInteriors->RedrawActorsOnly && ActorsOnlySupported(Device);
 
 		const int shadowedSlots = PointShadowForward::ShadowedSlots(isExterior);
@@ -1336,11 +1697,47 @@ void ShadowManager::RenderShadowMaps() {
 #endif
 			PointShadowCasterState(shadowLight, now.casterHash, now.staticCasters);
 			now.valid = true;
+			NiPoint3 anchor = { now.x, now.y, now.z };
+			bool anchored = false;
+			{
+				const float tolerance = TheSettingManager->SettingsMain.Main.LampShadowMoveTolerance;
+				if (tolerance > 0.0f && !isExterior && PointShadowForward::UsesAllSlots(isExterior) && ForwardWasActive &&
+					slots[i].valid && slots[i].light == shadowLight && slots[i].cell == now.cell && slots[i].radius == now.radius) {
+					const float dx = now.x - slots[i].x, dy = now.y - slots[i].y, dz = now.z - slots[i].z;
+					if ((dx != 0.0f || dy != 0.0f || dz != 0.0f) && dx * dx + dy * dy + dz * dz <= tolerance * tolerance) {
+						now.x = anchor.x = slots[i].x; now.y = anchor.y = slots[i].y; now.z = anchor.z = slots[i].z;
+						anchored = true;
+						if (GpuTimer::Enabled) statAnchored++;
+					}
+				}
+			}
 			if (GpuTimer::Enabled) statPresent++;
 			const PointShadowRedraw why = PointShadowRedrawReason(slots[i], now, scheduleFrame, i, interval);
 			if (why == PointShadowRedraw::None) {
 				if (GpuTimer::Enabled && now.staticCasters) statStaticReused++;
 				continue;
+			}
+			if (GpuTimer::Enabled && why == PointShadowRedraw::Moved) {
+				const float dx = now.x - slots[i].x, dy = now.y - slots[i].y, dz = now.z - slots[i].z;
+				const float step = sqrtf(dx * dx + dy * dy + dz * dz);
+				statMovedLamps++; statMovedStep += step; statMovedStepMax = (std::max)(statMovedStepMax, step); statMovedRadius += now.radius;
+				if (now.radius != slots[i].radius) {
+					statMovedResized++;
+					statMovedRadiusStep = (std::max)(statMovedRadiusStep, fabsf(now.radius - slots[i].radius) / (std::max)(now.radius, 1.0f));
+				}
+				if (!now.staticCasters && shadowLight->kGeometryList.start) statMovedWithPeople++;
+				if (movedLight[i] != shadowLight) { movedLight[i] = shadowLight; movedHome[i][0] = now.x; movedHome[i][1] = now.y; movedHome[i][2] = now.z; }
+				const float hx = now.x - movedHome[i][0], hy = now.y - movedHome[i][1], hz = now.z - movedHome[i][2];
+				statMovedWander = (std::max)(statMovedWander, sqrtf(hx * hx + hy * hy + hz * hz));
+				static std::unordered_map<const void*, bool> named;
+				static unsigned namedLines = 0;
+				if (namedLines < 16 && !named[shadowLight]) {
+					named[shadowLight] = true; namedLines++;
+					NiNode* parent = pointLight->m_parent;
+					Logger::Log("POINT SHADOWS MOVING LAMP %p '%s' (parent '%s') at %.1f %.1f %.1f, cube radius %.0f, step %.3f units, %s casters",
+						(const void*)shadowLight, pointLight->m_pcName ? pointLight->m_pcName : "", parent && parent->m_pcName ? parent->m_pcName : "",
+						now.x, now.y, now.z, now.radius, step, now.staticCasters ? "only still" : shadowLight->kGeometryList.start ? "moving" : "no listed");
+				}
 			}
 
 			const bool hasList = shadowLight->kGeometryList.start != nullptr;
@@ -1354,13 +1751,22 @@ void ShadowManager::RenderShadowMaps() {
 				staticNow.texture = Shadows->Textures.ShadowCubeMapStaticTexture[i];
 			}
 			const PointShadowDraw draw = PointShadowDrawPlan(split && hasList, staticSlots[i], staticNow, moving);
+			CubeEyeOverride = anchored ? &anchor : nullptr;
+			CubeCullAllowed = TheSettingManager->SettingsMain.Main.CubeFaceViewCull && interval <= 1 && !isExterior &&
+				(moving || why == PointShadowRedraw::Moved);
+			CubeCulledAny = false;
+			struct EyeReset { ~EyeReset() { CubeEyeOverride = nullptr; CubeCullAllowed = false; } } eyeReset;
+			static GpuTimer staticLayerTimer("  Cube static layer (1 lamp)", 480), movingOntoTimer("  Cube people onto copy (1 lamp)", 960),
+				wholeTimer("  Cube whole lamp (1 lamp)", 480);
 			if (draw == PointShadowDraw::StaticThenMoving) {
+				GpuProfileScope gpuLamp(staticLayerTimer, Device);
 				RenderShadowCubeMap(ShadowLights, i, CubeLayer::StaticOnly);
 				staticSlots[i] = staticNow;
 				if (GpuTimer::Enabled) statStaticDrawn++;
 			}
 			bool drawn = false;
 			if (draw != PointShadowDraw::All) {
+				GpuProfileScope gpuLamp(movingOntoTimer, Device);
 				drawn = RenderShadowCubeMap(ShadowLights, i, CubeLayer::MovingOnto);
 				if (drawn && GpuTimer::Enabled) statMovingOnly++;
 				if (!drawn) {
@@ -1370,9 +1776,11 @@ void ShadowManager::RenderShadowMaps() {
 			}
 			// Render targets set in function due to rendering multiple faces.
 			if (!drawn) {
+				GpuProfileScope gpuLamp(wholeTimer, Device);
 				RenderShadowCubeMap(ShadowLights, i);
 				if (GpuTimer::Enabled) statWhole++;
 			}
+			now.partial = CubeCulledAny;
 			slots[i] = now;
 			if (GpuTimer::Enabled) { statRedrawn++; statReasons[(int)why]++; }
 
@@ -1383,6 +1791,7 @@ void ShadowManager::RenderShadowMaps() {
 		scheduleFrame++;
 		if (!isExterior) {
 			PointShadowForward::Publish(slots, ShadowLights, shadowedSlots, Shadows->Textures.ShadowCubeMapTexture);
+			ForwardWasActive = PointShadowForward::Active;
 			PointShadowForward::FrameStats();
 		}
 
@@ -1404,6 +1813,21 @@ void ShadowManager::RenderShadowMaps() {
 				if (entry.second.seen == SkinnedBoundFrame && entry.second.changed && SkinnedBoundFrame - entry.second.changed < MovingSettleFrames) rigidMoving++;
 			Logger::Log("POINT SHADOWS RedrawActorsOnly %s: per frame %.1f lamps redrawn whole, %.1f only their people (a copy of the walls and furniture, plus %.1f static layers drawn); %u rigid pieces moving now (held weapons, doors...)",
 				split ? "on" : (ShadowsInteriors->RedrawActorsOnly ? "unavailable" : "off"), statWhole * perFrame, statMovingOnly * perFrame, statStaticDrawn * perFrame, rigidMoving);
+			Logger::Log("POINT SHADOWS CubeFaceCopySkip %s: per frame %.1f faces left as they were (still the static copy), %.1f copied only, %.1f copied and drawn on, %.1f by the old path (copy all six, draw all six)",
+				TheSettingManager->SettingsMain.Main.CubeFaceCopySkip ? "on" : "off", statFacesSkipped * perFrame, statFacesCopied * perFrame, statFacesDrawn * perFrame, statFacesOldPath * perFrame);
+			Logger::Log("POINT SHADOWS moved lamps: %.2f per frame (%.2f with moving casters), step per frame mean %.3f max %.3f units, furthest from where first seen %.2f units, cube radius mean %.0f",
+				statMovedLamps * perFrame, statMovedWithPeople * perFrame, statMovedLamps ? statMovedStep / statMovedLamps : 0.0f, statMovedStepMax, statMovedWander,
+				statMovedLamps ? statMovedRadius / statMovedLamps : 0.0f);
+			Logger::Log("POINT SHADOWS LampShadowMoveTolerance %.1f: %.2f lamps per frame kept their drawn point; view test (diagnostic): per frame faces drawn whole %.1f / static layer %.1f / people %.1f, of them wholly outside the view %.1f / %.1f / %.1f",
+				TheSettingManager->SettingsMain.Main.LampShadowMoveTolerance, statAnchored * perFrame, statViewFaces[0] * perFrame, statViewFaces[1] * perFrame, statViewFaces[2] * perFrame,
+				statViewFacesOut[0] * perFrame, statViewFacesOut[1] * perFrame, statViewFacesOut[2] * perFrame);
+			Logger::Log("POINT SHADOWS CubeFaceViewCull %s: per frame faces left out (out of view) %.1f of whole lamps, %.1f of people refreshes; partial redraws %.2f; moved lamps whose radius changed too %.2f per frame (largest change %.1f%%)",
+				TheSettingManager->SettingsMain.Main.CubeFaceViewCull ? "on" : "off", statFacesCulled[0] * perFrame, statFacesCulled[2] * perFrame,
+				statReasons[(int)PointShadowRedraw::Partial] * perFrame, statMovedResized * perFrame, 100.0f * statMovedRadiusStep);
+			statAnchored = 0; statMovedResized = 0; statMovedRadiusStep = 0.0f;
+			for (int k = 0; k < 3; k++) statViewFaces[k] = statViewFacesOut[k] = statFacesCulled[k] = 0;
+			statFacesSkipped = statFacesCopied = statFacesDrawn = statFacesOldPath = 0;
+			statMovedLamps = statMovedWithPeople = 0; statMovedStep = statMovedStepMax = statMovedWander = statMovedRadius = 0.0f;
 			statSkinnedCasters = statSkinnedFaces = statSkinnedOutOfRange = statSkinnedNoBound = 0;
 			statFrames = statPresent = statRedrawn = statStaticReused = 0;
 			statStaticDrawn = statMovingOnly = statWhole = 0;

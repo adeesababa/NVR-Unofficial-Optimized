@@ -1,4 +1,15 @@
 #include "ShadowsExterior.h"
+#include "../core/TestTools.h"
+
+static D3DXVECTOR4 LampContact(0.0f, 40.0f, 12.0f, 0.5f), LampContactFade(25.0f, 0.05f, 3000.0f, 1.0f / 900.0f),
+	LampContactBias(0.3f, 0.002f, 0.001f, 0.2f), LampContactNoise(0.0f, 0.0f, 52.9829189f, 0.0f);
+float LampContactStrength() { return LampContact.x; }
+static bool MaskHalfResOn = false;
+static IDirect3DTexture9* MaskHalfTexture = nullptr;
+static IDirect3DSurface9* MaskHalfSurface = nullptr;
+bool LampMaskHalfRes() { return MaskHalfResOn && MaskHalfTexture && MaskHalfSurface; }
+IDirect3DTexture9* LampMaskHalfTexture() { return MaskHalfTexture; }
+IDirect3DSurface9* LampMaskHalfSurface() { return MaskHalfSurface; }
 
 void ShadowsExteriorEffect::UpdateConstants() {
 
@@ -13,6 +24,7 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			// at night time, fade based on moonphase
 			// moonphase goes from 0 to 8
 			float MoonPhase = (fmod(DaysPassed, 8 * Tes->sky->firstClimate->phaseLength & 0x3F)) / (Tes->sky->firstClimate->phaseLength & 0x3F);
+			const float moonPhaseDays = MoonPhase;
 
 			float PI = 3.1416f; // use cos curve to fade moon light shadows strength
 			MoonPhase = std::lerp(-PI, PI, MoonPhase / 8) - PI / 4; // map moonphase to 1/2PI/2PI + 1/2
@@ -21,6 +33,16 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			float nightMinDarkness = 1 - Settings.Exteriors.NightMinDarkness;
 			float MoonVisibility = std::lerp((float)0.0, nightMinDarkness, (float)(cos(MoonPhase) * 0.5 + 0.5));
 			Constants.ShadowFade.x = std::lerp(MoonVisibility, (float)1.0, Constants.ShadowFade.x);
+
+			static float loggedFade = -1.0f, loggedDayLight = -1.0f;
+			if (fabsf(Constants.ShadowFade.x - loggedFade) > 0.01f || (TheShaderManager->GameState.dayLight <= 0.0f) != (loggedDayLight <= 0.0f)) {
+				Logger::Log("NIGHT STATE: days passed %.2f, moon phase %.2f of 8 (phase length %d days), sun shadow fade %.3f (1 = none), dayLight %.2f, sun colour %.3f %.3f %.3f",
+					DaysPassed, moonPhaseDays, (int)(Tes->sky->firstClimate->phaseLength & 0x3F), Constants.ShadowFade.x,
+					TheShaderManager->GameState.dayLight, TheShaderManager->ShaderConst.sunColor.x, TheShaderManager->ShaderConst.sunColor.y,
+					TheShaderManager->ShaderConst.sunColor.z);
+				loggedFade = Constants.ShadowFade.x;
+				loggedDayLight = TheShaderManager->GameState.dayLight;
+			}
 		}
 
 		// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant
@@ -43,8 +65,31 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		// not sun shadows enabled), so the sun-shadow path can't share it. See the interior
 		// branch below.
 		Constants.FormatData.z = 1.0f;
+
+		SunFaded = Settings.Exteriors.SkipWhenFaded && Constants.ShadowFade.x >= 1.0f;
+		Constants.ForwardData.x = (!Settings.Exteriors.ForwardShadows || SunFaded) ? 1.0f : 0.0f;
+#if NVR_TEST_TOOLS
+		if (Settings.Exteriors.SkipWhenFadedCheck == 3) Constants.ForwardData.x = 1.0f;
+#endif
+
+		const int fadeState = (Constants.ShadowFade.x >= 1.0f ? 1 : 0) | (SunFaded ? 2 : 0);
+		static int loggedFadeState = -1;
+		if (fadeState != loggedFadeState && Tes && Tes->sky) {
+			Sky* sky = Tes->sky;
+			const float riseBegin = sky->GetSunriseBegin(), riseEnd = sky->GetSunriseEnd(), setBegin = sky->GetSunsetBegin(), setEnd = sky->GetSunsetEnd();
+			TimeGlobals* time = TimeGlobals::Get();
+			Logger::Log("SUN FADE STATE: game hour %.3f, dayLight %.3f, sun shadow fade %.4f (1 = none), SkipWhenFaded %s: sun shadow lookups %s. "
+				"The fade is 1 from %.2f to %.2f (dawn) and %.2f to %.2f (dusk), game hours.",
+				time && time->GameHour ? fmod(time->GameHour->data, 24.0f) : -1.0f, TheShaderManager->GameState.dayLight, Constants.ShadowFade.x,
+				Settings.Exteriors.SkipWhenFaded ? "on" : "off", SunFaded ? "SKIPPED" : "run",
+				riseBegin - 1.0f + 0.4f * (riseEnd - riseBegin), riseBegin - 1.0f + 0.6f * (riseEnd - riseBegin),
+				setEnd + 1.0f - 0.6f * (setEnd - setBegin), setEnd + 1.0f - 0.4f * (setEnd - setBegin));
+			loggedFadeState = fadeState;
+		}
 	}
 	else {
+		SunFaded = false;
+		Constants.ForwardData.x = Settings.Exteriors.ForwardShadows ? 0.0f : 1.0f;
 		// pass the enabled/disabled property of the shadow maps to the shadowfade constant
 		Constants.ShadowFade.y = TheShaderManager->Effects.ShadowsInteriors->Enabled;
 		Constants.ShadowFade.z = 1; // z enables point lights
@@ -332,6 +377,12 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
+	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;
+#if NVR_TEST_TOOLS
+	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 4);
+#else
+	Settings.Exteriors.SkipWhenFadedCheck = 0;
+#endif
 	Settings.Exteriors.UsePointShadowsDay = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsDay");
 	Settings.Exteriors.UsePointShadowsNight = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsNight");
 
@@ -346,6 +397,12 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.OrthoMap.Resolution = 128 * pow(2, (std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Ortho", "Resolution"), 0, 4)));
 	Settings.OrthoMap.Distance = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Ortho", "Distance"), 100.0f);
 	Settings.OrthoMap.LimitFrequency = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Ortho", "LimitFrequency");
+	Settings.OrthoMap.ProbeDump = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Ortho", "ProbeDump");
+	Settings.OrthoMap.SkyCleanMap = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "CleanMap") != 0;
+	Settings.OrthoMap.SkyMapRefresh = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "MapRefresh"), 1, 100000);
+	Settings.OrthoMap.SkyMoveRefresh = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "MoveRefresh"), 1.0f, 100000.0f);
+	Settings.OrthoMap.SkyOwnProjection = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "OwnProjection") != 0;
+	++Settings.OrthoMap.SkySettingsGeneration;
 
 	if (oldOrthoResolution != 0 && oldOrthoResolution != Settings.OrthoMap.Resolution)
 		orthoSettingsChanged = true;
@@ -370,6 +427,15 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.Enabled = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Enabled");
 	Constants.PointShadowNear.x = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "NearFade"), 0.0f);
 	Constants.PointShadowNear.y = (std::min)((std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "EdgeFade"), 0.0f), 0.9f);
+	Constants.PointShadowNear.w = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "MaskSkipFar") ? 1.0f : 0.0f;
+	MaskHalfResOn = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "MaskHalfRes") != 0;
+	const char* interiorMain = "Shaders.ShadowsInteriors.Main";
+	const float contactDistance = std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactDistance"), 200.0f, 20000.0f);
+	LampContact = D3DXVECTOR4(std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactShadows"), 0.0f, 1.0f),
+		std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactLength"), 4.0f, 200.0f),
+		std::clamp(TheSettingManager->GetSettingF(interiorMain, "ContactThickness"), 1.0f, 100.0f), 0.5f);
+	LampContactFade = D3DXVECTOR4(25.0f, 1.0f / 20.0f, contactDistance, 1.0f / (0.3f * contactDistance));
+	LampContactNoise = D3DXVECTOR4(0.06711056f * (float)(std::max)(TheRenderManager->width, (UInt32)1), 0.00583715f * (float)(std::max)(TheRenderManager->height, (UInt32)1), 52.9829189f, TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "DarkeningBlur") ? 1.0f : 0.0f);
 	Settings.Interiors.Forms.AlphaEnabled = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "AlphaEnabled");
 	Settings.Interiors.Forms.Activators = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Activators");
 	Settings.Interiors.Forms.Actors = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Actors");
@@ -385,7 +451,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.LightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LightPoints"), ShadowCubeMapsMax));
 	Settings.Interiors.ExteriorLightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ExteriorLightPoints"), ExteriorBatchedMax));
 	Settings.Interiors.TorchesCastShadows = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TorchesCastShadows");
-	Settings.Interiors.ShadowCubeMapSize = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ShadowCubeMapSize");
+	Settings.Interiors.ShadowCubeMapSize = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ShadowCubeMapSize"), 64, 2048);
 	Settings.Interiors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "Darkness");
 	Settings.Interiors.LightRadiusMult = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "LightRadiusMult");
 	Settings.Interiors.DrawDistance = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "DrawDistance");
@@ -425,6 +491,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
 	Settings.ContactHardening.MaxSoftness = max(min(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "MaxSoftness"), 32.0f), 1.0f);
 	Settings.ContactHardening.Smooth = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "Smooth") != 0;
+	Settings.ContactHardening.AtNight = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "AtNight") != 0;
 	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
 		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
 
@@ -452,6 +519,27 @@ bool ShadowsExteriorEffect::ShouldRender() {
 	return false;
 }
 
+bool ShadowsExteriorEffect::FadedContactUnread() {
+#if NVR_TEST_TOOLS
+	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;
+#endif
+	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	return SunFaded && Constants.ShadowFade.z == 0.0f && Settings.Exteriors.Darkness >= 0.0f &&
+		!draws(TheShaderManager->Effects.BloodFlow) && !draws(TheShaderManager->Effects.WetWorld) &&
+		!draws(TheShaderManager->Effects.Underwater) && !draws(TheShaderManager->Effects.Debug);
+}
+
+bool ShadowsExteriorEffect::FadedCascadesUnread() {
+#if NVR_TEST_TOOLS
+	if (SunFaded && Settings.Exteriors.SkipWhenFadedCheck == 2) return true;
+#endif
+	auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+	VolumetricFogEffect* fog = TheShaderManager->Effects.VolumetricFog;
+	const bool fogReads = draws(fog) && fog->Constants.Scatter.y > 0.0f;
+	const bool deferredReads = !Settings.Exteriors.ForwardShadows && !FadedContactUnread();
+	return SunFaded && !fogReads && !deferredReads && !draws(TheShaderManager->Effects.VolumetricLight);
+}
+
 void ShadowsExteriorEffect::clearShadowsBuffer() {
 	// clear shadows buffer
 	IDirect3DSurface9* currentRT;
@@ -473,6 +561,10 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
 	TheShaderManager->RegisterConstant("TESR_PointShadowNear", &Constants.PointShadowNear);
+	TheShaderManager->RegisterConstant("TESR_LampContact", &LampContact);
+	TheShaderManager->RegisterConstant("TESR_LampContactFade", &LampContactFade);
+	TheShaderManager->RegisterConstant("TESR_LampContactBias", &LampContactBias);
+	TheShaderManager->RegisterConstant("TESR_LampContactNoise", &LampContactNoise);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
 	TheShaderManager->RegisterConstant("TESR_ShadowViewProjTransform", (D3DXVECTOR4*)&Constants.ShadowViewProj);
 	TheShaderManager->RegisterConstant("TESR_ShadowNearCenter", &ShadowMaps[MapNear].ShadowMapCascadeCenterRadius);
@@ -549,13 +641,18 @@ void ShadowsExteriorEffect::RegisterTextures() {
 
 
 	CubeMapSizeCreated = ShadowCubeMapSize;
+	CubeGeneration++;
 	for (int i = 0; i < ShadowCubeMapsMax; i++) {
 		Textures.ShadowCubeMapTexture[i] = nullptr;
 		Textures.ShadowCubeMapStaticTexture[i] = nullptr;
 		for (int j = 0; j < 6; j++) Textures.ShadowCubeMapSurface[i][j] = Textures.ShadowCubeMapStaticSurface[i][j] = nullptr;
 		if (i >= ShadowCubeMapsScreen) continue;
-		TheRenderManager->device->CreateCubeTexture(ShadowCubeMapSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &Textures.ShadowCubeMapTexture[i], NULL);
-		for (int j = 0; j < 6; j++) {
+		if (FAILED(TheRenderManager->device->CreateCubeTexture(ShadowCubeMapSize, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT,
+			&Textures.ShadowCubeMapTexture[i], NULL)) || !Textures.ShadowCubeMapTexture[i]) {
+			Textures.ShadowCubeMapTexture[i] = nullptr;
+			Logger::Log("UNOFFICIAL point shadows: could not create the cube map for slot %d (%d x %d; video memory?)", i, (int)ShadowCubeMapSize, (int)ShadowCubeMapSize);
+		}
+		else for (int j = 0; j < 6; j++) {
 			Textures.ShadowCubeMapTexture[i]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[i][j]);
 		}
 		std::string textureName = "TESR_ShadowCubeMapBuffer" + std::to_string(i);
@@ -569,6 +666,7 @@ void ShadowsExteriorEffect::RegisterTextures() {
 
 	// Initialize shadow buffer
 	TheTextureManager->InitTexture("TESR_PointShadowBuffer", &Textures.ShadowPassTexture, &Textures.ShadowPassSurface, TheRenderManager->width, TheRenderManager->height, D3DFMT_G16R16);
+	TheTextureManager->InitTexture("NVR_LampMaskHalf", &MaskHalfTexture, &MaskHalfSurface, (TheRenderManager->width + 1) / 2, (TheRenderManager->height + 1) / 2, D3DFMT_G16R16F);
 
 	texturesInitialized = true;
 }
@@ -588,6 +686,7 @@ bool ShadowsExteriorEffect::EnsureCubeMap(int slot) {
 		return false;
 	}
 	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapSurface[slot][j]);
+	CubeGeneration++;
 	Logger::Log("UNOFFICIAL point shadows: cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
 	return true;
 }
@@ -603,12 +702,14 @@ bool ShadowsExteriorEffect::EnsureStaticCubeMap(int slot) {
 		return false;
 	}
 	for (int j = 0; j < 6; j++) Textures.ShadowCubeMapStaticTexture[slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)j, 0, &Textures.ShadowCubeMapStaticSurface[slot][j]);
+	CubeGeneration++;
 	Logger::Log("UNOFFICIAL RedrawActorsOnly: static cube map for slot %d created (%u x %u)", slot, CubeMapSizeCreated, CubeMapSizeCreated);
 	return true;
 }
 
 void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cubemaps) {
 	if (cascades) {
+		TheShadowManager->SunAtlasDrawn = false;
 		if (ShadowAtlasSurface) {
 			ShadowAtlasSurface->Release();
 			ShadowAtlasSurface = nullptr;

@@ -219,6 +219,13 @@ float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
 
 float terrainBlendEdge(float keep, float height) {
     if (keep >= 1.0f || keep < 0.0f) return keep;
+    [branch] if (TESR_TerrainBlendShape.y < 0.0f) {
+        const float strength = -TESR_TerrainBlendShape.y;
+        const float coveragePower = 1.0f + strength, heightPower = 4.0f * strength;
+        const float terrainWeight = pow(keep, coveragePower) * (0.001f + pow(saturate(height), heightPower));
+        const float meshWeight = pow(1.0f - keep, coveragePower) * (0.001f + pow(0.5f, heightPower));
+        return terrainWeight / max(terrainWeight + meshWeight, 0.000001f);
+    }
     return saturate(keep + (height - 0.5f) * TESR_TerrainBlendShape.y * 4.0f * keep * (1.0f - keep));
 }
 
@@ -283,14 +290,15 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float gloss = 0.0f;
     float specExponent = 0.0f;
-    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, texCount, BaseMap, weights));
+    float2 odx = ddx(offsetUV), ody = ddy(offsetUV);
+    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights));
 #if TERRAIN_BLEND_ACTIVE
-    [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y > 0.0f)
+    [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y != 0.0f)
         terrainKeep = terrainBlendEdge(terrainKeep, terrainBlendHeight(offsetUV, dx, dy, texCount, BaseMap, weights, heightStatus));
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
         clip(terrainKeep - terrainBlendNoise(IN.screenPos));
 #endif
-    float3 combinedNormal = blendNormalMaps(offsetUV, texCount, NormalMap, weights, spec, gloss, specExponent);
+    float3 combinedNormal = blendNormalMaps(offsetUV, odx, ody, texCount, NormalMap, weights, spec, gloss, specExponent);
 
     float3 lightTS = mul(tbn, SunDir.xyz);
     float parallaxShadowMultiplier = 1.0;

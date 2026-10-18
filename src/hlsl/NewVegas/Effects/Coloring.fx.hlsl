@@ -40,6 +40,12 @@ float GetLuminance( const float3 rgb )
     return dot( XYZ_RGB[1], rgb );
 }
 
+float ColoringCurve(float x, float k)
+{
+	float y0 = 1.0 / (1.0 + exp(k / 2.0));
+	return abs(k) < 1e-4 ? x : (1.0 / (1.0 + exp(-k * (x - 0.5))) - y0) / (1.0 - 2.0 * y0);
+}
+
 float4 ColorGrade(float3 color)
 {
 	float3 H = 0.01;
@@ -55,15 +61,10 @@ float4 ColorGrade(float3 color)
 	color = pow(abs(color), TESR_ColoringValues.w) * sign(color); // same as our "pows()" helper function
 	color = lerp(H, color, TESR_ColoringData.w);
 
-	float y = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.y / 2.0));
-	float z = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.z / 2.0));
-	float w = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.w / 2.0));
-	float v = 1.0 / (1.0 + exp(TESR_ColoringColorCurve.x / 2.0));
-	
 	float3 luminance = GetLuminance(color);
-	luminance.r = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.y * (luminance.r - 0.5))) - y) / (1.0 - 2.0 * y);
-	luminance.g = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.z * (luminance.g - 0.5))) - z) / (1.0 - 2.0 * z);
-	luminance.b = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.w * (luminance.b - 0.5))) - w) / (1.0 - 2.0 * w);
+	luminance.r = ColoringCurve(luminance.r, TESR_ColoringColorCurve.y);
+	luminance.g = ColoringCurve(luminance.g, TESR_ColoringColorCurve.z);
+	luminance.b = ColoringCurve(luminance.b, TESR_ColoringColorCurve.w);
 	luminance = pow(max(luminance, 0), 1.0 / TESR_ColoringEffectGamma.x);
 
 	float3 luminancei = 1.0 - luminance;
@@ -78,20 +79,20 @@ float4 ColorGrade(float3 color)
 	if (luminance.r < 0.5)
 		color2.r = (2.0 * luminance.r - 1.0) * (color.r - color.r * color.r) + color.r;
 	else
-		color2.r = (2.0 * luminance.r - 1.0) * (sqrt(color.r) - color.r) + color.r;
+		color2.r = (2.0 * luminance.r - 1.0) * (sqrt(max(color.r, 0)) - color.r) + color.r;
 
 	if (luminance.g < 0.5)
 		color2.g = (2.0 * luminance.g - 1.0) * (color.g - color.g * color.g) + color.g;
 	else
-		color2.g = (2.0 * luminance.g - 1.0) * (sqrt(color.g) - color.g) + color.g;
+		color2.g = (2.0 * luminance.g - 1.0) * (sqrt(max(color.g, 0)) - color.g) + color.g;
 
 	if (luminance.b < 0.5)
 		color2.b = (2.0 * luminance.b - 1.0) * (color.b - color.b * color.b) + color.b;
 	else
-		color2.b = (2.0 * luminance.b - 1.0) * (sqrt(color.b) - color.b) + color.b;
+		color2.b = (2.0 * luminance.b - 1.0) * (sqrt(max(color.b, 0)) - color.b) + color.b;
 
 	float3 color3 = lerp(color, color2, TESR_ColoringData.x);
-	color3 = (1.0 / (1.0 + exp(-TESR_ColoringColorCurve.x * (color3 - 0.5))) - v) / (1.0 - 2.0 * v);
+	color3 = float3(ColoringCurve(color3.r, TESR_ColoringColorCurve.x), ColoringCurve(color3.g, TESR_ColoringColorCurve.x), ColoringCurve(color3.b, TESR_ColoringColorCurve.x));
 
 	float r2R = 1.0 - TESR_ColoringValues.x;
 	float g2R = 0.0 + TESR_ColoringValues.x;
@@ -105,9 +106,10 @@ float4 ColorGrade(float3 color)
 	float g2B = (0.0 + TESR_ColoringData.z) + TESR_ColoringValues.x;
 	float b2B = (1.0 - TESR_ColoringData.z) - TESR_ColoringValues.x;
 
-	color3.r = (color3.r * r2R + color3.g * g2R + color3.b * b2R);
-	color3.g = (color3.r * r2G + color3.g * g2G + color3.b * b2G);
-	color3.b = (color3.r * r2B + color3.g * g2B + color3.b * b2B);
+	float3 mixIn = color3;
+	color3.r = (mixIn.r * r2R + mixIn.g * g2R + mixIn.b * b2R);
+	color3.g = (mixIn.r * r2G + mixIn.g * g2G + mixIn.b * b2G);
+	color3.b = (mixIn.r * r2B + mixIn.g * g2B + mixIn.b * b2B);
 
 	float luminance2 = GetLuminance(color3);
 	float3 color4 = color3;

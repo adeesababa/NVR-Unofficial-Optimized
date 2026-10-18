@@ -124,6 +124,9 @@ public:
 		float SkylightingScale;
 		float SkylightingDirectionality;
 		float SkylightingSaturation;
+		float RmaosMetalnessScale;
+		float RmaosAOScale;
+		float RmaosRoughnessScale;
 	};
 	struct PBRSettingsStruct {
 		PBRSettings Default;
@@ -140,6 +143,8 @@ public:
 		D3DXVECTOR4		Metal;
 		D3DXVECTOR4		MetalLook;
 		D3DXVECTOR4		Env;
+		D3DXVECTOR4		Math = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		D3DXVECTOR4		LinearScales = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 0.0f);
 		D3DXVECTOR4		LampPassTrim;
 		D3DXVECTOR4		Translucency = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		D3DXVECTOR4		SharpSky;
@@ -167,6 +172,7 @@ public:
 	struct RmaosSettingsStruct {
 		bool On = false;
 		float Occlusion = 1.0f;
+		float OcclusionNow = 1.0f;
 		int DebugView = 0;
 		bool LogMatches = false;
 	};
