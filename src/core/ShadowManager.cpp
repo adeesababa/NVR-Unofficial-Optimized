@@ -3,6 +3,7 @@
 #include "PointShadowSchedule.h"
 #include "PointShadowForward.h"
 #include "TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
+#include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools: ortho map caster dump
 
 // UNOFFICIAL SkinnedShadowFaceTest ([Main.Main.Performance], default on, 2026-10-07). An animated (skinned) mesh's own
 // world bound is stale, so skinned casters used to be drawn into all six faces of every lamp cube map near them; with a
@@ -408,10 +409,27 @@ static bool AccumulatingLand = false;
 // Detect which pass the object must be added to
 void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLODLand) {
 	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
+#if NVR_TEST_TOOLS
+	OP_LAND(0);								// land diagnostics (OrthoProbe::LandCount): 0 geometry reached
+	if (!geo->shader) OP_LAND(1);			// 1 no shader
+	else if (!CheckShaderFlags(geo)) OP_LAND(2);	// 2 shader flags (decal, refraction) or no shader property
+	else if (!geometryPass->TestObject(geo)) OP_LAND(3);	// 3 the opaque pass refuses it (no buffer data / not a lighting property)
+#endif
 	if (!geo->shader) return; // skip Geometry without a shader
 
 	if (!CheckShaderFlags(geo))
 		return;
+#if NVR_TEST_TOOLS
+	OrthoProbe::NoteGeometry(geo);
+#endif
+
+	// UNOFFICIAL 2026-10-17 Skylighting v2 (CleanMap): in the ortho map, geometry that is only alpha BLENDED (no alpha test) does not
+	// block the sky: effect meshes (Goodsprings' FXDustWhirlWind01 over the road), glass, smoke cards. Set only around that map.
+	if (OrthoSkipBlendOnly) {
+		NiAlphaProperty* alpha = (NiAlphaProperty*)geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
+		if (alpha && (alpha->flags & NiAlphaProperty::AlphaFlags::ALPHA_BLEND_MASK) && !(alpha->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK))
+			return;
+	}
 
 #if defined(OBLIVION)
 	if (geo->m_pcName && !memcmp(geo->m_pcName, "Torch", 5)) return; // No torch geo, it is too near the light and a bad square is rendered.
@@ -470,6 +488,9 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 		if (!object) continue;
 
 		Node = object->IsNiNode();
+#if NVR_TEST_TOOLS
+		if (isLand && !isLOD) { OP_LAND(4); if (Node && (Node->m_flags & NiAVObject::NiFlags::APP_CULLED)) OP_LAND(5); }	// 4 land nodes, 5 culled
+#endif
     	if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling containers
 		if (!isLand && Node->GetWorldBoundRadius() < Forms->MinRadius) continue;
 
@@ -491,6 +512,9 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 
 		for (int i = 0; i < Node->m_children.end; i++) {
 			child = Node->m_children.data[i];
+#if NVR_TEST_TOOLS
+			if (isLand && !isLOD) { OP_LAND(6); if (child && (child->m_flags & NiAVObject::NiFlags::APP_CULLED)) OP_LAND(7); }	// 6 land children, 7 APP_CULLED
+#endif
 			if (!child || child->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling children
 			if (!isLand && child->GetWorldBoundRadius() < Forms->MinRadius) continue;
 
@@ -498,10 +522,16 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 			if (arPlanes && (isLand || isLOD)) {
 				BSMultiBoundNode* multibound = child->IsMultiBoundNode();
 
+#if NVR_TEST_TOOLS
+				if (isLand && !isLOD) { if (multibound) OP_LAND(8); if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) OP_LAND(9); }	// 8 multibound, 9 outside
+#endif
 				if (multibound && !multibound->spMultiBound->spShape->WithinFrustum(*arPlanes)) continue;
 			}
 			else if (arPlanes && !child->WithinFrustum(arPlanes)) continue;
 
+#if NVR_TEST_TOOLS
+			if (isLand && !isLOD && child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) OP_LAND(10);	// 10 faded
+#endif
 			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
 			if (skipLoadedLod && IsLodInLoadedCells(child)) continue; // object LOD inside the loaded cells
 			if (!child->IsGeometry())
@@ -589,8 +619,15 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 
 	if (ShadowMap->Forms.Terrain) {
 		AccumulatingLand = true;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentLand = true; OrthoProbe::CurrentRef = nullptr;
+		if (OrthoProbe::Recording) { OrthoProbe::LandCount[11]++; if (!Cell->GetChildNode(TESObjectCELL::kCellNode_Land)) OrthoProbe::LandCount[12]++; }	// 11 cells, 12 without a land node
+#endif
 		AccumChildren(Cell->GetChildNode(TESObjectCELL::kCellNode_Land), &ShadowMap->Forms, true, false, &ShadowMap->ShadowMapFrustumPlanes);
 		AccumulatingLand = false;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentLand = false;
+#endif
 	}
 
 	TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First;
@@ -602,8 +639,15 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 			continue;
 		}
 
-		if (RefNode->WithinFrustum(&ShadowMap->ShadowMapFrustumPlanes) && !IsRefracting(Entry->item))
+		if (RefNode->WithinFrustum(&ShadowMap->ShadowMapFrustumPlanes) && !IsRefracting(Entry->item)) {
+#if NVR_TEST_TOOLS
+			OrthoProbe::CurrentRef = Entry->item;
+#endif
 			AccumChildren(RefNode, &ShadowMap->Forms, false, false, &ShadowMap->ShadowMapFrustumPlanes);
+#if NVR_TEST_TOOLS
+			OrthoProbe::CurrentRef = nullptr;
+#endif
+		}
 
 		Entry = Entry->next;
 	}
@@ -1154,7 +1198,7 @@ void ShadowManager::RenderShadowMaps() {
 	bool InteriorEnabled = !isExterior && TheShaderManager->Effects.ShadowsInteriors->Enabled;
 
 	// early out in case shadow rendering is not required
-	if (!ExteriorEnabled && !InteriorEnabled && !TheShaderManager->orthoRequired || !ShadowShadersLoaded) {
+	if (!ExteriorEnabled && !InteriorEnabled && !TheShaderManager->orthoRequired && !TheShaderManager->orthoSkyRequired || !ShadowShadersLoaded) {
 		return;
 	}
 	if (!Player->parentCell) return;
@@ -1229,7 +1273,7 @@ void ShadowManager::RenderShadowMaps() {
 	// Quantize sun direction angle to reduce shimmer by a large factor.
 	D3DXVECTOR3 SunDir = Shadows->CalculateSmoothedSunDir();
 
-	if (isExterior && (ExteriorEnabled || TheShaderManager->orthoRequired)) {
+	if (isExterior && (ExteriorEnabled || TheShaderManager->orthoRequired || TheShaderManager->orthoSkyRequired)) {
 
 		// Update cascade depths based on current camera.
 		Shadows->GetCascadeDepths();
@@ -1445,21 +1489,107 @@ void ShadowManager::RenderShadowMaps() {
 #endif
 
 		// render ortho map if one of the effects using ortho is active
-		if (TheShaderManager->orthoRequired) {
+		if (TheShaderManager->orthoRequired || TheShaderManager->orthoSkyRequired) {
 			GpuProfileScope gpu(orthoMapTimer, Device);
 			auto shadowMapTimer = TimeLogger();
 
 			ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[MapOrtho];
 
-			if (!Shadows->Settings.OrthoMap.LimitFrequency || !((FrameCounter + 2) % 4)) {
+			// UNOFFICIAL 2026-10-17 Skylighting v2 (evidence skylight2-LOG.md): when ONLY the sky visibility needs the map (no rain or
+			// snow effect asked for it this frame), it is redrawn only when the camera moved MoveRefresh units since the last draw,
+			// every MapRefresh frames (cells that streamed in), on a settings change or after a pause in its use; in between it
+			// moves with the camera as below. The statics, terrain and trees it holds do not change from frame to frame.
+			bool draw = !Shadows->Settings.OrthoMap.LimitFrequency || !((FrameCounter + 2) % 4);
+			static D3DXVECTOR3 skyLastDrawPos(0.0f, 0.0f, 0.0f);
+			static int skyFramesSinceDraw = 1 << 20;
+			static int skySettingsSeen = -1;
+			static bool skyLastDrawSkyOnly = false;	// the map in the texture was drawn camera-centred (below)
+			const bool skyOnly = TheShaderManager->orthoSkyRequired && !TheShaderManager->orthoRequired;
+			const D3DXVECTOR3 cameraNow = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+			if (skyOnly) {
+				const D3DXVECTOR3 moved = cameraNow - skyLastDrawPos;
+				const float moveRefresh = Shadows->Settings.OrthoMap.SkyMoveRefresh;
+				draw = skyFramesSinceDraw >= Shadows->Settings.OrthoMap.SkyMapRefresh || TheShaderManager->orthoSkyFresh || !skyLastDrawSkyOnly ||
+					D3DXVec3LengthSq(&moved) > moveRefresh * moveRefresh || skySettingsSeen != Shadows->Settings.OrthoMap.SkySettingsGeneration;
+			}
+			if (draw) {
 				Device->SetRenderTarget(0, Shadows->ShadowMapOrthoSurface);
 				Device->SetDepthStencilSurface(Shadows->ShadowMapOrthoDepthSurface);
 
 				ShadowData->z = 1; // identify ortho map in shader constant
 				D3DXVECTOR3 OrthoDir = D3DXVECTOR3(0.05f, 0.05f, 1.0f);
-				Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &OrthoDir);
+				// UNOFFICIAL Skylighting v2 (sky only): the map is centred on the CAMERA (a view slice from -2/3 to +2/3 of the ortho
+				// distance: its bounding sphere is centred on the camera, ~3000 units round it at the default 3000), not on the view
+				// ahead, so turning the camera never needs a redraw; only moving does (and then the cached map is translated).
+				const float orthoNearWas = ShadowMap->ShadowMapNear, orthoRadiusWas = ShadowMap->ShadowMapRadius;
+				if (skyOnly && Shadows->Settings.OrthoMap.SkyOwnProjection) {
+					// UNOFFICIAL 2026-10-17 Skylighting v2 (OwnProjection, launch 2 diagnosis): an explicit top-down projection in camera-
+					// relative world space (the space of the casters' world matrices, RenderManager::CreateD3DMatrix): straight down from
+					// Distance above the camera, +y up in the map, +-Distance round the camera, depth 0..2 Distance, the world origin
+					// snapped to a texel (as GetCascadeViewProj does) so a redraw does not shift the texels.
+					NiCamera* sceneCamera = WorldSceneGraph->camera;
+					const float R = Shadows->Settings.OrthoMap.Distance, H = Shadows->Settings.OrthoMap.Distance;
+					D3DXVECTOR3 eye(0.0f, 0.0f, H), at(0.0f, 0.0f, 0.0f), up(0.0f, 1.0f, 0.0f);
+					D3DXMATRIX view, proj;
+					D3DXMatrixLookAtRH(&view, &eye, &at, &up);
+					D3DXMatrixOrthoOffCenterRH(&proj, -R, R, -R, R, 0.0f, 2.0f * H);
+					D3DXMATRIX viewProj = view * proj;
+					const float mapSize = ShadowMap->ShadowMapResolution;
+					D3DXVECTOR4 origin(-sceneCamera->m_worldTransform.pos.x, -sceneCamera->m_worldTransform.pos.y, -sceneCamera->m_worldTransform.pos.z, 1.0f);
+					D3DXVec4Transform(&origin, &origin, &viewProj);
+					const float ox = origin.x * mapSize * 0.5f, oy = origin.y * mapSize * 0.5f;
+					proj._41 += (floorf(ox + 0.5f) - ox) * 2.0f / mapSize;
+					proj._42 += (floorf(oy + 0.5f) - oy) * 2.0f / mapSize;
+					viewProj = view * proj;
+					NiFrustum frustum(-R, R, R, -R, 0.0f, 2.0f * H, true);
+					TheCameraManager->SetFrustumPlanes(&ShadowMap->ShadowMapFrustumPlanes, &viewProj, eye, frustum);
+					ShadowMap->ShadowMapFrustumPlanes.SetActivePlaneState(62);
+					ShadowMap->ShadowMapCascadeCenterRadius = D3DXVECTOR4(0.0f, 0.0f, 0.0f, R);
+					ShadowMap->Forms.MinRadius = ShadowMap->Forms.OrigMinRadius * R * ShadowMap->ShadowMapInverseResolution;
+					ShadowMap->CameraTranslation = sceneCamera->m_worldTransform.pos.toD3DXVEC3();
+					Shadows->Constants.ShadowViewProj = viewProj;
+				}
+				else {
+					if (skyOnly) { ShadowMap->ShadowMapRadius = orthoRadiusWas * (2.0f / 3.0f); ShadowMap->ShadowMapNear = -ShadowMap->ShadowMapRadius; }
+					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &OrthoDir);
+				}
+				ShadowMap->ShadowMapNear = orthoNearWas;
+				ShadowMap->ShadowMapRadius = orthoRadiusWas;
 
+#if NVR_TEST_TOOLS
+				// UNOFFICIAL 2026-10-17 OrthoProbe (test tools): a new ProbeDump value = this draw also writes each texel's caster (OrthoProbe.h).
+				const int probeValue = Shadows->Settings.OrthoMap.ProbeDump;
+				const bool probe = probeValue != 0 && probeValue != OrthoProbe::LastValue && OrthoProbe::Prepare(Device, (UINT)Shadows->Settings.OrthoMap.Resolution);
+				DWORD probeWrite1 = 0;
+				if (probe) {
+					OrthoProbe::Owners.clear(); OrthoProbe::Drawn.clear(); OrthoProbe::Recording = true;
+					for (int& n : OrthoProbe::LandCount) n = 0;
+					Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &probeWrite1);
+					Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+					Device->SetRenderTarget(1, OrthoProbe::IdSurface);
+				}
+#endif
+				// UNOFFICIAL Skylighting v2 CleanMap: alpha-tested casters with their test (leaves, fences), no blended-only geometry.
+				const bool clean = TheShaderManager->orthoSkyRequired && Shadows->Settings.OrthoMap.SkyCleanMap;
+				const bool alphaWas = ShadowMap->Forms.AlphaEnabled;
+				if (clean) { ShadowMap->Forms.AlphaEnabled = true; OrthoSkipBlendOnly = true; }
 				RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+				ShadowMap->Forms.AlphaEnabled = alphaWas;
+				OrthoSkipBlendOnly = false;
+				skyLastDrawPos = cameraNow;
+				skyFramesSinceDraw = 0;
+				skyLastDrawSkyOnly = skyOnly;
+				skySettingsSeen = Shadows->Settings.OrthoMap.SkySettingsGeneration;
+#if NVR_TEST_TOOLS
+				if (probe) {
+					OrthoProbe::Recording = false;
+					Device->SetRenderTarget(1, nullptr);
+					Device->SetRenderState(D3DRS_COLORWRITEENABLE1, probeWrite1);
+					OrthoProbe::Dump(Device, Shadows->ShadowMapOrthoSurface, ShadowMap->ShadowCameraToLight, probeValue);
+					OrthoProbe::LastValue = probeValue;
+					OrthoProbe::Owners.clear(); OrthoProbe::Drawn.clear();
+				}
+#endif
 			}
 			else {
 				D3DXVECTOR3 newCameraTranslation = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
@@ -1468,6 +1598,7 @@ void ShadowManager::RenderShadowMaps() {
 				D3DXMatrixTranslation(&translationMatrix, difference.x, difference.y, difference.z);
 				ShadowMap->ShadowCameraToLight = translationMatrix * ShadowMap->ShadowCameraToLight;
 				ShadowMap->CameraTranslation = newCameraTranslation;
+				++skyFramesSinceDraw;
 			}
 
 			OrthoData->x = Shadows->Settings.OrthoMap.Distance * 2;

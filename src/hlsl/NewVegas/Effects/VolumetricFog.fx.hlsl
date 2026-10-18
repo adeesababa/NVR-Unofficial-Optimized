@@ -1102,6 +1102,10 @@ float4 TESR_WaterSettings; // x: water height, z: camera underwater
 float4 TESR_AmbientOcclusionAOData; // z: clamp
 float4 TESR_AmbientOcclusionData;   // y: luma threshold, z: blur drop threshold
 static const float CompositeAOEndFade = 8000;
+// UNOFFICIAL 2026-10-17 Skylighting v2 (NVR_CompositeFlags.z): the sky factor (AmbientOcclusion.fx SkyVisibilityV2: the sky's share
+// of the light only, at the AO's resolution), bound by hand on stage 12 (VolumetricFog.cpp BindSky), upsampled with the AO's weights.
+// No new constants or literals here: with the physical sky this pass already uses c0-c218 of 224.
+sampler2D NVR_SkyVis : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 float3 CompositeSunShadow(float3 linearColor, float2 uv)
 {
@@ -1137,7 +1141,8 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	float2 base = floor(position);
 	float2 fraction = frac(position);
 	float blurDrop = TESR_AmbientOcclusionData.z;
-	float sum = 0, weights = 0;
+	float sum = 0, weights = 0, skySum = 0;
+	const bool sky = NVR_CompositeFlags.z > 0.5;	// UNOFFICIAL Skylighting v2
 	[unroll] for (int y = 0; y < 2; ++y) {
 		[unroll] for (int x = 0; x < 2; ++x) {
 			float2 sampleUV = clamp((base + float2(x, y) + 0.5) * texel, 0.5 * texel, 1 - 0.5 * texel);
@@ -1146,10 +1151,12 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 			weight /= 1 + abs(aoSample.y - depth) / max(blurDrop, 0.001);
 			sum += aoSample.x * weight;
 			weights += weight;
+			[branch] if (sky) skySum += tex2Dlod(NVR_SkyVis, float4(sampleUV, 0, 0)).r * weight;
 		}
 	}
 	float ao = lerp(TESR_AmbientOcclusionAOData.z, 1, sum / max(weights, 1.0e-6));
 	ao = lerp(ao, 1, saturate((luma(linearColor) - TESR_AmbientOcclusionData.y) * 3));
+	if (sky) ao *= saturate(skySum / max(weights, 1.0e-6));	// the sky factor (its own share; not part of the AO's clamp/fade)
 	return linearColor * ao;
 }
 

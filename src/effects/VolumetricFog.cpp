@@ -1,6 +1,17 @@
 #include "VolumetricFog.h"
 #include "../core/GpuProfiler.h"
 
+// UNOFFICIAL 2026-10-17 Skylighting v2: the quarter-resolution sky visibility on stage 12 (NVR_SkyVis), point sampled (the shader
+// does its own depth-aware upsample). Not a TESR_ sampler: those bind by their order in the file.
+static void BindSky(IDirect3DDevice9* Device, IDirect3DTexture9* sky) {
+	Device->SetTexture(12, sky);
+	TheRenderManager->renderState->NoteDeviceTexture(12, sky);
+	if (!sky) return;
+	const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+		{D3DSAMP_MAGFILTER, D3DTEXF_POINT}, {D3DSAMP_MINFILTER, D3DTEXF_POINT}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+	for (const auto& s : states) TheRenderManager->SetSamplerState(12, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+}
+
 void VolumetricFogEffect::UpdateConstants() {
 	// live weather-driven sky-filter disable, smoothly animated the same way RainEffect
 	// animates rain onset/offset (Animator started once on the true/false edge, sampled every frame).
@@ -285,7 +296,8 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
 	Effect->SetTechnique(technique);
 	SetCT();
-	D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, aoTexture ? 1.0f : 0.0f, 0.0f, 0.0f);
+	IDirect3DTexture9* sky = aoTexture ? compositeSkyTexture : nullptr;	// UNOFFICIAL Skylighting v2
+	D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, aoTexture ? 1.0f : 0.0f, sky ? 1.0f : 0.0f, 0.0f);
 	Effect->SetVector(flagsHandle, &flags);
 	if (aoTexture) {
 		D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
@@ -301,12 +313,14 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 			Device->SetTexture(6, nullptr);
 			Device->SetTexture(7, nullptr);
 			Device->SetTexture(8, aoTexture);
+			BindSky(Device, sky);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}
 		Effect->End();
 	}
 	Device->SetTexture(8, nullptr);
+	if (sky) BindSky(Device, nullptr);
 	Device->SetTexture(0, TheTextureManager->SourceTexture);
 	Device->SetRenderTarget(0, RenderTarget);
 	if (FAILED(result)) {
@@ -379,7 +393,8 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
 	if (composite) {
-		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f, 0.0f, 0.0f);
+		D3DXVECTOR4 flags(compositeShadow ? 1.0f : 0.0f, (compositeAO && compositeAOTexture) ? 1.0f : 0.0f,
+			(compositeAO && compositeAOTexture && compositeSkyTexture) ? 1.0f : 0.0f, 0.0f);	// z: UNOFFICIAL Skylighting v2
 		Effect->SetVector(flagsHandle, &flags);
 		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
 		D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
@@ -429,6 +444,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 				Device->SetTexture(6, fogTexture[0]);
 				Device->SetTexture(7, fogTexture[1]);
 				if (composite && compositeAO && compositeAOTexture) Device->SetTexture(8, compositeAOTexture);
+				if (composite && compositeAO && compositeAOTexture && compositeSkyTexture) BindSky(Device, compositeSkyTexture);
 			}
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
@@ -439,6 +455,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Device->SetTexture(6, nullptr);
 	Device->SetTexture(7, nullptr);
 	Device->SetTexture(8, nullptr);
+	if (compositeSkyTexture) BindSky(Device, nullptr);
 	if (grid) {
 		Device->SetTexture(11, nullptr);
 		TheRenderManager->renderState->NoteDeviceTexture(11, nullptr);

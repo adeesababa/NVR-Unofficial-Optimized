@@ -204,9 +204,20 @@ Enabled = false                      # UNOFFICIAL (2026-10-16): ground-truth amb
 MaxRadius = 64.0                     # [4-256] Largest search radius on screen, in pixels (close up the Range would cover half the screen)
 
 [_Shaders.AmbientOcclusion.Skylighting]
-Enabled = false                        # UNOFFICIAL (2026-10-17, new): outdoors, the sky's light is taken away where something above blocks the sky: under roofs, porches, bridges, overhangs and at the foot of cliffs. Uses the top-down map NVR draws for rain and goes through the ambient occlusion (needs it on), so directly lit spots stay as they were.
+Enabled = false                        # UNOFFICIAL (2026-10-17, new): outdoors, the sky's light is taken away where something above blocks the sky: under roofs, porches, bridges, overhangs and at the foot of cliffs. Uses a top-down map of the world round you and needs the ambient occlusion on. Version 2 takes away only the sky's share of the light, so sunlit spots keep their sunlight.
+Version = 2                            # UNOFFICIAL 2026-10-17: 2 = the sky's share only, its own clean and rarely redrawn map, quarter resolution (about 0.1-0.2 ms); 1 = the first version (darkens through the ambient occlusion, whole pixel, map redrawn every 4th frame).
 Strength = 1.0                         # [0.0-1.0] How much of the blocked sky light is taken away.
-Distance = 600.0                       # [64-4000] How far (game units) to look for something above. Larger: big overhangs and cliffs count from further away; smaller: only close cover.
+Distance = 800.0                       # [64-4000] How far (game units) to look for something above. Larger: big overhangs and cliffs count from further away; smaller: only close cover. (Version 1 was tuned at 600.)
+ShareApply = true                      # Version 2: take away only the sky's share of the light (false: the whole pixel, as a comparison).
+OpenThreshold = 0.85                   # [0.5-1.0] Version 2: a spot that sees at least this much of the sky counts as open (no change), so open ground next to buildings keeps its light. 1.0: every bit of blocked sky counts.
+DepthNormals = false                   # Version 2: work out the surface's slope from the depth (false: from the normals buffer, which is wrong on some road meshes and ground stains).
+OwnProjection = false                  # Version 2: draw its top-down map with its own straight-down projection round you (false: the rain map's projection).
+AmbientScale = 1.0                     # [0-10] Version 2: how strong the sky light is against the sun when the sky's share is worked out. Higher: sunlit surfaces under partial cover darken more.
+CleanMap = true                        # Version 2: the top-down map takes leaves and fences with their holes and leaves out see-through effects (dust devils, glass), which would block the sky over open ground.
+MapRefresh = 60                        # [1-100000] Version 2: frames between redraws of the top-down map while you stand still (cells that stream in). It is also redrawn when you move MoveRefresh units.
+MoveRefresh = 200.0                    # [1-100000] Version 2: how far (game units) you move before the top-down map is redrawn.
+SoftWidth = 40.0                       # [1-500] Version 2: how soft (game units) the edge of cover is in the test (against hard steps).
+DebugView = 0                          # Version 2, test views: 1 sky visibility, 2 the sky's share of the light, 3 the final darkening, 4 'covered' (something above the point in the map). 0 = off.
 
 [_Shaders.AmbientOcclusion.Status]
 Enabled = true                          # Shadows based on object proximity/creases for more realistic light contribution.
@@ -964,6 +975,7 @@ LodSkipLoaded = true				 # Distant-object LOD inside the loaded cells casts no s
 Resolution = 2						 # Resolution of the texture used to store the ortho map. 0: 128, 1: 256, 2: 512, 3: 1024, 4: 2048
 Distance = 3000                      # Distance to render ortho for. The unit is the same as the game uses for i.e. fog values.
 LimitFrequency = true				 # Limit the update frequency of the ortho map (one per four frames).
+ProbeDump = 0                        # UNOFFICIAL, development builds only: a new non-zero value writes one dump of the ortho map with the object that drew each texel (for diagnosis; does nothing in release builds).
 
 [_Shaders.ShadowsExteriors.Status]
 Enabled = true                       # Post process sun and pointlights shadows in exteriors.

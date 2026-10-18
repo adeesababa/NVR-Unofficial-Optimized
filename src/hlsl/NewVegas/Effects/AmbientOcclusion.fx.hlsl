@@ -12,6 +12,11 @@ float4 TESR_AmbientOcclusionData;
 float4 TESR_AmbientOcclusionGTAO;	// UNOFFICIAL 2026-10-16 ([Shaders.AmbientOcclusion.GTAO]; the GTAO techniques at the end): w largest radius (pixels)
 float4 TESR_AmbientOcclusionSky;	// UNOFFICIAL 2026-10-17 Skylighting ([Shaders.AmbientOcclusion.Skylighting]): x 1 on (exteriors), y strength, z ray length (units), w depth slack (ortho map units)
 float4x4 TESR_ShadowCameraToLightTransformOrtho;	// camera-relative world position -> the top-down ortho map (as WetWorld)
+float4 TESR_AmbientOcclusionSky2;	// UNOFFICIAL 2026-10-17 Skylighting v2: x 1 on, y strength, z sky light A, w sun light S (Includes/SkyShare.hlsl)
+float4 TESR_AmbientOcclusionSky3;	// x 1 = normal from the depth (0 = the normals buffer), y 1 / OpenThreshold, z share apply, w debug view
+float4 TESR_AmbientOcclusionSky4;	// x ray length (units), y soft width (units), z sun mask bound (pass), w factor bound (DedicatedCombine)
+float4 TESR_SmoothedSunDir;
+float4 TESR_ShadowFade;
 float4 TESR_ReciprocalResolution;
 float4 TESR_FogData; // x: fog start, y: fog end, z: sun glare, w: fog power
 float4 TESR_FogColor;
@@ -26,6 +31,10 @@ sampler2D NVR_AOBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRES
 // in AmbientOcclusionEffect::Render (an NVR_ name: TESR_ samplers are bound by their order among the TESR_ ones, and stage 5 is the
 // hand-bound NVR_AOBuffer).
 sampler2D NVR_OrthoMap : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-17 Skylighting v2 (bound by hand in AmbientOcclusion.cpp): the sky factor for DedicatedCombine (s7) and the sun
+// shadow mask TESR_PointShadowBuffer for the sky pass (s8; an NVR_ name for the same reason as above).
+sampler2D NVR_SkyVis : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_SunMask : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 static const float AOsamples = TESR_AmbientOcclusionAOData.x;
 static const float AOstrength = TESR_AmbientOcclusionAOData.y;
@@ -63,6 +72,7 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/BlurDepth.hlsl"
 #include "Includes/Helpers.hlsl"
 #include "Includes/Normals.hlsl"
+#include "Includes/SkyShare.hlsl"
 
 
 // returns a semi random float3 between 0 and 1 based on the given seed.
@@ -492,6 +502,87 @@ float4 PackedCombine(VSOUT IN) : COLOR0
 	return float4(source * pow(ao, 1.0 / 2.2), 1);
 }
 
+// UNOFFICIAL 2026-10-17 Skylighting v2: the sky visibility V at the AO's resolution, from the top-down ortho map (the highest surface over
+// each spot; ShadowManager draws it for v2 with alpha test and without blended-only geometry, camera-centred, redrawn when the camera
+// moves). A height-field visibility test written for this mod: straight up and 8 azimuths x 2 elevations (60 and 30 degrees up; the
+// azimuths 22.5 degrees off the world axes, so they do not run along walls), each ray probed at 0.4 and the full ray length; it is
+// open where the map's top lies below both probes. Each ray stands for the solid angle of its band (0-45, 45-75, 75-90 degrees up)
+// weighted by its cosine to the normal, so a ground pixel's estimate follows the cosine-weighted sky visibility. The comparison is a
+// depth ramp (SoftWidth) instead of a step, and nothing here is random: no noise for the composites' upsample to show. Height-field
+// sky/ambient occlusion: Max 1988 (horizon mapping), Sloan & Cohen 2000; the shipped D3D9-era precedent is CryEngine 3's height-map
+// AO; Community Shaders' Skylighting (sky occlusion from the precipitation map) gave the idea of using the rain's map (method only).
+// Its output: (the factor for the sky's share, Includes/SkyShare.hlsl SkyFactor; depth), at the AO's resolution: the composites
+// upsample it with the AO's own weights.
+// (Outside the map the sampler's border (1 = the far plane) makes every probe open; a probe above the map's top is open too.)
+sampler2D NVR_OrthoMapBorder : register(s6) = sampler_state { ADDRESSU = BORDER; ADDRESSV = BORDER; BORDERCOLOR = 0xFFFFFFFF; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+float SkyOpenV2(float3 o, float softScale)
+{
+	float top = tex2Dlod(NVR_OrthoMapBorder, float4(o.x * 0.5f + 0.5f, o.y * -0.5f + 0.5f, 0.0f, 0.0f)).r;
+	return saturate((top - o.z) * softScale + 0.5f);	// the map's depth beyond the probe's = its surface is below the probe
+}
+
+float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
+{
+	// On a full-resolution depth texel (the linear filter would blend a silhouette's two depths into a surface that is not there).
+	float2 uv = (floor(IN.UVCoord / TESR_ReciprocalResolution.xy) + 0.5f) * TESR_ReciprocalResolution.xy;
+	float depth = readDepth(uv);
+	float3 viewPosition = reconstructPosition(uv);
+	float3 viewNormal = GetNormal(uv);
+	// The surface's normal from the depth itself (on each axis the neighbour with the smaller depth step, so edges keep their own
+	// side's slope). Launch 1b showed the normals buffer is unusable here: Goodsprings' road meshes and ground stains (and the I-15
+	// road) give normals pointing away from the sky, which put the test's start point under the ground: 'covered' and V ~0.3 on
+	// open sunlit road. v1 used the same buffer (its open-road darkening).
+	float3 px0 = reconstructPosition(uv - float2(TESR_ReciprocalResolution.x, 0.0f)), px1 = reconstructPosition(uv + float2(TESR_ReciprocalResolution.x, 0.0f));
+	float3 py0 = reconstructPosition(uv - float2(0.0f, TESR_ReciprocalResolution.y)), py1 = reconstructPosition(uv + float2(0.0f, TESR_ReciprocalResolution.y));
+	float3 ddxP = abs(px1.z - viewPosition.z) < abs(viewPosition.z - px0.z) ? px1 - viewPosition : viewPosition - px0;
+	float3 ddyP = abs(py1.z - viewPosition.z) < abs(viewPosition.z - py0.z) ? py1 - viewPosition : viewPosition - py0;
+	float3 depthNormal = normalize(cross(ddxP, ddyP));
+	depthNormal = dot(depthNormal, viewPosition) > 0.0f ? -depthNormal : depthNormal;	// facing the camera
+	viewNormal = TESR_AmbientOcclusionSky3.x > 0.5f ? depthNormal : viewNormal;
+	float result = 1.0f;
+	float sunMask = TESR_AmbientOcclusionSky4.z > 0.5f ? lerp(TESR_ShadowFade.x, 1.0f, tex2Dlod(NVR_SunMask, float4(uv, 0.0f, 0.0f)).r) : 1.0f;
+	[branch] if (depth < endFade) {
+		float3 p = mul(float4(viewPosition, 0.0f), TESR_InvViewTransform).xyz;
+		float3 n = normalize(mul(float4(viewNormal, 0.0f), TESR_InvViewTransform).xyz);
+		p += n * 24.0f;	// off the surface's own texels of the map (~10 units each)
+		float4 o4 = mul(float4(p, 1.0f), TESR_ShadowCameraToLightTransformOrtho);
+		float3 o = o4.xyz / o4.w;
+		// The map is orthographic: a world offset d moves the map position by d x M (row vectors), the same everywhere.
+		float3x3 M = (float3x3)TESR_ShadowCameraToLightTransformOrtho;
+		float reach = TESR_AmbientOcclusionSky4.x;
+		float softScale = 1.0f / max(TESR_AmbientOcclusionSky4.y * abs(M[2][2]), 1.0e-9f);
+		{
+			float total = 0.034f * saturate(n.z);
+			float open = total * SkyOpenV2(o + M[2] * (reach * 0.4f), softScale) * SkyOpenV2(o + M[2] * reach, softScale);
+			[unroll] for (int i = 0; i < 8; i++) {
+				float a = (i + 0.5f) * (PI / 4.0f);
+				float2 h = float2(cos(a), sin(a));
+				[unroll] for (int k = 0; k < 2; k++) {
+					float3 dir = k ? float3(h * 0.8660254f, 0.5f) : float3(h * 0.5f, 0.8660254f);	// 30 / 60 degrees up
+					float w = (k ? 0.0884f : 0.0324f) * saturate(dot(dir, n));	// band solid angle / 2 pi / 8 x cosine
+					float3 stepO = mul(dir, M);
+					open += w * SkyOpenV2(o + stepO * (reach * 0.4f), softScale) * SkyOpenV2(o + stepO * reach, softScale);
+					total += w;
+				}
+			}
+			float visibility = total > 1.0e-5f ? open / total : 1.0f;
+			// Fade to open towards the map's edge (~3000 units round the camera), so its border never shows as a ring.
+			visibility = lerp(visibility, 1.0f, saturate((max(abs(o.x), abs(o.y)) - 0.8f) * 5.0f));
+			// Nearly open sky counts as open (OpenThreshold): the last few per cent of a height-field estimate on open ground near
+			// buildings are below what it can tell apart (no openings under eaves, a coarse map), and open sunlit ground keeps today's look.
+			visibility = saturate(visibility * TESR_AmbientOcclusionSky3.y);
+			float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);	// (debug view 4: the map's top is above the point)
+			result = SkyFactor(visibility, n, sunMask, covered);
+		}
+	}
+	return float4(result, min(depth, (float)endFade), 0, 1);
+}
+
+technique SkyVisibilityV2
+{
+	pass Sky { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SkyVisibilityV2PS(); }
+}
+
 technique PackedAO
 {
 	pass Estimate { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 PackedEstimate(); }
@@ -549,7 +640,22 @@ float4 DedicatedCombine(VSOUT IN) : COLOR0
 	#if viewao
 		return float4(ao, ao, ao, 1);
 	#endif
-	return float4(source * pow(ao, 1.0 / 2.2), 1);
+	float3 result = source * pow(ao, 1.0 / 2.2);
+	[branch] if (TESR_AmbientOcclusionSky4.w > 0.5f) {	// UNOFFICIAL Skylighting v2: the sky factor, with the AO's upsample weights
+		float skySum = 0, skyWeights = 0;
+		[unroll] for (int sy = 0; sy < 2; ++sy) {
+			[unroll] for (int sx = 0; sx < 2; ++sx) {
+				float2 uv = (base + float2(sx, sy) + 0.5) * NVR_AOLayout.zw;
+				float2 sample = tex2Dlod(NVR_AOBuffer, float4(DedicatedUV(uv), 0, 0)).rg;
+				float weight = (sx ? fraction.x : 1 - fraction.x) * (sy ? fraction.y : 1 - fraction.y);
+				weight /= 1 + abs(sample.y - depth) / max(blurDrop, 0.001);
+				skySum += tex2Dlod(NVR_SkyVis, float4(DedicatedUV(uv), 0, 0)).r * weight;
+				skyWeights += weight;
+			}
+		}
+		result *= pow(saturate(skySum / max(skyWeights, 1.0e-6)), 1.0 / 2.2);	// (a linear factor on a gamma colour)
+	}
+	return float4(result, 1);
 }
 
 technique DedicatedAO

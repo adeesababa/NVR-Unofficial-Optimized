@@ -18,6 +18,7 @@ public:
 	void					AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLand, bool isLOD, NiFrustumPlanes* arPlanes = nullptr);
 	bool					IsRefracting(TESObjectREFR* Ref);
 	void					AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLODLand);
+	bool					OrthoSkipBlendOnly = false;	// UNOFFICIAL Skylighting v2 clean ortho map: leave out alpha-blended-only geometry (FX meshes, glass)
 	void					RenderAccums();
 	void					RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj);
 	void					AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);

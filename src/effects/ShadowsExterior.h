@@ -122,6 +122,13 @@ public:
 		int					Resolution;
 		float				Distance;
 		bool				LimitFrequency;
+		int					ProbeDump = 0;	// UNOFFICIAL 2026-10-17 test tools: a new non-zero value = one caster dump (core/OrthoProbe.h)
+		// UNOFFICIAL 2026-10-17 Skylighting v2 ([Shaders.AmbientOcclusion.Skylighting]; ShadowManager::RenderShadowMaps)
+		bool				SkyCleanMap = true;			// alpha test on, blended-only geometry off, while v2 uses the map
+		int					SkyMapRefresh = 60;			// frames between redraws when only v2 uses the map
+		float				SkyMoveRefresh = 200.0f;	// camera move (units) that forces a redraw
+		int					SkySettingsGeneration = 0;	// bumped by every settings load: forces a redraw
+		bool				SkyOwnProjection = true;	// an explicit straight-down projection for the sky-only map (ShadowManager)
 	};
 
 	struct ExteriorsStruct {

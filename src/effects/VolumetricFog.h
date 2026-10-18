@@ -74,6 +74,9 @@ public:
 	bool	compositeShadow = false;
 	bool	compositeAO = false;
 	IDirect3DTexture9* compositeAOTexture = nullptr;
+	// UNOFFICIAL 2026-10-17 Skylighting v2: this frame's sky visibility (AmbientOcclusionEffect::SkyTexture), applied to the sky's
+	// share with the AO (stage 12, NVR_SkyVis; NVR_CompositeFlags.z). Null = nothing changes.
+	IDirect3DTexture9* compositeSkyTexture = nullptr;
 	bool	compositeApplied = false;
 	// UNOFFICIAL 2026-10-14 froxel grid (set by ShaderManager for the frame): the volumetric light's grid, read by the dedicated
 	// path on stage 11 (NVR_FogGrid); gridApplied reports that the volumetric light's composite was done in the fog's pass.

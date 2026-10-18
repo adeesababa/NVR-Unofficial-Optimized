@@ -420,6 +420,13 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.OrthoMap.Resolution = 128 * pow(2, (std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Ortho", "Resolution"), 0, 4)));
 	Settings.OrthoMap.Distance = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Ortho", "Distance"), 100.0f);
 	Settings.OrthoMap.LimitFrequency = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Ortho", "LimitFrequency");
+	Settings.OrthoMap.ProbeDump = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Ortho", "ProbeDump");	// UNOFFICIAL test tools (OrthoProbe.h)
+	// UNOFFICIAL 2026-10-17 Skylighting v2: how its ortho map is drawn (only while v2 is on; ShadowManager::RenderShadowMaps).
+	Settings.OrthoMap.SkyCleanMap = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "CleanMap") != 0;
+	Settings.OrthoMap.SkyMapRefresh = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "MapRefresh"), 1, 100000);
+	Settings.OrthoMap.SkyMoveRefresh = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "MoveRefresh"), 1.0f, 100000.0f);
+	Settings.OrthoMap.SkyOwnProjection = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "OwnProjection") != 0;
+	++Settings.OrthoMap.SkySettingsGeneration;
 
 	if (oldOrthoResolution != 0 && oldOrthoResolution != Settings.OrthoMap.Resolution)
 		orthoSettingsChanged = true;

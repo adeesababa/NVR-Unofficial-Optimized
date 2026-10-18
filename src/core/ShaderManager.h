@@ -238,6 +238,8 @@ public:
     TESObjectCELL*          PreviousCell;
     bool                    IsMenuSwitch;
     bool                    orthoRequired;
+    bool                    orthoSkyRequired = false;	// UNOFFICIAL 2026-10-17 Skylighting v2: the ortho map, amortised and clean (ShadowManager)
+    bool                    orthoSkyFresh = false;		// ... and v2 was not on last frame: redraw the map now
     bool                    avglumaRequired;
 	bool					EffectReloadQueued;
 	D3DXVECTOR4				SpotLightPosition[SpotLightsMax];

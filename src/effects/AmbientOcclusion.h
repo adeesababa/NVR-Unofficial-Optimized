@@ -22,6 +22,17 @@ public:
 	// Which pair the last estimate wrote; combineOnly and the fog composite must read the same one.
 	bool lastLowRes = false;
 	CachedHandle techDedicated, paramLayout;	// UNOFFICIAL: looked up once per loaded effect
+	// UNOFFICIAL 2026-10-17 Skylighting v2: the sky factor at the AO's resolution (G16R16F: factor, depth), written by the
+	// SkyVisibilityV2 technique each frame v2 is on; skyReady says this frame's is there (the composites read it only then).
+	IDirect3DTexture9* skyTexture = nullptr;
+	IDirect3DSurface9* skySurface = nullptr;
+	IDirect3DTexture9* skyTextureLow = nullptr;	// (with AOLowRes: the AO's quarter size)
+	IDirect3DSurface9* skySurfaceLow = nullptr;
+	bool skyReady = false;
+	CachedHandle techSky;
+	static bool SkyV2Active();
+	IDirect3DTexture9* SkyTexture() const { return skyReady ? (lastLowRes ? skyTextureLow : skyTexture) : nullptr; }
+	void RenderSkyVisibility(IDirect3DDevice9* Device);
 
 	bool	UseLowRes() const;
 	IDirect3DSurface9* NextResultSurface() const { return UseLowRes() ? aoSurfaceLow[0] : aoSurface[0]; }

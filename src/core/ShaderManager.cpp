@@ -1,3 +1,4 @@
+#include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools (AfterCombine)
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
@@ -272,6 +273,7 @@ void ShaderManager::UpdateConstants() {
 	const char* sectionName = NULL;
 	avglumaRequired = false; // toggle for rendering AvgLuma
 	orthoRequired = false; // toggle for rendering Ortho map
+	orthoSkyRequired = false; // UNOFFICIAL Skylighting v2 (AmbientOcclusionEffect::UpdateConstants)
 
 	if (Effects.Debug->Enabled) avglumaRequired = true;
 
@@ -1019,7 +1021,7 @@ void ShaderManager::RenderPointShadowBatches() {
 
 bool ShaderManager::ShouldRenderShadowMaps() {
 	if (GameState.isExterior)
-		return orthoRequired || (
+		return orthoRequired || orthoSkyRequired || (
 			Effects.ShadowsExteriors->Settings.Exteriors.Enabled &&
 			Effects.ShadowsExteriors->Enabled);
 	else
@@ -1092,6 +1094,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!mergedNormals)
 			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 	}
+#if NVR_TEST_TOOLS
+	OrthoProbe::AfterCombine(Device);	// UNOFFICIAL 2026-10-17 test tools: the depth the effects read, after an ortho dump
+#endif
 
 	// UNOFFICIAL interior forward point-light shadows (PointShadowForward.h): the object shaders shadow each lamp this
 	// frame, so the screen-space shadows are not applied again. KeepDarkening keeps their darkening of what no tracked lamp
@@ -1261,6 +1266,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	const bool pairApply = !composite && shadowApplies && aoApplies && !wouldRender(Effects.SnowAccumulation) &&
 		Fog->CanApplyShadowAO();
 	AO->deferredReady = false;
+	AO->skyReady = false;	// UNOFFICIAL Skylighting v2: set again by this frame's AO render
 	// UNOFFICIAL 2026-10-14: with AmbientLight on, the sun-shadow apply goes into its passes (nothing reads the scene between them
 	// unless snow accumulates); if it does not render after all, the shadow pass runs after it (below).
 	const bool shadowIntoAmbientLight = ambientLight && shadowApplies && !composite && !pairApply && !wouldRender(Effects.SnowAccumulation) &&
@@ -1294,7 +1300,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			bool merged = false;
 			if (AO->deferredReady) {
 				GpuProfileScope gpuMerged(mergedApplyTimer, Device);
+				Fog->compositeSkyTexture = AO->SkyTexture();	// UNOFFICIAL Skylighting v2 (null unless on)
 				merged = Fog->RenderShadowAO(Device, RenderTarget, TheTextureManager->RenderedSurface, true, AO->ResultTexture());
+				Fog->compositeSkyTexture = nullptr;
 			}
 			if (!merged) {
 				// The two passes as before, in their order: shadows, then the AO (its combine alone if it was deferred).
@@ -1429,8 +1437,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Fog->compositeShadow = composite && shadowApplies;
 		Fog->compositeAO = composite && AO->deferredReady;
 		Fog->compositeAOTexture = AO->ResultTexture();
+		Fog->compositeSkyTexture = Fog->compositeAO ? AO->SkyTexture() : nullptr;	// UNOFFICIAL Skylighting v2 (null unless on)
 		Fog->compositeApplied = false;
 		Fog->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Fog->compositeSkyTexture = nullptr;
 		const bool applied = Fog->compositeApplied;
 		Fog->compositeShadow = Fog->compositeAO = Fog->compositeApplied = false;
 		if (composite && !applied) {
