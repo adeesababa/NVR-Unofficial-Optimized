@@ -2088,10 +2088,14 @@ namespace GrassFirst {
 		const float r = bound->Radius + 64.0f;
 		const float depth = dx * fwd.x + dy * fwd.y + dz * fwd.z;
 		if (depth - r > FadeStart * 1.03f) return kAllFading;
-		const float fovY = TheRenderManager->FOVData.w, fovX = TheRenderManager->FOVData.z;
-		const float fov = (std::min)(fovX, fovY);
-		if (!(fov > 0.05f && fov < 3.0f)) return kMixed;
-		const float k = (std::max)(1.0f, 1.0f / tanf(fov * 0.5f)) * 1.03f;
+		// UNOFFICIAL 2026-10-18: the VS fade metric length(clip.x, clip.y, clip.w) is <= max(1, P11, P22) x distance with P11 = 2 / (R - L),
+		// P22 = 2 / (T - B) of the camera frustum. FOVData assumed a vertical FOV, but the engine's FOV is the width of a 4:3 picture:
+		// at FOV 90 / 16:9 that gave K = 1.03 where the top/bottom edge needs 1.13 (fading tufts drawn whole before the land = halos).
+		NiCamera* camera = WorldSceneGraph ? WorldSceneGraph->camera : nullptr;
+		if (!camera || camera->Frustum.Ortho) return kMixed;
+		const float fw = camera->Frustum.Right - camera->Frustum.Left, fh = camera->Frustum.Top - camera->Frustum.Bottom;
+		if (!(fw > 1e-4f && fh > 1e-4f)) return kMixed;
+		const float k = (std::max)(1.0f, (std::max)(2.0f / fw, 2.0f / fh)) * 1.03f;
 		if (k * (sqrtf(dx * dx + dy * dy + dz * dz) + r) <= FadeStart) return kAllNear;
 		return kMixed;
 	}
