@@ -18,7 +18,8 @@
 //                                                and the place check allows a move during a shot that runs one.
 //   final                                        (2026-10-15) every picture is the back buffer at ReShade's end of the frame
 //                                                (after ReShade's effects and the HUD) instead of NVR's picture before the HUD;
-//                                                needs ReShade's D3D9 runtime (ReShadeIntegration.cpp calls CaptureFinal).
+//                                                needs ReShade's D3D9 runtime (ReShadeIntegration.cpp calls CaptureFinal), or
+//                                                (2026-10-18) its Vulkan runtime under DXVK (capture_screenshot there).
 //   world                                        (2026-10-16) each shot also saves the world scene's HDR target raw (.world, CaptureWorld)
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <atomic>
@@ -36,7 +37,7 @@ namespace SettingShots {
 
 	struct Change { bool effect = false, console = false; std::string section, key, value; };
 	struct Shot { std::string slug; std::vector<Change> changes; };
-	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; };
+	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
 	inline std::vector<Shot> List;
@@ -54,7 +55,11 @@ namespace SettingShots {
 	inline std::vector<std::string> Commands;	// this shot's console commands, run at the start of its first frame
 	inline bool Moves = false;					// this shot ran console commands: the player may change place
 	inline bool FinalPicture = false;			// 'final': pictures from the back buffer at ReShade's present
-	inline bool WantFinal = false;				// the shot's frames are done: the next CaptureFinal takes it
+	// 'final' state (2026-10-18, atomic: ReShade's Vulkan runtime presents on DXVK's own thread): 0 nothing asked; 1 the shot's
+	// frames are done, the next present takes the picture; 2 being taken on the Vulkan runtime; 3 taken there, FinalJob holds it
+	// and the render thread finishes the shot (BeginFrame).
+	inline std::atomic<int> FinalState{ 0 };
+	inline Job* FinalJob = nullptr;
 
 	inline bool Requested() { return GetFileAttributesA(RequestFile) != INVALID_FILE_ATTRIBUTES; }
 
@@ -72,7 +77,9 @@ namespace SettingShots {
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WantFinal = false; WorldCapture = false; WorldTaken = (size_t)-1;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1;
+		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
+		FinalState.store(0);
 		std::ifstream in(RequestFile);
 		if (!in) { error = "the shot list could not be read"; return false; }
 		std::string line;
@@ -137,10 +144,12 @@ namespace SettingShots {
 				continue;
 			}
 			Undo u; u.section = c.section; u.key = c.key; u.type = node.Type; u.b = node.BoolValue; u.i = node.IntValue; u.f = node.FloatValue;
+			u.s = node.LongValue.empty() ? node.Value : node.LongValue;
 			Undos.push_back(u);
 			switch (node.Type) {
 			case SettingManager::Configuration::Boolean: TheSettingManager->SetSetting(c.section.c_str(), c.key.c_str(), Truthy(c.value)); break;
 			case SettingManager::Configuration::Integer: TheSettingManager->SetSetting(c.section.c_str(), c.key.c_str(), atoi(c.value.c_str())); break;
+			case SettingManager::Configuration::String: TheSettingManager->SetSettingS(c.section.c_str(), c.key.c_str(), c.value.substr(0, 79).c_str()); break;	// 2026-10-18 (Value holds 79)
 			default: TheSettingManager->SetSetting(c.section.c_str(), c.key.c_str(), (float)atof(c.value.c_str())); break;
 			}
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
@@ -155,6 +164,7 @@ namespace SettingShots {
 			switch (u->type) {
 			case SettingManager::Configuration::Boolean: TheSettingManager->SetSetting(u->section.c_str(), u->key.c_str(), u->b); break;
 			case SettingManager::Configuration::Integer: TheSettingManager->SetSetting(u->section.c_str(), u->key.c_str(), u->i); break;
+			case SettingManager::Configuration::String: TheSettingManager->SetSettingS(u->section.c_str(), u->key.c_str(), u->s.substr(0, 79).c_str()); break;
 			default: TheSettingManager->SetSetting(u->section.c_str(), u->key.c_str(), u->f); break;
 			}
 		}
@@ -229,6 +239,9 @@ namespace SettingShots {
 			(unsigned)d.MultiSampleType, path, saved ? "saved" : "NOT saved");
 	}
 
+	inline void QueueJob(Job* job);
+	inline void NextShot();
+
 	// Render.cpp, right after ShaderManager::UpdateConstants and EffectSelfTest::BeginFrame.
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
@@ -252,6 +265,14 @@ namespace SettingShots {
 			return;
 		}
 		if (!Running) return;
+		if (FinalState.load() == 3) {	// 2026-10-18: a 'final' picture taken on ReShade's Vulkan runtime
+			Job* job = FinalJob;
+			FinalJob = nullptr;
+			FinalState.store(0);
+			QueueJob(job);
+			NextShot();
+			if (!Running) return;
+		}
 		if (!Commands.empty()) {
 			for (const std::string& line : Commands) {
 				Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
@@ -265,20 +286,17 @@ namespace SettingShots {
 		Frame++;
 	}
 
-	inline void TakeShot(IDirect3DSurface9* surface) {
+	// The picture of the current shot: named after it and written on a worker thread.
+	inline void QueueJob(Job* job) {
 		const Shot& shot = List[Index];
-		Job* job = new (std::nothrow) Job();
-		if (job && Reader.Read(TheRenderManager->device, surface, job->bgra, job->width, job->height)) {
-			sprintf_s(job->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s.png", Run, (unsigned)Index, shot.slug.c_str());
-			InFlight++;
-			HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
-			if (thread) CloseHandle(thread);
-			else { InFlight--; delete job; Logger::Log("SETTING SHOTS %s: shot '%s' not written: no thread", Run, shot.slug.c_str()); }
-		}
-		else {
-			Logger::Log("SETTING SHOTS %s: shot '%s' NOT taken: %s", Run, shot.slug.c_str(), Reader.error ? Reader.error : "no memory");
-			delete job;
-		}
+		sprintf_s(job->path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_%s_ab_%02u_%s.png", Run, (unsigned)Index, shot.slug.c_str());
+		InFlight++;
+		HANDLE thread = CreateThread(nullptr, 0, Worker, job, 0, nullptr);
+		if (thread) CloseHandle(thread);
+		else { InFlight--; delete job; Logger::Log("SETTING SHOTS %s: shot '%s' not written: no thread", Run, shot.slug.c_str()); }
+	}
+
+	inline void NextShot() {
 		Revert();
 		Index++;
 		Frame = 0;
@@ -286,20 +304,39 @@ namespace SettingShots {
 		else { Running = false; AllQueued = true; }
 	}
 
+	inline void TakeShot(IDirect3DSurface9* surface) {
+		Job* job = new (std::nothrow) Job();
+		if (job && Reader.Read(TheRenderManager->device, surface, job->bgra, job->width, job->height)) QueueJob(job);
+		else {
+			Logger::Log("SETTING SHOTS %s: shot '%s' NOT taken: %s", Run, List[Index].slug.c_str(), Reader.error ? Reader.error : "no memory");
+			delete job;
+		}
+		NextShot();
+	}
+
 	// Render.cpp, the finished picture before the HUD (where the neon self-test takes its Final shots).
 	inline void Capture(IDirect3DSurface9* surface) {
 		if (!Running || Frame < Frames || !surface) return;
-		if (FinalPicture) { WantFinal = true; return; }	// taken at the present instead, the settings still the shot's
+		if (FinalPicture) { int idle = 0; FinalState.compare_exchange_strong(idle, 1); return; }	// taken at the present instead, the settings still the shot's
 		TakeShot(surface);
 	}
 
-	// ReShadeIntegration.cpp, ReShade's reshade_present event: the frame as presented (ReShade's effects and the HUD in it).
+	// ReShadeIntegration.cpp, ReShade's D3D9 reshade_present event (render thread): the frame as presented (ReShade's effects and the HUD in it).
 	inline void CaptureFinal() {
-		if (!Running || !WantFinal) return;
-		WantFinal = false;
+		int wanted = 1;
+		if (!Running || !FinalState.compare_exchange_strong(wanted, 0)) return;
 		IDirect3DSurface9* backBuffer = nullptr;
 		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a final picture"); return; }
 		TakeShot(backBuffer);
 		backBuffer->Release();
+	}
+
+	// 2026-10-18, ReShadeIntegration.cpp, ReShade's Vulkan reshade_present event (DXVK's presenting thread): Begin says whether a
+	// picture is wanted now; End hands it over (null: try again at the next present). The render thread finishes the shot.
+	inline bool BeginFinalCapture() { int wanted = 1; return Running && FinalState.compare_exchange_strong(wanted, 2); }
+	inline void EndFinalCapture(Job* job) {
+		if (!job) { FinalState.store(1); return; }
+		FinalJob = job;
+		FinalState.store(3);
 	}
 }
