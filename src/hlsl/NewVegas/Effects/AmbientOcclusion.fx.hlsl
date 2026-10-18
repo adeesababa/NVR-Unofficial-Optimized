@@ -775,4 +775,85 @@ technique DedicatedAOFast
 	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
 }
 
+// UNOFFICIAL 2026-10-17 FastPaths for GTAO (DedicatedGTAOFast, picked with GTAO and FastPaths both on): the far-pixel return of
+// GTAOValue made real, as in DedicatedAOFast (the compiler had flattened it: every pixel ran the 2 x 8 horizon taps).
+float3 GTAOPositionLod(float2 uv)
+{
+	float2 texel = (floor(uv / TESR_ReciprocalResolution.xy) + 0.5) * TESR_ReciprocalResolution.xy;
+	float x = texel.x * 2 - 1;
+	float y = (1 - texel.y) * 2 - 1;
+	float z = projectedDepthFromLinear(tex2Dlod(TESR_DepthBuffer, float4(texel, 0, 0)).x);
+	float4 viewSpace = mul(float4(x, y, z, 1.0f), TESR_InvProjectionTransform);
+	viewSpace /= viewSpace.w;
+	return viewSpace.xyz;
+}
+
+float GTAOValueFast(float2 uv, float3 P, float3 normalRaw, float3 noise)
+{
+	float3 V = normalize(-P);
+	float3 N = normalize(normalRaw);
+	N = dot(N, V) < 0.0 ? -N : N;
+	float radius = abs(AOrange);
+	float2 radiusUV = radius / P.z * 0.5 * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]);
+	radiusUV *= min(1.0, TESR_AmbientOcclusionGTAO.w * TESR_ReciprocalResolution.x / max(radiusUV.x, 1e-6));
+	float falloffMul = -1.0 / (0.615 * radius);
+	float falloffAdd = (1.0 - 0.615) / 0.615 + 1.0;
+	float visibility = 0.0;
+	[unroll] for (int slice = 0; slice < 2; slice++) {
+		float phi = (slice + noise.x) * (PI / 2.0);
+		float2 omega = float2(cos(phi), sin(phi));
+		float3 direction = float3(omega, 0.0);
+		float2 stepUV = float2(omega.x, -omega.y) * radiusUV;
+		float3 orthoDirection = direction - dot(direction, V) * V;
+		float3 axis = normalize(cross(orthoDirection, V));
+		float3 projectedN = N - axis * dot(N, axis);
+		float projectedLength = length(projectedN);
+		float cosN = saturate(dot(projectedN, V) / max(projectedLength, 1e-4));
+		float n = (dot(orthoDirection, projectedN) < 0.0 ? -1.0 : 1.0) * acos(cosN);
+		float low0 = cos(n + PI / 2.0);
+		float low1 = cos(n - PI / 2.0);
+		float horizon0 = low0, horizon1 = low1;
+		[unroll] for (int j = 0; j < 4; j++) {
+			float t = (j + noise.y) / 4.0;
+			t *= t;
+			float2 offset = stepUV * t + float2(omega.x, -omega.y) * TESR_ReciprocalResolution.xy * 2.0;
+			float3 s0 = GTAOPositionLod(uv + offset) - P;
+			float3 s1 = GTAOPositionLod(uv - offset) - P;
+			float l0 = length(s0), l1 = length(s1);
+			horizon0 = max(horizon0, lerp(low0, dot(s0, V) / max(l0, 1e-4), saturate(l0 * falloffMul + falloffAdd)));
+			horizon1 = max(horizon1, lerp(low1, dot(s1, V) / max(l1, 1e-4), saturate(l1 * falloffMul + falloffAdd)));
+		}
+		float h0 = n + clamp(-acos(horizon1) - n, -PI / 2.0, PI / 2.0);
+		float h1 = n + clamp(acos(horizon0) - n, -PI / 2.0, PI / 2.0);
+		float sinN = sin(n);
+		visibility += projectedLength * ((cosN + 2.0 * h0 * sinN - cos(2.0 * h0 - n)) + (cosN + 2.0 * h1 * sinN - cos(2.0 * h1 - n))) * 0.25;
+	}
+	visibility *= 0.5;
+	float darkness = saturate(1.0 - (1.0 - saturate(visibility)) * AOstrength);
+	float fogColor = luma(TESR_FogColor.rgb);
+	darkness = clamp(lerp(darkness, fogColor, fogCoeff(P.z)), darkness, 1.0);
+	return lerp(darkness, 1.0, saturate(invlerp(startFade, endFade, P.z)));
+}
+
+float4 GTAOEstimateFast(VSOUT IN) : COLOR0
+{
+	float3 skyOrigin = reconstructPosition(IN.UVCoord);
+	float3 skyNormal = GetNormal(IN.UVCoord);
+	float3 noise = random(IN.UVCoord);
+	float skyTurn = noise.y * 2.0f * PI;
+	float storedDepth = min(readDepth(IN.UVCoord), (float)endFade);
+	float ao = 1.0f;
+	[branch] if (!(skyOrigin.z > endFade)) ao = GTAOValueFast(IN.UVCoord, skyOrigin, skyNormal, noise);
+	[branch] if (TESR_AmbientOcclusionSky.x > 0.0f && skyOrigin.z < endFade) ao *= SkyVisibility(skyOrigin, skyNormal, skyTurn);
+	return float4(ao, storedDepth, 0, 1);
+}
+
+technique DedicatedGTAOFast
+{
+	pass Estimate { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 GTAOEstimateFast(); }
+	pass BlurX { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlurFast(io.xy); }
+	pass BlurY { VertexShader = compile vs_3_0 PackedVS(); PixelShader = compile ps_3_0 DedicatedBlurFast(io.yx); }
+	pass Combine { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 DedicatedCombine(); }
+}
+
 #endif

@@ -32,7 +32,7 @@ bool AmbientOcclusionEffect::SkyV2Active() { return SkyData2.x > 0.0f; }
 // its far-pixel early returns made real (the effect compiler had flattened them: sky and distant land ran the whole kernel and
 // both blurs). Same picture. Off, GTAO on, or an effect file without the technique: DedicatedAO / DedicatedGTAO as before.
 static bool FastPaths = false;
-static EffectRecord::CachedHandle techFast;
+static EffectRecord::CachedHandle techFast, techGTAOFast;
 
 void AmbientOcclusionEffect::UpdateConstants() {
 	const bool sky = SkyEnabled && TheShaderManager->GameState.isExterior && Constants.Enabled;
@@ -182,7 +182,8 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		if (fast) technique = fast;
 	}
 	if (GTAOData.x > 0.5f) {	// UNOFFICIAL 2026-10-16: the same passes with the GTAO estimate, when the effect file has them
-		D3DXHANDLE gtao = TechniqueHandle(techGTAO, "DedicatedGTAO");
+		D3DXHANDLE gtao = FastPaths ? TechniqueHandle(techGTAOFast, "DedicatedGTAOFast") : NULL;	// UNOFFICIAL 2026-10-17 FastPaths
+		if (!gtao) gtao = TechniqueHandle(techGTAO, "DedicatedGTAO");
 		if (gtao) technique = gtao;
 	}
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_AOLayout");
