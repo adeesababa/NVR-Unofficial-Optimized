@@ -718,3 +718,32 @@ Delete, master on/off toggle.** ✅ Done.
   feature's own apply path. Defaulting off means installing this build
   alongside an existing Cartographer setup doesn't change anything until
   the player deliberately turns it on.
+
+**Unofficial build, 2026-10-19 — automatic switching no longer wipes menu
+changes.** Reported by several P81 playtesters ("I reload my save and I have
+to reactivate everything"). Two causes, both inside the automatic path only:
+
+- **No preset authored anywhere = the raw shipped defaults on every load.**
+  With the master toggle on and no preset files, every location resolves to
+  `UsedRawDefaults`, and `ResolveAndApply` applied `ReadRawDefaults()` — the
+  shipped TOML defaults, not the player's own settings — on every save load
+  and every interior/exterior change. Now a location with no preset gets the
+  player's own settings: the live state taken at the first resolve of the
+  session, refreshed every time an automatic switch leaves such a place (and
+  when the master toggle is switched on, `ForgetSession()`).
+- **Same preset, re-applied anyway.** Session 8's rule ("an exterior cell
+  hop that resolves to the identical preset must not revert unsaved live
+  tweaks") is now applied to every automatic switch: `ResolveAndApply(Cell,
+  true)` from `ShaderManager` compares what the location resolves to (preset
+  name, or "own settings", plus the enabled Variants) with what is already
+  active and re-applies nothing when they match (Wasteland -> MegatonWorld,
+  both `DefaultExterior`; indoors <-> outdoors with no preset; a save
+  reload). A switch to a different preset applies its file exactly as
+  before, and explicit Save/Reload/Delete still re-read a preset file.
+
+The blacklist also gained this build's own machine/player preference
+sections, for the same reason as the original list: `Main.GunFX.Main`,
+`Main.Main.Performance`, `Main.Main.Quality`, `Main.Main.ReducedQuality`,
+`Main.Menu.NewInPatch`, `Shaders.AmbientOcclusion.FastPaths`,
+`Shaders.Debug.Main`, `Shaders.Skin.Debug`. Every look setting this build
+added is still captured and applied by presets like any other.

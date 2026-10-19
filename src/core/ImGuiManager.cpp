@@ -695,6 +695,7 @@ static void RenderPresetManagerPanel() {
 			// Re-enabling: resolve immediately rather than waiting for the next
 			// location change to notice -- same immediate-refresh pattern Save/
 			// Reload/Delete already use.
+			if (enabled) PresetManager::ForgetSession();	// UNOFFICIAL 2026-10-19: the settings right now are the player's own
 			if (enabled && Player && Player->parentCell)
 				PresetManager::ResolveAndApply(Player->parentCell);
 		}
