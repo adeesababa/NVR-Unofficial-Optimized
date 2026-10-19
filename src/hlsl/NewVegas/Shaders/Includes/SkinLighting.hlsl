@@ -274,8 +274,8 @@ float3 SkinSpecular(float3 N, float3 V, float3 L, float3 light, bool sun) {
     return lerp(lobe0, lobe1, SKIN_LOBE_MIX) * skinSpecScale * skinVanillaMatch;
 }
 
-// 2026-10-19 Fuzz, after Community Shaders' Advanced Skin (SkinDirectLightInput's fuzz lobe): peach fuzz, a soft sheen at grazing
-// light and against it. Charlie sheen distribution (Estevez & Kulla 2017), Neubelt's visibility, Schlick Fresnel at CS's
+// 2026-10-19 Fuzz, after Community Shaders' Advanced Skin (SkinDirectLightInput's fuzz lobe): peach fuzz, a soft sheen where both
+// the light and the view skim the skin (silhouettes; checked in game 2026-10-19: scalp and jaw line). Charlie sheen distribution (Estevez & Kulla 2017), Neubelt's visibility, Schlick Fresnel at CS's
 // FuzzF0 (damped in creases like the GGX lobes), CS's FuzzRoughness, and its own energy compensation as CS has it. Times PI as
 // SkinSpecularLobe: this shader's lights carry no 1 / PI (diffuse is albedo x N.L x light), CS's do. Not scaled by the
 // specular mask (CS scales it only by its own fuzz mask texture, which FNV skin has none of).
