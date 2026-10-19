@@ -19,6 +19,9 @@
 // (vanilla) vertex shaders, which do not move it -- the texture pass of multi-pass objects then misses and the cloth turns white.
 // So an object gets cloth only if, last frame, every one of its passes had an NVR vertex shader (SetShadersHook notes them).
 // Interiors: no wind, so no cloth.
+// 2026-10-18 (cloth round 3, 'cloth does nothing'): keywords match as substrings (with an exclusion list), worn clothing is masked by
+// the garment's own BIND-POSE height (pinned shoulders, loose hem), the calm-weather strength is higher, and non-cloth draws can no
+// longer inherit c248 from the grass shaders (they relocate their shadow matrices to c248..c255). See evidence\cloth3-LOG.md.
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -41,13 +44,24 @@ namespace ClothWind {
 		float Ripple = 0.5f;
 		float RippleScale = 0.012f;		// ripple cycles per unit
 		float TimeOffset = 0.0f;		// test only: seconds the pattern is ahead
-		bool  HeightFromFeet = true;	// mask 2 on worn clothing: heights from the actor's feet (the node the mesh hangs from), not the skin root
+		bool  HeightFromFeet = true;	// SkinMask 0 only: heights from the actor's feet (the node the mesh hangs from), not the skin root
+		int   SkinMask = 1;				// worn clothing: 0 the old actor-height mask (skin root), 1 bind-pose height above the feet (HeightTop..HeightBottom, legs still below LegCut), 2 the garment's own height range (PinFraction)
+		float LegCut = 14.0f;			// SkinMask 1: below this bind-pose height (boots, ankles) nothing moves, full strength 10 units higher
+		float PinFraction = 0.4f;		// SkinMask 1: the top part of the garment (fraction of its height) that does not move at all
+		int   SkinSpace = 1;			// worn clothing, what space the bones put vertices in: 0 the skin root's (rotated wind), 1 camera-relative world, 2 world
+		float CalmFactor = 0.6f;		// UseGameWind: strength in dead calm (rising to 1.7 in a gale); it was 0.3
+		bool  LogMatches = false;		// diagnostic: every skinned texture and every match goes to the log with its mesh numbers
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
+		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
+		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
 	};
 
 	inline Settings S;
-	inline std::vector<std::string> Words;
-	inline std::string WordsFrom;
+	inline std::vector<std::string> Words, Excluded, ExcludedParts;
+	inline std::string WordsFrom, ExcludeFrom, ExcludePartsFrom;
+	struct Extent { uint16_t count = 0; float lo = 0.0f, hi = 0.0f; bool fromVertices = false; };
+	inline std::unordered_map<const void*, Extent> Extents;		// bind-pose height range per skinned mesh (geometry data)
+	inline UInt32 SkinnedDrawsNow = 0;
 	inline std::unordered_map<const void*, std::pair<std::string, bool>> ByTexture;
 	inline float WorldDir[3] = { 1.0f, 0.0f, 0.0f };
 	inline float Phase[4] = {};			// main wave, gust, flutter 1, flutter 2 (cycles, wrapped)
@@ -57,7 +71,7 @@ namespace ClothWind {
 	inline float LastHour = -1.0f;
 	inline double RealStart = -1.0, ClockStart = 0.0;
 	inline float SpeedNow = 220.0f, IntensityNow = 6.0f;
-	inline bool NonZeroSent = false;	// the device's c248 last held a cloth draw's values
+	inline bool NonZeroSent = false;	// the device's c248 may hold a cloth draw's values (or the grass shaders' matrices: see NoteVertexShader)
 	inline UInt32 ClothDraws = 0, Frames = 0;
 	inline bool LoggedGameWind = false;
 	inline bool CompiledInRead = false;
@@ -76,27 +90,108 @@ namespace ClothWind {
 		return name && CapableNames.count(name) != 0;
 	}
 	// SetShadersHook, for every pass: did this object's pass use a vertex shader that carries the cloth code?
-	inline void NoteShaders(const void* geometry, bool nvrVertexShader) {
+	// The grass vertex shaders (GRASS23x00x) keep their shadow matrices in c248..c255: after one of them c248 is not zero, and the
+	// next object with cloth code would move although it is no cloth. Mark the register as 'to be zeroed' (the next non-cloth draw does it).
+	inline bool CurrentVSCapable = false;	// 2026-10-19: the vertex shader the last SetShaders bound carries the cloth code
+	inline std::unordered_map<const void*, bool> TentativeNow;	// 2026-10-19: per object this frame, did the BOUND vertex shader carry it at each lit pass
+	inline void NoteVertexShader(const char* name) {
+		if (S.On && name && name[0] == 'G' && name[1] == 'R' && name[2] == 'A' && name[3] == 'S' && name[4] == 'S') NonZeroSent = true;
+		CurrentVSCapable = S.On && CapableName(name);
+	}
+	// 2026-10-19 (P81 report 'cloth: only the player's SHADOW moves'): the object the render-pass hooks are drawing right now. SetShadersHook
+	// used the game's 'current geometry' global, which for worn (skinned) meshes is not the mesh being drawn: their lit passes were never
+	// noted, the SAFETY rule skipped every one of them (600 of 600 frames on NVRAutoTest12) while the shadow passes moved them.
+	inline const void* PassGeometry = nullptr;
+	inline std::unordered_map<const void*, std::string> VanillaVSNow, VanillaVSLast;
+	// 2026-10-19 diagnostic (LogMatches): per worn cloth mesh, lit passes moved / skipped (not seen by SetShaders, vanilla VS), shadow passes
+	struct PassCounts { std::string name; UInt32 lit = 0, notSeen = 0, vanilla = 0, shadow = 0; };
+	inline std::unordered_map<const void*, PassCounts> ClothPassCounts;	// 2026-10-19 diagnostic (LogMatches): which vertex shader
+	inline void NoteShaders(const void* geometry, bool nvrVertexShader, const char* vertexShaderName = nullptr) {
 		if (!S.On || !geometry) return;
 		SeenNow.insert(geometry);
-		if (!nvrVertexShader) VanillaNow.insert(geometry);
+		if (!nvrVertexShader) {
+			VanillaNow.insert(geometry);
+			if (S.LogMatches) VanillaVSNow[geometry] = vertexShaderName ? vertexShaderName : "(none)";
+		}
 	}
 
-	inline bool IsClothTexture(const char* path) {
-		if (!path || !path[0]) return false;
-		std::string p(path);
-		for (char& c : p) c = (char)tolower((unsigned char)c);
-		// A keyword counts only as a whole word of the path (a plural s allowed): "flag" finds flags but not flagstone.
-		auto letter = [&](size_t i) { return i < p.size() && p[i] >= 'a' && p[i] <= 'z'; };
-		for (const std::string& w : Words) {
-			if (w.empty()) continue;
-			for (size_t at = p.find(w); at != std::string::npos; at = p.find(w, at + 1)) {
-				size_t end = at + w.size();
-				if (end < p.size() && p[end] == 's' && !letter(end + 1)) end++;
-				if ((at == 0 || !letter(at - 1)) && !letter(end)) return true;
-			}
+	// Keywords and exclusions: lower case, '/' written for the path separator (the game's paths use '\').
+	inline std::string Norm(const std::string& in) {
+		std::string o(in);
+		for (char& c : o) { c = (char)tolower((unsigned char)c); if (c == '/') c = '\\'; }
+		return o;
+	}
+	inline bool Letter(const std::string& p, size_t i) { return i < p.size() && p[i] >= 'a' && p[i] <= 'z'; }
+	// A keyword is found ANYWHERE in the path ('lecloak', 'leflag', 'bosbanner', 'heavyduster' count); a short one (4 letters or
+	// fewer: cape, flag, tent, robe, tarp, coat) must close a word on its right (a plural s allowed): 'flag' is not 'flagstone'.
+	// Longer ones can be a path piece like 'lucassimms\outfit' (several textures of one folder).
+	inline bool KeywordIn(const std::string& p, const std::string& w) {
+		for (size_t at = p.find(w); at != std::string::npos; at = p.find(w, at + 1)) {
+			if (w.size() > 4) return true;
+			size_t end = at + w.size();
+			if (end < p.size() && p[end] == 's' && !Letter(p, end + 1)) end++;
+			if (!Letter(p, end)) return true;
 		}
 		return false;
+	}
+	// The path is cloth when a keyword is in it, none of the Exclude pieces is, and the FILE's own words name no body part (a hat or
+	// gloves that share the garment's folder or keyword do not move: ExcludeParts, matched against the file name's letters).
+	// Diagnostic (LogMatches): a static texture that looks like cloth but did not match is listed, so missed words can be found.
+	inline bool LooksLikeCloth(const char* path) {
+		const std::string p = Norm(path);
+		for (const char* w : { "cloth", "flag", "banner", "cloak", "cape", "sheet", "tent", "tarp", "canvas", "rag", "curtain", "drape", "awning", "fabric", "blanket", "towel", "laundry", "pennant", "rug", "sail", "coat", "robe", "scarf" })
+			if (p.find(w) != std::string::npos) return true;
+		return false;
+	}
+	inline bool IsClothTexture(const char* path) {
+		if (!path || !path[0]) return false;
+		const std::string p = Norm(path);
+		bool hit = false;
+		for (const std::string& w : Words) if (!w.empty() && KeywordIn(p, w)) { hit = true; break; }
+		if (!hit) return false;
+		for (const std::string& x : Excluded) if (!x.empty() && p.find(x) != std::string::npos) return false;
+		const size_t slash = p.find_last_of('\\');
+		const std::string file = p.substr(slash == std::string::npos ? 0 : slash + 1);
+		for (size_t i = 0; i < file.size();) {
+			if (!Letter(file, i)) { i++; continue; }
+			size_t j = i;
+			while (Letter(file, j)) j++;
+			const std::string word = file.substr(i, j - i);
+			for (const std::string& x : ExcludedParts) {
+				if (x.empty()) continue;
+				if (x.size() >= 4 ? word.find(x) != std::string::npos
+					: (word.size() >= x.size() && (word.compare(word.size() - x.size(), x.size(), x) == 0 || (word.back() == 's' && word.size() > x.size() && word.compare(word.size() - 1 - x.size(), x.size(), x) == 0))))
+					return false;
+			}
+			i = j;
+		}
+		return true;
+	}
+	inline void SplitList(const char* text, std::vector<std::string>& out) {
+		out.clear();
+		std::string w;
+		for (const char* c = text; ; c++) {
+			if (!*c || *c == ',') { while (!w.empty() && w.back() == ' ') w.pop_back(); if (!w.empty()) out.push_back(Norm(w)); w.clear(); if (!*c) break; }
+			else if (!(w.empty() && *c == ' ')) w += *c;
+		}
+	}
+
+	// The bind-pose height range of a skinned mesh (its own vertices before skinning), once per geometry data. The vertex array
+	// is read only when the game kept it (KEEP_XYZ); else the bound sphere stands in.
+	inline const Extent& ExtentOf(NiGeometry* geometry) {
+		NiGeometryData* d = geometry->geomData;
+		auto it = Extents.find(d);
+		if (it != Extents.end() && it->second.count == d->m_usVertices) return it->second;
+		if (Extents.size() >= 4096) Extents.clear();
+		Extent e;
+		e.count = d->m_usVertices;
+		if ((d->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && d->m_pkVertex && d->m_usVertices > 3) {
+			e.lo = 1e30f; e.hi = -1e30f;
+			for (uint16_t i = 0; i < d->m_usVertices; i++) { const float z = d->m_pkVertex[i].z; if (z < e.lo) e.lo = z; if (z > e.hi) e.hi = z; }
+			e.fromVertices = true;
+		}
+		else { e.lo = d->m_kBound.Center.z - d->m_kBound.Radius; e.hi = d->m_kBound.Center.z + d->m_kBound.Radius; }
+		return Extents[d] = e;
 	}
 
 	// Once a frame (Render.cpp, image space): the settings (live), the wind and the phases.
@@ -115,7 +210,12 @@ namespace ClothWind {
 
 	inline void BeginFrame(const Sky* sky, bool exterior) {
 		Exterior = exterior || TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Interiors") != 0;	// (named Exterior: 'cloth may move here')
+		// 2026-10-19: objects whose passes the game drew without setting shaders (not noted by SetShadersHook) count by the shader bound then
+		for (const auto& [g, capable] : TentativeNow)
+			if (!SeenNow.count(g)) { SeenNow.insert(g); if (!capable) VanillaNow.insert(g); }
+		TentativeNow.clear();
 		SeenLast.swap(SeenNow); SeenNow.clear(); VanillaLast.swap(VanillaNow); VanillaNow.clear();
+		VanillaVSLast.swap(VanillaVSNow); VanillaVSNow.clear();
 		// The shaders were compiled with Enabled as it was at startup (CLOTH_WIND_ON, ShaderRecord::BuildDefines): read once.
 		if (!CompiledInRead) { CompiledInRead = true; S.CompiledIn = TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") != 0; }
 		S.On = S.CompiledIn && TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled");
@@ -136,16 +236,20 @@ namespace ClothWind {
 		S.Ripple = std::clamp(TheSettingManager->GetSettingF(section, "RippleAmount"), 0.0f, 1.0f);
 		S.RippleScale = (std::max)(TheSettingManager->GetSettingF(section, "RippleScale"), 0.0f);
 		// (the whole text: GetSettingS goes through the node's 80-byte Value, which a longer list overflowed -- the game crashed)
-		SettingManager::Configuration::ConfigNode wordsNode;
-		const char* words = TheSettingManager->Config.FillNode(&wordsNode, section, "Keywords") ? wordsNode.LongValue.c_str() : nullptr;
-		if (words && WordsFrom != words) {
-			WordsFrom = words; Words.clear(); ByTexture.clear();
-			std::string w;
-			for (const char* c = words; ; c++) {
-				if (!*c || *c == ',') { while (!w.empty() && w.back() == ' ') w.pop_back(); if (!w.empty()) Words.push_back(w); w.clear(); if (!*c) break; }
-				else if (!(w.empty() && *c == ' ')) w += (char)tolower((unsigned char)*c);
-			}
-		}
+		auto readList = [&](const char* key, std::string& from, std::vector<std::string>& out) {
+			SettingManager::Configuration::ConfigNode node;
+			const char* text = TheSettingManager->Config.FillNode(&node, section, key) ? node.LongValue.c_str() : nullptr;
+			if (text && from != text) { from = text; SplitList(text, out); ByTexture.clear(); }
+		};
+		readList("Keywords", WordsFrom, Words);
+		readList("Exclude", ExcludeFrom, Excluded);
+		readList("ExcludeParts", ExcludePartsFrom, ExcludedParts);
+		S.SkinMask = std::clamp(TheSettingManager->GetSettingI(section, "SkinMask"), 0, 2);
+		S.LegCut = std::clamp(TheSettingManager->GetSettingF(section, "LegCut"), 0.0f, 60.0f);
+		S.PinFraction = std::clamp(TheSettingManager->GetSettingF(section, "PinFraction"), 0.0f, 0.9f);
+		S.SkinSpace = std::clamp(TheSettingManager->GetSettingI(section, "SkinSpace"), 0, 2);
+		S.CalmFactor = std::clamp(TheSettingManager->GetSettingF(section, "CalmFactor"), 0.0f, 1.7f);
+		S.LogMatches = TheSettingManager->GetSettingI(section, "LogMatches") != 0;
 		float d[3] = { S.Dir[0], S.Dir[1], S.Dir[2] };
 		float speed = S.Speed, intensity = S.Intensity;
 		if (S.UseGameWind && sky) {
@@ -154,7 +258,7 @@ namespace ClothWind {
 			d[0] = sinf(a); d[1] = cosf(a); d[2] = 0.0f;
 			const float w = std::clamp(sky->windSpeed, 0.0f, 1.0f);
 			speed *= 0.4f + 1.2f * w;
-			intensity *= 0.3f + 1.4f * w;
+			intensity *= S.CalmFactor + (1.7f - S.CalmFactor) * w;	// (2026-10-18: calm was 0.3, i.e. 4 cm of movement in the desert: invisible)
 			if (!LoggedGameWind) { LoggedGameWind = true; Logger::Log("Cloth wind: the game's wind, direction %.3f, speed %.3f", a, sky->windSpeed); }
 		}
 		const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -174,9 +278,15 @@ namespace ClothWind {
 		if (RealStart < 0.0 && TheFrameRateManager) { RealStart = TheFrameRateManager->Time; ClockStart = ClockSeconds; }
 		if (++Frames >= 600) {
 			const double real = TheFrameRateManager ? TheFrameRateManager->Time - RealStart : 0.0;
-			Logger::Log("Cloth wind: %.1f cloth draws per frame; clock %.2f s of wind per second of real time (1 = normal play, 0 = paused)", ClothDraws / (float)Frames, real > 0.0 ? (ClockSeconds - ClockStart) / real : 0.0);
+			Logger::Log("Cloth wind: %.1f cloth draws per frame (%.1f worn); clock %.2f s of wind per second of real time (1 = normal play, 0 = paused)", ClothDraws / (float)Frames, SkinnedDrawsNow / (float)Frames, real > 0.0 ? (ClockSeconds - ClockStart) / real : 0.0);
 			RealStart = TheFrameRateManager ? TheFrameRateManager->Time : -1.0; ClockStart = ClockSeconds;
-			Frames = ClothDraws = 0;
+			if (S.LogMatches) {
+				for (const auto& [g, c] : ClothPassCounts)
+					Logger::Log("Cloth wind: worn mesh '%s': lit passes moved %u, skipped %u (not seen by SetShaders) + %u (vertex shader without cloth code%s%s), shadow passes %u",
+						c.name.c_str(), c.lit, c.notSeen, c.vanilla, VanillaVSLast.count(g) ? ": " : "", VanillaVSLast.count(g) ? VanillaVSLast.at(g).c_str() : "", c.shadow);
+				ClothPassCounts.clear();
+			}
+			Frames = ClothDraws = SkinnedDrawsNow = 0;
 		}
 	}
 
@@ -191,7 +301,24 @@ namespace ClothWind {
 	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false) {
 		if (!device) return;
 		if (!S.On || !Exterior || !geometry) { Zero(device); return; }
-		if (!shadowPass && (!SeenLast.count(geometry) || VanillaLast.count(geometry))) { Zero(device); return; }	// see SAFETY above
+		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
+		// frames, 'not seen by SetShaders'): the game sets no shaders for a pass whose shaders are already bound (the coat follows its
+		// Pip-Boy piece, same shaders), so SetShadersHook never notes it. Such a pass draws with the vertex shader bound now: judge it by
+		// that one, and note it so the rule below holds for it from the next frame on (a vanilla one still keeps the object still).
+		bool boundAnswer = false;
+		if (!shadowPass) {
+			auto t = TentativeNow.find(geometry);
+			if (t == TentativeNow.end()) TentativeNow.emplace(geometry, CurrentVSCapable);
+			else t->second = t->second && CurrentVSCapable;	// every pass of the object this frame
+			boundAnswer = !SeenLast.count(geometry) && CurrentVSCapable && !VanillaLast.count(geometry);
+		}
+		if (!shadowPass && !boundAnswer && (!SeenLast.count(geometry) || VanillaLast.count(geometry))) {	// see SAFETY above
+			if (S.LogMatches) {	// 2026-10-19 diagnostic: how often the safety rule skips a known worn cloth mesh, and why
+				auto c = ClothPassCounts.find(geometry);
+				if (c != ClothPassCounts.end()) { if (!SeenLast.count(geometry)) c->second.notSeen++; else c->second.vanilla++; }
+			}
+			Zero(device); return;
+		}
 		if (shadowPass && VanillaLast.count(geometry)) { Zero(device); return; }
 		BSShaderProperty* property = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
 		const UInt32 vtable = property ? *(UInt32*)property : 0;
@@ -199,20 +326,28 @@ namespace ClothWind {
 		BSShaderPPLightingProperty* lighting = (BSShaderPPLightingProperty*)property;
 		const NiSourceTexture* diffuse = lighting->ppTextures[0] ? lighting->ppTextures[0][0] : nullptr;
 		if (!diffuse || !diffuse->ddsPath1) { Zero(device); return; }
+		const bool skinned = geometry->skinInstance != nullptr;
 		bool cloth;
 		auto known = ByTexture.find(diffuse);
 		if (known != ByTexture.end() && known->second.first == diffuse->ddsPath1) cloth = known->second.second;
 		else {
 			if (ByTexture.size() >= 4096) ByTexture.clear();	// 2026-10-17: entries are per texture object and were never dropped; the answer is worked out again on demand (same result)
-			cloth = IsClothTexture(diffuse->ddsPath1); ByTexture[diffuse] = { std::string(diffuse->ddsPath1), cloth }; if (cloth) Logger::Log("Cloth wind: %s", diffuse->ddsPath1);
+			cloth = IsClothTexture(diffuse->ddsPath1); ByTexture[diffuse] = { std::string(diffuse->ddsPath1), cloth };
+			if (cloth || (S.LogMatches && (skinned || LooksLikeCloth(diffuse->ddsPath1)))) {
+				const NiGeometryData* gd = geometry->geomData;
+				Logger::Log("Cloth wind: %s %s (%s '%s', %u vertices%s)", cloth ? "CLOTH" : "not cloth:", diffuse->ddsPath1, skinned ? "skinned" : "static",
+					geometry->m_pcName ? geometry->m_pcName : "", gd ? (unsigned)gd->m_usVertices : 0u, gd && (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) ? ", vertices kept" : ", vertices not kept");
+			}
 		}
 		// The vertex colour is the mask: without colours in the mesh, only the whole-mesh mode applies.
 		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { Zero(device); return; }
 		// Into the vertex shader's space: world for skinned meshes, the object's own for the rest.
 		float dir[3] = { WorldDir[0], WorldDir[1], WorldDir[2] };
 		float scale = 1.0f;
-		float top = 0.0f, invRange = 0.0f;	// mask 2, in the shader's space
-		if (!geometry->skinInstance) {
+		float mode = (float)S.MaskMode;
+		float top = 0.0f, invRange = 0.0f;	// mask 2 / 3, in the shader's space
+		float origin[3] = { 0.0f, 0.0f, 0.0f };	// where the shader's space origin lies in the world (phases are shifted by it, so the pattern stays on the world)
+		if (!skinned) {
 			const NiTransform& w = geometry->m_worldTransform;
 			scale = w.scale > 1e-4f ? w.scale : 1.0f;
 			for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
@@ -221,37 +356,91 @@ namespace ClothWind {
 				top = b.Center.z + 0.8f * b.Radius; invRange = b.Radius > 1e-3f ? 1.0f / (1.6f * b.Radius) : 0.0f;
 			}
 		}
-		else {	// worn clothing: from the actor's waist down to near the ground
+		else {	// worn clothing
 			const NiAVObject* root = geometry->skinInstance->RootParent ? geometry->skinInstance->RootParent : geometry;
-			const float range = S.HeightTop > S.HeightBottom ? S.HeightTop - S.HeightBottom : 1.0f;
-			// 2026-10-17 (round 2, the Ranger Patrol test: shoulders moved as much as the hem, only the head stood still): the skin root
-			// is the skeleton's own root (Bip01, at the hips), NOT the actor's feet, so 'units above the root' put HeightTop 95 units above
-			// the hips. The feet are the origin of the node the mesh hangs from (the geometry's own world transform: its local transform
-			// is the identity); the root's height above them is taken off. A reading outside 0..140 units (not an actor-like rig) falls
-			// back to the old way. UNVERIFIED in game: the first run with it logs "Cloth wind: skinned ...: root N above the feet".
-			float rootAbove = 0.0f;
-			if (S.HeightFromFeet) {
-				const float d = root->m_worldTransform.pos.z - geometry->m_worldTransform.pos.z;
-				if (d > -20.0f && d < 140.0f) rootAbove = d;
-				static int told = 0;
-				if (told < 6) { told++; Logger::Log("Cloth wind: skinned %s: skin root %.1f above the mesh node's origin (%s)", diffuse->ddsPath1, d, rootAbove != 0.0f || d == 0.0f ? "used as the feet" : "out of range: root taken as the feet"); }
+			SkinnedDrawsNow++;
+			if (S.LogMatches) {	// 2026-10-19 diagnostic (see ClothPassCounts)
+				PassCounts& c = ClothPassCounts[geometry];
+				if (c.name.empty()) c.name = geometry->m_pcName ? geometry->m_pcName : "?";
+				if (shadowPass) c.shadow++; else c.lit++;
 			}
-			if (shadowPass) {	// NVR's shadow pass skins into world space
-				top = root->m_worldTransform.pos.z - rootAbove + S.HeightTop;
-				invRange = 1.0f / range;
+			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
+			else if (S.SkinMask == 1 && geometry->geomData) {
+				// Actor meshes are authored with the feet at z 0 (checked on the vanilla Combat Ranger, Sheriff's duster and Patrol NIFs:
+				// z 0..116): the bind-pose height IS the height above the feet. Mask as the settings say, legs and boots still.
+				mode = 3.0f + S.LegCut * 0.001f;
+				const float range = S.HeightTop > S.HeightBottom ? S.HeightTop - S.HeightBottom : 1.0f;
+				top = S.HeightTop; invRange = 1.0f / range;
 			}
-			else {	// the game's passes: the skin root's space (z up; the feet are rootAbove below the root's origin)
+			else if (S.SkinMask == 2 && geometry->geomData) {
+				// 2026-10-18 (round 3): the mask is the garment's own BIND-POSE height (the shader reads the vertex before skinning): the top
+				// PinFraction of the garment never moves, the hem moves most. Independent of the actor's pose and of the space the bones
+				// put the vertices in -- round 2's actor-height mask (heights above the skin root) put the pin ~70 units too high.
+				const Extent& e = ExtentOf(geometry);
+				const float height = e.hi - e.lo > 1.0f ? e.hi - e.lo : 1.0f;
+				mode = 3.0f;
+				top = e.hi - S.PinFraction * height;
+				invRange = 1.0f / ((1.0f - S.PinFraction) * height);
+			}
+			else {	// the old actor-height mask (SkinMask 0): from the waist down to near the ground
+				const float range = S.HeightTop > S.HeightBottom ? S.HeightTop - S.HeightBottom : 1.0f;
+				float rootAbove = 0.0f;
+				if (S.HeightFromFeet) {
+					const float d = root->m_worldTransform.pos.z - geometry->m_worldTransform.pos.z;
+					if (d > -20.0f && d < 140.0f) rootAbove = d;
+				}
+				if (shadowPass || S.SkinSpace != 0) {
+					top = root->m_worldTransform.pos.z - rootAbove + S.HeightTop - (S.SkinSpace == 1 ? (float)TheRenderManager->CameraPosition.z : 0.0f);
+					invRange = 1.0f / range;
+				}
+				else {
+					const NiTransform& w = root->m_worldTransform;
+					scale = w.scale > 1e-4f ? w.scale : 1.0f;
+					top = (S.HeightTop - rootAbove) / scale;
+					invRange = scale / range;
+				}
+			}
+			// The wind direction in the space the bones put the vertices in.
+			if (S.SkinSpace == 0 && !shadowPass) {	// the skin root's space (round 2's assumption)
 				const NiTransform& w = root->m_worldTransform;
 				scale = w.scale > 1e-4f ? w.scale : 1.0f;
 				for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
-				top = (S.HeightTop - rootAbove) / scale;
-				invRange = scale / range;
+			}
+			else if (S.SkinSpace == 1) { origin[0] = TheRenderManager->CameraPosition.x; origin[1] = TheRenderManager->CameraPosition.y; origin[2] = TheRenderManager->CameraPosition.z; }
+			if (S.LogMatches) {
+				static int told = 0;
+				if (told < 12) {
+					told++;
+					const NiSkinInstance* si = geometry->skinInstance;
+					const float* bm = (const float*)si->BoneMatrixes;
+					const float* sw = (const float*)si->SkinToWorldWorldToSkin;
+					const Extent& e = ExtentOf(geometry);
+					Logger::Log("Cloth wind: skin %s: root (%.0f %.0f %.0f) geometry (%.0f %.0f %.0f) camera (%.0f %.0f %.0f) bind z %.1f..%.1f%s bound c.z %.1f r %.1f",
+						diffuse->ddsPath1, root->m_worldTransform.pos.x, root->m_worldTransform.pos.y, root->m_worldTransform.pos.z,
+						geometry->m_worldTransform.pos.x, geometry->m_worldTransform.pos.y, geometry->m_worldTransform.pos.z,
+						TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z, e.lo, e.hi, e.fromVertices ? "" : " (bound)",
+						geometry->geomData ? geometry->geomData->m_kBound.Center.z : 0.0f, geometry->geomData ? geometry->geomData->m_kBound.Radius : 0.0f);
+					if (bm) Logger::Log("Cloth wind:   bone matrix 0 rows: %.2f %.2f %.2f %.1f | %.2f %.2f %.2f %.1f | %.2f %.2f %.2f %.1f", bm[0], bm[1], bm[2], bm[3], bm[4], bm[5], bm[6], bm[7], bm[8], bm[9], bm[10], bm[11]);
+					if (sw) Logger::Log("Cloth wind:   skin-to-world: %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.1f %.1f %.1f %.2f", sw[0], sw[1], sw[2], sw[3], sw[4], sw[5], sw[6], sw[7], sw[8], sw[9], sw[10], sw[11], sw[12], sw[13], sw[14], sw[15]);
+				}
 			}
 		}
+		// Phases for this draw: the pattern is a function of the vertex's position in the shader's space; when that space's origin is
+		// not the world's (camera-relative skinned meshes), shift the phases so the pattern stays where the wind put it.
+		float ph[4] = { Phase[0], Phase[1], Phase[2], Phase[3] };
+		if (origin[0] != 0.0f || origin[1] != 0.0f || origin[2] != 0.0f) {
+			const double w = (double)scale / S.Wavelength, r = (double)S.RippleScale * scale;
+			const double d0 = (origin[0] * dir[0] + origin[1] * dir[1] + origin[2] * dir[2]) * w;
+			const double d1 = origin[0] * 0.0021 + origin[1] * 0.0027 + origin[2] * 0.0013;
+			const double d2 = (origin[0] * 0.71 + origin[1] * 0.53 + origin[2] * 0.37) * r;
+			const double d3 = (origin[0] * -0.43 + origin[1] * 0.81 + origin[2] * 0.59) * r * 1.7;
+			auto wrap = [](double c) { return (float)(c - floor(c)); };
+			ph[0] = wrap(Phase[0] - d0); ph[1] = wrap(Phase[1] + d1); ph[2] = wrap(Phase[2] + d2); ph[3] = wrap(Phase[3] - d3);
+		}
 		const float c[16] = {
-			1.0f, (float)S.MaskMode, S.Ripple, S.FlutterAmount,
+			1.0f, mode, S.Ripple, S.FlutterAmount,
 			dir[0], dir[1], dir[2], scale / S.Wavelength,
-			Phase[0], Phase[1], Phase[2], Phase[3],
+			ph[0], ph[1], ph[2], ph[3],
 			IntensityNow / scale, S.RippleScale * scale, top, invRange };
 		device->SetVertexShaderConstantF(248, c, 4);
 		NonZeroSent = true;

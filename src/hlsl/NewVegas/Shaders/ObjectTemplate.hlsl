@@ -425,7 +425,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
         #endif
     
         OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -438,7 +438,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
         #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
@@ -608,7 +608,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
-        ClothWindTBN(position.xyz, tbn, IN.vertexColor);	// UNOFFICIAL cloth wind
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
     #endif
     
     OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -621,7 +621,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
         #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif

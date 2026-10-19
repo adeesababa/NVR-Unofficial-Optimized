@@ -2315,8 +2315,9 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		Logger::Log("Error getting vertex shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
 	// UNOFFICIAL cloth wind: which objects drew with a vanilla vertex shader (they must not get cloth: see ClothWind.h SAFETY)
-	ClothWind::NoteShaders(Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
-		ClothWind::CapableName(VertexShader->Name));
+	ClothWind::NoteVertexShader(VertexShader ? VertexShader->Name : nullptr);
+	ClothWind::NoteShaders(ClothWind::PassGeometry ? ClothWind::PassGeometry : Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
+		ClothWind::CapableName(VertexShader->Name), VertexShader ? VertexShader->Name : nullptr);
 	if (PixelShader) {
 		PixelShader->SetupShader(ForcePixelConstants ? nullptr : PixelShader2);
 		ForcePixelConstants = false;
@@ -2517,7 +2518,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 		HiddenObjectCulling::Abandon();	// (a lamp-only pass is never an object's first pass in practice; if it was, its query is not used)
 		return;
 	}
+	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	ClothWind::PassGeometry = nullptr;
 #if NVR_TEST_TOOLS
 	LampPassTest::AfterDraw(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL, diagnostic
 #endif
@@ -2539,7 +2542,9 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
+	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	ClothWind::PassGeometry = nullptr;
 	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// LogLamps diagnostic
 }

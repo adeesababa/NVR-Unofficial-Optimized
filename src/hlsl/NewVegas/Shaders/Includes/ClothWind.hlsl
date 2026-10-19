@@ -4,7 +4,9 @@
 //
 // Per draw NVR sets (vertex shader constants; strength 0 = this draw is not cloth and nothing below runs):
 //   c248 ClothA: x strength 0-1, y mask (0 vertex colour RED: 1 = loose, 0 = pinned; 1 = whole mesh; 2 = by height: pinned at the
-//                top, loosest at the bottom -- for meshes without an authored red mask), z ripple 0-1, w flutter 0-1
+//                top, loosest at the bottom -- for meshes without an authored red mask; 3 = the same by the vertex's BIND-POSE
+//                height (the mesh's own position before skinning: worn clothing; independent of the pose, the actor's place and
+//                the space the bones put it in); the fraction above 3 is the height (/1000) below which legs and boots stay still), z ripple 0-1, w flutter 0-1
 //   c249 ClothB: xyz wind direction in the vertex shader's space (unit), w cycles per unit along the wind (1 / wavelength)
 //   c250 ClothC: x main wave phase, y gust phase, z/w flutter phases -- in cycles, wrapped on the CPU (double precision), so the
 //                motion never jitters after long play
@@ -36,15 +38,23 @@ float3 ClothDisplacement(float3 p, float3 n) {
     return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * (ClothA.z * wave + ClothA.w * ripple));
 }
 
-float ClothMask(float4 vertexColor, float3 p) {
-    const float m = ClothA.y > 1.5f ? saturate((ClothD.z - p.z) * ClothD.w) : (ClothA.y > 0.5f ? 1.0f : saturate(vertexColor.r));
+// bindP: the vertex before skinning (mode 3 only; for unskinned meshes it is p itself).
+float ClothMask(float4 vertexColor, float3 p, float3 bindP) {
+    float m;
+    [flatten] if (ClothA.y > 2.5f) {	// worn clothing: smooth from pinned (top part) to loose (hem)
+        m = saturate((ClothD.z - bindP.z) * ClothD.w);
+        m = m * m * (3.0f - 2.0f * m);
+        const float cut = (ClothA.y - 3.0f) * 1000.0f;	// legs and boots (meshes with the feet at z 0): fades to 0 below this height, full 10 units above
+        [flatten] if (cut > 0.5f) m *= saturate((bindP.z - cut) * 0.1f);
+    }
+    else m = ClothA.y > 1.5f ? saturate((ClothD.z - p.z) * ClothD.w) : (ClothA.y > 0.5f ? 1.0f : saturate(vertexColor.r));
     return ClothA.x * m;
 }
 
 // Moves the vertex and rebuilds tangent, binormal and normal. Every pass of an object must call it with the same inputs.
-void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor) {
+void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor, float3 bindP) {
     [branch] if (ClothA.x > 0.0f) {
-        const float mask = ClothMask(vertexColor, p);
+        const float mask = ClothMask(vertexColor, p, bindP);
         const float e = 2.0f;
         const float3 n = normalize(N);
         const float3 d0 = mask * ClothDisplacement(p, n);
@@ -68,17 +78,17 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 // Shadow maps: position only, but the same displacement as the lit passes (2026-10-17: it used n = 0 and so left out the part along
 // the normal -- up to ~0.85 of the intensity -- and the shadow caster sat off the cloth, which then shadowed itself in patches).
 // The normal is in the same space as p and need not be unit (a missing one reads as zero: the push along the wind only).
-float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor) {
+float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
-        p += ClothMask(vertexColor, p) * ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f);
+        p += ClothMask(vertexColor, p, bindP) * ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f);
     }
     return p;
 }
 
 // ObjectTemplate: the tangent frame is a float3x3 (rows tangent, binormal, normal).
-void ClothWindTBN(inout float3 p, inout float3x3 tbn, float4 vertexColor) {
+void ClothWindTBN(inout float3 p, inout float3x3 tbn, float4 vertexColor, float3 bindP) {
     float3 T = tbn[0], B = tbn[1], N = tbn[2];
-    ClothWind(p, T, B, N, vertexColor);
+    ClothWind(p, T, B, N, vertexColor, bindP);
     tbn = float3x3(T, B, N);
 }
