@@ -10,6 +10,7 @@ void SkinShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkinLightData", &NewConstants.LightData);
 	TheShaderManager->RegisterConstant("TESR_SkinLightExtra", &NewConstants.LightExtra);
 	TheShaderManager->RegisterConstant("TESR_SkinDebugData", &NewConstants.DebugData);
+	TheShaderManager->RegisterConstant("TESR_SkinLightCS", &NewConstants.LightCS);
 }
 
 // UNOFFICIAL Conor's skin shader: the material in use (outdoors or in), each frame. After his SkinShaders::UpdateConstants.
@@ -45,6 +46,7 @@ void SkinShaders::UpdateConstants() {
 	NewConstants.DebugData.x = DebugView < FirstScatteringDebugView ? (float)DebugView : 0.0f;
 	NewConstants.DebugData.y = isExterior ? 0.0f : 1.0f;
 	NewConstants.DebugData.z = Material.FillLight;
+	NewConstants.LightCS = CSDetails;
 }
 
 static void ReadSkinMaterial(SkinShaders::MaterialStruct* Material, const char* Section, const char* ScatteringSection) {
@@ -79,4 +81,10 @@ void SkinShaders::UpdateSettings() {
 	DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.Skin.Debug", "DebugView"), 0, DebugViewCount);
 	BindFaceGenMaps = TheSettingManager->GetSettingI("Shaders.Skin.Debug", "BindFaceGenMaps") != 0;
 	MuteGameHighlights = TheSettingManager->GetSettingI("Shaders.Skin.NewSkin", "MuteGameHighlights") != 0;
+	// 2026-10-19: shading details after Community Shaders' Advanced Skin (features\Skin\Shaders\Skin\Skin.hlsli, GPL-3.0),
+	// indoors and out, all off by default (a look change: the user's call). See SkinLighting.hlsl.
+	CSDetails.x = std::clamp(TheSettingManager->GetSettingF("Shaders.Skin.NewSkin", "Fuzz"), 0.0f, 2.0f);
+	CSDetails.y = TheSettingManager->GetSettingI("Shaders.Skin.NewSkin", "EnergyBalance") ? 1.0f : 0.0f;
+	CSDetails.z = TheSettingManager->GetSettingI("Shaders.Skin.NewSkin", "CreaseDamping") ? 1.0f : 0.0f;
+	CSDetails.w = TheSettingManager->GetSettingI("Shaders.Skin.NewSkin", "TransmitProfile") ? 1.0f : 0.0f;
 }

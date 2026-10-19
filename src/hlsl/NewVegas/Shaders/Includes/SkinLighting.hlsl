@@ -8,6 +8,9 @@
 //     build's PBR.hlsl does not have are below, renamed Skin* so they cannot clash
 //   - his merged lamp passes are not in this build: the merged-lamp variant (SkinLampLight) is left out
 //   - registers c192-c195 (his c136/c146/c147/c152 are this build's SharpSky, sun cross-fade and contact hardening)
+//   - 2026-10-19: optional shading details after Community Shaders' Advanced Skin (skyrim-community-shaders,
+//     features\Skin\Shaders\Skin\Skin.hlsli, GPL-3.0), all off by default ([Shaders.Skin.NewSkin] Fuzz, EnergyBalance,
+//     CreaseDamping, TransmitProfile; TESR_SkinLightCS c196): see setupSkinCS, SkinFuzz and SkinTransmittanceProfile
 //
 // His description:
 //   - Spherical-Gaussian skin diffusion (as in The Order: 1886, Neubelt & Pettineo): each colour
@@ -53,6 +56,11 @@ float4 SkinScreenSpaceScatter : register(c194);
 // Port: z FillLight ([Shaders.Skin.NewSkin] / [Shaders.Skin.Interiors], SkinVanillaFill below).
 float4 TESR_SkinDebugData : register(c195);
 
+// 2026-10-19 [Shaders.Skin.NewSkin], indoors and out, after Community Shaders' Advanced Skin (all 0 = off, the shader as before):
+// x Fuzz (peach-fuzz sheen strength, CS's FuzzStrength), y EnergyBalance, z CreaseDamping, w TransmitProfile (1 on).
+// c196: free in every skin pixel shader (c197-c199 are the object shaders' material rules, c196-c199 terrain blending's).
+float4 TESR_SkinLightCS : register(c196);
+
 #define SKIN_F0 0.028f
 #define SKIN_LOBE0_ROUGHNESS 0.75f      // sharp lobe, x the material roughness
 #define SKIN_LOBE1_ROUGHNESS 1.3f       // broad lobe
@@ -61,6 +69,14 @@ float4 TESR_SkinDebugData : register(c195);
 #define SKIN_TRANSMIT_DISTORTION 0.3f
 #define SKIN_TRANSMIT_POWER 4.0f
 #define SKIN_PENUMBRA_TINT float3(0.3f, 0.06f, 0.04f)   // light bled into a shadow edge
+// Community Shaders' defaults for the details above (src\Features\Skin.h): the fuzz lobe's roughness and F0.
+#define SKIN_FUZZ_ROUGHNESS 0.35f
+#define SKIN_FUZZ_F0 0.045f
+// TransmitProfile: the depth into Jimenez's profile at the thinnest skin (skinThinness 1, a ~1 mm radius: an ear's rim),
+// growing as 1 / thinness (0.67 where Translucency starts to show, thinness 0.3): orange at the rim, deep red further in.
+// The gain brings the profile's red at the rim (0.67) to the flat tint's 1.
+#define SKIN_TRANSMIT_PROFILE_DEPTH 0.2f
+#define SKIN_TRANSMIT_PROFILE_GAIN 1.5f
 
 // Curvature in 1/mm (one game unit is 1/70 m), capped at 1 (a 1 mm radius), where the
 // diffusion fit below was made. ScatterWidth 1 widens d'Eon's profile 2x, which reads right at
@@ -75,6 +91,23 @@ static float3 skinCompensation = 1.0f;  // 1 / base texture in the AD passes, el
 static float skinCurvature = 0.0f;      // 1/mm after ScatterWidth: 0 flat, 1 a 1 mm radius
 static float skinThinness = 0.0f;       // the same curvature without ScatterWidth, for transmission
 static float3 skinSkyReflected = 0.0f;  // the share of the sky the reflection takes (SkinSkyReflection), which the ambient leaves out
+// Set by setupSkinCS: exactly 1 with CreaseDamping off, which leaves the shading as it was. The only value the details keep
+// live through the lights (more overflows ps_3_0's 32 temporaries in the indoor many-lamp variants): EnergyBalance's factor
+// goes into skinSpecScale, and the fuzz lobe and TransmitProfile's colour are worked out inside their own branches.
+static float skinCrease = 1.0f;         // CreaseDamping: saturate(1 - CS's curvature), scales the highlights' F0
+
+// Jorge Jimenez's transmittance profile (Separable SSS, SSSSTransmittance, as in Community Shaders' Skin.hlsli): d'Eon's six
+// skin Gaussians per colour (variances in mm^2) at depth d. White at 0, orange, then red as the depth grows.
+// "Uses Separable SSS. Copyright (C) 2012 by Jorge Jimenez and Diego Gutierrez."
+float3 SkinTransmittanceProfile(float d) {
+    float dd = -d * d;
+    return float3(0.233f, 0.455f, 0.649f) * exp(dd / 0.0064f)
+         + float3(0.1f, 0.336f, 0.344f) * exp(dd / 0.0484f)
+         + float3(0.118f, 0.198f, 0.0f) * exp(dd / 0.187f)
+         + float3(0.113f, 0.007f, 0.007f) * exp(dd / 0.567f)
+         + float3(0.358f, 0.004f, 0.0f) * exp(dd / 1.99f)
+         + float3(0.078f, 0.0f, 0.0f) * exp(dd / 7.41f);
+}
 
 // Call once per pixel at the TOP LEVEL of the shader: it takes derivatives.
 //   normal:       shading normal (tangent space in SkinTemplate; only its derivatives are used)
@@ -107,6 +140,46 @@ void setupSkin(float3 normal, float3 vertexNormal, float3 worldPos, float mask, 
 // A LINEAR colour constant in this build's working space: gamma (the game's, about sqrt) or, with linear lighting, decoded
 // from that gamma, as SkyAmbient's colours are.
 float3 skinLinearTint(float3 c) { return LinColor(sqrt(c)); }
+
+// Lazarov's fit to the split-sum environment BRDF's scale and bias (Karis, Unreal Engine 4 mobile): F0 x A + B.
+float2 SkinEnvBRDFAB(float roughness, float NdotV) {
+    const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+    const float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28f * NdotV)) * r.x + r.y;
+    return float2(-1.04f, 1.04f) * a004 + r.zw;
+}
+
+// 2026-10-19: Community Shaders' Advanced Skin details (TESR_SkinLightCS). Call once per pixel at the TOP LEVEL, after
+// setupSkin and any change to skinRoughness (it takes derivatives). N and V share a space (SkinTemplate: tangent);
+// worldN is the bumped normal in world space.
+void setupSkinCS(float3 N, float3 V, float3 worldN) {
+    // CreaseDamping (CS: F0 x saturate(1 - curvature), Skin::CalculateCurvature): how fast the bumped normal turns from one
+    // pixel to the next. Highlights fade in creases (eyelids, lips, nostrils) and on fine relief, where they sparkle.
+    float3 dNdx = ddx(worldN);
+    float3 dNdy = ddy(worldN);
+    float curvature = length(float2(dot(dNdx, dNdx), dot(dNdy, dNdy)));
+    skinCrease = TESR_SkinLightCS.z > 0.0f ? saturate(1.0f - curvature) : 1.0f;
+
+    // EnergyBalance (CS: specular x (1 + F0 (1 / (A + B) - 1)), Karis / Fdez-Aguera multiple scattering): rough GGX lobes
+    // lose the light that bounces more than once between microfacets; this puts it back. Under 1% at skin's F0. Into
+    // skinSpecScale, which every highlight (lamps, sun, sky reflection) is scaled by.
+    [branch] if (TESR_SkinLightCS.y > 0.0f) {
+        float NdotV = saturate(abs(dot(N, V)) + 1e-5f);
+        float averageRoughness = lerp(clamp(skinRoughness * SKIN_LOBE0_ROUGHNESS, 0.04f, 1.0f), clamp(skinRoughness * SKIN_LOBE1_ROUGHNESS, 0.04f, 1.0f), SKIN_LOBE_MIX);
+        float2 ab = SkinEnvBRDFAB(averageRoughness, NdotV);
+        skinSpecScale *= 1.0f + SKIN_F0 * skinCrease * (1.0f / (ab.x + ab.y) - 1.0f);
+    }
+}
+
+// The colour of light through thin skin: the flat tint, or with TransmitProfile Jimenez's profile, deeper (redder) where the
+// skin is thicker (thinness from the curvature, setupSkin).
+float3 SkinTransmitColor() {
+    float3 tint = skinLinearTint(SKIN_TRANSMIT_TINT);
+    [branch] if (TESR_SkinLightCS.w > 0.0f)
+        tint = skinLinearTint(SkinTransmittanceProfile(SKIN_TRANSMIT_PROFILE_DEPTH / max(skinThinness, 0.2f)) * SKIN_TRANSMIT_PROFILE_GAIN);
+    return tint;
+}
 
 // Stephen Hill's fit to the irradiance of a normalised spherical Gaussian of sharpness lambda,
 // per channel: N.L blurred by the lobe (MJP, "SG Series" part 3). Plain saturate(N.L) as
@@ -194,9 +267,32 @@ float3 SkinSpecular(float3 N, float3 V, float3 L, float3 light, bool sun) {
         L0 = SkinSunSpecularDir(N, V, L, r0, n0);
         L1 = SkinSunSpecularDir(N, V, L, r1, n1);
     }
-    float3 lobe0 = SkinSpecularLobe(SKIN_F0.rrr, r0, N, V, L0, light) * n0;
-    float3 lobe1 = SkinSpecularLobe(SKIN_F0.rrr, r1, N, V, L1, light) * n1;
+    // 2026-10-19: skinCrease is 1 unless CreaseDamping is on (setupSkinCS); EnergyBalance is in skinSpecScale.
+    float3 f0 = (SKIN_F0 * skinCrease).rrr;
+    float3 lobe0 = SkinSpecularLobe(f0, r0, N, V, L0, light) * n0;
+    float3 lobe1 = SkinSpecularLobe(f0, r1, N, V, L1, light) * n1;
     return lerp(lobe0, lobe1, SKIN_LOBE_MIX) * skinSpecScale * skinVanillaMatch;
+}
+
+// 2026-10-19 Fuzz, after Community Shaders' Advanced Skin (SkinDirectLightInput's fuzz lobe): peach fuzz, a soft sheen at grazing
+// light and against it. Charlie sheen distribution (Estevez & Kulla 2017), Neubelt's visibility, Schlick Fresnel at CS's
+// FuzzF0 (damped in creases like the GGX lobes), CS's FuzzRoughness, and its own energy compensation as CS has it. Times PI as
+// SkinSpecularLobe: this shader's lights carry no 1 / PI (diffuse is albedo x N.L x light), CS's do. Not scaled by the
+// specular mask (CS scales it only by its own fuzz mask texture, which FNV skin has none of).
+float3 SkinFuzz(float3 N, float3 V, float3 L, float3 light) {
+    float3 H = normalize(V + L);
+    float NdotL = clamp(dot(N, L), 1e-5f, 1.0f);
+    float NdotV = saturate(abs(dot(N, V)) + 1e-5f);
+    float NdotH = saturate(dot(N, H));
+    float VdotH = saturate(dot(V, H));
+    const float invAlpha = 1.0f / (SKIN_FUZZ_ROUGHNESS * SKIN_FUZZ_ROUGHNESS * SKIN_FUZZ_ROUGHNESS * SKIN_FUZZ_ROUGHNESS);
+    float D = (2.0f + invAlpha) * pow(max(1.0f - NdotH * NdotH, 1e-6f), invAlpha * 0.5f) / (2.0f * PI);
+    float G = 1.0f / (4.0f * max(NdotL + NdotV - NdotL * NdotV, 1e-5f));
+    float Fc = pow(1.0f - VdotH, 5.0f);
+    float F = Fc + (1.0f - Fc) * (SKIN_FUZZ_F0 * skinCrease);
+    float2 ab = SkinEnvBRDFAB(SKIN_FUZZ_ROUGHNESS, NdotV);
+    float energy = 1.0f + SKIN_FUZZ_F0 * (1.0f / (ab.x + ab.y) - 1.0f);
+    return (D * G * F * NdotL * energy * PI * TESR_SkinLightCS.x) * light;
 }
 
 // Port (2026-10-15), FillLight (TESR_SkinDebugData.z, 0 = Conor's model alone): vanilla's skin shaders (SKIN2000-2011, this
@@ -246,26 +342,32 @@ float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, 
     selfShadowed = selfShadowed * selfShadowed * (3.0f - 2.0f * selfShadowed) * saturate(TESR_SkinLightExtra.z) * saturate(selfShadowEscape);
     float3 shadowColor = SkinShadow(shadow);
     float3 diffuse = albedo * (direct * shadowColor + wrapped * lerp(shadowColor, 1.0f, selfShadowed));
+    // 2026-10-19 EnergyBalance (Community Shaders): the light the highlight reflects does not also enter the skin, diffuse x
+    // (1 - F). Mostly at grazing angles: rims lit from behind.
+    [branch] if (TESR_SkinLightCS.y > 0.0f) {
+        float Fc = pow(1.0f - saturate(dot(V, normalize(V + L))), 5.0f);
+        diffuse *= 1.0f - (Fc + (1.0f - Fc) * (SKIN_F0 * skinCrease));
+    }
 
     // Transmission only through thin features (ears, nostrils, fingers: high curvature), and only
     // where the light reaches the far side of the surface (Jimenez: saturate(0.3 - N.L)).
+    // Its colour (SkinTransmitColor): the flat tint, or Jimenez's profile with TransmitProfile.
     float thin = smoothstep(0.3f, 0.9f, skinThinness);
     float farSide = saturate(0.3f - geometricNdotL);
     float3 transmitDir = normalize(L + Nsoft * SKIN_TRANSMIT_DISTORTION);
     float back = pow(saturate(dot(V, -transmitDir)), SKIN_TRANSMIT_POWER);
-    float3 transmitted = albedo * skinLinearTint(SKIN_TRANSMIT_TINT) * (back * thin * farSide * TESR_SkinLightData.w * shadow);
+    float3 transmitted = albedo * SkinTransmitColor() * (back * thin * farSide * TESR_SkinLightData.w * shadow);
 
-    specular = SkinSpecular(N, V, L, light, sun) * shadow;
+    specular = SkinSpecular(N, V, L, light, sun);
+    [branch] if (TESR_SkinLightCS.x > 0.0f)
+        specular += SkinFuzz(N, V, L, light);
+    specular *= shadow;
     return (diffuse + transmitted + SkinVanillaFill(N, V, L, albedo) * shadow) * light;
 }
 
 // Karis' analytic fit to the split-sum environment BRDF (Unreal Engine 4 mobile).
 float3 SkinEnvBRDF(float3 f0, float roughness, float NdotV) {
-    const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
-    const float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
-    float4 r = roughness * c0 + c1;
-    float a004 = min(r.x * r.x, exp2(-9.28f * NdotV)) * r.x + r.y;
-    float2 ab = float2(-1.04f, 1.04f) * a004 + r.zw;
+    float2 ab = SkinEnvBRDFAB(roughness, NdotV);
     return f0 * ab.x + ab.y;
 }
 
@@ -308,7 +410,8 @@ float3 SkinSkyReflection(float3 V, float3 geometricNormal, float3 N) {
     float3 radiance = lerp(SkinSkyRadiance(r, r0), SkinSkyRadiance(r, r1), SKIN_LOBE_MIX);
     float3 envBRDF = lerp(SkinEnvBRDF(SKIN_F0.rrr, r0, NdotV), SkinEnvBRDF(SKIN_F0.rrr, r1, NdotV), SKIN_LOBE_MIX);
 
-    float3 reflected = envBRDF * horizon * skinSpecScale * TESR_SkinLightExtra.x;
+    // 2026-10-19: x skinCrease (CS: the sky lobe x saturate(1 - curvature)), 1 unless CreaseDamping is on.
+    float3 reflected = envBRDF * horizon * skinSpecScale * TESR_SkinLightExtra.x * skinCrease;
     // The share of the sky the ambient must not scatter too. Without the AD compensation: the
     // ambient is divided by the same texture afterwards.
     skinSkyReflected = saturate(reflected);

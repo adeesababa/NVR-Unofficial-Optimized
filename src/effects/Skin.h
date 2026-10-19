@@ -37,6 +37,8 @@ public:
 		D3DXVECTOR4		LightData;    // TESR_SkinLightData (c192): x SpecularStrength, y Roughness, z PerPixelWidth, w Translucency
 		D3DXVECTOR4		LightExtra;   // TESR_SkinLightExtra (c193): x SkyReflectionScale (0 indoors), y wetness (rain x RainWetness), z ShadowScatter, w the vanilla-matched highlight factor (1-12)
 		D3DXVECTOR4		DebugData;    // TESR_SkinDebugData (c195): x [Shaders.Skin.Debug] DebugView (1-7), y 1 while the Interiors settings are in use, z FillLight
+		// 2026-10-19, Community Shaders' Advanced Skin details ([Shaders.Skin.NewSkin], all off by default; SkinLighting.hlsl):
+		D3DXVECTOR4		LightCS;      // TESR_SkinLightCS (c196): x Fuzz strength, y EnergyBalance, z CreaseDamping, w TransmitProfile (1 on)
 	};
 	NewSkinStruct NewConstants = {};
 
@@ -55,6 +57,7 @@ public:
 	MaterialStruct Interior = {};
 	float SkyReflectionScale = 1.0f;	// outdoors only: forced off indoors
 	float RainWetness = 0.5f;			// outdoors only
+	D3DXVECTOR4 CSDetails = {};			// 2026-10-19: [Shaders.Skin.NewSkin] Fuzz, EnergyBalance, CreaseDamping, TransmitProfile (indoors and out)
 
 	// [Shaders.Skin.Debug] DebugView. 1-7 are drawn by the skin shaders (SkinTemplate.hlsl); 8-10 by the skin scattering
 	// effect, which steps aside for 1-7 so it does not blur them.
