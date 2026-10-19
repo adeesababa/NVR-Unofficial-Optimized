@@ -45,7 +45,8 @@ namespace ClothWind {
 		float RippleScale = 0.012f;		// ripple cycles per unit
 		float TimeOffset = 0.0f;		// test only: seconds the pattern is ahead
 		bool  HeightFromFeet = true;	// SkinMask 0 only: heights from the actor's feet (the node the mesh hangs from), not the skin root
-		int   SkinMask = 1;				// worn clothing: 0 the old actor-height mask (skin root), 1 the garment's own bind-pose height (pinned top part, loose hem)
+		int   SkinMask = 1;				// worn clothing: 0 the old actor-height mask (skin root), 1 bind-pose height above the feet (HeightTop..HeightBottom, legs still below LegCut), 2 the garment's own height range (PinFraction)
+		float LegCut = 14.0f;			// SkinMask 1: below this bind-pose height (boots, ankles) nothing moves, full strength 10 units higher
 		float PinFraction = 0.4f;		// SkinMask 1: the top part of the garment (fraction of its height) that does not move at all
 		int   SkinSpace = 1;			// worn clothing, what space the bones put vertices in: 0 the skin root's (rotated wind), 1 camera-relative world, 2 world
 		float CalmFactor = 0.6f;		// UseGameWind: strength in dead calm (rising to 1.7 in a gale); it was 0.3
@@ -224,7 +225,8 @@ namespace ClothWind {
 		readList("Keywords", WordsFrom, Words);
 		readList("Exclude", ExcludeFrom, Excluded);
 		readList("ExcludeParts", ExcludePartsFrom, ExcludedParts);
-		S.SkinMask = std::clamp(TheSettingManager->GetSettingI(section, "SkinMask"), 0, 1);
+		S.SkinMask = std::clamp(TheSettingManager->GetSettingI(section, "SkinMask"), 0, 2);
+		S.LegCut = std::clamp(TheSettingManager->GetSettingF(section, "LegCut"), 0.0f, 60.0f);
 		S.PinFraction = std::clamp(TheSettingManager->GetSettingF(section, "PinFraction"), 0.0f, 0.9f);
 		S.SkinSpace = std::clamp(TheSettingManager->GetSettingI(section, "SkinSpace"), 0, 2);
 		S.CalmFactor = std::clamp(TheSettingManager->GetSettingF(section, "CalmFactor"), 0.0f, 1.7f);
@@ -317,6 +319,13 @@ namespace ClothWind {
 			SkinnedDrawsNow++;
 			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
 			else if (S.SkinMask == 1 && geometry->geomData) {
+				// Actor meshes are authored with the feet at z 0 (checked on the vanilla Combat Ranger, Sheriff's duster and Patrol NIFs:
+				// z 0..116): the bind-pose height IS the height above the feet. Mask as the settings say, legs and boots still.
+				mode = 3.0f + S.LegCut * 0.001f;
+				const float range = S.HeightTop > S.HeightBottom ? S.HeightTop - S.HeightBottom : 1.0f;
+				top = S.HeightTop; invRange = 1.0f / range;
+			}
+			else if (S.SkinMask == 2 && geometry->geomData) {
 				// 2026-10-18 (round 3): the mask is the garment's own BIND-POSE height (the shader reads the vertex before skinning): the top
 				// PinFraction of the garment never moves, the hem moves most. Independent of the actor's pose and of the space the bones
 				// put the vertices in -- round 2's actor-height mask (heights above the skin root) put the pin ~70 units too high.

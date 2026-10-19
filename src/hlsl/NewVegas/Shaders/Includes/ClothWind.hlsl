@@ -6,7 +6,7 @@
 //   c248 ClothA: x strength 0-1, y mask (0 vertex colour RED: 1 = loose, 0 = pinned; 1 = whole mesh; 2 = by height: pinned at the
 //                top, loosest at the bottom -- for meshes without an authored red mask; 3 = the same by the vertex's BIND-POSE
 //                height (the mesh's own position before skinning: worn clothing; independent of the pose, the actor's place and
-//                the space the bones put it in)), z ripple 0-1, w flutter 0-1
+//                the space the bones put it in); the fraction above 3 is the height (/1000) below which legs and boots stay still), z ripple 0-1, w flutter 0-1
 //   c249 ClothB: xyz wind direction in the vertex shader's space (unit), w cycles per unit along the wind (1 / wavelength)
 //   c250 ClothC: x main wave phase, y gust phase, z/w flutter phases -- in cycles, wrapped on the CPU (double precision), so the
 //                motion never jitters after long play
@@ -44,6 +44,8 @@ float ClothMask(float4 vertexColor, float3 p, float3 bindP) {
     [flatten] if (ClothA.y > 2.5f) {	// worn clothing: smooth from pinned (top part) to loose (hem)
         m = saturate((ClothD.z - bindP.z) * ClothD.w);
         m = m * m * (3.0f - 2.0f * m);
+        const float cut = (ClothA.y - 3.0f) * 1000.0f;	// legs and boots (meshes with the feet at z 0): fades to 0 below this height, full 10 units above
+        [flatten] if (cut > 0.5f) m *= saturate((bindP.z - cut) * 0.1f);
     }
     else m = ClothA.y > 1.5f ? saturate((ClothD.z - p.z) * ClothD.w) : (ClothA.y > 0.5f ? 1.0f : saturate(vertexColor.r));
     return ClothA.x * m;
