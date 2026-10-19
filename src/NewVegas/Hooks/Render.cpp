@@ -21,6 +21,7 @@
 #include "../../core/ClothWind.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
+#include "../../core/PbrPop.h"	// UNOFFICIAL 2026-10-18 PBR pop-in: SpecularFade, SpecularLODPasses (+ test diagnostic)
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
@@ -610,8 +611,13 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampPassTest::BeginFrame();	// UNOFFICIAL, diagnostic: LampPassTestSkip
 #endif
 	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
+	PbrPop::LodPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularLODPasses (likewise before the scene walk)
+	PbrPop::SpecFade::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularFade
+	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
+	PbrPop::SpecLodTest::BeginFrame();	// UNOFFICIAL, test: PbrPopSpecLODEnd
+	PbrPop::PopLog::NewFrame();	// UNOFFICIAL, diagnostic: PbrPopLog
 #endif
 	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): the scattering target is cleared on the frame's first skin draw;
 	// interior faces take SkinShader's own passes while it is on (Shaders.cpp UpdateFaceGenInteriorFlag).
@@ -1637,7 +1643,7 @@ namespace MaterialRulesDraw {
 // area's maps arrive over a few frames instead of stalling one (until then those objects draw as they did). The textures are
 // kept (GPU memory only, D3DPOOL_DEFAULT, so nothing of them sits in the game's 4 GB) for the rest of the session.
 namespace RmaosDraw {
-	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; };
+	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0; };
 	static std::unordered_map<std::string, Map> ByPath;			// normalised diffuse path -> its map
 	struct Entry { std::string Path; Map* Found; };
 	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
@@ -1647,6 +1653,10 @@ namespace RmaosDraw {
 	static std::deque<Job> ToRead, Read;
 	static bool WorkerStarted = false, Checked = false, Compiled = false;
 	static float Current[4] = { -1.0f, 0.0f, 0.0f, 0.0f };	// c220 as last sent this frame
+	// UNOFFICIAL 2026-10-18 FadeIn (pbrpop, [Shaders.PBR.Rmaos] FadeIn, seconds, live): a map that has just arrived comes in over this time
+	// (c220.x = its share, Object.hlsl blends its values in from the object's look without it) instead of at once. 0 = at once, as before.
+	static float FadeSeconds = 0.0f;
+	static double FrameNowMs = 0.0;
 	static int Loaded = 0;
 
 	static void Worker() {
@@ -1697,13 +1707,27 @@ namespace RmaosDraw {
 
 	// Once a frame: the files the worker has read, made into textures (at most two a frame), and c220 resent with the first object
 	// (the effects drawn between frames use the high constant registers too).
+#if NVR_TEST_TOOLS
+	static void ReloadTest();
+#endif
+	// UNOFFICIAL 2026-10-18 UploadBudget (pbrpop, [Shaders.PBR.Rmaos], live): with a value above 0, as many maps a frame as fit in that many
+	// milliseconds (at least one) instead of two: a new place's maps (hundreds indoors) arrive in a fraction of the frames, so fewer
+	// objects are seen changing their look when theirs comes in. 0 = two a frame, as before.
 	static void Upload() {
 		Current[0] = -1.0f;
-		for (int n = 0; n < 2; n++) {
+#if NVR_TEST_TOOLS
+		ReloadTest();
+#endif
+		const float budget = TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "UploadBudget");
+		FadeSeconds = (std::max)(TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "FadeIn"), 0.0f);
+		const double start = CpuTimer::NowMs();
+		FrameNowMs = start;
+		int uploaded = 0;
+		for (int n = 0; budget > 0.0f ? (n == 0 || CpuTimer::NowMs() - start < budget) : n < 2; n++) {
 			Job job;
 			{
 				std::lock_guard<std::mutex> hold(Lock);
-				if (Read.empty()) return;
+				if (Read.empty()) break;
 				job = std::move(Read.front());
 				Read.pop_front();
 			}
@@ -1711,10 +1735,49 @@ namespace RmaosDraw {
 			if (!job.Bytes.empty())
 				D3DXCreateTextureFromFileInMemoryEx(TheRenderManager->device, job.Bytes.data(), (UINT)job.Bytes.size(), D3DX_DEFAULT_NONPOW2,
 					D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT, 0, D3DFMT_UNKNOWN, D3DPOOL_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0, NULL, NULL, &texture);
-			if (texture) { job.Target->Texture = texture; Loaded++; }
+			if (texture) { job.Target->Texture = texture; job.Target->ArrivedMs = CpuTimer::NowMs(); Loaded++; }
 			else { job.Target->Missing = true; Logger::Log("[Rmaos] could not load %s", job.File.c_str()); }
+			uploaded++;
 		}
+#if NVR_TEST_TOOLS
+		// DIAGNOSTIC (pbrpop, with [Main.Main.Misc] PbrPopLog on): how fast a place's maps arrive.
+		static unsigned lines = 0;
+		if (TheSettingManager->GetSettingI("Main.Main.Misc", "PbrPopLog") && lines < 3000) {
+			size_t toRead = 0, toUpload = 0;
+			{ std::lock_guard<std::mutex> hold(Lock); toRead = ToRead.size(); toUpload = Read.size(); }
+			if (uploaded || toRead || toUpload) {
+				lines++;
+				Logger::Log("RMAOS STREAM: uploaded %d in %.2f ms (loaded so far %d); waiting: %u to read, %u to upload", uploaded, CpuTimer::NowMs() - start, Loaded,
+					(unsigned)toRead, (unsigned)toUpload);
+			}
+		}
+#endif
 	}
+
+#if NVR_TEST_TOOLS
+	// TEST (pbrpop, [Shaders.PBR.Rmaos] ReloadTest): a new nonzero value drops every loaded map, so they arrive again as in a new place
+	// (the arrival seen with a still camera). Maps still on their way are left alone.
+	static void ReloadTest() {
+		static int last = 0;
+		const int want = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "ReloadTest");
+		if (want == last) return;
+		last = want;
+		if (!want) return;
+		TheRenderManager->device->SetTexture(2, nullptr);
+		TheRenderManager->renderState->NoteDeviceTexture(2, nullptr);
+		int dropped = 0;
+		for (auto& entry : ByPath) {
+			Map& map = entry.second;
+			if (!map.Texture) continue;
+			map.Texture->Release();
+			map.Texture = nullptr;
+			map.Queued = false;
+			dropped++;
+		}
+		Loaded -= dropped;
+		Logger::Log("RMAOS STREAM: ReloadTest %d: %d maps dropped (they load again as they are drawn)", want, dropped);
+	}
+#endif
 
 	// Every draw with a map binds it (stage 2 is the effects' too between the passes); without one, stage 2 is left as it is:
 	// the shader does not read it then.
@@ -1764,7 +1827,9 @@ namespace RmaosDraw {
 			Wake.notify_one();
 		}
 		const bool on = map && map->Texture && pbr && pbr->RmaosSettings.On;
-		values[0] = on ? 1.0f : 0.0f;
+		float share = 1.0f;	// UNOFFICIAL FadeIn: the map's share while it comes in
+		if (on && FadeSeconds > 0.0f) share = std::clamp((float)((FrameNowMs - map->ArrivedMs) / (1000.0 * FadeSeconds)), 0.001f, 1.0f);
+		values[0] = on ? share : 0.0f;
 		Send(values, on ? map->Texture : nullptr);
 	}
 
@@ -2504,6 +2569,8 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	TerrainProbe::Note((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic (F10 only)
+	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)	// UNOFFICIAL, diagnostic: PbrPopLog
+		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
@@ -2512,6 +2579,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
+	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL SpecularFade
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
@@ -2532,6 +2600,8 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic (F10 only)
+	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)	// UNOFFICIAL, diagnostic: PbrPopLog
+		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
@@ -2540,6 +2610,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
+	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL SpecularFade
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
@@ -2770,7 +2841,9 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	// UNOFFICIAL: the first-person model's metal strength ([Shaders.PBR.Metal] FirstPerson) for this pass only.
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
+	PbrPop::ActorPasses::FirstPersonNow = 1;	// UNOFFICIAL ActorsInOnePass: the first-person model's passes are built in here
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	PbrPop::ActorPasses::FirstPersonNow = 0;
 	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL Conor's skin shader
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::EndContext();

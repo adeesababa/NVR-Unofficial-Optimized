@@ -58,7 +58,15 @@ float4 TESR_MaterialTint  : register(c199); // rgb: the class's DebugView colour
 float4 NVR_Rmaos : register(c220); // x: 1 = this draw has an _rmaos map on s2, y: occlusion strength, z: DebugView (1 roughness, 2 metal, 3 occlusion, 4 which objects have one)
 sampler2D NVR_RmaosMap : register(s2);
 static float4 RmaosValue = float4(1.0f, 0.0f, 1.0f, 1.0f);
-#define RMAOS_ACTIVE (NVR_Rmaos.x > 0.5f)
+// UNOFFICIAL 2026-10-18 FadeIn (pbrpop, [Shaders.PBR.Rmaos] FadeIn): x below 1 = the map arrived a moment ago: its values blend in
+// from what the object had without it (x = the map's share), so a map that arrives while the object is in view does not pop. x = 1:
+// exactly the map, as before; 0: no map.
+#define RMAOS_ACTIVE (NVR_Rmaos.x > 0.0f)
+#ifdef RMAOS_NO_FADE
+    #define RMAOS_FADING false	// (the includer's shader is near its slot limit: the map comes in at once there)
+#else
+    #define RMAOS_FADING (NVR_Rmaos.x < 1.0f)
+#endif
 
 // UNOFFICIAL 2026-10-18 per-weather RoughnessScale / MetalnessScale for the maps ([Shaders.PBR.Main/Rain/Night/NightRain/Interiors],
 // PBRShaders::UpdateConstants; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0, commit c1415cb8). TESR_PBRMath (PBR.hlsl)
@@ -75,7 +83,7 @@ void RmaosRead(float2 uv) {
 
 // The ambient light's share the map's occlusion leaves (1 without a map).
 float RmaosAmbient() {
-    return RMAOS_ACTIVE ? lerp(1.0f, RmaosValue.b, saturate(NVR_Rmaos.y)) : 1.0f;
+    return RMAOS_ACTIVE ? lerp(1.0f, RmaosValue.b, RMAOS_FADING ? saturate(NVR_Rmaos.y) * NVR_Rmaos.x : saturate(NVR_Rmaos.y)) : 1.0f;
 }
 
 // DebugView: the map's roughness, metal or occlusion in grey; 4: objects with a map in green, others dim grey.
@@ -100,12 +108,15 @@ float3 RmaosDebug(float3 color, float3 albedo) { return color; }
 
 float getRoughness(float gloss) {
     #ifdef RMAOS
-        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+        if (RMAOS_ACTIVE && !RMAOS_FADING) return max(RmaosValue.r, 0.02f);
     #endif
     float roughness = saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
     #ifdef MATERIAL_RULES
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
             roughness = lerp(TESR_MaterialRough.x, TESR_MaterialRough.y, saturate(1.0f - gloss));
+    #endif
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) roughness = RMAOS_FADING ? lerp(roughness, max(RmaosValue.r, 0.02f), NVR_Rmaos.x) : max(RmaosValue.r, 0.02f);	// FadeIn
     #endif
     return roughness;
 }
@@ -271,19 +282,23 @@ float getMetalStrength() {
     return TESR_PBRMetal.x;
 }
 
-float getDerivedMetallic(float specMask, float3 albedo) {
-    float peak = max(max(albedo.r, albedo.g), albedo.b);
-    float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
-    float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
-    #ifdef RMAOS
-        [branch] if (RMAOS_ACTIVE) return RmaosValue.g;
-    #endif
+float getDerivedMetallicGuess(float specMask, float greyness) {
     #ifdef MATERIAL_RULES
         // A rule's "full" metal (chrome, brass) is metal whatever its colour; otherwise the guess at the rule's strength.
         [branch] if (TESR_MaterialRule.x > 0.0f)
             return TESR_MaterialRule.z > 1.5f ? TESR_MaterialRule.y : saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_MaterialRule.y);
     #endif
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
+}
+
+float getDerivedMetallic(float specMask, float3 albedo) {
+    float peak = max(max(albedo.r, albedo.g), albedo.b);
+    float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
+    float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
+    #ifdef RMAOS
+        [branch] if (RMAOS_ACTIVE) return RMAOS_FADING ? lerp(getDerivedMetallicGuess(specMask, greyness), RmaosValue.g, NVR_Rmaos.x) : RmaosValue.g;
+    #endif
+    return getDerivedMetallicGuess(specMask, greyness);
 }
 
 // The metal fades out with distance, from 60% of TESR_PBRExtraData.w to all of it (w 0: never). PBRShaders keeps w short of
@@ -295,14 +310,18 @@ float getMetalFade(float3 cameraRelativePos) {
 // Metal's roughness: satin where the mask is bare, polished where it is painted (the mask is no gloss map, see above).
 float getMetalRoughness(float specMask) {
     #ifdef RMAOS
-        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+        if (RMAOS_ACTIVE && !RMAOS_FADING) return max(RmaosValue.r, 0.02f);
     #endif
+    float roughness = lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
     #ifdef MATERIAL_RULES
         // A rule's roughness range: its bare end where the mask is bare, its polished end where the mask is painted.
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
-            return lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
+            roughness = lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
     #endif
-    return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) roughness = RMAOS_FADING ? lerp(roughness, max(RmaosValue.r, 0.02f), NVR_Rmaos.x) : max(RmaosValue.r, 0.02f);	// FadeIn
+    #endif
+    return roughness;
 }
 
 // The metal's reflections of its surroundings, times the rule's (1 without one).
