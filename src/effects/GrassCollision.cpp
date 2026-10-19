@@ -27,6 +27,7 @@ namespace {
 	float	Scale = 0.0f;              // published: 1 / the texture's width (0 off)
 	double	LastTime = -1.0;
 	bool	FieldEmpty = true;
+	int		MinI = N, MinJ = N, MaxI = -1, MaxJ = -1;   // the cells holding a push (none: Max < Min); only texels that reach them are sampled
 
 	struct Pusher { float x, y, radius; };
 
@@ -60,6 +61,8 @@ namespace {
 	void Clear() {
 		std::fill(Field.begin(), Field.end(), 0.0f);
 		FieldEmpty = true;
+		MinI = MinJ = N;
+		MaxI = MaxJ = -1;
 	}
 
 	// The grid follows the camera in whole cells: what stays in range keeps its push.
@@ -98,7 +101,10 @@ namespace {
 				const float s = Settings.Strength * (1.0f - t * t * (3.0f - 2.0f * t));
 				const float px = cx / d * s, py = cy / d * s;
 				float* f = &Field[(j * N + i) * 2];
-				if (px * px + py * py > f[0] * f[0] + f[1] * f[1]) { f[0] = px; f[1] = py; FieldEmpty = false; }
+				if (px * px + py * py > f[0] * f[0] + f[1] * f[1]) {
+					f[0] = px; f[1] = py; FieldEmpty = false;
+					MinI = (std::min)(MinI, i); MaxI = (std::max)(MaxI, i); MinJ = (std::min)(MinJ, j); MaxJ = (std::max)(MaxJ, j);
+				}
 			}
 		}
 	}
@@ -174,11 +180,21 @@ void GrassCollision::Update() {
 	const double now = TheFrameRateManager->Time;
 	const float dt = LastTime < 0.0 ? 0.0f : (float)std::clamp(now - LastTime, 0.0, 0.25);
 	LastTime = now;
+	// (The cells still holding a push are found again as it fades: after a scroll they have moved.)
+	MinI = MinJ = N;
+	MaxI = MaxJ = -1;
 	if (!FieldEmpty) {
 		const float keep = Settings.Recovery > 0.0f ? expf(-3.0f * dt / Settings.Recovery) : 0.0f;
-		bool any = false;
-		for (float& f : Field) { f *= keep; if (fabsf(f) < 0.05f) f = 0.0f; else any = true; }
-		FieldEmpty = !any;
+		for (int j = 0; j < N; j++)
+			for (int i = 0; i < N; i++) {
+				float* f = &Field[(j * N + i) * 2];
+				f[0] *= keep; if (fabsf(f[0]) < 0.05f) f[0] = 0.0f;
+				f[1] *= keep; if (fabsf(f[1]) < 0.05f) f[1] = 0.0f;
+				if (f[0] != 0.0f || f[1] != 0.0f) {
+					MinI = (std::min)(MinI, i); MaxI = (std::max)(MaxI, i); MinJ = (std::min)(MinJ, j); MaxJ = (std::max)(MaxJ, j);
+				}
+			}
+		FieldEmpty = MaxI < 0;
 	}
 
 	// The player and the nearest actors (their 3D's bound: about half a person's height for a person).
@@ -193,16 +209,24 @@ void GrassCollision::Update() {
 	for (int i = 0; i < seen && count < Settings.Actors + 1; i++) pushers[count++] = found[i];
 	for (int i = 0; i < count; i++) Stamp(pushers[i].x, pushers[i].y, std::clamp(pushers[i].radius * 0.35f, 10.0f, 200.0f) * Settings.Radius);
 
-	// Into the camera-centred texture (its edge texels stay 0, so the clamp outside reads no push).
+	// Into the camera-centred texture (its edge texels stay 0, so the clamp outside reads no push). A texel is only sampled when one
+	// of its two cells a side (as Sample takes them) holds a push: the rest are the 0 Sample would give, and most of the grid is.
 	D3DLOCKED_RECT rect;
 	if (FAILED(Texture->LockRect(0, &rect, NULL, 0))) return;
 	const float width = N * Cell;
+	auto Reaches = [](float coordinate, int origin, int low, int high) {
+		const int c = (int)floorf(coordinate / Cell - origin - 0.5f);
+		return c + 1 >= low && c <= high;
+	};
+	bool columns[N];
+	for (int i = 0; i < N; i++) columns[i] = !FieldEmpty && Reaches(camera.x + ((i + 0.5f) / N - 0.5f) * width, OriginX, MinI, MaxI);
 	for (int j = 0; j < N; j++) {
 		float* row = (float*)((BYTE*)rect.pBits + (size_t)j * rect.Pitch);
 		const float y = camera.y + ((j + 0.5f) / N - 0.5f) * width;
+		const bool rowReaches = !FieldEmpty && Reaches(y, OriginY, MinJ, MaxJ);
 		for (int i = 0; i < N; i++) {
 			float px = 0.0f, py = 0.0f;
-			if (!FieldEmpty && i > 0 && j > 0 && i < N - 1 && j < N - 1) Sample(camera.x + ((i + 0.5f) / N - 0.5f) * width, y, px, py);
+			if (rowReaches && columns[i] && i > 0 && j > 0 && i < N - 1 && j < N - 1) Sample(camera.x + ((i + 0.5f) / N - 0.5f) * width, y, px, py);
 			row[i * 4] = px; row[i * 4 + 1] = py; row[i * 4 + 2] = 0.0f; row[i * 4 + 3] = 0.0f;
 		}
 	}

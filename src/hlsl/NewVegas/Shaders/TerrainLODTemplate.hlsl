@@ -136,6 +136,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 baseColor = tex2D(BaseMap, uv).rgb;
     
     baseColor = LODTexParams.w >= 1 ? baseColor : lerp(parentColor, baseColor, LODTexParams.w);
+    // UNOFFICIAL 2026-10-19 LOD Blending ([Shaders.Terrain.LODBlending]; after Community Shaders' LOD Blending, GPL-3.0): the far
+    // land's colour by a gamma and a brightness, to match the near land. Skipped while off.
+    [branch] if (TESR_LODBlendData.w > 0.0f) baseColor = pow(abs(baseColor), TESR_LODBlendData.y) * TESR_LODBlendData.x;
     
     float3 eyeDir = normalize(IN.eyePosition.xyz - IN.lPosition.xyz);
     

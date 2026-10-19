@@ -39,6 +39,7 @@ void TerrainShadowMap::RegisterConstants() {
 
 void TerrainShadowMap::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_TerrainShadowBuffer", (IDirect3DBaseTexture9**)&Texture);
+	TheTextureManager->RegisterTexture("TESR_TerrainShadowGround", (IDirect3DBaseTexture9**)&GroundTexture);
 }
 
 // Each shader keeps its own raw pointer to a TESR_ texture and only looks it up again while that is null, so they are all
@@ -49,6 +50,11 @@ void TerrainShadowMap::ReleaseTexture() {
 		TheShaderManager->ClearShaderSamplers("TESR_TerrainShadowBuffer", sizeof("TESR_TerrainShadowBuffer"));
 		Texture->Release();
 		Texture = nullptr;
+	}
+	if (GroundTexture) {
+		TheShaderManager->ClearShaderSamplers("TESR_TerrainShadowGround", sizeof("TESR_TerrainShadowGround"));
+		GroundTexture->Release();
+		GroundTexture = nullptr;
 	}
 	TextureWidth = TextureHeight = 0;
 	Uploaded = false;
@@ -262,7 +268,7 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(LoadRequest Request) {
 
 // The sweep, on a worker thread (see the header). A line of texels at a time across the light's path: each line only needs
 // the one before it, so only two lines of shadow heights are kept, and each is encoded straight into the result. (Conor.)
-TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const HeightMap> Map, std::vector<UINT64>* Packed, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation) {
+TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const HeightMap> Map, std::vector<UINT32>* Packed, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation) {
 	SweepResult Out;
 	Out.Generation = Generation;
 	Out.SunDir = SunDir;
@@ -325,8 +331,8 @@ TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const Heig
 				if (H[k] < Upper - Bias - Blur) ShadowedCount++;   // the ground fully under the soft edge, as the shader sees it
 				CurrentUpper[j] = (std::max)(P[k], CastUpper);
 				CurrentLower[j] = (std::max)(P[k], CastLower);
-				// A16B16G16R16: r upper, g lower shadow height, b the ground, a unused
-				(*Packed)[k] = (UINT64)Encode(Upper) | ((UINT64)Encode(Lower) << 16) | ((UINT64)Encode(H[k]) << 32) | (0xFFFFull << 48);
+				// G16R16: r upper, g lower shadow height (the ground goes in its own texture, written when the encoding changes)
+				(*Packed)[k] = Encode(Upper) | (Encode(Lower) << 16);
 			}
 			PreviousUpper.swap(CurrentUpper);
 			PreviousLower.swap(CurrentLower);
@@ -351,7 +357,7 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			ReleaseTexture();
 			PendingUpload = SweepResult();
 			Uploading = false;
-			std::vector<UINT64>().swap(SweepBuffer);
+			std::vector<UINT32>().swap(SweepBuffer);
 			RequestedWorldSpace = nullptr;
 			UploadedGeneration = ~0u;
 		}
@@ -432,9 +438,14 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 		else if (Valid) {   // a new map or encoding: all of it now, with its constants
 			if (!Texture || TextureWidth != Map->Width || TextureHeight != Map->Height) {
 				ReleaseTexture();
-				if (FAILED(Device->CreateTexture(Map->Width, Map->Height, 1, 0, D3DFMT_A16B16G16R16, D3DPOOL_MANAGED, &Texture, NULL))) {
-					Logger::Log("[ERROR] Terrain shadows: could not create the %ux%u shadow height texture; turned off until the settings change", Map->Width, Map->Height);
+				// The ground in L16 where it can be made (two bytes a texel), else the first channel of a G16R16.
+				GroundTwoChannels = FAILED(Device->CreateTexture(Map->Width, Map->Height, 1, 0, D3DFMT_L16, D3DPOOL_MANAGED, &GroundTexture, NULL));
+				if (GroundTwoChannels && FAILED(Device->CreateTexture(Map->Width, Map->Height, 1, 0, D3DFMT_G16R16, D3DPOOL_MANAGED, &GroundTexture, NULL)))
+					GroundTexture = nullptr;
+				if (!GroundTexture || FAILED(Device->CreateTexture(Map->Width, Map->Height, 1, 0, D3DFMT_G16R16, D3DPOOL_MANAGED, &Texture, NULL))) {
+					Logger::Log("[ERROR] Terrain shadows: could not create the %ux%u shadow height textures; turned off until the settings change", Map->Width, Map->Height);
 					Texture = nullptr;
+					ReleaseTexture();
 					Settings.Enabled = false;
 					Constants.Data.w = 0.0f;
 					return;
@@ -442,10 +453,27 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 				TextureWidth = Map->Width;
 				TextureHeight = Map->Height;
 			}
+			// The ground, in this sweep's encoding (as the sweep encodes it; 16 bits), now: it changes only with the map or the
+			// encoding, which is what brings an upload here.
+			bool GroundDone = false;
+			D3DLOCKED_RECT GroundRect;
+			if (GroundTexture && SUCCEEDED(GroundTexture->LockRect(0, &GroundRect, NULL, 0))) {
+				const float Scale = 65535.0f / Result.Range;
+				for (UINT r = 0; r < Map->Height; r++) {
+					BYTE* Row = (BYTE*)GroundRect.pBits + (size_t)r * GroundRect.Pitch;
+					for (UINT c = 0; c < Map->Width; c++) {
+						const UINT16 v = (UINT16)std::clamp((Map->Heights[(size_t)r * Map->Width + c] - Result.Low) * Scale + 0.5f, 0.0f, 65535.0f);
+						if (GroundTwoChannels) ((UINT32*)Row)[c] = v; else ((UINT16*)Row)[c] = v;
+					}
+				}
+				GroundTexture->UnlockRect(0);
+				GroundDone = true;
+			}
+			else LockFailures++;
 			D3DLOCKED_RECT Rect;
-			if (SUCCEEDED(Texture->LockRect(0, &Rect, NULL, 0))) {
+			if (GroundDone && SUCCEEDED(Texture->LockRect(0, &Rect, NULL, 0))) {
 				for (UINT r = 0; r < Map->Height; r++)
-					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &SweepBuffer[(size_t)r * Map->Width], (size_t)Map->Width * sizeof(UINT64));
+					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &SweepBuffer[(size_t)r * Map->Width], (size_t)Map->Width * sizeof(UINT32));
 				Texture->UnlockRect(0);
 				// Edges (not texel centres), so uv = distance in from the west / north edge over the size.
 				Constants.Data = D3DXVECTOR4(Map->West - 0.5f * Map->Texel, Map->North + 0.5f * Map->Texel, 1.0f / (Map->Width * Map->Texel), 0.0f);
@@ -461,7 +489,7 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 		}
 	}
 
-	// A strip of the pending sweep (128 rows, about 1.4 MB at the default size) a frame.
+	// A strip of the pending sweep (128 rows, about 0.7 MB at the default size) a frame.
 	if (Uploading) {
 		if (!Map || !Texture || PendingUpload.Generation != UploadedGeneration || SweepBuffer.size() != (size_t)TextureWidth * TextureHeight) {
 			Uploading = false;   // the map changed under it: a new full sweep follows
@@ -473,7 +501,7 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			D3DLOCKED_RECT Rect;
 			if (SUCCEEDED(Texture->LockRect(0, &Rect, &Strip, 0))) {
 				for (UINT r = 0; r < Rows; r++)
-					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &SweepBuffer[(size_t)(PendingRow + r) * TextureWidth], (size_t)TextureWidth * sizeof(UINT64));
+					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &SweepBuffer[(size_t)(PendingRow + r) * TextureWidth], (size_t)TextureWidth * sizeof(UINT32));
 				Texture->UnlockRect(0);
 			}
 			else LockFailures++;
@@ -493,7 +521,7 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 	const bool NewSettings = Settled && (Settings.Bias != SweptBias || Settings.Softness != SweptSoftness);
 	if (Map && !Map->Heights.empty() && !Sweeping && !Uploading && Sun.z > 0.0f &&
 		(SweptGeneration != Generation || NewSettings || D3DXVec3Dot(&Sun, &SweptSunDir) < 0.99999048f)) {
-		if (SweepBuffer.size() != Map->Heights.size()) std::vector<UINT64>().swap(SweepBuffer);   // another map's size: the old block freed first
+		if (SweepBuffer.size() != Map->Heights.size()) std::vector<UINT32>().swap(SweepBuffer);   // another map's size: the old block freed first
 		try {
 			SweepJob = std::async(std::launch::async, &TerrainShadowMap::Sweep, Map, &SweepBuffer, Sun, Settings.Softness, Settings.Bias, Generation);
 			Sweeping = true;

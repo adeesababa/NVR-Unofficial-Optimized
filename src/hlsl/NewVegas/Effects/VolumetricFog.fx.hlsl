@@ -1156,7 +1156,10 @@ sampler2D NVR_SunFar : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESS
 
 float3 CompositeSunShadow(float3 linearColor, float2 uv)
 {
-	linearColor *= lerp(1.0, pows(tex2Dlod(NVR_SunFar, float4(uv, 0, 0)).rgb, 2.2), NVR_SunFarFlags.x);	// (no branch on the flag: the composites have no boolean register to spare with the physical sky compiled in; 0 or 1)
+	// (No branch on the flag: the composites have no boolean register to spare with the physical sky compiled in; 0 or 1. A dynamic
+	// branch on uv.x < the flag compiles, but measured slower with SunFar off: this pass 0.47 -> 0.52-0.53 ms at the dusk lake, two
+	// launches each, while this read from the unbound stage costs nothing measurable, 0.47 as without SunFar at all. 2026-10-19.)
+	linearColor *= lerp(1.0, pows(tex2Dlod(NVR_SunFar, float4(uv, 0, 0)).rgb, 2.2), NVR_SunFarFlags.x);
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float depth = readDepthLod(uv);
 		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * depth;

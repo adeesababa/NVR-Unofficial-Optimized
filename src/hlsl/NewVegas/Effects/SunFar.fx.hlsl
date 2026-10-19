@@ -42,15 +42,16 @@ sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; AD
 sampler2D TESR_NormalsBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_ShadowAtlas : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D TESR_TerrainShadowBuffer : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D TESR_TerrainShadowGround : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 // The sky's cloud layers (and the textures they are blending to), bound by SunFarEffect::Render. After the TESR_ samplers.
-sampler2D NVR_CloudLayer0 : register(s4) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudLayer1 : register(s5) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudLayer2 : register(s6) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudLayer3 : register(s7) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudBlend0 : register(s8) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudBlend1 : register(s9) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudBlend2 : register(s10) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-sampler2D NVR_CloudBlend3 : register(s11) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudLayer0 : register(s5) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudLayer1 : register(s6) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudLayer2 : register(s7) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudLayer3 : register(s8) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudBlend0 : register(s9) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudBlend1 : register(s10) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudBlend2 : register(s11) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_CloudBlend3 : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -117,7 +118,8 @@ float TerrainShadow(float3 worldPos) {
 	float2 edge = min(uv, 1.0f - uv);
 	float inside = saturate(min(edge.x, edge.y) * 20.0f);
 	[branch] if (inside <= 0.0f) return 1.0f;
-	float3 encoded = tex2Dlod(TESR_TerrainShadowBuffer, float4(uv, 0.0f, 0.0f)).rgb * TESR_TerrainShadowRange.y + TESR_TerrainShadowRange.x;
+	// The shadow heights (each sweep) and the ground (each map) in two textures, in the same 16-bit encoding.
+	float3 encoded = float3(tex2Dlod(TESR_TerrainShadowBuffer, float4(uv, 0.0f, 0.0f)).rg, tex2Dlod(TESR_TerrainShadowGround, float4(uv, 0.0f, 0.0f)).r) * TESR_TerrainShadowRange.y + TESR_TerrainShadowRange.x;
 	float2 heights = encoded.xy - TESR_TerrainShadowRange.z;
 	// Never below the map's ground: the simplified LOD land on screen dips under it in places, and those pixels would be
 	// shadowed by their own slope (flickering with TAA's jitter). Objects keep their height.
@@ -163,7 +165,6 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	[branch] if (depth <= 0.0f || depth >= farZ * 0.996f) return 1.0f;
 	float3 rel = toWorld(uv) * depth;
 	float3 world = TESR_CameraPosition.xyz + rel;
-	float3 normal = GetWorldNormalLod(uv);
 
 	float terrain = TerrainShadow(world);
 	float cloud = CloudShadow(rel);
@@ -180,6 +181,7 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 		return float4(tint, 1.0f);
 	}
 	[branch] if (blocked >= 0.999f && shade <= 0.001f) return 1.0f;   // most of the screen
+	float3 normal = GetWorldNormalLod(uv);   // (read only past the early-out above: nothing before it needs it)
 
 	// Water is left alone, as the volumetric clouds' shadow leaves it: what it shows is mostly the reflection of things far off.
 	[branch] if (normal.z > 0.7f && abs(world.z - TESR_WaterSettings.x) < max(2.0f, depth * 0.002f)) return float4(1.0f, 1.0f, 1.0f, blocked);

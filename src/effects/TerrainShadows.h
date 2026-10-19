@@ -24,7 +24,8 @@
 // them, each texel's shadow height -- below it the sun is hidden by land between it and the sun -- is swept toward the sun
 // on a worker thread whenever the sun has moved a little: each texel takes the higher of its own height and the shadow
 // height of the texel before it on the light's path, lowered by how far the light drops over one step. Two channels, the
-// sun's elevation minus and plus Softness, give the soft edge; the map's own ground height is kept beside them. The SunFar
+// sun's elevation minus and plus Softness, give the soft edge; the map's own ground height is kept in a texture of its own
+// (written only when the map or its encoding changes, not with every sweep: half the bytes swept and uploaded). The SunFar
 // pass compares each pixel's height with them, never taking a pixel as lower than that ground: the LOD land on screen is
 // simplified and sits below the map in places, which would otherwise shadow itself (and flicker with TAA's jitter).
 class TerrainShadowMap {
@@ -49,7 +50,8 @@ public:
 	};
 	ConstantsStruct	Constants = {};
 
-	IDirect3DTexture9*	Texture = nullptr;   // A16B16G16R16: r upper, g lower shadow height, b ground (TESR_TerrainShadowBuffer)
+	IDirect3DTexture9*	Texture = nullptr;         // G16R16: r upper, g lower shadow height (TESR_TerrainShadowBuffer), each sweep
+	IDirect3DTexture9*	GroundTexture = nullptr;   // L16 (G16R16 where L16 cannot be made): the ground (TESR_TerrainShadowGround), per map
 
 	void	UpdateSettings();
 	void	RegisterConstants();
@@ -92,7 +94,7 @@ private:
 	// Both run on worker threads and never throw: a failure comes back as an empty result and a message.
 	static HeightMap	Load(LoadRequest Request);
 	static bool			LoadHeightMapFile(const LoadRequest& Request, HeightMap& Out);
-	static SweepResult	Sweep(std::shared_ptr<const HeightMap> Map, std::vector<UINT64>* Packed, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation);
+	static SweepResult	Sweep(std::shared_ptr<const HeightMap> Map, std::vector<UINT32>* Packed, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation);
 	void	ReleaseTexture();
 
 	void*				RequestedWorldSpace = nullptr;   // the land worldspace a load was started for
@@ -109,7 +111,7 @@ private:
 	// sweep starts only once the last upload is done). Kept from sweep to sweep: a new block of this size every couple of
 	// seconds fragments the game's 32-bit address space over hours of play until the allocation fails, and the shadows stay
 	// where the last good sweep left them.
-	std::vector<UINT64>	SweepBuffer;
+	std::vector<UINT32>	SweepBuffer;
 	ULONGLONG			BusySince = 0;   // GetTickCount64 when the running sweep or upload began (stall log)
 	bool				StallLogged = false;
 	UINT				LockFailures = 0;   // texture locks that failed (DebugMode status line)
@@ -129,5 +131,6 @@ private:
 	bool				Uploading = false;
 	void*				UploadedWorldSpace = nullptr;
 	UINT				TextureWidth = 0, TextureHeight = 0;
+	bool				GroundTwoChannels = false;   // the ground texture is a G16R16 (L16 could not be made)
 	float				LastFade = 1.0f;     // for the DebugMode log
 };

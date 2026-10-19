@@ -127,6 +127,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     normal.a *= LandLODSpec.x > 0.0f ? 1.0f : 0.0f;
 
     float3 baseColor = tex2D(BaseMap, IN.uv.xy).rgb;
+    // UNOFFICIAL 2026-10-19 LOD Blending: the far land's texture as TerrainLODTemplate adjusts it, so the fade band matches it.
+    [branch] if (TESR_LODBlendData.w > 0.0f) baseColor = pow(abs(baseColor), TESR_LODBlendData.y) * TESR_LODBlendData.x;
 
     // Forward sun shadows. Passed as parallaxMultiplier, which getSunLighting applies to
     // the sun colour only; ambient is added afterwards and stays untouched.

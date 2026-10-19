@@ -142,10 +142,10 @@ void SunFarEffect::RenderFactor(IDirect3DDevice9* Device) {
 	if (!Enabled || !Effect || !ShouldRender()) return;
 	static GpuTimer timer("Sun far shadows (land, clouds)");
 	GpuProfileScope gpu(timer, Device);
-	// The cloud layers on stages 4-11 (NVR_CloudLayer*, NVR_CloudBlend*), set after the pass begins (EffectRecord::PassTextures).
+	// The cloud layers on stages 5-12 (NVR_CloudLayer*, NVR_CloudBlend*), set after the pass begins (EffectRecord::PassTextures).
 	for (int i = 0; i < 4; i++) {
-		SetPassTexture(4 + i, layerTextures[i]);
-		SetPassTexture(8 + i, blendTextures[i]);
+		SetPassTexture(5 + i, layerTextures[i]);
+		SetPassTexture(9 + i, blendTextures[i]);
 	}
 	TheShaderManager->RenderEffectToRT(Surface, this, false, 0);
 	ClearPassTextures();

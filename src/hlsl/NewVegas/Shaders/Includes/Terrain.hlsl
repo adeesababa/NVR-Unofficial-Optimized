@@ -15,6 +15,10 @@
 // y: SkipEmptyLayers -> blendDiffuseMaps/blendNormalMaps skip layers with weight exactly 0 (below).
 // c94: free in every land variant (the game's land constants end at c93, Shadow.hlsl starts at c100).
 float4 TESR_TerrainParallaxIso : register(c94);
+// UNOFFICIAL 2026-10-19 [Shaders.Terrain.LODBlending] (after Community Shaders' LOD Blending, GPL-3.0; Terrain.cpp): x the far land's
+// brightness, y its gamma, z 1 = the near land without its vertex colours, w 1 = the far land adjusted (0: untouched). c97: clear of
+// the land's own constants, NVR's c89-c96 and Shadow.hlsl's c100-c133.
+float4 TESR_LODBlendData : register(c97);
 
 // UNOFFICIAL 2026-10-19 [Shaders.Terrain.Variation] (Includes/TerrainVariation.hlsl, after Conor's port of Community Shaders' Terrain
 // Variation): compiled in only when Enabled at startup (TERRAIN_VARIATION from ShaderRecord::LoadShader); the first

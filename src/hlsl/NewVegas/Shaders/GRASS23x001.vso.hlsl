@@ -119,12 +119,19 @@ VS_OUTPUT main(VS_INPUT IN) {
     // at a blade's tip is read where this vertex stands, from the camera-relative position the shadows rebuild; the vertex moves
     // as the sway does (its alpha squared: none at the root), and drops as it leans so the blade bends rather than stretches.
     // Only literals this shader already holds are used: its free constant registers are all taken by them.
+    // Past the texture's half-width round the camera (its edge texels are 0, clamped) and wherever no one pushes, the push is 0
+    // and the vertex stays where it was: those (most of the grass on screen) skip the read and the second transform.
     [branch] if (TESR_Translucency.w > 0.0f) {
-        float2 push = tex2Dlod(NVR_GrassPush, float4(GetShadowWorldPos(OUT.position).xy * TESR_Translucency.w + 0.5f, 0.0f, 0.0f)).xy * (IN.color.w * IN.color.w);
-        float height = max(pos.z, 1e-6f);
-        worldPos.xy += push;
-        worldPos.z -= min(dot(push, push) * 0.5f / height, height);
-        OUT.position = mul(ModelViewProj, worldPos);
+        float2 pushUV = GetShadowWorldPos(OUT.position).xy * TESR_Translucency.w;
+        [branch] if (max(abs(pushUV.x), abs(pushUV.y)) < 0.5f) {
+            float2 push = tex2Dlod(NVR_GrassPush, float4(pushUV + 0.5f, 0.0f, 0.0f)).xy * (IN.color.w * IN.color.w);
+            [branch] if (dot(push, push) > 0.0f) {
+                float height = max(pos.z, 1e-6f);
+                worldPos.xy += push;
+                worldPos.z -= min(dot(push, push) * 0.5f / height, height);
+                OUT.position = mul(ModelViewProj, worldPos);
+            }
+        }
     }
 
     float lightScale = frac(inst.w) * 0.75f + 0.25f;

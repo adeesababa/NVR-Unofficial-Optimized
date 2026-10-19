@@ -359,6 +359,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     float gloss = 0.0f;
     float specExponent = 0.0f;
     float2 odx = ddx(offsetUV), ody = ddy(offsetUV);	// UNOFFICIAL SkipEmptyLayers: the gradients tex2D took implicitly
+    // UNOFFICIAL 2026-10-19 LOD Blending (DisableVertexColors): the near land without its vertex colours, to match far land generated
+    // without them (xLODGen's Vertex Color Intensity 0), as Community Shaders' DisableTerrainVertexColors. z is 0 (off): unchanged.
+    float3 landVertexColor = lerp(IN.vertex_color, 1.0f, TESR_LODBlendData.z);
 #if TERRAIN_VARIATION
     // UNOFFICIAL 2026-10-19 Terrain Variation (Includes/TerrainVariation.hlsl; after Conor's port of Community Shaders' Terrain
     // Variation). The lattice is built from the ORIGINAL uv, not offsetUV: a surface point has to keep the same hash offset whatever
@@ -368,9 +371,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     StochasticOffsets stochastic = ComputeStochasticOffsets(IN.uv.xy, TESR_TerrainVariationData.x);
     stochastic.tap1Weight = lerp(1.0f, stochastic.tap1Weight, saturate((dist - TESR_TerrainVariationData.z) / max(TESR_TerrainVariationData.w, 1.0f)));
     float tapWeights[7] = { 1, 1, 1, 1, 1, 1, 1 };
-    float3 baseColor = LinColor(blendDiffuseMapsVaried(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights, stochastic, tapWeights));
+    float3 baseColor = LinColor(blendDiffuseMapsVaried(landVertexColor, offsetUV, odx, ody, texCount, BaseMap, weights, stochastic, tapWeights));
 #else
-    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
+    float3 baseColor = LinColor(blendDiffuseMaps(landVertexColor, offsetUV, odx, ody, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
 #endif
 #if TERRAIN_BLEND_ACTIVE
     // The land texture's height shapes the blend's edge (HeightBlend); the dither, if used, cuts on the shaped edge.

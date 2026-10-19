@@ -1,6 +1,6 @@
 # Community Shaders ports: what came from where, and under which licence
 
-Written 2026-10-19 with the five features below. Kept so that anyone can check, file by file, that nothing was taken from a
+Written 2026-10-19 with the five features below; LOD Blending (the sixth) added the same day. Kept so that anyone can check, file by file, that nothing was taken from a
 closed or unlicensed source.
 
 ## The short version
@@ -31,7 +31,9 @@ so all are GPL-3.0 with the exceptions):
 `features/Cloud Shadows/Shaders/CloudShadows/CloudShadows.hlsli`, `src/Features/CloudShadows.cpp`,
 `features/Grass Collision/Shaders/GrassCollision/{GrassCollision.hlsli,CollisionUpdateCS.hlsl}`,
 `features/Terrain Variation/Shaders/TerrainVariation/TerrainVariation.hlsli`,
-`features/Skylighting/Shaders/Skylighting/Skylighting.hlsli`, `src/Features/Skylighting.{h,cpp}` (the MinSpecularVisibility default).
+`features/Skylighting/Shaders/Skylighting/Skylighting.hlsli`, `src/Features/Skylighting.{h,cpp}` (the MinSpecularVisibility default),
+`features/LOD Blending/Shaders/Features/LODBlending.ini`, `src/Features/LODBlending.{h,cpp}`, and the `LOD_BLENDING` lines of
+`package/Shaders/Lighting.hlsl` (the brightness and gamma on the LOD land, DisableTerrainVertexColors).
 
 ## Feature by feature
 
@@ -68,10 +70,28 @@ so all are GPL-3.0 with the exceptions):
   reflection and to the sky fallback of the wet-ground reflections. The blend `lerp(MinReflection, 1, visibility)` and its
   0.1 default follow Community Shaders' Skylighting `MixSpecular` / `MinSpecularVisibility`.
 
+### Far land matching ([Shaders.Terrain.LODBlending])
+- **This build's own code**, after Community Shaders' LOD Blending: the far land's colour taken to a gamma and times a
+  brightness (`pow(abs(color), gamma) * brightness`, as their LOD land does), here in `TerrainLODTemplate.hlsl` and the
+  near/far fade (`TerrainFadeTemplate.hlsl`), and the near land without its vertex colours (their
+  `DisableTerrainVertexColors`). Their LOD-object and snow knobs are not ported (New Vegas draws far objects with the
+  ordinary object shaders, so there is no LOD-object shader to adjust).
+
+## Optimisation pass (2026-10-19, same picture)
+Done after the ports, none of it changing what is drawn (checked in game against the first build: the same pixels change by
+the same amount): Skylighting's target keeps two channels unless the sky reflections are on (3.5 MB of video memory at
+1280x720); the mountain shadows keep the ground height in a texture of its own, written once a map, so each sweep packs and
+uploads half the bytes (about 11 MB less memory in the game's process at the default size); the SunFar pass reads the normals
+only past its early-out; grass beyond the push texture or where no one pushes skips the read and the second transform; the
+push texture is only sampled near the pushed cells. None of these moves a frame time measurably; they save memory, uploads
+and a little CPU. Tried and dropped: skipping the composites' new texture reads with a dynamic branch while the features are
+off. It measured slower (the fog composite 0.47 -> 0.52-0.53 ms, two launches each), and the plain read costs nothing
+measurable with them off (0.47, the same as P81's shader without it).
+
 ## Credit lines for release notes
 
 - "Community Shaders team and contributors (github.com/community-shaders/skyrim-community-shaders, GPL-3.0): Terrain Shadows,
-  Cloud Shadows, Grass Collision, Terrain Variation and Skylighting, adapted for DirectX 9."
+  Cloud Shadows, Grass Collision, Terrain Variation, LOD Blending and Skylighting, adapted for DirectX 9."
 - "Conor (mrfury97, github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, GPL-3.0-or-later): the terrain shadows' height-map
   sweep and share composite, and the terrain variation port."
 - "Terrain variation after Deliot and Heitz 2019."

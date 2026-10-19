@@ -1737,6 +1737,12 @@ StartDistance = 0.0                 # (2026-10-19) Game units from you before th
 StartFade = 512.0                   # (2026-10-19) Game units over which the variation fades in after StartDistance.
 NormalMaps = true                   # (2026-10-19) The ground's normal maps (its bumps) vary too. Off: only the colour varies, for about half the cost; the bumps keep the plain repeat.
 
+[_Shaders.Terrain.LODBlending]
+Enabled = false                     # UNOFFICIAL (2026-10-19) Far land matching: the distant land (its LOD texture) by a brightness and a gamma, so it meets the near land without a visible change in colour, and optionally the near land without its painted-in vertex colours. Live, next to no GPU time. After Community Shaders' LOD Blending (GPL-3.0).
+Brightness = 1.0                    # [0.01-5] (2026-10-19) The far land's brightness (1: as it is). Raise it if distant land looks darker than the ground near you.
+Gamma = 1.0                         # [0.1-3] (2026-10-19) The far land's gamma (1: as it is). Above 1 darkens its dark parts more than its light ones (more contrast), below 1 the other way.
+DisableVertexColors = false         # (2026-10-19) The near land without its vertex colours (the darker and tinted patches painted into the land). Only for far land generated without them (xLODGen: Vertex Color Intensity 0), so both match.
+
 [_Shaders.Terrain.Status]
 Enabled = true                      # Replaces shaders used by terrain, adding PBR lighting and parallax.
 
