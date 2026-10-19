@@ -2315,6 +2315,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		Logger::Log("Error getting vertex shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
 	// UNOFFICIAL cloth wind: which objects drew with a vanilla vertex shader (they must not get cloth: see ClothWind.h SAFETY)
+	ClothWind::NoteVertexShader(VertexShader ? VertexShader->Name : nullptr);
 	ClothWind::NoteShaders(Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
 		ClothWind::CapableName(VertexShader->Name));
 	if (PixelShader) {

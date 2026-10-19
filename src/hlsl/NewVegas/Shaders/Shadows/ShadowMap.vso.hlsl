@@ -109,7 +109,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
 #if CLOTH_WIND_ON
-    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color);	// UNOFFICIAL cloth wind (normal and skinned geometry)
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz);	// UNOFFICIAL cloth wind (normal and skinned geometry)
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);

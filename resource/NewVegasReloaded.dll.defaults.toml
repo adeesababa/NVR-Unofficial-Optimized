@@ -873,13 +873,19 @@ DebugView = 0                        # [0-4] 1: the maps' roughness in grey; 2: 
 LogMatches = false                   # Writes each texture to the log the first time it is drawn, with its map or "none" ("[Rmaos] <texture> -> <file>"): which textures a place uses.
 
 [_Shaders.Cloth.Main]
-Enabled = false                      # UNOFFICIAL (2026-10-16): cloth (capes, dusters, flags, banners, curtains) moves in the wind, done in the vertex shader (no physics). Turning it on or off needs a restart; the values below apply immediately
-Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent"   # Textures whose path holds one of these words are cloth
+Enabled = false                      # UNOFFICIAL (2026-10-16): NEEDS A RESTART (Save, then restart the game; changing it in the menu alone does nothing until then). Cloth (capes, dusters, coats, flags, banners, curtains) moves in the wind, done in the vertex shader (no physics). The values below apply immediately
+Keywords = "cape,cloak,duster,coat,flag,banner,curtain,drape,tarp,poncho,robe,scarf,shawl,tent,lucassimms/outfit,mysteriousstranger/outfit,rangerarmor/nv_ranger,rangerpatrol,rileysranger/outfit,oasisdruid/outfit,wastelanddoctor01/outfit,projectpuritydoctor/outfit"   # (2026-10-18) Textures whose path holds one of these pieces are cloth: found ANYWHERE in the path (lecloak, leflag, bosbanner count); words of 4 letters or fewer must end a word (flag is not flagstone). A piece with a / (lucassimms/outfit) names a folder and file start: the vanilla dusters have no 'duster' in their texture names
+Exclude = "scape,probe,microbe,wardrobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone"   # (2026-10-18) A texture whose path holds one of these is NOT cloth even when a keyword matches (landscape, flagpole...)
+ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes"   # (2026-10-18) A texture whose FILE NAME has one of these words is NOT cloth (a hat or gloves sharing the garment's folder do not move)
 MaskMode = 2                         # 0: the mesh's vertex colour RED says how loose each part is (1 loose ends, 0 pinned) -- for meshes authored with such a mask; 1: the whole mesh moves; 2: by height, pinned at the top (works with unauthored meshes)
-HeightTop = 95.0                     # Mask 2 on worn clothing: where it is pinned (units above the actor's feet; ~waist)
-HeightBottom = 25.0                  # Mask 2 on worn clothing: where it is loosest
-HeightFromFeet = true                # Mask 2 on worn clothing: measure those heights from the actor's feet (true) or from the skeleton's root, which is at the hips (false: the old way, shoulders moved too)
+SkinMask = 1                         # (2026-10-18) Worn clothing: 1 = pinned by the garment's own height (the top PinFraction stays still, the hem moves most); 0 = the old actor-height mask (HeightTop/HeightBottom, shoulders moved too)
+PinFraction = 0.4                    # (2026-10-18) SkinMask 1: the top part of a worn garment (0-0.9 of its height) that does not move at all (shoulders, chest)
+SkinSpace = 1                        # (2026-10-18) Worn clothing: the space the skeleton puts vertices in: 1 = camera-relative world (verified in game), 0 = the skin root's own (the old assumption), 2 = world. Leave at 1
+HeightTop = 95.0                     # SkinMask 0 only: where it is pinned (units above the actor's feet; ~waist)
+HeightBottom = 25.0                  # SkinMask 0 only: where it is loosest
+HeightFromFeet = true                # SkinMask 0 only: measure those heights from the actor's feet (true) or from the skeleton's root (false)
 UseGameWind = true                   # Take direction and strength from the weather's wind (the values below still scale it)
+CalmFactor = 0.6                     # (2026-10-18) With the game's wind: the strength in dead calm as a fraction of WindIntensity (0-1.7; it rises to 1.7 in a gale). It was 0.3: in the calm desert cloth moved 4 cm, which nobody sees
 Interiors = false                    # Cloth moves indoors too (no wind indoors, so off)
 WindDirX = 1.0                       # Wind direction (world, used when UseGameWind is off)
 WindDirY = 0.0
@@ -891,6 +897,7 @@ FlutterSpeed = 3.0                   # High-frequency flutter (cycles per second
 FlutterAmount = 0.35                 # Flutter strength (0-1)
 RippleAmount = 0.5                   # Billow out of the cloth's plane (0-1)
 RippleScale = 0.012                  # Size of the small ripples (cycles per unit)
+LogMatches = false                   # Diagnostic: writes every worn texture (cloth or not) and every matched texture to the log with its mesh numbers
 TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
 
 [_Shaders.PBR.Linear]
