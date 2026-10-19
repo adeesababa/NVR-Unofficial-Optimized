@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include "TestTools.h"	// NVR_TEST_TOOLS
 #include "GpuProfiler.h"
 #include "ConstantFilter.h"	// its state-block / reset / pixel-shader hooks report to OnStateLost and OnSetPixelShader
 
@@ -40,6 +41,7 @@ namespace ShaderWarmUp2 {
 	inline double BudgetMs = 150.0;		// warm-up time per main-menu frame
 	inline double MinMs = 1.0;			// warm up the setups whose first draw took at least this long when recorded
 	inline const double SaveMinMs = 0.5;	// setups faster than this at their first draw are not written to the list
+	inline bool LogRecords = NVR_TEST_TOOLS;	// test builds: every list line also goes to the NVR log ('WARMUP2 REC'; the test's restore moves the list file away)
 
 	inline bool Installed = false, Broken = false;
 	inline DWORD Thread = 0;			// the render thread
@@ -243,20 +245,23 @@ namespace ShaderWarmUp2 {
 		return h;
 	}
 
-	inline void WriteRecord(FILE* f, const Record& r) {
-		fprintf(f, "W2 %016llX %.2f %016llX %016llX %lX %lX %lX %lX %lX %lX %lX %lX %u %u %u %u s", (unsigned long long)r.Id, r.Ms,
+	// One list line (without the line end).
+	inline std::string FormatRecord(const Record& r) {
+		char b[2048]; int n = 0;
+		auto add = [&](const char* format, auto... args) { if (n < (int)sizeof(b) - 64) { const int k = _snprintf_s(b + n, sizeof(b) - n, _TRUNCATE, format, args...); if (k > 0) n += k; } };
+		add("W2 %016llX %.2f %016llX %016llX %lX %lX %lX %lX %lX %lX %lX %lX %u %u %u %u s", (unsigned long long)r.Id, (double)r.Ms,
 			(unsigned long long)r.VsHash, (unsigned long long)r.PsHash, r.FVF, r.Rt[0], r.Rt[1], r.Rt[2], r.Rt[3], r.RtMs, r.Ds, r.DsMs,
-			r.Stride[0], r.Stride[1], r.Stride[2], r.Stride[3]);
-		for (int k = 0; k < kStates; k++) fprintf(f, "%c%lX", k ? ',' : ':', r.State[k]);
-		fprintf(f, " t");
+			(unsigned)r.Stride[0], (unsigned)r.Stride[1], (unsigned)r.Stride[2], (unsigned)r.Stride[3]);
+		for (int k = 0; k < kStates; k++) add("%c%lX", k ? ',' : ':', r.State[k]);
+		add(" t");
 		bool first = true;
-		for (int i = 0; i < kStages; i++) if (r.TexType[i]) { fprintf(f, "%c%d/%u/%lX/%u", first ? ':' : ',', i, r.TexType[i], r.TexFmt[i], r.Srgb[i]); first = false; }
-		if (first) fprintf(f, ":-");
-		fprintf(f, " d");
+		for (int i = 0; i < kStages; i++) if (r.TexType[i]) { add("%c%d/%u/%lX/%u", first ? ':' : ',', i, (unsigned)r.TexType[i], r.TexFmt[i], (unsigned)r.Srgb[i]); first = false; }
+		if (first) add(":-");
+		add(" d");
 		first = true;
-		for (const D3DVERTEXELEMENT9& e : r.Decl) { fprintf(f, "%c%u/%u/%u/%u/%u/%u", first ? ':' : ',', e.Stream, e.Offset, e.Type, e.Method, e.Usage, e.UsageIndex); first = false; }
-		if (first) fprintf(f, ":-");
-		fprintf(f, "\n");
+		for (const D3DVERTEXELEMENT9& e : r.Decl) { add("%c%u/%u/%u/%u/%u/%u", first ? ':' : ',', (unsigned)e.Stream, (unsigned)e.Offset, (unsigned)e.Type, (unsigned)e.Method, (unsigned)e.Usage, (unsigned)e.UsageIndex); first = false; }
+		if (first) add(":-");
+		return std::string(b, n);
 	}
 
 	inline bool ParseRecord(const char* line, Record& r) {
@@ -303,7 +308,7 @@ namespace ShaderWarmUp2 {
 		if (Pending.empty()) return;
 		FILE* f = nullptr;
 		if (!fopen_s(&f, ListPath().c_str(), "a") && f) {
-			for (const Record& r : Pending) WriteRecord(f, r);
+			for (const Record& r : Pending) { const std::string line = FormatRecord(r); fprintf(f, "%s\n", line.c_str()); if (LogRecords) Logger::Log("WARMUP2 REC %s", line.c_str()); }
 			fclose(f);
 		}
 		Pending.clear();
