@@ -613,6 +613,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
 	PbrPop::LodPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularLODPasses (likewise before the scene walk)
 	PbrPop::SpecFade::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularFade
+	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
 	PbrPop::SpecLodTest::BeginFrame();	// UNOFFICIAL, test: PbrPopSpecLODEnd
@@ -1642,7 +1643,7 @@ namespace MaterialRulesDraw {
 // area's maps arrive over a few frames instead of stalling one (until then those objects draw as they did). The textures are
 // kept (GPU memory only, D3DPOOL_DEFAULT, so nothing of them sits in the game's 4 GB) for the rest of the session.
 namespace RmaosDraw {
-	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; };
+	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0; };
 	static std::unordered_map<std::string, Map> ByPath;			// normalised diffuse path -> its map
 	struct Entry { std::string Path; Map* Found; };
 	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
@@ -1652,6 +1653,10 @@ namespace RmaosDraw {
 	static std::deque<Job> ToRead, Read;
 	static bool WorkerStarted = false, Checked = false, Compiled = false;
 	static float Current[4] = { -1.0f, 0.0f, 0.0f, 0.0f };	// c220 as last sent this frame
+	// UNOFFICIAL 2026-10-18 FadeIn (pbrpop, [Shaders.PBR.Rmaos] FadeIn, seconds, live): a map that has just arrived comes in over this time
+	// (c220.x = its share, Object.hlsl blends its values in from the object's look without it) instead of at once. 0 = at once, as before.
+	static float FadeSeconds = 0.0f;
+	static double FrameNowMs = 0.0;
 	static int Loaded = 0;
 
 	static void Worker() {
@@ -1714,7 +1719,9 @@ namespace RmaosDraw {
 		ReloadTest();
 #endif
 		const float budget = TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "UploadBudget");
+		FadeSeconds = (std::max)(TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "FadeIn"), 0.0f);
 		const double start = CpuTimer::NowMs();
+		FrameNowMs = start;
 		int uploaded = 0;
 		for (int n = 0; budget > 0.0f ? (n == 0 || CpuTimer::NowMs() - start < budget) : n < 2; n++) {
 			Job job;
@@ -1728,7 +1735,7 @@ namespace RmaosDraw {
 			if (!job.Bytes.empty())
 				D3DXCreateTextureFromFileInMemoryEx(TheRenderManager->device, job.Bytes.data(), (UINT)job.Bytes.size(), D3DX_DEFAULT_NONPOW2,
 					D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT, 0, D3DFMT_UNKNOWN, D3DPOOL_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0, NULL, NULL, &texture);
-			if (texture) { job.Target->Texture = texture; Loaded++; }
+			if (texture) { job.Target->Texture = texture; job.Target->ArrivedMs = CpuTimer::NowMs(); Loaded++; }
 			else { job.Target->Missing = true; Logger::Log("[Rmaos] could not load %s", job.File.c_str()); }
 			uploaded++;
 		}
@@ -1820,7 +1827,9 @@ namespace RmaosDraw {
 			Wake.notify_one();
 		}
 		const bool on = map && map->Texture && pbr && pbr->RmaosSettings.On;
-		values[0] = on ? 1.0f : 0.0f;
+		float share = 1.0f;	// UNOFFICIAL FadeIn: the map's share while it comes in
+		if (on && FadeSeconds > 0.0f) share = std::clamp((float)((FrameNowMs - map->ArrivedMs) / (1000.0 * FadeSeconds)), 0.001f, 1.0f);
+		values[0] = on ? share : 0.0f;
 		Send(values, on ? map->Texture : nullptr);
 	}
 
@@ -2827,7 +2836,9 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	// UNOFFICIAL: the first-person model's metal strength ([Shaders.PBR.Metal] FirstPerson) for this pass only.
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
+	PbrPop::ActorPasses::FirstPersonNow = 1;	// UNOFFICIAL ActorsInOnePass: the first-person model's passes are built in here
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	PbrPop::ActorPasses::FirstPersonNow = 0;
 	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL Conor's skin shader
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::EndContext();

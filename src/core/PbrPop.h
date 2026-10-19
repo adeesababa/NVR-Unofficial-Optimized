@@ -99,6 +99,88 @@ namespace PbrPop {
 		}
 	}
 
+	// ---- 3. ActorsInOnePass ([Main.Main.Misc], live, default off) ----
+	// An object whose lamp count crosses 2 <-> 3 swaps between the one exact many-lamp pass (with metal) and the multi-pass set (summed in
+	// the stored curve, no metal): it pops in brightness and loses or gains its metal. Static objects keep their lamps; MOVING ones do not:
+	// NPCs walking through a lit room and the player's own body and first-person model (armour metal coming and going was the 2026-10-08
+	// report). On: skinned objects (actors, the player's body and arms) and everything drawn in the first-person pass keep the one pass up
+	// to 5 + f lamps (the 6 light slots MoreLampsPerObject gives the shader), as LampsInOnePass does for everything (measured +1.1 ms in the
+	// Ultra-Luxe for all objects; this is the moving few). Code cave on GetRenderPasses_2x's specular capacity test: CMP ECX,EAX ;
+	// JG 0x00BE017B at 0x00BE00E3 (3B C8 0F 8F 90 00 00 00) -> JMP to the cave + 3 NOPs. In the cave, when the lamps exceed the cap: the
+	// geometry (param_1, [ESP+0x90]) skinned (+0xBC skin instance) or the first-person pass running -> cap f + 5 (f = local_38,
+	// [ESP+0x54]); the following tests (specular, FaceGen) run as before, so only specular non-FaceGen objects change.
+	namespace ActorPasses {
+		inline UInt8 On = 0, FirstPersonNow = 0;
+		inline UInt32 Widened = 0;
+		constexpr UInt32 kSite = 0x00BE00E3;
+		constexpr UInt8 kOld[8] = { 0x3B, 0xC8, 0x0F, 0x8F, 0x90, 0x00, 0x00, 0x00 };
+		constexpr UInt32 kRebuildBit = 0x08000000;
+		inline bool Installed = false, Refused = false;
+	}
+}
+static UInt8* PbrPopActorsOnFlag = &PbrPop::ActorPasses::On;
+static UInt8* PbrPopFirstPersonFlag = &PbrPop::ActorPasses::FirstPersonNow;
+static UInt32* PbrPopWidenedCount = &PbrPop::ActorPasses::Widened;
+static __declspec(naked) void PbrPopActorCave() {
+	__asm {
+		cmp ecx, eax
+		jle fits
+		push edx
+		mov edx, PbrPopActorsOnFlag
+		cmp byte ptr [edx], 0
+		je multi_pop
+		mov edx, dword ptr [esp + 0x94]		// the geometry (param_1; [ESP+0x90] before the push)
+		cmp dword ptr [edx + 0xBC], 0		// skinned
+		jne wide
+		mov edx, PbrPopFirstPersonFlag
+		cmp byte ptr [edx], 0
+		jne wide
+	multi_pop:
+		pop edx
+		jmp multi
+	wide:
+		mov edx, dword ptr [esp + 0x58]		// f (local_38; [ESP+0x54] before the push)
+		add edx, 5
+		cmp ecx, edx
+		jg multi_pop
+		mov edx, PbrPopWidenedCount
+		inc dword ptr [edx]
+		pop edx
+	fits:
+		push 0x00BE00EB
+		ret
+	multi:
+		push 0x00BE017B
+		ret
+	}
+}
+namespace PbrPop {
+	namespace ActorPasses {
+		inline void BeginFrame() {
+			const bool want = TheSettingManager->GetSettingI("Main.Main.Misc", "ActorsInOnePass") != 0;
+			if (want == (On != 0) || Refused) return;
+			if (want && !Installed) {
+				if (memcmp((const void*)kSite, kOld, sizeof(kOld))) {
+					Logger::Log("UNOFFICIAL ActorsInOnePass: the game's code at %08X is not as expected (another plugin?); not changed", kSite);
+					Refused = true;
+					return;
+				}
+				if (*(const UInt8*)0x00BDEA3F != 0x05) {	// MoreLampsPerObject's byte in AddPass_Opt (see LampsInOnePass.h)
+					Logger::Log("UNOFFICIAL ActorsInOnePass: needs MoreLampsPerObject (the game's cap of 3 would drop lamps); not changed");
+					Refused = true;
+					return;
+				}
+				WriteRelJump(kSite, (UInt32)&PbrPopActorCave);
+				SafeWrite8(kSite + 5, 0x90); SafeWrite8(kSite + 6, 0x90); SafeWrite8(kSite + 7, 0x90);
+				Installed = true;
+			}
+			On = want ? 1 : 0;
+			*(UInt32*)kEnabledPasses ^= kRebuildBit;
+			Logger::Log("UNOFFICIAL ActorsInOnePass: %s (every object's passes rebuilt)", want ?
+				"on (actors and the first-person model keep one lighting pass up to 5 lamps)" : "off (the game's choice)");
+		}
+	}
+
 #if NVR_TEST_TOOLS
 	// ---- TEST: move the game's highlight distance in place ([Main.Main.Misc] PbrPopSpecLODEnd, 0 = the game's own) ----
 	// fSpecularLODEnd = the value, fSpecularLODStartFade = the value minus the game's own fade range; every object rebuilds its passes, so
@@ -241,7 +323,7 @@ namespace PbrPop {
 				Logger::Log("PBR POP frame %u (shot %d frame %d): %u objects changed their passes: one->multi %u, multi->one %u, shiny->plain %u, plain->shiny %u, other %u",
 					done, shot, shotFrame, count, oneToMulti, multiToOne, toPlain, toShiny, other);
 			}
-			if (++Frames % 600 == 0) Logger::Log("PBR POP: %u frames, %llu pass-set switches so far", Frames, Switches);
+			if (++Frames % 600 == 0) Logger::Log("PBR POP: %u frames, %llu pass-set switches so far; ActorsInOnePass kept %u objects in one pass so far", Frames, Switches, ActorPasses::Widened);
 			FrameId++;
 		}
 	}

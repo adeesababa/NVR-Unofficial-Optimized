@@ -211,14 +211,19 @@
 // that draw a highlight (SPECULAR: the full passes and the highlight-only passes) scale it by the game's specular distance fade for
 // the object (NVR_SpecFade, core/PbrPop.h; Includes/PBR.hlsl), so it is gone where the game swaps in the shaders without one. Off: the
 // shaders exactly as before.
+// The 6-lamp OPT specular 4+ shader (SLS2035) sits close to the slot count the driver refuses (see LAMP_IF below): NVR_SLOT_TIGHT keeps
+// the 2026-10-18 pop-in fixes small there (SpecularFade: the highlight only, +12 slots in its interior record instead of +39; the _rmaos
+// FadeIn left out: the map comes in at once on those objects).
+#if defined(PS) && defined(OPT) && defined(SPECULAR) && !defined(ONLY_SPECULAR) && defined(LIGHTS) && defined(SPECULAR_LAMPS6)
+    #if LIGHTS > 3 && SPECULAR_LAMPS6
+        #define NVR_SLOT_TIGHT
+        #define RMAOS_NO_FADE
+    #endif
+#endif
 #if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
     #define PBR_SPEC_FADE
-    // The 6-lamp OPT specular 4+ shader (SLS2035) sits close to the slot count the driver refuses (see LAMP_IF below): there only the
-    // highlight fades (+1 multiply a light, not the diffuse slide: about +8 slots instead of +39 in its interior record).
-    #if defined(OPT) && !defined(ONLY_SPECULAR) && defined(LIGHTS) && SPECULAR_LAMPS6
-        #if LIGHTS > 3
-            #define PBR_SPEC_FADE_HIGHLIGHT_ONLY
-        #endif
+    #ifdef NVR_SLOT_TIGHT
+        #define PBR_SPEC_FADE_HIGHLIGHT_ONLY
     #endif
 #endif
 #include "includes/Object.hlsl"
