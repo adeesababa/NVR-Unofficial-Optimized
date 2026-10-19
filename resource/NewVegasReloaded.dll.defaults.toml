@@ -1508,7 +1508,7 @@ MuteGameHighlights = false          # UNOFFICIAL: true switches the game's own f
 
 [_Shaders.Skin.Scattering]
 ScreenSpace = true                  # With NewSkin on: screen-space subsurface scattering, light spreads under the skin across the screen (separable SSS, the ENB look). Off falls back to per-pixel diffusion. Needs the game's MSAA off: with MSAA on, D3D9 drivers (NVIDIA at least) draw nothing while its extra targets are bound, so it switches itself off and per-pixel diffusion is used.
-Width = 8.0                         # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier.
+Width = 28.6                        # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0, its default, as in Conor's latest version (was 8 on a narrower kernel).
 DepthFollow = 1.0                   # How sharply the blur stops at depth edges (nose against cheek, chin against neck).
 AlbedoDetail = 1.0                  # How much skin texture detail (freckles, pores, brows, stubble) stays sharp: 1 diffuses only the light, 0 blurs the texture with it (the waxy look).
 StrengthRed = 0.48                  # How much of each colour scatters. Red scatters most, which gives skin its warmth.
@@ -1527,7 +1527,7 @@ ShadowScatter = 1.0                 # Indoors: light bleeding red into shadow ed
 Translucency = 0.5                  # Indoors: red glow through ears, nostrils and fingers against a lamp.
 FillLight = 1.0                     # Indoors: extra soft light as the game's own skin shaders give it. 0 is Conor's physical look, 1 matches the old skin.
 ScreenSpace = true                  # Indoors: screen-space subsurface scattering.
-Width = 8.0                         # Indoors: how far light spreads under the skin on screen.
+Width = 28.6                        # Indoors: how far light spreads under the skin on screen. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0 (was 8 on a narrower kernel).
 DepthFollow = 1.0                   # Indoors: how sharply the blur stops at depth edges.
 AlbedoDetail = 1.0                  # Indoors: how much skin texture detail stays sharp (1 sharpest).
 StrengthRed = 0.48                  # Indoors: how much of each colour scatters.
