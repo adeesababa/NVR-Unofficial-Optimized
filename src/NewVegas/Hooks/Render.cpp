@@ -2972,6 +2972,9 @@ void __fastcall RenderInterfaceHook(void* apThis, void*, void* apCuller, bool ab
 	ImGuiManager::NewFrame();
 	ThisCall(kRenderInterfaceDetour.GetOverwrittenAddr(), apThis, apCuller, abPipboyVisible);
 	ImGuiManager::Render();
+#if NVR_TEST_TOOLS
+	SettingShots::CaptureMenu();	// UNOFFICIAL 2026-10-19, test only: 'menu' shots (the menu drawn on the picture)
+#endif
 }
 
 static void SetTileShaderConstants() {

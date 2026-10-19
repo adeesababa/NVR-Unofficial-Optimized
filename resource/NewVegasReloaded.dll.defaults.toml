@@ -1236,8 +1236,8 @@ Enabled = true                         # Volumetric light: sun shafts through th
 
 [_Shaders.Reflections.Main]
 GroundSheen = 0.0                      # [0.0-2.0] Outdoors: how much dry ground that faces up (roads, pavements, floors) mirrors what is around it, blurred. Gives streets the sheen that picks up neon and lamps at night. Sand and grass get it too, so keep it low. 0: dry ground reflects nothing.
-RainWetness = 1.0                      # [0.0-2.0] Outdoors: how much the rain makes the ground mirror the neon, lamps and sky. Follows the rain (and Wet World's puddles as they dry). Above 1: stronger than real wet asphalt. 0: no rain reflections.
-InteriorFloors = 0.0                   # [0.0-2.0] Indoors: how much floors mirror the room, blurred (polished tile, metal decks). 0: none.
+RainWetness = 1.0                      # [0.0-2.0] Outdoors: how much the rain makes the ground mirror the neon, lamps and sky. Follows the rain; only open ground gets wet (porches, awnings and marquees stay dry, as in Wet World); the puddles left after the rain are Wet World's. Above 1: stronger than real wet asphalt. 0: no rain reflections.
+InteriorFloors = 0.0                   # [0.0-2.0] Indoors: how much floors mirror the room, blurred. EVERY floor facing up, wood and carpet too (the effect cannot tell materials apart); the game's own shiny surfaces already show the room through [Shaders.PBR.EnvMaps] CubeReflections. 0: none (default).
 Roughness = 0.4                        # [0.02-1.0] How blurred the dry reflections are. 0.02: a mirror; 1: barely a glow.
 WetRoughness = 0.08                    # [0.02-1.0] How blurred the wet reflections are. Low: sharp mirrored neon in the puddles.
 MaxDistance = 4000.0                   # [200-20000] How far each reflected ray searches, in game units (4096 to a cell). Longer finds farther things, but costs more and may miss thin ones.
@@ -1250,7 +1250,7 @@ SkyFallback = true                     # Outdoors: a reflected ray that finds no
 CubeMap = true                         # A small live cube of the surroundings, built from what you have seen around you (a little behind, blurred). A reflected ray that finds nothing on screen takes it: ceilings and lamps above you still show in the floor, buildings behind you in the street. Off: only the sky (outdoors) or nothing.
 CubeCapture = 0.02                     # [0.02-1.0] How much of the cube each frame's view replaces. Lower: steadier, slower to follow changes (lights switching, turning); higher: quicker, can shimmer.
 CubeFade = 0.005                       # [0.0-0.2] How much of what is out of view fades away each frame (0.005: about two seconds to half). Higher forgets places you looked away from sooner.
-DebugView = 0                          # [0-3] 1: the reflection alone; 2: where the rays found something (green) and where not (red); 3: the surroundings cube over the whole screen (should look like a blurred copy of the view). 0: normal picture.
+DebugView = 0                          # [0-4] 1: the reflection alone; 2: where the rays found something (green) and where not (red); 3: the surroundings cube over the whole screen (should look like a blurred copy of the view). 0: normal picture. 4: where the rain wets the ground (white) and floors it cannot reach (covered: dark red).
 
 [_Shaders.Reflections.Status]
 Enabled = false                        # Screen-space reflections on the ground: wet streets mirror the neon and lamps in the rain; optional dry sheen and interior floors. Needs the normals buffer.

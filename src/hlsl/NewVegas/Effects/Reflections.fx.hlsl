@@ -5,7 +5,8 @@
 // Which pixels reflect: there is no material buffer, so the ground decides by shape. Surfaces that face up (floors,
 // roads, pavements) reflect by the Fresnel term of a dielectric (little looking down, a lot at a grazing angle -- the
 // look of a wet street at night that mirrors the neon), times:
-//   outdoors  GroundSheen (dry ground, rough) + the rain's wetness (RainWetness x how wet it is now, smooth)
+//   outdoors  GroundSheen (dry ground, rough) + the rain's wetness (RainWetness x how wet it is now, smooth; only where the
+//             sky is open above, from the top-down ortho map as Wet World's roof mask: porches, awnings and marquees stay dry)
 //   indoors   InteriorFloors (rough)
 // Water, the sky, the first-person weapon and anything past DrawDistance never reflect (water has its own reflection).
 //
@@ -34,7 +35,8 @@ float4 TESR_WaterSettings;           // x: height of the water in view
 float4 TESR_ReflectionsData;         // x: dry reflectivity of floors now, y: wetness now (0-1), z: dry roughness, w: wet roughness
 float4 TESR_ReflectionsData2;        // x: ray length (game units), y: steps, z: thickness scale, w: noise frame offset
 float4 TESR_ReflectionsData3;        // x: history weight (0 = none this frame), y: blur radius, z: debug view, w: 1 = sky fallback
-float4 TESR_ReflectionsData4;        // x: draw distance, yzw: unused
+float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), zw: unused
+float4x4 TESR_ShadowCameraToLightTransformOrtho;   // camera-relative world position -> the top-down ortho map (as Wet World)
 float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV
 float4x4 TESR_ReflectionsReproject;  // camera-relative world position -> last frame's clip space
 float4 TESR_ReflectionsCube;         // x: face being drawn (0-5, D3D order), y: its size in texels, z: mip level, w: 1 = empty the cube
@@ -52,6 +54,7 @@ sampler2D TESR_ReflectionsHistory : register(s7) = sampler_state { ADDRESSU = CL
 samplerCUBE TESR_ReflectionsCapture : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 samplerCUBE TESR_ReflectionsCaptureNew : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 samplerCUBE TESR_ReflectionsEnv : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_OrthoMapBuffer : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float DryReflect = TESR_ReflectionsData.x;
@@ -67,6 +70,7 @@ static const float BlurRadius = TESR_ReflectionsData3.y;
 static const float DebugView = TESR_ReflectionsData3.z;
 static const float SkyFallback = TESR_ReflectionsData3.w;
 static const float DrawDistance = TESR_ReflectionsData4.x;
+static const float RoofMaskOn = TESR_ReflectionsData4.y;
 static const float2 LowTexel = TESR_ReflectionsLayout.xy;
 static const float CubeFace = TESR_ReflectionsCube.x;
 static const float CubeSize = TESR_ReflectionsCube.y;
@@ -112,6 +116,23 @@ float3 ViewNormal(float2 uv) { return normalize(tex2Dlod(TESR_NormalsBuffer, flo
 // View space -> world space direction (the view transform's rows are the camera axes in world space, see toWorld).
 float3 ViewToWorldDir(float3 v) { return mul((float3x3)TESR_ViewTransform, v); }
 
+// UNOFFICIAL 2026-10-19 (P81 tester reports: the ground under the Vault 21 marquee wet and dark, mirroring its underside):
+// 1 where nothing is above the surface in the top-down ortho map (the test of Wet World's GetRoofMask), 0 under a roof.
+// Outside the map's square (it covers only the near area) the ground counts as open. A surface up to RoofMargin world units
+// below the highest thing in its map texel still counts as open: the map's texels are several units wide, so a roof's own
+// slope (or the top of a sign) would otherwise read as covered by itself (Wet World's 0.0001 depth margin is far smaller).
+static const float RoofMargin = 40.0;   // world units; real cover (a porch roof, a marquee) is 100+ units above the floor
+float OpenAbove(float2 uv, float depth) {
+	float4 p = mul(float4(toWorld(uv) * depth, 1.0), TESR_ShadowCameraToLightTransformOrtho);
+	p.xyz /= p.w;
+	[branch] if (abs(p.x) > 1.0 || abs(p.y) > 1.0 || p.z < 0.0 || p.z > 1.0) return 1.0;
+	float top = tex2Dlod(TESR_OrthoMapBuffer, float4(p.x * 0.5 + 0.5, p.y * -0.5 + 0.5, 0.0, 0.0)).r;
+	// the map's depth per world unit along its view axis (Wet World's GetOrthoDepthScale)
+	float3 depthAxis = float3(TESR_ShadowCameraToLightTransformOrtho[0][2], TESR_ShadowCameraToLightTransformOrtho[1][2], TESR_ShadowCameraToLightTransformOrtho[2][2]);
+	float perUnit = length(depthAxis) / max(abs(TESR_ShadowCameraToLightTransformOrtho[3][3]), 1.0e-6);
+	return top > p.z - max(RoofMargin * perUnit, 0.0001) ? 1.0 : 0.0;
+}
+
 // How much a surface reflects (before Fresnel) and how rough it is. 0 where it never reflects.
 float Reflectivity(float2 uv, float depth, float3 viewNormal, out float roughness) {
 	roughness = DryRoughness;
@@ -121,8 +142,10 @@ float Reflectivity(float2 uv, float depth, float3 viewNormal, out float roughnes
 	[branch] if (floorShare <= 0.0) return 0.0;
 	float worldZ = TESR_CameraPosition.z + toWorld(uv).z * depth;
 	[branch] if (abs(worldZ - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return 0.0;   // water reflects on its own
-	float amount = DryReflect + Wetness;
-	roughness = lerp(DryRoughness, WetRoughness, Wetness / max(amount, 1.0e-4));
+	float wetness = Wetness;
+	[branch] if (wetness > 0.0 && RoofMaskOn > 0.5) wetness *= OpenAbove(uv, depth);   // the rain wets open ground only
+	float amount = DryReflect + wetness;
+	roughness = lerp(DryRoughness, WetRoughness, wetness / max(amount, 1.0e-4));
 	float fade = 1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth);
 	return min(amount, 2.0) * floorShare * fade;   // above 1: stronger than a real surface, for taste
 }
@@ -382,6 +405,14 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
 	float depth = readDepthLod(uv);
+	// UNOFFICIAL 2026-10-19 DebugView 4: where the rain wets the ground: white on floors open to the sky (brighter the wetter it
+	// is now), dark red on floors the rain cannot reach (covered, by the ortho map's roof test), the rest of the picture dimmed.
+	[branch] if (DebugView > 3.5) {
+		bool isFloor = ViewToWorldDir(ViewNormal(uv)).z > 0.75 && depth < DrawDistance && depth < farZ * 0.98;
+		[branch] if (!isFloor) return float4(color.rgb * 0.15, color.a);
+		float open = RoofMaskOn > 0.5 ? OpenAbove(uv, depth) : 1.0;
+		return open > 0.5 ? float4((0.4 + 0.6 * saturate(Wetness)).xxx, 1.0) : float4(0.5, 0.05, 0.05, 1.0);
+	}
 	// DebugView 3: the surroundings cube as seen from here, over the whole screen (it should look like a blurred, slightly
 	// late copy of the picture; black where nothing was seen yet).
 	[branch] if (DebugView > 2.5) {

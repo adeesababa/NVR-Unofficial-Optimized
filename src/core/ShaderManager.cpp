@@ -330,7 +330,7 @@ void ShaderManager::UpdateConstants() {
 		// off, or re-enabling it later would see a stale-but-matching cache and
 		// skip the immediate resolve it needs to do.
 		if (TheSettingManager->SettingsMain.Main.PresetManagerEnabled && PresetManager::ShouldReResolve(currentCell))
-			PresetManager::ResolveAndApply(currentCell);
+			PresetManager::ResolveAndApply(currentCell, true);	// UNOFFICIAL 2026-10-19: automatic (keeps live edits, see PresetManager.h)
 	}
 
 	GameState.isUnderwater = Tes->sky->GetIsUnderWater();

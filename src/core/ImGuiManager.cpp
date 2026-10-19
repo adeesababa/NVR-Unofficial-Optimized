@@ -4,6 +4,7 @@
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
 #include "GpuProfiler.h"
+#include "TestTools.h"
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -24,6 +25,7 @@ WNDPROC ImGuiManager::OriginalWndProc = nullptr;
 
 static std::string SelectedSection;
 static void NewPatchRebuild();	// UNOFFICIAL 2026-10-18: the "New in this patch" list (defined above RenderContent)
+static void CaptureStartupValues();	// UNOFFICIAL 2026-10-19: menu honesty (defined above RenderSetting)
 
 // ---- DirectInput mouse block (zeros lX/lY/lZ deltas + buttons) ---------------
 // xNVSE has no public API to block mouse movement deltas, so we patch the
@@ -113,6 +115,7 @@ static float s_savedTimeScale = -1.0f; // session snapshot; -1 = not yet taken
 static bool  s_devFreecamOn   = false;
 static bool  s_devMenusHidden = false;
 static bool  s_screenshotMode = false;
+static bool  s_showTestSettings = false;	// UNOFFICIAL 2026-10-19 menu honesty: Display > "Show test settings"
 
 // ---- Preset Manager panel ------------------------------------------------
 // Session 2: minimal read-only skeleton. Session 5 (current): promoted into
@@ -695,6 +698,7 @@ static void RenderPresetManagerPanel() {
 			// Re-enabling: resolve immediately rather than waiting for the next
 			// location change to notice -- same immediate-refresh pattern Save/
 			// Reload/Delete already use.
+			if (enabled) PresetManager::ForgetSession();	// UNOFFICIAL 2026-10-19: the settings right now are the player's own
 			if (enabled && Player && Player->parentCell)
 				PresetManager::ResolveAndApply(Player->parentCell);
 		}
@@ -1214,6 +1218,12 @@ static void RenderDevPanel() {
 		}
 		ImGui::SameLine();
 		ImGui::TextDisabled("(Press NVR key to restore)");
+
+		ImGui::Spacing();
+		ImGui::Checkbox("Show test settings", &s_showTestSettings);	// UNOFFICIAL 2026-10-19 menu honesty (not saved: off each start)
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Also show the switches used for testing and finding faults (debug views, logs, checks) and the old "
+				"settings nothing reads any more. Leave them at their defaults when playing.");
 	}
 
 	ImGui::Spacing();
@@ -1401,6 +1411,18 @@ static void BlockGameInput(bool block) {
 
 // ---- Visibility --------------------------------------------------------------
 
+static void SetOverlayVisible(bool visible);
+#if NVR_TEST_TOOLS
+// UNOFFICIAL 2026-10-19: the auto-test's 'menu <section>' shots open the menu at that page (the picture is taken after it is
+// drawn, SettingShots::CaptureMenu) and close it again; ShowTests ticks Display > "Show test settings" for that shot.
+void ImGuiManager::TestShowMenu(const char* Section, bool ShowTests) {
+	if (!Initialized) return;
+	s_showTestSettings = Section && ShowTests;
+	if (Section) SelectedSection = Section;
+	SetOverlayVisible(Section != nullptr);
+}
+#endif
+
 static void SetOverlayVisible(bool visible) {
 	if (ImGuiManager::IsVisible() == visible) return;
 	ImGuiManager::SetVisible(visible);
@@ -1519,6 +1541,7 @@ void ImGuiManager::Initialize() {
 	GameWindow = hwnd;
 
 	NewPatchRebuild();	// UNOFFICIAL 2026-10-18: build the "New in this patch" list once (logs how many settings it holds)
+	CaptureStartupValues();	// UNOFFICIAL 2026-10-19: what the restart-only settings were when the game started
 
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -1938,6 +1961,231 @@ static bool IsInertSetting(const char* section, const char* key) {
 	return strcmp(key, "Mipmaps") == 0 || strcmp(key, "Anisotropy") == 0;
 }
 
+// ---- Menu honesty ----------------------------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-19 (P81 playtest reports: "lotta effects u gotta restart", "shadow blurring does not work", "a lot of
+// interior shadow settings don't do anything"). The menu now says which settings wait for a game restart, greys the ones the
+// current shadow mode or switch does not read (the reason on hover; they stay editable), and keeps test switches and settings
+// nothing reads out of sight unless Display > "Show test settings" is ticked.
+
+// 1. Settings read only when the game starts: compiled into the shaders (ShaderRecord::BuildDefines, EffectRecord::LoadEffect),
+// or used to install hooks or make textures at start-up. TurnOn: built in only when on at start, switching it off works at
+// once; Changed: any change waits for the restart. MaxQuality has its own note (RenderMaxQuality).
+enum class RestartRule { Changed, TurnOn };
+struct RestartSetting { const char* Section; const char* Key; RestartRule Rule; };
+static const RestartSetting kRestartSettings[] = {
+	{ "Main.Main.Misc",                       "MoreLampsPerObject", RestartRule::Changed },	// engine patch + SPECULAR_LAMPS6
+	{ "Main.Main.Misc",                       "LampReachMargin",    RestartRule::Changed },	// engine patch (Hooks.cpp)
+	{ "Main.Main.Performance",                "ParallelShaderCompile", RestartRule::Changed },
+	{ "Main.Main.Performance",                "ShaderWarmUp",       RestartRule::Changed },	// runs once, at the main menu
+	{ "Main.Main.Performance",                "SlimDepthBuffer",    RestartRule::Changed },	// depth texture format (CombineDepth)
+	{ "Shaders.ShadowsExteriors.Main",        "ForwardShadows",     RestartRule::TurnOn },
+	{ "Shaders.ShadowsExteriors.Main",        "Quality",            RestartRule::Changed },	// picks SHADOW_FIXED_MODE (Quality 0-3)
+	{ "Shaders.ShadowsExteriors.ShadowMaps",  "Mode",               RestartRule::Changed },	// SHADOW_FIXED_MODE (Quality 4)
+	{ "Shaders.ShadowsExteriors.SunSmoothing","CrossFade",          RestartRule::Changed },
+	{ "Shaders.ContactHardening.Status",      "Enabled",            RestartRule::TurnOn },
+	{ "Shaders.ShadowsInteriors.Forward",     "Enabled",            RestartRule::TurnOn },	// hooks + shader overrides at start
+	{ "Shaders.ShadowsInteriors.Forward",     "SmoothEdges",        RestartRule::Changed },
+	{ "Shaders.ShadowsInteriors.Main",        "ShadowCubeMapSize",  RestartRule::Changed },	// cube maps made at start (ShadowManager)
+	{ "Shaders.PBR.Main",                     "LampReachSkip",      RestartRule::Changed },
+	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },
+	{ "Shaders.PBR.Main",                     "SmithCorrelated",    RestartRule::Changed },
+	{ "Shaders.PBR.Main",                     "SkylightingMode",    RestartRule::Changed },
+	{ "Shaders.PBR.Metal",                    "CubeReflections",    RestartRule::TurnOn },	// LIVE_CUBE: either above 0 at start
+	{ "Shaders.PBR.EnvMaps",                  "CubeReflections",    RestartRule::TurnOn },
+	{ "Shaders.PBR.MaterialRules",            "Enabled",            RestartRule::TurnOn },
+	{ "Shaders.PBR.Rmaos",                    "Enabled",            RestartRule::Changed },
+	{ "Shaders.PBR.Linear",                   "Enabled",            RestartRule::TurnOn },	// off at runtime = Gamma 1
+	{ "Shaders.PBR.Linear",                   "PreDecode",          RestartRule::Changed },
+	{ "Shaders.Sky.Physical",                 "Enabled",            RestartRule::TurnOn },
+	{ "Shaders.Terrain.Blending",             "Enabled",            RestartRule::TurnOn },
+	{ "Shaders.HandBlood.Status",             "Enabled",            RestartRule::Changed },
+	{ "Shaders.Cloth.Main",                   "Enabled",            RestartRule::TurnOn },
+	{ "Shaders.WetWorld.Main",                "HudDrops",           RestartRule::TurnOn },	// HUD_RAIN_ON: above 0 at start
+	{ "Shaders.VolumetricClouds.Main",        "Resolution",         RestartRule::Changed },	// textures made at start
+	{ "Shaders.VolumetricClouds.Main",        "HalfResolution",     RestartRule::Changed },
+	{ "Shaders.VolumetricClouds.Main",        "ShadowResolution",   RestartRule::Changed },
+	{ "Shaders.Skin.NewSkin",                 "Enabled",            RestartRule::Changed },	// picks the SKIN shader files at start
+};
+
+static std::unordered_map<std::string, float> s_startupValues;	// "Section.Key" -> its value when the game started
+
+static float NumericSetting(const char* section, const char* key) {
+	SettingManager::Configuration::ConfigNode node;
+	if (!TheSettingManager->Config.FillNode(&node, section, key)) return 0.0f;
+	switch (node.Type) {
+	case SettingManager::Configuration::Boolean: return node.BoolValue ? 1.0f : 0.0f;
+	case SettingManager::Configuration::Integer: return (float)node.IntValue;
+	default: return node.FloatValue;
+	}
+}
+
+// From ImGuiManager::Initialize (the first rendered frame, before any location loads and before the menu can change anything).
+static void CaptureStartupValues() {
+	for (const RestartSetting& r : kRestartSettings)
+		s_startupValues[std::string(r.Section) + "." + r.Key] = NumericSetting(r.Section, r.Key);
+}
+
+// The shadow mode the shaders are compiled with (mirrors ShaderRecord::BuildDefines' SHADOW_FIXED_MODE).
+static int ShadowModeFrom(float quality, float mode) {
+	const int q = (int)quality;
+	if (q == 0 || q == 1) return 0;
+	if (q == 2) return 1;
+	if (q == 3) return 2;
+	return std::clamp((int)mode, 0, 3);
+}
+
+// What the start-up reads make of the setting: the value itself, or the on/off the define is built from.
+static float RestartState(const RestartSetting& r, bool atStart) {
+	auto get = [atStart](const char* section, const char* key) {
+		if (!atStart) return NumericSetting(section, key);
+		auto it = s_startupValues.find(std::string(section) + "." + key);
+		return it != s_startupValues.end() ? it->second : NumericSetting(section, key);
+	};
+	const std::string key = r.Key;
+	if (key == "CubeReflections")
+		return (get("Shaders.PBR.Metal", "CubeReflections") > 0.0f || get("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f) ? 1.0f : 0.0f;
+	if (key == "HudDrops") return get(r.Section, r.Key) > 0.0f ? 1.0f : 0.0f;
+	if (key == "SmithCorrelated") return get(r.Section, r.Key) == 1.0f ? 1.0f : 0.0f;
+	if ((!strcmp(r.Section, "Shaders.ShadowsExteriors.Main") && key == "Quality") ||
+		(!strcmp(r.Section, "Shaders.ShadowsExteriors.ShadowMaps") && key == "Mode"))
+		return (float)ShadowModeFrom(get("Shaders.ShadowsExteriors.Main", "Quality"), get("Shaders.ShadowsExteriors.ShadowMaps", "Mode"));
+	return get(r.Section, r.Key);
+}
+
+static const RestartSetting* FindRestartSetting(const char* section, const char* key) {
+	for (const RestartSetting& r : kRestartSettings)
+		if (!strcmp(r.Section, section) && !strcmp(r.Key, key)) return &r;
+	return nullptr;
+}
+
+// After the setting's row: "(restart)" in grey, or "restart to apply" in orange once it differs from what the game started with.
+static void RestartBadge(const char* section, const char* key) {
+	const RestartSetting* r = FindRestartSetting(section, key);
+	if (!r || s_startupValues.empty()) return;
+	const float atStart = RestartState(*r, true);
+	const float now = RestartState(*r, false);
+	const bool pending = r->Rule == RestartRule::TurnOn ? (now != 0.0f && atStart == 0.0f) : now != atStart;
+	if (!pending && r->Rule == RestartRule::TurnOn && atStart != 0.0f) return;	// built in: on and off both work at once
+	ImGui::SameLine();
+	if (pending) ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "restart to apply");
+	else ImGui::TextDisabled(r->Rule == RestartRule::TurnOn ? "(on after a restart)" : "(restart)");
+	if (ImGui::IsItemHovered()) {
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+		if (pending)
+			ImGui::TextUnformatted("Changed since the game started. Press Save, then restart the game: until then the game keeps "
+				"what it started with.");
+		else if (r->Rule == RestartRule::TurnOn)
+			ImGui::TextUnformatted("This was off when the game started, so it is not built in yet: turn it on, press Save and "
+				"restart the game. (When the game starts with it on, switching it off and on works at once.)");
+		else
+			ImGui::TextUnformatted("Read when the game starts (built into the shaders or the game's setup): change it, press "
+				"Save, then restart the game.");
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+}
+
+// 2. Settings the current mode does not read: the reason, or nullptr when it is in use. Each rule follows the code that reads it.
+static bool IsDeadSetting(const char* section, const char* key) {
+	// Nothing in this build reads these (kept in the file for old settings files).
+	static const char* const dead[][2] = {
+		{ "Shaders.ShadowsExteriors.Main", "OrthoMapResolution" },	// the ortho map size is [Shaders.ShadowsExteriors.Ortho] Resolution
+		{ "Shaders.ShadowsExteriors.Main", "OrthoRadius" },			// its reach is [Shaders.ShadowsExteriors.Ortho] Distance
+		{ "Shaders.ShadowsInteriors.Main", "Quality" },				// "Not currently used": only Oblivion's ShadowCube.hlsl read it
+		{ "Shaders.ShadowsInteriors.Main", "TorchesCastShadows" },	// its hook (AddCastShadowFlag) is not installed in New Vegas
+		{ "Shaders.ShadowsInteriors.Main", "UseCastShadowFlag" },	// read into Settings.Interiors, never used
+		{ "Shaders.ShadowsInteriors.Main", "PlayerShadowFirstPerson" },	// the same
+		{ "Shaders.ShadowsInteriors.Main", "PlayerShadowThirdPerson" },	// the same
+		{ "Shaders.Snow.Main", "Flakes" },
+	};
+	for (const auto& d : dead) if (!strcmp(d[0], section) && !strcmp(d[1], key)) return true;
+	return false;
+}
+
+static int CurrentShadowMode() {
+	return ShadowModeFrom(NumericSetting("Shaders.ShadowsExteriors.Main", "Quality"), NumericSetting("Shaders.ShadowsExteriors.ShadowMaps", "Mode"));
+}
+
+static const char* InactiveReason(const char* section, const char* key) {
+	static char reason[256];
+	const std::string sec = section;
+	auto is = [key](std::initializer_list<const char*> keys) {
+		for (const char* k : keys) if (!strcmp(k, key)) return true;
+		return false;
+	};
+
+	if (IsDeadSetting(section, key)) return "Does nothing: nothing in New Vegas Reloaded reads this setting (kept for old settings files).";
+
+	// Sun shadows (ShadowsExteriorEffect::UpdateSettings): Quality 0-3 set these themselves; only 4 (Custom) reads them.
+	const bool shadowMaps = sec == "Shaders.ShadowsExteriors.ShadowMaps";
+	const bool forms = sec.rfind("Shaders.ShadowsExteriors.Forms", 0) == 0 && sec != "Shaders.ShadowsExteriors.FormsOrtho";
+	if (shadowMaps || forms) {
+		const int quality = (int)NumericSetting("Shaders.ShadowsExteriors.Main", "Quality");
+		const bool custom = quality < 0 || quality > 3;
+		if (!custom && (forms || is({ "Mode", "Format", "Distance", "CascadeLambda", "SmoothFilter", "LimitFrequency", "CascadeResolution", "MSAA", "Prefilter" }))) {
+			sprintf_s(reason, "Not used now: shadow Quality (Shadows Exteriors > Main) is %d, which sets this itself. Only Quality 4 (Custom) reads it.", quality);
+			return reason;
+		}
+		if (custom && shadowMaps) {
+			const int mode = std::clamp((int)NumericSetting("Shaders.ShadowsExteriors.ShadowMaps", "Mode"), 0, 3);
+			if (mode == 3 && is({ "Prefilter", "MSAA" }))
+				return "Not used in Mode 3 (PCF): PCF keeps depths and compares them when it reads, so there is nothing to blur "
+					"(Prefilter) or average (MSAA). For softer PCF edges use SmoothFilter; Prefilter works in Modes 0-2.";
+			if (mode == 3 && is({ "Format" })) return "Not used in Mode 3 (PCF): PCF always stores 32-bit depth.";
+			if (mode != 3 && is({ "SmoothFilter" })) return "Only used in Mode 3 (PCF). Modes 0-2 soften their edges with Prefilter.";
+		}
+	}
+	// Contact-hardening sun shadows (Shadow.hlsl): Mode 2 (EVSM4) and 3 (PCF) only; Modes 0-1 take the plain lookup.
+	if (sec == "Shaders.ContactHardening.Main" && CurrentShadowMode() < 2) {
+		sprintf_s(reason, "Not used with the current sun shadows: contact hardening needs shadow Mode 2 (EVSM4) or 3 (PCF); "
+			"the current Quality/Mode give Mode %d.", CurrentShadowMode());
+		return reason;
+	}
+	if (sec == "Shaders.ShadowsExteriors.SunSmoothing" && is({ "CrossFade" }) && NumericSetting("Shaders.ShadowsExteriors.Main", "ForwardShadows") == 0.0f)
+		return "Only used with ForwardShadows on (Shadows Exteriors > Main).";
+
+	// Lamp shadows indoors (PointShadowForward, ShadowsExteriorEffect::UpdateSettings, ShaderManager's darkening pass).
+	if (sec == "Shaders.ShadowsInteriors.Forward" && !is({ "Enabled", "ScopeFix" })) {
+		if (NumericSetting(section, "Enabled") == 0.0f)
+			return "Only used with Forward Enabled on (the first switch in this section); with it off the old screen-space lamp shadows are used.";
+		if (is({ "Quality", "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "Softness") <= 0.0f)
+			return "Only used when Softness is above 0: sharp lamp shadows (Softness 0) take a single lookup.";
+		if (is({ "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "ContactHardening") == 0.0f)
+			return "Only used with ContactHardening on.";
+		if (is({ "DarkeningBlur", "MaskHalfRes" }) && NumericSetting(section, "KeepDarkening") == 0.0f)
+			return "Only used with KeepDarkening on (with it off the room darkening pass is not drawn).";
+	}
+	if (sec == "Shaders.ShadowsInteriors.Main" && is({ "ContactLength", "ContactThickness", "ContactDistance" }) && NumericSetting(section, "ContactShadows") <= 0.0f)
+		return "Only used when ContactShadows is above 0.";
+	return nullptr;
+}
+
+// 3. Test switches (the "New in this patch" tab's Diagnostics rule) and settings nothing reads: hidden unless ticked.
+static bool NewIsDiagnostic(const std::string& key, const std::string& description, const std::vector<std::string>& extra, const std::string& section);
+
+static bool IsTestSetting(const SettingManager::Configuration::ConfigNode& node) {
+	static const std::vector<std::string> none;
+	return IsDeadSetting(node.Section, node.Key) || NewIsDiagnostic(node.Key, node.Description, none, node.Section);
+}
+
+// The tooltip of a setting's row: why it is greyed (if it is), then its description from the settings file.
+// baseText: the normal text colour (the row itself may be drawn red or grey).
+static void SettingTooltip(const SettingManager::Configuration::ConfigNode& node, const char* why, const ImVec4& baseText) {
+	if (node.Description.empty() && !why) return;
+	ImGui::BeginTooltip();
+	ImGui::PushStyleColor(ImGuiCol_Text, baseText);
+	ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+	if (why) {
+		ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", why);
+		if (!node.Description.empty()) ImGui::Separator();
+	}
+	if (!node.Description.empty()) ImGui::TextUnformatted(node.Description.c_str());
+	ImGui::PopTextWrapPos();
+	ImGui::PopStyleColor();
+	ImGui::EndTooltip();
+}
+
 static const struct { int dik; const char* name; } kDIKTable[] = {
 	{ 0x01, "Escape" },
 	{ 0x02, "1" }, { 0x03, "2" }, { 0x04, "3" }, { 0x05, "4" }, { 0x06, "5" },
@@ -2262,9 +2510,13 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	// layer (SettingManager::Configuration::SetValue), never into the user's settings.
 	const bool maxLocked = node.MaxQuality;
 	bool inert = IsInertSetting(node.Section, node.Key);
+	// UNOFFICIAL 2026-10-19 menu honesty: a setting the current mode does not read is greyed (still editable), the reason on hover
+	const char* why = inert ? nullptr : InactiveReason(node.Section, node.Key);
+	const ImVec4 baseText = ImGui::GetStyleColorVec4(ImGuiCol_Text);
 	if (inert) ImGui::BeginDisabled();
 	if (maxLocked) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
-	struct MaxColour { bool on; ~MaxColour() { if (on) ImGui::PopStyleColor(); } } maxColour{ maxLocked };
+	if (why) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+	struct MaxColour { int n; ~MaxColour() { if (n) ImGui::PopStyleColor(n); } } maxColour{ (maxLocked ? 1 : 0) + (why ? 1 : 0) };
 
 	// Hover state of the *primary* widget for each case, captured immediately
 	// after that widget so RevertBtn()'s own "~" button (submitted right
@@ -2287,6 +2539,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 				"ShadowsExterior.cpp (deferred shadows produce artifacted derivatives).");
 		}
 		RevertBtn();
+		RestartBadge(node.Section, node.Key);
 		break;
 	}
 	case NodeType::Float: {
@@ -2320,14 +2573,9 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			}
 		}
 		RevertBtn();
+		RestartBadge(node.Section, node.Key);
 		if (inert) ImGui::EndDisabled();
-		if (hovered && !node.Description.empty()) {
-			ImGui::BeginTooltip();
-			ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-			ImGui::TextUnformatted(node.Description.c_str());
-			ImGui::PopTextWrapPos();
-			ImGui::EndTooltip();
-		}
+		if (hovered) SettingTooltip(node, why, baseText);
 		ImGui::PopID();
 		return;
 	}
@@ -2364,6 +2612,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->LoadSettings();
 		}
 		RevertBtn();
+		RestartBadge(node.Section, node.Key);
 		break;
 	}
 	default: {
@@ -2389,14 +2638,9 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			RenderDIKPopup();
 		}
 		RevertBtn();
+		RestartBadge(node.Section, node.Key);
 		if (inert) ImGui::EndDisabled();
-		if (hovered && !node.Description.empty()) {
-			ImGui::BeginTooltip();
-			ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-			ImGui::TextUnformatted(node.Description.c_str());
-			ImGui::PopTextWrapPos();
-			ImGui::EndTooltip();
-		}
+		if (hovered) SettingTooltip(node, why, baseText);
 		ImGui::PopID();
 		return;
 	}
@@ -2404,13 +2648,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 
 	if (inert) ImGui::EndDisabled();
 
-	if (mainHovered && !node.Description.empty()) {
-		ImGui::BeginTooltip();
-		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-		ImGui::TextUnformatted(node.Description.c_str());
-		ImGui::PopTextWrapPos();
-		ImGui::EndTooltip();
-	}
+	if (mainHovered) SettingTooltip(node, why, baseText);
 
 	ImGui::PopID();
 }
@@ -2513,12 +2751,14 @@ static bool NewEndsWith(const std::string& s, const char* suffix) {
 
 static bool NewIsDiagnostic(const std::string& key, const std::string& description, const std::vector<std::string>& extra, const std::string& section) {
 	if (NewListMatches(extra, section, key)) return true;
-	static const char* const suffixes[] = { "Check", "Log", "DebugView", "Probe", "ProbeDump", "ProbeLog", "Dump", "TestSkip", "OrderLog" };
+	static const char* const suffixes[] = { "Check", "Log", "DebugView", "Probe", "ProbeDump", "ProbeLog", "Dump", "TestSkip", "OrderLog", "Debug" };
 	for (const char* suffix : suffixes) if (NewEndsWith(key, suffix)) return true;
 	if (key.compare(0, 5, "Debug") == 0) return true;
+	if (key.size() > 3 && key.compare(0, 3, "Log") == 0 && isupper((unsigned char)key[3])) return true;	// 2026-10-19: LogLamps, LogMatches, LogDraws
 	std::string lower = description;
 	for (char& c : lower) c = (char)tolower((unsigned char)c);
-	static const char* const words[] = { "diagnostic", "test only", "testing", "debugging", "test views", "development builds only", "no effect:" };
+	static const char* const words[] = { "diagnostic", "test only", "testing", "debugging", "test views", "development builds only", "no effect:",
+		"for finding faults", "checking only" };
 	for (const char* word : words) if (lower.find(word) != std::string::npos) return true;
 	return false;
 }
@@ -2717,7 +2957,11 @@ static void RenderNewInPatch() {
 
 	NewRenderGroups(s_newMain, s_newMainGroups, false);
 
-	if (!s_newDiag.empty()) {
+	if (!s_newDiag.empty() && !s_showTestSettings) {	// UNOFFICIAL 2026-10-19 menu honesty
+		ImGui::Spacing();
+		ImGui::TextDisabled("%u test settings hidden (Display > Show test settings)", (UInt32)s_newDiag.size());
+	}
+	else if (!s_newDiag.empty()) {
 		ImGui::Spacing();
 		const std::string header = "Diagnostics (" + std::to_string(s_newDiag.size()) + ")##newdiag";
 		if (ImGui::CollapsingHeader(header.c_str())) {
@@ -2855,11 +3099,14 @@ static void RenderContent() {
 		keyIdx[settings[i].Key] = i;
 
 	std::unordered_set<std::string> handled;
+	int testHidden = 0, shown = 0;	// UNOFFICIAL 2026-10-19 menu honesty
 
 	for (auto& s : settings) {
 		std::string key(s.Key);
 		if (handled.count(key)) continue;
 		if (ShouldHideKey(s.Key)) continue;
+		if (!s_showTestSettings && IsTestSetting(s)) { testHidden++; continue; }	// UNOFFICIAL 2026-10-19: test switches, dead keys
+		shown++;
 
 		// Hide HDRCompat when PreTonemapping is off — it's meaningless in post-tonemapping mode
 		if (strcmp(s.Key, "HDRCompat") == 0 && SelectedSection == "Shaders.LUT.Main") {
@@ -2887,6 +3134,11 @@ static void RenderContent() {
 		}
 
 		RenderSetting(s, isShader);
+	}
+	if (testHidden) {
+		ImGui::Spacing();
+		ImGui::TextDisabled(shown ? "%d test setting%s hidden (Display > Show test settings)" : "Only test settings here: %d hidden%s (Display > Show test settings)",
+			testHidden, shown ? (testHidden == 1 ? "" : "s") : "");
 	}
 }
 

@@ -19,7 +19,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.CubeMap = TheSettingManager->GetSettingI(section, "CubeMap") != 0;
 	Settings.CubeCapture = std::clamp(TheSettingManager->GetSettingF(section, "CubeCapture"), 0.02f, 1.0f);
 	Settings.CubeFade = std::clamp(TheSettingManager->GetSettingF(section, "CubeFade"), 0.0f, 0.2f);
-	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 3);
+	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 4);	// 4: UNOFFICIAL 2026-10-19 the rain's wet mask
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -73,13 +73,17 @@ void ReflectionsEffect::ReportHistory(const char* when) {
 void ReflectionsEffect::UpdateConstants() {
 	const bool exterior = TheShaderManager->GameState.isExterior;
 
-	// Wetness: the rain falling now, or (with Wet World on) its puddles, which dry off slowly after the rain.
-	float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
-	const WetWorldEffect* wetWorld = TheShaderManager->Effects.WetWorld;
-	if (wetWorld && wetWorld->Enabled) wet = (std::max)(wet, std::clamp(wetWorld->Constants.Data.z, 0.0f, 1.0f));
+	// Wetness: the rain falling now. UNOFFICIAL 2026-10-19 (P81 tester report: "wet ground / reflections stay after rain in
+	// shadowed areas"): it used to follow Wet World's puddle level too, which dries over minutes, so ALL flat ground kept
+	// mirroring long after the rain (seen most in shade, where the bright surroundings stand out against the dark ground)
+	// while Wet World itself had dried everything but the puddles in hollows. The puddles keep their own wet look (Wet World).
+	const float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
 
 	Constants.Data.x = exterior ? Settings.GroundSheen : Settings.InteriorFloors;
 	Constants.Data.y = exterior ? wet * Settings.RainWetness : 0.0f;
+	// UNOFFICIAL 2026-10-19: the rain wets only open ground (the ortho map's roof test, as Wet World): kept up while it rains here.
+	Constants.Data4.y = Constants.Data.y > 0.0f ? 1.0f : 0.0f;
+	if (Constants.Data4.y > 0.0f) TheShaderManager->orthoRequired = true;
 	Constants.Data.z = Settings.Roughness;
 	Constants.Data.w = Settings.WetRoughness;
 	Constants.Data2.x = Settings.MaxDistance;

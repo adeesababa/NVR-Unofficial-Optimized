@@ -102,7 +102,17 @@ public:
 	// expect an immediate, real refresh regardless of whether the player has
 	// moved -- gating inside here would make those silently no-op while
 	// standing still, which is the common case for using them.
-	static void					ResolveAndApply(TESObjectCELL* Cell);
+	//
+	// UNOFFICIAL 2026-10-19 (P81 playtest report "I reload my save and I have to reactivate everything"), the same rule
+	// Session 8 below set for exterior cell hops, carried to every automatic switch: Automatic = the once-per-location
+	// call from ShaderManager. When it resolves to the SAME preset as the one already active (Wasteland -> MegatonWorld,
+	// both DefaultExterior; indoors -> outdoors with no preset authored; reloading a save) nothing is re-applied, so live
+	// menu edits stay. A location with no authored preset gets the player's own settings (as they were when they last left
+	// such a place) instead of the raw shipped defaults. A different preset is applied from its file exactly as before.
+	static void					ResolveAndApply(TESObjectCELL* Cell, bool Automatic = false);
+	// UNOFFICIAL 2026-10-19: forget the above (the master toggle calls it when switched on, so the player's settings at
+	// that moment are their own settings).
+	static void					ForgetSession();
 	static const ResolveResult&	GetLastResolveResult();
 
 	// Cheap, no file I/O -- true only when Cell's PRESET-RESOLUTION IDENTITY
@@ -256,4 +266,12 @@ private:
 	// "since step 1 began" reference point CaptureVariantDiff() compares
 	// live settings against (docs § "Variants" authoring flow).
 	static PresetData		s_baselineSnapshot;
+
+	// UNOFFICIAL 2026-10-19 (see ResolveAndApply): what the last resolve settled on (preset name or "own settings", plus the
+	// enabled Variants), and the player's own settings, used where no preset is authored (taken at the first resolve and
+	// again every time an automatic switch leaves such a place).
+	static std::string		s_activeKey;
+	static bool				s_activeIsOwn;
+	static PresetData		s_ownSettings;
+	static bool				s_hasOwnSettings;
 };
