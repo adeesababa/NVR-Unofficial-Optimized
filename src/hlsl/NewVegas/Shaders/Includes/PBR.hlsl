@@ -28,6 +28,20 @@ float SpecularAA(float3 normal, float roughness) {
 // NVR sets. Zero (not set) = off.
 float4 TESR_PBRMath : register(c223); // x: EnergySplit (1 = on)
 
+// UNOFFICIAL 2026-10-18 SpecularFade ([Shaders.PBR.Main], restart: SPEC_FADE_ON from ShaderRecord::BuildDefines; the object templates
+// define PBR_SPEC_FADE in their highlight-drawing pixel shaders, so terrain, skin, water and parallax keep the old code). The game stops
+// drawing an object's highlights where the object is fSpecularLODStartFade + fSpecularLODRange from the camera (2000 + 300 units by
+// default): there it swaps the object's shaders for ones without a highlight (and, for shiny objects with 3-5 lamps, its whole set of
+// passes). The game's own shaders faded the highlight out before that point (BSShaderPPLightingProperty::GetSpecularLODFade, 0x00B66B80,
+// 1 near -> 0 at the end; sent in the sun's direction .w and in the lamps' colours of the highlight passes); NVR's PBR shaders ignored
+// it, so at that distance the highlight vanished at once and the diffuse light jumped from the shiny form ((1 - F) x keep) to the plain
+// one: the "PBR pop-in" as the camera nears or leaves an object. NVR_SpecFade.x is that same fade for the object being drawn (set per
+// draw, core/PbrPop.h); the highlight is scaled by it and the diffuse light slides to the plain form, so at the swap the shiny shader
+// gives exactly what the plain one does. 1 (near, or the switch off) leaves every result exactly as before (x * 1, x + y * 0).
+#ifdef PBR_SPEC_FADE
+float4 NVR_SpecFade : register(c211); // x: the draw's highlight fade (1 = full); pinned clear of every other object-shader constant
+#endif
+
 // EnergySplit. The full pass and the sun pass give the diffuse part (1 - F(L.H)) of the light. For a white surface that adds up to
 // MORE light than the surface receives: up to +8.9% on smooth surfaces seen at a low angle (roughness 0.07-0.45, N.V 0.06-0.58;
 // white furnace, tests\furnace). This is that measured excess as a function of roughness and N.V (fitted to the furnace tables to
@@ -195,8 +209,11 @@ float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 no
     const float LdotH = shades(lightDir, halfway);
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+#ifdef PBR_SPEC_FADE
+    spec *= NVR_SpecFade.x;	// UNOFFICIAL SpecularFade (above)
+#endif
 
     return spec * NdotL * lightColor * PI;
 }
@@ -216,9 +233,16 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+    float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+#ifdef PBR_SPEC_FADE
+    // UNOFFICIAL SpecularFade (above): the highlight out, the diffuse light towards PBRDiffuse's plain form.
+    #ifndef PBR_SPEC_FADE_HIGHLIGHT_ONLY
+    diffuse += ((1 - metallicness) * albedo / PI - diffuse) * (1.0f - NVR_SpecFade.x);
+    #endif
+    spec *= NVR_SpecFade.x;
+#endif
 
     return (diffuse + spec) * NdotL * lightColor * PI;
 }
@@ -252,8 +276,11 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
     const float LdotH = shades(lightDir, halfway);
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+#ifdef PBR_SPEC_FADE
+    spec *= NVR_SpecFade.x;	// UNOFFICIAL SpecularFade (above)
+#endif
 
     return spec * NdotS * lightColor * PI;
 }
@@ -286,9 +313,16 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+    float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+#ifdef PBR_SPEC_FADE
+    // UNOFFICIAL SpecularFade (above): the highlight out, the diffuse light towards PBRDiffuse's plain form.
+    #ifndef PBR_SPEC_FADE_HIGHLIGHT_ONLY
+    diffuse += ((1 - metallicness) * albedo / PI - diffuse) * (1.0f - NVR_SpecFade.x);
+    #endif
+    spec *= NVR_SpecFade.x;
+#endif
 
     return (diffuse * NdotL + spec * NdotS) * lightColor * PI;
 }

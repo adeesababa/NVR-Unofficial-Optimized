@@ -207,6 +207,20 @@
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON	// 1 on, 2 the test mode (PBR.hlsl)
 #endif
+// UNOFFICIAL 2026-10-18 SpecularFade ([Shaders.PBR.Main], restart: SPEC_FADE_ON from ShaderRecord::BuildDefines): the pixel shaders
+// that draw a highlight (SPECULAR: the full passes and the highlight-only passes) scale it by the game's specular distance fade for
+// the object (NVR_SpecFade, core/PbrPop.h; Includes/PBR.hlsl), so it is gone where the game swaps in the shaders without one. Off: the
+// shaders exactly as before.
+#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+    #define PBR_SPEC_FADE
+    // The 6-lamp OPT specular 4+ shader (SLS2035) sits close to the slot count the driver refuses (see LAMP_IF below): there only the
+    // highlight fades (+1 multiply a light, not the diffuse slide: about +8 slots instead of +39 in its interior record).
+    #if defined(OPT) && !defined(ONLY_SPECULAR) && defined(LIGHTS) && SPECULAR_LAMPS6
+        #if LIGHTS > 3
+            #define PBR_SPEC_FADE_HIGHLIGHT_ONLY
+        #endif
+    #endif
+#endif
 #include "includes/Object.hlsl"
 // UNOFFICIAL: the camera matrices Shadow.hlsl rebuilds world positions with move out of c100-c107 in skinned vertex
 // shaders: the game's bone upload reaches past Bones[54] (c97) and overwrote them, so actors sampled the sun shadow

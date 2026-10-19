@@ -191,6 +191,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
 		AppendDefine("SMITH_CORRELATED_ON", smith == 1 ? "1" : "0");
 	}
+	// UNOFFICIAL 2026-10-18 SpecularFade (Includes/PBR.hlsl PBR_SPEC_FADE, core/PbrPop.h): the object shaders' highlights fade out with the
+	// game's specular distance fade instead of vanishing at once where the game swaps in the shaders without one. Compiled in only when on
+	// at startup (the per-draw value then switches it live: 1 = the old result exactly).
+	AppendDefine("SPEC_FADE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
