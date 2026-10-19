@@ -52,7 +52,7 @@ namespace ClothWind {
 		float CalmFactor = 0.6f;		// UseGameWind: strength in dead calm (rising to 1.7 in a gale); it was 0.3
 		bool  LogMatches = false;		// diagnostic: every skinned texture and every match goes to the log with its mesh numbers
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
-		std::string Exclude = "scape,probe,microbe,wardrobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
+		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
 	};
 
@@ -92,13 +92,27 @@ namespace ClothWind {
 	// SetShadersHook, for every pass: did this object's pass use a vertex shader that carries the cloth code?
 	// The grass vertex shaders (GRASS23x00x) keep their shadow matrices in c248..c255: after one of them c248 is not zero, and the
 	// next object with cloth code would move although it is no cloth. Mark the register as 'to be zeroed' (the next non-cloth draw does it).
+	inline bool CurrentVSCapable = false;	// 2026-10-19: the vertex shader the last SetShaders bound carries the cloth code
+	inline std::unordered_map<const void*, bool> TentativeNow;	// 2026-10-19: per object this frame, did the BOUND vertex shader carry it at each lit pass
 	inline void NoteVertexShader(const char* name) {
 		if (S.On && name && name[0] == 'G' && name[1] == 'R' && name[2] == 'A' && name[3] == 'S' && name[4] == 'S') NonZeroSent = true;
+		CurrentVSCapable = S.On && CapableName(name);
 	}
-	inline void NoteShaders(const void* geometry, bool nvrVertexShader) {
+	// 2026-10-19 (P81 report 'cloth: only the player's SHADOW moves'): the object the render-pass hooks are drawing right now. SetShadersHook
+	// used the game's 'current geometry' global, which for worn (skinned) meshes is not the mesh being drawn: their lit passes were never
+	// noted, the SAFETY rule skipped every one of them (600 of 600 frames on NVRAutoTest12) while the shadow passes moved them.
+	inline const void* PassGeometry = nullptr;
+	inline std::unordered_map<const void*, std::string> VanillaVSNow, VanillaVSLast;
+	// 2026-10-19 diagnostic (LogMatches): per worn cloth mesh, lit passes moved / skipped (not seen by SetShaders, vanilla VS), shadow passes
+	struct PassCounts { std::string name; UInt32 lit = 0, notSeen = 0, vanilla = 0, shadow = 0; };
+	inline std::unordered_map<const void*, PassCounts> ClothPassCounts;	// 2026-10-19 diagnostic (LogMatches): which vertex shader
+	inline void NoteShaders(const void* geometry, bool nvrVertexShader, const char* vertexShaderName = nullptr) {
 		if (!S.On || !geometry) return;
 		SeenNow.insert(geometry);
-		if (!nvrVertexShader) VanillaNow.insert(geometry);
+		if (!nvrVertexShader) {
+			VanillaNow.insert(geometry);
+			if (S.LogMatches) VanillaVSNow[geometry] = vertexShaderName ? vertexShaderName : "(none)";
+		}
 	}
 
 	// Keywords and exclusions: lower case, '/' written for the path separator (the game's paths use '\').
@@ -196,7 +210,12 @@ namespace ClothWind {
 
 	inline void BeginFrame(const Sky* sky, bool exterior) {
 		Exterior = exterior || TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Interiors") != 0;	// (named Exterior: 'cloth may move here')
+		// 2026-10-19: objects whose passes the game drew without setting shaders (not noted by SetShadersHook) count by the shader bound then
+		for (const auto& [g, capable] : TentativeNow)
+			if (!SeenNow.count(g)) { SeenNow.insert(g); if (!capable) VanillaNow.insert(g); }
+		TentativeNow.clear();
 		SeenLast.swap(SeenNow); SeenNow.clear(); VanillaLast.swap(VanillaNow); VanillaNow.clear();
+		VanillaVSLast.swap(VanillaVSNow); VanillaVSNow.clear();
 		// The shaders were compiled with Enabled as it was at startup (CLOTH_WIND_ON, ShaderRecord::BuildDefines): read once.
 		if (!CompiledInRead) { CompiledInRead = true; S.CompiledIn = TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") != 0; }
 		S.On = S.CompiledIn && TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled");
@@ -261,6 +280,12 @@ namespace ClothWind {
 			const double real = TheFrameRateManager ? TheFrameRateManager->Time - RealStart : 0.0;
 			Logger::Log("Cloth wind: %.1f cloth draws per frame (%.1f worn); clock %.2f s of wind per second of real time (1 = normal play, 0 = paused)", ClothDraws / (float)Frames, SkinnedDrawsNow / (float)Frames, real > 0.0 ? (ClockSeconds - ClockStart) / real : 0.0);
 			RealStart = TheFrameRateManager ? TheFrameRateManager->Time : -1.0; ClockStart = ClockSeconds;
+			if (S.LogMatches) {
+				for (const auto& [g, c] : ClothPassCounts)
+					Logger::Log("Cloth wind: worn mesh '%s': lit passes moved %u, skipped %u (not seen by SetShaders) + %u (vertex shader without cloth code%s%s), shadow passes %u",
+						c.name.c_str(), c.lit, c.notSeen, c.vanilla, VanillaVSLast.count(g) ? ": " : "", VanillaVSLast.count(g) ? VanillaVSLast.at(g).c_str() : "", c.shadow);
+				ClothPassCounts.clear();
+			}
 			Frames = ClothDraws = SkinnedDrawsNow = 0;
 		}
 	}
@@ -276,7 +301,24 @@ namespace ClothWind {
 	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false) {
 		if (!device) return;
 		if (!S.On || !Exterior || !geometry) { Zero(device); return; }
-		if (!shadowPass && (!SeenLast.count(geometry) || VanillaLast.count(geometry))) { Zero(device); return; }	// see SAFETY above
+		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
+		// frames, 'not seen by SetShaders'): the game sets no shaders for a pass whose shaders are already bound (the coat follows its
+		// Pip-Boy piece, same shaders), so SetShadersHook never notes it. Such a pass draws with the vertex shader bound now: judge it by
+		// that one, and note it so the rule below holds for it from the next frame on (a vanilla one still keeps the object still).
+		bool boundAnswer = false;
+		if (!shadowPass) {
+			auto t = TentativeNow.find(geometry);
+			if (t == TentativeNow.end()) TentativeNow.emplace(geometry, CurrentVSCapable);
+			else t->second = t->second && CurrentVSCapable;	// every pass of the object this frame
+			boundAnswer = !SeenLast.count(geometry) && CurrentVSCapable && !VanillaLast.count(geometry);
+		}
+		if (!shadowPass && !boundAnswer && (!SeenLast.count(geometry) || VanillaLast.count(geometry))) {	// see SAFETY above
+			if (S.LogMatches) {	// 2026-10-19 diagnostic: how often the safety rule skips a known worn cloth mesh, and why
+				auto c = ClothPassCounts.find(geometry);
+				if (c != ClothPassCounts.end()) { if (!SeenLast.count(geometry)) c->second.notSeen++; else c->second.vanilla++; }
+			}
+			Zero(device); return;
+		}
 		if (shadowPass && VanillaLast.count(geometry)) { Zero(device); return; }
 		BSShaderProperty* property = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
 		const UInt32 vtable = property ? *(UInt32*)property : 0;
@@ -317,6 +359,11 @@ namespace ClothWind {
 		else {	// worn clothing
 			const NiAVObject* root = geometry->skinInstance->RootParent ? geometry->skinInstance->RootParent : geometry;
 			SkinnedDrawsNow++;
+			if (S.LogMatches) {	// 2026-10-19 diagnostic (see ClothPassCounts)
+				PassCounts& c = ClothPassCounts[geometry];
+				if (c.name.empty()) c.name = geometry->m_pcName ? geometry->m_pcName : "?";
+				if (shadowPass) c.shadow++; else c.lit++;
+			}
 			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
 			else if (S.SkinMask == 1 && geometry->geomData) {
 				// Actor meshes are authored with the feet at z 0 (checked on the vanilla Combat Ranger, Sheriff's duster and Patrol NIFs:
