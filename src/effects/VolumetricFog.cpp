@@ -13,6 +13,27 @@ static void BindSky(IDirect3DDevice9* Device, IDirect3DTexture9* sky) {
 	for (const auto& s : states) TheRenderManager->SetSamplerState(12, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 }
 
+// UNOFFICIAL 2026-10-19 SunFar: the land's and the clouds' shadow factor (SunFarEffect::FactorTexture) on stage 13 (NVR_SunFar) for the
+// sun-shadow composite, its flag set with it; null unbinds (and the flag must then be 0).
+static void BindSunFar(IDirect3DDevice9* Device, IDirect3DTexture9* factor) {
+	Device->SetTexture(13, factor);
+	TheRenderManager->renderState->NoteDeviceTexture(13, factor);
+	if (!factor) return;
+	const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+		{D3DSAMP_MAGFILTER, D3DTEXF_POINT}, {D3DSAMP_MINFILTER, D3DTEXF_POINT}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+	for (const auto& s : states) TheRenderManager->SetSamplerState(13, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+}
+
+// The factor for a composite that applies the sun's shadows (null when SunFar drew nothing this frame), its flag set to match.
+IDirect3DTexture9* VolumetricFogEffect::SunFarFor(bool shadow) {
+	IDirect3DTexture9* factor = shadow && TheShaderManager->Effects.SunFar ? TheShaderManager->Effects.SunFar->FactorTexture() : nullptr;
+	D3DXHANDLE handle = ParameterHandle(paramSunFarFlags, "NVR_SunFarFlags");
+	if (!handle) return nullptr;
+	D3DXVECTOR4 flags(factor ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	Effect->SetVector(handle, &flags);
+	return factor;
+}
+
 void VolumetricFogEffect::UpdateConstants() {
 	// live weather-driven sky-filter disable, smoothly animated the same way RainEffect
 	// animates rain onset/offset (Animator started once on the true/false edge, sampled every frame).
@@ -390,6 +411,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 	IDirect3DTexture9* sky = aoTexture ? compositeSkyTexture : nullptr;	// UNOFFICIAL Skylighting v2
 	D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, aoTexture ? 1.0f : 0.0f, sky ? 1.0f : 0.0f, 0.0f);
 	Effect->SetVector(flagsHandle, &flags);
+	IDirect3DTexture9* sunFar = SunFarFor(shadow);	// UNOFFICIAL 2026-10-19
 	if (aoTexture) {
 		D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
 		Effect->SetVector(aoTexelHandle, &aoTexel);
@@ -405,6 +427,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 			Device->SetTexture(7, nullptr);
 			Device->SetTexture(8, aoTexture);
 			BindSky(Device, sky);
+			if (sunFar) BindSunFar(Device, sunFar);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}
@@ -412,6 +435,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 	}
 	Device->SetTexture(8, nullptr);
 	if (sky) BindSky(Device, nullptr);
+	if (sunFar) BindSunFar(Device, nullptr);
 	Device->SetTexture(0, TheTextureManager->SourceTexture);
 	Device->SetRenderTarget(0, RenderTarget);
 	if (FAILED(result)) {
@@ -463,6 +487,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = !targetOverride && chain.Owns(RenderTarget, RenderedSurface);
+	IDirect3DTexture9* sunFar = nullptr;	// UNOFFICIAL 2026-10-19 SunFar: bound for the composite pass (below)
 	IDirect3DSurface9* finalTarget = targetOverride ? targetOverride : chained ? chain.Output() : RenderTarget;
 	D3DVIEWPORT9 reduced = original;
 	reduced.Width = fog.Width;
@@ -488,6 +513,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 			(compositeAO && compositeAOTexture && compositeSkyTexture) ? 1.0f : 0.0f,	// z: UNOFFICIAL Skylighting v2
 			compositeInteriorShadow ? compositeRound : 0.0f);	// w: UNOFFICIAL InteriorShadowFold rounding (interior technique only)
 		Effect->SetVector(flagsHandle, &flags);
+		sunFar = compositeShadow && !compositeInteriorShadow ? SunFarFor(true) : SunFarFor(false);	// UNOFFICIAL 2026-10-19
 		// The AO targets are half or (AOLowRes) quarter resolution; tell the upsample which.
 		D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
 		D3DSURFACE_DESC ao = {};
@@ -537,6 +563,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 				Device->SetTexture(7, fogTexture[1]);
 				if (composite && compositeAO && compositeAOTexture) Device->SetTexture(8, compositeAOTexture);
 				if (composite && compositeAO && compositeAOTexture && compositeSkyTexture) BindSky(Device, compositeSkyTexture);
+				if (sunFar) BindSunFar(Device, sunFar);
 			}
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
@@ -548,6 +575,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	Device->SetTexture(7, nullptr);
 	Device->SetTexture(8, nullptr);
 	if (compositeSkyTexture) BindSky(Device, nullptr);
+	if (sunFar) BindSunFar(Device, nullptr);
 	if (grid) {
 		Device->SetTexture(11, nullptr);
 		TheRenderManager->renderState->NoteDeviceTexture(11, nullptr);

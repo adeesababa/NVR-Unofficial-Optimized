@@ -1149,9 +1149,14 @@ static const float CompositeAOEndFade = 8000;
 // of the light only, at the AO's resolution), bound by hand on stage 12 (VolumetricFog.cpp BindSky), upsampled with the AO's weights.
 // No new constants or literals here: with the physical sky this pass already uses c0-c218 of 224.
 sampler2D NVR_SkyVis : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-19 SunFar (SunFar.fx.hlsl): the land's and the clouds' shadow, a factor on the stored (gamma) colour, bound by
+// hand on stage 13 while NVR_SunFarFlags.x is 1 (VolumetricFog.cpp BindSunFar). One more constant register (c219 of 224 at most).
+float4 NVR_SunFarFlags;
+sampler2D NVR_SunFar : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 float3 CompositeSunShadow(float3 linearColor, float2 uv)
 {
+	linearColor *= lerp(1.0, pows(tex2Dlod(NVR_SunFar, float4(uv, 0, 0)).rgb, 2.2), NVR_SunFarFlags.x);	// (no branch on the flag: the composites have no boolean register to spare with the physical sky compiled in; 0 or 1)
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float depth = readDepthLod(uv);
 		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * depth;

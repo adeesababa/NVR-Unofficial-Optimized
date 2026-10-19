@@ -1,6 +1,7 @@
 #include "PBR.h"
 #include "../core/PassSums.h"
 #include "../core/LinearPreDecode.h"
+#include "GrassCollision.h"	// UNOFFICIAL 2026-10-19 (TESR_Translucency.w)
 
 void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRData", &Constants.Data);
@@ -182,7 +183,7 @@ void PBRShaders::UpdateConstants() {
 	Constants.Translucency.x = FoliageSettings.Translucency;
 	Constants.Translucency.y = FoliageSettings.Power;
 	Constants.Translucency.z = FoliageSettings.SunGate;
-	Constants.Translucency.w = 0.0f;
+	Constants.Translucency.w = GrassCollision::FieldScale();	// UNOFFICIAL 2026-10-19 grass collision: 1 / its push texture's width (0 off)
 
 	// get max value between rain animator and puddle animator
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);

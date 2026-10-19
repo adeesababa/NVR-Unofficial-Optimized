@@ -139,6 +139,22 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		Device->SetRenderTarget(0, target);
 		Render(Device, target, target, technique, false, target);
 	};
+	// UNOFFICIAL 2026-10-19 Skylighting v3 phase 1 ([Shaders.AmbientOcclusion.Skylighting] Reflections; after Community Shaders' Skylighting
+	// MixSpecular): the sky visibility on stage 11 for the trace, whose sky fallback fades where the sky is hidden.
+	AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+	IDirect3DTexture9* skyVis = ao ? ao->SkyReflectionTexture() : nullptr;
+	static CachedHandle skyHandle;
+	if (D3DXHANDLE handle = ParameterHandle(skyHandle, "NVR_ReflectionsSky")) {
+		D3DXVECTOR4 sky(skyVis ? 1.0f : 0.0f, ao ? ao->SkyMinReflection : 0.1f, 0.0f, 0.0f);
+		Effect->SetVector(handle, &sky);
+	}
+	else skyVis = nullptr;
+	if (skyVis) {
+		SetPassTexture(11, skyVis);	// set after each pass begins (EffectRecord::PassTextures)
+		const DWORD linear[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+			{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+		for (const auto& s : linear) TheRenderManager->SetSamplerState(11, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+	}
 	if (temporal) {
 		pass(Textures.TraceSurface, 1);
 		pass(Textures.TempSurface, 3);
@@ -148,6 +164,7 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		pass(Textures.TempSurface, 1);
 	pass(Textures.TraceSurface, 2);
 	pass(Textures.BufferSurface, 4);
+	ClearPassTextures();
 
 	haveHistory = temporal;
 	lastRenderedFrame = now;

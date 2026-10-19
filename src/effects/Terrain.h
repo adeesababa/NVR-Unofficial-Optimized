@@ -83,6 +83,8 @@ public:
 		D3DXVECTOR4		ExtraData;
 		// TerrainExtraData is full: x usePBR, y saturation, z NoiseScale, w NoiseTile.
 		D3DXVECTOR4		SkyData;      // x: skylight strength, y: sample directionality
+		D3DXVECTOR4		VariationData;	// UNOFFICIAL 2026-10-19 Terrain Variation (TESR_TerrainVariationData, c95): x lattice scale, y height influence, z StartDistance, w its fade
+		D3DXVECTOR4		VariationExtra;	// (TESR_TerrainVariationExtra, c96): x 1 = the normal maps vary too
 	};
 	TerrainStruct	Constants;
 

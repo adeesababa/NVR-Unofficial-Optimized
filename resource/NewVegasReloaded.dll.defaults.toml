@@ -241,6 +241,8 @@ MapRefresh = 60                        # [1-100000] Version 2: frames between re
 MoveRefresh = 200.0                    # [1-100000] Version 2: how far (game units) you move before the top-down map is redrawn.
 SoftWidth = 40.0                       # [1-500] Version 2: how soft (game units) the edge of cover is in the test (against hard steps).
 DebugView = 0                          # Version 2, test views: 1 sky visibility, 2 the sky's share of the light, 3 the final darkening, 4 'covered' (something above the point in the map). 0 = off.
+Reflections = false                    # UNOFFICIAL (2026-10-19) Skylighting step 3: the sky's reflection also goes where the sky cannot be seen, so wet floors, puddles and shiny ground under roofs, porches and overhangs stop mirroring a bright sky (the Specular effect's sky reflection and the wet-ground reflections' sky). Needs Skylighting Version 2 on. Costs next to nothing. After Community Shaders' Skylighting (GPL-3.0).
+MinReflection = 0.1                    # [0-1] (2026-10-19) How much of the sky's reflection stays where the sky is fully hidden (Community Shaders' default 0.1).
 
 [_Shaders.AmbientOcclusion.FastPaths]
 Enabled = true                         # UNOFFICIAL (2026-10-17): the same ambient occlusion for less GPU time outdoors: sky and distant pixels really skip the occlusion samples and both blurs (the shader compiler had turned that early exit into work every pixel did). Off = the original passes. Applies immediately
@@ -542,6 +544,14 @@ Wrap = 0.0                             # how far the sun's light wraps round a s
 TipLift = 0.3                          # a warm lift of the colour toward the tip.
 Variation = 0.2                        # per-strand brightness variation (+-): the fizz of the twigs.
 Log = 0                                # DIAGNOSTIC: 1 = one log line per replaced draw for the first 3 frames.
+
+[_Shaders.Grass.Collision]
+Enabled = false                        # UNOFFICIAL (2026-10-19) Grass that moves when you walk through it: you and the people and creatures near you push the grass aside, and it springs back behind you. Costs next to nothing (a small texture made each frame, one extra read per grass vertex). Works on the game's grass cards (not on NewGrass strands yet). After Community Shaders' Grass Collision (GPL-3.0); this build's own version for DirectX 9.
+Strength = 28.0                        # [0-200] (2026-10-19) How far a blade's tip is pushed aside right at someone's feet, in game units.
+Radius = 1.0                           # [0.1-5] (2026-10-19) How wide the pushed patch is, times each actor's own size.
+Recovery = 2.5                         # [0-60] (2026-10-19) Seconds for the grass to spring back once nobody stands in it (0: at once).
+Range = 1536.0                         # [256-8192] (2026-10-19) How far from you actors still push grass, in game units. Smaller: a finer push map (sharper footprints).
+Actors = 16                            # [0-64] (2026-10-19) How many of the nearest people and creatures push grass besides you.
 
 [_Shaders.Grass.Status]
 Enabled = true                        # Replaces the grass shaders.
@@ -1061,6 +1071,29 @@ Resolution = 2						 # Resolution of the texture used to store the ortho map. 0:
 Distance = 3000                      # Distance to render ortho for. The unit is the same as the game uses for i.e. fog values.
 LimitFrequency = true				 # Limit the update frequency of the ortho map (one per four frames).
 ProbeDump = 0                        # UNOFFICIAL, development builds only: a new non-zero value writes one dump of the ortho map with the object that drew each texel (for diagnosis; does nothing in release builds).
+
+[_Shaders.ShadowsExteriors.TerrainShadows]
+Enabled = false                      # UNOFFICIAL (2026-10-19) Mountain shadows: hills and mountains shade the land and everything on it far past the sun-shadow maps (about 85 m), so at sunrise and sunset ranges cast long shadows across the valleys. Only the sunlight is taken away: shaded land keeps its sky and ambient light. Reads the land's heights from your plugins in load order (about a second, on a spare core, when you enter a worldspace), or an xLODGen height map if you made one (UseHeightMapFile). Worked out on a spare CPU core when the sun moves; about 0.1 ms a frame on the GPU. Ported from Conor's (mrfury97) NVR fork, after Community Shaders' Terrain Shadows (both GPL-3.0).
+MaxResolution = 1                    # [0-2] (2026-10-19) The land's height map is shrunk to at most 0: 1024, 1: 2048, 2: 4096 texels on its longer side (applied on the next worldspace change or a moment after you change it). Larger: sharper shadow edges, more video memory (16 MB at 2048) and CPU per update.
+Bias = 64.0                          # [0-4096] (2026-10-19) Shadow heights are lowered by this many units, so slopes do not shadow themselves. Higher: fewer, deeper shadows only; lower: more shadow on gentle slopes.
+Softness = 1.0                       # [0.1-10] (2026-10-19) Degrees either side of the sun's height over which the shadow's edge fades.
+Strength = 1.0                       # [0-1] (2026-10-19) How much of the sun the land's shadow takes.
+Darkness = 0.0                       # [0-0.95] (2026-10-19) How much of the sky and ambient light the land's shadow also takes. 0: only the sun (physically right: a valley still sees the sky); higher: darker, more contrasted shadows (Conor's fork uses 0.5).
+Contrast = 1.5                       # [0.5-8] (2026-10-19) Sharpens the shadow's edge: 1 as worked out, higher a harder line between lit and shaded land.
+UseHeightMapFile = true              # (2026-10-19) Use an xLODGen height map when one is installed (FNVLODGen: Terrain LOD > Height maps, in Data\Textures\Terrain\<Worldspace>\), otherwise the land read from your plugins. Both give the same shape; the file skips the one-second read.
+DebugView = 0                        # (2026-10-19) 1: the land's shadow tinted green (and the clouds' blue) over the picture. 2: also tints the area the height map covers.
+
+[_Shaders.CloudShadows.Main]
+Enabled = false                      # UNOFFICIAL (2026-10-19) Cloud shadows: the game's own cloud layers cast moving shadows on the land, dimming only the sunlight (shade keeps its sky light). Cheap (a few texture reads per pixel); no volumetric clouds needed. When the volumetric clouds draw their own shadows, theirs are used instead. After Community Shaders' Cloud Shadows (GPL-3.0); this build's own version for DirectX 9.
+Strength = 0.6                       # [0-1] (2026-10-19) How much of the sun a fully clouded patch of sky takes.
+Density = 3.0                        # [0-8] (2026-10-19) How solid the clouds count: their pictures' cover times this. Thin, wispy cloud pictures need more to cast a visible shadow (faint, wispy clear-sky clouds still cast little shade at 3).
+Height = 140000.0                    # [1000-1000000] (2026-10-19) How high above you the clouds' shadows are cast from, in game units (140000 = about 2 km, as Community Shaders). Higher: the shadows move further from the clouds' spot overhead as the sun gets low.
+TileSize = 400000.0                  # [1000-10000000] (2026-10-19) How much land one cloud picture covers, in game units. Smaller: smaller, more frequent cloud shadows.
+Speed = 1.0                          # [0-20] (2026-10-19) How fast the cloud shadows drift with the weather's wind (the higher cloud layers faster).
+DebugView = 0                        # (2026-10-19) 1: the clouds' shadow tinted blue (and the land's green) over the picture.
+
+[_Shaders.SunFar.Status]
+Enabled = true                       # (2026-10-19) The pass that draws the mountain and cloud shadows above. It only runs while one of them is on.
 
 [_Shaders.ShadowsExteriors.Status]
 Enabled = true                       # Post process sun and pointlights shadows in exteriors.
@@ -1694,6 +1727,15 @@ Debug = false                       # Old switch, kept for old settings files: t
 [_Shaders.Terrain.LOD]
 LODNoiseScale = 0.7                 # Amount of noise applied to LOD.
 LODNoiseTile = 2.7                  # LOD noise texture tiling modifier.
+
+[_Shaders.Terrain.Variation]
+Enabled = false                     # UNOFFICIAL (2026-10-19) Less repeating ground: each ground texture is read twice at shifted, randomised spots and blended, so the desert stops looking like the same tile laid over and over (slightly softer contrast in exchange). Needs a restart. Some GPU time on the ground (its first Layers textures read twice); StartDistance can keep it off nearby. Ported from Conor's (mrfury97) NVR fork, after Community Shaders' Terrain Variation (both GPL-3.0), after Deliot and Heitz 2019.
+Layers = 2                          # [1-7] (2026-10-19) How many of a ground patch's textures (the first ones) get the variation. Needs a restart. Each one doubles that texture's reads; most open ground uses one to three.
+Scale = 1.0                         # (2026-10-19) Random cells per texture repeat. Lower: bigger patches (keeps more of the texture's own large shapes); higher: changes more often but blends more, softening contrast.
+HeightInfluence = 0.3               # [0-1] (2026-10-19) How much the textures' height decides the blend between the two reads. 0: a plain crossfade (both half-visible across the seam); higher: the taller one wins its own area, so seams follow stones and cracks.
+StartDistance = 0.0                 # (2026-10-19) Game units from you before the variation starts (0: everywhere). Measured in one noon desert view (2560x1440, GTX 1070): everywhere and off cost the same within 0.1 ms. If the ground ever costs you more, 1000-2000 keeps it off under your feet.
+StartFade = 512.0                   # (2026-10-19) Game units over which the variation fades in after StartDistance.
+NormalMaps = true                   # (2026-10-19) The ground's normal maps (its bumps) vary too. Off: only the colour varies, for about half the cost; the bumps keep the plain repeat.
 
 [_Shaders.Terrain.Status]
 Enabled = true                      # Replaces shaders used by terrain, adding PBR lighting and parallax.

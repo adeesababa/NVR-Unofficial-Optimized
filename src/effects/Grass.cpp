@@ -1,5 +1,6 @@
 #include "Grass.h"
 #include "../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass ([Shaders.Grass.NewGrass]): blade geometry in place of the near grass cards
+#include "GrassCollision.h"	// UNOFFICIAL 2026-10-19 [Shaders.Grass.Collision]
 
 void GrassShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GrassScale", &Constants.Scale);
@@ -18,9 +19,12 @@ void GrassShaders::UpdateSettings() {
 	DrawFirstRestore = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstRestore");
 	DrawFirstCull = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstCull");
 	NewGrass::ReadSettings();	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h): live
+	GrassCollision::ReadSettings();	// UNOFFICIAL 2026-10-19
 }
 
-void GrassShaders::UpdateConstants() {}
+void GrassShaders::UpdateConstants() {
+	GrassCollision::Update();	// UNOFFICIAL 2026-10-19: the push round the camera, once a frame
+}
 
 // UNOFFICIAL 2026-10-17 grass study: every pass that sets grass shaders up (SetShadersHook; the game does it once for a run of
 // grass draws). Tells NVR's grass vertex shaders (c19, GrassPairing in GRASS23x00*.vso) which pixel shader reads them: NVR's
@@ -46,4 +50,5 @@ void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShade
 		Sandstorm ? Sandstorm->GrassStorm[1] : 0.0f, (float)DrawPart };
 	TheRenderManager->device->SetVertexShaderConstantF(19, Pairing, 1);
 	for (int i = 0; i < 4; i++) LastPairing[i] = Pairing[i];
+	GrassCollision::Bind(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: the push texture on vertex sampler 0
 }

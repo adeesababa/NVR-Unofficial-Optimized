@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TerrainShadows.h"	// UNOFFICIAL 2026-10-19 [Shaders.ShadowsExteriors.TerrainShadows]
+
 typedef struct frustum {
 	enum PLANE {
 		PLANENEAR = 0,
@@ -212,6 +214,14 @@ public:
 	};
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
+	// UNOFFICIAL 2026-10-19: the land's shadows far past the cascades (TerrainShadows.h, after Conor's port of Community
+	// Shaders' Terrain Shadows), updated in ShadowManager::RenderShadowMaps, applied by the SunFar pass.
+	TerrainShadowMap		TerrainShadows;
+	// UNOFFICIAL 2026-10-19 (after Conor, 6043062a): the sun and ambient colours as the object shaders receive them
+	// (TESR_ShadowSunLight / TESR_ShadowAmbientLight), for the SunFar pass to split a pixel's light the way they lit it.
+	D3DXVECTOR4				SunLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+	D3DXVECTOR4				AmbientLight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+	void					UpdateLightColors();
 	ShadowMapSettings		ShadowMaps[5];
 	// UNOFFICIAL 2026-10-16 SkipWhenFaded: outdoors, this frame's sun shadows are fully faded out (ShadowFade.x 1, around
 	// sunrise and sunset) and the switch is on, so the forward lookups are off (ForwardData.x). Set by UpdateConstants.

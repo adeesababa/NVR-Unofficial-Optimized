@@ -1838,6 +1838,10 @@ void ShadowManager::RenderShadowMaps() {
 			}
 			ambientLight->gridSunHasColor = colour;
 		}
+
+		// UNOFFICIAL 2026-10-19 [ShadowsExteriors.TerrainShadows] (after Conor's port of Community Shaders' Terrain Shadows): the land's
+		// heights loaded and swept toward the sun on worker threads (effects/TerrainShadows.cpp); the SunFar pass applies them.
+		Shadows->TerrainShadows.Update(Device, D3DXVECTOR3(TheShaderManager->ShaderConst.SunDir));   // the real sun, not the quantized one
 	}
 
 	// Render shadow maps for point lights

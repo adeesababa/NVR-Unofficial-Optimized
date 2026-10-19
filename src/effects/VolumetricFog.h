@@ -105,6 +105,9 @@ public:
 	IDirect3DTexture9* gridTexture = nullptr;
 	bool	gridApplied = false;
 	CachedHandle paramGridFlags;
+	// UNOFFICIAL 2026-10-19 SunFar: NVR_SunFarFlags, and the factor for a composite pass (sets the flag; null when none).
+	CachedHandle paramSunFarFlags;
+	IDirect3DTexture9* SunFarFor(bool shadow);
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
 	bool	CanCompositeInterior() { return !PlainOnly() && CompositeInteriorTechnique() != NULL; }
 	// How this GPU stores a float in a 16-bit float render target: 0 round to nearest even, 2 round toward zero, -1 neither

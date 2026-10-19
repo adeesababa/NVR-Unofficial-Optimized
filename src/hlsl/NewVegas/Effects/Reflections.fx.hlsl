@@ -52,6 +52,11 @@ sampler2D TESR_ReflectionsHistory : register(s7) = sampler_state { ADDRESSU = CL
 samplerCUBE TESR_ReflectionsCapture : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 samplerCUBE TESR_ReflectionsCaptureNew : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 samplerCUBE TESR_ReflectionsEnv : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// UNOFFICIAL 2026-10-19 Skylighting v3 phase 1 ([Shaders.AmbientOcclusion.Skylighting] Reflections): the sky visibility (Skylighting
+// v2's b), bound by hand for the trace (ReflectionsEffect::RenderBuffers) while NVR_ReflectionsSky.x is 1, so the sky fallback fades
+// where the sky cannot be seen, down to y (MinReflection), as Community Shaders' Skylighting MixSpecular (GPL-3.0). After the TESR_ samplers.
+float4 NVR_ReflectionsSky;
+sampler2D NVR_ReflectionsSkyVis : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float DryReflect = TESR_ReflectionsData.x;
@@ -308,6 +313,7 @@ float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	}
 	[branch] if (confidence < 1.0 && SkyFallback > 0.0) {
 		float share = (1.0 - confidence) * smoothstep(0.0, 0.15, worldR.z);
+		share *= lerp(1.0, lerp(NVR_ReflectionsSky.y, 1.0, tex2Dlod(NVR_ReflectionsSkyVis, float4(uv, 0, 0)).b), NVR_ReflectionsSky.x);	// UNOFFICIAL 2026-10-19 (no branch on the flag)
 		sum += SkyAlong(worldR) * share;
 		confidence += share;
 	}

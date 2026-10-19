@@ -148,6 +148,18 @@
     <ClInclude Include="..\src\effects\SkyDither.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\GrassCollision.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\LandHeights.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\TerrainShadows.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\effects\SunFar.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\Bodycam.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -457,6 +469,18 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\SkyDither.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\GrassCollision.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\LandHeights.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\TerrainShadows.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\SunFar.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Bodycam.cpp">

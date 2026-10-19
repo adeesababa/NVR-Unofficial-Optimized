@@ -257,6 +257,11 @@ Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIA
 > this repository. All original copyright notices are unchanged.
 > The game-engine fixes since P75 (water reflection clip plane, scope fix, lamp shadow work) were built with
 > the help of [WallSoGB](https://github.com/WallSoGB)'s Fallout: New Vegas IDA Pro database.
+> Mountain shadows, cloud shadows, grass collision, terrain variation and the sky-reflection step of skylighting
+> follow the [Community Shaders](https://github.com/community-shaders/skyrim-community-shaders) team and contributors'
+> Terrain Shadows, Cloud Shadows, Grass Collision, Terrain Variation and Skylighting (GPL-3.0); the terrain shadows'
+> sweep and the terrain variation shader are ported from [Conor (mrfury97)](https://github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork)'s
+> NVR fork (GPL-3.0-or-later). What came from where: [docs/COMMUNITY-SHADERS-PORTS.md](docs/COMMUNITY-SHADERS-PORTS.md).
 >
 > This is shared in good faith. If any of the original authors or maintainers feel this release
 > steps on their toes, please open an issue here and it will be taken down.

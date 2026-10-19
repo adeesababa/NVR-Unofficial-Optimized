@@ -175,6 +175,10 @@
     <ClCompile Include="..\src\effects\Sandstorm.cpp" />
     <ClCompile Include="..\src\effects\VolumetricLight.cpp" />
     <ClCompile Include="..\src\effects\SkyDither.cpp" />
+    <ClCompile Include="..\src\effects\LandHeights.cpp" />
+    <ClCompile Include="..\src\effects\TerrainShadows.cpp" />
+    <ClCompile Include="..\src\effects\SunFar.cpp" />
+    <ClCompile Include="..\src\effects\GrassCollision.cpp" />
     <ClCompile Include="..\src\effects\Bodycam.cpp" />
     <ClCompile Include="..\src\effects\Reflections.cpp" />
     <ClCompile Include="..\src\effects\VolumetricClouds.cpp" />
@@ -302,6 +306,10 @@
     <ClInclude Include="..\src\effects\Sandstorm.h" />
     <ClInclude Include="..\src\effects\VolumetricLight.h" />
     <ClInclude Include="..\src\effects\SkyDither.h" />
+    <ClInclude Include="..\src\effects\LandHeights.h" />
+    <ClInclude Include="..\src\effects\TerrainShadows.h" />
+    <ClInclude Include="..\src\effects\SunFar.h" />
+    <ClInclude Include="..\src\effects\GrassCollision.h" />
     <ClInclude Include="..\src\effects\Bodycam.h" />
     <ClInclude Include="..\src\effects\BodycamAudio.h" />
     <ClInclude Include="..\src\effects\Reflections.h" />

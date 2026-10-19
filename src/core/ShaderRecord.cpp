@@ -199,6 +199,14 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// like LIVE_CUBE, so that otherwise the land shaders are exactly what they were. TextureManager makes its depth copy
 	// under the same condition.
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
+	// UNOFFICIAL 2026-10-19 Terrain Variation (Includes/TerrainVariation.hlsl): compiled in only when on at startup, and only for the
+	// first Layers blend layers (after Conor's port, 66653eea + d07ff4b9: it changes the shape of the land's sampling, not a value).
+	{
+		AppendDefine("TERRAIN_VARIATION", TheSettingManager->GetSettingI("Shaders.Terrain.Variation", "Enabled") ? "1" : "0");
+		static char layerDefine[2] = { '3', 0 };
+		layerDefine[0] = (char)('0' + std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Variation", "Layers"), 1, 7));
+		AppendDefine("TERRAIN_VARIATION_LAYERS", layerDefine);
+	}
 
 	// UNOFFICIAL 2026-10-13 blood on the first-person weapon and gloves (Includes/HandBlood.hlsl, HandBlood.cpp): compiled in only
 	// when on at startup, like TERRAIN_BLEND (the per-draw switch alone cost every lit object 2-5 %).
