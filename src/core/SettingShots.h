@@ -290,11 +290,14 @@ namespace SettingShots {
 			if (!Running) return;
 		}
 		if (!Commands.empty()) {
-			for (const std::string& line : Commands) {
+			// 2026-10-19: taken out of the list BEFORE running. A 'coc' draws loading-screen frames inside RunScriptLine, which come
+			// back here; with the list still full every one of them ran the coc again (117 nested coc calls, then a crash).
+			std::vector<std::string> lines;
+			lines.swap(Commands);
+			for (const std::string& line : lines) {
 				Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
 				if (g_ConsoleInterface) g_ConsoleInterface->RunScriptLine(line.c_str(), nullptr);
 			}
-			Commands.clear();
 		}
 		if (Moves && Player) Cell = Player->parentCell;
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
