@@ -510,6 +510,15 @@ namespace NewGrass {
 		state->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);
 		state->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
 
+		// 2026-10-19 (P81 playtest tester, RTX 4070 Ti Super: 'the new grass shader bugs out with giant black rendering of the grass if
+		// you get close enough'): this draw writes vertex c248-c251 and c254-c255 and pixel c20-c25, and never put them back. In the
+		// hybrid (KeepCards, the default) the game's card draw comes right after with its bindings restored but not those constants: the
+		// grass vertex shaders read their sun-shadow matrices from c248 (inverse projection) and c252 (inverse view), so the near cards'
+		// shadow positions were garbage. That shows wherever NVR's grass pixel shader does the shadow lookup (GRASS23x000TMS.pso, the
+		// transparency multisampling pairing): black cards right where the strands are drawn. Saved here, put back after the draw.
+		float savedVS[8][4], savedPS[6][4];
+		const bool haveVS = SUCCEEDED(device->GetVertexShaderConstantF(248, &savedVS[0][0], 8));
+		const bool havePS = SUCCEEDED(device->GetPixelShaderConstantF(20, &savedPS[0][0], 6));
 		ShaderRecordPixel* ps = S.ReceiveShadows ? PS : PSNoShadow;
 		device->SetVertexShader(VS->ShaderHandle);
 		device->SetPixelShader(ps->ShaderHandle);
@@ -537,6 +546,8 @@ namespace NewGrass {
 		device->SetIndices(v.IB);
 		Next(device, D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);	// straight to the runtime: the hooked entry would swallow it
 
+		if (haveVS) device->SetVertexShaderConstantF(248, &savedVS[0][0], 8);	// 2026-10-19: the constants above, put back (see the save)
+		if (havePS) device->SetPixelShaderConstantF(20, &savedPS[0][0], 6);
 		device->SetVertexShader(oldVS); device->SetPixelShader(oldPS); device->SetVertexDeclaration(oldDecl);
 		device->SetStreamSource(0, oldVB, oldOffset, oldStride); device->SetIndices(oldIB);
 		if (oldVS) oldVS->Release(); if (oldPS) oldPS->Release(); if (oldDecl) oldDecl->Release(); if (oldVB) oldVB->Release(); if (oldIB) oldIB->Release();
