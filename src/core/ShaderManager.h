@@ -172,6 +172,7 @@ public:
 		PointShadowsEffect*		PointShadows;
 		PointShadows2Effect*	PointShadows2;
 		SunShadowsEffect*		SunShadows;
+		SunFarEffect*			SunFar;				// UNOFFICIAL 2026-10-19: the land's and the clouds' shadows (SunFar.h)
 		UnderwaterEffect*		Underwater;
 		VolumetricFogEffect*	VolumetricFog;
 		WaterLensEffect*		WaterLens;

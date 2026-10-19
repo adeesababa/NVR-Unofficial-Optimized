@@ -416,6 +416,24 @@ bool EffectRecord::PassNeedsPrefill(UINT techniqueIndex, UINT pass) const {
 * Re-binds samplers that follow a TextureManager slot, for use after BeginPass when a slot's
 * texture changed since SetCT (the frame chain swaps TESR_RenderedBuffer between passes).
 */
+// UNOFFICIAL 2026-10-19 (see PassTextures in EffectRecord.h).
+void EffectRecord::BindPassTextures() {
+	for (UINT stage = 0; stage < 16; stage++) {
+		if (!PassTextures[stage]) continue;
+		TheRenderManager->device->SetTexture(stage, PassTextures[stage]);
+		TheRenderManager->renderState->NoteDeviceTexture(stage, PassTextures[stage]);
+	}
+}
+
+void EffectRecord::ClearPassTextures() {
+	for (UINT stage = 0; stage < 16; stage++) {
+		if (!PassTextures[stage]) continue;
+		PassTextures[stage] = nullptr;
+		TheRenderManager->device->SetTexture(stage, nullptr);
+		TheRenderManager->renderState->NoteDeviceTexture(stage, nullptr);
+	}
+}
+
 void EffectRecord::RebindSlotTextures() {
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
 		ShaderTextureValue* Sampler = &TextureShaderValues[c];
@@ -463,6 +481,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 				Effect->BeginPass(p);
 				RebindSlotTextures(); // the current image moved after the previous pass
+				BindPassTextures();	// UNOFFICIAL 2026-10-19
 				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
@@ -490,6 +509,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		for (UINT p = 0; p < Passes; p++) {
 			if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 			Effect->BeginPass(p);
+			BindPassTextures();	// UNOFFICIAL 2026-10-19
 			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture

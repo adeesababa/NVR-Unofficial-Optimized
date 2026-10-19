@@ -359,7 +359,22 @@ PS_OUTPUT main(PS_INPUT IN) {
     float gloss = 0.0f;
     float specExponent = 0.0f;
     float2 odx = ddx(offsetUV), ody = ddy(offsetUV);	// UNOFFICIAL SkipEmptyLayers: the gradients tex2D took implicitly
-    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
+    // UNOFFICIAL 2026-10-19 LOD Blending (DisableVertexColors): the near land without its vertex colours, to match far land generated
+    // without them (xLODGen's Vertex Color Intensity 0), as Community Shaders' DisableTerrainVertexColors. z is 0 (off): unchanged.
+    float3 landVertexColor = lerp(IN.vertex_color, 1.0f, TESR_LODBlendData.z);
+#if TERRAIN_VARIATION
+    // UNOFFICIAL 2026-10-19 Terrain Variation (Includes/TerrainVariation.hlsl; after Conor's port of Community Shaders' Terrain
+    // Variation). The lattice is built from the ORIGINAL uv, not offsetUV: a surface point has to keep the same hash offset whatever
+    // the view angle, and offsetUV moves with it. The samples still go to offsetUV + hash, so parallax still applies (its own height
+    // march reads the plain tiling: two taps per march step would not fit ps_3_0's budget). (Conor.) Nearer than StartDistance the
+    // single tap, the second fading in over the next w units.
+    StochasticOffsets stochastic = ComputeStochasticOffsets(IN.uv.xy, TESR_TerrainVariationData.x);
+    stochastic.tap1Weight = lerp(1.0f, stochastic.tap1Weight, saturate((dist - TESR_TerrainVariationData.z) / max(TESR_TerrainVariationData.w, 1.0f)));
+    float tapWeights[7] = { 1, 1, 1, 1, 1, 1, 1 };
+    float3 baseColor = LinColor(blendDiffuseMapsVaried(landVertexColor, offsetUV, odx, ody, texCount, BaseMap, weights, stochastic, tapWeights));
+#else
+    float3 baseColor = LinColor(blendDiffuseMaps(landVertexColor, offsetUV, odx, ody, texCount, BaseMap, weights));	// UNOFFICIAL linear lighting: decoded
+#endif
 #if TERRAIN_BLEND_ACTIVE
     // The land texture's height shapes the blend's edge (HeightBlend); the dither, if used, cuts on the shaped edge.
     [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y != 0.0f)   // < 0: HeightEdge 1
@@ -367,7 +382,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
         clip(terrainKeep - terrainBlendNoise(IN.screenPos));
 #endif
+#if TERRAIN_VARIATION
+    // NormalMaps off: the normal maps take the single tap (tap1Weight 1 takes the plain path in blendNormalMapsVaried).
+    StochasticOffsets stochasticNormals = stochastic;
+    stochasticNormals.tap1Weight = lerp(1.0f, stochastic.tap1Weight, saturate(TESR_TerrainVariationExtra.x));
+    float3 combinedNormal = blendNormalMapsVaried(offsetUV, odx, ody, texCount, NormalMap, weights, spec, stochasticNormals, tapWeights, gloss, specExponent);
+#else
     float3 combinedNormal = blendNormalMaps(offsetUV, odx, ody, texCount, NormalMap, weights, spec, gloss, specExponent);
+#endif
 
     float3 lightTS = mul(tbn, SunDir.xyz);
     float parallaxShadowMultiplier = 1.0;

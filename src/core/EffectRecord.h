@@ -46,6 +46,14 @@ public:
 	unsigned				LoadGeneration = 1;
 	D3DXHANDLE				TechniqueHandle(CachedHandle& cache, const char* name);
 	D3DXHANDLE				ParameterHandle(CachedHandle& cache, const char* name);
+	// UNOFFICIAL 2026-10-19: textures a caller wants on stages for its non-TESR (NVR_) samplers during its next Render calls. Render
+	// sets them again right after every BeginPass (as VolumetricFog and AmbientLight bind theirs by hand there): a texture set on the
+	// device before the pass began did not reach the pass (SunFar's cloud layers, Specular's sky visibility, 2026-10-19 tests).
+	// Null entries are left alone; ClearPassTextures unbinds the ones set and empties the list.
+	IDirect3DBaseTexture9*	PassTextures[16] = {};
+	void					SetPassTexture(UINT stage, IDirect3DBaseTexture9* texture) { if (stage < 16) PassTextures[stage] = texture; }
+	void					BindPassTextures();
+	void					ClearPassTextures();
 
 	ID3DXEffect* Effect;
 	const char* Name;

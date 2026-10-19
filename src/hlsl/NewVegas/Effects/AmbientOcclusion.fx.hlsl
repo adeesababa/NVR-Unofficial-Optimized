@@ -540,6 +540,7 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 	depthNormal = dot(depthNormal, viewPosition) > 0.0f ? -depthNormal : depthNormal;	// facing the camera
 	viewNormal = TESR_AmbientOcclusionSky3.x > 0.5f ? depthNormal : viewNormal;
 	float result = 1.0f;
+	float skyVisibility = 1.0f;
 	float sunMask = TESR_AmbientOcclusionSky4.z > 0.5f ? lerp(TESR_ShadowFade.x, 1.0f, tex2Dlod(NVR_SunMask, float4(uv, 0.0f, 0.0f)).r) : 1.0f;
 	[branch] if (depth < endFade) {
 		float3 p = mul(float4(viewPosition, 0.0f), TESR_InvViewTransform).xyz;
@@ -573,14 +574,17 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 			visibility = saturate(visibility * TESR_AmbientOcclusionSky3.y);
 			float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);	// (debug view 4: the map's top is above the point)
 			result = SkyFactor(visibility, n, sunMask, covered);
+			skyVisibility = visibility;
 		}
 	}
-	return float4(result, min(depth, (float)endFade), 0, 1);
+	// UNOFFICIAL 2026-10-19 Skylighting v3 phase 1: b holds the sky visibility itself (1 open), for the sky reflections (Specular,
+	// Reflections: they take the sky away where the sky cannot be seen, whatever the light's share).
+	return float4(result, min(depth, (float)endFade), skyVisibility, 1);
 }
 
 technique SkyVisibilityV2
 {
-	pass Sky { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SkyVisibilityV2PS(); }
+	pass Sky { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SkyVisibilityV2PS(); ColorWriteEnable = 15; }	// UNOFFICIAL 2026-10-19: b (the visibility) too
 }
 
 technique PackedAO

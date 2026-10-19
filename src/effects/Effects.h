@@ -28,6 +28,7 @@
 #include "BounceLight.h"
 #include "Specular.h"
 #include "SunShadows.h"
+#include "SunFar.h"	// UNOFFICIAL 2026-10-19 terrain + cloud shadows
 #include "PointShadows.h"
 #include "PointShadows2.h"
 #include "ShadowsInteriors.h"

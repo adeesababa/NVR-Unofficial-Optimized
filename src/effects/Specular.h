@@ -39,6 +39,10 @@ public:
 	};
 	TexturesStruct	Textures;
 	CachedHandle techBounce, paramBounceData, paramBounceLayout;	// UNOFFICIAL: looked up once per loaded effect
+	// UNOFFICIAL 2026-10-19: the sky visibility (Skylighting v3 phase 1) on stage 9 and the land's and clouds' shadow (SunFar) on stage
+	// 10 for the light step (technique 2), with NVR_SpecularExtra; on = false unbinds them.
+	CachedHandle paramExtra;
+	void	BindExtras(IDirect3DDevice9* Device, bool on);
 
 	void	UpdateConstants();
 	void	RegisterConstants();

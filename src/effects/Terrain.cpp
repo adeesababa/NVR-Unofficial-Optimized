@@ -9,6 +9,9 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainExtraData", &Constants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainSkyData", &Constants.SkyData);
+	TheShaderManager->RegisterConstant("TESR_TerrainVariationData", &Constants.VariationData);	// UNOFFICIAL 2026-10-19
+	TheShaderManager->RegisterConstant("TESR_TerrainVariationExtra", &Constants.VariationExtra);
+	TheShaderManager->RegisterConstant("TESR_LODBlendData", &Constants.LODBlend);	// UNOFFICIAL 2026-10-19 LOD Blending
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxIso", &ParallaxConstants.IsoData);
@@ -156,6 +159,25 @@ void TerrainShaders::UpdateSettings() {
 
 	LODSettings.NoiseScale = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseScale");
 	LODSettings.NoiseTile = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseTile");
+
+	// UNOFFICIAL 2026-10-19 Terrain Variation (Includes/TerrainVariation.hlsl, after Conor's port of Community Shaders' Terrain Variation).
+	// Enabled and Layers are compile time (TERRAIN_VARIATION, TERRAIN_VARIATION_LAYERS in ShaderRecord::LoadShader); these shape it. A
+	// scale of 0 would put the whole world in one lattice cell (a constant offset: plain tiling shifted), so it is floored. (Conor.)
+	Constants.VariationData.x = (std::max)(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "Scale"), 0.01f);
+	Constants.VariationData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "HeightInfluence"), 0.0f, 4.0f);
+	Constants.VariationData.z = (std::max)(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "StartDistance"), 0.0f);
+	Constants.VariationData.w = (std::max)(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "StartFade"), 1.0f);
+	Constants.VariationExtra.x = TheSettingManager->GetSettingI("Shaders.Terrain.Variation", "NormalMaps") ? 1.0f : 0.0f;
+
+	// UNOFFICIAL 2026-10-19 LOD Blending (after Community Shaders' LOD Blending, GPL-3.0): the far land's colour (its LOD texture) by a
+	// gamma and a brightness so it matches the near land where they meet (TerrainLODTemplate, TerrainFadeTemplate), and the near land
+	// optionally without its vertex colours (for far land generated without them). Live. Off: the shaders are exactly what they were
+	// (the far land's adjustment is skipped, the vertex colours kept as they come).
+	const bool lodBlend = TheSettingManager->GetSettingI("Shaders.Terrain.LODBlending", "Enabled") != 0;
+	Constants.LODBlend.x = lodBlend ? std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.LODBlending", "Brightness"), 0.01f, 5.0f) : 1.0f;
+	Constants.LODBlend.y = lodBlend ? std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.LODBlending", "Gamma"), 0.1f, 3.0f) : 1.0f;
+	Constants.LODBlend.z = lodBlend && TheSettingManager->GetSettingI("Shaders.Terrain.LODBlending", "DisableVertexColors") ? 1.0f : 0.0f;
+	Constants.LODBlend.w = lodBlend && (Constants.LODBlend.x != 1.0f || Constants.LODBlend.y != 1.0f) ? 1.0f : 0.0f;
 
 	// UNOFFICIAL terrain blending. Turning it on in the menu needs a restart (the land shaders and the depth copy are made
 	// at startup); turning it off works at once.

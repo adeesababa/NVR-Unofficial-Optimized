@@ -386,6 +386,13 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 		Effect->SetVector(flagsHandle, &flags);
 	}
+	// UNOFFICIAL 2026-10-19 SunFar: the land's and the clouds' shadow factor on stage 13 for the folded sun-shadow apply (Apply pass).
+	IDirect3DTexture9* sunFar = shadow && TheShaderManager->Effects.SunFar ? TheShaderManager->Effects.SunFar->FactorTexture() : nullptr;
+	if (D3DXHANDLE h = ParameterHandle(paramSunFarFlags, "NVR_SunFarFlags")) {
+		D3DXVECTOR4 sunFarFlags(sunFar ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		Effect->SetVector(h, &sunFarFlags);
+	}
+	else sunFar = nullptr;
 	// UNOFFICIAL Temporal: last frame's bounce is usable if it was made a moment ago in the same cell (a load or a door means
 	// another place); the depth test in the shader catches the rest.
 	const double now = TheFrameRateManager->Time;
@@ -436,6 +443,12 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			if (p == 5 && gridValid) Device->SetTexture(9, gridAccum[gridAccumIndex]);
 			if (p == 5 && gridValid && gridColorValid) Device->SetTexture(14, gridAccumColor[gridAccumIndex]);
 			if (p == 5 && gridScreenValid) Device->SetTexture(8, gridScreen[gridScreenIndex]);	// DebugView 8
+			if (p == 5 && sunFar) {	// UNOFFICIAL 2026-10-19 SunFar (NVR_SunFarAL), point sampled
+				Device->SetTexture(13, sunFar);
+				const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+					{D3DSAMP_MAGFILTER, D3DTEXF_POINT}, {D3DSAMP_MINFILTER, D3DTEXF_POINT}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+				for (const auto& s : states) TheRenderManager->SetSamplerState(13, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+			}
 			if (p == 4) Device->SetTexture(11, occlusionHistory[readIndex]);
 			else if (p == 5) Device->SetTexture(11, occlusionHistory[writeIndex]);
 			Device->SetTexture(1, scene);	// TESR_SourceBuffer slot: the current image
@@ -456,6 +469,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetTexture(14, nullptr);
 	Device->SetTexture(15, nullptr);
 	Device->SetTexture(8, nullptr);
+	if (sunFar) Device->SetTexture(13, nullptr);
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);

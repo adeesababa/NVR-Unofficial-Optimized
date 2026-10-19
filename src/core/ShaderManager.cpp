@@ -80,6 +80,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<PointShadowsEffect>(&TheShaderManager->Effects.PointShadows);
 	TheShaderManager->RegisterEffect<PointShadows2Effect>(&TheShaderManager->Effects.PointShadows2);
 	TheShaderManager->RegisterEffect<SunShadowsEffect>(&TheShaderManager->Effects.SunShadows);
+	TheShaderManager->RegisterEffect<SunFarEffect>(&TheShaderManager->Effects.SunFar);	// UNOFFICIAL 2026-10-19
 	TheShaderManager->RegisterEffect<SpecularEffect>(&TheShaderManager->Effects.Specular);
 	TheShaderManager->RegisterEffect<SnowEffect>(&TheShaderManager->Effects.Snow);
 	TheShaderManager->RegisterEffect<SnowAccumulationEffect>(&TheShaderManager->Effects.SnowAccumulation);
@@ -1547,6 +1548,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
 	}
 
+	// UNOFFICIAL 2026-10-19 SunFar: the land's and the clouds' shadows as a factor the sun-shadow composites below take (outdoors,
+	// while either is on; otherwise it marks the factor unused and draws nothing).
+	Effects.SunFar->RenderFactor(Device);
+
 	Device->SetRenderTarget(0, RenderTarget);
 
 	// Start the copy-free chain (FrameChain), or seed the rendered texture for the legacy path in
@@ -1769,7 +1774,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// then its main technique adds that to the image in the chain.
 		if (specularRenders) {
 			RenderEffectToRT(Effects.Specular->Textures.NormalsSurface, Effects.Specular, false, 1);
+			Effects.Specular->BindExtras(Device, true);	// UNOFFICIAL 2026-10-19: sky visibility + SunFar for the light step
 			RenderEffectToRT(Effects.Specular->Textures.LightSurface, Effects.Specular, false, 2);
+			Effects.Specular->BindExtras(Device, false);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 		bool specularDone = false;

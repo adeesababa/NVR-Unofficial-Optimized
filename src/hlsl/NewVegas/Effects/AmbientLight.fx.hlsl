@@ -92,7 +92,12 @@ bool IsViewModel(float2 uv) {
 }
 
 // ShadowsExteriors.fx.hlsl Shadow() on a gamma-encoded colour (the same maths as VolumetricFog.fx.hlsl CompositeSunShadow).
+// UNOFFICIAL 2026-10-19 SunFar (SunFar.fx.hlsl): the land's and the clouds' shadow, a factor on the stored (gamma) colour, bound by
+// hand on stage 13 while NVR_SunFarFlags.x is 1 (AmbientLight.cpp); stage 13 is otherwise the grid technique's.
+float4 NVR_SunFarFlags;
+sampler2D NVR_SunFarAL : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 float3 SunShadowApply(float3 color, float2 uv) {
+	color *= lerp(1.0f, tex2Dlod(NVR_SunFarAL, float4(uv, 0.0f, 0.0f)).rgb, NVR_SunFarFlags.x);	// (no branch on the flag: the composites have no boolean register to spare with the physical sky compiled in; 0 or 1)
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * readDepthLod(uv);
 		if (worldPos.z < (TESR_WaterSettings.x + 2) && worldPos.z > (TESR_WaterSettings.x - 2) && dot(GetWorldNormalLod(uv), float3(0, 0, -1)) > 0.999)

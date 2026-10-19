@@ -32,6 +32,11 @@ public:
 	CachedHandle techSky;
 	static bool SkyV2Active();
 	IDirect3DTexture9* SkyTexture() const { return skyReady ? (lastLowRes ? skyTextureLow : skyTexture) : nullptr; }
+	// UNOFFICIAL 2026-10-19 Skylighting v3 phase 1 ([Shaders.AmbientOcclusion.Skylighting] Reflections): the same texture (its b: the
+	// sky visibility) for the sky reflections (Specular, Reflections), while that is on; and how much reflection stays fully hidden.
+	bool	SkyReflections = false;
+	float	SkyMinReflection = 0.1f;
+	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections && Enabled ? SkyTexture() : nullptr; }
 	void RenderSkyVisibility(IDirect3DDevice9* Device);
 
 	bool	UseLowRes() const;

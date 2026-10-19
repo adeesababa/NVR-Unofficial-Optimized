@@ -34,6 +34,14 @@ sampler2D TESR_ShadowAtlas : register(s7) = sampler_state { ADDRESSU = CLAMP; AD
 // SpecularBounce: the bounce light's low-resolution result (BounceLight.fx.hlsl), bound by SpecularEffect::RenderWithBounce.
 // After the TESR_ samplers.
 sampler2D NVR_BounceBuffer : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-19, bound by hand for the light step (technique 2; SpecularEffect::BindExtras), with NVR_SpecularExtra:
+//   Skylighting v3 phase 1 ([Shaders.AmbientOcclusion.Skylighting] Reflections): the sky visibility (Skylighting v2's b), so the
+//   sky's reflection fades where the sky cannot be seen (under roofs and overhangs, in canyons), down to MinReflection, as
+//   Community Shaders' Skylighting MixSpecular (GPL-3.0) does with its own visibility;
+//   SunFar (SunFar.fx.hlsl): the land's and the clouds' shadow (its alpha), so the sun's highlight goes where they block the sun.
+float4 NVR_SpecularExtra;       // x: 1 sky visibility bound, y: MinReflection, z: 1 sun far bound
+sampler2D NVR_SpecularSkyVis : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D NVR_SpecularSunFar : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 texture NoTexture;              // never set: unbinds a technique's own render target from its sampler
 
 static const float SunStrength = TESR_SpecularData.x;
@@ -161,6 +169,9 @@ float4 SpecularLowPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float below = R.z >= 0.0 ? 1.0 : lerp(0.6, 0.25, saturate(-R.z * 4.0));
 	float2 env = EnvBRDFApprox(roughAA, NdotV);
 	float skyAmount = (F0 * env.x + env.y) * SkyStrength * below;
+	// UNOFFICIAL 2026-10-19 (no branches on these constants: this pass has no boolean register left; x and z are 0 or 1).
+	skyAmount *= lerp(1.0, lerp(NVR_SpecularExtra.y, 1.0, tex2Dlod(NVR_SpecularSkyVis, float4(uv, 0, 0)).b), NVR_SpecularExtra.x);
+	sunSpec *= lerp(1.0, tex2Dlod(NVR_SpecularSunFar, float4(uv, 0, 0)).a, NVR_SpecularExtra.z);
 
 	float fade = 1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth);
 	return float4(skyAmount * fade, skyAt, sunSpec * fade, depth);

@@ -144,6 +144,41 @@ void ShadowsExteriorEffect::UpdateConstants() {
 	// with the identical value when it draws.
 	TheRenderManager->device->SetPixelShaderConstantF(129, (const float*)&Constants.FormatData, 1);
 	TheRenderManager->device->SetPixelShaderConstantF(133, (const float*)&Constants.ForwardData, 1);
+	UpdateLightColors();	// UNOFFICIAL 2026-10-19 (SunFar)
+}
+
+// UNOFFICIAL 2026-10-19, after Conor's (mrfury97) ShadowsExteriorEffect::UpdateLightColors (6043062a, GPL-3.0-or-later): the sun and
+// ambient colours exactly as BSShaderLightingProperty::SetLight1x2x (0xB70820) hands them to the object shaders as PSLightColor[0]
+// and AmbientColor, for the SunFar pass to split a pixel's light the way the forward path does. They are not the weather's raw
+// colours (TESR_SunColor, TESR_SunAmbient): both are scaled by the light's dimmer, the sun by the HDR sunlight dimmer outdoors, and
+// the ambient floored at fMinAmbient. Left out are the per-object factors SetLight also applies -- forced darkness and the LOD
+// dimmers -- which a screen-space pass cannot know and which are 1 on almost everything.
+void ShadowsExteriorEffect::UpdateLightColors() {
+	static const bool* bHDR = (const bool*)0x11F941E;				// BSShaderManager::bHDR
+	static const bool* bInterior = (const bool*)0x11F9427;			// BSShaderManager::bInterior
+	static const float* fSunlightDimmer = (const float*)0x11F9190;	// BSShaderManager::fSunlightDimmer
+	static const float* fMinAmbient = (const float*)0x11F947C;		// BSShaderManager::fMinAmbient
+
+	NiDirectionalLight* sun = Tes ? Tes->directionalLight : nullptr;
+	if (!sun) {
+		SunLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+		AmbientLight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		return;
+	}
+	const float dimmer = *bHDR ? sun->Dimmer : (std::min)(sun->Dimmer, 1.0f);
+	D3DXVECTOR3 ambient(sun->Amb.r * dimmer, sun->Amb.g * dimmer, sun->Amb.b * dimmer);
+	if (*fMinAmbient > 0.0f) {
+		const float luminance = ambient.x * 0.33f + ambient.y * 0.34f + ambient.z * 0.33f;
+		if (luminance > 0.0f) {
+			const float boost = luminance <= *fMinAmbient ? *fMinAmbient / luminance : 1.0f;
+			ambient = (ambient + D3DXVECTOR3(0.1f, 0.1f, 0.1f)) * boost;
+		}
+		else ambient = D3DXVECTOR3(*fMinAmbient, *fMinAmbient, *fMinAmbient);
+	}
+	D3DXVECTOR3 sunColor(sun->Diff.r * dimmer, sun->Diff.g * dimmer, sun->Diff.b * dimmer);
+	if (*bHDR && !*bInterior) sunColor *= *fSunlightDimmer;
+	SunLight = D3DXVECTOR4(sunColor.x, sunColor.y, sunColor.z, 1.0f);
+	AmbientLight = D3DXVECTOR4(ambient.x, ambient.y, ambient.z, 1.0f);
 }
 
 bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
@@ -530,6 +565,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
 		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
 
+	TerrainShadows.UpdateSettings();	// UNOFFICIAL 2026-10-19 [Shaders.ShadowsExteriors.TerrainShadows]
+
 	bool isExterior = TheShaderManager->GameState.isExterior;
 
 	// if the effect was turned off the buffer must be cleared
@@ -646,9 +683,13 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	Constants.CrossFade = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	TheShaderManager->RegisterConstant("TESR_ShadowCubeMapLightPosition", &Constants.ShadowCubeMapLightPosition);
 	TheShaderManager->RegisterConstant("TESR_ShadowLightPosition", (D3DXVECTOR4*)&Constants.ShadowLightPosition);
+	TheShaderManager->RegisterConstant("TESR_ShadowSunLight", &SunLight);	// UNOFFICIAL 2026-10-19 (SunFar)
+	TheShaderManager->RegisterConstant("TESR_ShadowAmbientLight", &AmbientLight);
+	TerrainShadows.RegisterConstants();
 }
 
 void ShadowsExteriorEffect::RegisterTextures() {
+	TerrainShadows.RegisterTextures();	// UNOFFICIAL 2026-10-19
 	ULONG ShadowMapSize = Settings.ShadowMaps.CascadeResolution;
 	ULONG ShadowCubeMapSize = Settings.Interiors.ShadowCubeMapSize;
 	ULONG ShadowAtlasSize = ShadowMapSize * 2;
