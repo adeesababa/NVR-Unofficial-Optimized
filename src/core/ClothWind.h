@@ -121,6 +121,13 @@ namespace ClothWind {
 	}
 	// The path is cloth when a keyword is in it, none of the Exclude pieces is, and the FILE's own words name no body part (a hat or
 	// gloves that share the garment's folder or keyword do not move: ExcludeParts, matched against the file name's letters).
+	// Diagnostic (LogMatches): a static texture that looks like cloth but did not match is listed, so missed words can be found.
+	inline bool LooksLikeCloth(const char* path) {
+		const std::string p = Norm(path);
+		for (const char* w : { "cloth", "flag", "banner", "cloak", "cape", "sheet", "tent", "tarp", "canvas", "rag", "curtain", "drape", "awning", "fabric", "blanket", "towel", "laundry", "pennant", "rug", "sail", "coat", "robe", "scarf" })
+			if (p.find(w) != std::string::npos) return true;
+		return false;
+	}
 	inline bool IsClothTexture(const char* path) {
 		if (!path || !path[0]) return false;
 		const std::string p = Norm(path);
@@ -282,7 +289,7 @@ namespace ClothWind {
 		else {
 			if (ByTexture.size() >= 4096) ByTexture.clear();	// 2026-10-17: entries are per texture object and were never dropped; the answer is worked out again on demand (same result)
 			cloth = IsClothTexture(diffuse->ddsPath1); ByTexture[diffuse] = { std::string(diffuse->ddsPath1), cloth };
-			if (cloth || (S.LogMatches && skinned)) {
+			if (cloth || (S.LogMatches && (skinned || LooksLikeCloth(diffuse->ddsPath1)))) {
 				const NiGeometryData* gd = geometry->geomData;
 				Logger::Log("Cloth wind: %s %s (%s '%s', %u vertices%s)", cloth ? "CLOTH" : "not cloth:", diffuse->ddsPath1, skinned ? "skinned" : "static",
 					geometry->m_pcName ? geometry->m_pcName : "", gd ? (unsigned)gd->m_usVertices : 0u, gd && (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) ? ", vertices kept" : ", vertices not kept");
@@ -308,7 +315,8 @@ namespace ClothWind {
 		else {	// worn clothing
 			const NiAVObject* root = geometry->skinInstance->RootParent ? geometry->skinInstance->RootParent : geometry;
 			SkinnedDrawsNow++;
-			if (S.SkinMask == 1 && geometry->geomData) {
+			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
+			else if (S.SkinMask == 1 && geometry->geomData) {
 				// 2026-10-18 (round 3): the mask is the garment's own BIND-POSE height (the shader reads the vertex before skinning): the top
 				// PinFraction of the garment never moves, the hem moves most. Independent of the actor's pose and of the space the bones
 				// put the vertices in -- round 2's actor-height mask (heights above the skin root) put the pin ~70 units too high.
