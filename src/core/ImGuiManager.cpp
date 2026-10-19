@@ -1999,6 +1999,8 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.PBR.Linear",                   "PreDecode",          RestartRule::Changed },
 	{ "Shaders.Sky.Physical",                 "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.Terrain.Blending",             "Enabled",            RestartRule::TurnOn },
+	{ "Shaders.Terrain.Variation",            "Enabled",            RestartRule::Changed },	// TERRAIN_VARIATION (deep/csports)
+	{ "Shaders.Terrain.Variation",            "Layers",             RestartRule::Changed },	// TERRAIN_VARIATION_LAYERS
 	{ "Shaders.HandBlood.Status",             "Enabled",            RestartRule::Changed },
 	{ "Shaders.Cloth.Main",                   "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.WetWorld.Main",                "HudDrops",           RestartRule::TurnOn },	// HUD_RAIN_ON: above 0 at start
