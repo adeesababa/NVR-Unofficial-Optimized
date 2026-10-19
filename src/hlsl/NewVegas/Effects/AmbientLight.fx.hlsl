@@ -31,6 +31,7 @@ float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
 float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass)
+float4 NVR_ALInterior;          // UNOFFICIAL 2026-10-18 (ambfix2): x 1 = indoor balance (InteriorBalance), y 1 = last frames' balance usable, z InteriorBounceShare, w share of last frames' balance kept per frame
 float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: share of the grid light's colour kept (GridColour)
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
 float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
@@ -578,7 +579,55 @@ float3 SurfaceColour(float3 lin) {
 	return min(level, MaxReflectance) * min(lerp(1.0f, hue, trust), 3.0f);
 }
 
-// Pass 5: upsample and apply.
+// UNOFFICIAL 2026-10-18 (ambfix2, user: "indoors it's too powerful ... it diverges from the original mood of each vanilla room"):
+// indoors the room keeps its own brightness. The game's interior ambient already stands in for all the light bouncing round the
+// room, so the grid's bounce on top lifted every room (Gomorrah at GridBounce 2: median x1.3, 40 of 144 screen tiles brighter
+// than any lit surface round them). Indoors (NVR_ALInterior.x) the occlusion now darkens only the ambient share of a pixel (a lamp's
+// light is not occluded by the corner it falls into), and the bounce is scaled so that it gives back at most InteriorBounceShare x
+// the light the occlusion took over the whole picture: light moves from creases to the surfaces next to lit ones, the room's
+// average stays. The two totals come from 32 x 18 samples of the same terms (StatsSample: 16 x 9 texels of 2 x 2 samples each)
+// averaged into one texel (StatsReduce), eased over ~10 frames (fires flicker). Outdoors none of it runs.
+#define NVR_ALStats NVR_ALBuffer        // StatsReduce reads the samples through NVR_ALBuffer's stage (s6)
+#define NVR_ALBalance NVR_ALHistory     // StatsReduce reads last frames' balance, Apply this frame's, through NVR_ALHistory's stage (s7)
+static const float2 StatsSize = float2(16.0f, 9.0f);	// texels of StatsSample's target (NVR_AmbientLightStats), 2 x 2 samples each
+
+// One sample: the picture's light, the light the occlusion takes from its ambient share, the bounce (luma), as Apply works them out.
+float3 StatsAt(float2 uv) {
+	float3 lin = linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb);
+	float depth = readDepthLod(uv);
+	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(uv)) return float3(luma(lin), 0.0f, 0.0f);
+	float ao = lerp(DarkestAO, 1.0f, tex2Dlod(NVR_ALOcclusionHistory, float4(uv, 0.0f, 0.0f)).r);
+	ao = lerp(ao, 1.0f, saturate((luma(lin) - BrightFade) * 3.0f));
+	float3 albedo = SurfaceColour(lin);
+	float3 normal = normalize(GetWorldNormalLod(uv));
+	float3 bounce = GridBounce(toWorld(uv) * depth, normal) * (NVR_GridData.x * ao) * albedo;
+	float3 taken = (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb);
+	return float3(luma(lin), luma(taken), luma(bounce));
+}
+
+// Pass 6 (indoors): each texel, the sum of its 2 x 2 samples (a 32 x 18 grid over the picture).
+float4 StatsSample(VSOUT IN) : COLOR0 {
+	float2 cell = floor(IN.UVCoord * StatsSize);
+	float3 sum = 0.0f;
+	[unroll] for (int j = 0; j < 2; j++) {
+		[unroll] for (int i = 0; i < 2; i++) sum += StatsAt((cell * 2.0f + float2(i, j) + 0.5f) / (StatsSize * 2.0f));
+	}
+	return float4(sum, 1.0f);
+}
+
+// Pass 7 (indoors): the totals, the bounce's scale (at most 1: never more than GridBounce asks for), eased with last frames'.
+float4 StatsReduce(VSOUT IN) : COLOR0 {
+	float3 total = 0.0f;
+	[loop] for (int j = 0; j < 9; j++) {
+		[loop] for (int i = 0; i < 16; i++) total += tex2Dlod(NVR_ALStats, float4((float2(i, j) + 0.5f) / StatsSize, 0.0f, 0.0f)).xyz;
+	}
+	float scale = saturate(NVR_ALInterior.z * total.y / max(total.z, 1.0e-6f));
+	float last = tex2Dlod(NVR_ALBalance, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
+	scale = NVR_ALInterior.y > 0.5f ? lerp(scale, last, NVR_ALInterior.w) : scale;
+	return float4(scale, total.yzx / (StatsSize.x * StatsSize.y * 4.0f));
+}
+
+// Pass 8: upsample and apply.
 float4 Apply(VSOUT IN) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	[branch] if (NVR_ALFlags.x > 0.5f) color = float4(SunShadowApply(color.rgb, IN.UVCoord), 1.0f);
@@ -628,6 +677,8 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	// UNOFFICIAL 2026-10-18 (ambfix) diagnostics: 9 the grid's light on the surface (strength and occlusion included, before the
 	// surface colour), 10 the surface colour the apply multiplies it by; both linear, display-encoded.
 	[branch] if (DebugView > 8.5f) return delinearize(float4(DebugView < 9.5f ? gridBounce : albedo, 1.0f));
+	// UNOFFICIAL 2026-10-18 (ambfix2): indoors, the bounce at the scale StatsReduce found (see above StatsSample).
+	[branch] if (NVR_ALInterior.x > 0.5f) gridBounce *= tex2Dlod(NVR_ALBalance, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
 	// 8 (diagnostic): the screen memory in the pixel's own cell, unspread (r: its light x 4, g: cell seen at all, b: grid colour
 	// light x 4), NVR_GridWave's stage bound to the memory for it.
 	[branch] if (DebugView > 7.5f) {
@@ -639,7 +690,9 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));	// 7: the grid's bounce alone
 	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);	// diagnostics: the estimate's raw values
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));	// 2: the bounce (the light grid's)
-	lin = lin * ao + gridBounce * albedo;	// (the screen bounce removed 2026-10-14: the light grid is the bounce)
+	// UNOFFICIAL 2026-10-18 (ambfix2): indoors the occlusion takes only from the ambient share (see above StatsSample).
+	[branch] if (NVR_ALInterior.x > 0.5f) lin = lin - (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb) + gridBounce * albedo;
+	else lin = lin * ao + gridBounce * albedo;	// (the screen bounce removed 2026-10-14: the light grid is the bounce)
 	return delinearize(float4(lin, color.a));
 }
 
@@ -649,6 +702,8 @@ technique AmbientLight {
 	pass BlurX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(1.0f, 0.0f)); }
 	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
 	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
+	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
+	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
 
 }

@@ -49,6 +49,17 @@ public:
 	CachedHandle		paramGridStep, paramGridShift, paramGridScreen;
 	float				gridScreenStrength = 6.0f;	// GridScreenStrength
 	float				gridColour = 0.25f;			// UNOFFICIAL 2026-10-18 (ambfix) GridColour: share of the grid light's own colour kept
+	// UNOFFICIAL 2026-10-18 (ambfix2) indoor balance (InteriorBalance, InteriorBounceShare; passes 5-6 of AmbientLight.fx.hlsl).
+	static const int	StatsWidth = 16, StatsHeight = 9;	// 2 x 2 samples per texel (StatsSample)
+	bool				interiorBalance = true;
+	float				interiorBounceShare = 1.0f;
+	IDirect3DTexture9*	statsTexture = nullptr;			// per sample: light, the occlusion's darkening, the bounce (luma)
+	IDirect3DSurface9*	statsSurface = nullptr;
+	IDirect3DTexture9*	balanceTexture[2] = {};		// x: the bounce's scale (eased), yzw: the averages
+	IDirect3DSurface9*	balanceSurface[2] = {};
+	int					balanceIndex = 0;			// the one holding last frame's
+	bool				balanceValid = false;
+	CachedHandle		paramInterior;
 	// UNOFFICIAL 2026-10-14 screen memory (indoors, at night): per cell the light its surfaces showed on screen (ScreenInject).
 	IDirect3DTexture9*	gridScreen[2] = {};			// harmonics (A16B16G16R16F, the atlas), ping-pong
 	IDirect3DSurface9*	gridScreenSurface[2] = {};
