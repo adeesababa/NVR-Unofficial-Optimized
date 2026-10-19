@@ -408,7 +408,9 @@ float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float3 worldR = ViewToWorldDir(R);
 	float screenShare = confidence, cubeShare = 0.0, gridShare = 0.0, skyShare = 0.0;   // (DebugView 6)
 	float4 grid = 0.0;
-	[branch] if (GridOn > 0.0 && (confidence < 1.0 || abs(DebugView - 5.0) < 0.5)) grid = GridAlong(ViewToWorldDir(position), worldR);
+	// (Outdoors without the ortho map the grid answers for nothing above the horizon band, GridAlong's share: not read there.)
+	bool gridUseful = !(SkyFallback > 0.0 && RoofMaskOn < 0.5 && worldR.z >= 0.15);
+	[branch] if (GridOn > 0.0 && ((confidence < 1.0 && gridUseful) || abs(DebugView - 5.0) < 0.5)) grid = GridAlong(ViewToWorldDir(position), worldR);
 	[branch] if (confidence < 1.0 && (CubeOn > 0.0 || GridOn > 0.0)) {
 		float missing = 1.0 - confidence;
 		float4 env = 0.0;
