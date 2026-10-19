@@ -280,6 +280,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 		gridColorValid = colour;
 		for (int i = 0; i < 3; i++) gridOrigin[i] = gridPendingOrigin[i];
 		gridValid = true;
+		gridRenderedFrame = TheFrameRateManager->FrameNumber;
 		static bool logged = false;
 		if (!logged) Logger::Log("UNOFFICIAL AmbientLight: light grid running (cell %.0f units, %d steps, sun map %s, screen memory %s).",
 			gridCell, gridSteps, sun ? "yes" : "no", screen ? "yes" : "no");

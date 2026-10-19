@@ -25,7 +25,9 @@ public:
 		bool	CubeMap;		// rays that find nothing take the surroundings cube
 		float	CubeCapture;	// how much of the cube each frame's view replaces
 		float	CubeFade;		// how much of what is off screen fades each frame
-		int		DebugView;		// 1: the reflection alone, 2: where it found something, 3: the surroundings cube
+		int		DebugView;		// 1: the reflection alone, 2: where it found something, 3: the surroundings cube (4-6: see the .fx)
+		bool	GridFallback;	// UNOFFICIAL 2026-10-19: rays that find nothing on screen also take AmbientLight's light grid
+		float	GridBrightness;	// its brightness
 	};
 	SettingsStruct	Settings;
 
@@ -38,8 +40,13 @@ public:
 		D3DXMATRIX	Reproject;	// camera-relative world -> last frame's clip space
 		D3DXVECTOR4	Cube;		// x: face being drawn, y: its size, z: mip level, w: 1 = empty the cube
 		D3DXVECTOR4	Cube2;		// x: capture blend, y: fade per frame, z: last mip level, w: 1 = the cube is in use
+		D3DXVECTOR4	Grid;		// xyz: the light grid's corner relative to the camera, w: cell size
+		D3DXVECTOR4	Grid2;		// x: 1 = the grid is in use, y: brightness, z: 1 = it carries colours
+		D3DXVECTOR4	Grid3;		// rgb: the light every surface gets here (AmbientLight's, linear)
 	};
 	ConstantsStruct	Constants;
+	IDirect3DBaseTexture9*	GridLightSlot = nullptr;	// AmbientLight's finished grid this frame (TextureManager slots)
+	IDirect3DBaseTexture9*	GridColorSlot = nullptr;
 
 	// The surroundings cube: two capture cubes (this frame's, last frame's) and the blurred reflection cube with mips.
 	static const UINT CubeSize = 64;
@@ -91,6 +98,8 @@ private:
 	UINT		cubeFrame = 0;			// FrameNumber of the last cube update
 	D3DXMATRIX	cubeInvView;			// the camera at the last cube update (for the jump test)
 	bool		cubeOnly = false;		// RenderCubeOnly is drawing (ShouldRender lets its passes through)
+	UINT		gridFrames = 0, gridUsedFrames = 0;	// for the log: frames drawn with GridFallback on, and of them with a grid to read
+	void	GridStep();							// the light grid's constants and textures for this frame's trace
 	void	CubeStep(IDirect3DDevice9* Device);
 	void	RenderCube(IDirect3DDevice9* Device, bool reset);
 };

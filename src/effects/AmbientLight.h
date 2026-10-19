@@ -81,6 +81,7 @@ public:
 	double				gridOrigin[3] = {};			// the finished grid's corner (absolute world)
 	double				gridPendingOrigin[3] = {};	// the corner of the grid the sun map just drawn is for
 	unsigned			gridFrame = 0;
+	UINT				gridRenderedFrame = 0;		// UNOFFICIAL 2026-10-19: FrameNumber of the last finished grid (Reflections' GridFallback)
 	float				gridSunTexel = 1.0f;		// world units per sun map texel
 	D3DXMATRIX			gridSunToGrid, gridToSun;
 	ShadowsExteriorEffect::ShadowMapSettings gridSunMap = {};

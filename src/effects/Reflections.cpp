@@ -19,7 +19,9 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.CubeMap = TheSettingManager->GetSettingI(section, "CubeMap") != 0;
 	Settings.CubeCapture = std::clamp(TheSettingManager->GetSettingF(section, "CubeCapture"), 0.02f, 1.0f);
 	Settings.CubeFade = std::clamp(TheSettingManager->GetSettingF(section, "CubeFade"), 0.0f, 0.2f);
-	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 4);	// 4: UNOFFICIAL 2026-10-19 the rain's wet mask
+	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 6);	// 4: UNOFFICIAL 2026-10-19 the rain's wet mask; 5, 6 the light grid
+	Settings.GridFallback = TheSettingManager->GetSettingI(section, "GridFallback") != 0;
+	Settings.GridBrightness = std::clamp(TheSettingManager->GetSettingF(section, "GridBrightness"), 0.0f, 4.0f);
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -31,6 +33,9 @@ void ReflectionsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ReflectionsReproject", (D3DXVECTOR4*)&Constants.Reproject);
 	TheShaderManager->RegisterConstant("TESR_ReflectionsCube", &Constants.Cube);
 	TheShaderManager->RegisterConstant("TESR_ReflectionsCube2", &Constants.Cube2);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid", &Constants.Grid);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid2", &Constants.Grid2);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid3", &Constants.Grid3);
 }
 
 void ReflectionsEffect::RegisterTextures() {
@@ -58,6 +63,8 @@ void ReflectionsEffect::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_ReflectionsCapture", &Cubes.CaptureLastSlot);
 	TheTextureManager->RegisterTexture("TESR_ReflectionsCaptureNew", &Cubes.CaptureNewSlot);
 	TheTextureManager->RegisterTexture("TESR_ReflectionsEnv", &Cubes.EnvSlot);
+	TheTextureManager->RegisterTexture("TESR_ReflectionsGridLight", &GridLightSlot);	// UNOFFICIAL 2026-10-19 (GridStep)
+	TheTextureManager->RegisterTexture("TESR_ReflectionsGridColor", &GridColorSlot);
 }
 
 // UNOFFICIAL 2026-10-18: one line on what the trace's history and the surroundings cube did since the last report (only when it drew).
@@ -65,9 +72,37 @@ void ReflectionsEffect::ReportHistory(const char* when) {
 	if (!stats.drawn && !cubeSteps) return;
 	char text[256];
 	stats.Describe(text, sizeof(text));
-	Logger::Log("UNOFFICIAL Reflections temporal history (%s, Temporal %.2f): %s; cube: %u updates, %u emptied first", when, Settings.Temporal, text, cubeSteps, cubeEmptied);
+	Logger::Log("UNOFFICIAL Reflections temporal history (%s, Temporal %.2f): %s; cube: %u updates, %u emptied first; light grid: read on %u of %u frames with GridFallback on",
+		when, Settings.Temporal, text, cubeSteps, cubeEmptied, gridUsedFrames, gridFrames);
 	stats.Reset();
 	cubeSteps = cubeEmptied = 0;
+	gridFrames = gridUsedFrames = 0;
+}
+
+// UNOFFICIAL 2026-10-19 GridFallback: AmbientLight's light grid as the far / off-screen fallback of the trace. Read only while
+// AmbientLight keeps a grid up (on, GridBounce above 0) and it was finished a moment ago (it is redrawn every few frames, and
+// at once when it moves); its corner goes with the finished grid. AmbientLight draws before this effect in the frame, so
+// the grid read here is this frame's (or the last one it made). Nothing extra is drawn: the trace reads what is there.
+void ReflectionsEffect::GridStep() {
+	const AmbientLightEffect* ambient = TheShaderManager->Effects.AmbientLight;
+	const UINT now = TheFrameRateManager->FrameNumber;
+	bool use = Settings.GridFallback && ambient && ambient->Enabled && ambient->Effect && ambient->gridBounce > 0.0f &&
+		ambient->gridValid && now - ambient->gridRenderedFrame <= 8 && !TheShaderManager->GameState.isCellChanged;
+	IDirect3DTexture9* light = use ? ambient->gridAccum[ambient->gridAccumIndex] : nullptr;
+	IDirect3DTexture9* colour = use && ambient->gridColorValid ? ambient->gridAccumColor[ambient->gridAccumIndex] : nullptr;
+	use = use && light;
+	if (Settings.GridFallback) {
+		gridFrames++;
+		if (use) gridUsedFrames++;
+	}
+	GridLightSlot = light;
+	GridColorSlot = colour;
+	Constants.Grid2 = D3DXVECTOR4(use ? 1.0f : 0.0f, Settings.GridBrightness, colour ? 1.0f : 0.0f, 0.0f);
+	if (!use) return;
+	const NiPoint3 camera = WorldSceneGraph->camera->m_worldTransform.pos;
+	Constants.Grid = D3DXVECTOR4((float)(ambient->gridOrigin[0] - camera.x), (float)(ambient->gridOrigin[1] - camera.y),
+		(float)(ambient->gridOrigin[2] - camera.z), ambient->gridCell);
+	Constants.Grid3 = D3DXVECTOR4(ambient->sceneLight.x, ambient->sceneLight.y, ambient->sceneLight.z, 0.0f);
 }
 
 void ReflectionsEffect::UpdateConstants() {
@@ -136,8 +171,9 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	Constants.Data3.x = usable ? Settings.Temporal : 0.0f;
 	Constants.Data2.w = temporal ? (float)(now % 64) : 0.0f;
 
-	// The surroundings cube, before the trace reads it.
+	// The surroundings cube, before the trace reads it; the light grid's constants.
 	CubeStep(Device);
+	GridStep();
 
 	auto pass = [&](IDirect3DSurface9* target, UINT technique) {
 		Device->SetRenderTarget(0, target);

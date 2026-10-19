@@ -2158,6 +2158,12 @@ static const char* InactiveReason(const char* section, const char* key) {
 	}
 	if (sec == "Shaders.ShadowsInteriors.Main" && is({ "ContactLength", "ContactThickness", "ContactDistance" }) && NumericSetting(section, "ContactShadows") <= 0.0f)
 		return "Only used when ContactShadows is above 0.";
+	// UNOFFICIAL 2026-10-19 Reflections GridFallback (ReflectionsEffect::GridStep): reads Ambient Light's light grid, made only while it runs with GridBounce.
+	if (sec == "Shaders.Reflections.Main" && is({ "GridFallback", "GridBrightness" }) &&
+		(NumericSetting("Shaders.AmbientLight.Status", "Enabled") == 0.0f || NumericSetting("Shaders.AmbientLight.Main", "GridBounce") <= 0.0f))
+		return "Only used while Ambient Light is on with GridBounce above 0 (Ambient Light > Main): it reads the light grid that makes.";
+	if (sec == "Shaders.Reflections.Main" && is({ "GridBrightness" }) && NumericSetting(section, "GridFallback") == 0.0f)
+		return "Only used with GridFallback on.";
 	return nullptr;
 }
 
