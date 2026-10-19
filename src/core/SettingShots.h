@@ -107,6 +107,14 @@ namespace SettingShots {
 				std::getline(words, rest);
 				const size_t start = rest.find_first_not_of(" 	");
 				if (start == std::string::npos) { error = "line " + std::to_string(number) + ": empty console command"; return false; }
+				// 2026-10-19: coc/cow load the new cell inside the console call, i.e. inside this render-thread hook: the game hung
+				// (or, before the fix below, re-entered 117 times and crashed). player.moveto <a marker in the cell> works.
+				std::string head = rest.substr(start, rest.find_first_of(" 	", start) - start);
+				for (char& ch : head) ch = (char)tolower((unsigned char)ch);
+				if (head == "coc" || head == "cow" || head == "centeron") {
+					error = "line " + std::to_string(number) + ": coc/cow hang the game from a shot; use player.moveto <a reference in that cell>";
+					return false;
+				}
 				Change c; c.console = true; c.value = rest.substr(start);
 				List.back().changes.push_back(c);
 			}
