@@ -31,6 +31,7 @@
 #include <vector>
 #include "EffectSelfTestCore.h"
 #include "GpuProfiler.h"
+#include "ImGuiManager.h"
 
 namespace SettingShots {
 
@@ -38,7 +39,7 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
 
 	struct Change { bool effect = false, console = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; };
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; };	// menu: 2026-10-19
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -101,6 +102,13 @@ namespace SettingShots {
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
+			// 2026-10-19: 'menu <section>' = this shot's picture is NVR's menu open at that page ("@NewInPatch" = the new tab),
+			// taken after the menu is drawn (CaptureMenu); 'menutests' also ticks Display > "Show test settings" for it.
+			else if (command == "menu" || command == "menutests") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a menu before the first 'shot'"; return false; }
+				if (command == "menu") words >> List.back().menu;
+				else List.back().menuTests = true;
+			}
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
 				std::string rest;
@@ -168,10 +176,12 @@ namespace SettingShots {
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
 		}
 		TheSettingManager->LoadSettings();
+		if (!s.menu.empty()) ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
 	}
 
 	// Every change of the shot undone, newest first.
 	inline void Revert() {
+		if (Index < List.size() && !List[Index].menu.empty()) ImGuiManager::TestShowMenu(nullptr, false);	// 2026-10-19: menu shots
 		for (auto u = Undos.rbegin(); u != Undos.rend(); ++u) {
 			if (u->effect) { TheShaderManager->SwitchShaderStatus(u->section.c_str()); continue; }
 			switch (u->type) {
@@ -344,8 +354,18 @@ namespace SettingShots {
 	// Render.cpp, the finished picture before the HUD (where the neon self-test takes its Final shots).
 	inline void Capture(IDirect3DSurface9* surface) {
 		if (!Running || Frame < Frames || !surface) return;
+		if (!List[Index].menu.empty()) return;	// 2026-10-19: taken after the menu is drawn (CaptureMenu)
 		if (FinalPicture) { int idle = 0; FinalState.compare_exchange_strong(idle, 1); return; }	// taken at the present instead, the settings still the shot's
 		TakeShot(surface);
+	}
+
+	// 2026-10-19, Render.cpp right after ImGuiManager::Render: a 'menu' shot's picture, the back buffer with the menu drawn on it.
+	inline void CaptureMenu() {
+		if (!Running || Frame < Frames || Index >= List.size() || List[Index].menu.empty()) return;
+		IDirect3DSurface9* backBuffer = nullptr;
+		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a menu picture"); return; }
+		TakeShot(backBuffer);
+		backBuffer->Release();
 	}
 
 	// ReShadeIntegration.cpp, ReShade's D3D9 reshade_present event (render thread): the frame as presented (ReShade's effects and the HUD in it).

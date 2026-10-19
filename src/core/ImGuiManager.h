@@ -10,6 +10,7 @@ public:
 	static bool		IsVisible() { return Visible; }
 	static void		SetVisible(bool visible) { Visible = visible; }
 	static HWND		GetWindow() { return GameWindow; }
+	static void		TestShowMenu(const char* Section, bool ShowTests);	// UNOFFICIAL 2026-10-19, test builds only: SettingShots 'menu' (nullptr closes)
 
 private:
 	static bool		Initialized;
