@@ -730,8 +730,10 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// lights as before and still counts for the darkening, as a fill light does). LogLamps lists every light's answer once.
 	const bool indoorsForward = viewTest && !GameState.isExterior;
 	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
-	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || logLamps);
+	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || Settings->Forward.InvisibleLightSize > 0.0f ||
+		!Settings->Forward.LampModelShadows || logLamps);	// (LampModelShadows needs the cell's lamp models listed)
 	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
+	LampFixtures::LogModels = logLamps;
 
 	auto reachesView = [&](const D3DXVECTOR4& lightPosition, float reach) {
 		const D3DXVECTOR3 v(lightPosition.x - TheRenderManager->CameraPosition.x, lightPosition.y - TheRenderManager->CameraPosition.y,

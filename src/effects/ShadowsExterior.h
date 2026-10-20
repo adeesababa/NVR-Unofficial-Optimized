@@ -178,7 +178,10 @@ public:
 			float FixtureDistance;		// UNOFFICIAL (2026-10-20): world units; a glowing mesh this close makes a light a lamp's
 			float LampSize;				// UNOFFICIAL (2026-10-20): world units, a lamp's radius for shadows soft by distance (0 = off)
 			float MaxSoftness;			// UNOFFICIAL (2026-10-20): the widest blur LampSize may give, in shadow-map texels (1..32)
-			bool LampGlassShadows;		// UNOFFICIAL (2026-10-20): false = lamp parts (LampFixtures::LampPart) cast no lamp shadows; true = as before
+			float InvisibleLightSize;	// UNOFFICIAL (2026-10-20): world units, invisible lights' own lamp size for soft shadows (0 = as LampSize)
+			bool LampGlassShadows;
+			bool LampModelShadows;		// UNOFFICIAL (2026-10-20): false = a light leaves lamp models near it out of its shadow map (LampFixtures::NearLampModel)
+			float LampModelDistance;	// UNOFFICIAL (2026-10-20): world units, how near (to a lamp model's bound) that is		// UNOFFICIAL (2026-10-20): false = lamp parts (LampFixtures::LampPart) cast no lamp shadows; true = as before
 		} Forward;
 	};
 
