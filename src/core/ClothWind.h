@@ -139,13 +139,16 @@ namespace ClothWind {
 	// same happened to anything drawn after grass by a path without ForGeometry. Now, whenever the cloth code is compiled in, the grass
 	// marks c248 and binding a cloth-carrying vertex shader clears it at once -- before its draw, whatever path draws it.
 	inline void Zero(IDirect3DDevice9* device);
+	// UNOFFICIAL 2026-10-20 plant wind (core/PlantWind.h): static plants use this machinery too (c248-c253 with c248.x = -1, the SAFETY
+	// bookkeeping below, AfterDraw's clean-up), so it runs while either is on. Set by PlantWind::BeginFrame.
+	inline bool PlantsCompiledIn = false, PlantsOn = false;
 	inline void NoteVertexShader(const char* name) {
 		if (!CompiledInRead && TheSettingManager) { CompiledInRead = true; S.CompiledIn = TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") != 0; }
-		if (!S.CompiledIn) { CurrentVSCapable = false; return; }
+		if (!S.CompiledIn && !PlantsCompiledIn) { CurrentVSCapable = false; return; }
 		if (name && name[0] == 'G' && name[1] == 'R' && name[2] == 'A' && name[3] == 'S' && name[4] == 'S') { NonZeroSent = true; GrassInC248 = true; }
 		const bool capable = CapableName(name);
 		if (capable && GrassInC248 && TheRenderManager) Zero(TheRenderManager->device);
-		CurrentVSCapable = S.On && capable;
+		CurrentVSCapable = (S.On || PlantsOn) && capable;
 	}
 	// 2026-10-19 (P81 report 'cloth: only the player's SHADOW moves'): the object the render-pass hooks are drawing right now. SetShadersHook
 	// used the game's 'current geometry' global, which for worn (skinned) meshes is not the mesh being drawn: their lit passes were never
@@ -156,7 +159,7 @@ namespace ClothWind {
 	struct PassCounts { std::string name; UInt32 lit = 0, notSeen = 0, vanilla = 0, shadow = 0; };
 	inline std::unordered_map<const void*, PassCounts> ClothPassCounts;	// 2026-10-19 diagnostic (LogMatches): which vertex shader
 	inline void NoteShaders(const void* geometry, bool nvrVertexShader, const char* vertexShaderName = nullptr) {
-		if (!S.On || !geometry) return;
+		if (!(S.On || PlantsOn) || !geometry) return;
 		SeenNow.insert(geometry);
 		if (!nvrVertexShader) {
 			VanillaNow.insert(geometry);

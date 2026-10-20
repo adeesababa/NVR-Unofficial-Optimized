@@ -1,5 +1,6 @@
 #include "RenderPass.h"
 #include "ClothWind.h"
+#include "PlantWind.h"	// UNOFFICIAL 2026-10-20 plant wind: a static plant's shadow moves with it
 #include "ShadowBoneUpload.h"
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools: ortho map caster dump
 
@@ -51,6 +52,7 @@ void RenderPass::RenderAccum() {
 		PixelShader->SetCT();
 		VertexShader->SetCT();
 		ClothWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL cloth wind: the cloth's shadow moves with it
+		PlantWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL 2026-10-20 plant wind: so does a static plant's
 #if NVR_TEST_TOOLS
 		if (OrthoProbe::Recording) OrthoProbe::OnDraw(this, Geo);	// UNOFFICIAL 2026-10-17: only while an ortho dump is recorded
 #endif

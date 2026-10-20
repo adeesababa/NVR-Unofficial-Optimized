@@ -345,6 +345,15 @@ float3 ApplyBarrelHeat(float3 color, float mask) {
     #define CLOTH_WIND
     #include "includes/ClothWind.hlsl"
 #endif
+// UNOFFICIAL 2026-10-20 plant wind (Includes/PlantWind.hlsl, core/PlantWind.h): static plants bend in the grass field wind; compiled in
+// only when [Shaders.Plants.Wind] Enabled is on at startup (PLANT_WIND_ON); per draw it runs only for plants (c248.x = -1).
+#ifndef PLANT_WIND_ON
+    #define PLANT_WIND_ON 0
+#endif
+#if defined(VS) && PLANT_WIND_ON
+    #define PLANT_WIND
+    #include "includes/PlantWind.hlsl"
+#endif
 
 // Toggles.
 #define useVertexColor Toggles.x
@@ -448,6 +457,9 @@ VS_OUTPUT main(VS_INPUT IN) {
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
+        #endif
+        #ifdef PLANT_WIND
+            [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);	// UNOFFICIAL 2026-10-20 plant wind (static plants)
         #endif
     
         OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -659,6 +671,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
         ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
+    #endif
+    #ifdef PLANT_WIND
+        [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);	// UNOFFICIAL 2026-10-20 plant wind (static plants)
     #endif
     
     OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
