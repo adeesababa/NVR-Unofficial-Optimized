@@ -43,7 +43,8 @@ float4 TESR_CloudsBlocks;      // xy: one march texel (a 2 x 2 block) in UV, zw:
 float4 TESR_CloudsLook;        // x: edge sharpness (1 = soft .. 8 = hard), y: shape noise mip bias (0 = full detail),
                                // z: turbulence (distortion of the noise lookups), w: share of smooth noise in the detail
 float4x4 TESR_CloudsPrevViewProj; // last frame's view-projection, for the history
-float4 TESR_CloudsDetail;      // UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size
+float4 TESR_CloudsDetail;      // UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size,
+                               // w: (2026-10-20) cumulus shaping 0..1 (0 = the older slab profile)
 float4 TESR_CloudsExtra;       // UNOFFICIAL x: shadow strength (0 off), y: shadow map width (m), z: 1 = reflection debug view, w: 1 = shadow debug view
 float4x4 TESR_CloudsReflectInvVP;    // UNOFFICIAL: the water reflection camera's clip space -> world direction (no translation)
 float4x4 TESR_CloudsHistoryViewProj; // UNOFFICIAL: the view-projection the history in TESR_CloudHistory was made with
@@ -97,7 +98,10 @@ static const float Steps = max(TESR_CloudsMarch.x, 4.0);
 static const float MaxDistance = TESR_CloudsMarch.y;
 static const float HazeDistance = max(TESR_CloudsMarch.w, 1.0);
 static const float2 LowTexel = TESR_CloudsLayout.xy;
-static const float Sharpness = max(TESR_CloudsMotion.w, 0.0);   // UNOFFICIAL 2026-10-15: up to 3 (the sharpening; the rest uses up to 1)
+static const float Sharpness = max(TESR_CloudsMotion.w, 0.0);
+// UNOFFICIAL 2026-10-20 CumulusShape: heaped fair-weather clouds. It fades out as the sky closes over (cloudy, rain, snow): an
+// overcast deck is a layer, not heaps, and keeps the older look.
+static const float Cumulus = saturate(TESR_CloudsDetail.w) * (1.0 - smoothstep(0.6, 0.9, saturate(TESR_CloudsShape.z)));   // UNOFFICIAL 2026-10-15: up to 3 (the sharpening; the rest uses up to 1)
 
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
@@ -139,16 +143,31 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 	// Turbulence: the shape is read through a slow, large distortion, so the noise's cells do not line up into rows of
 	// look-alike heaps.
 	float3 s = p / ShapeTile;
-	s += (tex3Dlod(TESR_NoiseVolume, float4(s * 0.5, lod)).rga - 0.5) * (0.15 * TESR_CloudsLook.z);
+	// (CumulusShape: less of it, the big twist pulled heaps into smoky streaks)
+	s += (tex3Dlod(TESR_NoiseVolume, float4(s * 0.5, lod)).rga - 0.5) * (0.15 * TESR_CloudsLook.z * lerp(1.0, 0.4, Cumulus));
 	float shape = tex3Dlod(TESR_CloudShape, float4(s, lod + TESR_CloudsLook.y)).r;   // a mip down: fewer lone puffs
 	float base = saturate(Remap(shape * HeightProfile(h, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+	// UNOFFICIAL 2026-10-20 CumulusShape (after photos of Mojave fair-weather cumulus): the older profile cut every cloud off at
+	// the same top height, so they came out as flat slabs (boxy). Here the base stays flat and crisp (the condensation level)
+	// but the cloud needs a stronger core the higher it goes, so it narrows as it rises: only the cores climb, into rounded
+	// domes. Small, weak patches stay low and are dropped (no rows of ragged little puffs).
+	// (Worked out always and blended: a branch on a setting takes one of ps_3_0's 16 bool registers, and they are all used.)
+	{
+		float top = lerp(0.45, 1.0, type);
+		float rise = saturate(h / top);
+		float threshold = lerp(1.0 - local, 1.0, 0.9 * rise);
+		float core = saturate(Remap(shape, threshold, 1.0, 0.0, 1.0));
+		core *= smoothstep(0.0, 0.03, h) * (1.0 - smoothstep(0.85, 1.0, rise));
+		core = saturate(Remap(core, 0.1, 1.0, 0.0, 1.0)) * local;   // no faint fringe round the cores: those were the wisps
+		base = lerp(base, core, Cumulus);
+	}
 	if (base <= 0.0) return 0.0;
 	if (!cheap) {
 		float3 q = (p + float3(0.0, 0.0, TESR_CloudsWind.z)) / DetailTile;
 		// Turbulence again, at the detail's own scale: its round Worley cells are twisted and stretched (the way curl noise
 		// does it in Horizon Zero Dawn), and part of it is smooth fbm, so the cloud's surface is not a field of equal dots.
 		float4 warp = tex3Dlod(TESR_NoiseVolume, float4(q * 0.125, lod));
-		q += (warp.rga - 0.5) * TESR_CloudsLook.z;
+		q += (warp.rga - 0.5) * TESR_CloudsLook.z * lerp(1.0, 0.5, Cumulus);   // (CumulusShape: half: fewer hooks and curls)
 		float detail = lerp(tex3Dlod(TESR_CloudDetail, float4(q, lod)).r, warp.g, TESR_CloudsLook.w);
 		// UNOFFICIAL 2026-10-14 FineDetail: the same detail texture again at a smaller size (and through the same twist), a
 		// second octave, so the edges keep small wisps and curls close up instead of the one size of lump. One more read per
@@ -159,10 +178,15 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 			detail = lerp(detail, detail * 0.65 + fine * 0.35, TESR_CloudsDetail.x);
 		}
 		float wisps = lerp(detail, 1.0 - detail, saturate(h * 6.0));
-		base = saturate(Remap(base, wisps * Erosion, 1.0, 0.0, 1.0));
+		float erosion = Erosion;
+		// CumulusShape: billows all the way down (no wispy underside), and less wear near the base so it stays flat
+		wisps = lerp(wisps, 1.0 - detail, Cumulus);
+		erosion *= lerp(1.0, lerp(0.35, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+		base = saturate(Remap(base, wisps * erosion, 1.0, 0.0, 1.0));
 	}
 	// edge sharpness: thin cloud at the rim reaches full density sooner, so the outline is crisp instead of a long fade
-	base = saturate(base * max(TESR_CloudsLook.x, 1.0));
+	// (CumulusShape: half as crisp again. Real heaps end in a clean edge; the soft rim read as smudges and wisps from below.)
+	base = saturate(base * max(TESR_CloudsLook.x, 1.0) * (1.0 + 0.5 * Cumulus));
 	return base * Density * lerp(0.6, 1.0, weather.b);
 }
 
@@ -258,7 +282,11 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 			// powder: the edges facing the light are darker than a plain exponential says
 			float powder = 1.0 - exp(-2.0 * Extinction * density * 40.0);
 			float3 ambient = lerp(ambientBottom, ambientTop, saturate(h));
-			float3 radiance = sun * sunLight * lerp(0.5, 1.0, powder) + ambient;
+			// UNOFFICIAL 2026-10-20 CumulusShape: the bottom of a heap gets less of the light scattered down to it from the bright
+			// cloud above (Schneider's height term in Nubis): grey bases under white tops, as in the photos, instead of grey patches
+			// in the middle of an evenly white slab.
+			float lowLight = lerp(1.0, lerp(0.75, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+			float3 radiance = (sun * sunLight * lerp(0.5, 1.0, powder) + ambient) * lowLight;
 			float sigma = Extinction * density;
 			float stepTransmittance = exp(-sigma * dt);
 			scattered += transmittance * radiance * (1.0 - stepTransmittance);   // energy-conserving step (Hillaire)
