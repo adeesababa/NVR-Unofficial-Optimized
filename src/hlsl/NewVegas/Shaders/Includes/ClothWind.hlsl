@@ -56,6 +56,9 @@
 // Wave shape: Crytek's smooth triangle wave (Sousa, "Vegetation Procedural Animation and Shading in Crysis", GPU Gems 3 ch. 16,
 // 2007) -- cheaper than sin() and smooth. Normals: rebuilt from two moved neighbours (finite differences along the tangent and
 // the binormal), so lighting and shadows follow the folds.
+// 2026-10-20: Includes/PlantWind.hlsl reuses ClothA-F (the same registers) only where this file is included (it is not in the
+// SpeedTree leaf shaders: with PLANT_WIND_ON and CLOTH_WIND_ON both on they failed to compile and the leaves flew about).
+#define CLOTH_WIND_DECLARED
 float4 ClothA : register(c248);
 float4 ClothB : register(c249);
 float4 ClothC : register(c250);

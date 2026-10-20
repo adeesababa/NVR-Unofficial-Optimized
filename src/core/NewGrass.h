@@ -596,6 +596,13 @@ namespace NewGrass {
 		device->SetVertexDeclaration(Decl);
 		device->SetStreamSource(0, v.VB, 0, 4);
 		device->SetIndices(v.IB);
+		// 2026-10-20 (user: flat yellow ribbons flung round the player, save NVRAutoTest17; only with NewGrass AND Particles on, run
+		// 20261020-133927): the particle and blood-decal vertex shaders keep lamp positions and colours in c200-c250 (ParticleLight.hlsl),
+		// inside the grass instance table c20-c247, and every strand draw reads all 228 slots -- the tufts in those slots stood at lamp
+		// positions with a lamp's radius for their size step (huge strands). The game's own cards there fade out unseen. The table is
+		// re-sent from the game's own copy for this draw (TallGrassShader's instance buffer, the one its constant map uploads).
+		if (TallGrassShader* shader = TallGrassShader::GetShader())
+			if (shader->pInstanceData && tufts) device->SetVertexShaderConstantF(20, (const float*)shader->pInstanceData, tufts);
 		Next(device, D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);	// straight to the runtime: the hooked entry would swallow it
 
 		if (haveVS) device->SetVertexShaderConstantF(248, &savedVS[0][0], 8);	// 2026-10-19: the constants above, put back (see the save)
