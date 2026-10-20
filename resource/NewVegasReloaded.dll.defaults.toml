@@ -1581,6 +1581,7 @@ SplatDrips = 1.0                       # [0-3] How far the splat's drips run dow
 Merge = 0.6                            # [0-2] Splats that pile up merge into one (cheaper: one area to draw instead of many overlapping ones): centres closer than this x their radii. 0: off.
 MergeCount = 3                         # [2-64] ... once at least this many lie together.
 GibPools = 0.8                         # [0-3] A pool of its own grows under each cut-off limb (at the stump: neck, elbow, knee...), this size x the body's pool. 0: off.
+GibHold = 1.0                          # [0-5] Seconds a gib's landing blood waits before BloodFlow draws it; if the gib bounces on, it is dropped (only where it comes to rest). 0: off.
 MaxDistance = 3000.0                   # [500-10000] No streams or pools further than this (game units); they fade out over the last fifth.
 MaxSplats = 48                         # [0-96] Most splats drawn at once (the nearest).
 MaxPools = 12                          # [0-32] Most pools drawn at once (the nearest).
