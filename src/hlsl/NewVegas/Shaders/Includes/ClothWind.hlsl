@@ -11,6 +11,9 @@
 //   c250 ClothC: x main wave phase, y gust phase, z/w flutter phases -- in cycles, wrapped on the CPU (double precision), so the
 //                motion never jitters after long play
 //   c251 ClothD: x intensity (units), y ripple cycles per unit, z top height (mask 2), w 1 / (top - bottom) (mask 2)
+//   c252 ClothE: (2026-10-19) worn clothing follows its wearer: xyz the offset (units: trailing behind the movement + the stride
+//                swish), w the lag behind a turn (radians, around the upright axis) -- 0 for everything but worn clothing
+//   c253 ClothF: xy the wearer's upright axis in the vertex shader's space (the turn lag swings points around it)
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -21,6 +24,8 @@ float4 ClothA : register(c248);
 float4 ClothB : register(c249);
 float4 ClothC : register(c250);
 float4 ClothD : register(c251);
+float4 ClothE : register(c252);
+float4 ClothF : register(c253);
 
 float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
     const float t = abs(frac(c + 0.5f) * 2.0f - 1.0f);
@@ -36,6 +41,13 @@ float3 ClothDisplacement(float3 p, float3 n) {
     const float ripple = 0.6f * (ClothTri(dot(p, float3(0.71f, 0.53f, 0.37f)) * r + ClothC.z) * 2.0f - 1.0f)
                        + 0.4f * (ClothTri(dot(p, float3(-0.43f, 0.81f, 0.59f)) * r * 1.7f - ClothC.w) * 2.0f - 1.0f);
     return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * (ClothA.z * wave + ClothA.w * ripple));
+}
+
+// The wearer's movement at point p (worn clothing; core/ClothWind.h MotionOf): the same offset everywhere, plus a small turn of the
+// point around the wearer's upright axis. Under the same mask as the wind (pinned shoulders, still boots).
+float3 ClothMotion(float3 p) {
+    const float2 r = p.xy - ClothF.xy;
+    return ClothE.xyz + ClothE.w * float3(-r.y, r.x, 0.0f);
 }
 
 // bindP: the vertex before skinning (mode 3 only; for unskinned meshes it is p itself).
@@ -57,9 +69,9 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
         const float mask = ClothMask(vertexColor, p, bindP);
         const float e = 2.0f;
         const float3 n = normalize(N);
-        const float3 d0 = mask * ClothDisplacement(p, n);
-        const float3 dt = mask * ClothDisplacement(p + T * e, n);
-        const float3 db = mask * ClothDisplacement(p + B * e, n);
+        const float3 d0 = mask * (ClothDisplacement(p, n) + ClothMotion(p));
+        const float3 dt = mask * (ClothDisplacement(p + T * e, n) + ClothMotion(p + T * e));
+        const float3 db = mask * (ClothDisplacement(p + B * e, n) + ClothMotion(p + B * e));
         const float3 t2 = T * e + (dt - d0);
         const float3 b2 = B * e + (db - d0);
         // The turn of the frame: the moved frame's normal minus the unmoved one's, added to the mesh's own normal -- so with no
@@ -81,7 +93,7 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
-        p += ClothMask(vertexColor, p, bindP) * ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f);
+        p += ClothMask(vertexColor, p, bindP) * (ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f) + ClothMotion(p));
     }
     return p;
 }

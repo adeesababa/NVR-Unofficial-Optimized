@@ -51,6 +51,15 @@ namespace ClothWind {
 		int   SkinSpace = 1;			// worn clothing, what space the bones put vertices in: 0 the skin root's (rotated wind), 1 camera-relative world, 2 world
 		float CalmFactor = 0.6f;		// UseGameWind: strength in dead calm (rising to 1.7 in a gale); it was 0.3
 		bool  LogMatches = false;		// diagnostic: every skinned texture and every match goes to the log with its mesh numbers
+		// 2026-10-19 worn clothing follows its wearer (see MotionOf)
+		float MotionDrag = 0.1f;		// units the hem trails behind per unit/s of the wearer's speed, at low speed (walk ~100/s: ~8.5 units)
+		float MotionMax = 30.0f;		// the most it trails (approached softly: a run ~350/s ~20 units)
+		float MotionSpring = 1.5f;		// how fast it swings back (cycles per second)
+		float MotionDamping = 0.25f;	// 0 swings on and on .. 1 settles without swinging past
+		float StrideSwing = 6.0f;		// units of side-to-side swish at a run (less walking, none standing)
+		float StrideLength = 250.0f;	// units run per swish (one left and one right step); shorter steps when walking
+		float TurnLag = 0.12f;			// seconds the hem lags behind a turn (it flares out); 0 off
+		bool  MotionIndoors = true;		// the movement part also indoors (no wind there)
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
@@ -76,6 +85,18 @@ namespace ClothWind {
 	inline bool LoggedGameWind = false;
 	inline bool CompiledInRead = false;
 	inline bool Exterior = true;
+	// 2026-10-19 per wearer (the skin's root node): its movement, the hem's lag as a damped spring, the stride phase
+	struct Motion {
+		float pos[3] = {}, vel[3] = {};			// last position, smoothed velocity (units/s)
+		float offset[3] = {}, offsetVel[3] = {};	// the hem's trailing offset (world units) and its rate
+		float yaw = 0.0f, yawRate = 0.0f, turn = 0.0f, turnVel = 0.0f;	// heading, smoothed turn rate (rad/s), lag angle (rad) and its rate
+		double stride = 0.0, clock = 0.0;
+		UInt32 frame = 0;
+		bool valid = false;
+		float out[4] = {};						// this frame's offset (xyz) and turn lag (w), the same for every pass
+	};
+	inline std::unordered_map<const void*, Motion> Motions;
+	inline UInt32 FrameId = 0;
 	inline std::unordered_set<const void*> SeenNow, SeenLast, VanillaNow, VanillaLast;	// objects drawn / with a vanilla vertex shader
 	// The vertex shaders that carry the cloth code: NVR's ObjectTemplate ones (PBR.h's table), by name, built once.
 	inline std::unordered_set<std::string> CapableNames;
@@ -236,14 +257,31 @@ namespace ClothWind {
 		S.Ripple = std::clamp(TheSettingManager->GetSettingF(section, "RippleAmount"), 0.0f, 1.0f);
 		S.RippleScale = (std::max)(TheSettingManager->GetSettingF(section, "RippleScale"), 0.0f);
 		// (the whole text: GetSettingS goes through the node's 80-byte Value, which a longer list overflowed -- the game crashed)
-		auto readList = [&](const char* key, std::string& from, std::vector<std::string>& out) {
+		// 2026-10-19 (user: 'toggled it, restarted, couldn't see much'): a settings file saved before 2026-10-18 holds the OLD default
+		// keyword list word for word (the defaults are written back into it), which names none of the vanilla coats and dusters, so
+		// only flags and tarps moved. Exactly that old list now means 'the current default'.
+		auto readList = [&](const char* key, std::string& from, std::vector<std::string>& out, const char* oldDefault) {
 			SettingManager::Configuration::ConfigNode node;
-			const char* text = TheSettingManager->Config.FillNode(&node, section, key) ? node.LongValue.c_str() : nullptr;
-			if (text && from != text) { from = text; SplitList(text, out); ByTexture.clear(); }
+			if (!TheSettingManager->Config.FillNode(&node, section, key)) return;
+			std::string text = node.LongValue;
+			if (oldDefault && text == oldDefault) {
+				try { text = TheSettingManager->Config.DefaultConfig.at("_Shaders").at("Cloth").at("Main").at(key).as_string(); }
+				catch (...) {}
+			}
+			if (from != text) { from = text; SplitList(text.c_str(), out); ByTexture.clear(); }
 		};
-		readList("Keywords", WordsFrom, Words);
-		readList("Exclude", ExcludeFrom, Excluded);
-		readList("ExcludeParts", ExcludePartsFrom, ExcludedParts);
+		readList("Keywords", WordsFrom, Words, "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent");
+		readList("Exclude", ExcludeFrom, Excluded, nullptr);
+		readList("ExcludeParts", ExcludePartsFrom, ExcludedParts, nullptr);
+		S.MotionDrag = std::clamp(TheSettingManager->GetSettingF(section, "MotionDrag"), 0.0f, 0.3f);
+		S.MotionMax = std::clamp(TheSettingManager->GetSettingF(section, "MotionMax"), 0.0f, 80.0f);
+		S.MotionSpring = std::clamp(TheSettingManager->GetSettingF(section, "MotionSpring"), 0.2f, 6.0f);
+		S.MotionDamping = std::clamp(TheSettingManager->GetSettingF(section, "MotionDamping"), 0.05f, 1.0f);
+		S.StrideSwing = std::clamp(TheSettingManager->GetSettingF(section, "StrideSwing"), 0.0f, 30.0f);
+		S.StrideLength = std::clamp(TheSettingManager->GetSettingF(section, "StrideLength"), 40.0f, 600.0f);
+		S.TurnLag = std::clamp(TheSettingManager->GetSettingF(section, "TurnLag"), 0.0f, 0.5f);
+		S.MotionIndoors = TheSettingManager->GetSettingI(section, "MotionIndoors") != 0;
+		FrameId++;
 		S.SkinMask = std::clamp(TheSettingManager->GetSettingI(section, "SkinMask"), 0, 2);
 		S.LegCut = std::clamp(TheSettingManager->GetSettingF(section, "LegCut"), 0.0f, 60.0f);
 		S.PinFraction = std::clamp(TheSettingManager->GetSettingF(section, "PinFraction"), 0.0f, 0.9f);
@@ -286,6 +324,8 @@ namespace ClothWind {
 						c.name.c_str(), c.lit, c.notSeen, c.vanilla, VanillaVSLast.count(g) ? ": " : "", VanillaVSLast.count(g) ? VanillaVSLast.at(g).c_str() : "", c.shadow);
 				ClothPassCounts.clear();
 			}
+			for (auto m = Motions.begin(); m != Motions.end();)	// wearers not drawn for a while (gone, or the node freed)
+				m = FrameId - m->second.frame > 600 ? Motions.erase(m) : std::next(m);
 			Frames = ClothDraws = SkinnedDrawsNow = 0;
 		}
 	}
@@ -297,10 +337,70 @@ namespace ClothWind {
 		NonZeroSent = false;
 	}
 
+	// 2026-10-19 (user: 'make it more dramatic for our armor so we see the trench coat moving around when we walk'): worn clothing
+	// follows its wearer -- the hem trails behind as they walk or run and swings past and settles when they stop (a damped spring),
+	// swishes side to side with the steps, and lags behind a turn so the coat flares out. Worked out once per wearer per frame (every
+	// pass of the frame gets the same numbers: see SAFETY) from the skin root's movement in play time (a pause holds it); a jump of
+	// more than 400 units or a gap of more than a quarter second (a load, a teleport, not drawn for a while) starts it again at rest.
+	// The shader adds offset + lag angle x (the point's distance from the wearer's upright axis) under the wind's height mask, so the
+	// shoulders stay pinned and the boots still. The spring: semi-implicit Euler in steps of at most 1/120 s.
+	inline const float* MotionOf(const NiAVObject* root) {
+		Motion& m = Motions[root];
+		if (m.valid && m.frame == FrameId) return m.out;
+		const NiTransform& t = root->m_worldTransform;
+		const float p[3] = { t.pos.x, t.pos.y, t.pos.z };
+		const float yaw = atan2f(t.rot.data[1][0], t.rot.data[0][0]);	// the heading of the root's x axis in the world
+		const double dt = ClockSeconds - m.clock;
+		const float jump = sqrtf((p[0] - m.pos[0]) * (p[0] - m.pos[0]) + (p[1] - m.pos[1]) * (p[1] - m.pos[1]) + (p[2] - m.pos[2]) * (p[2] - m.pos[2]));
+		if (!m.valid || dt > 0.25 || dt < 0.0 || jump > 400.0f) {
+			m = Motion();
+			m.valid = true; m.frame = FrameId; m.clock = ClockSeconds; m.yaw = yaw;
+			for (int i = 0; i < 3; i++) m.pos[i] = p[i];
+			return m.out;
+		}
+		m.frame = FrameId;
+		if (dt < 1e-5) return m.out;	// no play time passed (paused): hold
+		m.clock = ClockSeconds;
+		const float h = (float)dt, smooth = 1.0f - expf(-h / 0.1f);	// the velocity is smoothed over ~0.1 s (the animation's own bob)
+		for (int i = 0; i < 3; i++) { m.vel[i] += ((p[i] - m.pos[i]) / h - m.vel[i]) * smooth; m.pos[i] = p[i]; }
+		float dy = yaw - m.yaw;
+		if (dy > 3.14159265f) dy -= 6.2831853f; else if (dy < -3.14159265f) dy += 6.2831853f;
+		m.yaw = yaw;
+		m.yawRate += (dy / h - m.yawRate) * smooth;
+		// targets: trail behind the movement (half as much up and down), Drag x speed at low speed, softly up to Max (a walk shows,
+		// a sprint does not throw the coat over the legs); lag behind the turn
+		float target[3] = { -m.vel[0], -m.vel[1], -m.vel[2] * 0.5f };
+		const float tl = sqrtf(target[0] * target[0] + target[1] * target[1] + target[2] * target[2]);
+		const float trail = S.MotionMax > 0.0f ? S.MotionMax * (1.0f - expf(-tl * S.MotionDrag / S.MotionMax)) : 0.0f;
+		for (float& v : target) v = tl > 1e-3f ? v * trail / tl : 0.0f;
+		const float turnTarget = std::clamp(-m.yawRate * S.TurnLag, -0.5f, 0.5f);
+		const float w = 6.2831853f * S.MotionSpring, k = w * w, c = 2.0f * S.MotionDamping * w;
+		const int steps = (std::min)((int)ceilf(h * 120.0f), 30);
+		const float s = h / steps;
+		for (int n = 0; n < steps; n++) {
+			for (int i = 0; i < 3; i++) { m.offsetVel[i] += (k * (target[i] - m.offset[i]) - c * m.offsetVel[i]) * s; m.offset[i] += m.offsetVel[i] * s; }
+			m.turnVel += (k * (turnTarget - m.turn) - c * m.turnVel) * s; m.turn += m.turnVel * s;
+		}
+		const float ol = sqrtf(m.offset[0] * m.offset[0] + m.offset[1] * m.offset[1] + m.offset[2] * m.offset[2]), most = 1.5f * S.MotionMax + 1.0f;
+		if (ol > most) for (float& v : m.offset) v *= most / ol;
+		m.turn = std::clamp(m.turn, -0.6f, 0.6f);
+		// the stride swish: across the movement, one cycle per two steps -- StrideLength at a run (~350/s, 1.4 a second), shorter
+		// steps when walking (~0.65 a second at 100/s) -- stronger the faster (about half at a walk, full at a run)
+		const float speed = sqrtf(m.vel[0] * m.vel[0] + m.vel[1] * m.vel[1]), pace = (std::min)(speed / 350.0f, 1.5f);
+		m.stride += dt * speed / (S.StrideLength * (0.45f + 0.55f * (std::min)(pace, 1.0f))); m.stride -= floor(m.stride);
+		const float swish = speed > 1.0f ? sinf(6.2831853f * (float)m.stride) * S.StrideSwing * sqrtf(pace) / speed : 0.0f;
+		m.out[0] = m.offset[0] - m.vel[1] * swish;
+		m.out[1] = m.offset[1] + m.vel[0] * swish;
+		m.out[2] = m.offset[2];
+		m.out[3] = m.turn;
+		return m.out;
+	}
+
 	// Before an object is drawn (the game's passes and NVR's shadow passes): its cloth values, or strength 0.
 	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false) {
 		if (!device) return;
-		if (!S.On || !Exterior || !geometry) { Zero(device); return; }
+		// 2026-10-19: indoors (no wind) worn clothing still follows its wearer (MotionIndoors); everything else stays still there
+		if (!S.On || !geometry || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
 		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
 		// frames, 'not seen by SetShaders'): the game sets no shaders for a pass whose shaders are already bound (the coat follows its
 		// Pip-Boy piece, same shaders), so SetShadersHook never notes it. Such a pass draws with the vertex shader bound now: judge it by
@@ -327,6 +427,7 @@ namespace ClothWind {
 		const NiSourceTexture* diffuse = lighting->ppTextures[0] ? lighting->ppTextures[0][0] : nullptr;
 		if (!diffuse || !diffuse->ddsPath1) { Zero(device); return; }
 		const bool skinned = geometry->skinInstance != nullptr;
+		if (!Exterior && !skinned) { Zero(device); return; }
 		bool cloth;
 		auto known = ByTexture.find(diffuse);
 		if (known != ByTexture.end() && known->second.first == diffuse->ddsPath1) cloth = known->second.second;
@@ -347,11 +448,12 @@ namespace ClothWind {
 		float mode = (float)S.MaskMode;
 		float top = 0.0f, invRange = 0.0f;	// mask 2 / 3, in the shader's space
 		float origin[3] = { 0.0f, 0.0f, 0.0f };	// where the shader's space origin lies in the world (phases are shifted by it, so the pattern stays on the world)
+		float motion[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, axis[2] = { 0.0f, 0.0f };	// 2026-10-19 worn clothing: the wearer's movement (c252, c253)
 		if (!skinned) {
 			const NiTransform& w = geometry->m_worldTransform;
 			scale = w.scale > 1e-4f ? w.scale : 1.0f;
 			for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
-			if (geometry->geomData) {	// hanging cloth: pinned at the top of its bound, loosest at the bottom (object space)
+			if (geometry->geomData) {	// (statics have no movement part: c252/c253 stay 0)	// hanging cloth: pinned at the top of its bound, loosest at the bottom (object space)
 				const NiBound& b = geometry->geomData->m_kBound;
 				top = b.Center.z + 0.8f * b.Radius; invRange = b.Radius > 1e-3f ? 1.0f / (1.6f * b.Radius) : 0.0f;
 			}
@@ -407,6 +509,19 @@ namespace ClothWind {
 				for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
 			}
 			else if (S.SkinSpace == 1) { origin[0] = TheRenderManager->CameraPosition.x; origin[1] = TheRenderManager->CameraPosition.y; origin[2] = TheRenderManager->CameraPosition.z; }
+			// 2026-10-19 the wearer's movement (MotionOf), in the same space: the offset, the lag angle, the wearer's upright axis
+			const float* mo = MotionOf(root);
+			if (S.SkinSpace == 0 && !shadowPass) {	// the skin root's space: its axis is the origin
+				const NiTransform& w = root->m_worldTransform;
+				for (int i = 0; i < 3; i++) motion[i] = (w.rot.data[0][i] * mo[0] + w.rot.data[1][i] * mo[1] + w.rot.data[2][i] * mo[2]) / scale;
+			}
+			else {
+				for (int i = 0; i < 3; i++) motion[i] = mo[i];
+				const bool camRel = S.SkinSpace == 1;
+				axis[0] = root->m_worldTransform.pos.x - (camRel ? TheRenderManager->CameraPosition.x : 0.0f);
+				axis[1] = root->m_worldTransform.pos.y - (camRel ? TheRenderManager->CameraPosition.y : 0.0f);
+			}
+			motion[3] = mo[3];
 			if (S.LogMatches) {
 				static int told = 0;
 				if (told < 12) {
@@ -437,12 +552,14 @@ namespace ClothWind {
 			auto wrap = [](double c) { return (float)(c - floor(c)); };
 			ph[0] = wrap(Phase[0] - d0); ph[1] = wrap(Phase[1] + d1); ph[2] = wrap(Phase[2] + d2); ph[3] = wrap(Phase[3] - d3);
 		}
-		const float c[16] = {
+		const float c[24] = {
 			1.0f, mode, S.Ripple, S.FlutterAmount,
 			dir[0], dir[1], dir[2], scale / S.Wavelength,
 			ph[0], ph[1], ph[2], ph[3],
-			IntensityNow / scale, S.RippleScale * scale, top, invRange };
-		device->SetVertexShaderConstantF(248, c, 4);
+			(Exterior ? IntensityNow : 0.0f) / scale, S.RippleScale * scale, top, invRange,	// (indoors: no wind, the movement part only)
+			motion[0], motion[1], motion[2], motion[3],
+			axis[0], axis[1], 0.0f, 0.0f };
+		device->SetVertexShaderConstantF(248, c, 6);
 		NonZeroSent = true;
 		ClothDraws++;
 	}

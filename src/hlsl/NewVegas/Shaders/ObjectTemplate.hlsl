@@ -337,7 +337,7 @@ float3 ApplyBarrelHeat(float3 color, float mask) {
 #endif
 
 // UNOFFICIAL 2026-10-16 cloth wind (Includes/ClothWind.hlsl, core/ClothWind.h): compiled into the vertex shaders only when
-// [Shaders.Cloth.Main] Enabled is on at startup (CLOTH_WIND_ON); per draw it runs only for cloth (NVR sets c248-c251).
+// [Shaders.Cloth.Main] Enabled is on at startup (CLOTH_WIND_ON); per draw it runs only for cloth (NVR sets c248-c253).
 #ifndef CLOTH_WIND_ON
     #define CLOTH_WIND_ON 0
 #endif
