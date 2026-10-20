@@ -73,6 +73,7 @@ namespace ClothWind {
 		float WalkHang = 1.0f;			// how fully the coat hangs from the hips instead of riding the legs (0 = rides them as made, 1 = hangs)
 		float WalkSpring = 1.4f, WalkDamping = 0.2f, WalkDrag = 1.0f, WalkLegMargin = 1.5f, WalkMaxSwing = 25.0f;
 		float WalkDragCap = 180.0f, WalkMaxAngle = 35.0f;	// 2026-10-20 round 9b (see ClothWalk.h)
+		float WalkHemSmooth = 1.0f;							// 2026-10-20 round 9c (see ClothWalk.h)
 		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
 		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
 										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
@@ -678,7 +679,7 @@ namespace ClothWind {
 		for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) x.r[i][j] = w.pelvis[i][j]; x.t[i] = w.pelvis[i][3]; }
 		ClothWalk::Params prm;
 		prm.spring = S.WalkSpring; prm.damping = S.WalkDamping; prm.drag = S.WalkDrag; prm.legMargin = S.WalkLegMargin; prm.maxSwing = S.WalkMaxSwing;
-		prm.dragCap = S.WalkDragCap; prm.maxAngle = S.WalkMaxAngle;
+		prm.dragCap = S.WalkDragCap; prm.maxAngle = S.WalkMaxAngle; prm.hemSmooth = S.WalkHemSmooth;
 		if (!w.st.valid || dt > 1e-5) ClothWalk::Step(w.st, mw.ring, x, w.legs, dt, prm, w.d);	// (no play time passed: hold)
 		// hang fades out when BOTH thighs are bent far from standing (sitting, crouching, lying). 2026-10-20 round 9b: it was the more bent
 		// thigh -- at a run the forward thigh passes 45 degrees every stride, so the coat switched between hanging and riding the legs
@@ -878,6 +879,7 @@ namespace ClothWind {
 		S.WalkMaxSwing = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxSwing"), 0.0f, 80.0f);
 		S.WalkDragCap = std::clamp(TheSettingManager->GetSettingF(section, "WalkDragCap"), 20.0f, 2000.0f);
 		S.WalkMaxAngle = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxAngle"), 5.0f, 89.0f);
+		S.WalkHemSmooth = std::clamp(TheSettingManager->GetSettingF(section, "WalkHemSmooth"), 0.0f, 1.0f);
 		WeightsMadeNow = 0;
 		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
 		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);

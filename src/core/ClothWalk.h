@@ -24,6 +24,14 @@
 // is soft (MaxSwing x tanh), and each vertex gets a PENDULUM share (Ring::swing: 0 at the hips rising evenly to 1 at the hem) for the
 // ring's displacement instead of its cloth weight (full from the knee down: the lower coat moved as one stiff block, folded at the knee).
 // Checked offline on a synthetic walk, run (350 units/s) and standing jump (cloth_walk_check.py, walk-v8).
+// 2026-10-20 round 9c (user: 'can we tune cloth a little bit so it doesn't take such sharp turns maybe some kind of smoothing on those
+// vertexes', 'so we don't get those sharp angles when we turn and move pretty fast'; evidence\cloth3\crease_check.py): the ring's 16
+// displacements are smoothed round the hem before use (HemSmooth: the mean kept, the one-wave part -- lean and turn -- at half, finer
+// waves dropped; neighbouring points 4 units apart moved 12-19 units differently and sheared the coat's big triangles over), and the
+// pendulum share starts at 0 where the moving cloth starts in each direction and eases in (it began at ~0.2 on the cloth's top edge: a
+// one-row step under the waist that creased when turning). Sharp folds (> 30 degrees sharper than the mesh's own) on the Combat Ranger
+// coat when running / turning / jumping while turning: 6.6 / 8.0 / 7.7 % of its edges -> 3.5 / 4.6 / 4.6 % (the game's own skinned
+// coat: ~9 %); the hem still moves ~85 % as far; no deeper into the legs.
 #include <vector>
 #include <cmath>
 #include <cstdint>
@@ -42,7 +50,7 @@ namespace ClothWalk {
 		double L[kRing] = {};				// their lengths
 		bool present[kRing] = {};
 		std::vector<float> u;				// per vertex: its place around the ring (point i at u = i; 0..16)
-		std::vector<float> swing;			// per vertex: its pendulum share of the ring's displacement (0 hips .. 1 hem, at most 1.2; 0 off the cloth)
+		std::vector<float> swing;			// per vertex: its pendulum share of the ring's displacement (0 where the cloth starts .. 1 hem, at most 1.2; 0 off the cloth)
 	};
 
 	// pos: xyz per vertex (bind pose); weight / label: ClothWeights.h's (label 2 = cloth)
@@ -92,13 +100,35 @@ namespace ClothWalk {
 			const double d[3] = { r.p[i][0] - r.a[i][0], r.p[i][1] - r.a[i][1], r.p[i][2] - r.a[i][2] };
 			r.L[i] = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 		}
-		r.swing.resize(n);	// round 9b: the pendulum share (cloth only: fades in over the first 0.2 of the weight)
+		// round 9c: the top of the moving cloth in each direction (its highest vertex with weight > 0.05; missing directions filled as above)
+		double zt[kRing]; bool hasT[kRing] = {};
+		for (int i = 0; i < kRing; i++) {
+			zt[i] = -1e30;
+			for (uint32_t v = 0; v < n; v++) if (sector[v] == i && weight[v] > 0.05f) { zt[i] = (std::max)(zt[i], (double)pos[v * 3 + 2]); hasT[i] = true; }
+		}
+		bool anyT = false;
+		for (int i = 0; i < kRing; i++) anyT = anyT || hasT[i];
+		for (int i = 0; i < kRing; i++) {
+			if (!anyT) { zt[i] = hipZ; continue; }
+			if (hasT[i]) continue;
+			int a = -1, b = -1, da = 99, db = 99;
+			for (int j = 0; j < kRing; j++) {
+				if (!hasT[j]) continue;
+				const int up = ((j - i) % kRing + kRing) % kRing, down = ((i - j) % kRing + kRing) % kRing;
+				if (up < da) { da = up; a = j; }
+				if (down < db) { db = down; b = j; }
+			}
+			zt[i] = zt[b] + (zt[a] - zt[b]) * ((double)db / (std::max)(da + db, 1));
+		}
+		r.swing.resize(n);	// round 9b: the pendulum share (cloth only: fades in over the first 0.2 of the weight); 9c: from the cloth's top, eased in
 		for (uint32_t v = 0; v < n; v++) {
 			const double i0 = std::floor(ud[v]), f = ud[v] - i0;
 			const int a = (int)i0 % kRing, b = (a + 1) % kRing;
 			const double zr = z[a] * (1.0 - f) + z[b] * f;
-			double share = ((double)hipZ - pos[v * 3 + 2]) / (std::max)((double)hipZ - zr, 1.0);
+			const double ztu = zt[a] * (1.0 - f) + zt[b] * f;
+			double share = (ztu - pos[v * 3 + 2]) / (std::max)(ztu - zr, 1.0);
 			share = share < 0.0 ? 0.0 : (share > 1.2 ? 1.2 : share);
+			if (share <= 1.0) share = share * share * (2.0 - share);	// no slope at the top, slope 1 at the ring
 			double wf = (double)weight[v] / 0.2; wf = wf < 0.0 ? 0.0 : (wf > 1.0 ? 1.0 : wf); wf = wf * wf * (3.0 - 2.0 * wf);
 			r.swing[v] = (float)(share * wf);
 		}
@@ -109,6 +139,7 @@ namespace ClothWalk {
 	struct Params {
 		double spring = 1.4, damping = 0.2, drag = 1.0, legMargin = 1.5, maxSwing = 25.0;
 		double dragCap = 180.0, maxAngle = 35.0;	// round 9b
+		double hemSmooth = 1.0;						// round 9c: 0 = as 9b, 1 = the ring smoothed round the hem (see the top)
 		double stretch = 1.03, neighbour = 0.5;
 		int iterations = 2;
 	};
@@ -204,6 +235,18 @@ namespace ClothWalk {
 			for (int k = 0; k < 3; k++) { s.tPrev[i][k] = tNow[i][k]; out[i][k] = s.x[i][k] - tNow[i][k]; }
 			const double l = std::sqrt(out[i][0] * out[i][0] + out[i][1] * out[i][1] + out[i][2] * out[i][2]);
 			if (l > 1e-6 && prm.maxSwing > 0.0) { const double m = prm.maxSwing * std::tanh(l / prm.maxSwing) / l; for (int k = 0; k < 3; k++) out[i][k] *= m; }	// soft limit
+		}
+		if (prm.hemSmooth > 0.0) {	// round 9c: the mean kept, the one-wave part at half, finer waves dropped (blended by hemSmooth)
+			double mean[3] = {}, A[3] = {}, B[3] = {}, cs[kRing], sn[kRing];
+			for (int i = 0; i < kRing; i++) {
+				cs[i] = std::cos(2.0 * kPi * i / kRing); sn[i] = std::sin(2.0 * kPi * i / kRing);
+				for (int k = 0; k < 3; k++) { mean[k] += out[i][k] / kRing; A[k] += out[i][k] * cs[i]; B[k] += out[i][k] * sn[i]; }
+			}
+			for (int i = 0; i < kRing; i++)
+				for (int k = 0; k < 3; k++) {
+					const double low = mean[k] + (cs[i] * A[k] + sn[i] * B[k]) / kRing;
+					out[i][k] += (low - out[i][k]) * prm.hemSmooth;
+				}
 		}
 	}
 }
