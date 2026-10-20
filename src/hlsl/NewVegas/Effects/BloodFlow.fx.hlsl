@@ -267,6 +267,10 @@ float SplatCoreRadius(float a, float seed, float grow) {
 // tip of each of the first arms: user: the spray and arms flow like liquid over the real surfaces). In splat radii.
 float SplatArms(float seed) { return 5.0 + floor(hash1(seed * 9.17) * 7.0); }
 
+// UNOFFICIAL 2026-10-20 (user: slow and 'comically violent'; log: 13 splats = 33 ms): the paint-splat shape is drawn at most this
+// big (game units of radius); the game's decals reach 60, and with spray round them a few close ones filled the screen.
+float ShapeR(float r) { return min(r, 24.0); }
+
 void SplatArm(float i, float seed, float grow, out float2 dir, out float rootR, out float len, out float width) {
 	float slant = 0.3 + 0.7 * hash1(seed * 3.71);
 	float lean = hash1(seed * 5.93) * 6.2832;
@@ -601,7 +605,7 @@ float4 ProbePS(PSIN IN) : COLOR0 {
 			float2 dir;
 			float rootR, len, width;
 			SplatArm(k, seed, 1.0, dir, rootR, len, width);
-			s.start = dir * (len + width * 0.5) * R;
+			s.start = dir * (len + width * 0.5) * ShapeR(R);
 			float thick = saturate((width - 0.05) / 0.1);
 			if (hash1(seed * 57.1 + k * 2.29) > 0.35 + 0.6 * thick) none = 1.0;
 			s.lengthMax *= lerp(0.5, 1.4, thick) * TESR_BloodFlowSplat.w;
@@ -671,10 +675,14 @@ float4 BoundsPS(PSIN IN) : COLOR0 {
 		float3 gN = known ? ground.xyz : float3(0.0, 0.0, 1.0);
 		slope = length(gN.xy) / max(gN.z, 0.3);
 		float reach = R * (1.45 * PoolStretch(slope) + PoolShift(slope)) + 2.0;
-		float gz = known ? ground.w : 0.0;
+		// UNOFFICIAL 2026-10-20 (user: half pools left, cut straight): BloodPS now follows the surface's own plane (the probe's is
+		// tilted by grass and ragdolls), so this box must not use the probe's height either: with GroundFit it allows any
+		// slope up to about 30 degrees round the pool's own centre, as when the ground is not found.
+		bool fit = TESR_BloodFlowGround.x > 0.5;
+		float gz = known && !fit ? ground.w : 0.0;
 		// UNOFFICIAL 2026-10-16 (GroundFit): with the ground round it not found, room for a slope up to about 30 degrees (BloodPS
 		// then follows the surface's own slope), and for the soft edge.
-		float unsure = TESR_BloodFlowGround.x > 0.5 && !known ? reach * 0.6 + 3.0 : 0.0;
+		float unsure = fit ? reach * 0.6 + 3.0 : 0.0;
 		lo = float3(-reach, -reach, gz - reach * slope - 8.0 - 0.45 * reach - unsure);
 		hi = float3(reach, reach, gz + reach * slope + 5.0 + 0.25 * reach + unsure);
 		count = 2.0;
@@ -1002,7 +1010,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	float boundsV = (firstRow + Streams * 0.5) * TESR_BloodFlowProbe.x;	// its row of the bounds texture (one per slot)
 	float4 lo = tex2Dlod(TESR_BloodFlowBounds, float4(0.25, boundsV, 0.0, 0.0));
 	float4 hi = tex2Dlod(TESR_BloodFlowBounds, float4(0.75, boundsV, 0.0, 0.0));
-	[branch] if (lo.w > 0.5) {
+	[branch] if (lo.w > 0.5 && pool < 0.5) {	// (2026-10-20: not for pools, as CutBox)
 		float3 margin = aa + 0.5;
 		bool inside = all(pp >= lo.xyz - margin) && all(pp <= hi.xyz + margin);
 		float3 inverse = 1.0 / (abs(rd) > 1e-6 ? rd : 1e-6);
@@ -1050,11 +1058,17 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 			// else (the ring hidden, by the body, grass or the screen's edge) the surface here, its plane carried to the
 			// pool's centre: on even ground that is the same height at every pixel, whatever the slope (the old fallback, a
 			// level plane through the body's lowest bone, cut a straight line across the pool's uphill side).
-			bool sure = known;
-			float h = sure ? pp.z - groundZ : dot(pp, Nw) / max(Nw.z, 0.3);
+			// UNOFFICIAL 2026-10-20 (user screenshots: half-disc pools, flat dark, cut on a straight line through the middle): the
+			// probe's plane is often tilted by grass or the body in its ring, so half the pool counted as a hollow (filled solid out
+			// to its whole reach) and half as a bump (cut). The surface's own plane here is used instead, always.
+			bool sure = false;
+			// (2026-10-20: height over the pool's centre, not the pixel's own plane, which is noisy and flickered with the view;
+			// the room below grows with the slope here.)
+			float h = sure ? pp.z - groundZ : pp.z;
+			float tiltRoom = fromCentre * sqrt(saturate(1.0 - Nw.z * Nw.z)) / max(Nw.z, 0.5);
 			float3 up = sure ? normalize(float3(gN.xy, max(gN.z, 0.3))) : float3(0.0, 0.0, 1.0);
 			float fade = max(aa * TESR_BloodFlowGround.y, 1.5);
-			keep = saturate((5.0 + 0.15 * fromCentre + fade - h) / fade) * saturate((8.0 + 0.3 * fromCentre + fade + h) / fade)
+			keep = saturate((5.0 + 0.15 * fromCentre + tiltRoom + fade - h) / fade) * saturate((8.0 + 0.3 * fromCentre + tiltRoom + fade + h) / fade)
 				* saturate((dot(Nw, up) - 0.45) / 0.25);
 			groundZ = pp.z - h;		// (the hollows below read the same height)
 		}
@@ -1072,13 +1086,13 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 			dist += (fbm(pp.xy * 0.09 + seed * 17.0) - 0.5) * radius * 0.55 * (0.5 + 0.5 * TESR_BloodFlowFlow.y);
 			// UNOFFICIAL 2026-10-13 (WetWorld's puddles in hollows): ground lower than the plane the probe found fills first,
 			// bumps stay dry; then as a thickness (0.25 at the edge it had before), shown above BloodAmount's threshold.
-			dist += clamp(pp.z - groundZ, -radius * 0.4, radius * 0.4) * 0.8;
+			dist += clamp(pp.z - groundZ, -radius * 0.12, radius * 0.4) * 0.8;	// (2026-10-20: a hollow deepens blood, never makes it)
 			float T = 0.25 - dist / max(radius, 0.5) * 0.9;
 			// With the user's splatter decals: the pool takes one's shape (stretched downhill with it), its dense middle the
 			// deep pool, its spray and droplets round the edge; a smooth core keeps the middle whole, hollows and bumps as above.
 			[branch] if (TESR_BloodFlowProbe.w > 0.5)
 				T = Splatter(shaped / (radius * 2.2), seed, aa / (radius * 2.2)) * 1.25 - 0.1 + RaggedCore(shaped, radius * 0.55, seed)
-					- clamp(pp.z - groundZ, -radius * 0.4, radius * 0.4) * 0.72 / max(radius, 0.5);
+					- clamp(pp.z - groundZ, -radius * 0.12, radius * 0.4) * 0.72 / max(radius, 0.5);
 			float cover = Shows(T, aa * 0.9 / max(radius, 0.5));
 			poolShape = cover;
 			cover *= keep;
@@ -1257,7 +1271,9 @@ VSOUT CutBox(VSIN IN, float limit) {
 		float boundsV = (slot * Streams + Streams * 0.5) * TESR_BloodFlowProbe.x;	// as BloodPS
 		float4 lo = tex2Dlod(BloodFlowBoundsVS, float4(0.25, boundsV, 0.0, 0.0));
 		float4 hi = tex2Dlod(BloodFlowBoundsVS, float4(0.75, boundsV, 0.0, 0.0));
-		if (lo.w > 0.5 && hi.w > 0.5) corner = clamp(corner, lo.xyz - margin, hi.xyz + margin);
+		// UNOFFICIAL 2026-10-20 (user + auto-test save nvrautotest14: pools cut on straight lines at this box's edges): pools keep
+		// the CPU's box (their shape and the ground's slope can reach past the bounds; they cost ~2 ms for 23).
+		if (lo.w > 0.5 && hi.w > 0.5 && pool < 0.5) corner = clamp(corner, lo.xyz - margin, hi.xyz + margin);
 	}
 	corner = clamp(corner, -limit - margin, limit + margin);
 	float3 rel = IN.a.xyz + corner;		// eye-relative
@@ -1272,7 +1288,13 @@ VSOUT CutBox(VSIN IN, float limit) {
 
 VSOUT PaintVS(VSIN IN) { return CutBox(IN, 1e9); }
 // The wet beads lie on the game's splat only (BeadsPS): its box needs no more than the splat itself (as BoundsPS).
-VSOUT BeadsVS(VSIN IN) { return CutBox(IN, IN.b.w * 1.1 + 1.0); }
+VSOUT BeadsVS(VSIN IN) {
+	VSOUT OUT = CutBox(IN, IN.b.w * 1.1 + 1.0);
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	if (pool > 0.5 || TESR_BloodFlowBeads.x <= 0.0) OUT.position = float4(0.0, 0.0, -2.0, 1.0);	// (as SplatVS: BeadsPS draws none)
+	return OUT;
+}
 
 technique BloodFlow
 {
@@ -1596,7 +1618,7 @@ VSOUT SplatVS(VSIN IN) {
 	// Its own box (the arms reach past the bounds the streams set): the CPU's box, cut to the arms' reach.
 	VSOUT OUT;
 	OUT.a = IN.a; OUT.b = IN.b; OUT.c = IN.c; OUT.d = IN.d;
-	float limit = IN.b.w * (1.2 + 2.4 * TESR_BloodFlowSplat.y + 2.4 * TESR_BloodFlowSplat.w) + 2.0;
+	float limit = ShapeR(IN.b.w) * (1.2 + 2.4 * TESR_BloodFlowSplat.y + 2.4 * TESR_BloodFlowSplat.w) + 2.0;
 	float3 corner = clamp(IN.position.xyz, -limit, limit);
 	float3 rel = IN.a.xyz + corner;
 	float face = floor(IN.position.w + 0.5);
@@ -1604,46 +1626,20 @@ VSOUT SplatVS(VSIN IN) {
 	float side = face - axis * 2.0 > 0.5 ? 1.0 : -1.0;
 	float plane = axis < 0.5 ? rel.x : (axis < 1.5 ? rel.y : rel.z);
 	OUT.position = side * plane > 0.0 ? mul(float4(rel + TESR_BloodFlowShape.xyz, 1.0), TESR_ViewProjectionTransform) : float4(0.0, 0.0, -2.0, 1.0);
+	// UNOFFICIAL 2026-10-20 (perf, user: frames drop very hard with a little blood on screen; log: splat shapes 38 ms with ~20
+	// pools): SplatPS draws nothing for a pool, but its 'discard' does not stop the shader, so every pixel of each pool's big
+	// box ran the whole splat shape. A pool's box is dropped here, before any pixel starts.
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	if (pool > 0.5 || TESR_BloodFlowSplat.x <= 0.0) OUT.position = float4(0.0, 0.0, -2.0, 1.0);
 	return OUT;
 }
 
-float4 SplatPS(PSIN IN) : COLOR0 {
-	float2 uv = (IN.vpos + 0.5) * TESR_ReciprocalResolution.xy;
-	float slot, pool, fresh;
-	DecodeSlot(IN.a.w, slot, pool, fresh);
-	if (pool > 0.5 || TESR_BloodFlowSplat.x <= 0.0) discard;
-	float viewmodelDepth = tex2D(TESR_DepthBufferViewModel, uv).x;
-	if ((TESR_DepthConstants.z == 0 && viewmodelDepth < 0.9) || (TESR_DepthConstants.z > 0 && viewmodelDepth > 0.01)) discard;
-	float depth = readDepth(uv);
-	if (depth >= farZ * 0.979) discard;
-	float3 rel = toWorld(uv) * depth;
-	float3 pp = rel - IN.a.xyz;
-	float R = max(IN.b.w, 1.0);
-	float3 n = normalize(IN.b.xyz);
-	float3 N = normalize(GetWorldNormalLod(uv));
-	float keep = SlabKeep(pp, n, N, R * 0.6 + 4.0, max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05), 0.3);
-	bool cutView = TESR_BloodFlowInfo.y > 1.5;
-	if (keep <= 0.0 && !cutView) discard;	// off the splat's surface
-	// The splat's plane: down the surface (+y), across it (+x).
-	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
-	float steep = length(down);
-	down = steep > 0.05 ? down / steep : float3(1.0, 0.0, 0.0);
-	float3 across = normalize(cross(n, down));
-	float2 q = float2(dot(pp, across), dot(pp, down)) / R;
-	float seed = ItemSeed(IN.c.z);
-	float age = IN.c.x;
-	float grow = smoothstep(0.0, 1.0, saturate(age / 0.12));
-	// The drips run on a wall or a slope (none on level ground), most of the way in the first few seconds.
-	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(age - 0.3, 0.0) / 4.0));	// (from about 3 degrees; full by about 20)
-	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05) / R;
-	// UNOFFICIAL 2026-10-16 (cheaper, the picture unchanged): nothing of the shape reaches past 0.96 + 3.12 x SplatReach radii from
-	// the centre (the longest spray line: the core's edge, at most 0.96, plus 2.4 x 1.3 x reach; the arms, their droplets and the
-	// mist stop sooner) but the drips, which hang below by at most run x max(1.26, 2.4 x reach) (an arm's tip drip; the curtain)
-	// and a bead. Pixels farther out -- most of a splat's box seen at an angle -- skip the arm and spray loops.
-	float reachMax = 1.15 + 3.12 * TESR_BloodFlowSplat.y + 2.0 * aa;
-	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
-	float2 qq = float2(q.x, q.y > 0.0 ? max(q.y - dripMax, 0.0) : q.y);
-	if (dot(qq, qq) > reachMax * reachMax) discard;
+// UNOFFICIAL 2026-10-20 (perf: splat shapes 38 ms, user debug shot: most of each box cut away): the shape and look, in a
+// function SplatPS calls only inside a real branch. ps_3_0 'discard' does not stop a pixel, so every cut-away or out-of-reach
+// pixel used to run all of it.
+float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R, float3 N, float keep, bool cutView,
+		float3 down, float3 across, float2 q, float seed, float age, float grow, float run, float aa) {
 	// The arms with a real stream (the probe found one: its row's end code is not 'none') draw no drip of their own.
 	float armDrip[6];
 	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = PathTexel(0.0, slot * Streams + ai).w < -0.5 ? 1.0 : 0.0;
@@ -1710,6 +1706,53 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	colour = min(colour, ceiling);
 	float alpha = cover * IN.c.y * saturate(TESR_BloodFlowSplat.x);
 	return float4(delinearize(max(colour, 0.0)), alpha);
+}
+
+float4 SplatPS(PSIN IN) : COLOR0 {
+	float2 uv = (IN.vpos + 0.5) * TESR_ReciprocalResolution.xy;
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	if (pool > 0.5 || TESR_BloodFlowSplat.x <= 0.0) discard;
+	float viewmodelDepth = tex2D(TESR_DepthBufferViewModel, uv).x;
+	if ((TESR_DepthConstants.z == 0 && viewmodelDepth < 0.9) || (TESR_DepthConstants.z > 0 && viewmodelDepth > 0.01)) discard;
+	float depth = readDepth(uv);
+	if (depth >= farZ * 0.979) discard;
+	float3 rel = toWorld(uv) * depth;
+	float3 pp = rel - IN.a.xyz;
+	float R = max(ShapeR(IN.b.w), 1.0);
+	float3 n = normalize(IN.b.xyz);
+	float3 N = normalize(GetWorldNormalLod(uv));
+	// UNOFFICIAL 2026-10-20 (user: half-disc 'pools' cut on a straight line next to ragdolls): the game's decal plane is often the
+	// ragdoll's, not the ground's, so a slab round it cut the splat in half. The surface here judged by its own plane instead: blood
+	// shows where the surface's tangent plane passes near the splat's centre (the ground under it, not a body above it).
+	// (2026-10-20 again, user: blood flickers in and out with the view angle: the pixel's own normal is too noisy a plane.) Ground
+	// is judged by height over the splat's centre (more room on a slope); a wall by the game's plane as before.
+	float3 slabN = N.z > 0.7 ? float3(0.0, 0.0, 1.0) : n;
+	float keep = SlabKeep(pp, slabN, N, R * 0.6 + 4.0, max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05), 0.3);
+	bool cutView = TESR_BloodFlowInfo.y > 1.5;
+	bool off = keep <= 0.0 && !cutView;	// off the splat's surface
+	// The splat's plane: down the surface (+y), across it (+x).
+	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
+	float steep = length(down);
+	down = steep > 0.05 ? down / steep : float3(1.0, 0.0, 0.0);
+	float3 across = normalize(cross(n, down));
+	float2 q = float2(dot(pp, across), dot(pp, down)) / R;
+	float seed = ItemSeed(IN.c.z);
+	float age = IN.c.x;
+	float grow = smoothstep(0.0, 1.0, saturate(age / 0.12));
+	// The drips run on a wall or a slope (none on level ground), most of the way in the first few seconds.
+	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(age - 0.3, 0.0) / 4.0));	// (from about 3 degrees; full by about 20)
+	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05) / R;
+	// UNOFFICIAL 2026-10-16 (cheaper, the picture unchanged): nothing of the shape reaches past 0.96 + 3.12 x SplatReach radii from
+	// the centre (the longest spray line: the core's edge, at most 0.96, plus 2.4 x 1.3 x reach; the arms, their droplets and the
+	// mist stop sooner) but the drips, which hang below by at most run x max(1.26, 2.4 x reach) (an arm's tip drip; the curtain)
+	// and a bead. Pixels farther out -- most of a splat's box seen at an angle -- skip the arm and spray loops.
+	float reachMax = 1.15 + 3.12 * TESR_BloodFlowSplat.y + 2.0 * aa;
+	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
+	float2 qq = float2(q.x, q.y > 0.0 ? max(q.y - dripMax, 0.0) : q.y);
+	[branch] if (off || dot(qq, qq) > reachMax * reachMax) discard;
+	else return SplatShade(IN, uv, slot, rel, pp, R, N, keep, cutView, down, across, q, seed, age, grow, run, aa);
+	return float4(0.0, 0.0, 0.0, 0.0);
 }
 
 technique BloodSplat
