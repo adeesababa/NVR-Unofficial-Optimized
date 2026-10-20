@@ -254,10 +254,21 @@ float terrainBlendDepthRange(TerrainBlendGap gap, float slope) {
 float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
     float maxDistance = TESR_TerrainBlendData.z;
     if (landViewDepth > maxDistance || gap.covered < 0.0f) return -1.0f;   // the object in front: the depth test handles it
-    float distance = terrainBlendDepthRange(gap, slope);
-    if (distance < 0.05f) return -1.0f;   // parallel to the ground: nothing to fade
-    float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
-    float keep = saturate(gap.covered / range);
+    float keep;
+    // UNOFFICIAL 2026-10-20 HeightEdge 2 (a community update to HeightEdge, sent to the user as TerrainTemplate.hlsl): the band is
+    // BlendDistance (x SlopeBlend on steep land) alone, no ground-width or pixel terms, and the land is solid already at 35 % of it,
+    // so more of the ground stays round rocks and walls. Sent as HeightBlend + 10, negated (Terrain.cpp).
+    [branch] if (TESR_TerrainBlendShape.y < -9.5f) {
+        const float slopeFactor = lerp(1.0f, TESR_TerrainBlendShape.z, saturate(slope * 2.0f));
+        const float range = max((1.0f / TESR_TerrainBlendData.y) * slopeFactor, 0.05f);
+        keep = saturate(gap.covered / max(range * 0.35f, 0.0001f));
+    }
+    else {
+        float distance = terrainBlendDepthRange(gap, slope);
+        if (distance < 0.05f) return -1.0f;   // parallel to the ground: nothing to fade
+        float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
+        keep = saturate(gap.covered / range);
+    }
     // Back to a hard edge over the last quarter before the max distance, so there is no visible line.
     return lerp(keep, 1.0f, saturate((landViewDepth / maxDistance - 0.75f) * 4.0f));
 }
@@ -271,7 +282,12 @@ float terrainBlendEdge(float keep, float height) {
     // the edge follows the land texture's height map: sand fills the gaps between pebbles, crisper than the nudge below.
     // Sent as a negative HeightBlend (TESR_TerrainBlendShape.y < 0; Terrain.cpp), so no new constant is needed.
     [branch] if (TESR_TerrainBlendShape.y < 0.0f) {
-        const float strength = -TESR_TerrainBlendShape.y;
+        // HeightEdge 2 (2026-10-20 update, see getTerrainBlend): the land's height pushed to strong contrast round the middle
+        // (x 8) and lifted 0.20, so the edge follows the texture's high parts crisply. HeightEdge 1: the height as it is.
+        const bool edge2 = TESR_TerrainBlendShape.y < -9.5f;
+        const float strength = edge2 ? -TESR_TerrainBlendShape.y - 10.0f : -TESR_TerrainBlendShape.y;
+        if (strength <= 0.0f) return keep;
+        if (edge2) height = saturate((height - 0.5f) * 8.0f + 0.5f + 0.20f);
         const float coveragePower = 1.0f + strength, heightPower = 4.0f * strength;
         const float terrainWeight = pow(keep, coveragePower) * (0.001f + pow(saturate(height), heightPower));
         const float meshWeight = pow(1.0f - keep, coveragePower) * (0.001f + pow(0.5f, heightPower));
