@@ -47,6 +47,14 @@
 #else
     #define TERRAIN_BLEND_ACTIVE 0
 #endif
+// HeightEdge 2's height contrast (terrainBlendEdge) takes 7 layers with SkylightingMode 1 past ps_3_0's 32 temporary registers
+// (2026-10-20, d3dx9_43 with the game's defines; the shader would fail and that land keep the game's own shader). There
+// HeightEdge 2 keeps its band but weighs the plain height, like HeightEdge 1.
+#if TEX_COUNT >= 7 && SKYLIGHTING_MODE
+    #define HEIGHT_EDGE2_CONTRAST 0
+#else
+    #define HEIGHT_EDGE2_CONTRAST 1
+#endif
 
 
 struct VS_INPUT {
@@ -287,7 +295,9 @@ float terrainBlendEdge(float keep, float height) {
         const bool edge2 = TESR_TerrainBlendShape.y < -9.5f;
         const float strength = edge2 ? -TESR_TerrainBlendShape.y - 10.0f : -TESR_TerrainBlendShape.y;
         if (strength <= 0.0f) return keep;
+#if HEIGHT_EDGE2_CONTRAST
         if (edge2) height = saturate((height - 0.5f) * 8.0f + 0.5f + 0.20f);
+#endif
         const float coveragePower = 1.0f + strength, heightPower = 4.0f * strength;
         const float terrainWeight = pow(keep, coveragePower) * (0.001f + pow(saturate(height), heightPower));
         const float meshWeight = pow(1.0f - keep, coveragePower) * (0.001f + pow(0.5f, heightPower));

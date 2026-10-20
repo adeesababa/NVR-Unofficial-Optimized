@@ -281,7 +281,9 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
         // secant steps: evaluate the height where the straight line between the bracket's two samples crosses the
         // ray, and keep the half that still brackets the hit. One height lookup each instead of four or more.
         [branch] if (lite && done) {
-            [unroll] for (int r = 0; r < LITE_SECANT_STEPS; r++) {	// (unroll: 1 step by default; [loop] warned X3557 at every compile)
+            // [loop], not [unroll], although it warns X3557 (one step) at every compile: [unroll] (10-19 08af8504) took the land shaders
+            // with 6 and 7 layers and terrain blending on past ps_3_0's 32 temporary registers (X4505, they failed to load; 2026-10-20).
+            [loop] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
                 float secant2 = pt2.x - pt2.y;
                 float secant1 = pt1.x - pt1.y;
                 float secantDenominator = secant2 - secant1;
