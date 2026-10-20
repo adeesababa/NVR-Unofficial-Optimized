@@ -261,7 +261,11 @@ Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIA
 > skylighting follow the [Community Shaders](https://github.com/community-shaders/skyrim-community-shaders) team and contributors'
 > Terrain Shadows, Cloud Shadows, Grass Collision, Terrain Variation, LOD Blending and Skylighting (GPL-3.0); the terrain shadows'
 > sweep and the terrain variation shader are ported from [Conor (mrfury97)](https://github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork)'s
-> NVR fork (GPL-3.0-or-later). What came from where: [docs/COMMUNITY-SHADERS-PORTS.md](docs/COMMUNITY-SHADERS-PORTS.md).
+> NVR fork (GPL-3.0-or-later). Also adapted from Community Shaders: the skin shader's shading details (after Advanced Skin)
+> and its screen-space blur kernel and width, the Terrain Blending method this build's terrain blending descends from, the
+> Complex Parallax Materials method in the parallax code, the True PBR material-map layout read for `_rmaos` maps, and Grass
+> Optimizations' size fade (through Balebandro's Physically-Based-Reloaded fork) in the new grass.
+> What came from where: [docs/COMMUNITY-SHADERS-PORTS.md](docs/COMMUNITY-SHADERS-PORTS.md).
 >
 > This is shared in good faith. If any of the original authors or maintainers feel this release
 > steps on their toes, please open an issue here and it will be taken down.
