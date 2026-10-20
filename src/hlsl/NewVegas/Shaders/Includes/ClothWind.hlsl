@@ -26,6 +26,9 @@
 //                the wind pushes AWAY FROM THE WEARER'S UPRIGHT AXIS instead of along the vertex normal -- a lining's normal points
 //                inward, so the normal billow pushed shell and lining apart (up to ~17 units in a gale). The caller passes that
 //                direction already carried into the skinned space (ClothOutwardBind, through the bones).
+//                (2026-10-19 round 6) That billow is ONE-SIDED: outward as before, inward softly limited to ClothBillowIn units --
+//                it swung both ways by up to (ripple + flutter) x intensity, and its inward half pushed the coat into the legs (60 units
+//                at 30 units of wind with ripple and flutter 1). The weight already scales with the coat's clearance from the body.
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -47,6 +50,10 @@ float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
     return t * t * (3.0f - 2.0f * t);
 }
 
+// Mask 5's billow: the most it pulls cloth inward (units). With the weight's clearance factor (core/ClothWeights.h) inward stays below
+// the straight-line room to the trousers (checked offline: bench\deep-roadmap\evidence\cloth3-LOG.md C3-12, 2 was 0.01 units too much).
+static const float ClothBillowIn = 1.5f;
+
 // The displacement at point p (the shader's space) with surface normal n; n = 0 gives the push along the wind only.
 float3 ClothDisplacement(float3 p, float3 n) {
     const float along = dot(p, ClothB.xyz) * ClothB.w;
@@ -55,7 +62,13 @@ float3 ClothDisplacement(float3 p, float3 n) {
     const float r = ClothD.y;
     const float ripple = 0.6f * (ClothTri(dot(p, float3(0.71f, 0.53f, 0.37f)) * r + ClothC.z) * 2.0f - 1.0f)
                        + 0.4f * (ClothTri(dot(p, float3(-0.43f, 0.81f, 0.59f)) * r * 1.7f - ClothC.w) * 2.0f - 1.0f);
-    return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * (ClothA.z * wave + ClothA.w * ripple));
+    float billow = ClothA.z * wave + ClothA.w * ripple;
+    // Mask 5 (2026-10-19 round 6): one-sided. In units b = intensity x gust x billow: outward unchanged, inward b / sqrt(1 + (b / In)^2)
+    // (slope 1 at rest, so small motion looks as before; never deeper than ClothBillowIn). Every other mask keeps its billow exactly.
+    const float in5 = min(billow, 0.0f);
+    const float k5 = ClothD.x * gust * (1.0f / ClothBillowIn);
+    [flatten] if (ClothA.y > 4.5f) billow += in5 * (rsqrt(1.0f + in5 * in5 * k5 * k5) - 1.0f);
+    return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * billow);
 }
 
 // The wearer's movement (worn clothing; core/ClothWind.h MotionOf): the same offset everywhere, plus a small turn of the garment
