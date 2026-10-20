@@ -14,6 +14,10 @@
 //   c252 ClothE: (2026-10-19) worn clothing follows its wearer: xyz the offset (units: trailing behind the movement + the stride
 //                swish), w the lag behind a turn (radians, around the upright axis) -- 0 for everything but worn clothing
 //   c253 ClothF: xy the wearer's upright axis in the vertex shader's space (the turn lag swings points around it)
+//   c226-c237 ClothLimb (2026-10-19, mask 4 = worn clothing by its own skeleton): the garment's hip, knee, ankle, toe tip (left,
+//                right) and elbow, wrist (left, right) where its bones sat when it was made (the mesh's own space, as IN.position),
+//                w the limb's radius there;  c238 ClothLimbParams: x hip height, y 1 / (hip - knee height), z gap off the limb where
+//                cloth starts to move, w 1 / fade;  c239 ClothLimbGround: x the height below which nothing moves, y 1 / its fade
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -26,6 +30,9 @@ float4 ClothC : register(c250);
 float4 ClothD : register(c251);
 float4 ClothE : register(c252);
 float4 ClothF : register(c253);
+float4 ClothLimb[12] : register(c226);
+float4 ClothLimbParams : register(c238);
+float4 ClothLimbGround : register(c239);
 
 float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
     const float t = abs(frac(c + 0.5f) * 2.0f - 1.0f);
@@ -50,10 +57,33 @@ float3 ClothMotion(float3 p) {
     return ClothE.xyz + ClothE.w * float3(-r.y, r.x, 0.0f);
 }
 
-// bindP: the vertex before skinning (mode 3 only; for unskinned meshes it is p itself).
+// Mask 4: distance from bindP to the limb segment a-b, minus the limb's radius there.
+float ClothLimbDistance(float3 p, float4 a, float4 b) {
+    const float3 ab = b.xyz - a.xyz;
+    const float t = saturate(dot(p - a.xyz, ab) / max(dot(ab, ab), 1e-4f));
+    return length(p - (a.xyz + ab * t)) - lerp(a.w, b.w, t);
+}
+
+// bindP: the vertex before skinning (modes 3 and 4; for unskinned meshes it is p itself).
 float ClothMask(float4 vertexColor, float3 p, float3 bindP) {
     float m;
-    [flatten] if (ClothA.y > 2.5f) {	// worn clothing: smooth from pinned (top part) to loose (hem)
+    [branch] if (ClothA.y > 3.5f) {	// worn clothing by its own skeleton (core/ClothWind.h SkeletonOf): only what stands off the legs
+                                    // and forearms moves, only below the hips, nothing at the ground -- legs, trousers, boots, hands
+                                    // and torso stay put
+        float d = ClothLimbDistance(bindP, ClothLimb[0], ClothLimb[1]);
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[1], ClothLimb[2]));
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[2], ClothLimb[3]));
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[4], ClothLimb[5]));
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[5], ClothLimb[6]));
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[6], ClothLimb[7]));
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[8], ClothLimb[9]));
+        d = min(d, ClothLimbDistance(bindP, ClothLimb[10], ClothLimb[11]));
+        const float off = saturate((d - ClothLimbParams.z) * ClothLimbParams.w);
+        const float h = saturate((ClothLimbParams.x - bindP.z) * ClothLimbParams.y);
+        const float g = saturate((bindP.z - ClothLimbGround.x) * ClothLimbGround.y);
+        m = off * off * (3.0f - 2.0f * off) * h * h * (3.0f - 2.0f * h) * g * g * (3.0f - 2.0f * g);
+    }
+    else [flatten] if (ClothA.y > 2.5f) {	// worn clothing: smooth from pinned (top part) to loose (hem)
         m = saturate((ClothD.z - bindP.z) * ClothD.w);
         m = m * m * (3.0f - 2.0f * m);
         const float cut = (ClothA.y - 3.0f) * 1000.0f;	// legs and boots (meshes with the feet at z 0): fades to 0 below this height, full 10 units above

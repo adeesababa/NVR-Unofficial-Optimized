@@ -60,6 +60,9 @@ namespace ClothWind {
 		float StrideLength = 250.0f;	// units run per swish (one left and one right step); shorter steps when walking
 		float TurnLag = 0.12f;			// seconds the hem lags behind a turn (it flares out); 0 off
 		bool  MotionIndoors = true;		// the movement part also indoors (no wind there)
+		bool  UseSkeleton = true;		// 2026-10-19 worn clothing masked by its own skeleton (see SkeletonOf); off: SkinMask
+		float LimbGap = 1.0f;			// units off the limb (beyond a human limb's radius) where cloth starts to move
+		float LimbFade = 5.0f;			// ...and how many units further it moves fully
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
@@ -215,6 +218,104 @@ namespace ClothWind {
 		return Extents[d] = e;
 	}
 
+	// 2026-10-19 (user: 'our body itself is billowing around, not just the coat -- how can we do this intelligently without a lot of
+	// hand-made tweaking'): worn clothing masked by the garment's OWN skeleton. Every skinned mesh carries its bones (names) and where
+	// each sat when the mesh was made (NiSkinData SkinToBone; the bone's origin in the mesh's own space = the space the vertex shader's
+	// IN.position is in). From them: hip, knee, ankle and toe of each leg, elbow and wrist of each arm. The shader moves only what stands
+	// OFF those limbs (distance to the nearest limb segment minus a limb radius: hip 7 -> knee 5 -> ankle 5 (boots) -> toe tip 3.5,
+	// elbow 3.5 -> wrist 2.5 units, 1 unit = 1.43 cm), only below the hips (pinned at the hip joints, loosest from the knees down) and
+	// nothing at ground level (fades in over the 6 units up to the ankles): legs, trousers, boots, hands and the torso stay put, a coat's
+	// skirt and tails move -- with no per-armour numbers. The height mask it replaces (SkinMask 1) let everything below HeightTop 95
+	// (chest height) move, hips, legs and hands included. Checked offline on vanilla NIFs (evidence\cloth3\skeleton_mask_check.py:
+	// hips z 67.8, knees 35.8, ankles 7.1, toes 1.2 forward +y; legs 0.00 moving vs 0.4-0.95 before). A mesh without thigh bones (a
+	// creature, a flag) keeps SkinMask. A missing ankle is put a thigh's length below the knee, a missing toe 12 units forward of the
+	// ankle (+y, the bind pose's forward); missing arms are left out.
+	struct Skeleton {
+		bool ok = false;
+		const void* boneData = nullptr; UInt32 bones = 0;	// what it was made from (the skin data can be freed and reused)
+		float pts[12][4] = {};			// L hip, knee, ankle, toe tip, R hip, knee, ankle, toe tip, L elbow, wrist, R elbow, wrist (xyz, radius)
+		float hipZ = 0.0f, kneeZ = 0.0f, groundZ = 0.0f;
+	};
+	inline std::unordered_map<const void*, Skeleton> Skeletons;	// per NiSkinData
+	inline UInt32 SkeletonsLogged = 0;
+	inline float LimbDistance(const float* p, const float* a, const float* b) {	// to the segment a-b, minus its radius there
+		const float ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+		const float len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+		const float t = std::clamp(len2 > 1e-4f ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2 : 0.0f, 0.0f, 1.0f);
+		const float d[3] = { ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t };
+		return sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - (a[3] + (b[3] - a[3]) * t);
+	}
+	inline float Smooth01(float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3.0f - 2.0f * x); }
+	// The same mask as the shader's (ClothWind.hlsl, mode 4): for the log's check that the bones and the vertices line up.
+	inline float SkeletonMask(const Skeleton& k, const float* p) {
+		static const int seg[8][2] = { {0, 1}, {1, 2}, {2, 3}, {4, 5}, {5, 6}, {6, 7}, {8, 9}, {10, 11} };
+		float d = 1e30f;
+		for (const auto& sg : seg) d = (std::min)(d, LimbDistance(p, k.pts[sg[0]], k.pts[sg[1]]));
+		const float off = Smooth01((d - S.LimbGap) / (std::max)(S.LimbFade, 0.1f));
+		const float h = Smooth01((k.hipZ - p[2]) / (std::max)(k.hipZ - k.kneeZ, 1.0f));
+		return off * h * Smooth01((p[2] - k.groundZ) / 6.0f);
+	}
+	inline const Skeleton& SkeletonOf(NiGeometry* geometry) {
+		static const Skeleton none;
+		const NiSkinInstance* si = geometry->skinInstance;
+		const NiSkinData* sd = si ? si->SkinData : nullptr;
+		if (!sd || !sd->BoneData || !si->BoneObjects) return none;
+		auto it = Skeletons.find(sd);
+		if (it != Skeletons.end() && it->second.boneData == sd->BoneData && it->second.bones == sd->Bones) return it->second;
+		if (Skeletons.size() >= 2048) Skeletons.clear();
+		Skeleton k;
+		k.boneData = sd->BoneData; k.bones = sd->Bones;
+		static const char* const names[12] = { "bip01 l thigh", "bip01 l calf", "bip01 l foot", "bip01 l toe0", "bip01 r thigh", "bip01 r calf",
+			"bip01 r foot", "bip01 r toe0", "bip01 l forearm", "bip01 l hand", "bip01 r forearm", "bip01 r hand" };
+		static const float radius[12] = { 7.0f, 5.0f, 5.0f, 3.5f, 7.0f, 5.0f, 5.0f, 3.5f, 3.5f, 2.5f, 3.5f, 2.5f };
+		bool found[12] = {};
+		const UInt32 count = (std::min)(sd->Bones, si->Bones);
+		for (UInt32 b = 0; b < count; b++) {
+			const NiAVObject* bone = si->BoneObjects[b];
+			const char* name = bone ? bone->m_pcName : nullptr;
+			if (!name) continue;
+			for (int n = 0; n < 12; n++) {
+				if (found[n] || _stricmp(name, names[n])) continue;
+				// the bone's origin in the mesh's space: SkinToBone maps p to s R p + t, so its origin is -R^T t / s
+				const NiTransform& t = sd->BoneData[b].SkinToBone;
+				const float sc = t.scale > 1e-4f ? t.scale : 1.0f;
+				for (int i = 0; i < 3; i++)
+					k.pts[n][i] = -(t.rot.data[0][i] * t.pos.x + t.rot.data[1][i] * t.pos.y + t.rot.data[2][i] * t.pos.z) / sc;
+				k.pts[n][3] = radius[n];
+				found[n] = true;
+			}
+		}
+		k.ok = found[0] && found[1] && found[4] && found[5];
+		if (k.ok) {
+			for (int leg = 0; leg < 2; leg++) {
+				float* hip = k.pts[leg * 4], *knee = k.pts[leg * 4 + 1], *ankle = k.pts[leg * 4 + 2], *toe = k.pts[leg * 4 + 3];
+				if (!found[leg * 4 + 2]) { for (int i = 0; i < 3; i++) ankle[i] = knee[i] + (knee[i] - hip[i]) * 0.95f; ankle[3] = radius[2]; }	// a thigh's length below the knee
+				if (!found[leg * 4 + 3]) { toe[0] = ankle[0]; toe[1] = ankle[1] + 11.6f; toe[2] = ankle[2] - 5.9f; toe[3] = radius[3]; }	// vanilla: 11.6 forward, 5.9 down
+				for (int i = 0; i < 3; i++) toe[i] += (toe[i] - ankle[i]) * 0.35f;	// the toe bone sits at the ball of the foot: on to the tip
+			}
+			for (int arm = 0; arm < 2; arm++) {	// a missing arm: far away (no effect)
+				if (!found[8 + arm * 2] || !found[9 + arm * 2])
+					for (int n = 8 + arm * 2; n < 10 + arm * 2; n++) { k.pts[n][0] = k.pts[n][1] = 0.0f; k.pts[n][2] = -1e5f; k.pts[n][3] = 0.0f; }
+			}
+			k.hipZ = 0.5f * (k.pts[0][2] + k.pts[4][2]);
+			k.kneeZ = 0.5f * (k.pts[1][2] + k.pts[5][2]);
+			k.groundZ = 0.5f * (k.pts[2][2] + k.pts[6][2]) - 6.0f;
+			k.ok = k.hipZ - k.kneeZ > 5.0f;	// an upright leg (else the space is not what we think: keep SkinMask)
+		}
+		if (SkeletonsLogged < 24 || S.LogMatches) {	// the check: bone heights, and how much of the mesh the mask moves
+			SkeletonsLogged++;
+			const NiGeometryData* gd = geometry->geomData;
+			UInt32 moving = 0, total = 0;
+			if (k.ok && gd && (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex)
+				for (UInt16 v = 0; v < gd->m_usVertices; v++, total++) if (SkeletonMask(k, &gd->m_pkVertex[v].x) > 0.5f) moving++;
+			Logger::Log("Cloth wind: skeleton of '%s' (%u bones): %s; hips z %.1f, knees z %.1f, ankles z %.1f %.1f, elbows %s%s%s; %u of %u vertices (kept) move > half",
+				geometry->m_pcName ? geometry->m_pcName : "?", sd->Bones, k.ok ? "used" : "NOT used (no upright legs: SkinMask)", k.hipZ, k.kneeZ,
+				k.pts[2][2], k.pts[6][2], found[8] && found[10] ? "found" : "missing", found[2] && found[6] ? "" : " (ankles guessed)",
+				found[3] && found[7] ? "" : " (toes guessed)", moving, total);
+		}
+		return Skeletons[sd] = k;
+	}
+
 	// Once a frame (Render.cpp, image space): the settings (live), the wind and the phases.
 	inline void AdvanceClock() {
 		TimeGlobals* g = TimeGlobals::Get();
@@ -281,6 +382,9 @@ namespace ClothWind {
 		S.StrideLength = std::clamp(TheSettingManager->GetSettingF(section, "StrideLength"), 40.0f, 600.0f);
 		S.TurnLag = std::clamp(TheSettingManager->GetSettingF(section, "TurnLag"), 0.0f, 0.5f);
 		S.MotionIndoors = TheSettingManager->GetSettingI(section, "MotionIndoors") != 0;
+		S.UseSkeleton = TheSettingManager->GetSettingI(section, "UseSkeleton") != 0;
+		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
+		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);
 		FrameId++;
 		S.SkinMask = std::clamp(TheSettingManager->GetSettingI(section, "SkinMask"), 0, 2);
 		S.LegCut = std::clamp(TheSettingManager->GetSettingF(section, "LegCut"), 0.0f, 60.0f);
@@ -466,7 +570,17 @@ namespace ClothWind {
 				if (c.name.empty()) c.name = geometry->m_pcName ? geometry->m_pcName : "?";
 				if (shadowPass) c.shadow++; else c.lit++;
 			}
+			const Skeleton* skeleton = S.MaskMode == 2 && S.UseSkeleton ? &SkeletonOf(geometry) : nullptr;
 			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
+			else if (skeleton && skeleton->ok) {	// 2026-10-19: the garment's own skeleton (SkeletonOf); c226-c239
+				mode = 4.0f;
+				float limbs[56] = {};
+				memcpy(limbs, skeleton->pts, sizeof(skeleton->pts));
+				limbs[48] = skeleton->hipZ; limbs[49] = 1.0f / (std::max)(skeleton->hipZ - skeleton->kneeZ, 1.0f);
+				limbs[50] = S.LimbGap; limbs[51] = 1.0f / (std::max)(S.LimbFade, 0.1f);
+				limbs[52] = skeleton->groundZ; limbs[53] = 1.0f / 6.0f;
+				device->SetVertexShaderConstantF(226, limbs, 14);
+			}
 			else if (S.SkinMask == 1 && geometry->geomData) {
 				// Actor meshes are authored with the feet at z 0 (checked on the vanilla Combat Ranger, Sheriff's duster and Patrol NIFs:
 				// z 0..116): the bind-pose height IS the height above the feet. Mask as the settings say, legs and boots still.
