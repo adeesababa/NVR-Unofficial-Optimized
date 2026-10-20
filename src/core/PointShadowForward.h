@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PointShadowSchedule.h"
+#include "LampFixtures.h"
 
 // UNOFFICIAL interior forward point-light shadows (NVR-Lunacy\docs\interior-forward-shadows.md).
 //
@@ -119,7 +120,7 @@ namespace PointShadowForward {
 	inline float DebugView = 0.0f;			// c181.x
 	inline float NearFade = 0.0f;			// c181.y: [Shaders.ShadowsInteriors.Main] NearFade (PointShadowForward.hlsl PointShadowNear)
 	inline float Quality = 1.0f;			// c181.w: [Shaders.ShadowsInteriors.Forward] Quality (Low arrives as spread 0 in c180.w)
-	inline float Soft[4] = {};				// c189: contact hardening strength (0 off), narrowest spread share
+	inline float Soft[4] = {};				// c189: contact hardening strength (0 off), narrowest spread share; LampSize / sqrt 2, widest spread
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };	// NVR_PointShadowCube0-5
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -333,6 +334,19 @@ namespace PointShadowForward {
 		Quality = (float)forward.Quality;
 		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;
 		Soft[1] = forward.ContactHardeningMinSoftness;
+		// UNOFFICIAL LampSize (2026-10-20): shadows soft by distance, as a lamp of that radius casts them (PointShadowForward.hlsl
+		// PointShadowCube): z = LampSize / sqrt 2 (the four diagonal taps sit sqrt 2 x the spread from the centre), w = the
+		// widest spread per unit of the cube direction's major axis (MaxSoftness texels). It uses contact hardening's blocker
+		// search, so it switches that on (x 1) when ContactHardening itself is off. Softness stays the narrowest spread.
+		// The shader takes both in one form (x = 0 and y = 1 here: the Softness spread is the narrowest, nothing scales by
+		// the ratio), so contact hardening's own settings do nothing while LampSize is on.
+		Soft[2] = Soft[3] = 0.0f;
+		if (forward.LampSize > 0.0f && forward.Quality > 0 && forward.Softness > 0.0f) {
+			Soft[0] = 0.0f;
+			Soft[1] = 1.0f;
+			Soft[2] = forward.LampSize * 0.70710678f;
+			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
+		}
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
@@ -368,6 +382,10 @@ namespace PointShadowForward {
 			// the floor instead of blacking it out. Rides in the per-lamp fade the shader multiplies the shadow by.
 			const NiPointLight* source = lights[i]->sourceLight;
 			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
+			// UNOFFICIAL InvisibleLightShadowStrength (2026-10-20): a light with no glowing lamp near it (ShaderManager::GetNearbyLights
+			// gives it no cube map at 0; LampFixtures.h has the answer cached for this frame).
+			if (forward.InvisibleLightShadowStrength < 1.0f && source && !TheShaderManager->GameState.isExterior &&
+				LampFixtures::Invisible(source, forward.FixtureDistance)) fade *= forward.InvisibleLightShadowStrength;
 			start[SlotCount] = since;
 			Slots[SlotCount++] = { lights[i], D3DXVECTOR3(slots[i].x, slots[i].y, slots[i].z), slots[i].radius, cubes[i], i, fade };
 		}

@@ -2152,10 +2152,16 @@ static const char* InactiveReason(const char* section, const char* key) {
 	if (sec == "Shaders.ShadowsInteriors.Forward" && !is({ "Enabled", "ScopeFix" })) {
 		if (NumericSetting(section, "Enabled") == 0.0f)
 			return "Only used with Forward Enabled on (the first switch in this section); with it off the old screen-space lamp shadows are used.";
-		if (is({ "Quality", "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "Softness") <= 0.0f)
+		if (is({ "Quality", "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness", "LampSize", "MaxSoftness" }) && NumericSetting(section, "Softness") <= 0.0f)
 			return "Only used when Softness is above 0: sharp lamp shadows (Softness 0) take a single lookup.";
 		if (is({ "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "ContactHardening") == 0.0f)
 			return "Only used with ContactHardening on.";
+		if (is({ "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "LampSize") > 0.0f)
+			return "Not used while LampSize is above 0 (LampSize decides how soft each shadow is).";
+		if (is({ "MaxSoftness" }) && NumericSetting(section, "LampSize") <= 0.0f)
+			return "Only used when LampSize is above 0.";
+		if (is({ "FixtureDistance" }) && NumericSetting(section, "InvisibleLightShadowStrength") >= 1.0f)
+			return "Only used when InvisibleLightShadowStrength is below 1.";
 		if (is({ "DarkeningBlur", "MaskHalfRes" }) && NumericSetting(section, "KeepDarkening") == 0.0f)
 			return "Only used with KeepDarkening on (with it off the room darkening pass is not drawn).";
 	}

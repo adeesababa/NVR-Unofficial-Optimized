@@ -174,6 +174,10 @@ public:
 			int Quality;				// UNOFFICIAL (2026-10-10): PCF taps, 0 Low (1), 1 Medium (4, as before), 2 High (10), 3 Ultra (20)
 			bool ContactHardening;		// UNOFFICIAL (2026-10-10): lamp shadows sharp at contact, Softness further out (not the sun's [Shaders.ContactHardening])
 			float ContactHardeningStrength, ContactHardeningMinSoftness;	// at least 0; 0..1 share of the Softness spread
+			float InvisibleLightShadowStrength;	// UNOFFICIAL (2026-10-20): 0..1, shadows of lights with no glowing lamp near them (LampFixtures.h); 1 = as before
+			float FixtureDistance;		// UNOFFICIAL (2026-10-20): world units; a glowing mesh this close makes a light a lamp's
+			float LampSize;				// UNOFFICIAL (2026-10-20): world units, a lamp's radius for shadows soft by distance (0 = off)
+			float MaxSoftness;			// UNOFFICIAL (2026-10-20): the widest blur LampSize may give, in shadow-map texels (1..32)
 		} Forward;
 	};
 

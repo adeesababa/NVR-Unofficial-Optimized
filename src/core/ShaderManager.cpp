@@ -2,6 +2,7 @@
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "LampFixtures.h"
 #include "EffectSelfTest.h"
 
 #define RESZ_CODE 0x7FA05000
@@ -723,6 +724,14 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		notes[noteCount++] = { light, reason, distance, key, source->Spec.r, source->m_worldTransform.pos.toD3DXVEC4(),
 			D3DXVECTOR4(source->Diff.r, source->Diff.g, source->Diff.b, source->Dimmer), (int)source->CanCarry };
 	};
+	// UNOFFICIAL InvisibleLightShadowStrength (2026-10-20, with forward shadows on, indoors): a light with no glowing lamp
+	// within FixtureDistance (LampFixtures.h: the level designers' invisible fill and key lights, most of New Vegas's interior
+	// lights) casts that share of a shadow; at 0 none, and it leaves its cube map to lamps that are really there (it still
+	// lights as before and still counts for the darkening, as a fill light does). LogLamps lists every light's answer once.
+	const bool indoorsForward = viewTest && !GameState.isExterior;
+	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
+	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || logLamps);
+	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
 
 	auto reachesView = [&](const D3DXVECTOR4& lightPosition, float reach) {
 		const D3DXVECTOR3 v(lightPosition.x - TheRenderManager->CameraPosition.x, lightPosition.y - TheRenderManager->CameraPosition.y,
@@ -863,8 +872,25 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 				}
 			}
 
+			if (classifyLamps && CastShadow) {	// UNOFFICIAL InvisibleLightShadowStrength, see above
+				const bool invisible = LampFixtures::Invisible(Light, Settings->Forward.FixtureDistance);
+				if (invisible) CastShadow = invisibleStrength > 0.0f;
+				static std::unordered_map<const void*, unsigned> loggedKind;	// light -> glow list generation it was logged for
+				if (logLamps && loggedKind.size() < 512) {
+					auto seen = loggedKind.find(v->second);
+					if (seen == loggedKind.end() || seen->second != LampFixtures::Generation) {
+						loggedKind[v->second] = LampFixtures::Generation;
+						const D3DXVECTOR4 at = Light->m_worldTransform.pos.toD3DXVEC4();
+						Logger::Log("LAMP %p is %s: nearest glowing mesh %.0f units (FixtureDistance %.0f; %u glowing meshes in the cell)%s | at %.0f %.0f %.0f, reach %.0f, colour %.2f %.2f %.2f x %.2f",
+							v->second, invisible ? "an INVISIBLE light" : "at a lamp", LampFixtures::NearestGlow(Light), Settings->Forward.FixtureDistance,
+							(unsigned)LampFixtures::Glows.size(), invisible ? (invisibleStrength > 0.0f ? ", its shadow at InvisibleLightShadowStrength" : ", no shadow") : "",
+							at.x, at.y, at.z, Light->Spec.r, Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+					}
+				}
+			}
+
 #if defined(OBLIVION)
-			// Oblivion exception for carried torch lights 
+			// Oblivion exception for carried torch lights
 			if (TorchOnBeltEnabled && Light->CanCarry == 2) {
 				HighProcessEx* Process = (HighProcessEx*)Player->process;
 				if (Process->OnBeltState == HighProcessEx::State::In) CastShadow = false;

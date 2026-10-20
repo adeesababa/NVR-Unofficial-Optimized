@@ -50,7 +50,9 @@ float4 NVR_PointShadowFocus     : register(c188); // view 3: the focus lamp (cub
                                                   // lamps; its cube map is on NVR_PointShadowCube5
 float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardening ([Shaders.ShadowsInteriors.Forward] ContactHardening):
                                                   // x: strength (0 = off, the spread as before), y: the narrowest spread, as a
-                                                  // share of the Softness spread (where a blocker touches what it shadows)
+                                                  // share of the Softness spread (where a blocker touches what it shadows);
+                                                  // z: LampSize / sqrt 2 (world units; 0 = the ratio above), w: the widest spread
+                                                  // LampSize may give, per unit of the direction's major axis (MaxSoftness)
 
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
@@ -108,23 +110,33 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
     [branch] if (NVR_PointShadowParams.w > 0.0f) {
         // Four taps on a rotated 2x2 grid: these four offsets give one on each diagonal of whichever face the
         // direction falls on. A face texel spans 2 * major / resolution in direction units.
-        float s = NVR_PointShadowParams.w * max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
+        float major = max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
+        float s = NVR_PointShadowParams.w * major;
         // UNOFFICIAL contact hardening (PCSS-style): find the blockers' mean distance over the full spread first, then
         // narrow the spread by how far the blocker is from this point compared with the lamp: sharp where an object
         // touches the floor, the full Softness spread further out. Nothing blocked in the search: lit, the PCF skipped.
-        [branch] if (NVR_PointShadowSoft.x > 0.0f) {
+        // UNOFFICIAL 2026-10-20 LampSize (z > 0): the spread a lamp of that radius gives instead, seen from the lamp
+        // LampSize x (1 / blocker distance - 1 / this point's distance), between the Softness spread and MaxSoftness's (w),
+        // searched over the widest: sharp where an object touches what it shadows, softer the further the shadow falls
+        // from it, and blurred out where the blocker is right at the lamp (its fixture, a fan's blades above its globes).
+        // Both in one form, t = 1 / blocker - 1 / d (so (d - blocker) / blocker = d t): the spread is
+        // clamp(t (z / radius x major + x s d), y s, max(s, w major)), with z = w = 0 for contact hardening alone and
+        // x = 0, y = 1 for LampSize (PointShadowForward::Publish), to keep the 6-lamp shaders' instruction count down.
+        [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.z > 0.0f) {
+            float wide = max(NVR_PointShadowSoft.w * major, s);
             float4 search = float4(
-                texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
-                texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
-                texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
-                texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
+                texCUBElod(cube, float4(dir + wide * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + wide * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + wide * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + wide * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
             float centre = texCUBElod(cube, float4(dir, 0.0f)).r;
             float4 isBlocker = (float4)(search <= threshold) * (float4)(search > 0.0f);
             float centreBlocker = (float)(centre <= threshold) * (float)(centre > 0.0f);
             float blockers = dot(isBlocker, 1.0f) + centreBlocker;
             [branch] if (!(blockers > 0.0f)) return 1.0f;
             float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
-            s *= clamp((d - blocker) / max(blocker, 0.0001f) * NVR_PointShadowSoft.x, NVR_PointShadowSoft.y, 1.0f);
+            float t = 1.0f / max(blocker, 0.0001f) - 1.0f / d;
+            s = clamp(t * (NVR_PointShadowSoft.z * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
         }
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
