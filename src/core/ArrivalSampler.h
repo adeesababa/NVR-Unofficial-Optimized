@@ -6,8 +6,8 @@
 // keep their call-site hooks): a thread of ours wakes every ~1 ms (a high-resolution waitable timer; the system timer
 // resolution is not changed), suspends the main (render) thread, reads its registers and copies its live stack (ESP up to the
 // stack base, at most 128 KB), and resumes it. Only then, with the main thread running again, the copy is searched for return
-// addresses (a value inside a loaded module's executable section, right after a call instruction): innermost 40 and outermost
-// 16 are kept with the instruction pointer. While the main thread is suspended this thread takes no lock and allocates nothing
+// addresses (a value inside a loaded module's executable section, right after a call instruction): innermost 256 and outermost
+// 128 are kept with the instruction pointer (all of them in nearly every sample). While the main thread is suspended this thread takes no lock and allocates nothing
 // (a lock the main thread holds would deadlock both).
 // The main thread's frame tick (ShaderWarmUp2::FrameTick, the 'WARMUP2 FRAME' point) hands every frame's interval and flags
 // over a lock-free queue; this thread writes the samples of frames over 50 ms (not loading screens, not the main menu) and of
@@ -22,7 +22,7 @@
 
 namespace ArrivalSampler {
 #if NVR_TEST_TOOLS
-	static const unsigned kKeepInner = 40, kKeepOuter = 16, kKeep = kKeepInner + kKeepOuter;
+	static const unsigned kKeepInner = 256, kKeepOuter = 128, kKeep = kKeepInner + kKeepOuter;	// 2026-10-20 L1: 40 + 16 lost the OnIdle frames (~105 return addresses per stack, the OnIdle call 16-60 from the outer end)
 	struct Sample { LONGLONG Qpc; DWORD Eip, Esp; DWORD PauseTicks; unsigned short Kept, Found; DWORD Ra[kKeep]; };
 	struct FrameInfo { LONGLONG Start, End; float Ms, DrawMs, NewMs, SlowKnownMs, SinceLoad; int Shot; unsigned Index; char Kind; char Flags[6]; };
 	struct Range { DWORD Start, End; int Module; };
@@ -40,7 +40,7 @@ namespace ArrivalSampler {
 	inline volatile unsigned FramesRead = 0;	// written by the sampler only; the main thread reads it to see if the ring is full
 
 	// sampler-thread state only
-	static const unsigned kSampleRing = 16384;
+	static const unsigned kSampleRing = 8192;	// ~16 s at one sample per 2 ms
 	inline Sample* Samples = nullptr;
 	inline unsigned SampleW = 0, SampleR = 0;	// SampleW - SampleR = samples held (oldest dropped when full)
 	inline unsigned char* StackCopy = nullptr;
@@ -55,7 +55,7 @@ namespace ArrivalSampler {
 	inline double PauseSumUs = 0.0, PauseMaxUs = 0.0;
 	inline LONGLONG LastModuleScan = 0, LastTotals = 0;
 	inline bool UnknownEip = false;
-	static const unsigned long long kMaxWritten = 120000;	// ~30 MB at most per launch
+	static const unsigned long long kMaxWritten = 60000;	// ~60 MB at most per launch
 
 	inline LONGLONG Qpc() { LARGE_INTEGER c; QueryPerformanceCounter(&c); return c.QuadPart; }
 	inline double TicksToMs(LONGLONG t) { return (double)t * 1000.0 / (double)QpcFreq; }
