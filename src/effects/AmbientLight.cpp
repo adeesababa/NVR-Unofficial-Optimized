@@ -23,6 +23,8 @@ void AmbientLightEffect::UpdateSettings() {
 	gridBlocking = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBlocking"), 0.0f, 4.0f);
 	gridScreenStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridScreenStrength"), 0.0f, 40.0f);
 	gridColour = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridColour"), 0.0f, 1.0f);
+	interiorBalance = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "InteriorBalance") != 0;
+	interiorBounceShare = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "InteriorBounceShare"), 0.0f, 4.0f);
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -39,6 +41,11 @@ void AmbientLightEffect::EnsureBuffers() {
 	TheTextureManager->InitTexture("NVR_AmbientLightHistory1", &historyTexture[1], &historySurface[1], width, height, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_AmbientLightOcclusion0", &occlusionHistory[0], &occlusionHistorySurface[0], width, height, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("NVR_AmbientLightOcclusion1", &occlusionHistory[1], &occlusionHistorySurface[1], width, height, D3DFMT_A16B16G16R16F);
+	// UNOFFICIAL 2026-10-18 (ambfix2) indoor balance: 32 x 18 samples (16 x 9 texels) of the picture's light, the occlusion's darkening and the bounce,
+	// and their average with the bounce's scale (1 x 1, one read while the other is written).
+	TheTextureManager->InitTexture("NVR_AmbientLightStats", &statsTexture, &statsSurface, StatsWidth, StatsHeight, D3DFMT_A32B32G32R32F);
+	TheTextureManager->InitTexture("NVR_AmbientLightBalance0", &balanceTexture[0], &balanceSurface[0], 1, 1, D3DFMT_A32B32G32R32F);
+	TheTextureManager->InitTexture("NVR_AmbientLightBalance1", &balanceTexture[1], &balanceSurface[1], 1, 1, D3DFMT_A32B32G32R32F);
 }
 
 // UNOFFICIAL 2026-10-14 light grid: the sun map (256^2 R32F + depth) and the atlas pairs (128^2 A16B16G16R16F), about 0.9 MB.
@@ -308,7 +315,22 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	{
 		D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient, direct = TheShaderManager->ShaderConst.sunColor;
 		const bool interior = !TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() && Player->parentCell->lighting;
-		if (interior) { ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4(); direct = Player->parentCell->lighting->directional.toD3DXVECTOR4(); }
+		UInt32 inherit = 0;
+		TESObjectCELL::LightingData* fromTemplate = nullptr;
+		if (interior) {
+			TESObjectCELL* cell = Player->parentCell;
+			ambient = cell->lighting->ambient.toD3DXVECTOR4(); direct = cell->lighting->directional.toD3DXVECTOR4();
+			// UNOFFICIAL 2026-10-18 (ambfix2): a cell with a lighting template takes the fields its inherit flags name (LNAM: 1 ambient,
+			// 2 directional) from the template (BGSLightingTemplate: TESForm, then the same data as XCLL). The cell's own values are
+			// then placeholders: Rivet City's hangar (RCHangar, TTW) has ambient 0 0 0 and inherits RCUpperDecksTemplate's 44 48 62
+			// (P81 read the placeholders: a 4 x too dark, yellow scene light, so every surface counted as lamp-lit and the bounce came
+			// out strong and blue). The flags follow the template pointer (TESObjectCELL 0xDC; the Xbox 360 debug build's type
+			// records name them pLightingTemplate / iLightingTemplateInheritanceFlags, 184 / 188 there). Part of InteriorBalance.
+			inherit = cell->unk0DC;
+			if (cell->lightingTemplate && interiorBalance) fromTemplate = (TESObjectCELL::LightingData*)((char*)cell->lightingTemplate + sizeof(TESForm));
+			if (fromTemplate && (inherit & 1)) ambient = fromTemplate->ambient.toD3DXVECTOR4();
+			if (fromTemplate && (inherit & 2)) direct = fromTemplate->directional.toD3DXVECTOR4();
+		}
 		// 2026-10-19 (a P81 tester's log: ~12000 of these lines in 30 minutes): outdoors the sky's colours drift a little every
 		// frame, so 'when it changes' was every frame. Now: on an indoor/outdoor switch, or a change of more than 0.02 in a channel,
 		// at most 200 lines a session.
@@ -323,6 +345,15 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			if (++loggedLines == 200) Logger::Log("UNOFFICIAL AmbientLight: scene light lines stop here (200 this session)");
 			Logger::Log("UNOFFICIAL AmbientLight: scene light (%s): ambient %.4f %.4f %.4f, %s %.4f %.4f %.4f", interior ? "cell" : "sky",
 				ambient.x, ambient.y, ambient.z, interior ? "directional" : "sun", direct.x, direct.y, direct.z);
+			if (interior) {
+				TESObjectCELL::LightingData* own = Player->parentCell->lighting;
+				Logger::Log("UNOFFICIAL AmbientLight: cell lighting: own ambient %u %u %u directional %u %u %u fog near %.1f, inherit flags 0x%X, template %s%s",
+					own->ambient.r, own->ambient.g, own->ambient.b, own->directional.r, own->directional.g, own->directional.b, own->fogNear, inherit,
+					Player->parentCell->lightingTemplate ? "yes" : "none", Player->parentCell->lightingTemplate && !fromTemplate ? " (not used: InteriorBalance off)" : "");
+				if (fromTemplate) Logger::Log("UNOFFICIAL AmbientLight: template lighting: ambient %u %u %u directional %u %u %u fog near %.1f",
+					fromTemplate->ambient.r, fromTemplate->ambient.g, fromTemplate->ambient.b, fromTemplate->directional.r, fromTemplate->directional.g,
+					fromTemplate->directional.b, fromTemplate->fogNear);
+			}
 		}
 		// The light every surface gets (linear, on a white surface): the ambient, indoors plus half the cell's directional light.
 		auto linear = [](float c) { c = (std::max)(c, 0.0f); return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); };
@@ -338,10 +369,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	if (!layoutHandle || !scene || !prepTexture || !prepSurface || !bufferTexture[0] || !bufferTexture[1] || !bufferSurface[0] ||
 		!bufferSurface[1] || !historyTexture[0] || !historyTexture[1] || !historySurface[0] || !historySurface[1] ||
 		!occlusionHistory[0] || !occlusionHistory[1] || !occlusionHistorySurface[0] || !occlusionHistorySurface[1] || !technique ||
-		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 6 ||
+		FAILED(Effect->GetTechniqueDesc(technique, &description)) || description.Passes != 8 ||
 		FAILED(Device->GetViewport(&original)) || FAILED(bufferSurface[0]->GetDesc(&half))) {
 		static bool reported = false;
-		if (!reported) Logger::Log("UNOFFICIAL AmbientLight: buffers missing or AmbientLight.fx.hlsl is not the matching version (6 passes), effect skipped.");
+		if (!reported) Logger::Log("UNOFFICIAL AmbientLight: buffers missing or AmbientLight.fx.hlsl is not the matching version (8 passes), effect skipped.");
 		reported = true;
 		renderTime = 0;
 		return;
@@ -390,6 +421,18 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		D3DXVECTOR4 scene(sceneLight.x, sceneLight.y, sceneLight.z, gridColour);
 		Effect->SetVector(h, &scene);
 	}
+	// UNOFFICIAL 2026-10-18 (ambfix2, user: "indoors it's too powerful ... diverges from the original mood of each vanilla room"):
+	// indoors (InteriorBalance) the occlusion darkens only the ambient light, not the lamps', and the bounce gives back at most
+	// InteriorBounceShare x the light the occlusion took, so the room keeps its own brightness; worked out from 32 x 18 samples
+	// (passes 5-6) and eased over about 10 frames. Outdoors nothing of this runs (the picture exactly as before).
+	const bool interiorMode = interiorBalance && !TheShaderManager->GameState.isExterior && statsSurface && balanceSurface[0] && balanceSurface[1];
+	const bool balanceRuns = interiorMode && gridOn && gridValid;
+	if (!balanceRuns || TheShaderManager->GameState.isCellChanged) balanceValid = false;
+	const int balanceRead = balanceIndex, balanceWrite = balanceIndex ^ 1;
+	if (D3DXHANDLE h = ParameterHandle(paramInterior, "NVR_ALInterior")) {
+		D3DXVECTOR4 data(interiorMode ? 1.0f : 0.0f, balanceValid ? 1.0f : 0.0f, interiorBounceShare, 0.9f);
+		Effect->SetVector(h, &data);
+	}
 	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
 	const bool shadow = foldShadow && flagsHandle;
 	if (flagsHandle) {
@@ -420,47 +463,54 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		Effect->SetVector(temporalHandle, &temporalData);
 		Effect->SetMatrix(reprojectHandle, &reproject);
 	}
-	static GpuTimer passTimers[6] = { GpuTimer("  Ambient light prepare (half)"), GpuTimer("  Ambient light estimate (half)"),
+	static GpuTimer passTimers[8] = { GpuTimer("  Ambient light prepare (half)"), GpuTimer("  Ambient light estimate (half)"),
 		GpuTimer("  Ambient light blur X (half)"), GpuTimer("  Ambient light blur Y (half)"), GpuTimer("  Ambient light accumulate (half)"),
-		GpuTimer("  Ambient light apply (full)") };
+		GpuTimer("  Ambient light balance samples (indoors)"), GpuTimer("  Ambient light balance (indoors)"), GpuTimer("  Ambient light apply (full)") };
+	D3DVIEWPORT9 statsViewport = { 0, 0, (DWORD)StatsWidth, (DWORD)StatsHeight, 0.0f, 1.0f }, balanceViewport = { 0, 0, 1, 1, 0.0f, 1.0f };
 	DWORD writeMask1 = 0xF;	// UNOFFICIAL 2026-10-18 (ambfix): Accumulate's second target, all four channels (see RenderGrid)
 	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &writeMask1);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
 	UINT passes = 0;
 	HRESULT result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		for (UINT p = 0; p < 6 && SUCCEEDED(result); ++p) {
+		for (UINT p = 0; p < 8 && SUCCEEDED(result); ++p) {
 			// Prepare -> prep; Estimate (prep) -> 0; blur X (0) -> 1; blur Y (1) -> 0; Accumulate (0, last history) -> this
-			// frame's history; Apply (0 for the occlusion, this frame's history for the bounce) -> the frame.
-			const bool apply = p == 5;
+			// frame's history; (indoors) balance samples -> stats, balance (stats, last balance) -> this frame's balance;
+			// Apply (0 for the occlusion, this frame's history for the bounce) -> the frame.
+			if ((p == 5 || p == 6) && !balanceRuns) continue;
+			const bool apply = p == 7;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
-				bufferSurface[p == 2 ? 1 : 0];
+				p == 5 ? statsSurface : p == 6 ? balanceSurface[balanceWrite] : bufferSurface[p == 2 ? 1 : 0];
 			Device->SetTexture(5, nullptr);
 			Device->SetTexture(6, nullptr);
 			Device->SetTexture(7, nullptr);
 			result = Device->SetRenderTarget(0, destination);
 			// UNOFFICIAL: the occlusion's history is Accumulate's second target.
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, p == 4 ? occlusionHistorySurface[writeIndex] : nullptr);
-			if (SUCCEEDED(result)) result = Device->SetViewport(apply ? &original : &reduced);
+			if (SUCCEEDED(result)) result = Device->SetViewport(apply ? &original : p == 5 ? &statsViewport : p == 6 ? &balanceViewport : &reduced);
 			if (SUCCEEDED(result)) result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
 			if (p > 0) Device->SetTexture(5, prepTexture);
 			Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);	// NVR_ALViewModel (Prepare, Apply)
-			if (p == 2 || p == 4 || p == 5) Device->SetTexture(6, bufferTexture[0]);
+			const bool applyLike = p == 5 || p == 7;	// the balance samples read what Apply reads
+			if (p == 2 || p == 4 || p == 7) Device->SetTexture(6, bufferTexture[0]);
 			else if (p == 3) Device->SetTexture(6, bufferTexture[1]);
+			else if (p == 6) Device->SetTexture(6, statsTexture);								// NVR_ALStats
 			if (p == 4) Device->SetTexture(7, historyTexture[readIndex]);
-			else if (p == 5) Device->SetTexture(7, historyTexture[writeIndex]);
-			if (p == 5 && gridValid) Device->SetTexture(9, gridAccum[gridAccumIndex]);
-			if (p == 5 && gridValid && gridColorValid) Device->SetTexture(14, gridAccumColor[gridAccumIndex]);
-			if (p == 5 && gridScreenValid) Device->SetTexture(8, gridScreen[gridScreenIndex]);	// DebugView 8
-			if (p == 5 && sunFar) {	// UNOFFICIAL 2026-10-19 SunFar (NVR_SunFarAL), point sampled
+			else if (p == 6) Device->SetTexture(7, balanceTexture[balanceRead]);				// NVR_ALBalance: last frames'
+			else if (p == 7 && interiorMode) Device->SetTexture(7, balanceTexture[balanceRuns ? balanceWrite : balanceRead]);
+			else if (p == 7) Device->SetTexture(7, historyTexture[writeIndex]);
+			if (applyLike && gridValid) Device->SetTexture(9, gridAccum[gridAccumIndex]);
+			if (applyLike && gridValid && gridColorValid) Device->SetTexture(14, gridAccumColor[gridAccumIndex]);
+			if (p == 7 && gridScreenValid) Device->SetTexture(8, gridScreen[gridScreenIndex]);	// DebugView 8
+			if (p == 7 && sunFar) {	// UNOFFICIAL 2026-10-19 SunFar (NVR_SunFarAL) on the Apply pass (pass 7 since InteriorBalance), point sampled
 				Device->SetTexture(13, sunFar);
 				const DWORD states[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
 					{D3DSAMP_MAGFILTER, D3DTEXF_POINT}, {D3DSAMP_MINFILTER, D3DTEXF_POINT}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
 				for (const auto& s : states) TheRenderManager->SetSamplerState(13, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 			}
 			if (p == 4) Device->SetTexture(11, occlusionHistory[readIndex]);
-			else if (p == 5) Device->SetTexture(11, occlusionHistory[writeIndex]);
+			else if (applyLike) Device->SetTexture(11, occlusionHistory[writeIndex]);
 			Device->SetTexture(1, scene);	// TESR_SourceBuffer slot: the current image
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
@@ -484,6 +534,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
 	// UNOFFICIAL Temporal: this frame's history is next frame's "last frame".
+	if (SUCCEEDED(result) && balanceRuns) {
+		balanceIndex = balanceWrite;	// this frame's balance is next frame's "last"
+		balanceValid = true;
+	}
 	if (SUCCEEDED(result)) {
 		historyIndex = writeIndex;
 		historyValid = true;
