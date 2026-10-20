@@ -18,7 +18,14 @@
 //   c226-c237 ClothLimb (2026-10-19, mask 4 = worn clothing by its own skeleton): the garment's hip, knee, ankle, toe tip (left,
 //                right) and elbow, wrist (left, right) where its bones sat when it was made (the mesh's own space, as IN.position),
 //                w the limb's radius there;  c238 ClothLimbParams: x hip height, y 1 / (hip - knee height), z gap off the limb where
-//                cloth starts to move, w 1 / fade;  c239 ClothLimbGround: x the height below which nothing moves, y 1 / its fade
+//                cloth starts to move, w 1 / fade;  c239 ClothLimbGround: x the height below which nothing moves, y 1 / its fade,
+//                zw (mask 5) the wearer's upright axis in the bind pose (between the hip joints)
+//   mask 5 (2026-10-19 round 5, worn clothing): the per-vertex weight NVR worked out from the garment's own mesh (core/ClothWeights.h:
+//                trouser legs and boots 0, the coat pinned at the hips and loosest at the hem, its shell and lining averaged together),
+//                read from vertex stream 1 (TEXCOORD7, bound only for those draws: core/ClothWind.h DrawPartition); the billow part of
+//                the wind pushes AWAY FROM THE WEARER'S UPRIGHT AXIS instead of along the vertex normal -- a lining's normal points
+//                inward, so the normal billow pushed shell and lining apart (up to ~17 units in a gale). The caller passes that
+//                direction already carried into the skinned space (ClothOutwardBind, through the bones).
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -64,10 +71,18 @@ float ClothLimbDistance(float3 p, float4 a, float4 b) {
     return length(p - (a.xyz + ab * t)) - lerp(a.w, b.w, t);
 }
 
-// bindP: the vertex before skinning (modes 3 and 4; for unskinned meshes it is p itself).
-float ClothMask(float4 vertexColor, float3 p, float3 bindP) {
+// Mask 5's billow direction in the bind pose: horizontal, away from the wearer's upright axis, fading out within 4 units of it.
+float3 ClothOutwardBind(float3 bindP) {
+    const float2 o = bindP.xy - ClothLimbGround.zw;
+    const float l = length(o);
+    return float3(o / max(l, 1e-3f) * saturate(l * 0.25f), 0.0f);
+}
+
+// bindP: the vertex before skinning (modes 3 and 4; for unskinned meshes it is p itself). weight5: mask 5's per-vertex weight.
+float ClothMask(float4 vertexColor, float3 p, float3 bindP, float weight5) {
     float m;
-    [branch] if (ClothA.y > 3.5f) {	// worn clothing by its own skeleton (core/ClothWind.h SkeletonOf): only what stands off the legs
+    [branch] if (ClothA.y > 4.5f) m = saturate(weight5);	// worn clothing by its own mesh (core/ClothWeights.h), vertex stream 1
+    else [branch] if (ClothA.y > 3.5f) {	// worn clothing by its own skeleton (core/ClothWind.h SkeletonOf): only what stands off the legs
                                     // and forearms moves, only below the hips, nothing at the ground -- legs, trousers, boots, hands
                                     // and torso stay put
         float d = ClothLimbDistance(bindP, ClothLimb[0], ClothLimb[1]);
@@ -94,15 +109,17 @@ float ClothMask(float4 vertexColor, float3 p, float3 bindP) {
 }
 
 // Moves the vertex and rebuilds tangent, binormal and normal. Every pass of an object must call it with the same inputs.
-void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor, float3 bindP) {
+// weight5 / out5: mask 5's weight and billow direction (skinned space; 0 for everything else).
+void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor, float3 bindP, float weight5, float3 out5) {
     [branch] if (ClothA.x > 0.0f) {
-        const float mask = ClothMask(vertexColor, p, bindP);
+        const float mask = ClothMask(vertexColor, p, bindP, weight5);
         const float e = 2.0f;
         const float3 n = normalize(N);
+        const float3 bill = ClothA.y > 4.5f ? out5 : n;	// the billow's direction
         const float3 motion = ClothMotion(bindP);
-        const float3 d0 = mask * (ClothDisplacement(p, n) + motion);
-        const float3 dt = mask * (ClothDisplacement(p + T * e, n) + motion);
-        const float3 db = mask * (ClothDisplacement(p + B * e, n) + motion);
+        const float3 d0 = mask * (ClothDisplacement(p, bill) + motion);
+        const float3 dt = mask * (ClothDisplacement(p + T * e, bill) + motion);
+        const float3 db = mask * (ClothDisplacement(p + B * e, bill) + motion);
         const float3 t2 = T * e + (dt - d0);
         const float3 b2 = B * e + (db - d0);
         // The turn of the frame: the moved frame's normal minus the unmoved one's, added to the mesh's own normal -- so with no
@@ -121,17 +138,18 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 // Shadow maps: position only, but the same displacement as the lit passes (2026-10-17: it used n = 0 and so left out the part along
 // the normal -- up to ~0.85 of the intensity -- and the shadow caster sat off the cloth, which then shadowed itself in patches).
 // The normal is in the same space as p and need not be unit (a missing one reads as zero: the push along the wind only).
-float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP) {
+float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP, float weight5, float3 out5) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
-        p += ClothMask(vertexColor, p, bindP) * (ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f) + ClothMotion(bindP));
+        const float3 bill = ClothA.y > 4.5f ? out5 : (l > 1e-4f ? n / l : 0.0f);
+        p += ClothMask(vertexColor, p, bindP, weight5) * (ClothDisplacement(p, bill) + ClothMotion(bindP));
     }
     return p;
 }
 
 // ObjectTemplate: the tangent frame is a float3x3 (rows tangent, binormal, normal).
-void ClothWindTBN(inout float3 p, inout float3x3 tbn, float4 vertexColor, float3 bindP) {
+void ClothWindTBN(inout float3 p, inout float3x3 tbn, float4 vertexColor, float3 bindP, float weight5, float3 out5) {
     float3 T = tbn[0], B = tbn[1], N = tbn[2];
-    ClothWind(p, T, B, N, vertexColor, bindP);
+    ClothWind(p, T, B, N, vertexColor, bindP, weight5, out5);
     tbn = float3x3(T, B, N);
 }

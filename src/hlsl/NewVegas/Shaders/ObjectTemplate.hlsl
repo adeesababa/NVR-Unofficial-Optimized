@@ -365,6 +365,9 @@ struct VS_INPUT {
     float3 blendWeight : BLENDWEIGHT;
     float4 blendIndices : BLENDINDICES;
 #endif
+#if defined(SKIN) && defined(CLOTH_WIND)
+    float clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5)
+#endif
 };
 
 #if defined(VS) && LIGHTS < 4
@@ -444,7 +447,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
         #endif
     
         OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -457,7 +460,9 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
+            float3 clothOut = 0.0f;	// mask 5's billow direction, carried by the same bones
+            [branch] if (ClothA.y > 4.5f) clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut);	// UNOFFICIAL cloth wind
         #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
@@ -627,7 +632,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
-        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
     #endif
     
     OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -640,7 +645,9 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz);	// UNOFFICIAL cloth wind
+            float3 clothOut = 0.0f;	// mask 5's billow direction, carried by the same bones
+            [branch] if (ClothA.y > 4.5f) clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut);	// UNOFFICIAL cloth wind
         #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif
