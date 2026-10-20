@@ -35,6 +35,7 @@
 #include "TestTools.h"	// NVR_TEST_TOOLS
 #include "GpuProfiler.h"
 #include "ConstantFilter.h"	// its state-block / reset / pixel-shader hooks report to OnStateLost and OnSetPixelShader
+#include "ArrivalSampler.h"	// UNOFFICIAL 2026-10-20 (test builds only, off by default): main-thread samples of the frames over 50 ms, fed from FrameTick
 
 namespace ShaderWarmUp2 {
 
@@ -931,6 +932,7 @@ namespace ShaderWarmUp2 {
 					interval, Frame.New, Frame.NewMs, Frame.NewMax, Frame.SlowKnown, Frame.SlowKnownMs, Frame.Draws, Frame.DrawMs, Frame.HookMs,
 					loading ? "[loading] " : LoadingSeen ? "[loadmenu] " : "", menu ? "[menu] " : "", picture ? "[picture] " : "", (now - LoadEnd) / 1000.0, shot);
 			}
+			ArrivalSampler::OnFrame(interval, loading, menu, picture, LoadingSeen, shot, (now - LoadEnd) / 1000.0, Frame.DrawMs, Frame.NewMs, Frame.SlowKnownMs);	// test builds: ArrivalSampler = 1
 			// 2026-10-19: also once when a test's shot list ends (shot index back to -1), so a run's analysis gets exact totals.
 			if (TotalFrames % 600 == 0 || (shot < 0 && LastShot >= 0))
 				Logger::Log("WARMUP2 TOTALS%s %u frames out of menus | over 50 ms %u, over 100 ms %u, over 250 ms %u (loading screens left out) | in play (3 s after a load, no picture frames): over 50 ms %u, over 100 ms %u, worst %.1f ms | new setups %u (%u slow, %.0f ms in their first draws) | known-setup draws over 2 ms %u (%.0f ms) | recorder %.3f ms per frame, state read back %llu times, state blocks %llu",
