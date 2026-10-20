@@ -21,6 +21,7 @@
 #include "../../core/PassSums.h"
 #include "../../core/LampsInOnePass.h"
 #include "../../core/ClothWind.h"
+#include "../../core/PlantWind.h"	// UNOFFICIAL 2026-10-20 plant wind ([Shaders.Plants.Wind])
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
 #include "../../core/PbrPop.h"	// UNOFFICIAL 2026-10-18 PBR pop-in: SpecularFade, SpecularLODPasses (+ test diagnostic)
@@ -615,6 +616,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampScissor::BeginFrame();	// UNOFFICIAL: LampScissor
 	PassSums::BeginFrame(TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums"));	// UNOFFICIAL ExactPassSums
 	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL cloth wind
+	PlantWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL 2026-10-20 plant wind (after the cloth: it uses its bookkeeping)
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();	// UNOFFICIAL, diagnostic: LampPassTestSkip
 #endif
@@ -2583,6 +2585,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
+	PlantWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-20 plant wind (cleaned by ClothWind::AfterDraw)
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules

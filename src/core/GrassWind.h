@@ -52,6 +52,7 @@ namespace GrassWind {
 	inline UInt32 Frames = 0;
 	inline float WindDir[2] = { 0.0f, 1.0f }, WindSpeed = 0.0f, Speed = 0.0f;
 	inline bool LoggedOnce = false;
+	inline bool ClockWanted = false;	// UNOFFICIAL 2026-10-20 plant wind (core/PlantWind.h): the plants share this wind and clock, so it runs while they are on
 
 	static const double kWrap = 8.0 * 3.14159265358979323846;
 
@@ -92,7 +93,7 @@ namespace GrassWind {
 		if (frame == LastFrame) return;
 		LastFrame = frame;
 		On = S.Enabled && exterior;
-		if (!On) { for (float& l : Lanes) l = 0.0f; LastHour = -1.0f; return; }
+		if (!On && !(ClockWanted && exterior)) { for (float& l : Lanes) l = 0.0f; LastHour = -1.0f; return; }
 
 		// The weather's wind, as cloth reads it: direction as an angle around up, speed 0-1.
 		float a = S.Direction * 0.0174532925f, w = 0.5f;
@@ -101,6 +102,7 @@ namespace GrassWind {
 		const double k = 2.0 * 3.14159265358979323846 / S.GustSize;
 		Lanes[0] = (float)(WindDir[0] * k); Lanes[1] = (float)(WindDir[1] * k);
 		Lanes[2] = S.GustStrength; Lanes[3] = S.Flutter;
+		if (!On) for (float& l : Lanes) l = 0.0f;	// (the grass wind off, the plants on: the grass keeps the game's sway)
 
 		// The clock: the gusts (clock / 4) roll at Speed along the wind, so the clock runs at 4 x Speed x k; in a sandstorm its rate
 		// blends to the storm's own 8.4 rad/s (its grass path reads the same c19.z).

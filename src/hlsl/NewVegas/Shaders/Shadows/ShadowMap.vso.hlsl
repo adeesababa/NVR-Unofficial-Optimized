@@ -7,6 +7,14 @@
 #if CLOTH_WIND_ON
     #include "../includes/ClothWind.hlsl"
 #endif
+// UNOFFICIAL 2026-10-20 plant wind (../includes/PlantWind.hlsl, core/PlantWind.h): the SpeedTree leaves' shadows move as the lit leaves
+// (STLEAF001/003: the same gust boost, flutter and lean), and the static plants' as the plants (PLANT_WIND_ON, c248-c253). c131-c134:
+// free (LeafBase ends at c130, the land LOD's constants start at c140).
+float4 TESR_PlantLeafWind  : register(c131);
+float4 TESR_PlantLeafWind2 : register(c132);
+float4 TESR_PlantLeafWind3 : register(c133);
+float4 TESR_CameraPosition : register(c134);
+#include "../includes/PlantWind.hlsl"
 
 row_major float4x4 TESR_ShadowWorldTransform : register(c0);
 row_major float4x4 TESR_ShadowViewProjTransform : register(c4);
@@ -85,6 +93,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 	float4 r4;
 	float4 r5;
 	float4 r0 = IN.position;
+	float plantLean = 0.0f;	// UNOFFICIAL 2026-10-20 plant wind: SpeedTree leaves' lean downwind (world units)
 #if CLOTH_WIND_ON
 	float3 clothNormal = IN.normal;	// the vertex's normal in the space r0 ends in (model space; skinned: the bones' space)
 	float3 clothOut = 0.0f;			// mask 5's billow direction (skinned only), carried by the same bones
@@ -127,7 +136,20 @@ VS_OUTPUT main(VS_INPUT IN) {
 #endif
 	}
 	else if (TESR_ShadowData.x == 2.0f) { // Leaves (Speedtrees)
-        r0.xyzw = SpeedTreeTransform(BillboardUp, BillboardRight, RockParams, RustleParams, WindMatrices, LeafBase, IN.blendindexes, r0);
+        // UNOFFICIAL 2026-10-20 plant wind: as the lit leaves (STLEAF001/003), a passing gust strengthens the game's swing (both swings x
+        // boost: the swing is sin x params.x x params.z) and leans the leaves (plantLean, added in the world below); the gust is read at the
+        // bush's base. (The lit leaves' small flutter is left out here: no way to add it through the game's parameters.)
+        float4 rockParams = RockParams, rustleParams = RustleParams;
+        [branch] if (TESR_PlantLeafWind.w > 0.0f) {
+            const float2 base = float2(TESR_ShadowWorldTransform._m30, TESR_ShadowWorldTransform._m31) + TESR_CameraPosition.xy;
+            const float gust = PlantLeafGust(base, TESR_PlantLeafWind.xy, TESR_PlantLeafWind.z);
+            const float boost = 1.0f + TESR_PlantLeafWind2.w * gust;
+            rockParams.x *= boost;
+            rustleParams.x *= boost;
+            const float rise = saturate(IN.position.z * TESR_PlantLeafWind2.z);
+            plantLean = TESR_PlantLeafWind2.y * gust * rise * rise;
+        }
+        r0.xyzw = SpeedTreeTransform(BillboardUp, BillboardRight, rockParams, rustleParams, WindMatrices, LeafBase, IN.blendindexes, r0);
     }
     else if (TESR_ShadowData.x == 3.0f) { // Terrain LOD.
         float4 r1 = IN.position;
@@ -138,10 +160,14 @@ VS_OUTPUT main(VS_INPUT IN) {
 
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
+#if PLANT_WIND_ON
+    [branch] if (TESR_ShadowData.x == 0.0f && PlantA.x < -0.5f) r0.xyz += PlantWindMove(r0.xyz);	// UNOFFICIAL 2026-10-20 plant wind (static plants)
+#endif
 #if CLOTH_WIND_ON
     if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind (normal and skinned geometry)
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
+    [branch] if (plantLean != 0.0f) r0.xy += TESR_PlantLeafWind3.xy * plantLean;	// UNOFFICIAL 2026-10-20 plant wind: the leaves' lean (world)
 	r0 = mul(r0, TESR_ShadowViewProjTransform);
 	
 	// Pancaking to ensure geometry outside of near plane is not culled.
