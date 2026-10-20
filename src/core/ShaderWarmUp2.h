@@ -588,6 +588,7 @@ namespace ShaderWarmUp2 {
 			if (TheSettingManager->Config.FillNode(&node, section, "ShaderWarmUp2MinMs")) MinMs = std::clamp((double)node.FloatValue, 0.0, 1000.0);
 		}
 		if (Mode <= 0) return;
+		ArrivalSampler::Start();	// test builds, ArrivalSampler = 1 (else nothing): sampling starts here, before the first world frame
 		if (!strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) {
 #if NVR_TEST_TOOLS
 			// 2026-10-19: test builds keep the frame log under DXVK (no device detours, no list, no warm-up), so a DXVK run of a test
@@ -905,6 +906,7 @@ namespace ShaderWarmUp2 {
 		Thread = GetCurrentThreadId();
 		const double now = NowMs();
 		if (now - CalMs > 200.0) TicksPerMs = (double)(__rdtsc() - CalTsc) / (now - CalMs);
+		if (LastTick <= 0.0) ArrivalSampler::FirstTick();
 		if (LastTick > 0.0) {
 			const double interval = now - LastTick;
 			const bool loading = interval > 1500.0;		// the interval held a loading screen (the game does not render then)

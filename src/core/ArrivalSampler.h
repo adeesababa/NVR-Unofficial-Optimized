@@ -214,6 +214,7 @@ namespace ArrivalSampler {
 
 	// Main (render) thread, from ShaderWarmUp2's frame tick.
 	inline void Start() {
+		if (Started) return;
 		Started = true;
 		SettingManager::Configuration::ConfigNode node;
 		Enabled = TheSettingManager->Config.FillNode(&node, "Main.Main.Performance", "ArrivalSampler") && node.IntValue > 0;
@@ -243,6 +244,15 @@ namespace ArrivalSampler {
 		Logger::Log("UNOFFICIAL ArrivalSampler (test build): sampling the main thread every ~1 ms; frames over 50 ms -> %s", path);
 	}
 
+	// The first world frame's tick (ShaderWarmUp2::FrameTick): the first frame starts here. Start() normally ran earlier, at the
+	// device hooks (ShaderWarmUp2::Install), so the long first frame after the save load is sampled too.
+	inline void FirstTick() {
+		if (!Started) Start();
+		if (!Enabled) return;
+		if (GetCurrentThreadId() != MainId) Logger::Log("UNOFFICIAL ArrivalSampler (test build): WARNING the frame tick runs on thread %lu, the sampled thread is %lu", (unsigned long)GetCurrentThreadId(), (unsigned long)MainId);
+		LastFrameQpc = Qpc();
+	}
+
 	inline void OnFrame(double ms, bool loading, bool menu, bool picture, bool loadMenu, int shot, double sinceLoad, double drawMs, double newMs, double slowKnownMs) {
 		if (!Started) Start();
 		if (!Enabled) return;
@@ -263,6 +273,8 @@ namespace ArrivalSampler {
 		FramesWritten.store(w + 1, std::memory_order_release);
 	}
 #else
+	inline void Start() {}
+	inline void FirstTick() {}
 	inline void OnFrame(double, bool, bool, bool, bool, int, double, double, double, double) {}
 #endif
 }
