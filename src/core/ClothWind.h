@@ -232,6 +232,7 @@ namespace ClothWind {
 	// ankle (+y, the bind pose's forward); missing arms are left out.
 	struct Skeleton {
 		bool ok = false;
+		bool actor = false;				// it hangs on a human skeleton (any 'Bip01' bone): without usable legs it does not move at all
 		const void* boneData = nullptr; UInt32 bones = 0;	// what it was made from (the skin data can be freed and reused)
 		float pts[12][4] = {};			// L hip, knee, ankle, toe tip, R hip, knee, ankle, toe tip, L elbow, wrist, R elbow, wrist (xyz, radius)
 		float hipZ = 0.0f, kneeZ = 0.0f, groundZ = 0.0f;
@@ -274,6 +275,7 @@ namespace ClothWind {
 			const NiAVObject* bone = si->BoneObjects[b];
 			const char* name = bone ? bone->m_pcName : nullptr;
 			if (!name) continue;
+			if (!_strnicmp(name, "bip01", 5)) k.actor = true;
 			for (int n = 0; n < 12; n++) {
 				if (found[n] || _stricmp(name, names[n])) continue;
 				// the bone's origin in the mesh's space: SkinToBone maps p to s R p + t, so its origin is -R^T t / s
@@ -440,6 +442,10 @@ namespace ClothWind {
 		device->SetVertexShaderConstantF(248, zero, 1);
 		NonZeroSent = false;
 	}
+	// 2026-10-19 (user: 'cloth is causing unintended meshes to flicker and distort violently'): right after each hooked draw. Before,
+	// a cloth draw's values stayed in c248 until the next hooked object; anything drawn in between by another path with an NVR object
+	// vertex shader moved as that cloth did -- harmless while cloth moved 5 cm, violent with the walking offset.
+	inline void AfterDraw(IDirect3DDevice9* device) { if (device) Zero(device); }
 
 	// 2026-10-19 (user: 'make it more dramatic for our armor so we see the trench coat moving around when we walk'): worn clothing
 	// follows its wearer -- the hem trails behind as they walk or run and swings past and settles when they stop (a damped spring),
@@ -464,8 +470,14 @@ namespace ClothWind {
 		}
 		m.frame = FrameId;
 		if (dt < 1e-5) return m.out;	// no play time passed (paused): hold
-		m.clock = ClockSeconds;
 		const float h = (float)dt, smooth = 1.0f - expf(-h / 0.1f);	// the velocity is smoothed over ~0.1 s (the animation's own bob)
+		if (jump / h > 1500.0f) {	// 2026-10-19: faster than any run (a snap, a push, a moving platform's hand-over): start again at rest
+			m = Motion();
+			m.valid = true; m.frame = FrameId; m.clock = ClockSeconds; m.yaw = yaw;
+			for (int i = 0; i < 3; i++) m.pos[i] = p[i];
+			return m.out;
+		}
+		m.clock = ClockSeconds;
 		for (int i = 0; i < 3; i++) { m.vel[i] += ((p[i] - m.pos[i]) / h - m.vel[i]) * smooth; m.pos[i] = p[i]; }
 		float dy = yaw - m.yaw;
 		if (dy > 3.14159265f) dy -= 6.2831853f; else if (dy < -3.14159265f) dy += 6.2831853f;
@@ -477,7 +489,7 @@ namespace ClothWind {
 		const float tl = sqrtf(target[0] * target[0] + target[1] * target[1] + target[2] * target[2]);
 		const float trail = S.MotionMax > 0.0f ? S.MotionMax * (1.0f - expf(-tl * S.MotionDrag / S.MotionMax)) : 0.0f;
 		for (float& v : target) v = tl > 1e-3f ? v * trail / tl : 0.0f;
-		const float turnTarget = std::clamp(-m.yawRate * S.TurnLag, -0.5f, 0.5f);
+		const float turnTarget = t.rot.data[2][2] > 0.8f ? std::clamp(-m.yawRate * S.TurnLag, -0.5f, 0.5f) : 0.0f;	// (a tilted root: no turn)
 		const float w = 6.2831853f * S.MotionSpring, k = w * w, c = 2.0f * S.MotionDamping * w;
 		const int steps = (std::min)((int)ceilf(h * 120.0f), 30);
 		const float s = h / steps;
@@ -501,10 +513,13 @@ namespace ClothWind {
 	}
 
 	// Before an object is drawn (the game's passes and NVR's shadow passes): its cloth values, or strength 0.
-	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false) {
+	// 2026-10-19 (user: 'our first person view of the coat was heavily distorted, the mesh stretching in random directions'): nothing
+	// moves in the first-person pass -- there the garment hangs on the first-person skeleton, posed around the camera, so the walking
+	// offset and the turn swing tore it apart. (Its shadow still comes from the third-person body.)
+	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false, bool firstPerson = false) {
 		if (!device) return;
 		// 2026-10-19: indoors (no wind) worn clothing still follows its wearer (MotionIndoors); everything else stays still there
-		if (!S.On || !geometry || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
+		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
 		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
 		// frames, 'not seen by SetShaders'): the game sets no shaders for a pass whose shaders are already bound (the coat follows its
 		// Pip-Boy piece, same shaders), so SetShadersHook never notes it. Such a pass draws with the vertex shader bound now: judge it by
@@ -552,7 +567,7 @@ namespace ClothWind {
 		float mode = (float)S.MaskMode;
 		float top = 0.0f, invRange = 0.0f;	// mask 2 / 3, in the shader's space
 		float origin[3] = { 0.0f, 0.0f, 0.0f };	// where the shader's space origin lies in the world (phases are shifted by it, so the pattern stays on the world)
-		float motion[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, axis[2] = { 0.0f, 0.0f };	// 2026-10-19 worn clothing: the wearer's movement (c252, c253)
+		float motion[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, turn[4] = { 0.0f, 0.0f, 0.0f, 0.0f };	// 2026-10-19 worn clothing: the wearer's movement (c252, c253)
 		if (!skinned) {
 			const NiTransform& w = geometry->m_worldTransform;
 			scale = w.scale > 1e-4f ? w.scale : 1.0f;
@@ -571,6 +586,10 @@ namespace ClothWind {
 				if (shadowPass) c.shadow++; else c.lit++;
 			}
 			const Skeleton* skeleton = S.MaskMode == 2 && S.UseSkeleton ? &SkeletonOf(geometry) : nullptr;
+			// 2026-10-19 (user: 'cloth is causing unintended meshes to flicker and distort'): a piece on a human skeleton without legs --
+			// a Pip-Boy or spurs sharing the outfit's texture folder, gloves, a hat, first-person arms -- is no cloth: it stays still
+			// (it got the old height mask and the walking offset before)
+			if (skeleton && !skeleton->ok && skeleton->actor) { Zero(device); return; }
 			if (S.MaskMode != 2) {}	// mask 0 (vertex colour) and 1 (whole mesh) need no heights
 			else if (skeleton && skeleton->ok) {	// 2026-10-19: the garment's own skeleton (SkeletonOf); c226-c239
 				mode = 4.0f;
@@ -623,19 +642,22 @@ namespace ClothWind {
 				for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
 			}
 			else if (S.SkinSpace == 1) { origin[0] = TheRenderManager->CameraPosition.x; origin[1] = TheRenderManager->CameraPosition.y; origin[2] = TheRenderManager->CameraPosition.z; }
-			// 2026-10-19 the wearer's movement (MotionOf), in the same space: the offset, the lag angle, the wearer's upright axis
+			// 2026-10-19 the wearer's movement (MotionOf), in the same space: the offset, and the turn lag as a small turn of the garment's
+			// BIND-POSE position around its own upright axis (garments are made centred on x = y = 0), carried into the space by the
+			// wearer's heading: turn = bind.x * c253.xy + bind.y * c253.zw. (The first version turned the posed point around the root
+			// relative to the camera: wrong wherever that camera is not the one the pass draws with.)
 			const float* mo = MotionOf(root);
-			if (S.SkinSpace == 0 && !shadowPass) {	// the skin root's space: its axis is the origin
+			const float th = mo[3];
+			if (S.SkinSpace == 0 && !shadowPass) {	// the skin root's space
 				const NiTransform& w = root->m_worldTransform;
 				for (int i = 0; i < 3; i++) motion[i] = (w.rot.data[0][i] * mo[0] + w.rot.data[1][i] * mo[1] + w.rot.data[2][i] * mo[2]) / scale;
+				turn[1] = th; turn[2] = -th;
 			}
 			else {
 				for (int i = 0; i < 3; i++) motion[i] = mo[i];
-				const bool camRel = S.SkinSpace == 1;
-				axis[0] = root->m_worldTransform.pos.x - (camRel ? TheRenderManager->CameraPosition.x : 0.0f);
-				axis[1] = root->m_worldTransform.pos.y - (camRel ? TheRenderManager->CameraPosition.y : 0.0f);
+				const NiMatrix33& r = root->m_worldTransform.rot;	// the root's x and y axes in the world (its columns)
+				turn[0] = th * r.data[0][1]; turn[1] = th * r.data[1][1]; turn[2] = -th * r.data[0][0]; turn[3] = -th * r.data[1][0];
 			}
-			motion[3] = mo[3];
 			if (S.LogMatches) {
 				static int told = 0;
 				if (told < 12) {
@@ -671,8 +693,8 @@ namespace ClothWind {
 			dir[0], dir[1], dir[2], scale / S.Wavelength,
 			ph[0], ph[1], ph[2], ph[3],
 			(Exterior ? IntensityNow : 0.0f) / scale, S.RippleScale * scale, top, invRange,	// (indoors: no wind, the movement part only)
-			motion[0], motion[1], motion[2], motion[3],
-			axis[0], axis[1], 0.0f, 0.0f };
+			motion[0], motion[1], motion[2], 0.0f,
+			turn[0], turn[1], turn[2], turn[3] };
 		device->SetVertexShaderConstantF(248, c, 6);
 		NonZeroSent = true;
 		ClothDraws++;

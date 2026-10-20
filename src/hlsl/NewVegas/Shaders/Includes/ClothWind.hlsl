@@ -12,8 +12,9 @@
 //                motion never jitters after long play
 //   c251 ClothD: x intensity (units), y ripple cycles per unit, z top height (mask 2), w 1 / (top - bottom) (mask 2)
 //   c252 ClothE: (2026-10-19) worn clothing follows its wearer: xyz the offset (units: trailing behind the movement + the stride
-//                swish), w the lag behind a turn (radians, around the upright axis) -- 0 for everything but worn clothing
-//   c253 ClothF: xy the wearer's upright axis in the vertex shader's space (the turn lag swings points around it)
+//                swish) -- 0 for everything but worn clothing
+//   c253 ClothF: the lag behind a turn as a small turn of the garment's bind-pose position around its upright axis, carried into
+//                the vertex shader's space by the wearer's heading: turn = bind.x * xy + bind.y * zw (x/y only)
 //   c226-c237 ClothLimb (2026-10-19, mask 4 = worn clothing by its own skeleton): the garment's hip, knee, ankle, toe tip (left,
 //                right) and elbow, wrist (left, right) where its bones sat when it was made (the mesh's own space, as IN.position),
 //                w the limb's radius there;  c238 ClothLimbParams: x hip height, y 1 / (hip - knee height), z gap off the limb where
@@ -50,11 +51,10 @@ float3 ClothDisplacement(float3 p, float3 n) {
     return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * (ClothA.z * wave + ClothA.w * ripple));
 }
 
-// The wearer's movement at point p (worn clothing; core/ClothWind.h MotionOf): the same offset everywhere, plus a small turn of the
-// point around the wearer's upright axis. Under the same mask as the wind (pinned shoulders, still boots).
-float3 ClothMotion(float3 p) {
-    const float2 r = p.xy - ClothF.xy;
-    return ClothE.xyz + ClothE.w * float3(-r.y, r.x, 0.0f);
+// The wearer's movement (worn clothing; core/ClothWind.h MotionOf): the same offset everywhere, plus a small turn of the garment
+// around its own upright axis (from the bind-pose position, so it does not depend on any camera). Under the same mask as the wind.
+float3 ClothMotion(float3 bindP) {
+    return ClothE.xyz + float3(bindP.x * ClothF.xy + bindP.y * ClothF.zw, 0.0f);
 }
 
 // Mask 4: distance from bindP to the limb segment a-b, minus the limb's radius there.
@@ -99,9 +99,10 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
         const float mask = ClothMask(vertexColor, p, bindP);
         const float e = 2.0f;
         const float3 n = normalize(N);
-        const float3 d0 = mask * (ClothDisplacement(p, n) + ClothMotion(p));
-        const float3 dt = mask * (ClothDisplacement(p + T * e, n) + ClothMotion(p + T * e));
-        const float3 db = mask * (ClothDisplacement(p + B * e, n) + ClothMotion(p + B * e));
+        const float3 motion = ClothMotion(bindP);
+        const float3 d0 = mask * (ClothDisplacement(p, n) + motion);
+        const float3 dt = mask * (ClothDisplacement(p + T * e, n) + motion);
+        const float3 db = mask * (ClothDisplacement(p + B * e, n) + motion);
         const float3 t2 = T * e + (dt - d0);
         const float3 b2 = B * e + (db - d0);
         // The turn of the frame: the moved frame's normal minus the unmoved one's, added to the mesh's own normal -- so with no
@@ -123,7 +124,7 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
-        p += ClothMask(vertexColor, p, bindP) * (ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f) + ClothMotion(p));
+        p += ClothMask(vertexColor, p, bindP) * (ClothDisplacement(p, l > 1e-4f ? n / l : 0.0f) + ClothMotion(bindP));
     }
     return p;
 }

@@ -56,6 +56,7 @@ void RenderPass::RenderAccum() {
 #endif
 
 		RenderGeometry(Geo);
+		ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 	}
 }
 

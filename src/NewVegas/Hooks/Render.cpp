@@ -2574,8 +2574,8 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
-	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL cloth wind
-	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
@@ -2584,11 +2584,13 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
 		HiddenObjectCulling::Abandon();	// (a lamp-only pass is never an object's first pass in practice; if it was, its query is not used)
+		ClothWind::AfterDraw(TheRenderManager->device);
 		return;
 	}
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 	ClothWind::PassGeometry = nullptr;
+	ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 #if NVR_TEST_TOOLS
 	LampPassTest::AfterDraw(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL, diagnostic
 #endif
@@ -2605,8 +2607,8 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
-	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL cloth wind
-	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL HiddenObjectCulling
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
@@ -2616,6 +2618,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
 	ClothWind::PassGeometry = nullptr;
+	ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// LogLamps diagnostic
 }
