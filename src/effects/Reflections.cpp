@@ -2,7 +2,9 @@
 #include "../core/GpuProfiler.h"
 
 void ReflectionsEffect::UpdateSettings() {
-	ReportHistory("settings changed");	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced
+	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
+	// profile runs (as the 240-frame report): every settings change reruns this, so dragging a menu slider wrote dozens of lines.
+	if (GpuTimer::Enabled) ReportHistory("settings changed");
 	const char* section = "Shaders.Reflections.Main";
 	Settings.GroundSheen = std::clamp(TheSettingManager->GetSettingF(section, "GroundSheen"), 0.0f, 2.0f);
 	Settings.RainWetness = std::clamp(TheSettingManager->GetSettingF(section, "RainWetness"), 0.0f, 2.0f);

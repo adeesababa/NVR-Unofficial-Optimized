@@ -55,7 +55,11 @@ void SettingManager::Configuration::Init() {
 		TomlConfig = toml::parse<toml::discard_comments, std::map>((std::string_view)TomlFilename).as_table();
 	}
 	catch(const std::exception& e){
-		Logger::Log("error loading toml: %s, new config will be created from defaults.", e.what());
+		// UNOFFICIAL 2026-10-19: no settings file yet (a new install, or a test run that moved it aside) is no error
+		if (GetFileAttributesA(TomlFilename) == INVALID_FILE_ATTRIBUTES)
+			Logger::Log("No settings file yet (%s): one will be made from the defaults.", TomlFilename);
+		else
+			Logger::Log("error loading toml: %s, new config will be created from defaults.", e.what());
 		TomlConfig = toml::table();
 	}
 
