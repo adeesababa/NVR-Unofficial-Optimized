@@ -184,7 +184,9 @@ float Splatter(float2 local, float seed, float footprint) {
 	float angle = seed * 37.0;
 	float2 r = float2(local.x * cos(angle) - local.y * sin(angle), local.x * sin(angle) + local.y * cos(angle));
 	float2 uv = (float2(fmod(pick, 2.0), floor(pick * 0.5)) + 0.5 + clamp(r, -0.48, 0.48)) * 0.5;
-	return tex2Dlod(TESR_BloodSplatter, float4(uv, 0.0, log2(max(footprint * 1024.0, 1.0)))).a * step(abs(r.x), 0.48) * step(abs(r.y), 0.48);
+	// UNOFFICIAL 2026-10-20 (user: 'still saw a circular pool'): a small pool read the atlas so far down its mips that the
+	// splatter blurred into a round blob, and above the threshold that is a disc. At most mip 2 (the edge is smoothed by Shows).
+	return tex2Dlod(TESR_BloodSplatter, float4(uv, 0.0, min(log2(max(footprint * 1024.0, 1.0)), 2.0))).a * step(abs(r.x), 0.48) * step(abs(r.y), 0.48);
 }
 
 // UNOFFICIAL 2026-10-13 (user: streams should come out of the splatter's blood, not from the edge of its texture): the cover
