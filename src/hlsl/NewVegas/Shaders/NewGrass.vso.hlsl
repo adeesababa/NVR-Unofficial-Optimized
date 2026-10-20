@@ -166,11 +166,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // UNOFFICIAL 2026-10-20 grass collision on the strands ([Shaders.Grass.Collision], effects/GrassCollision.cpp; user: 'not doing
     // anything i can see': only the cards took the push, and with NewGrass the strands round each clump hid it). The same push the card
-    // takes at the same point and height (GRASS23x00*.vso, GrassPushWeight), read from the same texture (vertex sampler 0) round the
+    // takes at the same height (GRASS23x00*.vso, GrassPushWeight; read at the tuft's root), from the same texture (vertex sampler 0) round the
     // camera: AlphaParam.xy = the camera's world xy (its centre), AmbientColor.w = 1 / its width (0: off), both set by NewGrass.h for
     // this draw only (the game reads neither there; its c5 and c6 are put back after the draw).
     [branch] if (AmbientColor.w > 0.0f) {
-        float2 pushUV = (pos.xy - AlphaParam.xy) * AmbientColor.w;
+        float2 pushUV = (inst.xy - AlphaParam.xy) * AmbientColor.w;   // at the tuft's root, as the card (its whole clump leans as one)
         [branch] if (max(abs(pushUV.x), abs(pushUV.y)) < 0.5f) {
             float rise = dot(pos - base, up);
             float2 push = tex2Dlod(NVR_GrassPush, float4(pushUV + 0.5f, 0.0f, 0.0f)).xy * GrassPushWeight(rise);

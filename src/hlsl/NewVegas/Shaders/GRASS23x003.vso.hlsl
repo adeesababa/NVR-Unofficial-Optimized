@@ -145,15 +145,17 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     // UNOFFICIAL 2026-10-19 grass collision ([Shaders.Grass.Collision]; after Community Shaders' Grass Collision, GPL-3.0): the player
     // and the people and creatures near them push the grass aside, and it springs back as they pass (GrassCollision.cpp). The push
-    // at a blade's tip is read where this vertex stands, from the camera-relative position the shadows rebuild; the vertex moves
+    // at a blade's tip is read at the TUFT'S ROOT (its clip position, instClip, carried back by the shadows' rebuild), so the whole
+    // tuft leans away as one (2026-10-20: read where each vertex stood, a tuft straddling someone's feet had its corners pushed
+    // apart -- the user's 'garbled twisted pieces of grass flying around my character'); the vertex moves
     // by its height above the root (2026-10-20, user: 'not doing anything i can see': it used the sway's alpha squared, 0.02-0.5 at
-    // the tips of the Mojave's grass models, so most grass hardly moved): none at the root, the full push from 40 units up
+    // the tips of the Mojave's grass models, so most grass hardly moved): none at the root, the full push from 50 units up
     // (GrassPushWeight, NewGrass.vso takes the same at the same height), and drops as it leans so the blade bends, not stretches.
     // Only literals this shader already holds are used: its free constant registers are all taken by them.
     // Past the texture's half-width round the camera (its edge texels are 0, clamped) and wherever no one pushes, the push is 0
     // and the vertex stays where it was: those (most of the grass on screen) skip the read and the second transform.
     [branch] if (TESR_Translucency.w > 0.0f) {
-        float2 pushUV = GetShadowWorldPos(OUT.position).xy * TESR_Translucency.w;
+        float2 pushUV = GetShadowWorldPos(instClip).xy * TESR_Translucency.w;
         [branch] if (max(abs(pushUV.x), abs(pushUV.y)) < 0.5f) {
             float2 push = tex2Dlod(NVR_GrassPush, float4(pushUV + 0.5f, 0.0f, 0.0f)).xy * GrassPushWeight(pos.z);
             [branch] if (dot(push, push) > 0.0f) {
