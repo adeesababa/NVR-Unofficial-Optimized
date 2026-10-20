@@ -337,6 +337,9 @@ void ShaderManager::UpdateConstants() {
 	GameState.isUnderwater = Tes->sky->GetIsUnderWater();
 	GameState.isRainy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Rainy : false;
 	GameState.isSnow = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Snow : false;
+	// UNOFFICIAL 2026-10-19: [Shaders.Snow.Main] ForceSnow -- the snow effects act as if it snowed (no snow weathers in the game or
+	// most load orders, so macintroll's snow shaders could not be seen otherwise)
+	if (!GameState.isSnow && TheSettingManager->GetSettingI("Shaders.Snow.Main", "ForceSnow")) { GameState.isSnow = true; GameState.isRainy = false; }
 	GameState.isCloudy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Cloudy : false;
 
 	TimeGlobals* GameTimeGlobals = TimeGlobals::Get();
