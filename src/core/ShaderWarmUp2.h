@@ -641,6 +641,7 @@ namespace ShaderWarmUp2 {
 	inline size_t Next = 0;
 	inline bool WarmStarted = false, WarmDone = false;
 	inline unsigned WarmExtra = 0;	// extra draws for other objects with the same bytecode
+	inline unsigned WarmDrawFailed = 0, WarmOwnScenes = 0;	// draws the device refused; frames that needed their own BeginScene
 	inline unsigned WarmFrames = 0, WarmDrawn = 0, WarmSkipShader = 0, WarmSkipTarget = 0, WarmSkipDecl = 0, WarmTexMissing = 0, WarmListed = 0, WarmBelow = 0;
 	inline double WarmMs = 0, WarmCallMs = 0, WarmSlowest = 0, WarmFlushMs = 0;
 	inline uint64_t WarmSlowestPs = 0;
@@ -804,9 +805,9 @@ namespace ShaderWarmUp2 {
 	inline void FinishWarm(const char* why) {
 		WarmDone = true;
 		if (WarmStarted)
-			Logger::Log("Shader warm-up 2 %s: %u of %u setups drawn in %u main-menu frames (+%u draws for duplicate shader objects), %.0f ms in all (draw calls %.0f ms, waiting for the driver %.0f ms; slowest %.1f ms, pixel shader #%08llX) | not rebuilt: %u shader not found, %u target refused, %u declaration | %u texture stand-ins refused | list: %u lines, %u setups under %.1f ms left out",
+			Logger::Log("Shader warm-up 2 %s: %u of %u setups drawn in %u main-menu frames (+%u draws for duplicate shader objects), %.0f ms in all (draw calls %.0f ms, waiting for the driver %.0f ms; slowest %.1f ms, pixel shader #%08llX) | not rebuilt: %u shader not found, %u target refused, %u declaration | %u texture stand-ins refused | list: %u lines, %u setups under %.1f ms left out | draws refused %u, own BeginScene in %u frames",
 				why, WarmDrawn, (unsigned)Queue.size(), WarmFrames, WarmExtra, WarmMs, WarmCallMs, WarmFlushMs, WarmSlowest, (unsigned long long)(WarmSlowestPs >> 32),
-				WarmSkipShader, WarmSkipTarget, WarmSkipDecl, WarmTexMissing, WarmListed, WarmBelow, MinMs);
+				WarmSkipShader, WarmSkipTarget, WarmSkipDecl, WarmTexMissing, WarmListed, WarmBelow, MinMs, WarmDrawFailed, WarmOwnScenes);
 		ReleaseWarm();
 	}
 
@@ -821,12 +822,17 @@ namespace ShaderWarmUp2 {
 		RECT oldScissor = {}; d->GetScissorRect(&oldScissor);
 		WarmFrames++;
 		Replaying = true;
+		// 2026-10-19: a draw outside BeginScene/EndScene is refused (and compiles nothing). Inside the game's scene BeginScene fails
+		// harmlessly; when it succeeds we were outside one and close ours below.
+		const bool ownScene = SUCCEEDED(d->BeginScene());
+		if (ownScene) WarmOwnScenes++;
 		const double start = NowMs();
 		while (Next < Queue.size() && NowMs() - start < BudgetMs) {
 			const Record& r = Queue[Next++];
 			if (!Rebuild(d, r)) continue;
 			const double t0 = NowMs();
-			d->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
+			const HRESULT hr = d->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
+			if (FAILED(hr) && WarmDrawFailed++ < 5) Logger::Log("Shader warm-up 2: draw of setup %016llX refused (%08lX)", (unsigned long long)r.Id, (unsigned long)hr);
 			// The same bytecode in more than one shader object (NVR's default / exterior / interior records can be identical):
 			// each object once, in case the driver keeps compiled code per object.
 			const std::vector<IUnknown*> moreVs = ObjectsOf(r.VsHash), morePs = ObjectsOf(r.PsHash);
@@ -837,6 +843,7 @@ namespace ShaderWarmUp2 {
 			WarmCallMs += ms; WarmDrawn++;
 			if (ms > WarmSlowest) { WarmSlowest = ms; WarmSlowestPs = r.PsHash; }
 		}
+		if (ownScene) d->EndScene();
 		// Wait until the driver has done what these draws asked (a compile on its own thread is then counted here, not in play).
 		const double f0 = NowMs();
 		if (Event && SUCCEEDED(Event->Issue(D3DISSUE_END))) { while (Event->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_FALSE && NowMs() - f0 < 2000.0) {} }
