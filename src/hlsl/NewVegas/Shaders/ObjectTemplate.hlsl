@@ -447,7 +447,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
         #endif
     
         OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -461,8 +461,17 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
             float3 clothOut = 0.0f;	// mask 5's billow direction, carried by the same bones
-            [branch] if (ClothA.y > 4.5f) clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut);	// UNOFFICIAL cloth wind
+            float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
+            float3 clothUp = 0.0f;	// ...and the bind pose's up (the legs' direction)
+            [branch] if (ClothA.y > 4.5f) {
+                clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+                const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+                const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+                clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
+                clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
+                clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+            }
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
         #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
@@ -632,7 +641,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
-        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
     #endif
     
     OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -646,8 +655,17 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
             float3 clothOut = 0.0f;	// mask 5's billow direction, carried by the same bones
-            [branch] if (ClothA.y > 4.5f) clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut);	// UNOFFICIAL cloth wind
+            float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
+            float3 clothUp = 0.0f;	// ...and the bind pose's up (the legs' direction)
+            [branch] if (ClothA.y > 4.5f) {
+                clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+                const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+                const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+                clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
+                clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
+                clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+            }
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
         #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif

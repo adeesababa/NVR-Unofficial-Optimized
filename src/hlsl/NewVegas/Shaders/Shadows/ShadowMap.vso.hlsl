@@ -26,6 +26,19 @@ float4 LODLandParams : register(c145);
 
 #define	weight(v)		dot(v, 1)
 
+#if CLOTH_WIND_ON
+// cloth mask 5 (2026-10-19 round 8): a bind-pose vector through the same blend of the bones' rotations as the position (w = 0 drops the
+// translation); offset / bw as in main's skinned branch
+float3 ClothBonesVector(float4 offset, float3 bw, float3 v) {
+	const float4 vw = float4(v, 0);
+	const float3 v8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), vw);
+	const float3 v6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), vw);
+	const float3 v5 = mul(float3x4(Bones[0 + offset.x].xyzw, Bones[1 + offset.x].xyzw, Bones[2 + offset.x].xyzw), vw);
+	const float3 v4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), vw);
+	return ((1 - weight(bw)) * v8) + (bw.z * v6) + (bw.x * v5) + (v4 * bw.y);
+}
+#endif
+
 struct VS_INPUT {
     float4 position : POSITION;
 	float4 texcoord_0 : TEXCOORD0;
@@ -75,6 +88,8 @@ VS_OUTPUT main(VS_INPUT IN) {
 #if CLOTH_WIND_ON
 	float3 clothNormal = IN.normal;	// the vertex's normal in the space r0 ends in (model space; skinned: the bones' space)
 	float3 clothOut = 0.0f;			// mask 5's billow direction (skinned only), carried by the same bones
+	float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
+	float3 clothUp = 0.0f;				// ...and the bind pose's up (the legs' direction)
 #endif
 	
 	if (TESR_ShadowData.x == 1.0f) { // Skinned (Actors)
@@ -103,6 +118,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 			const float3 o5 = mul(float3x4(Bones[0 + offset.x].xyzw, Bones[1 + offset.x].xyzw, Bones[2 + offset.x].xyzw), ow);
 			const float3 o4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), ow);
 			clothOut = ((1 - weight(IN.blendweight.xyz)) * o8) + (IN.blendweight.z * o6) + (IN.blendweight.x * o5) + (o4 * IN.blendweight.y);
+			const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+			const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+			clothLegL = float4(ClothBonesVector(offset, IN.blendweight.xyz, legL.xyz), legL.w);
+			clothLegR = float4(ClothBonesVector(offset, IN.blendweight.xyz, legR.xyz), legR.w);
+			clothUp = ClothBonesVector(offset, IN.blendweight.xyz, float3(0.0f, 0.0f, 1.0f));
 		}
 #endif
 	}
@@ -119,7 +139,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
 #if CLOTH_WIND_ON
-    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight, clothOut);	// UNOFFICIAL cloth wind (normal and skinned geometry)
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind (normal and skinned geometry)
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);

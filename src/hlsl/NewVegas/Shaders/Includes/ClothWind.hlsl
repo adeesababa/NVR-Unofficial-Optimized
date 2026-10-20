@@ -32,6 +32,11 @@
 //                (2026-10-19 round 7) The same soft limit on the inward part of the WHOLE displacement (push + billow + the wearer's
 //                motion): the push along the wind and the motion trail are two-way too, and on the windward side they still pressed
 //                the coat 4-8 units into the legs at 30 units of wind. Sideways (around the wearer) and outward stay as they were.
+//                (2026-10-19 round 8) Then a limit per LEG (thigh / calf axis, ClothLimb, the garment's measured radius): 'towards the
+//                wearer's axis' alone let a panel in front of a knee but off the centre line slide sideways onto that knee (offline: a
+//                BoS scribe robe panel 1.1 units into its leg core). It lets the cloth go towards a leg only as far as it still ends
+//                ClothLegMargin off the leg's surface (ClothLegLimit). The legs are worked out in the bind pose and carried into the
+//                skinned space by the same bones as the billow's direction (the caller passes them).
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -94,6 +99,66 @@ float3 ClothInward5(float3 d, float3 in5) {
     return d + in5 * (s * (rsqrt(1.0f + s * s * (1.0f / (ClothBillowIn * ClothBillowIn))) - 1.0f));
 }
 
+// Mask 5 (2026-10-19 round 8): ONE LIMIT PER LEG. Per leg, in the bind pose (ClothLimb: hip, knee, ankle; w the garment's MEASURED
+// radius): the vector from the leg's axis to the vertex and the radius there; carried into the skinned space by the vertex's bones (as
+// out5), so its length is the distance from the axis in that space. The limit lets d's part towards that axis (along -n) go as far as
+// the vertex still ENDS ClothLegMargin off the measured surface, given how far it moves around the leg (T: neither towards it nor along
+// it -- a flap swinging past a leg is not one swinging into it): x <= r - sqrt((R + margin)^2 - T^2), never less than ClothBillowIn;
+// soft knee s / (1 + (s / allowance)^4)^(1/4) (keeps the motion below the allowance as it was). Left, right, twice (a correction for
+// one leg can only push towards the other between the legs). Offline: bench\deep-roadmap\evidence\cloth3-LOG.md C3-14.
+static const float ClothLegTau = 2.0f;		// units: the thigh and calf blend near the knee (a smooth minimum of their distances)
+static const float ClothLegMargin = 1.0f;	// units the cloth stays off the measured leg surface
+
+// One leg segment (a-b: hip-knee or knee-ankle) seen from p: xyz from the nearest point of its axis to p, w the distance off its surface.
+float4 ClothLegSegment(float3 p, float4 a, float4 b) {
+    const float3 ab = b.xyz - a.xyz;
+    const float t = saturate(dot(p - a.xyz, ab) / max(dot(ab, ab), 1e-4f));
+    const float3 v = p - (a.xyz + ab * t);
+    return float4(v, length(v) - lerp(a.w, b.w, t));
+}
+
+// One leg in the bind pose: xyz = the unit direction away from its axis (thigh and calf blended by 2^(-extra distance / ClothLegTau))
+// times the (blended) distance r from the axis; w = the radius there / r (so the skinned radius is |xyz| x w).
+float4 ClothLegBind(float3 bindP, float4 hip, float4 knee, float4 ankle) {
+    const float4 t = ClothLegSegment(bindP, hip, knee);
+    const float4 c = ClothLegSegment(bindP, knee, ankle);
+    const float2 r = float2(length(t.xyz), length(c.xyz));
+    const float2 e = exp2((min(t.w, c.w) - float2(t.w, c.w)) * (1.0f / ClothLegTau));
+    const float3 g = e.x * t.xyz / max(r.x, 1e-4f) + e.y * c.xyz / max(r.y, 1e-4f);
+    const float rb = dot(e, r) / (e.x + e.y);
+    const float sb = dot(e, float2(t.w, c.w)) / (e.x + e.y);
+    return float4(g * (rsqrt(max(dot(g, g), 1e-8f)) * rb), (rb - sb) / max(rb, 1e-3f));
+}
+
+// The limit for one leg (leg = ClothLegBind carried by the bones, w as it was; up = the bind pose's up carried alike: the leg's direction;
+// mask = how much of d the vertex moves).
+float3 ClothLegLimit(float3 d, float4 leg, float3 up, float mask) {
+    const float r = length(leg.xyz);
+    const float3 n = leg.xyz / max(r, 1e-4f);
+    const float3 a = up - dot(up, n) * n;
+    const float dn = dot(d, n);
+    const float da = dot(d, a) * rsqrt(max(dot(a, a), 1e-8f));
+    const float T2 = max(dot(d, d) - dn * dn - da * da, 0.0f) * (mask * mask);
+    const float R = r * leg.w + ClothLegMargin;
+    const float allow = max(ClothBillowIn, (r - sqrt(max(R * R - T2, 0.0f))) / max(mask, 1e-3f));
+    const float s = min(dn, 0.0f);
+    const float q = s / allow;
+    return d + n * (s * rsqrt(sqrt(1.0f + q * q * q * q)) - s);
+}
+
+// Mask 5: the wearer's axis first (round 7), then each leg (round 8). Every other mask: d exactly -- the callers fill the legs only
+// for mask 5 (w = radius / distance > 0), so the leg part is not run (and the unskinned shaders, passing literal zeros, do not carry it).
+float3 ClothLimit5(float3 d, float3 in5, float4 legL, float4 legR, float3 up, float mask) {
+    d = ClothInward5(d, in5);
+    [branch] if (legL.w + legR.w > 0.0f) {
+        [unroll] for (int i = 0; i < 2; i++) {
+            d = ClothLegLimit(d, legL, up, mask);
+            d = ClothLegLimit(d, legR, up, mask);
+        }
+    }
+    return d;
+}
+
 // Mask 4: distance from bindP to the limb segment a-b, minus the limb's radius there.
 float ClothLimbDistance(float3 p, float4 a, float4 b) {
     const float3 ab = b.xyz - a.xyz;
@@ -139,8 +204,10 @@ float ClothMask(float4 vertexColor, float3 p, float3 bindP, float weight5) {
 }
 
 // Moves the vertex and rebuilds tangent, binormal and normal. Every pass of an object must call it with the same inputs.
-// weight5 / out5: mask 5's weight and billow direction (skinned space; 0 for everything else).
-void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor, float3 bindP, float weight5, float3 out5) {
+// weight5 / out5: mask 5's weight and billow direction; legL5 / legR5 / up5: its legs (ClothLegBind) and the bind pose's up, all carried
+// by the bones (skinned space; 0 for everything else).
+void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor, float3 bindP, float weight5, float3 out5,
+               float4 legL5, float4 legR5, float3 up5) {
     [branch] if (ClothA.x > 0.0f) {
         const float mask = ClothMask(vertexColor, p, bindP, weight5);
         const float e = 2.0f;
@@ -148,9 +215,9 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
         const float3 bill = ClothA.y > 4.5f ? out5 : n;	// the billow's direction
         const float3 motion = ClothMotion(bindP);
         const float3 in5 = ClothInDir(out5);
-        const float3 d0 = mask * ClothInward5(ClothDisplacement(p, bill) + motion, in5);
-        const float3 dt = mask * ClothInward5(ClothDisplacement(p + T * e, bill) + motion, in5);
-        const float3 db = mask * ClothInward5(ClothDisplacement(p + B * e, bill) + motion, in5);
+        const float3 d0 = mask * ClothLimit5(ClothDisplacement(p, bill) + motion, in5, legL5, legR5, up5, mask);
+        const float3 dt = mask * ClothLimit5(ClothDisplacement(p + T * e, bill) + motion, in5, legL5, legR5, up5, mask);
+        const float3 db = mask * ClothLimit5(ClothDisplacement(p + B * e, bill) + motion, in5, legL5, legR5, up5, mask);
         const float3 t2 = T * e + (dt - d0);
         const float3 b2 = B * e + (db - d0);
         // The turn of the frame: the moved frame's normal minus the unmoved one's, added to the mesh's own normal -- so with no
@@ -169,18 +236,19 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 // Shadow maps: position only, but the same displacement as the lit passes (2026-10-17: it used n = 0 and so left out the part along
 // the normal -- up to ~0.85 of the intensity -- and the shadow caster sat off the cloth, which then shadowed itself in patches).
 // The normal is in the same space as p and need not be unit (a missing one reads as zero: the push along the wind only).
-float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP, float weight5, float3 out5) {
+float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP, float weight5, float3 out5, float4 legL5, float4 legR5, float3 up5) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
         const float3 bill = ClothA.y > 4.5f ? out5 : (l > 1e-4f ? n / l : 0.0f);
-        p += ClothMask(vertexColor, p, bindP, weight5) * ClothInward5(ClothDisplacement(p, bill) + ClothMotion(bindP), ClothInDir(out5));
+        const float mask = ClothMask(vertexColor, p, bindP, weight5);
+        p += mask * ClothLimit5(ClothDisplacement(p, bill) + ClothMotion(bindP), ClothInDir(out5), legL5, legR5, up5, mask);
     }
     return p;
 }
 
 // ObjectTemplate: the tangent frame is a float3x3 (rows tangent, binormal, normal).
-void ClothWindTBN(inout float3 p, inout float3x3 tbn, float4 vertexColor, float3 bindP, float weight5, float3 out5) {
+void ClothWindTBN(inout float3 p, inout float3x3 tbn, float4 vertexColor, float3 bindP, float weight5, float3 out5, float4 legL5, float4 legR5, float3 up5) {
     float3 T = tbn[0], B = tbn[1], N = tbn[2];
-    ClothWind(p, T, B, N, vertexColor, bindP, weight5, out5);
+    ClothWind(p, T, B, N, vertexColor, bindP, weight5, out5, legL5, legR5, up5);
     tbn = float3x3(T, B, N);
 }
