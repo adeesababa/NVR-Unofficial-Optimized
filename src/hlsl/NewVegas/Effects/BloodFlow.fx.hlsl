@@ -1275,7 +1275,13 @@ VSOUT CutBox(VSIN IN, float limit) {
 		float4 hi = tex2Dlod(BloodFlowBoundsVS, float4(0.75, boundsV, 0.0, 0.0));
 		// UNOFFICIAL 2026-10-20 (user + auto-test save nvrautotest14: pools cut on straight lines at this box's edges): pools keep
 		// the CPU's box (their shape and the ground's slope can reach past the bounds; they cost ~2 ms for 23).
-		if (lo.w > 0.5 && hi.w > 0.5 && pool < 0.5) corner = clamp(corner, lo.xyz - margin, hi.xyz + margin);
+		if (lo.w > 0.5 && hi.w > 0.5) {
+			// (2026-10-20 b, auto-test: pools drawn in the CPU's whole box, 4.6 radii every way, cost 2.1 -> 6.3 ms for 26.) A pool's
+			// box: its paths' bounds joined with the room its shape can take (stretched and moved downhill: 3.1 radii; the ground
+			// up to about 30 degrees round it), so it is never cut and never much bigger than it.
+			float3 room = pool > 0.5 ? float3(4.0, 4.0, 3.2) * IN.b.w + float3(6.0, 6.0, 20.0) : float3(0.0, 0.0, 0.0);
+			corner = clamp(corner, min(lo.xyz, -room) - margin, max(hi.xyz, room) + margin);
+		}
 	}
 	corner = clamp(corner, -limit - margin, limit + margin);
 	float3 rel = IN.a.xyz + corner;		// eye-relative
