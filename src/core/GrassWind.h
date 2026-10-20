@@ -29,7 +29,7 @@ namespace GrassWind {
 
 	struct SettingsStruct {
 		bool	Enabled = false;
-		float	GustStrength = 1.0f;	// how far the gusts lean the grass at their crest, times the game's own sway
+		float	GustStrength = 2.0f;	// how far the gusts lean the grass at their crest, times the game's own sway
 		float	GustSize = 1200.0f;		// units from one gust front to the next (the waves' length)
 		float	GustSpeed = 300.0f;		// units per second the gusts roll at (x 0.4 in dead calm .. x 1.6 in a gale: cloth's curve)
 		float	Flutter = 0.3f;			// each tuft's own quiver, times the game's own sway (8 quivers per passing gust front)
