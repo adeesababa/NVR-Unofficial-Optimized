@@ -39,8 +39,11 @@ float PlantLeafGust(float2 P, float2 K, float clock) {
 }
 
 #if PLANT_WIND_ON
-#if CLOTH_WIND_ON
-    // the cloth's own declarations of c248-c253 (Includes/ClothWind.hlsl, included before this file)
+#ifdef CLOTH_WIND_DECLARED
+    // the cloth's own declarations of c248-c253 (Includes/ClothWind.hlsl, included before this file). 2026-10-20: tested on the
+    // marker ClothWind.hlsl defines, not on CLOTH_WIND_ON: the SpeedTree leaf shaders include this file without ClothWind.hlsl, and
+    // with both switches on they failed to compile ('undeclared identifier ClothE'): the bush leaves were drawn without their vertex
+    // shader, flat and flung about round the player (user's 13:20 screenshot).
     #define PlantA ClothA
     #define PlantB ClothB
     #define PlantC ClothC
