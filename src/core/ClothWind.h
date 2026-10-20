@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
 
 namespace ClothWind {
 
@@ -61,8 +62,8 @@ namespace ClothWind {
 		float TurnLag = 0.12f;			// seconds the hem lags behind a turn (it flares out); 0 off
 		bool  MotionIndoors = true;		// the movement part also indoors (no wind there)
 		bool  UseSkeleton = true;		// 2026-10-19 worn clothing masked by its own skeleton (see SkeletonOf); off: SkinMask
-		float LimbGap = 1.0f;			// units off the limb (beyond a human limb's radius) where cloth starts to move
-		float LimbFade = 5.0f;			// ...and how many units further it moves fully
+		float LimbGap = 0.5f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
+		float LimbFade = 2.5f;			// ...and how many units further it moves fully
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
@@ -245,6 +246,7 @@ namespace ClothWind {
 	struct Skeleton {
 		bool ok = false;
 		bool actor = false;				// it hangs on a human skeleton (any 'Bip01' bone): without usable legs it does not move at all
+		bool measured = false;			// 2026-10-19: the leg radii are the garment's own (MeasureLegs), not the fixed ones
 		const void* boneData = nullptr; UInt32 bones = 0;	// what it was made from (the skin data can be freed and reused)
 		float pts[12][4] = {};			// L hip, knee, ankle, toe tip, R hip, knee, ankle, toe tip, L elbow, wrist, R elbow, wrist (xyz, radius)
 		float hipZ = 0.0f, kneeZ = 0.0f, groundZ = 0.0f;
@@ -268,6 +270,45 @@ namespace ClothWind {
 		const float h = Smooth01((k.hipZ - p[2]) / (std::max)(k.hipZ - k.kneeZ, 1.0f));
 		return off * h * Smooth01((p[2] - k.groundZ) / 6.0f);
 	}
+	// 2026-10-19 (user: 'how can we detect what's part of the cloth on a mesh intelligently?'): the garment's OWN leg thickness. For every
+	// kept vertex below the hips: its nearest thigh or calf segment and its distance to that segment's axis; per joint (hip, knee, ankle
+	// of each leg) the 10th percentile of those distances = the innermost surface there -- the trousers under a coat. Kept within
+	// hip 5-10, knee 3.5-8, ankle 3-6.5 units, so a robe with no legs modelled under it falls back to the most a leg can be and still
+	// moves. Then cloth = what stands LimbGap (0.5) beyond that surface, fully LimbFade (2.5) further. Offline on vanilla + the user's
+	// ADAM replacer NIFs (evidence\cloth3\skeleton_mask_check.py): coats move more than with fixed radii (Sheriff's duster 10.5 -> 20.8 %,
+	// robe 19.8 -> 24.3 %, the ADAM ranger duster 0.0 -> 3.7 % -- modelled skin-tight on the thighs, no trousers under it, so only its
+	// panels between the legs and its tails stand off), legs ~0.05 of the motion. Without kept vertices the fixed radii stay.
+	inline void MeasureLegs(Skeleton& k, NiGeometry* geometry) {
+		const NiGeometryData* gd = geometry->geomData;
+		if (!gd || !(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex) return;
+		static const int seg[4][2] = { {0, 1}, {1, 2}, {4, 5}, {5, 6} };
+		static const float rmin[3] = { 5.0f, 3.5f, 3.0f }, rmax[3] = { 10.0f, 8.0f, 6.5f };
+		std::vector<float> samples[7];
+		for (UInt16 v = 0; v < gd->m_usVertices; v++) {
+			const float* p = &gd->m_pkVertex[v].x;
+			if (p[2] > k.hipZ + 2.0f || p[2] < k.groundZ + 6.0f) continue;
+			float best = 1e30f; int joint = -1;
+			for (const auto& sg : seg) {
+				const float* a = k.pts[sg[0]]; const float* b = k.pts[sg[1]];
+				const float ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+				const float len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+				const float t = std::clamp(len2 > 1e-4f ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2 : 0.0f, 0.0f, 1.0f);
+				const float dx = ap[0] - ab[0] * t, dy = ap[1] - ab[1] * t, dz = ap[2] - ab[2] * t;
+				const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+				if (d < best) { best = d; joint = t < 0.5f ? sg[0] : sg[1]; }
+			}
+			if (joint >= 0) samples[joint].push_back(best);
+		}
+		for (int j : { 0, 1, 2, 4, 5, 6 }) {
+			std::vector<float>& ds = samples[j];
+			if (ds.size() < 20) continue;
+			std::nth_element(ds.begin(), ds.begin() + ds.size() / 10, ds.end());
+			const int kind = j % 4;	// 0 hip, 1 knee, 2 ankle
+			k.pts[j][3] = std::clamp(ds[ds.size() / 10], rmin[kind], rmax[kind]);
+		}
+		k.measured = true;
+	}
+
 	inline const Skeleton& SkeletonOf(NiGeometry* geometry) {
 		static const Skeleton none;
 		const NiSkinInstance* si = geometry->skinInstance;
@@ -282,7 +323,10 @@ namespace ClothWind {
 			"bip01 r foot", "bip01 r toe0", "bip01 l forearm", "bip01 l hand", "bip01 r forearm", "bip01 r hand" };
 		static const float radius[12] = { 7.0f, 5.0f, 5.0f, 3.5f, 7.0f, 5.0f, 5.0f, 3.5f, 3.5f, 2.5f, 3.5f, 2.5f };
 		bool found[12] = {};
-		const UInt32 count = (std::min)(sd->Bones, si->Bones);
+		// 2026-10-19 (user: 'our legs still bend around when we walk'): the count is the skin data's, as ShadowManager's SkinnedWorldBound
+		// reads it -- NiSkinInstance::Bones (+0x1C) read 0 in game, so no bone was ever looked at, every garment fell back to the height
+		// mask (SkinMask 1) and the legs below the knee kept moving
+		const UInt32 count = (std::min)(sd->Bones, (UInt32)512);
 		for (UInt32 b = 0; b < count; b++) {
 			const NiAVObject* bone = si->BoneObjects[b];
 			const char* name = bone ? bone->m_pcName : nullptr;
@@ -315,6 +359,7 @@ namespace ClothWind {
 			k.kneeZ = 0.5f * (k.pts[1][2] + k.pts[5][2]);
 			k.groundZ = 0.5f * (k.pts[2][2] + k.pts[6][2]) - 6.0f;
 			k.ok = k.hipZ - k.kneeZ > 5.0f;	// an upright leg (else the space is not what we think: keep SkinMask)
+			if (k.ok) MeasureLegs(k, geometry);
 		}
 		if (SkeletonsLogged < 24 || S.LogMatches) {	// the check: bone heights, and how much of the mesh the mask moves
 			SkeletonsLogged++;
@@ -322,10 +367,10 @@ namespace ClothWind {
 			UInt32 moving = 0, total = 0;
 			if (k.ok && gd && (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex)
 				for (UInt16 v = 0; v < gd->m_usVertices; v++, total++) if (SkeletonMask(k, &gd->m_pkVertex[v].x) > 0.5f) moving++;
-			Logger::Log("Cloth wind: skeleton of '%s' (%u bones): %s; hips z %.1f, knees z %.1f, ankles z %.1f %.1f, elbows %s%s%s; %u of %u vertices (kept) move > half",
-				geometry->m_pcName ? geometry->m_pcName : "?", sd->Bones, k.ok ? "used" : "NOT used (no upright legs: SkinMask)", k.hipZ, k.kneeZ,
-				k.pts[2][2], k.pts[6][2], found[8] && found[10] ? "found" : "missing", found[2] && found[6] ? "" : " (ankles guessed)",
-				found[3] && found[7] ? "" : " (toes guessed)", moving, total);
+			Logger::Log("Cloth wind: skeleton of '%s' (%u bones%s): %s; hips z %.1f, knees z %.1f, ankles z %.1f %.1f, leg radii %s %.1f %.1f %.1f / %.1f %.1f %.1f, elbows %s%s%s; %u of %u vertices (kept) move > half",
+				geometry->m_pcName ? geometry->m_pcName : "?", sd->Bones, k.actor ? ", human" : "", k.ok ? "used" : (k.actor ? "NOT used: no legs, stays still" : "NOT used (no upright legs: SkinMask)"),
+				k.hipZ, k.kneeZ, k.pts[2][2], k.pts[6][2], k.measured ? "measured" : "fixed", k.pts[0][3], k.pts[1][3], k.pts[2][3], k.pts[4][3], k.pts[5][3], k.pts[6][3],
+				found[8] && found[10] ? "found" : "missing", found[2] && found[6] ? "" : " (ankles guessed)", found[3] && found[7] ? "" : " (toes guessed)", moving, total);
 		}
 		return Skeletons[sd] = k;
 	}
