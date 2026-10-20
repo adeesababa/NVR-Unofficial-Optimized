@@ -925,8 +925,8 @@ StrideLength = 250.0                 # (2026-10-19) Units run per swish (one lef
 TurnLag = 0.12                       # (2026-10-19) Seconds the hem lags behind a turn, so the coat flares out. 0 = off
 MotionIndoors = true                 # (2026-10-19) Worn coats follow the wearer indoors too (the wind part stays outdoors)
 UseSkeleton = true                   # (2026-10-19) Worn clothing: only what stands off the legs and arms moves, and only below the hips, found from each garment's own skeleton (no per-armour numbers; legs, trousers, hands and torso stay still). Off = the height mask below (SkinMask)
-LimbGap = 0.5                        # (2026-10-19) UseSkeleton: how far beyond the garment's own leg thickness (measured from its mesh: the trousers under a coat) cloth starts to move, in units. Raise it if trousers move
-LimbFade = 2.5                       # (2026-10-19) UseSkeleton: how many units further off the legs cloth moves fully
+LimbGap = 1.0                        # (2026-10-19) UseSkeleton: how far beyond the garment's own leg thickness (measured from its mesh: the trousers under a coat) cloth starts to move, in units. Raise it if trousers move
+LimbFade = 6.0                       # (2026-10-19) UseSkeleton: how many units further off the legs cloth moves fully. Smaller = more of a coat moves but its lining and shell drift apart; larger = calmer
 LogMatches = false                   # Diagnostic: writes every worn texture (cloth or not) and every matched texture to the log with its mesh numbers
 TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
 

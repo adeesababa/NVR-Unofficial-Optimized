@@ -62,8 +62,9 @@ namespace ClothWind {
 		float TurnLag = 0.12f;			// seconds the hem lags behind a turn (it flares out); 0 off
 		bool  MotionIndoors = true;		// the movement part also indoors (no wind there)
 		bool  UseSkeleton = true;		// 2026-10-19 worn clothing masked by its own skeleton (see SkeletonOf); off: SkinMask
-		float LimbGap = 0.5f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
-		float LimbFade = 2.5f;			// ...and how many units further it moves fully
+		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
+		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
+										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
