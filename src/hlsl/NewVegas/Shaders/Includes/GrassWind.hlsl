@@ -25,6 +25,15 @@
 // grass groups without a seam. Flutter: per tuft, its phase from its random size step and brightness (inst.w) and its place.
 // Only literals the grass shaders already hold (0.25 0.5 0.75 2 1/128 1e-6): one more spills past c255 and the game refuses the shader.
 
+// Grass collision ([Shaders.Grass.Collision], effects/GrassCollision.cpp), shared by the card shaders and NewGrass.vso so a strand is
+// pushed as its card is at the same height: how much of the push (the grid's value, the push at a blade's tip) a point takes, by its
+// height above the tuft's root: none at the root, all of it from 50 units up (2026-10-20: it was the card's vertex alpha squared,
+// 0.02-0.5 at the tips of the Mojave's grass models, so most grass hardly moved). Written with the literals the card shaders already
+// hold (0.01, 2; the inner saturate keeps the compiler from folding them into a new one): GRASS23x002/003 have no literal slot left.
+float GrassPushWeight(float height) {
+    return saturate(saturate(height * 0.01f) * 2.0f);
+}
+
 // The whole move of a vertex in the field wind: the game's sway (swing as the game computes it, of the game's size) turned onto the
 // wind direction, plus the gust lean along the wind and the flutter along it and half as much across, all times the game's sway size
 // and the vertex weight (the game's: vertex alpha squared); z drops as the blade leans so it bends rather than stretches (height = the

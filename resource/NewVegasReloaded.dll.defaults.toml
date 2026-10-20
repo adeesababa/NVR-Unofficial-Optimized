@@ -557,8 +557,8 @@ Variation = 0.2                        # per-strand brightness variation (+-): t
 Log = 0                                # DIAGNOSTIC: 1 = one log line per replaced draw for the first 3 frames.
 
 [_Shaders.Grass.Collision]
-Enabled = false                        # UNOFFICIAL (2026-10-19) Grass that moves when you walk through it: you and the people and creatures near you push the grass aside, and it springs back behind you. Costs next to nothing (a small texture made each frame, one extra read per grass vertex). Works on the game's grass cards (not on NewGrass strands yet). After Community Shaders' Grass Collision (GPL-3.0); this build's own version for DirectX 9.
-Strength = 28.0                        # [0-200] (2026-10-19) How far a blade's tip is pushed aside right at someone's feet, in game units.
+Enabled = false                        # UNOFFICIAL (2026-10-19) Grass that moves when you walk through it: you and the people and creatures near you push the grass aside, and it springs back behind you. Costs next to nothing (a small texture made each frame, one extra read per grass vertex). Works on the game's grass and (2026-10-20) on NewGrass strands, which bend with their clump; every grass type now bends by the full Strength (it used to follow each grass's own sway stiffness, so most grass hardly moved). After Community Shaders' Grass Collision (GPL-3.0); this build's own version for DirectX 9.
+Strength = 28.0                        # [0-200] (2026-10-19) How far a blade's tip is pushed aside right at someone's feet, in game units (2026-10-20: the full amount from 50 units above the ground up, for every grass type).
 Radius = 1.0                           # [0.1-5] (2026-10-19) How wide the pushed patch is, times each actor's own size.
 Recovery = 2.5                         # [0-60] (2026-10-19) Seconds for the grass to spring back once nobody stands in it (0: at once).
 Range = 1536.0                         # [256-8192] (2026-10-19) How far from you actors still push grass, in game units. Smaller: a finer push map (sharper footprints).
