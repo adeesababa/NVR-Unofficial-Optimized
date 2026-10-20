@@ -35,6 +35,12 @@ float4 NG_Misc  : register(c250); // x 1 = blades grow along the slope normal (L
 float4 NG_Var   : register(c251); // x 1 / (levels - 1), y 1 = only the tufts before the fade start (GrassFirst part 1 of a mixed draw), z flutter, w LengthMin
 float4 NG_Prof  : register(c254); // the card's silhouette per height band, bottom to top (share of the half width): the alpha EDGE in the hybrid, the mean alpha radius for replacing blades
 float4 NG_Prof2 : register(c255); // x Spread: how far from the clump's centre a strand's root may stand (share of the half width); y 1 = hybrid (the card stays: the strands thin out to NONE at LodFar); z TipReach: tips between half of and this many times the silhouette radius; w Kink: a sideways wobble along the strand (share of its width)
+// UNOFFICIAL 2026-10-20 grass field wind ([Shaders.Grass.Wind], Includes/GrassWind.hlsl; NewGrass.h writes it per draw, 0 = off).
+// c253 is the one register this shader leaves free (its literals fill c3-c19 and c252); the clock and the card's weight line ride in
+// AddlParams.yzw (c7: the game reads only x, the grass dimmer; NewGrass.h sets y-w for its own draw and puts the game's c7 back).
+float4 NG_WindLanes : register(c253); // the field wind's lanes, as the card shaders get them: xy the gust wave vector, z gust lean, w flutter
+
+#include "Includes/GrassWind.hlsl"
 
 struct VS_INPUT {
     float4 packed : TEXCOORD0;   // UBYTE4: x tuft, y blade, z level, w side
@@ -122,8 +128,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;
     phase = frac(phase * 0.159154937f + 0.5f) * 6.28318548f - 3.14159274f;
     float swing = sin(phase + h1 * 1.5f);
-    float3 wind = float3(WindData.xy * (swing * WindData.z), 0.0f)
-                + sideVec * (sin(phase * 2.3f + h2 * 6.2831853f) * WindData.z * NG_Var.z);
+    float3 flutterAcross = sideVec * (sin(phase * 2.3f + h2 * 6.2831853f) * WindData.z * NG_Var.z);
+    float3 wind = float3(WindData.xy * (swing * WindData.z), 0.0f) + flutterAcross;
+    // UNOFFICIAL 2026-10-20 grass field wind (NG_WindLanes; GrassWind.hlsl): the strand then moves exactly as the card it stands on moves
+    // at the same height (below, after its shape): the game's sway leaves the curve here, only NewGrass's own flutter across stays.
+    const bool fieldWind = dot(NG_WindLanes.xy, NG_WindLanes.xy) > 0.0f;
+    [flatten] if (fieldWind) wind = flutterAcross;
 
     // The blade: a quadratic Bezier from its root up and outward to its tip on the silhouette, curving (Bend = the control point's
     // outward share), a far-leaning blade dropping its tip (Droop), the wind pulling the top.
@@ -141,6 +151,16 @@ VS_OUTPUT main(VS_INPUT IN) {
     // dry twig instead of running smooth.
     float width = plantH * NG_Shape.z * (0.6f + 0.6f * h4) * (1.0f + depth * NG_Lod.z) * (1.0f - t * t) * keep;
     pos += sideVec * (side * 0.5f * width + NG_Prof2.w * width * sin(t * 9.0f + h2 * 6.2831853f) * (0.5f + 0.5f * h3));
+
+    // UNOFFICIAL 2026-10-20 grass field wind: the card's move at this point's height (GRASS23x00*.vso: the game's sway without the
+    // per-blade jitter, turned onto the wind, plus the gusts and flutter of THIS tuft, times the card's weight at that height: the line
+    // AddlParams.z + w x height fitted to its vertex alpha^2 against its own model height, NewGrass.h), so the strands stay with
+    // their clump. AddlParams.y = the clock.
+    [branch] if (fieldWind) {
+        float rise = dot(pos - base, up);
+        float weight = saturate(AddlParams.z + AddlParams.w * rise / scale.z);
+        pos += GrassWindMove(inst, NG_WindLanes, AddlParams.y, sin(phase), WindData, weight, rise);
+    }
 
     float3 normal = normalize(cross(sideVec, tangent));
     normal = normalize(normal + sideVec * (side * 0.3f));   // a rounded blade: the normal tilts toward each side

@@ -7,6 +7,7 @@
 #define SHADOW_INVPROJ_REG c248
 #define SHADOW_INVVIEW_REG c252
 #include "includes/Shadow.hlsl"
+#include "includes/GrassWind.hlsl"   // UNOFFICIAL 2026-10-20 grass field wind ([Shaders.Grass.Wind]; reads the lanes after Shadow.hlsl's matrix)
 
 float3 DiffuseDir   : register(c0);
 float3 DiffuseColor : register(c1);
@@ -110,6 +111,17 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     float3 scale = (0.01f * inst.w) * ScaleMask.xyz + 1.0f;
     float3 pos = IN.position.xyz * scale + float3(sway * WindData.xy, 0.0f);
+
+    // UNOFFICIAL 2026-10-20 grass field wind ([Shaders.Grass.Wind], Includes/GrassWind.hlsl, core/GrassWind.h): gusts that roll across
+    // the field along the weather's wind, a flutter per tuft, the game's sway turned onto that wind (cloth's direction and strength).
+    // The lanes are the 4th column of the inverse view matrix rows (no free register here: see GrassWind.hlsl), the clock is c19.z.
+    // Lanes xy 0 (the effect off: that column is the matrix's own 0 0 0 1) = the branch is not taken, the line above alone: the game's
+    // sway exactly. Taken, the position is worked out again from the vertex with the field wind in place of the game's sway.
+    const float4 windLanes = float4(TESR_InvViewTransform._m03, TESR_InvViewTransform._m13, TESR_InvViewTransform._m23, TESR_InvViewTransform._m33);
+    [branch] if (dot(windLanes.xy, windLanes.xy) > 0.0f) {
+        pos = IN.position.xyz * scale + GrassWindMove(inst, windLanes, GrassPairing.z, swing, WindData,
+            IN.color.w * IN.color.w, IN.position.z * scale.z);
+    }
 
     float4 worldPos = float4(pos + inst.xyz, 1.0f);
     OUT.position = mul(ModelViewProj, worldPos);

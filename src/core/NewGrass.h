@@ -28,6 +28,7 @@
 #include <cmath>
 #include <unordered_map>
 #include <vector>
+#include "GrassWind.h"	// 2026-10-20 grass field wind: the strands get the same wind as their card (Draw)
 
 namespace NewGrass {
 
@@ -70,7 +71,9 @@ namespace NewGrass {
 
 	// What a grass model is (per NiGeometryData, learned once).
 	// Rects: the tiles of its texture the model's cards use (u0 v0 du dv each; the vertex texture coordinates clustered), up to 4.
-	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; float Rects[4][4] = { { 0.0f, 0.0f, 1.0f, 1.0f } }; unsigned RectCount = 1; };
+	// SwayA, SwayB (2026-10-20 grass field wind): the card's sway weight (the game's: vertex alpha squared) against the vertex's height
+	// on the model, a line fitted to its own vertices (SwayA + SwayB x height), so a strand moves as the card does at its height.
+	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; float Rects[4][4] = { { 0.0f, 0.0f, 1.0f, 1.0f } }; unsigned RectCount = 1; float SwayA = 0.0f, SwayB = 0.0f; };
 	inline std::unordered_map<const void*, Model> Models;
 	// The colour ramp of a grass type (per texture, read from a small mip; refreshed every 60 s in case the address is reused).
 	// C: colour per height band (root -> tip); Fill: alpha coverage per band; Radius: the band's mean |u - 0.5| x 2 (0..1 of the card's half
@@ -227,6 +230,30 @@ namespace NewGrass {
 			if (m.RectCount == 0) { m.Rects[0][0] = m.Rects[0][1] = 0.0f; m.Rects[0][2] = m.Rects[0][3] = 1.0f; m.RectCount = 1; }
 		}
 		m.Card = vpm <= 64;	// vanilla tufts are clusters of crossed cards: 13, 18 and 40 vertices per tuft seen in the noon field (launch 1)
+		// 2026-10-20 grass field wind: the card's sway weight against height (least squares over one tuft's vertices; without vertex
+		// colours the game's shader reads alpha 1 everywhere). The rows (vertices within a unit in height, up to 4) go to the log.
+		char rows[160] = "no vertex colours";
+		if (gd->m_pkVertex && vpm) {
+			double n = 0.0, sz = 0.0, sw = 0.0, szz = 0.0, szw = 0.0;
+			float rz[4] = {}, rw[4] = {}; unsigned rn[4] = {}, nr = 0;
+			for (unsigned i = 0; i < vpm; i++) {
+				const double z = gd->m_pkVertex[i].z, a = gd->m_pkColor ? gd->m_pkColor[i].a : 1.0, w = a * a;
+				n += 1.0; sz += z; sw += w; szz += z * z; szw += z * w;
+				unsigned r = 0;
+				for (; r < nr; r++) if (fabsf((float)z - rz[r] / rn[r]) < 1.0f) break;
+				if (r == nr && nr < 4) nr++;
+				if (r < nr) { rz[r] += (float)z; rw[r] += (float)w; rn[r]++; }
+			}
+			const double var = szz - sz * sz / n;
+			m.SwayB = var > 1e-6 ? (float)((szw - sz * sw / n) / var) : 0.0f;
+			m.SwayA = (float)((sw - m.SwayB * sz) / n);
+			if (gd->m_pkColor) {
+				int at = _snprintf_s(rows, sizeof(rows), _TRUNCATE, "%u height row(s):", nr);
+				for (unsigned r = 0; r < nr && at > 0 && at < (int)sizeof(rows); r++)
+					at += _snprintf_s(rows + at, sizeof(rows) - at, _TRUNCATE, " z %.1f alpha^2 %.2f (%u)", rz[r] / rn[r], rw[r] / rn[r], rn[r]);
+			}
+		}
+		Logger::Log("UNOFFICIAL NewGrass: model %p: sway weight %.3f + %.4f x height; %s", gd, m.SwayA, m.SwayB, rows);
 		Logger::Log("UNOFFICIAL NewGrass: model %p: %u vertices, %u per tuft (%u tufts), height %.1f width %.1f%s, %u texture tile(s): %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f -> %s",
 			gd, m.Total, vpm, m.Capacity, m.Height, m.Width, m.FromBound ? " (from the bound)" : "", m.RectCount,
 			m.Rects[0][0], m.Rects[0][1], m.Rects[0][2], m.Rects[0][3], m.Rects[1][0], m.Rects[1][1], m.Rects[1][2], m.Rects[1][3],
@@ -536,6 +563,17 @@ namespace NewGrass {
 		const float prof[8] = { (std::min)(prof0[0] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[1] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[2] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[3] * (S.KeepCards ? 1.0f : 1.1f), 1.0f),
 			S.Spread, S.KeepCards ? 1.0f : 0.0f, S.KeepCards ? S.TipReach : 1.0f, S.Kink };
 		device->SetVertexShaderConstantF(254, prof, 2);
+		// 2026-10-20 grass field wind ([Shaders.Grass.Wind], core/GrassWind.h): its lanes in c253 (0 = off: the strands sway as before;
+		// put back with the rest of c248-c255 below), the clock and this card's sway-weight line in c7.yzw (the game reads only x there,
+		// the grass dimmer; the game's c7 is put back right after the draw), so the strands move as their card does at their height.
+		float savedC7[4];
+		const bool wind = GrassWind::On && SUCCEEDED(device->GetVertexShaderConstantF(7, savedC7, 1));
+		const float lanes[4] = { wind ? GrassWind::Lanes[0] : 0.0f, wind ? GrassWind::Lanes[1] : 0.0f, wind ? GrassWind::Lanes[2] : 0.0f, wind ? GrassWind::Lanes[3] : 0.0f };
+		device->SetVertexShaderConstantF(253, lanes, 1);
+		if (wind) {
+			const float c7[4] = { savedC7[0], GrassWind::ClockNow, m.SwayA, m.SwayB };
+			device->SetVertexShaderConstantF(7, c7, 1);
+		}
 		float psc[24];
 		memcpy(psc, S.KeepCards ? ramp.Bright : ramp.C, sizeof(ramp.C));	// the strands wear the card's bright twig colour
 		psc[16] = S.ShadowLift; psc[17] = S.Wrap; psc[18] = S.TipLift; psc[19] = S.Variation;
@@ -547,6 +585,7 @@ namespace NewGrass {
 		Next(device, D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);	// straight to the runtime: the hooked entry would swallow it
 
 		if (haveVS) device->SetVertexShaderConstantF(248, &savedVS[0][0], 8);	// 2026-10-19: the constants above, put back (see the save)
+		if (wind) device->SetVertexShaderConstantF(7, savedC7, 1);	// 2026-10-20: the game's c7 (grass field wind)
 		if (havePS) device->SetPixelShaderConstantF(20, &savedPS[0][0], 6);
 		device->SetVertexShader(oldVS); device->SetPixelShader(oldPS); device->SetVertexDeclaration(oldDecl);
 		device->SetStreamSource(0, oldVB, oldOffset, oldStride); device->SetIndices(oldIB);

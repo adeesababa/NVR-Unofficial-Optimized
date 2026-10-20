@@ -1,6 +1,7 @@
 #include "Grass.h"
 #include "../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass ([Shaders.Grass.NewGrass]): blade geometry in place of the near grass cards
 #include "GrassCollision.h"	// UNOFFICIAL 2026-10-19 [Shaders.Grass.Collision]
+#include "../core/GrassWind.h"	// UNOFFICIAL 2026-10-20 [Shaders.Grass.Wind]: gusts rolling across the field along the weather's wind
 
 void GrassShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GrassScale", &Constants.Scale);
@@ -20,10 +21,16 @@ void GrassShaders::UpdateSettings() {
 	DrawFirstCull = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstCull");
 	NewGrass::ReadSettings();	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h): live
 	GrassCollision::ReadSettings();	// UNOFFICIAL 2026-10-19
+	GrassWind::ReadSettings();	// UNOFFICIAL 2026-10-20 (live)
 }
 
 void GrassShaders::UpdateConstants() {
 	GrassCollision::Update();	// UNOFFICIAL 2026-10-19: the push round the camera, once a frame
+	// UNOFFICIAL 2026-10-20 grass field wind: the weather's wind and the clock, once a rendered frame. While a sandstorm blows, the
+	// clock's rate blends to the storm's (its grass path shares c19.z).
+	const SandstormEffect* Sandstorm = TheShaderManager->Effects.Sandstorm;
+	const float storm = Sandstorm && Sandstorm->Enabled && Sandstorm->GrassStorm[0] > 0.0f ? Sandstorm->Intensity : 0.0f;
+	GrassWind::Update(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior, storm);
 }
 
 // UNOFFICIAL 2026-10-17 grass study: every pass that sets grass shaders up (SetShadersHook; the game does it once for a run of
@@ -46,9 +53,14 @@ void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShade
 	// 0, 0 with no storm or the effect off, and the grass VS then sways exactly as the game's). GrassFirst's re-writes of c19 keep
 	// them (LastPairing).
 	const SandstormEffect* Sandstorm = TheShaderManager->Effects.Sandstorm;
+	// UNOFFICIAL 2026-10-20 grass field wind ([Shaders.Grass.Wind], core/GrassWind.h): z is its clock while it is on (the storm's
+	// gusts then run on it too, at a rate blended to theirs), and its lanes go into the 4th column of c252-c255 (the inverse view
+	// matrix SetCT has just put there). Off: z the storm's clock as before, c252-c255 as SetCT wrote them.
 	const float Pairing[4] = { NVRPixel || !GameShaderFix ? 1.0f : 0.0f, Sandstorm ? Sandstorm->GrassStorm[0] : 0.0f,
-		Sandstorm ? Sandstorm->GrassStorm[1] : 0.0f, (float)DrawPart };
+		GrassWind::On ? GrassWind::ClockNow : Sandstorm ? Sandstorm->GrassStorm[1] : 0.0f, (float)DrawPart };
 	TheRenderManager->device->SetVertexShaderConstantF(19, Pairing, 1);
 	for (int i = 0; i < 4; i++) LastPairing[i] = Pairing[i];
 	GrassCollision::Bind(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: the push texture on vertex sampler 0
+	GrassWind::BindCards(TheRenderManager->device);
+	GrassWind::LogState(TheRenderManager->device);	// diagnostic (Log 1)
 }
