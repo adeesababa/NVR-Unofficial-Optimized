@@ -145,8 +145,13 @@ namespace ClothWind {
 	inline void NoteVertexShader(const char* name) {
 		if (!CompiledInRead && TheSettingManager) { CompiledInRead = true; S.CompiledIn = TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") != 0; }
 		if (!S.CompiledIn && !PlantsCompiledIn) { CurrentVSCapable = false; return; }
-		if (name && name[0] == 'G' && name[1] == 'R' && name[2] == 'A' && name[3] == 'S' && name[4] == 'S') { NonZeroSent = true; GrassInC248 = true; }
+		// 2026-10-20 (user, cloth 9b + Particles on: 'pbr is now incredibly broken in interiors', walls and floors gone or torn): not only
+		// the grass. The particle and blood-decal shaders (NOLIGHT006/016/017, GDECAL/GDECALS: Includes/ParticleLight.hlsl) keep their
+		// lamp colours in c227-c250, so after a particle the next object with cloth code took a lamp colour for ClothA and moved
+		// (indoors, where the lamps are). Any vertex shader without the cloth code may leave c248 non-zero: mark it, and the next
+		// cloth-carrying bind clears it before its draw (one register write per such switch).
 		const bool capable = CapableName(name);
+		if (!capable) { NonZeroSent = true; GrassInC248 = true; }
 		if (capable && GrassInC248 && TheRenderManager) Zero(TheRenderManager->device);
 		CurrentVSCapable = (S.On || PlantsOn) && capable;
 	}
