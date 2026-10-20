@@ -27,10 +27,20 @@ float4 TESR_LinearLighting : register(c191); // x: gamma the colours are decoded
 float3 LinColor(float3 c) { return TESR_LinearLighting.x > 1.0f ? pow(max(c, 0.0f), TESR_LinearLighting.x) : c; }
 float3 LinEncode(float3 c) { return TESR_LinearLighting.x > 1.0f ? pow(max(c, 0.0f), TESR_LinearLighting.y) : c; }
 float LinScale(float s) { return TESR_LinearLighting.x > 1.0f ? pow(max(s, 0.0f), TESR_LinearLighting.x) : s; }
+// UNOFFICIAL 2026-10-20 (user: 'interiors look incredibly bright'; Rivet City's hangar): a lamp's distance falloff (vanillaAtt, 1 at
+// the lamp, 0 at its radius) was made for the game's gamma-space light. Multiplied into the linear light and encoded back, a lamp
+// alone came out att^(1/2.2) bright instead of att: 2x at att 0.25, 3.5x at 0.1 -- big rooms with wide lamps lit almost evenly.
+// Decoded like the colours, a lamp alone falls off exactly as in the game again; lamps still add up in linear light.
+// z: the exponent the falloff is decoded with ([Shaders.PBR.Linear] FalloffMatch: 1 + (gamma - 1) x match); 0 (not written) = gamma.
+float LinFalloff(float a) {
+    const float k = TESR_LinearLighting.z > 0.0f ? TESR_LinearLighting.z : TESR_LinearLighting.x;
+    return TESR_LinearLighting.x > 1.0f ? pow(max(a, 0.0f), k) : a;
+}
 #else
 float3 LinColor(float3 c) { return c; }
 float3 LinEncode(float3 c) { return c; }
 float LinScale(float s) { return s; }
+float LinFalloff(float a) { return a; }
 #endif
 
 #endif

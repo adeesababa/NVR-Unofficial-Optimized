@@ -76,6 +76,10 @@ void PBRShaders::UpdateSettings() {
 		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
 	Constants.Linear.x = linearGamma;
 	Constants.Linear.y = 1.0f / linearGamma;
+	// UNOFFICIAL 2026-10-20 FalloffMatch (LinearLight.hlsl LinFalloff): the exponent a lamp's distance falloff is decoded with. 1 = the
+	// lamp alone falls off as in the game (att^gamma); 0 = the falloff used as is in linear light (before 2026-10-20: a lamp alone came
+	// out att^(1/gamma) bright -- 2-3.5x along its reach; Rivet City's hangar ~2x too bright). Live.
+	Constants.Linear.z = 1.0f + (linearGamma - 1.0f) * std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "FalloffMatch"), 0.0f, 1.0f);
 	PassSums::Gamma = linearGamma;	// UNOFFICIAL ExactPassSums: the fold-in decodes with the same gamma
 	LinearPreDecode::Gamma = linearGamma;	// UNOFFICIAL 2026-10-17 LinearPreDecode: the colours decoded on the CPU, the same gamma
 

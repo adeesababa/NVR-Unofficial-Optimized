@@ -133,7 +133,7 @@ float getRoughness(float glossmap, float meshgloss){
 
 // Vanilla
 float3 getVanillaLighting(float3 lightDir, float radius, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float gloss, float glossPower) {
-    float att = vanillaAtt(lightDir, radius);
+    float att = LinFalloff(vanillaAtt(lightDir, radius));	// UNOFFICIAL 2026-10-20 (LinearLight.hlsl)
     
     lightDir = normalize(lightDir);
     viewDir = normalize(viewDir);
@@ -181,7 +181,7 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
     lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
     
-    float att = vanillaAtt(lightDir, radius);
+    float att = LinFalloff(vanillaAtt(lightDir, radius));	// UNOFFICIAL 2026-10-20: the falloff decoded like the colours (LinearLight.hlsl)
     
     #if defined(ONLY_SPECULAR)
         return att * PBRSpecular(0, roughness, albedo, normal, viewDir, lightDir, lightColor);
@@ -196,6 +196,7 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
 float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
     lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
+    att = LinFalloff(att);	// UNOFFICIAL 2026-10-20: the falloff decoded like the colours (LinearLight.hlsl)
 
     #if defined(ONLY_SPECULAR)
         return att * PBRSpecular(metallic, roughness, albedo, normal, viewDir, lightDir, lightColor);
