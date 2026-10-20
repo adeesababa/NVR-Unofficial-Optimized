@@ -41,18 +41,24 @@ float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked 
 float4 NVR_PointShadowDebug     : register(c181); // x: debug view (0 off, 1 a lamp's blocked light in that lamp's colour, 2 the lit
                                                   // area of every lamp that has a shadow tinted in its colour, 3 PointShadowTrace);
                                                   // y: NearFade (world units; 0 off), see PointShadowNear; z (view 3): which light
-                                                  // of the draw the focus lamp is, -1 none; w: Quality (PCF taps with a
+                                                  // of the draw the focus lamp is, -1 none; z (every other view, UNOFFICIAL
+                                                  // 2026-10-20): InvisibleLightSize / sqrt 2, the lamp size of lights whose fade
+                                                  // (NVR_PointShadowTint w) is negative (view 3 replaces the lighting, so the
+                                                  // shadows it would size are never seen); w: Quality (PCF taps with a
                                                   // spread: 1 Medium = 4, as before; 2 High = 10; 3 Ultra = 20; Low
                                                   // arrives as spread 0 = 1 tap)
 float4 NVR_PointShadowTint[6]   : register(c182); // rgb: debug colour of light k's lamp (one per cube-map slot; white = no shadow);
-                                                  // w: how far light k's shadow has faded in, 0..1 (a lamp that just got one)
+                                                  // w: how far light k's shadow has faded in, 0..1 (a lamp that just got one);
+                                                  // negative (the same amount): an invisible light with its own lamp size
+                                                  // (InvisibleLightSize, c181.z)
 float4 NVR_PointShadowFocus     : register(c188); // view 3: the focus lamp (cube slot 0) as NVR_PointShadowLight, whatever the draw's
                                                   // lamps; its cube map is on NVR_PointShadowCube5
 float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardening ([Shaders.ShadowsInteriors.Forward] ContactHardening):
                                                   // x: strength (0 = off, the spread as before), y: the narrowest spread, as a
                                                   // share of the Softness spread (where a blocker touches what it shadows);
                                                   // z: LampSize / sqrt 2 (world units; 0 = the ratio above), w: the widest spread
-                                                  // LampSize may give, per unit of the direction's major axis (MaxSoftness)
+                                                  // LampSize (or InvisibleLightSize) may give, per unit of the direction's major
+                                                  // axis (MaxSoftness); 0 with contact hardening alone
 
 samplerCUBE NVR_PointShadowCube0 : register(s8);
 samplerCUBE NVR_PointShadowCube1 : register(s11);
@@ -122,7 +128,8 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         // Both in one form, t = 1 / blocker - 1 / d (so (d - blocker) / blocker = d t): the spread is
         // clamp(t (z / radius x major + x s d), y s, max(s, w major)), with z = w = 0 for contact hardening alone and
         // x = 0, y = 1 for LampSize (PointShadowForward::Publish), to keep the 6-lamp shaders' instruction count down.
-        [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.z > 0.0f) {
+        // UNOFFICIAL 2026-10-20 InvisibleLightSize: an invisible light (negative fade) takes its own size, c181.z.
+        [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.w > 0.0f) {
             float wide = max(NVR_PointShadowSoft.w * major, s);
             float4 search = float4(
                 texCUBElod(cube, float4(dir + wide * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
@@ -136,7 +143,8 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             [branch] if (!(blockers > 0.0f)) return 1.0f;
             float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
             float t = 1.0f / max(blocker, 0.0001f) - 1.0f / d;
-            s = clamp(t * (NVR_PointShadowSoft.z * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
+            float size = fade < 0.0f ? NVR_PointShadowDebug.z : NVR_PointShadowSoft.z;
+            s = clamp(t * (size * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
         }
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
@@ -181,7 +189,7 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;
         lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
     }
-    return lerp(1.0f, lit, NVR_PointShadowParams.x * fade);
+    return lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade));
 }
 
 // What light k's colour is multiplied by: its shadow, or in the debug views (NVR_PointShadowDebug.x, the same for the

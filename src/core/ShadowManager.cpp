@@ -111,8 +111,12 @@ static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade) {
 }
 
 static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& staticCasters) {
-	// UNOFFICIAL LampGlassShadows (2026-10-20): switching it changes what a lamp's cube map holds, so it changes the hash (a redraw).
-	hash = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.LampGlassShadows ? 1469598103934665603ULL : 0x6C62272E07BB0142ULL;
+	// UNOFFICIAL LampGlassShadows / LampModelShadows (2026-10-20): switching them changes what a lamp's cube map holds, so they change
+	// the hash (a redraw); with LampModelShadows off so does a new listing of the cell's lamp models (LampFixtures::Generation).
+	const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forwardSettings = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
+	hash = forwardSettings.LampGlassShadows ? 1469598103934665603ULL : 0x6C62272E07BB0142ULL;
+	if (!forwardSettings.LampModelShadows)
+		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 
@@ -980,6 +984,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		D3DXVECTOR3(0.0f, 0.0f, 1.0f), D3DXVECTOR3(0.0f, 0.0f, -1.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f), D3DXVECTOR3(0.0f, 1.0f, 0.0f) };
 	const bool useGeometryList = Lights[LightIndex]->kGeometryList.start != nullptr;
 	cubeCasters.clear();
+	std::unordered_map<int, int> lampModelCache;	// UNOFFICIAL LampModelShadows: this light's answer per lamp model (LampFixtures::NearLampModel)
 	if (useGeometryList) {
 		// Since this is pure geometry, getting reference data will be difficult (read: slow)
 		for (auto iter = Lights[LightIndex]->kGeometryList.start; iter; iter = iter->next) {
@@ -1004,6 +1009,13 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			// UNOFFICIAL LampGlassShadows false (2026-10-20): a lamp's glowing glass, bulb or glow sprite is a light source, not a
 			// blocker; drawn solid it threw the whole shade outline of a sconce or chandelier onto the wall (LampFixtures::LampPart).
 			if (!Settings->Forward.LampGlassShadows && LampFixtures::LampPart(geo))
+				continue;
+
+			// UNOFFICIAL LampModelShadows false (2026-10-20): the lamp models near this light (whole models: a sconce, a chandelier, a ceiling
+			// fan, an arm lamp) cast nothing into its map. The level designers put their invisible lights right next to the lamps, and from
+			// there a lamp threw its whole outline, hard and room-sized; every other shadow of the light stays (LampFixtures::NearLampModel).
+			if (!Settings->Forward.LampModelShadows && !TheShaderManager->GameState.isExterior &&
+				LampFixtures::NearLampModel(geo, pNiLight, LightPos, Settings->Forward.LampModelDistance, lampModelCache))
 				continue;
 
 			bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);

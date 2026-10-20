@@ -2,6 +2,8 @@
 
 #include <vector>
 #include <unordered_map>
+#include <cstring>
+#include <cctype>
 
 // UNOFFICIAL 2026-10-20 (interior look): which lamps sit at a visible lamp, for [Shaders.ShadowsInteriors.Forward]
 // InvisibleLightShadowStrength.
@@ -33,6 +35,48 @@ namespace LampFixtures {
 	inline bool Ready = false;								// the last listing saw placed objects with 3D (else: no answer yet)
 	inline UInt64 GlowHash = 0;
 
+	// UNOFFICIAL LampModelShadows (2026-10-20): the cell's lamp MODELS -- sconces, chandeliers, ceiling fans, hanging lamps, table lamps
+	// (whole models: body, arms, blades, shade frame, glass) -- and which model each of their meshes belongs to. A light leaves the
+	// lamp models within LampModelDistance of it out of its own shadow map (ShadowManager::RenderShadowCubeMap): the level designers
+	// put their invisible lights right next to the lamps (Doc Mitchell's sconces' lights 103-162 units away, the fan's fills
+	// 113-137 under it, the saloon's 10-75 from its chandeliers and arm lamps), and from there a lamp's model threw its whole
+	// outline, hard and room-sized (the user: "shadows from the lamps being right next to the fake lights that looked strange").
+	// Every other shadow of those lights -- furniture, props, walls, people -- stays. A lamp still shadows its OWN light (one built into
+	// its model, or one within OwnLightDistance of one of its small meshes, i.e. at its bulb): a shade then shapes the light as it should
+	// (measured 2026-10-20: without this the saloon's arm lamps lit the ceiling straight through their metal shades).
+	struct Part { float x, y, z, radius; };
+	struct Model { float x, y, z, radius; const NiNode* root; std::vector<Part> parts; const char* name; };
+	inline bool LogModels = false;							// LogLamps: each light's keep / leave-out answer per lamp model (capped)
+	inline unsigned LogModelLines = 0;
+	inline constexpr float OwnLightDistance = 24.0f;		// world units from a lamp mesh's bound: the lamp's own (bulb) light
+	inline std::vector<Model> Models;
+	inline std::unordered_map<const void*, int> ModelOf;		// NiGeometry* -> index in Models
+	inline constexpr float MaxLampModel = 200.0f;			// bound radius: a ceiling fan is ~150; buildings named '...light...' are not lamps
+
+	// A lamp model by its file name (or, without one, its root node's name): light, lamp, fan, chandelier, sconce, bulb, lantern,
+	// candle, torch. FalloutNV.esm's fixtures: dlc04lightwall01on.nif, LamplightChandelier.NIF, NV_Fan.NIF, ShackHangingLight01.NIF,
+	// LamplightLamp.NIF, dlc04bwalklight01.nif, LampGenericR01.NIF, OperatingLightR01.NIF, dlc04lighthousebulb.nif, ...
+	// Only the file name counts, not its folders (Dungeons/Caves/Lamplight/ holds every kind of model).
+	inline bool LampName(const char* path) {
+		if (!path || !*path) return false;
+		const char* name = path;
+		for (const char* c = path; *c; c++) if (*c == '\\' || *c == '/') name = c + 1;
+		char low[128]; size_t n = 0;
+		for (; name[n] && n < sizeof(low) - 1; n++) low[n] = (char)tolower((unsigned char)name[n]);
+		low[n] = 0;
+		static const char* const keys[] = { "light", "lamp", "fan", "chandel", "sconce", "bulb", "lantern", "candle", "torch" };
+		for (const char* k : keys) if (strstr(low, k)) return true;
+		return false;
+	}
+
+	// The model file of a placed object's base form, where New Vegas keeps one we know the layout of (statics, lights).
+	inline const char* ModelPath(TESForm* base) {
+		if (!base) return nullptr;
+		if (base->formType == TESForm::FormType::kFormType_Stat) return static_cast<TESObjectSTAT*>(base)->model.nifPath.m_data;
+		if (base->formType == TESForm::FormType::kFormType_Light) return static_cast<TESObjectLIGH*>(base)->modelSwap.nifPath.m_data;
+		return nullptr;
+	}
+
 	struct Answer { float x, y, z; unsigned generation; float distance; };
 	inline std::unordered_map<const void*, Answer> Answers;	// per NiPointLight: the nearest glowing mesh's distance
 
@@ -47,7 +91,7 @@ namespace LampFixtures {
 	inline float Emission(NiGeometry* geo) {
 		NiMaterialProperty* material = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
 		if (!material) return 0.0f;
-		const float mult = material->fEmitMult > 0.0f ? material->fEmitMult : 1.0f;
+		const float mult = material->fEmitMult > 0.0f ? material->fEmitMult : 0.0f;	// a multiplier of 0 glows not at all
 		return (0.2126f * material->emit.r + 0.7152f * material->emit.g + 0.0722f * material->emit.b) * mult;
 	}
 
@@ -66,15 +110,26 @@ namespace LampFixtures {
 	inline void ListGlows(TESObjectCELL* cell, bool log) {
 		const double started = Now();
 		std::vector<Glow> found;
+		std::vector<Model> models;
+		std::unordered_map<const void*, int> modelOf;
 		std::vector<NiAVObject*> stack;
 		UInt64 hash = 1469598103934665603ull;
 		unsigned refs = 0, geometries = 0;
 		for (TList<TESObjectREFR>::Entry* entry = &cell->objectList.First; entry; entry = entry->next) {
 			TESObjectREFR* ref = entry->item;
-			if (!ref || !ref->baseForm || ref->baseForm->formType == TESForm::FormType::kFormType_Light) continue;
+			if (!ref || !ref->baseForm) continue;
 			NiNode* root = ref->GetNode();
 			if (!root) continue;
 			refs++;
+			// A lamp model (LampModelShadows): by its file name, else its root node's name; whole models up to MaxLampModel.
+			int model = -1;
+			const char* path = ModelPath(ref->baseForm);
+			NiBound* rootBound = root->GetWorldBound();
+			if ((path && *path ? LampName(path) : LampName(root->m_pcName)) && rootBound && rootBound->Radius > 0.0f && rootBound->Radius <= MaxLampModel) {
+				model = (int)models.size();
+				models.push_back({ rootBound->Center.x, rootBound->Center.y, rootBound->Center.z, rootBound->Radius, root, {}, path && *path ? path : root->m_pcName });
+				hash = (hash ^ (UInt64)(SInt64)(rootBound->Center.x * 8.0f + rootBound->Center.y * 32.0f + rootBound->Center.z * 128.0f)) * 1099511628211ull;
+			}
 			stack.clear();
 			stack.push_back(root);
 			while (!stack.empty()) {
@@ -84,6 +139,10 @@ namespace LampFixtures {
 				if (object->IsGeometry()) {
 					NiGeometry* geo = static_cast<NiGeometry*>(object);
 					geometries++;
+					if (model >= 0) {
+						modelOf[geo] = model;
+						if (NiBound* b = geo->GetWorldBound()) models[model].parts.push_back({ b->Center.x, b->Center.y, b->Center.z, b->Radius });
+					}
 					const float emit = Emission(geo);
 					if (emit < 0.25f) continue;
 					NiBound* bound = geo->GetWorldBound();
@@ -96,18 +155,57 @@ namespace LampFixtures {
 					for (int i = 0; i < node->m_children.end; i++) stack.push_back(node->m_children.data[i]);
 			}
 		}
-		hash ^= found.size() ^ ((UInt64)(refs > 0) << 40);
+		hash ^= found.size() ^ ((UInt64)models.size() << 20) ^ ((UInt64)(refs > 0) << 40);
 		Ready = refs > 0;
 		const bool changed = hash != GlowHash;
 		if (changed) { GlowHash = hash; Generation++; }
 		if (log && changed) {
-			Logger::Log("UNOFFICIAL LampFixtures: %u glowing meshes among %u meshes of %u placed objects with 3D (listed in %.2f ms)",
-				(unsigned)found.size(), geometries, refs, (Now() - started) * 1000.0);
+			Logger::Log("UNOFFICIAL LampFixtures: %u glowing meshes and %u lamp models (%u meshes) among %u meshes of %u placed objects with 3D (listed in %.2f ms)",
+				(unsigned)found.size(), (unsigned)models.size(), (unsigned)modelOf.size(), geometries, refs, (Now() - started) * 1000.0);
 			for (size_t i = 0; i < found.size() && i < 160; i++)
 				Logger::Log("  GLOW %3u at %.0f %.0f %.0f radius %.0f emissive %.2f | '%s' of '%s'", (unsigned)i, found[i].x, found[i].y, found[i].z,
 					found[i].radius, found[i].emit, found[i].name ? found[i].name : "", found[i].root ? found[i].root : "");
 		}
 		Glows.swap(found);
+		Models.swap(models);
+		ModelOf.swap(modelOf);
+	}
+
+	// Is this light the lamp model's own: built into it (the light's node hangs under the model's root), or at one of its meshes?
+	inline bool OwnLight(const Model& m, const NiPointLight* light, const NiPoint3* at) {
+		for (const NiAVObject* node = light; node; node = node->m_parent) if (node == m.root) return true;
+		for (const Part& p : m.parts) {
+			// Only a lamp's small parts (bulb, shade, socket: MaxLampPart) place its bulb; a ceiling fan's blade mesh is ~100 units round
+			// and took the globe lights under it for the fan's own (measured 2026-10-20: the blade ovals stayed).
+			if (p.radius > MaxLampPart) continue;
+			const float dx = p.x - at->x, dy = p.y - at->y, dz = p.z - at->z;
+			if (sqrtf(dx * dx + dy * dy + dz * dz) - p.radius <= OwnLightDistance) return true;
+		}
+		return false;
+	}
+
+	// LampModelShadows false: does this caster belong to a lamp model within distance of the light (its bound's edge) that is not the
+	// light's own lamp? cache: per cube draw, model index -> 0 unknown, 1 leave out, 2 keep.
+	inline bool NearLampModel(const NiGeometry* geo, const NiPointLight* light, const NiPoint3* at, float distance, std::unordered_map<int, int>& cache) {
+		auto it = ModelOf.find(geo);
+		if (it == ModelOf.end()) return false;
+		int& answer = cache[it->second];
+		if (!answer) {
+			const Model& m = Models[it->second];
+			const float dx = m.x - at->x, dy = m.y - at->y, dz = m.z - at->z;
+			const float edge = sqrtf(dx * dx + dy * dy + dz * dz) - m.radius;
+			const bool close = edge <= distance, own = close && OwnLight(m, light, at);	// ('near' is a Windows macro)
+			answer = close && !own ? 1 : 2;
+			if (LogModels && close && LogModelLines < 400) {
+				LogModelLines++;
+				float smallest = 1.0e9f;
+				for (const Part& p : m.parts) smallest = (std::min)(smallest, p.radius);
+				Logger::Log("LAMPMODEL light %p at %.0f %.0f %.0f: lamp model '%s' (radius %.0f, %u meshes, smallest %.0f) edge %.0f units: %s",
+					(const void*)light, at->x, at->y, at->z, m.name ? m.name : "", m.radius, (unsigned)m.parts.size(), smallest, edge,
+					own ? "its OWN lamp, keeps shadowing it" : "LEFT OUT of its shadows");
+			}
+		}
+		return answer == 1;
 	}
 
 	// Once per frame, indoors: list the cell's glowing meshes when the cell changed, every second for its first 10 seconds,
@@ -115,7 +213,7 @@ namespace LampFixtures {
 	inline void Update(TESObjectCELL* cell, bool log) {
 		if (!cell) return;
 		const double now = Now();
-		if (cell != GlowCell) { GlowCell = cell; CellEntered = now; GlowListed = -1.0e9; Answers.clear(); Ready = false; }
+		if (cell != GlowCell) { GlowCell = cell; CellEntered = now; GlowListed = -1.0e9; Answers.clear(); Ready = false; Models.clear(); ModelOf.clear(); }
 		const double period = now - CellEntered < 10.0 ? 1.0 : 10.0;
 		if (now - GlowListed < period) return;
 		GlowListed = now;

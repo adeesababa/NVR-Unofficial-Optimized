@@ -119,6 +119,7 @@ namespace PointShadowForward {
 	inline float Params[4] = {};				// c180: strength, bias, normal offset, PCF spread
 	inline float DebugView = 0.0f;			// c181.x
 	inline float NearFade = 0.0f;			// c181.y: [Shaders.ShadowsInteriors.Main] NearFade (PointShadowForward.hlsl PointShadowNear)
+	inline float InvisibleSize = 0.0f;		// c181.z outside DebugView 3: InvisibleLightSize / sqrt 2 (0 off)
 	inline float Quality = 1.0f;			// c181.w: [Shaders.ShadowsInteriors.Forward] Quality (Low arrives as spread 0 in c180.w)
 	inline float Soft[4] = {};				// c189: contact hardening strength (0 off), narrowest spread share; LampSize / sqrt 2, widest spread
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
@@ -340,12 +341,17 @@ namespace PointShadowForward {
 		// search, so it switches that on (x 1) when ContactHardening itself is off. Softness stays the narrowest spread.
 		// The shader takes both in one form (x = 0 and y = 1 here: the Softness spread is the narrowest, nothing scales by
 		// the ratio), so contact hardening's own settings do nothing while LampSize is on.
+		// UNOFFICIAL InvisibleLightSize (2026-10-20): the game's invisible lights (LampFixtures.h) get their own lamp size, c181.z; the
+		// shader picks it for lights whose fade is negative (below). Either size switches the blocker search on (w > 0); a lamp size
+		// of 0 then keeps that kind of light at the Softness spread.
 		Soft[2] = Soft[3] = 0.0f;
-		if (forward.LampSize > 0.0f && forward.Quality > 0 && forward.Softness > 0.0f) {
+		InvisibleSize = 0.0f;
+		if ((forward.LampSize > 0.0f || forward.InvisibleLightSize > 0.0f) && forward.Quality > 0 && forward.Softness > 0.0f) {
 			Soft[0] = 0.0f;
 			Soft[1] = 1.0f;
 			Soft[2] = forward.LampSize * 0.70710678f;
 			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
+			InvisibleSize = forward.InvisibleLightSize * 0.70710678f;
 		}
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
@@ -384,8 +390,12 @@ namespace PointShadowForward {
 			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
 			// UNOFFICIAL InvisibleLightShadowStrength (2026-10-20): a light with no glowing lamp near it (ShaderManager::GetNearbyLights
 			// gives it no cube map at 0; LampFixtures.h has the answer cached for this frame).
-			if (forward.InvisibleLightShadowStrength < 1.0f && source && !TheShaderManager->GameState.isExterior &&
-				LampFixtures::Invisible(source, forward.FixtureDistance)) fade *= forward.InvisibleLightShadowStrength;
+			// InvisibleLightSize: its fade goes negative (the same amount), the shader's sign for 'use c181.z as the lamp size'.
+			if ((forward.InvisibleLightShadowStrength < 1.0f || InvisibleSize > 0.0f) && source && !TheShaderManager->GameState.isExterior &&
+				LampFixtures::Invisible(source, forward.FixtureDistance)) {
+				fade *= forward.InvisibleLightShadowStrength;
+				if (InvisibleSize > 0.0f) fade = -fade;
+			}
 			start[SlotCount] = since;
 			Slots[SlotCount++] = { lights[i], D3DXVECTOR3(slots[i].x, slots[i].y, slots[i].z), slots[i].radius, cubes[i], i, fade };
 		}
@@ -493,6 +503,7 @@ namespace PointShadowForward {
 		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); }
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
+		constants[7][2] = matched ? InvisibleSize : 0.0f;	// (DebugView 3 puts the focus lamp's index here below)
 		constants[7][3] = matched ? Quality : 0.0f;
 		// DebugView 3 on every draw of the wanted passes, matched or not: the focus lamp at c188, its cube map on stage 15
 		// (NVR_PointShadowCube5: the view replaces the draw's own lighting, so light 5's lookup does not matter).
