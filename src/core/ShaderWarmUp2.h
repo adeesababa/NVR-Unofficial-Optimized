@@ -10,10 +10,12 @@
 //  - RECORD (mode 1 and 2): detours on the d3d9 device's function bodies (as ConstantFilter.h; the native runtime rewrites its
 //    vtable) keep a copy of the drawing setup on the render thread: vertex and pixel shader, vertex declaration, the format and
 //    type of the texture on every sampler the shaders declare (+ sRGB read), the render-target and depth formats with their
-//    MSAA, and the render states that can change the compiled code. Every new setup is timed at its first draw; setups whose
-//    first draw took >= 0.5 ms are appended to Shaders\NewVegasReloaded\Shaders\Cache\WarmUp2.txt (shaders by a hash of their
-//    bytecode, so the list is valid in the next session), with what is needed to rebuild them.
-//  - REPLAY (mode 2), at the main menu: every listed setup whose first draw took >= MinMs is rebuilt with stand-ins (the real
+//    MSAA, and the render states that can change the compiled code. Every new setup is timed at its first draw and appended to
+//    Shaders\NewVegasReloaded\Shaders\Cache\WarmUp2.txt (shaders by a hash of their bytecode, so the list is valid in the next
+//    session), with what is needed to rebuild them. 2026-10-19: EVERY new setup, not only slow first draws: with NVIDIA's
+//    threaded driver a draw call only queues (~0.4 us) and the compile runs on the driver's thread, so its cost lands on some
+//    later call (test B1: 0.3 s in first draws, 2.0 s in draws of known setups, most of the rest outside draw calls).
+//  - REPLAY (mode 2), at the main menu: every listed setup whose first draw took >= MinMs (default 0 = all) is rebuilt with stand-ins (the real
 //    shaders found by bytecode hash; a vertex buffer of zeros; 4x4 textures and 16x16 targets of the recorded types, formats and
 //    MSAA; the recorded states) and drawn once (a degenerate triangle into a hidden target), slowest first, BudgetMs per menu
 //    frame; the device state is saved in a state block (+ render targets, depth, viewport, scissor) and put back. The driver
@@ -39,8 +41,8 @@ namespace ShaderWarmUp2 {
 	// ---- settings (read once, when the device hooks go in) ----
 	inline int Mode = 0;				// 0 off, 1 record only, 2 record + warm up at the main menu
 	inline double BudgetMs = 150.0;		// warm-up time per main-menu frame
-	inline double MinMs = 1.0;			// warm up the setups whose first draw took at least this long when recorded
-	inline const double SaveMinMs = 0.5;	// setups faster than this at their first draw are not written to the list
+	inline double MinMs = 0.0;			// warm up the setups whose first draw took at least this long when recorded (0 = all)
+	inline const double SaveMinMs = 0.0;	// every new setup is written (2026-10-19: was 0.5 ms; first-draw time does not show a compile on a threaded driver)
 	inline bool LogRecords = NVR_TEST_TOOLS;	// test builds: every list line also goes to the NVR log ('WARMUP2 REC'; the test's restore moves the list file away)
 
 	inline bool Installed = false, Broken = false;
@@ -361,8 +363,8 @@ namespace ShaderWarmUp2 {
 	// ---- a new setup: build its record (render thread, at its first draw) ----
 	inline void RecordNew(IDirect3DDevice9* d, double ms, UINT upStride) {
 		Total.NewSetups++; Total.NewMs += ms; Frame.New++; Frame.NewMs += ms; if (ms > Frame.NewMax) Frame.NewMax = ms;
+		if (ms >= 0.5) Total.NewSlow++;	// 'slow' in the TOTALS line: first draw >= 0.5 ms
 		if (ms < SaveMinMs) return;
-		Total.NewSlow++;
 		Record r;
 		r.VsObj = Cur.VS; r.PsObj = Cur.PS;
 		r.VsHash = InfoOf((IDirect3DVertexShader9*)Cur.VS).Hash;
