@@ -92,7 +92,7 @@ float2 getParallaxCoordsObjectLite(float distance, float2 coords, float2 dx, flo
     }
 
     [branch] if (hit) {
-        [loop] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
+        [unroll] for (int r = 0; r < LITE_SECANT_STEPS; r++) {	// (unroll: 1 step by default; [loop] warned X3557 at every compile)
             float secant2 = pt2.x - pt2.y;
             float secant1 = pt1.x - pt1.y;
             float secantDenominator = secant2 - secant1;
@@ -281,7 +281,7 @@ float2 getParallaxCoords(float distance, float2 coords, float2 dx, float2 dy, fl
         // secant steps: evaluate the height where the straight line between the bracket's two samples crosses the
         // ray, and keep the half that still brackets the hit. One height lookup each instead of four or more.
         [branch] if (lite && done) {
-            [loop] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
+            [unroll] for (int r = 0; r < LITE_SECANT_STEPS; r++) {	// (unroll: 1 step by default; [loop] warned X3557 at every compile)
                 float secant2 = pt2.x - pt2.y;
                 float secant1 = pt1.x - pt1.y;
                 float secantDenominator = secant2 - secant1;
