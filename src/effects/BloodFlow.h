@@ -55,6 +55,7 @@ public:
 		float	SplatDrips;		// how far its drips run on walls and slopes, in splat radii (0 none)
 		float	Merge;			// splats closer than this x their radii merge into one item (0 off)
 		float	GibPools;		// a pool under each cut-off limb, this x the body's pool size (0 off)
+		float	GibHold;		// UNOFFICIAL 2026-10-20: seconds a gib's landing splat waits (dropped if the gib bounces on; 0 off)
 		int		MergeCount;		// ... when at least this many lie together
 	};
 	BloodFlowSettingsStruct	Settings;

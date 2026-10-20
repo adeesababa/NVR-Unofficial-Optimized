@@ -474,6 +474,7 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.StreamWidth = std::clamp(TheSettingManager->GetSettingF(section, "StreamWidth"), 0.1f, 4.0f);
 	Settings.Beads = std::clamp(TheSettingManager->GetSettingF(section, "Beads"), 0.0f, 3.0f);
 	Settings.GibPools = std::clamp(TheSettingManager->GetSettingF(section, "GibPools"), 0.0f, 3.0f);
+	Settings.GibHold = std::clamp(TheSettingManager->GetSettingF(section, "GibHold"), 0.0f, 5.0f);
 	Settings.Merge = std::clamp(TheSettingManager->GetSettingF(section, "Merge"), 0.0f, 2.0f);
 	Settings.MergeCount = std::clamp(TheSettingManager->GetSettingI(section, "MergeCount"), 2, 64);
 	Settings.BeadSize = std::clamp(TheSettingManager->GetSettingF(section, "BeadSize"), 1.0f, 200.0f);
@@ -563,6 +564,23 @@ void BloodFlowEffect::GatherSplats() {
 		const D3DXVECTOR3 center(s.Origin[0], s.Origin[1], s.Origin[2]);
 		const float distance = Length(center - eye);
 		if (!(distance < Settings.MaxDistance)) continue;
+		// UNOFFICIAL 2026-10-20 (user: 'the little giblets that bounce around reset the blood pool from them every time they roll;
+		// they shouldn't produce any blood from our shader until they stop moving'; log: each bounce leaves a new 142-unit decal
+		// thrown straight down). A decal thrown straight down (a gib landing; a shot's blood is thrown along the shot) is held
+		// back for GibHold seconds, and dropped for good when a newer one lands near it within that time (the gib bounced on):
+		// only the last, where the gib came to rest, is drawn, its age counted from then.
+		if (fabsf(s.Direction[2]) > 0.99f && Settings.GibHold > 0.0f) {
+			if (s.Age < Settings.GibHold) continue;
+			bool bounced = false;
+			for (int j = 0; j < total && !bounced; j++) {
+				const RawSplat& o = raw[j];
+				if (j == i || o.Local || o.TextureSet != s.TextureSet || !(fabsf(o.Direction[2]) > 0.99f)) continue;
+				if (!(o.Age < s.Age && s.Age - o.Age < Settings.GibHold)) continue;
+				const float dx = o.Origin[0] - s.Origin[0], dy = o.Origin[1] - s.Origin[1], dz = o.Origin[2] - s.Origin[2];
+				bounced = dx * dx + dy * dy + dz * dz < 300.0f * 300.0f;
+			}
+			if (bounced) continue;
+		}
 		candidates[kept++] = { i, distance };
 	}
 	std::sort(candidates, candidates + kept, [](const Candidate& a, const Candidate& b) { return a.Distance < b.Distance; });
@@ -620,7 +638,7 @@ void BloodFlowEffect::GatherSplats() {
 		item.Center = center;
 		item.Normal = normal;
 		item.Radius = max(std::clamp(radius, 1.0f, 60.0f), grownRadius[c]);
-		item.Age = std::clamp(s.Age, 0.0f, 1e6f);
+		item.Age = std::clamp(fabsf(s.Direction[2]) > 0.99f ? s.Age - Settings.GibHold : s.Age, 0.0f, 1e6f);	// (a held gib's: from its release)
 		item.Seed = Hash01(HashFloats(s.Origin, 3));
 		float fade = 1.0f - std::clamp((candidates[c].Distance - 0.8f * Settings.MaxDistance) / (0.2f * Settings.MaxDistance), 0.0f, 1.0f);
 		// Goes as the game removes it (by the game's own clock: most splats are never aged by the game, and their lifetime
