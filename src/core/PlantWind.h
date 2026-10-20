@@ -35,7 +35,8 @@ namespace PlantWind {
 
 	struct SettingsStruct {
 		bool	Enabled = false;		// live for the leaves; the static plants need it on at startup (PLANT_WIND_ON)
-		float	Bend = 4.0f;			// units a passing gust leans a static plant's top, per 100 units of its height, at a middling wind
+		float	Bend = 6.0f;			// units a passing gust leans a static plant's top, per 100 units of its height, at a middling wind (2026-10-20: 4 was
+										// hard to see in clear weather, 1.6 units at the noon spot's wind; evidence\plantwind-LOG.md)
 		float	StiffHeight = 200.0f;	// plants taller than this bend less (Joshua trees): lean x (H / 100) / (1 + (H / StiffHeight)^2)
 		float	Flutter = 0.25f;		// a static plant's own quiver, as a fraction of its gust lean (Bend)
 		float	LeafGust = 1.5f;		// SpeedTree leaves: a passing gust's crest multiplies the game's leaf swing by (1 + LeafGust)
