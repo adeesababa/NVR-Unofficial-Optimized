@@ -558,8 +558,23 @@ void ShaderTextureValue::GetSamplerStateString(ID3DXBuffer* ShaderSource, UINT32
 		}
 	}
 
+	// UNOFFICIAL 2026-10-19: the state block may run over several lines ('= sampler_state {' on the declaration's line, the states
+	// and '};' below, as GunFX's VolumetricSmoke and BarrelHaze write them). Only the declaration's own line was searched, so those
+	// samplers logged '[ERROR] ... Samplerstate description not found' at every start and silently ran with the default states
+	// (WRAP, POINT) instead of their own (CLAMP, LINEAR for the half and quarter resolution smoke buffers).
 	size_t StartStatePos = SamplerLine.find("{");
 	size_t EndStatePos = SamplerLine.rfind("}");
+	if (StartStatePos != std::string::npos && EndStatePos == std::string::npos) {
+		const size_t blockStart = SamplerPos + StartStatePos;
+		const size_t blockEnd = Source.find("}", blockStart + 1);
+		const size_t nextDeclaration = Source.find("register", blockStart + 1);
+		if (blockEnd != std::string::npos && (nextDeclaration == std::string::npos || blockEnd < nextDeclaration)) {
+			std::string block = Source.substr(blockStart + 1, blockEnd - blockStart - 1);
+			for (char& c : block) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+			SamplerString = block;
+			return;
+		}
+	}
 	if (EndStatePos == std::string::npos || StartStatePos == std::string::npos) {
 		Logger::Log("[ERROR] during binding of %s : Samplerstate description not found", Name);
 		return;
