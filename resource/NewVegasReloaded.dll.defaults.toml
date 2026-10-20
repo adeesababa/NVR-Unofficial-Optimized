@@ -564,6 +564,17 @@ Recovery = 2.5                         # [0-60] (2026-10-19) Seconds for the gra
 Range = 1536.0                         # [256-8192] (2026-10-19) How far from you actors still push grass, in game units. Smaller: a finer push map (sharper footprints).
 Actors = 16                            # [0-64] (2026-10-19) How many of the nearest people and creatures push grass besides you.
 
+[_Shaders.Grass.Wind]
+Enabled = false                        # UNOFFICIAL (2026-10-20) GRASS IN THE WIND, a LOOK CHANGE (off): the grass moves like a field in the wind instead of every tuft swaying on its own. Gusts roll across the grass along the weather's wind like waves through wheat (stronger and faster as the wind rises), each tuft flutters a little on its own, and the game's own sway follows the weather's wind direction -- the same wind cloth uses, so grass and coats agree (the game itself sways all grass north-south whatever the weather). Works on the game's grass and on NewGrass strands (they move with their clump). Off = exactly the game's sway. Live.
+GustStrength = 2.0                     # [0-10] (2026-10-20) How far a passing gust leans the grass, as a multiple of the game's own sway (which already grows with the weather's wind speed and keeps each grass model's own stiffness). 1 = subtle, 3-4 = strong rolling waves, 0 = no gusts.
+GustSize = 1200.0                      # [50-20000] (2026-10-20) Distance from one gust front to the next, in game units (1200 is about 17 m). Bigger = broad slow waves, smaller = choppy.
+GustSpeed = 300.0                      # [0-3000] (2026-10-20) How fast the gusts roll across the field, in units per second at a middling wind (0.4x in dead calm up to 1.6x in a gale, as cloth). The flutter quickens with it (8 quivers per passing front).
+Flutter = 0.3                          # [0-10] (2026-10-20) Each tuft's own small quiver, as a multiple of the game's sway, so neighbouring tufts never move in step. 0 = none.
+UseGameWind = true                     # (2026-10-20) Take the wind's direction from the weather (as cloth does). false = Direction below.
+Direction = 0.0                        # (2026-10-20) With UseGameWind off: where the wind blows toward, in degrees from north (0) toward east (90).
+TimeOffset = 0.0                       # (2026-10-20) Test only: seconds the gust pattern is ahead (for pictures at set moments). Leave 0.
+Log = 0                                # (2026-10-20) DIAGNOSTIC: 1 = a log line every 600 grass shader binds with the game's grass wind values, the weather's wind and these settings as the shaders get them.
+
 [_Shaders.Grass.Status]
 Enabled = true                        # Replaces the grass shaders.
 
