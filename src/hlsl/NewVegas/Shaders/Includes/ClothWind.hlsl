@@ -29,6 +29,9 @@
 //                (2026-10-19 round 6) That billow is ONE-SIDED: outward as before, inward softly limited to ClothBillowIn units --
 //                it swung both ways by up to (ripple + flutter) x intensity, and its inward half pushed the coat into the legs (60 units
 //                at 30 units of wind with ripple and flutter 1). The weight already scales with the coat's clearance from the body.
+//                (2026-10-19 round 7) The same soft limit on the inward part of the WHOLE displacement (push + billow + the wearer's
+//                motion): the push along the wind and the motion trail are two-way too, and on the windward side they still pressed
+//                the coat 4-8 units into the legs at 30 units of wind. Sideways (around the wearer) and outward stay as they were.
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -50,8 +53,9 @@ float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
     return t * t * (3.0f - 2.0f * t);
 }
 
-// Mask 5's billow: the most it pulls cloth inward (units). With the weight's clearance factor (core/ClothWeights.h) inward stays below
-// the straight-line room to the trousers (checked offline: bench\deep-roadmap\evidence\cloth3-LOG.md C3-12, 2 was 0.01 units too much).
+// Mask 5's billow, and (round 7) its whole displacement: the most it pulls cloth inward (units, before the weight). With the weight's
+// clearance factor (core/ClothWeights.h) inward stays below the straight-line room to the trousers (checked offline:
+// bench\deep-roadmap\evidence\cloth3-LOG.md C3-12, 2 was 0.01 units too much; C3-13 for the whole displacement).
 static const float ClothBillowIn = 1.5f;
 
 // The displacement at point p (the shader's space) with surface normal n; n = 0 gives the push along the wind only.
@@ -75,6 +79,19 @@ float3 ClothDisplacement(float3 p, float3 n) {
 // around its own upright axis (from the bind-pose position, so it does not depend on any camera). Under the same mask as the wind.
 float3 ClothMotion(float3 bindP) {
     return ClothE.xyz + float3(bindP.x * ClothF.xy + bindP.y * ClothF.zw, 0.0f);
+}
+
+// Mask 5 (2026-10-19 round 7): the unit direction away from the wearer's upright axis for ClothInward5, 0 for every other mask (a select:
+// there ClothInward5 gives d back as it was).
+float3 ClothInDir(float3 out5) {
+    return ClothA.y > 4.5f ? out5 * rsqrt(max(dot(out5, out5), 1e-8f)) : 0.0f;
+}
+
+// The whole displacement d (wind + the wearer's motion, units, before the weight) with its part towards the wearer's upright axis (along
+// -in5) softly limited as the billow's: s / sqrt(1 + (s / ClothBillowIn)^2), slope 1 at rest, never deeper than ClothBillowIn.
+float3 ClothInward5(float3 d, float3 in5) {
+    const float s = min(dot(d, in5), 0.0f);
+    return d + in5 * (s * (rsqrt(1.0f + s * s * (1.0f / (ClothBillowIn * ClothBillowIn))) - 1.0f));
 }
 
 // Mask 4: distance from bindP to the limb segment a-b, minus the limb's radius there.
@@ -130,9 +147,10 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
         const float3 n = normalize(N);
         const float3 bill = ClothA.y > 4.5f ? out5 : n;	// the billow's direction
         const float3 motion = ClothMotion(bindP);
-        const float3 d0 = mask * (ClothDisplacement(p, bill) + motion);
-        const float3 dt = mask * (ClothDisplacement(p + T * e, bill) + motion);
-        const float3 db = mask * (ClothDisplacement(p + B * e, bill) + motion);
+        const float3 in5 = ClothInDir(out5);
+        const float3 d0 = mask * ClothInward5(ClothDisplacement(p, bill) + motion, in5);
+        const float3 dt = mask * ClothInward5(ClothDisplacement(p + T * e, bill) + motion, in5);
+        const float3 db = mask * ClothInward5(ClothDisplacement(p + B * e, bill) + motion, in5);
         const float3 t2 = T * e + (dt - d0);
         const float3 b2 = B * e + (db - d0);
         // The turn of the frame: the moved frame's normal minus the unmoved one's, added to the mesh's own normal -- so with no
@@ -155,7 +173,7 @@ float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP, f
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
         const float3 bill = ClothA.y > 4.5f ? out5 : (l > 1e-4f ? n / l : 0.0f);
-        p += ClothMask(vertexColor, p, bindP, weight5) * (ClothDisplacement(p, bill) + ClothMotion(bindP));
+        p += ClothMask(vertexColor, p, bindP, weight5) * ClothInward5(ClothDisplacement(p, bill) + ClothMotion(bindP), ClothInDir(out5));
     }
     return p;
 }
