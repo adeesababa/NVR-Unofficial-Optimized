@@ -22,11 +22,14 @@
 // 2026-10-18 (cloth round 3, 'cloth does nothing'): keywords match as substrings (with an exclusion list), worn clothing is masked by
 // the garment's own BIND-POSE height (pinned shoulders, loose hem), the calm-weather strength is higher, and non-cloth draws can no
 // longer inherit c248 from the grass shaders (they relocate their shadow matrices to c248..c255). See evidence\cloth3-LOG.md.
+// 2026-10-19 (cloth round 5): worn clothing by a per-vertex weight from its own mesh (ClothWeights.h, mask 5), delivered as vertex
+// stream 1 around the skinned partition draw (DrawPartition); the skeleton mask (4) stays the fallback. evidence\cloth3-LOG.md C3-11.
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include "ClothWeights.h"	// 2026-10-19 round 5: per-vertex weights of worn meshes (mask 5)
 
 namespace ClothWind {
 
@@ -62,6 +65,7 @@ namespace ClothWind {
 		float TurnLag = 0.12f;			// seconds the hem lags behind a turn (it flares out); 0 off
 		bool  MotionIndoors = true;		// the movement part also indoors (no wind there)
 		bool  UseSkeleton = true;		// 2026-10-19 worn clothing masked by its own skeleton (see SkeletonOf); off: SkinMask
+		bool  UseWeights = true;		// 2026-10-19 round 5: worn clothing by per-vertex weights from its own mesh (WeightsOf, mask 5); off: the skeleton mask (4)
 		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
 		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
 										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
@@ -376,6 +380,242 @@ namespace ClothWind {
 		return Skeletons[sd] = k;
 	}
 
+	// 2026-10-19 round 5 (user: 'how can we detect what's part of the cloth on a mesh intelligently?'): worn clothing by a PER-VERTEX
+	// weight from the garment's own mesh (ClothWeights.h: trouser legs and boots found as cuts around one leg, the coat's weight pinned
+	// at the hips, loosest at the hem, its shell and lining averaged together), worked out once per mesh. The armour vertex formats have
+	// no spare channel, so the weight goes to the vertex shader as a SECOND VERTEX STREAM (one float per vertex, TEXCOORD7): one small
+	// vertex buffer per skin partition (the partition draws its own vertices, in its vertex map's order), bound around the partition's
+	// draw -- the game's NiDX9Renderer::Do_DrawPartition (0xE6D310) through its two calls in BSBatchRenderer::RenderPassImmediately_Skinned
+	// (patched in Hooks.cpp only when the cloth code is compiled in), and NVR's own skinned shadow draw (RenderPass.cpp). The vertex
+	// declaration for that draw = the partition's own + the stream-1 element; stream 1 and the declaration are put back right after it.
+	// Mask 5 only when EVERY partition of the mesh has its buffer (else mask 4 for the whole mesh: no seams between partitions).
+	struct PartBuf { const void* partition = nullptr; const UInt16* vertexMap = nullptr; UInt16 vertices = 0; UInt32 base = 0; IDirect3DVertexBuffer9* vb = nullptr; };
+	struct MeshWeights {
+		const void* skinData = nullptr; const void* skinPartition = nullptr; const void* partitions = nullptr; UInt32 partitionCount = 0;
+		UInt16 vertices = 0;
+		int state = 0;					// 0 not worked out yet, 1 weights made, -1 not possible (no kept vertices or triangles)
+		bool buffers = false;			// every partition has its buffer
+		std::vector<float> w;
+		std::vector<PartBuf> parts;
+		float center[2] = {};			// the wearer's upright axis in the bind pose (between the hip joints): mask 5's billow points away from it
+		UInt32 lastFrame = 0;
+	};
+	inline std::unordered_map<const void*, MeshWeights> Weights;	// per NiGeometryData
+	inline MeshWeights* ActiveWeights = nullptr;	// the mesh ForGeometry chose mask 5 for (until AfterDraw)
+	inline float ActiveC248[4] = {};				// the c248 sent with it (a partition without its buffer draws with mask 4: see DrawPartition)
+	inline bool DrawHookOn = false;					// Hooks.cpp patched the game's two partition draw calls
+	inline UInt32 WeightsMadeNow = 0, WeightsLogged = 0;
+	inline UInt32 StatWeighted = 0, StatFallback = 0, StatNoDecl = 0;	// partition draws with weights / with mask 4 / no declaration (per 600 frames)
+
+	inline void ReleaseBuffers(MeshWeights& m) {
+		for (PartBuf& p : m.parts) if (p.vb) { p.vb->Release(); p.vb = nullptr; }
+		m.parts.clear(); m.buffers = false;
+	}
+	// A partition's weights as a vertex buffer: [base] zeros (the draw's BaseVertexIndex), then w[vertex map[i]].
+	inline bool FillPart(IDirect3DDevice9* device, const MeshWeights& m, PartBuf& p) {
+		if (p.vb) { p.vb->Release(); p.vb = nullptr; }
+		if (!p.vertexMap || !p.vertices || p.base > 65535) return false;
+		const UINT bytes = (p.base + p.vertices) * 4;
+		void* data = nullptr;
+		if (FAILED(device->CreateVertexBuffer(bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &p.vb, NULL)) || !p.vb) { p.vb = nullptr; return false; }
+		if (FAILED(p.vb->Lock(0, 0, &data, 0)) || !data) { p.vb->Release(); p.vb = nullptr; return false; }
+		float* f = (float*)data;
+		for (UInt32 i = 0; i < p.base; i++) f[i] = 0.0f;
+		for (UInt32 i = 0; i < p.vertices; i++) { const UInt16 v = p.vertexMap[i]; f[p.base + i] = v < m.w.size() ? m.w[v] : 0.0f; }
+		p.vb->Unlock();
+		return true;
+	}
+	// The mesh's triangles: the geometry data's own list (NiTriShapeData) or strips (NiTriStripsData) when the game kept them, else the
+	// partitions' (their own indices, through each vertex map).
+	inline const char* TrianglesOf(NiGeometry* geometry, const NiSkinPartition* sp, std::vector<UInt16>& tris) {
+		tris.clear();
+		const NiGeometryData* gd = geometry->geomData;
+		const UInt16 nv = gd->m_usVertices;
+		auto addStrip = [&](const UInt16* idx, UInt32 len, const UInt16* map, UInt32 mapCount) {
+			for (UInt32 k = 0; k + 2 < len; k++) {
+				UInt16 a = idx[k], b = idx[k + 1], c = idx[k + 2];
+				if (map) { if (a >= mapCount || b >= mapCount || c >= mapCount) return; a = map[a]; b = map[b]; c = map[c]; }
+				if (a == b || b == c || a == c || a >= nv || b >= nv || c >= nv) continue;
+				if (k & 1) std::swap(b, c);
+				tris.push_back(a); tris.push_back(b); tris.push_back(c);
+			}
+		};
+		const UInt32 vt = *(const UInt32*)gd;
+		if (vt == 0x109DAC4) {	// NiTriShapeData: m_usTriangles +0x40, m_pusTriList +0x48
+			const UInt16 count = *(const UInt16*)((const char*)gd + 0x40);
+			const UInt16* list = *(UInt16* const*)((const char*)gd + 0x48);
+			if (list && count) {
+				for (UInt32 i = 0; i < (UInt32)count * 3; i += 3)
+					if (list[i] < nv && list[i + 1] < nv && list[i + 2] < nv) { tris.push_back(list[i]); tris.push_back(list[i + 1]); tris.push_back(list[i + 2]); }
+				if (!tris.empty()) return "the mesh's triangle list";
+			}
+		}
+		else if (vt == 0x109D8AC) {	// NiTriStripsData: m_usStrips +0x44, m_pusStripLengths +0x48, m_pusStripLists +0x4C
+			const UInt16 strips = *(const UInt16*)((const char*)gd + 0x44);
+			const UInt16* lengths = *(UInt16* const*)((const char*)gd + 0x48);
+			const UInt16* lists = *(UInt16* const*)((const char*)gd + 0x4C);
+			if (strips && lengths && lists) {
+				UInt32 at = 0;
+				for (UInt16 s = 0; s < strips; s++) { addStrip(lists + at, lengths[s], nullptr, 0); at += lengths[s]; }
+				if (!tris.empty()) return "the mesh's strips";
+			}
+		}
+		if (!sp || !sp->Partitions) return nullptr;
+		for (UInt32 p = 0; p < sp->PartitionsCount; p++) {	// the partitions' own: m_pusVertexMap +0x0C, m_pusTriList +0x14, m_pusStripLengths +0x18
+			const NiSkinPartition::Partition& part = sp->Partitions[p];
+			const UInt16* map = *(UInt16* const*)((const char*)&part + 0x0C);
+			const UInt16* list = *(UInt16* const*)((const char*)&part + 0x14);
+			const UInt16* lengths = *(UInt16* const*)((const char*)&part + 0x18);
+			if (!map || !list) continue;
+			if (part.Strips && lengths) {
+				UInt32 at = 0;
+				for (UInt16 s = 0; s < part.Strips; s++) { addStrip(list + at, lengths[s], map, part.Vertices); at += lengths[s]; }
+			}
+			else
+				for (UInt32 i = 0; i < (UInt32)part.Triangles * 3; i += 3) {
+					const UInt16 a = list[i], b = list[i + 1], c = list[i + 2];
+					if (a >= part.Vertices || b >= part.Vertices || c >= part.Vertices) continue;
+					const UInt16 ma = map[a], mb = map[b], mc = map[c];
+					if (ma < nv && mb < nv && mc < nv) { tris.push_back(ma); tris.push_back(mb); tris.push_back(mc); }
+				}
+		}
+		return tris.empty() ? nullptr : "the skin partitions' triangles";
+	}
+	// The weights of a worn mesh with usable legs, made once (at most 2 new meshes a frame: a crowd coming into view spreads over a few
+	// frames, those wait with mask 4); nullptr unless every partition has its buffer.
+	inline MeshWeights* WeightsOf(IDirect3DDevice9* device, NiGeometry* geometry, const Skeleton& k) {
+		NiGeometryData* gd = geometry->geomData;
+		const NiSkinInstance* si = geometry->skinInstance;
+		const NiSkinPartition* sp = si ? si->SkinPartition : nullptr;
+		if (!gd || !si || !sp || !sp->Partitions || !sp->PartitionsCount) return nullptr;
+		MeshWeights& m = Weights[gd];
+		if (m.state != 0 && (m.vertices != gd->m_usVertices || m.skinData != si->SkinData || m.skinPartition != sp || m.partitions != sp->Partitions || m.partitionCount != sp->PartitionsCount)) {
+			ReleaseBuffers(m); m = MeshWeights();	// the data was freed and the memory reused for another mesh
+		}
+		m.lastFrame = FrameId;
+		if (m.state < 0) return nullptr;
+		if (m.state == 0) {
+			if (WeightsMadeNow >= 2) return nullptr;
+			WeightsMadeNow++;
+			m.vertices = gd->m_usVertices; m.skinData = si->SkinData; m.skinPartition = sp; m.partitions = sp->Partitions; m.partitionCount = sp->PartitionsCount;
+			m.state = -1;
+			std::vector<UInt16> tris;
+			const char* from = (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex ? TrianglesOf(geometry, sp, tris) : nullptr;
+			ClothWeights::Input in;
+			ClothWeights::Result r;
+			LARGE_INTEGER q0 = {}, q1 = {}, qf = {};
+			QueryPerformanceCounter(&q0);
+			if (from) {
+				in.pos = &gd->m_pkVertex[0].x; in.vertices = gd->m_usVertices; in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
+				for (int leg = 0; leg < 2; leg++) for (int j = 0; j < 3; j++) for (int c = 0; c < 4; c++) in.legs[leg][j][c] = k.pts[leg * 4 + j][c];
+				in.hipZ = k.hipZ; in.kneeZ = k.kneeZ; in.groundZ = k.groundZ;
+				if (ClothWeights::Compute(in, r)) { m.w = std::move(r.weight); m.state = 1; }
+			}
+			m.center[0] = 0.5f * (k.pts[0][0] + k.pts[4][0]); m.center[1] = 0.5f * (k.pts[0][1] + k.pts[4][1]);
+			if (WeightsLogged < 24 || S.LogMatches) {
+				WeightsLogged++;
+				QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+				const double ms = qf.QuadPart ? (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart : 0.0;
+				if (m.state > 0)
+					Logger::Log("Cloth wind: cloth weights of '%s': %u vertices (%u welded): body %u, cloth %u, torso %u; cuts %u (tubes %u, pads %u, cloth %u), crotch z %.1f; from %s, %u triangles; %.2f ms",
+						geometry->m_pcName ? geometry->m_pcName : "?", (unsigned)gd->m_usVertices, r.welded, r.body, r.cloth, r.torso, r.cuts, r.tubes, r.pads, r.clothCuts, r.crotch, from, (unsigned)(tris.size() / 3), ms);
+				else
+					Logger::Log("Cloth wind: cloth weights of '%s': NOT made (%s): the skeleton mask (4) stays", geometry->m_pcName ? geometry->m_pcName : "?",
+						!(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex ? "the game did not keep its vertices" : (!from ? "no triangles kept" : "the weights failed"));
+			}
+			if (m.state < 0) return nullptr;
+		}
+		if (!m.buffers) {
+			if (!device) return nullptr;
+			m.parts.assign(sp->PartitionsCount, PartBuf());
+			bool all = true;
+			for (UInt32 p = 0; p < sp->PartitionsCount; p++) {
+				const NiSkinPartition::Partition& part = sp->Partitions[p];
+				PartBuf& pb = m.parts[p];
+				pb.partition = &part;
+				pb.vertexMap = *(UInt16* const*)((const char*)&part + 0x0C);	// m_pusVertexMap
+				pb.vertices = part.Vertices;
+				pb.base = part.BuffData ? part.BuffData->BaseVertexIndex : 0;
+				if (!FillPart(device, m, pb)) all = false;
+			}
+			if (!all) {
+				if (WeightsLogged < 48 || S.LogMatches) { WeightsLogged++; Logger::Log("Cloth wind: cloth weights of '%s': partition buffers NOT made (vertex map missing?): the skeleton mask (4) stays", geometry->m_pcName ? geometry->m_pcName : "?"); }
+				ReleaseBuffers(m); m.state = -1;
+				return nullptr;
+			}
+			m.buffers = true;
+		}
+		return &m;
+	}
+	// The partition's vertex declaration + stream 1 (TEXCOORD7, one float). Cached per declaration, which is kept alive (AddRef) so its
+	// address is never another declaration's while cached. Not for declarations that already use stream 1 or TEXCOORD7.
+	struct DeclPair { IDirect3DVertexDeclaration9* orig; IDirect3DVertexDeclaration9* aug; };
+	inline std::vector<DeclPair> Decls;
+	inline IDirect3DVertexDeclaration9* Augmented(IDirect3DDevice9* device, IDirect3DVertexDeclaration9* orig) {
+		if (!orig) return nullptr;
+		for (const DeclPair& d : Decls) if (d.orig == orig) return d.aug;
+		D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 2] = {};
+		UINT n = MAXD3DDECLLENGTH + 1;
+		IDirect3DVertexDeclaration9* aug = nullptr;
+		if (SUCCEEDED(orig->GetDeclaration(el, &n)) && n >= 1 && n <= MAXD3DDECLLENGTH) {	// n counts the D3DDECL_END
+			bool free = true;
+			for (UINT i = 0; i + 1 < n; i++) if (el[i].Stream != 0 || (el[i].Usage == D3DDECLUSAGE_TEXCOORD && el[i].UsageIndex == 7)) free = false;
+			if (free) {
+				el[n - 1] = { 1, 0, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 7 };
+				el[n] = D3DDECL_END();
+				if (FAILED(device->CreateVertexDeclaration(el, &aug))) aug = nullptr;
+			}
+		}
+		orig->AddRef();
+		Decls.push_back({ orig, aug });
+		if (Decls.size() > 64) { if (Decls.front().aug) Decls.front().aug->Release(); Decls.front().orig->Release(); Decls.erase(Decls.begin()); }
+		return aug;
+	}
+	// The per-partition draw (thiscall on the renderer: buffer data, partition, unused): with the mesh's weights in stream 1 while
+	// ForGeometry chose mask 5 for it, else exactly the game's call.
+	typedef void(__thiscall* DrawPartitionFn)(void*, NiGeometryBufferData*, NiSkinPartition::Partition*, void*);
+	inline const DrawPartitionFn DrawPartitionOriginal = (DrawPartitionFn)0x00E6D310;
+	inline void DrawPartition(void* renderer, NiGeometryBufferData* buffer, NiSkinPartition::Partition* partition, void* unused) {
+		MeshWeights* m = ActiveWeights;
+		IDirect3DDevice9* device = TheRenderManager ? TheRenderManager->device : nullptr;
+		if (!m || !device || !partition) { DrawPartitionOriginal(renderer, buffer, partition, unused); return; }
+		PartBuf* pb = nullptr;
+		for (PartBuf& p : m->parts) if (p.partition == partition) { pb = &p; break; }
+		if (pb && buffer && buffer->BaseVertexIndex != pb->base) {	// the game moved the partition in its vertex buffer: follow it
+			pb->base = buffer->BaseVertexIndex;
+			if (!FillPart(device, *m, *pb)) pb = nullptr;
+		}
+		IDirect3DVertexDeclaration9* decl = nullptr;
+		IDirect3DVertexDeclaration9* aug = nullptr;
+		if (pb && pb->vb && buffer && buffer->StreamCount <= 1 && !buffer->FVF) {
+			device->GetVertexDeclaration(&decl);
+			aug = Augmented(device, decl);
+		}
+		if (!aug) {	// this partition draws with the skeleton mask (4)
+			if (decl) decl->Release();
+			if (pb) StatNoDecl++;
+			StatFallback++;
+			float c4[4] = { ActiveC248[0], 4.0f, ActiveC248[2], ActiveC248[3] };
+			device->SetVertexShaderConstantF(248, c4, 1);
+			DrawPartitionOriginal(renderer, buffer, partition, unused);
+			device->SetVertexShaderConstantF(248, ActiveC248, 1);
+			return;
+		}
+		IDirect3DVertexBuffer9* old = nullptr; UINT oldOffset = 0, oldStride = 0;
+		device->GetStreamSource(1, &old, &oldOffset, &oldStride);
+		device->SetStreamSource(1, pb->vb, 0, 4);
+		device->SetVertexDeclaration(aug);
+		DrawPartitionOriginal(renderer, buffer, partition, unused);
+		device->SetVertexDeclaration(decl);
+		device->SetStreamSource(1, old, oldOffset, oldStride);
+		if (old) old->Release();
+		decl->Release();
+		StatWeighted++;
+	}
+	inline void __fastcall DrawPartitionHook(void* renderer, void* edx, NiGeometryBufferData* buffer, NiSkinPartition::Partition* partition, void* unused) {
+		DrawPartition(renderer, buffer, partition, unused);
+	}
+
 	// Once a frame (Render.cpp, image space): the settings (live), the wind and the phases.
 	inline void AdvanceClock() {
 		TimeGlobals* g = TimeGlobals::Get();
@@ -443,6 +683,8 @@ namespace ClothWind {
 		S.TurnLag = std::clamp(TheSettingManager->GetSettingF(section, "TurnLag"), 0.0f, 0.5f);
 		S.MotionIndoors = TheSettingManager->GetSettingI(section, "MotionIndoors") != 0;
 		S.UseSkeleton = TheSettingManager->GetSettingI(section, "UseSkeleton") != 0;
+		S.UseWeights = TheSettingManager->GetSettingI(section, "UseWeights") != 0;
+		WeightsMadeNow = 0;
 		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
 		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);
 		FrameId++;
@@ -490,11 +732,19 @@ namespace ClothWind {
 			}
 			for (auto m = Motions.begin(); m != Motions.end();)	// wearers not drawn for a while (gone, or the node freed)
 				m = FrameId - m->second.frame > 600 ? Motions.erase(m) : std::next(m);
+			if (S.LogMatches || StatFallback) {
+				Logger::Log("Cloth wind: weights: %u partition draws with weights, %u with the skeleton mask instead (%u without a declaration); %u meshes known",
+					StatWeighted, StatFallback, StatNoDecl, (unsigned)Weights.size());
+			}
+			StatWeighted = StatFallback = StatNoDecl = 0;
+			for (auto w = Weights.begin(); w != Weights.end();)	// 2026-10-19 meshes not drawn for a while: their buffers go
+				if (FrameId - w->second.lastFrame > 1800) { ReleaseBuffers(w->second); w = Weights.erase(w); } else ++w;
 			Frames = ClothDraws = SkinnedDrawsNow = 0;
 		}
 	}
 
 	inline void Zero(IDirect3DDevice9* device) {
+		ActiveWeights = nullptr;	// 2026-10-19 round 5: no weights bound for draws that are no cloth
 		if (!NonZeroSent || !device) return;
 		static const float zero[4] = { 0, 0, 0, 0 };
 		device->SetVertexShaderConstantF(248, zero, 1);
@@ -576,6 +826,7 @@ namespace ClothWind {
 	// offset and the turn swing tore it apart. (Its shadow still comes from the third-person body.)
 	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false, bool firstPerson = false) {
 		if (!device) return;
+		ActiveWeights = nullptr;
 		// 2026-10-19: indoors (no wind) worn clothing still follows its wearer (MotionIndoors); everything else stays still there
 		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
 		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
@@ -656,6 +907,11 @@ namespace ClothWind {
 				limbs[48] = skeleton->hipZ; limbs[49] = 1.0f / (std::max)(skeleton->hipZ - skeleton->kneeZ, 1.0f);
 				limbs[50] = S.LimbGap; limbs[51] = 1.0f / (std::max)(S.LimbFade, 0.1f);
 				limbs[52] = skeleton->groundZ; limbs[53] = 1.0f / 6.0f;
+				// 2026-10-19 round 5: the mesh's own per-vertex weights (mask 5) when every partition can have them; c239.zw = the
+				// wearer's upright axis (bind pose), which mask 5's billow points away from
+				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton) : nullptr) {
+					mode = 5.0f; limbs[54] = mw->center[0]; limbs[55] = mw->center[1]; ActiveWeights = mw;
+				}
 				device->SetVertexShaderConstantF(226, limbs, 14);
 			}
 			else if (S.SkinMask == 1 && geometry->geomData) {
@@ -754,6 +1010,7 @@ namespace ClothWind {
 			motion[0], motion[1], motion[2], 0.0f,
 			turn[0], turn[1], turn[2], turn[3] };
 		device->SetVertexShaderConstantF(248, c, 6);
+		if (ActiveWeights) memcpy(ActiveC248, c, sizeof(ActiveC248));
 		NonZeroSent = true; GrassInC248 = false;
 		ClothDraws++;
 	}

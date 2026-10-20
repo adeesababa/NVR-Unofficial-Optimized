@@ -130,7 +130,7 @@ void RenderPass::DrawSkinnedGeometryBuffer(NiGeometry* Geo, NiGeometryBufferData
 	else
 		TheRenderManager->renderState->SetVertexDeclaration(GeoData->VertexDeclaration, false);
 
-	ThisStdCall(0xE6D310, NiDX9Renderer::GetSingleton(), GeoData, Partition, nullptr);  // DrawSkinnedGeometry
+	ClothWind::DrawPartition(NiDX9Renderer::GetSingleton(), GeoData, Partition, nullptr);  // DrawSkinnedGeometry (0xE6D310; UNOFFICIAL 2026-10-19: with worn cloth's per-vertex weights in stream 1 when ForGeometry chose them)
 }
 
 
