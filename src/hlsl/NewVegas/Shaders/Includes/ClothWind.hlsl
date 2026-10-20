@@ -122,7 +122,7 @@ float3 ClothRingAt(float u) {
 }
 static const float ClothPushMargin = 1.0f;	// units the coat is kept off the measured leg surface
 static const float ClothPushBand = 2.0f;	// on a leg's inner half: fades in over this depth
-static const float ClothPushSoft = 1.0f;	// units: how softly the push starts
+static const float ClothPushSoft = 2.0f;	// units: how softly the push starts (2026-10-20 round 9c: 1 -> 2, fewer one-row folds where a leg presses)
 // One leg segment (a, b: xyz, radius): the push across the leg in the outward direction o (cloth_walk_check.py new_coat).
 float3 ClothLegPushSegment(float3 p, float3 o, float4 a, float4 b) {
     const float3 ab = b.xyz - a.xyz;
