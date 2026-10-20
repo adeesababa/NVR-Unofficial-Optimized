@@ -1,4 +1,5 @@
 #pragma once
+#include <unordered_map>
 
 // UNOFFICIAL 2026-10-15: CREDIT Conor (mrfury97): his screen-space skin scattering, from his NVR testbed
 // (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, branch testbed, src/effects/SkinScattering.h). Used only with
@@ -19,7 +20,8 @@
 //     scene colour still matches what the skin drew, so anything drawn over the skin afterwards
 //     (hair cards, gear, decals, particles, with or without depth writes) is left alone. It runs
 //     first in the effect chain, on the scene exactly as drawn, for that comparison. It takes the highlights out before
-//     blurring and puts them back after, and divides the albedo out before blurring and
+//     blurring and puts them back after (the skin shader's own, and since 2026-10-19 the game's own highlight passes on
+//     skin, which add the same colour to the skin target as to the scene: BindForGameHighlights), and divides the albedo out before blurring and
 //     multiplies it back after (Community Shaders' pre/post scatter), so only light is diffused
 //     and the skin texture's detail stays sharp.
 // Anything this cannot handle (fading actors, reflections, MSAA edges, the effect switched off)
@@ -34,12 +36,14 @@ class SkinScatteringEffect : public EffectRecord
 public:
 	SkinScatteringEffect() : EffectRecord("SkinScattering") {};
 
-	static const int KernelSamples = 17;
+	// 2026-10-19 re-sync with Conor's testbed 00e81af5 (2026-10-16): 17 -> 21, Community Shaders' SSSS_N_SAMPLES, which
+	// CalculateKernel spreads over +-3 kernel units (17 spread over +-2).
+	static const int KernelSamples = 21;
 
 	struct SkinScatteringStruct {
 		D3DXVECTOR4		Data;                       // x width (game units per kernel unit), y depth follow, z distance tolerance, w albedo detail
 		D3DXVECTOR4		Kernel[KernelSamples];      // rgb weight, a offset (kernel units, mm of d'Eon's profile)
-		D3DXVECTOR4		Debug;                      // x DebugView
+		D3DXVECTOR4		Debug;                      // x DebugView, y 1 to turn the kernel per pixel (with TAA), z this frame's turn
 	};
 	SkinScatteringStruct	Constants;
 
@@ -75,6 +79,7 @@ public:
 	// Per frame.
 	bool		InWorldScene = false;   // set around the world scene render (RenderWorldSceneGraphHook)
 	bool		Bound = false;
+	bool		HighlightsBound = false;   // the skin target bound for one of the game's own highlight passes (BindForGameHighlights)
 	bool		ClearedThisFrame = false;
 	bool		SkinDrawn = false;
 	DWORD		SavedWriteMask1 = 0xF;
@@ -82,6 +87,7 @@ public:
 
 	void	BeginFrame();
 	void	BindForSkinDraw(NiD3DPixelShaderEx* PixelShader);
+	bool	BindForGameHighlights(NiD3DPixelShaderEx* PixelShader);
 	void	Unbind();
 
 	void	UpdateConstants();
@@ -91,6 +97,7 @@ public:
 	bool	ShouldRender();
 
 private:
+	std::unordered_map<IDirect3DPixelShader9*, std::pair<UINT, bool>> WritesColor1;   // BindForGameHighlights: per pixel shader, its bytecode size and whether it writes COLOR1
 	bool	EnsureTarget(const D3DSURFACE_DESC& SceneDesc);
 	void	ReleaseTarget();
 	void	ClearTarget(IDirect3DSurface9* SceneTarget);

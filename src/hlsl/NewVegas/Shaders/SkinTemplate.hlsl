@@ -8,6 +8,7 @@
 //     not in this build)
 //   - rain on the first-person arms is this build's HudRain.hlsl (HudDrops) instead of his HudRaindrops.hlsl
 //   - linear lighting is this build's ([Shaders.PBR.Linear]: LinColor / LinEncode)
+//   - 2026-10-19: optional details after Community Shaders' Advanced Skin (GPL-3.0), off by default (SkinLighting.hlsl)
 //
 // His notes follow. Both halves are replaced, so the interface between them is NVR's own; only the engine's
 // constants and the vertex declarations have to match vanilla's. Those were read off the vanilla
@@ -497,6 +498,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if HUD_RAIN
         skinSpecScale = lerp(skinSpecScale, max(skinSpecScale, 1.0f), hudRainGloss);
     #endif
+    // 2026-10-19 Community Shaders' skin details ([Shaders.Skin.NewSkin] Fuzz, EnergyBalance, CreaseDamping, TransmitProfile;
+    // Includes/SkinLighting.hlsl): top level, it takes derivatives of the bumped world normal.
+    setupSkinCS(N, V, normalize(N.x * IN.tangent.xyz + N.y * IN.binormal.xyz + N.z * IN.normal.xyz));
     float3 albedo = LinColor(baseColor.rgb);
 
     // --- shadows (top level: both take derivatives)

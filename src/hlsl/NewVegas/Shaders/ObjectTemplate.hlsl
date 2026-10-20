@@ -766,6 +766,13 @@ struct PS_INPUT {
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
+#if defined(ONLY_SPECULAR)
+    // UNOFFICIAL 2026-10-19 NewSkin: a copy of COLOR0. The game draws its own highlight passes on skin with these shaders;
+    // while the screen-space skin blur runs, the SkinShader hook (Hooks/Shaders.cpp) binds the blur's skin target here, so
+    // the same highlights add to its highlight share as to the scene: the blur takes them out before it blurs and puts them
+    // back after, as it does the skin shader's own (Effects/SkinScattering.fx.hlsl). Anywhere else it is discarded.
+    float4 highlightCopy : COLOR1;
+#endif
 };
 
 #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
@@ -1218,6 +1225,9 @@ PS_OUTPUT main(PS_INPUT IN) {
         OUT.color.a = baseColor.a;
     #else
         OUT.color.a = baseColor.a * AmbientColor.a;
+    #endif
+    #if defined(ONLY_SPECULAR)
+        OUT.highlightCopy = OUT.color;   // UNOFFICIAL NewSkin: alpha too, so any blend the pass uses adds alike to both targets
     #endif
 
     return OUT;

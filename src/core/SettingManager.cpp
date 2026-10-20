@@ -373,7 +373,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 65;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 66;  // 53 was an enhanced-water step, since removed
 extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -474,6 +474,12 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 		if (saved && saved->is_table() && saved->contains("ParallaxLite") && saved->at("ParallaxLite").is_boolean() &&
 			saved->at("ParallaxLite").as_boolean())
 			ParallaxLiteDistanceMigrationPending = true;
+	}
+	// 66 (2026-10-19): NewSkin's screen-space blur re-synced with Conor's version: Community Shaders' 21-sample kernel over
+	// +-3 and its width, Width 28.6 (= CS Blur Radius 1.0). The old 8 was sized for the 17-sample kernel over +-2.
+	if (version < 66) {
+		replace("Shaders.Skin.Scattering", "Width", 8.0, 28.6, false);
+		replace("Shaders.Skin.Interiors", "Width", 8.0, 28.6, false);
 	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "

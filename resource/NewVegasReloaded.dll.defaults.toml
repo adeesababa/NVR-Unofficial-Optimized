@@ -1573,10 +1573,14 @@ FillLight = 1.0                     # UNOFFICIAL: extra soft light on skin as th
 SkyReflectionScale = 1.0            # Sky reflections on skin (sheen at glancing angles). 0 disables. Exteriors only.
 RainWetness = 0.5                   # How wet and glossy skin gets in the rain. 0 disables.
 MuteGameHighlights = false          # UNOFFICIAL: true switches the game's own face highlight passes off (Conor's choice: his skin draws its own). False keeps them: lamp-lit faces then come out about as bright as with the old skin shaders. They are switched off anyway while the screen-space blur runs (it would blur them).
+Fuzz = 0.0                          # UNOFFICIAL (2026-10-19), live, indoors and out: peach fuzz, a soft velvety sheen along the edges of faces, ears and noses where both the light and your view skim the skin, after Community Shaders' Advanced Skin (its fuzz lobe: Charlie sheen, roughness 0.35, F0 0.045). 0 off; Community Shaders' default is 1. 0-2.
+EnergyBalance = false               # UNOFFICIAL (2026-10-19), live, indoors and out: after Community Shaders' Advanced Skin, the two highlight lobes get back the light rough skin loses between its micro-bumps (under 1% at skin's shine), and light that the highlight reflects no longer also enters the skin (diffuse x (1 - Fresnel)): rims lit from behind get a little darker. Off = Conor's model as before.
+CreaseDamping = false               # UNOFFICIAL (2026-10-19), live, indoors and out: after Community Shaders' Advanced Skin, highlights and sky sheen fade where the skin's surface turns quickly from one pixel to the next (eyelid and lip creases, nostrils, fine relief, faces far away), so they stop sparkling there. Off = as before.
+TransmitProfile = false             # UNOFFICIAL (2026-10-19), live, indoors and out: the light glowing through ears, nostrils and fingers (Translucency) takes Jimenez's measured skin profile (as in Community Shaders) instead of one flat red: orange at the thinnest rims, deep red further in. Off = the flat tint as before.
 
 [_Shaders.Skin.Scattering]
 ScreenSpace = true                  # With NewSkin on: screen-space subsurface scattering, light spreads under the skin across the screen (separable SSS, the ENB look). Off falls back to per-pixel diffusion. Needs the game's MSAA off: with MSAA on, D3D9 drivers (NVIDIA at least) draw nothing while its extra targets are bound, so it switches itself off and per-pixel diffusion is used.
-Width = 8.0                         # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier.
+Width = 28.6                        # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0, its default, as in Conor's latest version (was 8 on a narrower kernel).
 DepthFollow = 1.0                   # How sharply the blur stops at depth edges (nose against cheek, chin against neck).
 AlbedoDetail = 1.0                  # How much skin texture detail (freckles, pores, brows, stubble) stays sharp: 1 diffuses only the light, 0 blurs the texture with it (the waxy look).
 StrengthRed = 0.48                  # How much of each colour scatters. Red scatters most, which gives skin its warmth.
@@ -1595,7 +1599,7 @@ ShadowScatter = 1.0                 # Indoors: light bleeding red into shadow ed
 Translucency = 0.5                  # Indoors: red glow through ears, nostrils and fingers against a lamp.
 FillLight = 1.0                     # Indoors: extra soft light as the game's own skin shaders give it. 0 is Conor's physical look, 1 matches the old skin.
 ScreenSpace = true                  # Indoors: screen-space subsurface scattering.
-Width = 8.0                         # Indoors: how far light spreads under the skin on screen.
+Width = 28.6                        # Indoors: how far light spreads under the skin on screen. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0 (was 8 on a narrower kernel).
 DepthFollow = 1.0                   # Indoors: how sharply the blur stops at depth edges.
 AlbedoDetail = 1.0                  # Indoors: how much skin texture detail stays sharp (1 sharpest).
 StrengthRed = 0.48                  # Indoors: how much of each colour scatters.
