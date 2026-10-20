@@ -46,6 +46,10 @@
 //                then keeps the vertex out of those legs (ClothLegPush): pushed OUTWARD (away from the wearer's axis, the same way for a
 //                shell and its lining) across the leg, smoothly (nothing well outside, never more for a point further out: layers keep
 //                their order), on a leg's inner half only once inside it. Offline: bench\deep-roadmap\evidence\cloth3\cloth_walk_check.py.
+//                (2026-10-20 round 9b) The ring moves each vertex by its PENDULUM share (stream 1's third float: 0 at the hips rising
+//                evenly to 1 at the hem), added after the wind -- by the cloth weight (full from the knee down) the lower coat moved as
+//                one stiff block and folded at the knee; and where the outward direction runs along a leg (a calf kicked up level
+//                behind at a run) the push goes straight off the leg instead (radially: over the calf).
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -65,7 +69,7 @@ float4 ClothPelvis[3] : register(c200);	// round 9: the pelvis bone, bind pose -
 float4 ClothRing[16] : register(c203);		// round 9: the hem ring's displacements (the shader's space)
 float4 ClothWalk : register(c219);			// round 9: x 1 = the walking simulation is on for this draw, y hang (0..1)
 float4 ClothLegNow[6] : register(c220);		// round 9: the current legs: L hip, knee, ankle, R hip, knee, ankle (xyz, radius)
-static float3 ClothWalkMove = 0.0f;			// round 9: the ring's displacement at this vertex (set by the caller), moved with the wearer's motion
+static float3 ClothWalkMove = 0.0f;			// round 9: added to the wearer's motion (round 9b: unused -- the ring goes by the pendulum share, see the callers)
 
 float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
     const float t = abs(frac(c + 0.5f) * 2.0f - 1.0f);
@@ -134,8 +138,12 @@ float3 ClothLegPushSegment(float3 p, float3 o, float4 a, float4 b) {
     const float depth = R - length(pp);
     const float gin = depth > 0.0f ? smoothstep(0.0f, 1.0f, depth * (1.0f / ClothPushBand)) : 0.0f;
     const float g = gin + (1.0f - gin) * smoothstep(0.0f, 1.0f, (B + 1.0f) * 0.5f);
-    const float f = g * saturate(1.0f - max(-along, along - L) / R) * smoothstep(0.0f, 1.0f, (ol - 0.1f) * (1.0f / 0.3f));
-    return oh * (ClothPushSoft * log(1.0f + exp(min(sexit * (1.0f / ClothPushSoft), 40.0f))) * f);
+    const float ends = saturate(1.0f - max(-along, along - L) / R);
+    const float ko = smoothstep(0.0f, 1.0f, (ol - 0.1f) * (1.0f / 0.3f));
+    const float lp = length(pp);
+    // round 9b: where o runs along the leg, straight off it (radially from its axis), the same softplus of depth
+    const float mr = ClothPushSoft * log(1.0f + exp(min((R - lp) * (1.0f / ClothPushSoft), 40.0f))) * ends * (1.0f - ko);
+    return oh * (ClothPushSoft * log(1.0f + exp(min(sexit * (1.0f / ClothPushSoft), 40.0f))) * g * ends * ko) + pp / max(lp, 1e-4f) * mr;
 }
 // Out of the current legs (the largest of the four pushes: each thigh and calf).
 float3 ClothLegPush(float3 p, float3 o) {

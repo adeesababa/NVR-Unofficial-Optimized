@@ -2,7 +2,7 @@
 // offline prototype (bench\deep-roadmap\evidence\cloth3\cloth_walk_check.py with CW_WALK_CPP=<this exe>), so both can be compared.
 //   cloth_walk_test <in.cwwalk> <out.cwwalkout>
 // in:  u32 n, f32 xyz * n, f32 weight * n, u8 label * n, f32 centre[2], f32 hipZ, u32 frames, per frame: f64 dt, f64 r[9], f64 t[3], f64 legs[24]
-// out: u32 n, f32 u * n, f64 p[48], f64 a[48], f64 L[16], per frame f64 d[48]
+// out: u32 n, f32 u * n, f32 swing * n, f64 p[48], f64 a[48], f64 L[16], per frame f64 d[48]
 // Build (x86 Native Tools prompt): cl /EHsc /O2 /std:c++17 cloth_walk_test.cpp
 #include "../src/core/ClothWalk.h"
 #include <cstdio>
@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
 	fread(&frames, 4, 1, f);
 	FILE* o = nullptr;
 	if (fopen_s(&o, argv[2], "wb") || !o) return 2;
-	fwrite(&n, 4, 1, o); fwrite(ring.u.data(), 4, n, o);
+	fwrite(&n, 4, 1, o); fwrite(ring.u.data(), 4, n, o); fwrite(ring.swing.data(), 4, n, o);
 	fwrite(ring.p, 8, 48, o); fwrite(ring.a, 8, 48, o); fwrite(ring.L, 8, 16, o);
 	ClothWalk::State st; ClothWalk::Params prm;
 	for (uint32_t i = 0; i < frames; i++) {

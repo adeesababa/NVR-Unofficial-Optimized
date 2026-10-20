@@ -18,6 +18,12 @@
 //  - the displacement of each point from its spot (at most MaxSwing units) is what the shader adds, by angle and cloth weight.
 // So the knee kicks the hem forward at every step, the calf pushes it back, the hips' sway swings it, it trails, and it swings past
 // and settles after a stop.
+// 2026-10-20 round 9b (user's video: 'moves a bit too dramatically when we run and has a clear cut off point'; 'we should simulate
+// running and jumping too'): the air drag sees the speed through a soft cap (DragCap: a run trailed 16+ units, now ~8), each point may
+// swing at most MaxAngle (35) degrees off its hanging direction (the back of the coat flew out level at a run), the displacement's limit
+// is soft (MaxSwing x tanh), and each vertex gets a PENDULUM share (Ring::swing: 0 at the hips rising evenly to 1 at the hem) for the
+// ring's displacement instead of its cloth weight (full from the knee down: the lower coat moved as one stiff block, folded at the knee).
+// Checked offline on a synthetic walk, run (350 units/s) and standing jump (cloth_walk_check.py, walk-v8).
 #include <vector>
 #include <cmath>
 #include <cstdint>
@@ -36,6 +42,7 @@ namespace ClothWalk {
 		double L[kRing] = {};				// their lengths
 		bool present[kRing] = {};
 		std::vector<float> u;				// per vertex: its place around the ring (point i at u = i; 0..16)
+		std::vector<float> swing;			// per vertex: its pendulum share of the ring's displacement (0 hips .. 1 hem, at most 1.2; 0 off the cloth)
 	};
 
 	// pos: xyz per vertex (bind pose); weight / label: ClothWeights.h's (label 2 = cloth)
@@ -44,10 +51,11 @@ namespace ClothWalk {
 		r.c[0] = center[0]; r.c[1] = center[1];
 		r.u.resize(n);
 		std::vector<int> sector(n);
+		std::vector<double> ud(n);
 		for (uint32_t v = 0; v < n; v++) {
 			const double ang = std::atan2((double)pos[v * 3 + 1] - r.c[1], (double)pos[v * 3] - r.c[0]);
 			double u = std::fmod(ang / (2.0 * kPi) * kRing - 0.5, (double)kRing); if (u < 0.0) u += kRing;
-			r.u[v] = (float)u;
+			r.u[v] = (float)u; ud[v] = u;
 			double s = std::fmod(ang / (2.0 * kPi) * kRing, (double)kRing); if (s < 0.0) s += kRing;
 			sector[v] = (int)std::floor(s) % kRing;
 		}
@@ -84,12 +92,23 @@ namespace ClothWalk {
 			const double d[3] = { r.p[i][0] - r.a[i][0], r.p[i][1] - r.a[i][1], r.p[i][2] - r.a[i][2] };
 			r.L[i] = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 		}
+		r.swing.resize(n);	// round 9b: the pendulum share (cloth only: fades in over the first 0.2 of the weight)
+		for (uint32_t v = 0; v < n; v++) {
+			const double i0 = std::floor(ud[v]), f = ud[v] - i0;
+			const int a = (int)i0 % kRing, b = (a + 1) % kRing;
+			const double zr = z[a] * (1.0 - f) + z[b] * f;
+			double share = ((double)hipZ - pos[v * 3 + 2]) / (std::max)((double)hipZ - zr, 1.0);
+			share = share < 0.0 ? 0.0 : (share > 1.2 ? 1.2 : share);
+			double wf = (double)weight[v] / 0.2; wf = wf < 0.0 ? 0.0 : (wf > 1.0 ? 1.0 : wf); wf = wf * wf * (3.0 - 2.0 * wf);
+			r.swing[v] = (float)(share * wf);
+		}
 		r.ok = true;
 		return true;
 	}
 
 	struct Params {
-		double spring = 1.4, damping = 0.2, drag = 1.0, legMargin = 1.5, maxSwing = 30.0;
+		double spring = 1.4, damping = 0.2, drag = 1.0, legMargin = 1.5, maxSwing = 25.0;
+		double dragCap = 180.0, maxAngle = 35.0;	// round 9b
 		double stretch = 1.03, neighbour = 0.5;
 		int iterations = 2;
 	};
@@ -124,9 +143,13 @@ namespace ClothWalk {
 			return;
 		}
 		const double w0 = 2.0 * kPi * prm.spring, c = 2.0 * prm.damping * w0;
-		double vt[kRing][3], rest[kRing];
+		const double cmax = std::cos(prm.maxAngle * kPi / 180.0), smax = std::sin(prm.maxAngle * kPi / 180.0);
+		double vt[kRing][3], vair[kRing][3], rest[kRing];
 		for (int i = 0; i < kRing; i++) {
 			for (int k = 0; k < 3; k++) vt[i][k] = (tNow[i][k] - s.tPrev[i][k]) / dt;
+			const double vs = std::sqrt(vt[i][0] * vt[i][0] + vt[i][1] * vt[i][1] + vt[i][2] * vt[i][2]);
+			const double sat = 1.0 / std::sqrt(1.0 + (vs / prm.dragCap) * (vs / prm.dragCap));	// the speed the air sees (soft cap)
+			for (int k = 0; k < 3; k++) vair[i][k] = vt[i][k] * sat;
 			const int j = (i + 1) % kRing;
 			const double e[3] = { tNow[i][0] - tNow[j][0], tNow[i][1] - tNow[j][1], tNow[i][2] - tNow[j][2] };
 			rest[i] = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
@@ -136,11 +159,11 @@ namespace ClothWalk {
 		static const int segs[4][2] = { { 0, 1 }, { 1, 2 }, { 3, 4 }, { 4, 5 } };
 		for (int st = 0; st < n; st++) {
 			const double f = (double)(st + 1) / n;
-			double xOld[kRing][3];
+			double xOld[kRing][3], ts[kRing][3];
 			for (int i = 0; i < kRing; i++)
 				for (int k = 0; k < 3; k++) {
-					const double ts = s.tPrev[i][k] + (tNow[i][k] - s.tPrev[i][k]) * f;
-					s.v[i][k] += h * (w0 * w0 * (ts - s.x[i][k]) - c * (s.v[i][k] - (1.0 - prm.drag) * vt[i][k]));
+					ts[i][k] = s.tPrev[i][k] + (tNow[i][k] - s.tPrev[i][k]) * f;
+					s.v[i][k] += h * (w0 * w0 * (ts[i][k] - s.x[i][k]) - c * (s.v[i][k] - vt[i][k]) - c * prm.drag * vair[i][k]);
 					xOld[i][k] = s.x[i][k];
 					s.x[i][k] += s.v[i][k] * h;
 				}
@@ -161,13 +184,26 @@ namespace ClothWalk {
 					const double l = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
 					if (l > prm.stretch * r.L[i]) for (int q = 0; q < 3; q++) s.x[i][q] = A[i][q] + e[q] * (prm.stretch * r.L[i] / l);
 				}
+				for (int i = 0; i < kRing; i++) {	// round 9b: at most maxAngle off its hanging direction (from its hip point)
+					const double e[3] = { s.x[i][0] - A[i][0], s.x[i][1] - A[i][1], s.x[i][2] - A[i][2] };
+					const double rr[3] = { ts[i][0] - A[i][0], ts[i][1] - A[i][1], ts[i][2] - A[i][2] };
+					const double le = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]), lr = std::sqrt(rr[0] * rr[0] + rr[1] * rr[1] + rr[2] * rr[2]);
+					if (le < 1e-6 || lr < 1e-6) continue;
+					const double rh[3] = { rr[0] / lr, rr[1] / lr, rr[2] / lr };
+					const double ca = (e[0] * rh[0] + e[1] * rh[1] + e[2] * rh[2]) / le;
+					if (ca < cmax) {
+						const double pp[3] = { e[0] / le - ca * rh[0], e[1] / le - ca * rh[1], e[2] / le - ca * rh[2] };
+						const double pl = std::sqrt(pp[0] * pp[0] + pp[1] * pp[1] + pp[2] * pp[2]);
+						if (pl > 1e-6) for (int q = 0; q < 3; q++) s.x[i][q] = A[i][q] + le * (cmax * rh[q] + smax * pp[q] / pl);
+					}
+				}
 			}
 			for (int i = 0; i < kRing; i++) for (int k = 0; k < 3; k++) s.v[i][k] = (s.x[i][k] - xOld[i][k]) / h;
 		}
 		for (int i = 0; i < kRing; i++) {
 			for (int k = 0; k < 3; k++) { s.tPrev[i][k] = tNow[i][k]; out[i][k] = s.x[i][k] - tNow[i][k]; }
 			const double l = std::sqrt(out[i][0] * out[i][0] + out[i][1] * out[i][1] + out[i][2] * out[i][2]);
-			if (l > prm.maxSwing) for (int k = 0; k < 3; k++) out[i][k] *= prm.maxSwing / l;
+			if (l > 1e-6 && prm.maxSwing > 0.0) { const double m = prm.maxSwing * std::tanh(l / prm.maxSwing) / l; for (int k = 0; k < 3; k++) out[i][k] *= m; }	// soft limit
 		}
 	}
 }

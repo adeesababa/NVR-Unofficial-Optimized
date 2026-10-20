@@ -366,7 +366,7 @@ struct VS_INPUT {
     float4 blendIndices : BLENDINDICES;
 #endif
 #if defined(SKIN) && defined(CLOTH_WIND)
-    float2 clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring (2026-10-20)
+    float3 clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring, pendulum share (2026-10-20)
 #endif
 };
 
@@ -474,7 +474,6 @@ VS_OUTPUT main(VS_INPUT IN) {
                     clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
                     clothLegL = ClothLegBind(position.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
                     clothLegR = ClothLegBind(position.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
-                    ClothWalkMove = ClothRingAt(IN.clothWeight.y);
                 }
                 else {
                     clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
@@ -486,7 +485,10 @@ VS_OUTPUT main(VS_INPUT IN) {
                 }
             }
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
-            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) position.xyz += ClothLegPush(position.xyz, clothOut);	// round 9: out of the current legs
+            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
+                position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
+                position.xyz += ClothLegPush(position.xyz, clothOut);
+            }
         #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
@@ -683,7 +685,6 @@ VS_OUTPUT main(VS_INPUT IN) {
                     clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
                     clothLegL = ClothLegBind(position.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
                     clothLegR = ClothLegBind(position.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
-                    ClothWalkMove = ClothRingAt(IN.clothWeight.y);
                 }
                 else {
                     clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
@@ -695,7 +696,10 @@ VS_OUTPUT main(VS_INPUT IN) {
                 }
             }
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
-            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) position.xyz += ClothLegPush(position.xyz, clothOut);	// round 9: out of the current legs
+            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
+                position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
+                position.xyz += ClothLegPush(position.xyz, clothOut);
+            }
         #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif

@@ -48,7 +48,7 @@ struct VS_INPUT {
 #if CLOTH_WIND_ON
     float4 color : COLOR0;	// cloth wind mask (red)
     float3 normal : NORMAL;	// cloth wind (2026-10-17): the displacement has a part along the normal (billow, flutter): the shadow needs it too
-    float2 clothWeight : TEXCOORD7;	// cloth wind mask 5 (2026-10-19): vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring (2026-10-20)
+    float3 clothWeight : TEXCOORD7;	// cloth wind mask 5 (2026-10-19): vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring (2026-10-20)
 #endif
 };
 
@@ -117,7 +117,6 @@ VS_OUTPUT main(VS_INPUT IN) {
 			clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
 			clothLegL = ClothLegBind(r0.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
 			clothLegR = ClothLegBind(r0.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
-			ClothWalkMove = ClothRingAt(IN.clothWeight.y);
 		}
 		else [branch] if (ClothA.y > 4.5f) {	// mask 5 (2026-10-19): the same for the direction away from the wearer's upright axis
 			const float4 ow = float4(ClothOutwardBind(IN.position.xyz), 0);
@@ -148,7 +147,10 @@ VS_OUTPUT main(VS_INPUT IN) {
     }
 #if CLOTH_WIND_ON
     if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind (normal and skinned geometry)
-    if (TESR_ShadowData.x == 1.0f && ClothA.y > 4.5f && ClothWalk.x > 0.5f) r0.xyz += ClothLegPush(r0.xyz, clothOut);	// round 9: out of the current legs
+    if (TESR_ShadowData.x == 1.0f && ClothA.y > 4.5f && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
+        r0.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
+        r0.xyz += ClothLegPush(r0.xyz, clothOut);
+    }
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);

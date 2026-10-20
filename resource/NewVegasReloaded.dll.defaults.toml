@@ -941,7 +941,9 @@ WalkSpring = 1.4                     # (2026-10-20) WalkSim: how fast the hem sw
 WalkDamping = 0.2                    # (2026-10-20) WalkSim: 0.02 = swings on and on, 1 = settles without swinging past
 WalkDrag = 1.0                       # (2026-10-20) WalkSim: how much the air holds the hem back while you move (0 = none: it only lags while speeding up)
 WalkLegMargin = 1.5                  # (2026-10-20) WalkSim: how far (units) the hem is kept off your legs
-WalkMaxSwing = 30.0                  # (2026-10-20) WalkSim: the most the hem moves away from where it hangs (units)
+WalkMaxSwing = 25.0                  # (2026-10-20) WalkSim: the most the hem moves away from where it hangs (units, reached softly)
+WalkMaxAngle = 35.0                  # (2026-10-20) WalkSim: the most the hem swings out from hanging straight down (degrees; it flew out level at a run)
+WalkDragCap = 180.0                  # (2026-10-20) WalkSim: above about this speed (units/s) the air holds the hem back no further (a run trails about as much as a brisk walk)
 LogMatches = false                   # Diagnostic: writes every worn texture (cloth or not) and every matched texture to the log with its mesh numbers
 TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
 

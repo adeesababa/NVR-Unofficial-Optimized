@@ -71,7 +71,8 @@ namespace ClothWind {
 		// 2026-10-20 round 9: the walking simulation of worn coats (mask 5; see WalkOf)
 		bool  WalkSim = true;
 		float WalkHang = 1.0f;			// how fully the coat hangs from the hips instead of riding the legs (0 = rides them as made, 1 = hangs)
-		float WalkSpring = 1.4f, WalkDamping = 0.2f, WalkDrag = 1.0f, WalkLegMargin = 1.5f, WalkMaxSwing = 30.0f;
+		float WalkSpring = 1.4f, WalkDamping = 0.2f, WalkDrag = 1.0f, WalkLegMargin = 1.5f, WalkMaxSwing = 25.0f;
+		float WalkDragCap = 180.0f, WalkMaxAngle = 35.0f;	// 2026-10-20 round 9b (see ClothWalk.h)
 		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
 		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
 										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
@@ -422,22 +423,23 @@ namespace ClothWind {
 		for (PartBuf& p : m.parts) if (p.vb) { p.vb->Release(); p.vb = nullptr; }
 		m.parts.clear(); m.buffers = false;
 	}
-	// A partition's weights as a vertex buffer: [base] zeros (the draw's BaseVertexIndex), then w[vertex map[i]]. 2026-10-20 round 9: two
-	// floats a vertex -- the weight and the vertex's place around the hem ring (ClothWalk::Ring::u, 0..16).
+	// A partition's weights as a vertex buffer: [base] zeros (the draw's BaseVertexIndex), then w[vertex map[i]]. 2026-10-20 round 9: three
+	// floats a vertex -- the weight, the vertex's place around the hem ring (ClothWalk::Ring::u, 0..16) and its pendulum share (round 9b).
 	inline bool FillPart(IDirect3DDevice9* device, const MeshWeights& m, PartBuf& p) {
 		if (p.vb) { p.vb->Release(); p.vb = nullptr; }
 		if (!p.vertexMap || !p.vertices || p.base > 65535) return false;
-		const UINT bytes = (p.base + p.vertices) * 8;
+		const UINT bytes = (p.base + p.vertices) * 12;
 		void* data = nullptr;
 		if (FAILED(device->CreateVertexBuffer(bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &p.vb, NULL)) || !p.vb) { p.vb = nullptr; return false; }
 		if (FAILED(p.vb->Lock(0, 0, &data, 0)) || !data) { p.vb->Release(); p.vb = nullptr; return false; }
 		float* f = (float*)data;
-		for (UInt32 i = 0; i < p.base * 2; i++) f[i] = 0.0f;
-		const bool ring = m.ring.u.size() == m.w.size();
+		for (UInt32 i = 0; i < p.base * 3; i++) f[i] = 0.0f;
+		const bool ring = m.ring.u.size() == m.w.size() && m.ring.swing.size() == m.w.size();
 		for (UInt32 i = 0; i < p.vertices; i++) {
 			const UInt16 v = p.vertexMap[i];
-			f[(p.base + i) * 2] = v < m.w.size() ? m.w[v] : 0.0f;
-			f[(p.base + i) * 2 + 1] = ring && v < m.w.size() ? m.ring.u[v] : 0.0f;
+			f[(p.base + i) * 3] = v < m.w.size() ? m.w[v] : 0.0f;
+			f[(p.base + i) * 3 + 1] = ring && v < m.w.size() ? m.ring.u[v] : 0.0f;
+			f[(p.base + i) * 3 + 2] = ring && v < m.w.size() ? m.ring.swing[v] : 0.0f;
 		}
 		p.vb->Unlock();
 		return true;
@@ -581,7 +583,7 @@ namespace ClothWind {
 			bool free = true;
 			for (UINT i = 0; i + 1 < n; i++) if (el[i].Stream != 0 || (el[i].Usage == D3DDECLUSAGE_TEXCOORD && el[i].UsageIndex == 7)) free = false;
 			if (free) {
-				el[n - 1] = { 1, 0, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 7 };	// weight, place on the hem ring
+				el[n - 1] = { 1, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 7 };	// weight, place on the hem ring, pendulum share
 				el[n] = D3DDECL_END();
 				if (FAILED(device->CreateVertexDeclaration(el, &aug))) aug = nullptr;
 			}
@@ -668,16 +670,19 @@ namespace ClothWind {
 		for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) x.r[i][j] = w.pelvis[i][j]; x.t[i] = w.pelvis[i][3]; }
 		ClothWalk::Params prm;
 		prm.spring = S.WalkSpring; prm.damping = S.WalkDamping; prm.drag = S.WalkDrag; prm.legMargin = S.WalkLegMargin; prm.maxSwing = S.WalkMaxSwing;
+		prm.dragCap = S.WalkDragCap; prm.maxAngle = S.WalkMaxAngle;
 		if (!w.st.valid || dt > 1e-5) ClothWalk::Step(w.st, mw.ring, x, w.legs, dt, prm, w.d);	// (no play time passed: hold)
-		// hang fades out when a thigh is bent far from standing (sitting, crouching, lying)
-		double worst = 1.0;
+		// hang fades out when BOTH thighs are bent far from standing (sitting, crouching, lying). 2026-10-20 round 9b: it was the more bent
+		// thigh -- at a run the forward thigh passes 45 degrees every stride, so the coat switched between hanging and riding the legs
+		double worst = -1.0;
 		for (int leg = 0; leg < 2; leg++) {
 			const float* hb = k.pts[leg * 4]; const float* kb = k.pts[leg * 4 + 1];
 			const double rb[3] = { (double)kb[0] - hb[0], (double)kb[1] - hb[1], (double)kb[2] - hb[2] };
 			double rest[3], cur[3];
 			for (int i = 0; i < 3; i++) { rest[i] = w.pelvis[i][0] * rb[0] + w.pelvis[i][1] * rb[1] + w.pelvis[i][2] * rb[2]; cur[i] = w.legs[leg * 3 + 1][i] - w.legs[leg * 3][i]; }
 			const double lr = std::sqrt(rest[0] * rest[0] + rest[1] * rest[1] + rest[2] * rest[2]), lc = std::sqrt(cur[0] * cur[0] + cur[1] * cur[1] + cur[2] * cur[2]);
-			if (lr > 1e-6 && lc > 1e-6) worst = (std::min)(worst, (rest[0] * cur[0] + rest[1] * cur[1] + rest[2] * cur[2]) / (lr * lc));
+			const double cosLeg = lr > 1e-6 && lc > 1e-6 ? (rest[0] * cur[0] + rest[1] * cur[1] + rest[2] * cur[2]) / (lr * lc) : 1.0;
+			worst = (std::max)(worst, cosLeg);	// the LESS bent thigh decides
 		}
 		const double angle = std::acos(std::clamp(worst, -1.0, 1.0)) * 57.29578;
 		const float target = S.WalkHang * (float)(1.0 - Smooth01d((angle - 45.0) / 25.0));
@@ -775,7 +780,7 @@ namespace ClothWind {
 		}
 		IDirect3DVertexBuffer9* old = nullptr; UINT oldOffset = 0, oldStride = 0;
 		device->GetStreamSource(1, &old, &oldOffset, &oldStride);
-		device->SetStreamSource(1, pb->vb, 0, 8);
+		device->SetStreamSource(1, pb->vb, 0, 12);
 		device->SetVertexDeclaration(aug);
 		DrawPartitionOriginal(renderer, buffer, partition, unused);
 		device->SetVertexDeclaration(decl);
@@ -863,6 +868,8 @@ namespace ClothWind {
 		S.WalkDrag = std::clamp(TheSettingManager->GetSettingF(section, "WalkDrag"), 0.0f, 1.0f);
 		S.WalkLegMargin = std::clamp(TheSettingManager->GetSettingF(section, "WalkLegMargin"), 0.0f, 10.0f);
 		S.WalkMaxSwing = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxSwing"), 0.0f, 80.0f);
+		S.WalkDragCap = std::clamp(TheSettingManager->GetSettingF(section, "WalkDragCap"), 20.0f, 2000.0f);
+		S.WalkMaxAngle = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxAngle"), 5.0f, 89.0f);
 		WeightsMadeNow = 0;
 		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
 		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);
