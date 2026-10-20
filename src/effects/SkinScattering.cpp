@@ -1,7 +1,9 @@
 // UNOFFICIAL 2026-10-15: CREDIT Conor (mrfury97), from his NVR testbed (src/effects/SkinScattering.cpp); see SkinScattering.h.
 #include <algorithm>
+#include <vector>
 
 #include "SkinScattering.h"
+#include "../core/PassSums.h"
 
 static const float SkinScatterMMPerUnit = 14.2857f;   // one game unit is 1/70 m
 
@@ -326,10 +328,111 @@ void SkinScatteringEffect::BindForSkinDraw(NiD3DPixelShaderEx* PixelShader) {
 	SkinDrawn = true;
 }
 
+// True when the pixel shader writes COLOR1 (oC1), read from its bytecode: the destination of each instruction (D3D9 shader
+// token format; declarations and constant definitions carry no destination there).
+static bool PixelShaderWritesColor1(const std::vector<DWORD>& Code) {
+	const size_t Count = Code.size();
+	if (Count < 2 || (Code[0] & 0xFFFF0000) != 0xFFFF0000 || ((Code[0] >> 8) & 0xFF) < 2) return false;   // ps_2_0 or later: instruction lengths below
+	for (size_t i = 1; i < Count; ) {
+		const DWORD Token = Code[i];
+		const DWORD Opcode = Token & 0xFFFF;
+		if (Opcode == 0xFFFF) break;                                                // end
+		if (Opcode == 0xFFFE) { i += 1 + ((Token >> 16) & 0x7FFF); continue; }      // comment
+		const DWORD Length = (Token >> 24) & 0x0F;                                  // tokens that follow
+		const bool Declaration = Opcode == 0x1F || Opcode == 0x51 || Opcode == 0x30 || Opcode == 0x2F;   // dcl, def, defi, defb
+		if (!Declaration && Length >= 1 && i + 1 < Count) {
+			const DWORD Dest = Code[i + 1];
+			const DWORD Type = ((Dest >> 28) & 0x7) | ((Dest >> 8) & 0x18);
+			if (Type == D3DSPR_COLOROUT && (Dest & D3DSP_REGNUM_MASK) == 1) return true;
+		}
+		i += 1 + Length;
+	}
+	return false;
+}
+
+// Called by the SkinShader hook just before one of the game's own highlight passes on skin (Hooks/Shaders.cpp), while the
+// blur is on. These passes add highlights on top of the lit skin, and the blur used to need them muted, or it would have
+// blurred them as light (faces came out about a fifth darker with the blur: evidence\skin-resync-LOG.md run B2). NVR's
+// versions of their pixel shaders write the same colour to COLOR1 (ObjectTemplate.hlsl ONLY_SPECULAR); with the skin target
+// bound there (rgb only: its alpha is the skin's distance), the highlights add to the skin target's highlight share exactly as
+// they add to the scene. The blur takes that share out before it blurs and puts it back after, so they stay sharp where it
+// blurs and are kept as drawn wherever it leaves a pixel alone. Only the second target changes: the scene target, depth
+// test, viewport and scissor stay the game's.
+// True when the pass can draw: the copy is bound, or the blur cannot take these pixels anyway (another view than the world
+// scene's own full-screen target). False when the blur could take them but the copy cannot be made (the game's own pixel
+// shader or an older ObjectTemplate.hlsl, without COLOR1; or a pass that does not simply add): the caller mutes the pass.
+bool SkinScatteringEffect::BindForGameHighlights(NiD3DPixelShaderEx* PixelShader) {
+	if (HighlightsBound) return true;   // the partitions of one skinned geometry
+	if (Bound) return false;            // a skin draw's targets: never expected here
+	if (!Enabled || !ScreenSpace || !Supported || Effect == nullptr) return true;
+	if (!InWorldScene) return true;     // first-person arms, reflections, menus: never blurred
+	// ExactPassSums ([Shaders.PBR.Linear], off by default) draws a run of highlight passes into its own buffer, in linear light,
+	// and folds it into the scene afterwards: not an addition the skin target could follow. Muted, as before.
+	if (PassSums::Active != PassSums::None) return false;
+
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	IDirect3DSurface9* Scene = nullptr;
+	if (FAILED(Device->GetRenderTarget(0, &Scene)) || !Scene) return false;
+	D3DSURFACE_DESC SceneDesc;
+	Scene->GetDesc(&SceneDesc);
+	// Not the blur's: smaller views, and a multisampled scene (the first skin draw switches the blur off then).
+	if (SceneDesc.Width != TheRenderManager->width || SceneDesc.Height != TheRenderManager->height || SceneDesc.MultiSampleType != D3DMULTISAMPLE_NONE) {
+		Scene->Release();
+		return true;
+	}
+
+	// The pass must add its colour (destination x 1, a source factor that does not read the target): then each target
+	// grows by the same amount, whatever it held.
+	DWORD Blend = FALSE, Op = 0, Src = 0, Dst = 0;
+	Device->GetRenderState(D3DRS_ALPHABLENDENABLE, &Blend);
+	Device->GetRenderState(D3DRS_BLENDOP, &Op);
+	Device->GetRenderState(D3DRS_SRCBLEND, &Src);
+	Device->GetRenderState(D3DRS_DESTBLEND, &Dst);
+	bool Copy = Blend && Op == D3DBLENDOP_ADD && Dst == D3DBLEND_ONE && (Src == D3DBLEND_ONE || Src == D3DBLEND_SRCALPHA);
+
+	// NVR's pixel shader, writing COLOR1 (read once per shader; a recompiled shader may reuse an address, so its size is checked).
+	IDirect3DPixelShader9* Shader = PixelShader ? PixelShader->ShaderHandle : nullptr;
+	if (Copy) Copy = Shader && TheRenderManager->renderState->GetPixelShader() == Shader;
+	if (Copy) {
+		UINT Size = 0;
+		Copy = SUCCEEDED(Shader->GetFunction(NULL, &Size)) && Size >= 2 * sizeof(DWORD);
+		if (Copy) {
+			auto Known = WritesColor1.find(Shader);
+			if (Known == WritesColor1.end() || Known->second.first != Size) {
+				std::vector<DWORD> Code(Size / sizeof(DWORD));
+				const bool Writes = SUCCEEDED(Shader->GetFunction(Code.data(), &Size)) && PixelShaderWritesColor1(Code);
+				Known = WritesColor1.insert_or_assign(Shader, std::make_pair(Size, Writes)).first;
+				if (!Writes) Logger::Log("[WARNING] SkinScattering: the game's highlight pass on skin uses pixel shader %s, which does not write the skin target (COLOR1; ObjectTemplate.hlsl from this build?): those highlights are muted while the skin blur runs",
+					PixelShader->Name ? PixelShader->Name : "?");
+			}
+			Copy = Known->second.second;
+		}
+	}
+	if (!Copy || !EnsureTarget(SceneDesc)) {
+		Scene->Release();
+		return false;
+	}
+	if (!ClearedThisFrame) {   // no skin drawn yet this frame
+		ClearTarget(Scene);
+		ClearedThisFrame = true;
+	}
+	Scene->Release();
+
+	D3DVIEWPORT9 Viewport;
+	Device->GetViewport(&Viewport);
+	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &SavedWriteMask1);
+	Device->GetRenderState(D3DRS_COLORWRITEENABLE2, &SavedWriteMask2);
+	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+	Device->SetRenderTarget(1, MSAASurface ? MSAASurface : TextureSurface);
+	Device->SetViewport(&Viewport);
+	HighlightsBound = true;
+	return true;
+}
+
 // Called by the SkinShader hook after the geometry is drawn, and defensively at the end of the
 // world and first-person scenes: nothing else may write the skin target.
 void SkinScatteringEffect::Unbind() {
-	if (!Bound) return;
+	if (!Bound && !HighlightsBound) return;
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	D3DVIEWPORT9 Viewport;
 	Device->GetViewport(&Viewport);
@@ -339,6 +442,7 @@ void SkinScatteringEffect::Unbind() {
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, SavedWriteMask1);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE2, SavedWriteMask2);
 	Bound = false;
+	HighlightsBound = false;
 }
 
 bool SkinScatteringEffect::ShouldRender() {

@@ -22,7 +22,8 @@ void __fastcall SkyShader__UpdateConstants(SkyShader* apThis, void*, const NiPro
 // the batch renderer's paths (BSBatchRenderer::RenderPassImmediately_Standard and _Skinned):
 // slot 27 PrepareGeometryForRendering (NiD3DShader, 0xE812F0) runs just before the draw, slot 35
 // PostGeometry (ShadowLightShader, 0xB7C320) just after. The skin scattering effect binds its
-// second render target between the two and nowhere else (src/effects/SkinScattering.h). The
+// second render target between the two and nowhere else (src/effects/SkinScattering.h: for NVR's
+// skin pixel shaders, and for the game's highlight passes on skin while the blur runs). The
 // batch-level SetupPassShaders hook (SetShadersHook) runs once per batch, not per draw.
 VirtFuncDetour kSkinPrepareGeometryDetour;
 VirtFuncDetour kSkinPostGeometryDetour;
@@ -74,15 +75,22 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
     const bool NVRSkin = TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
     const bool SkinPixelShader = PixelShader && PixelShader->Name && !memcmp(PixelShader->Name, "SKIN", 4);
     // The pass type alone is not trusted to be current: a skin pixel shader is never muted.
-    // Port: only with MuteGameHighlights on, or while the screen-space blur will run (it would blur them as light). Kept, they
-    // give lamp-lit faces the brightness of the old skin shaders (with MSAA, which turns the blur off, faces in the light-only
-    // passes came out about a fifth darker without them).
+    // Port: only with MuteGameHighlights on. Kept, they give lamp-lit faces the brightness of the old skin shaders (with MSAA,
+    // which turns the blur off, faces in the light-only passes came out about a fifth darker without them).
+    // 2026-10-19: while the screen-space blur runs they are kept too, drawn into the blur's skin target as well as the scene
+    // (BindForGameHighlights), so the blur leaves them sharp instead of blurring them as light. They used to be muted then:
+    // with MSAA off, faces came out 22% darker with the blur than without it (evidence\skin-resync-LOG.md run B2). Muted as
+    // before only where that copy cannot be made.
     SkinScatteringEffect* Blur = TheShaderManager->Effects.SkinScattering;
     const bool BlurRuns = Blur && Blur->Enabled && Blur->Supported && Blur->ScreenSpace;
-    if (NVRSkin && (TheShaderManager->Shaders.Skin->MuteGameHighlights || BlurRuns) && !SkinPixelShader && PassType >= 0x154 && PassType <= 0x177 && !sSkinHighlightMuted) {
-        TheRenderManager->device->GetRenderState(D3DRS_COLORWRITEENABLE, &sSkinSavedWriteMask);
-        TheRenderManager->device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
-        sSkinHighlightMuted = true;
+    const bool GameHighlightPass = NVRSkin && !SkinPixelShader && PassType >= 0x154 && PassType <= 0x177;
+    if (GameHighlightPass && !sSkinHighlightMuted) {
+        const bool Keep = !TheShaderManager->Shaders.Skin->MuteGameHighlights && (!BlurRuns || Blur->BindForGameHighlights(PixelShader));
+        if (!Keep) {
+            TheRenderManager->device->GetRenderState(D3DRS_COLORWRITEENABLE, &sSkinSavedWriteMask);
+            TheRenderManager->device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+            sSkinHighlightMuted = true;
+        }
     }
 
     // The scattering targets only for NVR's own skin pixel shaders, not the highlight or fog
@@ -98,10 +106,10 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
 
     // Develop.DebugMode + the TraceShaders key: what this hook did for every skin draw that frame.
     if (TheSettingManager->SettingsMain.Develop.DebugMode && Global->OnKeyDown(TheSettingManager->SettingsMain.Develop.TraceShaders)) {
-        Logger::Log("SkinHook: pass %s (0x%X), pixel shader %s: highlights muted %d, scattering bound %d",
+        Logger::Log("SkinHook: pass %s (0x%X), pixel shader %s: highlights muted %d, copied %d, scattering bound %d",
             Pointers::Functions::GetPassDescription(PassType), (UInt32)PassType,
             (PixelShader && PixelShader->Name) ? PixelShader->Name : "(none)",
-            sSkinHighlightMuted ? 1 : 0, (Scattering && Scattering->Bound) ? 1 : 0);
+            sSkinHighlightMuted ? 1 : 0, (Scattering && Scattering->HighlightsBound) ? 1 : 0, (Scattering && Scattering->Bound) ? 1 : 0);
     }
     // Port, diagnostic ([Shaders.Skin.Debug] LogDraws, read once): the first LogDraws world-scene draws through SkinShader, in
     // the log (pass, both pass enums, pixel shader, blend, what this hook did).
@@ -117,10 +125,10 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
         const void* RenderPass = *(void**)0x011F91E0;	// BSShaderManager::pCurrentRenderPass (+0x04 its pass enum)
         const UInt16 PassEnum = RenderPass ? *(const UInt16*)((const UInt8*)RenderPass + 0x04) : 0xFFFF;
         const bool Nvr = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
-        Logger::Log("SKIN DRAW %s: eCurrentPass 0x%X (%s), render pass 0x%X (%s), PS %s (%s), blend %d %d->%d, write 0x%X: muted %d, scatter bound %d, facegen %d",
+        Logger::Log("SKIN DRAW %s: eCurrentPass 0x%X (%s), render pass 0x%X (%s), PS %s (%s), blend %d %d->%d, write 0x%X: muted %d, highlights copied %d, scatter bound %d, facegen %d",
             ((NiGeometry*)apGeometry)->m_pcName ? ((NiGeometry*)apGeometry)->m_pcName : "?", (UInt32)PassType, Pointers::Functions::GetPassDescription(PassType),
             (UInt32)PassEnum, Pointers::Functions::GetPassDescription(PassEnum), (PixelShader && PixelShader->Name) ? PixelShader->Name : "(none)",
-            Nvr ? "NVR" : "game", (int)Blend, (int)Src, (int)Dst, (UInt32)Write, sSkinHighlightMuted ? 1 : 0, Scattering->Bound ? 1 : 0, FaceGenBound ? 1 : 0);
+            Nvr ? "NVR" : "game", (int)Blend, (int)Src, (int)Dst, (UInt32)Write, sSkinHighlightMuted ? 1 : 0, Scattering->HighlightsBound ? 1 : 0, Scattering->Bound ? 1 : 0, FaceGenBound ? 1 : 0);
     }
 
     // SkinScreenSpaceScatter (Includes/SkinLighting.hlsl, c194), every skin draw: x 1 while the target is

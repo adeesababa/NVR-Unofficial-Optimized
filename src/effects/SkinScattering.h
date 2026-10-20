@@ -1,4 +1,5 @@
 #pragma once
+#include <unordered_map>
 
 // UNOFFICIAL 2026-10-15: CREDIT Conor (mrfury97): his screen-space skin scattering, from his NVR testbed
 // (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, branch testbed, src/effects/SkinScattering.h). Used only with
@@ -19,7 +20,8 @@
 //     scene colour still matches what the skin drew, so anything drawn over the skin afterwards
 //     (hair cards, gear, decals, particles, with or without depth writes) is left alone. It runs
 //     first in the effect chain, on the scene exactly as drawn, for that comparison. It takes the highlights out before
-//     blurring and puts them back after, and divides the albedo out before blurring and
+//     blurring and puts them back after (the skin shader's own, and since 2026-10-19 the game's own highlight passes on
+//     skin, which add the same colour to the skin target as to the scene: BindForGameHighlights), and divides the albedo out before blurring and
 //     multiplies it back after (Community Shaders' pre/post scatter), so only light is diffused
 //     and the skin texture's detail stays sharp.
 // Anything this cannot handle (fading actors, reflections, MSAA edges, the effect switched off)
@@ -77,6 +79,7 @@ public:
 	// Per frame.
 	bool		InWorldScene = false;   // set around the world scene render (RenderWorldSceneGraphHook)
 	bool		Bound = false;
+	bool		HighlightsBound = false;   // the skin target bound for one of the game's own highlight passes (BindForGameHighlights)
 	bool		ClearedThisFrame = false;
 	bool		SkinDrawn = false;
 	DWORD		SavedWriteMask1 = 0xF;
@@ -84,6 +87,7 @@ public:
 
 	void	BeginFrame();
 	void	BindForSkinDraw(NiD3DPixelShaderEx* PixelShader);
+	bool	BindForGameHighlights(NiD3DPixelShaderEx* PixelShader);
 	void	Unbind();
 
 	void	UpdateConstants();
@@ -93,6 +97,7 @@ public:
 	bool	ShouldRender();
 
 private:
+	std::unordered_map<IDirect3DPixelShader9*, std::pair<UINT, bool>> WritesColor1;   // BindForGameHighlights: per pixel shader, its bytecode size and whether it writes COLOR1
 	bool	EnsureTarget(const D3DSURFACE_DESC& SceneDesc);
 	void	ReleaseTarget();
 	void	ClearTarget(IDirect3DSurface9* SceneTarget);
