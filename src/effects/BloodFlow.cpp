@@ -313,6 +313,7 @@ namespace {
 		double SeenAt = 0.0;		// last seen at all
 		bool Locked = false;		// the pool's place is fixed (the body has come to rest)
 		double LockAt = 0.0;		// Clock when the pool started
+		bool EverLocked = false;	// UNOFFICIAL 2026-10-20: a pool was started once (a push moves it, it does not start over)
 		double StillSince = -1.0;
 		D3DXVECTOR3 Last = D3DXVECTOR3(0, 0, 0);	// body centre last frame
 		D3DXVECTOR3 Pool = D3DXVECTOR3(0, 0, 0);	// the pool's centre on the ground
@@ -704,7 +705,11 @@ void BloodFlowEffect::GatherPools() {
 			else body.StillSince = -1.0;
 			if (old || (body.StillSince >= 0.0 && Clock - body.StillSince > 0.5) || Clock - body.DeadAt > 3.0) {
 				body.Locked = true;
-				body.LockAt = old ? Clock - 1e5 : Clock;
+				// UNOFFICIAL 2026-10-20 (user: 'the little pools seem to reset'): a body shot or bumped in a pile is pushed off its
+				// pool again and again; the pool (and its cut parts' pools, aged from this too) used to start over from nothing
+				// each time. Now it keeps the age it had: it moves with the body, already spread.
+				if (!body.EverLocked) body.LockAt = old ? Clock - 1e5 : Clock;
+				body.EverLocked = true;
 				body.Pool = D3DXVECTOR3(now.x, now.y, a.MinZ - 1.5f);
 				body.MaxRadius = maxRadius;
 				if (LoggedPools < 12) {
