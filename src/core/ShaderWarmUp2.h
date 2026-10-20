@@ -699,6 +699,16 @@ namespace ShaderWarmUp2 {
 		const DWORD quality = ms >> 8;
 		if (depth) { if (FAILED(d->CreateDepthStencilSurface(16, 16, (D3DFORMAT)format, type, quality, FALSE, &s, nullptr))) s = nullptr; }
 		else if (FAILED(d->CreateRenderTarget(16, 16, (D3DFORMAT)format, type, quality, FALSE, &s, nullptr))) s = nullptr;
+		// 2026-10-19: formats that only exist as textures (INTZ / DF24 depth, some float targets): level 0 of a 16x16 texture
+		// (no MSAA there). The surface keeps its texture alive.
+		if (!s && type == D3DMULTISAMPLE_NONE) {
+			IDirect3DTexture9* t = nullptr;
+			if (SUCCEEDED(d->CreateTexture(16, 16, 1, depth ? D3DUSAGE_DEPTHSTENCIL : D3DUSAGE_RENDERTARGET, (D3DFORMAT)format, D3DPOOL_DEFAULT, &t, nullptr)) && t) {
+				if (FAILED(t->GetSurfaceLevel(0, &s))) s = nullptr;
+				t->Release();
+			}
+		}
+		if (!s) Logger::Log("Shader warm-up 2: no %s stand-in for format %lX, MSAA %lu/%lu (its setups are skipped)", depth ? "depth" : "render-target", format, (unsigned long)type, quality);
 		Targets[key] = s;
 		return s;
 	}
@@ -734,7 +744,10 @@ namespace ShaderWarmUp2 {
 	inline bool Rebuild(IDirect3DDevice9* d, const Record& r) {
 		IUnknown* vs = ObjectOf(r.VsHash);
 		IUnknown* ps = ObjectOf(r.PsHash);
-		if ((r.VsHash && !vs) || (r.PsHash && !ps)) { WarmSkipShader++; return false; }
+		if ((r.VsHash && !vs) || (r.PsHash && !ps)) {
+			if (WarmSkipShader++ < 20) Logger::Log("Shader warm-up 2: setup %016llX (%.1f ms) skipped: %s shader %016llX not created this session", (unsigned long long)r.Id, (double)r.Ms, (r.VsHash && !vs) ? "vertex" : "pixel", (unsigned long long)((r.VsHash && !vs) ? r.VsHash : r.PsHash));
+			return false;
+		}
 		IDirect3DSurface9* rt0 = r.Rt[0] ? TargetFor(d, r.Rt[0], r.RtMs, false) : nullptr;
 		if (!rt0) { WarmSkipTarget++; return false; }
 		IDirect3DSurface9* more[3] = {};
@@ -898,11 +911,12 @@ namespace ShaderWarmUp2 {
 					interval, Frame.New, Frame.NewMs, Frame.NewMax, Frame.SlowKnown, Frame.SlowKnownMs, Frame.Draws, Frame.DrawMs, Frame.HookMs,
 					loading ? "[loading] " : LoadingSeen ? "[loadmenu] " : "", menu ? "[menu] " : "", picture ? "[picture] " : "", (now - LoadEnd) / 1000.0, shot);
 			}
-			if (TotalFrames % 600 == 0)
-				Logger::Log("WARMUP2 TOTALS %u frames out of menus | over 50 ms %u, over 100 ms %u, over 250 ms %u (loading screens left out) | in play (3 s after a load, no picture frames): over 50 ms %u, over 100 ms %u, worst %.1f ms | new setups %u (%u slow, %.0f ms in their first draws) | known-setup draws over 2 ms %u (%.0f ms) | recorder %.3f ms per frame, state read back %llu times, state blocks %llu",
-					Total.Frames, Total.Over50, Total.Over100, Total.Over250, Total.Over50Play, Total.Over100Play, Total.MaxPlay, Total.NewSetups, Total.NewSlow, Total.NewMs,
+			// 2026-10-19: also once when a test's shot list ends (shot index back to -1), so a run's analysis gets exact totals.
+			if (TotalFrames % 600 == 0 || (shot < 0 && LastShot >= 0))
+				Logger::Log("WARMUP2 TOTALS%s %u frames out of menus | over 50 ms %u, over 100 ms %u, over 250 ms %u (loading screens left out) | in play (3 s after a load, no picture frames): over 50 ms %u, over 100 ms %u, worst %.1f ms | new setups %u (%u slow, %.0f ms in their first draws) | known-setup draws over 2 ms %u (%.0f ms) | recorder %.3f ms per frame, state read back %llu times, state blocks %llu",
+					(shot < 0 && LastShot >= 0) ? " (end of shots)" : "", Total.Frames, Total.Over50, Total.Over100, Total.Over250, Total.Over50Play, Total.Over100Play, Total.MaxPlay, Total.NewSetups, Total.NewSlow, Total.NewMs,
 					Total.SlowKnown, Total.SlowKnownMs, Total.Frames ? Total.HookMs / Total.Frames : 0.0, StatRequeries, StatApplies);
-			if (TotalFrames % 120 == 0) FlushPending();
+			if (TotalFrames % 120 == 0 || (shot < 0 && LastShot >= 0)) FlushPending();	// (end of shots: the test ends the game soon after)
 		}
 		Frame = FrameCounters();
 		LastTick = now; LastShot = shot; LoadingSeen = false;
