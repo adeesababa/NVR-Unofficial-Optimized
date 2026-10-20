@@ -40,6 +40,7 @@ public:
 		float	SplatDrips;
 		float	Merge;
 		float	GibPools;
+		float	GibHold;
 		int		MergeCount;
 	};
 	BloodFlowSettingsStruct	Settings;

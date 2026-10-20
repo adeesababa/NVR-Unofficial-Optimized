@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PointShadowSchedule.h"
+#include "LampFixtures.h"
 
 namespace PointShadowForward {
 
@@ -249,6 +250,13 @@ namespace PointShadowForward {
 		Quality = (float)forward.Quality;
 		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;
 		Soft[1] = forward.ContactHardeningMinSoftness;
+		Soft[2] = Soft[3] = 0.0f;
+		if (forward.LampSize > 0.0f && forward.Quality > 0 && forward.Softness > 0.0f) {
+			Soft[0] = 0.0f;
+			Soft[1] = 1.0f;
+			Soft[2] = forward.LampSize * 0.70710678f;
+			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
+		}
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
@@ -279,6 +287,8 @@ namespace PointShadowForward {
 			float fade = fadeIn > 0.0f ? (float)(std::min)(1.0, (now - since) / fadeIn) : 1.0f;
 			const NiPointLight* source = lights[i]->sourceLight;
 			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
+			if (forward.InvisibleLightShadowStrength < 1.0f && source && !TheShaderManager->GameState.isExterior &&
+				LampFixtures::Invisible(source, forward.FixtureDistance)) fade *= forward.InvisibleLightShadowStrength;
 			start[SlotCount] = since;
 			Slots[SlotCount++] = { lights[i], D3DXVECTOR3(slots[i].x, slots[i].y, slots[i].z), slots[i].radius, cubes[i], i, fade };
 		}

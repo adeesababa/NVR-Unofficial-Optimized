@@ -102,7 +102,8 @@ public:
 	// expect an immediate, real refresh regardless of whether the player has
 	// moved -- gating inside here would make those silently no-op while
 	// standing still, which is the common case for using them.
-	static void					ResolveAndApply(TESObjectCELL* Cell);
+	static void					ResolveAndApply(TESObjectCELL* Cell, bool Automatic = false);
+	static void					ForgetSession();
 	static const ResolveResult&	GetLastResolveResult();
 
 	// Cheap, no file I/O -- true only when Cell's PRESET-RESOLUTION IDENTITY
@@ -256,4 +257,9 @@ private:
 	// "since step 1 began" reference point CaptureVariantDiff() compares
 	// live settings against (docs § "Variants" authoring flow).
 	static PresetData		s_baselineSnapshot;
+
+	static std::string		s_activeKey;
+	static bool				s_activeIsOwn;
+	static PresetData		s_ownSettings;
+	static bool				s_hasOwnSettings;
 };

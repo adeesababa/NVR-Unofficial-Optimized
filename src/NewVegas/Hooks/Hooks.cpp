@@ -1,5 +1,6 @@
 #include "Hooks.h"
 #include "../../core/PointShadowForward.h"
+#include "../../core/ClothWind.h"
 
 void AttachHooks() {
 
@@ -71,6 +72,16 @@ void AttachHooks() {
 	}
 
 	InstallGrassFirstHooks();
+	if (TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled")) {
+		auto isDrawPartition = [](UInt32 site) { return *(UInt8*)site == 0xE8 && site + 5 + *(SInt32*)(site + 1) == 0x00E6D310; };
+		if (isDrawPartition(0x00B992E3) && isDrawPartition(0x00B99339)) {
+			WriteRelCall(0x00B992E3, (UInt32)&ClothWind::DrawPartitionHook);
+			WriteRelCall(0x00B99339, (UInt32)&ClothWind::DrawPartitionHook);
+			ClothWind::DrawHookOn = true;
+			Logger::Log("UNOFFICIAL cloth wind: the skinned partition draws are hooked (per-vertex weights of worn cloth, [Shaders.Cloth.Main] UseWeights)");
+		}
+		else Logger::Log("UNOFFICIAL cloth wind: the calls at 00B992E3 / 00B99339 are not the game's partition draw (another plugin?); worn cloth keeps the skeleton mask");
+	}
 	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
 	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);
 	SafeWrite32(0x00E7624D, sizeof(RenderManager));

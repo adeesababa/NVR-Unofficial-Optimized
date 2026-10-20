@@ -34,6 +34,10 @@ public:
 	unsigned				LoadGeneration = 1;
 	D3DXHANDLE				TechniqueHandle(CachedHandle& cache, const char* name);
 	D3DXHANDLE				ParameterHandle(CachedHandle& cache, const char* name);
+	IDirect3DBaseTexture9*	PassTextures[16] = {};
+	void					SetPassTexture(UINT stage, IDirect3DBaseTexture9* texture) { if (stage < 16) PassTextures[stage] = texture; }
+	void					BindPassTextures();
+	void					ClearPassTextures();
 
 	ID3DXEffect* Effect;
 	const char* Name;

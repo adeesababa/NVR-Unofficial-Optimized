@@ -10,6 +10,7 @@ public:
 	static bool		IsVisible() { return Visible; }
 	static void		SetVisible(bool visible) { Visible = visible; }
 	static HWND		GetWindow() { return GameWindow; }
+	static void		TestShowMenu(const char* Section, bool ShowTests);
 
 private:
 	static bool		Initialized;

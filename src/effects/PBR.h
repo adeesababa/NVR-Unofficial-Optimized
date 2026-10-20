@@ -192,6 +192,15 @@ public:
 	};
 	FoliageSettingsStruct	FoliageSettings;
 
+	struct LinearSettingsStruct {
+		bool  Enabled = false;
+		float Gamma = 1.0f;
+		float NightGamma = 0.0f;
+		float FalloffMatch = 1.0f;
+	};
+	LinearSettingsStruct	LinearSettings;
+	void	ApplyLinearGamma();
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();

@@ -12,6 +12,8 @@
 #include "../../core/GpuTimeline.h"
 #include "../../core/PointShadowForward.h"
 #include "../../core/ShaderWarmUp.h"
+#include "../../core/ShaderWarmUp2.h"
+#include "../../core/IOWorker2.h"
 #include "../../core/ConstantFilter.h"
 #include "../../core/HiddenObjectCulling.h"
 #include "../../core/LampScissor.h"
@@ -19,8 +21,10 @@
 #include "../../core/PassSums.h"
 #include "../../core/LampsInOnePass.h"
 #include "../../core/ClothWind.h"
+#include "../../core/PlantWind.h"
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
+#include "../../core/PbrPop.h"
 #include "../../core/NewGrass.h"
 
 namespace RmaosDraw { static void Upload(); }
@@ -522,6 +526,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 		}
 	}
 	FrameSplit::PresentMs = 0.0;
+#if NVR_TEST_TOOLS
+	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);
+#else
+	ShaderWarmUp2::FrameTick(-1);
+#endif
+	IOWorker2::Tick();
 	
 	SettingsMainStruct* SettingsMain = &TheSettingManager->SettingsMain;
 
@@ -552,12 +562,18 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampScissor::BeginFrame();
 	PassSums::BeginFrame(TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums"));
 	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);
+	PlantWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);
 #if NVR_TEST_TOOLS
 	LampPassTest::BeginFrame();
 #endif
 	LampsInOnePass::BeginFrame();
+	PbrPop::LodPasses::BeginFrame();
+	PbrPop::SpecFade::BeginFrame();
+	PbrPop::ActorPasses::BeginFrame();
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();
+	PbrPop::SpecLodTest::BeginFrame();
+	PbrPop::PopLog::NewFrame();
 #endif
 	if (SkinShaders::NewSkinEnabled()) {
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->BeginFrame();
@@ -1487,7 +1503,7 @@ namespace MaterialRulesDraw {
 }
 
 namespace RmaosDraw {
-	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; };
+	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0; };
 	static std::unordered_map<std::string, Map> ByPath;
 	struct Entry { std::string Path; Map* Found; };
 	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
@@ -1497,6 +1513,8 @@ namespace RmaosDraw {
 	static std::deque<Job> ToRead, Read;
 	static bool WorkerStarted = false, Checked = false, Compiled = false;
 	static float Current[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+	static float FadeSeconds = 0.0f;
+	static double FrameNowMs = 0.0;
 	static int Loaded = 0;
 
 	static void Worker() {
@@ -1544,13 +1562,24 @@ namespace RmaosDraw {
 		return &map;
 	}
 
+#if NVR_TEST_TOOLS
+	static void ReloadTest();
+#endif
 	static void Upload() {
 		Current[0] = -1.0f;
-		for (int n = 0; n < 2; n++) {
+#if NVR_TEST_TOOLS
+		ReloadTest();
+#endif
+		const float budget = TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "UploadBudget");
+		FadeSeconds = (std::max)(TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "FadeIn"), 0.0f);
+		const double start = CpuTimer::NowMs();
+		FrameNowMs = start;
+		int uploaded = 0;
+		for (int n = 0; budget > 0.0f ? (n == 0 || CpuTimer::NowMs() - start < budget) : n < 2; n++) {
 			Job job;
 			{
 				std::lock_guard<std::mutex> hold(Lock);
-				if (Read.empty()) return;
+				if (Read.empty()) break;
 				job = std::move(Read.front());
 				Read.pop_front();
 			}
@@ -1558,10 +1587,46 @@ namespace RmaosDraw {
 			if (!job.Bytes.empty())
 				D3DXCreateTextureFromFileInMemoryEx(TheRenderManager->device, job.Bytes.data(), (UINT)job.Bytes.size(), D3DX_DEFAULT_NONPOW2,
 					D3DX_DEFAULT_NONPOW2, D3DX_DEFAULT, 0, D3DFMT_UNKNOWN, D3DPOOL_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0, NULL, NULL, &texture);
-			if (texture) { job.Target->Texture = texture; Loaded++; }
+			if (texture) { job.Target->Texture = texture; job.Target->ArrivedMs = CpuTimer::NowMs(); Loaded++; }
 			else { job.Target->Missing = true; Logger::Log("[Rmaos] could not load %s", job.File.c_str()); }
+			uploaded++;
 		}
+#if NVR_TEST_TOOLS
+		static unsigned lines = 0;
+		if (TheSettingManager->GetSettingI("Main.Main.Misc", "PbrPopLog") && lines < 3000) {
+			size_t toRead = 0, toUpload = 0;
+			{ std::lock_guard<std::mutex> hold(Lock); toRead = ToRead.size(); toUpload = Read.size(); }
+			if (uploaded || toRead || toUpload) {
+				lines++;
+				Logger::Log("RMAOS STREAM: uploaded %d in %.2f ms (loaded so far %d); waiting: %u to read, %u to upload", uploaded, CpuTimer::NowMs() - start, Loaded,
+					(unsigned)toRead, (unsigned)toUpload);
+			}
+		}
+#endif
 	}
+
+#if NVR_TEST_TOOLS
+	static void ReloadTest() {
+		static int last = 0;
+		const int want = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "ReloadTest");
+		if (want == last) return;
+		last = want;
+		if (!want) return;
+		TheRenderManager->device->SetTexture(2, nullptr);
+		TheRenderManager->renderState->NoteDeviceTexture(2, nullptr);
+		int dropped = 0;
+		for (auto& entry : ByPath) {
+			Map& map = entry.second;
+			if (!map.Texture) continue;
+			map.Texture->Release();
+			map.Texture = nullptr;
+			map.Queued = false;
+			dropped++;
+		}
+		Loaded -= dropped;
+		Logger::Log("RMAOS STREAM: ReloadTest %d: %d maps dropped (they load again as they are drawn)", want, dropped);
+	}
+#endif
 
 	static void Send(const float values[4], IDirect3DTexture9* texture) {
 		if (texture) {
@@ -1608,7 +1673,9 @@ namespace RmaosDraw {
 			Wake.notify_one();
 		}
 		const bool on = map && map->Texture && pbr && pbr->RmaosSettings.On;
-		values[0] = on ? 1.0f : 0.0f;
+		float share = 1.0f;
+		if (on && FadeSeconds > 0.0f) share = std::clamp((float)((FrameNowMs - map->ArrivedMs) / (1000.0 * FadeSeconds)), 0.001f, 1.0f);
+		values[0] = on ? share : 0.0f;
 		Send(values, on ? map->Texture : nullptr);
 	}
 
@@ -2065,8 +2132,9 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting vertex shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
-	ClothWind::NoteShaders(Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
-		ClothWind::CapableName(VertexShader->Name));
+	ClothWind::NoteVertexShader(VertexShader ? VertexShader->Name : nullptr);
+	ClothWind::NoteShaders(ClothWind::PassGeometry ? ClothWind::PassGeometry : Geometry, VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup &&
+		ClothWind::CapableName(VertexShader->Name), VertexShader ? VertexShader->Name : nullptr);
 	if (PixelShader) {
 		PixelShader->SetupShader(ForcePixelConstants ? nullptr : PixelShader2);
 		ForcePixelConstants = false;
@@ -2229,21 +2297,29 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	TerrainProbe::Note((const PointShadowForward::RenderPassView*)Pass);
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
+	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)
+		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
-	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
-	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
+	PlantWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
+	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
 		HiddenObjectCulling::Abandon();
+		ClothWind::AfterDraw(TheRenderManager->device);
 		return;
 	}
+	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	ClothWind::PassGeometry = nullptr;
+	ClothWind::AfterDraw(TheRenderManager->device);
 #if NVR_TEST_TOOLS
 	LampPassTest::AfterDraw(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
 #endif
@@ -2255,17 +2331,23 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
+	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)
+		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 #endif
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
-	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
-	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
+	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
+	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
+	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
+	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	ClothWind::PassGeometry = nullptr;
+	ClothWind::AfterDraw(TheRenderManager->device);
 	HiddenObjectCulling::After();
 	PointShadowForward::NoteDraw((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
 }
@@ -2459,7 +2541,9 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	ShaderSplit::BeginContext(ShaderSplit::FirstPerson);
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	if (pbr) pbr->BeginFirstPerson(TheRenderManager->device);
+	PbrPop::ActorPasses::FirstPersonNow = 1;
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	PbrPop::ActorPasses::FirstPersonNow = 0;
 	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::EndContext();
@@ -2658,10 +2742,14 @@ static void RenderMainMenuMovie() {
 CallDetour kRenderInterfaceDetour;
 void __fastcall RenderInterfaceHook(void* apThis, void*, void* apCuller, bool abPipboyVisible) {
 	ShaderWarmUp::OnInterfaceFrame();
+	ShaderWarmUp2::OnInterfaceFrame();
 	RenderMainMenuMovie();
 	ImGuiManager::NewFrame();
 	ThisCall(kRenderInterfaceDetour.GetOverwrittenAddr(), apThis, apCuller, abPipboyVisible);
 	ImGuiManager::Render();
+#if NVR_TEST_TOOLS
+	SettingShots::CaptureMenu();
+#endif
 }
 
 static void SetTileShaderConstants() {

@@ -127,6 +127,35 @@ void ShadowsExteriorEffect::UpdateConstants() {
 	// with the identical value when it draws.
 	TheRenderManager->device->SetPixelShaderConstantF(129, (const float*)&Constants.FormatData, 1);
 	TheRenderManager->device->SetPixelShaderConstantF(133, (const float*)&Constants.ForwardData, 1);
+	UpdateLightColors();
+}
+
+void ShadowsExteriorEffect::UpdateLightColors() {
+	static const bool* bHDR = (const bool*)0x11F941E;
+	static const bool* bInterior = (const bool*)0x11F9427;
+	static const float* fSunlightDimmer = (const float*)0x11F9190;
+	static const float* fMinAmbient = (const float*)0x11F947C;
+
+	NiDirectionalLight* sun = Tes ? Tes->directionalLight : nullptr;
+	if (!sun) {
+		SunLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+		AmbientLight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		return;
+	}
+	const float dimmer = *bHDR ? sun->Dimmer : (std::min)(sun->Dimmer, 1.0f);
+	D3DXVECTOR3 ambient(sun->Amb.r * dimmer, sun->Amb.g * dimmer, sun->Amb.b * dimmer);
+	if (*fMinAmbient > 0.0f) {
+		const float luminance = ambient.x * 0.33f + ambient.y * 0.34f + ambient.z * 0.33f;
+		if (luminance > 0.0f) {
+			const float boost = luminance <= *fMinAmbient ? *fMinAmbient / luminance : 1.0f;
+			ambient = (ambient + D3DXVECTOR3(0.1f, 0.1f, 0.1f)) * boost;
+		}
+		else ambient = D3DXVECTOR3(*fMinAmbient, *fMinAmbient, *fMinAmbient);
+	}
+	D3DXVECTOR3 sunColor(sun->Diff.r * dimmer, sun->Diff.g * dimmer, sun->Diff.b * dimmer);
+	if (*bHDR && !*bInterior) sunColor *= *fSunlightDimmer;
+	SunLight = D3DXVECTOR4(sunColor.x, sunColor.y, sunColor.z, 1.0f);
+	AmbientLight = D3DXVECTOR4(ambient.x, ambient.y, ambient.z, 1.0f);
 }
 
 bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
@@ -486,6 +515,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.ContactHardening = TheSettingManager->GetSettingI(section, "ContactHardening") != 0;
 		forward.ContactHardeningStrength = (std::max)(0.0f, TheSettingManager->GetSettingF(section, "ContactHardeningStrength"));
 		forward.ContactHardeningMinSoftness = std::clamp(TheSettingManager->GetSettingF(section, "ContactHardeningMinSoftness"), 0.0f, 1.0f);
+		forward.InvisibleLightShadowStrength = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightShadowStrength"), 0.0f, 1.0f);
+		forward.FixtureDistance = std::clamp(TheSettingManager->GetSettingF(section, "FixtureDistance"), 0.0f, 512.0f);
+		forward.LampSize = std::clamp(TheSettingManager->GetSettingF(section, "LampSize"), 0.0f, 64.0f);
+		forward.MaxSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MaxSoftness"), 1.0f, 32.0f);
+		forward.LampGlassShadows = TheSettingManager->GetSettingI(section, "LampGlassShadows") != 0;
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
@@ -494,6 +528,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.ContactHardening.AtNight = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "AtNight") != 0;
 	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
 		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
+
+	TerrainShadows.UpdateSettings();
 
 	bool isExterior = TheShaderManager->GameState.isExterior;
 
@@ -588,9 +624,13 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	Constants.CrossFade = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	TheShaderManager->RegisterConstant("TESR_ShadowCubeMapLightPosition", &Constants.ShadowCubeMapLightPosition);
 	TheShaderManager->RegisterConstant("TESR_ShadowLightPosition", (D3DXVECTOR4*)&Constants.ShadowLightPosition);
+	TheShaderManager->RegisterConstant("TESR_ShadowSunLight", &SunLight);
+	TheShaderManager->RegisterConstant("TESR_ShadowAmbientLight", &AmbientLight);
+	TerrainShadows.RegisterConstants();
 }
 
 void ShadowsExteriorEffect::RegisterTextures() {
+	TerrainShadows.RegisterTextures();
 	ULONG ShadowMapSize = Settings.ShadowMaps.CascadeResolution;
 	ULONG ShadowCubeMapSize = Settings.Interiors.ShadowCubeMapSize;
 	ULONG ShadowAtlasSize = ShadowMapSize * 2;

@@ -28,6 +28,7 @@
 #include "BounceLight.h"
 #include "Specular.h"
 #include "SunShadows.h"
+#include "SunFar.h"
 #include "PointShadows.h"
 #include "PointShadows2.h"
 #include "ShadowsInteriors.h"

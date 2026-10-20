@@ -151,6 +151,7 @@ public:
 		PointShadowsEffect*		PointShadows;
 		PointShadows2Effect*	PointShadows2;
 		SunShadowsEffect*		SunShadows;
+		SunFarEffect*			SunFar;
 		UnderwaterEffect*		Underwater;
 		VolumetricFogEffect*	VolumetricFog;
 		WaterLensEffect*		WaterLens;

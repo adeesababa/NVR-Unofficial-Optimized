@@ -490,6 +490,7 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 	depthNormal = dot(depthNormal, viewPosition) > 0.0f ? -depthNormal : depthNormal;
 	viewNormal = TESR_AmbientOcclusionSky3.x > 0.5f ? depthNormal : viewNormal;
 	float result = 1.0f;
+	float skyVisibility = 1.0f;
 	float sunMask = TESR_AmbientOcclusionSky4.z > 0.5f ? lerp(TESR_ShadowFade.x, 1.0f, tex2Dlod(NVR_SunMask, float4(uv, 0.0f, 0.0f)).r) : 1.0f;
 	[branch] if (depth < endFade) {
 		float3 p = mul(float4(viewPosition, 0.0f), TESR_InvViewTransform).xyz;
@@ -519,14 +520,15 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 			visibility = saturate(visibility * TESR_AmbientOcclusionSky3.y);
 			float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);
 			result = SkyFactor(visibility, n, sunMask, covered);
+			skyVisibility = visibility;
 		}
 	}
-	return float4(result, min(depth, (float)endFade), 0, 1);
+	return float4(result, min(depth, (float)endFade), skyVisibility, 1);
 }
 
 technique SkyVisibilityV2
 {
-	pass Sky { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SkyVisibilityV2PS(); }
+	pass Sky { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SkyVisibilityV2PS(); ColorWriteEnable = 15; }
 }
 
 technique PackedAO
@@ -586,7 +588,7 @@ float4 DedicatedCombine(VSOUT IN) : COLOR0
 	#if viewao
 		return float4(ao, ao, ao, 1);
 	#endif
-	float3 result = source * pow(ao, 1.0 / 2.2);
+	float3 result = source * pow(abs(ao), 1.0 / 2.2);
 	[branch] if (TESR_AmbientOcclusionSky4.w > 0.5f) {
 		float skySum = 0, skyWeights = 0;
 		[unroll] for (int sy = 0; sy < 2; ++sy) {

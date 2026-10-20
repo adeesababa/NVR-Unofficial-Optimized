@@ -134,6 +134,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 baseColor = tex2D(BaseMap, uv).rgb;
     
     baseColor = LODTexParams.w >= 1 ? baseColor : lerp(parentColor, baseColor, LODTexParams.w);
+    [branch] if (TESR_LODBlendData.w > 0.0f) baseColor = pow(abs(baseColor), TESR_LODBlendData.y) * TESR_LODBlendData.x;
     
     float3 eyeDir = normalize(IN.eyePosition.xyz - IN.lPosition.xyz);
     

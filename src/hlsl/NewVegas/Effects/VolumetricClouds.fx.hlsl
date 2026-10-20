@@ -61,6 +61,7 @@ static const float MaxDistance = TESR_CloudsMarch.y;
 static const float HazeDistance = max(TESR_CloudsMarch.w, 1.0);
 static const float2 LowTexel = TESR_CloudsLayout.xy;
 static const float Sharpness = max(TESR_CloudsMotion.w, 0.0);
+static const float Cumulus = saturate(TESR_CloudsDetail.w) * (1.0 - smoothstep(0.6, 0.9, saturate(TESR_CloudsShape.z)));
 
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
@@ -95,14 +96,23 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 	if (local <= 0.0) return 0.0;
 	float type = saturate(weather.g + TESR_CloudsWind.w);
 	float3 s = p / ShapeTile;
-	s += (tex3Dlod(TESR_NoiseVolume, float4(s * 0.5, lod)).rga - 0.5) * (0.15 * TESR_CloudsLook.z);
+	s += (tex3Dlod(TESR_NoiseVolume, float4(s * 0.5, lod)).rga - 0.5) * (0.15 * TESR_CloudsLook.z * lerp(1.0, 0.4, Cumulus));
 	float shape = tex3Dlod(TESR_CloudShape, float4(s, lod + TESR_CloudsLook.y)).r;
 	float base = saturate(Remap(shape * HeightProfile(h, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+	{
+		float top = lerp(0.45, 1.0, type);
+		float rise = saturate(h / top);
+		float threshold = lerp(1.0 - local, 1.0, 0.9 * rise);
+		float core = saturate(Remap(shape, threshold, 1.0, 0.0, 1.0));
+		core *= smoothstep(0.0, 0.03, h) * (1.0 - smoothstep(0.85, 1.0, rise));
+		core = saturate(Remap(core, 0.1, 1.0, 0.0, 1.0)) * local;
+		base = lerp(base, core, Cumulus);
+	}
 	if (base <= 0.0) return 0.0;
 	if (!cheap) {
 		float3 q = (p + float3(0.0, 0.0, TESR_CloudsWind.z)) / DetailTile;
 		float4 warp = tex3Dlod(TESR_NoiseVolume, float4(q * 0.125, lod));
-		q += (warp.rga - 0.5) * TESR_CloudsLook.z;
+		q += (warp.rga - 0.5) * TESR_CloudsLook.z * lerp(1.0, 0.5, Cumulus);
 		float detail = lerp(tex3Dlod(TESR_CloudDetail, float4(q, lod)).r, warp.g, TESR_CloudsLook.w);
 		[branch] if (TESR_CloudsDetail.x > 0.0) {
 			float3 f = (p + float3(0.0, 0.0, 1.7 * TESR_CloudsWind.z)) / max(TESR_CloudsDetail.y, 1.0) + (warp.gar - 0.5) * TESR_CloudsLook.z;
@@ -110,9 +120,12 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 			detail = lerp(detail, detail * 0.65 + fine * 0.35, TESR_CloudsDetail.x);
 		}
 		float wisps = lerp(detail, 1.0 - detail, saturate(h * 6.0));
-		base = saturate(Remap(base, wisps * Erosion, 1.0, 0.0, 1.0));
+		float erosion = Erosion;
+		wisps = lerp(wisps, 1.0 - detail, Cumulus);
+		erosion *= lerp(1.0, lerp(0.35, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+		base = saturate(Remap(base, wisps * erosion, 1.0, 0.0, 1.0));
 	}
-	base = saturate(base * max(TESR_CloudsLook.x, 1.0));
+	base = saturate(base * max(TESR_CloudsLook.x, 1.0) * (1.0 + 0.5 * Cumulus));
 	return base * Density * lerp(0.6, 1.0, weather.b);
 }
 
@@ -189,7 +202,8 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 			}
 			float powder = 1.0 - exp(-2.0 * Extinction * density * 40.0);
 			float3 ambient = lerp(ambientBottom, ambientTop, saturate(h));
-			float3 radiance = sun * sunLight * lerp(0.5, 1.0, powder) + ambient;
+			float lowLight = lerp(1.0, lerp(0.75, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+			float3 radiance = (sun * sunLight * lerp(0.5, 1.0, powder) + ambient) * lowLight;
 			float sigma = Extinction * density;
 			float stepTransmittance = exp(-sigma * dt);
 			scattered += transmittance * radiance * (1.0 - stepTransmittance);

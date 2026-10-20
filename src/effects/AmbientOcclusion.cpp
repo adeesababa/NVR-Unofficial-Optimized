@@ -77,6 +77,8 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	SkyData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "Strength"), 0.0f, 1.0f);
 	SkyData.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "Distance"), 64.0f, 4000.0f);
 	SkyVersion = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Version") == 1 ? 1 : 2;
+	SkyReflections = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Reflections") != 0;
+	SkyMinReflection = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "MinReflection"), 0.0f, 1.0f);
 	SkyData2.y = SkyData.y;
 	SkyData3.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "DebugView"), 0, 4);
 	SkyAmbientScale = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "AmbientScale"), 0.0f, 10.0f);
@@ -94,12 +96,23 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	D3DXHANDLE technique = TechniqueHandle(techSky, "SkyVisibilityV2");
 	static bool createTried[2] = { false, false };
 	const int which = lastLowRes ? 1 : 0;
+	static D3DFORMAT createdFormat[2] = { D3DFMT_UNKNOWN, D3DFMT_UNKNOWN };
+	const D3DFORMAT wanted = SkyReflections ? D3DFMT_A16B16G16R16F : D3DFMT_G16R16F;
+	if (createTried[which] && createdFormat[which] != wanted) {
+		IDirect3DTexture9*& texture = lastLowRes ? skyTextureLow : skyTexture;
+		IDirect3DSurface9*& surface = lastLowRes ? skySurfaceLow : skySurface;
+		if (surface) { surface->Release(); surface = nullptr; }
+		if (texture) { texture->Release(); texture = nullptr; }
+		skyReady = false;
+		createTried[which] = false;
+	}
 	if (technique && orthoMap && !createTried[which]) {
 		createTried[which] = true;
+		createdFormat[which] = wanted;
 		if (lastLowRes)
-			TheTextureManager->InitTexture("NVR_SkyVisBufferLow", &skyTextureLow, &skySurfaceLow, MaxQuality::Reduced(TheRenderManager->width, 4), MaxQuality::Reduced(TheRenderManager->height, 4), D3DFMT_G16R16F);
+			TheTextureManager->InitTexture("NVR_SkyVisBufferLow", &skyTextureLow, &skySurfaceLow, MaxQuality::Reduced(TheRenderManager->width, 4), MaxQuality::Reduced(TheRenderManager->height, 4), wanted);
 		else
-			TheTextureManager->InitTexture("NVR_SkyVisBuffer", &skyTexture, &skySurface, MaxQuality::Reduced(TheRenderManager->width, 2), MaxQuality::Reduced(TheRenderManager->height, 2), D3DFMT_G16R16F);
+			TheTextureManager->InitTexture("NVR_SkyVisBuffer", &skyTexture, &skySurface, MaxQuality::Reduced(TheRenderManager->width, 2), MaxQuality::Reduced(TheRenderManager->height, 2), wanted);
 	}
 	IDirect3DSurface9* target = lastLowRes ? skySurfaceLow : skySurface;
 	D3DSURFACE_DESC desc = {};
@@ -139,10 +152,11 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
 	skyReady = SUCCEEDED(result);
-	static bool reported = false;
-	if (skyReady && !reported) {
-		Logger::Log("UNOFFICIAL Skylighting v2 active: sky factor %ux%u G16R16F (sun mask %s), applied to the sky's share.", desc.Width, desc.Height, sunMask ? "yes" : "no");
-		reported = true;
+	static D3DFORMAT reported = D3DFMT_UNKNOWN;
+	if (skyReady && reported != desc.Format) {
+		Logger::Log("UNOFFICIAL Skylighting v2 active: sky factor %ux%u %s (sun mask %s), applied to the sky's share.", desc.Width, desc.Height,
+			desc.Format == D3DFMT_A16B16G16R16F ? "A16B16G16R16F (b: the visibility, for the sky reflections)" : "G16R16F", sunMask ? "yes" : "no");
+		reported = desc.Format;
 	}
 }
 

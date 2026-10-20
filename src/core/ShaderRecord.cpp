@@ -157,12 +157,20 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		const int smith = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
 		AppendDefine("SMITH_CORRELATED_ON", smith == 1 ? "1" : "0");
 	}
+	AppendDefine("SPEC_FADE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") ? "1" : "0");
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
 
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
+	{
+		AppendDefine("TERRAIN_VARIATION", TheSettingManager->GetSettingI("Shaders.Terrain.Variation", "Enabled") ? "1" : "0");
+		static char layerDefine[2] = { '3', 0 };
+		layerDefine[0] = (char)('0' + std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Variation", "Layers"), 1, 7));
+		AppendDefine("TERRAIN_VARIATION_LAYERS", layerDefine);
+	}
 
 	AppendDefine("HAND_BLOOD", TheSettingManager->GetSettingI("Shaders.HandBlood.Status", "Enabled") ? "1" : "0");
 	AppendDefine("CLOTH_WIND_ON", TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") ? "1" : "0");
+	AppendDefine("PLANT_WIND_ON", TheSettingManager->GetSettingI("Shaders.Plants.Wind", "Enabled") ? "1" : "0");
 
 	AppendDefine("SUN_CROSSFADE", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.SunSmoothing", "CrossFade") &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
@@ -503,6 +511,17 @@ void ShaderTextureValue::GetSamplerStateString(ID3DXBuffer* ShaderSource, UINT32
 
 	size_t StartStatePos = SamplerLine.find("{");
 	size_t EndStatePos = SamplerLine.rfind("}");
+	if (StartStatePos != std::string::npos && EndStatePos == std::string::npos) {
+		const size_t blockStart = SamplerPos + StartStatePos;
+		const size_t blockEnd = Source.find("}", blockStart + 1);
+		const size_t nextDeclaration = Source.find("register", blockStart + 1);
+		if (blockEnd != std::string::npos && (nextDeclaration == std::string::npos || blockEnd < nextDeclaration)) {
+			std::string block = Source.substr(blockStart + 1, blockEnd - blockStart - 1);
+			for (char& c : block) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+			SamplerString = block;
+			return;
+		}
+	}
 	if (EndStatePos == std::string::npos || StartStatePos == std::string::npos) {
 		Logger::Log("[ERROR] during binding of %s : Samplerstate description not found", Name);
 		return;

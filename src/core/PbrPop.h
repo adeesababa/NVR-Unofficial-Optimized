@@ -1,0 +1,283 @@
+#pragma once
+#include <algorithm>
+#include <string>
+#include "TestTools.h"
+
+namespace PbrPop {
+
+	constexpr UInt32 kEnabledPasses = 0x011F91D8;
+
+	inline const BSShaderProperty* LitProperty(const NiGeometry* geometry) {
+		const BSShaderProperty* property = geometry ? (const BSShaderProperty*)geometry->propertyState.m_spShadeProperty : nullptr;
+		if (!property) return nullptr;
+		const UInt32 vtable = *(const UInt32*)property;
+		return vtable == 0x10AE0D0 || vtable == 0x10B9910 ? property : nullptr;
+	}
+
+	inline float GameSpecularFade(const BSShaderProperty* property) {
+		if (!property) return 1.0f;
+		typedef float(__thiscall* FadeFn)(const void*);
+		const FadeFn fade = (FadeFn)(*(const UInt32*)(*(const UInt32*)property + 0x10C));
+		const float f = fade(property);
+		return f >= 0.0f ? (f <= 1.0f ? f : 1.0f) : 0.0f;
+	}
+
+	namespace SpecFade {
+		inline bool Checked = false, Compiled = false, On = false;
+		inline float Sent = -1.0f;
+
+		inline void BeginFrame() {
+			if (!Checked) {
+				Checked = true;
+				Compiled = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") != 0;
+				Logger::Log("UNOFFICIAL SpecularFade: %s", Compiled ? "on (object highlights fade out with the game's specular distance fade)" : "off (not compiled into the shaders)");
+			}
+			On = Compiled && TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") != 0;
+			Sent = -1.0f;
+		}
+
+		inline void ForDraw(IDirect3DDevice9* device, const NiGeometry* geometry) {
+			if (!Compiled) return;
+			const float fade = On ? GameSpecularFade(LitProperty(geometry)) : 1.0f;
+			if (fade == Sent) return;
+			Sent = fade;
+			const float value[4] = { fade, 0.0f, 0.0f, 0.0f };
+			device->SetPixelShaderConstantF(211, value, 1);
+		}
+	}
+
+	namespace LodPasses {
+		constexpr UInt32 kSites[3] = { 0x00BE00BD, 0x00BE00D2, 0x00BE00EB };
+		constexpr UInt8 kOld[5] = { 0x80, 0x7C, 0x24, 0x28, 0x00 };
+		constexpr UInt8 kNew[5] = { 0xF6, 0x46, 0x20, 0x01, 0x90 };
+		constexpr UInt32 kRebuildBit = 0x20000000;
+		inline bool Applied = false, Refused = false;
+
+		inline void BeginFrame() {
+			const bool want = TheSettingManager->GetSettingI("Main.Main.Misc", "SpecularLODPasses") != 0;
+			if (want == Applied || Refused) return;
+			const UInt8* expect = Applied ? kNew : kOld;
+			for (UInt32 site : kSites)
+				if (memcmp((const void*)site, expect, 5)) {
+					Logger::Log("UNOFFICIAL SpecularLODPasses: the game's code at %08X is not as expected (another plugin?); not changed", site);
+					Refused = true;
+					return;
+				}
+			for (UInt32 site : kSites) SafeWriteBuf(site, want ? kNew : kOld, 5);
+			*(UInt32*)kEnabledPasses ^= kRebuildBit;
+			Applied = want;
+			Logger::Log("UNOFFICIAL SpecularLODPasses: %s (every object's passes rebuilt)", want ?
+				"on (shiny objects keep the same set of lighting passes on both sides of the highlight distance)" : "off (the game's choice)");
+		}
+	}
+
+	namespace ActorPasses {
+		inline UInt8 On = 0, FirstPersonNow = 0;
+		inline UInt32 Widened = 0;
+		constexpr UInt32 kSite = 0x00BE00E3;
+		constexpr UInt8 kOld[8] = { 0x3B, 0xC8, 0x0F, 0x8F, 0x90, 0x00, 0x00, 0x00 };
+		constexpr UInt32 kRebuildBit = 0x08000000;
+		inline bool Installed = false, Refused = false;
+	}
+}
+static UInt8* PbrPopActorsOnFlag = &PbrPop::ActorPasses::On;
+static UInt8* PbrPopFirstPersonFlag = &PbrPop::ActorPasses::FirstPersonNow;
+static UInt32* PbrPopWidenedCount = &PbrPop::ActorPasses::Widened;
+static __declspec(naked) void PbrPopActorCave() {
+	__asm {
+		cmp ecx, eax
+		jle fits
+		push edx
+		mov edx, PbrPopActorsOnFlag
+		cmp byte ptr [edx], 0
+		je multi_pop
+		mov edx, dword ptr [esp + 0x94]
+		cmp dword ptr [edx + 0xBC], 0
+		jne wide
+		mov edx, PbrPopFirstPersonFlag
+		cmp byte ptr [edx], 0
+		jne wide
+	multi_pop:
+		pop edx
+		jmp multi
+	wide:
+		mov edx, dword ptr [esp + 0x58]
+		add edx, 5
+		cmp ecx, edx
+		jg multi_pop
+		mov edx, PbrPopWidenedCount
+		inc dword ptr [edx]
+		pop edx
+	fits:
+		push 0x00BE00EB
+		ret
+	multi:
+		push 0x00BE017B
+		ret
+	}
+}
+namespace PbrPop {
+	namespace ActorPasses {
+		inline void BeginFrame() {
+			const bool want = TheSettingManager->GetSettingI("Main.Main.Misc", "ActorsInOnePass") != 0;
+			if (want == (On != 0) || Refused) return;
+			if (want && !Installed) {
+				if (memcmp((const void*)kSite, kOld, sizeof(kOld))) {
+					Logger::Log("UNOFFICIAL ActorsInOnePass: the game's code at %08X is not as expected (another plugin?); not changed", kSite);
+					Refused = true;
+					return;
+				}
+				if (*(const UInt8*)0x00BDEA3F != 0x05) {
+					Logger::Log("UNOFFICIAL ActorsInOnePass: needs MoreLampsPerObject (the game's cap of 3 would drop lamps); not changed");
+					Refused = true;
+					return;
+				}
+				WriteRelJump(kSite, (UInt32)&PbrPopActorCave);
+				SafeWrite8(kSite + 5, 0x90); SafeWrite8(kSite + 6, 0x90); SafeWrite8(kSite + 7, 0x90);
+				Installed = true;
+			}
+			On = want ? 1 : 0;
+			*(UInt32*)kEnabledPasses ^= kRebuildBit;
+			Logger::Log("UNOFFICIAL ActorsInOnePass: %s (every object's passes rebuilt)", want ?
+				"on (actors and the first-person model keep one lighting pass up to 5 lamps)" : "off (the game's choice)");
+		}
+	}
+
+#if NVR_TEST_TOOLS
+	namespace SpecLodTest {
+		inline float Current = 0.0f, OrigStart = 0.0f, OrigEnd = 0.0f;
+		inline bool Saved = false;
+		constexpr UInt32 kRebuildBit = 0x40000000;
+		inline void BeginFrame() {
+			const float want = (std::max)(TheSettingManager->GetSettingF("Main.Main.Misc", "PbrPopSpecLODEnd"), 0.0f);
+			if (want == Current) return;
+			if (!Saved) { OrigStart = *BSShaderManager::fSpecularLODStartFade; OrigEnd = *BSShaderManager::fSpecularLODEnd; Saved = true; }
+			if (want > 0.0f) {
+				*BSShaderManager::fSpecularLODEnd = want;
+				*BSShaderManager::fSpecularLODStartFade = (std::max)(want - (OrigEnd - OrigStart), 1.0f);
+			}
+			else { *BSShaderManager::fSpecularLODStartFade = OrigStart; *BSShaderManager::fSpecularLODEnd = OrigEnd; }
+			*(UInt32*)kEnabledPasses ^= kRebuildBit;
+			Current = want;
+			Logger::Log("PBR POP TEST: highlight distance %.0f-%.0f (game's own %.0f-%.0f); every object's passes rebuilt",
+				*BSShaderManager::fSpecularLODStartFade, *BSShaderManager::fSpecularLODEnd, OrigStart, OrigEnd);
+		}
+	}
+
+	namespace PopLog {
+		constexpr unsigned kSlots = 16384, kEnums = 6;
+		struct Slot {
+			const NiGeometry* key = nullptr;
+			unsigned frame = 0;
+			bool prevValid = false;
+			UInt8 nCur = 0, nPrev = 0;
+			UInt16 cur[kEnums] = {}, prev[kEnums] = {};
+			UInt8 context = 0;
+		};
+		inline Slot* Table = nullptr;
+		inline unsigned FrameId = 1, Lines = 0, Frames = 0, Enabled = 0;
+		inline unsigned long long Switches = 0;
+
+		inline bool IsTexture(UInt16 e) { return e >= 0x14A && e <= 0x150; }
+		inline bool IsOpt(UInt16 e) { return e >= 0xC3 && e <= 0xD6; }
+		inline bool HasTexture(const UInt16* e, unsigned n) { for (unsigned i = 0; i < n; i++) if (IsTexture(e[i])) return true; return false; }
+		inline bool HasHighlight(const UInt16* e, unsigned n) { for (unsigned i = 0; i < n; i++) if (LampsInOnePass::Census::IsHighlightPass(e[i])) return true; return false; }
+		inline bool SameSet(const Slot& s) {
+			if (s.nCur != s.nPrev) return false;
+			for (unsigned i = 0; i < s.nCur; i++) { bool found = false; for (unsigned j = 0; j < s.nPrev; j++) if (s.cur[i] == s.prev[j]) found = true; if (!found) return false; }
+			return true;
+		}
+		inline std::string Names(const UInt16* e, unsigned n) {
+			std::string text;
+			for (unsigned i = 0; i < n; i++) {
+				char one[96];
+				const char* name = Pointers::Functions::GetPassDescription(e[i]);
+				sprintf_s(one, "%s%03X %s", i ? ", " : "", e[i], name ? name : "?");
+				text += one;
+			}
+			return text;
+		}
+
+		inline bool ScreenOf(const NiGeometry* geometry, float& u, float& v, float& ru) {
+			const NiBound* bound = geometry ? geometry->m_kWorldBound : nullptr;
+			if (!bound) return false;
+			const D3DXMATRIX& m = TheRenderManager->ViewProjMatrix;
+			const float x = bound->Center.x, y = bound->Center.y, z = bound->Center.z;
+			const float cx = x * m._11 + y * m._21 + z * m._31 + m._41;
+			const float cy = x * m._12 + y * m._22 + z * m._32 + m._42;
+			const float cw = x * m._14 + y * m._24 + z * m._34 + m._44;
+			if (cw <= 1.0f) return false;
+			u = cx / cw * 0.5f + 0.5f;
+			v = 0.5f - cy / cw * 0.5f;
+			const float projX = TheRenderManager->InvProjMatrix._11 != 0.0f ? 1.0f / TheRenderManager->InvProjMatrix._11 : 1.0f;
+			ru = bound->Radius * projX / cw * 0.5f;
+			return true;
+		}
+
+		inline void Note(const PointShadowForward::RenderPassView* pass, UInt8 context) {
+			if (!Enabled || !pass || !pass->geometry || !LitProperty(pass->geometry)) return;
+			if (!Table) { Table = new (std::nothrow) Slot[kSlots]; if (!Table) { Enabled = 0; return; } }
+			unsigned h = (unsigned)(((uintptr_t)pass->geometry >> 4) * 2654435761u) & (kSlots - 1);
+			Slot* s = nullptr;
+			Slot* spare = nullptr;
+			for (unsigned probe = 0; probe < 64; probe++, h = (h + 1) & (kSlots - 1)) {
+				Slot& c = Table[h];
+				if (c.key == pass->geometry) { s = &c; break; }
+				if (!spare && (!c.key || c.frame + 2 < FrameId)) spare = &c;
+				if (!c.key) break;
+			}
+			if (!s) { if (!spare) return; *spare = Slot(); spare->key = pass->geometry; s = spare; }
+			if (s->frame != FrameId) {
+				s->prevValid = s->frame && s->frame + 1 == FrameId;
+				memcpy(s->prev, s->cur, sizeof(s->cur)); s->nPrev = s->nCur;
+				s->nCur = 0; s->frame = FrameId; s->context = context;
+			}
+			const UInt16 e = pass->passEnum;
+			for (unsigned i = 0; i < s->nCur; i++) if (s->cur[i] == e) return;
+			if (s->nCur < kEnums) s->cur[s->nCur++] = e;
+		}
+
+		inline void NewFrame() {
+			Enabled = (unsigned)(std::max)(TheSettingManager->GetSettingI("Main.Main.Misc", "PbrPopLog"), 0);
+			if (!Enabled || !Table) { FrameId++; return; }
+			const unsigned done = FrameId;
+			unsigned count = 0, oneToMulti = 0, multiToOne = 0, toPlain = 0, toShiny = 0, other = 0, detail = 0;
+			const int shot = SettingShots::Running ? (int)SettingShots::Index : -1;
+			const int shotFrame = SettingShots::Running ? SettingShots::Frame : -1;
+			for (unsigned i = 0; i < kSlots; i++) {
+				Slot& s = Table[i];
+				if (!s.key || s.frame != done || !s.prevValid || SameSet(s)) continue;
+				count++;
+				const bool texWas = HasTexture(s.prev, s.nPrev), texNow = HasTexture(s.cur, s.nCur);
+				const bool hlWas = HasHighlight(s.prev, s.nPrev), hlNow = HasHighlight(s.cur, s.nCur);
+				const char* kind = "other";
+				if (!texWas && texNow) { oneToMulti++; kind = "one->multi"; }
+				else if (texWas && !texNow) { multiToOne++; kind = "multi->one"; }
+				else if (hlWas && !hlNow) { toPlain++; kind = "shiny->plain"; }
+				else if (!hlWas && hlNow) { toShiny++; kind = "plain->shiny"; }
+				else other++;
+				if (detail < 24 && Lines < 6000) {
+					detail++; Lines++;
+					const BSShaderProperty* property = LitProperty(s.key);
+					float u = -1.0f, v = -1.0f, ru = 0.0f;
+					ScreenOf(s.key, u, v, ru);
+					const NiAVObject* parent = (const NiAVObject*)s.key->m_parent;
+					Logger::Log("PBR POP   %s %s '%s' (in '%s') dist %.0f fade %.2f lamps %u flags %08X screen u %.3f v %.3f r %.3f | %s -> %s",
+						s.context ? "1st" : "world", kind, s.key->m_pcName ? s.key->m_pcName : "", parent && parent->m_pcName ? parent->m_pcName : "",
+						property ? *(const float*)((const UInt8*)property + 0x34) : -1.0f, GameSpecularFade(property),
+						property ? LampsInOnePass::Census::CountLamps(property) : 0u, property ? property->ulFlags[0] : 0u, u, v, ru,
+						Names(s.prev, s.nPrev).c_str(), Names(s.cur, s.nCur).c_str());
+				}
+			}
+			Switches += count;
+			if (count && Lines < 6000) {
+				Lines++;
+				Logger::Log("PBR POP frame %u (shot %d frame %d): %u objects changed their passes: one->multi %u, multi->one %u, shiny->plain %u, plain->shiny %u, other %u",
+					done, shot, shotFrame, count, oneToMulti, multiToOne, toPlain, toShiny, other);
+			}
+			if (++Frames % 600 == 0) Logger::Log("PBR POP: %u frames, %llu pass-set switches so far; ActorsInOnePass kept %u objects in one pass so far", Frames, Switches, ActorPasses::Widened);
+			FrameId++;
+		}
+	}
+#endif
+}

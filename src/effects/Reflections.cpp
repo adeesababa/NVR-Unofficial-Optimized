@@ -2,7 +2,7 @@
 #include "../core/GpuProfiler.h"
 
 void ReflectionsEffect::UpdateSettings() {
-	ReportHistory("settings changed");
+	if (GpuTimer::Enabled) ReportHistory("settings changed");
 	const char* section = "Shaders.Reflections.Main";
 	Settings.GroundSheen = std::clamp(TheSettingManager->GetSettingF(section, "GroundSheen"), 0.0f, 2.0f);
 	Settings.RainWetness = std::clamp(TheSettingManager->GetSettingF(section, "RainWetness"), 0.0f, 2.0f);
@@ -19,7 +19,9 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.CubeMap = TheSettingManager->GetSettingI(section, "CubeMap") != 0;
 	Settings.CubeCapture = std::clamp(TheSettingManager->GetSettingF(section, "CubeCapture"), 0.02f, 1.0f);
 	Settings.CubeFade = std::clamp(TheSettingManager->GetSettingF(section, "CubeFade"), 0.0f, 0.2f);
-	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 3);
+	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 6);
+	Settings.GridFallback = TheSettingManager->GetSettingI(section, "GridFallback") != 0;
+	Settings.GridBrightness = std::clamp(TheSettingManager->GetSettingF(section, "GridBrightness"), 0.0f, 4.0f);
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -31,6 +33,9 @@ void ReflectionsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ReflectionsReproject", (D3DXVECTOR4*)&Constants.Reproject);
 	TheShaderManager->RegisterConstant("TESR_ReflectionsCube", &Constants.Cube);
 	TheShaderManager->RegisterConstant("TESR_ReflectionsCube2", &Constants.Cube2);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid", &Constants.Grid);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid2", &Constants.Grid2);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid3", &Constants.Grid3);
 }
 
 void ReflectionsEffect::RegisterTextures() {
@@ -57,26 +62,52 @@ void ReflectionsEffect::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_ReflectionsCapture", &Cubes.CaptureLastSlot);
 	TheTextureManager->RegisterTexture("TESR_ReflectionsCaptureNew", &Cubes.CaptureNewSlot);
 	TheTextureManager->RegisterTexture("TESR_ReflectionsEnv", &Cubes.EnvSlot);
+	TheTextureManager->RegisterTexture("TESR_ReflectionsGridLight", &GridLightSlot);
+	TheTextureManager->RegisterTexture("TESR_ReflectionsGridColor", &GridColorSlot);
 }
 
 void ReflectionsEffect::ReportHistory(const char* when) {
 	if (!stats.drawn && !cubeSteps) return;
 	char text[256];
 	stats.Describe(text, sizeof(text));
-	Logger::Log("UNOFFICIAL Reflections temporal history (%s, Temporal %.2f): %s; cube: %u updates, %u emptied first", when, Settings.Temporal, text, cubeSteps, cubeEmptied);
+	Logger::Log("UNOFFICIAL Reflections temporal history (%s, Temporal %.2f): %s; cube: %u updates, %u emptied first; light grid: read on %u of %u frames with GridFallback on",
+		when, Settings.Temporal, text, cubeSteps, cubeEmptied, gridUsedFrames, gridFrames);
 	stats.Reset();
 	cubeSteps = cubeEmptied = 0;
+	gridFrames = gridUsedFrames = 0;
+}
+
+void ReflectionsEffect::GridStep() {
+	const AmbientLightEffect* ambient = TheShaderManager->Effects.AmbientLight;
+	const UINT now = TheFrameRateManager->FrameNumber;
+	bool use = Settings.GridFallback && !TheShaderManager->GameState.isExterior && ambient && ambient->Enabled && ambient->Effect && ambient->gridBounce > 0.0f &&
+		ambient->gridValid && now - ambient->gridRenderedFrame <= 8 && !TheShaderManager->GameState.isCellChanged;
+	IDirect3DTexture9* light = use ? ambient->gridAccum[ambient->gridAccumIndex] : nullptr;
+	IDirect3DTexture9* colour = use && ambient->gridColorValid ? ambient->gridAccumColor[ambient->gridAccumIndex] : nullptr;
+	use = use && light;
+	if (Settings.GridFallback) {
+		gridFrames++;
+		if (use) gridUsedFrames++;
+	}
+	GridLightSlot = light;
+	GridColorSlot = colour;
+	Constants.Grid2 = D3DXVECTOR4(use ? 1.0f : 0.0f, Settings.GridBrightness, colour ? 1.0f : 0.0f, 0.0f);
+	if (!use) return;
+	const NiPoint3 camera = WorldSceneGraph->camera->m_worldTransform.pos;
+	Constants.Grid = D3DXVECTOR4((float)(ambient->gridOrigin[0] - camera.x), (float)(ambient->gridOrigin[1] - camera.y),
+		(float)(ambient->gridOrigin[2] - camera.z), ambient->gridCell);
+	Constants.Grid3 = D3DXVECTOR4(ambient->sceneLight.x, ambient->sceneLight.y, ambient->sceneLight.z, 0.0f);
 }
 
 void ReflectionsEffect::UpdateConstants() {
 	const bool exterior = TheShaderManager->GameState.isExterior;
 
-	float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
-	const WetWorldEffect* wetWorld = TheShaderManager->Effects.WetWorld;
-	if (wetWorld && wetWorld->Enabled) wet = (std::max)(wet, std::clamp(wetWorld->Constants.Data.z, 0.0f, 1.0f));
+	const float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
 
 	Constants.Data.x = exterior ? Settings.GroundSheen : Settings.InteriorFloors;
 	Constants.Data.y = exterior ? wet * Settings.RainWetness : 0.0f;
+	Constants.Data4.y = Constants.Data.y > 0.0f ? 1.0f : 0.0f;
+	if (Constants.Data4.y > 0.0f) TheShaderManager->orthoRequired = true;
 	Constants.Data.z = Settings.Roughness;
 	Constants.Data.w = Settings.WetRoughness;
 	Constants.Data2.x = Settings.MaxDistance;
@@ -124,11 +155,26 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	Constants.Data2.w = temporal ? (float)(now % 64) : 0.0f;
 
 	CubeStep(Device);
+	GridStep();
 
 	auto pass = [&](IDirect3DSurface9* target, UINT technique) {
 		Device->SetRenderTarget(0, target);
 		Render(Device, target, target, technique, false, target);
 	};
+	AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+	IDirect3DTexture9* skyVis = ao ? ao->SkyReflectionTexture() : nullptr;
+	static CachedHandle skyHandle;
+	if (D3DXHANDLE handle = ParameterHandle(skyHandle, "NVR_ReflectionsSky")) {
+		D3DXVECTOR4 sky(skyVis ? 1.0f : 0.0f, ao ? ao->SkyMinReflection : 0.1f, 0.0f, 0.0f);
+		Effect->SetVector(handle, &sky);
+	}
+	else skyVis = nullptr;
+	if (skyVis) {
+		SetPassTexture(14, skyVis);
+		const DWORD linear[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+			{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+		for (const auto& s : linear) TheRenderManager->SetSamplerState(14, (D3DSAMPLERSTATETYPE)s[0], s[1]);
+	}
 	if (temporal) {
 		pass(Textures.TraceSurface, 1);
 		pass(Textures.TempSurface, 3);
@@ -138,6 +184,7 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		pass(Textures.TempSurface, 1);
 	pass(Textures.TraceSurface, 2);
 	pass(Textures.BufferSurface, 4);
+	ClearPassTextures();
 
 	haveHistory = temporal;
 	lastRenderedFrame = now;

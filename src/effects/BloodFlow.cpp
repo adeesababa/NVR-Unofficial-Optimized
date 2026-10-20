@@ -263,6 +263,7 @@ namespace {
 		double SeenAt = 0.0;
 		bool Locked = false;
 		double LockAt = 0.0;
+		bool EverLocked = false;
 		double StillSince = -1.0;
 		D3DXVECTOR3 Last = D3DXVECTOR3(0, 0, 0);
 		D3DXVECTOR3 Pool = D3DXVECTOR3(0, 0, 0);
@@ -402,6 +403,7 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.StreamWidth = std::clamp(TheSettingManager->GetSettingF(section, "StreamWidth"), 0.1f, 4.0f);
 	Settings.Beads = std::clamp(TheSettingManager->GetSettingF(section, "Beads"), 0.0f, 3.0f);
 	Settings.GibPools = std::clamp(TheSettingManager->GetSettingF(section, "GibPools"), 0.0f, 3.0f);
+	Settings.GibHold = std::clamp(TheSettingManager->GetSettingF(section, "GibHold"), 0.0f, 5.0f);
 	Settings.Merge = std::clamp(TheSettingManager->GetSettingF(section, "Merge"), 0.0f, 2.0f);
 	Settings.MergeCount = std::clamp(TheSettingManager->GetSettingI(section, "MergeCount"), 2, 64);
 	Settings.BeadSize = std::clamp(TheSettingManager->GetSettingF(section, "BeadSize"), 1.0f, 200.0f);
@@ -486,6 +488,18 @@ void BloodFlowEffect::GatherSplats() {
 		const D3DXVECTOR3 center(s.Origin[0], s.Origin[1], s.Origin[2]);
 		const float distance = Length(center - eye);
 		if (!(distance < Settings.MaxDistance)) continue;
+		if (fabsf(s.Direction[2]) > 0.99f && Settings.GibHold > 0.0f) {
+			if (s.Age < Settings.GibHold) continue;
+			bool bounced = false;
+			for (int j = 0; j < total && !bounced; j++) {
+				const RawSplat& o = raw[j];
+				if (j == i || o.Local || o.TextureSet != s.TextureSet || !(fabsf(o.Direction[2]) > 0.99f)) continue;
+				if (!(o.Age < s.Age && s.Age - o.Age < Settings.GibHold)) continue;
+				const float dx = o.Origin[0] - s.Origin[0], dy = o.Origin[1] - s.Origin[1], dz = o.Origin[2] - s.Origin[2];
+				bounced = dx * dx + dy * dy + dz * dz < 300.0f * 300.0f;
+			}
+			if (bounced) continue;
+		}
 		candidates[kept++] = { i, distance };
 	}
 	std::sort(candidates, candidates + kept, [](const Candidate& a, const Candidate& b) { return a.Distance < b.Distance; });
@@ -537,7 +551,7 @@ void BloodFlowEffect::GatherSplats() {
 		item.Center = center;
 		item.Normal = normal;
 		item.Radius = max(std::clamp(radius, 1.0f, 60.0f), grownRadius[c]);
-		item.Age = std::clamp(s.Age, 0.0f, 1e6f);
+		item.Age = std::clamp(fabsf(s.Direction[2]) > 0.99f ? s.Age - Settings.GibHold : s.Age, 0.0f, 1e6f);
 		item.Seed = Hash01(HashFloats(s.Origin, 3));
 		float fade = 1.0f - std::clamp((candidates[c].Distance - 0.8f * Settings.MaxDistance) / (0.2f * Settings.MaxDistance), 0.0f, 1.0f);
 		if (s.Lifetime > 0.0f && s.GameAge > 0.0f) fade *= std::clamp((s.Lifetime - s.GameAge) / 2.0f, 0.0f, 1.0f);
@@ -612,7 +626,8 @@ void BloodFlowEffect::GatherPools() {
 			else body.StillSince = -1.0;
 			if (old || (body.StillSince >= 0.0 && Clock - body.StillSince > 0.5) || Clock - body.DeadAt > 3.0) {
 				body.Locked = true;
-				body.LockAt = old ? Clock - 1e5 : Clock;
+				if (!body.EverLocked) body.LockAt = old ? Clock - 1e5 : Clock;
+				body.EverLocked = true;
 				body.Pool = D3DXVECTOR3(now.x, now.y, a.MinZ - 1.5f);
 				body.MaxRadius = maxRadius;
 				if (LoggedPools < 12) {

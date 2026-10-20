@@ -26,6 +26,10 @@ float SpecularAA(float3 normal, float roughness) {
 
 float4 TESR_PBRMath : register(c223);
 
+#ifdef PBR_SPEC_FADE
+float4 NVR_SpecFade : register(c211);
+#endif
+
 #ifndef PBR_SMITH_CORRELATED
     #define PBR_SMITH_CORRELATED 0
 #endif
@@ -163,8 +167,11 @@ float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 no
     const float LdotH = shades(lightDir, halfway);
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+#ifdef PBR_SPEC_FADE
+    spec *= NVR_SpecFade.x;
+#endif
 
     return spec * NdotL * lightColor * PI;
 }
@@ -184,9 +191,15 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+    float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
+#ifdef PBR_SPEC_FADE
+    #ifndef PBR_SPEC_FADE_HIGHLIGHT_ONLY
+    diffuse += ((1 - metallicness) * albedo / PI - diffuse) * (1.0f - NVR_SpecFade.x);
+    #endif
+    spec *= NVR_SpecFade.x;
+#endif
 
     return (diffuse + spec) * NdotL * lightColor * PI;
 }
@@ -218,8 +231,11 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
     const float LdotH = shades(lightDir, halfway);
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+#ifdef PBR_SPEC_FADE
+    spec *= NVR_SpecFade.x;
+#endif
 
     return spec * NdotS * lightColor * PI;
 }
@@ -250,9 +266,15 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
 
     const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
     
-    const float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
-    
-    const float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+    float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
+
+    float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
+#ifdef PBR_SPEC_FADE
+    #ifndef PBR_SPEC_FADE_HIGHLIGHT_ONLY
+    diffuse += ((1 - metallicness) * albedo / PI - diffuse) * (1.0f - NVR_SpecFade.x);
+    #endif
+    spec *= NVR_SpecFade.x;
+#endif
 
     return (diffuse * NdotL + spec * NdotS) * lightColor * PI;
 }

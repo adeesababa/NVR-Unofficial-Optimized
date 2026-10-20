@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <cstring>
 using Microsoft::WRL::ComPtr;
 
 static void Check(HRESULT hr, const char* what) {
@@ -93,9 +94,24 @@ int main(int argc, char** argv) {
 			{ "6-sunset",             0,  8,    5,  4, 0.5f, 0.55f, 0.0f, 0.0f, 1.0f, 0.55f, 0.25f, 0.25f, 0.30f, 0.55f, 0.95f, 0.60f, 0.40f },
 			{ "8-cloudy-up",         90, 35,   10, 40, 0.8f, 0.7f, 0.0f, 0.0f, 0.85f, 0.85f, 0.80f, 0.55f, 0.60f, 0.55f, 0.65f, 0.68f, 0.62f },
 			{ "9-cloudy-horizon",    90, 10,   10, 40, 0.8f, 0.7f, 0.0f, 0.0f, 0.85f, 0.85f, 0.80f, 0.55f, 0.60f, 0.55f, 0.65f, 0.68f, 0.62f },
+			{ "m1-cumulus-across",   60,  6,   10, 40, 1.0f, 0.40f, 0.0f, 0.0f, 1.0f, 0.96f, 0.88f, 0.25f, 0.45f, 0.85f, 0.62f, 0.74f, 0.90f },
+			{ "m2-cumulus-up",       60, 22,   10, 50, 1.0f, 0.45f, 0.0f, 0.2f, 1.0f, 0.96f, 0.88f, 0.25f, 0.45f, 0.85f, 0.62f, 0.74f, 0.90f },
+			{ "m3-storm-build",     240,  8,   10, 35, 1.0f, 0.60f, 0.3f, 0.4f, 1.0f, 0.95f, 0.85f, 0.20f, 0.38f, 0.80f, 0.60f, 0.70f, 0.86f },
+			{ "m4-low-sun",          30,  5,   10, 12, 0.9f, 0.55f, 0.0f, 0.0f, 1.0f, 0.85f, 0.65f, 0.30f, 0.45f, 0.75f, 0.80f, 0.75f, 0.70f },
 			{ "7-night",             90, 20,   10, 50, 0.0f, 0.5f, 0.0f, 0.0f, 0.25f, 0.30f, 0.40f, 0.03f, 0.05f, 0.10f, 0.06f, 0.08f, 0.14f },
 		};
+		const char* only = getenv("CLOUD_VIEWS");
 		for (const View& v : views) {
+			if (only) {
+				bool wanted = false;
+				for (const char* t = only; *t; ) {
+					while (*t == ' ') t++;
+					size_t n = strcspn(t, " ");
+					if (n && strncmp(v.name, t, n) == 0) wanted = true;
+					t += n;
+				}
+				if (!wanted) continue;
+			}
 			D3DXVECTOR3 forward = Direction(v.yaw, v.pitch);
 			D3DXVECTOR3 eye(0, 0, 0), up(0, 0, 1), at = forward;
 			D3DXMATRIX view, proj, viewProj;
@@ -134,12 +150,14 @@ int main(int argc, char** argv) {
 			vec("TESR_SkyLowColor", v.horR, v.horG, v.horB, 1);
 			vec("TESR_HorizonColor", v.horR, v.horG, v.horB, 1);
 			auto env = [](const char* n, float d) { const char* e = getenv(n); return e ? (float)atof(e) : d; };
-			vec("TESR_CloudsShape", 1500, 1800, v.coverage, env("CLOUD_DENSITY", 1.0f));
-			vec("TESR_CloudsLook", env("CLOUD_SHARP", 2.0f), env("CLOUD_MIP", 0.0f), env("CLOUD_WARP", 1.0f), env("CLOUD_SMOOTH", 0.5f));
-			vec("TESR_CloudsNoise", env("CLOUD_SHAPE", 9000), env("CLOUD_DETAIL", 500), env("CLOUD_EROSION", 0.5f), 30000);
-			vec("TESR_CloudsLight", 1.4f, 0.7f, 0.6f, v.rain);
-			vec("TESR_CloudsMarch", 48, 80000, 0, 40000);
-			vec("TESR_CloudsLayout", 1.0f / LW, 1.0f / LH, 0.0f, 1.0f);
+			const bool user = getenv("CLOUD_USER") != NULL;
+			const float steps = user ? 24.0f : 48.0f, haze = user ? 15555.0f : 30000.0f, bright = user ? 3.5f : 1.0f;
+			vec("TESR_CloudsShape", user ? 5555.0f : 1500.0f, user ? 3333.0f : 1800.0f, v.coverage, env("CLOUD_DENSITY", user ? 0.5f : 1.0f));
+			vec("TESR_CloudsLook", env("CLOUD_SHARP", user ? 1.0f : 2.0f), env("CLOUD_MIP", user ? 1.0f : 0.0f), env("CLOUD_WARP", user ? 0.0f : 1.0f), env("CLOUD_SMOOTH", user ? 0.0f : 0.5f));
+			vec("TESR_CloudsNoise", env("CLOUD_SHAPE", user ? 33333.0f : 9000.0f), env("CLOUD_DETAIL", user ? 1888.0f : 500.0f), env("CLOUD_EROSION", user ? 0.33f : 0.5f), user ? 82222.0f : 30000.0f);
+			vec("TESR_CloudsDetail", env("CLOUD_FINE", user ? 0.2f : 0.0f), user ? 4221.5f : 140.0f, 256.0f, env("CLOUD_CUMULUS", 1.0f));
+			vec("TESR_CloudsMotion", 0.0f, 0.0f, 0.0f, env("CLOUD_SHARPNESS", user ? 2.0f : 0.5f));
+			vec("TESR_CloudsLight", 1.4f, user ? 0.4f : 0.7f, user ? 0.95f : 0.6f, v.rain);
 			effect->SetMatrix("TESR_ViewTransform", &view);
 			effect->SetMatrix("TESR_ProjectionTransform", &proj);
 			effect->SetMatrix("TESR_CloudsPrevViewProj", &viewProj);
@@ -152,8 +170,8 @@ int main(int argc, char** argv) {
 			QueryPerformanceCounter(&f0);
 			for (int frame = 0; frame < frames; frame++) {
 				vec("TESR_CloudsWind", frame * 2.0f, frame * 1.0f, frame * 0.5f, v.typeBias);
-				vec("TESR_CloudsMarch", 48, 80000, (float)frame, 30000);
-				vec("TESR_CloudsLayout", 1.0f / LW, 1.0f / LH, frame ? 0.8f : 0.0f, 1.0f);
+				vec("TESR_CloudsMarch", steps, 80000, (float)frame, haze);
+				vec("TESR_CloudsLayout", 1.0f / LW, 1.0f / LH, frame ? 0.8f : 0.0f, bright);
 				static const float order[4][2] = { {0, 0}, {1, 1}, {1, 0}, {0, 1} };
 				vec("TESR_CloudsBlocks", 1.0f / BW, 1.0f / BH, order[frame % 4][0], order[frame % 4][1]);
 				Check(device->BeginScene(), "begin");

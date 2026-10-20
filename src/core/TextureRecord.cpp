@@ -69,7 +69,7 @@ void TextureRecord::GetSamplerStates(std::string samplerStateSubstring) {
 	while (std::getline(samplerSettings, setting, ';')) {
 		size_t newlinePos = setting.find("\n");
 		if (newlinePos != std::string::npos) setting.erase(newlinePos, 1);
-		std::string opt = trim(setting.substr(0, setting.find("=") - 1));
+		std::string opt = trim(setting.substr(0, setting.find("=")));
 		std::string val = trim(setting.substr(setting.find("=") + 1, setting.length()));
 		std::transform(opt.begin(), opt.end(), opt.begin(), ::toupper);
 		std::transform(val.begin(), val.end(), val.begin(), ::toupper);

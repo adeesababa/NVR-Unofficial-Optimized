@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <vector>
 
 #include "SkinScattering.h"
+#include "../core/PassSums.h"
 
 static const float SkinScatterMMPerUnit = 14.2857f;
 
@@ -64,6 +66,9 @@ void SkinScatteringEffect::UpdateConstants() {
 	Constants.Data.y = Profile.DepthFollow;
 	Constants.Data.z = 0.002f;
 	Constants.Data.w = Profile.AlbedoDetail;
+	TAAEffect* TAA = TheShaderManager->Effects.TAA;
+	Constants.Debug.y = TAA && TAA->Enabled && TAA->Effect ? 1.0f : 0.0f;
+	Constants.Debug.z = (float)(TheFrameRateManager->FrameNumber % 64);
 }
 
 static D3DXVECTOR3 SkinScatterGaussian(const D3DXVECTOR3& Falloff, float Variance, float R) {
@@ -279,8 +284,90 @@ void SkinScatteringEffect::BindForSkinDraw(NiD3DPixelShaderEx* PixelShader) {
 	SkinDrawn = true;
 }
 
+static bool PixelShaderWritesColor1(const std::vector<DWORD>& Code) {
+	const size_t Count = Code.size();
+	if (Count < 2 || (Code[0] & 0xFFFF0000) != 0xFFFF0000 || ((Code[0] >> 8) & 0xFF) < 2) return false;
+	for (size_t i = 1; i < Count; ) {
+		const DWORD Token = Code[i];
+		const DWORD Opcode = Token & 0xFFFF;
+		if (Opcode == 0xFFFF) break;
+		if (Opcode == 0xFFFE) { i += 1 + ((Token >> 16) & 0x7FFF); continue; }
+		const DWORD Length = (Token >> 24) & 0x0F;
+		const bool Declaration = Opcode == 0x1F || Opcode == 0x51 || Opcode == 0x30 || Opcode == 0x2F;
+		if (!Declaration && Length >= 1 && i + 1 < Count) {
+			const DWORD Dest = Code[i + 1];
+			const DWORD Type = ((Dest >> 28) & 0x7) | ((Dest >> 8) & 0x18);
+			if (Type == D3DSPR_COLOROUT && (Dest & D3DSP_REGNUM_MASK) == 1) return true;
+		}
+		i += 1 + Length;
+	}
+	return false;
+}
+
+bool SkinScatteringEffect::BindForGameHighlights(NiD3DPixelShaderEx* PixelShader) {
+	if (HighlightsBound) return true;
+	if (Bound) return false;
+	if (!Enabled || !ScreenSpace || !Supported || Effect == nullptr) return true;
+	if (!InWorldScene) return true;
+	if (PassSums::Active != PassSums::None) return false;
+
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	IDirect3DSurface9* Scene = nullptr;
+	if (FAILED(Device->GetRenderTarget(0, &Scene)) || !Scene) return false;
+	D3DSURFACE_DESC SceneDesc;
+	Scene->GetDesc(&SceneDesc);
+	if (SceneDesc.Width != TheRenderManager->width || SceneDesc.Height != TheRenderManager->height || SceneDesc.MultiSampleType != D3DMULTISAMPLE_NONE) {
+		Scene->Release();
+		return true;
+	}
+
+	DWORD Blend = FALSE, Op = 0, Src = 0, Dst = 0;
+	Device->GetRenderState(D3DRS_ALPHABLENDENABLE, &Blend);
+	Device->GetRenderState(D3DRS_BLENDOP, &Op);
+	Device->GetRenderState(D3DRS_SRCBLEND, &Src);
+	Device->GetRenderState(D3DRS_DESTBLEND, &Dst);
+	bool Copy = Blend && Op == D3DBLENDOP_ADD && Dst == D3DBLEND_ONE && (Src == D3DBLEND_ONE || Src == D3DBLEND_SRCALPHA);
+
+	IDirect3DPixelShader9* Shader = PixelShader ? PixelShader->ShaderHandle : nullptr;
+	if (Copy) Copy = Shader && TheRenderManager->renderState->GetPixelShader() == Shader;
+	if (Copy) {
+		UINT Size = 0;
+		Copy = SUCCEEDED(Shader->GetFunction(NULL, &Size)) && Size >= 2 * sizeof(DWORD);
+		if (Copy) {
+			auto Known = WritesColor1.find(Shader);
+			if (Known == WritesColor1.end() || Known->second.first != Size) {
+				std::vector<DWORD> Code(Size / sizeof(DWORD));
+				const bool Writes = SUCCEEDED(Shader->GetFunction(Code.data(), &Size)) && PixelShaderWritesColor1(Code);
+				Known = WritesColor1.insert_or_assign(Shader, std::make_pair(Size, Writes)).first;
+				if (!Writes) Logger::Log("[WARNING] SkinScattering: the game's highlight pass on skin uses pixel shader %s, which does not write the skin target (COLOR1; ObjectTemplate.hlsl from this build?): those highlights are muted while the skin blur runs",
+					PixelShader->Name ? PixelShader->Name : "?");
+			}
+			Copy = Known->second.second;
+		}
+	}
+	if (!Copy || !EnsureTarget(SceneDesc)) {
+		Scene->Release();
+		return false;
+	}
+	if (!ClearedThisFrame) {
+		ClearTarget(Scene);
+		ClearedThisFrame = true;
+	}
+	Scene->Release();
+
+	D3DVIEWPORT9 Viewport;
+	Device->GetViewport(&Viewport);
+	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &SavedWriteMask1);
+	Device->GetRenderState(D3DRS_COLORWRITEENABLE2, &SavedWriteMask2);
+	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+	Device->SetRenderTarget(1, MSAASurface ? MSAASurface : TextureSurface);
+	Device->SetViewport(&Viewport);
+	HighlightsBound = true;
+	return true;
+}
+
 void SkinScatteringEffect::Unbind() {
-	if (!Bound) return;
+	if (!Bound && !HighlightsBound) return;
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	D3DVIEWPORT9 Viewport;
 	Device->GetViewport(&Viewport);
@@ -290,6 +377,7 @@ void SkinScatteringEffect::Unbind() {
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, SavedWriteMask1);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE2, SavedWriteMask2);
 	Bound = false;
+	HighlightsBound = false;
 }
 
 bool SkinScatteringEffect::ShouldRender() {

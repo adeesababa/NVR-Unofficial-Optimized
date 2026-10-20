@@ -27,51 +27,6 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   **Also fixed in P77:** water reflections losing far buildings, lamp shadows ending at a circle, huge shadows when
   you stand at a lamp, interior floors flickering light and dark, grass popping in, and a seam where the far water
   begins (see below). (P77 replaces P76, which was withdrawn.)
-- **New in P78:** volumetric light (sun shafts through the air, **on by default**), the sky's colour banding fixed
-  where it is made (Shaders > SkyDither, **on by default**), a metal look on guns, robots and steel in the world with
-  per-texture material rules (Shaders > PBR > MaterialRules, **on by default**; the table is the editable file
-  `NewVegasReloaded.dll.materials.txt`), and, off by default: volumetric clouds (with cloud shadows and water
-  reflections), terrain blending, TAA, wet-ground reflections, heat haze, plant translucency, skin light diffusion,
-  more bloom options and the legacy fog for older presets (Shaders > VolumetricFog > LegacyFog). **Fixed in P78:**
-  bounce light drawn over pillars in front of lit walls, and ParallaxLite no longer locks the parallax distance.
-  Terrain blending, TAA's sharpness/mip bias, heat haze and the volumetric clouds' first version come
-  from Balebandro's [Physically-Based-Reloaded](https://github.com/Balebandro/Physically-Based-Reloaded) fork;
-  terrain blending follows Community Shaders' Terrain Blending; TAA by Conor. The release page also offers an
-  optional, experimental extra as a separate download: **FNV Multithreaded AI** (with its own readme).
-- **New in P79** (P79 replaces P78, which was withdrawn): **rain on surfaces** by macintroll (Shaders > WetWorld, on as
-  before: splashes, streaks running down walls, puddles in hollows that reflect the sky and the surroundings; only costs
-  anything while it rains), and **lamp light that no longer pops or flickers** indoors (`Main > Main > Misc`:
-  `MoreLampsPerObject` and `LampReachMargin`, on, need a restart). Off by default: **blood that flows** (Shaders >
-  BloodFlow: splats run down walls and slopes and drip off edges, pools spread under bodies and cut-off limbs, wet beads
-  on fresh blood, all in the colour of your own blood textures), **blood on your weapon and gloves** when you hit someone
-  up close (Shaders > HandBlood, needs a restart), a **police body-camera look** (Shaders > Bodycam, with its own day,
-  night and interior settings, 30 fps video, slow auto exposure, video breakup while moving, a chest-mount bob,
-  gunfire jolt and flash overload, a night low-light mode, light smear, encoder hiccups, autofocus hunting, an optional wider
-  view (`WideView`) and an optional cheap-microphone filter on all the game's sound (`Mic`)), more lamp shadows
-  outdoors (Shaders > ShadowsInteriors > Main > `ExteriorLightPoints`) and `TwoSidedCasters` (Shaders > ShadowsExteriors,
-  stops sunlight and light shafts shining through one-sided walls). **Fixed in P79:** stripes on the ground with
-  volumetric clouds on, a pale sheen sweeping over the casinos' marble walls, the 5th and 6th lamp on an object lit
-  from the wrong place, `UsePointShadowsDay/Night` only taking effect at the next dawn or dusk, a crash at startup when
-  the graphics driver refuses a shader, GunFX's barrel glow vanishing in some lighting, the blood on the weapon looking
-  clear in some lighting (its runs are now short, wide drips), and GunFX's smoke haze now drifts
-  steadily instead of shifting as you walk.
-  The blood on the weapon follows mrfury97's HUD raindrops (Physically-Based-Reloaded testbed, after Ascii1457's
-  Screen Space Shaders), and the blood textures were made for this build.
-- **New in P80 (pre-release):** the shipped defaults are now the author's own settings, with these new pieces on:
-  **linear lighting** (light added up in linear space, so lit sides and shadows fall off naturally; Shaders > PBR >
-  Linear), a **physical sky** (the sky's colours from the air itself; Shaders > Sky > Physical), **PCSS sun shadows**
-  (Shadow Maps `Mode` 3 + Contact Hardening: sharp where an object meets the ground, softer further away, and cheaper
-  than before), a **light grid for the fog and light shafts** (Volumetric Light `Froxels` + Volumetric Fog `FogVolume`),
-  **AmbientLight** (ambient occlusion and bounce light in one pass, replacing the old AO, with a **3D light grid** for the
-  bounce, `GridBounce`: the sun's light bounced off the surroundings, and indoors and at night the light of lamps and neon,
-  without the shimmer or popping of screen-only bounce light), **PBR material maps** (`_rmaos` textures next to the
-  diffuse or under `textures\pbr\`; Shaders > PBR > Rmaos), **rain drops on your first-person weapon** (Wet World
-  `HudDrops`), blood splats shaped like **thrown paint** (arms, spray lines and drips that run down walls and slopes), and
-  **terrain blending** that keeps a thin seam on shallow objects (`GroundWidth`, `HeightBlend`). Shaders now compile on
-  all CPU cores at startup (`ParallelShaderCompile`; a full rebuild in about a fifth of the time). Grass: set
-  `b30GrassVS=1` under `[Grass]` in `Fallout.ini` and `FalloutPrefs.ini`, or the game uses old grass shaders that NVR
-  cannot replace (grass then glows at night). The terrain blending update is ported from mrfury97's fork (after Terrain
-  Blending - NVSE); the weapon rain drops follow Conor's raindrop shader.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -300,12 +255,17 @@ Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIA
 > Built on the fork by [macrimmon12-tech](https://github.com/macrimmon12-tech/TESReloaded10)
 > (volumetric fog v2, skin and lighting fixes, ImGui menu and more), whose history is preserved in
 > this repository. All original copyright notices are unchanged.
-> The game-engine fixes since P75 (water reflection clip plane, scope fix, lamp shadow work, and in P79 the lamp
-> limits and the blood decal work) were built with the help of [WallSoGB](https://github.com/WallSoGB)'s
-> Fallout: New Vegas IDA Pro database. The WetWorld rain shader and its textures are by macintroll (with Boomstick),
-> used with permission. Terrain blending, TAA's sharpness/mip bias, heat haze and the volumetric clouds' first version
-> come from Balebandro's Physically-Based-Reloaded fork; TAA by Conor; the blood on the weapon follows mrfury97's HUD
-> raindrops, after Ascii1457's Screen Space Shaders.
+> The game-engine fixes since P75 (water reflection clip plane, scope fix, lamp shadow work) were built with
+> the help of [WallSoGB](https://github.com/WallSoGB)'s Fallout: New Vegas IDA Pro database.
+> Mountain shadows, cloud shadows, grass collision, terrain variation, far land matching and the sky-reflection step of
+> skylighting follow the [Community Shaders](https://github.com/community-shaders/skyrim-community-shaders) team and contributors'
+> Terrain Shadows, Cloud Shadows, Grass Collision, Terrain Variation, LOD Blending and Skylighting (GPL-3.0); the terrain shadows'
+> sweep and the terrain variation shader are ported from [Conor (mrfury97)](https://github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork)'s
+> NVR fork (GPL-3.0-or-later). Also adapted from Community Shaders: the skin shader's shading details (after Advanced Skin)
+> and its screen-space blur kernel and width, the Terrain Blending method this build's terrain blending descends from, the
+> Complex Parallax Materials method in the parallax code, the True PBR material-map layout read for `_rmaos` maps, and Grass
+> Optimizations' size fade (through Balebandro's Physically-Based-Reloaded fork) in the new grass.
+> What came from where: [docs/COMMUNITY-SHADERS-PORTS.md](docs/COMMUNITY-SHADERS-PORTS.md).
 >
 > This is shared in good faith. If any of the original authors or maintainers feel this release
 > steps on their toes, please open an issue here and it will be taken down.

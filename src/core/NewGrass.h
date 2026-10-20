@@ -4,6 +4,8 @@
 #include <cmath>
 #include <unordered_map>
 #include <vector>
+#include "GrassWind.h"
+#include "../effects/GrassCollision.h"
 
 namespace NewGrass {
 
@@ -43,7 +45,7 @@ namespace NewGrass {
 	struct Variant { IDirect3DVertexBuffer9* VB = nullptr; IDirect3DIndexBuffer9* IB = nullptr; unsigned Levels = 0, VertsPerBlade = 0, TrisPerBlade = 0, Verts = 0; };
 	inline Variant Variants[3];
 
-	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; float Rects[4][4] = { { 0.0f, 0.0f, 1.0f, 1.0f } }; unsigned RectCount = 1; };
+	struct Model { unsigned VertsPerModel = 0, Capacity = 0, Total = 0; float Height = 0.0f, Width = 0.0f; bool Card = false, FromBound = false; float Rects[4][4] = { { 0.0f, 0.0f, 1.0f, 1.0f } }; unsigned RectCount = 1; float SwayA = 0.0f, SwayB = 0.0f; };
 	inline std::unordered_map<const void*, Model> Models;
 	struct Ramp { float C[4][4] = {}; float Bright[4][4] = {}; float Fill[4] = {}, Radius[4] = {}, Edge[4] = {}; float Top = 1.0f; bool Read = false, Cutout = false; float Coverage = 1.0f; ULONGLONG When = 0; const void* Texture = nullptr; char Info[384] = ""; };
 	inline std::unordered_map<const void*, Ramp> Ramps;
@@ -185,6 +187,28 @@ namespace NewGrass {
 			if (m.RectCount == 0) { m.Rects[0][0] = m.Rects[0][1] = 0.0f; m.Rects[0][2] = m.Rects[0][3] = 1.0f; m.RectCount = 1; }
 		}
 		m.Card = vpm <= 64;
+		char rows[160] = "no vertex colours";
+		if (gd->m_pkVertex && vpm) {
+			double n = 0.0, sz = 0.0, sw = 0.0, szz = 0.0, szw = 0.0;
+			float rz[4] = {}, rw[4] = {}; unsigned rn[4] = {}, nr = 0;
+			for (unsigned i = 0; i < vpm; i++) {
+				const double z = gd->m_pkVertex[i].z, a = gd->m_pkColor ? gd->m_pkColor[i].a : 1.0, w = a * a;
+				n += 1.0; sz += z; sw += w; szz += z * z; szw += z * w;
+				unsigned r = 0;
+				for (; r < nr; r++) if (fabsf((float)z - rz[r] / rn[r]) < 1.0f) break;
+				if (r == nr && nr < 4) nr++;
+				if (r < nr) { rz[r] += (float)z; rw[r] += (float)w; rn[r]++; }
+			}
+			const double var = szz - sz * sz / n;
+			m.SwayB = var > 1e-6 ? (float)((szw - sz * sw / n) / var) : 0.0f;
+			m.SwayA = (float)((sw - m.SwayB * sz) / n);
+			if (gd->m_pkColor) {
+				int at = _snprintf_s(rows, sizeof(rows), _TRUNCATE, "%u height row(s):", nr);
+				for (unsigned r = 0; r < nr && at > 0 && at < (int)sizeof(rows); r++)
+					at += _snprintf_s(rows + at, sizeof(rows) - at, _TRUNCATE, " z %.1f alpha^2 %.2f (%u)", rz[r] / rn[r], rw[r] / rn[r], rn[r]);
+			}
+		}
+		Logger::Log("UNOFFICIAL NewGrass: model %p: sway weight %.3f + %.4f x height; %s", gd, m.SwayA, m.SwayB, rows);
 		Logger::Log("UNOFFICIAL NewGrass: model %p: %u vertices, %u per tuft (%u tufts), height %.1f width %.1f%s, %u texture tile(s): %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f | %.2f %.2f + %.2f %.2f -> %s",
 			gd, m.Total, vpm, m.Capacity, m.Height, m.Width, m.FromBound ? " (from the bound)" : "", m.RectCount,
 			m.Rects[0][0], m.Rects[0][1], m.Rects[0][2], m.Rects[0][3], m.Rects[1][0], m.Rects[1][1], m.Rects[1][2], m.Rects[1][3],
@@ -453,6 +477,9 @@ namespace NewGrass {
 		state->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);
 		state->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
 
+		float savedVS[8][4], savedPS[6][4];
+		const bool haveVS = SUCCEEDED(device->GetVertexShaderConstantF(248, &savedVS[0][0], 8));
+		const bool havePS = SUCCEEDED(device->GetPixelShaderConstantF(20, &savedPS[0][0], 6));
 		ShaderRecordPixel* ps = S.ReceiveShadows ? PS : PSNoShadow;
 		device->SetVertexShader(VS->ShaderHandle);
 		device->SetPixelShader(ps->ShaderHandle);
@@ -468,6 +495,24 @@ namespace NewGrass {
 		const float prof[8] = { (std::min)(prof0[0] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[1] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[2] * (S.KeepCards ? 1.0f : 1.1f), 1.0f), (std::min)(prof0[3] * (S.KeepCards ? 1.0f : 1.1f), 1.0f),
 			S.Spread, S.KeepCards ? 1.0f : 0.0f, S.KeepCards ? S.TipReach : 1.0f, S.Kink };
 		device->SetVertexShaderConstantF(254, prof, 2);
+		float savedC7[4];
+		const bool wind = GrassWind::On && SUCCEEDED(device->GetVertexShaderConstantF(7, savedC7, 1));
+		const float lanes[4] = { wind ? GrassWind::Lanes[0] : 0.0f, wind ? GrassWind::Lanes[1] : 0.0f, wind ? GrassWind::Lanes[2] : 0.0f, wind ? GrassWind::Lanes[3] : 0.0f };
+		device->SetVertexShaderConstantF(253, lanes, 1);
+		if (wind) {
+			const float c7[4] = { savedC7[0], GrassWind::ClockNow, m.SwayA, m.SwayB };
+			device->SetVertexShaderConstantF(7, c7, 1);
+		}
+		float savedC5[4], savedC6[4];
+		const bool haveC56 = SUCCEEDED(device->GetVertexShaderConstantF(5, savedC5, 1)) && SUCCEEDED(device->GetVertexShaderConstantF(6, savedC6, 1));
+		const float pushScale = haveC56 ? GrassCollision::FieldScale() : 0.0f;
+		if (haveC56) {
+			if (pushScale > 0.0f) GrassCollision::Bind(device);
+			const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+			const float c5[4] = { camera.x, camera.y, savedC5[2], savedC5[3] }, c6[4] = { savedC6[0], savedC6[1], savedC6[2], pushScale };
+			device->SetVertexShaderConstantF(5, c5, 1);
+			device->SetVertexShaderConstantF(6, c6, 1);
+		}
 		float psc[24];
 		memcpy(psc, S.KeepCards ? ramp.Bright : ramp.C, sizeof(ramp.C));
 		psc[16] = S.ShadowLift; psc[17] = S.Wrap; psc[18] = S.TipLift; psc[19] = S.Variation;
@@ -476,8 +521,14 @@ namespace NewGrass {
 		device->SetVertexDeclaration(Decl);
 		device->SetStreamSource(0, v.VB, 0, 4);
 		device->SetIndices(v.IB);
+		if (TallGrassShader* shader = TallGrassShader::GetShader())
+			if (shader->pInstanceData && tufts) device->SetVertexShaderConstantF(20, (const float*)shader->pInstanceData, tufts);
 		Next(device, D3DPT_TRIANGLELIST, 0, 0, verts, 0, prims);
 
+		if (haveVS) device->SetVertexShaderConstantF(248, &savedVS[0][0], 8);
+		if (wind) device->SetVertexShaderConstantF(7, savedC7, 1);
+		if (haveC56) { device->SetVertexShaderConstantF(5, savedC5, 1); device->SetVertexShaderConstantF(6, savedC6, 1); }
+		if (havePS) device->SetPixelShaderConstantF(20, &savedPS[0][0], 6);
 		device->SetVertexShader(oldVS); device->SetPixelShader(oldPS); device->SetVertexDeclaration(oldDecl);
 		device->SetStreamSource(0, oldVB, oldOffset, oldStride); device->SetIndices(oldIB);
 		if (oldVS) oldVS->Release(); if (oldPS) oldPS->Release(); if (oldDecl) oldDecl->Release(); if (oldVB) oldVB->Release(); if (oldIB) oldIB->Release();

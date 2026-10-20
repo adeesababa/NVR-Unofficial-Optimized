@@ -36,6 +36,8 @@ namespace ConstantFilter {
 	inline unsigned StatFrames = 0;
 	inline double StatVertexCalls = 0, StatVertexSkipped = 0, StatPixelCalls = 0, StatPixelSkipped = 0, StatWipes = 0;
 	inline unsigned StatPauses = 0;
+	inline void (*PixelShaderObserver)(IDirect3DPixelShader9*) = nullptr;
+	inline void (*StateLostObserver)() = nullptr;
 
 	inline void Wipe() {
 		memset(Vertex.known, 0, sizeof(Vertex.known));
@@ -156,6 +158,7 @@ namespace ConstantFilter {
 	inline HRESULT STDMETHODCALLTYPE HookSetPixelShader(IDirect3DDevice9* self, IDirect3DPixelShader9* shader) {
 		if (GpuTimer::Enabled && LinearPreDecode::Active && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) PreDecodeCheck(self);
 		const HRESULT result = OrigSetPixelShader(self, shader);
+		if (SUCCEEDED(result) && PixelShaderObserver) PixelShaderObserver(shader);
 		if (SUCCEEDED(result) && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
 			LinearPreDecode::Active = LinearPreDecode::Is(shader);
 			if (LinearPreDecode::Active) PreDecodeRefresh(self);
@@ -164,9 +167,10 @@ namespace ConstantFilter {
 	}
 
 	inline HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* parameters) {
-		if (GetCurrentThreadId() != Thread) { InterlockedIncrement(&ForeignTick); return OrigReset(self, parameters); }
+		if (GetCurrentThreadId() != Thread) { InterlockedIncrement(&ForeignTick); const HRESULT r = OrigReset(self, parameters); if (StateLostObserver) StateLostObserver(); return r; }
 		Wipe();
 		const HRESULT result = OrigReset(self, parameters);
+		if (StateLostObserver) StateLostObserver();
 		Wipe();
 		PreDecodeResync(self);
 		return result;
@@ -183,6 +187,7 @@ namespace ConstantFilter {
 		if (GetCurrentThreadId() == Thread) Wipe();
 		else InterlockedIncrement(&ForeignTick);
 		const HRESULT result = OrigEndStateBlock(self, block);
+		if (StateLostObserver) StateLostObserver();
 		if (GetCurrentThreadId() == Thread) PreDecodeResync(self);
 		return result;
 	}
@@ -191,6 +196,7 @@ namespace ConstantFilter {
 		if (GetCurrentThreadId() == Thread) Wipe();
 		else InterlockedIncrement(&ForeignTick);
 		const HRESULT result = OrigApply(self);
+		if (StateLostObserver) StateLostObserver();
 		if (GetCurrentThreadId() == Thread) {
 			IDirect3DDevice9* device = nullptr;
 			if (SUCCEEDED(self->GetDevice(&device)) && device) { PreDecodeResync(device); device->Release(); }

@@ -32,6 +32,7 @@ public:
 		D3DXVECTOR4		LightData;
 		D3DXVECTOR4		LightExtra;
 		D3DXVECTOR4		DebugData;
+		D3DXVECTOR4		LightCS;
 	};
 	NewSkinStruct NewConstants = {};
 
@@ -48,6 +49,7 @@ public:
 	MaterialStruct Interior = {};
 	float SkyReflectionScale = 1.0f;
 	float RainWetness = 0.5f;
+	D3DXVECTOR4 CSDetails = {};
 
 	int DebugView = 0;
 	bool MuteGameHighlights = true;

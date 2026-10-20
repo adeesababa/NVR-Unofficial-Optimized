@@ -1,4 +1,5 @@
 #define RESZ_CODE 0x7FA05000
+#include "ShaderWarmUp2.h"
 
 void RenderManager::CreateD3DMatrix(D3DMATRIX* Matrix, NiTransform* Transform) {
 
@@ -332,6 +333,7 @@ void RenderManager::Initialize() {
 	Logger::Log("D3D9 runtime: %s", D3D9RuntimeDescription());
 	if (TheSettingManager->SettingsMain.Main.AnisotropicFilter >= 2) device->SetSamplerState(0, D3DSAMP_MAXANISOTROPY, TheSettingManager->SettingsMain.Main.AnisotropicFilter);
 	BackBuffer = CreateHDRRenderTarget();
+	ShaderWarmUp2::Install(device);
 }
 
 void RenderManager::ResolveDepthBuffer(IDirect3DTexture9* Buffer) {

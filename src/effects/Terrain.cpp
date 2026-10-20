@@ -7,6 +7,9 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainExtraData", &Constants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainSkyData", &Constants.SkyData);
+	TheShaderManager->RegisterConstant("TESR_TerrainVariationData", &Constants.VariationData);
+	TheShaderManager->RegisterConstant("TESR_TerrainVariationExtra", &Constants.VariationExtra);
+	TheShaderManager->RegisterConstant("TESR_LODBlendData", &Constants.LODBlend);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxIso", &ParallaxConstants.IsoData);
@@ -136,6 +139,18 @@ void TerrainShaders::UpdateSettings() {
 	LODSettings.NoiseScale = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseScale");
 	LODSettings.NoiseTile = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseTile");
 
+	Constants.VariationData.x = (std::max)(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "Scale"), 0.01f);
+	Constants.VariationData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "HeightInfluence"), 0.0f, 4.0f);
+	Constants.VariationData.z = (std::max)(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "StartDistance"), 0.0f);
+	Constants.VariationData.w = (std::max)(TheSettingManager->GetSettingF("Shaders.Terrain.Variation", "StartFade"), 1.0f);
+	Constants.VariationExtra.x = TheSettingManager->GetSettingI("Shaders.Terrain.Variation", "NormalMaps") ? 1.0f : 0.0f;
+
+	const bool lodBlend = TheSettingManager->GetSettingI("Shaders.Terrain.LODBlending", "Enabled") != 0;
+	Constants.LODBlend.x = lodBlend ? std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.LODBlending", "Brightness"), 0.01f, 5.0f) : 1.0f;
+	Constants.LODBlend.y = lodBlend ? std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.LODBlending", "Gamma"), 0.1f, 3.0f) : 1.0f;
+	Constants.LODBlend.z = lodBlend && TheSettingManager->GetSettingI("Shaders.Terrain.LODBlending", "DisableVertexColors") ? 1.0f : 0.0f;
+	Constants.LODBlend.w = lodBlend && (Constants.LODBlend.x != 1.0f || Constants.LODBlend.y != 1.0f) ? 1.0f : 0.0f;
+
 	BlendingSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") != 0;
 	BlendingSettings.Debug = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Debug") != 0;
 	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 0.5f, 20.0f);
@@ -150,8 +165,9 @@ void TerrainShaders::UpdateSettings() {
 	BlendingConstants.Data.y = 1.0f / BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
 	BlendingConstants.Data.w = (float)BlendingSettings.DebugView;
-	const bool heightEdge = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "HeightEdge") != 0;
-	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, heightEdge ? -BlendingSettings.HeightBlend : BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
+	const int heightEdge = std::clamp(TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "HeightEdge"), 0, 2);
+	const float shapeY = heightEdge == 2 ? -(BlendingSettings.HeightBlend + 10.0f) : heightEdge == 1 ? -BlendingSettings.HeightBlend : BlendingSettings.HeightBlend;
+	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, shapeY, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
 	BlendingConstants.Extra.w = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Smooth") ? 1.0f : 0.0f;
 }
 

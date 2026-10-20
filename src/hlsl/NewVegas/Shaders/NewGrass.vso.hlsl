@@ -20,6 +20,10 @@ float4 NG_Misc  : register(c250);
 float4 NG_Var   : register(c251);
 float4 NG_Prof  : register(c254);
 float4 NG_Prof2 : register(c255);
+float4 NG_WindLanes : register(c253);
+sampler2D NVR_GrassPush : register(s0);
+
+#include "Includes/GrassWind.hlsl"
 
 struct VS_INPUT {
     float4 packed : TEXCOORD0;
@@ -91,8 +95,10 @@ VS_OUTPUT main(VS_INPUT IN) {
     float phase = (inst.x + inst.y) * 0.0078125f + WindData.w;
     phase = frac(phase * 0.159154937f + 0.5f) * 6.28318548f - 3.14159274f;
     float swing = sin(phase + h1 * 1.5f);
-    float3 wind = float3(WindData.xy * (swing * WindData.z), 0.0f)
-                + sideVec * (sin(phase * 2.3f + h2 * 6.2831853f) * WindData.z * NG_Var.z);
+    float3 flutterAcross = sideVec * (sin(phase * 2.3f + h2 * 6.2831853f) * WindData.z * NG_Var.z);
+    float3 wind = float3(WindData.xy * (swing * WindData.z), 0.0f) + flutterAcross;
+    const bool fieldWind = dot(NG_WindLanes.xy, NG_WindLanes.xy) > 0.0f;
+    [flatten] if (fieldWind) wind = flutterAcross;
 
     float lean = rTip / max(height, 1.0f);
     float droop = NG_Lod.w * saturate(lean - 0.5f) * height;
@@ -105,6 +111,24 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     float width = plantH * NG_Shape.z * (0.6f + 0.6f * h4) * (1.0f + depth * NG_Lod.z) * (1.0f - t * t) * keep;
     pos += sideVec * (side * 0.5f * width + NG_Prof2.w * width * sin(t * 9.0f + h2 * 6.2831853f) * (0.5f + 0.5f * h3));
+
+    [branch] if (fieldWind) {
+        float rise = dot(pos - base, up);
+        float weight = saturate(AddlParams.z + AddlParams.w * rise / scale.z);
+        pos += GrassWindMove(inst, NG_WindLanes, AddlParams.y, sin(phase), WindData, weight, rise);
+    }
+
+    [branch] if (AmbientColor.w > 0.0f) {
+        float2 pushUV = (inst.xy - AlphaParam.xy) * AmbientColor.w;
+        [branch] if (max(abs(pushUV.x), abs(pushUV.y)) < 0.5f) {
+            float rise = dot(pos - base, up);
+            float2 push = tex2Dlod(NVR_GrassPush, float4(pushUV + 0.5f, 0.0f, 0.0f)).xy * GrassPushWeight(rise);
+            [branch] if (dot(push, push) > 0.0f) {
+                float h = max(rise, 1e-6f);
+                pos += float3(push, -min(dot(push, push) * 0.5f / h, h));
+            }
+        }
+    }
 
     float3 normal = normalize(cross(sideVec, tangent));
     normal = normalize(normal + sideVec * (side * 0.3f));

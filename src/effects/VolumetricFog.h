@@ -83,6 +83,8 @@ public:
 	IDirect3DTexture9* gridTexture = nullptr;
 	bool	gridApplied = false;
 	CachedHandle paramGridFlags;
+	CachedHandle paramSunFarFlags;
+	IDirect3DTexture9* SunFarFor(bool shadow);
 	bool	CanComposite(IDirect3DSurface9* aoSurface);
 	bool	CanCompositeInterior() { return !PlainOnly() && CompositeInteriorTechnique() != NULL; }
 	int		HalfStoreMode(IDirect3DDevice9* Device);

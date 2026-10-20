@@ -5,6 +5,7 @@
 #include "../src/core/Device/Hook.h"
 #include "../src/NewVegas/Managers.h"
 #include "../src/core/EffectSelfTest.h"
+#include "../src/core/IOWorker2.h"
 
 extern "C" {
 
@@ -125,6 +126,7 @@ extern "C" {
 			TheSettingManager->LoadSettings();
 			PresetManager::Initialize();
 			AttachHooks();
+			IOWorker2::Install();
 		}
 		return true;
 

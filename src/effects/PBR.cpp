@@ -1,6 +1,7 @@
 #include "PBR.h"
 #include "../core/PassSums.h"
 #include "../core/LinearPreDecode.h"
+#include "GrassCollision.h"
 
 void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PBRData", &Constants.Data);
@@ -58,12 +59,12 @@ void PBRShaders::UpdateSettings() {
 	MetalSettings.CubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections"), 0.0f, 1.0f);
 	MetalSettings.EnvCubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections"), 0.0f, 1.0f);
 
-	const float linearGamma = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ?
-		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
-	Constants.Linear.x = linearGamma;
-	Constants.Linear.y = 1.0f / linearGamma;
-	PassSums::Gamma = linearGamma;
-	LinearPreDecode::Gamma = linearGamma;
+	LinearSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") != 0;
+	LinearSettings.Gamma = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f);
+	const float nightGamma = TheSettingManager->GetSettingF("Shaders.PBR.Linear", "NightGamma");
+	LinearSettings.NightGamma = nightGamma > 0.0f ? std::clamp(nightGamma, 1.0f, 3.0f) : 0.0f;
+	LinearSettings.FalloffMatch = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "FalloffMatch"), 0.0f, 1.0f);
+	ApplyLinearGamma();
 
 	Constants.Math.x = TheSettingManager->GetSettingI("Shaders.PBR.Main", "EnergySplit") ? 1.0f : 0.0f;
 	static const int smithMode = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
@@ -146,7 +147,22 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Interiors.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "RoughnessScale"), 1.0f, 2.0f);
 }
 
+void PBRShaders::ApplyLinearGamma() {
+	float gamma = 1.0f;
+	if (LinearSettings.Enabled) {
+		gamma = LinearSettings.NightGamma > 0.0f ?
+			TheShaderManager->GetTransitionValue(LinearSettings.Gamma, LinearSettings.NightGamma, LinearSettings.Gamma) : LinearSettings.Gamma;
+	}
+	Constants.Linear.x = gamma;
+	Constants.Linear.y = 1.0f / gamma;
+	Constants.Linear.z = 1.0f + (gamma - 1.0f) * LinearSettings.FalloffMatch;
+	PassSums::Gamma = gamma;
+	LinearPreDecode::Gamma = gamma;
+}
+
 void PBRShaders::UpdateConstants() {
+	ApplyLinearGamma();
+
 	Constants.LampPassTrim.x = TheSettingManager->SettingsMain.Main.TrimLampPasses ? 1.0f : 0.0f;
 
 	const ReflectionsEffect* reflections = TheShaderManager->Effects.Reflections;
@@ -157,7 +173,7 @@ void PBRShaders::UpdateConstants() {
 	Constants.Translucency.x = FoliageSettings.Translucency;
 	Constants.Translucency.y = FoliageSettings.Power;
 	Constants.Translucency.z = FoliageSettings.SunGate;
-	Constants.Translucency.w = 0.0f;
+	Constants.Translucency.w = GrassCollision::FieldScale();
 
 	// get max value between rain animator and puddle animator
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);

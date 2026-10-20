@@ -273,7 +273,7 @@ float3 Lottes(float3 color, float contrast, float midOut, float midIn, float hdr
     peak *= 0.5;
     peak *= 1.0 + 1.666 * max(0, (peak - lum) / peak);
 
-    peak = ColTone(peak, float4(contrast, shoulder, b, c) );
+    peak = ColTone(peak.x, float4(contrast, shoulder, b, c) );
 
     float saturation = contrast; // crosstalk saturation
     float crossSaturation = contrast * 64.0; // crosstalk saturation
@@ -282,7 +282,7 @@ float3 Lottes(float3 color, float contrast, float midOut, float midIn, float hdr
 
     // wrap crosstalk in transform
     ratio = pows(abs(ratio + 0.11) * 0.90909, saturation / crossSaturation);
-    ratio = lerp(ratio, rgb, pow(peak, float3(4.0, 1.5, 1.5) * 1.0/peak));
+    ratio = lerp(ratio, rgb, pow(abs(peak), float3(4.0, 1.5, 1.5) * 1.0/peak));
     ratio = pows(min(1.0, ratio), crossSaturation);
 
     return peak * ratio;
@@ -296,7 +296,7 @@ float UchimuraChannel(float x, float P, float a, float m, float l, float c, floa
     float C2 = (a * P) / (P - S1);
     
     float L = m + a * (x - m);
-    float T = m * pow(x / m, c);
+    float T = m * pow(abs(x / m), c);
     float S = P - (P - S1) * exp(-C2 * (x - S0) / P);
     float w0 = 1 - smoothstep(0.0f, m, x);
     float w2 = (x < m + l0) ? 0 : 1;

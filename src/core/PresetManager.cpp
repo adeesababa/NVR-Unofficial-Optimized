@@ -37,6 +37,10 @@ bool											PresetManager::s_hasReResolveBaseline = false;
 bool											PresetManager::s_lastLocationWasInterior = false;
 TESObjectCELL*									PresetManager::s_lastInteriorCell = nullptr;
 TESWorldSpace*									PresetManager::s_lastExteriorWorldSpace = nullptr;
+std::string										PresetManager::s_activeKey;
+bool											PresetManager::s_activeIsOwn = false;
+PresetManager::PresetData						PresetManager::s_ownSettings;
+bool											PresetManager::s_hasOwnSettings = false;
 
 // ---- setting-scope blacklist ---------------------------------------------
 // docs/preset-manager-design.md § "Setting scope -- a blacklist, still needed"
@@ -54,6 +58,14 @@ static const std::unordered_set<std::string> kBlacklistedSections = {
 	"Main.Menu.Keys",
 	"Main.Menu.Style",
 	"Main.SleepingMode.Main",
+	"Main.GunFX.Main",
+	"Main.Main.Performance",
+	"Main.Main.Quality",
+	"Main.Main.ReducedQuality",
+	"Main.Menu.NewInPatch",
+	"Shaders.AmbientOcclusion.FastPaths",
+	"Shaders.Debug.Main",
+	"Shaders.Skin.Debug",
 };
 
 bool PresetManager::IsBlacklistedSection(const std::string& Section) {
@@ -448,6 +460,7 @@ void PresetManager::ApplyPreset(const PresetData& Target) {
 	// loaded. Confirmed root cause of "LUTs didn't swap" -- same special
 	// case ImGuiManager.cpp's RevertToSnapshot() already has to apply.
 	LUTEffect* lut = TheShaderManager ? TheShaderManager->Effects.LUT : nullptr;
+	UInt32 changedValues = 0;
 
 	for (const auto& [section, keys] : Target) {
 		for (const auto& [key, value] : keys) {
@@ -464,13 +477,17 @@ void PresetManager::ApplyPreset(const PresetData& Target) {
 					continue;
 				}
 
-				if (value.StringValue != buf)
+				if (value.StringValue != buf) {
 					TheSettingManager->SetSettingS(section.c_str(), key.c_str(), value.StringValue.c_str());
+					changedValues++;
+				}
 			}
 			else {
 				float current = TheSettingManager->GetSettingF(section.c_str(), key.c_str());
-				if (current != value.FloatValue)
+				if (current != value.FloatValue) {
 					TheSettingManager->SetSettingF(section.c_str(), key.c_str(), value.FloatValue);
+					changedValues++;
+				}
 			}
 		}
 	}
@@ -488,25 +505,50 @@ void PresetManager::ApplyPreset(const PresetData& Target) {
 	}
 
 	TheSettingManager->LoadSettings(); // final refresh, matching RevertToSnapshot's own pattern
+	Logger::Log("PresetManager: [Preset] apply changed %u live value(s)", changedValues);
 }
 
-void PresetManager::ResolveAndApply(TESObjectCELL* Cell) {
+void PresetManager::ResolveAndApply(TESObjectCELL* Cell, bool Automatic) {
 	PresetData target;
 	ResolveResult result;
 
 	if (!ResolveCurrentLocation(Cell, target, result))
 		return;
 
-	ApplyVariants(target);
+	const bool own = result.UsedRawDefaults;
+	std::string key = own ? std::string("<own settings>") : result.PresetName;
+	for (const auto& variant : s_enabledVariants) key += "+" + variant;
+	if (!s_hasOwnSettings) s_hasOwnSettings = CaptureLiveState(s_ownSettings);
 
+	const char* where = result.IsInterior ? result.CellEditorID.c_str() : result.WorldspaceEditorID.c_str();
+	if (key == s_activeKey && (Automatic || own)) {
+		s_lastResolveResult = result;
+		Logger::Log("PresetManager: [Preset] Resolved %s -> '%s' again: already active, nothing re-applied (live settings kept)",
+			where, key.c_str());
+		return;
+	}
+	if (Automatic && s_activeIsOwn)
+		CaptureLiveState(s_ownSettings);
+
+	if (own)
+		target = s_ownSettings;
+	ApplyVariants(target);
 	ApplyPreset(target);
+	s_activeKey = key;
+	s_activeIsOwn = own;
 	s_lastResolveResult = result;
 	s_resolveGeneration++;
 
-	Logger::Log("PresetManager: [Preset] Resolved %s -> tier=%d name='%s' rawDefaults=%d keyword='%s' variants=%u",
-		result.IsInterior ? result.CellEditorID.c_str() : result.WorldspaceEditorID.c_str(),
-		(int)result.Tier, result.PresetName.c_str(), result.UsedRawDefaults, result.Keyword.c_str(),
-		(UInt32)s_enabledVariants.size());
+	Logger::Log("PresetManager: [Preset] Resolved %s -> tier=%d name='%s' rawDefaults=%d keyword='%s' variants=%u%s",
+		where, (int)result.Tier, result.PresetName.c_str(), result.UsedRawDefaults, result.Keyword.c_str(),
+		(UInt32)s_enabledVariants.size(), own ? " (the player's own settings)" : "");
+}
+
+void PresetManager::ForgetSession() {
+	s_activeKey.clear();
+	s_activeIsOwn = false;
+	s_ownSettings.clear();
+	s_hasOwnSettings = false;
 }
 
 const PresetManager::ResolveResult& PresetManager::GetLastResolveResult() {

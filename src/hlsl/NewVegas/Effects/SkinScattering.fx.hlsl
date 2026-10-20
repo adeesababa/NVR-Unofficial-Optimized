@@ -1,7 +1,8 @@
-#define SAMPLES 17
+#define SAMPLES 21
 
 float4 TESR_SkinScatterData;
 float4 TESR_SkinScatterKernel[SAMPLES];
+float4 TESR_ReciprocalResolution;
 float4 TESR_SkinScatterDebug;
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -39,11 +40,16 @@ bool DistanceStillSkin(float skinDistance, float sceneDistance) {
     return abs(gap) < sceneDistance * TESR_SkinScatterData.z + 0.02f || (gap > 0.0f && gap < 1.5f);
 }
 
+bool HighlightsStillThere(float3 share, float3 sceneColor) {
+    return all(share <= sceneColor + share * 0.25f + 0.02f);
+}
+
 bool IsSkin(float4 scatter, float drawnLuma, float3 sceneColor, float viewDepth, float2 uv) {
     float distance = viewDepth * length(toWorld(uv));
     return scatter.a > 0.0f
         && DistanceStillSkin(scatter.a, distance)
-        && ColourStillSkin(luma(sceneColor), drawnLuma);
+        && ColourStillSkin(luma(sceneColor), drawnLuma)
+        && HighlightsStillThere(scatter.rgb, sceneColor);
 }
 
 float3 Decode(float3 c) { return c * c; }
@@ -79,7 +85,7 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
         else {
             float distance = depthM * length(toWorld(uv));
             bool distanceOK = DistanceStillSkin(scatterM.a, distance);
-            bool colourOK = ColourStillSkin(luma(sceneM.rgb), albedoM.a);
+            bool colourOK = ColourStillSkin(luma(sceneM.rgb), albedoM.a) && HighlightsStillThere(scatterM.rgb, sceneM.rgb);
             tint = !distanceOK ? float3(1.0f, 0.0f, 0.0f) : (!colourOK ? float3(0.0f, 0.2f, 1.0f) : float3(0.0f, 1.0f, 0.0f));
         }
         return float4(lerp(sceneM.rgb, tint, 0.6f), sceneM.a);
@@ -88,6 +94,13 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
     if (!IsSkin(scatterM, albedoM.a, sceneM.rgb, depthM, uv)) return colorM;
 
     float3 lightM = firstPass ? ToLight(colorM.rgb, scatterM.rgb, albedoM.rgb) : Unpack(colorM.rgb);
+
+    [flatten] if (TESR_SkinScatterDebug.y > 0.5f) {
+        float2 pixel = floor(uv / TESR_ReciprocalResolution.xy) + 5.588238f * TESR_SkinScatterDebug.z;
+        float angle = frac(52.9829189f * frac(dot(pixel, float2(0.06711056f, 0.00583715f)))) * 6.2831853f;
+        float c = cos(angle), s = sin(angle);
+        dir = float2(dir.x * c - dir.y * s, dir.x * s + dir.y * c);
+    }
 
     float2 stepUV = dir * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) * (0.5f * TESR_SkinScatterData.x / max(depthM, 1.0f));
 
@@ -103,7 +116,7 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
 
         float3 light = firstPass ? ToLight(color.rgb, scatter.rgb, albedo.rgb) : Unpack(color.rgb);
 
-        float follow = saturate(TESR_SkinScatterData.y * abs(depthM - depth));
+        float follow = saturate(TESR_SkinScatterData.y * TESR_ProjectionTransform[1][1] * abs(depthM - depth));
         light = lerp(light, lightM, follow * follow);
         light = IsSkin(scatter, albedo.a, scene, depth, sampleUV.xy) ? light : lightM;
 
@@ -115,9 +128,10 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
     float4 original = sceneM;
     float3 albedo = Decode(albedoM.rgb);
     float3 participation = Participation(albedo);
+    float3 highlights = min(scatterM.rgb, original.rgb);
     float3 light = blurred * AlbedoFactor(albedo) * participation
-                 + Decode(max(original.rgb - scatterM.rgb, 0.0f)) * (1.0f - participation * participation);
-    float3 result = Encode(light) + scatterM.rgb;
+                 + Decode(original.rgb - highlights) * (1.0f - participation * participation);
+    float3 result = Encode(light) + highlights;
 
     if (TESR_SkinScatterDebug.x > 2.5f) {
         float change = luma(result) - luma(original.rgb);

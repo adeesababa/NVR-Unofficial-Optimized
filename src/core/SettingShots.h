@@ -7,6 +7,7 @@
 #include <vector>
 #include "EffectSelfTestCore.h"
 #include "GpuProfiler.h"
+#include "ImGuiManager.h"
 
 namespace SettingShots {
 
@@ -14,7 +15,7 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };
 
 	struct Change { bool effect = false, console = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; };
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; };
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -73,12 +74,23 @@ namespace SettingShots {
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
+			else if (command == "menu" || command == "menutests") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a menu before the first 'shot'"; return false; }
+				if (command == "menu") words >> List.back().menu;
+				else List.back().menuTests = true;
+			}
 			else if (command == "console") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a command before the first 'shot'"; return false; }
 				std::string rest;
 				std::getline(words, rest);
 				const size_t start = rest.find_first_not_of(" 	");
 				if (start == std::string::npos) { error = "line " + std::to_string(number) + ": empty console command"; return false; }
+				std::string head = rest.substr(start, rest.find_first_of(" 	", start) - start);
+				for (char& ch : head) ch = (char)tolower((unsigned char)ch);
+				if (head == "coc" || head == "cow" || head == "centeron") {
+					error = "line " + std::to_string(number) + ": coc/cow hang the game from a shot; use player.moveto <a reference in that cell>";
+					return false;
+				}
 				Change c; c.console = true; c.value = rest.substr(start);
 				List.back().changes.push_back(c);
 			}
@@ -131,9 +143,11 @@ namespace SettingShots {
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
 		}
 		TheSettingManager->LoadSettings();
+		if (!s.menu.empty()) ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
 	}
 
 	inline void Revert() {
+		if (Index < List.size() && !List[Index].menu.empty()) ImGuiManager::TestShowMenu(nullptr, false);
 		for (auto u = Undos.rbegin(); u != Undos.rend(); ++u) {
 			if (u->effect) { TheShaderManager->SwitchShaderStatus(u->section.c_str()); continue; }
 			switch (u->type) {
@@ -252,11 +266,12 @@ namespace SettingShots {
 			if (!Running) return;
 		}
 		if (!Commands.empty()) {
-			for (const std::string& line : Commands) {
+			std::vector<std::string> lines;
+			lines.swap(Commands);
+			for (const std::string& line : lines) {
 				Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
 				if (g_ConsoleInterface) g_ConsoleInterface->RunScriptLine(line.c_str(), nullptr);
 			}
-			Commands.clear();
 		}
 		if (Moves && Player) Cell = Player->parentCell;
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
@@ -293,8 +308,17 @@ namespace SettingShots {
 
 	inline void Capture(IDirect3DSurface9* surface) {
 		if (!Running || Frame < Frames || !surface) return;
+		if (!List[Index].menu.empty()) return;
 		if (FinalPicture) { int idle = 0; FinalState.compare_exchange_strong(idle, 1); return; }
 		TakeShot(surface);
+	}
+
+	inline void CaptureMenu() {
+		if (!Running || Frame < Frames || Index >= List.size() || List[Index].menu.empty()) return;
+		IDirect3DSurface9* backBuffer = nullptr;
+		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a menu picture"); return; }
+		TakeShot(backBuffer);
+		backBuffer->Release();
 	}
 
 	inline void CaptureFinal() {

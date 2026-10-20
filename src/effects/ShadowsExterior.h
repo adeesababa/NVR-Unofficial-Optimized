@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TerrainShadows.h"
+
 typedef struct frustum {
 	enum PLANE {
 		PLANENEAR = 0,
@@ -167,6 +169,11 @@ public:
 			int Quality;
 			bool ContactHardening;
 			float ContactHardeningStrength, ContactHardeningMinSoftness;
+			float InvisibleLightShadowStrength;
+			float FixtureDistance;
+			float LampSize;
+			float MaxSoftness;
+			bool LampGlassShadows;
 		} Forward;
 	};
 
@@ -207,6 +214,10 @@ public:
 	};
 	SettingsShadowStruct	Settings;
 	ShadowStruct			Constants;
+	TerrainShadowMap		TerrainShadows;
+	D3DXVECTOR4				SunLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+	D3DXVECTOR4				AmbientLight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+	void					UpdateLightColors();
 	ShadowMapSettings		ShadowMaps[5];
 	bool					SunFaded = false;
 	bool					FadedContactUnread();

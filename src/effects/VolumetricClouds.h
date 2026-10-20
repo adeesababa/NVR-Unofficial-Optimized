@@ -31,6 +31,7 @@ public:
 		int		ReflectionDebug;
 		float	FineDetail;
 		float	FineDetailSize;
+		float	CumulusShape;
 		float	Sharpness;
 		float	FromWeatherTextures;
 		bool	FixedMarchExit;

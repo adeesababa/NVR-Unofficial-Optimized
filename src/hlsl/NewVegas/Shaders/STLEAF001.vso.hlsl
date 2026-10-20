@@ -23,6 +23,12 @@ float4 BranchRows[16] : register(c18);  // 4 matrices, row stride 1, matrix stri
 float4 LeafData[48]   : register(c34);
 float4 TESR_Translucency : register(c82);
 float4 TESR_LeafStorm : register(c134);
+float4 TESR_PlantLeafWind  : register(c135);
+float4 TESR_PlantLeafWind2 : register(c136);
+float4 TESR_PlantLeafWind3 : register(c137);
+float4 TESR_CameraPosition : register(c138);
+row_major float4x4 TESR_ViewProjectionTransform : register(c139);
+#include "includes/PlantWind.hlsl"
 
 struct VS_INPUT {
     float4 position     : POSITION;
@@ -68,6 +74,17 @@ VS_OUTPUT main(VS_INPUT IN) {
         float flutter = TESR_LeafStorm.y * sin(TESR_LeafStorm.z + v3.z * 1.7f);
         swingA = swingA * TESR_LeafStorm.x + flutter;
         swingB = swingB * TESR_LeafStorm.x + flutter * 0.7f;
+    }
+    float leafLean = 0.0f;
+    [branch] if (TESR_PlantLeafWind.w > 0.0f) {
+        const float2 base = GetShadowWorldPos(float4(ModelViewProj._m03, ModelViewProj._m13, ModelViewProj._m23, ModelViewProj._m33)).xy + TESR_CameraPosition.xy;
+        const float gust = PlantLeafGust(base, TESR_PlantLeafWind.xy, TESR_PlantLeafWind.z);
+        const float flutter = TESR_PlantLeafWind2.x * sin(2.0f * TESR_PlantLeafWind.z + v3.z * 1.7f + (base.x - base.y) * 0.0078125f);
+        const float boost = 1.0f + TESR_PlantLeafWind2.w * gust;
+        swingA = swingA * boost + flutter;
+        swingB = swingB * boost + flutter * 0.7f;
+        const float rise = saturate(v0.z * TESR_PlantLeafWind2.z);
+        leafLean = TESR_PlantLeafWind2.y * gust * rise * rise;
     }
     a = WrapPi(swingA, 0.159154937f);
     // xy rotation of the camera basis. Identity at zero wind: offset = p*Right + q*Up.
@@ -117,6 +134,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     float lightScale = frac(v3.z);
 
     OUT.position = mul(ModelViewProj, pos);
+    [branch] if (leafLean != 0.0f) OUT.position += mul(float4(TESR_PlantLeafWind3.xy * leafLean, 0.0f, 0.0f), TESR_ViewProjectionTransform);
 
     float3 shadowWorldPos = GetShadowWorldPos(OUT.position);
     [branch] if (TESR_Translucency.x > 0.0f) {

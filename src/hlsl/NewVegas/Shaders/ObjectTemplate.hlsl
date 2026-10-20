@@ -185,6 +185,18 @@
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON
 #endif
+#if defined(PS) && defined(OPT) && defined(SPECULAR) && !defined(ONLY_SPECULAR) && defined(LIGHTS) && defined(SPECULAR_LAMPS6)
+    #if LIGHTS > 3 && SPECULAR_LAMPS6
+        #define NVR_SLOT_TIGHT
+        #define RMAOS_NO_FADE
+    #endif
+#endif
+#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+    #define PBR_SPEC_FADE
+    #ifdef NVR_SLOT_TIGHT
+        #define PBR_SPEC_FADE_HIGHLIGHT_ONLY
+    #endif
+#endif
 #include "includes/Object.hlsl"
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
@@ -271,6 +283,13 @@ float3 ApplyBarrelHeat(float3 color, float mask) {
     #define CLOTH_WIND
     #include "includes/ClothWind.hlsl"
 #endif
+#ifndef PLANT_WIND_ON
+    #define PLANT_WIND_ON 0
+#endif
+#if defined(VS) && PLANT_WIND_ON
+    #define PLANT_WIND
+    #include "includes/PlantWind.hlsl"
+#endif
 
 // Toggles.
 #define useVertexColor Toggles.x
@@ -290,6 +309,9 @@ struct VS_INPUT {
 #ifdef SKIN
     float3 blendWeight : BLENDWEIGHT;
     float4 blendIndices : BLENDINDICES;
+#endif
+#if defined(SKIN) && defined(CLOTH_WIND)
+    float3 clothWeight : TEXCOORD7;
 #endif
 };
 
@@ -369,7 +391,10 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        #endif
+        #ifdef PLANT_WIND
+            [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);
         #endif
     
         OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -382,7 +407,35 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+            float3 clothOut = 0.0f;
+            float4 clothLegL = 0.0f, clothLegR = 0.0f;
+            float3 clothUp = 0.0f;
+            [branch] if (ClothA.y > 4.5f) {
+                [branch] if (ClothWalk.x > 0.5f) {
+                    const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
+                    position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
+                    tbn = float3x3(normalize(lerp(tbn[0], normalize(ClothPelvisVector(IN.tangent)), hw)),
+                                   normalize(lerp(tbn[1], normalize(ClothPelvisVector(IN.binormal)), hw)),
+                                   normalize(lerp(tbn[2], normalize(ClothPelvisVector(IN.normal)), hw)));
+                    clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
+                    clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
+                    clothLegL = ClothLegBind(position.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
+                    clothLegR = ClothLegBind(position.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
+                }
+                else {
+                    clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+                    const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+                    const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+                    clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
+                    clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
+                    clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+                }
+            }
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);
+            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+                position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
+                position.xyz += ClothLegPush(position.xyz, clothOut);
+            }
         #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
@@ -544,7 +597,10 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
-        ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    #endif
+    #ifdef PLANT_WIND
+        [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);
     #endif
     
     OUT.sPosition.xyzw = mul(ModelViewProj, position.xyzw);
@@ -557,7 +613,35 @@ VS_OUTPUT main(VS_INPUT IN) {
         position.w = 1;
         position.xyz = BonesTransformPosition(Bones, offset, blend, position);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor);
+            float3 clothOut = 0.0f;
+            float4 clothLegL = 0.0f, clothLegR = 0.0f;
+            float3 clothUp = 0.0f;
+            [branch] if (ClothA.y > 4.5f) {
+                [branch] if (ClothWalk.x > 0.5f) {
+                    const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
+                    position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
+                    tbn = float3x3(normalize(lerp(tbn[0], normalize(ClothPelvisVector(IN.tangent)), hw)),
+                                   normalize(lerp(tbn[1], normalize(ClothPelvisVector(IN.binormal)), hw)),
+                                   normalize(lerp(tbn[2], normalize(ClothPelvisVector(IN.normal)), hw)));
+                    clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
+                    clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
+                    clothLegL = ClothLegBind(position.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
+                    clothLegR = ClothLegBind(position.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
+                }
+                else {
+                    clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+                    const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+                    const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+                    clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
+                    clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
+                    clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+                }
+            }
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);
+            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+                position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
+                position.xyz += ClothLegPush(position.xyz, clothOut);
+            }
         #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif
@@ -658,6 +742,9 @@ struct PS_INPUT {
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
+#if defined(ONLY_SPECULAR)
+    float4 highlightCopy : COLOR1;
+#endif
 };
 
 #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
@@ -1072,6 +1159,9 @@ PS_OUTPUT main(PS_INPUT IN) {
         OUT.color.a = baseColor.a;
     #else
         OUT.color.a = baseColor.a * AmbientColor.a;
+    #endif
+    #if defined(ONLY_SPECULAR)
+        OUT.highlightCopy = OUT.color;
     #endif
 
     return OUT;

@@ -6,6 +6,11 @@
 #if CLOTH_WIND_ON
     #include "../includes/ClothWind.hlsl"
 #endif
+float4 TESR_PlantLeafWind  : register(c131);
+float4 TESR_PlantLeafWind2 : register(c132);
+float4 TESR_PlantLeafWind3 : register(c133);
+float4 TESR_CameraPosition : register(c134);
+#include "../includes/PlantWind.hlsl"
 
 row_major float4x4 TESR_ShadowWorldTransform : register(c0);
 row_major float4x4 TESR_ShadowViewProjTransform : register(c4);
@@ -25,6 +30,17 @@ float4 LODLandParams : register(c145);
 
 #define	weight(v)		dot(v, 1)
 
+#if CLOTH_WIND_ON
+float3 ClothBonesVector(float4 offset, float3 bw, float3 v) {
+	const float4 vw = float4(v, 0);
+	const float3 v8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), vw);
+	const float3 v6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), vw);
+	const float3 v5 = mul(float3x4(Bones[0 + offset.x].xyzw, Bones[1 + offset.x].xyzw, Bones[2 + offset.x].xyzw), vw);
+	const float3 v4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), vw);
+	return ((1 - weight(bw)) * v8) + (bw.z * v6) + (bw.x * v5) + (v4 * bw.y);
+}
+#endif
+
 struct VS_INPUT {
     float4 position : POSITION;
 	float4 texcoord_0 : TEXCOORD0;
@@ -34,6 +50,7 @@ struct VS_INPUT {
 #if CLOTH_WIND_ON
     float4 color : COLOR0;
     float3 normal : NORMAL;
+    float3 clothWeight : TEXCOORD7;
 #endif
 };
 
@@ -70,8 +87,12 @@ VS_OUTPUT main(VS_INPUT IN) {
 	float4 r4;
 	float4 r5;
 	float4 r0 = IN.position;
+	float plantLean = 0.0f;
 #if CLOTH_WIND_ON
 	float3 clothNormal = IN.normal;
+	float3 clothOut = 0.0f;
+	float4 clothLegL = 0.0f, clothLegR = 0.0f;
+	float3 clothUp = 0.0f;
 #endif
 	
 	if (TESR_ShadowData.x == 1.0f) { // Skinned (Actors)
@@ -93,10 +114,40 @@ VS_OUTPUT main(VS_INPUT IN) {
 			const float3 n4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), nw);
 			clothNormal = ((1 - weight(IN.blendweight.xyz)) * n8) + (IN.blendweight.z * n6) + (IN.blendweight.x * n5) + (n4 * IN.blendweight.y);
 		}
+		[branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+			r0.xyz = lerp(r0.xyz, ClothPelvisPoint(IN.position.xyz), saturate(IN.clothWeight.x) * ClothWalk.y);
+			clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
+			clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
+			clothLegL = ClothLegBind(r0.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
+			clothLegR = ClothLegBind(r0.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
+		}
+		else [branch] if (ClothA.y > 4.5f) {
+			const float4 ow = float4(ClothOutwardBind(IN.position.xyz), 0);
+			const float3 o8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), ow);
+			const float3 o6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), ow);
+			const float3 o5 = mul(float3x4(Bones[0 + offset.x].xyzw, Bones[1 + offset.x].xyzw, Bones[2 + offset.x].xyzw), ow);
+			const float3 o4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), ow);
+			clothOut = ((1 - weight(IN.blendweight.xyz)) * o8) + (IN.blendweight.z * o6) + (IN.blendweight.x * o5) + (o4 * IN.blendweight.y);
+			const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+			const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+			clothLegL = float4(ClothBonesVector(offset, IN.blendweight.xyz, legL.xyz), legL.w);
+			clothLegR = float4(ClothBonesVector(offset, IN.blendweight.xyz, legR.xyz), legR.w);
+			clothUp = ClothBonesVector(offset, IN.blendweight.xyz, float3(0.0f, 0.0f, 1.0f));
+		}
 #endif
 	}
 	else if (TESR_ShadowData.x == 2.0f) { // Leaves (Speedtrees)
-        r0.xyzw = SpeedTreeTransform(BillboardUp, BillboardRight, RockParams, RustleParams, WindMatrices, LeafBase, IN.blendindexes, r0);
+        float4 rockParams = RockParams, rustleParams = RustleParams;
+        [branch] if (TESR_PlantLeafWind.w > 0.0f) {
+            const float2 base = float2(TESR_ShadowWorldTransform._m30, TESR_ShadowWorldTransform._m31) + TESR_CameraPosition.xy;
+            const float gust = PlantLeafGust(base, TESR_PlantLeafWind.xy, TESR_PlantLeafWind.z);
+            const float boost = 1.0f + TESR_PlantLeafWind2.w * gust;
+            rockParams.x *= boost;
+            rustleParams.x *= boost;
+            const float rise = saturate(IN.position.z * TESR_PlantLeafWind2.z);
+            plantLean = TESR_PlantLeafWind2.y * gust * rise * rise;
+        }
+        r0.xyzw = SpeedTreeTransform(BillboardUp, BillboardRight, rockParams, rustleParams, WindMatrices, LeafBase, IN.blendindexes, r0);
     }
     else if (TESR_ShadowData.x == 3.0f) { // Terrain LOD.
         float4 r1 = IN.position;
@@ -107,10 +158,18 @@ VS_OUTPUT main(VS_INPUT IN) {
 
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
+#if PLANT_WIND_ON
+    [branch] if (TESR_ShadowData.x == 0.0f && PlantA.x < -0.5f) r0.xyz += PlantWindMove(r0.xyz);
+#endif
 #if CLOTH_WIND_ON
-    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color);
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);
+    if (TESR_ShadowData.x == 1.0f && ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+        r0.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
+        r0.xyz += ClothLegPush(r0.xyz, clothOut);
+    }
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
+    [branch] if (plantLean != 0.0f) r0.xy += TESR_PlantLeafWind3.xy * plantLean;
 	r0 = mul(r0, TESR_ShadowViewProjTransform);
 	
 	// Pancaking to ensure geometry outside of near plane is not culled.

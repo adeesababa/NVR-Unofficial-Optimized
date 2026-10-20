@@ -14,6 +14,8 @@ sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP;
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = ANISOTROPIC; MIPFILTER = LINEAR; };
 sampler2D TESR_PointShadowBuffer : register(s2)  = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NormalsBuffer : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+float4 TESR_SunFarApply;
+sampler2D TESR_SunFarBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 
 static const float DARKNESS = max(0.0,1-TESR_ShadowData.y);
@@ -53,6 +55,7 @@ float4 Shadow(VSOUT IN) : COLOR0
 {
 	float4 color = tex2D(TESR_RenderedBuffer, IN.UVCoord);
 	float2 uv = IN.UVCoord;
+	color.rgb *= lerp(1.0f, tex2Dlod(TESR_SunFarBuffer, float4(uv, 0.0f, 0.0f)).rgb, saturate(TESR_SunFarApply.x));
 
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float depth = readDepthLod(uv);

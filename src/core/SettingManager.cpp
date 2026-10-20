@@ -1,4 +1,5 @@
 #define TOML11_PRESERVE_COMMENTS_BY_DEFAULT
+#include <unordered_map>
 
 // GetCurrentDirectoryA is reliable at startup but GetSaveFileNameA (and other
 // common-dialog calls) can silently change it.  Capture the game root once and
@@ -54,7 +55,10 @@ void SettingManager::Configuration::Init() {
 		TomlConfig = toml::parse<toml::discard_comments, std::map>((std::string_view)TomlFilename).as_table();
 	}
 	catch(const std::exception& e){
-		Logger::Log("error loading toml: %s, new config will be created from defaults.", e.what());
+		if (GetFileAttributesA(TomlFilename) == INVALID_FILE_ATTRIBUTES)
+			Logger::Log("No settings file yet (%s): one will be made from the defaults.", TomlFilename);
+		else
+			Logger::Log("error loading toml: %s, new config will be created from defaults.", e.what());
 		TomlConfig = toml::table();
 	}
 
@@ -345,7 +349,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	return FindSection(&TomlConfig, &keys);
 }
 
-static const int UnofficialSettingsVersion = 65;
+static const int UnofficialSettingsVersion = 66;
 extern bool ParallaxLiteDistanceMigrationPending;
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -435,6 +439,10 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 		if (saved && saved->is_table() && saved->contains("ParallaxLite") && saved->at("ParallaxLite").is_boolean() &&
 			saved->at("ParallaxLite").as_boolean())
 			ParallaxLiteDistanceMigrationPending = true;
+	}
+	if (version < 66) {
+		replace("Shaders.Skin.Scattering", "Width", 8.0, 28.6, false);
+		replace("Shaders.Skin.Interiors", "Width", 8.0, 28.6, false);
 	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
@@ -1552,8 +1560,44 @@ void SettingManager::CreateNodeS(Configuration::ConfigNode* Node, const char* Se
 }
 
 
+SettingManager::MenuSwitch SettingManager::GetMenuShaderSwitch(const char* Name) {
+	static std::unordered_map<std::string, MenuSwitch> fromDefaults;
+	MenuSwitch kind;
+	auto it = fromDefaults.find(Name);
+	if (it != fromDefaults.end()) kind = it->second;
+	else {
+		auto hasEnabled = [this, Name](const char* sub) {
+			char path[256];
+			snprintf(path, sizeof(path), "_Shaders.%s.%s", Name, sub);
+			StringList keys;
+			SplitString(path, ".", &keys);
+			tomlValue* section = Config.FindSection(&Config.DefaultConfig, &keys);
+			if (!section) return false;
+			try { section->at("Enabled"); return true; }
+			catch (const std::exception&) { return false; }
+		};
+		kind = hasEnabled("Status") ? MenuSwitch::Status : hasEnabled("Main") ? MenuSwitch::MainEnabled : MenuSwitch::None;
+		fromDefaults.emplace(Name, kind);
+	}
+	if (kind == MenuSwitch::None && (TheShaderManager->GetEffectByName(Name) || TheShaderManager->GetShaderCollectionByName(Name)))
+		return MenuSwitch::Status;
+	return kind;
+}
+
+
 bool SettingManager::GetMenuShaderEnabled(const char* Name) {
 	char settingString[256];
+
+	switch (GetMenuShaderSwitch(Name)) {
+	case MenuSwitch::MainEnabled:
+		snprintf(settingString, sizeof(settingString), "Shaders.%s.Main", Name);
+		return GetSettingI(settingString, "Enabled") != 0;
+	case MenuSwitch::None:
+		return true;
+	default:
+		break;
+	}
+
 	strcpy(settingString, "Shaders.");
 	strcat(settingString, Name);
 
@@ -1584,9 +1628,9 @@ bool SettingManager::GetMenuShaderEnabled(const char* Name) {
 
 void SettingManager::SetMenuShaderEnabled(const char* Name, bool enabled) {
 	char settingString[256];
-	strcpy(settingString, "Shaders.");
-	strcat(settingString, Name);
-	strcat(settingString, ".Status");
+	const MenuSwitch kind = GetMenuShaderSwitch(Name);
+	if (kind == MenuSwitch::None) return;
+	snprintf(settingString, sizeof(settingString), kind == MenuSwitch::MainEnabled ? "Shaders.%s.Main" : "Shaders.%s.Status", Name);
 	SetSetting(settingString, "Enabled", enabled);
 }
 

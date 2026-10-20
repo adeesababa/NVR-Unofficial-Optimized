@@ -41,6 +41,11 @@
 #else
     #define TERRAIN_BLEND_ACTIVE 0
 #endif
+#if TEX_COUNT >= 7 && SKYLIGHTING_MODE
+    #define HEIGHT_EDGE2_CONTRAST 0
+#else
+    #define HEIGHT_EDGE2_CONTRAST 1
+#endif
 
 
 struct VS_INPUT {
@@ -210,17 +215,30 @@ float terrainBlendDepthRange(TerrainBlendGap gap, float slope) {
 float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
     float maxDistance = TESR_TerrainBlendData.z;
     if (landViewDepth > maxDistance || gap.covered < 0.0f) return -1.0f;
-    float distance = terrainBlendDepthRange(gap, slope);
-    if (distance < 0.05f) return -1.0f;
-    float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
-    float keep = saturate(gap.covered / range);
+    float keep;
+    [branch] if (TESR_TerrainBlendShape.y < -9.5f) {
+        const float slopeFactor = lerp(1.0f, TESR_TerrainBlendShape.z, saturate(slope * 2.0f));
+        const float range = max((1.0f / TESR_TerrainBlendData.y) * slopeFactor, 0.05f);
+        keep = saturate(gap.covered / max(range * 0.35f, 0.0001f));
+    }
+    else {
+        float distance = terrainBlendDepthRange(gap, slope);
+        if (distance < 0.05f) return -1.0f;
+        float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
+        keep = saturate(gap.covered / range);
+    }
     return lerp(keep, 1.0f, saturate((landViewDepth / maxDistance - 0.75f) * 4.0f));
 }
 
 float terrainBlendEdge(float keep, float height) {
     if (keep >= 1.0f || keep < 0.0f) return keep;
     [branch] if (TESR_TerrainBlendShape.y < 0.0f) {
-        const float strength = -TESR_TerrainBlendShape.y;
+        const bool edge2 = TESR_TerrainBlendShape.y < -9.5f;
+        const float strength = edge2 ? -TESR_TerrainBlendShape.y - 10.0f : -TESR_TerrainBlendShape.y;
+        if (strength <= 0.0f) return keep;
+#if HEIGHT_EDGE2_CONTRAST
+        if (edge2) height = saturate((height - 0.5f) * 8.0f + 0.5f + 0.20f);
+#endif
         const float coveragePower = 1.0f + strength, heightPower = 4.0f * strength;
         const float terrainWeight = pow(keep, coveragePower) * (0.001f + pow(saturate(height), heightPower));
         const float meshWeight = pow(1.0f - keep, coveragePower) * (0.001f + pow(0.5f, heightPower));
@@ -291,14 +309,28 @@ PS_OUTPUT main(PS_INPUT IN) {
     float gloss = 0.0f;
     float specExponent = 0.0f;
     float2 odx = ddx(offsetUV), ody = ddy(offsetUV);
-    float3 baseColor = LinColor(blendDiffuseMaps(IN.vertex_color, offsetUV, odx, ody, texCount, BaseMap, weights));
+    float3 landVertexColor = lerp(IN.vertex_color, 1.0f, TESR_LODBlendData.z);
+#if TERRAIN_VARIATION
+    StochasticOffsets stochastic = ComputeStochasticOffsets(IN.uv.xy, TESR_TerrainVariationData.x);
+    stochastic.tap1Weight = lerp(1.0f, stochastic.tap1Weight, saturate((dist - TESR_TerrainVariationData.z) / max(TESR_TerrainVariationData.w, 1.0f)));
+    float tapWeights[7] = { 1, 1, 1, 1, 1, 1, 1 };
+    float3 baseColor = LinColor(blendDiffuseMapsVaried(landVertexColor, offsetUV, odx, ody, texCount, BaseMap, weights, stochastic, tapWeights));
+#else
+    float3 baseColor = LinColor(blendDiffuseMaps(landVertexColor, offsetUV, odx, ody, texCount, BaseMap, weights));
+#endif
 #if TERRAIN_BLEND_ACTIVE
     [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y != 0.0f)
         terrainKeep = terrainBlendEdge(terrainKeep, terrainBlendHeight(offsetUV, dx, dy, texCount, BaseMap, weights, heightStatus));
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
         clip(terrainKeep - terrainBlendNoise(IN.screenPos));
 #endif
+#if TERRAIN_VARIATION
+    StochasticOffsets stochasticNormals = stochastic;
+    stochasticNormals.tap1Weight = lerp(1.0f, stochastic.tap1Weight, saturate(TESR_TerrainVariationExtra.x));
+    float3 combinedNormal = blendNormalMapsVaried(offsetUV, odx, ody, texCount, NormalMap, weights, spec, stochasticNormals, tapWeights, gloss, specExponent);
+#else
     float3 combinedNormal = blendNormalMaps(offsetUV, odx, ody, texCount, NormalMap, weights, spec, gloss, specExponent);
+#endif
 
     float3 lightTS = mul(tbn, SunDir.xyz);
     float parallaxShadowMultiplier = 1.0;

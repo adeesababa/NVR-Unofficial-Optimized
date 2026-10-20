@@ -33,6 +33,8 @@ public:
 	};
 	TexturesStruct	Textures;
 	CachedHandle techBounce, paramBounceData, paramBounceLayout;
+	CachedHandle paramExtra;
+	void	BindExtras(IDirect3DDevice9* Device, bool on);
 
 	void	UpdateConstants();
 	void	RegisterConstants();

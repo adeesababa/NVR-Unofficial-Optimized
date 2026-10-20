@@ -10,7 +10,7 @@ static void ReadLook(const char* section, VolumetricLightEffect::LookStruct& loo
 }
 
 void VolumetricLightEffect::UpdateSettings() {
-	ReportHistory("settings changed");
+	if (GpuTimer::Enabled) ReportHistory("settings changed");
 	const char* section = "Shaders.VolumetricLight.Main";
 	ReadLook(section, Settings.Day);
 	ReadLook("Shaders.VolumetricLight.Night", Settings.Night);

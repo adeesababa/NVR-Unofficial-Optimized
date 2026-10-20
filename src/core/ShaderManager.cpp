@@ -2,6 +2,7 @@
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "LampFixtures.h"
 #include "EffectSelfTest.h"
 
 #define RESZ_CODE 0x7FA05000
@@ -80,6 +81,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<PointShadowsEffect>(&TheShaderManager->Effects.PointShadows);
 	TheShaderManager->RegisterEffect<PointShadows2Effect>(&TheShaderManager->Effects.PointShadows2);
 	TheShaderManager->RegisterEffect<SunShadowsEffect>(&TheShaderManager->Effects.SunShadows);
+	TheShaderManager->RegisterEffect<SunFarEffect>(&TheShaderManager->Effects.SunFar);
 	TheShaderManager->RegisterEffect<SpecularEffect>(&TheShaderManager->Effects.Specular);
 	TheShaderManager->RegisterEffect<SnowEffect>(&TheShaderManager->Effects.Snow);
 	TheShaderManager->RegisterEffect<SnowAccumulationEffect>(&TheShaderManager->Effects.SnowAccumulation);
@@ -327,12 +329,13 @@ void ShaderManager::UpdateConstants() {
 		// off, or re-enabling it later would see a stale-but-matching cache and
 		// skip the immediate resolve it needs to do.
 		if (TheSettingManager->SettingsMain.Main.PresetManagerEnabled && PresetManager::ShouldReResolve(currentCell))
-			PresetManager::ResolveAndApply(currentCell);
+			PresetManager::ResolveAndApply(currentCell, true);
 	}
 
 	GameState.isUnderwater = Tes->sky->GetIsUnderWater();
 	GameState.isRainy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Rainy : false;
 	GameState.isSnow = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Snow : false;
+	if (!GameState.isSnow && TheSettingManager->GetSettingI("Shaders.Snow.Main", "ForceSnow")) { GameState.isSnow = true; GameState.isRainy = false; }
 	GameState.isCloudy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Cloudy : false;
 
 	TimeGlobals* GameTimeGlobals = TimeGlobals::Get();
@@ -688,6 +691,10 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		notes[noteCount++] = { light, reason, distance, key, source->Spec.r, source->m_worldTransform.pos.toD3DXVEC4(),
 			D3DXVECTOR4(source->Diff.r, source->Diff.g, source->Diff.b, source->Dimmer), (int)source->CanCarry };
 	};
+	const bool indoorsForward = viewTest && !GameState.isExterior;
+	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
+	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || logLamps);
+	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
 
 	auto reachesView = [&](const D3DXVECTOR4& lightPosition, float reach) {
 		const D3DXVECTOR3 v(lightPosition.x - TheRenderManager->CameraPosition.x, lightPosition.y - TheRenderManager->CameraPosition.y,
@@ -822,8 +829,26 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 				}
 			}
 
+			if (classifyLamps && CastShadow) {
+				const bool invisible = LampFixtures::Invisible(Light, Settings->Forward.FixtureDistance);
+				if (invisible) CastShadow = invisibleStrength > 0.0f;
+				static std::unordered_map<const void*, unsigned> loggedKind;
+				if (logLamps && loggedKind.size() < 512) {
+					auto seen = loggedKind.find(v->second);
+					if (seen == loggedKind.end() || seen->second != LampFixtures::Generation) {
+						loggedKind[v->second] = LampFixtures::Generation;
+						const D3DXVECTOR4 at = Light->m_worldTransform.pos.toD3DXVEC4();
+						Logger::Log("LAMP %p is %s: nearest glowing mesh %.0f units (GLOW %d; FixtureDistance %.0f; %u glowing meshes in the cell)%s | at %.0f %.0f %.0f, reach %.0f, colour %.2f %.2f %.2f x %.2f",
+							v->second, invisible ? "an INVISIBLE light" : "at a lamp", LampFixtures::NearestGlow(Light), LampFixtures::NearestGlowIndex(Light),
+							Settings->Forward.FixtureDistance, (unsigned)LampFixtures::Glows.size(),
+							invisible ? (invisibleStrength > 0.0f ? ", its shadow at InvisibleLightShadowStrength" : ", no shadow") : "",
+							at.x, at.y, at.z, Light->Spec.r, Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+					}
+				}
+			}
+
 #if defined(OBLIVION)
-			// Oblivion exception for carried torch lights 
+			// Oblivion exception for carried torch lights
 			if (TorchOnBeltEnabled && Light->CanCarry == 2) {
 				HighProcessEx* Process = (HighProcessEx*)Player->process;
 				if (Process->OnBeltState == HighProcessEx::State::In) CastShadow = false;
@@ -1419,6 +1444,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
 	}
 
+	Effects.SunFar->RenderFactor(Device);
+
 	Device->SetRenderTarget(0, RenderTarget);
 
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
@@ -1596,7 +1623,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.Flashlight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.Flashlight->selectedPass, true, SourceSurface);
 		if (specularRenders) {
 			RenderEffectToRT(Effects.Specular->Textures.NormalsSurface, Effects.Specular, false, 1);
+			Effects.Specular->BindExtras(Device, true);
 			RenderEffectToRT(Effects.Specular->Textures.LightSurface, Effects.Specular, false, 2);
+			Effects.Specular->BindExtras(Device, false);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 		bool specularDone = false;

@@ -380,6 +380,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if HUD_RAIN
         skinSpecScale = lerp(skinSpecScale, max(skinSpecScale, 1.0f), hudRainGloss);
     #endif
+    setupSkinCS(N, V, normalize(N.x * IN.tangent.xyz + N.y * IN.binormal.xyz + N.z * IN.normal.xyz));
     float3 albedo = LinColor(baseColor.rgb);
 
     #if !defined(DIFFUSE)

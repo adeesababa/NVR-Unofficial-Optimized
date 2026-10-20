@@ -47,10 +47,14 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
     const bool SkinPixelShader = PixelShader && PixelShader->Name && !memcmp(PixelShader->Name, "SKIN", 4);
     SkinScatteringEffect* Blur = TheShaderManager->Effects.SkinScattering;
     const bool BlurRuns = Blur && Blur->Enabled && Blur->Supported && Blur->ScreenSpace;
-    if (NVRSkin && (TheShaderManager->Shaders.Skin->MuteGameHighlights || BlurRuns) && !SkinPixelShader && PassType >= 0x154 && PassType <= 0x177 && !sSkinHighlightMuted) {
-        TheRenderManager->device->GetRenderState(D3DRS_COLORWRITEENABLE, &sSkinSavedWriteMask);
-        TheRenderManager->device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
-        sSkinHighlightMuted = true;
+    const bool GameHighlightPass = NVRSkin && !SkinPixelShader && PassType >= 0x154 && PassType <= 0x177;
+    if (GameHighlightPass && !sSkinHighlightMuted) {
+        const bool Keep = !TheShaderManager->Shaders.Skin->MuteGameHighlights && (!BlurRuns || Blur->BindForGameHighlights(PixelShader));
+        if (!Keep) {
+            TheRenderManager->device->GetRenderState(D3DRS_COLORWRITEENABLE, &sSkinSavedWriteMask);
+            TheRenderManager->device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+            sSkinHighlightMuted = true;
+        }
     }
 
     SkinScatteringEffect* Scattering = TheShaderManager->Effects.SkinScattering;
@@ -62,10 +66,10 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
         FaceGenBound = BindFaceGenMaps(apThis, (NiGeometry*)apGeometry, Pass);
 
     if (TheSettingManager->SettingsMain.Develop.DebugMode && Global->OnKeyDown(TheSettingManager->SettingsMain.Develop.TraceShaders)) {
-        Logger::Log("SkinHook: pass %s (0x%X), pixel shader %s: highlights muted %d, scattering bound %d",
+        Logger::Log("SkinHook: pass %s (0x%X), pixel shader %s: highlights muted %d, copied %d, scattering bound %d",
             Pointers::Functions::GetPassDescription(PassType), (UInt32)PassType,
             (PixelShader && PixelShader->Name) ? PixelShader->Name : "(none)",
-            sSkinHighlightMuted ? 1 : 0, (Scattering && Scattering->Bound) ? 1 : 0);
+            sSkinHighlightMuted ? 1 : 0, (Scattering && Scattering->HighlightsBound) ? 1 : 0, (Scattering && Scattering->Bound) ? 1 : 0);
     }
     static int sLogLeft = -1;
     if (sLogLeft < 0) sLogLeft = (std::max)(0, TheSettingManager->GetSettingI("Shaders.Skin.Debug", "LogDraws"));
@@ -79,10 +83,10 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
         const void* RenderPass = *(void**)0x011F91E0;
         const UInt16 PassEnum = RenderPass ? *(const UInt16*)((const UInt8*)RenderPass + 0x04) : 0xFFFF;
         const bool Nvr = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
-        Logger::Log("SKIN DRAW %s: eCurrentPass 0x%X (%s), render pass 0x%X (%s), PS %s (%s), blend %d %d->%d, write 0x%X: muted %d, scatter bound %d, facegen %d",
+        Logger::Log("SKIN DRAW %s: eCurrentPass 0x%X (%s), render pass 0x%X (%s), PS %s (%s), blend %d %d->%d, write 0x%X: muted %d, highlights copied %d, scatter bound %d, facegen %d",
             ((NiGeometry*)apGeometry)->m_pcName ? ((NiGeometry*)apGeometry)->m_pcName : "?", (UInt32)PassType, Pointers::Functions::GetPassDescription(PassType),
             (UInt32)PassEnum, Pointers::Functions::GetPassDescription(PassEnum), (PixelShader && PixelShader->Name) ? PixelShader->Name : "(none)",
-            Nvr ? "NVR" : "game", (int)Blend, (int)Src, (int)Dst, (UInt32)Write, sSkinHighlightMuted ? 1 : 0, Scattering->Bound ? 1 : 0, FaceGenBound ? 1 : 0);
+            Nvr ? "NVR" : "game", (int)Blend, (int)Src, (int)Dst, (UInt32)Write, sSkinHighlightMuted ? 1 : 0, Scattering->HighlightsBound ? 1 : 0, Scattering->Bound ? 1 : 0, FaceGenBound ? 1 : 0);
     }
 
     const float ScreenSpace[4] = { (Scattering && Scattering->Bound) ? 1.0f : 0.0f, FaceGenBound ? 1.0f : 0.0f, 0.0f, 0.0f };

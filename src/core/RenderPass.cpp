@@ -1,5 +1,6 @@
 #include "RenderPass.h"
 #include "ClothWind.h"
+#include "PlantWind.h"
 #include "ShadowBoneUpload.h"
 #include "OrthoProbe.h"
 
@@ -48,11 +49,13 @@ void RenderPass::RenderAccum() {
 		PixelShader->SetCT();
 		VertexShader->SetCT();
 		ClothWind::ForGeometry(TheRenderManager->device, Geo, true);
+		PlantWind::ForGeometry(TheRenderManager->device, Geo, true);
 #if NVR_TEST_TOOLS
 		if (OrthoProbe::Recording) OrthoProbe::OnDraw(this, Geo);
 #endif
 
 		RenderGeometry(Geo);
+		ClothWind::AfterDraw(TheRenderManager->device);
 	}
 }
 
@@ -126,7 +129,7 @@ void RenderPass::DrawSkinnedGeometryBuffer(NiGeometry* Geo, NiGeometryBufferData
 	else
 		TheRenderManager->renderState->SetVertexDeclaration(GeoData->VertexDeclaration, false);
 
-	ThisStdCall(0xE6D310, NiDX9Renderer::GetSingleton(), GeoData, Partition, nullptr);  // DrawSkinnedGeometry
+	ClothWind::DrawPartition(NiDX9Renderer::GetSingleton(), GeoData, Partition, nullptr);
 }
 
 

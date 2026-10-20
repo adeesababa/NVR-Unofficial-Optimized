@@ -3,6 +3,7 @@ float4 TESR_AmbientLightData2;
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;
 float4 NVR_ALFlags;
+float4 NVR_ALInterior;
 float4 NVR_ALScene;
 float4 NVR_ALTemporal;
 float4x4 NVR_ALReproject;
@@ -57,7 +58,10 @@ bool IsViewModel(float2 uv) {
 	return (TESR_DepthConstants.z == 0 && d < 0.9f) || (TESR_DepthConstants.z > 0 && d > 0.01f);
 }
 
+float4 NVR_SunFarFlags;
+sampler2D NVR_SunFarAL : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 float3 SunShadowApply(float3 color, float2 uv) {
+	color *= lerp(1.0f, tex2Dlod(NVR_SunFarAL, float4(uv, 0.0f, 0.0f)).rgb, NVR_SunFarFlags.x);
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * readDepthLod(uv);
 		if (worldPos.z < (TESR_WaterSettings.x + 2) && worldPos.z > (TESR_WaterSettings.x - 2) && dot(GetWorldNormalLod(uv), float3(0, 0, -1)) > 0.999)
@@ -445,6 +449,43 @@ float3 SurfaceColour(float3 lin) {
 	return min(level, MaxReflectance) * min(lerp(1.0f, hue, trust), 3.0f);
 }
 
+#define NVR_ALStats NVR_ALBuffer
+#define NVR_ALBalance NVR_ALHistory
+static const float2 StatsSize = float2(16.0f, 9.0f);
+
+float3 StatsAt(float2 uv) {
+	float3 lin = linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb);
+	float depth = readDepthLod(uv);
+	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(uv)) return float3(luma(lin), 0.0f, 0.0f);
+	float ao = lerp(DarkestAO, 1.0f, tex2Dlod(NVR_ALOcclusionHistory, float4(uv, 0.0f, 0.0f)).r);
+	ao = lerp(ao, 1.0f, saturate((luma(lin) - BrightFade) * 3.0f));
+	float3 albedo = SurfaceColour(lin);
+	float3 normal = normalize(GetWorldNormalLod(uv));
+	float3 bounce = GridBounce(toWorld(uv) * depth, normal) * (NVR_GridData.x * ao) * albedo;
+	float3 taken = (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb);
+	return float3(luma(lin), luma(taken), luma(bounce));
+}
+
+float4 StatsSample(VSOUT IN) : COLOR0 {
+	float2 cell = floor(IN.UVCoord * StatsSize);
+	float3 sum = 0.0f;
+	[unroll] for (int j = 0; j < 2; j++) {
+		[unroll] for (int i = 0; i < 2; i++) sum += StatsAt((cell * 2.0f + float2(i, j) + 0.5f) / (StatsSize * 2.0f));
+	}
+	return float4(sum, 1.0f);
+}
+
+float4 StatsReduce(VSOUT IN) : COLOR0 {
+	float3 total = 0.0f;
+	[loop] for (int j = 0; j < 9; j++) {
+		[loop] for (int i = 0; i < 16; i++) total += tex2Dlod(NVR_ALStats, float4((float2(i, j) + 0.5f) / StatsSize, 0.0f, 0.0f)).xyz;
+	}
+	float scale = saturate(NVR_ALInterior.z * total.y / max(total.z, 1.0e-6f));
+	float last = tex2Dlod(NVR_ALBalance, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
+	scale = NVR_ALInterior.y > 0.5f ? lerp(scale, last, NVR_ALInterior.w) : scale;
+	return float4(scale, total.yzx / (StatsSize.x * StatsSize.y * 4.0f));
+}
+
 float4 Apply(VSOUT IN) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	[branch] if (NVR_ALFlags.x > 0.5f) color = float4(SunShadowApply(color.rgb, IN.UVCoord), 1.0f);
@@ -485,6 +526,7 @@ float4 Apply(VSOUT IN) : COLOR0 {
 		gridBounce = GridBounce(cameraRelative, normal) * (NVR_GridData.x * ao);
 	}
 	[branch] if (DebugView > 8.5f) return delinearize(float4(DebugView < 9.5f ? gridBounce : albedo, 1.0f));
+	[branch] if (NVR_ALInterior.x > 0.5f) gridBounce *= tex2Dlod(NVR_ALBalance, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
 	[branch] if (DebugView > 7.5f) {
 		float3 cameraRelative = toWorld(IN.UVCoord) * depth;
 		float3 c = floor((cameraRelative - NVR_GridOrigin.xyz) / NVR_GridOrigin.w);
@@ -494,7 +536,8 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));
 	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));
-	lin = lin * ao + gridBounce * albedo;
+	[branch] if (NVR_ALInterior.x > 0.5f) lin = lin - (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb) + gridBounce * albedo;
+	else lin = lin * ao + gridBounce * albedo;
 	return delinearize(float4(lin, color.a));
 }
 
@@ -504,6 +547,8 @@ technique AmbientLight {
 	pass BlurX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(1.0f, 0.0f)); }
 	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
 	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
+	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
+	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
 
 }

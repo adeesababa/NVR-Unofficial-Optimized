@@ -8,6 +8,21 @@
 #endif
 
 float4 TESR_TerrainParallaxIso : register(c94);
+float4 TESR_LODBlendData : register(c97);
+
+#ifndef TERRAIN_VARIATION
+    #define TERRAIN_VARIATION 0
+#endif
+#ifndef TERRAIN_VARIATION_LAYERS
+    #define TERRAIN_VARIATION_LAYERS 3
+#endif
+#if TERRAIN_VARIATION
+    #if defined(__INTELLISENSE__)
+        #include "TerrainVariation.hlsl"
+    #else
+        #include "includes/TerrainVariation.hlsl"
+    #endif
+#endif
 
 #if defined(__INTELLISENSE__)
     #include "SkyAmbient.hlsl"
@@ -47,6 +62,43 @@ float3 blendDiffuseMaps(float3 vertexColor, float2 uv, float2 odx, float2 ody, i
 
     return color * vertexColor;
 }
+
+#if TERRAIN_VARIATION
+float3 blendDiffuseMapsVaried(float3 vertexColor, float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7], StochasticOffsets stochastic, inout float tapWeights[7]) {
+    float3 color = float3(0, 0, 0);
+    [unroll] for (int i = 0; i < texCount; i++) {
+        [branch] if (blends[i] != 0 || TESR_TerrainParallaxIso.y < 0.5f) {
+            if (i < TERRAIN_VARIATION_LAYERS) {
+                [branch] if (stochastic.tap1Weight < 0.999f) color += StochasticSampleAlbedo(tex[i], uv, odx, ody, stochastic, tapWeights[i]).xyz * blends[i];
+                else color += tex2Dgrad(tex[i], uv, odx, ody).xyz * blends[i];
+            }
+            else color += tex2Dgrad(tex[i], uv, odx, ody).xyz * blends[i];
+        }
+    }
+    return color * vertexColor;
+}
+
+float3 blendNormalMapsVaried(float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7], float spec[7], StochasticOffsets stochastic, float tapWeights[7], out float gloss, out float specExponent) {
+    gloss = 0.0f;
+    specExponent = 0.0f;
+    float3 blendedNormal = float3(0, 0, 0);
+    float4 normal;
+    [unroll] for (int i = 0; i < texCount; i++) {
+        [branch] if (blends[i] != 0 || TESR_TerrainParallaxIso.y < 0.5f) {
+        if (i < TERRAIN_VARIATION_LAYERS) {
+            [branch] if (stochastic.tap1Weight < 0.999f) normal = StochasticSampleWith(tex[i], uv, odx, ody, stochastic, tapWeights[i]);
+            else normal = tex2Dgrad(tex[i], uv, odx, ody);
+        }
+        else normal = tex2Dgrad(tex[i], uv, odx, ody);
+        blendedNormal += normal.xyz * blends[i];
+        gloss += normal.w * blends[i] * (spec[i] > 0 ? 1.0f : 0.0f);
+        specExponent += spec[i] * blends[i];
+        }
+    }
+    gloss = saturate(gloss);
+    return normalize(expand(blendedNormal));
+}
+#endif
 
 float3 blendNormalMaps(float2 uv, float2 odx, float2 ody, int texCount, sampler2D tex[7], float blends[7], float spec[7], out float gloss, out float specExponent) {
     gloss = 0.0f;

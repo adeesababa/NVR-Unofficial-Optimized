@@ -7,6 +7,7 @@
 #define SHADOW_INVPROJ_REG c248
 #define SHADOW_INVVIEW_REG c252
 #include "includes/Shadow.hlsl"
+#include "includes/GrassWind.hlsl"
 
 float3 DiffuseDir   : register(c0);
 float3 DiffuseColor : register(c1);
@@ -20,6 +21,7 @@ float4 FogColor     : register(c14);
 float4 FogParam     : register(c15);
 float4 TESR_Translucency : register(c18);
 float4 GrassPairing : register(c19);
+sampler2D NVR_GrassPush : register(s0);
 
 #ifndef GRASS_INSTANCE_COUNT
     #define GRASS_INSTANCE_COUNT 228
@@ -84,8 +86,27 @@ VS_OUTPUT main(VS_INPUT IN) {
     float3 scale = (0.01f * inst.w) * ScaleMask.xyz + 1.0f;
     float3 pos = IN.position.xyz * scale + float3(sway * WindData.xy, 0.0f);
 
+    const float4 windLanes = float4(TESR_InvViewTransform._m03, TESR_InvViewTransform._m13, TESR_InvViewTransform._m23, TESR_InvViewTransform._m33);
+    [branch] if (dot(windLanes.xy, windLanes.xy) > 0.0f) {
+        pos = IN.position.xyz * scale + GrassWindMove(inst, windLanes, GrassPairing.z, swing, WindData,
+            IN.color.w * IN.color.w, IN.position.z * scale.z);
+    }
+
     float4 worldPos = float4(pos + inst.xyz, 1.0f);
     OUT.position = mul(ModelViewProj, worldPos);
+
+    [branch] if (TESR_Translucency.w > 0.0f) {
+        float2 pushUV = GrassCameraRelative(instClip).xy * TESR_Translucency.w;
+        [branch] if (max(abs(pushUV.x), abs(pushUV.y)) < 0.5f) {
+            float2 push = tex2Dlod(NVR_GrassPush, float4(pushUV + 0.5f, 0.0f, 0.0f)).xy * GrassPushWeight(pos.z);
+            [branch] if (dot(push, push) > 0.0f) {
+                float height = max(pos.z, 1e-6f);
+                worldPos.xy += push;
+                worldPos.z -= min(dot(push, push) * 0.5f / height, height);
+                OUT.position = mul(ModelViewProj, worldPos);
+            }
+        }
+    }
 
     float4 f = frac(inst);
     float lightScale = f.w * 0.75f + 0.25f;

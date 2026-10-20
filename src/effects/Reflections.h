@@ -23,6 +23,8 @@ public:
 		float	CubeCapture;
 		float	CubeFade;
 		int		DebugView;
+		bool	GridFallback;
+		float	GridBrightness;
 	};
 	SettingsStruct	Settings;
 
@@ -35,8 +37,13 @@ public:
 		D3DXMATRIX	Reproject;
 		D3DXVECTOR4	Cube;
 		D3DXVECTOR4	Cube2;
+		D3DXVECTOR4	Grid;
+		D3DXVECTOR4	Grid2;
+		D3DXVECTOR4	Grid3;
 	};
 	ConstantsStruct	Constants;
+	IDirect3DBaseTexture9*	GridLightSlot = nullptr;
+	IDirect3DBaseTexture9*	GridColorSlot = nullptr;
 
 	static const UINT CubeSize = 64;
 	static const UINT CubeLevels = 7;
@@ -86,6 +93,8 @@ private:
 	UINT		cubeFrame = 0;
 	D3DXMATRIX	cubeInvView;
 	bool		cubeOnly = false;
+	UINT		gridFrames = 0, gridUsedFrames = 0;
+	void	GridStep();
 	void	CubeStep(IDirect3DDevice9* Device);
 	void	RenderCube(IDirect3DDevice9* Device, bool reset);
 };

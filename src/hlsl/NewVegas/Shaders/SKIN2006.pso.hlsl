@@ -88,14 +88,14 @@ VS_OUTPUT main(VS_INPUT IN) {
     const float4 PointLight1Color = PBRLight(PSLightColor[2]);
     const float4 PointLight2Color = PBRLight(PSLightColor[3]);
 
-    noxel2.xyz = tex2D(NormalMap, IN.BaseUV.xy);			// partial precision
+    noxel2.xyz = tex2D(NormalMap, IN.BaseUV.xy).xyz;			// partial precision
     r4.xyzw = tex2D(GlowMap, IN.BaseUV.xy);			// partial precision
     texel0.xyzw = tex2D(BaseMap, IN.BaseUV.xy);			// partial precision
     OUT.color_0.rgba = texel0.xyzw;			// partial precision
-    att4.x = tex2D(AttenuationMap, IN.texcoord_4.zw);			// partial precision
-    att3.x = tex2D(AttenuationMap, IN.texcoord_4.xy);			// partial precision
-    att1.x = tex2D(AttenuationMap, IN.texcoord_5.xy);			// partial precision
-    att39.x = tex2D(AttenuationMap, IN.texcoord_5.zw);			// partial precision
+    att4.x = tex2D(AttenuationMap, IN.texcoord_4.zw).x;			// partial precision
+    att3.x = tex2D(AttenuationMap, IN.texcoord_4.xy).x;			// partial precision
+    att1.x = tex2D(AttenuationMap, IN.texcoord_5.xy).x;			// partial precision
+    att39.x = tex2D(AttenuationMap, IN.texcoord_5.zw).x;			// partial precision
     r2.w = saturate((1 - att1.x) - att39.x);			// partial precision
     q6.xyz = normalize(expand(noxel2.xyz));			// partial precision
     q5.xyz = normalize(IN.texcoord_7.xyz);			// partial precision
@@ -110,9 +110,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     q10.x = saturate((q8.x + 0.3) * 0.769230783);
     q11.x = saturate(((3 - (q10.x * 2)) * sqr(q10.x)) - ((3 - (q9.x * 2)) * sqr(q9.x)));			// partial precision
     r2.xyz = (q13.x * shades(q5.xyz, -normalize(IN.texcoord_3.xyz))) * lerp(PointLight2Color.xyz, r4.xyz, 0.5);			// partial precision
-    q40.xyz = (q11.x * r4.xyzw) + ((PointLight1Color.xyzw * q9.x) + (r4.w * lerp(PointLight1Color.xyzw, r4.wzyx, 0.5)));			// partial precision
-    r0.yzw = (PointLight2Color.xyzw * q18.x) + r2.xyzw;			// partial precision
-    r5.yzw = ((q13.x * shades(q5.xyz, -IN.texcoord_1)) * SunLightColor.xyzw) * 0.5;			// partial precision
+    q40.xyz = ((q11.x * r4.xyzw) + ((PointLight1Color.xyzw * q9.x) + (r4.w * lerp(PointLight1Color.xyzw, r4.wzyx, 0.5)))).xyz;			// partial precision
+    r0.yzw = ((PointLight2Color.xyzw * q18.x) + r2.xyzw).xyz;			// partial precision
+    r5.yzw = (((q13.x * shades(q5.xyz, -IN.texcoord_1)) * SunLightColor.xyzw) * 0.5).xyz;			// partial precision
     // Sun contribution, kept separate so the shadow scales it alone.
     float3 sunTerm = (SunLightColor.xyz * shades(q6.xyz, IN.texcoord_1.xyz)) + r5.yzw;
     [branch] if (TESR_SkinDiffusion.x > 0.0f)

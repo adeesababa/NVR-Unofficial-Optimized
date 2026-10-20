@@ -17,6 +17,7 @@ public:
 	IDirect3DSurface9*	bufferSurface[2] = {};
 	bool				buffersTried = false;
 	CachedHandle		paramLayout, paramFlags, paramTemporal, paramReproject;
+	CachedHandle		paramSunFarFlags;
 	CachedHandle		paramScene;
 	D3DXVECTOR4			sceneLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
 	IDirect3DTexture9*	historyTexture[2] = {};
@@ -42,6 +43,16 @@ public:
 	CachedHandle		paramGridStep, paramGridShift, paramGridScreen;
 	float				gridScreenStrength = 6.0f;
 	float				gridColour = 0.25f;
+	static const int	StatsWidth = 16, StatsHeight = 9;
+	bool				interiorBalance = true;
+	float				interiorBounceShare = 1.0f;
+	IDirect3DTexture9*	statsTexture = nullptr;
+	IDirect3DSurface9*	statsSurface = nullptr;
+	IDirect3DTexture9*	balanceTexture[2] = {};
+	IDirect3DSurface9*	balanceSurface[2] = {};
+	int					balanceIndex = 0;
+	bool				balanceValid = false;
+	CachedHandle		paramInterior;
 	IDirect3DTexture9*	gridScreen[2] = {};
 	IDirect3DSurface9*	gridScreenSurface[2] = {};
 	IDirect3DTexture9*	gridScreenColor[2] = {};
@@ -73,6 +84,7 @@ public:
 	double				gridOrigin[3] = {};
 	double				gridPendingOrigin[3] = {};
 	unsigned			gridFrame = 0;
+	UINT				gridRenderedFrame = 0;
 	float				gridSunTexel = 1.0f;
 	D3DXMATRIX			gridSunToGrid, gridToSun;
 	ShadowsExteriorEffect::ShadowMapSettings gridSunMap = {};

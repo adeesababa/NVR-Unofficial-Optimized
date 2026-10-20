@@ -1,11 +1,12 @@
 #pragma once
+#include <unordered_map>
 
 class SkinScatteringEffect : public EffectRecord
 {
 public:
 	SkinScatteringEffect() : EffectRecord("SkinScattering") {};
 
-	static const int KernelSamples = 17;
+	static const int KernelSamples = 21;
 
 	struct SkinScatteringStruct {
 		D3DXVECTOR4		Data;
@@ -42,6 +43,7 @@ public:
 
 	bool		InWorldScene = false;
 	bool		Bound = false;
+	bool		HighlightsBound = false;
 	bool		ClearedThisFrame = false;
 	bool		SkinDrawn = false;
 	DWORD		SavedWriteMask1 = 0xF;
@@ -49,6 +51,7 @@ public:
 
 	void	BeginFrame();
 	void	BindForSkinDraw(NiD3DPixelShaderEx* PixelShader);
+	bool	BindForGameHighlights(NiD3DPixelShaderEx* PixelShader);
 	void	Unbind();
 
 	void	UpdateConstants();
@@ -58,6 +61,7 @@ public:
 	bool	ShouldRender();
 
 private:
+	std::unordered_map<IDirect3DPixelShader9*, std::pair<UINT, bool>> WritesColor1;
 	bool	EnsureTarget(const D3DSURFACE_DESC& SceneDesc);
 	void	ReleaseTarget();
 	void	ClearTarget(IDirect3DSurface9* SceneTarget);

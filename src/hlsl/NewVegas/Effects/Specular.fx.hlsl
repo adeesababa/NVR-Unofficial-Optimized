@@ -19,6 +19,9 @@ sampler2D TESR_SpecularBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP;
 sampler2D TESR_SpecularNormals : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_ShadowAtlas : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D NVR_BounceBuffer : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 NVR_SpecularExtra;
+sampler2D NVR_SpecularSkyVis : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D NVR_SpecularSunFar : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 texture NoTexture;
 
 static const float SunStrength = TESR_SpecularData.x;
@@ -120,6 +123,8 @@ float4 SpecularLowPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float below = R.z >= 0.0 ? 1.0 : lerp(0.6, 0.25, saturate(-R.z * 4.0));
 	float2 env = EnvBRDFApprox(roughAA, NdotV);
 	float skyAmount = (F0 * env.x + env.y) * SkyStrength * below;
+	skyAmount *= lerp(1.0, lerp(NVR_SpecularExtra.y, 1.0, tex2Dlod(NVR_SpecularSkyVis, float4(uv, 0, 0)).b), NVR_SpecularExtra.x);
+	sunSpec *= lerp(1.0, tex2Dlod(NVR_SpecularSunFar, float4(uv, 0, 0)).a, NVR_SpecularExtra.z);
 
 	float fade = 1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth);
 	return float4(skyAmount * fade, skyAt, sunSpec * fade, depth);

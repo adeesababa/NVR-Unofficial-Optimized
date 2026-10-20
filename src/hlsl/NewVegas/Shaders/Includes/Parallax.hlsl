@@ -84,7 +84,7 @@ float2 getParallaxCoordsObjectLite(float distance, float2 coords, float2 dx, flo
     }
 
     [branch] if (hit) {
-        [loop] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
+        [unroll] for (int r = 0; r < LITE_SECANT_STEPS; r++) {
             float secant2 = pt2.x - pt2.y;
             float secant1 = pt1.x - pt1.y;
             float secantDenominator = secant2 - secant1;

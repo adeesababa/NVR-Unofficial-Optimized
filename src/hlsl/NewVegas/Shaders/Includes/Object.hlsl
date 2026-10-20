@@ -43,7 +43,12 @@ float4 TESR_MaterialTint  : register(c199);
 float4 NVR_Rmaos : register(c220);
 sampler2D NVR_RmaosMap : register(s2);
 static float4 RmaosValue = float4(1.0f, 0.0f, 1.0f, 1.0f);
-#define RMAOS_ACTIVE (NVR_Rmaos.x > 0.5f)
+#define RMAOS_ACTIVE (NVR_Rmaos.x > 0.0f)
+#ifdef RMAOS_NO_FADE
+    #define RMAOS_FADING false
+#else
+    #define RMAOS_FADING (NVR_Rmaos.x < 1.0f)
+#endif
 
 void RmaosRead(float2 uv) {
     float2 dx = ddx(uv), dy = ddy(uv);
@@ -54,7 +59,7 @@ void RmaosRead(float2 uv) {
 }
 
 float RmaosAmbient() {
-    return RMAOS_ACTIVE ? lerp(1.0f, RmaosValue.b, saturate(NVR_Rmaos.y)) : 1.0f;
+    return RMAOS_ACTIVE ? lerp(1.0f, RmaosValue.b, RMAOS_FADING ? saturate(NVR_Rmaos.y) * NVR_Rmaos.x : saturate(NVR_Rmaos.y)) : 1.0f;
 }
 
 float3 RmaosDebug(float3 color, float3 albedo) {
@@ -78,12 +83,15 @@ float3 RmaosDebug(float3 color, float3 albedo) { return color; }
 
 float getRoughness(float gloss) {
     #ifdef RMAOS
-        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+        if (RMAOS_ACTIVE && !RMAOS_FADING) return max(RmaosValue.r, 0.02f);
     #endif
     float roughness = saturate(max(0.043, 1 - gloss) * TESR_PBRData.y);
     #ifdef MATERIAL_RULES
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
             roughness = lerp(TESR_MaterialRough.x, TESR_MaterialRough.y, saturate(1.0f - gloss));
+    #endif
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) roughness = RMAOS_FADING ? lerp(roughness, max(RmaosValue.r, 0.02f), NVR_Rmaos.x) : max(RmaosValue.r, 0.02f);
     #endif
     return roughness;
 }
@@ -100,7 +108,7 @@ float getRoughness(float glossmap, float meshgloss){
 
 // Vanilla
 float3 getVanillaLighting(float3 lightDir, float radius, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float gloss, float glossPower) {
-    float att = vanillaAtt(lightDir, radius);
+    float att = LinFalloff(vanillaAtt(lightDir, radius));
     
     lightDir = normalize(lightDir);
     viewDir = normalize(viewDir);
@@ -148,7 +156,7 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
     lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
     
-    float att = vanillaAtt(lightDir, radius);
+    float att = LinFalloff(vanillaAtt(lightDir, radius));
     
     #if defined(ONLY_SPECULAR)
         return att * PBRSpecular(0, roughness, albedo, normal, viewDir, lightDir, lightColor);
@@ -162,6 +170,7 @@ float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, f
 float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
     lightColor = lightColor * LIN_SCALE_LIGHT;
     albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
+    att = LinFalloff(att);
 
     #if defined(ONLY_SPECULAR)
         return att * PBRSpecular(metallic, roughness, albedo, normal, viewDir, lightDir, lightColor);
@@ -238,18 +247,22 @@ float getMetalStrength() {
     return TESR_PBRMetal.x;
 }
 
-float getDerivedMetallic(float specMask, float3 albedo) {
-    float peak = max(max(albedo.r, albedo.g), albedo.b);
-    float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
-    float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
-    #ifdef RMAOS
-        [branch] if (RMAOS_ACTIVE) return RmaosValue.g;
-    #endif
+float getDerivedMetallicGuess(float specMask, float greyness) {
     #ifdef MATERIAL_RULES
         [branch] if (TESR_MaterialRule.x > 0.0f)
             return TESR_MaterialRule.z > 1.5f ? TESR_MaterialRule.y : saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_MaterialRule.y);
     #endif
     return saturate(greyness * lerp(TESR_PBRMetal.y, 1.0f, getMetalMask(specMask)) * TESR_PBRMetal.x);
+}
+
+float getDerivedMetallic(float specMask, float3 albedo) {
+    float peak = max(max(albedo.r, albedo.g), albedo.b);
+    float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
+    float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
+    #ifdef RMAOS
+        [branch] if (RMAOS_ACTIVE) return RMAOS_FADING ? lerp(getDerivedMetallicGuess(specMask, greyness), RmaosValue.g, NVR_Rmaos.x) : RmaosValue.g;
+    #endif
+    return getDerivedMetallicGuess(specMask, greyness);
 }
 
 float getMetalFade(float3 cameraRelativePos) {
@@ -258,13 +271,17 @@ float getMetalFade(float3 cameraRelativePos) {
 
 float getMetalRoughness(float specMask) {
     #ifdef RMAOS
-        if (RMAOS_ACTIVE) return max(RmaosValue.r, 0.02f);
+        if (RMAOS_ACTIVE && !RMAOS_FADING) return max(RmaosValue.r, 0.02f);
     #endif
+    float roughness = lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
     #ifdef MATERIAL_RULES
         [flatten] if (TESR_MaterialRule.x > 0.0f && TESR_MaterialRough.x >= 0.0f)
-            return lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
+            roughness = lerp(TESR_MaterialRough.y, TESR_MaterialRough.x, getMetalMask(specMask));
     #endif
-    return lerp(TESR_PBRMetalLook.x, TESR_PBRMetalLook.y, getMetalMask(specMask));
+    #ifdef RMAOS
+        if (RMAOS_ACTIVE) roughness = RMAOS_FADING ? lerp(roughness, max(RmaosValue.r, 0.02f), NVR_Rmaos.x) : max(RmaosValue.r, 0.02f);
+    #endif
+    return roughness;
 }
 
 float getMaterialReflections() {

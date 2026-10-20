@@ -54,20 +54,23 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
 
     float lit;
     [branch] if (NVR_PointShadowParams.w > 0.0f) {
-        float s = NVR_PointShadowParams.w * max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
-        [branch] if (NVR_PointShadowSoft.x > 0.0f) {
+        float major = max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
+        float s = NVR_PointShadowParams.w * major;
+        [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.z > 0.0f) {
+            float wide = max(NVR_PointShadowSoft.w * major, s);
             float4 search = float4(
-                texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
-                texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
-                texCUBElod(cube, float4(dir + s * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
-                texCUBElod(cube, float4(dir + s * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
+                texCUBElod(cube, float4(dir + wide * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + wide * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + wide * float3( 1.0f, -1.0f, -1.0f), 0.0f)).r,
+                texCUBElod(cube, float4(dir + wide * float3(-1.0f,  1.0f, -1.0f), 0.0f)).r);
             float centre = texCUBElod(cube, float4(dir, 0.0f)).r;
             float4 isBlocker = (float4)(search <= threshold) * (float4)(search > 0.0f);
             float centreBlocker = (float)(centre <= threshold) * (float)(centre > 0.0f);
             float blockers = dot(isBlocker, 1.0f) + centreBlocker;
             [branch] if (!(blockers > 0.0f)) return 1.0f;
             float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
-            s *= clamp((d - blocker) / max(blocker, 0.0001f) * NVR_PointShadowSoft.x, NVR_PointShadowSoft.y, 1.0f);
+            float t = 1.0f / max(blocker, 0.0001f) - 1.0f / d;
+            s = clamp(t * (NVR_PointShadowSoft.z * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
         }
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,

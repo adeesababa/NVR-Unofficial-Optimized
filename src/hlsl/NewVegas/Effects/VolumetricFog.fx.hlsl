@@ -1040,9 +1040,12 @@ float4 TESR_AmbientOcclusionAOData;
 float4 TESR_AmbientOcclusionData;
 static const float CompositeAOEndFade = 8000;
 sampler2D NVR_SkyVis : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 NVR_SunFarFlags;
+sampler2D NVR_SunFar : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 float3 CompositeSunShadow(float3 linearColor, float2 uv)
 {
+	linearColor *= lerp(1.0, pows(tex2Dlod(NVR_SunFar, float4(uv, 0, 0)).rgb, 2.2), NVR_SunFarFlags.x);
 	[branch] if (TESR_WaterSettings.z == 1) {
 		float depth = readDepthLod(uv);
 		float3 worldPos = TESR_CameraPosition.xyz + toWorld(uv) * depth;

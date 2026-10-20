@@ -83,6 +83,9 @@ public:
 		D3DXVECTOR4		ExtraData;
 		// TerrainExtraData is full: x usePBR, y saturation, z NoiseScale, w NoiseTile.
 		D3DXVECTOR4		SkyData;      // x: skylight strength, y: sample directionality
+		D3DXVECTOR4		VariationData;
+		D3DXVECTOR4		VariationExtra;
+		D3DXVECTOR4		LODBlend;
 	};
 	TerrainStruct	Constants;
 

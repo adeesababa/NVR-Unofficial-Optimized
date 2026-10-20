@@ -403,6 +403,23 @@ bool EffectRecord::PassNeedsPrefill(UINT techniqueIndex, UINT pass) const {
 	return true;
 }
 
+void EffectRecord::BindPassTextures() {
+	for (UINT stage = 0; stage < 16; stage++) {
+		if (!PassTextures[stage]) continue;
+		TheRenderManager->device->SetTexture(stage, PassTextures[stage]);
+		TheRenderManager->renderState->NoteDeviceTexture(stage, PassTextures[stage]);
+	}
+}
+
+void EffectRecord::ClearPassTextures() {
+	for (UINT stage = 0; stage < 16; stage++) {
+		if (!PassTextures[stage]) continue;
+		PassTextures[stage] = nullptr;
+		TheRenderManager->device->SetTexture(stage, nullptr);
+		TheRenderManager->renderState->NoteDeviceTexture(stage, nullptr);
+	}
+}
+
 void EffectRecord::RebindSlotTextures() {
 	for (UInt32 c = 0; c < TextureShaderValuesCount; c++) {
 		ShaderTextureValue* Sampler = &TextureShaderValues[c];
@@ -445,6 +462,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 				Effect->BeginPass(p);
 				RebindSlotTextures();
+				BindPassTextures();
 				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
@@ -470,6 +488,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		for (UINT p = 0; p < Passes; p++) {
 			if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 			Effect->BeginPass(p);
+			BindPassTextures();
 			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture
