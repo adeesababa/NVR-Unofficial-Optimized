@@ -34,6 +34,19 @@ float GrassPushWeight(float height) {
     return saturate(saturate(height * 0.01f) * 2.0f);
 }
 
+// The camera-relative world position of a point from its clip position, for the card shaders' collision lookup (2026-10-20, user:
+// 'blades of grass follow my player around in a bizarre fashion'). GetShadowWorldPos (Includes/Shadow.hlsl) rescales its result by
+// clip.w / view z, which is 0 / 0 at the plane through the camera across the view -- exactly where the player's own feet are when he
+// looks ahead -- so the tufts rooted round the player read the push grid at random places that changed with every step and turn. For
+// this camera's projection (symmetric, RenderManager) view x, y are clip x, y times the inverse projection's diagonal and view z is
+// clip w, with no division: exact at any depth, the same point elsewhere. Card shaders only (they declare both matrices).
+#ifdef SHADOW_INVVIEW_REG
+float3 GrassCameraRelative(float4 clip) {
+    const float4 view = float4(clip.x * TESR_InvProjectionTransform._11, clip.y * TESR_InvProjectionTransform._22, clip.w, 1.0f);
+    return mul(view, TESR_InvViewTransform).xyz;
+}
+#endif
+
 // The whole move of a vertex in the field wind: the game's sway (swing as the game computes it, of the game's size) turned onto the
 // wind direction, plus the gust lean along the wind and the flutter along it and half as much across, all times the game's sway size
 // and the vertex weight (the game's: vertex alpha squared); z drops as the blade leans so it bends rather than stretches (height = the
