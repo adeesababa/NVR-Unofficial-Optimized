@@ -37,6 +37,7 @@ namespace ClothWeights {
 
 	constexpr double kWeld = 0.05, kStep = 2.0, kArcHug = 4.0, kPelvis = 8.0, kPelvisOff = 6.0, kFree = 8.0, kClear = 5.0, kLayer = 2.0;
 	constexpr int kSmooth = 8;	// (2 left the scribe robe's layers 0.072 apart, 8: 0.018; evidence\cloth3-LOG.md C3-11)
+	constexpr double kHangTop = 4.0;	// 2026-10-20 auto-detect: a moving piece counts when it reaches this close below the hips (or higher)
 
 	struct Input {
 		const float* pos = nullptr;				// xyz per vertex (bind pose)
@@ -51,6 +52,8 @@ namespace ClothWeights {
 		std::vector<uint8_t> label;				// per vertex: 0 torso / pelvis (still), 1 body (still), 2 cloth
 		uint32_t welded = 0, body = 0, cloth = 0, torso = 0, cuts = 0, tubes = 0, pads = 0, clothCuts = 0;
 		float crotch = 0.0f;
+		uint32_t moving = 0;					// 2026-10-20 auto-detect: welded vertices with weight > 0.5
+		float hemDrop = 0.0f;					// ...and how far the lowest of them hangs below the crotch (units)
 	};
 
 	inline double Smooth(double x) { x = x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x); return x * x * (3.0 - 2.0 * x); }
@@ -319,6 +322,61 @@ namespace ClothWeights {
 		out.weight.resize(n); out.label.resize(n);
 		for (uint32_t i = 0; i < n; i++) { out.weight[i] = (float)w[wid[i]]; out.label[i] = (uint8_t)label[wid[i]]; }
 		for (uint32_t v = 0; v < nw; v++) { if (label[v] == 0) out.torso++; else if (label[v] == 1) out.body++; else out.cloth++; }
+		// 2026-10-20 auto-detect (ClothWind.h AutoVerdict): how much of the garment hangs free, on the welded vertices -- only in a piece
+		// that reaches up to the waist (kHangTop below the hips or higher): a coat, a robe, a skirt hangs from there; loose knee plates,
+		// bolts and buckles do not (the NCR salvaged power armour's knee plates measured 52 % 'moving' on their own)
+		std::vector<uint32_t> piece(nw, UINT32_MAX);
+		std::vector<double> pieceTop;
+		for (uint32_t s = 0; s < nw; s++) {
+			if (piece[s] != UINT32_MAX) continue;
+			const uint32_t id = (uint32_t)pieceTop.size();
+			double top = wp[s].z;
+			std::vector<uint32_t> stack{ s }; piece[s] = id;
+			while (!stack.empty()) {
+				const uint32_t v = stack.back(); stack.pop_back();
+				top = (std::max)(top, wp[v].z);
+				for (uint32_t u : nbr[v]) if (piece[u] == UINT32_MAX) { piece[u] = id; stack.push_back(u); }
+			}
+			pieceTop.push_back(top);
+		}
+		for (uint32_t v = 0; v < nw; v++) {
+			if (w[v] <= 0.5 || pieceTop[piece[v]] < hip - kHangTop) continue;
+			out.moving++;
+			out.hemDrop = (std::max)(out.hemDrop, (float)(crotch - wp[v].z));
+		}
 		return true;
+	}
+
+	// 2026-10-20 auto-detect, the verdict after Compute ([Shaders.Cloth.Main] AutoDetect, ClothWind.h): the garment hangs free -- a coat,
+	// a duster, a robe, a dress -- when at least kAutoMoving of its (welded) vertices in pieces hanging from the waist move more than half,
+	// they are at least minShare of the garment, and they reach kAutoHem units below the crotch (not a belt or a pouch at the hips).
+	// Survey of every vanilla + DLC + TTW armour: evidence\clothauto (SURVEY.md).
+	constexpr uint32_t kAutoMoving = 24;
+	constexpr double kAutoHem = 10.0, kFreeFirst = 0.03;	// (0.15 left out the long tight dresses: Formal Wear 5 %; stockings and jeans that the weights wrongly let move measure 0)
+	inline bool HangsFree(const Result& r, double minShare) {
+		return r.welded && r.moving >= kAutoMoving && (double)r.moving >= minShare * (double)r.welded && r.hemDrop >= kAutoHem;
+	}
+
+	// 2026-10-20 auto-detect, the cheap first look (before Compute, ~20 us on a 2000-vertex mesh): the share of the vertices between the
+	// knees' height and kFreeTop below the hips that stand more than kFreeGap off BOTH legs' surfaces (the measured radius at that height):
+	// a coat's skirt, a robe, a duster's tails. Trousers, power armour and tight suits stay near 0 (their surface hugs the legs, and the
+	// measured radius is their own thickness); only garments above kFreeFirst get the full weights (Compute) and a verdict.
+	constexpr double kFreeTop = 6.0, kFreeGap = 4.0;
+	inline float FreeShare(const Input& in) {
+		const double hip = in.hipZ, knee = in.kneeZ;
+		uint32_t band = 0, free = 0;
+		for (uint32_t i = 0; i < in.vertices; i++) {
+			const double x = in.pos[i * 3], y = in.pos[i * 3 + 1], z = in.pos[i * 3 + 2];
+			if (z > hip - kFreeTop || z < knee) continue;
+			band++;
+			double off = 1e30;
+			for (int leg = 0; leg < 2; leg++) {
+				double ax, ay, r;
+				AxisPoint(in, leg, z, ax, ay, r);
+				off = (std::min)(off, std::sqrt((x - ax) * (x - ax) + (y - ay) * (y - ay)) - r);
+			}
+			if (off > kFreeGap) free++;
+		}
+		return band ? (float)free / (float)band : 0.0f;
 	}
 }
