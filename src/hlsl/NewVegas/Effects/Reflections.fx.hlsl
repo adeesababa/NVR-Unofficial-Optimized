@@ -20,7 +20,8 @@
 //   1 Trace    the reflected ray from each block's surface, its direction spread by the surface's roughness with a
 //              noise that changes every frame; up to Steps steps that grow along the ray, then a binary refinement.
 //              Where it lands: the image's colour there (linear). Nothing found: the surroundings cube along the ray
-//              (CubeMap), then the sky outdoors (SkyFallback), else nothing. Output premultiplied: rgb = colour x
+//              (CubeMap) and AmbientLight's light grid (GridFallback; rough surfaces ask the grid first, smooth ones the
+//              cube), then the sky outdoors (SkyFallback), else nothing. Output premultiplied: rgb = colour x
 //              confidence, a = confidence. -> Temp, or -> Trace when Temporal is on.
 //   3 Temporal Trace + last frame's result (History) at the same surface point, held to the range of this frame's
 //              neighbours (no trails) -> Temp; the effect then copies Temp to History.
@@ -41,6 +42,9 @@ float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen 
 float4x4 TESR_ReflectionsReproject;  // camera-relative world position -> last frame's clip space
 float4 TESR_ReflectionsCube;         // x: face being drawn (0-5, D3D order), y: its size in texels, z: mip level, w: 1 = empty the cube
 float4 TESR_ReflectionsCube2;        // x: capture blend, y: fade per frame, z: last mip level, w: 1 = the cube is in use
+float4 TESR_ReflectionsGrid;         // UNOFFICIAL 2026-10-19 GridFallback: xyz the light grid's corner relative to the camera, w: cell size
+float4 TESR_ReflectionsGrid2;        // x: 1 = the grid is in use, y: brightness (GridBrightness), z: 1 = the grid carries colours
+float4 TESR_ReflectionsGrid3;        // rgb: the light every surface gets here (linear: the sky's or the cell's ambient, AmbientLight's)
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
@@ -55,12 +59,16 @@ samplerCUBE TESR_ReflectionsCapture : register(s8) = sampler_state { ADDRESSU = 
 samplerCUBE TESR_ReflectionsCaptureNew : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 samplerCUBE TESR_ReflectionsEnv : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_OrthoMapBuffer : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-19 GridFallback: AmbientLight's finished light grid (its NVR_GridAccum / NVR_GridAccumColor, the atlas of
+// 4 x 4 tiles of 32 x 32 cells), bilinear within a layer as AmbientLight reads it.
+sampler2D TESR_ReflectionsGridLight : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D TESR_ReflectionsGridColor : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 // UNOFFICIAL 2026-10-19 Skylighting v3 phase 1 ([Shaders.AmbientOcclusion.Skylighting] Reflections): the sky visibility (Skylighting
 // v2's b), bound by hand for the trace (ReflectionsEffect::RenderBuffers) while NVR_ReflectionsSky.x is 1, so the sky fallback fades
 // where the sky cannot be seen, down to y (MinReflection), as Community Shaders' Skylighting MixSpecular (GPL-3.0). After the TESR_ samplers:
-// stage 12 (2026-10-19 merge: TESR_OrthoMapBuffer, the 12th TESR_ sampler, binds to stage 11).
+// stage 14 (2026-10-19 merges: TESR_OrthoMapBuffer binds to stage 11, the GridFallback samplers to 12 and 13).
 float4 NVR_ReflectionsSky;
-sampler2D NVR_ReflectionsSkyVis : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D NVR_ReflectionsSkyVis : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float DryReflect = TESR_ReflectionsData.x;
@@ -86,6 +94,7 @@ static const float CaptureBlend = TESR_ReflectionsCube2.x;
 static const float CubeFade = TESR_ReflectionsCube2.y;
 static const float CubeLastMip = TESR_ReflectionsCube2.z;
 static const float CubeOn = TESR_ReflectionsCube2.w;
+static const float GridOn = TESR_ReflectionsGrid2.x;
 static const int RefineSteps = 5;
 static const float BrightestReflection = 16.0;   // linear: a lamp's core reflected in one texel cannot flash the whole puddle
 
@@ -199,6 +208,78 @@ float4 EnvAlong(float3 worldDir, float roughness) {
 	float4 coarse = texCUBElod(TESR_ReflectionsEnv, float4(worldDir, min(lod + 2.0, CubeLastMip)));
 	float4 m = sharp + coarse * (1.0 - saturate(sharp.a));
 	return float4(m.rgb / max(m.a, 1.0e-4), saturate(m.a));
+}
+
+// ---- The light grid (AmbientLight's GridBounce) as the far / off-screen fallback ----
+// UNOFFICIAL 2026-10-19 GridFallback (user: could the bounce light's grid stop reflections cutting off at the screen edge?).
+// Each grid cell holds the light passing through it as order-1 spherical harmonics (one number for all directions, three for
+// the direction; brightness only) and that light's colour (colour x light, light): by day outdoors the sunlit surfaces round
+// the player, indoors and at night what the screen showed (AmbientLight.fx.hlsl GridInject / ScreenInject). The light that
+// reaches the surface from the reflected direction R travels along -R: it is read at a few points along the ray (so it is
+// position-correct, unlike the cube, which is seen from the camera) and averaged. Coarse (a cell is GridCellSize wide, the
+// direction a single lobe): fit for blurred reflections, not for a mirror. The grid holds no sky and no ambient light, so the
+// light a typical surface shows from the scene's ambient is added (what a shaded wall would show), in the grid's colour.
+static const float GridX = 32.0, GridY = 32.0, GridZ = 16.0;
+static const float GridAlbedo = 0.4;   // a typical surface (desert ground, plaster) for the ambient share
+static const float GridIrradianceScale = 1.5;   // AmbientLight's GridBounce reads the grid x 1.5 (its spreading loses light)
+float4 GridShBasis(float3 d) { return float4(0.282095, 0.488603 * d); }
+float2 GridCellUV(float3 c) { return (float2(fmod(c.z, 4.0), floor(c.z / 4.0)) * 32.0 + c.xy + 0.5) / 128.0; }
+
+// 1 where the top-down ortho map has something above the camera-relative point p (inside or under a building, a rock, a
+// roof: a ray that got there met it), 0 in the open or outside the map's square. Only while the map is kept up (RoofMaskOn).
+float CoveredAt(float3 p) {
+	float4 m = mul(float4(p, 1.0), TESR_ShadowCameraToLightTransformOrtho);
+	m.xyz /= m.w;
+	[branch] if (abs(m.x) > 1.0 || abs(m.y) > 1.0 || m.z < 0.0 || m.z > 1.0) return 0.0;
+	float top = tex2Dlod(TESR_OrthoMapBuffer, float4(m.x * 0.5 + 0.5, m.y * -0.5 + 0.5, 0.0, 0.0)).r;
+	float3 depthAxis = float3(TESR_ShadowCameraToLightTransformOrtho[0][2], TESR_ShadowCameraToLightTransformOrtho[1][2], TESR_ShadowCameraToLightTransformOrtho[2][2]);
+	float perUnit = length(depthAxis) / max(abs(TESR_ShadowCameraToLightTransformOrtho[3][3]), 1.0e-6);
+	return top < m.z - max(RoofMargin * perUnit, 0.0001) ? 1.0 : 0.0;
+}
+
+// The light reaching a surface at camera-relative position start from world direction worldR, out of the grid: rgb colour
+// (linear), a how much of the missing reflection it answers for (0 outside the grid; outdoors only where the ray meets
+// something in the ortho map or runs near the horizon, toward the land and buildings round about: the grid has no sky).
+float4 GridAlong(float3 start, float3 worldR) {
+	float size = TESR_ReflectionsGrid.w;
+	float3 dims = float3(GridX, GridY, GridZ);
+	float4 toward = GridShBasis(-worldR);
+	float light = 0.0, weight = 0.0, inside = 0.0, covered = 0.0;
+	float4 colour = 0.0;
+	bool open = true;   // nothing met yet along the ray (the ortho map's test)
+	[loop] for (float k = 0.0; k < 3.5; k += 1.0) {
+		float t = size * (k < 0.5 ? 0.75 : exp2(k));   // 0.75, 2, 4, 8 cells out
+		float3 p = start + worldR * t;
+		float3 g = (p - TESR_ReflectionsGrid.xyz) / size - 0.5;
+		float3 edge = min(g + 0.5, dims - 0.5 - g);
+		float fade = saturate(min(min(edge.x, edge.y), edge.z) / 2.0);
+		[branch] if (open && fade > 0.0) {
+			g = clamp(g, 0.0, dims - 1.0);
+			float z0 = floor(g.z), z1 = min(z0 + 1.0, GridZ - 1.0);
+			float4 sh = lerp(tex2Dlod(TESR_ReflectionsGridLight, float4(GridCellUV(float3(g.xy, z0)), 0.0, 0.0)),
+				tex2Dlod(TESR_ReflectionsGridLight, float4(GridCellUV(float3(g.xy, z1)), 0.0, 0.0)), g.z - z0);
+			light += max(dot(sh, toward), 0.0) * fade;
+			// the colour from the nearer layer (one read)
+			[branch] if (TESR_ReflectionsGrid2.z > 0.5) colour += tex2Dlod(TESR_ReflectionsGridColor, float4(GridCellUV(float3(g.xy, round(g.z))), 0.0, 0.0)) * fade;
+			weight += fade;
+			inside = max(inside, fade);
+			[branch] if (RoofMaskOn > 0.5) {
+				float c = CoveredAt(p);
+				covered = max(covered, c * fade);
+				open = c < 0.5;
+			}
+		}
+	}
+	[branch] if (weight <= 0.0) return 0.0;
+	float3 hue = 1.0;
+	[branch] if (colour.a > 1.0e-5) {
+		hue = max(colour.rgb / colour.a, 0.0);
+		hue = min(hue / max(luma(hue), 1.0e-4), 3.0);
+	}
+	float3 radiance = (light / weight * GridIrradianceScale + TESR_ReflectionsGrid3.rgb * GridAlbedo) * hue * TESR_ReflectionsGrid2.y;
+	float share = inside;
+	[branch] if (SkyFallback > 0.0) share *= max(covered, 1.0 - smoothstep(0.0, 0.15, worldR.z));
+	return float4(radiance, share);
 }
 
 // ---- 5: Capture, one cube face per draw ----
@@ -325,23 +406,43 @@ float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 			confidence = saturate(min(edge.x, edge.y) * 12.0) * (1.0 - smoothstep(0.75, 1.0, hi / RayLength));
 		}
 	}
-	// What the ray did not find on screen: the surroundings cube along it, then (outdoors) the sky if it points up into
-	// it. Each fills only the share still missing (premultiplied sums).
+	// What the ray did not find on screen: the surroundings cube and (GridFallback) the light grid along it, then (outdoors)
+	// the sky if it points up into it. Each fills only the share still missing (premultiplied sums). UNOFFICIAL 2026-10-19:
+	// rough surfaces ask the grid first (position-correct, coarse: what a blurred reflection needs), smooth ones the cube first
+	// (sharper, but seen from the camera, so it is in the wrong place for a puddle far ahead); the other fills what is left.
 	float3 sum = colour * confidence;
 	float3 worldR = ViewToWorldDir(R);
-	[branch] if (confidence < 1.0 && CubeOn > 0.0) {
-		float4 env = EnvAlong(worldR, roughness);
-		float share = (1.0 - confidence) * env.a;
-		sum += env.rgb * share;
-		confidence += share;
+	float screenShare = confidence, cubeShare = 0.0, gridShare = 0.0, skyShare = 0.0;   // (DebugView 6)
+	float4 grid = 0.0, env = 0.0;
+	[branch] if (CubeOn > 0.0 && confidence < 1.0) env = EnvAlong(worldR, roughness);
+	float gridFirst = smoothstep(0.15, 0.35, roughness);
+	// The grid is read only where its share can be above 0: not where the cube goes first and covers the whole direction (wet,
+	// smooth ground with a full cube), nor outdoors without the ortho map above the horizon band (GridAlong's share).
+	bool gridUseful = (gridFirst > 0.0 || env.a < 1.0) && !(SkyFallback > 0.0 && RoofMaskOn < 0.5 && worldR.z >= 0.15);
+	[branch] if (GridOn > 0.0 && ((confidence < 1.0 && gridUseful) || abs(DebugView - 5.0) < 0.5)) grid = GridAlong(ViewToWorldDir(position), worldR);
+	[branch] if (confidence < 1.0 && (CubeOn > 0.0 || GridOn > 0.0)) {
+		float missing = 1.0 - confidence;
+		float cubeA = missing * env.a, gridA = (missing - cubeA) * grid.a;   // the cube first
+		float gridB = missing * grid.a, cubeB = (missing - gridB) * env.a;   // the grid first
+		cubeShare = lerp(cubeA, cubeB, gridFirst);
+		gridShare = lerp(gridA, gridB, gridFirst);
+		sum += env.rgb * cubeShare + grid.rgb * gridShare;
+		confidence += cubeShare + gridShare;
 	}
 	[branch] if (confidence < 1.0 && SkyFallback > 0.0) {
-		float share = (1.0 - confidence) * smoothstep(0.0, 0.15, worldR.z);
-		share *= lerp(1.0, lerp(NVR_ReflectionsSky.y, 1.0, tex2Dlod(NVR_ReflectionsSkyVis, float4(uv, 0, 0)).b), NVR_ReflectionsSky.x);	// UNOFFICIAL 2026-10-19 (no branch on the flag)
-		sum += SkyAlong(worldR) * share;
-		confidence += share;
+		skyShare = (1.0 - confidence) * smoothstep(0.0, 0.15, worldR.z);
+		skyShare *= lerp(1.0, lerp(NVR_ReflectionsSky.y, 1.0, tex2Dlod(NVR_ReflectionsSkyVis, float4(uv, 0, 0)).b), NVR_ReflectionsSky.x);	// UNOFFICIAL 2026-10-19 (no branch on the flag)
+		sum += SkyAlong(worldR) * skyShare;
+		confidence += skyShare;
 	}
 	colour = sum / max(confidence, 1.0e-4);
+	// UNOFFICIAL 2026-10-19 diagnostics: 5 what the light grid gives along every reflected ray (its colour alone, wherever it
+	// is read; black outside it), 6 where each share came from (green the screen, blue the cube, red the grid, grey the sky).
+	[branch] if (DebugView > 4.5) {
+		[branch] if (DebugView < 5.5) colour = grid.rgb;
+		else colour = float3(gridShare, screenShare, cubeShare) + 0.5 * skyShare;
+		return float4(Tame(colour), 1.0);
+	}
 	// Fireflies (in game 2026-10-12: tiny bright marquee bulbs caught by single rays sparkled across rough ground): a lower cap
 	// on rough surfaces, and everything after this pass averages in a compressed space (Tame) where one very bright read
 	// counts little; Untame in the composite turns the average back.
@@ -414,7 +515,7 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	float depth = readDepthLod(uv);
 	// UNOFFICIAL 2026-10-19 DebugView 4: where the rain wets the ground: white on floors open to the sky (brighter the wetter it
 	// is now), dark red on floors the rain cannot reach (covered, by the ortho map's roof test), the rest of the picture dimmed.
-	[branch] if (DebugView > 3.5) {
+	[branch] if (abs(DebugView - 4.0) < 0.5) {
 		bool isFloor = ViewToWorldDir(ViewNormal(uv)).z > 0.75 && depth < DrawDistance && depth < farZ * 0.98;
 		[branch] if (!isFloor) return float4(color.rgb * 0.15, color.a);
 		float open = RoofMaskOn > 0.5 ? OpenAbove(uv, depth) : 1.0;
@@ -422,7 +523,7 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	}
 	// DebugView 3: the surroundings cube as seen from here, over the whole screen (it should look like a blurred, slightly
 	// late copy of the picture; black where nothing was seen yet).
-	[branch] if (DebugView > 2.5) {
+	[branch] if (abs(DebugView - 3.0) < 0.5) {
 		float4 env = EnvAlong(normalize(toWorld(uv)), 0.0);
 		return float4(delinearize(env.rgb * env.a), 1.0);
 	}
@@ -454,6 +555,7 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	float share = saturate(amount * EnvironmentFresnel(roughness, saturate(dot(-V, N)))) * saturate(reflection.a);
 	float3 reflected = Untame(reflection.rgb / max(reflection.a, 1.0e-4));
 
+	[branch] if (DebugView > 4.5) return float4(delinearize(reflected), 1.0);   // 5, 6: the trace's diagnostic colours as they are
 	[branch] if (DebugView > 1.5) return float4(1.0 - reflection.a, reflection.a, amount * 0.5, 1.0);   // red: nothing found
 	[branch] if (DebugView > 0.5) return float4(delinearize(reflected * share), color.a);
 
