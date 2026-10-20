@@ -587,7 +587,18 @@ namespace ShaderWarmUp2 {
 			if (TheSettingManager->Config.FillNode(&node, section, "ShaderWarmUp2MinMs")) MinMs = std::clamp((double)node.FloatValue, 0.0, 1000.0);
 		}
 		if (Mode <= 0) return;
-		if (!strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) { Logger::Log("UNOFFICIAL ShaderWarmUp2: DXVK compiles shaders ahead; not needed, off"); Mode = 0; return; }
+		if (!strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) {
+#if NVR_TEST_TOOLS
+			// 2026-10-19: test builds keep the frame log under DXVK (no device detours, no list, no warm-up), so a DXVK run of a test
+			// walk gives the same WARMUP2 FRAME / TOTALS lines as a native one (native vs DXVK arrival hitches).
+			Installed = true; Mode = 1;
+			CalTsc = __rdtsc(); CalMs = NowMs();
+			Logger::Log("UNOFFICIAL ShaderWarmUp2: DXVK compiles shaders ahead; test build: frame log only (no recording, no warm-up)");
+#else
+			Logger::Log("UNOFFICIAL ShaderWarmUp2: DXVK compiles shaders ahead; not needed, off"); Mode = 0;
+#endif
+			return;
+		}
 		memset(StateSlot, -1, sizeof(StateSlot));
 		for (int k = 0; k < kStates; k++) StateSlot[KeyStates[k]] = (signed char)k;
 		KeepObjects = Mode >= 2;
