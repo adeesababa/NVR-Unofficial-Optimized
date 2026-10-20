@@ -12,6 +12,8 @@
 #include "../../core/GpuTimeline.h"
 #include "../../core/PointShadowForward.h"
 #include "../../core/ShaderWarmUp.h"
+#include "../../core/ShaderWarmUp2.h"
+#include "../../core/IOWorker2.h"	// UNOFFICIAL 2026-10-20: second loading thread (its once-a-minute log line)
 #include "../../core/ConstantFilter.h"
 #include "../../core/HiddenObjectCulling.h"
 #include "../../core/LampScissor.h"
@@ -575,6 +577,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 		}
 	}
 	FrameSplit::PresentMs = 0.0;
+#if NVR_TEST_TOOLS
+	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);	// UNOFFICIAL ShaderWarmUp2: frame times + new setups (shot index: picture frames)
+#else
+	ShaderWarmUp2::FrameTick(-1);	// UNOFFICIAL ShaderWarmUp2: frame times + new setups
+#endif
+	IOWorker2::Tick();	// UNOFFICIAL IOWorker2 (off by default): what the second loading thread did, once a minute
 	
 	SettingsMainStruct* SettingsMain = &TheSettingManager->SettingsMain;
 
@@ -3049,6 +3057,7 @@ static void RenderMainMenuMovie() {
 CallDetour kRenderInterfaceDetour;
 void __fastcall RenderInterfaceHook(void* apThis, void*, void* apCuller, bool abPipboyVisible) {
 	ShaderWarmUp::OnInterfaceFrame();	// UNOFFICIAL: at the main menu, draw the shaders used in play once (ShaderWarmUp.h)
+	ShaderWarmUp2::OnInterfaceFrame();	// UNOFFICIAL: at the main menu, draw the recorded drawing setups once (ShaderWarmUp2.h)
 	RenderMainMenuMovie();
 	ImGuiManager::NewFrame();
 	ThisCall(kRenderInterfaceDetour.GetOverwrittenAddr(), apThis, apCuller, abPipboyVisible);
