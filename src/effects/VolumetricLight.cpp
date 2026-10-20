@@ -10,7 +10,9 @@ static void ReadLook(const char* section, VolumetricLightEffect::LookStruct& loo
 }
 
 void VolumetricLightEffect::UpdateSettings() {
-	ReportHistory("settings changed");	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced
+	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
+	// profile runs (as the 240-frame report): every settings change reruns this, so dragging a menu slider wrote dozens of lines.
+	if (GpuTimer::Enabled) ReportHistory("settings changed");
 	const char* section = "Shaders.VolumetricLight.Main";
 	ReadLook(section, Settings.Day);
 	ReadLook("Shaders.VolumetricLight.Night", Settings.Night);

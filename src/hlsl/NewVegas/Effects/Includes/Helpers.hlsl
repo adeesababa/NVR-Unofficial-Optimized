@@ -28,13 +28,13 @@
 
 float3 linearize(float3 color) {
     float3 linearRGBLo = color / 12.92;
-    float3 linearRGBHi = pow((color + 0.055) / 1.055, 2.4);
+    float3 linearRGBHi = pow(abs((color + 0.055) / 1.055), 2.4);	// (abs: free, and only where the select uses it, base > 0.09: no change; ends warning X3571)
     float3 linearRGB = (color <= 0.04045) ? linearRGBLo : linearRGBHi;
     return linearRGB;
 }
 float4 linearize(float4 color) {
     float3 linearRGBLo = color.rgb / 12.92;
-    float3 linearRGBHi = pow((color.rgb + 0.055) / 1.055, 2.4);
+    float3 linearRGBHi = pow(abs((color.rgb + 0.055) / 1.055), 2.4);
     float3 linearRGB = (color.rgb <= 0.04045) ? linearRGBLo : linearRGBHi;
     return float4(linearRGB, color.a);
 }

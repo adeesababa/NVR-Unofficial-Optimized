@@ -82,7 +82,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 
     OUT.color_0.a = (stars.a * skytint.a) * IN.texcoord_2.x * TESR_SkyData.w ;//* (n * starsLuma + 1);
     stars.rgb = stars.rgb * (n * 100 * starsLuma + 1) * skytint.rgb;
-    stars.rgb = delinearize(stars); //delinearise
+    stars.rgb = delinearize(stars).rgb; //delinearise
     OUT.color_0.rgb = stars.rgb;
     return OUT;
 };

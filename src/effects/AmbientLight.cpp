@@ -309,9 +309,18 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		D3DXVECTOR4 ambient = TheShaderManager->ShaderConst.sunAmbient, direct = TheShaderManager->ShaderConst.sunColor;
 		const bool interior = !TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() && Player->parentCell->lighting;
 		if (interior) { ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4(); direct = Player->parentCell->lighting->directional.toD3DXVECTOR4(); }
+		// 2026-10-19 (a P81 tester's log: ~12000 of these lines in 30 minutes): outdoors the sky's colours drift a little every
+		// frame, so 'when it changes' was every frame. Now: on an indoor/outdoor switch, or a change of more than 0.02 in a channel,
+		// at most 200 lines a session.
 		static D3DXVECTOR4 loggedAmbient(-1.0f, -1.0f, -1.0f, -1.0f), loggedDirect(-1.0f, -1.0f, -1.0f, -1.0f);
-		if (ambient != loggedAmbient || direct != loggedDirect) {
-			loggedAmbient = ambient; loggedDirect = direct;
+		static bool loggedInterior = false;
+		static UInt32 loggedLines = 0;
+		auto moved = [](const D3DXVECTOR4& a, const D3DXVECTOR4& b) {
+			return fabsf(a.x - b.x) > 0.02f || fabsf(a.y - b.y) > 0.02f || fabsf(a.z - b.z) > 0.02f;
+		};
+		if (loggedLines < 200 && (interior != loggedInterior || moved(ambient, loggedAmbient) || moved(direct, loggedDirect))) {
+			loggedAmbient = ambient; loggedDirect = direct; loggedInterior = interior;
+			if (++loggedLines == 200) Logger::Log("UNOFFICIAL AmbientLight: scene light lines stop here (200 this session)");
 			Logger::Log("UNOFFICIAL AmbientLight: scene light (%s): ambient %.4f %.4f %.4f, %s %.4f %.4f %.4f", interior ? "cell" : "sky",
 				ambient.x, ambient.y, ambient.z, interior ? "directional" : "sun", direct.x, direct.y, direct.z);
 		}

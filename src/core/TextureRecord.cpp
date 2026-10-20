@@ -69,7 +69,9 @@ void TextureRecord::GetSamplerStates(std::string samplerStateSubstring) {
 	while (std::getline(samplerSettings, setting, ';')) {
 		size_t newlinePos = setting.find("\n");
 		if (newlinePos != std::string::npos) setting.erase(newlinePos, 1);
-		std::string opt = trim(setting.substr(0, setting.find("=") - 1));
+		// UNOFFICIAL 2026-10-19: up to the '=' (trim takes the space): '- 1' cut the name's last letter when written without a
+		// space ('ADDRESSU=CLAMP', GunFX's BarrelHaze), so those states were silently ignored
+		std::string opt = trim(setting.substr(0, setting.find("=")));
 		std::string val = trim(setting.substr(setting.find("=") + 1, setting.length()));
 		std::transform(opt.begin(), opt.end(), opt.begin(), ::toupper);
 		std::transform(val.begin(), val.end(), val.begin(), ::toupper);

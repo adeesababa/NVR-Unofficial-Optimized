@@ -138,7 +138,7 @@ float4 ShadeClouds(float4 finalColor, float4 vertexColor, float3 skyColor, SunVa
 
     // calculate sky color to blend in the clouds
     float3 scattering = pows(Sun.sunInfluence, 20) * smoothstep(0.5, 1, 1.0 - alpha) * Sun.sunColor;
-    float sunDir = Sun.sunDir;
+    float sunDir = Sun.sunDir.x;	// (.x: what the implicit truncation took; ends warning X3206)
     float3 baseSkyColor = linearize(TESR_SkyColor).rgb;
 
     if (!UseNormals){
@@ -369,7 +369,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     Sun.sunHeight = shade(TESR_SunPosition.xyz, up);
     Sun.sunDir = compress(dot(eyeDir, TESR_SunPosition.xyz)); // stores wether the camera is looking in the direction of the sun in range 0/1
     Sun.athmosphere = pows(1 - verticality, 8) * TESR_SkyData.x;
-    Sun.sunInfluence = pows(Sun.sunDir, SUNINFLUENCE);
+    Sun.sunInfluence = pows(Sun.sunDir, SUNINFLUENCE).x;	// (.x: what the implicit truncation took)
     Sun.isDayTime = smoothstep(0, 0.5, TESR_SunAmount.x);
     Sun.sunColor = GetSunColor(Sun.sunHeight, TESR_SkyData.x, TESR_SunAmount.x, TESR_SunColor.rgb, TESR_SunsetColor.rgb);
 

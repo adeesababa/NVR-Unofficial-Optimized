@@ -644,7 +644,7 @@ float4 DedicatedCombine(VSOUT IN) : COLOR0
 	#if viewao
 		return float4(ao, ao, ao, 1);
 	#endif
-	float3 result = source * pow(ao, 1.0 / 2.2);
+	float3 result = source * pow(abs(ao), 1.0 / 2.2);	// (abs: free, ao >= 0 here; ends warning X3571)
 	[branch] if (TESR_AmbientOcclusionSky4.w > 0.5f) {	// UNOFFICIAL Skylighting v2: the sky factor, with the AO's upsample weights
 		float skySum = 0, skyWeights = 0;
 		[unroll] for (int sy = 0; sy < 2; ++sy) {
