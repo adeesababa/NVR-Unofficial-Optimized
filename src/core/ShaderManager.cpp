@@ -2255,6 +2255,7 @@ void ShaderManager::SwitchShaderStatus(const char* Name) {
 
 	// UNOFFICIAL: a menu entry with only settings (Shaders.<Name>.Status Enabled, e.g. ContactHardening, which
 	// ShadowManager reads each frame) just flips its setting.
+	// SetMenuShaderEnabled picks the setting (Status, or [Shaders.<Name>.Main] Enabled for Cloth/CloudShadows; none for Foliage).
 	TheSettingManager->SetMenuShaderEnabled(Name, !TheSettingManager->GetMenuShaderEnabled(Name));
 	IsMenuSwitch = false;
 }

@@ -429,6 +429,8 @@ public:
 	void					CreateNode(Configuration::ConfigNode* Node, const char* Section, const char* Key, int Value, bool Reboot);
 	void					CreateNode(Configuration::ConfigNode* Node, const char* Section, const char* Key, bool Value, bool Reboot);
 	void					CreateNodeS(Configuration::ConfigNode* Node, const char* Section, const char* Key, const char* Value, bool Reboot);
+	enum class MenuSwitch { Status, MainEnabled, None };	// UNOFFICIAL: which setting switches a Shaders list entry (GetMenuShaderSwitch)
+	MenuSwitch				GetMenuShaderSwitch(const char* Name);
 	bool					GetMenuShaderEnabled(const char* Name);
 	void					SetMenuShaderEnabled(const char* Name, bool enabled);
 	bool					GetMenuMiscEnabled(const char* Name);

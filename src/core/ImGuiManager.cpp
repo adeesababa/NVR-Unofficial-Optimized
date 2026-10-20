@@ -3002,24 +3002,29 @@ static void RenderContent() {
 		size_t dot2 = SelectedSection.find('.', dot1 + 1);
 		if (dot1 != std::string::npos && dot2 != std::string::npos) {
 			std::string shaderName = SelectedSection.substr(dot1 + 1, dot2 - dot1 - 1);
+			const SettingManager::MenuSwitch kind = TheSettingManager->GetMenuShaderSwitch(shaderName.c_str());
 			bool enabled = TheSettingManager->GetMenuShaderEnabled(shaderName.c_str());
 			bool forced  = TheSettingManager->IsShaderForced(shaderName.c_str());
-			ImGui::SameLine();
-			ImGui::BeginDisabled(forced);
-			ImGui::PushStyleColor(ImGuiCol_Button, enabled
-				? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
-				: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
-			// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: the tooltip says so.
-			const std::string label = shaderName + ": " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
-			if (ImGui::SmallButton(label.c_str())) {
-				TheShaderManager->SwitchShaderStatus(shaderName.c_str());
-				TheSettingManager->LoadSettings();
+			if (kind != SettingManager::MenuSwitch::None) {	// UNOFFICIAL 2026-10-19: no button for an entry without a switch
+				ImGui::SameLine();
+				ImGui::BeginDisabled(forced);
+				ImGui::PushStyleColor(ImGuiCol_Button, enabled
+					? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
+					: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
+				// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: the tooltip says so.
+				const std::string label = shaderName + ": " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
+				if (ImGui::SmallButton(label.c_str())) {
+					TheShaderManager->SwitchShaderStatus(shaderName.c_str());
+					TheSettingManager->LoadSettings();
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Turns all of %s on or off (every %s section), not just this section.\nThis section's own switches are in the list below.",
+						shaderName.c_str(), shaderName.c_str());
+				ImGui::PopStyleColor();
+				ImGui::EndDisabled();
+				if (kind == SettingManager::MenuSwitch::MainEnabled)	// e.g. Cloth: read at start, so the same badge as its Main page
+					RestartBadge(("Shaders." + shaderName + ".Main").c_str(), "Enabled");
 			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Turns all of %s on or off (every %s section), not just this section.\nThis section's own switches are in the list below.",
-					shaderName.c_str(), shaderName.c_str());
-			ImGui::PopStyleColor();
-			ImGui::EndDisabled();
 		}
 	}
 
@@ -3183,12 +3188,22 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		ImGui::PopStyleColor();
 
 		ImGui::SameLine();
-		ImGui::BeginDisabled(forced);
-		if (ImGui::Checkbox(name.c_str(), &enabled)) {
-			TheShaderManager->SwitchShaderStatus(name.c_str());
-			TheSettingManager->LoadSettings();
+		const SettingManager::MenuSwitch kind = TheSettingManager->GetMenuShaderSwitch(name.c_str());
+		if (kind == SettingManager::MenuSwitch::None) {
+			// UNOFFICIAL 2026-10-19: no on/off setting (e.g. Foliage): a name, not a checkbox that springs back
+			ImGui::TextUnformatted(name.c_str());
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s has no on/off switch of its own: the settings inside control it.", name.c_str());
 		}
-		ImGui::EndDisabled();
+		else {
+			ImGui::BeginDisabled(forced);
+			if (ImGui::Checkbox(name.c_str(), &enabled)) {
+				TheShaderManager->SwitchShaderStatus(name.c_str());
+				TheSettingManager->LoadSettings();
+			}
+			ImGui::EndDisabled();
+			if (kind == SettingManager::MenuSwitch::MainEnabled)	// e.g. Cloth: read at start, so the same badge as its Main page
+				RestartBadge(("Shaders." + name + ".Main").c_str(), "Enabled");
+		}
 
 		if (forced) {
 			ImGui::SameLine();

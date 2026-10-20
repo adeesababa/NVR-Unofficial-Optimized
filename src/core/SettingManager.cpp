@@ -1,4 +1,5 @@
 #define TOML11_PRESERVE_COMMENTS_BY_DEFAULT
+#include <unordered_map>
 
 // GetCurrentDirectoryA is reliable at startup but GetSaveFileNameA (and other
 // common-dialog calls) can silently change it.  Capture the game root once and
@@ -1602,8 +1603,49 @@ void SettingManager::CreateNodeS(Configuration::ConfigNode* Node, const char* Se
 }
 
 
+// UNOFFICIAL 2026-10-19 ('cloth toggle turns on then off immediately'): which setting is a Shaders list entry's on/off switch.
+// Effects and shaders have [Shaders.<Name>.Status] Enabled; a few settings-only entries keep theirs in [Shaders.<Name>.Main]
+// Enabled (Cloth, CloudShadows) and some have none (Foliage: the settings inside decide). The list's checkbox, the page's
+// button and Insert wrote a Status that does not exist for those, so the switch sprang straight back.
+SettingManager::MenuSwitch SettingManager::GetMenuShaderSwitch(const char* Name) {
+	static std::unordered_map<std::string, MenuSwitch> fromDefaults;	// the defaults do not change while the game runs
+	MenuSwitch kind;
+	auto it = fromDefaults.find(Name);
+	if (it != fromDefaults.end()) kind = it->second;
+	else {
+		auto hasEnabled = [this, Name](const char* sub) {
+			char path[256];
+			snprintf(path, sizeof(path), "_Shaders.%s.%s", Name, sub);
+			StringList keys;
+			SplitString(path, ".", &keys);
+			tomlValue* section = Config.FindSection(&Config.DefaultConfig, &keys);
+			if (!section) return false;
+			try { section->at("Enabled"); return true; }
+			catch (const std::exception&) { return false; }
+		};
+		kind = hasEnabled("Status") ? MenuSwitch::Status : hasEnabled("Main") ? MenuSwitch::MainEnabled : MenuSwitch::None;
+		fromDefaults.emplace(Name, kind);
+	}
+	// an effect or shader without a Status in the defaults keeps the old behaviour (SwitchShaderStatus switches its record)
+	if (kind == MenuSwitch::None && (TheShaderManager->GetEffectByName(Name) || TheShaderManager->GetShaderCollectionByName(Name)))
+		return MenuSwitch::Status;
+	return kind;
+}
+
+
 bool SettingManager::GetMenuShaderEnabled(const char* Name) {
 	char settingString[256];
+
+	switch (GetMenuShaderSwitch(Name)) {
+	case MenuSwitch::MainEnabled:
+		snprintf(settingString, sizeof(settingString), "Shaders.%s.Main", Name);
+		return GetSettingI(settingString, "Enabled") != 0;
+	case MenuSwitch::None:
+		return true;	// no switch (the menu shows none): its settings decide
+	default:
+		break;
+	}
+
 	strcpy(settingString, "Shaders.");
 	strcat(settingString, Name);
 
@@ -1634,9 +1676,9 @@ bool SettingManager::GetMenuShaderEnabled(const char* Name) {
 
 void SettingManager::SetMenuShaderEnabled(const char* Name, bool enabled) {
 	char settingString[256];
-	strcpy(settingString, "Shaders.");
-	strcat(settingString, Name);
-	strcat(settingString, ".Status");
+	const MenuSwitch kind = GetMenuShaderSwitch(Name);
+	if (kind == MenuSwitch::None) return;
+	snprintf(settingString, sizeof(settingString), kind == MenuSwitch::MainEnabled ? "Shaders.%s.Main" : "Shaders.%s.Status", Name);
 	SetSetting(settingString, "Enabled", enabled);
 }
 
