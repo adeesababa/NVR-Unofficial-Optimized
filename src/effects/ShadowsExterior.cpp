@@ -558,6 +558,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.FixtureDistance = std::clamp(TheSettingManager->GetSettingF(section, "FixtureDistance"), 0.0f, 512.0f);
 		forward.LampSize = std::clamp(TheSettingManager->GetSettingF(section, "LampSize"), 0.0f, 64.0f);
 		forward.MaxSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MaxSoftness"), 1.0f, 32.0f);
+		forward.LampGlassShadows = TheSettingManager->GetSettingI(section, "LampGlassShadows") != 0;
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);

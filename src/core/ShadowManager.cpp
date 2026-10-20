@@ -111,7 +111,8 @@ static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade) {
 }
 
 static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& staticCasters) {
-	hash = 1469598103934665603ULL;
+	// UNOFFICIAL LampGlassShadows (2026-10-20): switching it changes what a lamp's cube map holds, so it changes the hash (a redraw).
+	hash = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.LampGlassShadows ? 1469598103934665603ULL : 0x6C62272E07BB0142ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 
@@ -998,6 +999,11 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 
 			// Skip refraction and fire refraction.
 			if (!CheckShaderFlags(geo))
+				continue;
+
+			// UNOFFICIAL LampGlassShadows false (2026-10-20): a lamp's glowing glass, bulb or glow sprite is a light source, not a
+			// blocker; drawn solid it threw the whole shade outline of a sconce or chandelier onto the wall (LampFixtures::LampPart).
+			if (!Settings->Forward.LampGlassShadows && LampFixtures::LampPart(geo))
 				continue;
 
 			bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);

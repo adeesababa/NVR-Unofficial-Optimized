@@ -881,9 +881,10 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 					if (seen == loggedKind.end() || seen->second != LampFixtures::Generation) {
 						loggedKind[v->second] = LampFixtures::Generation;
 						const D3DXVECTOR4 at = Light->m_worldTransform.pos.toD3DXVEC4();
-						Logger::Log("LAMP %p is %s: nearest glowing mesh %.0f units (FixtureDistance %.0f; %u glowing meshes in the cell)%s | at %.0f %.0f %.0f, reach %.0f, colour %.2f %.2f %.2f x %.2f",
-							v->second, invisible ? "an INVISIBLE light" : "at a lamp", LampFixtures::NearestGlow(Light), Settings->Forward.FixtureDistance,
-							(unsigned)LampFixtures::Glows.size(), invisible ? (invisibleStrength > 0.0f ? ", its shadow at InvisibleLightShadowStrength" : ", no shadow") : "",
+						Logger::Log("LAMP %p is %s: nearest glowing mesh %.0f units (GLOW %d; FixtureDistance %.0f; %u glowing meshes in the cell)%s | at %.0f %.0f %.0f, reach %.0f, colour %.2f %.2f %.2f x %.2f",
+							v->second, invisible ? "an INVISIBLE light" : "at a lamp", LampFixtures::NearestGlow(Light), LampFixtures::NearestGlowIndex(Light),
+							Settings->Forward.FixtureDistance, (unsigned)LampFixtures::Glows.size(),
+							invisible ? (invisibleStrength > 0.0f ? ", its shadow at InvisibleLightShadowStrength" : ", no shadow") : "",
 							at.x, at.y, at.z, Light->Spec.r, Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
 					}
 				}
