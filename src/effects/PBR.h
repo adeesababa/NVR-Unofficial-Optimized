@@ -206,6 +206,18 @@ public:
 	};
 	FoliageSettingsStruct	FoliageSettings;
 
+	// UNOFFICIAL [Shaders.PBR.Linear] gamma (Includes/LinearLight.hlsl): UpdateSettings reads it, ApplyLinearGamma (every frame, from
+	// UpdateConstants) blends Gamma (day and interiors) into NightGamma (exteriors at night; 0 = the same as Gamma) on the day/night
+	// transition curve and hands the result to the shaders, ExactPassSums and LinearPreDecode.
+	struct LinearSettingsStruct {
+		bool  Enabled = false;
+		float Gamma = 1.0f;
+		float NightGamma = 0.0f;
+		float FalloffMatch = 1.0f;
+	};
+	LinearSettingsStruct	LinearSettings;
+	void	ApplyLinearGamma();
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();

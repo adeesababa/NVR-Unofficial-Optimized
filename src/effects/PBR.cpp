@@ -72,16 +72,13 @@ void PBRShaders::UpdateSettings() {
 
 	// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl: ObjectTemplate, TerrainTemplate). Enabled is read at startup
 	// (ShaderRecord::LoadShader compiles it in); Gamma is live, and 1 returns every colour unchanged.
-	const float linearGamma = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ?
-		std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f) : 1.0f;
-	Constants.Linear.x = linearGamma;
-	Constants.Linear.y = 1.0f / linearGamma;
-	// UNOFFICIAL 2026-10-20 FalloffMatch (LinearLight.hlsl LinFalloff): the exponent a lamp's distance falloff is decoded with. 1 = the
-	// lamp alone falls off as in the game (att^gamma); 0 = the falloff used as is in linear light (before 2026-10-20: a lamp alone came
-	// out att^(1/gamma) bright -- 2-3.5x along its reach; Rivet City's hangar ~2x too bright). Live.
-	Constants.Linear.z = 1.0f + (linearGamma - 1.0f) * std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "FalloffMatch"), 0.0f, 1.0f);
-	PassSums::Gamma = linearGamma;	// UNOFFICIAL ExactPassSums: the fold-in decodes with the same gamma
-	LinearPreDecode::Gamma = linearGamma;	// UNOFFICIAL 2026-10-17 LinearPreDecode: the colours decoded on the CPU, the same gamma
+	LinearSettings.Enabled = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") != 0;
+	LinearSettings.Gamma = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "Gamma"), 1.0f, 3.0f);
+	// UNOFFICIAL 2026-10-20 NightGamma (user request): the gamma outside at night, live; 0 = the same as Gamma.
+	const float nightGamma = TheSettingManager->GetSettingF("Shaders.PBR.Linear", "NightGamma");
+	LinearSettings.NightGamma = nightGamma > 0.0f ? std::clamp(nightGamma, 1.0f, 3.0f) : 0.0f;
+	LinearSettings.FalloffMatch = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "FalloffMatch"), 0.0f, 1.0f);
+	ApplyLinearGamma();
 
 	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl DiffuseEnergyKeep): white surfaces no longer send back more light than
 	// they receive in the full and sun passes. Live.
@@ -172,7 +169,29 @@ Settings.Default.Saturation = TheSettingManager->GetSettingF("Shaders.PBR.Main",
 	Settings.Interiors.RmaosRoughnessScale = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Interiors", "RoughnessScale"), 1.0f, 2.0f);
 }
 
+// UNOFFICIAL linear lighting's gamma for this frame (see UpdateSettings). With NightGamma set, exteriors blend from Gamma (day) to
+// NightGamma (night) on the same transition curve as the other day / night settings (GetTransitionValue); interiors keep Gamma.
+// Without it (0, the default) this is Gamma exactly as before 2026-10-20. LinearPreDecode remakes its copies only when the value
+// changes (dusk and dawn): a dozen powf.
+void PBRShaders::ApplyLinearGamma() {
+	float gamma = 1.0f;
+	if (LinearSettings.Enabled) {
+		gamma = LinearSettings.NightGamma > 0.0f ?
+			TheShaderManager->GetTransitionValue(LinearSettings.Gamma, LinearSettings.NightGamma, LinearSettings.Gamma) : LinearSettings.Gamma;
+	}
+	Constants.Linear.x = gamma;
+	Constants.Linear.y = 1.0f / gamma;
+	// UNOFFICIAL 2026-10-20 FalloffMatch (LinearLight.hlsl LinFalloff): the exponent a lamp's distance falloff is decoded with. 1 = the
+	// lamp alone falls off as in the game (att^gamma); 0 = the falloff used as is in linear light (before 2026-10-20: a lamp alone came
+	// out att^(1/gamma) bright -- 2-3.5x along its reach; Rivet City's hangar ~2x too bright). Live.
+	Constants.Linear.z = 1.0f + (gamma - 1.0f) * LinearSettings.FalloffMatch;
+	PassSums::Gamma = gamma;	// UNOFFICIAL ExactPassSums: the fold-in decodes with the same gamma
+	LinearPreDecode::Gamma = gamma;	// UNOFFICIAL 2026-10-17 LinearPreDecode: the colours decoded on the CPU, the same gamma
+}
+
 void PBRShaders::UpdateConstants() {
+	ApplyLinearGamma();	// first: the LinearScales below decode with it
+
 	// UNOFFICIAL TrimLampPasses (ObjectTemplate.hlsl DIFFUSE / POINT passes), live.
 	Constants.LampPassTrim.x = TheSettingManager->SettingsMain.Main.TrimLampPasses ? 1.0f : 0.0f;
 
