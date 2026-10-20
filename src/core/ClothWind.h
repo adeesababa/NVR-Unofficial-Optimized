@@ -84,6 +84,7 @@ namespace ClothWind {
 	inline double RealStart = -1.0, ClockStart = 0.0;
 	inline float SpeedNow = 220.0f, IntensityNow = 6.0f;
 	inline bool NonZeroSent = false;	// the device's c248 may hold a cloth draw's values (or the grass shaders' matrices: see NoteVertexShader)
+	inline bool GrassInC248 = false;	// 2026-10-19: ...and it is the grass shaders' matrices (cleared when a cloth-carrying shader is bound)
 	inline UInt32 ClothDraws = 0, Frames = 0;
 	inline bool LoggedGameWind = false;
 	inline bool CompiledInRead = false;
@@ -118,9 +119,20 @@ namespace ClothWind {
 	// next object with cloth code would move although it is no cloth. Mark the register as 'to be zeroed' (the next non-cloth draw does it).
 	inline bool CurrentVSCapable = false;	// 2026-10-19: the vertex shader the last SetShaders bound carries the cloth code
 	inline std::unordered_map<const void*, bool> TentativeNow;	// 2026-10-19: per object this frame, did the BOUND vertex shader carry it at each lit pass
+	// 2026-10-19 (test on the user's flicker save NVRAutoTest13, run 20261019-204305: with the cloth code compiled in but cloth switched
+	// OFF, 8.4 % of the picture changed -- houses and the road white, rocks and poles bent -- vs 0.02 % frame-to-frame noise): the grass
+	// mark was set only while cloth was ON, so with it off nothing ever cleared the grass matrices out of c248, and every NVR object
+	// vertex shader drawn after grass ran the cloth code on them (passes no longer met: white objects, torn meshes). With cloth on the
+	// same happened to anything drawn after grass by a path without ForGeometry. Now, whenever the cloth code is compiled in, the grass
+	// marks c248 and binding a cloth-carrying vertex shader clears it at once -- before its draw, whatever path draws it.
+	inline void Zero(IDirect3DDevice9* device);
 	inline void NoteVertexShader(const char* name) {
-		if (S.On && name && name[0] == 'G' && name[1] == 'R' && name[2] == 'A' && name[3] == 'S' && name[4] == 'S') NonZeroSent = true;
-		CurrentVSCapable = S.On && CapableName(name);
+		if (!CompiledInRead && TheSettingManager) { CompiledInRead = true; S.CompiledIn = TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Enabled") != 0; }
+		if (!S.CompiledIn) { CurrentVSCapable = false; return; }
+		if (name && name[0] == 'G' && name[1] == 'R' && name[2] == 'A' && name[3] == 'S' && name[4] == 'S') { NonZeroSent = true; GrassInC248 = true; }
+		const bool capable = CapableName(name);
+		if (capable && GrassInC248 && TheRenderManager) Zero(TheRenderManager->device);
+		CurrentVSCapable = S.On && capable;
 	}
 	// 2026-10-19 (P81 report 'cloth: only the player's SHADOW moves'): the object the render-pass hooks are drawing right now. SetShadersHook
 	// used the game's 'current geometry' global, which for worn (skinned) meshes is not the mesh being drawn: their lit passes were never
@@ -437,10 +449,10 @@ namespace ClothWind {
 	}
 
 	inline void Zero(IDirect3DDevice9* device) {
-		if (!NonZeroSent) return;
+		if (!NonZeroSent || !device) return;
 		static const float zero[4] = { 0, 0, 0, 0 };
 		device->SetVertexShaderConstantF(248, zero, 1);
-		NonZeroSent = false;
+		NonZeroSent = false; GrassInC248 = false;
 	}
 	// 2026-10-19 (user: 'cloth is causing unintended meshes to flicker and distort violently'): right after each hooked draw. Before,
 	// a cloth draw's values stayed in c248 until the next hooked object; anything drawn in between by another path with an NVR object
@@ -696,7 +708,7 @@ namespace ClothWind {
 			motion[0], motion[1], motion[2], 0.0f,
 			turn[0], turn[1], turn[2], turn[3] };
 		device->SetVertexShaderConstantF(248, c, 6);
-		NonZeroSent = true;
+		NonZeroSent = true; GrassInC248 = false;
 		ClothDraws++;
 	}
 }
