@@ -24,12 +24,14 @@
 // longer inherit c248 from the grass shaders (they relocate their shadow matrices to c248..c255). See evidence\cloth3-LOG.md.
 // 2026-10-19 (cloth round 5): worn clothing by a per-vertex weight from its own mesh (ClothWeights.h, mask 5), delivered as vertex
 // stream 1 around the skinned partition draw (DrawPartition); the skeleton mask (4) stays the fallback. evidence\cloth3-LOG.md C3-11.
+// 2026-10-20 (cloth round 9): worn coats hang from the hips and their hem is simulated while walking (ClothWalk.h, WalkOf). C3-15.
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
 #include "ClothWeights.h"	// 2026-10-19 round 5: per-vertex weights of worn meshes (mask 5)
+#include "ClothWalk.h"		// 2026-10-20 round 9: the walking simulation of worn coats (hem ring)
 
 namespace ClothWind {
 
@@ -66,6 +68,10 @@ namespace ClothWind {
 		bool  MotionIndoors = true;		// the movement part also indoors (no wind there)
 		bool  UseSkeleton = true;		// 2026-10-19 worn clothing masked by its own skeleton (see SkeletonOf); off: SkinMask
 		bool  UseWeights = true;		// 2026-10-19 round 5: worn clothing by per-vertex weights from its own mesh (WeightsOf, mask 5); off: the skeleton mask (4)
+		// 2026-10-20 round 9: the walking simulation of worn coats (mask 5; see WalkOf)
+		bool  WalkSim = true;
+		float WalkHang = 1.0f;			// how fully the coat hangs from the hips instead of riding the legs (0 = rides them as made, 1 = hangs)
+		float WalkSpring = 1.4f, WalkDamping = 0.2f, WalkDrag = 1.0f, WalkLegMargin = 1.5f, WalkMaxSwing = 30.0f;
 		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
 		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
 										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
@@ -255,6 +261,7 @@ namespace ClothWind {
 		const void* boneData = nullptr; UInt32 bones = 0;	// what it was made from (the skin data can be freed and reused)
 		float pts[12][4] = {};			// L hip, knee, ankle, toe tip, R hip, knee, ankle, toe tip, L elbow, wrist, R elbow, wrist (xyz, radius)
 		float hipZ = 0.0f, kneeZ = 0.0f, groundZ = 0.0f;
+		int bone[5] = { -1, -1, -1, -1, -1 };	// 2026-10-20 skin bone indices: pelvis (or the lowest spine bone), L thigh, L calf, R thigh, R calf
 	};
 	inline std::unordered_map<const void*, Skeleton> Skeletons;	// per NiSkinData
 	inline UInt32 SkeletonsLogged = 0;
@@ -337,8 +344,11 @@ namespace ClothWind {
 			const char* name = bone ? bone->m_pcName : nullptr;
 			if (!name) continue;
 			if (!_strnicmp(name, "bip01", 5)) k.actor = true;
+			if (!_stricmp(name, "bip01 pelvis")) k.bone[0] = (int)b;
+			else if (!_stricmp(name, "bip01 spine") && k.bone[0] < 0) k.bone[0] = (int)b;	// (replaced by the pelvis when it comes later)
 			for (int n = 0; n < 12; n++) {
 				if (found[n] || _stricmp(name, names[n])) continue;
+				if (n == 0) k.bone[1] = (int)b; else if (n == 1) k.bone[2] = (int)b; else if (n == 4) k.bone[3] = (int)b; else if (n == 5) k.bone[4] = (int)b;
 				// the bone's origin in the mesh's space: SkinToBone maps p to s R p + t, so its origin is -R^T t / s
 				const NiTransform& t = sd->BoneData[b].SkinToBone;
 				const float sc = t.scale > 1e-4f ? t.scale : 1.0f;
@@ -399,6 +409,7 @@ namespace ClothWind {
 		std::vector<PartBuf> parts;
 		float center[2] = {};			// the wearer's upright axis in the bind pose (between the hip joints): mask 5's billow points away from it
 		UInt32 lastFrame = 0;
+		ClothWalk::Ring ring;			// 2026-10-20 round 9: the hem ring (bind pose); ring.u is each vertex's place around it (stream 1's second float)
 	};
 	inline std::unordered_map<const void*, MeshWeights> Weights;	// per NiGeometryData
 	inline MeshWeights* ActiveWeights = nullptr;	// the mesh ForGeometry chose mask 5 for (until AfterDraw)
@@ -411,17 +422,23 @@ namespace ClothWind {
 		for (PartBuf& p : m.parts) if (p.vb) { p.vb->Release(); p.vb = nullptr; }
 		m.parts.clear(); m.buffers = false;
 	}
-	// A partition's weights as a vertex buffer: [base] zeros (the draw's BaseVertexIndex), then w[vertex map[i]].
+	// A partition's weights as a vertex buffer: [base] zeros (the draw's BaseVertexIndex), then w[vertex map[i]]. 2026-10-20 round 9: two
+	// floats a vertex -- the weight and the vertex's place around the hem ring (ClothWalk::Ring::u, 0..16).
 	inline bool FillPart(IDirect3DDevice9* device, const MeshWeights& m, PartBuf& p) {
 		if (p.vb) { p.vb->Release(); p.vb = nullptr; }
 		if (!p.vertexMap || !p.vertices || p.base > 65535) return false;
-		const UINT bytes = (p.base + p.vertices) * 4;
+		const UINT bytes = (p.base + p.vertices) * 8;
 		void* data = nullptr;
 		if (FAILED(device->CreateVertexBuffer(bytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &p.vb, NULL)) || !p.vb) { p.vb = nullptr; return false; }
 		if (FAILED(p.vb->Lock(0, 0, &data, 0)) || !data) { p.vb->Release(); p.vb = nullptr; return false; }
 		float* f = (float*)data;
-		for (UInt32 i = 0; i < p.base; i++) f[i] = 0.0f;
-		for (UInt32 i = 0; i < p.vertices; i++) { const UInt16 v = p.vertexMap[i]; f[p.base + i] = v < m.w.size() ? m.w[v] : 0.0f; }
+		for (UInt32 i = 0; i < p.base * 2; i++) f[i] = 0.0f;
+		const bool ring = m.ring.u.size() == m.w.size();
+		for (UInt32 i = 0; i < p.vertices; i++) {
+			const UInt16 v = p.vertexMap[i];
+			f[(p.base + i) * 2] = v < m.w.size() ? m.w[v] : 0.0f;
+			f[(p.base + i) * 2 + 1] = ring && v < m.w.size() ? m.ring.u[v] : 0.0f;
+		}
 		p.vb->Unlock();
 		return true;
 	}
@@ -512,13 +529,16 @@ namespace ClothWind {
 				if (ClothWeights::Compute(in, r)) { m.w = std::move(r.weight); m.state = 1; }
 			}
 			m.center[0] = 0.5f * (k.pts[0][0] + k.pts[4][0]); m.center[1] = 0.5f * (k.pts[0][1] + k.pts[4][1]);
+			if (m.state > 0)	// 2026-10-20 round 9: the hem ring (needs the labels; a mesh without coat directions has none: no walking simulation)
+				ClothWalk::BuildRing(&gd->m_pkVertex[0].x, gd->m_usVertices, m.w.data(), r.label.data(), m.center, k.hipZ, m.ring);
 			if (WeightsLogged < 24 || S.LogMatches) {
 				WeightsLogged++;
 				QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
 				const double ms = qf.QuadPart ? (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart : 0.0;
 				if (m.state > 0)
-					Logger::Log("Cloth wind: cloth weights of '%s': %u vertices (%u welded): body %u, cloth %u, torso %u; cuts %u (tubes %u, pads %u, cloth %u), crotch z %.1f; from %s, %u triangles; %.2f ms",
-						geometry->m_pcName ? geometry->m_pcName : "?", (unsigned)gd->m_usVertices, r.welded, r.body, r.cloth, r.torso, r.cuts, r.tubes, r.pads, r.clothCuts, r.crotch, from, (unsigned)(tris.size() / 3), ms);
+					Logger::Log("Cloth wind: cloth weights of '%s': %u vertices (%u welded): body %u, cloth %u, torso %u; cuts %u (tubes %u, pads %u, cloth %u), crotch z %.1f; from %s, %u triangles; %.2f ms; hem ring %s",
+						geometry->m_pcName ? geometry->m_pcName : "?", (unsigned)gd->m_usVertices, r.welded, r.body, r.cloth, r.torso, r.cuts, r.tubes, r.pads, r.clothCuts, r.crotch, from, (unsigned)(tris.size() / 3), ms,
+						m.ring.ok ? "made" : "none (no coat below the hips)");
 				else
 					Logger::Log("Cloth wind: cloth weights of '%s': NOT made (%s): the skeleton mask (4) stays", geometry->m_pcName ? geometry->m_pcName : "?",
 						!(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex ? "the game did not keep its vertices" : (!from ? "no triangles kept" : "the weights failed"));
@@ -561,7 +581,7 @@ namespace ClothWind {
 			bool free = true;
 			for (UINT i = 0; i + 1 < n; i++) if (el[i].Stream != 0 || (el[i].Usage == D3DDECLUSAGE_TEXCOORD && el[i].UsageIndex == 7)) free = false;
 			if (free) {
-				el[n - 1] = { 1, 0, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 7 };
+				el[n - 1] = { 1, 0, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 7 };	// weight, place on the hem ring
 				el[n] = D3DDECL_END();
 				if (FAILED(device->CreateVertexDeclaration(el, &aug))) aug = nullptr;
 			}
@@ -571,6 +591,154 @@ namespace ClothWind {
 		if (Decls.size() > 64) { if (Decls.front().aug) Decls.front().aug->Release(); Decls.front().orig->Release(); Decls.erase(Decls.begin()); }
 		return aug;
 	}
+	// 2026-10-20 round 9 (user: 'can our cloth have some sort of faux physics simulation when we walk? right now it still kinda just
+	// follows our player'): the garment's own skin weights glue a coat's skirt to the leg bones, so it moved like trousers (the old walking
+	// part only added one offset for the whole coat). Now, per wearer, once a frame: the pelvis bone and the legs (thigh and calf bones
+	// carrying the garment's own hip, knee and ankle points) are read from the skeleton, and the hem ring (ClothWalk.h: 16 points around
+	// the wearer, each a damped spring towards its spot on the hips-hung coat, pushed out of the current legs, hanging from the hips) is
+	// stepped on the play clock (a pause holds it; a jump of 400 units starts it again at rest). The shader then lets each coat vertex
+	// HANG FROM THE HIPS (blends its skinned place towards the pelvis bone's alone by weight x hang), moves it by the ring at its angle x
+	// weight, and keeps it out of the current legs. Hang fades out when a thigh bends more than 45..70 degrees off standing (sitting,
+	// crouching), smoothed over 0.15 s. Everything is worked out in world space; DrawPartition carries it into the vertex shader's own
+	// space by comparing the bone palette the game just uploaded with the same bone computed here (so it does not matter what space the
+	// game skins into). c200-c202 pelvis, c203-c218 ring, c219 (on, hang), c220-c225 the current legs (xyz, radius).
+	struct Walker {
+		ClothWalk::State st;
+		UInt32 frame = 0;
+		double clock = 0.0;
+		const void* data = nullptr;
+		bool ok = false;
+		double d[ClothWalk::kRing][3] = {};	// this frame's ring displacements (world)
+		double pelvis[3][4] = {};			// the pelvis bone: bind pose -> world (rows r | t)
+		double legs[6][4] = {};				// the current legs: L hip, knee, ankle, R hip, knee, ankle (world xyz, radius)
+		double lastPos[3] = {};
+		float hang = -1.0f;					// the smoothed hang factor
+		int pelvisBone = -1;
+	};
+	inline std::unordered_map<const void*, Walker> Walkers;	// per worn geometry (each wearer has its own)
+	inline Walker* ActiveWalk = nullptr;
+	inline const NiSkinInstance* ActiveSkin = nullptr;
+	inline int ActiveBonesBase = 44;		// where the vertex shader's bone palette starts: ObjectTemplate c44, Shadows\ShadowMap.vso c9
+	inline UInt32 StatWalkDraws = 0, StatWalkNoSpace = 0, WalkChecksLogged = 0;
+
+	// Skin bone b: bind (skin) space -> world, i.e. the bone's world transform after its SkinToBone (p' = s R p + t each), as rows r | t.
+	inline bool BoneXf(const NiSkinInstance* si, int b, double out[3][4]) {
+		const NiSkinData* sd = si ? si->SkinData : nullptr;
+		if (b < 0 || !sd || !sd->BoneData || !si->BoneObjects || (UInt32)b >= sd->Bones || !si->BoneObjects[b]) return false;
+		const NiTransform& W = si->BoneObjects[b]->m_worldTransform;
+		const NiTransform& S = sd->BoneData[b].SkinToBone;
+		const double sp[3] = { S.pos.x, S.pos.y, S.pos.z }, wp[3] = { W.pos.x, W.pos.y, W.pos.z };
+		for (int i = 0; i < 3; i++) {
+			for (int j = 0; j < 3; j++) {
+				double acc = 0.0;
+				for (int m = 0; m < 3; m++) acc += (double)W.rot.data[i][m] * S.rot.data[m][j];
+				out[i][j] = acc * W.scale * S.scale;
+			}
+			out[i][3] = ((double)W.rot.data[i][0] * sp[0] + (double)W.rot.data[i][1] * sp[1] + (double)W.rot.data[i][2] * sp[2]) * W.scale + wp[i];
+		}
+		return true;
+	}
+	inline double Smooth01d(double x) { x = x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x); return x * x * (3.0 - 2.0 * x); }
+
+	// The wearer's walking simulation for this frame (worked out once a frame; the same numbers for every pass), or nullptr.
+	inline Walker* WalkOf(NiGeometry* geometry, const Skeleton& k, const MeshWeights& mw) {
+		const NiSkinInstance* si = geometry->skinInstance;
+		if (!si || !mw.ring.ok) return nullptr;
+		for (int b : k.bone) if (b < 0) return nullptr;
+		Walker& w = Walkers[geometry];
+		if (w.data != geometry->geomData) { w = Walker(); w.data = geometry->geomData; }
+		if (w.frame == FrameId && w.ok) return &w;
+		w.frame = FrameId; w.ok = false;
+		double tl[3][4], cl[3][4], tr[3][4], cr[3][4];
+		if (!BoneXf(si, k.bone[0], w.pelvis) || !BoneXf(si, k.bone[1], tl) || !BoneXf(si, k.bone[2], cl) || !BoneXf(si, k.bone[3], tr) || !BoneXf(si, k.bone[4], cr)) return nullptr;
+		w.pelvisBone = k.bone[0];
+		const double (*bone[6])[4] = { tl, tl, cl, tr, tr, cr };
+		static const int joint[6] = { 0, 1, 2, 4, 5, 6 };
+		for (int j = 0; j < 6; j++) {
+			const float* q = k.pts[joint[j]];
+			for (int i = 0; i < 3; i++) w.legs[j][i] = bone[j][i][0] * q[0] + bone[j][i][1] * q[1] + bone[j][i][2] * q[2] + bone[j][i][3];
+			w.legs[j][3] = q[3];
+		}
+		const double dt = ClockSeconds - w.clock;
+		w.clock = ClockSeconds;
+		const double jx = w.pelvis[0][3] - w.lastPos[0], jy = w.pelvis[1][3] - w.lastPos[1], jz = w.pelvis[2][3] - w.lastPos[2];
+		if (jx * jx + jy * jy + jz * jz > 400.0 * 400.0) w.st.valid = false;	// a load, a teleport: start again at rest
+		for (int i = 0; i < 3; i++) w.lastPos[i] = w.pelvis[i][3];
+		ClothWalk::Xf x;
+		for (int i = 0; i < 3; i++) { for (int j = 0; j < 3; j++) x.r[i][j] = w.pelvis[i][j]; x.t[i] = w.pelvis[i][3]; }
+		ClothWalk::Params prm;
+		prm.spring = S.WalkSpring; prm.damping = S.WalkDamping; prm.drag = S.WalkDrag; prm.legMargin = S.WalkLegMargin; prm.maxSwing = S.WalkMaxSwing;
+		if (!w.st.valid || dt > 1e-5) ClothWalk::Step(w.st, mw.ring, x, w.legs, dt, prm, w.d);	// (no play time passed: hold)
+		// hang fades out when a thigh is bent far from standing (sitting, crouching, lying)
+		double worst = 1.0;
+		for (int leg = 0; leg < 2; leg++) {
+			const float* hb = k.pts[leg * 4]; const float* kb = k.pts[leg * 4 + 1];
+			const double rb[3] = { (double)kb[0] - hb[0], (double)kb[1] - hb[1], (double)kb[2] - hb[2] };
+			double rest[3], cur[3];
+			for (int i = 0; i < 3; i++) { rest[i] = w.pelvis[i][0] * rb[0] + w.pelvis[i][1] * rb[1] + w.pelvis[i][2] * rb[2]; cur[i] = w.legs[leg * 3 + 1][i] - w.legs[leg * 3][i]; }
+			const double lr = std::sqrt(rest[0] * rest[0] + rest[1] * rest[1] + rest[2] * rest[2]), lc = std::sqrt(cur[0] * cur[0] + cur[1] * cur[1] + cur[2] * cur[2]);
+			if (lr > 1e-6 && lc > 1e-6) worst = (std::min)(worst, (rest[0] * cur[0] + rest[1] * cur[1] + rest[2] * cur[2]) / (lr * lc));
+		}
+		const double angle = std::acos(std::clamp(worst, -1.0, 1.0)) * 57.29578;
+		const float target = S.WalkHang * (float)(1.0 - Smooth01d((angle - 45.0) / 25.0));
+		if (w.hang < 0.0f || dt > 0.25) w.hang = target;
+		else if (dt > 0.0) w.hang += (target - w.hang) * (float)(1.0 - std::exp(-dt / 0.15));
+		w.ok = true;
+		return &w;
+	}
+	// The walking constants for the partition about to be drawn, in the vertex shader's own space: T = (the palette's first bone as the
+	// game just uploaded it) x (the same bone computed here, inverted) maps world to it; then pelvis, ring and legs go through T.
+	inline bool WalkConstants(IDirect3DDevice9* device, const NiSkinPartition::Partition* part) {
+		const Walker* w = ActiveWalk;
+		if (!w || !ActiveSkin || !part || !part->pBones || !part->Bones) return false;
+		double M[3][4];
+		if (!BoneXf(ActiveSkin, part->pBones[0], M)) return false;
+		float R[12];
+		if (FAILED(device->GetVertexShaderConstantF(ActiveBonesBase, R, 3))) return false;
+		const double a = M[0][0], b = M[0][1], c = M[0][2], d = M[1][0], e = M[1][1], f = M[1][2], g = M[2][0], h = M[2][1], i = M[2][2];
+		const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+		if (std::fabs(det) < 1e-9) return false;
+		const double inv[3][3] = { { (e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det },
+								   { (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det },
+								   { (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det } };
+		double Mi[3][4];
+		for (int r = 0; r < 3; r++) { for (int q = 0; q < 3; q++) Mi[r][q] = inv[r][q]; Mi[r][3] = -(inv[r][0] * M[0][3] + inv[r][1] * M[1][3] + inv[r][2] * M[2][3]); }
+		double T[3][4];
+		for (int r = 0; r < 3; r++) {
+			for (int q = 0; q < 4; q++) T[r][q] = R[r * 4] * Mi[0][q] + R[r * 4 + 1] * Mi[1][q] + R[r * 4 + 2] * Mi[2][q];
+			T[r][3] += R[r * 4 + 3];
+		}
+		const double scale = std::cbrt(std::fabs(T[0][0] * (T[1][1] * T[2][2] - T[1][2] * T[2][1]) - T[0][1] * (T[1][0] * T[2][2] - T[1][2] * T[2][0]) + T[0][2] * (T[1][0] * T[2][1] - T[1][1] * T[2][0])));
+		float k[26][4] = {};
+		for (int r = 0; r < 3; r++) {	// c200-c202: the pelvis bone, bind pose -> the shader's space
+			for (int q = 0; q < 4; q++) k[r][q] = (float)(T[r][0] * w->pelvis[0][q] + T[r][1] * w->pelvis[1][q] + T[r][2] * w->pelvis[2][q]);
+			k[r][3] += (float)T[r][3];
+		}
+		for (int n = 0; n < ClothWalk::kRing; n++)	// c203-c218: the ring's displacements (vectors)
+			for (int r = 0; r < 3; r++) k[3 + n][r] = (float)(T[r][0] * w->d[n][0] + T[r][1] * w->d[n][1] + T[r][2] * w->d[n][2]);
+		k[19][0] = 1.0f; k[19][1] = w->hang;	// c219
+		for (int j = 0; j < 6; j++) {	// c220-c225: the current legs
+			for (int r = 0; r < 3; r++) k[20 + j][r] = (float)(T[r][0] * w->legs[j][0] + T[r][1] * w->legs[j][1] + T[r][2] * w->legs[j][2] + T[r][3]);
+			k[20 + j][3] = (float)(w->legs[j][3] * scale);
+		}
+		device->SetVertexShaderConstantF(200, &k[0][0], 26);
+		if (S.LogMatches && WalkChecksLogged < 6) {	// the check that the space is right: the pelvis from the palette itself, when it is in it
+			for (UInt16 sl = 0; sl < part->Bones; sl++) {
+				if (part->pBones[sl] != w->pelvisBone) continue;
+				float P[12];
+				if (SUCCEEDED(device->GetVertexShaderConstantF(ActiveBonesBase + sl * 3, P, 3))) {
+					float worst = 0.0f;
+					for (int r = 0; r < 3; r++) for (int q = 0; q < 4; q++) worst = (std::max)(worst, std::fabs(P[r * 4 + q] - k[r][q]));
+					WalkChecksLogged++;
+					Logger::Log("Cloth wind: walk space check (%s pass): the pelvis from the bone palette vs computed: largest difference %.4f (translation %.1f %.1f %.1f), hang %.2f, ring point 0 off by %.1f %.1f %.1f",
+						ActiveBonesBase == 9 ? "shadow" : "lit", worst, P[3], P[7], P[11], w->hang, k[3][0], k[3][1], k[3][2]);
+				}
+				break;
+			}
+		}
+		return true;
+	}
+
 	// The per-partition draw (thiscall on the renderer: buffer data, partition, unused): with the mesh's weights in stream 1 while
 	// ForGeometry chose mask 5 for it, else exactly the game's call.
 	typedef void(__thiscall* DrawPartitionFn)(void*, NiGeometryBufferData*, NiSkinPartition::Partition*, void*);
@@ -601,9 +769,13 @@ namespace ClothWind {
 			device->SetVertexShaderConstantF(248, ActiveC248, 1);
 			return;
 		}
+		if (ActiveWalk) {	// 2026-10-20 round 9: the walking constants in this draw's space (else this partition draws without the walk part)
+			if (WalkConstants(device, partition)) StatWalkDraws++;
+			else { StatWalkNoSpace++; const float off[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; device->SetVertexShaderConstantF(219, off, 1); }
+		}
 		IDirect3DVertexBuffer9* old = nullptr; UINT oldOffset = 0, oldStride = 0;
 		device->GetStreamSource(1, &old, &oldOffset, &oldStride);
-		device->SetStreamSource(1, pb->vb, 0, 4);
+		device->SetStreamSource(1, pb->vb, 0, 8);
 		device->SetVertexDeclaration(aug);
 		DrawPartitionOriginal(renderer, buffer, partition, unused);
 		device->SetVertexDeclaration(decl);
@@ -684,6 +856,13 @@ namespace ClothWind {
 		S.MotionIndoors = TheSettingManager->GetSettingI(section, "MotionIndoors") != 0;
 		S.UseSkeleton = TheSettingManager->GetSettingI(section, "UseSkeleton") != 0;
 		S.UseWeights = TheSettingManager->GetSettingI(section, "UseWeights") != 0;
+		S.WalkSim = TheSettingManager->GetSettingI(section, "WalkSim") != 0;
+		S.WalkHang = std::clamp(TheSettingManager->GetSettingF(section, "WalkHang"), 0.0f, 1.0f);
+		S.WalkSpring = std::clamp(TheSettingManager->GetSettingF(section, "WalkSpring"), 0.3f, 6.0f);
+		S.WalkDamping = std::clamp(TheSettingManager->GetSettingF(section, "WalkDamping"), 0.02f, 1.0f);
+		S.WalkDrag = std::clamp(TheSettingManager->GetSettingF(section, "WalkDrag"), 0.0f, 1.0f);
+		S.WalkLegMargin = std::clamp(TheSettingManager->GetSettingF(section, "WalkLegMargin"), 0.0f, 10.0f);
+		S.WalkMaxSwing = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxSwing"), 0.0f, 80.0f);
 		WeightsMadeNow = 0;
 		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
 		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);
@@ -736,7 +915,11 @@ namespace ClothWind {
 				Logger::Log("Cloth wind: weights: %u partition draws with weights, %u with the skeleton mask instead (%u without a declaration); %u meshes known",
 					StatWeighted, StatFallback, StatNoDecl, (unsigned)Weights.size());
 			}
-			StatWeighted = StatFallback = StatNoDecl = 0;
+			if (S.LogMatches && (StatWalkDraws || StatWalkNoSpace))
+				Logger::Log("Cloth wind: walking: %u partition draws with the walk part, %u without (no space); %u wearers known", StatWalkDraws, StatWalkNoSpace, (unsigned)Walkers.size());
+			StatWeighted = StatFallback = StatNoDecl = StatWalkDraws = StatWalkNoSpace = 0;
+			for (auto w = Walkers.begin(); w != Walkers.end();)	// 2026-10-20 wearers not drawn for a while
+				w = FrameId - w->second.frame > 600 ? Walkers.erase(w) : std::next(w);
 			for (auto w = Weights.begin(); w != Weights.end();)	// 2026-10-19 meshes not drawn for a while: their buffers go
 				if (FrameId - w->second.lastFrame > 1800) { ReleaseBuffers(w->second); w = Weights.erase(w); } else ++w;
 			Frames = ClothDraws = SkinnedDrawsNow = 0;
@@ -745,6 +928,7 @@ namespace ClothWind {
 
 	inline void Zero(IDirect3DDevice9* device) {
 		ActiveWeights = nullptr;	// 2026-10-19 round 5: no weights bound for draws that are no cloth
+		ActiveWalk = nullptr; ActiveSkin = nullptr;
 		if (!NonZeroSent || !device) return;
 		static const float zero[4] = { 0, 0, 0, 0 };
 		device->SetVertexShaderConstantF(248, zero, 1);
@@ -911,6 +1095,10 @@ namespace ClothWind {
 				// wearer's upright axis (bind pose), which mask 5's billow points away from
 				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton) : nullptr) {
 					mode = 5.0f; limbs[54] = mw->center[0]; limbs[55] = mw->center[1]; ActiveWeights = mw;
+					// 2026-10-20 round 9: the walking simulation (DrawPartition sends its constants); without it c219.x = 0 (round 8's path)
+					ActiveSkin = geometry->skinInstance; ActiveBonesBase = shadowPass ? 9 : 44;
+					ActiveWalk = S.WalkSim ? WalkOf(geometry, *skeleton, *mw) : nullptr;
+					if (!ActiveWalk) { const float off[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; device->SetVertexShaderConstantF(219, off, 1); }
 				}
 				device->SetVertexShaderConstantF(226, limbs, 14);
 			}
@@ -1002,6 +1190,7 @@ namespace ClothWind {
 			auto wrap = [](double c) { return (float)(c - floor(c)); };
 			ph[0] = wrap(Phase[0] - d0); ph[1] = wrap(Phase[1] + d1); ph[2] = wrap(Phase[2] + d2); ph[3] = wrap(Phase[3] - d3);
 		}
+		if (ActiveWalk) { for (float& v : motion) v = 0.0f; for (float& v : turn) v = 0.0f; }	// 2026-10-20: the hem ring replaces the one-offset trail
 		const float c[24] = {
 			1.0f, mode, S.Ripple, S.FlutterAmount,
 			dir[0], dir[1], dir[2], scale / S.Wavelength,

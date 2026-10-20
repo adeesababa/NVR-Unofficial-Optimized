@@ -37,6 +37,15 @@
 //                BoS scribe robe panel 1.1 units into its leg core). It lets the cloth go towards a leg only as far as it still ends
 //                ClothLegMargin off the leg's surface (ClothLegLimit). The legs are worked out in the bind pose and carried into the
 //                skinned space by the same bones as the billow's direction (the caller passes them).
+//   (2026-10-20 round 9) the walking simulation (core/ClothWalk.h, core/ClothWind.h WalkOf / WalkConstants), when c219.x is 1: the
+//                garment's own skin weights glue a coat's skirt to the leg bones (it moved like trousers), so the caller lets each coat
+//                vertex HANG FROM THE HIPS -- its skinned place blended towards the pelvis bone's alone (c200-c202) by weight x hang
+//                (c219.y) -- adds the hem ring's displacement at the vertex's angle (c203-c218, between the two nearest of 16 points;
+//                stream 1's second float is the vertex's place on the ring) under the weight like the wearer's motion, works round 8's
+//                leg limits out against the CURRENT legs (c220-c225, xyz in the shader's space, w the garment's measured radius), and
+//                then keeps the vertex out of those legs (ClothLegPush): pushed OUTWARD (away from the wearer's axis, the same way for a
+//                shell and its lining) across the leg, smoothly (nothing well outside, never more for a point further out: layers keep
+//                their order), on a leg's inner half only once inside it. Offline: bench\deep-roadmap\evidence\cloth3\cloth_walk_check.py.
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -52,6 +61,11 @@ float4 ClothF : register(c253);
 float4 ClothLimb[12] : register(c226);
 float4 ClothLimbParams : register(c238);
 float4 ClothLimbGround : register(c239);
+float4 ClothPelvis[3] : register(c200);	// round 9: the pelvis bone, bind pose -> the shader's space (rows)
+float4 ClothRing[16] : register(c203);		// round 9: the hem ring's displacements (the shader's space)
+float4 ClothWalk : register(c219);			// round 9: x 1 = the walking simulation is on for this draw, y hang (0..1)
+float4 ClothLegNow[6] : register(c220);		// round 9: the current legs: L hip, knee, ankle, R hip, knee, ankle (xyz, radius)
+static float3 ClothWalkMove = 0.0f;			// round 9: the ring's displacement at this vertex (set by the caller), moved with the wearer's motion
 
 float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
     const float t = abs(frac(c + 0.5f) * 2.0f - 1.0f);
@@ -83,7 +97,55 @@ float3 ClothDisplacement(float3 p, float3 n) {
 // The wearer's movement (worn clothing; core/ClothWind.h MotionOf): the same offset everywhere, plus a small turn of the garment
 // around its own upright axis (from the bind-pose position, so it does not depend on any camera). Under the same mask as the wind.
 float3 ClothMotion(float3 bindP) {
-    return ClothE.xyz + float3(bindP.x * ClothF.xy + bindP.y * ClothF.zw, 0.0f);
+    return ClothE.xyz + float3(bindP.x * ClothF.xy + bindP.y * ClothF.zw, 0.0f) + ClothWalkMove;
+}
+
+// Round 9: the pelvis bone's transform of a bind-pose point / vector, and the hem ring at a place u (point i at u = i, 0..16).
+float3 ClothPelvisPoint(float3 bindP) {
+    const float4 q = float4(bindP, 1.0f);
+    return float3(dot(ClothPelvis[0], q), dot(ClothPelvis[1], q), dot(ClothPelvis[2], q));
+}
+float3 ClothPelvisVector(float3 v) {
+    return float3(dot(ClothPelvis[0].xyz, v), dot(ClothPelvis[1].xyz, v), dot(ClothPelvis[2].xyz, v));
+}
+float3 ClothRingAt(float u) {
+    const float i0 = floor(u);
+    const float i1 = i0 >= 15.0f ? 0.0f : i0 + 1.0f;
+    return lerp(ClothRing[(int)i0].xyz, ClothRing[(int)i1].xyz, u - i0);
+}
+static const float ClothPushMargin = 1.0f;	// units the coat is kept off the measured leg surface
+static const float ClothPushBand = 2.0f;	// on a leg's inner half: fades in over this depth
+static const float ClothPushSoft = 1.0f;	// units: how softly the push starts
+// One leg segment (a, b: xyz, radius): the push across the leg in the outward direction o (cloth_walk_check.py new_coat).
+float3 ClothLegPushSegment(float3 p, float3 o, float4 a, float4 b) {
+    const float3 ab = b.xyz - a.xyz;
+    const float L = length(ab);
+    const float3 e = ab / max(L, 1e-4f);
+    const float3 rel = p - a.xyz;
+    const float along = dot(rel, e);
+    const float R = lerp(a.w, b.w, saturate(along / max(L, 1e-4f))) + ClothPushMargin;
+    const float3 pp = rel - along * e;
+    const float3 op = o - dot(o, e) * e;
+    const float ol = length(op);
+    const float3 oh = op / max(ol, 1e-4f);
+    const float B = dot(pp, oh);
+    const float disc = B * B - (dot(pp, pp) - R * R);
+    const float sexit = disc >= 0.0f ? sqrt(max(disc, 0.0f)) - B : -1000.0f;
+    const float depth = R - length(pp);
+    const float gin = depth > 0.0f ? smoothstep(0.0f, 1.0f, depth * (1.0f / ClothPushBand)) : 0.0f;
+    const float g = gin + (1.0f - gin) * smoothstep(0.0f, 1.0f, (B + 1.0f) * 0.5f);
+    const float f = g * saturate(1.0f - max(-along, along - L) / R) * smoothstep(0.0f, 1.0f, (ol - 0.1f) * (1.0f / 0.3f));
+    return oh * (ClothPushSoft * log(1.0f + exp(min(sexit * (1.0f / ClothPushSoft), 40.0f))) * f);
+}
+// Out of the current legs (the largest of the four pushes: each thigh and calf).
+float3 ClothLegPush(float3 p, float3 o) {
+    float3 best = ClothLegPushSegment(p, o, ClothLegNow[0], ClothLegNow[1]);
+    float3 q = ClothLegPushSegment(p, o, ClothLegNow[1], ClothLegNow[2]);
+    best = dot(q, q) > dot(best, best) ? q : best;
+    q = ClothLegPushSegment(p, o, ClothLegNow[3], ClothLegNow[4]);
+    best = dot(q, q) > dot(best, best) ? q : best;
+    q = ClothLegPushSegment(p, o, ClothLegNow[4], ClothLegNow[5]);
+    return dot(q, q) > dot(best, best) ? q : best;
 }
 
 // Mask 5 (2026-10-19 round 7): the unit direction away from the wearer's upright axis for ClothInward5, 0 for every other mask (a select:

@@ -935,6 +935,13 @@ UseSkeleton = true                   # (2026-10-19) Worn clothing: only what sta
 LimbGap = 1.0                        # (2026-10-19) UseSkeleton: how far beyond the garment's own leg thickness (measured from its mesh: the trousers under a coat) cloth starts to move, in units. Raise it if trousers move
 LimbFade = 6.0                       # (2026-10-19) UseSkeleton: how many units further off the legs cloth moves fully. Smaller = more of a coat moves but its lining and shell drift apart; larger = calmer
 UseWeights = true                    # (2026-10-19) Worn clothing: each garment's own mesh decides what moves, worked out once per garment (trouser legs and boots found from the mesh and kept still; the coat pinned at the hips, loosest at the hem; its outside and its lining move together). Off = the skeleton mask above (LimbGap, LimbFade). Applies immediately
+WalkSim = true                       # (2026-10-20) Worn coats get a small walking simulation: the coat hangs from the hips instead of riding your legs like trousers, its hem trails behind, the knees push it forward at each step, it swings and settles when you stop. Needs UseWeights. Applies immediately
+WalkHang = 1.0                       # (2026-10-20) WalkSim: how fully the coat hangs from the hips (0 = rides the legs as the mesh was made, 1 = hangs from the hips). It fades out by itself when you sit or crouch
+WalkSpring = 1.4                     # (2026-10-20) WalkSim: how fast the hem swings back (swings per second)
+WalkDamping = 0.2                    # (2026-10-20) WalkSim: 0.02 = swings on and on, 1 = settles without swinging past
+WalkDrag = 1.0                       # (2026-10-20) WalkSim: how much the air holds the hem back while you move (0 = none: it only lags while speeding up)
+WalkLegMargin = 1.5                  # (2026-10-20) WalkSim: how far (units) the hem is kept off your legs
+WalkMaxSwing = 30.0                  # (2026-10-20) WalkSim: the most the hem moves away from where it hangs (units)
 LogMatches = false                   # Diagnostic: writes every worn texture (cloth or not) and every matched texture to the log with its mesh numbers
 TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
 

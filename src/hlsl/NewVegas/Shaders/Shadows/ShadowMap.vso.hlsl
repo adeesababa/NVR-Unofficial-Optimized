@@ -48,7 +48,7 @@ struct VS_INPUT {
 #if CLOTH_WIND_ON
     float4 color : COLOR0;	// cloth wind mask (red)
     float3 normal : NORMAL;	// cloth wind (2026-10-17): the displacement has a part along the normal (billow, flutter): the shadow needs it too
-    float clothWeight : TEXCOORD7;	// cloth wind mask 5 (2026-10-19): vertex stream 1, bound only for worn cloth (read only in mask 5)
+    float2 clothWeight : TEXCOORD7;	// cloth wind mask 5 (2026-10-19): vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring (2026-10-20)
 #endif
 };
 
@@ -111,7 +111,15 @@ VS_OUTPUT main(VS_INPUT IN) {
 			const float3 n4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), nw);
 			clothNormal = ((1 - weight(IN.blendweight.xyz)) * n8) + (IN.blendweight.z * n6) + (IN.blendweight.x * n5) + (n4 * IN.blendweight.y);
 		}
-		[branch] if (ClothA.y > 4.5f) {	// mask 5 (2026-10-19): the same for the direction away from the wearer's upright axis
+		[branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {	// 2026-10-20 round 9: hangs from the hips, the hem ring, the current legs
+			r0.xyz = lerp(r0.xyz, ClothPelvisPoint(IN.position.xyz), saturate(IN.clothWeight.x) * ClothWalk.y);
+			clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
+			clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
+			clothLegL = ClothLegBind(r0.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
+			clothLegR = ClothLegBind(r0.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
+			ClothWalkMove = ClothRingAt(IN.clothWeight.y);
+		}
+		else [branch] if (ClothA.y > 4.5f) {	// mask 5 (2026-10-19): the same for the direction away from the wearer's upright axis
 			const float4 ow = float4(ClothOutwardBind(IN.position.xyz), 0);
 			const float3 o8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), ow);
 			const float3 o6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), ow);
@@ -139,7 +147,8 @@ VS_OUTPUT main(VS_INPUT IN) {
         r0.z = r1.z - ((q0.x * q1.x) * LODLandParams.y);
     }
 #if CLOTH_WIND_ON
-    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind (normal and skinned geometry)
+    if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind (normal and skinned geometry)
+    if (TESR_ShadowData.x == 1.0f && ClothA.y > 4.5f && ClothWalk.x > 0.5f) r0.xyz += ClothLegPush(r0.xyz, clothOut);	// round 9: out of the current legs
 #endif
     if (TESR_ShadowData.x != 1.0f) r0 = mul(r0, TESR_ShadowWorldTransform);
 	r0 = mul(r0, TESR_ShadowViewProjTransform);

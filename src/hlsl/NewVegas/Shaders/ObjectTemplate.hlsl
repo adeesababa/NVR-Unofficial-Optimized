@@ -366,7 +366,7 @@ struct VS_INPUT {
     float4 blendIndices : BLENDINDICES;
 #endif
 #if defined(SKIN) && defined(CLOTH_WIND)
-    float clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5)
+    float2 clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring (2026-10-20)
 #endif
 };
 
@@ -464,14 +464,29 @@ VS_OUTPUT main(VS_INPUT IN) {
             float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
             float3 clothUp = 0.0f;	// ...and the bind pose's up (the legs' direction)
             [branch] if (ClothA.y > 4.5f) {
-                clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
-                const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
-                const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
-                clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
-                clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
-                clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+                [branch] if (ClothWalk.x > 0.5f) {	// 2026-10-20 round 9: hangs from the hips, the hem ring, the current legs
+                    const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
+                    position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
+                    tbn = float3x3(normalize(lerp(tbn[0], normalize(ClothPelvisVector(IN.tangent)), hw)),
+                                   normalize(lerp(tbn[1], normalize(ClothPelvisVector(IN.binormal)), hw)),
+                                   normalize(lerp(tbn[2], normalize(ClothPelvisVector(IN.normal)), hw)));
+                    clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
+                    clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
+                    clothLegL = ClothLegBind(position.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
+                    clothLegR = ClothLegBind(position.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
+                    ClothWalkMove = ClothRingAt(IN.clothWeight.y);
+                }
+                else {
+                    clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+                    const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+                    const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+                    clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
+                    clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
+                    clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+                }
             }
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
+            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) position.xyz += ClothLegPush(position.xyz, clothOut);	// round 9: out of the current legs
         #endif
     
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
@@ -658,14 +673,29 @@ VS_OUTPUT main(VS_INPUT IN) {
             float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
             float3 clothUp = 0.0f;	// ...and the bind pose's up (the legs' direction)
             [branch] if (ClothA.y > 4.5f) {
-                clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
-                const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
-                const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
-                clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
-                clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
-                clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+                [branch] if (ClothWalk.x > 0.5f) {	// 2026-10-20 round 9: hangs from the hips, the hem ring, the current legs
+                    const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
+                    position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
+                    tbn = float3x3(normalize(lerp(tbn[0], normalize(ClothPelvisVector(IN.tangent)), hw)),
+                                   normalize(lerp(tbn[1], normalize(ClothPelvisVector(IN.binormal)), hw)),
+                                   normalize(lerp(tbn[2], normalize(ClothPelvisVector(IN.normal)), hw)));
+                    clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
+                    clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
+                    clothLegL = ClothLegBind(position.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
+                    clothLegR = ClothLegBind(position.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
+                    ClothWalkMove = ClothRingAt(IN.clothWeight.y);
+                }
+                else {
+                    clothOut = BonesTransformVector(Bones, offset, blend, ClothOutwardBind(IN.position.xyz));
+                    const float4 legL = ClothLegBind(IN.position.xyz, ClothLimb[0], ClothLimb[1], ClothLimb[2]);
+                    const float4 legR = ClothLegBind(IN.position.xyz, ClothLimb[4], ClothLimb[5], ClothLimb[6]);
+                    clothLegL = float4(BonesTransformVector(Bones, offset, blend, legL.xyz), legL.w);
+                    clothLegR = float4(BonesTransformVector(Bones, offset, blend, legR.xyz), legR.w);
+                    clothUp = BonesTransformVector(Bones, offset, blend, float3(0.0f, 0.0f, 1.0f));
+                }
             }
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
+            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) position.xyz += ClothLegPush(position.xyz, clothOut);	// round 9: out of the current legs
         #endif
         OUT.sPosition.xyzw = mul(SkinModelViewProj, position.xyzw);
     #endif
