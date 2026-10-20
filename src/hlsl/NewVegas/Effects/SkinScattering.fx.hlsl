@@ -80,12 +80,25 @@ bool DistanceStillSkin(float skinDistance, float sceneDistance) {
     return abs(gap) < sceneDistance * TESR_SkinScatterData.z + 0.02f || (gap > 0.0f && gap < 1.5f);
 }
 
-// Skin where both tests pass.
+// UNOFFICIAL 2026-10-19 (deep/skin-highlights): the highlights test. Every highlight pass ADDS the same colour to the scene and
+// to the skin target's share (the skin shader's own, and the game's own highlight passes on skin, which no longer are muted
+// while the blur runs: SkinScatteringEffect::BindForGameHighlights), so visible skin holds at least that share in every
+// channel. Where hair lies over the scalp's highlights (close enough for the distance test, about as bright as the skin) a
+// channel falls well below the share (brown hair over a white highlight): covered skin, left alone. Without this test those
+// hair pixels took the share out and back in as if it were all there, and the blur's light came on top: a blue-white tint on
+// the hair (in game: ~600 px, +21/255 blue at the top of the head). A quarter of the share is allowed below, for fog, which
+// the game's fog pass lays over the scene but not over the share.
+bool HighlightsStillThere(float3 share, float3 sceneColor) {
+    return all(share <= sceneColor + share * 0.25f + 0.02f);
+}
+
+// Skin where all tests pass.
 bool IsSkin(float4 scatter, float drawnLuma, float3 sceneColor, float viewDepth, float2 uv) {
     float distance = viewDepth * length(toWorld(uv));
     return scatter.a > 0.0f
         && DistanceStillSkin(scatter.a, distance)
-        && ColourStillSkin(luma(sceneColor), drawnLuma);
+        && ColourStillSkin(luma(sceneColor), drawnLuma)
+        && HighlightsStillThere(scatter.rgb, sceneColor);
 }
 
 // The scene is gamma encoded (the skin shaders encode with sqrt); the blur works on light.
@@ -134,7 +147,7 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
         else {
             float distance = depthM * length(toWorld(uv));
             bool distanceOK = DistanceStillSkin(scatterM.a, distance);
-            bool colourOK = ColourStillSkin(luma(sceneM.rgb), albedoM.a);
+            bool colourOK = ColourStillSkin(luma(sceneM.rgb), albedoM.a) && HighlightsStillThere(scatterM.rgb, sceneM.rgb);
             tint = !distanceOK ? float3(1.0f, 0.0f, 0.0f) : (!colourOK ? float3(0.0f, 0.2f, 1.0f) : float3(0.0f, 1.0f, 0.0f));
         }
         return float4(lerp(sceneM.rgb, tint, 0.6f), sceneM.a);
@@ -186,9 +199,11 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
     float4 original = sceneM;
     float3 albedo = Decode(albedoM.rgb);
     float3 participation = Participation(albedo);
+    // Port 2026-10-19: never more highlights back than the pixel held (the share can exceed it under fog; same light term).
+    float3 highlights = min(scatterM.rgb, original.rgb);
     float3 light = blurred * AlbedoFactor(albedo) * participation
-                 + Decode(max(original.rgb - scatterM.rgb, 0.0f)) * (1.0f - participation * participation);
-    float3 result = Encode(light) + scatterM.rgb;
+                 + Decode(original.rgb - highlights) * (1.0f - participation * participation);
+    float3 result = Encode(light) + highlights;
 
     // View 3, on skin (everything else is left as it is): the change, x8, over the dimmed scene:
     // dark where the blur did nothing, bright where it moved the colour by an eighth or more. Red
