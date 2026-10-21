@@ -111,13 +111,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 34 && Template.Defines[i].Name != NULL) {
+		while (i < 38 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
 			i++;
 		}
-		if (i >= 34) {  // out of room (Defines[36]: 34 entries and the terminator); skip rather than overrun
+		if (i >= 38) {  // out of room (Defines[40]: 38 entries and the terminator); skip rather than overrun
 			static bool warned = false;	// fixes-a #12: say so once (a dropped define = the shader compiled without that option)
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 34 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 38 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -195,6 +195,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// game's specular distance fade instead of vanishing at once where the game swaps in the shaders without one. Compiled in only when on
 	// at startup (the per-draw value then switches it live: 1 = the old result exactly).
 	AppendDefine("SPEC_FADE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") ? "1" : "0");
+	// UNOFFICIAL 2026-10-21 FoldHighlights (ObjectTemplate.hlsl NVR_FOLD, core/FoldHighlights.h): the light-only and extra-lamp passes of shiny
+	// objects with 3+ lamps can draw their lamps' highlights (and metal) themselves, as the one-pass shaders do. Compiled in only when on at
+	// startup (the per-draw switch then turns it on live: 0 = the old result exactly).
+	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
@@ -424,7 +428,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
 						bool linear = false, predecode = false;
-						for (int d = 0; d < 36 && Template.Defines[d].Name; d++) {
+						for (int d = 0; d < 40 && Template.Defines[d].Name; d++) {
 							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 						}

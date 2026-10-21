@@ -157,6 +157,27 @@
     #endif
 #endif
 
+// UNOFFICIAL 2026-10-21 FoldHighlights ([Shaders.PBR.Main] FoldHighlights, restart: FOLD_HIGHLIGHTS_ON from ShaderRecord::BuildDefines; per
+// draw NVR_SpecFade.y, core/FoldHighlights.h; bench\deep-roadmap\evidence\pbrtiles\LOG.md). A shiny object lit by 3 or more lamps is
+// drawn in several passes: a light-only pass (the sun, the first lamps, the ambient), extra lamp passes, a texture pass that MULTIPLIES
+// what is there by the object's colour, highlight passes ADDED after it, and fog. With linear lighting each added highlight pass was
+// encoded on its own, so its highlight came out several times too strong (1% light -> 12% stored), and these passes had no metal and
+// the plain diffuse: two identical floor pieces, one reached by 2 lamps (one exact pass) and the next by 3, looked different (user,
+// Lucky 38 floor, 2026-10-21). On, for the objects NVR picks per draw, the light-only and extra-lamp passes work their lamps' light out
+// as the one-pass shaders do (the PBR diffuse, the highlight, metal) and divide it by the colour the texture pass then multiplies in
+// (the base texture, times the vertex colour where the game's texture pass multiplies that too: NVR_SpecFade.z), so after the
+// multiply each pass holds that light exactly as one pass would, highlight included; NVR skips the object's highlight passes. Only in
+// the light-only (AD) and extra-lamp (DIFFUSE) variants without a glow map; NVR_SpecFade.y 0 (every other draw): the old code exactly.
+#ifndef FOLD_HIGHLIGHTS_ON
+    #define FOLD_HIGHLIGHTS_ON 0
+#endif
+#if FOLD_HIGHLIGHTS_ON && defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(HAIR) && !defined(SI)
+    #define NVR_FOLD
+    #define FOLD_DECL
+#else
+    #define FOLD_DECL float3
+#endif
+
 #include "includes/Helpers.hlsl"
 // UNOFFICIAL: the live surroundings cube for metal (includes/LiveCube.hlsl), before Object.hlsl, whose getMetalAmbient reads
 // it. Compiled in only when a CubeReflections setting is above 0 at startup (LIVE_CUBE, ShaderRecord::LoadShader), and not with
@@ -220,7 +241,7 @@
         #define RMAOS_NO_FADE
     #endif
 #endif
-#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+#if defined(PS) && (defined(SPECULAR) || defined(NVR_FOLD)) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
     #define PBR_SPEC_FADE
     #ifdef NVR_SLOT_TIGHT
         #define PBR_SPEC_FADE_HIGHLIGHT_ONLY
@@ -367,7 +388,7 @@ struct VS_INPUT {
     float3 binormal : BINORMAL;
     float3 normal : NORMAL;
     float4 uv : TEXCOORD0;
-#if !defined(NO_VERTEX_COLOR) || defined(CLOTH_WIND)
+#if !defined(NO_VERTEX_COLOR) || defined(CLOTH_WIND) || defined(NVR_FOLD)
     float4 vertexColor : COLOR0;	// (cloth wind: its red is the mask, read in every pass so all passes move alike)
 #endif
 #ifdef SKIN
@@ -384,6 +405,9 @@ struct VS_INPUT {
 struct VS_OUTPUT {
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;
+#endif
+#if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
+    float4 foldColor : COLOR0;	// UNOFFICIAL FoldHighlights: the vertex colour (the light-only passes had none)
 #endif
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
@@ -536,6 +560,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     
     #ifndef NO_VERTEX_COLOR
         OUT.vertexColor = clamp(IN.vertexColor, 0.0f, 1.0f);
+    #endif
+    #if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
+        OUT.foldColor = clamp(IN.vertexColor, 0.0f, 1.0f);	// UNOFFICIAL FoldHighlights
     #endif
 
     #ifndef NO_FOG
@@ -791,6 +818,9 @@ VS_OUTPUT main(VS_INPUT IN) {
 #if defined(PS) && (!defined(LIGHTS) || LIGHTS < 4)
 
 struct PS_INPUT {
+#if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
+    float4 foldColor : COLOR0;	// UNOFFICIAL FoldHighlights: the vertex colour
+#endif
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;    // METAL: .a = world up's z in tangent space, encoded (see the VS)
 #endif
@@ -826,6 +856,9 @@ struct PS_OUTPUT {
 
 #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
     sampler2D NormalMap : register(s0);
+    #if defined(NVR_FOLD) && defined(DIFFUSE)
+        sampler2D FoldBaseMap : register(s3);	// UNOFFICIAL FoldHighlights: the object's base texture, bound by NVR for folded draws (core\FoldHighlights.h kBaseStage)
+    #endif
 #else
     sampler2D BaseMap : register(s0);
     sampler2D NormalMap : register(s1);
@@ -914,6 +947,9 @@ PS_OUTPUT main(PS_INPUT IN) {
             // Keep the sampled albedo before the lighting-only path discards it.
             // Bound the reciprocal on black texels to avoid extreme HDR values.
             heatMaterialFactor = max(baseColor.rgb, 0.03f);
+            #ifdef NVR_FOLD
+                const float3 foldTexture = baseColor.rgb;	// UNOFFICIAL FoldHighlights: the colour the texture pass multiplies in
+            #endif
             baseColor.rgb = 1;
         #endif
     #else
@@ -943,6 +979,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     roughness = HudRainRoughness(roughness);	// UNOFFICIAL: the rain drops, wet and rounded
     normal.xyz = HudRainNormal(normal.xyz);
     SetDiffuseEnergyKeep(normal.xyz, IN.viewDir.xyz, roughness);	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl): once per pixel, every lamp reuses it
+    #ifdef NVR_FOLD
+        // UNOFFICIAL FoldHighlights: at top level (ddx/ddy): the metal finish, and the base texture's gradients for the extra-lamp passes.
+        const float foldMetalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
+        #if defined(DIFFUSE)
+            const float2 foldUvDx = ddx(IN.uv.xy), foldUvDy = ddy(IN.uv.xy);
+        #endif
+    #endif
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -1055,6 +1098,57 @@ PS_OUTPUT main(PS_INPUT IN) {
         float pointWeight = 0.0f;   // ONLY_SPECULAR POINT: this pass's blend weight without the point shadows (see the alpha)
     #endif
 
+    #ifdef NVR_FOLD
+    float3 lighting;
+    [branch] if (NVR_SpecFade.y > 0.5f) {
+        // UNOFFICIAL FoldHighlights (see the top): these lamps' light as the one-pass shaders give it (Object.hlsl ...Full), divided
+        // by the colour the texture pass multiplies in afterwards.
+        #if defined(DIFFUSE)
+            float3 foldStored = tex2Dgrad(FoldBaseMap, IN.uv.xy, foldUvDx, foldUvDy).rgb;
+        #else
+            float3 foldStored = foldTexture;
+        #endif
+        foldStored *= NVR_SpecFade.z > 0.5f ? IN.foldColor.rgb : 1.0f;	// the game's TEXTURE_Vc pass multiplies the vertex colour in too
+        const float3 foldAlbedo = LinColor(foldStored);
+        const float foldValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+        float foldMetal = 0.0f;
+        [branch] if (getMetalStrength() > 0.0f)
+            foldMetal = getDerivedMetallic(normal.a, foldStored) * (foldValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f);
+        const float foldRough = lerp(roughness, foldMetalRoughness, foldMetal);
+        #if !defined(DIFFUSE)
+            lighting = getSunLightingFull(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            lighting += getAmbientLighting(AmbientColor.rgb, foldAlbedo * (1.0f - foldMetal), shadowGeometricNormal, foldValid);
+            [branch] if (foldMetal > 0.0f)
+                lighting += foldMetal * getMetalAmbient(AmbientColor.rgb, foldAlbedo, foldRough, saturate(dot(normal.xyz, normalize(IN.viewDir.xyz))),
+                                                        0.0f, 0.0f, IN.shadowWorldPos.xyz, shadowGeometricNormal);
+            float foldReach = 1.0f;
+        #else
+            const float foldAtt0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
+            lighting = 0.0f;
+            LAMP_IF(foldAtt0)
+                lighting = getPointLightLightingAttFull(IN.lightDir.xyz, foldAtt0, SHADOWED(PSLightColor[0].rgb, 0, foldAtt0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            float foldReach = foldAtt0;
+        #endif
+        #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+            const float foldAtt2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            LAMP_IF(foldAtt2)
+                lighting += getPointLightLightingAttFull(IN.light2Dir.xyz, foldAtt2, SHADOWED(PSLightColor[1].rgb, 1, foldAtt2), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            foldReach = max(foldReach, foldAtt2);
+        #endif
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            const float foldAtt3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            LAMP_IF(foldAtt3)
+                lighting += getPointLightLightingAttFull(IN.light3Dir.xyz, foldAtt3, SHADOWED(PSLightColor[2].rgb, 2, foldAtt3), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            foldReach = max(foldReach, foldAtt3);
+        #endif
+        // fp16 target: kept finite where the colour is (almost) black; the texture pass then multiplies it by (almost) nothing.
+        lighting = min(lighting / max(foldAlbedo, 1e-6f), 60000.0f);
+        #if defined(DIFFUSE)
+            clip((TESR_LampPassTrim.x > 0.0f && foldReach <= 0.0f && BarrelHeatMuzzle.w <= 0.0f) ? -1.0f : 0.0f);	// TrimLampPasses, as below
+        #endif
+    }
+    else {
+    #endif
     #if defined(METAL)
         // UNOFFICIAL metal (Object.hlsl). getMetalStrength() (TESR_PBRMetal.x, or the material rule's) is the same for every pixel of a draw, so this is one cheap
         // branch: off ([Shaders.PBR.Metal] 0 for this pass) runs the old lighting below exactly. On: how much of the pixel
@@ -1118,21 +1212,21 @@ PS_OUTPUT main(PS_INPUT IN) {
         }
     #else
     #if !defined(DIFFUSE) && !defined(POINT)
-        float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        FOLD_DECL lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #else
         // Pointlights only. Attenuate from the object-space lightDistSq.x carried from the VS,
         // not length(IN.lightDir.xyz) -- that vector is tangent-space (TBN-transformed) and its
         // length is only correct if the TBN basis is orthonormal.
         float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 lighting = 0.0f;
+            FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0) {   // UNOFFICIAL LampReachSkip
                 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
                 pointWeight += weight(lighting);
                 lighting *= POINT_SHADOW(0, att0);
             }
         #else
-            float3 lighting = 0.0f;
+            FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0)   // UNOFFICIAL LampReachSkip
                 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
@@ -1196,6 +1290,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #endif // METAL
+    #ifdef NVR_FOLD
+    }
+    #endif
 
     #if !defined(DIFFUSE) && !defined(POINT)
         // UNOFFICIAL: the sun focused through each rain drop into a bright spot on its far side (includes/HudRain.hlsl).
