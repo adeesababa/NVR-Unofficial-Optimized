@@ -32,6 +32,17 @@
     #define POINT_SHADOW_SMOOTH 0
 #endif
 
+// UNOFFICIAL 2026-10-20 POINT_SHADOW_FIT (ShaderManager::LoadShader, PointShadowForward::FitLevel): a shorter version of the
+// lookups below, for a shader the GPU refuses whole. D3D9 drivers take about 3,600 instruction slots in one pixel shader; with
+// HandBlood on, the six-lamp shiny-object shaders came to 3,820-4,016 indoors and were refused (P82 tester, RTX 4070 Ti SUPER;
+// the GTX 1070 refuses them too): those objects then drew without lamp shadows whenever a third lamp reached them, and the
+// shadows came and went. 0: as before (the first try, always). 1: High/Ultra's extra taps in a loop (the same taps and weights,
+// the same shadows; about 90 slots less per lamp). 2: no High/Ultra (the DLL then caps Quality at Medium for every object, so
+// they all match). 3: also no blocker search (the DLL then turns contact hardening and LampSize off for every object's lamps).
+#ifndef POINT_SHADOW_FIT
+    #define POINT_SHADOW_FIT 0
+#endif
+
 float4 NVR_PointShadowLight[6]  : register(c174); // per light of the draw, see above
 float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked light adds nothing), y: depth bias (share of the
                                                   // distance, 0.018 as PointShadows.fx), z: normal offset (world units per
@@ -74,6 +85,17 @@ samplerCUBE NVR_PointShadowCube5 : register(s15);
 float4 PointShadowNear(float4 stored, float lightW) {
     return NVR_PointShadowDebug.y > 0.0f ? smoothstep(0.0f, NVR_PointShadowDebug.y * lightW, stored) : 1.0f;
 }
+
+#if POINT_SHADOW_FIT == 1
+// POINT_SHADOW_FIT 1: High's six taps (along each axis at spread s), then Ultra's ten (the four diagonals and the six axes at half
+// the spread), as PointShadowCube's unrolled code takes them; w: the share of the spread.
+static const float4 PointShadowTaps[16] = {
+    float4( 1.0f, 0.0f, 0.0f, 1.0f), float4(-1.0f, 0.0f, 0.0f, 1.0f), float4(0.0f,  1.0f, 0.0f, 1.0f), float4(0.0f, -1.0f, 0.0f, 1.0f),
+    float4(0.0f, 0.0f,  1.0f, 1.0f), float4(0.0f, 0.0f, -1.0f, 1.0f),
+    float4( 1.0f,  1.0f,  1.0f, 0.5f), float4(-1.0f, -1.0f,  1.0f, 0.5f), float4( 1.0f, -1.0f, -1.0f, 0.5f), float4(-1.0f,  1.0f, -1.0f, 0.5f),
+    float4( 1.0f, 0.0f, 0.0f, 0.5f), float4(-1.0f, 0.0f, 0.0f, 0.5f), float4(0.0f,  1.0f, 0.0f, 0.5f), float4(0.0f, -1.0f, 0.0f, 0.5f),
+    float4(0.0f, 0.0f,  1.0f, 0.5f), float4(0.0f, 0.0f, -1.0f, 0.5f) };
+#endif
 
 // UNOFFICIAL Quality High/Ultra: the blocked share summed over six taps, one along each axis at spread s.
 float PointShadowRing(samplerCUBE cube, float3 dir, float s, float threshold, float lightW) {
@@ -129,6 +151,7 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         // clamp(t (z / radius x major + x s d), y s, max(s, w major)), with z = w = 0 for contact hardening alone and
         // x = 0, y = 1 for LampSize (PointShadowForward::Publish), to keep the 6-lamp shaders' instruction count down.
         // UNOFFICIAL 2026-10-20 InvisibleLightSize: an invisible light (negative fade) takes its own size, c181.z.
+#if POINT_SHADOW_FIT < 3
         [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.w > 0.0f) {
             float wide = max(NVR_PointShadowSoft.w * major, s);
             float4 search = float4(
@@ -146,6 +169,7 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             float size = fade < 0.0f ? NVR_PointShadowDebug.z : NVR_PointShadowSoft.z;
             s = clamp(t * (size * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
         }
+#endif
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
@@ -164,10 +188,23 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
 #else
         float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
 #endif
+#if POINT_SHADOW_FIT < 2
         [branch] if (NVR_PointShadowDebug.w > 1.5f) {
             // UNOFFICIAL Quality 2 (High): six more taps, one along each axis: the four across the face fill the 3x3 grid's
             // edges, the two along the face's own axis land on the centre (it counts twice). Quality 3 (Ultra): the same ten
             // again at half the spread, for a smoother edge over the same width.
+#if POINT_SHADOW_FIT == 1
+            // (POINT_SHADOW_FIT 1: one tap a turn from PointShadowTaps; the sum in another order, the same within rounding.)
+            const int count = NVR_PointShadowDebug.w > 2.5f ? 16 : 6;
+            float extra = 0.0f;
+            [loop] for (int i = 0; i < 16; i++) {
+                [branch] if (i >= count) break;
+                const float4 tap = PointShadowTaps[i];
+                const float v = texCUBElod(cube, float4(dir + (s * tap.w) * tap.xyz, 0.0f)).r;
+                extra += (float)(v <= threshold) * (float)(v > 0.0f) * PointShadowNear(v.xxxx, light.w).x;
+            }
+            lit = 1.0f - (dot(blocked, 1.0f) + extra) / (4.0f + (float)count);
+#else
             float sum = dot(blocked, 1.0f) + PointShadowRing(cube, dir, s, threshold, light.w);
             float taps = 10.0f;
             [branch] if (NVR_PointShadowDebug.w > 2.5f) {
@@ -182,8 +219,12 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
                 taps = 20.0f;
             }
             lit = 1.0f - sum / taps;
+#endif
         }
         else lit = 1.0f - dot(blocked, 0.25f);
+#else
+        lit = 1.0f - dot(blocked, 0.25f);
+#endif
     }
     else {
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;

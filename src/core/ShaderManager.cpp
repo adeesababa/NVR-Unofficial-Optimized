@@ -648,14 +648,38 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 	if (!PixelShader->ShaderProg[ShaderRecordType::Interior] && PixelShader->ShaderProg[ShaderRecordType::Default] &&
 		PointShadowForward::Eligible(PixelShader->Name, Template) &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled")) {
-		static const D3DXMACRO overrides[] = { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" },
-			{ "CONTACT_HARDENING", "0" }, { NULL, NULL } };
-		ShaderRecordPixel* record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template, "Interiors\\", overrides);
+		// UNOFFICIAL 2026-10-20 (P82 tester): when the GPU refuses a record (too long), shorter ones in turn (PointShadowForward.hlsl
+		// POINT_SHADOW_FIT, each with its own cache folder; the first is the old one exactly, also what ShaderPrecompile makes), and
+		// PointShadowForward::FitLevel / Refused keep every object to what the shortest one loaded can do.
+		static const D3DXMACRO overrides[4][6] = {
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "1" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "2" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "3" }, { NULL, NULL } } };
+		static const char* const cache[4] = { "Interiors\\", "Interiors\\Fit1\\", "Interiors\\Fit2\\", "Interiors\\Fit3\\" };
+		static const char* const what[4] = { "", "the High/Ultra taps in a loop (the same shadows)",
+			"no High/Ultra: lamp shadow Quality is held at Medium for every object", "also no blocker search: contact hardening and LampSize are off for every object's lamp shadows" };
+		ShaderRecordPixel* record = nullptr;
+		int level = 0;
+		for (; level < 4 && !record; level++) {
+			if (level) Logger::Log("UNOFFICIAL lamp shadows: %s with lamp shadows did not load; trying a shorter version (%d of 3: %s).", PixelShader->Name, level, what[level]);
+			record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template, cache[level], overrides[level]);
+		}
 		if (record) {
+			if (--level) {
+				Logger::Log("UNOFFICIAL lamp shadows: %s with lamp shadows loaded at the shorter version %d (%s).", PixelShader->Name, level, what[level]);
+				if (level > PointShadowForward::FitLevel) PointShadowForward::FitLevel = level;
+			}
 			record->PointShadowForward = true;
 			PixelShader->ShaderProg[ShaderRecordType::Interior] = record;
 			PointShadowForward::CompiledIn = true;
 			PointShadowForward::CompiledCount++;
+		}
+		else {
+			Logger::Log("[ERROR] UNOFFICIAL lamp shadows: no version of %s with lamp shadows loads on this GPU. Forward lamp shadows are off: every object "
+				"uses the screen-space lamp shadows, as with [Shaders.ShadowsInteriors.Forward] Enabled off (the objects drawn with it would otherwise lose "
+				"their lamp shadows whenever enough lamps reach them).", PixelShader->Name);
+			PointShadowForward::Refused = true;
 		}
 	}
 	PixelShader->Enabled = enabled;
