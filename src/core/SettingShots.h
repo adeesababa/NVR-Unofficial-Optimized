@@ -28,6 +28,8 @@
 //   cloudcoverage <0-1>                          (2026-10-21) at the start of the shot, the volumetric clouds' eased coverage is set to
 //                                                this (as right after a load or a weather change); it eases back to the weather's over
 //                                                about ten seconds. Not a setting: no reload, nothing to undo
+//   wait <frames>                                (2026-10-21, button sweep) this shot waits that many frames instead of 'frames'
+//                                                (e.g. a long first shot, so the scene has settled after the load)
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -45,7 +47,7 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; };	// menu: 2026-10-19
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21)
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -135,6 +137,11 @@ namespace SettingShots {
 				Change c; c.console = true; c.value = rest.substr(start);
 				List.back().changes.push_back(c);
 			}
+			else if (command == "wait") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a wait before the first 'shot'"; return false; }
+				words >> List.back().frames;
+				List.back().frames = std::clamp(List.back().frames, 2, 20000);
+			}
 			else if (command == "cloudcoverage") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }
 				Change c; c.coverage = true; words >> c.value;
@@ -158,6 +165,9 @@ namespace SettingShots {
 	}
 
 	inline bool Truthy(const std::string& v) { return v == "1" || v == "true" || v == "on" || v == "yes"; }
+
+	// The frames the current shot waits before its picture: its own 'wait', or the list's 'frames'.
+	inline int ShotFrames() { return Index < List.size() && List[Index].frames > 0 ? List[Index].frames : Frames; }
 
 	// One shot's changes, the old values kept for Revert.
 	inline void Apply(const Shot& s) {
@@ -247,14 +257,14 @@ namespace SettingShots {
 	// rows. A test-only stall (the GPU is waited for); nothing of it runs in normal play.
 	inline void SaveTarget(IDirect3DDevice9* device, IDirect3DSurface9* target, const char* suffix);
 	inline void CaptureWorld(IDirect3DDevice9* device, IDirect3DSurface9* target) {
-		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < Frames) return;
+		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < ShotFrames()) return;
 		WorldTaken = Index;
 		SaveTarget(device, target, "");
 	}
 	// UNOFFICIAL 2026-10-18 'stage' (ambfix: the AmbientLight tint measured in linear light): ShaderManager calls this right after the
 	// AmbientLight step with the current picture (TextureManager::RenderedSurface); saved as <slug>-al.world in the shot's last frame.
 	inline void CaptureStage(IDirect3DDevice9* device, IDirect3DSurface9* target) {
-		if (!Running || !StageCapture || !device || !target || Index >= List.size() || StageTaken == Index || Frame < Frames) return;
+		if (!Running || !StageCapture || !device || !target || Index >= List.size() || StageTaken == Index || Frame < ShotFrames()) return;
 		StageTaken = Index;
 		SaveTarget(device, target, "-al");
 	}
@@ -387,7 +397,7 @@ namespace SettingShots {
 
 	// Render.cpp, the finished picture before the HUD (where the neon self-test takes its Final shots).
 	inline void Capture(IDirect3DSurface9* surface) {
-		if (!Running || Frame < Frames || !surface) return;
+		if (!Running || Frame < ShotFrames() || !surface) return;
 		if (!List[Index].menu.empty()) return;	// 2026-10-19: taken after the menu is drawn (CaptureMenu)
 		if (FinalPicture) { int idle = 0; FinalState.compare_exchange_strong(idle, 1); return; }	// taken at the present instead, the settings still the shot's
 		TakeShot(surface);
@@ -395,7 +405,7 @@ namespace SettingShots {
 
 	// 2026-10-19, Render.cpp right after ImGuiManager::Render: a 'menu' shot's picture, the back buffer with the menu drawn on it.
 	inline void CaptureMenu() {
-		if (!Running || Frame < Frames || Index >= List.size() || List[Index].menu.empty()) return;
+		if (!Running || Frame < ShotFrames() || Index >= List.size() || List[Index].menu.empty()) return;
 		IDirect3DSurface9* backBuffer = nullptr;
 		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a menu picture"); return; }
 		TakeShot(backBuffer);
