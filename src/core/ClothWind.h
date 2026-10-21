@@ -952,9 +952,9 @@ namespace ClothWind {
 			if (StillLogged < 48 || S.LogMatches) {
 				StillLogged++;
 				if (m.job->ok)
-					Logger::Log("Cloth wind: still cloth '%s): %u vertices (%u welded): %u pieces = %u poles/ropes, %u solid, %u tiny, %u cloth (%u two-sided of %u groups); cloth held by poles/ropes %u, the ground %u (at z %.1f%s), its top %u; free edges %u; %u of %u vertices move, %u > half; %.2f ms on the worker",
+					Logger::Log("Cloth wind: still cloth '%s): %u vertices (%u welded): %u pieces = %u poles/ropes, %u solid, %u tiny, %u cloth (%u two-sided of %u groups); cloth held by poles/ropes %u, the ground %u (at z %.1f%s), its top %u (%u flat sheets tied all round); free edges %u; %u of %u vertices move, %u > half; %.2f ms on the worker",
 						m.name.c_str(), (unsigned)m.vertices, r.welded, r.pieces, r.rods, r.solids, r.tiny, r.sheets, r.layered, r.clusters, r.heldRigid, r.heldGround, r.groundZ, r.standing ? "" : ", hanging: none",
-						r.heldTop, r.freeEdges, moving, (unsigned)m.vertices, r.moving, m.job->ms);
+						r.heldTop, r.canopies, r.freeEdges, moving, (unsigned)m.vertices, r.moving, m.job->ms);
 				else Logger::Log("Cloth wind: still cloth '%s): NOT worked out (the weights failed): it stays still", m.name.c_str());
 			}
 			m.job.reset();

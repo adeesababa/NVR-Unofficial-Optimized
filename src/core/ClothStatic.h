@@ -29,6 +29,8 @@
 //  6. per sheet vertex: g = the distance ALONG THE CLOTH to where it is held, f = to the nearest free edge;
 //     looseness t = g / (g + f) (0 where held .. 1 on a free edge; a panel held all round stays near 0 in its middle: taut canvas);
 //     weight = smooth((t - kTaut) / (1 - kTaut)) x smooth(g / kHold); rigid pieces 0;
+//     (2026-10-20, a tarp held at one corner flapped whole) a flat hanging cluster (an awning, a tarp) is tied along all its edges, and a
+//     cluster with no free edge at all billows gently in its middle (kTautShare);
 //  7. layers: sheet vertices within kLayer of each other (two-sided cloth) are averaged kSmooth times, so they move together;
 //  8. the billow's side: the shader billows along the normal, and a two-sided cloth's two layers face opposite ways (they pushed
 //     apart). In a cluster where a fifth of the vertices have an opposite-facing vertex within kLayer, each vertex gets the sign that
@@ -55,6 +57,8 @@ namespace ClothStatic {
 	constexpr double kTopEdge = 0.15;		// cloth touching nothing rigid: its edge in the top share of its height is held too
 	constexpr double kHold = 12.0;			// units along the cloth over which motion fades in from where it is held
 	constexpr double kTaut = 0.25;			// looseness below this does not move at all (canvas held all round)
+	constexpr double kFlat = 0.35;			// a hanging sheet less tall than this share of its width is an awning / canopy (tied all round)
+	constexpr double kTautShare = 0.5, kTautReach = 40.0;	// a sheet with no free edge: its middle moves this much, reached this far in from where it is held
 	constexpr double kLayer = 2.0;
 	constexpr int    kSmooth = 4;
 
@@ -71,6 +75,7 @@ namespace ClothStatic {
 		std::vector<uint8_t> flag;			// per vertex (pictures): 0 sheet, 1 held by a rigid part, 2 by the ground, 3 top line, 4 free edge
 		std::vector<float> side;			// per vertex: +1 / -1, the billow goes along normal x side (step 8)
 		uint32_t layered = 0;				// clusters found two-sided
+		uint32_t canopies = 0;				// flat hanging clusters tied along all their edges
 		uint32_t welded = 0, pieces = 0, rods = 0, solids = 0, tiny = 0, sheets = 0, clusters = 0;
 		uint32_t heldRigid = 0, heldGround = 0, heldTop = 0, freeEdges = 0, moving = 0;	// sheet vertices (welded); moving = weight > 0.5
 		float groundZ = 0.0f; bool standing = false;	// groundZ: where the ground was taken (standing meshes)
@@ -348,8 +353,13 @@ namespace ClothStatic {
 					for (uint32_t v : c) if (P[v].z <= groundZ + kGround) { if (!held[v]) out.heldGround++; held[v] = 2; ground = true; }
 				if (ground || !rigidContact)
 					for (uint32_t v : c) if (P[v].z >= top - kTopBand && !held[v]) { held[v] = 3; out.heldTop++; }
-				// cloth that touches nothing rigid hangs from its whole top edge (a banner's top edge sags between its corners)
-				if (!rigidContact)
+				// cloth that touches nothing rigid hangs from its whole top edge (a banner's top edge sags between its corners); a FLAT one
+				// (an awning, a tarp over a stall: much wider than tall) is tied along all its edges instead
+				double lo[2] = { 1e30, 1e30 }, hi[2] = { -1e30, -1e30 };
+				for (uint32_t v : c) { lo[0] = (std::min)(lo[0], P[v].x); hi[0] = (std::max)(hi[0], P[v].x); lo[1] = (std::min)(lo[1], P[v].y); hi[1] = (std::max)(hi[1], P[v].y); }
+				const bool flat = top - bottom < kFlat * (std::max)(hi[0] - lo[0], hi[1] - lo[1]);
+				if (!rigidContact && !ground && flat) { for (uint32_t v : c) if (rimV[v] && !held[v]) { held[v] = 3; out.heldTop++; } out.canopies++; }
+				else if (!rigidContact)
 					for (uint32_t v : c) if (rimV[v] && P[v].z >= top - (std::max)(kTopBand, kTopEdge * (top - bottom)) && !held[v]) { held[v] = 3; out.heldTop++; }
 			}
 			// 5. free edges: the cloth's edges whose ends are not held and meet no other sheet (a seam between two panels is not free)
@@ -377,8 +387,12 @@ namespace ClothStatic {
 			std::vector<double> gh, gf;
 			dijkstra(heldSrc, gh);
 			dijkstra(freeV, gf);
+			// a cluster with no free edge at all (held all round: a closed tent wall, a canopy tied at its edges) billows gently in its middle
+			std::vector<char> clusterFree(clusters.size(), 0);
+			for (uint32_t v : sheet) if (freeV[v]) clusterFree[cl[v]] = 1;
 			for (uint32_t v : sheet) {
 				if (held[v] || gh[v] >= 1e29) { w[v] = 0.0; continue; }
+				if (!clusterFree[cl[v]]) { w[v] = kTautShare * Smooth(gh[v] / kTautReach); continue; }
 				const double f = gf[v] >= 1e29 ? 1e6 : gf[v];
 				const double t = gh[v] / (gh[v] + f);
 				w[v] = Smooth((t - kTaut) / (1.0 - kTaut)) * Smooth(gh[v] / kHold);
