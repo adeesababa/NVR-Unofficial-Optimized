@@ -322,7 +322,7 @@ namespace SettingShots {
 	}
 	// 2026-10-20 (cloth C3-18: two test games froze for good at a 'placeatme'): BeginFrame runs inside the game's render, which holds the
 	// renderer's lock (NiDX9Renderer + 0x80); placeatme then waits for the game's loading lock (0x011D5A9C), and a loading thread that
-	// holds that one and is creating a mesh waits for the renderer's lock: a deadlock (stacks in evidence\clothautounreeze-B4c).
+	// holds that one and is creating a mesh waits for the renderer's lock: a deadlock (stacks in evidence\clothauto\run\freeze-B4c).
 	// So the commands run here, on xNVSE's main-loop message (Main.cpp), between frames, where the game runs its own scripts.
 	inline void MainLoop() {
 		if (!MainLoopSeen) { MainLoopSeen = true; Logger::Log("SETTING SHOTS: console commands run on the game's main loop (between frames)"); }
