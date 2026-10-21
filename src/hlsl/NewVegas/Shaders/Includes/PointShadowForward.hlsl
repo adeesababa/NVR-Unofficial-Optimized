@@ -43,6 +43,14 @@
     #define POINT_SHADOW_FIT 0
 #endif
 
+// UNOFFICIAL 2026-10-21 POINT_SHADOW_EVEN ([Shaders.ShadowsInteriors.Forward] EvenTaps, needs a restart; ShaderRecord::BuildDefines):
+// High and Ultra's extra taps spread evenly (PointShadowEven) instead of on a 5x5 grid, and MagnifiedSoftness (c188). 0: as before,
+// byte for byte. The grid gave an edge only five tap positions across it, eight of Ultra's twenty taps on the centre line: wide
+// (LampSize) blurs showed as stacked copies of the shadow's edge, and narrow ones stepped along the cube map's texels.
+#ifndef POINT_SHADOW_EVEN
+    #define POINT_SHADOW_EVEN 0
+#endif
+
 float4 NVR_PointShadowLight[6]  : register(c174); // per light of the draw, see above
 float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked light adds nothing), y: depth bias (share of the
                                                   // distance, 0.018 as PointShadows.fx), z: normal offset (world units per
@@ -63,7 +71,11 @@ float4 NVR_PointShadowTint[6]   : register(c182); // rgb: debug colour of light 
                                                   // negative (the same amount): an invisible light with its own lamp size
                                                   // (InvisibleLightSize, c181.z)
 float4 NVR_PointShadowFocus     : register(c188); // view 3: the focus lamp (cube slot 0) as NVR_PointShadowLight, whatever the draw's
-                                                  // lamps; its cube map is on NVR_PointShadowCube5
+                                                  // lamps; its cube map is on NVR_PointShadowCube5. UNOFFICIAL 2026-10-21, every
+                                                  // other view (POINT_SHADOW_EVEN): MagnifiedSoftness, x y: how many screen pixels
+                                                  // one cube texel covers, as a 0..1 ramp = saturate(lamp distance / camera
+                                                  // distance x x + y); z: the spread it then gives at least, per unit of the
+                                                  // direction's major axis (0 = off)
 float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardening ([Shaders.ShadowsInteriors.Forward] ContactHardening):
                                                   // x: strength (0 = off, the spread as before), y: the narrowest spread, as a
                                                   // share of the Softness spread (where a blocker touches what it shadows);
@@ -97,6 +109,47 @@ static const float4 PointShadowTaps[16] = {
     float4(0.0f, 0.0f,  1.0f, 0.5f), float4(0.0f, 0.0f, -1.0f, 0.5f) };
 #endif
 
+#if POINT_SHADOW_EVEN
+// UNOFFICIAL 2026-10-21 EvenTaps: High's six extra taps (the first six) and Ultra's ten more, as offsets in units of the spread s (w:
+// 1, the share of the spread, for the POINT_SHADOW_FIT 1 loop). A 3D Latin hypercube (every axis takes every level once), so on each
+// cube face the taps land on the offset's two other components at distinct places, for edges at any angle; picked by
+// bench\deep-roadmap\evidence\lampedge\taps.py (random search, fewest taps bunched together over faces, edge angles and the shear
+// toward a face's edges), scaled so that each Quality's blur width (per-axis variance with the four Medium taps) is as before.
+static const float4 PointShadowEven[16] = {
+    float4(-0.16903f, -0.84515f, -0.50709f, 1.0f), float4(-0.84515f, +0.16903f, -0.16903f, 1.0f),
+    float4(+0.50709f, +0.50709f, -0.84515f, 1.0f), float4(-0.50709f, +0.84515f, +0.84515f, 1.0f),
+    float4(+0.84515f, -0.50709f, +0.16903f, 1.0f), float4(+0.16903f, -0.16903f, +0.50709f, 1.0f),
+    float4(-0.47194f, +0.20226f, +0.20226f, 1.0f), float4(+0.60678f, -0.06742f, +0.33710f, 1.0f),
+    float4(-0.20226f, -0.33710f, +0.60678f, 1.0f), float4(+0.33710f, +0.06742f, -0.60678f, 1.0f),
+    float4(-0.60678f, +0.33710f, -0.33710f, 1.0f), float4(-0.06742f, -0.20226f, -0.47194f, 1.0f),
+    float4(+0.20226f, -0.60678f, +0.47194f, 1.0f), float4(+0.47194f, +0.47194f, -0.20226f, 1.0f),
+    float4(+0.06742f, -0.47194f, -0.06742f, 1.0f), float4(-0.33710f, +0.60678f, +0.06742f, 1.0f) };
+
+// NearFade and the 'no data' test (a stored 0) in one: t = saturate(v x nearK), smoothstep's t x t x (3 - 2 t). nearK: 1 / (NearFade
+// as a share of the radius), or 2^60 with NearFade 0 (then t is 1 for any stored distance above 0 and 0 for 0): the same values as
+// (v > 0) x PointShadowNear, two instructions less per four taps (the room for MagnifiedSoftness in the six-lamp shaders).
+float4 PointShadowKeep(float4 v, float nearK) {
+    float4 t = saturate(v * nearK);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// The blocked count of four (two) even taps from PointShadowEven[i]: plain compares, as High and Ultra's extra taps always were.
+float PointShadowEven4(samplerCUBE cube, float3 dir, float s, float threshold, float nearK, int i) {
+    float4 v = float4(
+        texCUBElod(cube, float4(dir + s * PointShadowEven[i].xyz, 0.0f)).r,
+        texCUBElod(cube, float4(dir + s * PointShadowEven[i + 1].xyz, 0.0f)).r,
+        texCUBElod(cube, float4(dir + s * PointShadowEven[i + 2].xyz, 0.0f)).r,
+        texCUBElod(cube, float4(dir + s * PointShadowEven[i + 3].xyz, 0.0f)).r);
+    return dot((float4)(v <= threshold) * PointShadowKeep(v, nearK), 1.0f);
+}
+float PointShadowEven2(samplerCUBE cube, float3 dir, float s, float threshold, float nearK, int i) {
+    float4 v = float4(
+        texCUBElod(cube, float4(dir + s * PointShadowEven[i].xyz, 0.0f)).r,
+        texCUBElod(cube, float4(dir + s * PointShadowEven[i + 1].xyz, 0.0f)).r, 1.0f, 1.0f);
+    return dot(((float4)(v <= threshold) * PointShadowKeep(v, nearK)).xy, 1.0f);
+}
+#endif
+
 // UNOFFICIAL Quality High/Ultra: the blocked share summed over six taps, one along each axis at spread s.
 float PointShadowRing(samplerCUBE cube, float3 dir, float s, float threshold, float lightW) {
     float4 a = float4(
@@ -127,6 +180,9 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
     float3 p = toPixel + normal * (NVR_PointShadowParams.z * len);
     float d = length(p) * light.w;                       // what the cube map stores: distance / radius
     float threshold = d - NVR_PointShadowParams.y * d;    // lit where stored + bias * d > d (Effects\Includes\Shadows.hlsl)
+#if POINT_SHADOW_EVEN
+    float nearK = NVR_PointShadowDebug.y > 0.0f ? 1.0f / (NVR_PointShadowDebug.y * light.w) : 1152921504606846976.0f;	// PointShadowKeep
+#endif
 
     // Face convention of ShadowCubeMap.vso: lookup = (light - point) * (-1, -1, 1) = (point - light) * (1, 1, -1).
     float3 dir = p * float3(1.0f, 1.0f, -1.0f);
@@ -140,6 +196,14 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         // direction falls on. A face texel spans 2 * major / resolution in direction units.
         float major = max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
         float s = NVR_PointShadowParams.w * major;
+#if POINT_SHADOW_EVEN
+        // UNOFFICIAL 2026-10-21 MagnifiedSoftness (c188, PointShadowForward::Publish; z 0 = off, s exactly as before): a cube texel is
+        // (2 / resolution) x the lamp's distance wide, a screen pixel (its angle) x the camera's distance, so far from its lamp and
+        // close to the camera one texel covers many pixels and a narrow edge shows its stair-steps. There the spread is at least
+        // MagnifiedSoftness texels, ramping in between a few pixels per texel and a few more; the blocker search and LampSize
+        // take it as their narrowest spread.
+        s = max(s, saturate(len * rsqrt(dot(worldPos, worldPos)) * NVR_PointShadowFocus.x + NVR_PointShadowFocus.y) * NVR_PointShadowFocus.z * major);
+#endif
         // UNOFFICIAL contact hardening (PCSS-style): find the blockers' mean distance over the full spread first, then
         // narrow the spread by how far the blocker is from this point compared with the lamp: sharp where an object
         // touches the floor, the full Softness spread further out. Nothing blocked in the search: lit, the PCF skipped.
@@ -182,9 +246,14 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         // among the four taps: a tap on the blocker counts fully, one on the edge partly, so the edge fades over a texel
         // as with bilinear PCF (the four taps; High and Ultra's extra rings stay plain compares, to keep the 4-lamp shaders
         // as small as possible). Off: the plain compare, exactly as before.
-#if POINT_SHADOW_SMOOTH
+#if POINT_SHADOW_SMOOTH && POINT_SHADOW_EVEN
+        float invRamp = 1.0f / max(threshold - min(min(stored.x, stored.y), min(stored.z, stored.w)), 0.0001f);
+        float4 blocked = saturate((threshold - stored) * invRamp) * PointShadowKeep(stored, nearK);
+#elif POINT_SHADOW_SMOOTH
         float invRamp = 1.0f / max(threshold - min(min(stored.x, stored.y), min(stored.z, stored.w)), 0.0001f);
         float4 blocked = saturate((threshold - stored) * invRamp) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
+#elif POINT_SHADOW_EVEN
+        float4 blocked = (float4)(stored <= threshold) * PointShadowKeep(stored, nearK);
 #else
         float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
 #endif
@@ -199,11 +268,27 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             float extra = 0.0f;
             [loop] for (int i = 0; i < 16; i++) {
                 [branch] if (i >= count) break;
+#if POINT_SHADOW_EVEN
+                const float4 tap = PointShadowEven[i];
+                const float v = texCUBElod(cube, float4(dir + (s * tap.w) * tap.xyz, 0.0f)).r;
+                extra += (float)(v <= threshold) * PointShadowKeep(v.xxxx, nearK).x;
+#else
                 const float4 tap = PointShadowTaps[i];
                 const float v = texCUBElod(cube, float4(dir + (s * tap.w) * tap.xyz, 0.0f)).r;
                 extra += (float)(v <= threshold) * (float)(v > 0.0f) * PointShadowNear(v.xxxx, light.w).x;
+#endif
             }
             lit = 1.0f - (dot(blocked, 1.0f) + extra) / (4.0f + (float)count);
+#elif POINT_SHADOW_EVEN
+            // EvenTaps: the same counts (High 10, Ultra 20) and equal weights; PointShadowEven's places instead of the grid.
+            float sum = dot(blocked, 1.0f) + PointShadowEven4(cube, dir, s, threshold, nearK, 0) + PointShadowEven2(cube, dir, s, threshold, nearK, 4);
+            float taps = 10.0f;
+            [branch] if (NVR_PointShadowDebug.w > 2.5f) {
+                sum += PointShadowEven4(cube, dir, s, threshold, nearK, 6) + PointShadowEven4(cube, dir, s, threshold, nearK, 10) +
+                       PointShadowEven2(cube, dir, s, threshold, nearK, 14);
+                taps = 20.0f;
+            }
+            lit = 1.0f - sum / taps;
 #else
             float sum = dot(blocked, 1.0f) + PointShadowRing(cube, dir, s, threshold, light.w);
             float taps = 10.0f;
@@ -228,7 +313,11 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
     }
     else {
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;
+#if POINT_SHADOW_EVEN
+        lit = 1.0f - (float)(stored <= threshold) * PointShadowKeep(stored.xxxx, nearK).x;
+#else
         lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
+#endif
     }
     return lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade));
 }

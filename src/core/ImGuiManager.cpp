@@ -1985,6 +1985,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.ContactHardening.Status",      "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "Enabled",            RestartRule::TurnOn },	// hooks + shader overrides at start
 	{ "Shaders.ShadowsInteriors.Forward",     "SmoothEdges",        RestartRule::Changed },
+	{ "Shaders.ShadowsInteriors.Forward",     "EvenTaps",           RestartRule::Changed },	// POINT_SHADOW_EVEN (deep/lampedge)
 	{ "Shaders.ShadowsInteriors.Main",        "ShadowCubeMapSize",  RestartRule::Changed },	// cube maps made at start (ShadowManager)
 	{ "Shaders.PBR.Main",                     "LampReachSkip",      RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },
@@ -2161,6 +2162,12 @@ static const char* InactiveReason(const char* section, const char* key) {
 			return "Only used when Softness is above 0: sharp lamp shadows (Softness 0) take a single lookup.";
 		if (is({ "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "ContactHardening") == 0.0f)
 			return "Only used with ContactHardening on.";
+		if (is({ "EvenTaps" }) && NumericSetting(section, "Quality") < 2.0f)
+			return "Only changes Quality 2 (High) and 3 (Ultra): Low and Medium have no extra lookups. (MagnifiedSoftness needs it on at any Quality.)";
+		if (is({ "MagnifiedSoftness" }) && NumericSetting(section, "EvenTaps") == 0.0f)
+			return "Only used with EvenTaps on (it is compiled into the shaders with it; restart after turning EvenTaps on).";
+		if (is({ "MagnifiedSoftness" }) && (NumericSetting(section, "Softness") <= 0.0f || NumericSetting(section, "Quality") < 1.0f))
+			return "Only used with Softness above 0 and Quality 1 or more (sharp lamp shadows take a single lookup).";
 		if (is({ "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "LampSize") > 0.0f)
 			return "Not used while LampSize is above 0 (LampSize decides how soft each shadow is).";
 		if (is({ "MaxSoftness" }) && NumericSetting(section, "LampSize") <= 0.0f && NumericSetting(section, "InvisibleLightSize") <= 0.0f)

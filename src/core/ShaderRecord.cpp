@@ -148,6 +148,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
 	// UNOFFICIAL 2026-10-15: interior forward lamp shadows with smooth edges (Includes/PointShadowForward.hlsl)
 	AppendDefine("POINT_SHADOW_SMOOTH", TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "SmoothEdges") ? "1" : "0");
+	// UNOFFICIAL 2026-10-21 EvenTaps (deep/lampedge): High/Ultra's extra taps spread evenly + MagnifiedSoftness. Defined only when on, so
+	// that off the define list and the shaders are exactly what they were (the list is near its 38-entry cap: 29 + 6 template defines).
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "EvenTaps"))
+		AppendDefine("POINT_SHADOW_EVEN", "1");
 
 	// UNOFFICIAL CubeReflections (Includes/LiveCube.hlsl): metal and the env-map pass read the live surroundings cube only when
 	// compiled in, which is when either setting is above 0 at startup, so that otherwise those shaders are exactly what they were.

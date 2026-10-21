@@ -130,6 +130,8 @@ namespace PointShadowForward {
 	inline float InvisibleSize = 0.0f;		// c181.z outside DebugView 3: InvisibleLightSize / sqrt 2 (0 off)
 	inline float Quality = 1.0f;			// c181.w: [Shaders.ShadowsInteriors.Forward] Quality (Low arrives as spread 0 in c180.w)
 	inline float Soft[4] = {};				// c189: contact hardening strength (0 off), narrowest spread share; LampSize / sqrt 2, widest spread
+	inline float Magnified[4] = {};			// c188 outside DebugView 3 (UNOFFICIAL 2026-10-21 MagnifiedSoftness, POINT_SHADOW_EVEN): x y the ramp
+											// of how many pixels a cube texel covers, z the least spread then (per unit major; 0 = off)
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };	// NVR_PointShadowCube0-5
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -361,6 +363,19 @@ namespace PointShadowForward {
 			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
 			InvisibleSize = forward.InvisibleLightSize * 0.70710678f;
 		}
+		// UNOFFICIAL 2026-10-21 MagnifiedSoftness (PointShadowForward.hlsl, compiled in with EvenTaps): a cube texel at distance L from its
+		// lamp is about L x 2 / resolution wide, a screen pixel at distance C from the camera about C x (frustum width / screen width)
+		// (InvProjMatrix._11 = half the frustum width at unit distance). The shader gets the ramp of texel pixels = L / C x x over
+		// MagnifiedPixels0..1 as saturate(L / C x x + y), and the spread MagnifiedSoftness texels gives.
+		{
+			const float pixel = 2.0f * fabsf(TheRenderManager->InvProjMatrix._11) / (float)(std::max)(TheRenderManager->width, (UInt32)1);
+			const float texelPixels = pixel > 0.0f ? (2.0f / face) / pixel : 0.0f;	// pixels per texel when L = C
+			static const float MagnifiedPixels0 = 2.0f, MagnifiedPixels1 = 8.0f;	// no widening at 2 px per texel or less, all from 8
+			Magnified[0] = texelPixels / (MagnifiedPixels1 - MagnifiedPixels0);
+			Magnified[1] = -MagnifiedPixels0 / (MagnifiedPixels1 - MagnifiedPixels0);
+			Magnified[2] = forward.Quality > 0 && forward.Softness > 0.0f && texelPixels > 0.0f ? forward.MagnifiedSoftness * 2.0f / face : 0.0f;
+			Magnified[3] = 0.0f;
+		}
 		// UNOFFICIAL 2026-10-20 FitLevel (above): what the shortest record loaded can do, for every object. 2: no High/Ultra (Medium
 		// at most); 3: also no blocker search (contact hardening and LampSize off: x and w 0 skip it in every shader).
 		if (FitLevel >= 2 && Quality > 1.0f) Quality = 1.0f;
@@ -540,7 +555,7 @@ namespace PointShadowForward {
 				}
 			}
 		}
-		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); }
+		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); memcpy(constants[14], Magnified, sizeof(Magnified)); }
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
 		constants[7][2] = matched ? InvisibleSize : 0.0f;	// (DebugView 3 puts the focus lamp's index here below)
