@@ -507,6 +507,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if !defined(DIFFUSE)
         #if FORWARD_SHADOWS
             float3 shadowNormal = GetShadowGeometricNormal(worldPos);
+            shadowNormal = ShadowLookupNormal(shadowNormal, float4(IN.normal.xyz, SHADOW_VS_SENTINEL));   // UNOFFICIAL 2026-10-20 SmoothCharacterShadows (Shadow.hlsl): the interpolated world normal
             // The same SKIN_SELF_SHADOW_REACH toward the sun: lit there, a shadow here is the skin's own.
             // SkinLight uses it only at the terminator (geometric N.L under 0.05), in shadow, with
             // ShadowScatter on: anywhere else it changes nothing, and the second lookup is skipped.

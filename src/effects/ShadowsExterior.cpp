@@ -430,8 +430,15 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// (nothing ever sets ShaderManager::EffectReloadQueued), so the macro is frozen at whatever
 	// it was when the shader was first compiled.
 	Constants.ForwardData.x = Settings.Exteriors.ForwardShadows ? 0.0f : 1.0f;
-	Constants.ForwardData.y = 0.0f;
-	Constants.ForwardData.z = 0.0f;
+	// UNOFFICIAL 2026-10-20 SmoothCharacterShadows (P82 testers: sun shadows on faces blocky and popping as the head turns):
+	// 1 = the skin shaders' sun and lamp shadow lookups (and the old skin's sky light) take the smooth vertex normal their vertex
+	// shader sends instead of the flat triangle normal (Includes/Shadow.hlsl ShadowLookupNormal). Live: a constant, bound with .x.
+	Settings.Exteriors.SmoothCharacterShadows = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SmoothCharacterShadows") != 0;
+	Constants.ForwardData.y = Settings.Exteriors.SmoothCharacterShadows ? 1.0f : 0.0f;
+	// CharacterShadowSoftness: with SmoothCharacterShadows, the least half-width a sun shadow edge on skin fades over, in world units
+	// (Shadow.hlsl ShadowMinPenumbra; contact hardening's disc lookup, so it needs that compiled in, as it is by default).
+	Settings.Exteriors.CharacterShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowSoftness"), 0.0f, 4.0f);
+	Constants.ForwardData.z = Settings.Exteriors.SmoothCharacterShadows ? Settings.Exteriors.CharacterShadowSoftness : 0.0f;
 	Constants.ForwardData.w = 0.0f;
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
