@@ -25,13 +25,24 @@
 // 2026-10-19 (cloth round 5): worn clothing by a per-vertex weight from its own mesh (ClothWeights.h, mask 5), delivered as vertex
 // stream 1 around the skinned partition draw (DrawPartition); the skeleton mask (4) stays the fallback. evidence\cloth3-LOG.md C3-11.
 // 2026-10-20 (cloth round 9): worn coats hang from the hips and their hem is simulated while walking (ClothWalk.h, WalkOf). C3-15.
+// 2026-10-20 (user's video: 'the entire tent mesh wobbles around'; 'only move thin parts of static cloth objects'): still cloth by a
+// per-vertex weight from its own mesh (ClothStatic.h, mask 6: poles, ropes and solid parts still, the cloth held where it touches them,
+// the ground and its top line, loosest at its free edges), worked out once per mesh on a worker thread and delivered as vertex stream
+// 1 around the game's still-object draw (NiDX9Renderer::Do_OnlyRenderShape / Do_OnlyRenderTristrips: OnlyRender). See StillOf.
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <atomic>
 #include "ClothWeights.h"	// 2026-10-19 round 5: per-vertex weights of worn meshes (mask 5)
 #include "ClothWalk.h"		// 2026-10-20 round 9: the walking simulation of worn coats (hem ring)
+#include "ClothStatic.h"	// 2026-10-20: per-vertex weights of still cloth (mask 6: tents, flags, banners)
 
 namespace ClothWind {
 
@@ -74,6 +85,10 @@ namespace ClothWind {
 		float WalkSpring = 1.4f, WalkDamping = 0.2f, WalkDrag = 1.0f, WalkLegMargin = 1.5f, WalkMaxSwing = 25.0f;
 		float WalkDragCap = 180.0f, WalkMaxAngle = 35.0f;	// 2026-10-20 round 9b (see ClothWalk.h)
 		float WalkHemSmooth = 1.0f;							// 2026-10-20 round 9c (see ClothWalk.h)
+		bool  StillWeights = true;		// 2026-10-20 still cloth by per-vertex weights from its own mesh (mask 6, ClothStatic.h); off: the height mask (2)
+		bool  AutoDetect = false;		// 2026-10-20 worn garments not named in Keywords move when their own mesh hangs free (AutoVerdictOf)
+		float AutoShare = 2.0f;			// ...at least this share (%) of the garment hangs free
+		bool  LogAuto = true;			// ...every verdict to the log once
 		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
 		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
 										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
@@ -83,8 +98,8 @@ namespace ClothWind {
 	};
 
 	inline Settings S;
-	inline std::vector<std::string> Words, Excluded, ExcludedParts;
-	inline std::string WordsFrom, ExcludeFrom, ExcludePartsFrom;
+	inline std::vector<std::string> Words, Excluded, ExcludedParts, ForcedOff;
+	inline std::string WordsFrom, ExcludeFrom, ExcludePartsFrom, ForceOffFrom;
 	struct Extent { uint16_t count = 0; float lo = 0.0f, hi = 0.0f; bool fromVertices = false; };
 	inline std::unordered_map<const void*, Extent> Extents;		// bind-pose height range per skinned mesh (geometry data)
 	inline UInt32 SkinnedDrawsNow = 0;
@@ -201,6 +216,12 @@ namespace ClothWind {
 			if (p.find(w) != std::string::npos) return true;
 		return false;
 	}
+	inline bool ExcludedPart(const std::string& p);
+	// 2026-10-20 ForceOff: a texture whose path holds one of these never moves, whether a keyword or AutoDetect picked it.
+	inline bool IsForcedOff(const std::string& p) {
+		for (const std::string& x : ForcedOff) if (!x.empty() && p.find(x) != std::string::npos) return true;
+		return false;
+	}
 	inline bool IsClothTexture(const char* path) {
 		if (!path || !path[0]) return false;
 		const std::string p = Norm(path);
@@ -208,6 +229,10 @@ namespace ClothWind {
 		for (const std::string& w : Words) if (!w.empty() && KeywordIn(p, w)) { hit = true; break; }
 		if (!hit) return false;
 		for (const std::string& x : Excluded) if (!x.empty() && p.find(x) != std::string::npos) return false;
+		return !IsForcedOff(p) && !ExcludedPart(p);
+	}
+	// The FILE name's words name a body part (ExcludeParts: a hat or gloves sharing the garment's folder, a body's skin).
+	inline bool ExcludedPart(const std::string& p) {
 		const size_t slash = p.find_last_of('\\');
 		const std::string file = p.substr(slash == std::string::npos ? 0 : slash + 1);
 		for (size_t i = 0; i < file.size();) {
@@ -219,11 +244,11 @@ namespace ClothWind {
 				if (x.empty()) continue;
 				if (x.size() >= 4 ? word.find(x) != std::string::npos
 					: (word.size() >= x.size() && (word.compare(word.size() - x.size(), x.size(), x) == 0 || (word.back() == 's' && word.size() > x.size() && word.compare(word.size() - 1 - x.size(), x.size(), x) == 0))))
-					return false;
+					return true;
 			}
 			i = j;
 		}
-		return true;
+		return false;
 	}
 	inline void SplitList(const char* text, std::vector<std::string>& out) {
 		out.clear();
@@ -384,6 +409,7 @@ namespace ClothWind {
 			k.kneeZ = 0.5f * (k.pts[1][2] + k.pts[5][2]);
 			k.groundZ = 0.5f * (k.pts[2][2] + k.pts[6][2]) - 6.0f;
 			k.ok = k.hipZ - k.kneeZ > 5.0f;	// an upright leg (else the space is not what we think: keep SkinMask)
+			if (!std::isfinite(k.hipZ) || !std::isfinite(k.kneeZ) || !std::isfinite(k.groundZ) || k.hipZ - k.groundZ > (float)ClothWeights::kMaxLegs) k.ok = false;	// 2026-10-20: broken bone data
 			if (k.ok) MeasureLegs(k, geometry);
 		}
 		if (SkeletonsLogged < 24 || S.LogMatches) {	// the check: bone heights, and how much of the mesh the mask moves
@@ -511,7 +537,8 @@ namespace ClothWind {
 	}
 	// The weights of a worn mesh with usable legs, made once (at most 2 new meshes a frame: a crowd coming into view spreads over a few
 	// frames, those wait with mask 4); nullptr unless every partition has its buffer.
-	inline MeshWeights* WeightsOf(IDirect3DDevice9* device, NiGeometry* geometry, const Skeleton& k) {
+	// 2026-10-20: pre = the weights AutoDetect already worked out for this mesh on the worker (the same inputs): used as they are.
+	inline MeshWeights* WeightsOf(IDirect3DDevice9* device, NiGeometry* geometry, const Skeleton& k, const ClothWeights::Result* pre = nullptr) {
 		NiGeometryData* gd = geometry->geomData;
 		const NiSkinInstance* si = geometry->skinInstance;
 		const NiSkinPartition* sp = si ? si->SkinPartition : nullptr;
@@ -523,17 +550,19 @@ namespace ClothWind {
 		m.lastFrame = FrameId;
 		if (m.state < 0) return nullptr;
 		if (m.state == 0) {
-			if (WeightsMadeNow >= 2) return nullptr;
-			WeightsMadeNow++;
+			const bool given = pre && pre->weight.size() == gd->m_usVertices && pre->label.size() == gd->m_usVertices;
+			if (!given && WeightsMadeNow >= 2) return nullptr;
+			if (!given) WeightsMadeNow++;
 			m.vertices = gd->m_usVertices; m.skinData = si->SkinData; m.skinPartition = sp; m.partitions = sp->Partitions; m.partitionCount = sp->PartitionsCount;
 			m.state = -1;
 			std::vector<UInt16> tris;
-			const char* from = (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex ? TrianglesOf(geometry, sp, tris) : nullptr;
+			const char* from = given ? "the auto-detect measure (worker)" : ((gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex ? TrianglesOf(geometry, sp, tris) : nullptr);
 			ClothWeights::Input in;
 			ClothWeights::Result r;
 			LARGE_INTEGER q0 = {}, q1 = {}, qf = {};
 			QueryPerformanceCounter(&q0);
-			if (from) {
+			if (given) { r = *pre; m.w = r.weight; m.state = 1; }
+			else if (from) {
 				in.pos = &gd->m_pkVertex[0].x; in.vertices = gd->m_usVertices; in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
 				for (int leg = 0; leg < 2; leg++) for (int j = 0; j < 3; j++) for (int c = 0; c < 4; c++) in.legs[leg][j][c] = k.pts[leg * 4 + j][c];
 				in.hipZ = k.hipZ; in.kneeZ = k.kneeZ; in.groundZ = k.groundZ;
@@ -802,6 +831,275 @@ namespace ClothWind {
 		DrawPartition(renderer, buffer, partition, unused);
 	}
 
+	// 2026-10-20 still cloth (mask 6; user: 'here the entire tent mesh wobbles around', 'only move thin parts of static cloth objects
+	// instead of the whole thing'). The height mask (2) pinned still cloth at the top of its bound and moved it most at the BOTTOM: a
+	// tent's poles, ropes and the canvas edge on the ground swung, a flag swung its pole. Now each still cloth mesh gets a per-vertex
+	// weight from its own shape (ClothStatic.h: poles, ropes, pegs and other solid parts never move; the cloth is held where it touches
+	// them, at the ground and along its top line, and moves most at its free edges; two-sided cloth moves as one), worked out ONCE per
+	// mesh on a worker thread (the largest vanilla tent takes ~45 ms; the object stays still until its weights are ready, a frame or
+	// two). Delivered as vertex stream 1 like the worn coats' (FLOAT3: weight, the billow's side, 0) around the game's still-object
+	// draw: NiDX9Renderer::Do_OnlyRenderShape / Do_OnlyRenderTristrips (renderer vtable 0x10EE670 / 0x10EE674, called by the
+	// geometry's OnlyRenderImmediate after the pass set the shaders, streams and declaration; Hooks.cpp patches the two slots) and NVR's
+	// own shadow draw (RenderPass.cpp). A draw that cannot have its stream draws without cloth (c248 zero): never stale weights.
+	// One piece of work for the cloth worker thread (still cloth weights, auto-detect measures): its own copies of the inputs.
+	struct Job {
+		virtual ~Job() {}
+		virtual bool Run() = 0;
+		bool ok = false;
+		double ms = 0.0;
+		std::atomic<bool> done{ false };
+	};
+	struct StillJob : Job {
+		std::vector<float> pos, nrm;
+		std::vector<uint16_t> tris;
+		ClothStatic::Result r;
+		bool Run() override {
+			ClothStatic::Input in;
+			in.pos = pos.data(); in.nrm = nrm.empty() ? nullptr : nrm.data(); in.vertices = (uint32_t)(pos.size() / 3);
+			in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
+			return ClothStatic::Compute(in, r);
+		}
+	};
+	struct StillMesh {
+		const void* data = nullptr; UInt16 vertices = 0;
+		int state = 0;					// 0 new, 1 being worked out, 2 ready, -1 none (no kept vertices / triangles, or nothing moves)
+		std::shared_ptr<StillJob> job;
+		std::vector<float> w, side;
+		IDirect3DVertexBuffer9* vb = nullptr; UInt32 base = 0;
+		UInt32 lastFrame = 0;
+		std::string name;
+	};
+	inline std::unordered_map<const void*, StillMesh> Stills;	// per NiGeometryData
+	inline StillMesh* ActiveStill = nullptr;					// the mesh ForGeometry chose mask 6 for (until AfterDraw)
+	inline bool StillHookOn = false;							// Hooks.cpp patched the two renderer slots
+	inline UInt32 StillLogged = 0, StatStillDraws = 0, StatStillMissed = 0;
+	struct ClothWorker { std::mutex m; std::condition_variable cv; std::deque<std::shared_ptr<Job>> q; bool started = false; };
+	inline ClothWorker& Worker() { static ClothWorker* w = new ClothWorker(); return *w; }	// never freed: the thread may outlive the statics at exit
+	inline void Submit(const std::shared_ptr<Job>& job) {
+		ClothWorker& W = Worker();
+		{
+			std::lock_guard<std::mutex> lock(W.m);
+			W.q.push_back(job);
+			if (!W.started) {
+				W.started = true;
+				std::thread([] {
+					ClothWorker& W = Worker();
+					for (;;) {
+						std::shared_ptr<Job> j;
+						{
+							std::unique_lock<std::mutex> lock(W.m);
+							W.cv.wait(lock, [&] { return !W.q.empty(); });
+							j = W.q.front(); W.q.pop_front();
+						}
+						LARGE_INTEGER q0 = {}, q1 = {}, qf = {};
+						QueryPerformanceCounter(&q0);
+						try { j->ok = j->Run(); }
+						catch (...) { j->ok = false; }
+						QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+						j->ms = qf.QuadPart ? (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart : 0.0;
+						j->done = true;
+					}
+				}).detach();
+			}
+		}
+		W.cv.notify_one();
+	}
+	inline bool FillStill(IDirect3DDevice9* device, StillMesh& m, UInt32 base) {
+		if (m.vb) { m.vb->Release(); m.vb = nullptr; }
+		if (base > 262144 || !m.vertices) return false;	// (a mesh far into a shared buffer: 3 MB of leading zeros is the most)
+		void* data = nullptr;
+		if (FAILED(device->CreateVertexBuffer((base + m.vertices) * 12, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &m.vb, NULL)) || !m.vb) { m.vb = nullptr; return false; }
+		if (FAILED(m.vb->Lock(0, 0, &data, 0)) || !data) { m.vb->Release(); m.vb = nullptr; return false; }
+		float* f = (float*)data;
+		memset(f, 0, base * 12);
+		for (UInt32 i = 0; i < m.vertices; i++) {
+			f[(base + i) * 3] = i < m.w.size() ? m.w[i] : 0.0f;
+			f[(base + i) * 3 + 1] = i < m.side.size() ? m.side[i] : 1.0f;
+			f[(base + i) * 3 + 2] = 0.0f;
+		}
+		m.vb->Unlock();
+		m.base = base;
+		return true;
+	}
+	// The still cloth weights of this mesh when ready, else nullptr (the first sight queues them; the mesh stays still meanwhile).
+	inline StillMesh* StillOf(NiGeometry* geometry, const char* texture) {
+		NiGeometryData* gd = geometry->geomData;
+		if (!gd) return nullptr;
+		StillMesh& m = Stills[gd];
+		if (m.state != 0 && m.vertices != gd->m_usVertices) {	// the data was freed and the memory reused for another mesh
+			if (m.vb) m.vb->Release();
+			m = StillMesh();
+		}
+		m.lastFrame = FrameId;
+		if (m.state == 0) {
+			m.data = gd; m.vertices = gd->m_usVertices; m.state = -1;
+			m.name = std::string(geometry->m_pcName ? geometry->m_pcName : "?") + "' (" + (texture ? texture : "");
+			std::vector<UInt16> tris;
+			if ((gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex && gd->m_usVertices >= 3 && TrianglesOf(geometry, nullptr, tris)) {
+				auto job = std::make_shared<StillJob>();
+				job->pos.assign(&gd->m_pkVertex[0].x, &gd->m_pkVertex[0].x + gd->m_usVertices * 3);
+				if (gd->m_pkNormal) job->nrm.assign(&gd->m_pkNormal[0].x, &gd->m_pkNormal[0].x + gd->m_usVertices * 3);
+				job->tris.assign(tris.begin(), tris.end());
+				m.job = job; m.state = 1;
+				Submit(job);
+			}
+			else if (StillLogged < 48 || S.LogMatches) { StillLogged++; Logger::Log("Cloth wind: still cloth '%s): NOT worked out (%s): it stays still", m.name.c_str(), !(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex ? "the game did not keep its vertices" : "no triangles kept"); }
+		}
+		if (m.state == 1 && m.job && m.job->done) {
+			const ClothStatic::Result& r = m.job->r;
+			UInt32 moving = 0;
+			if (m.job->ok && r.weight.size() == m.vertices) { m.w = r.weight; m.side = r.side; for (float v : m.w) if (v > 0.02f) moving++; }
+			m.state = moving ? 2 : -1;
+			if (StillLogged < 48 || S.LogMatches) {
+				StillLogged++;
+				if (m.job->ok)
+					Logger::Log("Cloth wind: still cloth '%s): %u vertices (%u welded): %u pieces = %u poles/ropes, %u solid, %u tiny, %u cloth (%u two-sided of %u groups); cloth held by poles/ropes %u, the ground %u (at z %.1f%s), its top %u (%u flat sheets tied all round); free edges %u; %u of %u vertices move, %u > half; %.2f ms on the worker",
+						m.name.c_str(), (unsigned)m.vertices, r.welded, r.pieces, r.rods, r.solids, r.tiny, r.sheets, r.layered, r.clusters, r.heldRigid, r.heldGround, r.groundZ, r.standing ? "" : ", hanging: none",
+						r.heldTop, r.canopies, r.freeEdges, moving, (unsigned)m.vertices, r.moving, m.job->ms);
+				else Logger::Log("Cloth wind: still cloth '%s): NOT worked out (the weights failed): it stays still", m.name.c_str());
+			}
+			m.job.reset();
+		}
+		return m.state == 2 ? &m : nullptr;
+	}
+	// The still-object draw (thiscall on the renderer: the geometry): with the mesh's weights in stream 1 while ForGeometry chose mask
+	// 6 for it, else exactly the game's call.
+	typedef void(__thiscall* OnlyRenderFn)(void*, NiGeometry*);
+	inline OnlyRenderFn OnlyRenderShapeOriginal = (OnlyRenderFn)0x00E745A0, OnlyRenderStripsOriginal = (OnlyRenderFn)0x00E74840;
+	inline void OnlyRender(bool strips, void* renderer, NiGeometry* geometry) {
+		const OnlyRenderFn original = strips ? OnlyRenderStripsOriginal : OnlyRenderShapeOriginal;
+		StillMesh* m = ActiveStill;
+		IDirect3DDevice9* device = TheRenderManager ? TheRenderManager->device : nullptr;
+		if (!m || !device || !geometry || geometry->geomData != m->data) { original(renderer, geometry); return; }
+		const NiGeometryBufferData* buffer = geometry->geomData->m_pkBuffData;
+		IDirect3DVertexDeclaration9* decl = nullptr;
+		IDirect3DVertexDeclaration9* aug = nullptr;
+		bool ready = buffer && buffer->VertCount == m->vertices && buffer->StreamCount <= 1 && !buffer->FVF;
+		if (ready && (!m->vb || buffer->BaseVertexIndex != m->base)) ready = FillStill(device, *m, buffer->BaseVertexIndex);	// (the game moved it in its buffer: follow)
+		if (ready) { device->GetVertexDeclaration(&decl); aug = Augmented(device, decl); }
+		if (!aug) {	// no stream for this draw: it draws without cloth
+			if (decl) decl->Release();
+			StatStillMissed++;
+			float c[4] = {}, zero[4] = {};
+			device->GetVertexShaderConstantF(248, c, 1);
+			device->SetVertexShaderConstantF(248, zero, 1);
+			original(renderer, geometry);
+			device->SetVertexShaderConstantF(248, c, 1);
+			return;
+		}
+		IDirect3DVertexBuffer9* old = nullptr; UINT oldOffset = 0, oldStride = 0;
+		device->GetStreamSource(1, &old, &oldOffset, &oldStride);
+		device->SetStreamSource(1, m->vb, 0, 12);
+		device->SetVertexDeclaration(aug);
+		original(renderer, geometry);
+		device->SetVertexDeclaration(decl);
+		device->SetStreamSource(1, old, oldOffset, oldStride);
+		if (old) old->Release();
+		decl->Release();
+		StatStillDraws++;
+	}
+	inline void __fastcall OnlyRenderShapeHook(void* renderer, void* edx, NiGeometry* geometry) { OnlyRender(false, renderer, geometry); }
+	inline void __fastcall OnlyRenderStripsHook(void* renderer, void* edx, NiGeometry* geometry) { OnlyRender(true, renderer, geometry); }
+
+	// 2026-10-20 AutoDetect (user: 'expanding our clothing physics shader to other vanilla armors and potentially modded ones (idk how we'd
+	// detect they'd benefit from the physics)'): a worn garment that no keyword names moves when its own mesh HANGS FREE of the legs --
+	// a coat, a duster, a robe, a dress -- and trousers, power armour and tight suits stay still. Per garment, once: the cheap look first
+	// (ClothWeights::FreeShare: does any of it stand off the legs at all, ~20 us), then the full per-vertex weights on the worker thread
+	// (ClothWeights::Compute, 1-4 ms) and the verdict (ClothWeights::HangsFree: enough of it, hanging from the waist, down below the
+	// crotch); a garment that hangs free keeps those weights (WeightsOf uses them: no second computation). Cached per texture + shape
+	// name + vertex count for the whole session (every wearer of an armour shares it), logged once each (LogAuto). Keywords still force
+	// a garment on, ForceOff forces it off. Survey of every vanilla, DLC and TTW armour: bench\deep-roadmap\evidence\clothauto.
+	struct AutoJob : Job {
+		std::vector<float> pos;
+		std::vector<uint16_t> tris;
+		ClothWeights::Input in;
+		ClothWeights::Result r;
+		bool Run() override {
+			in.pos = pos.data(); in.vertices = (uint32_t)(pos.size() / 3); in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
+			return ClothWeights::Compute(in, r);
+		}
+	};
+	struct Verdict {
+		int state = 0;					// 0 new, 1 measuring on the worker, 2 hangs free (cloth), -1 still
+		UInt16 vertices = 0;
+		float free = 0.0f;
+		std::shared_ptr<AutoJob> job;
+		ClothWeights::Result r;			// kept when it hangs free (its weights)
+		std::string name;
+	};
+	inline std::unordered_map<std::string, Verdict> Verdicts;		// texture | shape | vertices
+	struct VerdictRef { UInt16 vertices = 0; const void* texture = nullptr; Verdict* v = nullptr; };
+	inline std::unordered_map<const void*, VerdictRef> VerdictOfData;	// per NiGeometryData: its entry above
+	inline UInt32 AutoLogged = 0;
+	inline float AutoShareUsed = -1.0f;
+	inline void LogVerdict(const Verdict& v, const char* why) {
+		if (!S.LogAuto || AutoLogged >= 400) return;
+		AutoLogged++;
+		const ClothWeights::Result& r = v.state == 2 ? v.r : (v.job ? v.job->r : v.r);
+		if (v.state == 2)
+			Logger::Log("Cloth wind: auto: CLOTH %s: hangs free -- %.0f %% of its thigh band stands off the legs, %u of %u vertices move (%.1f %%), down to %.0f units below the crotch; %.2f ms on the worker",
+				v.name.c_str(), v.free * 100.0f, r.moving, r.welded, r.welded ? 100.0 * r.moving / r.welded : 0.0, r.hemDrop, v.job ? v.job->ms : 0.0);
+		else if (v.job && v.job->ok)
+			Logger::Log("Cloth wind: auto: still %s: %s -- %.0f %% of its thigh band stands off the legs, %u of %u vertices would move (%.1f %%), down to %.0f units below the crotch",
+				v.name.c_str(), why, v.free * 100.0f, r.moving, r.welded, r.welded ? 100.0 * r.moving / r.welded : 0.0, r.hemDrop);
+		else Logger::Log("Cloth wind: auto: still %s: %s", v.name.c_str(), why);
+	}
+	// The verdict for this worn mesh (nullptr: not a garment AutoDetect looks at). Starts the measure on first sight; until it is done
+	// the garment stays still.
+	inline const Verdict* AutoVerdictOf(NiGeometry* geometry, const NiSourceTexture* diffuse) {
+		NiGeometryData* gd = geometry->geomData;
+		if (!gd || !diffuse || !diffuse->ddsPath1) return nullptr;
+		Verdict* v = nullptr;
+		auto it = VerdictOfData.find(gd);
+		if (it != VerdictOfData.end() && it->second.vertices == gd->m_usVertices && it->second.texture == diffuse) v = it->second.v;
+		else {
+			if (VerdictOfData.size() >= 4096) VerdictOfData.clear();
+			const std::string path = Norm(diffuse->ddsPath1);
+			const std::string key = path + "|" + (geometry->m_pcName ? geometry->m_pcName : "") + "|" + std::to_string(gd->m_usVertices);
+			v = &Verdicts[key];
+			VerdictOfData[gd] = { gd->m_usVertices, diffuse, v };
+			if (v->state == 0) {
+				v->vertices = gd->m_usVertices;
+				v->name = std::string("'") + (geometry->m_pcName ? geometry->m_pcName : "?") + "' (" + diffuse->ddsPath1 + ", " + std::to_string(gd->m_usVertices) + " vertices)";
+				v->state = -1;
+				const Skeleton& k = SkeletonOf(geometry);
+				std::vector<UInt16> tris;
+				const NiSkinPartition* sp = geometry->skinInstance ? geometry->skinInstance->SkinPartition : nullptr;
+				if (IsForcedOff(path)) LogVerdict(*v, "ForceOff");
+				else if (ExcludedPart(path)) LogVerdict(*v, "its file name is a body part (ExcludeParts)");
+				else if (!k.ok) LogVerdict(*v, k.actor ? "no legs in its skeleton" : "not on a human skeleton");
+				else if (!(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex || !TrianglesOf(geometry, sp, tris)) LogVerdict(*v, "the game did not keep its vertices or triangles");
+				else {
+					auto job = std::make_shared<AutoJob>();
+					job->pos.assign(&gd->m_pkVertex[0].x, &gd->m_pkVertex[0].x + gd->m_usVertices * 3);
+					job->tris.assign(tris.begin(), tris.end());
+					for (int leg = 0; leg < 2; leg++) for (int j = 0; j < 3; j++) for (int c = 0; c < 4; c++) job->in.legs[leg][j][c] = k.pts[leg * 4 + j][c];
+					job->in.hipZ = k.hipZ; job->in.kneeZ = k.kneeZ; job->in.groundZ = k.groundZ;
+					job->in.pos = job->pos.data(); job->in.vertices = gd->m_usVertices;
+					v->free = ClothWeights::FreeShare(job->in);
+					if (v->free < (float)ClothWeights::kFreeFirst) {
+					char why[96];
+					snprintf(why, sizeof(why), "it hugs the legs (%.0f %% of its thigh band stands off them)", v->free * 100.0f);
+					LogVerdict(*v, why);
+				}
+					else { v->job = job; v->state = 1; Submit(job); }
+				}
+			}
+		}
+		if (v->state == 1 && v->job && v->job->done) {
+			const char* why = "the weights failed";
+			if (v->job->ok) {
+				const ClothWeights::Result& r = v->job->r;
+				if (ClothWeights::HangsFree(r, S.AutoShare * 0.01)) { v->r = r; v->state = 2; why = ""; }
+				else why = r.moving < ClothWeights::kAutoMoving || r.moving < S.AutoShare * 0.01 * r.welded ? "too little of it hangs free" : "it moves only at the hips";
+			}
+			if (v->state != 2) v->state = -1;
+			LogVerdict(*v, why);
+			v->job.reset();
+		}
+		return v;
+	}
+
 	// Once a frame (Render.cpp, image space): the settings (live), the wind and the phases.
 	inline void AdvanceClock() {
 		TimeGlobals* g = TimeGlobals::Get();
@@ -860,6 +1158,9 @@ namespace ClothWind {
 		readList("Keywords", WordsFrom, Words, "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent");
 		readList("Exclude", ExcludeFrom, Excluded, nullptr);
 		readList("ExcludeParts", ExcludePartsFrom, ExcludedParts, nullptr);
+		const std::string forceOffWas = ForceOffFrom;
+		readList("ForceOff", ForceOffFrom, ForcedOff, nullptr);	// 2026-10-20
+		if (ForceOffFrom != forceOffWas) { VerdictOfData.clear(); Verdicts.clear(); AutoLogged = 0; }	// AutoDetect judges again
 		S.MotionDrag = std::clamp(TheSettingManager->GetSettingF(section, "MotionDrag"), 0.0f, 0.3f);
 		S.MotionMax = std::clamp(TheSettingManager->GetSettingF(section, "MotionMax"), 0.0f, 80.0f);
 		S.MotionSpring = std::clamp(TheSettingManager->GetSettingF(section, "MotionSpring"), 0.2f, 6.0f);
@@ -880,6 +1181,11 @@ namespace ClothWind {
 		S.WalkDragCap = std::clamp(TheSettingManager->GetSettingF(section, "WalkDragCap"), 20.0f, 2000.0f);
 		S.WalkMaxAngle = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxAngle"), 5.0f, 89.0f);
 		S.WalkHemSmooth = std::clamp(TheSettingManager->GetSettingF(section, "WalkHemSmooth"), 0.0f, 1.0f);
+		S.StillWeights = TheSettingManager->GetSettingI(section, "StillWeights") != 0;
+		S.AutoDetect = TheSettingManager->GetSettingI(section, "AutoDetect") != 0;	// 2026-10-20 (see AutoVerdictOf)
+		S.AutoShare = std::clamp(TheSettingManager->GetSettingF(section, "AutoShare"), 0.0f, 50.0f);
+		S.LogAuto = TheSettingManager->GetSettingI(section, "LogAuto") != 0;
+		if (S.AutoShare != AutoShareUsed) { AutoShareUsed = S.AutoShare; VerdictOfData.clear(); Verdicts.clear(); AutoLogged = 0; }	// judged again (the worker measures again)
 		WeightsMadeNow = 0;
 		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
 		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);
@@ -939,6 +1245,11 @@ namespace ClothWind {
 				w = FrameId - w->second.frame > 600 ? Walkers.erase(w) : std::next(w);
 			for (auto w = Weights.begin(); w != Weights.end();)	// 2026-10-19 meshes not drawn for a while: their buffers go
 				if (FrameId - w->second.lastFrame > 1800) { ReleaseBuffers(w->second); w = Weights.erase(w); } else ++w;
+			if (S.LogMatches && (StatStillDraws || StatStillMissed))
+				Logger::Log("Cloth wind: still cloth: %u draws with weights, %u without (drawn still); %u meshes known", StatStillDraws, StatStillMissed, (unsigned)Stills.size());
+			StatStillDraws = StatStillMissed = 0;
+			for (auto m = Stills.begin(); m != Stills.end();)	// 2026-10-20 still cloth not drawn for a while (a job still running keeps its own copy)
+				if (FrameId - m->second.lastFrame > 1800) { if (m->second.vb) m->second.vb->Release(); m = Stills.erase(m); } else ++m;
 			Frames = ClothDraws = SkinnedDrawsNow = 0;
 		}
 	}
@@ -946,6 +1257,7 @@ namespace ClothWind {
 	inline void Zero(IDirect3DDevice9* device) {
 		ActiveWeights = nullptr;	// 2026-10-19 round 5: no weights bound for draws that are no cloth
 		ActiveWalk = nullptr; ActiveSkin = nullptr;
+		ActiveStill = nullptr;		// 2026-10-20 still cloth (mask 6)
 		if (!NonZeroSent || !device) return;
 		static const float zero[4] = { 0, 0, 0, 0 };
 		device->SetVertexShaderConstantF(248, zero, 1);
@@ -1069,6 +1381,12 @@ namespace ClothWind {
 					geometry->m_pcName ? geometry->m_pcName : "", gd ? (unsigned)gd->m_usVertices : 0u, gd && (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) ? ", vertices kept" : ", vertices not kept");
 			}
 		}
+		// 2026-10-20 AutoDetect: a worn garment no keyword names moves when its own mesh hangs free (AutoVerdictOf); it brings its weights
+		const Verdict* autoVerdict = nullptr;
+		if (!cloth && skinned && S.AutoDetect && S.MaskMode == 2 && S.UseSkeleton && S.UseWeights && DrawHookOn) {
+			autoVerdict = AutoVerdictOf(geometry, diffuse);
+			if (autoVerdict && autoVerdict->state == 2) cloth = true; else autoVerdict = nullptr;
+		}
 		// The vertex colour is the mask: without colours in the mesh, only the whole-mesh mode applies.
 		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { Zero(device); return; }
 		// Into the vertex shader's space: world for skinned meshes, the object's own for the rest.
@@ -1085,6 +1403,12 @@ namespace ClothWind {
 			if (geometry->geomData) {	// (statics have no movement part: c252/c253 stay 0)	// hanging cloth: pinned at the top of its bound, loosest at the bottom (object space)
 				const NiBound& b = geometry->geomData->m_kBound;
 				top = b.Center.z + 0.8f * b.Radius; invRange = b.Radius > 1e-3f ? 1.0f / (1.6f * b.Radius) : 0.0f;
+			}
+			// 2026-10-20 still cloth by its own mesh (mask 6, StillOf): still until its weights are ready
+			if (S.MaskMode == 2 && S.StillWeights && StillHookOn) {
+				StillMesh* sm = StillOf(geometry, diffuse->ddsPath1);
+				if (!sm) { Zero(device); return; }
+				mode = 6.0f; ActiveStill = sm;
 			}
 		}
 		else {	// worn clothing
@@ -1110,7 +1434,7 @@ namespace ClothWind {
 				limbs[52] = skeleton->groundZ; limbs[53] = 1.0f / 6.0f;
 				// 2026-10-19 round 5: the mesh's own per-vertex weights (mask 5) when every partition can have them; c239.zw = the
 				// wearer's upright axis (bind pose), which mask 5's billow points away from
-				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton) : nullptr) {
+				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton, autoVerdict ? &autoVerdict->r : nullptr) : nullptr) {
 					mode = 5.0f; limbs[54] = mw->center[0]; limbs[55] = mw->center[1]; ActiveWeights = mw;
 					// 2026-10-20 round 9: the walking simulation (DrawPartition sends its constants); without it c219.x = 0 (round 8's path)
 					ActiveSkin = geometry->skinInstance; ActiveBonesBase = shadowPass ? 9 : 44;

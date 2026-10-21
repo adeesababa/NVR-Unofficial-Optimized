@@ -25,6 +25,11 @@ extern "C" {
 			EffectSelfTest::RegisterLink();	// UNOFFICIAL, TEST ONLY: after every plugin is loaded (critic-notes 14)
 #endif
 			break;
+#if NVR_TEST_TOOLS
+		case NVSEMessagingInterface::kMessage_MainGameLoop:
+			SettingShots::MainLoop();	// UNOFFICIAL, TEST ONLY: the auto-test's console commands, between frames (SettingShots.h)
+			break;
+#endif
 		case NVSEMessagingInterface::kMessage_PreLoadGame:
 			TheSettingManager->GameLoading = true;
 			break;

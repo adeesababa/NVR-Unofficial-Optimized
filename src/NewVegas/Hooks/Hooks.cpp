@@ -94,6 +94,19 @@ void AttachHooks() {
 			Logger::Log("UNOFFICIAL cloth wind: the skinned partition draws are hooked (per-vertex weights of worn cloth, [Shaders.Cloth.Main] UseWeights)");
 		}
 		else Logger::Log("UNOFFICIAL cloth wind: the calls at 00B992E3 / 00B99339 are not the game's partition draw (another plugin?); worn cloth keeps the skeleton mask");
+		// UNOFFICIAL 2026-10-20 still cloth (core/ClothWind.h OnlyRender): the renderer's still-object draws (NiDX9Renderer vtable 0x10EE4BC
+		// + 0x1B4 Do_OnlyRenderShape, + 0x1B8 Do_OnlyRenderTristrips; what the geometry's OnlyRenderImmediate calls after the pass set its
+		// shaders, streams and declaration), so still cloth can have its per-vertex weights in vertex stream 1. Whatever sits in the slots
+		// is called through (another plugin's patch keeps working).
+		const UInt32 shape = *(UInt32*)0x010EE670, strips = *(UInt32*)0x010EE674;
+		if (shape && strips) {
+			ClothWind::OnlyRenderShapeOriginal = (ClothWind::OnlyRenderFn)shape;
+			ClothWind::OnlyRenderStripsOriginal = (ClothWind::OnlyRenderFn)strips;
+			SafeWrite32(0x010EE670, (UInt32)&ClothWind::OnlyRenderShapeHook);
+			SafeWrite32(0x010EE674, (UInt32)&ClothWind::OnlyRenderStripsHook);
+			ClothWind::StillHookOn = true;
+			Logger::Log("UNOFFICIAL cloth wind: the still-object draws are hooked (%08X %08X; per-vertex weights of still cloth, [Shaders.Cloth.Main] StillWeights)", shape, strips);
+		}
 	}
 	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
 	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);

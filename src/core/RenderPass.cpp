@@ -106,12 +106,9 @@ void RenderPass::DrawGeometryBuffer(NiGeometry* Geo, NiGeometryBufferData* GeoDa
 
 	uint16_t dirtyFlags = Geo->geomData->m_usDirtyFlags;
 	NiTriStrips* pStrips = Geo->IsTriStrips();
-	if (pStrips) {
-		ThisStdCall(0xE74840, NiDX9Renderer::GetSingleton(), Geo);  // RenderTriStripsAlt
-	}
-	else {
-		ThisStdCall(0xE745A0, NiDX9Renderer::GetSingleton(), Geo);  // RenderTriShapeAlt
-	}
+	// RenderTriStripsAlt (0xE74840) / RenderTriShapeAlt (0xE745A0), through ClothWind::OnlyRender (UNOFFICIAL 2026-10-20: with still
+	// cloth's per-vertex weights in stream 1 when ForGeometry chose them; else exactly these calls)
+	ClothWind::OnlyRender(pStrips != nullptr, NiDX9Renderer::GetSingleton(), Geo);
 	// Add back the dirty flag that are reset with vanilla render functions.
 	Geo->geomData->m_usDirtyFlags = dirtyFlags;
 }

@@ -374,8 +374,8 @@ struct VS_INPUT {
     float3 blendWeight : BLENDWEIGHT;
     float4 blendIndices : BLENDINDICES;
 #endif
-#if defined(SKIN) && defined(CLOTH_WIND)
-    float3 clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring, pendulum share (2026-10-20)
+#if defined(CLOTH_WIND)
+    float3 clothWeight : TEXCOORD7;	// UNOFFICIAL 2026-10-19 cloth mask 5: vertex stream 1, bound only for worn cloth (read only in mask 5): weight, place on the hem ring, pendulum share (2026-10-20); still cloth (mask 6, 2026-10-20): weight, the billow's side
 #endif
 };
 
@@ -456,7 +456,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, float3(IN.clothWeight.y, 0.0f, 0.0f), 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind (2026-10-20: still cloth's mask 6 from stream 1)
         #endif
         #ifdef PLANT_WIND
             [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);	// UNOFFICIAL 2026-10-20 plant wind (static plants)
@@ -475,7 +475,7 @@ VS_OUTPUT main(VS_INPUT IN) {
             float3 clothOut = 0.0f;	// mask 5's billow direction, carried by the same bones
             float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
             float3 clothUp = 0.0f;	// ...and the bind pose's up (the legs' direction)
-            [branch] if (ClothA.y > 4.5f) {
+            [branch] if (ClothIsMask5()) {
                 [branch] if (ClothWalk.x > 0.5f) {	// 2026-10-20 round 9: hangs from the hips, the hem ring, the current legs
                     const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
                     position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
@@ -497,7 +497,7 @@ VS_OUTPUT main(VS_INPUT IN) {
                 }
             }
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
-            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
+            [branch] if (ClothIsMask5() && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
                 position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
                 position.xyz += ClothLegPush(position.xyz, clothOut);
             }
@@ -670,7 +670,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
-        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, float3(IN.clothWeight.y, 0.0f, 0.0f), 0.0f, 0.0f, 0.0f);	// UNOFFICIAL cloth wind (2026-10-20: still cloth's mask 6 from stream 1)
     #endif
     #ifdef PLANT_WIND
         [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);	// UNOFFICIAL 2026-10-20 plant wind (static plants)
@@ -689,7 +689,7 @@ VS_OUTPUT main(VS_INPUT IN) {
             float3 clothOut = 0.0f;	// mask 5's billow direction, carried by the same bones
             float4 clothLegL = 0.0f, clothLegR = 0.0f;	// mask 5 (round 8): each leg (ClothLegBind), carried by the same bones
             float3 clothUp = 0.0f;	// ...and the bind pose's up (the legs' direction)
-            [branch] if (ClothA.y > 4.5f) {
+            [branch] if (ClothIsMask5()) {
                 [branch] if (ClothWalk.x > 0.5f) {	// 2026-10-20 round 9: hangs from the hips, the hem ring, the current legs
                     const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
                     position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
@@ -711,7 +711,7 @@ VS_OUTPUT main(VS_INPUT IN) {
                 }
             }
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);	// UNOFFICIAL cloth wind
-            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
+            [branch] if (ClothIsMask5() && ClothWalk.x > 0.5f) {	// round 9: the hem ring by the pendulum share, then out of the current legs
                 position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
                 position.xyz += ClothLegPush(position.xyz, clothOut);
             }

@@ -50,6 +50,12 @@
 //                evenly to 1 at the hem), added after the wind -- by the cloth weight (full from the knee down) the lower coat moved as
 //                one stiff block and folded at the knee; and where the outward direction runs along a leg (a calf kicked up level
 //                behind at a run) the push goes straight off the leg instead (radially: over the calf).
+//   mask 6 (2026-10-20, still cloth: tents, flags, banners; user: 'the entire tent mesh wobbles around'): the per-vertex weight NVR
+//                worked out from the still mesh's own shape (core/ClothStatic.h: poles, ropes and solid parts 0, the cloth held where it
+//                touches them, the ground and its top line, loosest at its free edges), read from vertex stream 1 like mask 5 (TEXCOORD7:
+//                weight, the billow's side); the billow goes along the normal x that side (+1 / -1), so the two layers of two-sided cloth
+//                (whose normals face apart) billow the same way. The callers pass the side as out5.x. Mask 2 (by height) stays for
+//                StillWeights off: it moved the bottom most -- a tent's poles, its ropes and the canvas on the ground.
 // The same function runs in every pass of the object (the extra lamp passes test depth EQUAL, so they must land on the same spot)
 // and in the shadow maps.
 //
@@ -84,6 +90,13 @@ float ClothTri(float c) {	// 0..1, period 1, smooth at the turns
 // bench\deep-roadmap\evidence\cloth3-LOG.md C3-12, 2 was 0.01 units too much; C3-13 for the whole displacement).
 static const float ClothBillowIn = 1.5f;
 
+// Mask 5 (worn clothing by its own mesh) alone; mask 6 (still cloth) shares only its stream weight (ClothMask).
+bool ClothIsMask5() { return ClothA.y > 4.5f && ClothA.y < 5.5f; }
+// The billow's direction: mask 5 away from the wearer's axis (out5), mask 6 along the normal x its side (out5.x), else the normal.
+float3 ClothBillowDir(float3 n, float3 out5) {
+    return ClothA.y > 5.5f ? n * (out5.x < 0.0f ? -1.0f : 1.0f) : (ClothIsMask5() ? out5 : n);
+}
+
 // The displacement at point p (the shader's space) with surface normal n; n = 0 gives the push along the wind only.
 float3 ClothDisplacement(float3 p, float3 n) {
     const float along = dot(p, ClothB.xyz) * ClothB.w;
@@ -97,7 +110,7 @@ float3 ClothDisplacement(float3 p, float3 n) {
     // (slope 1 at rest, so small motion looks as before; never deeper than ClothBillowIn). Every other mask keeps its billow exactly.
     const float in5 = min(billow, 0.0f);
     const float k5 = ClothD.x * gust * (1.0f / ClothBillowIn);
-    [flatten] if (ClothA.y > 4.5f) billow += in5 * (rsqrt(1.0f + in5 * in5 * k5 * k5) - 1.0f);
+    [flatten] if (ClothIsMask5()) billow += in5 * (rsqrt(1.0f + in5 * in5 * k5 * k5) - 1.0f);
     return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * billow);
 }
 
@@ -162,7 +175,7 @@ float3 ClothLegPush(float3 p, float3 o) {
 // Mask 5 (2026-10-19 round 7): the unit direction away from the wearer's upright axis for ClothInward5, 0 for every other mask (a select:
 // there ClothInward5 gives d back as it was).
 float3 ClothInDir(float3 out5) {
-    return ClothA.y > 4.5f ? out5 * rsqrt(max(dot(out5, out5), 1e-8f)) : 0.0f;
+    return ClothIsMask5() ? out5 * rsqrt(max(dot(out5, out5), 1e-8f)) : 0.0f;
 }
 
 // The whole displacement d (wind + the wearer's motion, units, before the weight) with its part towards the wearer's upright axis (along
@@ -249,7 +262,7 @@ float3 ClothOutwardBind(float3 bindP) {
 // bindP: the vertex before skinning (modes 3 and 4; for unskinned meshes it is p itself). weight5: mask 5's per-vertex weight.
 float ClothMask(float4 vertexColor, float3 p, float3 bindP, float weight5) {
     float m;
-    [branch] if (ClothA.y > 4.5f) m = saturate(weight5);	// worn clothing by its own mesh (core/ClothWeights.h), vertex stream 1
+    [branch] if (ClothA.y > 4.5f) m = saturate(weight5);	// worn clothing (mask 5, core/ClothWeights.h) or still cloth (mask 6, core/ClothStatic.h) by its own mesh, vertex stream 1
     else [branch] if (ClothA.y > 3.5f) {	// worn clothing by its own skeleton (core/ClothWind.h SkeletonOf): only what stands off the legs
                                     // and forearms moves, only below the hips, nothing at the ground -- legs, trousers, boots, hands
                                     // and torso stay put
@@ -278,14 +291,15 @@ float ClothMask(float4 vertexColor, float3 p, float3 bindP, float weight5) {
 
 // Moves the vertex and rebuilds tangent, binormal and normal. Every pass of an object must call it with the same inputs.
 // weight5 / out5: mask 5's weight and billow direction; legL5 / legR5 / up5: its legs (ClothLegBind) and the bind pose's up, all carried
-// by the bones (skinned space; 0 for everything else).
+// by the bones (skinned space; 0 for everything else). Still meshes pass their stream 1 here too: weight5 = mask 6's weight, out5.x =
+// its billow side.
 void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, float4 vertexColor, float3 bindP, float weight5, float3 out5,
                float4 legL5, float4 legR5, float3 up5) {
     [branch] if (ClothA.x > 0.0f) {
         const float mask = ClothMask(vertexColor, p, bindP, weight5);
         const float e = 2.0f;
         const float3 n = normalize(N);
-        const float3 bill = ClothA.y > 4.5f ? out5 : n;	// the billow's direction
+        const float3 bill = ClothBillowDir(n, out5);	// the billow's direction
         const float3 motion = ClothMotion(bindP);
         const float3 in5 = ClothInDir(out5);
         const float3 d0 = mask * ClothLimit5(ClothDisplacement(p, bill) + motion, in5, legL5, legR5, up5, mask);
@@ -312,7 +326,7 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP, float weight5, float3 out5, float4 legL5, float4 legR5, float3 up5) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
-        const float3 bill = ClothA.y > 4.5f ? out5 : (l > 1e-4f ? n / l : 0.0f);
+        const float3 bill = ClothBillowDir(l > 1e-4f ? n / l : 0.0f, out5);
         const float mask = ClothMask(vertexColor, p, bindP, weight5);
         p += mask * ClothLimit5(ClothDisplacement(p, bill) + ClothMotion(bindP), ClothInDir(out5), legL5, legR5, up5, mask);
     }

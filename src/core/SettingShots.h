@@ -57,6 +57,7 @@ namespace SettingShots {
 	inline TESObjectCELL* Cell = nullptr;
 	inline std::vector<std::string> Commands;	// this shot's console commands, run at the start of its first frame
 	inline bool Moves = false;					// this shot ran console commands: the player may change place
+	inline bool MainLoopSeen = false;			// 2026-10-20: xNVSE's main-loop message arrives (Main.cpp): the console commands run there
 	inline bool FinalPicture = false;			// 'final': pictures from the back buffer at ReShade's present
 	// 'final' state (2026-10-18, atomic: ReShade's Vulkan runtime presents on DXVK's own thread): 0 nothing asked; 1 the shot's
 	// frames are done, the next present takes the picture; 2 being taken on the Vulkan runtime; 3 taken there, FinalJob holds it
@@ -276,6 +277,27 @@ namespace SettingShots {
 	inline void QueueJob(Job* job);
 	inline void NextShot();
 
+	// The shot's console commands. 2026-10-19: taken out of the list BEFORE running. A 'coc' draws loading-screen frames inside
+	// RunScriptLine, which come back to BeginFrame; with the list still full every one of them ran the coc again (117 nested coc calls,
+	// then a crash).
+	inline void RunCommands() {
+		if (Commands.empty()) return;
+		std::vector<std::string> lines;
+		lines.swap(Commands);
+		for (const std::string& line : lines) {
+			Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
+			if (g_ConsoleInterface) g_ConsoleInterface->RunScriptLine(line.c_str(), nullptr);
+		}
+	}
+	// 2026-10-20 (cloth C3-18: two test games froze for good at a 'placeatme'): BeginFrame runs inside the game's render, which holds the
+	// renderer's lock (NiDX9Renderer + 0x80); placeatme then waits for the game's loading lock (0x011D5A9C), and a loading thread that
+	// holds that one and is creating a mesh waits for the renderer's lock: a deadlock (stacks in evidence\clothautounreeze-B4c).
+	// So the commands run here, on xNVSE's main-loop message (Main.cpp), between frames, where the game runs its own scripts.
+	inline void MainLoop() {
+		if (!MainLoopSeen) { MainLoopSeen = true; Logger::Log("SETTING SHOTS: console commands run on the game's main loop (between frames)"); }
+		if (Running) RunCommands();
+	}
+
 	// Render.cpp, right after ShaderManager::UpdateConstants and EffectSelfTest::BeginFrame.
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
@@ -307,16 +329,7 @@ namespace SettingShots {
 			NextShot();
 			if (!Running) return;
 		}
-		if (!Commands.empty()) {
-			// 2026-10-19: taken out of the list BEFORE running. A 'coc' draws loading-screen frames inside RunScriptLine, which come
-			// back here; with the list still full every one of them ran the coc again (117 nested coc calls, then a crash).
-			std::vector<std::string> lines;
-			lines.swap(Commands);
-			for (const std::string& line : lines) {
-				Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
-				if (g_ConsoleInterface) g_ConsoleInterface->RunScriptLine(line.c_str(), nullptr);
-			}
-		}
+		if (!MainLoopSeen) RunCommands();	// (an xNVSE without the main-loop message: here, as before)
 		if (Moves && Player) Cell = Player->parentCell;
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
 		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
