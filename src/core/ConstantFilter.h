@@ -19,8 +19,6 @@
 // Hooked on the function bodies (Detours), not in the device's vtable: the native D3D9 runtime rewrites the vtable
 // every frame (measuring build's lesson).
 #include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17 LinearPreDecode: decodes the lit objects' colour constants here
-#include <intrin.h>
-#include <emmintrin.h>
 
 namespace ConstantFilter {
 
@@ -60,12 +58,6 @@ namespace ConstantFilter {
 	// every state block applied / reset (its copy of the device state is then read back). Null unless that feature is on.
 	inline void (*PixelShaderObserver)(IDirect3DPixelShader9*) = nullptr;
 	inline void (*StateLostObserver)() = nullptr;
-	// UNOFFICIAL 2026-10-21 FastConstantCompare ([Main.Main.Performance], cpulimits): the CPU sampler put ~3.5 % of the main thread
-	// in Redundant in a lamp-rich interior (~106,000 constant uploads per frame in the Ultra-Luxe). With it on, a register is
-	// compared as 16 bytes at once (bit for bit, as memcmp) and the thread id comes straight from the thread's TEB (the value
-	// GetCurrentThreadId returns) instead of a call per upload. The same uploads are dropped either way.
-	inline bool FastCompare = false;	// the setting, read each frame (BeginFrame)
-	inline DWORD ThreadNow() { return FastCompare ? (DWORD)__readfsdword(0x24) : GetCurrentThreadId(); }
 
 	inline void Wipe() {
 		memset(Vertex.known, 0, sizeof(Vertex.known));
@@ -81,15 +73,7 @@ namespace ConstantFilter {
 			return false;
 		}
 		bool same = true;
-		if (FastCompare) {
-			for (UINT i = 0; i < count; i++) {
-				if (!copy.known[start + i]) { same = false; break; }
-				const __m128i held = _mm_loadu_si128((const __m128i*)copy.value[start + i]);
-				const __m128i sent = _mm_loadu_si128((const __m128i*)(data + i * 4));
-				if (_mm_movemask_epi8(_mm_cmpeq_epi32(held, sent)) != 0xFFFF) { same = false; break; }
-			}
-		}
-		else for (UINT i = 0; i < count; i++) {
+		for (UINT i = 0; i < count; i++) {
 			if (!copy.known[start + i] || memcmp(copy.value[start + i], data + i * 4, sizeof(float) * 4) != 0) { same = false; break; }
 		}
 		if (same) return count > 0;
@@ -101,7 +85,7 @@ namespace ConstantFilter {
 	// 1: filter the call; 0: pass it through and forget the registers it sets; -1: pass it through, copy untouched.
 	inline int Use() {
 		if (Recording) return -1;
-		const DWORD thread = ThreadNow();
+		const DWORD thread = GetCurrentThreadId();
 		if (!Thread) return -1;
 		if (thread != Thread) {
 			InterlockedIncrement(&ForeignTick);
@@ -134,7 +118,7 @@ namespace ConstantFilter {
 	}
 
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): true on the frame thread outside state-block recording.
-	inline bool PreDecodeThread() { return !Recording && Thread && ThreadNow() == Thread; }
+	inline bool PreDecodeThread() { return !Recording && Thread && GetCurrentThreadId() == Thread; }
 
 	// The decoded copy of game value v (register r: c1, c3-c12) into c(63 + r), unless the copy there was made from exactly v.
 	inline void PreDecodeCopy(IDirect3DDevice9* self, UINT r, const float* v) {
@@ -335,8 +319,7 @@ namespace ConstantFilter {
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
-		FastCompare = TheSettingManager->SettingsMain.Main.FastConstantCompare;	// UNOFFICIAL 2026-10-21 (cpulimits)
-		LinearPreDecode::UseCache = TheSettingManager->SettingsMain.Main.PreDecodeCache;
+		LinearPreDecode::UseCache = TheSettingManager->SettingsMain.Main.PreDecodeCache;	// UNOFFICIAL 2026-10-21 (cpulimits)
 		// UNOFFICIAL LinearPreDecode: the gamma changed (live setting): the copies are remade at the next bind of such a shader.
 		if (LinearPreDecode::CopyGamma != LinearPreDecode::Gamma) LinearPreDecode::CopiesValid = false;
 		const bool enabled = TheSettingManager->SettingsMain.Main.SkipRedundantConstants;	// read by SettingManager::LoadSettings, not by name each frame

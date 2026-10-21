@@ -48,6 +48,15 @@ namespace CpuSampler {
 	inline unsigned Counts[kThreads][kRows][kOwners];
 	inline unsigned KernelCounts[kThreads][kRows][kOwners];	// of those, the thread was inside a Windows kernel call (waiting or a syscall)
 	inline int Wow64Cpu = -1;	// module index of wow64cpu.dll (the 32-bit side of every syscall)
+	// How much the thread really ran: its consumed CPU cycles (QueryThreadCycleTime, TSC-based) since the previous sample over the
+	// wall time between them. The share is booked to the bucket the thread is in at the sample: 1 = computing the whole time,
+	// 0 = waiting (the driver waiting for the graphics card, a lock, a semaphore). Written as W lines.
+	inline double BusySum[kThreads][kRows];
+	inline unsigned BusyN[kThreads][kRows];
+	inline ULONG64 LastCycles[kThreads];
+	inline LONGLONG LastBusyQpc[kThreads];
+	inline LONGLONG CalQpc = 0;
+	inline unsigned long long CalTsc = 0;
 	inline unsigned Taken[kThreads];
 	inline std::unordered_map<unsigned long long, unsigned> Leaves;	// (thread << 56 | bucket << 40 | owner << 32 | address) -> samples
 	inline std::unordered_map<unsigned long long, unsigned> Callers;	// (bucket << 40 | caller owner << 32 | return address) -> driver samples
@@ -166,8 +175,22 @@ namespace CpuSampler {
 			memcpy(StackCopy, (const void*)(uintptr_t)ctx.Esp, len);
 		}
 		bucket = BucketNow(thread);
+		ULONG64 cycles = 0;
+		const BOOL gotCycles = QueryThreadCycleTime(Handles[thread], &cycles);
+		const LONGLONG cycleQpc = Qpc();
 		ResumeThread(Handles[thread]);
 		// ---- running ----
+		if (gotCycles) {
+			const double tscPerQpc = cycleQpc > CalQpc ? (double)(__rdtsc() - CalTsc) / (double)(Qpc() - CalQpc) : 0.0;
+			if (LastBusyQpc[thread] && tscPerQpc > 0.0 && cycleQpc > LastBusyQpc[thread]) {
+				double busy = (double)(cycles - LastCycles[thread]) / ((double)(cycleQpc - LastBusyQpc[thread]) * tscPerQpc);
+				busy = busy < 0.0 ? 0.0 : busy > 1.0 ? 1.0 : busy;
+				BusySum[thread][bucket] += busy;
+				BusyN[thread][bucket]++;
+			}
+			LastCycles[thread] = cycles;
+			LastBusyQpc[thread] = cycleQpc;
+		}
 		const double us = (double)(Qpc() - t0) * 1e6 / (double)QpcFreq;
 		PauseSumUs += us; PauseCount++; if (us > PauseMaxUs) PauseMaxUs = us;
 		if (!got) return;
@@ -221,7 +244,10 @@ namespace CpuSampler {
 		for (unsigned t = 0; t < kThreads; t++)
 			for (unsigned b = 0; b < kRows; b++)
 				for (unsigned o = 0; o < kOwners; o++)
-					if (Counts[t][b][o]) fprintf(Out, "B %u %s|%s %u\n", t, b < CpuSplit::kBucketCount ? CpuSplit::BucketNames[b] : "(none)", OwnerNames[o], Counts[t][b][o], KernelCounts[t][b][o]);
+					if (Counts[t][b][o]) fprintf(Out, "B %u %s|%s %u %u\n", t, b < CpuSplit::kBucketCount ? CpuSplit::BucketNames[b] : "(none)", OwnerNames[o], Counts[t][b][o], KernelCounts[t][b][o]);
+		for (unsigned t = 0; t < kThreads; t++)
+			for (unsigned b = 0; b < kRows; b++)
+				if (BusyN[t][b]) fprintf(Out, "W %u %s|busy %.1f %u\n", t, b < CpuSplit::kBucketCount ? CpuSplit::BucketNames[b] : "(none)", BusySum[t][b], BusyN[t][b]);
 		auto dump = [](const char* tag, std::unordered_map<unsigned long long, unsigned>& map, size_t keep) {
 			std::vector<std::pair<unsigned long long, unsigned>> v(map.begin(), map.end());
 			std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
@@ -238,6 +264,8 @@ namespace CpuSampler {
 		fflush(Out);
 		memset(Counts, 0, sizeof(Counts));
 		memset(KernelCounts, 0, sizeof(KernelCounts));
+		memset(BusySum, 0, sizeof(BusySum));
+		memset(BusyN, 0, sizeof(BusyN));
 		memset(Taken, 0, sizeof(Taken));
 		Leaves.clear(); Callers.clear();
 		PauseSumUs = PauseMaxUs = 0.0; PauseCount = 0;
@@ -299,6 +327,7 @@ namespace CpuSampler {
 		if (Started || Hz <= 0) return;
 		Started = true;
 		LARGE_INTEGER f; QueryPerformanceFrequency(&f); QpcFreq = f.QuadPart;
+		CalQpc = Qpc(); CalTsc = __rdtsc();
 		Ids[0] = GetCurrentThreadId();
 		StackBase[0] = __readfsdword(0x04);
 		StackBottom[0] = __readfsdword(0xE0C);
