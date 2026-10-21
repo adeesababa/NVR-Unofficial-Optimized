@@ -186,7 +186,7 @@ public:
 			float LampModelDistance;	// UNOFFICIAL (2026-10-20): world units, how near (to a lamp model's bound) that is
 			float InvisibleShadowFromLamp;	// UNOFFICIAL (2026-10-20): world units; invisible lights cast from the nearest lamp part within it (0 off)		// UNOFFICIAL (2026-10-20): false = lamp parts (LampFixtures::LampPart) cast no lamp shadows; true = as before
 			bool EvenTaps;				// UNOFFICIAL (2026-10-21): High/Ultra's extra taps spread evenly (POINT_SHADOW_EVEN, read at startup)
-			float MagnifiedSoftness;	// UNOFFICIAL (2026-10-21): texels; the least spread where a cube texel covers many pixels (0 off; needs EvenTaps)
+			float MagnifiedSoftness;	// UNOFFICIAL (2026-10-21): texels; the least spread where a cube texel covers many pixels (0 off; compiled in when above 0 at startup)
 		} Forward;
 	};
 
