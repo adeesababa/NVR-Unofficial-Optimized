@@ -197,9 +197,10 @@ namespace CpuSampler {
 		default: break;
 		}
 		Counts[thread][bucket][o]++;
-		// In the kernel: stopped in wow64cpu.dll (the transition) or in Windows code right after a call instruction (a syscall stub's
-		// return point; ordinary code is almost never caught exactly there).
-		if (module >= 0 && (module == Wow64Cpu || (leafKind == kSystem && AfterCall(ctx.Eip)))) KernelCounts[thread][bucket][o]++;
+		// In the kernel: stopped outside every 32-bit module (the 64-bit syscall layer, wow64cpu.dll, which the 32-bit module list
+		// does not show), or in Windows code right after a call instruction (a syscall stub's return point). Hook stubs in allocated
+		// memory are outside every module too, but a sample rarely lands in their few instructions.
+		if (module < 0 || module == Wow64Cpu || (leafKind == kSystem && AfterCall(ctx.Eip))) KernelCounts[thread][bucket][o]++;
 		Taken[thread]++;
 		Leaves[((unsigned long long)thread << 56) | ((unsigned long long)bucket << 40) | ((unsigned long long)o << 32) | leaf]++;
 		if (caller) Callers[((unsigned long long)thread << 56) | ((unsigned long long)bucket << 40) | ((unsigned long long)o << 32) | caller]++;

@@ -698,6 +698,9 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
 	SettingsMain.Main.ShaderWarmUp = boolSetting(performance, "ShaderWarmUp", false);
 	SettingsMain.Main.HiddenObjectCulling = boolSetting(performance, "HiddenObjectCulling", false);
+	SettingsMain.Main.PreDecodeCache = boolSetting(performance, "PreDecodeCache", false);	// UNOFFICIAL 2026-10-21 cpulimits
+	SettingsMain.Main.FastCasterHash = boolSetting(performance, "FastCasterHash", false);
+	SettingsMain.Main.FastConstantCompare = boolSetting(performance, "FastConstantCompare", false);
 	SettingsMain.Main.TrimLampPasses = boolSetting(performance, "TrimLampPasses", true);
 	{
 		Configuration::ConfigNode node;
