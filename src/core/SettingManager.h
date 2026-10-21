@@ -21,6 +21,7 @@ struct SettingsMainStruct {
         bool    RenderPreTonemapping;
         bool    DisableFrameChain; // ![Main.Main.Performance] FrameChain (copy-free effect chain)
         bool    DisableWorldSceneGuard; // ![Main.Main.Performance] WorldSceneGuard (skip NVR effects while the game renders no world scene)
+        bool    MenuSceneGuard; // [Main.Main.Performance] MenuSceneGuard (UNOFFICIAL 2026-10-20: skip them at once over a menu's still background: the Pip-Boy)
         bool    DisableCompositeApply; // ![Main.Main.Performance] CompositeApply (shadow/AO apply folded into fog)
         bool    DisableChainGameTexture; // ![Main.Main.Performance] ChainUsesGameTexture
         bool    DisableMergedNormals; // ![Main.Main.Performance] MergedDepthNormals

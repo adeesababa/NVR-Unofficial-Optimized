@@ -493,9 +493,15 @@ static bool WorldRenderExpected() {
 		!InterfaceManager->IsActive(Menu::MenuType::kMenuType_Loading);
 }
 
+// UNOFFICIAL 2026-10-20 MenuSceneGuard (P82 tester's Pip-Boy screenshot: a blurred green and orange glow on the right of the screen
+// glass, in daylight): with the Pip-Boy open the game draws only the Pip-Boy over a still, already finished picture of the world, and
+// NVR's effects ran on that picture for the guard's first 10 frames. The surroundings cube (Reflections, CubeMap) took in the Pip-Boy's
+// own green screen and orange buttons (the stale depth buffers let them through its weapon and distance tests), and the glass, an
+// env-mapped surface ([Shaders.PBR.EnvMaps] CubeReflections), reflected them blurred for as long as the Pip-Boy stayed open. Such a
+// frame (the menu's background ready, no world drawn) is now skipped at once; the cube keeps the last world frame's surroundings.
 static bool WorldSceneGuardActive() {
-	return !TheSettingManager->SettingsMain.Main.DisableWorldSceneGuard && !WorldRenderedThisFrame &&
-		WorldMissStreak >= WorldGuardFrames && WorldRenderExpected();
+	if (TheSettingManager->SettingsMain.Main.DisableWorldSceneGuard || WorldRenderedThisFrame || !WorldRenderExpected()) return false;
+	return WorldMissStreak >= WorldGuardFrames || (TheSettingManager->SettingsMain.Main.MenuSceneGuard && TESMain::IsMenuBackgroundReady());
 }
 
 static void ReportWorldRender(BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
@@ -2977,7 +2983,20 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		// stale and they would darken the image. Let the game's own image space run on its own.
 		static bool announced = false;
 		if (!announced) { Logger::Log("UNOFFICIAL world scene guard: no world scene render for %u frames, NVR effects skipped until it returns.", WorldMissStreak); announced = true; }
+#if NVR_TEST_TOOLS
+		SettingShots::BeginFrame();	// UNOFFICIAL 2026-10-20, test only: the shots go on over a menu's still background (Pip-Boy pictures)
+#endif
+		// UNOFFICIAL 2026-10-20 MenuSceneGuard: NVR's bloom is not drawn in these frames, so the HDR blend (ISHDRBLENDINSHADERCIN) took
+		// the last one it made, frozen (in the Pip-Boy: of the world before it opened, or of the Pip-Boy part way through opening). It
+		// takes the game's own bloom of this frame instead, as with NVR's bloom off; NVR's flag comes back with its next frame.
+		BloomEffect* bloom = TheShaderManager->Effects.Bloom;
+		const float bloomFlag = bloom ? bloom->Constants.ExtraData.x : 0.0f;
+		if (bloom && TheSettingManager->SettingsMain.Main.MenuSceneGuard) bloom->Constants.ExtraData.x = 0.0f;
 		ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
+		if (bloom) bloom->Constants.ExtraData.x = bloomFlag;
+#if NVR_TEST_TOOLS
+		if (!DestinationTarget && TheRenderManager->currentRTGroup) SettingShots::Capture(TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface);
+#endif
 		return;
 	}
 
