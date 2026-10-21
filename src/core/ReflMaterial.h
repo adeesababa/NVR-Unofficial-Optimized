@@ -117,7 +117,10 @@ namespace ReflMaterial {
 		if (Overrides.empty()) return -1.0f;
 		std::string f(file);
 		std::transform(f.begin(), f.end(), f.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-		for (const auto& o : Overrides) if (f.find(o.first) != std::string::npos) return o.second;
+		for (const auto& o : Overrides) if (f.find(o.first) != std::string::npos) {
+			Logger::Log("MaterialAware reflections: roughness %.2f for %s (RoughnessOverrides '%s')", o.second, file.c_str(), o.first.c_str());
+			return o.second;
+		}
 		return -1.0f;
 	}
 
