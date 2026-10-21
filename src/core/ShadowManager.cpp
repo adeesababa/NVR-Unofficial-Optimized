@@ -1933,6 +1933,18 @@ void ShadowManager::RenderShadowMaps() {
 			ShadowData->z = 0; // set shader constant to identify other shadow maps
 			auto shadowMapTimer = TimeLogger();
 
+			// UNOFFICIAL 2026-10-21 (sunfix): one log line whenever the sun reaches or leaves straight overhead (GetCascadeViewProj).
+			{
+				static int loggedOverhead = -1;
+				const int overheadState = !ShadowsExteriorEffect::SunOverhead(SunDir) ? 0 : Shadows->Settings.Exteriors.OverheadSunFix ? 2 : 1;
+				if (overheadState != loggedOverhead) {
+					Logger::Log("SUN OVERHEAD STATE: sun %.4f %.4f %.4f %s", SunDir.x, SunDir.y, SunDir.z, overheadState == 2 ?
+						"straight overhead: cascades built with +Y as up (OverheadSunFix)" : overheadState == 1 ?
+						"straight overhead: cascades flat and empty, no sun shadows from them (OverheadSunFix off)" : "not overhead: cascades as always");
+					loggedOverhead = overheadState;
+				}
+			}
+
 			if (Shadows->ShadowAtlasSurfaceMSAA)
 				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurfaceMSAA);
 			else

@@ -448,6 +448,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.SunSkipFlat = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeSkipFlat") != 0;
 	Settings.Exteriors.SunOneWalk = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeOneWalk") != 0;
 	Settings.Exteriors.SunLeanDraws = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeLeanDraws") != 0;
+	Settings.Exteriors.OverheadSunFix = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "OverheadSunFix") != 0;	// UNOFFICIAL 2026-10-21 (sunfix)
 #if NVR_TEST_TOOLS
 	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 4);
 	Settings.Exteriors.CascadeStats = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeStats");	// UNOFFICIAL 2026-10-21
@@ -1209,6 +1210,14 @@ D3DXMATRIX ShadowsExteriorEffect::GetCascadeViewProj(ShadowMapSettings* ShadowMa
 	
 	// Must be kept stable.
 	D3DXVECTOR3 upDir(0.0f, 0.0f, 1.0f);
+	// UNOFFICIAL 2026-10-21 (sunfix) OverheadSunFix: a sun within ~2.6 degrees of straight overhead (QuantizeSun rounds any sun within
+	// half a PitchStepSize of the zenith to exactly (0, 0, 1)) is parallel to that up direction: the view's side axes come out as zero
+	// vectors, every caster is drawn as zero-area triangles and the cascade stays empty (no sun shadows at all; SunCascadeSkipFlat then
+	// skips it). World +Y is taken as up instead (map x = world +X, y = world +Y, as AmbientLight's grid sun map and the billboard
+	// vectors do for that case). It depends on the sun direction alone, so the texel snapping below holds still from frame to frame.
+	// The tilted ortho direction (0.05, 0.05, 1) is ~4 degrees off the zenith: not affected.
+	if (Settings.Exteriors.OverheadSunFix && SunOverhead(*SunDir))
+		upDir = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
 
 	D3DXVECTOR3 minExtents, maxExtents;
 
