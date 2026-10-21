@@ -37,6 +37,8 @@ namespace ClothWeights {
 
 	constexpr double kWeld = 0.05, kStep = 2.0, kArcHug = 4.0, kPelvis = 8.0, kPelvisOff = 6.0, kFree = 8.0, kClear = 5.0, kLayer = 2.0;
 	constexpr int kSmooth = 8;	// (2 left the scribe robe's layers 0.072 apart, 8: 0.018; evidence\cloth3-LOG.md C3-11)
+	constexpr double kMaxLegs = 400.0;	// 2026-10-20: hips more than this above the ground (or not finite) = not a body we know: no weights
+	constexpr int kMaxCuts = 512;		// at most this many cut heights (400 / kStep = 200 for any real body)
 	constexpr double kHangTop = 4.0;	// 2026-10-20 auto-detect: a moving piece counts when it reaches this close below the hips (or higher)
 
 	struct Input {
@@ -144,6 +146,8 @@ namespace ClothWeights {
 			}
 		for (auto& l : nbr) { std::sort(l.begin(), l.end()); l.erase(std::unique(l.begin(), l.end()), l.end()); }
 		const double hip = in.hipZ, knee = in.kneeZ, ground = in.groundZ;
+		// 2026-10-20 (C3-18, a frozen test): a hip at +inf or a ground at -inf made the cut loop below endless; never trust the heights
+		if (!std::isfinite(hip) || !std::isfinite(knee) || !std::isfinite(ground) || hip <= ground || hip - ground > kMaxLegs) return false;
 		std::vector<double> dax(nw);
 		for (uint32_t v = 0; v < nw; v++) dax[v] = LegAxisDistance(in, wp[v]);
 		// 2. cuts
@@ -154,7 +158,8 @@ namespace ClothWeights {
 		std::vector<Seg> segs;
 		std::unordered_map<uint64_t, std::vector<uint32_t>> at;
 		std::vector<double> poly;
-		for (double z0 = hip - 1.0 + 1e-3; z0 > ground + 1.0; z0 -= kStep) {
+		int cutSteps = 0;
+		for (double z0 = hip - 1.0 + 1e-3; z0 > ground + 1.0 && cutSteps < kMaxCuts; z0 -= kStep, cutSteps++) {
 			segs.clear();
 			for (uint32_t t = 0; t < nt; t++) {
 				const uint32_t vv[3] = { T[t * 3], T[t * 3 + 1], T[t * 3 + 2] };

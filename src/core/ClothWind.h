@@ -409,6 +409,7 @@ namespace ClothWind {
 			k.kneeZ = 0.5f * (k.pts[1][2] + k.pts[5][2]);
 			k.groundZ = 0.5f * (k.pts[2][2] + k.pts[6][2]) - 6.0f;
 			k.ok = k.hipZ - k.kneeZ > 5.0f;	// an upright leg (else the space is not what we think: keep SkinMask)
+			if (!std::isfinite(k.hipZ) || !std::isfinite(k.kneeZ) || !std::isfinite(k.groundZ) || k.hipZ - k.groundZ > (float)ClothWeights::kMaxLegs) k.ok = false;	// 2026-10-20: broken bone data
 			if (k.ok) MeasureLegs(k, geometry);
 		}
 		if (SkeletonsLogged < 24 || S.LogMatches) {	// the check: bone heights, and how much of the mesh the mask moves
