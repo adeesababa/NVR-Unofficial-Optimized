@@ -510,6 +510,7 @@ void ShaderManager::UpdateConstants() {
 			(*effect)->constantUpdateTime = 0;
 		}
 	}
+	if (!Effects.AmbientOcclusion->Enabled) Effects.AmbientOcclusion->UpdateSkyConstants();
 
 	// The skin, hair and grass shaders route their light and ambient terms through
 	// TESR_PBRData (see Shaders/Includes/PBRScale.hlsl) and render black at a zero scale, so
@@ -633,14 +634,35 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 	if (!PixelShader->ShaderProg[ShaderRecordType::Interior] && PixelShader->ShaderProg[ShaderRecordType::Default] &&
 		PointShadowForward::Eligible(PixelShader->Name, Template) &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled")) {
-		static const D3DXMACRO overrides[] = { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" },
-			{ "CONTACT_HARDENING", "0" }, { NULL, NULL } };
-		ShaderRecordPixel* record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template, "Interiors\\", overrides);
+		static const D3DXMACRO overrides[4][6] = {
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "1" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "2" }, { NULL, NULL } },
+			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "3" }, { NULL, NULL } } };
+		static const char* const cache[4] = { "Interiors\\", "Interiors\\Fit1\\", "Interiors\\Fit2\\", "Interiors\\Fit3\\" };
+		static const char* const what[4] = { "", "the High/Ultra taps in a loop (the same shadows)",
+			"no High/Ultra: lamp shadow Quality is held at Medium for every object", "also no blocker search: contact hardening and LampSize are off for every object's lamp shadows" };
+		ShaderRecordPixel* record = nullptr;
+		int level = 0;
+		for (; level < 4 && !record; level++) {
+			if (level) Logger::Log("UNOFFICIAL lamp shadows: %s with lamp shadows did not load; trying a shorter version (%d of 3: %s).", PixelShader->Name, level, what[level]);
+			record = (ShaderRecordPixel*)ShaderRecord::LoadShader(PixelShader->Name, NULL, Template, cache[level], overrides[level]);
+		}
 		if (record) {
+			if (--level) {
+				Logger::Log("UNOFFICIAL lamp shadows: %s with lamp shadows loaded at the shorter version %d (%s).", PixelShader->Name, level, what[level]);
+				if (level > PointShadowForward::FitLevel) PointShadowForward::FitLevel = level;
+			}
 			record->PointShadowForward = true;
 			PixelShader->ShaderProg[ShaderRecordType::Interior] = record;
 			PointShadowForward::CompiledIn = true;
 			PointShadowForward::CompiledCount++;
+		}
+		else {
+			Logger::Log("[ERROR] UNOFFICIAL lamp shadows: no version of %s with lamp shadows loads on this GPU. Forward lamp shadows are off: every object "
+				"uses the screen-space lamp shadows, as with [Shaders.ShadowsInteriors.Forward] Enabled off (the objects drawn with it would otherwise lose "
+				"their lamp shadows whenever enough lamps reach them).", PixelShader->Name);
+			PointShadowForward::Refused = true;
 		}
 	}
 	PixelShader->Enabled = enabled;
@@ -693,8 +715,10 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	};
 	const bool indoorsForward = viewTest && !GameState.isExterior;
 	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
-	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || logLamps);
+	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || Settings->Forward.InvisibleLightSize > 0.0f ||
+		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || logLamps);
 	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
+	LampFixtures::LogModels = logLamps;
 
 	auto reachesView = [&](const D3DXVECTOR4& lightPosition, float reach) {
 		const D3DXVECTOR3 v(lightPosition.x - TheRenderManager->CameraPosition.x, lightPosition.y - TheRenderManager->CameraPosition.y,
@@ -1452,6 +1476,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (!Chain.Begin(RenderTarget))
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
+	Effects.Reflections->CaptureMaterial(Device);
+	Device->SetRenderTarget(0, RenderTarget);
+
 	if (Effects.SkinScattering && SkinShaders::NewSkinEnabled()) {
 		static GpuTimer skinScatterTimer("Skin scattering");
 		GpuProfileScope gpu(skinScatterTimer, Device);
@@ -1582,6 +1609,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (ambientLight) {
 		static GpuTimer ambientLightTimer("Ambient light (AO + bounce)");
 		GpuProfileScope gpu(ambientLightTimer, Device);
+		if (AmbientOcclusionEffect::SkyV2Active() && AO->Effect) {
+			AO->lastLowRes = false;
+			AO->RenderSkyVisibility(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
 		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;
 		Effects.AmbientLight->shadowApplied = false;
 		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
@@ -1655,7 +1687,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (wouldRender(Effects.Reflections)) {
 			Effects.Reflections->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
+			Effects.Reflections->BindMaterial();
 			Effects.Reflections->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			Effects.Reflections->ClearPassTextures();
 		}
 		else if (Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) {
 			Effects.Reflections->RenderCubeOnly(Device);

@@ -25,6 +25,11 @@ extern "C" {
 			EffectSelfTest::RegisterLink();
 #endif
 			break;
+#if NVR_TEST_TOOLS
+		case NVSEMessagingInterface::kMessage_MainGameLoop:
+			SettingShots::MainLoop();
+			break;
+#endif
 		case NVSEMessagingInterface::kMessage_PreLoadGame:
 			TheSettingManager->GameLoading = true;
 			break;

@@ -22,6 +22,7 @@
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
+#define SHADOW_SKIN_SOFTNESS 1
 #include "includes/Shadow.hlsl"
 
 #if defined(VS)
@@ -386,6 +387,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if !defined(DIFFUSE)
         #if FORWARD_SHADOWS
             float3 shadowNormal = GetShadowGeometricNormal(worldPos);
+            shadowNormal = ShadowLookupNormal(shadowNormal, float4(IN.normal.xyz, SHADOW_VS_SENTINEL));
             float sunShadow = GetSunShadow(worldPos, shadowNormal);
             float sunShadowBeyond = 1.0f;
             [branch] if (sunShadow < 1.0f && normalize(float3(IN.uv.zw, IN.tangent.w)).z < 0.05f && TESR_SkinLightExtra.z > 0.0f)

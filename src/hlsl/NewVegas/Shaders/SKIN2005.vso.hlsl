@@ -47,6 +47,7 @@ struct VS_OUTPUT {
     float4 shadowWorldPos : TEXCOORD3;   // the only addition to vanilla
     float4 atten          : TEXCOORD4;   // attenuation map UVs, w: 0.5
     float3 eyeDir         : TEXCOORD6;   // eye direction in tangent space
+    float4 smoothNormal   : TEXCOORD7;
     float4 color          : COLOR0;
     float4 fog            : COLOR1;      // rgb: fog colour, w: fog amount
 };
@@ -92,6 +93,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.color = IN.color;
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
+    OUT.smoothNormal = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz);
 
     return OUT;
 };

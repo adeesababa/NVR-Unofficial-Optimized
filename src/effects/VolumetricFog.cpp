@@ -377,7 +377,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 	Effect->SetVector(flagsHandle, &flags);
 	IDirect3DTexture9* sunFar = SunFarFor(shadow);
 	if (aoTexture) {
-		D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
+		D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, AmbientOcclusionEffect::SkyTakeComposite().x, AmbientOcclusionEffect::SkyTakeComposite().y);
 		Effect->SetVector(aoTexelHandle, &aoTexel);
 	}
 	UINT passes = 0;
@@ -478,7 +478,7 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		D3DXHANDLE aoTexelHandle = ParameterHandle(paramCompositeAOTexel, "NVR_CompositeAOTexel");
 		D3DSURFACE_DESC ao = {};
 		if (aoTexelHandle && compositeAO && compositeAOTexture && SUCCEEDED(compositeAOTexture->GetLevelDesc(0, &ao))) {
-			D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, 0.0f, 0.0f);
+			D3DXVECTOR4 aoTexel(1.0f / ao.Width, 1.0f / ao.Height, AmbientOcclusionEffect::SkyTakeComposite().x, AmbientOcclusionEffect::SkyTakeComposite().y);
 			Effect->SetVector(aoTexelHandle, &aoTexel);
 		}
 	}

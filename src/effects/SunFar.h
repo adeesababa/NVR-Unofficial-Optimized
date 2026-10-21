@@ -23,6 +23,7 @@ public:
 		D3DXVECTOR4	CloudWeight;
 		D3DXVECTOR4	CloudBlend;
 		D3DXVECTOR4	Apply;
+		D3DXVECTOR4	Volume;
 	};
 	ConstantsStruct	Constants = {};
 

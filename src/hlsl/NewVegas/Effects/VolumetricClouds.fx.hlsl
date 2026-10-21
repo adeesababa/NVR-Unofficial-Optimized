@@ -343,7 +343,7 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		[branch] if (ShadowStrength > 0.0 && !water) {
 			float3 sunDir = normalize(TESR_SunDirection.xyz);
 			float day = saturate(TESR_SunAmount.x);
-			float facing = sqrt(saturate(dot(normal, sunDir)));
+			float facing = smoothstep(0.0, 0.25, dot(normal, sunDir));
 			float strength = ShadowStrength * lerp(0.3, 1.0, day) * smoothstep(0.08, 0.35, sunDir.z) * facing;
 			float shadow = CloudShadowAt(world);
 			[branch] if (TESR_CloudsExtra.w > 0.0) return float4(shadow.xxx * lerp(0.4, 1.0, facing), 1.0);

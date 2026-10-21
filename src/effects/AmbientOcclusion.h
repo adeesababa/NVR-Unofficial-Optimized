@@ -26,8 +26,11 @@ public:
 	IDirect3DTexture9* SkyTexture() const { return skyReady ? (lastLowRes ? skyTextureLow : skyTexture) : nullptr; }
 	bool	SkyReflections = false;
 	float	SkyMinReflection = 0.1f;
-	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections && Enabled ? SkyTexture() : nullptr; }
+	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections ? SkyTexture() : nullptr; }
 	void RenderSkyVisibility(IDirect3DDevice9* Device);
+	void UpdateSkyConstants();
+	static bool SkyHostedByAmbientLight();
+	static D3DXVECTOR2 SkyTakeComposite();
 
 	bool	UseLowRes() const;
 	IDirect3DSurface9* NextResultSurface() const { return UseLowRes() ? aoSurfaceLow[0] : aoSurface[0]; }

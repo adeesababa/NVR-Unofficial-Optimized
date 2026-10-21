@@ -192,6 +192,13 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 #endif
 }
 
+#ifndef SHADOW_SKIN_SOFTNESS
+    #define SHADOW_SKIN_SOFTNESS 0
+#endif
+#if SHADOW_SKIN_SOFTNESS
+    static float ShadowMinPenumbra = 0.0f;
+#endif
+
 #if SHADOW_FIXED_MODE == 3
 static float ShadowSlopeBias = 0.0f;
 
@@ -420,6 +427,9 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         }
         float distance = max(depth - casterSum / max(casters, 1.0f), 0.0f) * worldPerDepth;
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
+        #if SHADOW_SKIN_SOFTNESS
+        if (casters > 0.5f && casters < 4.5f) radius = max(radius, min(ShadowMinPenumbra * uvPerWorld, 0.73f * maxRadius));
+        #endif
     }
     float w3 = TESR_ContactHardeningData.z > 0.0f ? saturate(2.0f - radius / texel) : (radius <= texel ? 1.0f : 0.0f);
     float lit = 0.0f;
@@ -519,6 +529,19 @@ float3 GetShadowGeometricNormal(float3 worldPos) {
     return n * sign(dot(n, -worldPos));
 }
 
+float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
+#if SHADOW_SKIN_SOFTNESS
+    ShadowMinPenumbra = TESR_ShadowForwardData.z;
+#endif
+    float len2 = dot(smoothNormal.xyz, smoothNormal.xyz);
+    return (TESR_ShadowForwardData.y > 0.0f && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
+}
+
+float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 normal, float3 shadowWorldPos) {
+    float3 along = GetShadowWorldPos(mul(modelViewProj, float4(position + 2.0f * normalize(normal), 1.0f)));
+    return float4(normalize(along - shadowWorldPos), SHADOW_VS_SENTINEL);
+}
+
 #if SHADOW_FIXED_MODE == 3
 float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float4 offsetDistance, float bias) {
     float4x4 lightTransform = c < 0.5f ? TESR_ShadowCameraToLightTransformNear : c < 1.5f ? TESR_ShadowCameraToLightTransformMiddle :
@@ -527,7 +550,11 @@ float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float4 offsetD
     float offset = c < 0.5f ? offsetDistance.x : c < 1.5f ? offsetDistance.y : c < 2.5f ? offsetDistance.z : offsetDistance.w;
     float3 position = worldPos + offset * worldNormal;
 #if CONTACT_HARDENING
+#if SHADOW_SKIN_SOFTNESS
+    return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && (TESR_ContactHardeningData.x > 0.0f || ShadowMinPenumbra > 0.0f));
+#else
     return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && TESR_ContactHardeningData.x > 0.0f);
+#endif
 #else
     return SampleShadowAtlas(mul(float4(position, 1.0f), lightTransform), quadrant, bias, 0.0f);
 #endif

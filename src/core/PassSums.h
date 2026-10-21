@@ -23,6 +23,14 @@ namespace PassSums {
 	inline int LogFrames = 0;
 	inline UInt32 RunPasses = 0;	inline UInt16 RunFirst = 0, RunLast = 0;
 	inline int LastMode = 0;
+	constexpr int kIncrements = 4;
+	constexpr DWORD kRunStartStage = 9;
+	inline IDirect3DTexture9* IncTex = nullptr;  inline IDirect3DSurface9* IncSurf = nullptr;
+	inline D3DSURFACE_DESC IncMade = {};
+	inline bool RunIsIncrements = false;
+	inline bool IncLive = false;
+	inline bool LampSumsChecked = false, LampSumsCompiled = false;
+	inline UInt32 IncFrames = 0, IncCopies = 0, IncPasses = 0, IncLeft = 0, IncFailed = 0;
 
 	inline Kind KindOf(UInt16 e) {
 		if ((e >= 0x132 && e <= 0x13C && e != 0x137) || (e >= 0x13E && e <= 0x148 && e != 0x143)) return Lamps;
@@ -39,6 +47,26 @@ namespace PassSums {
 		for (IUnknown** p : { (IUnknown**)&AccMS, (IUnknown**)&Acc, (IUnknown**)&AccTex, (IUnknown**)&Copy, (IUnknown**)&CopyTex })
 			if (*p) { (*p)->Release(); *p = nullptr; }
 		Made = {};
+	}
+
+	inline void ReleaseIncrements() {
+		if (IncSurf) { IncSurf->Release(); IncSurf = nullptr; }
+		if (IncTex) { IncTex->Release(); IncTex = nullptr; }
+		IncMade = {};
+	}
+
+	inline bool MakeIncrements(IDirect3DDevice9* device, const D3DSURFACE_DESC& d) {
+		if (IncTex && IncMade.Width == d.Width && IncMade.Height == d.Height && IncMade.Format == d.Format) return true;
+		ReleaseIncrements();
+		if (FAILED(device->CreateTexture(d.Width, d.Height, 1, D3DUSAGE_RENDERTARGET, d.Format, D3DPOOL_DEFAULT, &IncTex, NULL)) ||
+			FAILED(IncTex->GetSurfaceLevel(0, &IncSurf))) {
+			Logger::Log("LampSums: could not make the frame's copy (%ux%u format %u): off", d.Width, d.Height, (unsigned)d.Format);
+			ReleaseIncrements();
+			return false;
+		}
+		IncMade = d;
+		Logger::Log("LampSums: copy made (%ux%u format %u, the frame msaa %u)", d.Width, d.Height, (unsigned)d.Format, (unsigned)d.MultiSampleType);
+		return true;
 	}
 
 	inline bool Make(IDirect3DDevice9* device, const D3DSURFACE_DESC& d) {
@@ -131,8 +159,56 @@ namespace PassSums {
 		for (auto& r : rs) device->SetRenderState((D3DRENDERSTATETYPE)r[0], r[1]);
 	}
 
+	inline void BindRunStart() {
+		TheRenderManager->renderState->SetTexture(kRunStartStage, IncTex);
+		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_SRGBTEXTURE, FALSE);
+	}
+
+	inline void BeginIncrements(IDirect3DDevice9* device, Kind kind) {
+		Active = kind;
+		Runs[kind]++;
+		RunPasses = 0;
+		RunIsIncrements = true;
+		IncLive = false;
+		IDirect3DSurface9* target = nullptr;
+		if (FAILED(device->GetRenderTarget(0, &target)) || !target) { IncFailed++; return; }
+		D3DSURFACE_DESC d = {};
+		target->GetDesc(&d);
+		const bool made = MakeIncrements(device, d);
+		static GpuTimer timer("  Lamp sums (copy)");
+		bool copied = false;
+		if (made) {
+			GpuProfileScope gpu(timer, device);
+			copied = SUCCEEDED(device->StretchRect(target, NULL, IncSurf, NULL, D3DTEXF_NONE));
+		}
+		target->Release();
+		if (!copied) { IncFailed++; if (!made) Failed = true; return; }
+		BindRunStart();
+		Redirect = D3DXVECTOR4(0.0f, 1.0f, 1.0f / (float)d.Width, 1.0f / (float)d.Height);
+		device->SetPixelShaderConstantF(210, (const float*)&Redirect, 1);
+		IncLive = true;
+		IncCopies++;
+	}
+
+	inline void EndIncrements(IDirect3DDevice9* device) {
+		Active = None;
+		RunIsIncrements = false;
+		if (!IncLive) return;
+		IncLive = false;
+		IncPasses += RunPasses;
+		Redirect = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		device->SetPixelShaderConstantF(210, (const float*)&Redirect, 1);
+		TheRenderManager->renderState->SetTexture(kRunStartStage, nullptr);
+	}
+
 	inline void End(IDirect3DDevice9* device) {
 		if (Active == None) return;
+		if (RunIsIncrements) { EndIncrements(device); return; }
 		Active = None;
 		SetFlag(device, 0.0f);
 		static GpuTimer timer("  Pass sums (fold in)");
@@ -164,8 +240,27 @@ namespace PassSums {
 		if (mode != LastMode) { LastMode = mode; LogFrames = 3; } else if (LogFrames > 0) LogFrames--;
 		Mode = Failed ? 0 : mode;
 		Runs[0] = Runs[1] = Runs[2] = 0;
-		if (Mode && ++Frames >= 600) { Logger::Log("ExactPassSums (mode %d): %.2f fold-ins per frame", Mode, Composes / (float)Frames); Frames = Composes = 0; }
-		if (!Mode && AccTex) Release();
+		const bool foldIn = (Mode & Highlights) || ((Mode & Lamps) && !(Mode & kIncrements));
+		if (foldIn && ++Frames >= 600) { Logger::Log("ExactPassSums (mode %d): %.2f fold-ins per frame", Mode, Composes / (float)Frames); Frames = Composes = 0; }
+		if ((Mode & kIncrements) && (Mode & Lamps) && ++IncFrames >= 600) {
+			Logger::Log("UNOFFICIAL LampSums: per frame %.2f lamp runs copied (%.1f extra lamp passes each), %.2f extra lamp passes left as before (a third run), "
+				"%.2f copies failed", IncCopies / (float)IncFrames, IncCopies ? IncPasses / (float)IncCopies : 0.0f, IncLeft / (float)IncFrames, IncFailed / (float)IncFrames);
+			IncFrames = IncCopies = IncPasses = IncLeft = IncFailed = 0;
+		}
+		if (!foldIn && AccTex) Release();
+		if (!((Mode & kIncrements) && (Mode & Lamps)) && IncTex) ReleaseIncrements();
+	}
+
+	inline int ModeFromSettings() {
+		if (!LampSumsChecked) {
+			LampSumsChecked = true;
+			LampSumsCompiled = TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") != 0 && TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") != 0;
+			Logger::Log("UNOFFICIAL LampSums: %s", LampSumsCompiled ? "compiled in (the extra lamp passes add their light in linear light)" :
+				"off (not compiled into the shaders)");
+		}
+		const int exact = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums");
+		if (exact) return exact;
+		return LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? (kIncrements | Lamps) : 0;
 	}
 
 	inline void BeforePass(const void* pass, bool world, IDirect3DDevice9* device) {
@@ -173,18 +268,30 @@ namespace PassSums {
 		if (!world) { if (Active) End(device); return; }
 		const UInt16 e = *(const UInt16*)((const UInt8*)pass + 0x04);
 		const Kind k = KindOf(e);
-		if (k == Active) { RunPasses++; RunLast = e; return; }
+		if (k == Active) {
+			RunPasses++; RunLast = e;
+			if (IncLive) TheRenderManager->renderState->SetTexture(kRunStartStage, IncTex);
+			return;
+		}
 		if (Active) {
-			if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d, %u passes (%03X..%03X), ended by pass %03X", (int)Active, RunPasses, RunFirst, RunLast, e);
+			if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d (%s), %u passes (%03X..%03X), ended by pass %03X", (int)Active,
+				RunIsIncrements ? "LampSums" : "fold-in", RunPasses, RunFirst, RunLast, e);
 			End(device);
 		}
-		if (k != None && (Mode & k) && Runs[k] >= 2 && LogFrames > 0) Logger::Log("ExactPassSums: pass %03X of kind %d NOT redirected (third run this frame)", e, (int)k);
-		if (k != None && (Mode & k) && Runs[k] < 2) { Begin(device, k); RunPasses = 1; RunFirst = RunLast = e; }
+		if (k != None && (Mode & k) && Runs[k] >= 2) {
+			if (LogFrames > 0) Logger::Log("ExactPassSums: pass %03X of kind %d NOT redirected (third run this frame)", e, (int)k);
+			if (k == Lamps && (Mode & kIncrements)) IncLeft++;
+		}
+		if (k != None && (Mode & k) && Runs[k] < 2) {
+			if (k == Lamps && (Mode & kIncrements)) BeginIncrements(device, k); else Begin(device, k);
+			RunPasses = 1; RunFirst = RunLast = e;
+		}
 	}
 
 	inline void EndWorld(IDirect3DDevice9* device) {
 		if (!Active || !device) return;
-		if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d, %u passes (%03X..%03X), ended by the world's end", (int)Active, RunPasses, RunFirst, RunLast);
+		if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d (%s), %u passes (%03X..%03X), ended by the world's end", (int)Active,
+			RunIsIncrements ? "LampSums" : "fold-in", RunPasses, RunFirst, RunLast);
 		End(device);
 	}
 }

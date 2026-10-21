@@ -8,6 +8,10 @@
     #define POINT_SHADOW_SMOOTH 0
 #endif
 
+#ifndef POINT_SHADOW_FIT
+    #define POINT_SHADOW_FIT 0
+#endif
+
 float4 NVR_PointShadowLight[6]  : register(c174);
 float4 NVR_PointShadowParams    : register(c180);
 
@@ -26,6 +30,15 @@ samplerCUBE NVR_PointShadowCube5 : register(s15);
 float4 PointShadowNear(float4 stored, float lightW) {
     return NVR_PointShadowDebug.y > 0.0f ? smoothstep(0.0f, NVR_PointShadowDebug.y * lightW, stored) : 1.0f;
 }
+
+#if POINT_SHADOW_FIT == 1
+static const float4 PointShadowTaps[16] = {
+    float4( 1.0f, 0.0f, 0.0f, 1.0f), float4(-1.0f, 0.0f, 0.0f, 1.0f), float4(0.0f,  1.0f, 0.0f, 1.0f), float4(0.0f, -1.0f, 0.0f, 1.0f),
+    float4(0.0f, 0.0f,  1.0f, 1.0f), float4(0.0f, 0.0f, -1.0f, 1.0f),
+    float4( 1.0f,  1.0f,  1.0f, 0.5f), float4(-1.0f, -1.0f,  1.0f, 0.5f), float4( 1.0f, -1.0f, -1.0f, 0.5f), float4(-1.0f,  1.0f, -1.0f, 0.5f),
+    float4( 1.0f, 0.0f, 0.0f, 0.5f), float4(-1.0f, 0.0f, 0.0f, 0.5f), float4(0.0f,  1.0f, 0.0f, 0.5f), float4(0.0f, -1.0f, 0.0f, 0.5f),
+    float4(0.0f, 0.0f,  1.0f, 0.5f), float4(0.0f, 0.0f, -1.0f, 0.5f) };
+#endif
 
 float PointShadowRing(samplerCUBE cube, float3 dir, float s, float threshold, float lightW) {
     float4 a = float4(
@@ -56,7 +69,8 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
     [branch] if (NVR_PointShadowParams.w > 0.0f) {
         float major = max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
         float s = NVR_PointShadowParams.w * major;
-        [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.z > 0.0f) {
+#if POINT_SHADOW_FIT < 3
+        [branch] if (NVR_PointShadowSoft.x + NVR_PointShadowSoft.w > 0.0f) {
             float wide = max(NVR_PointShadowSoft.w * major, s);
             float4 search = float4(
                 texCUBElod(cube, float4(dir + wide * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
@@ -70,8 +84,10 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             [branch] if (!(blockers > 0.0f)) return 1.0f;
             float blocker = (dot(search * isBlocker, 1.0f) + centre * centreBlocker) / blockers;
             float t = 1.0f / max(blocker, 0.0001f) - 1.0f / d;
-            s = clamp(t * (NVR_PointShadowSoft.z * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
+            float size = fade < 0.0f ? NVR_PointShadowDebug.z : NVR_PointShadowSoft.z;
+            s = clamp(t * (size * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
         }
+#endif
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
@@ -83,7 +99,19 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
 #else
         float4 blocked = (float4)(stored <= threshold) * (float4)(stored > 0.0f) * PointShadowNear(stored, light.w);
 #endif
+#if POINT_SHADOW_FIT < 2
         [branch] if (NVR_PointShadowDebug.w > 1.5f) {
+#if POINT_SHADOW_FIT == 1
+            const int count = NVR_PointShadowDebug.w > 2.5f ? 16 : 6;
+            float extra = 0.0f;
+            [loop] for (int i = 0; i < 16; i++) {
+                [branch] if (i >= count) break;
+                const float4 tap = PointShadowTaps[i];
+                const float v = texCUBElod(cube, float4(dir + (s * tap.w) * tap.xyz, 0.0f)).r;
+                extra += (float)(v <= threshold) * (float)(v > 0.0f) * PointShadowNear(v.xxxx, light.w).x;
+            }
+            lit = 1.0f - (dot(blocked, 1.0f) + extra) / (4.0f + (float)count);
+#else
             float sum = dot(blocked, 1.0f) + PointShadowRing(cube, dir, s, threshold, light.w);
             float taps = 10.0f;
             [branch] if (NVR_PointShadowDebug.w > 2.5f) {
@@ -98,14 +126,18 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
                 taps = 20.0f;
             }
             lit = 1.0f - sum / taps;
+#endif
         }
         else lit = 1.0f - dot(blocked, 0.25f);
+#else
+        lit = 1.0f - dot(blocked, 0.25f);
+#endif
     }
     else {
         float stored = texCUBElod(cube, float4(dir, 0.0f)).r;
         lit = 1.0f - (float)(stored <= threshold) * (float)(stored > 0.0f) * PointShadowNear(stored, light.w).x;
     }
-    return lerp(1.0f, lit, NVR_PointShadowParams.x * fade);
+    return lerp(1.0f, lit, NVR_PointShadowParams.x * abs(fade));
 }
 
 float3 PointShadowFactor(float shadow, float4 tint) {

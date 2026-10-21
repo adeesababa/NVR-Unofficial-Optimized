@@ -24,6 +24,8 @@ namespace PointShadowForward {
 
 	inline bool CompiledIn = false;
 	inline int CompiledCount = 0;
+	inline int FitLevel = 0;
+	inline bool Refused = false;
 	inline bool Active = false;
 	inline bool FirstPerson = true;
 	inline Slot Slots[ShadowCubeMapsMax] = {};
@@ -84,6 +86,7 @@ namespace PointShadowForward {
 	inline float Params[4] = {};
 	inline float DebugView = 0.0f;
 	inline float NearFade = 0.0f;
+	inline float InvisibleSize = 0.0f;
 	inline float Quality = 1.0f;
 	inline float Soft[4] = {};
 	inline IDirect3DCubeTexture9* Neutral = nullptr;
@@ -132,7 +135,7 @@ namespace PointShadowForward {
 	inline bool BoundThisFrame = false;
 
 	inline bool UsesAllSlots(bool exterior) {
-		return CompiledIn && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
+		return CompiledIn && !Refused && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
 	}
 	inline bool ExteriorBatched(bool exterior) {
 		return exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.ExteriorLightPoints > ShadowCubeMapsScreen &&
@@ -235,7 +238,7 @@ namespace PointShadowForward {
 		LogObjectLamps = forward.LogLamps;
 		KeepLampsWanted = forward.Enabled && forward.KeepLampsInView;
 		const float strength = forward.Strength;
-		if (!forward.Enabled || !(strength > 0.0f)) { lastCount = 0; return; }
+		if (!forward.Enabled || !(strength > 0.0f) || Refused) { lastCount = 0; return; }
 		LARGE_INTEGER frequency, counter;
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&counter);
@@ -251,11 +254,24 @@ namespace PointShadowForward {
 		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;
 		Soft[1] = forward.ContactHardeningMinSoftness;
 		Soft[2] = Soft[3] = 0.0f;
-		if (forward.LampSize > 0.0f && forward.Quality > 0 && forward.Softness > 0.0f) {
+		InvisibleSize = 0.0f;
+		if ((forward.LampSize > 0.0f || forward.InvisibleLightSize > 0.0f) && forward.Quality > 0 && forward.Softness > 0.0f) {
 			Soft[0] = 0.0f;
 			Soft[1] = 1.0f;
 			Soft[2] = forward.LampSize * 0.70710678f;
 			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
+			InvisibleSize = forward.InvisibleLightSize * 0.70710678f;
+		}
+		if (FitLevel >= 2 && Quality > 1.0f) Quality = 1.0f;
+		if (FitLevel >= 3) { Soft[0] = Soft[3] = 0.0f; InvisibleSize = 0.0f; }
+		static int cappedLogged = -1;
+		const int capped = (FitLevel >= 2 && forward.Quality > 1 ? 1 : 0) | (FitLevel >= 3 && (forward.ContactHardening || forward.LampSize > 0.0f ||
+			forward.InvisibleLightSize > 0.0f) ? 2 : 0);
+		if (capped && capped != cappedLogged) {
+			cappedLogged = capped;
+			Logger::Log("UNOFFICIAL lamp shadows: this GPU took only shorter versions of some lit shaders (see the startup log), so every object's lamp shadows get%s%s%s.",
+				capped & 1 ? " Quality Medium (the setting asks for more)" : "", capped == 3 ? " and" : "",
+				capped & 2 ? " no contact hardening or LampSize" : "");
 		}
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;
@@ -287,13 +303,33 @@ namespace PointShadowForward {
 			float fade = fadeIn > 0.0f ? (float)(std::min)(1.0, (now - since) / fadeIn) : 1.0f;
 			const NiPointLight* source = lights[i]->sourceLight;
 			if (forward.FillLightRadius > 0.0f && source && source->Spec.r > forward.FillLightRadius) fade *= forward.FillLightShadowStrength;
-			if (forward.InvisibleLightShadowStrength < 1.0f && source && !TheShaderManager->GameState.isExterior &&
-				LampFixtures::Invisible(source, forward.FixtureDistance)) fade *= forward.InvisibleLightShadowStrength;
+			if ((forward.InvisibleLightShadowStrength < 1.0f || InvisibleSize > 0.0f) && source && !TheShaderManager->GameState.isExterior &&
+				LampFixtures::Invisible(source, forward.FixtureDistance)) {
+				fade *= forward.InvisibleLightShadowStrength;
+				if (InvisibleSize > 0.0f) fade = -fade;
+			}
 			start[SlotCount] = since;
 			Slots[SlotCount++] = { lights[i], D3DXVECTOR3(slots[i].x, slots[i].y, slots[i].z), slots[i].radius, cubes[i], i, fade };
 		}
 		rejectedLast = rejected;
 		for (int s = 0; s < SlotCount; s++) { lastLights[s] = Slots[s].light; lastStart[s] = start[s]; }
+		if (forward.LogLamps) {
+			static UInt64 lastSet = 0; static unsigned setLogs = 0;
+			UInt64 set = 1469598103934665603ull;
+			for (int s = 0; s < SlotCount; s++) set = (set ^ (UInt64)(uintptr_t)Slots[s].light ^ ((UInt64)Slots[s].slot << 48)) * 1099511628211ull;
+			if (set != lastSet && setLogs < 40) {
+				lastSet = set; setLogs++;
+				static const char* const colour[11] = { "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple", "lime", "pink", "sky" };
+				for (int s = 0; s < SlotCount; s++) {
+					const NiPointLight* source = Slots[s].light->sourceLight;
+					Logger::Log("LAMPSLOT %d (%s) lamp %p cube at %.0f %.0f %.0f radius %.0f fade %.2f | light at %.0f %.0f %.0f, reach %.0f, colour %.2f %.2f %.2f x %.2f",
+						Slots[s].slot, colour[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], (const void*)Slots[s].light,
+						Slots[s].position.x, Slots[s].position.y, Slots[s].position.z, Slots[s].radius, Slots[s].fade,
+						source ? source->m_worldTransform.pos.x : 0.0f, source ? source->m_worldTransform.pos.y : 0.0f, source ? source->m_worldTransform.pos.z : 0.0f,
+						source ? source->Spec.r : 0.0f, source ? source->Diff.r : 0.0f, source ? source->Diff.g : 0.0f, source ? source->Diff.b : 0.0f, source ? source->Dimmer : 0.0f);
+				}
+			}
+		}
 		lastCount = SlotCount;
 		Active = SlotCount > 0;
 		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }
@@ -381,6 +417,7 @@ namespace PointShadowForward {
 		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); }
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
+		constants[7][2] = matched ? InvisibleSize : 0.0f;
 		constants[7][3] = matched ? Quality : 0.0f;
 		if (trace && wanted) {
 			memcpy(constants[6], Params, sizeof(Params));

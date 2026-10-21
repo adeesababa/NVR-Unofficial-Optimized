@@ -5,8 +5,15 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <atomic>
 #include "ClothWeights.h"
 #include "ClothWalk.h"
+#include "ClothStatic.h"
 
 namespace ClothWind {
 
@@ -47,6 +54,10 @@ namespace ClothWind {
 		float WalkSpring = 1.4f, WalkDamping = 0.2f, WalkDrag = 1.0f, WalkLegMargin = 1.5f, WalkMaxSwing = 25.0f;
 		float WalkDragCap = 180.0f, WalkMaxAngle = 35.0f;
 		float WalkHemSmooth = 1.0f;
+		bool  StillWeights = true;
+		bool  AutoDetect = false;
+		float AutoShare = 2.0f;
+		bool  LogAuto = true;
 		float LimbGap = 1.0f;
 		float LimbFade = 6.0f;
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
@@ -55,8 +66,8 @@ namespace ClothWind {
 	};
 
 	inline Settings S;
-	inline std::vector<std::string> Words, Excluded, ExcludedParts;
-	inline std::string WordsFrom, ExcludeFrom, ExcludePartsFrom;
+	inline std::vector<std::string> Words, Excluded, ExcludedParts, ForcedOff;
+	inline std::string WordsFrom, ExcludeFrom, ExcludePartsFrom, ForceOffFrom;
 	struct Extent { uint16_t count = 0; float lo = 0.0f, hi = 0.0f; bool fromVertices = false; };
 	inline std::unordered_map<const void*, Extent> Extents;
 	inline UInt32 SkinnedDrawsNow = 0;
@@ -144,6 +155,11 @@ namespace ClothWind {
 			if (p.find(w) != std::string::npos) return true;
 		return false;
 	}
+	inline bool ExcludedPart(const std::string& p);
+	inline bool IsForcedOff(const std::string& p) {
+		for (const std::string& x : ForcedOff) if (!x.empty() && p.find(x) != std::string::npos) return true;
+		return false;
+	}
 	inline bool IsClothTexture(const char* path) {
 		if (!path || !path[0]) return false;
 		const std::string p = Norm(path);
@@ -151,6 +167,9 @@ namespace ClothWind {
 		for (const std::string& w : Words) if (!w.empty() && KeywordIn(p, w)) { hit = true; break; }
 		if (!hit) return false;
 		for (const std::string& x : Excluded) if (!x.empty() && p.find(x) != std::string::npos) return false;
+		return !IsForcedOff(p) && !ExcludedPart(p);
+	}
+	inline bool ExcludedPart(const std::string& p) {
 		const size_t slash = p.find_last_of('\\');
 		const std::string file = p.substr(slash == std::string::npos ? 0 : slash + 1);
 		for (size_t i = 0; i < file.size();) {
@@ -162,11 +181,11 @@ namespace ClothWind {
 				if (x.empty()) continue;
 				if (x.size() >= 4 ? word.find(x) != std::string::npos
 					: (word.size() >= x.size() && (word.compare(word.size() - x.size(), x.size(), x) == 0 || (word.back() == 's' && word.size() > x.size() && word.compare(word.size() - 1 - x.size(), x.size(), x) == 0))))
-					return false;
+					return true;
 			}
 			i = j;
 		}
-		return true;
+		return false;
 	}
 	inline void SplitList(const char* text, std::vector<std::string>& out) {
 		out.clear();
@@ -300,6 +319,7 @@ namespace ClothWind {
 			k.kneeZ = 0.5f * (k.pts[1][2] + k.pts[5][2]);
 			k.groundZ = 0.5f * (k.pts[2][2] + k.pts[6][2]) - 6.0f;
 			k.ok = k.hipZ - k.kneeZ > 5.0f;
+			if (!std::isfinite(k.hipZ) || !std::isfinite(k.kneeZ) || !std::isfinite(k.groundZ) || k.hipZ - k.groundZ > (float)ClothWeights::kMaxLegs) k.ok = false;
 			if (k.ok) MeasureLegs(k, geometry);
 		}
 		if (SkeletonsLogged < 24 || S.LogMatches) {
@@ -412,7 +432,7 @@ namespace ClothWind {
 		}
 		return tris.empty() ? nullptr : "the skin partitions' triangles";
 	}
-	inline MeshWeights* WeightsOf(IDirect3DDevice9* device, NiGeometry* geometry, const Skeleton& k) {
+	inline MeshWeights* WeightsOf(IDirect3DDevice9* device, NiGeometry* geometry, const Skeleton& k, const ClothWeights::Result* pre = nullptr) {
 		NiGeometryData* gd = geometry->geomData;
 		const NiSkinInstance* si = geometry->skinInstance;
 		const NiSkinPartition* sp = si ? si->SkinPartition : nullptr;
@@ -424,17 +444,19 @@ namespace ClothWind {
 		m.lastFrame = FrameId;
 		if (m.state < 0) return nullptr;
 		if (m.state == 0) {
-			if (WeightsMadeNow >= 2) return nullptr;
-			WeightsMadeNow++;
+			const bool given = pre && pre->weight.size() == gd->m_usVertices && pre->label.size() == gd->m_usVertices;
+			if (!given && WeightsMadeNow >= 2) return nullptr;
+			if (!given) WeightsMadeNow++;
 			m.vertices = gd->m_usVertices; m.skinData = si->SkinData; m.skinPartition = sp; m.partitions = sp->Partitions; m.partitionCount = sp->PartitionsCount;
 			m.state = -1;
 			std::vector<UInt16> tris;
-			const char* from = (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex ? TrianglesOf(geometry, sp, tris) : nullptr;
+			const char* from = given ? "the auto-detect measure (worker)" : ((gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex ? TrianglesOf(geometry, sp, tris) : nullptr);
 			ClothWeights::Input in;
 			ClothWeights::Result r;
 			LARGE_INTEGER q0 = {}, q1 = {}, qf = {};
 			QueryPerformanceCounter(&q0);
-			if (from) {
+			if (given) { r = *pre; m.w = r.weight; m.state = 1; }
+			else if (from) {
 				in.pos = &gd->m_pkVertex[0].x; in.vertices = gd->m_usVertices; in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
 				for (int leg = 0; leg < 2; leg++) for (int j = 0; j < 3; j++) for (int c = 0; c < 4; c++) in.legs[leg][j][c] = k.pts[leg * 4 + j][c];
 				in.hipZ = k.hipZ; in.kneeZ = k.kneeZ; in.groundZ = k.groundZ;
@@ -682,6 +704,251 @@ namespace ClothWind {
 		DrawPartition(renderer, buffer, partition, unused);
 	}
 
+	struct Job {
+		virtual ~Job() {}
+		virtual bool Run() = 0;
+		bool ok = false;
+		double ms = 0.0;
+		std::atomic<bool> done{ false };
+	};
+	struct StillJob : Job {
+		std::vector<float> pos, nrm;
+		std::vector<uint16_t> tris;
+		ClothStatic::Result r;
+		bool Run() override {
+			ClothStatic::Input in;
+			in.pos = pos.data(); in.nrm = nrm.empty() ? nullptr : nrm.data(); in.vertices = (uint32_t)(pos.size() / 3);
+			in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
+			return ClothStatic::Compute(in, r);
+		}
+	};
+	struct StillMesh {
+		const void* data = nullptr; UInt16 vertices = 0;
+		int state = 0;
+		std::shared_ptr<StillJob> job;
+		std::vector<float> w, side;
+		IDirect3DVertexBuffer9* vb = nullptr; UInt32 base = 0;
+		UInt32 lastFrame = 0;
+		std::string name;
+	};
+	inline std::unordered_map<const void*, StillMesh> Stills;
+	inline StillMesh* ActiveStill = nullptr;
+	inline bool StillHookOn = false;
+	inline UInt32 StillLogged = 0, StatStillDraws = 0, StatStillMissed = 0;
+	struct ClothWorker { std::mutex m; std::condition_variable cv; std::deque<std::shared_ptr<Job>> q; bool started = false; };
+	inline ClothWorker& Worker() { static ClothWorker* w = new ClothWorker(); return *w; }
+	inline void Submit(const std::shared_ptr<Job>& job) {
+		ClothWorker& W = Worker();
+		{
+			std::lock_guard<std::mutex> lock(W.m);
+			W.q.push_back(job);
+			if (!W.started) {
+				W.started = true;
+				std::thread([] {
+					ClothWorker& W = Worker();
+					for (;;) {
+						std::shared_ptr<Job> j;
+						{
+							std::unique_lock<std::mutex> lock(W.m);
+							W.cv.wait(lock, [&] { return !W.q.empty(); });
+							j = W.q.front(); W.q.pop_front();
+						}
+						LARGE_INTEGER q0 = {}, q1 = {}, qf = {};
+						QueryPerformanceCounter(&q0);
+						try { j->ok = j->Run(); }
+						catch (...) { j->ok = false; }
+						QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+						j->ms = qf.QuadPart ? (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart : 0.0;
+						j->done = true;
+					}
+				}).detach();
+			}
+		}
+		W.cv.notify_one();
+	}
+	inline bool FillStill(IDirect3DDevice9* device, StillMesh& m, UInt32 base) {
+		if (m.vb) { m.vb->Release(); m.vb = nullptr; }
+		if (base > 262144 || !m.vertices) return false;
+		void* data = nullptr;
+		if (FAILED(device->CreateVertexBuffer((base + m.vertices) * 12, D3DUSAGE_WRITEONLY, 0, D3DPOOL_MANAGED, &m.vb, NULL)) || !m.vb) { m.vb = nullptr; return false; }
+		if (FAILED(m.vb->Lock(0, 0, &data, 0)) || !data) { m.vb->Release(); m.vb = nullptr; return false; }
+		float* f = (float*)data;
+		memset(f, 0, base * 12);
+		for (UInt32 i = 0; i < m.vertices; i++) {
+			f[(base + i) * 3] = i < m.w.size() ? m.w[i] : 0.0f;
+			f[(base + i) * 3 + 1] = i < m.side.size() ? m.side[i] : 1.0f;
+			f[(base + i) * 3 + 2] = 0.0f;
+		}
+		m.vb->Unlock();
+		m.base = base;
+		return true;
+	}
+	inline StillMesh* StillOf(NiGeometry* geometry, const char* texture) {
+		NiGeometryData* gd = geometry->geomData;
+		if (!gd) return nullptr;
+		StillMesh& m = Stills[gd];
+		if (m.state != 0 && m.vertices != gd->m_usVertices) {
+			if (m.vb) m.vb->Release();
+			m = StillMesh();
+		}
+		m.lastFrame = FrameId;
+		if (m.state == 0) {
+			m.data = gd; m.vertices = gd->m_usVertices; m.state = -1;
+			m.name = std::string(geometry->m_pcName ? geometry->m_pcName : "?") + "' (" + (texture ? texture : "");
+			std::vector<UInt16> tris;
+			if ((gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) && gd->m_pkVertex && gd->m_usVertices >= 3 && TrianglesOf(geometry, nullptr, tris)) {
+				auto job = std::make_shared<StillJob>();
+				job->pos.assign(&gd->m_pkVertex[0].x, &gd->m_pkVertex[0].x + gd->m_usVertices * 3);
+				if (gd->m_pkNormal) job->nrm.assign(&gd->m_pkNormal[0].x, &gd->m_pkNormal[0].x + gd->m_usVertices * 3);
+				job->tris.assign(tris.begin(), tris.end());
+				m.job = job; m.state = 1;
+				Submit(job);
+			}
+			else if (StillLogged < 48 || S.LogMatches) { StillLogged++; Logger::Log("Cloth wind: still cloth '%s): NOT worked out (%s): it stays still", m.name.c_str(), !(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex ? "the game did not keep its vertices" : "no triangles kept"); }
+		}
+		if (m.state == 1 && m.job && m.job->done) {
+			const ClothStatic::Result& r = m.job->r;
+			UInt32 moving = 0;
+			if (m.job->ok && r.weight.size() == m.vertices) { m.w = r.weight; m.side = r.side; for (float v : m.w) if (v > 0.02f) moving++; }
+			m.state = moving ? 2 : -1;
+			if (StillLogged < 48 || S.LogMatches) {
+				StillLogged++;
+				if (m.job->ok)
+					Logger::Log("Cloth wind: still cloth '%s): %u vertices (%u welded): %u pieces = %u poles/ropes, %u solid, %u tiny, %u cloth (%u two-sided of %u groups); cloth held by poles/ropes %u, the ground %u (at z %.1f%s), its top %u (%u flat sheets tied all round); free edges %u; %u of %u vertices move, %u > half; %.2f ms on the worker",
+						m.name.c_str(), (unsigned)m.vertices, r.welded, r.pieces, r.rods, r.solids, r.tiny, r.sheets, r.layered, r.clusters, r.heldRigid, r.heldGround, r.groundZ, r.standing ? "" : ", hanging: none",
+						r.heldTop, r.canopies, r.freeEdges, moving, (unsigned)m.vertices, r.moving, m.job->ms);
+				else Logger::Log("Cloth wind: still cloth '%s): NOT worked out (the weights failed): it stays still", m.name.c_str());
+			}
+			m.job.reset();
+		}
+		return m.state == 2 ? &m : nullptr;
+	}
+	typedef void(__thiscall* OnlyRenderFn)(void*, NiGeometry*);
+	inline OnlyRenderFn OnlyRenderShapeOriginal = (OnlyRenderFn)0x00E745A0, OnlyRenderStripsOriginal = (OnlyRenderFn)0x00E74840;
+	inline void OnlyRender(bool strips, void* renderer, NiGeometry* geometry) {
+		const OnlyRenderFn original = strips ? OnlyRenderStripsOriginal : OnlyRenderShapeOriginal;
+		StillMesh* m = ActiveStill;
+		IDirect3DDevice9* device = TheRenderManager ? TheRenderManager->device : nullptr;
+		if (!m || !device || !geometry || geometry->geomData != m->data) { original(renderer, geometry); return; }
+		const NiGeometryBufferData* buffer = geometry->geomData->m_pkBuffData;
+		IDirect3DVertexDeclaration9* decl = nullptr;
+		IDirect3DVertexDeclaration9* aug = nullptr;
+		bool ready = buffer && buffer->VertCount == m->vertices && buffer->StreamCount <= 1 && !buffer->FVF;
+		if (ready && (!m->vb || buffer->BaseVertexIndex != m->base)) ready = FillStill(device, *m, buffer->BaseVertexIndex);
+		if (ready) { device->GetVertexDeclaration(&decl); aug = Augmented(device, decl); }
+		if (!aug) {
+			if (decl) decl->Release();
+			StatStillMissed++;
+			float c[4] = {}, zero[4] = {};
+			device->GetVertexShaderConstantF(248, c, 1);
+			device->SetVertexShaderConstantF(248, zero, 1);
+			original(renderer, geometry);
+			device->SetVertexShaderConstantF(248, c, 1);
+			return;
+		}
+		IDirect3DVertexBuffer9* old = nullptr; UINT oldOffset = 0, oldStride = 0;
+		device->GetStreamSource(1, &old, &oldOffset, &oldStride);
+		device->SetStreamSource(1, m->vb, 0, 12);
+		device->SetVertexDeclaration(aug);
+		original(renderer, geometry);
+		device->SetVertexDeclaration(decl);
+		device->SetStreamSource(1, old, oldOffset, oldStride);
+		if (old) old->Release();
+		decl->Release();
+		StatStillDraws++;
+	}
+	inline void __fastcall OnlyRenderShapeHook(void* renderer, void* edx, NiGeometry* geometry) { OnlyRender(false, renderer, geometry); }
+	inline void __fastcall OnlyRenderStripsHook(void* renderer, void* edx, NiGeometry* geometry) { OnlyRender(true, renderer, geometry); }
+
+	struct AutoJob : Job {
+		std::vector<float> pos;
+		std::vector<uint16_t> tris;
+		ClothWeights::Input in;
+		ClothWeights::Result r;
+		bool Run() override {
+			in.pos = pos.data(); in.vertices = (uint32_t)(pos.size() / 3); in.tris = tris.data(); in.triangles = (uint32_t)(tris.size() / 3);
+			return ClothWeights::Compute(in, r);
+		}
+	};
+	struct Verdict {
+		int state = 0;
+		UInt16 vertices = 0;
+		float free = 0.0f;
+		std::shared_ptr<AutoJob> job;
+		ClothWeights::Result r;
+		std::string name;
+	};
+	inline std::unordered_map<std::string, Verdict> Verdicts;
+	struct VerdictRef { UInt16 vertices = 0; const void* texture = nullptr; Verdict* v = nullptr; };
+	inline std::unordered_map<const void*, VerdictRef> VerdictOfData;
+	inline UInt32 AutoLogged = 0;
+	inline float AutoShareUsed = -1.0f;
+	inline void LogVerdict(const Verdict& v, const char* why) {
+		if (!S.LogAuto || AutoLogged >= 400) return;
+		AutoLogged++;
+		const ClothWeights::Result& r = v.state == 2 ? v.r : (v.job ? v.job->r : v.r);
+		if (v.state == 2)
+			Logger::Log("Cloth wind: auto: CLOTH %s: hangs free -- %.0f %% of its thigh band stands off the legs, %u of %u vertices move (%.1f %%), down to %.0f units below the crotch; %.2f ms on the worker",
+				v.name.c_str(), v.free * 100.0f, r.moving, r.welded, r.welded ? 100.0 * r.moving / r.welded : 0.0, r.hemDrop, v.job ? v.job->ms : 0.0);
+		else if (v.job && v.job->ok)
+			Logger::Log("Cloth wind: auto: still %s: %s -- %.0f %% of its thigh band stands off the legs, %u of %u vertices would move (%.1f %%), down to %.0f units below the crotch",
+				v.name.c_str(), why, v.free * 100.0f, r.moving, r.welded, r.welded ? 100.0 * r.moving / r.welded : 0.0, r.hemDrop);
+		else Logger::Log("Cloth wind: auto: still %s: %s", v.name.c_str(), why);
+	}
+	inline const Verdict* AutoVerdictOf(NiGeometry* geometry, const NiSourceTexture* diffuse) {
+		NiGeometryData* gd = geometry->geomData;
+		if (!gd || !diffuse || !diffuse->ddsPath1) return nullptr;
+		Verdict* v = nullptr;
+		auto it = VerdictOfData.find(gd);
+		if (it != VerdictOfData.end() && it->second.vertices == gd->m_usVertices && it->second.texture == diffuse) v = it->second.v;
+		else {
+			if (VerdictOfData.size() >= 4096) VerdictOfData.clear();
+			const std::string path = Norm(diffuse->ddsPath1);
+			const std::string key = path + "|" + (geometry->m_pcName ? geometry->m_pcName : "") + "|" + std::to_string(gd->m_usVertices);
+			v = &Verdicts[key];
+			VerdictOfData[gd] = { gd->m_usVertices, diffuse, v };
+			if (v->state == 0) {
+				v->vertices = gd->m_usVertices;
+				v->name = std::string("'") + (geometry->m_pcName ? geometry->m_pcName : "?") + "' (" + diffuse->ddsPath1 + ", " + std::to_string(gd->m_usVertices) + " vertices)";
+				v->state = -1;
+				const Skeleton& k = SkeletonOf(geometry);
+				std::vector<UInt16> tris;
+				const NiSkinPartition* sp = geometry->skinInstance ? geometry->skinInstance->SkinPartition : nullptr;
+				if (IsForcedOff(path)) LogVerdict(*v, "ForceOff");
+				else if (ExcludedPart(path)) LogVerdict(*v, "its file name is a body part (ExcludeParts)");
+				else if (!k.ok) LogVerdict(*v, k.actor ? "no legs in its skeleton" : "not on a human skeleton");
+				else if (!(gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) || !gd->m_pkVertex || !TrianglesOf(geometry, sp, tris)) LogVerdict(*v, "the game did not keep its vertices or triangles");
+				else {
+					auto job = std::make_shared<AutoJob>();
+					job->pos.assign(&gd->m_pkVertex[0].x, &gd->m_pkVertex[0].x + gd->m_usVertices * 3);
+					job->tris.assign(tris.begin(), tris.end());
+					for (int leg = 0; leg < 2; leg++) for (int j = 0; j < 3; j++) for (int c = 0; c < 4; c++) job->in.legs[leg][j][c] = k.pts[leg * 4 + j][c];
+					job->in.hipZ = k.hipZ; job->in.kneeZ = k.kneeZ; job->in.groundZ = k.groundZ;
+					job->in.pos = job->pos.data(); job->in.vertices = gd->m_usVertices;
+					v->free = ClothWeights::FreeShare(job->in);
+					if (v->free < (float)ClothWeights::kFreeFirst) {
+					char why[96];
+					snprintf(why, sizeof(why), "it hugs the legs (%.0f %% of its thigh band stands off them)", v->free * 100.0f);
+					LogVerdict(*v, why);
+				}
+					else { v->job = job; v->state = 1; Submit(job); }
+				}
+			}
+		}
+		if (v->state == 1 && v->job && v->job->done) {
+			const char* why = "the weights failed";
+			if (v->job->ok) {
+				const ClothWeights::Result& r = v->job->r;
+				if (ClothWeights::HangsFree(r, S.AutoShare * 0.01)) { v->r = r; v->state = 2; why = ""; }
+				else why = r.moving < ClothWeights::kAutoMoving || r.moving < S.AutoShare * 0.01 * r.welded ? "too little of it hangs free" : "it moves only at the hips";
+			}
+			if (v->state != 2) v->state = -1;
+			LogVerdict(*v, why);
+			v->job.reset();
+		}
+		return v;
+	}
+
 	inline void AdvanceClock() {
 		TimeGlobals* g = TimeGlobals::Get();
 		if (!g || !g->GameHour) return;
@@ -733,6 +1000,9 @@ namespace ClothWind {
 		readList("Keywords", WordsFrom, Words, "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent");
 		readList("Exclude", ExcludeFrom, Excluded, nullptr);
 		readList("ExcludeParts", ExcludePartsFrom, ExcludedParts, nullptr);
+		const std::string forceOffWas = ForceOffFrom;
+		readList("ForceOff", ForceOffFrom, ForcedOff, nullptr);
+		if (ForceOffFrom != forceOffWas) { VerdictOfData.clear(); Verdicts.clear(); AutoLogged = 0; }
 		S.MotionDrag = std::clamp(TheSettingManager->GetSettingF(section, "MotionDrag"), 0.0f, 0.3f);
 		S.MotionMax = std::clamp(TheSettingManager->GetSettingF(section, "MotionMax"), 0.0f, 80.0f);
 		S.MotionSpring = std::clamp(TheSettingManager->GetSettingF(section, "MotionSpring"), 0.2f, 6.0f);
@@ -753,6 +1023,11 @@ namespace ClothWind {
 		S.WalkDragCap = std::clamp(TheSettingManager->GetSettingF(section, "WalkDragCap"), 20.0f, 2000.0f);
 		S.WalkMaxAngle = std::clamp(TheSettingManager->GetSettingF(section, "WalkMaxAngle"), 5.0f, 89.0f);
 		S.WalkHemSmooth = std::clamp(TheSettingManager->GetSettingF(section, "WalkHemSmooth"), 0.0f, 1.0f);
+		S.StillWeights = TheSettingManager->GetSettingI(section, "StillWeights") != 0;
+		S.AutoDetect = TheSettingManager->GetSettingI(section, "AutoDetect") != 0;
+		S.AutoShare = std::clamp(TheSettingManager->GetSettingF(section, "AutoShare"), 0.0f, 50.0f);
+		S.LogAuto = TheSettingManager->GetSettingI(section, "LogAuto") != 0;
+		if (S.AutoShare != AutoShareUsed) { AutoShareUsed = S.AutoShare; VerdictOfData.clear(); Verdicts.clear(); AutoLogged = 0; }
 		WeightsMadeNow = 0;
 		S.LimbGap = std::clamp(TheSettingManager->GetSettingF(section, "LimbGap"), -5.0f, 30.0f);
 		S.LimbFade = std::clamp(TheSettingManager->GetSettingF(section, "LimbFade"), 0.5f, 40.0f);
@@ -810,6 +1085,11 @@ namespace ClothWind {
 				w = FrameId - w->second.frame > 600 ? Walkers.erase(w) : std::next(w);
 			for (auto w = Weights.begin(); w != Weights.end();)
 				if (FrameId - w->second.lastFrame > 1800) { ReleaseBuffers(w->second); w = Weights.erase(w); } else ++w;
+			if (S.LogMatches && (StatStillDraws || StatStillMissed))
+				Logger::Log("Cloth wind: still cloth: %u draws with weights, %u without (drawn still); %u meshes known", StatStillDraws, StatStillMissed, (unsigned)Stills.size());
+			StatStillDraws = StatStillMissed = 0;
+			for (auto m = Stills.begin(); m != Stills.end();)
+				if (FrameId - m->second.lastFrame > 1800) { if (m->second.vb) m->second.vb->Release(); m = Stills.erase(m); } else ++m;
 			Frames = ClothDraws = SkinnedDrawsNow = 0;
 		}
 	}
@@ -817,6 +1097,7 @@ namespace ClothWind {
 	inline void Zero(IDirect3DDevice9* device) {
 		ActiveWeights = nullptr;
 		ActiveWalk = nullptr; ActiveSkin = nullptr;
+		ActiveStill = nullptr;
 		if (!NonZeroSent || !device) return;
 		static const float zero[4] = { 0, 0, 0, 0 };
 		device->SetVertexShaderConstantF(248, zero, 1);
@@ -917,6 +1198,11 @@ namespace ClothWind {
 					geometry->m_pcName ? geometry->m_pcName : "", gd ? (unsigned)gd->m_usVertices : 0u, gd && (gd->m_ucKeepFlags & NiGeometryData::KEEP_XYZ) ? ", vertices kept" : ", vertices not kept");
 			}
 		}
+		const Verdict* autoVerdict = nullptr;
+		if (!cloth && skinned && S.AutoDetect && S.MaskMode == 2 && S.UseSkeleton && S.UseWeights && DrawHookOn) {
+			autoVerdict = AutoVerdictOf(geometry, diffuse);
+			if (autoVerdict && autoVerdict->state == 2) cloth = true; else autoVerdict = nullptr;
+		}
 		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { Zero(device); return; }
 		float dir[3] = { WorldDir[0], WorldDir[1], WorldDir[2] };
 		float scale = 1.0f;
@@ -931,6 +1217,11 @@ namespace ClothWind {
 			if (geometry->geomData) {
 				const NiBound& b = geometry->geomData->m_kBound;
 				top = b.Center.z + 0.8f * b.Radius; invRange = b.Radius > 1e-3f ? 1.0f / (1.6f * b.Radius) : 0.0f;
+			}
+			if (S.MaskMode == 2 && S.StillWeights && StillHookOn) {
+				StillMesh* sm = StillOf(geometry, diffuse->ddsPath1);
+				if (!sm) { Zero(device); return; }
+				mode = 6.0f; ActiveStill = sm;
 			}
 		}
 		else {
@@ -951,7 +1242,7 @@ namespace ClothWind {
 				limbs[48] = skeleton->hipZ; limbs[49] = 1.0f / (std::max)(skeleton->hipZ - skeleton->kneeZ, 1.0f);
 				limbs[50] = S.LimbGap; limbs[51] = 1.0f / (std::max)(S.LimbFade, 0.1f);
 				limbs[52] = skeleton->groundZ; limbs[53] = 1.0f / 6.0f;
-				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton) : nullptr) {
+				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton, autoVerdict ? &autoVerdict->r : nullptr) : nullptr) {
 					mode = 5.0f; limbs[54] = mw->center[0]; limbs[55] = mw->center[1]; ActiveWeights = mw;
 					ActiveSkin = geometry->skinInstance; ActiveBonesBase = shadowPass ? 9 : 44;
 					ActiveWalk = S.WalkSim ? WalkOf(geometry, *skeleton, *mw) : nullptr;

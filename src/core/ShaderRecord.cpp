@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include "GpuProfiler.h"
 #include "LinearPreDecode.h"
+#include "ReflMaterial.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -105,13 +106,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 34 && Template.Defines[i].Name != NULL) {
+		while (i < 38 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;
 			i++;
 		}
-		if (i >= 34) {
+		if (i >= 38) {
 			static bool warned = false;
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 34 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 38 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -143,6 +144,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("MATERIAL_RULES_ON", TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ? "1" : "0");
 
 	AppendDefine("RMAOS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? "1" : "0");
+	if (ReflMaterial::CompiledIn())
+		AppendDefine("REFL_MATERIAL_ON", "1");
 
 	AppendDefine("HUD_RAIN_ON", TheSettingManager->GetSettingF("Shaders.WetWorld.Main", "HudDrops") > 0.0f ? "1" : "0");
 
@@ -158,6 +161,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		AppendDefine("SMITH_CORRELATED_ON", smith == 1 ? "1" : "0");
 	}
 	AppendDefine("SPEC_FADE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") ? "1" : "0");
+	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
+	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
 
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
@@ -373,7 +378,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
 						bool linear = false, predecode = false;
-						for (int d = 0; d < 36 && Template.Defines[d].Name; d++) {
+						for (int d = 0; d < 40 && Template.Defines[d].Name; d++) {
 							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 						}
@@ -382,7 +387,15 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					Logger::Log("Shader loaded: %s", ShaderCompiledPath);
 				}
 				else {
-					Logger::Log("ERROR: Failed to create DirectX shader for %s", Name);
+					unsigned slots = 0;
+					ID3DXBuffer* listing = NULL;
+					if (SUCCEEDED(D3DXDisassembleShader((const DWORD*)Function, FALSE, NULL, &listing)) && listing) {
+						const char* at = strstr((const char*)listing->GetBufferPointer(), "approximately ");
+						if (at) sscanf_s(at, "approximately %u", &slots);
+						listing->Release();
+					}
+					Logger::Log("ERROR: Failed to create DirectX shader for %s (%s): the device refused it (hr 0x%08X), %u instruction slots",
+						Name, ShaderCompiledPath, (unsigned)createResult, slots);
 					ReportError(createResult);
 					delete ShaderProg;
 					ShaderProg = nullptr;

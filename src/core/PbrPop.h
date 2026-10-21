@@ -24,7 +24,8 @@ namespace PbrPop {
 
 	namespace SpecFade {
 		inline bool Checked = false, Compiled = false, On = false;
-		inline float Sent = -1.0f;
+		inline bool FoldCompiled = false;
+		inline float Sent = -1.0f, SentFold = 0.0f, SentVc = 0.0f;
 
 		inline void BeginFrame() {
 			if (!Checked) {
@@ -36,12 +37,12 @@ namespace PbrPop {
 			Sent = -1.0f;
 		}
 
-		inline void ForDraw(IDirect3DDevice9* device, const NiGeometry* geometry) {
-			if (!Compiled) return;
-			const float fade = On ? GameSpecularFade(LitProperty(geometry)) : 1.0f;
-			if (fade == Sent) return;
-			Sent = fade;
-			const float value[4] = { fade, 0.0f, 0.0f, 0.0f };
+		inline void ForDraw(IDirect3DDevice9* device, const NiGeometry* geometry, float fold = 0.0f, float vertexColor = 0.0f) {
+			if (!Compiled && !FoldCompiled) return;
+			const float fade = Compiled && On ? GameSpecularFade(LitProperty(geometry)) : 1.0f;
+			if (fade == Sent && fold == SentFold && vertexColor == SentVc) return;
+			Sent = fade; SentFold = fold; SentVc = vertexColor;
+			const float value[4] = { fade, fold, vertexColor, 0.0f };
 			device->SetPixelShaderConstantF(211, value, 1);
 		}
 	}

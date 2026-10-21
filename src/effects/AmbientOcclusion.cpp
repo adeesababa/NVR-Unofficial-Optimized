@@ -9,6 +9,9 @@ static D3DXVECTOR4 SkyData2(0.0f, 1.0f, 0.0f, 0.0f);
 static D3DXVECTOR4 SkyData3(0.0f, 0.0f, 1.0f, 0.0f);
 static D3DXVECTOR4 SkyData4(800.0f, 40.0f, 0.0f, 0.0f);
 static float SkyAmbientScale = 1.0f;
+static D3DXVECTOR4 SkyData5(0.0f, 0.0f, 0.0f, 1.0e6f);
+static float SkyLightCap = 0.0f;
+static float SkyOpenSides = 0.0f;
 static int SkyVersion = 2;
 
 static float LinearLuma(const D3DXVECTOR4& c) {
@@ -16,15 +19,33 @@ static float LinearLuma(const D3DXVECTOR4& c) {
 }
 
 bool AmbientOcclusionEffect::SkyV2Active() { return SkyData2.x > 0.0f; }
+D3DXVECTOR2 AmbientOcclusionEffect::SkyTakeComposite() {
+	const bool limit = SkyLightCap > 0.0f && SkyData3.w < 0.5f;
+	return limit ? D3DXVECTOR2(SkyLightCap * SkyData2.y * SkyData2.z, 0.0f) : D3DXVECTOR2(0.0f, 1.0e6f);
+}
+bool AmbientOcclusionEffect::SkyHostedByAmbientLight() {
+	AmbientLightEffect* al = TheShaderManager->Effects.AmbientLight;
+	AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+	return al && al->ShouldRender() && ao && ao->Effect;
+}
 static bool FastPaths = false;
 static EffectRecord::CachedHandle techFast, techGTAOFast;
 
 void AmbientOcclusionEffect::UpdateConstants() {
-	const bool sky = SkyEnabled && TheShaderManager->GameState.isExterior && Constants.Enabled;
-	SkyData.x = sky && SkyVersion == 1 ? 1.0f : 0.0f;
-	SkyData2.x = sky && SkyVersion == 2 ? 1.0f : 0.0f;
+	UpdateSkyConstants();
+}
+
+void AmbientOcclusionEffect::UpdateSkyConstants() {
+	const bool hosted = SkyHostedByAmbientLight();
+	const bool sky = SkyEnabled && TheShaderManager->GameState.isExterior && (hosted || (Enabled && Constants.Enabled));
+	SkyData.x = sky && !hosted && SkyVersion == 1 ? 1.0f : 0.0f;
+	SkyData2.x = sky && (hosted || SkyVersion == 2) ? 1.0f : 0.0f;
 	SkyData2.z = LinearLuma(TheShaderManager->ShaderConst.sunAmbient) * SkyAmbientScale;
 	SkyData2.w = LinearLuma(TheShaderManager->ShaderConst.sunColor);
+	{
+		const D3DXVECTOR2 take = SkyTakeComposite();
+		SkyData5 = D3DXVECTOR4(take.x, SkyOpenSides, 0.0f, take.y);
+	}
 	if (SkyData.x > 0.0f) TheShaderManager->orthoRequired = true;
 	if (SkyData2.x > 0.0f) TheShaderManager->orthoSkyRequired = true;
 	static bool skyWasActive = false;
@@ -40,6 +61,7 @@ void AmbientOcclusionEffect::RegisterConstants() {
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky2"] = &SkyData2;
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky3"] = &SkyData3;
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky4"] = &SkyData4;
+	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky5"] = &SkyData5;
 }
 
 void AmbientOcclusionEffect::RegisterTextures() {
@@ -79,6 +101,8 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	SkyVersion = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Version") == 1 ? 1 : 2;
 	SkyReflections = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Reflections") != 0;
 	SkyMinReflection = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "MinReflection"), 0.0f, 1.0f);
+	SkyLightCap = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "LightCap"), 0.0f, 10.0f);
+	SkyOpenSides = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "OpenSides"), 0.0f, 1.0f);
 	SkyData2.y = SkyData.y;
 	SkyData3.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "DebugView"), 0, 4);
 	SkyAmbientScale = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "AmbientScale"), 0.0f, 10.0f);
@@ -97,7 +121,7 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	static bool createTried[2] = { false, false };
 	const int which = lastLowRes ? 1 : 0;
 	static D3DFORMAT createdFormat[2] = { D3DFMT_UNKNOWN, D3DFMT_UNKNOWN };
-	const D3DFORMAT wanted = SkyReflections ? D3DFMT_A16B16G16R16F : D3DFMT_G16R16F;
+	const D3DFORMAT wanted = SkyReflections || SkyLightCap > 0.0f ? D3DFMT_A16B16G16R16F : D3DFMT_G16R16F;
 	if (createTried[which] && createdFormat[which] != wanted) {
 		IDirect3DTexture9*& texture = lastLowRes ? skyTextureLow : skyTexture;
 		IDirect3DSurface9*& surface = lastLowRes ? skySurfaceLow : skySurface;
@@ -124,7 +148,10 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	D3DVIEWPORT9 quarter = { 0, 0, desc.Width, desc.Height, 0.0f, 1.0f };
 	SkyData4.z = sunMask ? 1.0f : 0.0f;
 	Effect->SetTechnique(technique);
+	const bool wasEnabled = Enabled;
+	Enabled = true;
 	SetCT();
+	Enabled = wasEnabled;
 	UINT passes = 0;
 	IDirect3DSurface9* depthSurface = nullptr;
 	Device->GetDepthStencilSurface(&depthSurface);
@@ -154,8 +181,9 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	skyReady = SUCCEEDED(result);
 	static D3DFORMAT reported = D3DFMT_UNKNOWN;
 	if (skyReady && reported != desc.Format) {
-		Logger::Log("UNOFFICIAL Skylighting v2 active: sky factor %ux%u %s (sun mask %s), applied to the sky's share.", desc.Width, desc.Height,
-			desc.Format == D3DFMT_A16B16G16R16F ? "A16B16G16R16F (b: the visibility, for the sky reflections)" : "G16R16F", sunMask ? "yes" : "no");
+		Logger::Log("UNOFFICIAL Skylighting v2 active: sky factor %ux%u %s (sun mask %s), applied to the sky's share%s.", desc.Width, desc.Height,
+			desc.Format == D3DFMT_A16B16G16R16F ? "A16B16G16R16F (b: the visibility, for the sky reflections and LightCap)" : "G16R16F", sunMask ? "yes" : "no",
+			SkyHostedByAmbientLight() ? " (in AmbientLight's apply)" : "");
 		reported = desc.Format;
 	}
 }

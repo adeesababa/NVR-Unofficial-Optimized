@@ -114,14 +114,14 @@ VS_OUTPUT main(VS_INPUT IN) {
 			const float3 n4 = mul(float3x4(Bones[0 + offset.y].xyzw, Bones[1 + offset.y].xyzw, Bones[2 + offset.y].xyzw), nw);
 			clothNormal = ((1 - weight(IN.blendweight.xyz)) * n8) + (IN.blendweight.z * n6) + (IN.blendweight.x * n5) + (n4 * IN.blendweight.y);
 		}
-		[branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+		[branch] if (ClothIsMask5() && ClothWalk.x > 0.5f) {
 			r0.xyz = lerp(r0.xyz, ClothPelvisPoint(IN.position.xyz), saturate(IN.clothWeight.x) * ClothWalk.y);
 			clothOut = ClothPelvisVector(ClothOutwardBind(IN.position.xyz));
 			clothUp = ClothPelvisVector(float3(0.0f, 0.0f, 1.0f));
 			clothLegL = ClothLegBind(r0.xyz, ClothLegNow[0], ClothLegNow[1], ClothLegNow[2]);
 			clothLegR = ClothLegBind(r0.xyz, ClothLegNow[3], ClothLegNow[4], ClothLegNow[5]);
 		}
-		else [branch] if (ClothA.y > 4.5f) {
+		else [branch] if (ClothIsMask5()) {
 			const float4 ow = float4(ClothOutwardBind(IN.position.xyz), 0);
 			const float3 o8 = mul(float3x4(Bones[0 + offset.w].xyzw, Bones[1 + offset.w].xyzw, Bones[2 + offset.w].xyzw), ow);
 			const float3 o6 = mul(float3x4(Bones[0 + offset.z].xyzw, Bones[1 + offset.z].xyzw, Bones[2 + offset.z].xyzw), ow);
@@ -162,8 +162,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     [branch] if (TESR_ShadowData.x == 0.0f && PlantA.x < -0.5f) r0.xyz += PlantWindMove(r0.xyz);
 #endif
 #if CLOTH_WIND_ON
+    if (TESR_ShadowData.x == 0.0f) clothOut = float3(IN.clothWeight.y, 0.0f, 0.0f);
     if (TESR_ShadowData.x == 0.0f || TESR_ShadowData.x == 1.0f) r0.xyz = ClothWindPosition(r0.xyz, clothNormal, IN.color, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);
-    if (TESR_ShadowData.x == 1.0f && ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+    if (TESR_ShadowData.x == 1.0f && ClothIsMask5() && ClothWalk.x > 0.5f) {
         r0.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
         r0.xyz += ClothLegPush(r0.xyz, clothOut);
     }

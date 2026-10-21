@@ -81,6 +81,22 @@ float RmaosAmbient() { return 1.0f; }
 float3 RmaosDebug(float3 color, float3 albedo) { return color; }
 #endif
 
+#if defined(RMAOS) && defined(REFL_MATERIAL_ON) && REFL_MATERIAL_ON
+float4 NVR_ReflMaterial : register(c212);
+float ReflMaterialAlpha(float alpha) {
+    #ifdef NVR_SLOT_TIGHT
+        const float metal = 0.0f;
+    #else
+        float metal = floor(saturate(RmaosValue.g * 2.5f - 1.5f) * 3.0f + 0.5f);
+    #endif
+    float roughness = saturate(RmaosValue.r * NVR_ReflMaterial.y + NVR_ReflMaterial.z);
+    float encoded = 2.0f + metal * 0.25f + roughness * 0.24f;
+    return lerp(alpha, encoded, NVR_ReflMaterial.x * (alpha >= 0.999f ? 1.0f : 0.0f));
+}
+#else
+#define ReflMaterialAlpha(alpha) (alpha)
+#endif
+
 float getRoughness(float gloss) {
     #ifdef RMAOS
         if (RMAOS_ACTIVE && !RMAOS_FADING) return max(RmaosValue.r, 0.02f);
@@ -201,6 +217,21 @@ float3 getSunLighting(float3 lightDir, float3 lightColor, float3 viewDir, float3
 float3 getSunLighting(float3 lightDir, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness) {
     return getSunLighting(lightDir, lightColor, viewDir, normal, albedo, roughness, 0.0f);
 }
+
+#ifdef NVR_FOLD
+float3 getPointLightLightingAttFull(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
+    lightColor = lightColor * LIN_SCALE_LIGHT;
+    albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
+    att = LinFalloff(att);
+    return att * PBR(metallic, roughness, albedo, normal, viewDir, lightDir, lightColor);
+}
+
+float3 getSunLightingFull(float3 lightDir, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
+    lightColor = lightColor * LIN_SCALE_LIGHT;
+    albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
+    return PBRSun(metallic, roughness, albedo, normal, viewDir, lightDir, lightColor);
+}
+#endif
 
 
 

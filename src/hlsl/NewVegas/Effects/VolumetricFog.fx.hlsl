@@ -1040,6 +1040,7 @@ float4 TESR_AmbientOcclusionAOData;
 float4 TESR_AmbientOcclusionData;
 static const float CompositeAOEndFade = 8000;
 sampler2D NVR_SkyVis : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+#include "Includes/SkyTake.hlsl"
 float4 NVR_SunFarFlags;
 sampler2D NVR_SunFar : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
@@ -1078,7 +1079,8 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	float2 base = floor(position);
 	float2 fraction = frac(position);
 	float blurDrop = TESR_AmbientOcclusionData.z;
-	float sum = 0, weights = 0, skySum = 0;
+	float sum = 0, weights = 0;
+	float2 skySum = 0;
 	const bool sky = NVR_CompositeFlags.z > 0.5;
 	[unroll] for (int y = 0; y < 2; ++y) {
 		[unroll] for (int x = 0; x < 2; ++x) {
@@ -1088,12 +1090,12 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 			weight /= 1 + abs(aoSample.y - depth) / max(blurDrop, 0.001);
 			sum += aoSample.x * weight;
 			weights += weight;
-			[branch] if (sky) skySum += tex2Dlod(NVR_SkyVis, float4(sampleUV, 0, 0)).r * weight;
+			[branch] if (sky) skySum += tex2Dlod(NVR_SkyVis, float4(sampleUV, 0, 0)).rb * weight;
 		}
 	}
 	float ao = lerp(TESR_AmbientOcclusionAOData.z, 1, sum / max(weights, 1.0e-6));
 	ao = lerp(ao, 1, saturate((luma(linearColor) - TESR_AmbientOcclusionData.y) * 3));
-	if (sky) ao *= saturate(skySum / max(weights, 1.0e-6));
+	if (sky) { float2 skyAt = saturate(skySum / max(weights, 1.0e-6)); return SkyTake(linearColor * ao, skyAt.x, skyAt.y, NVR_CompositeAOTexel.z, NVR_CompositeAOTexel.w); }
 	return linearColor * ao;
 }
 

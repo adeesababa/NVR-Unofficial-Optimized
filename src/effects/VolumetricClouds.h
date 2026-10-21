@@ -86,13 +86,20 @@ public:
 	bool	ShouldRender();
 	void	RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		IDirect3DSurface9* SourceSurface);
+	void	RenderShadowMap(IDirect3DDevice9* Device);
+	float	ShadowStrengthForSunFar();
+	bool	shadowsViaSunFar = false;
+	void	TestSetCoverage(float value) { coverage = std::clamp(value, 0.0f, 1.0f); }
 
 private:
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;
+	unsigned int	lastUpdateFrame = 0;
+	bool		updatedBefore = false;
 	D3DXVECTOR3	wind = D3DXVECTOR3(0, 0, 0);
 	double		windX = 0.0, windY = 0.0, windZ = 0.0;
 	D3DXMATRIX	lastViewProj;
 	UINT		frame = 0, read = 0;
+	UINT		shadowMapFrame = UINT_MAX;
 	double		lastRenderTime = -1.0;
 	UINT		lowWidth = 0, lowHeight = 0, blockWidth = 0, blockHeight = 0;
 	double		lastCloudTime = -1.0;

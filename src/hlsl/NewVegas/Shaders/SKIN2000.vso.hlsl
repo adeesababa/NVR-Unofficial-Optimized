@@ -34,6 +34,7 @@ struct VS_OUTPUT {
     float4 lightDir       : TEXCOORD1;   // xyz: sun direction in tangent space, w: 1
     float4 shadowWorldPos : TEXCOORD4;   // the only addition to vanilla
     float3 eyeDir         : TEXCOORD6;   // eye direction in tangent space
+    float4 smoothNormal   : TEXCOORD7;
     float4 color          : COLOR0;
     float4 fog            : COLOR1;      // rgb: fog colour, w: fog amount
 };
@@ -64,6 +65,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.color = IN.color;
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
+    OUT.smoothNormal = GetShadowSmoothNormal(ModelViewProj, IN.position.xyz, IN.normal, OUT.shadowWorldPos.xyz);
 
     return OUT;
 };

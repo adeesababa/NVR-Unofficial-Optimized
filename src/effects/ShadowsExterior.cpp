@@ -1,5 +1,6 @@
 #include "ShadowsExterior.h"
 #include "../core/TestTools.h"
+#include "../core/LampFixtures.h"
 
 static D3DXVECTOR4 LampContact(0.0f, 40.0f, 12.0f, 0.5f), LampContactFade(25.0f, 0.05f, 3000.0f, 1.0f / 900.0f),
 	LampContactBias(0.3f, 0.002f, 0.001f, 0.2f), LampContactNoise(0.0f, 0.0f, 52.9829189f, 0.0f);
@@ -400,8 +401,10 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// (nothing ever sets ShaderManager::EffectReloadQueued), so the macro is frozen at whatever
 	// it was when the shader was first compiled.
 	Constants.ForwardData.x = Settings.Exteriors.ForwardShadows ? 0.0f : 1.0f;
-	Constants.ForwardData.y = 0.0f;
-	Constants.ForwardData.z = 0.0f;
+	Settings.Exteriors.SmoothCharacterShadows = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SmoothCharacterShadows") != 0;
+	Constants.ForwardData.y = Settings.Exteriors.SmoothCharacterShadows ? 1.0f : 0.0f;
+	Settings.Exteriors.CharacterShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowSoftness"), 0.0f, 4.0f);
+	Constants.ForwardData.z = Settings.Exteriors.SmoothCharacterShadows ? Settings.Exteriors.CharacterShadowSoftness : 0.0f;
 	Constants.ForwardData.w = 0.0f;
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
@@ -520,6 +523,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.LampSize = std::clamp(TheSettingManager->GetSettingF(section, "LampSize"), 0.0f, 64.0f);
 		forward.MaxSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MaxSoftness"), 1.0f, 32.0f);
 		forward.LampGlassShadows = TheSettingManager->GetSettingI(section, "LampGlassShadows") != 0;
+		forward.LampModelShadows = TheSettingManager->GetSettingI(section, "LampModelShadows") != 0;
+		forward.LampModelDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelDistance"), 0.0f, 512.0f);
+		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);
+		forward.InvisibleShadowFromLamp = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleShadowFromLamp"), 0.0f, 1024.0f);
+		forward.InvisibleLightSize = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightSize"), 0.0f, 128.0f);
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);

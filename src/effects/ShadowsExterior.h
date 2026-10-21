@@ -137,6 +137,8 @@ public:
 		int					Quality;
 		float				Darkness;
 		float				NightMinDarkness;
+		bool				SmoothCharacterShadows = false;
+		float				CharacterShadowSoftness = 0.0f;
 		bool				SkipWhenFaded;
 		int					SkipWhenFadedCheck;
 	};
@@ -173,7 +175,11 @@ public:
 			float FixtureDistance;
 			float LampSize;
 			float MaxSoftness;
+			float InvisibleLightSize;
 			bool LampGlassShadows;
+			bool LampModelShadows;
+			float LampModelDistance;
+			float InvisibleShadowFromLamp;
 		} Forward;
 	};
 

@@ -25,6 +25,12 @@ public:
 		int		DebugView;
 		bool	GridFallback;
 		float	GridBrightness;
+		int		MaterialAware;
+		float	MaterialReflect;
+		float	MaterialMaxRoughness;
+		float	ReflectAdd;
+		float	SpecularOcclusion;
+		float	SpecularOcclusionLevel;
 	};
 	SettingsStruct	Settings;
 
@@ -40,6 +46,7 @@ public:
 		D3DXVECTOR4	Grid;
 		D3DXVECTOR4	Grid2;
 		D3DXVECTOR4	Grid3;
+		D3DXVECTOR4	Material;
 	};
 	ConstantsStruct	Constants;
 	IDirect3DBaseTexture9*	GridLightSlot = nullptr;
@@ -67,6 +74,8 @@ public:
 		IDirect3DSurface9* TempSurface = nullptr;
 		IDirect3DTexture9* HistoryTexture = nullptr;
 		IDirect3DSurface9* HistorySurface = nullptr;
+		IDirect3DTexture9* MaterialTexture = nullptr;
+		IDirect3DSurface9* MaterialSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 
@@ -79,6 +88,8 @@ public:
 	bool	CubeWanted();
 	void	RenderCubeOnly(IDirect3DDevice9* Device);
 	bool	CubeReady() const;
+	void	CaptureMaterial(IDirect3DDevice9* Device);
+	void	BindMaterial();
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;
@@ -93,6 +104,8 @@ private:
 	UINT		cubeFrame = 0;
 	D3DXMATRIX	cubeInvView;
 	bool		cubeOnly = false;
+	bool		materialOnly = false;
+	bool		materialFilled = false;
 	UINT		gridFrames = 0, gridUsedFrames = 0;
 	void	GridStep();
 	void	CubeStep(IDirect3DDevice9* Device);

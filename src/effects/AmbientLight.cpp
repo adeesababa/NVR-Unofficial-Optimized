@@ -345,6 +345,24 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		renderTime = 0;
 		return;
 	}
+	IDirect3DTexture9* skyTexture = nullptr;
+	if (AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion; ao && ao->Effect && AmbientOcclusionEffect::SkyV2Active()) {
+		D3DXHANDLE skyTechnique = TechniqueHandle(techSky, "AmbientLightSky");
+		IDirect3DTexture9* written = ao->SkyTexture();
+		D3DSURFACE_DESC skyDesc = {};
+		D3DXTECHNIQUE_DESC skyTechniqueDesc = {};
+		if (skyTechnique && written && SUCCEEDED(written->GetLevelDesc(0, &skyDesc)) && skyDesc.Width == half.Width && skyDesc.Height == half.Height &&
+			SUCCEEDED(Effect->GetTechniqueDesc(skyTechnique, &skyTechniqueDesc)) && skyTechniqueDesc.Passes == 8) {
+			technique = skyTechnique;
+			skyTexture = written;
+		}
+		static int reported = -1;
+		if ((skyTexture ? 1 : 0) != reported) {
+			reported = skyTexture ? 1 : 0;
+			Logger::Log("UNOFFICIAL AmbientLight: Skylighting %s.", skyTexture ? "applied (the AO's sky pass writes the sky target)" :
+				"NOT applied (no sky target this frame, or no AmbientLightSky technique: AmbientLight.fx.hlsl must be this DLL's)");
+		}
+	}
 	auto timer = TimeLogger();
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
@@ -464,6 +482,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			}
 			if (p == 4) Device->SetTexture(11, occlusionHistory[readIndex]);
 			else if (applyLike) Device->SetTexture(11, occlusionHistory[writeIndex]);
+			if (p == 7 && skyTexture) {
+				Device->SetTexture(10, skyTexture);
+				TheRenderManager->renderState->NoteDeviceTexture(10, skyTexture);
+			}
 			Device->SetTexture(1, scene);
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
@@ -483,6 +505,10 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetTexture(15, nullptr);
 	Device->SetTexture(8, nullptr);
 	if (sunFar) Device->SetTexture(13, nullptr);
+	if (skyTexture) {
+		Device->SetTexture(10, nullptr);
+		TheRenderManager->renderState->NoteDeviceTexture(10, nullptr);
+	}
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);

@@ -21,6 +21,11 @@ float ClothTri(float c) {
 
 static const float ClothBillowIn = 1.5f;
 
+bool ClothIsMask5() { return ClothA.y > 4.5f && ClothA.y < 5.5f; }
+float3 ClothBillowDir(float3 n, float3 out5) {
+    return ClothA.y > 5.5f ? n * (out5.x < 0.0f ? -1.0f : 1.0f) : (ClothIsMask5() ? out5 : n);
+}
+
 float3 ClothDisplacement(float3 p, float3 n) {
     const float along = dot(p, ClothB.xyz) * ClothB.w;
     const float wave = ClothTri(along - ClothC.x) * 2.0f - 1.0f;
@@ -31,7 +36,7 @@ float3 ClothDisplacement(float3 p, float3 n) {
     float billow = ClothA.z * wave + ClothA.w * ripple;
     const float in5 = min(billow, 0.0f);
     const float k5 = ClothD.x * gust * (1.0f / ClothBillowIn);
-    [flatten] if (ClothA.y > 4.5f) billow += in5 * (rsqrt(1.0f + in5 * in5 * k5 * k5) - 1.0f);
+    [flatten] if (ClothIsMask5()) billow += in5 * (rsqrt(1.0f + in5 * in5 * k5 * k5) - 1.0f);
     return ClothD.x * gust * (ClothB.xyz * (0.6f + 0.4f * wave) + n * billow);
 }
 
@@ -88,7 +93,7 @@ float3 ClothLegPush(float3 p, float3 o) {
 }
 
 float3 ClothInDir(float3 out5) {
-    return ClothA.y > 4.5f ? out5 * rsqrt(max(dot(out5, out5), 1e-8f)) : 0.0f;
+    return ClothIsMask5() ? out5 * rsqrt(max(dot(out5, out5), 1e-8f)) : 0.0f;
 }
 
 float3 ClothInward5(float3 d, float3 in5) {
@@ -187,7 +192,7 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
         const float mask = ClothMask(vertexColor, p, bindP, weight5);
         const float e = 2.0f;
         const float3 n = normalize(N);
-        const float3 bill = ClothA.y > 4.5f ? out5 : n;
+        const float3 bill = ClothBillowDir(n, out5);
         const float3 motion = ClothMotion(bindP);
         const float3 in5 = ClothInDir(out5);
         const float3 d0 = mask * ClothLimit5(ClothDisplacement(p, bill) + motion, in5, legL5, legR5, up5, mask);
@@ -209,7 +214,7 @@ void ClothWind(inout float3 p, inout float3 T, inout float3 B, inout float3 N, f
 float3 ClothWindPosition(float3 p, float3 n, float4 vertexColor, float3 bindP, float weight5, float3 out5, float4 legL5, float4 legR5, float3 up5) {
     [branch] if (ClothA.x > 0.0f) {
         const float l = length(n);
-        const float3 bill = ClothA.y > 4.5f ? out5 : (l > 1e-4f ? n / l : 0.0f);
+        const float3 bill = ClothBillowDir(l > 1e-4f ? n / l : 0.0f, out5);
         const float mask = ClothMask(vertexColor, p, bindP, weight5);
         p += mask * ClothLimit5(ClothDisplacement(p, bill) + ClothMotion(bindP), ClothInDir(out5), legL5, legR5, up5, mask);
     }

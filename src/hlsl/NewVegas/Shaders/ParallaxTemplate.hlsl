@@ -578,7 +578,7 @@ PS_OUTPUT main(PS_INPUT IN)
     #elif defined(ONLY_LIGHT)
         OUT.color.a = baseColor.a;
     #else
-        OUT.color.a = alpha * AmbientColor.a;
+        OUT.color.a = ReflMaterialAlpha(alpha * AmbientColor.a);
     #endif
 
     return OUT;

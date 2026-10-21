@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <fstream>
 #include <sstream>
@@ -14,8 +15,8 @@ namespace SettingShots {
 	inline const char* const RequestFile = "Data\\NVSE\\Plugins\\NVRAutoTest.shots.txt";
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };
 
-	struct Change { bool effect = false, console = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; };
+	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; };
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -33,6 +34,7 @@ namespace SettingShots {
 	inline TESObjectCELL* Cell = nullptr;
 	inline std::vector<std::string> Commands;
 	inline bool Moves = false;
+	inline bool MainLoopSeen = false;
 	inline bool FinalPicture = false;
 	inline std::atomic<int> FinalState{ 0 };
 	inline Job* FinalJob = nullptr;
@@ -48,13 +50,14 @@ namespace SettingShots {
 	inline bool WorldCapture = false;
 	inline size_t WorldTaken = (size_t)-1;
 	inline bool StageCapture = false;
+	inline bool NoReload = false;
 	inline size_t StageTaken = (size_t)-1;
 	inline IDirect3DSurface9* WorldResolve = nullptr;
 	inline IDirect3DSurface9* WorldReadback = nullptr;
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
 		std::ifstream in(RequestFile);
@@ -73,6 +76,7 @@ namespace SettingShots {
 			else if (command == "final") FinalPicture = true;
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
+			else if (command == "noreload") NoReload = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "menu" || command == "menutests") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a menu before the first 'shot'"; return false; }
@@ -94,6 +98,17 @@ namespace SettingShots {
 				Change c; c.console = true; c.value = rest.substr(start);
 				List.back().changes.push_back(c);
 			}
+			else if (command == "wait") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a wait before the first 'shot'"; return false; }
+				words >> List.back().frames;
+				List.back().frames = std::clamp(List.back().frames, 2, 20000);
+			}
+			else if (command == "cloudcoverage") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }
+				Change c; c.coverage = true; words >> c.value;
+				if (c.value.empty()) { error = "line " + std::to_string(number) + ": incomplete"; return false; }
+				List.back().changes.push_back(c);
+			}
 			else if (command == "set" || command == "effect") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }
 				Change c;
@@ -112,11 +127,18 @@ namespace SettingShots {
 
 	inline bool Truthy(const std::string& v) { return v == "1" || v == "true" || v == "on" || v == "yes"; }
 
+	inline int ShotFrames() { return Index < List.size() && List[Index].frames > 0 ? List[Index].frames : Frames; }
+
 	inline void Apply(const Shot& s) {
 		Commands.clear();
 		Moves = false;
 		for (const Change& c : s.changes) {
 			if (c.console) { Commands.push_back(c.value); Moves = true; continue; }
+			if (c.coverage) {
+				if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) clouds->TestSetCoverage((float)atof(c.value.c_str()));
+				Logger::Log("SETTING SHOTS %s: shot '%s': cloud coverage set to %s (eases back to the weather's)", Run, s.slug.c_str(), c.value.c_str());
+				continue;
+			}
 			if (c.effect) {
 				const bool want = Truthy(c.value);
 				if (TheSettingManager->GetMenuShaderEnabled(c.section.c_str()) != want) {
@@ -142,7 +164,9 @@ namespace SettingShots {
 			}
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
 		}
-		TheSettingManager->LoadSettings();
+		const bool changes = std::any_of(s.changes.begin(), s.changes.end(), [](const Change& c) { return !c.console && !c.coverage; });
+		if (changes || !NoReload) TheSettingManager->LoadSettings();
+		else Logger::Log("SETTING SHOTS %s: shot '%s': no changes, no settings reload (noreload)", Run, s.slug.c_str());
 		if (!s.menu.empty()) ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
 	}
 
@@ -186,12 +210,12 @@ namespace SettingShots {
 
 	inline void SaveTarget(IDirect3DDevice9* device, IDirect3DSurface9* target, const char* suffix);
 	inline void CaptureWorld(IDirect3DDevice9* device, IDirect3DSurface9* target) {
-		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < Frames) return;
+		if (!Running || !WorldCapture || !device || !target || Index >= List.size() || WorldTaken == Index || Frame < ShotFrames()) return;
 		WorldTaken = Index;
 		SaveTarget(device, target, "");
 	}
 	inline void CaptureStage(IDirect3DDevice9* device, IDirect3DSurface9* target) {
-		if (!Running || !StageCapture || !device || !target || Index >= List.size() || StageTaken == Index || Frame < Frames) return;
+		if (!Running || !StageCapture || !device || !target || Index >= List.size() || StageTaken == Index || Frame < ShotFrames()) return;
 		StageTaken = Index;
 		SaveTarget(device, target, "-al");
 	}
@@ -235,6 +259,20 @@ namespace SettingShots {
 	inline void QueueJob(Job* job);
 	inline void NextShot();
 
+	inline void RunCommands() {
+		if (Commands.empty()) return;
+		std::vector<std::string> lines;
+		lines.swap(Commands);
+		for (const std::string& line : lines) {
+			Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
+			if (g_ConsoleInterface) g_ConsoleInterface->RunScriptLine(line.c_str(), nullptr);
+		}
+	}
+	inline void MainLoop() {
+		if (!MainLoopSeen) { MainLoopSeen = true; Logger::Log("SETTING SHOTS: console commands run on the game's main loop (between frames)"); }
+		if (Running) RunCommands();
+	}
+
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
 			AllQueued = false;
@@ -265,14 +303,7 @@ namespace SettingShots {
 			NextShot();
 			if (!Running) return;
 		}
-		if (!Commands.empty()) {
-			std::vector<std::string> lines;
-			lines.swap(Commands);
-			for (const std::string& line : lines) {
-				Logger::Log("SETTING SHOTS %s: shot '%s': console %s", Run, List[Index].slug.c_str(), line.c_str());
-				if (g_ConsoleInterface) g_ConsoleInterface->RunScriptLine(line.c_str(), nullptr);
-			}
-		}
+		if (!MainLoopSeen) RunCommands();
 		if (Moves && Player) Cell = Player->parentCell;
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
 		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
@@ -307,14 +338,14 @@ namespace SettingShots {
 	}
 
 	inline void Capture(IDirect3DSurface9* surface) {
-		if (!Running || Frame < Frames || !surface) return;
+		if (!Running || Frame < ShotFrames() || !surface) return;
 		if (!List[Index].menu.empty()) return;
 		if (FinalPicture) { int idle = 0; FinalState.compare_exchange_strong(idle, 1); return; }
 		TakeShot(surface);
 	}
 
 	inline void CaptureMenu() {
-		if (!Running || Frame < Frames || Index >= List.size() || List[Index].menu.empty()) return;
+		if (!Running || Frame < ShotFrames() || Index >= List.size() || List[Index].menu.empty()) return;
 		IDirect3DSurface9* backBuffer = nullptr;
 		if (FAILED(TheRenderManager->device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) { Stop("no back buffer for a menu picture"); return; }
 		TakeShot(backBuffer);

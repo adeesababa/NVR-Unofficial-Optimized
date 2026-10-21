@@ -21,6 +21,7 @@ struct SettingsMainStruct {
         bool    RenderPreTonemapping;
         bool    DisableFrameChain;
         bool    DisableWorldSceneGuard;
+        bool    MenuSceneGuard;
         bool    DisableCompositeApply;
         bool    DisableChainGameTexture;
         bool    DisableMergedNormals;
@@ -43,6 +44,7 @@ struct SettingsMainStruct {
         bool    ReShadeMenuGuard;
         bool    ReShadeMenuGuardVATS;
         bool    LampScissor;
+        bool    LampScissorExact;
         bool    NeonSpillSelfTest;
         int     LampPassTestSkip;
         bool    TrimLampPasses;

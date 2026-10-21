@@ -13,6 +13,8 @@ float4 TESR_ShadowFade;
 float4 TESR_SkyColor;
 float4 TESR_SunAmbient;
 float4 TESR_SunDirection;
+float4 TESR_AmbientOcclusionSky5;
+float4 TESR_AmbientOcclusionData;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_SourceBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
@@ -51,6 +53,9 @@ VSOUT FrameVS(VSIN IN) {
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
+
+static const int endFade = 8000;
+#include "Includes/SkyTake.hlsl"
 
 sampler2D NVR_ALViewModel : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 bool IsViewModel(float2 uv) {
@@ -486,11 +491,37 @@ float4 StatsReduce(VSOUT IN) : COLOR0 {
 	return float4(scale, total.yzx / (StatsSize.x * StatsSize.y * 4.0f));
 }
 
-float4 Apply(VSOUT IN) : COLOR0 {
+sampler2D NVR_ALSkyVis : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float2 SkyFactorAt(float2 uv, float depth) {
+	[branch] if (!(depth < endFade)) return 1.0f;
+	float2 position = uv / NVR_ALLayout.zw - 0.5f;
+	float2 base = floor(position);
+	float2 fraction = position - base;
+	float2 sum = 0.0f;
+	float weights = 0.0f;
+	[unroll] for (int y = 0; y < 2; y++) {
+		[unroll] for (int x = 0; x < 2; x++) {
+			float2 tapUV = clamp((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, 0.5f * NVR_ALLayout.zw, 1.0f - 0.5f * NVR_ALLayout.zw);
+			float3 tap = tex2Dlod(NVR_ALSkyVis, float4(tapUV, 0.0f, 0.0f)).rgb;
+			float weight = (x ? fraction.x : 1.0f - fraction.x) * (y ? fraction.y : 1.0f - fraction.y);
+			weight /= 1.0f + abs(tap.y - depth) / max(TESR_AmbientOcclusionData.z, 0.001f);
+			sum += tap.xz * weight;
+			weights += weight;
+		}
+	}
+	return saturate(sum / max(weights, 1.0e-6f));
+}
+
+float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	[branch] if (NVR_ALFlags.x > 0.5f) color = float4(SunShadowApply(color.rgb, IN.UVCoord), 1.0f);
 	float depth = readDepth(IN.UVCoord);
-	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(IN.UVCoord)) return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
+	float2 skyFactor = 1.0f;
+	if (sky) skyFactor = SkyFactorAt(IN.UVCoord, depth);
+	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(IN.UVCoord)) {
+		if (sky) color.rgb = pows(SkyTake(pows(color.rgb, 2.2f), skyFactor.x, skyFactor.y, TESR_AmbientOcclusionSky5.x, TESR_AmbientOcclusionSky5.w), 1.0f / 2.2f);
+		return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
+	}
 
 	float2 position = IN.UVCoord / NVR_ALLayout.zw - 0.5f;
 	float2 base = floor(position);
@@ -537,7 +568,11 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));
 	[branch] if (NVR_ALInterior.x > 0.5f) lin = lin - (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb) + gridBounce * albedo;
-	else lin = lin * ao + gridBounce * albedo;
+	else {
+		float3 lit = lin * ao;
+		if (sky) lit = SkyTake(lit, skyFactor.x, skyFactor.y, TESR_AmbientOcclusionSky5.x, TESR_AmbientOcclusionSky5.w);
+		lin = lit + gridBounce * albedo;
+	}
 	return delinearize(float4(lin, color.a));
 }
 
@@ -549,7 +584,7 @@ technique AmbientLight {
 	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
 	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
 	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
-	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
+	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(false); }
 
 }
 
@@ -557,4 +592,15 @@ technique AmbientLightGrid {
 	pass ScreenInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 ScreenInject(); }
 	pass GridInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridInject(); }
 	pass GridPropagate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridPropagate(); }
+}
+
+technique AmbientLightSky {
+	pass Prepare { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Prepare(); }
+	pass Estimate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Estimate(); }
+	pass BlurX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(1.0f, 0.0f)); }
+	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
+	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
+	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
+	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
+	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(true); }
 }

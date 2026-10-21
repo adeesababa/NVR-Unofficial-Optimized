@@ -630,6 +630,7 @@ void SettingManager::LoadSettings() {
 	const char* performance = "Main.Main.Performance";
 	SettingsMain.Main.DisableFrameChain = !boolSetting(performance, "FrameChain", true);
 	SettingsMain.Main.DisableWorldSceneGuard = !boolSetting(performance, "WorldSceneGuard", true);
+	SettingsMain.Main.MenuSceneGuard = boolSetting(performance, "MenuSceneGuard", true);
 	SettingsMain.Main.DisableCompositeApply = !boolSetting(performance, "CompositeApply", true);
 	SettingsMain.Main.DisableChainGameTexture = !boolSetting(performance, "ChainUsesGameTexture", true);
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
@@ -659,6 +660,7 @@ void SettingManager::LoadSettings() {
 		SettingsMain.Main.NeonSpillSelfTest = Config.FillNode(&node, "Shaders.BounceLight.Main", "NeonSpillSelfTest") ? node.BoolValue : false;
 	}
 	SettingsMain.Main.LampScissor = boolSetting(performance, "LampScissor", true);
+	SettingsMain.Main.LampScissorExact = boolSetting(performance, "LampScissorExact", true);
 	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
 	SettingsMain.Main.ReShadeNVRDepth = boolSetting(performance, "ReShadeNVRDepth", true);
 	SettingsMain.Main.ReShadeBeforeHUD = boolSetting(performance, "ReShadeBeforeHUD", true);

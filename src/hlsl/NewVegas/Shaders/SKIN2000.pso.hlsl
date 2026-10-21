@@ -40,6 +40,7 @@ float4 TESR_DebugVar;
 struct VS_INPUT {
     float2 BaseUV : TEXCOORD0;
     float4 shadowWorldPos : TEXCOORD4;   // from ObjectTemplate VS			            // UV
+    float4 smoothNormal : TEXCOORD7;
     float3 texcoord_1 : TEXCOORD1;			// light data in tangent space
     float3 texcoord_6 : TEXCOORD6;			// eye data in tangent space
     float3 position : SV_POSITION;			// light data in tangent space
@@ -51,6 +52,7 @@ struct VS_OUTPUT {
     float4 color_0 : COLOR0;
 };
 
+#define SHADOW_SKIN_SOFTNESS 1
 #include "Includes/Shadow.hlsl"
 #include "Includes/Skin.hlsl"
 
@@ -73,6 +75,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+    shadowNormal = ShadowLookupNormal(shadowNormal, IN.smoothNormal);
 #if FORWARD_SHADOWS
     // Forward sun shadow. Scales the SUN terms only; ambient-driven terms are untouched.
     // ddx/ddy must stay at top level, outside dynamic flow control.

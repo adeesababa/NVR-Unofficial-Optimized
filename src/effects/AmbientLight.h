@@ -19,6 +19,7 @@ public:
 	CachedHandle		paramLayout, paramFlags, paramTemporal, paramReproject;
 	CachedHandle		paramSunFarFlags;
 	CachedHandle		paramScene;
+	CachedHandle		techSky;
 	D3DXVECTOR4			sceneLight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
 	IDirect3DTexture9*	historyTexture[2] = {};
 	IDirect3DSurface9*	historySurface[2] = {};

@@ -26,7 +26,7 @@ float SpecularAA(float3 normal, float roughness) {
 
 float4 TESR_PBRMath : register(c223);
 
-#ifdef PBR_SPEC_FADE
+#if defined(PBR_SPEC_FADE) || defined(NVR_FOLD)
 float4 NVR_SpecFade : register(c211);
 #endif
 

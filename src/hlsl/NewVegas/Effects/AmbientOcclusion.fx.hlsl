@@ -14,6 +14,7 @@ float4x4 TESR_ShadowCameraToLightTransformOrtho;
 float4 TESR_AmbientOcclusionSky2;
 float4 TESR_AmbientOcclusionSky3;
 float4 TESR_AmbientOcclusionSky4;
+float4 TESR_AmbientOcclusionSky5;
 float4 TESR_SmoothedSunDir;
 float4 TESR_ShadowFade;
 float4 TESR_ReciprocalResolution;
@@ -67,6 +68,7 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Helpers.hlsl"
 #include "Includes/Normals.hlsl"
 #include "Includes/SkyShare.hlsl"
+#include "Includes/SkyTake.hlsl"
 
 
 // returns a semi random float3 between 0 and 1 based on the given seed.
@@ -501,6 +503,8 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 		float3x3 M = (float3x3)TESR_ShadowCameraToLightTransformOrtho;
 		float reach = TESR_AmbientOcclusionSky4.x;
 		float softScale = 1.0f / max(TESR_AmbientOcclusionSky4.y * abs(M[2][2]), 1.0e-9f);
+		float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);
+		float sides = saturate(TESR_AmbientOcclusionSky5.y * covered);
 		{
 			float total = 0.034f * saturate(n.z);
 			float open = total * SkyOpenV2(o + M[2] * (reach * 0.4f), softScale) * SkyOpenV2(o + M[2] * reach, softScale);
@@ -511,14 +515,15 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 					float3 dir = k ? float3(h * 0.8660254f, 0.5f) : float3(h * 0.5f, 0.8660254f);
 					float w = (k ? 0.0884f : 0.0324f) * saturate(dot(dir, n));
 					float3 stepO = mul(dir, M);
-					open += w * SkyOpenV2(o + stepO * (reach * 0.4f), softScale) * SkyOpenV2(o + stepO * reach, softScale);
+					float rayOpen = SkyOpenV2(o + stepO * (reach * 0.4f), softScale) * SkyOpenV2(o + stepO * reach, softScale);
+					[branch] if (k && sides > 0.0f) rayOpen = lerp(rayOpen, SkyOpenV2(o + mul(float3(h, 0.0f), M) * reach, softScale), sides);
+					open += w * rayOpen;
 					total += w;
 				}
 			}
 			float visibility = total > 1.0e-5f ? open / total : 1.0f;
 			visibility = lerp(visibility, 1.0f, saturate((max(abs(o.x), abs(o.y)) - 0.8f) * 5.0f));
 			visibility = saturate(visibility * TESR_AmbientOcclusionSky3.y);
-			float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);
 			result = SkyFactor(visibility, n, sunMask, covered);
 			skyVisibility = visibility;
 		}
@@ -590,18 +595,20 @@ float4 DedicatedCombine(VSOUT IN) : COLOR0
 	#endif
 	float3 result = source * pow(abs(ao), 1.0 / 2.2);
 	[branch] if (TESR_AmbientOcclusionSky4.w > 0.5f) {
-		float skySum = 0, skyWeights = 0;
+		float2 skySum = 0;
+		float skyWeights = 0;
 		[unroll] for (int sy = 0; sy < 2; ++sy) {
 			[unroll] for (int sx = 0; sx < 2; ++sx) {
 				float2 uv = (base + float2(sx, sy) + 0.5) * NVR_AOLayout.zw;
 				float2 sample = tex2Dlod(NVR_AOBuffer, float4(DedicatedUV(uv), 0, 0)).rg;
 				float weight = (sx ? fraction.x : 1 - fraction.x) * (sy ? fraction.y : 1 - fraction.y);
 				weight /= 1 + abs(sample.y - depth) / max(blurDrop, 0.001);
-				skySum += tex2Dlod(NVR_SkyVis, float4(DedicatedUV(uv), 0, 0)).r * weight;
+				skySum += tex2Dlod(NVR_SkyVis, float4(DedicatedUV(uv), 0, 0)).rb * weight;
 				skyWeights += weight;
 			}
 		}
-		result *= pow(saturate(skySum / max(skyWeights, 1.0e-6)), 1.0 / 2.2);
+		float2 sky = saturate(skySum / max(skyWeights, 1.0e-6));
+		result = pows(SkyTake(pows(result, 2.2), sky.x, sky.y, TESR_AmbientOcclusionSky5.x, TESR_AmbientOcclusionSky5.w), 1.0 / 2.2);
 	}
 	return float4(result, 1);
 }

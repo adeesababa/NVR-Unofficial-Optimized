@@ -3,6 +3,7 @@
 #include "../core/GpuProfiler.h"
 
 void VolumetricCloudsEffect::UpdateSettings() {
+	const SettingsStruct before = Settings;
 	const char* section = "Shaders.VolumetricClouds.Main";
 	Settings.Base = std::clamp(TheSettingManager->GetSettingF(section, "CloudBase"), 200.0f, 8000.0f);
 	Settings.Thickness = std::clamp(TheSettingManager->GetSettingF(section, "Thickness"), 100.0f, 6000.0f);
@@ -43,7 +44,9 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
-	coverage = -1.0f;
+	if (memcmp(before.Coverage, Settings.Coverage, sizeof(Settings.Coverage)) || memcmp(before.TypeBias, Settings.TypeBias, sizeof(Settings.TypeBias)) ||
+		before.FromWeatherTextures != Settings.FromWeatherTextures)
+		coverage = -1.0f;
 }
 
 void VolumetricCloudsEffect::RegisterConstants() {
@@ -213,6 +216,10 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
 	static double lastFrameTime = -1.0;
 	const float dt = (float)(ElapsedOncePerFrame(lastFrameTime) * TunedClockRate);
+	const unsigned int frameNumber = TheFrameRateManager->FrameNumber;
+	if (updatedBefore && frameNumber - lastUpdateFrame > 1) coverage = -1.0f;
+	lastUpdateFrame = frameNumber;
+	updatedBefore = true;
 
 	if (dt > 0.0f) LearnWeatherFill(sky);
 	TESWeather* current = sky ? sky->firstWeather : nullptr;
@@ -356,21 +363,45 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	Textures.HistoryRead = Textures.HistoryTexture[read];
 	ProbeLayer(Device);
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
-		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");
+		compositeTimer("  Clouds composite (full)");
 	static CachedHandle fixedExitCache;
 	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
 		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
 	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, fixedExit ? 6 : 1); }
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }
-	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }
+	RenderShadowMap(Device);
 	read = 1 - read;
 	Textures.HistoryRead = Textures.HistoryTexture[read];
 	Device->SetRenderTarget(0, RenderTarget);
-	{ GpuProfileScope gpu(compositeTimer, Device); Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface); }
+	{
+		const float strength = Constants.Extra.x;
+		if (shadowsViaSunFar) Constants.Extra.x = 0.0f;
+		GpuProfileScope gpu(compositeTimer, Device);
+		Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+		Constants.Extra.x = strength;
+	}
 
 	lastViewProj = viewProj;
 	lastRenderTime = now;
 	frame++;
+}
+
+void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
+	if (shadowMapFrame == frame || Constants.Extra.x <= 0.0f || !Textures.ShadowSurface || !Enabled || !Effect || !ShouldRender()) return;
+	static GpuTimer shadowTimer("  Clouds shadow map");
+	GpuProfileScope gpu(shadowTimer, Device);
+	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4);
+	shadowMapFrame = frame;
+}
+
+float VolumetricCloudsEffect::ShadowStrengthForSunFar() {
+	if (!Enabled || !Effect || !ShouldRender() || !Textures.ShadowTexture || Constants.Extra.x <= 0.0f || Settings.ShadowDebug) return 0.0f;
+	const D3DXVECTOR4& sun = TheShaderManager->ShaderConst.SunDir;
+	const float length = sqrtf(sun.x * sun.x + sun.y * sun.y + sun.z * sun.z);
+	const float z = length > 0.0f ? sun.z / length : 0.0f;
+	const float t = std::clamp((z - 0.08f) / (0.35f - 0.08f), 0.0f, 1.0f);
+	const float day = std::clamp(TheShaderManager->ShaderConst.SunAmount.x, 0.0f, 1.0f);
+	return Constants.Extra.x * (0.3f + 0.7f * day) * t * t * (3.0f - 2.0f * t);
 }
 
 bool VolumetricCloudsEffect::ReflectionWanted() const {

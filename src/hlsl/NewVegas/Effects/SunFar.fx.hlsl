@@ -16,6 +16,8 @@ float4 TESR_SunFarClouds;
 float4 TESR_SunFarCloudOffset[2];
 float4 TESR_SunFarCloudWeight;
 float4 TESR_SunFarCloudBlend;
+float4 TESR_SunFarVolume;
+float4 TESR_SunDirection;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_NormalsBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -30,6 +32,7 @@ sampler2D NVR_CloudBlend0 : register(s9) = sampler_state { ADDRESSU = WRAP; ADDR
 sampler2D NVR_CloudBlend1 : register(s10) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_CloudBlend2 : register(s11) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_CloudBlend3 : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D NVR_VolumeCloudShadow : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -119,6 +122,20 @@ float CloudShadow(float3 rel) {
 	return saturate(1.0f - (1.0f - clear) * TESR_SunFarData.x);
 }
 
+float VolumeCloudShadow(float3 world) {
+	[branch] if (TESR_SunFarVolume.x <= 0.0f) return 1.0f;
+	float3 light = normalize(TESR_SunDirection.xyz);
+	light.z = max(light.z, 0.25f);
+	light = normalize(light);
+	float3 p = world / 70.0f;
+	float texel = TESR_SunFarVolume.y / TESR_SunFarVolume.z;
+	float2 centre = floor(TESR_CameraPosition.xy / 70.0f / texel) * texel;
+	float2 q = p.xy + light.xy * ((TESR_SunFarVolume.w - p.z) / light.z);
+	float2 suv = (q - centre) / TESR_SunFarVolume.y + 0.5f;
+	float2 edge = min(suv, 1.0f - suv);
+	float inside = saturate(min(edge.x, edge.y) * 10.0f);
+	return lerp(1.0f, tex2Dlod(NVR_VolumeCloudShadow, float4(suv, 0.0f, 0.0f)).r, inside * TESR_SunFarVolume.x);
+}
 float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float depth = readDepthLod(uv);
@@ -127,7 +144,7 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float3 world = TESR_CameraPosition.xyz + rel;
 
 	float terrain = TerrainShadow(world);
-	float cloud = CloudShadow(rel);
+	float cloud = CloudShadow(rel) * VolumeCloudShadow(world);
 	float blocked = terrain * cloud;
 	float shade = (1.0f - terrain) * TESR_TerrainShadowParams.z;
 

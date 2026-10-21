@@ -153,6 +153,16 @@
     #endif
 #endif
 
+#ifndef FOLD_HIGHLIGHTS_ON
+    #define FOLD_HIGHLIGHTS_ON 0
+#endif
+#if FOLD_HIGHLIGHTS_ON && defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(HAIR) && !defined(SI)
+    #define NVR_FOLD
+    #define FOLD_DECL
+#else
+    #define FOLD_DECL float3
+#endif
+
 #include "includes/Helpers.hlsl"
 #ifndef LIVE_CUBE
     #define LIVE_CUBE 0
@@ -182,6 +192,13 @@
         #define LIN_PREDECODED
     #endif
 #endif
+#ifndef LAMP_SUMS_ON
+    #define LAMP_SUMS_ON 0
+#endif
+#if defined(PS) && defined(DIFFUSE) && LAMP_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s9);
+#endif
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON
 #endif
@@ -191,7 +208,7 @@
         #define RMAOS_NO_FADE
     #endif
 #endif
-#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+#if defined(PS) && (defined(SPECULAR) || defined(NVR_FOLD)) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
     #define PBR_SPEC_FADE
     #ifdef NVR_SLOT_TIGHT
         #define PBR_SPEC_FADE_HIGHLIGHT_ONLY
@@ -303,14 +320,14 @@ struct VS_INPUT {
     float3 binormal : BINORMAL;
     float3 normal : NORMAL;
     float4 uv : TEXCOORD0;
-#if !defined(NO_VERTEX_COLOR) || defined(CLOTH_WIND)
+#if !defined(NO_VERTEX_COLOR) || defined(CLOTH_WIND) || defined(NVR_FOLD)
     float4 vertexColor : COLOR0;
 #endif
 #ifdef SKIN
     float3 blendWeight : BLENDWEIGHT;
     float4 blendIndices : BLENDINDICES;
 #endif
-#if defined(SKIN) && defined(CLOTH_WIND)
+#if defined(CLOTH_WIND)
     float3 clothWeight : TEXCOORD7;
 #endif
 };
@@ -320,6 +337,9 @@ struct VS_INPUT {
 struct VS_OUTPUT {
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;
+#endif
+#if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
+    float4 foldColor : COLOR0;
 #endif
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
@@ -391,7 +411,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
         float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
         #ifdef CLOTH_WIND
-            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+            ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, float3(IN.clothWeight.y, 0.0f, 0.0f), 0.0f, 0.0f, 0.0f);
         #endif
         #ifdef PLANT_WIND
             [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);
@@ -410,7 +430,7 @@ VS_OUTPUT main(VS_INPUT IN) {
             float3 clothOut = 0.0f;
             float4 clothLegL = 0.0f, clothLegR = 0.0f;
             float3 clothUp = 0.0f;
-            [branch] if (ClothA.y > 4.5f) {
+            [branch] if (ClothIsMask5()) {
                 [branch] if (ClothWalk.x > 0.5f) {
                     const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
                     position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
@@ -432,7 +452,7 @@ VS_OUTPUT main(VS_INPUT IN) {
                 }
             }
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);
-            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+            [branch] if (ClothIsMask5() && ClothWalk.x > 0.5f) {
                 position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
                 position.xyz += ClothLegPush(position.xyz, clothOut);
             }
@@ -471,6 +491,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     
     #ifndef NO_VERTEX_COLOR
         OUT.vertexColor = clamp(IN.vertexColor, 0.0f, 1.0f);
+    #endif
+    #if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
+        OUT.foldColor = clamp(IN.vertexColor, 0.0f, 1.0f);
     #endif
 
     #ifndef NO_FOG
@@ -597,7 +620,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #ifndef SKIN
     float3x3 tbn = float3x3(IN.tangent.xyz, IN.binormal.xyz, IN.normal.xyz);
     #ifdef CLOTH_WIND
-        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, float3(IN.clothWeight.y, 0.0f, 0.0f), 0.0f, 0.0f, 0.0f);
     #endif
     #ifdef PLANT_WIND
         [branch] if (PlantA.x < -0.5f) position.xyz += PlantWindMove(position.xyz);
@@ -616,7 +639,7 @@ VS_OUTPUT main(VS_INPUT IN) {
             float3 clothOut = 0.0f;
             float4 clothLegL = 0.0f, clothLegR = 0.0f;
             float3 clothUp = 0.0f;
-            [branch] if (ClothA.y > 4.5f) {
+            [branch] if (ClothIsMask5()) {
                 [branch] if (ClothWalk.x > 0.5f) {
                     const float hw = saturate(IN.clothWeight.x) * ClothWalk.y;
                     position.xyz = lerp(position.xyz, ClothPelvisPoint(IN.position.xyz), hw);
@@ -638,7 +661,7 @@ VS_OUTPUT main(VS_INPUT IN) {
                 }
             }
             ClothWindTBN(position.xyz, tbn, IN.vertexColor, IN.position.xyz, IN.clothWeight.x, clothOut, clothLegL, clothLegR, clothUp);
-            [branch] if (ClothA.y > 4.5f && ClothWalk.x > 0.5f) {
+            [branch] if (ClothIsMask5() && ClothWalk.x > 0.5f) {
                 position.xyz += ClothRingAt(IN.clothWeight.y) * IN.clothWeight.z;
                 position.xyz += ClothLegPush(position.xyz, clothOut);
             }
@@ -718,6 +741,12 @@ VS_OUTPUT main(VS_INPUT IN) {
 #if defined(PS) && (!defined(LIGHTS) || LIGHTS < 4)
 
 struct PS_INPUT {
+#if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
+    float4 foldColor : COLOR0;
+#endif
+#ifdef NVR_LAMP_SUMS
+    float2 vpos : VPOS;
+#endif
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;
 #endif
@@ -749,6 +778,9 @@ struct PS_OUTPUT {
 
 #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
     sampler2D NormalMap : register(s0);
+    #if defined(NVR_FOLD) && defined(DIFFUSE)
+        sampler2D FoldBaseMap : register(s7);
+    #endif
 #else
     sampler2D BaseMap : register(s0);
     sampler2D NormalMap : register(s1);
@@ -832,6 +864,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     
         #if defined(ONLY_LIGHT)
             heatMaterialFactor = max(baseColor.rgb, 0.03f);
+            #ifdef NVR_FOLD
+                const float3 foldTexture = baseColor.rgb;
+            #endif
             baseColor.rgb = 1;
         #endif
     #else
@@ -860,6 +895,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     roughness = HudRainRoughness(roughness);
     normal.xyz = HudRainNormal(normal.xyz);
     SetDiffuseEnergyKeep(normal.xyz, IN.viewDir.xyz, roughness);
+    #ifdef NVR_FOLD
+        const float foldMetalRoughness = SpecularAA(normal.xyz, getMetalRoughness(normal.a));
+        #if defined(DIFFUSE)
+            const float2 foldUvDx = ddx(IN.uv.xy), foldUvDy = ddy(IN.uv.xy);
+        #endif
+    #endif
 
     //if (TESR_DebugVar.y > 0.0) {
     //    OUT.color.a = 1;
@@ -957,6 +998,54 @@ PS_OUTPUT main(PS_INPUT IN) {
         float pointWeight = 0.0f;
     #endif
 
+    #ifdef NVR_FOLD
+    float3 lighting;
+    [branch] if (NVR_SpecFade.y > 0.5f) {
+        #if defined(DIFFUSE)
+            float3 foldStored = tex2Dgrad(FoldBaseMap, IN.uv.xy, foldUvDx, foldUvDy).rgb;
+        #else
+            float3 foldStored = foldTexture;
+        #endif
+        foldStored *= NVR_SpecFade.z > 0.5f ? IN.foldColor.rgb : 1.0f;
+        const float3 foldAlbedo = LinColor(foldStored);
+        const float foldValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+        float foldMetal = 0.0f;
+        [branch] if (getMetalStrength() > 0.0f)
+            foldMetal = getDerivedMetallic(normal.a, foldStored) * (foldValid > 0.0f ? getMetalFade(IN.shadowWorldPos.xyz) : 1.0f);
+        const float foldRough = lerp(roughness, foldMetalRoughness, foldMetal);
+        #if !defined(DIFFUSE)
+            lighting = getSunLightingFull(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            lighting += getAmbientLighting(AmbientColor.rgb, foldAlbedo * (1.0f - foldMetal), shadowGeometricNormal, foldValid);
+            [branch] if (foldMetal > 0.0f)
+                lighting += foldMetal * getMetalAmbient(AmbientColor.rgb, foldAlbedo, foldRough, saturate(dot(normal.xyz, normalize(IN.viewDir.xyz))),
+                                                        0.0f, 0.0f, IN.shadowWorldPos.xyz, shadowGeometricNormal);
+            float foldReach = 1.0f;
+        #else
+            const float foldAtt0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
+            lighting = 0.0f;
+            LAMP_IF(foldAtt0)
+                lighting = getPointLightLightingAttFull(IN.lightDir.xyz, foldAtt0, SHADOWED(PSLightColor[0].rgb, 0, foldAtt0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            float foldReach = foldAtt0;
+        #endif
+        #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
+            const float foldAtt2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            LAMP_IF(foldAtt2)
+                lighting += getPointLightLightingAttFull(IN.light2Dir.xyz, foldAtt2, SHADOWED(PSLightColor[1].rgb, 1, foldAtt2), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            foldReach = max(foldReach, foldAtt2);
+        #endif
+        #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
+            const float foldAtt3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            LAMP_IF(foldAtt3)
+                lighting += getPointLightLightingAttFull(IN.light3Dir.xyz, foldAtt3, SHADOWED(PSLightColor[2].rgb, 2, foldAtt3), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
+            foldReach = max(foldReach, foldAtt3);
+        #endif
+        lighting = min(lighting / max(foldAlbedo, 1e-6f), 60000.0f);
+        #if defined(DIFFUSE)
+            clip((TESR_LampPassTrim.x > 0.0f && foldReach <= 0.0f && BarrelHeatMuzzle.w <= 0.0f) ? -1.0f : 0.0f);
+        #endif
+    }
+    else {
+    #endif
     #if defined(METAL)
         #ifdef SI
             float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
@@ -1015,21 +1104,21 @@ PS_OUTPUT main(PS_INPUT IN) {
         }
     #else
     #if !defined(DIFFUSE) && !defined(POINT)
-        float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+        FOLD_DECL lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
     #else
         // Pointlights only. Attenuate from the object-space lightDistSq.x carried from the VS,
         // not length(IN.lightDir.xyz) -- that vector is tangent-space (TBN-transformed) and its
         // length is only correct if the TBN basis is orthonormal.
         float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
         #if INTERIOR_SHADOWS && defined(POINT)
-            float3 lighting = 0.0f;
+            FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0) {
                 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
                 pointWeight += weight(lighting);
                 lighting *= POINT_SHADOW(0, att0);
             }
         #else
-            float3 lighting = 0.0f;
+            FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0)
                 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, SHADOWED(PSLightColor[0].rgb, 0, att0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
         #endif
@@ -1089,6 +1178,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #endif
+    #ifdef NVR_FOLD
+    }
+    #endif
 
     #if !defined(DIFFUSE) && !defined(POINT)
         lighting += PSLightColor[0].rgb * shadowMultiplier * baseColor.rgb * HudRainLens(IN.lightDir.xyz).y;
@@ -1096,6 +1188,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 finalColor = LinEncode(lighting.rgb);
     #if defined(ONLY_LIGHT)
         [flatten] if (TESR_PassRedirect.x > 0.5f) finalColor = max(lighting.rgb, 0.0f);
+    #endif
+    #ifdef NVR_LAMP_SUMS
+        [branch] if (TESR_PassRedirect.y > 0.5f) {
+            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((IN.vpos + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
+            finalColor = LinEncode(LinColor(runStart) + max(lighting.rgb, 0.0f)) - runStart;
+        }
     #endif
     finalColor = MaterialRulesDebug(finalColor, albedoStored);
     finalColor = RmaosDebug(finalColor, albedoStored);
@@ -1156,9 +1254,9 @@ PS_OUTPUT main(PS_INPUT IN) {
             OUT.color.a = weight(finalColor.rgb);
         #endif
     #elif defined(ONLY_LIGHT)
-        OUT.color.a = baseColor.a;
+        OUT.color.a = ReflMaterialAlpha(baseColor.a);
     #else
-        OUT.color.a = baseColor.a * AmbientColor.a;
+        OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);
     #endif
     #if defined(ONLY_SPECULAR)
         OUT.highlightCopy = OUT.color;
@@ -1419,7 +1517,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if INTERIOR_SHADOWS
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
     #endif
-    OUT.color.a = baseColor.a * AmbientColor.a;
+    OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);
 
     return OUT;
 }

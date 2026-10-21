@@ -25,7 +25,10 @@
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
 #include "../../core/PbrPop.h"
+#include "../../core/PassFamilyView.h"
+#include "../../core/FoldHighlights.h"
 #include "../../core/NewGrass.h"
+#include "../../core/ReflMaterial.h"
 
 namespace RmaosDraw { static void Upload(); }
 
@@ -447,8 +450,8 @@ static bool WorldRenderExpected() {
 }
 
 static bool WorldSceneGuardActive() {
-	return !TheSettingManager->SettingsMain.Main.DisableWorldSceneGuard && !WorldRenderedThisFrame &&
-		WorldMissStreak >= WorldGuardFrames && WorldRenderExpected();
+	if (TheSettingManager->SettingsMain.Main.DisableWorldSceneGuard || WorldRenderedThisFrame || !WorldRenderExpected()) return false;
+	return WorldMissStreak >= WorldGuardFrames || (TheSettingManager->SettingsMain.Main.MenuSceneGuard && TESMain::IsMenuBackgroundReady());
 }
 
 static void ReportWorldRender(BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
@@ -560,7 +563,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	ConstantFilter::BeginFrame(TheRenderManager->device);
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);
 	LampScissor::BeginFrame();
-	PassSums::BeginFrame(TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums"));
+	PassSums::BeginFrame(PassSums::ModeFromSettings());
 	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);
 	PlantWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);
 #if NVR_TEST_TOOLS
@@ -569,11 +572,13 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampsInOnePass::BeginFrame();
 	PbrPop::LodPasses::BeginFrame();
 	PbrPop::SpecFade::BeginFrame();
+	FoldHighlights::BeginFrame();
 	PbrPop::ActorPasses::BeginFrame();
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();
 	PbrPop::SpecLodTest::BeginFrame();
 	PbrPop::PopLog::NewFrame();
+	PassFamilyView::BeginFrame();
 #endif
 	if (SkinShaders::NewSkinEnabled()) {
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->BeginFrame();
@@ -1503,7 +1508,8 @@ namespace MaterialRulesDraw {
 }
 
 namespace RmaosDraw {
-	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0; };
+	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0;
+		float ReflRough = -1.0f; unsigned ReflGeneration = 0; };
 	static std::unordered_map<std::string, Map> ByPath;
 	struct Entry { std::string Path; Map* Found; };
 	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
@@ -1513,6 +1519,7 @@ namespace RmaosDraw {
 	static std::deque<Job> ToRead, Read;
 	static bool WorkerStarted = false, Checked = false, Compiled = false;
 	static float Current[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+	static bool ThisDraw = false;
 	static float FadeSeconds = 0.0f;
 	static double FrameNowMs = 0.0;
 	static int Loaded = 0;
@@ -1642,6 +1649,7 @@ namespace RmaosDraw {
 	}
 
 	static void ForObject(const PointShadowForward::RenderPassView* pass) {
+		ThisDraw = false;
 		if (!Checked) {
 			Checked = true;
 			Compiled = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") != 0;
@@ -1676,6 +1684,12 @@ namespace RmaosDraw {
 		float share = 1.0f;
 		if (on && FadeSeconds > 0.0f) share = std::clamp((float)((FrameNowMs - map->ArrivedMs) / (1000.0 * FadeSeconds)), 0.001f, 1.0f);
 		values[0] = on ? share : 0.0f;
+		ThisDraw = on;
+		if (on && ReflMaterial::Writing && map->ReflGeneration != ReflMaterial::OverrideGeneration) {
+			map->ReflRough = ReflMaterial::RoughFor(map->File);
+			map->ReflGeneration = ReflMaterial::OverrideGeneration;
+		}
+		ReflMaterial::DrawRough = on ? map->ReflRough : -1.0f;
 		Send(values, on ? map->Texture : nullptr);
 	}
 
@@ -2142,6 +2156,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	ReflMaterial::OnShadersBound(TheRenderManager->device);
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);
 	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;
 	TerrainProbe::LastVertex = VertexShader ? VertexShader->Name : nullptr;
@@ -2191,6 +2206,11 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;
 	PointShadowForward::LastVertexShaderNvr = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
 	PointShadowForward::LastPixelShaderNvr = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
+	FoldHighlights::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, PassIndex);
+#if NVR_TEST_TOOLS
+	PassFamilyView::OnBind(TheRenderManager->device, PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr,
+		ShaderSplit::CurrentContext == ShaderSplit::World, PassIndex);
+#endif
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);
@@ -2300,7 +2320,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)
 		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
+	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 #endif
+	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	PlantWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
@@ -2308,16 +2330,29 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
-	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
+	{
+		float fold = 0.0f, foldVertexColor = 0.0f;
+		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
+		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
+	}
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
-	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
+	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World, BarrelHeat::Active) == LampScissor::Skip) {
 		HiddenObjectCulling::Abandon();
 		ClothWind::AfterDraw(TheRenderManager->device);
 		return;
 	}
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;
+#if NVR_TEST_TOOLS
+	PassFamilyView::BeforeDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
+#endif
+	ReflMaterial::ForPass(Pass, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World && RmaosDraw::ThisDraw, TheRenderManager->device);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	ReflMaterial::AfterPass(TheRenderManager->device);
+#if NVR_TEST_TOOLS
+	FoldHighlights::AfterDraw(TheRenderManager->device);
+	PassFamilyView::After(TheRenderManager->device, ShaderSplit::CurrentContext == ShaderSplit::World);
+#endif
 	ClothWind::PassGeometry = nullptr;
 	ClothWind::AfterDraw(TheRenderManager->device);
 #if NVR_TEST_TOOLS
@@ -2334,18 +2369,33 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)
 		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
+	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 #endif
+	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);
-	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);
+	{
+		float fold = 0.0f, foldVertexColor = 0.0f;
+		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
+		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
+	}
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;
+#if NVR_TEST_TOOLS
+	PassFamilyView::BeforeDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World);
+#endif
+	ReflMaterial::ForPass(Pass, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World && RmaosDraw::ThisDraw, TheRenderManager->device);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	ReflMaterial::AfterPass(TheRenderManager->device);
+#if NVR_TEST_TOOLS
+	FoldHighlights::AfterDraw(TheRenderManager->device);
+	PassFamilyView::After(TheRenderManager->device, ShaderSplit::CurrentContext == ShaderSplit::World);
+#endif
 	ClothWind::PassGeometry = nullptr;
 	ClothWind::AfterDraw(TheRenderManager->device);
 	HiddenObjectCulling::After();
@@ -2490,7 +2540,9 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		BarrelHeat::BeginWorldProbe();
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
 		SandstormGlass::BeginWorld();
+		ReflMaterial::BeginWorld(TheRenderManager->renderState, TheRenderManager->device, ReflMaterial::CompiledIn() && TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0);
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		ReflMaterial::EndWorld(TheRenderManager->renderState, TheRenderManager->device);
 		SandstormGlass::EndWorld();
 		PassSums::EndWorld(TheRenderManager->device);
 		if (TheShaderManager->Effects.SkinScattering) {
@@ -2659,7 +2711,17 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	if (WorldSceneGuardActive()) {
 		static bool announced = false;
 		if (!announced) { Logger::Log("UNOFFICIAL world scene guard: no world scene render for %u frames, NVR effects skipped until it returns.", WorldMissStreak); announced = true; }
+#if NVR_TEST_TOOLS
+		SettingShots::BeginFrame();
+#endif
+		BloomEffect* bloom = TheShaderManager->Effects.Bloom;
+		const float bloomFlag = bloom ? bloom->Constants.ExtraData.x : 0.0f;
+		if (bloom && TheSettingManager->SettingsMain.Main.MenuSceneGuard) bloom->Constants.ExtraData.x = 0.0f;
 		ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
+		if (bloom) bloom->Constants.ExtraData.x = bloomFlag;
+#if NVR_TEST_TOOLS
+		if (!DestinationTarget && TheRenderManager->currentRTGroup) SettingShots::Capture(TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface);
+#endif
 		return;
 	}
 

@@ -12,6 +12,9 @@ namespace ClothWeights {
 
 	constexpr double kWeld = 0.05, kStep = 2.0, kArcHug = 4.0, kPelvis = 8.0, kPelvisOff = 6.0, kFree = 8.0, kClear = 5.0, kLayer = 2.0;
 	constexpr int kSmooth = 8;
+	constexpr double kMaxLegs = 400.0;
+	constexpr int kMaxCuts = 512;
+	constexpr double kHangTop = 4.0;
 
 	struct Input {
 		const float* pos = nullptr;
@@ -26,6 +29,8 @@ namespace ClothWeights {
 		std::vector<uint8_t> label;
 		uint32_t welded = 0, body = 0, cloth = 0, torso = 0, cuts = 0, tubes = 0, pads = 0, clothCuts = 0;
 		float crotch = 0.0f;
+		uint32_t moving = 0;
+		float hemDrop = 0.0f;
 	};
 
 	inline double Smooth(double x) { x = x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x); return x * x * (3.0 - 2.0 * x); }
@@ -113,6 +118,7 @@ namespace ClothWeights {
 			}
 		for (auto& l : nbr) { std::sort(l.begin(), l.end()); l.erase(std::unique(l.begin(), l.end()), l.end()); }
 		const double hip = in.hipZ, knee = in.kneeZ, ground = in.groundZ;
+		if (!std::isfinite(hip) || !std::isfinite(knee) || !std::isfinite(ground) || hip <= ground || hip - ground > kMaxLegs) return false;
 		std::vector<double> dax(nw);
 		for (uint32_t v = 0; v < nw; v++) dax[v] = LegAxisDistance(in, wp[v]);
 		struct Cut { uint64_t key; double x, y; };
@@ -122,7 +128,8 @@ namespace ClothWeights {
 		std::vector<Seg> segs;
 		std::unordered_map<uint64_t, std::vector<uint32_t>> at;
 		std::vector<double> poly;
-		for (double z0 = hip - 1.0 + 1e-3; z0 > ground + 1.0; z0 -= kStep) {
+		int cutSteps = 0;
+		for (double z0 = hip - 1.0 + 1e-3; z0 > ground + 1.0 && cutSteps < kMaxCuts; z0 -= kStep, cutSteps++) {
 			segs.clear();
 			for (uint32_t t = 0; t < nt; t++) {
 				const uint32_t vv[3] = { T[t * 3], T[t * 3 + 1], T[t * 3 + 2] };
@@ -287,6 +294,50 @@ namespace ClothWeights {
 		out.weight.resize(n); out.label.resize(n);
 		for (uint32_t i = 0; i < n; i++) { out.weight[i] = (float)w[wid[i]]; out.label[i] = (uint8_t)label[wid[i]]; }
 		for (uint32_t v = 0; v < nw; v++) { if (label[v] == 0) out.torso++; else if (label[v] == 1) out.body++; else out.cloth++; }
+		std::vector<uint32_t> piece(nw, UINT32_MAX);
+		std::vector<double> pieceTop;
+		for (uint32_t s = 0; s < nw; s++) {
+			if (piece[s] != UINT32_MAX) continue;
+			const uint32_t id = (uint32_t)pieceTop.size();
+			double top = wp[s].z;
+			std::vector<uint32_t> stack{ s }; piece[s] = id;
+			while (!stack.empty()) {
+				const uint32_t v = stack.back(); stack.pop_back();
+				top = (std::max)(top, wp[v].z);
+				for (uint32_t u : nbr[v]) if (piece[u] == UINT32_MAX) { piece[u] = id; stack.push_back(u); }
+			}
+			pieceTop.push_back(top);
+		}
+		for (uint32_t v = 0; v < nw; v++) {
+			if (w[v] <= 0.5 || pieceTop[piece[v]] < hip - kHangTop) continue;
+			out.moving++;
+			out.hemDrop = (std::max)(out.hemDrop, (float)(crotch - wp[v].z));
+		}
 		return true;
+	}
+
+	constexpr uint32_t kAutoMoving = 24;
+	constexpr double kAutoHem = 10.0, kFreeFirst = 0.03;
+	inline bool HangsFree(const Result& r, double minShare) {
+		return r.welded && r.moving >= kAutoMoving && (double)r.moving >= minShare * (double)r.welded && r.hemDrop >= kAutoHem;
+	}
+
+	constexpr double kFreeTop = 6.0, kFreeGap = 4.0;
+	inline float FreeShare(const Input& in) {
+		const double hip = in.hipZ, knee = in.kneeZ;
+		uint32_t band = 0, free = 0;
+		for (uint32_t i = 0; i < in.vertices; i++) {
+			const double x = in.pos[i * 3], y = in.pos[i * 3 + 1], z = in.pos[i * 3 + 2];
+			if (z > hip - kFreeTop || z < knee) continue;
+			band++;
+			double off = 1e30;
+			for (int leg = 0; leg < 2; leg++) {
+				double ax, ay, r;
+				AxisPoint(in, leg, z, ax, ay, r);
+				off = (std::min)(off, std::sqrt((x - ax) * (x - ax) + (y - ay) * (y - ay)) - r);
+			}
+			if (off > kFreeGap) free++;
+		}
+		return band ? (float)free / (float)band : 0.0f;
 	}
 }

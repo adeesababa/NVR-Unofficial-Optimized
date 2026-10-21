@@ -31,6 +31,15 @@ sampler2D TESR_ReflectionsGridLight : register(s12) = sampler_state { ADDRESSU =
 sampler2D TESR_ReflectionsGridColor : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 float4 NVR_ReflectionsSky;
 sampler2D NVR_ReflectionsSkyVis : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#ifndef REFL_MATERIAL_ON
+    #define REFL_MATERIAL_ON 0
+#endif
+#if REFL_MATERIAL_ON
+float4 TESR_ReflectionsMaterial;
+sampler2D NVR_ReflectionsMaterial : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+static float SurfaceMetal = 0.0;
+float4 MaterialAt(float2 uv) { return TESR_ReflectionsMaterial.x > 0.5 ? tex2Dlod(NVR_ReflectionsMaterial, float4(uv, 0, 0)) : 0.0; }
+#endif
 texture NoTexture;
 
 static const float DryReflect = TESR_ReflectionsData.x;
@@ -100,11 +109,35 @@ float OpenAbove(float2 uv, float depth) {
 	return top > p.z - max(RoofMargin * perUnit, 0.0001) ? 1.0 : 0.0;
 }
 
+#if REFL_MATERIAL_ON
+float MaterialReflectivity(float2 uv, float depth, float floorShare, float4 material, out float roughness) {
+	float worldZ = TESR_CameraPosition.z + toWorld(uv).z * depth;
+	roughness = max(material.r, 0.02);
+	[branch] if (floorShare > 0.0 && abs(worldZ - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return 0.0;
+	float maxRough = TESR_ReflectionsMaterial.y;
+	float dry = TESR_ReflectionsMaterial.z * (1.0 - smoothstep(0.6 * maxRough, maxRough, material.r));
+	float wetness = Wetness * floorShare;
+	[branch] if (wetness > 0.0 && RoofMaskOn > 0.5) wetness *= OpenAbove(uv, depth);
+	float amount = dry + wetness;
+	roughness = lerp(roughness, WetRoughness, wetness / max(amount, 1.0e-4));
+	SurfaceMetal = material.g;
+	float fade = 1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth);
+	return min(amount, 2.0) * fade;
+}
+#endif
+
 float Reflectivity(float2 uv, float depth, float3 viewNormal, out float roughness) {
 	roughness = DryRoughness;
+#if REFL_MATERIAL_ON
+	SurfaceMetal = 0.0;
+#endif
 	[branch] if (depth >= DrawDistance || depth >= farZ * 0.98 || IsWeapon(uv)) return 0.0;
 	float3 worldNormal = ViewToWorldDir(viewNormal);
 	float floorShare = saturate((worldNormal.z - 0.75) / 0.2);
+#if REFL_MATERIAL_ON
+	float4 material = MaterialAt(uv);
+	[branch] if (material.b > 0.5) return MaterialReflectivity(uv, depth, floorShare, material, roughness);
+#endif
 	[branch] if (floorShare <= 0.0) return 0.0;
 	float worldZ = TESR_CameraPosition.z + toWorld(uv).z * depth;
 	[branch] if (abs(worldZ - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return 0.0;
@@ -124,6 +157,17 @@ float EnvironmentFresnel(float roughness, float NdotV) {
 	float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
 	return 0.04 * ab.x + ab.y;
 }
+
+#if REFL_MATERIAL_ON
+float3 EnvironmentFresnelF0(float roughness, float NdotV, float3 F0) {
+	const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+	const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+	float4 r = roughness * c0 + c1;
+	float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+	float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
+	return F0 * ab.x + ab.y;
+}
+#endif
 
 float3 SkyAlong(float3 worldDir) {
 	float up = saturate(worldDir.z);
@@ -419,6 +463,12 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		float4 env = EnvAlong(normalize(toWorld(uv)), 0.0);
 		return float4(delinearize(env.rgb * env.a), 1.0);
 	}
+#if REFL_MATERIAL_ON
+	[branch] if (abs(DebugView - 7.0) < 0.5) {
+		float4 m = tex2Dlod(NVR_ReflectionsMaterial, float4(uv, 0, 0));
+		return m.b > 0.5 ? float4(m.r, m.g, 0.6 * (1.0 - m.r), 1.0) : float4(color.rgb * 0.15, color.a);
+	}
+#endif
 	float3 N = ViewNormal(uv);
 	float roughness;
 	float amount = Reflectivity(uv, depth, N, roughness);
@@ -443,14 +493,39 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	reflection /= weights;
 
 	float3 V = normalize(ViewPosition(uv, depth));
+#if REFL_MATERIAL_ON
+	float3 litColour = linearize(color.rgb);
+	float3 tint = saturate(litColour / max(max(litColour.r, max(litColour.g, litColour.b)), 1.0e-4));
+	float3 share = saturate(amount * EnvironmentFresnelF0(roughness, saturate(dot(-V, N)), lerp(0.04, tint, SurfaceMetal))) * saturate(reflection.a);
+#else
 	float share = saturate(amount * EnvironmentFresnel(roughness, saturate(dot(-V, N)))) * saturate(reflection.a);
+#endif
 	float3 reflected = Untame(reflection.rgb / max(reflection.a, 1.0e-4));
+#ifndef REFL_SPECOCC_ON
+    #define REFL_SPECOCC_ON 0
+#endif
+#if REFL_SPECOCC_ON
+	[branch] if (TESR_ReflectionsData4.w > 0.0) {
+		float surfaceLight = luma(linearize(color.rgb));
+		float reflectedLight = max(luma(reflected) * TESR_ReflectionsLayout.z, 1.0e-6);
+		float occlusion = lerp(1.0, saturate(surfaceLight / reflectedLight), TESR_ReflectionsData4.w);
+		[branch] if (abs(DebugView - 8.0) < 0.5) return float4(saturate(surfaceLight * 8.0), saturate(reflectedLight * 8.0), occlusion, 1.0);
+		share *= occlusion;
+	}
+#endif
 
 	[branch] if (DebugView > 4.5) return float4(delinearize(reflected), 1.0);
 	[branch] if (DebugView > 1.5) return float4(1.0 - reflection.a, reflection.a, amount * 0.5, 1.0);
 	[branch] if (DebugView > 0.5) return float4(delinearize(reflected * share), color.a);
 
 	float3 lin = linearize(color.rgb);
+#ifndef REFL_ADD_ON
+    #define REFL_ADD_ON 0
+#endif
+#if REFL_ADD_ON
+	[branch] if (TESR_ReflectionsData4.z > 0.0) lin = lin * (1.0 - share * (1.0 - TESR_ReflectionsData4.z)) + reflected * share;
+	else
+#endif
 	lin = lerp(lin, reflected, share);
 	return float4(delinearize(lin), color.a);
 }
@@ -512,3 +587,20 @@ technique Filter {
 		Texture[8] = <NoTexture>;
 	}
 }
+
+#if REFL_MATERIAL_ON
+float4 MaterialCapturePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float a = tex2Dlod(TESR_RenderedBuffer, float4((vpos + 0.5) * TESR_ReciprocalResolution.xy, 0, 0)).a - 2.0;
+	[branch] if (a < 0.0 || a >= 1.0) return 0.0;
+	float metal = floor(a * 4.0);
+	return float4(saturate((a - metal * 0.25) / 0.24), metal / 3.0, 1.0, 1.0);
+}
+
+technique MaterialCapture {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 MaterialCapturePS();
+		Texture[15] = <NoTexture>;
+	}
+}
+#endif

@@ -1978,11 +1978,16 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "SmithCorrelated",    RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "SpecularFade",       RestartRule::Changed },
+	{ "Shaders.PBR.Main",                     "FoldHighlights",     RestartRule::TurnOn },
+	{ "Shaders.PBR.Main",                     "LampSums",           RestartRule::TurnOn },
 	{ "Shaders.PBR.Main",                     "SkylightingMode",    RestartRule::Changed },
 	{ "Shaders.PBR.Metal",                    "CubeReflections",    RestartRule::TurnOn },
 	{ "Shaders.PBR.EnvMaps",                  "CubeReflections",    RestartRule::TurnOn },
 	{ "Shaders.PBR.MaterialRules",            "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.PBR.Rmaos",                    "Enabled",            RestartRule::Changed },
+	{ "Shaders.Reflections.Main",             "MaterialAware",      RestartRule::TurnOn },
+	{ "Shaders.Reflections.Main",             "ReflectAdd",         RestartRule::TurnOn },
+	{ "Shaders.Reflections.Main",             "SpecularOcclusion",  RestartRule::TurnOn },
 	{ "Shaders.PBR.Linear",                   "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.PBR.Linear",                   "PreDecode",          RestartRule::Changed },
 	{ "Shaders.Sky.Physical",                 "Enabled",            RestartRule::TurnOn },
@@ -2131,14 +2136,20 @@ static const char* InactiveReason(const char* section, const char* key) {
 	if (sec == "Shaders.ShadowsInteriors.Forward" && !is({ "Enabled", "ScopeFix" })) {
 		if (NumericSetting(section, "Enabled") == 0.0f)
 			return "Only used with Forward Enabled on (the first switch in this section); with it off the old screen-space lamp shadows are used.";
-		if (is({ "Quality", "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness", "LampSize", "MaxSoftness" }) && NumericSetting(section, "Softness") <= 0.0f)
+		if (is({ "Quality", "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness", "LampSize", "MaxSoftness", "InvisibleLightSize" }) && NumericSetting(section, "Softness") <= 0.0f)
 			return "Only used when Softness is above 0: sharp lamp shadows (Softness 0) take a single lookup.";
 		if (is({ "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "ContactHardening") == 0.0f)
 			return "Only used with ContactHardening on.";
 		if (is({ "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "LampSize") > 0.0f)
 			return "Not used while LampSize is above 0 (LampSize decides how soft each shadow is).";
-		if (is({ "MaxSoftness" }) && NumericSetting(section, "LampSize") <= 0.0f)
-			return "Only used when LampSize is above 0.";
+		if (is({ "MaxSoftness" }) && NumericSetting(section, "LampSize") <= 0.0f && NumericSetting(section, "InvisibleLightSize") <= 0.0f)
+			return "Only used when LampSize or InvisibleLightSize is above 0.";
+		if (is({ "InvisibleLightSize" }) && NumericSetting(section, "InvisibleLightShadowStrength") <= 0.0f)
+			return "Not used while InvisibleLightShadowStrength is 0 (invisible lights then cast no shadow at all).";
+		if (is({ "InvisibleShadowFromLamp" }) && NumericSetting(section, "InvisibleLightShadowStrength") <= 0.0f)
+			return "Not used while InvisibleLightShadowStrength is 0 (invisible lights then cast no shadow at all).";
+		if (is({ "LampModelDistance", "LampModelOwnDistance" }) && NumericSetting(section, "LampModelShadows") != 0.0f)
+			return "Only used with LampModelShadows off.";
 		if (is({ "FixtureDistance" }) && NumericSetting(section, "InvisibleLightShadowStrength") >= 1.0f)
 			return "Only used when InvisibleLightShadowStrength is below 1.";
 		if (is({ "DarkeningBlur", "MaskHalfRes" }) && NumericSetting(section, "KeepDarkening") == 0.0f)
@@ -2151,6 +2162,10 @@ static const char* InactiveReason(const char* section, const char* key) {
 		return "Only used while Ambient Light is on with GridBounce above 0 (Ambient Light > Main): it reads the light grid that makes.";
 	if (sec == "Shaders.Reflections.Main" && is({ "GridBrightness" }) && NumericSetting(section, "GridFallback") == 0.0f)
 		return "Only used with GridFallback on.";
+	if (sec == "Shaders.Reflections.Main" && is({ "MaterialAware", "MaterialReflect", "MaterialMaxRoughness" }) && NumericSetting("Shaders.PBR.Rmaos", "Enabled") == 0.0f)
+		return "Only used with the _rmaos maps on ([Shaders.PBR.Rmaos] Enabled): the materials come from them.";
+	if (sec == "Shaders.Reflections.Main" && is({ "MaterialReflect", "MaterialMaxRoughness" }) && NumericSetting(section, "MaterialAware") != 1.0f)
+		return "Only used with MaterialAware 1.";
 	return nullptr;
 }
 
