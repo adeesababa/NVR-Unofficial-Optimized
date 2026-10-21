@@ -36,7 +36,7 @@ float4 TESR_WaterSettings;           // x: height of the water in view
 float4 TESR_ReflectionsData;         // x: dry reflectivity of floors now, y: wetness now (0-1), z: dry roughness, w: wet roughness
 float4 TESR_ReflectionsData2;        // x: ray length (game units), y: steps, z: thickness scale, w: noise frame offset
 float4 TESR_ReflectionsData3;        // x: history weight (0 = none this frame), y: blur radius, z: debug view, w: 1 = sky fallback
-float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), zw: unused
+float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), z: ReflectAdd (REFL_ADD_ON), w: unused
 float4x4 TESR_ShadowCameraToLightTransformOrtho;   // camera-relative world position -> the top-down ortho map (as Wet World)
 float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV
 float4x4 TESR_ReflectionsReproject;  // camera-relative world position -> last frame's clip space
@@ -629,6 +629,19 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	[branch] if (DebugView > 0.5) return float4(delinearize(reflected * share), color.a);
 
 	float3 lin = linearize(color.rgb);
+#ifndef REFL_ADD_ON
+    #define REFL_ADD_ON 0
+#endif
+#if REFL_ADD_ON
+	// UNOFFICIAL 2026-10-21 ReflectAdd ([Shaders.Reflections.Main], compiled in only when above 0 at startup: REFL_ADD_ON): the reflection
+	// is ADDED to the surface's own lighting instead of replacing that share of it. Replacing (the lerp below) swaps part of the floor's
+	// lit colour for the reflection; indoors the reflection is rough, about the room's average, so where a lamp lights the floor little
+	// changed (and the lamp's own highlight was dulled), while in shadow the gap was large: the user saw floor reflections "way more
+	// visible in shadow". Adding is what a highlight does (the surface's diffuse light stays, the specular reflection comes on top).
+	// ReflectAdd 1: lin + reflected x share; 0..1: only (1 - ReflectAdd) of the share is taken out of the surface's colour.
+	[branch] if (TESR_ReflectionsData4.z > 0.0) lin = lin * (1.0 - share * (1.0 - TESR_ReflectionsData4.z)) + reflected * share;
+	else
+#endif
 	lin = lerp(lin, reflected, share);
 	return float4(delinearize(lin), color.a);
 }

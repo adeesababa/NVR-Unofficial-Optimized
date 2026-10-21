@@ -28,6 +28,7 @@
 
 namespace ReflMaterial {
 	inline int Startup = -1;					// MaterialAware > 0 and the _rmaos maps on, read once (the shaders are compiled with it)
+	inline int AddStartup = -1;					// UNOFFICIAL 2026-10-21: [Shaders.Reflections.Main] ReflectAdd > 0 at startup (REFL_ADD_ON in the effect)
 	inline bool Writing = false;				// this frame's world scene writes the material (MaterialAware > 0 now)
 	inline float Current = -1.0f;				// c212.x as last sent (-1: send on the next pass)
 	inline bool StatesSet = false;
@@ -50,6 +51,11 @@ namespace ReflMaterial {
 			Startup = TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0 &&
 				TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? 1 : 0;
 		return Startup > 0;
+	}
+
+	inline bool AddCompiledIn() {
+		if (AddStartup < 0) AddStartup = TheSettingManager->GetSettingF("Shaders.Reflections.Main", "ReflectAdd") > 0.0f ? 1 : 0;
+		return AddStartup > 0;
 	}
 
 	inline void Send(IDirect3DDevice9* device, float v) {

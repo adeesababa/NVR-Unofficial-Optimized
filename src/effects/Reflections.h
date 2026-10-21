@@ -31,6 +31,7 @@ public:
 		int		MaterialAware;	// UNOFFICIAL 2026-10-20: 1 = the _rmaos materials decide what reflects (core/ReflMaterial.h); 2 = filled, not used (test)
 		float	MaterialReflect;	// how much a smooth known material reflects
 		float	MaterialMaxRoughness;	// known materials at least this rough do not reflect
+		float	ReflectAdd;		// UNOFFICIAL 2026-10-21: 0 the reflection replaces its share of the surface's colour (as before), 1 it is added on top
 	};
 	SettingsStruct	Settings;
 

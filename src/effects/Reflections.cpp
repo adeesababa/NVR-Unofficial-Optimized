@@ -29,6 +29,8 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.MaterialAware = ReflMaterial::CompiledIn() ? std::clamp(TheSettingManager->GetSettingI(section, "MaterialAware"), 0, 2) : 0;
 	Settings.MaterialReflect = std::clamp(TheSettingManager->GetSettingF(section, "MaterialReflect"), 0.0f, 2.0f);
 	Settings.MaterialMaxRoughness = std::clamp(TheSettingManager->GetSettingF(section, "MaterialMaxRoughness"), 0.05f, 1.0f);
+	// UNOFFICIAL 2026-10-21 ReflectAdd: live, but only compiled into the effect when above 0 at startup (ReflMaterial::AddCompiledIn).
+	Settings.ReflectAdd = ReflMaterial::AddCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "ReflectAdd"), 0.0f, 1.0f) : 0.0f;
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -146,6 +148,7 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data3.z = (float)Settings.DebugView;
 	Constants.Data3.w = exterior && Settings.SkyFallback ? 1.0f : 0.0f;
 	Constants.Data4.x = Settings.DrawDistance;
+	Constants.Data4.z = Settings.ReflectAdd;
 	// UNOFFICIAL 2026-10-20 MaterialAware: x is set again by CaptureMaterial (1 only when the buffer was filled this frame).
 	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect, 0.0f);
 }
