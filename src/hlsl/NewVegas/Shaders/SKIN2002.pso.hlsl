@@ -39,6 +39,7 @@ float4 TESR_DebugVar;
 
 // Structures:
 #include "Includes/PBRScale.hlsl"
+#define SHADOW_SKIN_SOFTNESS 1   // UNOFFICIAL 2026-10-20 CharacterShadowSoftness (Includes/Shadow.hlsl ShadowMinPenumbra)
 #include "Includes/Shadow.hlsl"
 
 struct VS_INPUT {

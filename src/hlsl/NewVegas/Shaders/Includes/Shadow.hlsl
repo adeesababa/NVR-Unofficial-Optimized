@@ -206,8 +206,15 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 // least half-width, in world units, a sun shadow edge on skin fades over (real skin carries light a few millimetres past a shadow
 // line; without it a face showed every stair step of the shadow map and the straight edges of the head's triangles, hard, and
 // moving with every turn of the head). Used by the contact-hardening lookup below (PCF, Mode 3; declared in every mode so the
-// callers need no guard), only where its search finds an edge near the point. 0 (everything else): unchanged.
-static float ShadowMinPenumbra = 0.0f;
+// callers need no guard), only where its search finds an edge near the point. Compiled in only for the skin shaders, which define
+// SHADOW_SKIN_SOFTNESS 1 before including this file: everywhere else none of it is compiled and the shaders are
+// exactly what they were (a static the compiler cannot prove stays 0 cost the hair shaders 5 slots).
+#ifndef SHADOW_SKIN_SOFTNESS
+    #define SHADOW_SKIN_SOFTNESS 0
+#endif
+#if SHADOW_SKIN_SOFTNESS
+    static float ShadowMinPenumbra = 0.0f;
+#endif
 
 #if SHADOW_FIXED_MODE == 3
 // UNOFFICIAL 2026-10-14 (user: the stripes over the power armour came back, low sun): how far the receiver's own surface falls
@@ -488,7 +495,9 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
         // UNOFFICIAL 2026-10-20 skin (ShadowMinPenumbra): an edge near the point fades over at least that width, up to the search's
         // reach (a disc wider than the search let points just past its reach take the plain lookup: a hard seam round shadows).
+        #if SHADOW_SKIN_SOFTNESS
         if (casters > 0.5f && casters < 4.5f) radius = max(radius, min(ShadowMinPenumbra * uvPerWorld, 0.73f * maxRadius));
+        #endif
     }
     // UNOFFICIAL 2026-10-15 [Shaders.ContactHardening.Main] Smooth (TESR_ContactHardeningData.z), against the aliasing seen
     // with contact hardening: (1) the plain 3 x 3 (under a texel) and the disc (over it) no longer switch at one penumbra
@@ -618,7 +627,9 @@ float3 GetShadowGeometricNormal(float3 worldPos) {
 // shadowWorldPos) instead. Off, or without one (a vanilla vertex shader): the flat normal, as before. Called only by the skin
 // shaders, just before their GetSunShadow: it also sets the skin's shadow edge softness (ShadowMinPenumbra, 0 when off).
 float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
+#if SHADOW_SKIN_SOFTNESS
     ShadowMinPenumbra = TESR_ShadowForwardData.z;
+#endif
     float len2 = dot(smoothNormal.xyz, smoothNormal.xyz);
     return (TESR_ShadowForwardData.y > 0.0f && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
 }
@@ -641,7 +652,11 @@ float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float4 offsetD
     float offset = c < 0.5f ? offsetDistance.x : c < 1.5f ? offsetDistance.y : c < 2.5f ? offsetDistance.z : offsetDistance.w;
     float3 position = worldPos + offset * worldNormal;
 #if CONTACT_HARDENING
+#if SHADOW_SKIN_SOFTNESS
     return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && (TESR_ContactHardeningData.x > 0.0f || ShadowMinPenumbra > 0.0f));
+#else
+    return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && TESR_ContactHardeningData.x > 0.0f);
+#endif
 #else
     return SampleShadowAtlas(mul(float4(position, 1.0f), lightTransform), quadrant, bias, 0.0f);
 #endif
