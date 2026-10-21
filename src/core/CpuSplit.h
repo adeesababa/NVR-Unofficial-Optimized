@@ -421,7 +421,17 @@ namespace CpuSplit {
 			if (InExe(target)) { sprintf_s(note, noteSize, "%08X calls %08X inside the game, expected %08X", s.site, target, s.expected); return false; }
 			char module[MAX_PATH];
 			ModuleName(target, module, sizeof(module));
-			if (!strcmp(module, "?")) { sprintf_s(note, noteSize, "%08X calls %08X in no module", s.site, target); return false; }
+			if (!strcmp(module, "?")) {
+				// Not in a module: a hook's stub in memory it allocated (FNVProbe's call-site stubs, trampolines). Chained only when
+				// that memory is committed and executable.
+				MEMORY_BASIC_INFORMATION mbi = {};
+				const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+				if (!VirtualQuery((LPCVOID)target, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || !(mbi.Protect & exec)) {
+					sprintf_s(note, noteSize, "%08X calls %08X in no module and not executable memory", s.site, target);
+					return false;
+				}
+				strcpy_s(module, "a hook stub");
+			}
 			sprintf_s(note, noteSize, "%08X via %s", s.site, module);	// chained through another plugin's hook
 		}
 		Targets[i] = target;
@@ -443,7 +453,7 @@ namespace CpuSplit {
 			char note[160];
 			if (PatchSite(i, note, sizeof(note))) {
 				done++;
-				if (note[0]) { chained++; if (chainedText.size() < 900) { chainedText += " "; chainedText += note; } }
+				if (note[0]) { chained++; if (chainedText.size() < 600) { chainedText += " "; chainedText += note; } }
 			}
 			else { refused++; if (refusedText.size() < 900) { refusedText += " "; refusedText += note; } }
 		}

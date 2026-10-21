@@ -46,6 +46,8 @@ namespace CpuSampler {
 
 	// this shot's counts (sampler thread only)
 	inline unsigned Counts[kThreads][kRows][kOwners];
+	inline unsigned KernelCounts[kThreads][kRows][kOwners];	// of those, the thread was inside a Windows kernel call (waiting or a syscall)
+	inline int Wow64Cpu = -1;	// module index of wow64cpu.dll (the 32-bit side of every syscall)
 	inline unsigned Taken[kThreads];
 	inline std::unordered_map<unsigned long long, unsigned> Leaves;	// (thread << 56 | bucket << 40 | owner << 32 | address) -> samples
 	inline std::unordered_map<unsigned long long, unsigned> Callers;	// (bucket << 40 | caller owner << 32 | return address) -> driver samples
@@ -83,6 +85,7 @@ namespace CpuSampler {
 				ModuleBase[m] = base; ModuleSize[m] = size;
 				if (!WideCharToMultiByte(CP_ACP, 0, me.szModule, -1, ModuleNames[m], 64, nullptr, nullptr)) strcpy_s(ModuleNames[m], "?");
 				ModuleKind[m] = KindOf(ModuleNames[m]);
+				if (!_stricmp(ModuleNames[m], "wow64cpu.dll")) Wow64Cpu = m;
 				if (Out) fprintf(Out, "M %08lX %08lX %s\n", (unsigned long)base, (unsigned long)size, ModuleNames[m]);
 			}
 			if (m < 0) continue;
@@ -194,6 +197,9 @@ namespace CpuSampler {
 		default: break;
 		}
 		Counts[thread][bucket][o]++;
+		// In the kernel: stopped in wow64cpu.dll (the transition) or in Windows code right after a call instruction (a syscall stub's
+		// return point; ordinary code is almost never caught exactly there).
+		if (module >= 0 && (module == Wow64Cpu || (leafKind == kSystem && AfterCall(ctx.Eip)))) KernelCounts[thread][bucket][o]++;
 		Taken[thread]++;
 		Leaves[((unsigned long long)thread << 56) | ((unsigned long long)bucket << 40) | ((unsigned long long)o << 32) | leaf]++;
 		if (caller) Callers[((unsigned long long)thread << 56) | ((unsigned long long)bucket << 40) | ((unsigned long long)o << 32) | caller]++;
@@ -214,7 +220,7 @@ namespace CpuSampler {
 		for (unsigned t = 0; t < kThreads; t++)
 			for (unsigned b = 0; b < kRows; b++)
 				for (unsigned o = 0; o < kOwners; o++)
-					if (Counts[t][b][o]) fprintf(Out, "B %u %s|%s %u\n", t, b < CpuSplit::kBucketCount ? CpuSplit::BucketNames[b] : "(none)", OwnerNames[o], Counts[t][b][o]);
+					if (Counts[t][b][o]) fprintf(Out, "B %u %s|%s %u\n", t, b < CpuSplit::kBucketCount ? CpuSplit::BucketNames[b] : "(none)", OwnerNames[o], Counts[t][b][o], KernelCounts[t][b][o]);
 		auto dump = [](const char* tag, std::unordered_map<unsigned long long, unsigned>& map, size_t keep) {
 			std::vector<std::pair<unsigned long long, unsigned>> v(map.begin(), map.end());
 			std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
@@ -230,6 +236,7 @@ namespace CpuSampler {
 		dump("C", Callers, 600);
 		fflush(Out);
 		memset(Counts, 0, sizeof(Counts));
+		memset(KernelCounts, 0, sizeof(KernelCounts));
 		memset(Taken, 0, sizeof(Taken));
 		Leaves.clear(); Callers.clear();
 		PauseSumUs = PauseMaxUs = 0.0; PauseCount = 0;
