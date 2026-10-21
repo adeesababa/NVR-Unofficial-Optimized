@@ -698,6 +698,8 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
 	SettingsMain.Main.ShaderWarmUp = boolSetting(performance, "ShaderWarmUp", false);
 	SettingsMain.Main.HiddenObjectCulling = boolSetting(performance, "HiddenObjectCulling", false);
+	SettingsMain.Main.PreDecodeCache = boolSetting(performance, "PreDecodeCache", false);	// UNOFFICIAL 2026-10-21 cpulimits
+	SettingsMain.Main.FastCasterHash = boolSetting(performance, "FastCasterHash", false);
 	SettingsMain.Main.TrimLampPasses = boolSetting(performance, "TrimLampPasses", true);
 	{
 		Configuration::ConfigNode node;
@@ -709,6 +711,7 @@ void SettingManager::LoadSettings() {
 		SettingsMain.Main.NeonSpillSelfTest = Config.FillNode(&node, "Shaders.BounceLight.Main", "NeonSpillSelfTest") ? node.BoolValue : false;
 	}
 	SettingsMain.Main.LampScissor = boolSetting(performance, "LampScissor", true);
+	SettingsMain.Main.LampScissorExact = boolSetting(performance, "LampScissorExact", true);
 	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
 	SettingsMain.Main.ReShadeNVRDepth = boolSetting(performance, "ReShadeNVRDepth", true);
 	SettingsMain.Main.ReShadeBeforeHUD = boolSetting(performance, "ReShadeBeforeHUD", true);

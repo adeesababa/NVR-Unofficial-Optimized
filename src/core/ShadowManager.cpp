@@ -82,18 +82,46 @@ static UInt64 HashPointShadowBytes(UInt64 hash, const void* data, size_t size) {
 	return hash;
 }
 
+// UNOFFICIAL 2026-10-21 FastCasterHash ([Main.Main.Performance], cpulimits; bench\deep-roadmap\CPU-LIMITS.md). The byte-wise 64-bit
+// FNV above costs a call to the compiler's 64-bit multiply helper (_allmul, 32-bit build) for every byte: ~90 bytes per caster, for
+// every lamp the caster is near, every frame. The CPU sampler put ~3 % of the main thread in the Ultra-Luxe here (the hash, _allmul,
+// RecentlyMoved). With it on: the same bytes, four at a time, in two 32-bit lanes (FNV-1a and a Murmur-style mix) that use the CPU's
+// own multiply, and a caster's hash is made once per frame however many lamps it is near (CasterMotion keeps it). Only what a lamp
+// redraws on depends on the hash: a change is still caught unless both 32-bit lanes collide (about 1 in 2^64).
+static bool FastCasterHashOn() { return TheSettingManager->SettingsMain.Main.FastCasterHash; }
+static UInt64 HashPointShadowWords(UInt64 hash, const void* data, size_t size) {
+	const unsigned char* bytes = static_cast<const unsigned char*>(data);
+	UInt32 a = (UInt32)hash, b = (UInt32)(hash >> 32);
+	size_t i = 0;
+	for (; i + 4 <= size; i += 4) {
+		UInt32 w;
+		memcpy(&w, bytes + i, sizeof(w));
+		a = (a ^ w) * 16777619u;
+		b = (b ^ w) * 0x5BD1E995u; b ^= b >> 15;
+	}
+	for (; i < size; ++i) {
+		a = (a ^ bytes[i]) * 16777619u;
+		b = (b ^ bytes[i]) * 0x5BD1E995u; b ^= b >> 15;
+	}
+	return ((UInt64)b << 32) | a;
+}
+static UInt64 HashCasterBytes(UInt64 hash, const void* data, size_t size) {
+	return FastCasterHashOn() ? HashPointShadowWords(hash, data, size) : HashPointShadowBytes(hash, data, size);
+}
+
 // UNOFFICIAL RedrawActorsOnly (2026-10-08): rigid geometry that moves -- a held gun, a hat, a door swinging, a box being
 // pushed -- counts as moving while its world transform keeps changing and for MovingSettleFrames after it last changed.
 // Without this, people's rigid parts were in the static layer and changed it every frame, so it was redrawn every frame.
 // Each geometry is looked at once per frame (SkinnedBoundFrame); first sight counts as still.
-struct CasterMotion { UInt32 seen = 0, changed = 0; UInt64 transform = 0; bool known = false; };
+struct CasterMotion { UInt32 seen = 0, changed = 0; UInt64 transform = 0; bool known = false; UInt32 hashFrame = 0; UInt64 casterHash = 0; bool hashKnown = false; };
 static std::unordered_map<NiGeometry*, CasterMotion> CasterMotions;
 static const UInt32 MovingSettleFrames = 60;
 
-static bool RecentlyMoved(NiGeometry* geo) {
+static bool RecentlyMoved(NiGeometry* geo, CasterMotion** out = nullptr) {
 	CasterMotion& motion = CasterMotions[geo];
+	if (out) *out = &motion;
 	if (motion.seen != SkinnedBoundFrame || !motion.known) {
-		const UInt64 transform = HashPointShadowBytes(1469598103934665603ULL, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		const UInt64 transform = HashCasterBytes(1469598103934665603ULL, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
 		if (motion.known && transform != motion.transform) motion.changed = SkinnedBoundFrame;
 		motion.transform = transform;
 		motion.known = true;
@@ -105,10 +133,11 @@ static bool RecentlyMoved(NiGeometry* geo) {
 // A caster that moves: skinned geometry (people, creatures), wind-blown SpeedTree leaves (both move without their transform
 // changing), and rigid geometry that moved lately (RecentlyMoved). They make a lamp's caster list dynamic, and
 // RedrawActorsOnly draws them apart from the rest (RenderShadowCubeMap).
-static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade) {
+static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade, CasterMotion** motion = nullptr) {
+	if (motion) *motion = nullptr;
 	if (!geo) return false;
 	if (geo->skinInstance || (shade && shade->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf)) return true;
-	return RecentlyMoved(geo);
+	return RecentlyMoved(geo, motion);
 }
 
 static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& staticCasters) {
@@ -121,29 +150,40 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
+	// FastCasterHash switched (live): its hashes differ from the old ones, so every caster's motion starts again from 'first sight'
+	// (counts as still) instead of looking moved for MovingSettleFrames; each lamp's set hash changes once (one redraw).
+	const bool fast = FastCasterHashOn();
+	static bool fastBefore = false;
+	if (fast != fastBefore) { fastBefore = fast; CasterMotions.clear(); }
 
 	// The hash covers only the casters that never move, so with moving ones it describes what RedrawActorsOnly keeps in
 	// the static cube map.
 	for (auto entry = light->kGeometryList.start; entry; entry = entry->next) {
 		NiGeometry* geo = entry->data;
 		NiShadeProperty* shade = geo ? static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade)) : nullptr;
-		if (IsMovingCaster(geo, shade)) {
+		CasterMotion* motion = nullptr;
+		if (IsMovingCaster(geo, shade, &motion)) {
 			staticCasters = false;
 			continue;
 		}
+		if (fast && motion && motion->hashKnown && motion->hashFrame == SkinnedBoundFrame) {	// FastCasterHash: made for another lamp this frame
+			hash = PointShadowAddCasterHash(hash, motion->casterHash);
+			continue;
+		}
 		UInt64 casterHash = 1469598103934665603ULL;
-		casterHash = HashPointShadowBytes(casterHash, &geo, sizeof(geo));
+		casterHash = HashCasterBytes(casterHash, &geo, sizeof(geo));
 		if (!geo) continue;
-		casterHash = HashPointShadowBytes(casterHash, &geo->m_flags, sizeof(geo->m_flags));
-		casterHash = HashPointShadowBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
-		if (geo->m_kWorldBound) casterHash = HashPointShadowBytes(casterHash, geo->m_kWorldBound, sizeof(*geo->m_kWorldBound));
+		casterHash = HashCasterBytes(casterHash, &geo->m_flags, sizeof(geo->m_flags));
+		casterHash = HashCasterBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		if (geo->m_kWorldBound) casterHash = HashCasterBytes(casterHash, geo->m_kWorldBound, sizeof(*geo->m_kWorldBound));
 
 		NiMaterialProperty* material = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
 		if (shade) {
-			casterHash = HashPointShadowBytes(casterHash, &shade->m_usFlags, sizeof(shade->m_usFlags));
-			casterHash = HashPointShadowBytes(casterHash, &shade->m_eShaderType, sizeof(shade->m_eShaderType));
+			casterHash = HashCasterBytes(casterHash, &shade->m_usFlags, sizeof(shade->m_usFlags));
+			casterHash = HashCasterBytes(casterHash, &shade->m_eShaderType, sizeof(shade->m_eShaderType));
 		}
-		if (material) casterHash = HashPointShadowBytes(casterHash, &material->fAlpha, sizeof(material->fAlpha));
+		if (material) casterHash = HashCasterBytes(casterHash, &material->fAlpha, sizeof(material->fAlpha));
+		if (fast && motion) { motion->casterHash = casterHash; motion->hashFrame = SkinnedBoundFrame; motion->hashKnown = true; }
 		hash = PointShadowAddCasterHash(hash, casterHash);
 	}
 }

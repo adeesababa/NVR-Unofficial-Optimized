@@ -125,12 +125,35 @@ namespace ConstantFilter {
 		using namespace LinearPreDecode;
 		if (CopiesValid && CopyGamma == Gamma && SourceKnown[r] && !memcmp(Source[r], v, sizeof(float) * 4)) return;
 		float d[4];
-		Decode(d, v, Gamma);
+		DecodeFast(d, v, Gamma);
 		SendPixel(self, CopyBase + r, d, 1);
 		memcpy(Source[r], v, sizeof(float) * 4);
 		SourceKnown[r] = true;
 		StatCopies++;
 	}
+
+	// UNOFFICIAL 2026-10-21 PreDecodeCache: the decoded copies of one call (or one refresh) go up in one upload per run of consecutive
+	// registers (c66-c75 in one piece when the game sends c3-c12 together) instead of one upload per register; the device ends with
+	// the same values. A copy whose source did not change is left out, as in PreDecodeCopy.
+	struct PreDecodeRun {
+		IDirect3DDevice9* device;
+		UINT first = 0, n = 0;
+		float values[LinearPreDecode::Last + 1][4];
+		explicit PreDecodeRun(IDirect3DDevice9* d) : device(d) {}
+		~PreDecodeRun() { Flush(); }
+		void Flush() { if (n) SendPixel(device, LinearPreDecode::CopyBase + first, &values[0][0], n); n = 0; }
+		void Add(UINT r, const float* v) {
+			using namespace LinearPreDecode;
+			if (CopiesValid && CopyGamma == Gamma && SourceKnown[r] && !memcmp(Source[r], v, sizeof(float) * 4)) { Flush(); return; }
+			if (n && first + n != r) Flush();
+			if (!n) first = r;
+			DecodeFast(values[n], v, Gamma);
+			memcpy(Source[r], v, sizeof(float) * 4);
+			SourceKnown[r] = true;
+			StatCopies++;
+			n++;
+		}
+	};
 
 	// A LIN_PREDECODED shader is now bound: read the game's c1-c12 back from the device (the runtime's own copy, so it is the
 	// truth whatever wrote them: the game, a state block, anyone) and remake every copy that does not match.
@@ -141,7 +164,11 @@ namespace ConstantFilter {
 		if (!CopiesValid || CopyGamma != Gamma) for (UINT r = 0; r <= Last; r++) SourceKnown[r] = false;
 		CopiesValid = true;	// (before the copies: PreDecodeCopy compares against the sources only while valid)
 		CopyGamma = Gamma;
-		for (UINT r = 1; r <= Last; r++) if (Decodes(r)) PreDecodeCopy(self, r, game + r * 4);
+		if (UseCache) {	// UNOFFICIAL 2026-10-21 PreDecodeCache
+			PreDecodeRun run(self);
+			for (UINT r = 1; r <= Last; r++) { if (Decodes(r)) run.Add(r, game + r * 4); else run.Flush(); }
+		}
+		else for (UINT r = 1; r <= Last; r++) if (Decodes(r)) PreDecodeCopy(self, r, game + r * 4);
 		StatRefreshes++;
 	}
 
@@ -167,6 +194,13 @@ namespace ConstantFilter {
 			// them, and the draws that followed used the overwritten values until the next shader bind).
 			if (LinearPreDecode::Active) {
 				if (!LinearPreDecode::CopiesValid) PreDecodeRefresh(self);	// (reads back what this call just set too)
+				else if (start <= LinearPreDecode::Last && LinearPreDecode::UseCache) {	// UNOFFICIAL 2026-10-21 PreDecodeCache
+					PreDecodeRun run(self);
+					for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++) {
+						if (LinearPreDecode::Decodes(start + i)) run.Add(start + i, data + i * 4);
+						else run.Flush();
+					}
+				}
 				else if (start <= LinearPreDecode::Last)
 					for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++)
 						if (LinearPreDecode::Decodes(start + i)) PreDecodeCopy(self, start + i, data + i * 4);
@@ -285,6 +319,7 @@ namespace ConstantFilter {
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
+		LinearPreDecode::UseCache = TheSettingManager->SettingsMain.Main.PreDecodeCache;	// UNOFFICIAL 2026-10-21 (cpulimits)
 		// UNOFFICIAL LinearPreDecode: the gamma changed (live setting): the copies are remade at the next bind of such a shader.
 		if (LinearPreDecode::CopyGamma != LinearPreDecode::Gamma) LinearPreDecode::CopiesValid = false;
 		const bool enabled = TheSettingManager->SettingsMain.Main.SkipRedundantConstants;	// read by SettingManager::LoadSettings, not by name each frame
@@ -313,9 +348,11 @@ namespace ConstantFilter {
 				StatPixelCalls > 0 ? 100.0 * StatPixelSkipped / StatPixelCalls : 0.0, StatVertexCalls * perFrame, StatVertexSkipped * perFrame,
 				StatVertexCalls > 0 ? 100.0 * StatVertexSkipped / StatVertexCalls : 0.0, StatWipes * perFrame, StatPauses);
 			if (!LinearPreDecode::Shaders.empty())	// UNOFFICIAL LinearPreDecode
-				Logger::Log("LINEAR PREDECODE: %u shaders, %.0f decoded copies and %.0f copy refreshes per frame (gamma %.2f), %u read-back failures | self-check: %u of %u finished draw runs had a stale copy",
+				Logger::Log("LINEAR PREDECODE: %u shaders, %.0f decoded copies and %.0f copy refreshes per frame (gamma %.2f), %u read-back failures | self-check: %u of %u finished draw runs had a stale copy | PreDecodeCache %s: %.0f channel lookups per frame, %.1f%% from the table",
 					(unsigned)LinearPreDecode::Shaders.size(), LinearPreDecode::StatCopies * perFrame, LinearPreDecode::StatRefreshes * perFrame, LinearPreDecode::Gamma,
-					LinearPreDecode::StatReadFailures, LinearPreDecode::StatMismatches, LinearPreDecode::StatChecks);
+					LinearPreDecode::StatReadFailures, LinearPreDecode::StatMismatches, LinearPreDecode::StatChecks, LinearPreDecode::UseCache ? "on" : "off",
+					LinearPreDecode::StatPowLookups * perFrame, LinearPreDecode::StatPowLookups ? 100.0 * (LinearPreDecode::StatPowLookups - LinearPreDecode::StatPowMisses) / LinearPreDecode::StatPowLookups : 0.0);
+			LinearPreDecode::StatPowLookups = LinearPreDecode::StatPowMisses = 0;
 			LinearPreDecode::StatMismatches = LinearPreDecode::StatChecks = 0;
 			LinearPreDecode::StatCopies = LinearPreDecode::StatRefreshes = 0;
 			StatFrames = 0;
