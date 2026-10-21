@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include "GpuProfiler.h"
 #include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17
+#include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -160,6 +161,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL _rmaos maps (Includes/Object.hlsl, ObjectTemplate.hlsl, Render.cpp RmaosDraw): compiled in only when on at
 	// startup, so that otherwise the object shaders are exactly what they were.
 	AppendDefine("RMAOS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? "1" : "0");
+	// UNOFFICIAL 2026-10-20 MaterialAware reflections (Includes/Object.hlsl ReflMaterialAlpha, effects/Reflections.cpp): the objects' first
+	// passes leave their _rmaos material in the scene's alpha. Defined only when on at startup (with the _rmaos maps): off, the define
+	// list and the shaders are exactly what they were (the list is near its 34-entry cap).
+	if (ReflMaterial::CompiledIn())
+		AppendDefine("REFL_MATERIAL_ON", "1");
 
 	// UNOFFICIAL rain on the first-person weapon (Includes/HudRain.hlsl, ObjectTemplate.hlsl, Render.cpp HudRain): compiled in only
 	// when Wet World's HudDrops is above 0 at startup.

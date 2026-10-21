@@ -36,9 +36,9 @@ float4 TESR_WaterSettings;           // x: height of the water in view
 float4 TESR_ReflectionsData;         // x: dry reflectivity of floors now, y: wetness now (0-1), z: dry roughness, w: wet roughness
 float4 TESR_ReflectionsData2;        // x: ray length (game units), y: steps, z: thickness scale, w: noise frame offset
 float4 TESR_ReflectionsData3;        // x: history weight (0 = none this frame), y: blur radius, z: debug view, w: 1 = sky fallback
-float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), zw: unused
+float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), z: ReflectAdd (REFL_ADD_ON), w: SpecularOcclusion (REFL_SPECOCC_ON)
 float4x4 TESR_ShadowCameraToLightTransformOrtho;   // camera-relative world position -> the top-down ortho map (as Wet World)
-float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV
+float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV, z: SpecularOcclusionLevel (REFL_SPECOCC_ON)
 float4x4 TESR_ReflectionsReproject;  // camera-relative world position -> last frame's clip space
 float4 TESR_ReflectionsCube;         // x: face being drawn (0-5, D3D order), y: its size in texels, z: mip level, w: 1 = empty the cube
 float4 TESR_ReflectionsCube2;        // x: capture blend, y: fade per frame, z: last mip level, w: 1 = the cube is in use
@@ -69,6 +69,19 @@ sampler2D TESR_ReflectionsGridColor : register(s13) = sampler_state { ADDRESSU =
 // stage 14 (2026-10-19 merges: TESR_OrthoMapBuffer binds to stage 11, the GridFallback samplers to 12 and 13).
 float4 NVR_ReflectionsSky;
 sampler2D NVR_ReflectionsSkyVis : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-20 MaterialAware ([Shaders.Reflections.Main] MaterialAware, core/ReflMaterial.h): the material buffer, copied out of
+// the scene's alpha before any effect draws (technique 7): r roughness, g metal, b 1 where an object with an _rmaos map is seen (0:
+// no material known: the floor guess as before). Bound by hand on stage 15 (ReflectionsEffect::BindMaterial). Compiled in only
+// when MaterialAware is on at startup (REFL_MATERIAL_ON); otherwise this effect is exactly what it was.
+#ifndef REFL_MATERIAL_ON
+    #define REFL_MATERIAL_ON 0
+#endif
+#if REFL_MATERIAL_ON
+float4 TESR_ReflectionsMaterial;     // x: 1 = the buffer is read (filled this frame), y: MaxRoughness, z: MaterialReflect
+sampler2D NVR_ReflectionsMaterial : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+static float SurfaceMetal = 0.0;     // set by Reflectivity: the surface's metal (0 without material data)
+float4 MaterialAt(float2 uv) { return TESR_ReflectionsMaterial.x > 0.5 ? tex2Dlod(NVR_ReflectionsMaterial, float4(uv, 0, 0)) : 0.0; }
+#endif
 texture NoTexture;   // never set: unbinds a technique's own render target from its sampler
 
 static const float DryReflect = TESR_ReflectionsData.x;
@@ -148,12 +161,40 @@ float OpenAbove(float2 uv, float depth) {
 	return top > p.z - max(RoofMargin * perUnit, 0.0001) ? 1.0 : 0.0;
 }
 
+#if REFL_MATERIAL_ON
+// UNOFFICIAL 2026-10-20 MaterialAware: a surface whose material is known (its _rmaos map). Whatever way it faces, it reflects by how
+// smooth it is: MaterialReflect where its roughness is well under MaxRoughness, fading to nothing at MaxRoughness (rough concrete,
+// dirt and carpet stop sheening; tiles, glass, polished counters and car paint get it, walls too). The rain still wets floors that
+// face up and are open to the sky, whatever they are made of (a wet surface is smooth). Its metal tints the reflection (Composite).
+float MaterialReflectivity(float2 uv, float depth, float floorShare, float4 material, out float roughness) {
+	float worldZ = TESR_CameraPosition.z + toWorld(uv).z * depth;
+	roughness = max(material.r, 0.02);
+	[branch] if (floorShare > 0.0 && abs(worldZ - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return 0.0;   // water reflects on its own
+	float maxRough = TESR_ReflectionsMaterial.y;
+	float dry = TESR_ReflectionsMaterial.z * (1.0 - smoothstep(0.6 * maxRough, maxRough, material.r));
+	float wetness = Wetness * floorShare;
+	[branch] if (wetness > 0.0 && RoofMaskOn > 0.5) wetness *= OpenAbove(uv, depth);   // the rain wets open ground only
+	float amount = dry + wetness;
+	roughness = lerp(roughness, WetRoughness, wetness / max(amount, 1.0e-4));
+	SurfaceMetal = material.g;
+	float fade = 1.0 - smoothstep(0.7 * DrawDistance, DrawDistance, depth);
+	return min(amount, 2.0) * fade;
+}
+#endif
+
 // How much a surface reflects (before Fresnel) and how rough it is. 0 where it never reflects.
 float Reflectivity(float2 uv, float depth, float3 viewNormal, out float roughness) {
 	roughness = DryRoughness;
+#if REFL_MATERIAL_ON
+	SurfaceMetal = 0.0;
+#endif
 	[branch] if (depth >= DrawDistance || depth >= farZ * 0.98 || IsWeapon(uv)) return 0.0;
 	float3 worldNormal = ViewToWorldDir(viewNormal);
 	float floorShare = saturate((worldNormal.z - 0.75) / 0.2);
+#if REFL_MATERIAL_ON
+	float4 material = MaterialAt(uv);
+	[branch] if (material.b > 0.5) return MaterialReflectivity(uv, depth, floorShare, material, roughness);
+#endif
 	[branch] if (floorShare <= 0.0) return 0.0;
 	float worldZ = TESR_CameraPosition.z + toWorld(uv).z * depth;
 	[branch] if (abs(worldZ - TESR_WaterSettings.x) < max(2.0, depth * 0.002)) return 0.0;   // water reflects on its own
@@ -174,6 +215,18 @@ float EnvironmentFresnel(float roughness, float NdotV) {
 	float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
 	return 0.04 * ab.x + ab.y;
 }
+
+#if REFL_MATERIAL_ON
+// The same with any F0 (MaterialAware: metal).
+float3 EnvironmentFresnelF0(float roughness, float NdotV, float3 F0) {
+	const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+	const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+	float4 r = roughness * c0 + c1;
+	float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+	float2 ab = float2(-1.04, 1.04) * a004 + r.zw;
+	return F0 * ab.x + ab.y;
+}
+#endif
 
 // The sky along a world direction: the weather's horizon and zenith colours (as Specular reads it). Below the horizon,
 // nothing (the ground there is not on screen, and the sky would light it up).
@@ -527,6 +580,14 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		float4 env = EnvAlong(normalize(toWorld(uv)), 0.0);
 		return float4(delinearize(env.rgb * env.a), 1.0);
 	}
+#if REFL_MATERIAL_ON
+	// UNOFFICIAL 2026-10-20 DebugView 7: the material buffer (MaterialAware): red the roughness, green the metal, blue the smoothness,
+	// where a material is known (dark red: rough; blue: smooth; green/yellow: metal); the rest of the picture dimmed (the floor guess).
+	[branch] if (abs(DebugView - 7.0) < 0.5) {
+		float4 m = tex2Dlod(NVR_ReflectionsMaterial, float4(uv, 0, 0));
+		return m.b > 0.5 ? float4(m.r, m.g, 0.6 * (1.0 - m.r), 1.0) : float4(color.rgb * 0.15, color.a);
+	}
+#endif
 	float3 N = ViewNormal(uv);
 	float roughness;
 	float amount = Reflectivity(uv, depth, N, roughness);
@@ -552,14 +613,54 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	reflection /= weights;
 
 	float3 V = normalize(ViewPosition(uv, depth));
+#if REFL_MATERIAL_ON
+	// UNOFFICIAL 2026-10-20 MaterialAware: metal reflects in its own colour (F0 = its albedo, guessed from the lit colour's hue), the
+	// rest at F0 0.04 as before (with no metal this is EnvironmentFresnel exactly).
+	float3 litColour = linearize(color.rgb);
+	float3 tint = saturate(litColour / max(max(litColour.r, max(litColour.g, litColour.b)), 1.0e-4));
+	float3 share = saturate(amount * EnvironmentFresnelF0(roughness, saturate(dot(-V, N)), lerp(0.04, tint, SurfaceMetal))) * saturate(reflection.a);
+#else
 	float share = saturate(amount * EnvironmentFresnel(roughness, saturate(dot(-V, N)))) * saturate(reflection.a);
+#endif
 	float3 reflected = Untame(reflection.rgb / max(reflection.a, 1.0e-4));
+#ifndef REFL_SPECOCC_ON
+    #define REFL_SPECOCC_ON 0
+#endif
+#if REFL_SPECOCC_ON
+	// UNOFFICIAL 2026-10-21 SpecularOcclusion ([Shaders.Reflections.Main], compiled in only when above 0 at startup: REFL_SPECOCC_ON). A
+	// blurred reflection is about the room's average light, the same over the whole floor, while the floor's own light varies with the
+	// lamps: in shadow it stood out (Ultra-Luxe carpet: +31 % in shadow, +7 % lit). Here the reflection is scaled down where the surface
+	// itself is much darker than what it reflects: by (its lit brightness / (the reflection's x Level)), capped at 1, so a floor at least
+	// Level times as bright as its reflection keeps all of it. Sharp reflections too (2026-10-21: the user's dry Roughness is 0.02, near a
+	// mirror, and those were the ones standing out in shadow): not what a real mirror does, a taste setting (SpecularOcclusion 0..1).
+	[branch] if (TESR_ReflectionsData4.w > 0.0) {
+		float surfaceLight = luma(linearize(color.rgb));
+		float reflectedLight = max(luma(reflected) * TESR_ReflectionsLayout.z, 1.0e-6);
+		float occlusion = lerp(1.0, saturate(surfaceLight / reflectedLight), TESR_ReflectionsData4.w);
+		// DebugView 8 (diagnostic): red the surface's own light, green the reflection's (x Level), both x 8; blue the factor.
+		[branch] if (abs(DebugView - 8.0) < 0.5) return float4(saturate(surfaceLight * 8.0), saturate(reflectedLight * 8.0), occlusion, 1.0);
+		share *= occlusion;
+	}
+#endif
 
 	[branch] if (DebugView > 4.5) return float4(delinearize(reflected), 1.0);   // 5, 6: the trace's diagnostic colours as they are
 	[branch] if (DebugView > 1.5) return float4(1.0 - reflection.a, reflection.a, amount * 0.5, 1.0);   // red: nothing found
 	[branch] if (DebugView > 0.5) return float4(delinearize(reflected * share), color.a);
 
 	float3 lin = linearize(color.rgb);
+#ifndef REFL_ADD_ON
+    #define REFL_ADD_ON 0
+#endif
+#if REFL_ADD_ON
+	// UNOFFICIAL 2026-10-21 ReflectAdd ([Shaders.Reflections.Main], compiled in only when above 0 at startup: REFL_ADD_ON): the reflection
+	// is ADDED to the surface's own lighting instead of replacing that share of it. Replacing (the lerp below) swaps part of the floor's
+	// lit colour for the reflection; indoors the reflection is rough, about the room's average, so where a lamp lights the floor little
+	// changed (and the lamp's own highlight was dulled), while in shadow the gap was large: the user saw floor reflections "way more
+	// visible in shadow". Adding is what a highlight does (the surface's diffuse light stays, the specular reflection comes on top).
+	// ReflectAdd 1: lin + reflected x share; 0..1: only (1 - ReflectAdd) of the share is taken out of the surface's colour.
+	[branch] if (TESR_ReflectionsData4.z > 0.0) lin = lin * (1.0 - share * (1.0 - TESR_ReflectionsData4.z)) + reflected * share;
+	else
+#endif
 	lin = lerp(lin, reflected, share);
 	return float4(delinearize(lin), color.a);
 }
@@ -621,3 +722,23 @@ technique Filter {
 		Texture[8] = <NoTexture>;
 	}
 }
+
+#if REFL_MATERIAL_ON
+// ---- 7: Material, full resolution (MaterialAware), before any effect draws: the scene's alpha decoded (Includes/Object.hlsl
+// ReflMaterialAlpha: 2 + 0.25 x metal in 4 steps + 0.24 x roughness). Anything under 2 is the game's own alpha (no material); an
+// edge the game's MSAA averaged with such a pixel falls under 2 as well, or decodes as a mix of the two materials.
+float4 MaterialCapturePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float a = tex2Dlod(TESR_RenderedBuffer, float4((vpos + 0.5) * TESR_ReciprocalResolution.xy, 0, 0)).a - 2.0;
+	[branch] if (a < 0.0 || a >= 1.0) return 0.0;
+	float metal = floor(a * 4.0);
+	return float4(saturate((a - metal * 0.25) / 0.24), metal / 3.0, 1.0, 1.0);
+}
+
+technique MaterialCapture {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 MaterialCapturePS();
+		Texture[15] = <NoTexture>;  // writes the material buffer
+	}
+}
+#endif

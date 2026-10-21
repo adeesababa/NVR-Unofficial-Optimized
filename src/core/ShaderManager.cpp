@@ -1621,6 +1621,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (!Chain.Begin(RenderTarget))
 		Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 
+	// UNOFFICIAL 2026-10-20 MaterialAware reflections (core/ReflMaterial.h): the materials the world scene left in the scene's alpha,
+	// copied out before the first effect draws over it.
+	Effects.Reflections->CaptureMaterial(Device);
+	Device->SetRenderTarget(0, RenderTarget);
+
 	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): screen-space skin scattering first, on the scene exactly as
 	// drawn: it recognises skin by comparing each pixel with the colour the skin shader wrote, which any effect before it would
 	// change. Shadows, AO and fog then apply to the scattered skin like everything else. Nothing runs with the setting off.
@@ -1876,7 +1881,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (wouldRender(Effects.Reflections)) {
 			Effects.Reflections->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
+			Effects.Reflections->BindMaterial();	// UNOFFICIAL 2026-10-20 MaterialAware (stage 15; nothing without it)
 			Effects.Reflections->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+			Effects.Reflections->ClearPassTextures();
 		}
 		else if (Effects.Reflections->Enabled && Effects.Reflections->Effect && Effects.Reflections->CubeWanted()) {
 			// No floor reflects now, but metal and the env maps may read the surroundings cube: keep it up.

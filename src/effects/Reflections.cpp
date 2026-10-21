@@ -1,5 +1,6 @@
 #include "Reflections.h"
 #include "../core/GpuProfiler.h"
+#include "../core/ReflMaterial.h"
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -21,9 +22,18 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.CubeMap = TheSettingManager->GetSettingI(section, "CubeMap") != 0;
 	Settings.CubeCapture = std::clamp(TheSettingManager->GetSettingF(section, "CubeCapture"), 0.02f, 1.0f);
 	Settings.CubeFade = std::clamp(TheSettingManager->GetSettingF(section, "CubeFade"), 0.0f, 0.2f);
-	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 6);	// 4: UNOFFICIAL 2026-10-19 the rain's wet mask; 5, 6 the light grid
+	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(section, "DebugView"), 0, 8);	// 8: SpecularOcclusion (diagnostic)	// 4: UNOFFICIAL 2026-10-19 the rain's wet mask; 5, 6 the light grid; 7 the material buffer
 	Settings.GridFallback = TheSettingManager->GetSettingI(section, "GridFallback") != 0;
 	Settings.GridBrightness = std::clamp(TheSettingManager->GetSettingF(section, "GridBrightness"), 0.0f, 4.0f);
+	// UNOFFICIAL 2026-10-20 MaterialAware (core/ReflMaterial.h): needs the shaders compiled with it (on at startup, with the _rmaos maps).
+	Settings.MaterialAware = ReflMaterial::CompiledIn() ? std::clamp(TheSettingManager->GetSettingI(section, "MaterialAware"), 0, 2) : 0;
+	Settings.MaterialReflect = std::clamp(TheSettingManager->GetSettingF(section, "MaterialReflect"), 0.0f, 2.0f);
+	Settings.MaterialMaxRoughness = std::clamp(TheSettingManager->GetSettingF(section, "MaterialMaxRoughness"), 0.05f, 1.0f);
+	// UNOFFICIAL 2026-10-21 ReflectAdd: live, but only compiled into the effect when above 0 at startup (ReflMaterial::AddCompiledIn).
+	Settings.ReflectAdd = ReflMaterial::AddCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "ReflectAdd"), 0.0f, 1.0f) : 0.0f;
+	// UNOFFICIAL 2026-10-21 SpecularOcclusion: live, compiled into the effect only when above 0 at startup (ReflMaterial::OccCompiledIn).
+	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
+	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -38,6 +48,7 @@ void ReflectionsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid", &Constants.Grid);
 	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid2", &Constants.Grid2);
 	TheShaderManager->RegisterConstant("TESR_ReflectionsGrid3", &Constants.Grid3);
+	TheShaderManager->RegisterConstant("TESR_ReflectionsMaterial", &Constants.Material);
 }
 
 void ReflectionsEffect::RegisterTextures() {
@@ -47,6 +58,15 @@ void ReflectionsEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("TESR_ReflectionsTemp", &Textures.TempTexture, &Textures.TempSurface, w, h, D3DFMT_A16B16G16R16F);
 	TheTextureManager->InitTexture("TESR_ReflectionsHistory", &Textures.HistoryTexture, &Textures.HistorySurface, w, h, D3DFMT_A16B16G16R16F);
 	Constants.Layout = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
+	// UNOFFICIAL 2026-10-20 MaterialAware: the material buffer (full resolution, 8 bits a channel: r roughness, g metal, b known), only
+	// when the shaders were compiled with it.
+	if (ReflMaterial::CompiledIn() &&
+		(FAILED(TheRenderManager->device->CreateTexture(TheRenderManager->width, TheRenderManager->height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+			D3DPOOL_DEFAULT, &Textures.MaterialTexture, NULL)) || FAILED(Textures.MaterialTexture->GetSurfaceLevel(0, &Textures.MaterialSurface)))) {
+		Logger::Log("UNOFFICIAL Reflections: the material buffer could not be created; MaterialAware is off.");
+		if (Textures.MaterialTexture) { Textures.MaterialTexture->Release(); Textures.MaterialTexture = nullptr; }
+		Textures.MaterialSurface = nullptr;
+	}
 
 	// The surroundings cube (FP16, about 0.6 MB in all). If any part fails, the cube stays off (CubeMap is ignored).
 	IDirect3DDevice9* device = TheRenderManager->device;
@@ -131,13 +151,42 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data3.z = (float)Settings.DebugView;
 	Constants.Data3.w = exterior && Settings.SkyFallback ? 1.0f : 0.0f;
 	Constants.Data4.x = Settings.DrawDistance;
+	Constants.Data4.z = Settings.ReflectAdd;
+	Constants.Data4.w = Settings.SpecularOcclusion;
+	Constants.Layout.z = Settings.SpecularOcclusionLevel;
+	// UNOFFICIAL 2026-10-20 MaterialAware: x is set again by CaptureMaterial (1 only when the buffer was filled this frame).
+	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect, 0.0f);
+}
+
+// UNOFFICIAL 2026-10-20 MaterialAware (core/ReflMaterial.h): the world scene left each known material in the scene's alpha; it is
+// copied out into the material buffer (technique 7) at the start of the chain, before any effect writes the scene.
+void ReflectionsEffect::CaptureMaterial(IDirect3DDevice9* Device) {
+	materialFilled = false;
+	Constants.Material.x = 0.0f;
+	if (!Enabled || !Effect || !Textures.MaterialSurface || Settings.MaterialAware <= 0 || TheShaderManager->GameState.isUnderwater) return;
+	static GpuTimer timer("Reflections material copy");
+	GpuProfileScope gpu(timer, Device);
+	materialOnly = true;
+	Device->SetRenderTarget(0, Textures.MaterialSurface);
+	Render(Device, Textures.MaterialSurface, Textures.MaterialSurface, 7, false, Textures.MaterialSurface);
+	materialOnly = false;
+	materialFilled = true;
+	Constants.Material.x = Settings.MaterialAware == 1 ? 1.0f : 0.0f;
+}
+
+void ReflectionsEffect::BindMaterial() {
+	if (!materialFilled || !Textures.MaterialTexture) return;
+	SetPassTexture(15, Textures.MaterialTexture);	// set after each pass begins (EffectRecord::PassTextures)
+	const DWORD point[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},
+		{D3DSAMP_MAGFILTER, D3DTEXF_POINT}, {D3DSAMP_MINFILTER, D3DTEXF_POINT}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
+	for (const auto& s : point) TheRenderManager->SetSamplerState(15, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 }
 
 bool ReflectionsEffect::ShouldRender() {
-	if (cubeOnly) return true;	// RenderCubeOnly's own passes
+	if (cubeOnly || materialOnly) return true;	// RenderCubeOnly's / CaptureMaterial's own passes
 	const NormalsEffect* normals = TheShaderManager->Effects.Normals;
 	return !TheShaderManager->GameState.isUnderwater && normals && normals->Enabled &&
-		(Constants.Data.x > 0.0f || Constants.Data.y > 0.0f) &&
+		(Constants.Data.x > 0.0f || Constants.Data.y > 0.0f || (Constants.Material.x > 0.0f && Constants.Material.z > 0.0f)) &&
 		Textures.TraceSurface && Textures.BufferSurface && Textures.TempSurface && Textures.HistorySurface;
 }
 
@@ -192,6 +241,7 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		Effect->SetVector(handle, &sky);
 	}
 	else skyVis = nullptr;
+	BindMaterial();	// UNOFFICIAL 2026-10-20 MaterialAware (stage 15)
 	if (skyVis) {
 		SetPassTexture(14, skyVis);	// set after each pass begins (EffectRecord::PassTextures)
 		const DWORD linear[][2] = { {D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP}, {D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP},

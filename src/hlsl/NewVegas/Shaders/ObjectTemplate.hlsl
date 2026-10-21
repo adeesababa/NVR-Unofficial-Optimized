@@ -1393,9 +1393,9 @@ PS_OUTPUT main(PS_INPUT IN) {
             OUT.color.a = weight(finalColor.rgb);
         #endif
     #elif defined(ONLY_LIGHT)
-        OUT.color.a = baseColor.a;
+        OUT.color.a = ReflMaterialAlpha(baseColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
     #else
-        OUT.color.a = baseColor.a * AmbientColor.a;
+        OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);
     #endif
     #if defined(ONLY_SPECULAR)
         OUT.highlightCopy = OUT.color;   // UNOFFICIAL NewSkin: alpha too, so any blend the pass uses adds alike to both targets
@@ -1681,7 +1681,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // UNOFFICIAL DebugView 3 (PointShadowForward.hlsl PointShadowTrace).
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
     #endif
-    OUT.color.a = baseColor.a * AmbientColor.a;
+    OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
 
     return OUT;
 }
