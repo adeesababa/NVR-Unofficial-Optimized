@@ -36,6 +36,8 @@ struct SettingsMainStruct {
         bool    ShaderWarmUp; // [Main.Main.Performance] ShaderWarmUp (ShaderWarmUp.h: the driver compiles NVR shaders at the main menu)
         bool    SkinnedShadowFaceTest; // [Main.Main.Performance] SkinnedShadowFaceTest (ShadowManager.cpp: skeleton bounds for animated casters in lamp cube maps), live
         bool    HiddenObjectCulling; // [Main.Main.Performance] HiddenObjectCulling (HiddenObjectCulling.h: skip the extra passes of objects hidden a few frames ago), live
+        bool    PreDecodeCache; // [Main.Main.Performance] PreDecodeCache (LinearPreDecode.h: powf results kept, decoded copies sent per call; same bits), live
+        bool    FastCasterHash; // [Main.Main.Performance] FastCasterHash (ShadowManager.cpp: lamp caster hash over 4-byte words, once per object per frame), live
         int     HiddenObjectCullingMaxAge; // [Main.Main.Performance] HiddenObjectCullingMaxAge (oldest visibility answer used, 1-7 frames), live
         bool    ReShadeDepthCompat; // [Main.Main.Performance] ReShadeDepthCompat (keep the game's depth-stencil bound through NVR's passes, for ReShade; also on while ReShade is loaded, ReShadeIntegration::KeepDepthBound), live
         bool    ReShadeNVRDepth; // [Main.Main.Performance] ReShadeNVRDepth (ReShadeIntegration.cpp: ReShade's DEPTH = NVR's combined depth, world + first-person model), live

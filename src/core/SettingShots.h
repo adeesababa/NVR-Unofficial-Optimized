@@ -30,6 +30,11 @@
 //                                                about ten seconds. Not a setting: no reload, nothing to undo
 //   wait <frames>                                (2026-10-21, button sweep) this shot waits that many frames instead of 'frames'
 //                                                (e.g. a long first shot, so the scene has settled after the load)
+//   sampler <hz>                                 (2026-10-21, cpulimits) a sampling profiler on the main and AI threads for the run
+//                                                (CpuSampler.h; per-shot counts in NVR-Unofficial-Optimized-Logs\CpuSamples_<time>.txt)
+//   affinity <hex mask>                          (2026-10-21, cpulimits) at the start of the shot the game process may use only these
+//                                                logical processors (SetProcessAffinityMask on this process only; e.g. 3 = two, F = four):
+//                                                a weaker CPU emulated in the same launch. NOT undone: it stays for the later shots.
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -40,6 +45,8 @@
 #include "EffectSelfTestCore.h"
 #include "GpuProfiler.h"
 #include "ImGuiManager.h"
+#include "CpuSplit.h"
+#include "CpuSampler.h"
 
 namespace SettingShots {
 
@@ -47,7 +54,7 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21)
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21)
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -148,6 +155,14 @@ namespace SettingShots {
 				if (c.value.empty()) { error = "line " + std::to_string(number) + ": incomplete"; return false; }
 				List.back().changes.push_back(c);
 			}
+			else if (command == "sampler") { words >> CpuSampler::Hz; CpuSampler::Hz = std::clamp(CpuSampler::Hz, 100, 4000); }
+			else if (command == "affinity") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": an affinity before the first 'shot'"; return false; }
+				std::string mask;
+				words >> mask;
+				List.back().affinity = (DWORD_PTR)strtoull(mask.c_str(), nullptr, 16);
+				if (!List.back().affinity) { error = "line " + std::to_string(number) + ": affinity needs a hex mask"; return false; }
+			}
 			else if (command == "set" || command == "effect") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }
 				Change c;
@@ -173,6 +188,16 @@ namespace SettingShots {
 	inline void Apply(const Shot& s) {
 		Commands.clear();
 		Moves = false;
+		if (s.affinity) {	// 2026-10-21 cpulimits: a weaker CPU, this process only
+			DWORD_PTR process = 0, system = 0;
+			GetProcessAffinityMask(GetCurrentProcess(), &process, &system);
+			const DWORD_PTR want = (s.affinity & system) ? (s.affinity & system) : system;
+			const BOOL set = SetProcessAffinityMask(GetCurrentProcess(), want);
+			unsigned threads = 0, outside = 0;
+			CpuSplit::CountThreadsOutside(want, threads, outside);
+			Logger::Log("SETTING SHOTS %s: shot '%s': affinity %llX (was %llX, system %llX) %s; %u threads, %u still allowed outside it", Run, s.slug.c_str(),
+				(unsigned long long)want, (unsigned long long)process, (unsigned long long)system, set ? "set" : "NOT set", threads, outside);
+		}
 		for (const Change& c : s.changes) {
 			if (c.console) { Commands.push_back(c.value); Moves = true; continue; }
 			if (c.coverage) {
@@ -346,6 +371,7 @@ namespace SettingShots {
 			if (!Player || !Player->parentCell) { Notify(kLinkStopped, "no game loaded"); return; }
 			if (!Parse(error)) { Logger::Log("SETTING SHOTS %s: %s", Run, error.c_str()); Notify(kLinkStopped, error.c_str()); return; }
 			Running = true; Index = 0; Frame = 0; Cell = Player->parentCell;
+			CpuSampler::Start();	// 2026-10-21 cpulimits: only with a 'sampler' line
 			Logger::Log("SETTING SHOTS %s: started, %u shots, %d frames each (settings changed in memory only, never saved)", Run, (unsigned)List.size(), Frames);
 			Notify(kLinkStarted, Run);
 			Apply(List[0]);
@@ -431,3 +457,9 @@ namespace SettingShots {
 		FinalState.store(3);
 	}
 }
+
+#if NVR_TEST_TOOLS
+// CpuSampler's view of the run (read on its own thread; the list does not change during a run)
+inline int CpuSampler::ShotNow() { return SettingShots::Running ? (int)SettingShots::Index : -1; }
+inline const char* CpuSampler::SlugOf(int shot) { return shot >= 0 && (size_t)shot < SettingShots::List.size() ? SettingShots::List[shot].slug.c_str() : "?"; }
+#endif
