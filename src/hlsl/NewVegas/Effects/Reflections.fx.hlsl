@@ -631,12 +631,12 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	// blurred reflection is about the room's average light, the same over the whole floor, while the floor's own light varies with the
 	// lamps: in shadow it stood out (Ultra-Luxe carpet: +31 % in shadow, +7 % lit). Here the reflection is scaled down where the surface
 	// itself is much darker than what it reflects: by (its lit brightness / (the reflection's x Level)), capped at 1, so a floor at least
-	// Level times as bright as its reflection keeps all of it. Only for blurred reflections: a sharp one (a wet street, a polished
-	// floor) shows lights whatever the floor's own light, as a mirror does.
+	// Level times as bright as its reflection keeps all of it. Sharp reflections too (2026-10-21: the user's dry Roughness is 0.02, near a
+	// mirror, and those were the ones standing out in shadow): not what a real mirror does, a taste setting (SpecularOcclusion 0..1).
 	[branch] if (TESR_ReflectionsData4.w > 0.0) {
 		float surfaceLight = luma(linearize(color.rgb));
 		float reflectedLight = max(luma(reflected) * TESR_ReflectionsLayout.z, 1.0e-6);
-		float occlusion = lerp(1.0, saturate(surfaceLight / reflectedLight), TESR_ReflectionsData4.w * smoothstep(0.15, 0.4, roughness));
+		float occlusion = lerp(1.0, saturate(surfaceLight / reflectedLight), TESR_ReflectionsData4.w);
 		// DebugView 8 (diagnostic): red the surface's own light, green the reflection's (x Level), both x 8; blue the factor.
 		[branch] if (abs(DebugView - 8.0) < 0.5) return float4(saturate(surfaceLight * 8.0), saturate(reflectedLight * 8.0), occlusion, 1.0);
 		share *= occlusion;
