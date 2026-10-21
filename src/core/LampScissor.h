@@ -13,9 +13,10 @@
 // skipped (it adds nothing visible).
 // Rectangle (2026-10-21 LampScissorExact, live; bench\deep-roadmap\evidence\lampscissor\LOG.md): the exact screen bound of the
 // part of each sphere in front of the near plane (AxisRange), so lamps whose reach crosses the near plane are scissored too
-// and a lamp wholly behind it is dropped; only a lamp whose reach holds the camera still gives the whole screen. Off: the
-// projection of each sphere's bounding box, and a lamp whose box reaches behind z = near/2 leaves the draw unscissored (in
-// lamp-rich interiors ~80% of the draws: Ultra-Luxe 434 of 537 a frame).
+// and a lamp wholly behind it is dropped; only a lamp whose reach holds the camera still gives the whole screen. An empty slot
+// in the pass's lamp list (about half of these draws indoors) is ignored: the game makes its colour black and every term of
+// these shaders is multiplied by it. Off: the projection of each sphere's bounding box, and a lamp whose box reaches behind
+// z = near/2, or an empty slot, leaves the draw unscissored (in lamp-rich interiors ~80% of the draws: Ultra-Luxe 434 of 537).
 // Reach: ShadowLightShader::SetupGeometryConstants_Lights 0x00B78A90 puts the lamp into the object's model space and
 // divides the radius by the object's scale (or scales the position instead for passes 0x231-0x233), so in world space
 // a lamp reaches exactly NiPointLight::Spec.r (+0xE0, BSShaderLightingProperty::SetLight1x2x 0x00B70820) from its world
@@ -37,6 +38,7 @@ namespace LampScissor {
 	inline double StatBehind = 0, StatUnusual = 0, StatInside = 0, StatCovers = 0;	// the full-screen draws, by reason
 	enum Unusual { OwnColour, CameraOff, NoLight, NotPoint, NoSource, BadRadius, StateFailed, UnusualKinds };
 	inline double StatWhy[UnusualKinds] = {};
+	inline double StatEmpty = 0;		// exact mode: draws with an empty lamp slot (ignored)
 	inline const char* BoundName = "";	// the lamp-only pixel shader bound (diagnostic)
 	inline unsigned UnusualLogged = 0;	// 2026-10-21 diagnostic: the first examples of each kind and pass type, per launch
 
@@ -85,11 +87,13 @@ namespace LampScissor {
 				Logger::Log("LAMP SCISSOR %s: lamp-only draws %.0f/frame, scissored %.0f (average %.0f%% of the screen), skipped (no lamp on screen) %.0f, full screen %.0f (camera inside a lamp's reach %.0f, rectangle covers the screen %.0f, lamp behind the camera %.0f, unusual %.0f); screen open to these draws %.1f%% (full screen = 100) (%.0f frames)",
 					StatMode == 2 ? "on (exact)" : "on (box)", StatDraws / f, StatScissored / f, StatScissored > 0 ? 100.0 * StatAreaShare / StatScissored : 0.0,
 					StatSkipped / f, full / f, StatInside / f, StatCovers / f, StatBehind / f, StatUnusual / f, 100.0 * StatShaded / StatDraws, f);
+				if (StatEmpty > 0) Logger::Log("LAMP SCISSOR empty lamp slots (ignored, black): in %.0f draws a frame", StatEmpty / f);
 				if (StatUnusual > 0)
 					Logger::Log("LAMP SCISSOR unusual by kind: own colour %.0f, camera or viewport %.0f, no light %.0f, not a point light %.0f, no source light %.0f, radius %.0f, scissor state %.0f",
 						StatWhy[OwnColour] / f, StatWhy[CameraOff] / f, StatWhy[NoLight] / f, StatWhy[NotPoint] / f, StatWhy[NoSource] / f, StatWhy[BadRadius] / f, StatWhy[StateFailed] / f);
 			}
 			for (double& w : StatWhy) w = 0;
+			StatEmpty = 0;
 			StatFrames = 0;
 			StatDraws = StatScissored = StatSkipped = StatAreaShare = StatShaded = 0;
 			StatBehind = StatUnusual = StatInside = StatCovers = 0;
@@ -152,10 +156,13 @@ namespace LampScissor {
 		auto screenY = [&](float t) { return (1.0f - (2.0f * t - (frustum.Top + frustum.Bottom)) / frustumHeight) * 0.5f * port.Height; };
 		const float nearClip = frustum.Near * 0.5f;	// the GPU clips at z = Near; half of it keeps a margin (a smaller cut only adds)
 		float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
-		bool anyOnScreen = false, inside = false;
+		bool anyOnScreen = false, inside = false, emptySlots = false;
 		for (UInt8 k = 0; k < pass->numLights; k++) {
 			const UInt8* light = (const UInt8*)pass->lights[k];
-			if (!light) return unusual(NoLight, -1);
+			if (!light) {	// an empty slot: the game makes its colour black (SetLight1x2x 0x00B70820), so it adds exactly 0
+				if (Exact) { emptySlots = true; continue; }
+				return unusual(NoLight, k);
+			}
 			if (!*(const bool*)(light + 0xF4)) return unusual(NotPoint, k);
 			const NiPointLight* source = *(NiPointLight* const*)(light + 0xF8);
 			if (!source) return unusual(NoSource, k);
@@ -195,6 +202,7 @@ namespace LampScissor {
 			minX = (std::min)(minX, lampMinX); maxX = (std::max)(maxX, lampMaxX);
 			minY = (std::min)(minY, lampMinY); maxY = (std::max)(maxY, lampMaxY);
 		}
+		if (stats && emptySlots) StatEmpty += 1;
 		if (!anyOnScreen) { if (stats) StatSkipped += 1; return Skip; }
 		RECT rect;
 		rect.left = (LONG)(std::max)(0.0f, floorf(minX) - 1.0f);
