@@ -3,6 +3,7 @@
 #include "../core/GpuProfiler.h"
 
 void VolumetricCloudsEffect::UpdateSettings() {
+	const SettingsStruct before = Settings;
 	const char* section = "Shaders.VolumetricClouds.Main";
 	Settings.Base = std::clamp(TheSettingManager->GetSettingF(section, "CloudBase"), 200.0f, 8000.0f);
 	Settings.Thickness = std::clamp(TheSettingManager->GetSettingF(section, "Thickness"), 100.0f, 6000.0f);
@@ -44,7 +45,15 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);	// UNOFFICIAL 2026-10-15: was 0-1
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
-	coverage = -1.0f;	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change)
+	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change).
+	// UNOFFICIAL 2026-10-21 (P82 tester: "ticking particles menu on and off affects vol clouds"): only a change of the settings the
+	// coverage comes from. Every menu switch and every setting edit re-reads all the effects' settings (LoadSettings), and this
+	// snapped the clouds on each one: switching Particles (or a foliage setting) jumped them to their weather's look whenever they
+	// were still easing toward it (the minute after a load, a weather change or a newly measured weather layer). Switched on, the
+	// clouds still start on their weather's look (UpdateConstants).
+	if (memcmp(before.Coverage, Settings.Coverage, sizeof(Settings.Coverage)) || memcmp(before.TypeBias, Settings.TypeBias, sizeof(Settings.TypeBias)) ||
+		before.FromWeatherTextures != Settings.FromWeatherTextures)
+		coverage = -1.0f;
 }
 
 void VolumetricCloudsEffect::RegisterConstants() {
@@ -243,6 +252,12 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	// UNOFFICIAL 2026-10-13: once a frame, at the tuned rate (FrameClock.h: UpdateConstants runs twice a frame).
 	static double lastFrameTime = -1.0;
 	const float dt = (float)(ElapsedOncePerFrame(lastFrameTime) * TunedClockRate);
+	// UNOFFICIAL 2026-10-21: not updated last frame = switched back on: the clouds start on their weather's look at once, as the settings
+	// reload that comes with the menu's switch made them before (UpdateSettings now snaps only when a coverage setting changes).
+	const unsigned int frameNumber = TheFrameRateManager->FrameNumber;
+	if (updatedBefore && frameNumber - lastUpdateFrame > 1) coverage = -1.0f;
+	lastUpdateFrame = frameNumber;
+	updatedBefore = true;
 
 	// The weather's coverage, blended across a weather change as the game blends its own (weatherPercent: 1 = the new
 	// weather in full), then eased so a change of weather builds or clears the clouds over about a minute.

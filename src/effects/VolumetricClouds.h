@@ -107,6 +107,8 @@ public:
 
 private:
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;	// eased toward the weather's
+	unsigned int	lastUpdateFrame = 0;	// UNOFFICIAL 2026-10-21: the rendered frame (FrameRateManager::FrameNumber) of the last UpdateConstants
+	bool		updatedBefore = false;
 	D3DXVECTOR3	wind = D3DXVECTOR3(0, 0, 0);
 	double		windX = 0.0, windY = 0.0, windZ = 0.0;	// UNOFFICIAL: the wind offset, kept in doubles (wind holds it as floats for the shader)
 	D3DXMATRIX	lastViewProj;
