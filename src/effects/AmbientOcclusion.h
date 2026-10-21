@@ -36,8 +36,17 @@ public:
 	// sky visibility) for the sky reflections (Specular, Reflections), while that is on; and how much reflection stays fully hidden.
 	bool	SkyReflections = false;
 	float	SkyMinReflection = 0.1f;
-	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections && Enabled ? SkyTexture() : nullptr; }
+	// UNOFFICIAL 2026-10-20 (skyamb): no '&& Enabled' any more: AmbientLight switches this effect off while it renders and can host the
+	// sky test (below); SkyTexture() is null unless this frame's sky target was written.
+	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections ? SkyTexture() : nullptr; }
 	void RenderSkyVisibility(IDirect3DDevice9* Device);
+	// UNOFFICIAL 2026-10-20 (skyamb) Skylighting under AmbientLight: while AmbientLight renders it switches this effect off (it does its own
+	// AO), and the sky test that lives here went with it. Now AmbientLight hosts it outdoors whether or not this effect is on: the sky
+	// constants are kept up (UpdateSkyConstants, also called by ShaderManager while this effect is off), this effect's sky pass runs just
+	// before AmbientLight (ShaderManager) and AmbientLight's Apply takes the sky target's factor.
+	void UpdateSkyConstants();
+	static bool SkyHostedByAmbientLight();
+	static D3DXVECTOR2 SkyTakeComposite();	// LightCap for VolumetricFog's composites (Includes/SkyTake.hlsl): x the cap's scale, y no limit
 
 	bool	UseLowRes() const;
 	IDirect3DSurface9* NextResultSurface() const { return UseLowRes() ? aoSurfaceLow[0] : aoSurface[0]; }

@@ -515,6 +515,9 @@ void ShaderManager::UpdateConstants() {
 			(*effect)->constantUpdateTime = 0;
 		}
 	}
+	// UNOFFICIAL 2026-10-20 (skyamb): Skylighting's constants while AmbientOcclusion is off too: AmbientLight hosts the sky test then
+	// (AmbientOcclusion.h UpdateSkyConstants; with AmbientLight off as well the sky stays off, as before).
+	if (!Effects.AmbientOcclusion->Enabled) Effects.AmbientOcclusion->UpdateSkyConstants();
 
 	// The skin, hair and grass shaders route their light and ambient terms through
 	// TESR_PBRData (see Shaders/Includes/PBRScale.hlsl) and render black at a zero scale, so
@@ -1757,6 +1760,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// UNOFFICIAL: AO and bounce light in one pass, on the shadowed scene, where the bounce light ran.
 		static GpuTimer ambientLightTimer("Ambient light (AO + bounce)");
 		GpuProfileScope gpu(ambientLightTimer, Device);
+		// UNOFFICIAL 2026-10-20 (skyamb) Skylighting (AmbientOcclusion.h): the AO's sky pass first, at AmbientLight's half resolution;
+		// AmbientLight's Apply takes its factor.
+		if (AmbientOcclusionEffect::SkyV2Active() && AO->Effect) {
+			AO->lastLowRes = false;
+			AO->RenderSkyVisibility(Device);
+			Device->SetRenderTarget(0, RenderTarget);
+		}
 		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;
 		Effects.AmbientLight->shadowApplied = false;
 		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);

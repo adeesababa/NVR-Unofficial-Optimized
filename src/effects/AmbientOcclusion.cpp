@@ -21,6 +21,15 @@ static D3DXVECTOR4 SkyData2(0.0f, 1.0f, 0.0f, 0.0f);
 static D3DXVECTOR4 SkyData3(0.0f, 0.0f, 1.0f, 0.0f);
 static D3DXVECTOR4 SkyData4(800.0f, 40.0f, 0.0f, 0.0f);
 static float SkyAmbientScale = 1.0f;
+// UNOFFICIAL 2026-10-20 (skyamb; user: under a neon canopy at dusk the lamp-lit wall and the glowing bulbs went nearly black): the share
+// (Includes/SkyShare.hlsl) knows only the sun and the sky, so in shade everything counts as sky light and a pixel under a wide cover
+// (V ~ 0) lost all of it, lamps and glow included. [Shaders.AmbientOcclusion.Skylighting] LightCap: the composites take away at most
+// (1 - V) x LightCap x Strength x the sky's light on a white surface (linear luminance of TESR_SunAmbient x AmbientScale), whatever the share says,
+// so light the sky cannot explain (lamps, glow, emissive) stays. Sky5: x that light (linear luminance), w 0; LightCap 0 or a debug
+// view: x 0, w 1e6 (no limit: the factor as before). Needs the sky target's b (the visibility): A16B16G16R16F while it is on.
+static D3DXVECTOR4 SkyData5(0.0f, 0.0f, 0.0f, 1.0e6f);
+static float SkyLightCap = 0.0f;
+static float SkyOpenSides = 0.0f;	// UNOFFICIAL 2026-10-20 (skyamb) OpenSides (Sky5.y; Includes/SkyVisibility.hlsl)
 static int SkyVersion = 2;
 
 static float LinearLuma(const D3DXVECTOR4& c) {
@@ -28,6 +37,19 @@ static float LinearLuma(const D3DXVECTOR4& c) {
 }
 
 bool AmbientOcclusionEffect::SkyV2Active() { return SkyData2.x > 0.0f; }
+// UNOFFICIAL 2026-10-20 (skyamb) LightCap (SkyData5, Includes/SkyTake.hlsl): (the most light the sky may take: LightCap x Strength x the
+// sky's linear luminance x AmbientScale (SkyData2.z), no limit).
+D3DXVECTOR2 AmbientOcclusionEffect::SkyTakeComposite() {
+	const bool limit = SkyLightCap > 0.0f && SkyData3.w < 0.5f;	// (debug views: the raw values)
+	return limit ? D3DXVECTOR2(SkyLightCap * SkyData2.y * SkyData2.z, 0.0f) : D3DXVECTOR2(0.0f, 1.0e6f);
+}
+// UNOFFICIAL 2026-10-20 (skyamb): AmbientLight renders this frame (its ShouldRender: on, loaded, not under water) and hosts the sky test
+// (this effect's file loaded: the sky pass and the sky target are this effect's).
+bool AmbientOcclusionEffect::SkyHostedByAmbientLight() {
+	AmbientLightEffect* al = TheShaderManager->Effects.AmbientLight;
+	AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+	return al && al->ShouldRender() && ao && ao->Effect;
+}
 // UNOFFICIAL 2026-10-17 FastPaths ([Shaders.AmbientOcclusion.FastPaths] Enabled): the DedicatedAOFast technique = DedicatedAO with
 // its far-pixel early returns made real (the effect compiler had flattened them: sky and distant land ran the whole kernel and
 // both blurs). Same picture. With GTAO on it picks DedicatedGTAOFast instead. Off, or an effect file without the technique:
@@ -36,11 +58,23 @@ static bool FastPaths = false;
 static EffectRecord::CachedHandle techFast, techGTAOFast;
 
 void AmbientOcclusionEffect::UpdateConstants() {
-	const bool sky = SkyEnabled && TheShaderManager->GameState.isExterior && Constants.Enabled;
-	SkyData.x = sky && SkyVersion == 1 ? 1.0f : 0.0f;
-	SkyData2.x = sky && SkyVersion == 2 ? 1.0f : 0.0f;
+	UpdateSkyConstants();
+}
+
+// UNOFFICIAL 2026-10-20 (skyamb): the sky part of UpdateConstants, also run by ShaderManager every frame this effect is off. With
+// AmbientLight rendering, the sky test runs for it (Version 2 whatever Version says: Version 1 darkens through this effect's own AO,
+// which does not run then), whatever this effect's Enabled settings are; otherwise as before (this effect on, its Enabled setting).
+void AmbientOcclusionEffect::UpdateSkyConstants() {
+	const bool hosted = SkyHostedByAmbientLight();
+	const bool sky = SkyEnabled && TheShaderManager->GameState.isExterior && (hosted || (Enabled && Constants.Enabled));
+	SkyData.x = sky && !hosted && SkyVersion == 1 ? 1.0f : 0.0f;
+	SkyData2.x = sky && (hosted || SkyVersion == 2) ? 1.0f : 0.0f;
 	SkyData2.z = LinearLuma(TheShaderManager->ShaderConst.sunAmbient) * SkyAmbientScale;	// (Includes/SkyShare.hlsl SkyShare)
 	SkyData2.w = LinearLuma(TheShaderManager->ShaderConst.sunColor);
+	{	// UNOFFICIAL 2026-10-20 (skyamb) LightCap (above)
+		const D3DXVECTOR2 take = SkyTakeComposite();
+		SkyData5 = D3DXVECTOR4(take.x, SkyOpenSides, 0.0f, take.y);
+	}
 	if (SkyData.x > 0.0f) TheShaderManager->orthoRequired = true;	// UNOFFICIAL Skylighting v1 reads the ortho map
 	if (SkyData2.x > 0.0f) TheShaderManager->orthoSkyRequired = true;	// v2: amortised + clean map (ShadowManager)
 	static bool skyWasActive = false;
@@ -56,6 +90,7 @@ void AmbientOcclusionEffect::RegisterConstants() {
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky2"] = &SkyData2;	// UNOFFICIAL Skylighting v2
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky3"] = &SkyData3;
 	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky4"] = &SkyData4;
+	TheShaderManager->ConstantsTable["TESR_AmbientOcclusionSky5"] = &SkyData5;	// UNOFFICIAL 2026-10-20 (skyamb) LightCap
 }
 
 void AmbientOcclusionEffect::RegisterTextures() {
@@ -98,6 +133,8 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	SkyVersion = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Version") == 1 ? 1 : 2;
 	SkyReflections = TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "Reflections") != 0;	// UNOFFICIAL 2026-10-19
 	SkyMinReflection = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "MinReflection"), 0.0f, 1.0f);
+	SkyLightCap = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "LightCap"), 0.0f, 10.0f);
+	SkyOpenSides = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "OpenSides"), 0.0f, 1.0f);
 	SkyData2.y = SkyData.y;
 	SkyData3.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientOcclusion.Skylighting", "DebugView"), 0, 4);
 	SkyAmbientScale = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "AmbientScale"), 0.0f, 10.0f);
@@ -111,6 +148,7 @@ void AmbientOcclusionEffect::UpdateSettings() {
 /*
 * UNOFFICIAL 2026-10-17 Skylighting v2: the sky pass (technique SkyVisibilityV2) into the target the size of this frame's AO target,
 * with the ortho map on stage 6 and the sun shadow mask on stage 8. Called from Render before the AO passes; sets skyReady.
+* UNOFFICIAL 2026-10-20 (skyamb): also called by ShaderManager just before AmbientLight while that hosts the sky test.
 */
 void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	IDirect3DTexture9* orthoMap = TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr;
@@ -123,8 +161,9 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	// UNOFFICIAL 2026-10-19: the sky reflections ([Shaders.AmbientOcclusion.Skylighting] Reflections) need a third channel (b, the
 	// visibility itself); without them the target keeps the two it had (half the bytes to write and to read back). Switching
 	// Reflections recreates this resolution's target (its users take it from SkyTexture() each frame).
+	// UNOFFICIAL 2026-10-20 (skyamb): LightCap reads the b too (Includes/SkyTake.hlsl).
 	static D3DFORMAT createdFormat[2] = { D3DFMT_UNKNOWN, D3DFMT_UNKNOWN };
-	const D3DFORMAT wanted = SkyReflections ? D3DFMT_A16B16G16R16F : D3DFMT_G16R16F;
+	const D3DFORMAT wanted = SkyReflections || SkyLightCap > 0.0f ? D3DFMT_A16B16G16R16F : D3DFMT_G16R16F;
 	if (createTried[which] && createdFormat[which] != wanted) {
 		IDirect3DTexture9*& texture = lastLowRes ? skyTextureLow : skyTexture;
 		IDirect3DSurface9*& surface = lastLowRes ? skySurfaceLow : skySurface;
@@ -151,7 +190,13 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	D3DVIEWPORT9 quarter = { 0, 0, desc.Width, desc.Height, 0.0f, 1.0f };
 	SkyData4.z = sunMask ? 1.0f : 0.0f;
 	Effect->SetTechnique(technique);
+	// UNOFFICIAL 2026-10-20 (skyamb): SetCT does nothing while this effect is off, and it is off whenever AmbientLight hosts the sky
+	// test (ShaderManager switches it off for the frame; the user may have it off too): the pass then ran with no depth, normals or
+	// constants (measured: no darkening, the debug views did not change). On for the call.
+	const bool wasEnabled = Enabled;
+	Enabled = true;
 	SetCT();
+	Enabled = wasEnabled;
 	UINT passes = 0;
 	IDirect3DSurface9* depthSurface = nullptr;	// no depth-stencil while this draws (restored below)
 	Device->GetDepthStencilSurface(&depthSurface);
@@ -181,8 +226,9 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	skyReady = SUCCEEDED(result);
 	static D3DFORMAT reported = D3DFMT_UNKNOWN;	// (again when Reflections switches the format)
 	if (skyReady && reported != desc.Format) {
-		Logger::Log("UNOFFICIAL Skylighting v2 active: sky factor %ux%u %s (sun mask %s), applied to the sky's share.", desc.Width, desc.Height,
-			desc.Format == D3DFMT_A16B16G16R16F ? "A16B16G16R16F (b: the visibility, for the sky reflections)" : "G16R16F", sunMask ? "yes" : "no");
+		Logger::Log("UNOFFICIAL Skylighting v2 active: sky factor %ux%u %s (sun mask %s), applied to the sky's share%s.", desc.Width, desc.Height,
+			desc.Format == D3DFMT_A16B16G16R16F ? "A16B16G16R16F (b: the visibility, for the sky reflections and LightCap)" : "G16R16F", sunMask ? "yes" : "no",
+			SkyHostedByAmbientLight() ? " (in AmbientLight's apply)" : "");
 		reported = desc.Format;
 	}
 }
