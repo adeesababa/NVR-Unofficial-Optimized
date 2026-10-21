@@ -14,6 +14,7 @@
 #include "../../core/ShaderWarmUp.h"
 #include "../../core/ShaderWarmUp2.h"
 #include "../../core/IOWorker2.h"	// UNOFFICIAL 2026-10-20: second loading thread (its once-a-minute log line)
+#include "../../core/CpuSplit.h"	// UNOFFICIAL 2026-10-21: game update split (F10 profiling only)
 #include "../../core/ConstantFilter.h"
 #include "../../core/HiddenObjectCulling.h"
 #include "../../core/LampScissor.h"
@@ -549,9 +550,11 @@ namespace FrameSplit {
 	static PresentFn OriginalPresent = nullptr;
 	static double RenderEnd = 0.0, PresentMs = 0.0;
 	static HRESULT __stdcall PresentHook(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window, const RGNDATA* dirty) {
+		CpuSplit::MarkNow(CpuSplit::kPresentBegin);	// UNOFFICIAL 2026-10-21 game update split
 		const double start = CpuTimer::NowMs();
 		const HRESULT result = OriginalPresent(device, source, dest, window, dirty);
 		PresentMs += CpuTimer::NowMs() - start;
+		CpuSplit::MarkNow(CpuSplit::kPresentEnd);
 		return result;
 	}
 	static void Install(IDirect3DDevice9* device) {
@@ -577,6 +580,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	const double renderStart = CpuTimer::NowMs();
 	if (GpuTimer::Enabled) {
 		FrameSplit::Install(TheRenderManager->device);
+		CpuSplit::Install();	// UNOFFICIAL 2026-10-21: the game update split ('Upd', 'Rnd', 'AI' lines), patched the first time F10 is on
 		if (FrameSplit::RenderEnd > 0.0 && FrameSplit::OriginalPresent) {
 			const double between = renderStart - FrameSplit::RenderEnd;
 			presentCpuTimer.Add(FrameSplit::PresentMs);
@@ -584,6 +588,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 		}
 	}
 	FrameSplit::PresentMs = 0.0;
+	CpuSplit::MarkNow(CpuSplit::kRenderBegin);
 #if NVR_TEST_TOOLS
 	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);	// UNOFFICIAL ShaderWarmUp2: frame times + new setups (shot index: picture frames)
 #else
@@ -649,7 +654,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	const double renderEnd = CpuTimer::NowMs();
 	FrameSplit::RenderEnd = GpuTimer::Enabled ? renderEnd : 0.0;
 	if (GpuTimer::Enabled) gameRenderCpuTimer.Add(renderEnd - renderStart);
-
+	CpuSplit::MarkNow(CpuSplit::kRenderEnd);
 }
 
 // Set when NVR changes, mid-frame, a TESR_ constant that game shaders read (CheapReflections). Constants
