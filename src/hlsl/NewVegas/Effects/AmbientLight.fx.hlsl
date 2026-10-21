@@ -25,8 +25,14 @@
 // this effect is on) is done here instead (NVR_ALFlags.x): in Apply before the occlusion, and in Prepare on the colour the bounce
 // light is gathered from, so both see the scene as they did after that pass. The blurs and the apply take their depths from the
 // depth buffer (4 bytes a read) instead of the 16-byte prepared texel.
+//
+// UNOFFICIAL 2026-10-20 (skyamb) Skylighting ([Shaders.AmbientOcclusion.Skylighting], outdoors): this effect switches the
+// AmbientOcclusion effect off, and with it the sky test that lives there, so the sky light under roofs, porches and overhangs stayed.
+// Now the AO's sky pass runs just before this effect (ShaderManager) and technique AmbientLightSky (the end of the file) applies its
+// factor in Apply, as the AO's combine does. Without the sky the first technique runs, unchanged. (Measured 2026-10-20: the same test
+// inside Estimate, written as a second target, made Estimate 0.17-0.23 ms slower against the sky pass's 0.16-0.20 ms: dropped.)
 
-float4 TESR_AmbientLightData;   // x: radius (world units), y: occlusion strength, z: bounce strength, w: draw distance
+float4 TESR_AmbientLightData;  // x: radius (world units), y: occlusion strength, z: bounce strength, w: draw distance
 float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-1), y: brightness above which it fades, z: blur radius (half-res texels per tap), w: debug view (1 occlusion, 2 bounce)
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
@@ -41,6 +47,9 @@ float4 TESR_ShadowFade;         // x: fading at sunrise/sunset, z: point light s
 float4 TESR_SkyColor;
 float4 TESR_SunAmbient;
 float4 TESR_SunDirection;
+// UNOFFICIAL 2026-10-20 (skyamb) Skylighting, for technique AmbientLightSky only (AmbientOcclusion.cpp's).
+float4 TESR_AmbientOcclusionSky5;	// x LightCap, w no limit (Includes/SkyTake.hlsl)
+float4 TESR_AmbientOcclusionData;	// z: BlurDropThreshold (the AO combine's upsample weights)
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_SourceBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
@@ -82,6 +91,10 @@ VSOUT FrameVS(VSIN IN) {
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
 #include "Includes/Normals.hlsl"
+
+// UNOFFICIAL 2026-10-20 (skyamb) Skylighting (technique AmbientLightSky).
+static const int endFade = 8000;	// (as AmbientOcclusion.fx.hlsl's: no sky factor beyond it)
+#include "Includes/SkyTake.hlsl"
 
 // UNOFFICIAL 2026-10-14 (user: an orange tip on the first-person gun): the weapon and arms' own depth, bound by hand (an NVR_
 // sampler: a TESR_ one would bind by its place in the file). Those pixels get nothing from this effect and stand in for no
@@ -632,12 +645,44 @@ float4 StatsReduce(VSOUT IN) : COLOR0 {
 	return float4(scale, total.yzx / (StatsSize.x * StatsSize.y * 4.0f));
 }
 
-// Pass 8: upsample and apply.
-float4 Apply(VSOUT IN) : COLOR0 {
+// UNOFFICIAL 2026-10-20 (skyamb) Skylighting: the sky target (AmbientOcclusion's, bound by hand on stage 10 for Apply in technique AmbientLightSky;
+// r the factor for the sky's share, g its depth, b the visibility) at a full-resolution pixel, upsampled as AmbientOcclusion.fx
+// DedicatedCombine does it: the four nearest half-resolution texels, bilinear, each counted less across a depth step of
+// BlurDropThreshold. (factor, visibility); (1, 1) beyond endFade.
+sampler2D NVR_ALSkyVis : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float2 SkyFactorAt(float2 uv, float depth) {
+	[branch] if (!(depth < endFade)) return 1.0f;
+	float2 position = uv / NVR_ALLayout.zw - 0.5f;
+	float2 base = floor(position);
+	float2 fraction = position - base;
+	float2 sum = 0.0f;
+	float weights = 0.0f;
+	[unroll] for (int y = 0; y < 2; y++) {
+		[unroll] for (int x = 0; x < 2; x++) {
+			float2 tapUV = clamp((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, 0.5f * NVR_ALLayout.zw, 1.0f - 0.5f * NVR_ALLayout.zw);
+			float3 tap = tex2Dlod(NVR_ALSkyVis, float4(tapUV, 0.0f, 0.0f)).rgb;
+			float weight = (x ? fraction.x : 1.0f - fraction.x) * (y ? fraction.y : 1.0f - fraction.y);
+			weight /= 1.0f + abs(tap.y - depth) / max(TESR_AmbientOcclusionData.z, 0.001f);
+			sum += tap.xz * weight;
+			weights += weight;
+		}
+	}
+	return saturate(sum / max(weights, 1.0e-6f));
+}
+
+// Pass 8: upsample and apply. UNOFFICIAL 2026-10-20 (skyamb) sky (technique AmbientLightSky): Skylighting's factor too, as the AO's combine
+// applies it: on every pixel up to endFade, the ones this effect leaves alone included (near, beyond DrawDistance, the weapon), times
+// the occlusion; the bounce light is not sky light and keeps its strength. The debug views stay this effect's own.
+float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	[branch] if (NVR_ALFlags.x > 0.5f) color = float4(SunShadowApply(color.rgb, IN.UVCoord), 1.0f);
 	float depth = readDepth(IN.UVCoord);
-	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(IN.UVCoord)) return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
+	float2 skyFactor = 1.0f;	// (the factor, the visibility; Includes/SkyTake.hlsl. 'if (sky)': compiled out of the technique without the sky)
+	if (sky) skyFactor = SkyFactorAt(IN.UVCoord, depth);
+	[branch] if (depth < NearFade || depth > DrawDistance || IsViewModel(IN.UVCoord)) {
+		if (sky) color.rgb = pows(SkyTake(pows(color.rgb, 2.2f), skyFactor.x, skyFactor.y, TESR_AmbientOcclusionSky5.x, TESR_AmbientOcclusionSky5.w), 1.0f / 2.2f);	// (on gamma 2.2 linear, as the AO's combine)
+		return DebugView > 0.5f ? float4(0.0f, 0.0f, 0.0f, 1.0f) : color;
+	}
 
 	// The four nearest half-resolution texels, the ones at another depth (across an object's edge) counted less.
 	float2 position = IN.UVCoord / NVR_ALLayout.zw - 0.5f;
@@ -697,7 +742,11 @@ float4 Apply(VSOUT IN) : COLOR0 {
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));	// 2: the bounce (the light grid's)
 	// UNOFFICIAL 2026-10-18 (ambfix2): indoors the occlusion takes only from the ambient share (see above StatsSample).
 	[branch] if (NVR_ALInterior.x > 0.5f) lin = lin - (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb) + gridBounce * albedo;
-	else lin = lin * ao + gridBounce * albedo;	// (the screen bounce removed 2026-10-14: the light grid is the bounce)
+	else {
+		float3 lit = lin * ao;
+		if (sky) lit = SkyTake(lit, skyFactor.x, skyFactor.y, TESR_AmbientOcclusionSky5.x, TESR_AmbientOcclusionSky5.w);	// (UNOFFICIAL 2026-10-20 skyamb)
+		lin = lit + gridBounce * albedo;	// (the screen bounce removed 2026-10-14: the light grid is the bounce)
+	}
 	return delinearize(float4(lin, color.a));
 }
 
@@ -709,7 +758,7 @@ technique AmbientLight {
 	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
 	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
 	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
-	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(); }
+	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(false); }
 
 }
 
@@ -718,4 +767,17 @@ technique AmbientLightGrid {
 	pass ScreenInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 ScreenInject(); }
 	pass GridInject { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridInject(); }
 	pass GridPropagate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 GridPropagate(); }
+}
+
+// UNOFFICIAL 2026-10-20 (skyamb) Skylighting (see the top): the same passes with the sky's factor in Apply; the AO's sky pass wrote the
+// sky target just before.
+technique AmbientLightSky {
+	pass Prepare { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Prepare(); }
+	pass Estimate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Estimate(); }
+	pass BlurX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(1.0f, 0.0f)); }
+	pass BlurY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Blur(float2(0.0f, 1.0f)); }
+	pass Accumulate { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Accumulate(); }
+	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
+	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
+	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(true); }
 }

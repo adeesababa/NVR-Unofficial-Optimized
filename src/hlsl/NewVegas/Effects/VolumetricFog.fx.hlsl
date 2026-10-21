@@ -1139,7 +1139,7 @@ float4 DedicatedFogCombine(VSOUT IN, uniform bool legacy, uniform bool classic =
 // the only difference is that intermediate colours stay in registers instead of 16-bit targets.
 // Keep them in step with those files.
 float4 NVR_CompositeFlags; // x: apply exterior sun shadows, y: apply AO (both deferred by the CPU)
-float4 NVR_CompositeAOTexel; // xy: 1 / AO target dimensions (half, or quarter with AOLowRes)
+float4 NVR_CompositeAOTexel; // xy: 1 / AO target dimensions (half, or quarter with AOLowRes); UNOFFICIAL 2026-10-20 (skyamb) zw: LightCap (Includes/SkyTake.hlsl: z the cap, w no limit)
 float4 TESR_ShadowData;    // y: darkness
 float4 TESR_WaterSettings; // x: water height, z: camera underwater
 float4 TESR_AmbientOcclusionAOData; // z: clamp
@@ -1149,6 +1149,8 @@ static const float CompositeAOEndFade = 8000;
 // of the light only, at the AO's resolution), bound by hand on stage 12 (VolumetricFog.cpp BindSky), upsampled with the AO's weights.
 // No new constants or literals here: with the physical sky this pass already uses c0-c218 of 224.
 sampler2D NVR_SkyVis : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-20 (skyamb) LightCap: the light the sky may take is limited (Includes/SkyTake.hlsl); its b holds the visibility.
+#include "Includes/SkyTake.hlsl"
 // UNOFFICIAL 2026-10-19 SunFar (SunFar.fx.hlsl): the land's and the clouds' shadow, a factor on the stored (gamma) colour, bound by
 // hand on stage 13 while NVR_SunFarFlags.x is 1 (VolumetricFog.cpp BindSunFar). One more constant register (c219 of 224 at most).
 float4 NVR_SunFarFlags;
@@ -1192,7 +1194,8 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	float2 base = floor(position);
 	float2 fraction = frac(position);
 	float blurDrop = TESR_AmbientOcclusionData.z;
-	float sum = 0, weights = 0, skySum = 0;
+	float sum = 0, weights = 0;
+	float2 skySum = 0;	// UNOFFICIAL 2026-10-20 (skyamb): x the factor, y the visibility (LightCap)
 	const bool sky = NVR_CompositeFlags.z > 0.5;	// UNOFFICIAL Skylighting v2
 	[unroll] for (int y = 0; y < 2; ++y) {
 		[unroll] for (int x = 0; x < 2; ++x) {
@@ -1202,12 +1205,13 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 			weight /= 1 + abs(aoSample.y - depth) / max(blurDrop, 0.001);
 			sum += aoSample.x * weight;
 			weights += weight;
-			[branch] if (sky) skySum += tex2Dlod(NVR_SkyVis, float4(sampleUV, 0, 0)).r * weight;
+			[branch] if (sky) skySum += tex2Dlod(NVR_SkyVis, float4(sampleUV, 0, 0)).rb * weight;
 		}
 	}
 	float ao = lerp(TESR_AmbientOcclusionAOData.z, 1, sum / max(weights, 1.0e-6));
 	ao = lerp(ao, 1, saturate((luma(linearColor) - TESR_AmbientOcclusionData.y) * 3));
-	if (sky) ao *= saturate(skySum / max(weights, 1.0e-6));	// the sky factor (its own share; not part of the AO's clamp/fade)
+	// the sky factor (its own share; not part of the AO's clamp/fade), at most what LightCap allows (UNOFFICIAL 2026-10-20 skyamb)
+	if (sky) { float2 skyAt = saturate(skySum / max(weights, 1.0e-6)); return SkyTake(linearColor * ao, skyAt.x, skyAt.y, NVR_CompositeAOTexel.z, NVR_CompositeAOTexel.w); }
 	return linearColor * ao;
 }
 

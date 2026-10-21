@@ -15,6 +15,7 @@ float4x4 TESR_ShadowCameraToLightTransformOrtho;	// camera-relative world positi
 float4 TESR_AmbientOcclusionSky2;	// UNOFFICIAL 2026-10-17 Skylighting v2: x 1 on, y strength, z sky light A, w sun light S (Includes/SkyShare.hlsl)
 float4 TESR_AmbientOcclusionSky3;	// x 1 = normal from the depth (0 = the normals buffer), y 1 / OpenThreshold, z share apply, w debug view
 float4 TESR_AmbientOcclusionSky4;	// x ray length (units), y soft width (units), z sun mask bound (pass), w factor bound (DedicatedCombine)
+float4 TESR_AmbientOcclusionSky5;	// UNOFFICIAL 2026-10-20 (skyamb) LightCap (Includes/SkyTake.hlsl): x the most light the sky may take (x (1 - V)), y OpenSides (SkyVisibilityV2PS), w 1e6 = no limit
 float4 TESR_SmoothedSunDir;
 float4 TESR_ShadowFade;
 float4 TESR_ReciprocalResolution;
@@ -73,6 +74,7 @@ VSOUT FrameVS(VSIN IN)
 #include "Includes/Helpers.hlsl"
 #include "Includes/Normals.hlsl"
 #include "Includes/SkyShare.hlsl"
+#include "Includes/SkyTake.hlsl"
 
 
 // returns a semi random float3 between 0 and 1 based on the given seed.
@@ -552,6 +554,14 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 		float3x3 M = (float3x3)TESR_ShadowCameraToLightTransformOrtho;
 		float reach = TESR_AmbientOcclusionSky4.x;
 		float softScale = 1.0f / max(TESR_AmbientOcclusionSky4.y * abs(M[2][2]), 1.0e-9f);
+		// UNOFFICIAL 2026-10-20 (skyamb) OpenSides (TESR_AmbientOcclusionSky5.y, 0-1; user: under a neon canopy at dusk the wall and doors
+		// went black): the map holds only the top surface, so for a point under a cover (covered: the map's top is above it) every ray is
+		// 'blocked' until it leaves the cover's footprint, even through the open air under an open-sided canopy or porch roof. With it on,
+		// the low rays (30 degrees up, standing for the 0-45 degree band: most of a wall's sky light) of such a point count as open where,
+		// at full reach straight out, nothing in the map stands above the point's own height (the cover has ended there); toward a cliff,
+		// the house a porch belongs to or a cover larger than the reach they stay blocked. 0: as before.
+		float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);	// (debug view 4: the map's top is above the point)
+		float sides = saturate(TESR_AmbientOcclusionSky5.y * covered);
 		{
 			float total = 0.034f * saturate(n.z);
 			float open = total * SkyOpenV2(o + M[2] * (reach * 0.4f), softScale) * SkyOpenV2(o + M[2] * reach, softScale);
@@ -562,7 +572,9 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 					float3 dir = k ? float3(h * 0.8660254f, 0.5f) : float3(h * 0.5f, 0.8660254f);	// 30 / 60 degrees up
 					float w = (k ? 0.0884f : 0.0324f) * saturate(dot(dir, n));	// band solid angle / 2 pi / 8 x cosine
 					float3 stepO = mul(dir, M);
-					open += w * SkyOpenV2(o + stepO * (reach * 0.4f), softScale) * SkyOpenV2(o + stepO * reach, softScale);
+					float rayOpen = SkyOpenV2(o + stepO * (reach * 0.4f), softScale) * SkyOpenV2(o + stepO * reach, softScale);
+					[branch] if (k && sides > 0.0f) rayOpen = lerp(rayOpen, SkyOpenV2(o + mul(float3(h, 0.0f), M) * reach, softScale), sides);
+					open += w * rayOpen;
 					total += w;
 				}
 			}
@@ -572,7 +584,6 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 			// Nearly open sky counts as open (OpenThreshold): the last few per cent of a height-field estimate on open ground near
 			// buildings are below what it can tell apart (no openings under eaves, a coarse map), and open sunlit ground keeps today's look.
 			visibility = saturate(visibility * TESR_AmbientOcclusionSky3.y);
-			float covered = 1.0f - SkyOpenV2(o + M[2] * 32.0f, softScale);	// (debug view 4: the map's top is above the point)
 			result = SkyFactor(visibility, n, sunMask, covered);
 			skyVisibility = visibility;
 		}
@@ -646,18 +657,22 @@ float4 DedicatedCombine(VSOUT IN) : COLOR0
 	#endif
 	float3 result = source * pow(abs(ao), 1.0 / 2.2);	// (abs: free, ao >= 0 here; ends warning X3571)
 	[branch] if (TESR_AmbientOcclusionSky4.w > 0.5f) {	// UNOFFICIAL Skylighting v2: the sky factor, with the AO's upsample weights
-		float skySum = 0, skyWeights = 0;
+		float2 skySum = 0;	// UNOFFICIAL 2026-10-20 (skyamb): x the factor, y the visibility (LightCap)
+		float skyWeights = 0;
 		[unroll] for (int sy = 0; sy < 2; ++sy) {
 			[unroll] for (int sx = 0; sx < 2; ++sx) {
 				float2 uv = (base + float2(sx, sy) + 0.5) * NVR_AOLayout.zw;
 				float2 sample = tex2Dlod(NVR_AOBuffer, float4(DedicatedUV(uv), 0, 0)).rg;
 				float weight = (sx ? fraction.x : 1 - fraction.x) * (sy ? fraction.y : 1 - fraction.y);
 				weight /= 1 + abs(sample.y - depth) / max(blurDrop, 0.001);
-				skySum += tex2Dlod(NVR_SkyVis, float4(DedicatedUV(uv), 0, 0)).r * weight;
+				skySum += tex2Dlod(NVR_SkyVis, float4(DedicatedUV(uv), 0, 0)).rb * weight;
 				skyWeights += weight;
 			}
 		}
-		result *= pow(saturate(skySum / max(skyWeights, 1.0e-6)), 1.0 / 2.2);	// (a linear factor on a gamma colour)
+		// The factor on the linear colour (it was the same as a gamma factor on the gamma colour), taking away at most what LightCap allows
+		// (Includes/SkyTake.hlsl; no limit: as before).
+		float2 sky = saturate(skySum / max(skyWeights, 1.0e-6));
+		result = pows(SkyTake(pows(result, 2.2), sky.x, sky.y, TESR_AmbientOcclusionSky5.x, TESR_AmbientOcclusionSky5.w), 1.0 / 2.2);
 	}
 	return float4(result, 1);
 }
