@@ -23,7 +23,13 @@
 //   world                                        (2026-10-16) each shot also saves the world scene's HDR target raw (.world, CaptureWorld)
 //   stage                                        (2026-10-18) each shot also saves the HDR picture right after the AmbientLight step
 //                                                (whether it ran or not) raw, as <slug>-al.world (CaptureStage; the same file format)
+//   noreload                                     (2026-10-21) a shot with no set/effect lines skips the settings reload (LoadSettings)
+//                                                every shot otherwise starts with: nothing in the game is touched in that shot
+//   cloudcoverage <0-1>                          (2026-10-21) at the start of the shot, the volumetric clouds' eased coverage is set to
+//                                                this (as right after a load or a weather change); it eases back to the weather's over
+//                                                about ten seconds. Not a setting: no reload, nothing to undo
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
+#include <algorithm>
 #include <atomic>
 #include <fstream>
 #include <sstream>
@@ -38,7 +44,7 @@ namespace SettingShots {
 	inline const char* const RequestFile = "Data\\NVSE\\Plugins\\NVRAutoTest.shots.txt";
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
 
-	struct Change { bool effect = false, console = false; std::string section, key, value; };
+	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
 	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; };	// menu: 2026-10-19
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
@@ -77,13 +83,14 @@ namespace SettingShots {
 	inline bool WorldCapture = false;			// 'world' (2026-10-16): each shot also saves the world scene's HDR target (CaptureWorld)
 	inline size_t WorldTaken = (size_t)-1;		// the shot whose world target is saved already
 	inline bool StageCapture = false;			// 'stage' (2026-10-18): each shot also saves the picture after the AmbientLight step
+	inline bool NoReload = false;				// 'noreload' (2026-10-21): shots without changes skip the settings reload
 	inline size_t StageTaken = (size_t)-1;		// the shot whose stage picture is saved already
 	inline IDirect3DSurface9* WorldResolve = nullptr;
 	inline IDirect3DSurface9* WorldReadback = nullptr;
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
 		std::ifstream in(RequestFile);
@@ -102,6 +109,7 @@ namespace SettingShots {
 			else if (command == "final") FinalPicture = true;
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
+			else if (command == "noreload") NoReload = true;
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			// 2026-10-19: 'menu <section>' = this shot's picture is NVR's menu open at that page ("@NewInPatch" = the new tab),
 			// taken after the menu is drawn (CaptureMenu); 'menutests' also ticks Display > "Show test settings" for it.
@@ -125,6 +133,12 @@ namespace SettingShots {
 					return false;
 				}
 				Change c; c.console = true; c.value = rest.substr(start);
+				List.back().changes.push_back(c);
+			}
+			else if (command == "cloudcoverage") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }
+				Change c; c.coverage = true; words >> c.value;
+				if (c.value.empty()) { error = "line " + std::to_string(number) + ": incomplete"; return false; }
 				List.back().changes.push_back(c);
 			}
 			else if (command == "set" || command == "effect") {
@@ -151,6 +165,11 @@ namespace SettingShots {
 		Moves = false;
 		for (const Change& c : s.changes) {
 			if (c.console) { Commands.push_back(c.value); Moves = true; continue; }
+			if (c.coverage) {
+				if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) clouds->TestSetCoverage((float)atof(c.value.c_str()));
+				Logger::Log("SETTING SHOTS %s: shot '%s': cloud coverage set to %s (eases back to the weather's)", Run, s.slug.c_str(), c.value.c_str());
+				continue;
+			}
 			if (c.effect) {
 				const bool want = Truthy(c.value);
 				if (TheSettingManager->GetMenuShaderEnabled(c.section.c_str()) != want) {
@@ -176,7 +195,9 @@ namespace SettingShots {
 			}
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
 		}
-		TheSettingManager->LoadSettings();
+		const bool changes = std::any_of(s.changes.begin(), s.changes.end(), [](const Change& c) { return !c.console && !c.coverage; });
+		if (changes || !NoReload) TheSettingManager->LoadSettings();
+		else Logger::Log("SETTING SHOTS %s: shot '%s': no changes, no settings reload (noreload)", Run, s.slug.c_str());
 		if (!s.menu.empty()) ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
 	}
 

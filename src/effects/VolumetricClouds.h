@@ -101,6 +101,9 @@ public:
 	void	RenderShadowMap(IDirect3DDevice9* Device);
 	float	ShadowStrengthForSunFar();
 	bool	shadowsViaSunFar = false;
+	// UNOFFICIAL 2026-10-21, test tool (SettingShots 'cloudcoverage'): puts the eased coverage away from the weather's, as right after a
+	// load or a weather change, so a test can see what a later step does to the easing (it eases back from there).
+	void	TestSetCoverage(float value) { coverage = std::clamp(value, 0.0f, 1.0f); }
 
 private:
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;	// eased toward the weather's
