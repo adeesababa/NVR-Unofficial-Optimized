@@ -30,7 +30,9 @@ namespace ReflMaterial {
 	inline float Current = -1.0f;				// c212.x as last sent (-1: send on the next pass)
 	inline bool StatesSet = false;
 	inline DWORD SavedSeparate = FALSE, SavedSrcAlpha = D3DBLEND_ONE, SavedDstAlpha = D3DBLEND_ZERO, SavedOpAlpha = D3DBLEND_ONE;
-	inline std::unordered_set<UInt16> Refused;	// pass numbers that drew blended with the flag on (never flagged again)
+	// Pass numbers that drew blended with the flag on (never flagged again). Seeded with the ones the first in-game run found (2026-10-21,
+	// Ultra-Luxe: each drew blended once while loading): 14A 14D 14E and 248 252 254.
+	inline std::unordered_set<UInt16> Refused = { 0x14A, 0x14D, 0x14E, 0x248, 0x252, 0x254 };
 	inline UInt32 FlaggedPasses = 0, Frames = 0;
 	inline UInt16 LastFlaggedPass = 0;
 	inline bool LastFlagged = false;
