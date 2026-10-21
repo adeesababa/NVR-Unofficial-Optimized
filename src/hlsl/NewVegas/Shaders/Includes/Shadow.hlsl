@@ -202,6 +202,13 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 #endif
 }
 
+// UNOFFICIAL 2026-10-20 SmoothCharacterShadows (CharacterShadowSoftness, TESR_ShadowForwardData.z): the skin shaders set this to the
+// least half-width, in world units, a sun shadow edge on skin fades over (real skin carries light a few millimetres past a shadow
+// line; without it a face showed every stair step of the shadow map and the straight edges of the head's triangles, hard, and
+// moving with every turn of the head). Used by the contact-hardening lookup below (PCF, Mode 3; declared in every mode so the
+// callers need no guard), only where its search finds an edge near the point. 0 (everything else): unchanged.
+static float ShadowMinPenumbra = 0.0f;
+
 #if SHADOW_FIXED_MODE == 3
 // UNOFFICIAL 2026-10-14 (user: the stripes over the power armour came back, low sun): how far the receiver's own surface falls
 // away from the sun per shadow-map texel, in light-space depth, set by GetSunShadow from the surface's slope to the sun. A
@@ -479,6 +486,9 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
         }
         float distance = max(depth - casterSum / max(casters, 1.0f), 0.0f) * worldPerDepth;
         radius = casters < 0.5f || casters > 4.5f ? 0.0f : min(0.5f * distance * TESR_ContactHardeningData.x * uvPerWorld, maxRadius);
+        // UNOFFICIAL 2026-10-20 skin (ShadowMinPenumbra): an edge near the point fades over at least that width, up to the search's
+        // reach (a disc wider than the search let points just past its reach take the plain lookup: a hard seam round shadows).
+        if (casters > 0.5f && casters < 4.5f) radius = max(radius, min(ShadowMinPenumbra * uvPerWorld, 0.73f * maxRadius));
     }
     // UNOFFICIAL 2026-10-15 [Shaders.ContactHardening.Main] Smooth (TESR_ContactHardeningData.z), against the aliasing seen
     // with contact hardening: (1) the plain 3 x 3 (under a texel) and the disc (over it) no longer switch at one penumbra
@@ -599,6 +609,27 @@ float3 GetShadowGeometricNormal(float3 worldPos) {
     return n * sign(dot(n, -worldPos));
 }
 
+// UNOFFICIAL 2026-10-20 [Shaders.ShadowsExteriors.Main] SmoothCharacterShadows (TESR_ShadowForwardData.y), live (P82 testers:
+// sun shadows on faces blocky and popping as the head turns). The flat normal above is one per TRIANGLE: the shadow lookup's
+// normal offset (its direction and length), its slope bias, and the old skin's sky light all changed at every triangle edge
+// (measured in game, bench\deep-roadmap\evidence\charshadow: triangle-shaped differences of a few brightness levels on a face,
+// most on the old skin's shaded side; the hard, jagged, moving edges themselves are ShadowMinPenumbra's part). With the switch
+// on, the skin shaders take the smooth vertex normal their vertex shader sends (w = SHADOW_VS_SENTINEL; camera-relative world space, like
+// shadowWorldPos) instead. Off, or without one (a vanilla vertex shader): the flat normal, as before. Called only by the skin
+// shaders, just before their GetSunShadow: it also sets the skin's shadow edge softness (ShadowMinPenumbra, 0 when off).
+float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
+    ShadowMinPenumbra = TESR_ShadowForwardData.z;
+    float len2 = dot(smoothNormal.xyz, smoothNormal.xyz);
+    return (TESR_ShadowForwardData.y > 0.0f && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
+}
+
+// The vertex shader side: the vertex normal in camera-relative world space, by the same projection round trip as
+// GetShadowWorldPos, two units along the normal (whatever space the draw's matrix takes the vertex from: skinned or not).
+float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 normal, float3 shadowWorldPos) {
+    float3 along = GetShadowWorldPos(mul(modelViewProj, float4(position + 2.0f * normalize(normal), 1.0f)));
+    return float4(normalize(along - shadowWorldPos), SHADOW_VS_SENTINEL);
+}
+
 #if SHADOW_FIXED_MODE == 3
 // UNOFFICIAL 2026-10-14 (PCF): one cascade's lookup, the cascade chosen by c (0 Near .. 3 Lod) with selects rather than one
 // copy of the code per cascade: GetSunShadow's tree below wrote the lookup out eight times, which with contact hardening's
@@ -610,7 +641,7 @@ float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float4 offsetD
     float offset = c < 0.5f ? offsetDistance.x : c < 1.5f ? offsetDistance.y : c < 2.5f ? offsetDistance.z : offsetDistance.w;
     float3 position = worldPos + offset * worldNormal;
 #if CONTACT_HARDENING
-    return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && TESR_ContactHardeningData.x > 0.0f);
+    return SampleShadowAtlasPCSS(position, lightTransform, quadrant, bias, c < 1.5f && (TESR_ContactHardeningData.x > 0.0f || ShadowMinPenumbra > 0.0f));
 #else
     return SampleShadowAtlas(mul(float4(position, 1.0f), lightTransform), quadrant, bias, 0.0f);
 #endif

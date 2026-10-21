@@ -46,6 +46,7 @@ struct VS_INPUT {
     float4 texcoord_4 : TEXCOORD4;			        // attenuation map UV
     float4 texcoord_5 : TEXCOORD5;			        // attenuation map2 UV
     float3 texcoord_7 : TEXCOORD7_centroid;			// eyeDirection for pointlight2
+    float4 smoothNormal : TEXCOORD8;                // UNOFFICIAL 2026-10-20: from SKIN2013.vso, .w = sentinel
 };
 
 
@@ -124,6 +125,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+    shadowNormal = ShadowLookupNormal(shadowNormal, IN.smoothNormal);   // UNOFFICIAL 2026-10-20 SmoothCharacterShadows (Shadow.hlsl)
 #if FORWARD_SHADOWS
     // ddx/ddy must stay at top level, outside dynamic flow control.
     float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)

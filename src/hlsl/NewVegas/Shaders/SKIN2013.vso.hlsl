@@ -48,6 +48,7 @@ struct VS_OUTPUT {
     float4 atten2         : TEXCOORD5;   // point light 2 attenuation UVs, w: 0.5
     float4 shadowWorldPos : TEXCOORD6;   // the only addition to vanilla
     float3 eyeDir         : TEXCOORD7;   // eye direction in tangent space
+    float4 smoothNormal   : TEXCOORD8;   // UNOFFICIAL 2026-10-20: the vertex normal for SmoothCharacterShadows (Shadow.hlsl ShadowLookupNormal)
 };
 
 VS_OUTPUT main(VS_INPUT IN) {
@@ -88,6 +89,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.uv = IN.uv;
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
+    OUT.smoothNormal = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz);
 
     return OUT;
 };
