@@ -1995,6 +1995,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.PBR.EnvMaps",                  "CubeReflections",    RestartRule::TurnOn },
 	{ "Shaders.PBR.MaterialRules",            "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.PBR.Rmaos",                    "Enabled",            RestartRule::Changed },
+	{ "Shaders.Reflections.Main",             "MaterialAware",      RestartRule::TurnOn },	// REFL_MATERIAL_ON (core/ReflMaterial.h)
 	{ "Shaders.PBR.Linear",                   "Enabled",            RestartRule::TurnOn },	// off at runtime = Gamma 1
 	{ "Shaders.PBR.Linear",                   "PreDecode",          RestartRule::Changed },
 	{ "Shaders.Sky.Physical",                 "Enabled",            RestartRule::TurnOn },
@@ -2179,6 +2180,11 @@ static const char* InactiveReason(const char* section, const char* key) {
 		return "Only used while Ambient Light is on with GridBounce above 0 (Ambient Light > Main): it reads the light grid that makes.";
 	if (sec == "Shaders.Reflections.Main" && is({ "GridBrightness" }) && NumericSetting(section, "GridFallback") == 0.0f)
 		return "Only used with GridFallback on.";
+	// UNOFFICIAL 2026-10-20 MaterialAware (core/ReflMaterial.h): the material comes from the _rmaos maps.
+	if (sec == "Shaders.Reflections.Main" && is({ "MaterialAware", "MaterialReflect", "MaterialMaxRoughness" }) && NumericSetting("Shaders.PBR.Rmaos", "Enabled") == 0.0f)
+		return "Only used with the _rmaos maps on ([Shaders.PBR.Rmaos] Enabled): the materials come from them.";
+	if (sec == "Shaders.Reflections.Main" && is({ "MaterialReflect", "MaterialMaxRoughness" }) && NumericSetting(section, "MaterialAware") != 1.0f)
+		return "Only used with MaterialAware 1.";
 	return nullptr;
 }
 

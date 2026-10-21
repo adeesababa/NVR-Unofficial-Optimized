@@ -106,6 +106,27 @@ float RmaosAmbient() { return 1.0f; }
 float3 RmaosDebug(float3 color, float3 albedo) { return color; }
 #endif
 
+// UNOFFICIAL 2026-10-20 MaterialAware reflections ([Shaders.Reflections.Main] MaterialAware, core/ReflMaterial.h): the first
+// (opaque) pass of an object with an _rmaos map leaves its roughness and metal in the scene's alpha for the Reflections effect.
+// D3D9 cannot draw into a second target with the game's MSAA on, so the scene's own alpha (fp16) carries it:
+// 2 + 0.25 x metal (4 steps) + 0.24 x roughness, always 2 or more where the game writes 0-1. NVR sets c212.x per pass
+// (core/ReflMaterial.h): 1 only for the first passes of opaque, untested objects with a map, in the world scene; never for a
+// blended pass (its alpha weighs its colour). The world scene keeps blended passes off the alpha (separate alpha blend ZERO/ONE).
+// Only alpha 1 is replaced (an object that fades keeps its own). Compiled in only when MaterialAware is on at startup
+// (REFL_MATERIAL_ON, with RMAOS_ON); otherwise the shaders are exactly what they were. Kept to a few instructions: the 6-lamp
+// interior shader (SLS2035) is near the slot count the driver refuses.
+#if defined(RMAOS) && defined(REFL_MATERIAL_ON) && REFL_MATERIAL_ON
+float4 TESR_ReflMaterial : register(c212); // x: 1 = this pass leaves its material in the alpha (pinned clear of every other object-shader constant)
+float ReflMaterialAlpha(float alpha) {
+    // (the map's own roughness: the shader's, after SpecularAA, would bring back its whole computation into the shaders without a highlight)
+    float metal = floor(saturate(RmaosValue.g) * 3.0f + 0.5f);
+    float encoded = 2.0f + metal * 0.25f + saturate(RmaosValue.r) * 0.24f;
+    return lerp(alpha, encoded, TESR_ReflMaterial.x * (alpha >= 0.999f ? 1.0f : 0.0f));
+}
+#else
+#define ReflMaterialAlpha(alpha) (alpha)
+#endif
+
 float getRoughness(float gloss) {
     #ifdef RMAOS
         if (RMAOS_ACTIVE && !RMAOS_FADING) return max(RmaosValue.r, 0.02f);

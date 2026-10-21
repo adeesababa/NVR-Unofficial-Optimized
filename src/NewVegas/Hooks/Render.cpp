@@ -26,6 +26,7 @@
 #include "../../core/MaterialRules.h"
 #include "../../core/PbrPop.h"	// UNOFFICIAL 2026-10-18 PBR pop-in: SpecularFade, SpecularLODPasses (+ test diagnostic)
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
+#include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
 
@@ -1669,6 +1670,7 @@ namespace RmaosDraw {
 	static std::deque<Job> ToRead, Read;
 	static bool WorkerStarted = false, Checked = false, Compiled = false;
 	static float Current[4] = { -1.0f, 0.0f, 0.0f, 0.0f };	// c220 as last sent this frame
+	static bool ThisDraw = false;	// UNOFFICIAL 2026-10-20: the object being drawn has its map on (MaterialAware reflections, core/ReflMaterial.h)
 	// UNOFFICIAL 2026-10-18 FadeIn (pbrpop, [Shaders.PBR.Rmaos] FadeIn, seconds, live): a map that has just arrived comes in over this time
 	// (c220.x = its share, Object.hlsl blends its values in from the object's look without it) instead of at once. 0 = at once, as before.
 	static float FadeSeconds = 0.0f;
@@ -1812,6 +1814,7 @@ namespace RmaosDraw {
 
 	// One object about to be drawn (RenderPassStandard/Skinned hooks).
 	static void ForObject(const PointShadowForward::RenderPassView* pass) {
+		ThisDraw = false;
 		if (!Checked) {
 			Checked = true;
 			Compiled = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") != 0;	// as ShaderRecord compiled it
@@ -1846,6 +1849,7 @@ namespace RmaosDraw {
 		float share = 1.0f;	// UNOFFICIAL FadeIn: the map's share while it comes in
 		if (on && FadeSeconds > 0.0f) share = std::clamp((float)((FrameNowMs - map->ArrivedMs) / (1000.0 * FadeSeconds)), 0.001f, 1.0f);
 		values[0] = on ? share : 0.0f;
+		ThisDraw = on;
 		Send(values, on ? map->Texture : nullptr);
 	}
 
@@ -2605,7 +2609,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 		return;
 	}
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
+	ReflMaterial::ForPass(Pass, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World && RmaosDraw::ThisDraw, TheRenderManager->device);	// UNOFFICIAL MaterialAware reflections
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	ReflMaterial::AfterPass(TheRenderManager->device);
 	ClothWind::PassGeometry = nullptr;
 	ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 #if NVR_TEST_TOOLS
@@ -2633,7 +2639,9 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
+	ReflMaterial::ForPass(Pass, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World && RmaosDraw::ThisDraw, TheRenderManager->device);	// UNOFFICIAL MaterialAware reflections
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	ReflMaterial::AfterPass(TheRenderManager->device);
 	ClothWind::PassGeometry = nullptr;
 	ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 	HiddenObjectCulling::After();
@@ -2805,7 +2813,10 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		// UNOFFICIAL Conor's skin shader: its scattering target is bound only for skin drawn inside the world scene.
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
 		SandstormGlass::BeginWorld();	// UNOFFICIAL sandport: ThroughBlended (RenderBlendedHook)
+		// UNOFFICIAL 2026-10-20 MaterialAware reflections (core/ReflMaterial.h): blended passes keep off the scene's alpha.
+		ReflMaterial::BeginWorld(TheRenderManager->renderState, TheRenderManager->device, ReflMaterial::CompiledIn() && TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0);
 		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+		ReflMaterial::EndWorld(TheRenderManager->renderState, TheRenderManager->device);
 		SandstormGlass::EndWorld();
 		PassSums::EndWorld(TheRenderManager->device);	// UNOFFICIAL ExactPassSums: a run still open at the world's end is folded in here
 		// UNOFFICIAL Conor's skin shader: the SkinShader hooks unbind the target after every skin draw; this only guarantees

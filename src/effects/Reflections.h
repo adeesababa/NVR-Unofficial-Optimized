@@ -28,6 +28,9 @@ public:
 		int		DebugView;		// 1: the reflection alone, 2: where it found something, 3: the surroundings cube (4-6: see the .fx)
 		bool	GridFallback;	// UNOFFICIAL 2026-10-19: rays that find nothing on screen also take AmbientLight's light grid
 		float	GridBrightness;	// its brightness
+		int		MaterialAware;	// UNOFFICIAL 2026-10-20: 1 = the _rmaos materials decide what reflects (core/ReflMaterial.h); 2 = filled, not used (test)
+		float	MaterialReflect;	// how much a smooth known material reflects
+		float	MaterialMaxRoughness;	// known materials at least this rough do not reflect
 	};
 	SettingsStruct	Settings;
 
@@ -43,6 +46,7 @@ public:
 		D3DXVECTOR4	Grid;		// xyz: the light grid's corner relative to the camera, w: cell size
 		D3DXVECTOR4	Grid2;		// x: 1 = the grid is in use, y: brightness, z: 1 = it carries colours
 		D3DXVECTOR4	Grid3;		// rgb: the light every surface gets here (AmbientLight's, linear)
+		D3DXVECTOR4	Material;	// UNOFFICIAL 2026-10-20 x: 1 = the material buffer is read, y: MaterialMaxRoughness, z: MaterialReflect
 	};
 	ConstantsStruct	Constants;
 	IDirect3DBaseTexture9*	GridLightSlot = nullptr;	// AmbientLight's finished grid this frame (TextureManager slots)
@@ -71,6 +75,8 @@ public:
 		IDirect3DSurface9* TempSurface = nullptr;
 		IDirect3DTexture9* HistoryTexture = nullptr;
 		IDirect3DSurface9* HistorySurface = nullptr;
+		IDirect3DTexture9* MaterialTexture = nullptr;	// UNOFFICIAL 2026-10-20 MaterialAware: full resolution, made only when compiled in
+		IDirect3DSurface9* MaterialSurface = nullptr;
 	};
 	TexturesStruct	Textures;
 
@@ -83,6 +89,8 @@ public:
 	bool	CubeWanted();								// the cube is kept up even when no floor reflects (metal, env maps)
 	void	RenderCubeOnly(IDirect3DDevice9* Device);	// the cube alone, on a frame RenderBuffers does not run
 	bool	CubeReady() const;							// the cube was kept up last frame (what the object shaders read now)
+	void	CaptureMaterial(IDirect3DDevice9* Device);	// UNOFFICIAL 2026-10-20 MaterialAware: the scene's alpha into the material buffer, before any effect draws
+	void	BindMaterial();								// the material buffer on stage 15 for the next passes (ClearPassTextures unbinds it)
 
 private:
 	D3DXMATRIX	lastView, lastInvView, lastProj;
@@ -98,6 +106,8 @@ private:
 	UINT		cubeFrame = 0;			// FrameNumber of the last cube update
 	D3DXMATRIX	cubeInvView;			// the camera at the last cube update (for the jump test)
 	bool		cubeOnly = false;		// RenderCubeOnly is drawing (ShouldRender lets its passes through)
+	bool		materialOnly = false;	// CaptureMaterial is drawing
+	bool		materialFilled = false;	// the material buffer was filled this frame
 	UINT		gridFrames = 0, gridUsedFrames = 0;	// for the log: frames drawn with GridFallback on, and of them with a grid to read
 	void	GridStep();							// the light grid's constants and textures for this frame's trace
 	void	CubeStep(IDirect3DDevice9* Device);
