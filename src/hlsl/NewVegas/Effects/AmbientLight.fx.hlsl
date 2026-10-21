@@ -36,7 +36,7 @@ float4 TESR_AmbientLightData;  // x: radius (world units), y: occlusion strength
 float4 TESR_AmbientLightData2;  // x: darkest the occlusion may make a pixel (0-1), y: brightness above which it fades, z: blur radius (half-res texels per tap), w: debug view (1 occlusion, 2 bounce)
 float4 TESR_ReciprocalResolution;
 float4 NVR_ALLayout;            // xy: half-resolution size / full size, zw: 1 / half-resolution size
-float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass)
+float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager skips their own pass), y: NoEdgeOutline (UNOFFICIAL 2026-10-21)
 float4 NVR_ALInterior;          // UNOFFICIAL 2026-10-18 (ambfix2): x 1 = indoor balance (InteriorBalance), y 1 = last frames' balance usable, z InteriorBounceShare, w share of last frames' balance kept per frame
 float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: share of the grid light's colour kept (GridColour)
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
@@ -712,9 +712,26 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 	// (which blade covers the pixel this frame, swaying), and the blur and the frame history cannot settle it (they keep
 	// pixels at other depths apart). There it keeps only a quarter of its darkening; solid ground and walls keep all of it.
 	float2 px = TESR_ReciprocalResolution.xy;
-	float bendX = abs(readDepthLod(IN.UVCoord + float2(px.x, 0.0f)) + readDepthLod(IN.UVCoord - float2(px.x, 0.0f)) - 2.0f * depth);
-	float bendY = abs(readDepthLod(IN.UVCoord + float2(0.0f, px.y)) + readDepthLod(IN.UVCoord - float2(0.0f, px.y)) - 2.0f * depth);
+	float left = readDepthLod(IN.UVCoord - float2(px.x, 0.0f)), right = readDepthLod(IN.UVCoord + float2(px.x, 0.0f));
+	float up = readDepthLod(IN.UVCoord - float2(0.0f, px.y)), down = readDepthLod(IN.UVCoord + float2(0.0f, px.y));
+	float bendX = abs(left + right - 2.0f * depth);
+	float bendY = abs(up + down - 2.0f * depth);
+	// UNOFFICIAL 2026-10-21 (aloutline, user: "this outline that occurs in some areas w/ ambient light", a dim saloon with a seated NPC:
+	// a thin light line round every character, table, booth and lamp): the rule above took any bend in the depth for busy depth, and
+	// the edge of every object is one (a single step bends the depth at the two pixels either side of it), so a line two pixels wide
+	// round everything kept only a quarter of its darkening; in a dim room, where the occlusion takes much of the light, it showed
+	// as a light outline (measured: edge pixels 1.42 x the light round them, 1.09 with AmbientLight off). With NoEdgeOutline
+	// (NVR_ALFlags.y) the depth must bend at three pixels in a row (the bends one pixel either side as well, the smallest of the
+	// three counts): a lone edge has two, grass and bushes (blades a pixel or two wide, each at its own depth) keep theirs. Four
+	// more depth reads.
+	[branch] if (NVR_ALFlags.y > 0.5f) {
+		float left2 = readDepthLod(IN.UVCoord - float2(2.0f * px.x, 0.0f)), right2 = readDepthLod(IN.UVCoord + float2(2.0f * px.x, 0.0f));
+		float up2 = readDepthLod(IN.UVCoord - float2(0.0f, 2.0f * px.y)), down2 = readDepthLod(IN.UVCoord + float2(0.0f, 2.0f * px.y));
+		bendX = min(bendX, min(abs(left2 + depth - 2.0f * left), abs(depth + right2 - 2.0f * right)));
+		bendY = min(bendY, min(abs(up2 + depth - 2.0f * up), abs(depth + down2 - 2.0f * down)));
+	}
 	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
+	[branch] if (DebugView > 10.5f) return float4(busy.xxx, 1.0f);	// 11 (diagnostic): where the busy-depth rule lifts the occlusion
 	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
 	float3 albedo = SurfaceColour(lin);                                  // UNOFFICIAL 2026-10-18 (ambfix): was lin / max channel * 0.6
 	// UNOFFICIAL 2026-10-14: the light grid's bounce (GridBounce), darkened by the occlusion as light from round about is.

@@ -55,6 +55,9 @@ public:
 	static const int	StatsWidth = 16, StatsHeight = 9;	// 2 x 2 samples per texel (StatsSample)
 	bool				interiorBalance = true;
 	float				interiorBounceShare = 1.0f;
+	// UNOFFICIAL 2026-10-21 (aloutline) NoEdgeOutline: the busy-depth rule (Apply) needs a bend at three pixels in a row, so the edges
+	// of things no longer count as grass (NVR_ALFlags.y).
+	bool				noEdgeOutline = true;
 	IDirect3DTexture9*	statsTexture = nullptr;			// per sample: light, the occlusion's darkening, the bounce (luma)
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};		// x: the bounce's scale (eased), yzw: the averages
