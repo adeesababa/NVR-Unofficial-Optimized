@@ -401,6 +401,25 @@ namespace PointShadowForward {
 		}
 		rejectedLast = rejected;
 		for (int s = 0; s < SlotCount; s++) { lastLights[s] = Slots[s].light; lastStart[s] = start[s]; }
+		// UNOFFICIAL LogLamps (2026-10-20): the published lamps by cube slot whenever the set changes, with DebugView 1/2's colour for each
+		// (slot 0 red, the others by slot), so a shadow on screen can be traced to its lamp.
+		if (forward.LogLamps) {
+			static UInt64 lastSet = 0; static unsigned setLogs = 0;
+			UInt64 set = 1469598103934665603ull;
+			for (int s = 0; s < SlotCount; s++) set = (set ^ (UInt64)(uintptr_t)Slots[s].light ^ ((UInt64)Slots[s].slot << 48)) * 1099511628211ull;
+			if (set != lastSet && setLogs < 40) {
+				lastSet = set; setLogs++;
+				static const char* const colour[11] = { "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple", "lime", "pink", "sky" };
+				for (int s = 0; s < SlotCount; s++) {
+					const NiPointLight* source = Slots[s].light->sourceLight;
+					Logger::Log("LAMPSLOT %d (%s) lamp %p cube at %.0f %.0f %.0f radius %.0f fade %.2f | light at %.0f %.0f %.0f, reach %.0f, colour %.2f %.2f %.2f x %.2f",
+						Slots[s].slot, colour[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], (const void*)Slots[s].light,
+						Slots[s].position.x, Slots[s].position.y, Slots[s].position.z, Slots[s].radius, Slots[s].fade,
+						source ? source->m_worldTransform.pos.x : 0.0f, source ? source->m_worldTransform.pos.y : 0.0f, source ? source->m_worldTransform.pos.z : 0.0f,
+						source ? source->Spec.r : 0.0f, source ? source->Diff.r : 0.0f, source ? source->Diff.g : 0.0f, source ? source->Diff.b : 0.0f, source ? source->Dimmer : 0.0f);
+				}
+			}
+		}
 		lastCount = SlotCount;
 		Active = SlotCount > 0;
 		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }

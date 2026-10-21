@@ -116,7 +116,8 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forwardSettings = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
 	hash = forwardSettings.LampGlassShadows ? 1469598103934665603ULL : 0x6C62272E07BB0142ULL;
 	if (!forwardSettings.LampModelShadows)
-		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
+		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f) ^
+			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 
@@ -205,6 +206,11 @@ static void ForgetLiveFaces(int slot) {
 // UNOFFICIAL 2026-10-18 LampShadowMoveTolerance ([Main.Main.ReducedQuality], CHANGES THE IMAGE, off at 0): the point the cube map
 // is drawn from when it is not the light's own position this frame (RenderShadowMaps sets it around the draw calls).
 static NiPoint3* CubeEyeOverride = nullptr;
+// UNOFFICIAL InvisibleShadowFromLamp (2026-10-20): while one lamp's cube map is drawn from a visible lamp instead of the light: the radius
+// it covers (the light's reach plus the move) and the lamp model at its eye, left out (-1 none).
+static float CubeRadiusOverride = 0.0f;
+static bool CubeRelocated = false;
+static int CubeSkipModel = -1;
 
 // UNOFFICIAL 2026-10-18 CubeFaceViewCull ([Main.Main.Performance]; evidence\intshadow-LOG.md). Indoors with the forward lamp shadows,
 // a lamp cube map is looked up only by the world pass and the first-person pass (PointShadowForward::SetForPass: never the water
@@ -935,7 +941,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	NiPointLight* pNiLight = Lights[LightIndex]->sourceLight;
 
 	LightPos = CubeEyeOverride ? CubeEyeOverride : &pNiLight->m_worldTransform.pos;	// UNOFFICIAL LampShadowMoveTolerance (null: as before)
-	Radius = pNiLight->Spec.r * Shadows->Settings.Interiors.LightRadiusMult;
+	Radius = CubeRadiusOverride > 0.0f ? CubeRadiusOverride : pNiLight->Spec.r * Shadows->Settings.Interiors.LightRadiusMult;	// (InvisibleShadowFromLamp)
 #if defined(OBLIVION)
 	if (pNiLight->CanCarry)
 		Radius = 256.0f;
@@ -1009,6 +1015,11 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			// UNOFFICIAL LampGlassShadows false (2026-10-20): a lamp's glowing glass, bulb or glow sprite is a light source, not a
 			// blocker; drawn solid it threw the whole shade outline of a sconce or chandelier onto the wall (LampFixtures::LampPart).
 			if (!Settings->Forward.LampGlassShadows && LampFixtures::LampPart(geo))
+				continue;
+
+			// UNOFFICIAL InvisibleShadowFromLamp (2026-10-20): drawn from a lamp, that lamp (its model, and every glowing lamp part) is
+			// the light source here, not a blocker.
+			if (CubeRelocated && ((CubeSkipModel >= 0 && LampFixtures::ModelIndexOf(geo) == CubeSkipModel) || LampFixtures::LampPart(geo)))
 				continue;
 
 			// UNOFFICIAL LampModelShadows false (2026-10-20): the lamp models near this light (whole models: a sconce, a chandelier, a ceiling
@@ -1936,6 +1947,35 @@ void ShadowManager::RenderShadowMaps() {
 					}
 				}
 			}
+			// UNOFFICIAL 2026-10-20 InvisibleShadowFromLamp ([Shaders.ShadowsInteriors.Forward], a LOOK OPTION, 0 off): an invisible light
+			// (no lamp part within FixtureDistance) with a lamp part within that distance has its cube map drawn from that lamp part, over
+			// its reach plus the move, without that lamp: it still lights the room from where the designers put it, but its shadows fall
+			// from a lamp the player can see. The forward lookups read the cube from where it was drawn (Publish takes now's position).
+			float radiusOverride = 0.0f;
+			int skipModel = -1;
+			bool relocated = false;
+			{
+				const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = ShadowsInteriors->Forward;
+				if (forward.InvisibleShadowFromLamp > 0.0f && forward.Enabled && !isExterior && PointShadowForward::UsesAllSlots(isExterior) &&
+					LampFixtures::Invisible(pointLight, forward.FixtureDistance)) {
+					if (const LampFixtures::Glow* lamp = LampFixtures::NearestLampPart(pointLight, forward.InvisibleShadowFromLamp)) {
+						const float dx = lamp->x - pointLight->m_worldTransform.pos.x, dy = lamp->y - pointLight->m_worldTransform.pos.y,
+							dz = lamp->z - pointLight->m_worldTransform.pos.z;
+						now.x = anchor.x = lamp->x; now.y = anchor.y = lamp->y; now.z = anchor.z = lamp->z;
+						now.radius += sqrtf(dx * dx + dy * dy + dz * dz);
+						radiusOverride = now.radius;
+						skipModel = lamp->model;
+						relocated = true;
+						static std::unordered_map<const void*, int> loggedMove;
+						if (ShadowsInteriors->Forward.LogLamps && loggedMove.size() < 256 && !loggedMove.count(shadowLight)) {
+							loggedMove[shadowLight] = 1;
+							Logger::Log("LAMP %p (invisible, at %.0f %.0f %.0f) casts its shadows from the lamp part '%s' of '%s' at %.0f %.0f %.0f (%.0f units away), cube radius %.0f",
+								(const void*)shadowLight, pointLight->m_worldTransform.pos.x, pointLight->m_worldTransform.pos.y, pointLight->m_worldTransform.pos.z,
+								lamp->name ? lamp->name : "", lamp->root ? lamp->root : "", lamp->x, lamp->y, lamp->z, sqrtf(dx * dx + dy * dy + dz * dz), now.radius);
+						}
+					}
+				}
+			}
 			if (GpuTimer::Enabled) statPresent++;
 			const PointShadowRedraw why = PointShadowRedrawReason(slots[i], now, scheduleFrame, i, interval);
 			if (why == PointShadowRedraw::None) {
@@ -1980,13 +2020,16 @@ void ShadowManager::RenderShadowMaps() {
 				staticNow.texture = Shadows->Textures.ShadowCubeMapStaticTexture[i];
 			}
 			const PointShadowDraw draw = PointShadowDrawPlan(split && hasList, staticSlots[i], staticNow, moving);
-			CubeEyeOverride = anchored ? &anchor : nullptr;	// UNOFFICIAL LampShadowMoveTolerance: draw from the kept point
+			CubeEyeOverride = anchored || relocated ? &anchor : nullptr;	// UNOFFICIAL LampShadowMoveTolerance: draw from the kept point
+			CubeRadiusOverride = radiusOverride;	// UNOFFICIAL InvisibleShadowFromLamp (0: the light's own)
+			CubeRelocated = relocated;
+			CubeSkipModel = skipModel;
 			// UNOFFICIAL CubeFaceViewCull: only for a lamp redrawn every frame anyway (above RenderShadowCubeMap)
 			// (Any reader of the cube maps indoors -- the forward lookups or the screen-space lamp mask -- reads them for pixels in view.)
 			CubeCullAllowed = TheSettingManager->SettingsMain.Main.CubeFaceViewCull && interval <= 1 && !isExterior &&
 				(moving || why == PointShadowRedraw::Moved);
 			CubeCulledAny = false;
-			struct EyeReset { ~EyeReset() { CubeEyeOverride = nullptr; CubeCullAllowed = false; } } eyeReset;
+			struct EyeReset { ~EyeReset() { CubeEyeOverride = nullptr; CubeCullAllowed = false; CubeRadiusOverride = 0.0f; CubeRelocated = false; CubeSkipModel = -1; } } eyeReset;
 			// UNOFFICIAL 2026-10-18 diagnostic (intshadow): GPU time per lamp of each kind of draw (avg per lamp; the counts per frame
 			// are in the POINT SHADOWS lines), F10 profile only.
 			static GpuTimer staticLayerTimer("  Cube static layer (1 lamp)", 480), movingOntoTimer("  Cube people onto copy (1 lamp)", 960),

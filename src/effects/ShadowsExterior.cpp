@@ -1,5 +1,6 @@
 #include "ShadowsExterior.h"
 #include "../core/TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
+#include "../core/LampFixtures.h"	// UNOFFICIAL 2026-10-20: LampModelOwnDistance
 
 // UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS, technique 2; drawn by ShaderManager after the lamp
 // pass): every number the shader needs (see the constants' comments there). Kept out of ShadowsExterior.h (widely included).
@@ -561,6 +562,8 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.LampGlassShadows = TheSettingManager->GetSettingI(section, "LampGlassShadows") != 0;
 		forward.LampModelShadows = TheSettingManager->GetSettingI(section, "LampModelShadows") != 0;
 		forward.LampModelDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelDistance"), 0.0f, 512.0f);
+		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);
+		forward.InvisibleShadowFromLamp = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleShadowFromLamp"), 0.0f, 1024.0f);
 		forward.InvisibleLightSize = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightSize"), 0.0f, 128.0f);
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;

@@ -2162,7 +2162,9 @@ static const char* InactiveReason(const char* section, const char* key) {
 			return "Only used when LampSize or InvisibleLightSize is above 0.";
 		if (is({ "InvisibleLightSize" }) && NumericSetting(section, "InvisibleLightShadowStrength") <= 0.0f)
 			return "Not used while InvisibleLightShadowStrength is 0 (invisible lights then cast no shadow at all).";
-		if (is({ "LampModelDistance" }) && NumericSetting(section, "LampModelShadows") != 0.0f)
+		if (is({ "InvisibleShadowFromLamp" }) && NumericSetting(section, "InvisibleLightShadowStrength") <= 0.0f)
+			return "Not used while InvisibleLightShadowStrength is 0 (invisible lights then cast no shadow at all).";
+		if (is({ "LampModelDistance", "LampModelOwnDistance" }) && NumericSetting(section, "LampModelShadows") != 0.0f)
 			return "Only used with LampModelShadows off.";
 		if (is({ "FixtureDistance" }) && NumericSetting(section, "InvisibleLightShadowStrength") >= 1.0f)
 			return "Only used when InvisibleLightShadowStrength is below 1.";

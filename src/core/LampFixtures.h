@@ -26,7 +26,8 @@
 // that list changes.
 namespace LampFixtures {
 
-	struct Glow { float x, y, z, radius, emit; const char* name; const char* root; };	// name/root: LogLamps only (engine strings)
+	struct Glow { float x, y, z, radius, emit; const char* name; const char* root; int model; };	// name/root: LogLamps only (engine strings);
+																								// model: its lamp model (Models), -1 none
 
 	inline std::vector<Glow> Glows;							// the cell's glowing meshes (world bound centre and radius)
 	inline const void* GlowCell = nullptr;					// the cell they were listed for
@@ -48,9 +49,15 @@ namespace LampFixtures {
 	struct Model { float x, y, z, radius; const NiNode* root; std::vector<Part> parts; const char* name; };
 	inline bool LogModels = false;							// LogLamps: each light's keep / leave-out answer per lamp model (capped)
 	inline unsigned LogModelLines = 0;
-	inline constexpr float OwnLightDistance = 24.0f;		// world units from a lamp mesh's bound: the lamp's own (bulb) light
+	inline float OwnLightDistance = 24.0f;					// [Shaders.ShadowsInteriors.Forward] LampModelOwnDistance: world units from a lamp's
+															// small mesh = its own (bulb) light; 0 = only lights built into its model; below 0
+															// no lamp is a light's own, not even built in
 	inline std::vector<Model> Models;
 	inline std::unordered_map<const void*, int> ModelOf;		// NiGeometry* -> index in Models
+	// The roots of every placed object that carries a model (statics, lamps, furniture, and lights WITH a model), but not the designers'
+	// model-less lights: a light hanging under one of these is built into an object (a lamp's bulb), any other light is a designer's
+	// invisible light (OwnLight).
+	inline std::unordered_map<const void*, int> ObjectRoots;
 	inline constexpr float MaxLampModel = 200.0f;			// bound radius: a ceiling fan is ~150; buildings named '...light...' are not lamps
 
 	// A lamp model by its file name (or, without one, its root node's name): light, lamp, fan, chandelier, sconce, bulb, lantern,
@@ -111,7 +118,7 @@ namespace LampFixtures {
 		const double started = Now();
 		std::vector<Glow> found;
 		std::vector<Model> models;
-		std::unordered_map<const void*, int> modelOf;
+		std::unordered_map<const void*, int> modelOf, objectRoots;
 		std::vector<NiAVObject*> stack;
 		UInt64 hash = 1469598103934665603ull;
 		unsigned refs = 0, geometries = 0;
@@ -124,6 +131,9 @@ namespace LampFixtures {
 			// A lamp model (LampModelShadows): by its file name, else its root node's name; whole models up to MaxLampModel.
 			int model = -1;
 			const char* path = ModelPath(ref->baseForm);
+			const bool modelLessLight = ref->baseForm->formType == TESForm::FormType::kFormType_Light && !(path && *path);
+			if (modelLessLight) continue;	// a designer's invisible light: no model, nothing to list
+			objectRoots[root] = 1;
 			NiBound* rootBound = root->GetWorldBound();
 			if ((path && *path ? LampName(path) : LampName(root->m_pcName)) && rootBound && rootBound->Radius > 0.0f && rootBound->Radius <= MaxLampModel) {
 				model = (int)models.size();
@@ -147,7 +157,7 @@ namespace LampFixtures {
 					if (emit < 0.25f) continue;
 					NiBound* bound = geo->GetWorldBound();
 					if (!bound || !(bound->Radius > 0.0f) || bound->Radius > MaxLampPart) continue;	// a lamp part (LampPart), not a light shaft
-					found.push_back({ bound->Center.x, bound->Center.y, bound->Center.z, bound->Radius, emit, geo->m_pcName, root->m_pcName });
+					found.push_back({ bound->Center.x, bound->Center.y, bound->Center.z, bound->Radius, emit, geo->m_pcName, root->m_pcName, model });
 					hash = (hash ^ (UInt64)(SInt64)(bound->Center.x * 4.0f + bound->Center.y * 16.0f + bound->Center.z * 64.0f)) * 1099511628211ull;
 					continue;
 				}
@@ -169,11 +179,21 @@ namespace LampFixtures {
 		Glows.swap(found);
 		Models.swap(models);
 		ModelOf.swap(modelOf);
+		ObjectRoots.swap(objectRoots);
 	}
 
-	// Is this light the lamp model's own: built into it (the light's node hangs under the model's root), or at one of its meshes?
+	// Is this light the lamp model's own: built into it (the light's node hangs under the model's root), or a light built into another
+	// object (a bulb model inside a shade, the saloon's arm lamps) within OwnLightDistance of one of its small meshes? A designer's
+	// invisible light never is, wherever it stands: the house's main light placed inside a chandelier's globes made the chandelier throw
+	// its frame across the ceiling (the user's 'shadow from nowhere', Doc Mitchell's house, 2026-10-20).
 	inline bool OwnLight(const Model& m, const NiPointLight* light, const NiPoint3* at) {
-		for (const NiAVObject* node = light; node; node = node->m_parent) if (node == m.root) return true;
+		if (OwnLightDistance < 0.0f) return false;
+		bool builtIn = false;
+		for (const NiAVObject* node = light; node; node = node->m_parent) {
+			if (node == m.root) return true;
+			if (ObjectRoots.count(node)) builtIn = true;
+		}
+		if (!builtIn || !(OwnLightDistance > 0.0f)) return false;	// a designer's light, or 0: only lights built into this lamp's model
 		for (const Part& p : m.parts) {
 			// Only a lamp's small parts (bulb, shade, socket: MaxLampPart) place its bulb; a ceiling fan's blade mesh is ~100 units round
 			// and took the globe lights under it for the fan's own (measured 2026-10-20: the blade ovals stayed).
@@ -183,6 +203,8 @@ namespace LampFixtures {
 		}
 		return false;
 	}
+
+	inline int ModelIndexOf(const NiGeometry* geo) { auto it = ModelOf.find(geo); return it == ModelOf.end() ? -1 : it->second; }
 
 	// LampModelShadows false: does this caster belong to a lamp model within distance of the light (its bound's edge) that is not the
 	// light's own lamp? cache: per cube draw, model index -> 0 unknown, 1 leave out, 2 keep.
@@ -213,7 +235,7 @@ namespace LampFixtures {
 	inline void Update(TESObjectCELL* cell, bool log) {
 		if (!cell) return;
 		const double now = Now();
-		if (cell != GlowCell) { GlowCell = cell; CellEntered = now; GlowListed = -1.0e9; Answers.clear(); Ready = false; Models.clear(); ModelOf.clear(); }
+		if (cell != GlowCell) { GlowCell = cell; CellEntered = now; GlowListed = -1.0e9; Answers.clear(); Ready = false; Models.clear(); ModelOf.clear(); ObjectRoots.clear(); }
 		const double period = now - CellEntered < 10.0 ? 1.0 : 10.0;
 		if (now - GlowListed < period) return;
 		GlowListed = now;
@@ -232,6 +254,19 @@ namespace LampFixtures {
 			best = (std::min)(best, (std::max)(0.0f, sqrtf(dx * dx + dy * dy + dz * dz) - g.radius));
 		}
 		Answers[light] = { p.x, p.y, p.z, Generation, best };
+		return best;
+	}
+
+	// UNOFFICIAL InvisibleShadowFromLamp (2026-10-20): the lamp part (a small glowing mesh: bulb, globe, shade glass, glow) nearest to a
+	// light within maxDistance of its centre, or null. ShadowManager then draws that invisible light's shadow map from there: the room is
+	// lit as the designers placed the light, but its shadows fall from a lamp the player can see.
+	inline const Glow* NearestLampPart(const NiPointLight* light, float maxDistance) {
+		const NiPoint3& p = light->m_worldTransform.pos;
+		const Glow* best = nullptr; float bestDistance = maxDistance * maxDistance;
+		for (const Glow& g : Glows) {
+			const float dx = g.x - p.x, dy = g.y - p.y, dz = g.z - p.z, d = dx * dx + dy * dy + dz * dz;
+			if (d <= bestDistance) { bestDistance = d; best = &g; }
+		}
 		return best;
 	}
 
