@@ -38,8 +38,9 @@ float4 TESR_PBRMath : register(c223); // x: EnergySplit (1 = on)
 // one: the "PBR pop-in" as the camera nears or leaves an object. NVR_SpecFade.x is that same fade for the object being drawn (set per
 // draw, core/PbrPop.h); the highlight is scaled by it and the diffuse light slides to the plain form, so at the swap the shiny shader
 // gives exactly what the plain one does. 1 (near, or the switch off) leaves every result exactly as before (x * 1, x + y * 0).
-#ifdef PBR_SPEC_FADE
+#if defined(PBR_SPEC_FADE) || defined(NVR_FOLD)
 float4 NVR_SpecFade : register(c211); // x: the draw's highlight fade (1 = full); pinned clear of every other object-shader constant
+                                      // y (UNOFFICIAL 2026-10-21 FoldHighlights, ObjectTemplate.hlsl): 1 = fold this draw; z: 1 = with the vertex colour
 #endif
 
 // EnergySplit. The full pass and the sun pass give the diffuse part (1 - F(L.H)) of the light. For a white surface that adds up to

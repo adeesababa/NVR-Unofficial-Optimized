@@ -711,6 +711,7 @@ void SettingManager::LoadSettings() {
 		SettingsMain.Main.NeonSpillSelfTest = Config.FillNode(&node, "Shaders.BounceLight.Main", "NeonSpillSelfTest") ? node.BoolValue : false;
 	}
 	SettingsMain.Main.LampScissor = boolSetting(performance, "LampScissor", true);
+	SettingsMain.Main.LampScissorExact = boolSetting(performance, "LampScissorExact", true);
 	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
 	SettingsMain.Main.ReShadeNVRDepth = boolSetting(performance, "ReShadeNVRDepth", true);
 	SettingsMain.Main.ReShadeBeforeHUD = boolSetting(performance, "ReShadeBeforeHUD", true);

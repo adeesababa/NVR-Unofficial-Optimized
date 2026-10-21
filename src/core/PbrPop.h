@@ -50,7 +50,8 @@ namespace PbrPop {
 	// ---- 1. SpecularFade ([Shaders.PBR.Main] SpecularFade; compiled in at startup, live while compiled) ----
 	namespace SpecFade {
 		inline bool Checked = false, Compiled = false, On = false;
-		inline float Sent = -1.0f;
+		inline bool FoldCompiled = false;	// UNOFFICIAL 2026-10-21 FoldHighlights (core/FoldHighlights.h) is compiled in: it sends c211.y/z
+		inline float Sent = -1.0f, SentFold = 0.0f, SentVc = 0.0f;
 
 		inline void BeginFrame() {
 			if (!Checked) {
@@ -62,13 +63,14 @@ namespace PbrPop {
 			Sent = -1.0f;	// resent with the frame's first object (effects between frames may use the high registers)
 		}
 
-		// One object pass about to be drawn (RenderPassStandard/Skinned hooks): its fade in pixel c211.x.
-		inline void ForDraw(IDirect3DDevice9* device, const NiGeometry* geometry) {
-			if (!Compiled) return;
-			const float fade = On ? GameSpecularFade(LitProperty(geometry)) : 1.0f;
-			if (fade == Sent) return;
-			Sent = fade;
-			const float value[4] = { fade, 0.0f, 0.0f, 0.0f };
+		// One object pass about to be drawn (RenderPassStandard/Skinned hooks): its fade in pixel c211.x; FoldHighlights' switches for the
+		// draw in y (fold) and z (with the vertex colour), 0 for every draw it does not fold.
+		inline void ForDraw(IDirect3DDevice9* device, const NiGeometry* geometry, float fold = 0.0f, float vertexColor = 0.0f) {
+			if (!Compiled && !FoldCompiled) return;
+			const float fade = Compiled && On ? GameSpecularFade(LitProperty(geometry)) : 1.0f;
+			if (fade == Sent && fold == SentFold && vertexColor == SentVc) return;
+			Sent = fade; SentFold = fold; SentVc = vertexColor;
+			const float value[4] = { fade, fold, vertexColor, 0.0f };
 			device->SetPixelShaderConstantF(211, value, 1);
 		}
 	}
