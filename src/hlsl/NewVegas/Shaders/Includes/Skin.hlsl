@@ -131,5 +131,6 @@ float3 getPointLight(float3 LightDirection, float3 eyeDirection, float3 LightCol
     pointLightContribution += fresnel * shades(eyeDirection, -LightDirection) * SSScolor.rgb;
     // clip(normal);
 
-    return saturate((1 - Attenuation1) - Attenuation2) * pointLightContribution;
+    // UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl): att as before, the objects' decode (MatchEverywhere) or the shape.
+    return LampAttOther(saturate((1 - Attenuation1) - Attenuation2)) * pointLightContribution;
 }

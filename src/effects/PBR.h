@@ -153,6 +153,7 @@ public:
 		D3DXVECTOR4		SharpSky;	// UNOFFICIAL TESR_SharpSky (SkyAmbient.hlsl): x [Shaders.PBR.Metal] SharpSky, 0 = the plain sky
 		D3DXVECTOR4		EnvCube = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_EnvCube (Includes/LiveCube.hlsl): x metal's, y the env-map pass's share of the live cube (0 while it is not kept up), z its last mip
 		D3DXVECTOR4		Linear = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);	// UNOFFICIAL TESR_LinearLighting (Includes/LinearLight.hlsl): x gamma (1 = off), y 1 / x
+		D3DXVECTOR4		LampFalloff = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// UNOFFICIAL 2026-10-21 TESR_LampFalloff (Includes/LampFalloff.hlsl, c205): x shape on, y 1 / Falloff^2, z strength, w MatchEverywhere
 	};
 	PBRStruct	Constants;
 
@@ -217,6 +218,35 @@ public:
 	};
 	LinearSettingsStruct	LinearSettings;
 	void	ApplyLinearGamma();
+
+	// UNOFFICIAL 2026-10-21 [Shaders.PBR.LampFalloff] (Includes/LampFalloff.hlsl): the lamps' physically shaped falloff (Exterior outdoors,
+	// Interior indoors; Falloff, Brightness) and MatchEverywhere (the ground, skin and hair get the objects' FalloffMatch decode). Compiled
+	// into the shaders only when one of the switches is on at startup (LampFalloffCompiledIn); then all of it is live.
+	struct LampFalloffSettingsStruct {
+		bool  Exterior = false;
+		bool  Interior = false;
+		bool  MatchEverywhere = false;
+		float Falloff = 0.25f;		// the inverse-square core as a share of the lamp's radius: small = bright by the lamp, dim far from it
+		float Brightness = 1.0f;	// times the strength that sends out the game's falloff's light (LampFalloffNorm)
+		float Norm = 1.0f;			// LampFalloffNorm(Falloff)
+	};
+	LampFalloffSettingsStruct	LampFalloffSettings;
+	static float	LampFalloffNorm(float Falloff);
+	// As ShaderRecord::BuildDefines compiled the shaders: read once, at the first shader load (startup).
+	enum LampFalloffSwitchEnum { LampFalloffExterior, LampFalloffInterior, LampFalloffMatch };
+	static bool	LampFalloffAtStartup(int Which) {
+		static const bool on[3] = { TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Exterior") != 0,
+			TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Interior") != 0,
+			TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "MatchEverywhere") != 0 };
+		return on[Which];
+	}
+	static bool	LampFalloffShapeIn() { return LampFalloffAtStartup(LampFalloffExterior) || LampFalloffAtStartup(LampFalloffInterior); }
+	static bool	LampFalloffCompiledIn() { return LampFalloffShapeIn() || LampFalloffAtStartup(LampFalloffMatch); }
+	// The interior lamp-shadow records' LAMP_FALLOFF_ON (they draw indoors only): nullptr = as the global one.
+	static const char* LampFalloffInteriorDefine() {
+		if (!LampFalloffShapeIn() || LampFalloffAtStartup(LampFalloffInterior)) return nullptr;
+		return LampFalloffAtStartup(LampFalloffMatch) ? "1" : "0";
+	}
 
 	void	UpdateConstants();
 	void	RegisterConstants();

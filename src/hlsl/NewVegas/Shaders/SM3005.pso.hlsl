@@ -141,7 +141,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         float att = 1.0f;
         if (!isDirectional) {
             float d = saturate(length(toLight) / lightVec.w);
-            att = 1.0f - d * d;
+            att = LampAttOther(1.0f - d * d); // UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl): as before, the objects' decode or the shape
         }
 
         // The shadow scales the sun only; point lights and ambient stay untouched.

@@ -344,7 +344,7 @@ float3 PointLight(int i, float3 d, float3 shadow, float3 albedo, float3 N, float
     // out up to about half as bright as the old skin shader's (a lamp faded to 30 % lit it at 30 % instead of 58 %). With
     // linear lighting off the two are the same.
     float3 lightColor = PSLightColor[FIRST_POINT + i].rgb;
-    shadow *= saturate(1.0f - dot(d, d));
+    shadow *= LampAttOther(saturate(1.0f - dot(d, d)));	// UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl): as before, the objects' decode or the shape
     #ifdef MANY
         // Unused slots (EmittanceColor.a lights are live) can hold anything, NaN included, so
         // they are branched around, not multiplied by 0. The branch also keeps the compiler

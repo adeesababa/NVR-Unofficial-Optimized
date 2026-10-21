@@ -179,6 +179,11 @@ VS_OUTPUT main(VS_INPUT IN) {
     lit1.xyz = (PSLightPosition[0].xyz - IN.texcoord_1.xyz) / PSLightPosition[0].w;			// partial precision
     r5.x = shades(lit1.xyz, lit1.xyz);			// partial precision
     r5.xyzw = 1 - r5.xyzw;			// partial precision
+#if LAMP_FALLOFF_ON
+    // UNOFFICIAL 2026-10-21: each lamp's falloff below goes through LampAttOther (Includes/LampFalloff.hlsl, via PBRScale.hlsl): as before,
+    // the objects' decode ([Shaders.PBR.LampFalloff] MatchEverywhere) or the physically shaped falloff (Exterior / Interior).
+    r5 = float4(LampAttOther(r5.x), LampAttOther(r5.y), LampAttOther(r5.z), LampAttOther(r5.w));
+#endif
     r6.xyz = (r1.z >= EmittanceColor.a ? q15.xyz : ((r5.x * ((q11.x * const_9.xyz) + q14.xyz)) + q15.xyz));			// partial precision
     r8.xyz = (r5.y * ((q20.x * const_9.xyz) + q18.xyz)) + r6.xyz;			// partial precision
     r1.yzw = (r1.y >= EmittanceColor.a ? r6.zyx : r8.zyx);   // was .zyx; r8 is float3			// partial precision

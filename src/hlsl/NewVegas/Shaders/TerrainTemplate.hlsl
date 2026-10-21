@@ -437,7 +437,8 @@ PS_OUTPUT main(PS_INPUT IN) {
             [branch]
             if (att > 0.001) {
                 pointlightDir = mul(tbn, pointlightDir);
-                lighting += getPointLightLighting(pointlightDir, att, LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
+                // UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl): att as before, the objects' decode (MatchEverywhere) or the shape.
+                lighting += getPointLightLighting(pointlightDir, LampAttOther(att), LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
             }
         }
     #endif

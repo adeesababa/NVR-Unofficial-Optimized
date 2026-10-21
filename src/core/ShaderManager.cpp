@@ -651,11 +651,20 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 		// UNOFFICIAL 2026-10-20 (P82 tester): when the GPU refuses a record (too long), shorter ones in turn (PointShadowForward.hlsl
 		// POINT_SHADOW_FIT, each with its own cache folder; the first is the old one exactly, also what ShaderPrecompile makes), and
 		// PointShadowForward::FitLevel / Refused keep every object to what the shortest one loaded can do.
-		static const D3DXMACRO overrides[4][6] = {
+		static D3DXMACRO overrides[4][7] = {
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "1" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "2" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "3" }, { NULL, NULL } } };
+		// UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl): these records draw indoors only, so without [Shaders.PBR.LampFalloff]
+		// Interior they get no lamp shape (LAMP_FALLOFF_ON 1 = MatchEverywhere only, 0 = nothing): the six-lamp shaders stay as long as they
+		// were (SLS2035: 3592 slots with the user's settings; the shape takes it to ~3700, past what the GPU takes, and the next level).
+		static const bool lampFalloffOverride = [] {
+			const char* value = PBRShaders::LampFalloffInteriorDefine();
+			if (value) for (auto& level : overrides) for (auto& d : level) if (!d.Name) { d = { "LAMP_FALLOFF_ON", value }; break; }
+			return value != nullptr;
+		}();
+		(void)lampFalloffOverride;
 		static const char* const cache[4] = { "Interiors\\", "Interiors\\Fit1\\", "Interiors\\Fit2\\", "Interiors\\Fit3\\" };
 		static const char* const what[4] = { "", "the High/Ultra taps in a loop (the same shadows)",
 			"no High/Ultra: lamp shadow Quality is held at Medium for every object", "also no blocker search: contact hardening and LampSize are off for every object's lamp shadows" };

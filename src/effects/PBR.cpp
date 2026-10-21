@@ -11,6 +11,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
 	TheShaderManager->RegisterConstant("TESR_EnvCube", &Constants.EnvCube);
 	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
+	TheShaderManager->RegisterConstant("TESR_LampFalloff", &Constants.LampFalloff);	// UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl)
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
@@ -79,6 +80,33 @@ void PBRShaders::UpdateSettings() {
 	LinearSettings.NightGamma = nightGamma > 0.0f ? std::clamp(nightGamma, 1.0f, 3.0f) : 0.0f;
 	LinearSettings.FalloffMatch = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "FalloffMatch"), 0.0f, 1.0f);
 	ApplyLinearGamma();
+
+	// UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl), live once compiled in (LampFalloffCompiledIn, at startup).
+	{
+		LampFalloffSettingsStruct& lamp = LampFalloffSettings;
+		lamp.Exterior = TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Exterior") != 0;
+		lamp.Interior = TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Interior") != 0;
+		lamp.MatchEverywhere = TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "MatchEverywhere") != 0;
+		lamp.Falloff = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.LampFalloff", "Falloff"), 0.05f, 1.0f);
+		lamp.Brightness = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.LampFalloff", "Brightness"), 0.1f, 4.0f);
+		lamp.Norm = LampFalloffNorm(lamp.Falloff);
+		// Said once, and again whenever one of them changes.
+		static float last[5] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
+		const float now[5] = { lamp.Exterior ? 1.0f : 0.0f, lamp.Interior ? 1.0f : 0.0f, lamp.MatchEverywhere ? 1.0f : 0.0f, lamp.Falloff, lamp.Brightness };
+		if (memcmp(last, now, sizeof(now))) {
+			memcpy(last, now, sizeof(now));
+			if (!LampFalloffCompiledIn())
+				Logger::Log("UNOFFICIAL LampFalloff: off (not compiled into the shaders)%s", lamp.Exterior || lamp.Interior || lamp.MatchEverywhere ?
+					"; switched on now: it takes effect after a restart" : "");
+			else {
+				const bool later = (lamp.Exterior && !LampFalloffAtStartup(LampFalloffExterior) && !LampFalloffShapeIn()) ||
+					(lamp.Interior && !LampFalloffAtStartup(LampFalloffInterior)) || (lamp.MatchEverywhere && !LampFalloffAtStartup(LampFalloffMatch));
+				Logger::Log("UNOFFICIAL LampFalloff: compiled in; physical falloff outdoors %s, indoors %s (Falloff %.2f, Brightness %.2f, strength %.3f); "
+					"MatchEverywhere %s%s", lamp.Exterior ? "on" : "off", lamp.Interior ? "on" : "off", lamp.Falloff, lamp.Brightness, lamp.Norm * lamp.Brightness,
+					lamp.MatchEverywhere ? "on" : "off", later ? " (a switch turned on since the start needs a restart to apply everywhere)" : "");
+			}
+		}
+	}
 
 	// UNOFFICIAL 2026-10-16 EnergySplit (Includes/PBR.hlsl DiffuseEnergyKeep): white surfaces no longer send back more light than
 	// they receive in the full and sun passes. Live.
@@ -189,8 +217,36 @@ void PBRShaders::ApplyLinearGamma() {
 	LinearPreDecode::Gamma = gamma;	// UNOFFICIAL 2026-10-17 LinearPreDecode: the colours decoded on the CPU, the same gamma
 }
 
+// UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl LampShape): the shape's strength that makes a lamp send out as much light
+// over its reach as the game's falloff does in linear light (display gamma 2.2): the integral of att^2.2 over the lamp's sphere
+// (x^2 dx, x = d / r) over the shape's. Falloff 0.5 comes out close to the game's own curve (strength 1.15); 0.25 -> 2.73, 0.1 -> 12.2.
+float PBRShaders::LampFalloffNorm(float Falloff) {
+	const double k = 1.0 / ((double)Falloff * Falloff);
+	double game = 0.0, shape = 0.0;
+	const int steps = 2048;
+	for (int i = 0; i < steps; i++) {
+		const double x = (i + 0.5) / steps, q = x * x, window = (1.0 - q * q) * (1.0 - q * q);
+		game += pow(1.0 - q, 2.2) * q;
+		shape += window / (1.0 + q * k) * q;
+	}
+	return shape > 0.0 ? (float)(game / shape) : 1.0f;
+}
+
 void PBRShaders::UpdateConstants() {
 	ApplyLinearGamma();	// first: the LinearScales below decode with it
+
+	// UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl), live: the shape outdoors with Exterior, indoors with Interior.
+	{
+		const LampFalloffSettingsStruct& lamp = LampFalloffSettings;
+		// Started with Exterior but not Interior, the indoor lamp-shadow records were built without the shape (and without MatchEverywhere
+		// unless it was on too): switched on later, both wait indoors for a restart, so that every object in a room stays alike.
+		const bool indoors = !TheShaderManager->GameState.isExterior;
+		const bool interiorBuilt = LampFalloffInteriorDefine() == nullptr;
+		const bool shaped = indoors ? lamp.Interior && interiorBuilt : lamp.Exterior;
+		const bool match = lamp.MatchEverywhere && (!indoors || interiorBuilt || LampFalloffAtStartup(LampFalloffMatch));
+		Constants.LampFalloff = D3DXVECTOR4(shaped ? 1.0f : 0.0f, 1.0f / (lamp.Falloff * lamp.Falloff), lamp.Norm * lamp.Brightness,
+			match ? 1.0f : 0.0f);
+	}
 
 	// UNOFFICIAL TrimLampPasses (ObjectTemplate.hlsl DIFFUSE / POINT passes), live.
 	Constants.LampPassTrim.x = TheSettingManager->SettingsMain.Main.TrimLampPasses ? 1.0f : 0.0f;

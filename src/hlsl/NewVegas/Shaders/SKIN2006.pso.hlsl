@@ -135,6 +135,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     sunTerm *= sunShadow;
 #endif
 
+    // UNOFFICIAL 2026-10-21: the lamps' falloffs below go through LampAttOther (Includes/LampFalloff.hlsl): as before, the objects'
+    // decode (MatchEverywhere) or the shape. The shadow lookups keep the game's att (they only test the lamp's reach).
 #if INTERIOR_SHADOWS
     // UNOFFICIAL forward point-light shadows: light 1 of the draw is PointLight1Color (c4), light 2 PointLight2Color (c5).
     float3 ptWorldPos = IN.shadowWorldPos.xyz;
@@ -145,11 +147,11 @@ VS_OUTPUT main(VS_INPUT IN) {
         ptShadow1 = POINT_SHADOW_LOOKUP(1, saturate((1 - att3.x) - att4.x));
         ptShadow2 = POINT_SHADOW_LOOKUP(2, r2.w);
     }
-    r1.yzw = (saturate((1 - att3.x) - att4.x) * q40.xyz * ptShadow1) + sunTerm;			// partial precision
-    r6.xyz = ((r2.w * ((q19.x * r4.yzw) + r0.yzw) * ptShadow2) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);			// partial precision
+    r1.yzw = (LampAttOther(saturate((1 - att3.x) - att4.x)) * q40.xyz * ptShadow1) + sunTerm;			// partial precision
+    r6.xyz = ((LampAttOther(r2.w) * ((q19.x * r4.yzw) + r0.yzw) * ptShadow2) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);			// partial precision
 #else
-    r1.yzw = (saturate((1 - att3.x) - att4.x) * q40.xyz) + sunTerm;			// partial precision
-    r6.xyz = ((r2.w * ((q19.x * r4.yzw) + r0.yzw)) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);			// partial precision
+    r1.yzw = (LampAttOther(saturate((1 - att3.x) - att4.x)) * q40.xyz) + sunTerm;			// partial precision
+    r6.xyz = ((LampAttOther(r2.w) * ((q19.x * r4.yzw) + r0.yzw)) + r1.yzw) + PBRAmbient(AmbientColor.rgb) + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);			// partial precision
 #endif
 
     // Was a debug override: selectColor(TESR_DebugVar.x, ...) emitted a flat light colour

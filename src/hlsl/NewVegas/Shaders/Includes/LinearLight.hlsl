@@ -43,4 +43,11 @@ float LinScale(float s) { return s; }
 float LinFalloff(float a) { return a; }
 #endif
 
+// UNOFFICIAL 2026-10-21 LampFalloff: LampAtt (objects) and LampAttOther (the ground, skin, hair), with or without linear lighting.
+#if defined(__INTELLISENSE__)
+    #include "LampFalloff.hlsl"
+#else
+    #include "includes/LampFalloff.hlsl"
+#endif
+
 #endif
