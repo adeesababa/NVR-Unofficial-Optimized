@@ -857,7 +857,7 @@ struct PS_OUTPUT {
 #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
     sampler2D NormalMap : register(s0);
     #if defined(NVR_FOLD) && defined(DIFFUSE)
-        sampler2D FoldBaseMap : register(s3);	// UNOFFICIAL FoldHighlights: the object's base texture, bound by NVR for folded draws (core\FoldHighlights.h kBaseStage)
+        sampler2D FoldBaseMap : register(s7);	// UNOFFICIAL FoldHighlights: the object's base texture, bound by NVR for folded draws (core\FoldHighlights.h kBaseStage)
     #endif
 #else
     sampler2D BaseMap : register(s0);

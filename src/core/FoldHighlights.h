@@ -19,7 +19,7 @@
 // divide it by the colour the texture pass then multiplies in, so each pass ends up holding its lamps' light exactly as one pass would;
 // the object's highlight passes are then skipped (their highlights are already drawn). Per draw: NVR_SpecFade (c211) y = 1 (fold) and
 // z = 1 when the game's texture pass multiplies the vertex colour too (the property's Vertex_Colors flag); for the extra-lamp passes the
-// object's base texture is bound on sampler 3 (they have only the normal map; nothing else of theirs uses 3). What stays: the lamps of each extra-lamp pass are still
+// object's base texture is bound on sampler 7 (they have only the normal map; the game binds 3 for some objects -- env-mapped bottles, run 20261021-023111 -- so 7, past every stage the game gives these passes, checked per draw). What stays: the lamps of each extra-lamp pass are still
 // added to the rest in the stored curve (their highlights now with them), much smaller here. Off (live): every draw exactly as before.
 namespace FoldHighlights {
 
@@ -27,9 +27,10 @@ namespace FoldHighlights {
 	inline bool Checked = false, Compiled = false, On = false;
 	inline UInt16 BindPass = 0xFFFF;		// the last shader bind (SetShadersHook): its pass enum and what NVR's pixel shader can do
 	inline Kind BindKind = KindNone;
-	constexpr UInt32 kBaseStage = 3;		// ObjectTemplate.hlsl FoldBaseMap
+	constexpr UInt32 kBaseStage = 7;		// ObjectTemplate.hlsl FoldBaseMap (s7)
 	inline IDirect3DBaseTexture9* LastBase = nullptr;	// bound for the extra-lamp pass being drawn (nullptr: none)
-	inline unsigned long long BaseLost = 0;
+	inline unsigned long long BaseLost = 0, StageRefused = 0;
+	inline UInt32 MaxStages = 0;	// the most texture stages the game's extra-lamp passes had (diagnostic)
 	inline unsigned LostLogged = 0;
 	inline const NiGeometry* LastGeometry = nullptr;	// diagnostic (AfterDraw): the extra-lamp pass being drawn
 	inline UInt16 LastPass = 0;
@@ -69,10 +70,10 @@ namespace FoldHighlights {
 		FrameId++;
 		if (On && ++Frames >= 600) {
 			Logger::Log("UNOFFICIAL FoldHighlights: per frame %.1f light passes and %.1f extra-lamp passes folded, %.1f highlight passes skipped, %.2f objects not "
-				"folded in full (highlights kept); vertex colour flag on %.1f of folded objects, texture pass with it %.1f, disagreeing %.2f; base texture replaced by the game %.2f",
+				"folded in full (highlights kept); vertex colour flag on %.1f of folded objects, texture pass with it %.1f, disagreeing %.2f; base texture replaced by the game %.2f; most texture stages of the game's extra-lamp passes %u (refused %.2f)",
 				Folded / (double)Frames, LampsFolded / (double)Frames, Skipped / (double)Frames, Broken / (double)Frames,
-				VcFlag / (double)Frames, VcPass / (double)Frames, VcMismatch / (double)Frames, BaseLost / (double)Frames);
-			Folded = LampsFolded = Skipped = Broken = Frames = VcFlag = VcPass = VcMismatch = BaseLost = 0;
+				VcFlag / (double)Frames, VcPass / (double)Frames, VcMismatch / (double)Frames, BaseLost / (double)Frames, MaxStages, StageRefused / (double)Frames);
+			Folded = LampsFolded = Skipped = Broken = Frames = VcFlag = VcPass = VcMismatch = BaseLost = StageRefused = 0;
 		}
 	}
 
@@ -147,7 +148,10 @@ namespace FoldHighlights {
 			if (!state || *state != 1) return;	// its light pass was not folded: as before
 			const NiSourceTexture* base = property->ppTextures[0] ? property->ppTextures[0][0] : nullptr;
 			IDirect3DBaseTexture9* texture = base && base->rendererData ? base->rendererData->dTexture : nullptr;
-			if (!texture) { *state = 2; Broken++; return; }
+			const NiD3DPass* d3dPass = *(NiD3DPass**)0x0126F74C;	// the pass the game bound (SetShadersHook reads the same)
+			const UInt32 stages = d3dPass ? d3dPass->StageCount : 0;
+			if (stages > MaxStages) MaxStages = stages;
+			if (!texture || stages > kBaseStage) { if (stages > kBaseStage) StageRefused++; *state = 2; Broken++; return; }
 			device->SetTexture(kBaseStage, texture);
 			TheRenderManager->renderState->NoteDeviceTexture(kBaseStage, texture);
 			LastBase = texture; LastGeometry = geometry; LastPass = pass->passEnum;
@@ -165,7 +169,7 @@ namespace FoldHighlights {
 	}
 
 #if NVR_TEST_TOOLS
-	// After the draw (diagnostic): the base texture was still bound when the game drew the extra-lamp pass (it did not set sampler 3 itself).
+	// After the draw (diagnostic): the base texture was still bound when the game drew the extra-lamp pass (it did not set that sampler itself).
 	inline void AfterDraw(IDirect3DDevice9* device) {
 		if (!LastBase) return;
 		IDirect3DBaseTexture9* now = nullptr;
