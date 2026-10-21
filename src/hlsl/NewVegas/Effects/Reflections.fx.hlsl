@@ -637,6 +637,8 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 		float surfaceLight = luma(linearize(color.rgb));
 		float reflectedLight = max(luma(reflected) * TESR_ReflectionsLayout.z, 1.0e-6);
 		float occlusion = lerp(1.0, saturate(surfaceLight / reflectedLight), TESR_ReflectionsData4.w * smoothstep(0.15, 0.4, roughness));
+		// DebugView 8 (diagnostic): red the surface's own light, green the reflection's (x Level), both x 8; blue the factor.
+		[branch] if (abs(DebugView - 8.0) < 0.5) return float4(saturate(surfaceLight * 8.0), saturate(reflectedLight * 8.0), occlusion, 1.0);
 		share *= occlusion;
 	}
 #endif
