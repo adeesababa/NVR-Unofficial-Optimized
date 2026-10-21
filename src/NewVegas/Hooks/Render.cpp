@@ -25,6 +25,8 @@
 #include "../../core/EffectSelfTest.h"
 #include "../../core/MaterialRules.h"
 #include "../../core/PbrPop.h"	// UNOFFICIAL 2026-10-18 PBR pop-in: SpecularFade, SpecularLODPasses (+ test diagnostic)
+#include "../../core/PassFamilyView.h"	// UNOFFICIAL 2026-10-21, diagnostic: which pass family draws each lit object
+#include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
@@ -620,7 +622,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: HiddenObjectCulling
 	LampScissor::BeginFrame();	// UNOFFICIAL: LampScissor
-	PassSums::BeginFrame(TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums"));	// UNOFFICIAL ExactPassSums
+	PassSums::BeginFrame(PassSums::ModeFromSettings());	// UNOFFICIAL ExactPassSums, and 2026-10-21 LampSums (the extra lamp passes summed in linear light)
 	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL cloth wind
 	PlantWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL 2026-10-20 plant wind (after the cloth: it uses its bookkeeping)
 #if NVR_TEST_TOOLS
@@ -629,11 +631,13 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
 	PbrPop::LodPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularLODPasses (likewise before the scene walk)
 	PbrPop::SpecFade::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularFade
+	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
 	PbrPop::SpecLodTest::BeginFrame();	// UNOFFICIAL, test: PbrPopSpecLODEnd
 	PbrPop::PopLog::NewFrame();	// UNOFFICIAL, diagnostic: PbrPopLog
+	PassFamilyView::BeginFrame();	// UNOFFICIAL 2026-10-21, diagnostic: PassFamilyView
 #endif
 	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): the scattering target is cleared on the frame's first skin draw;
 	// interior faces take SkinShader's own passes while it is on (Shaders.cpp UpdateFaceGenInteriorFlag).
@@ -2464,6 +2468,11 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	PointShadowForward::LastVertexShaderName = VertexShader ? VertexShader->Name : nullptr;	// AimProbe (LogLamps)
 	PointShadowForward::LastVertexShaderNvr = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
 	PointShadowForward::LastPixelShaderNvr = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
+	FoldHighlights::OnBind(PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, PassIndex);	// UNOFFICIAL FoldHighlights
+#if NVR_TEST_TOOLS
+	PassFamilyView::OnBind(TheRenderManager->device, PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr,
+		ShaderSplit::CurrentContext == ShaderSplit::World, PassIndex);	// UNOFFICIAL, diagnostic: PassFamilyView
+#endif
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
@@ -2588,7 +2597,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)	// UNOFFICIAL, diagnostic: PbrPopLog
 		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
+	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic: PassFamilyView
 #endif
+	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
 	PlantWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-20 plant wind (cleaned by ClothWind::AfterDraw)
@@ -2596,16 +2607,27 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
-	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL SpecularFade
+	{	// UNOFFICIAL SpecularFade, and FoldHighlights' switches for this draw (same constant)
+		float fold = 0.0f, foldVertexColor = 0.0f;
+		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
+		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
+	}
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
-	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
+	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World, BarrelHeat::Active) == LampScissor::Skip) {
 		HiddenObjectCulling::Abandon();	// (a lamp-only pass is never an object's first pass in practice; if it was, its query is not used)
 		ClothWind::AfterDraw(TheRenderManager->device);
 		return;
 	}
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
+#if NVR_TEST_TOOLS
+	PassFamilyView::BeforeDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic
+#endif
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+#if NVR_TEST_TOOLS
+	FoldHighlights::AfterDraw(TheRenderManager->device);	// UNOFFICIAL, diagnostic
+	PassFamilyView::After(TheRenderManager->device, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic
+#endif
 	ClothWind::PassGeometry = nullptr;
 	ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 #if NVR_TEST_TOOLS
@@ -2622,18 +2644,31 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)	// UNOFFICIAL, diagnostic: PbrPopLog
 		PbrPop::PopLog::Note((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 1 : 0);
 	if (LampPassTest::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic
+	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic: PassFamilyView
 #endif
+	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
-	PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry);	// UNOFFICIAL SpecularFade
+	{	// UNOFFICIAL SpecularFade, and FoldHighlights' switches for this draw (same constant)
+		float fold = 0.0f, foldVertexColor = 0.0f;
+		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
+		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
+	}
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object
+#if NVR_TEST_TOOLS
+	PassFamilyView::BeforeDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic
+#endif
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+#if NVR_TEST_TOOLS
+	FoldHighlights::AfterDraw(TheRenderManager->device);	// UNOFFICIAL, diagnostic
+	PassFamilyView::After(TheRenderManager->device, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic
+#endif
 	ClothWind::PassGeometry = nullptr;
 	ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
 	HiddenObjectCulling::After();

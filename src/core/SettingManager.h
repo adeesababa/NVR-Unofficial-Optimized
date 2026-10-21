@@ -44,6 +44,7 @@ struct SettingsMainStruct {
         bool    ReShadeMenuGuard; // [Main.Main.Performance] ReShadeMenuGuard (ReShadeIntegration.cpp: the ReShadeMenuGuardEffects files paused while menus are open), live
         bool    ReShadeMenuGuardVATS; // [Main.Main.Performance] ReShadeMenuGuardVATS (the menu guard also in VATS), live
         bool    LampScissor; // [Main.Main.Performance] LampScissor (LampScissor.h: lamp-only passes drawn only inside their lamps' screen rectangle), live
+        bool    LampScissorExact; // [Main.Main.Performance] LampScissorExact (LampScissor.h, 2026-10-21: the exact rectangle, also for lamps near the camera), live
         bool    NeonSpillSelfTest;    // [Shaders.BounceLight.Main] NeonSpillSelfTest (EffectSelfTest.h, DIAGNOSTIC: ticking it runs one in-game A/B test of the neon spill), live
         int     LampPassTestSkip; // [Main.Main.Performance] LampPassTestSkip (LampPassTest.h, DIAGNOSTIC: skip the passes a merged light pass would replace; 0 off), live
         bool    TrimLampPasses; // [Main.Main.Performance] TrimLampPasses (ObjectTemplate.hlsl: lamp passes drop pixels outside every lamp's reach), live

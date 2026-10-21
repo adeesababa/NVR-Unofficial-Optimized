@@ -228,6 +228,23 @@ float3 getSunLighting(float3 lightDir, float3 lightColor, float3 viewDir, float3
     return getSunLighting(lightDir, lightColor, viewDir, normal, albedo, roughness, 0.0f);
 }
 
+#ifdef NVR_FOLD
+// UNOFFICIAL 2026-10-21 FoldHighlights (ObjectTemplate.hlsl): the lamps' and the sun's light as the one-pass shaders give it (SPECULAR:
+// the PBR diffuse with its highlight, metal), for the light-only and extra-lamp passes, whatever variant they are.
+float3 getPointLightLightingAttFull(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
+    lightColor = lightColor * LIN_SCALE_LIGHT;
+    albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
+    att = LinFalloff(att);
+    return att * PBR(metallic, roughness, albedo, normal, viewDir, lightDir, lightColor);
+}
+
+float3 getSunLightingFull(float3 lightDir, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float metallic) {
+    lightColor = lightColor * LIN_SCALE_LIGHT;
+    albedo = lerp(luma(albedo), albedo, TESR_PBRExtraData.x);
+    return PBRSun(metallic, roughness, albedo, normal, viewDir, lightDir, lightColor);
+}
+#endif
+
 
 
 // [_Main.Develop.Main], via Debug.cpp UpdateSettings. c135: c132 is TESR_ShadowBlur.
