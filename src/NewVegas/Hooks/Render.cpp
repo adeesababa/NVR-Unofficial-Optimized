@@ -2410,6 +2410,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	ReflMaterial::OnShadersBound(TheRenderManager->device);	// UNOFFICIAL 2026-10-21 MaterialAware reflections: alpha writes for a flagged pass
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);	// UNOFFICIAL 2026-10-17 grass lighting fix
 	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 	TerrainProbe::LastVertex = VertexShader ? VertexShader->Name : nullptr;

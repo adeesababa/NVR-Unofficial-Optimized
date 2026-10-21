@@ -8,6 +8,8 @@
 //  - D3D9 cannot draw into a second render target while the game's MSAA is on (SkinScattering.cpp measured it: nothing drawn at
 //    all), so the scene's own alpha carries it. The world target is fp16; the object shaders' first passes write
 //    2 + 0.25 x metal (4 steps) + 0.24 x roughness there (Object.hlsl ReflMaterialAlpha), always 2 or more, where the game writes 0-1.
+//  - The game draws the world without alpha writes (COLORWRITEENABLE 7): a flagged pass gets alpha added to the mask on the device
+//    once its shaders are bound, and the old mask back after the draw (OnShadersBound / AfterPass).
 //  - Only opaque, untested objects' first passes in the world scene, and only objects with their map on, write it (c212.x = 1,
 //    set per pass here; the shader then takes the map's values without testing for it): a blended pass's
 //    alpha weighs its colour (SRCALPHA), and an alpha-tested one is cut by it. The lamp and highlight runs (PassSums::KindOf) are
@@ -32,10 +34,15 @@ namespace ReflMaterial {
 	inline DWORD SavedSeparate = FALSE, SavedSrcAlpha = D3DBLEND_ONE, SavedDstAlpha = D3DBLEND_ZERO, SavedOpAlpha = D3DBLEND_ONE;
 	// Pass numbers that drew blended with the flag on (never flagged again). Seeded with the ones the first in-game run found (2026-10-21,
 	// Ultra-Luxe: each drew blended once while loading): 14A 14D 14E and 248 252 254.
-	inline std::unordered_set<UInt16> Refused = { 0x14A, 0x14D, 0x14E, 0x248, 0x252, 0x254 };
+	// 2026-10-21 Strip run: also 249 and 24A. The 248-254 group (and 14A-14E) are taken whole.
+	inline std::unordered_set<UInt16> Refused = { 0x14A, 0x14B, 0x14C, 0x14D, 0x14E, 0x248, 0x249, 0x24A, 0x24B, 0x24C, 0x24D, 0x24E,
+		0x24F, 0x250, 0x251, 0x252, 0x253, 0x254 };
 	inline UInt32 FlaggedPasses = 0, Frames = 0;
 	inline UInt16 LastFlaggedPass = 0;
 	inline bool LastFlagged = false;
+	inline DWORD SavedWrite = 0xF;				// the pass's colour write mask before OnShadersBound added alpha
+	inline bool WriteChanged = false;
+	inline UInt32 DiagBound = 0, DiagChanged = 0, DiagFlagged = 0, DiagMask[16] = {};	// diagnostic counts for the log (per report)
 
 	// Whether the object shaders were compiled with it (asked by ShaderRecord::BuildDefines, at the first shader load).
 	inline bool CompiledIn() {
@@ -88,8 +95,27 @@ namespace ReflMaterial {
 		if (Frames >= 1800) {
 			Logger::Log("MaterialAware reflections: %u object passes per frame wrote their material (average of %u frames); %u pass kinds refused",
 				FlaggedPasses / Frames, Frames, (unsigned)Refused.size());
+			char masks[160] = ""; size_t used = 0;
+			for (int m = 0; m < 16; m++) if (DiagMask[m]) used += snprintf(masks + used, sizeof(masks) - used, " %X:%u", m, DiagMask[m]);
+			Logger::Log("MaterialAware reflections diagnostic: %u flagged passes drew, %u shader binds inside them, %u got alpha added; write mask at the draw's end (mask:passes)%s",
+				DiagFlagged, DiagBound, DiagChanged, masks);
+			DiagBound = DiagChanged = DiagFlagged = 0; memset(DiagMask, 0, sizeof(DiagMask));
 			FlaggedPasses = 0; Frames = 0;
 		}
+	}
+
+	// A flagged pass is about to draw (ForPass; the game binds the pass's shaders before the pass hook, run 2026-10-21 00:29: no
+	// SetShaders call inside 151800 flagged passes): the game draws the world with COLORWRITEENABLE 7 (no alpha: run 00:22, the world
+	// target's alpha stayed 0 everywhere), so alpha is added to the mask on the device for this draw only. The game's state cache
+	// never sees it; AfterPass puts the old value back. (Also called from SetShadersHook, in case a pass binds inside.)
+	inline void OnShadersBound(IDirect3DDevice9* device) {
+		if (!LastFlagged || WriteChanged || !device) return;
+		DiagBound++;
+		device->GetRenderState(D3DRS_COLORWRITEENABLE, &SavedWrite);
+		if (SavedWrite & D3DCOLORWRITEENABLE_ALPHA) return;
+		device->SetRenderState(D3DRS_COLORWRITEENABLE, SavedWrite | D3DCOLORWRITEENABLE_ALPHA);
+		WriteChanged = true;
+		DiagChanged++;
 	}
 
 	// Before each object pass (Render.cpp RenderPassStandardHook / RenderPassSkinnedHook). world: in the world scene, with an _rmaos map.
@@ -107,7 +133,7 @@ namespace ReflMaterial {
 			flag = !alpha || !(alpha->flags & (NiAlphaProperty::ALPHA_BLEND_MASK | NiAlphaProperty::TEST_ENABLE_MASK));
 		}
 		Send(device, flag ? 1.0f : 0.0f);
-		if (flag) { FlaggedPasses++; LastFlagged = true; LastFlaggedPass = e; }
+		if (flag) { FlaggedPasses++; LastFlagged = true; LastFlaggedPass = e; OnShadersBound(device); }
 	}
 
 	// After the pass drew: the flag goes back to 0 at once (draws that do not come through the pass hooks, such as the sorted
@@ -116,7 +142,10 @@ namespace ReflMaterial {
 	inline void AfterPass(IDirect3DDevice9* device) {
 		if (!LastFlagged || !device) return;
 		LastFlagged = false;
+		DiagFlagged++;
+		{ DWORD mask = 0; device->GetRenderState(D3DRS_COLORWRITEENABLE, &mask); DiagMask[mask & 15]++; }
 		Send(device, 0.0f);
+		if (WriteChanged) { device->SetRenderState(D3DRS_COLORWRITEENABLE, SavedWrite); WriteChanged = false; }
 		DWORD blend = FALSE;
 		device->GetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
 		if (!blend) return;
