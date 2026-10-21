@@ -433,7 +433,18 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					Logger::Log("Shader loaded: %s", ShaderCompiledPath);
 				}
 				else {
-					Logger::Log("ERROR: Failed to create DirectX shader for %s", Name);
+					// UNOFFICIAL 2026-10-20 (P82 tester): which file, the device's answer and the compiler's slot count, so a report says why.
+					// A shader longer than the driver takes is refused (the GTX 1070 took 3,596 slots and refused 3,820; a P82 tester's
+					// RTX 4070 Ti SUPER refused the same shaders).
+					unsigned slots = 0;
+					ID3DXBuffer* listing = NULL;
+					if (SUCCEEDED(D3DXDisassembleShader((const DWORD*)Function, FALSE, NULL, &listing)) && listing) {
+						const char* at = strstr((const char*)listing->GetBufferPointer(), "approximately ");
+						if (at) sscanf_s(at, "approximately %u", &slots);
+						listing->Release();
+					}
+					Logger::Log("ERROR: Failed to create DirectX shader for %s (%s): the device refused it (hr 0x%08X), %u instruction slots",
+						Name, ShaderCompiledPath, (unsigned)createResult, slots);
 					ReportError(createResult);
 					delete ShaderProg;
 					ShaderProg = nullptr;

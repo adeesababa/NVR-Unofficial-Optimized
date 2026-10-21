@@ -56,6 +56,14 @@ namespace PointShadowForward {
 
 	inline bool CompiledIn = false;			// an Interior record was compiled with INTERIOR_SHADOWS
 	inline int CompiledCount = 0;
+	// UNOFFICIAL 2026-10-20 (P82 tester: shiny objects indoors lost their lamp shadows as a third lamp came near): the GPU refused
+	// the six-lamp shiny-object shaders' Interior records (HandBlood on: 3,820-4,016 instruction slots, the driver takes about
+	// 3,600), so those objects drew without lamp shadows while the others had them. ShaderManager::LoadShader now steps down
+	// through shorter versions (PointShadowForward.hlsl POINT_SHADOW_FIT): FitLevel is the highest step any record needed, and
+	// Publish holds every object to what that one can do, so all objects match. Refused: some lit shader got no Interior record
+	// at all: then no object uses the forward shadows (the screen-space ones for all, as with Enabled off).
+	inline int FitLevel = 0;
+	inline bool Refused = false;
 	inline bool Active = false;				// this frame: indoors, Strength > 0, at least one cube map to use
 	inline bool FirstPerson = true;			// [Shaders.ShadowsInteriors.Forward] FirstPerson, read per frame
 	inline Slot Slots[ShadowCubeMapsMax] = {};
@@ -179,7 +187,7 @@ namespace PointShadowForward {
 	// [Shaders.ShadowsInteriors.Main] LightPoints up to ShadowCubeMapsMax (each object binds only its own lamps); otherwise
 	// the screen-space passes read them: LightPoints up to ShadowCubeMapsScreen (11 with a shadow, the 12th lit without).
 	inline bool UsesAllSlots(bool exterior) {
-		return CompiledIn && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
+		return CompiledIn && !Refused && !exterior && TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.Enabled;
 	}
 	// UNOFFICIAL ExteriorLightPoints (2026-10-13): outdoors above 12, every slot up to it has a shadow, the screen-space pass
 	// drawn in batches of 11 (ShaderManager::RenderPointShadowBatches).
@@ -320,7 +328,7 @@ namespace PointShadowForward {
 		// UNOFFICIAL (2026-10-08): Enabled switched off in the menu stops the forward shadows at once (the shaders stay
 		// compiled in until a restart; idle = every draw gets c180.x 0 and the old screen-space pass runs). It used to be
 		// read only at startup, so turning it off in play only changed the lamp choice (no view test, no margin).
-		if (!forward.Enabled || !(strength > 0.0f)) { lastCount = 0; return; }
+		if (!forward.Enabled || !(strength > 0.0f) || Refused) { lastCount = 0; return; }
 		LARGE_INTEGER frequency, counter;
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&counter);
@@ -352,6 +360,19 @@ namespace PointShadowForward {
 			Soft[2] = forward.LampSize * 0.70710678f;
 			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
 			InvisibleSize = forward.InvisibleLightSize * 0.70710678f;
+		}
+		// UNOFFICIAL 2026-10-20 FitLevel (above): what the shortest record loaded can do, for every object. 2: no High/Ultra (Medium
+		// at most); 3: also no blocker search (contact hardening and LampSize off: x and w 0 skip it in every shader).
+		if (FitLevel >= 2 && Quality > 1.0f) Quality = 1.0f;
+		if (FitLevel >= 3) { Soft[0] = Soft[3] = 0.0f; InvisibleSize = 0.0f; }
+		static int cappedLogged = -1;
+		const int capped = (FitLevel >= 2 && forward.Quality > 1 ? 1 : 0) | (FitLevel >= 3 && (forward.ContactHardening || forward.LampSize > 0.0f ||
+			forward.InvisibleLightSize > 0.0f) ? 2 : 0);
+		if (capped && capped != cappedLogged) {
+			cappedLogged = capped;
+			Logger::Log("UNOFFICIAL lamp shadows: this GPU took only shorter versions of some lit shaders (see the startup log), so every object's lamp shadows get%s%s%s.",
+				capped & 1 ? " Quality Medium (the setting asks for more)" : "", capped == 3 ? " and" : "",
+				capped & 2 ? " no contact hardening or LampSize" : "");
 		}
 		DebugView = (float)forward.DebugView;
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
