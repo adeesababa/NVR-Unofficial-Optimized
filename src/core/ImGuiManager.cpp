@@ -1987,6 +1987,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.ShadowsInteriors.Forward",     "SmoothEdges",        RestartRule::Changed },
 	{ "Shaders.ShadowsInteriors.Forward",     "EvenTaps",           RestartRule::Changed },	// POINT_SHADOW_EVEN (deep/lampedge)
 	{ "Shaders.ShadowsInteriors.Forward",     "MagnifiedSoftness",  RestartRule::TurnOn },	// POINT_SHADOW_MAG when above 0 at start; 0 is live
+	{ "Shaders.ShadowsInteriors.Forward",     "TexelFilter",        RestartRule::Changed },	// POINT_SHADOW_TEXEL (deep/lampedge)
 	{ "Shaders.ShadowsInteriors.Main",        "ShadowCubeMapSize",  RestartRule::Changed },	// cube maps made at start (ShadowManager)
 	{ "Shaders.PBR.Main",                     "LampReachSkip",      RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },
@@ -2163,6 +2164,10 @@ static const char* InactiveReason(const char* section, const char* key) {
 			return "Only used when Softness is above 0: sharp lamp shadows (Softness 0) take a single lookup.";
 		if (is({ "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "ContactHardening") == 0.0f)
 			return "Only used with ContactHardening on.";
+		if (is({ "EvenTaps", "MagnifiedSoftness", "SmoothEdges" }) && NumericSetting(section, "TexelFilter") != 0.0f)
+			return "Not used with TexelFilter on (it filters every lamp shadow edge the way the sun's shadows are; restart after changing TexelFilter).";
+		if (is({ "TexelFilter" }) && (NumericSetting(section, "Softness") <= 0.0f || NumericSetting(section, "Quality") < 1.0f))
+			return "Only used with Softness above 0 and Quality 1 or more (sharp lamp shadows take a single lookup).";
 		if (is({ "EvenTaps" }) && NumericSetting(section, "Quality") < 2.0f)
 			return "Only changes Quality 2 (High) and 3 (Ultra): Low and Medium have no extra lookups.";
 		if (is({ "MagnifiedSoftness" }) && (NumericSetting(section, "Softness") <= 0.0f || NumericSetting(section, "Quality") < 1.0f))

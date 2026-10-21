@@ -131,7 +131,8 @@ namespace PointShadowForward {
 	inline float Quality = 1.0f;			// c181.w: [Shaders.ShadowsInteriors.Forward] Quality (Low arrives as spread 0 in c180.w)
 	inline float Soft[4] = {};				// c189: contact hardening strength (0 off), narrowest spread share; LampSize / sqrt 2, widest spread
 	inline float Magnified[4] = {};			// c188 outside DebugView 3 (UNOFFICIAL 2026-10-21 MagnifiedSoftness, POINT_SHADOW_MAG): x y the ramp
-											// of how many pixels a cube texel covers, z the least spread then (per unit major; 0 = off)
+											// of how many pixels a cube texel covers, z the least spread then (per unit major; 0 = off);
+											// w the face resolution (TexelFilter, POINT_SHADOW_TEXEL)
 	inline IDirect3DCubeTexture9* Neutral = nullptr;	// 1x1 cube holding 1 ("nothing drawn") for unmatched stages
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };	// NVR_PointShadowCube0-5
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -375,7 +376,7 @@ namespace PointShadowForward {
 			Magnified[0] = texelPixels / (MagnifiedPixels1 - MagnifiedPixels0);
 			Magnified[1] = -MagnifiedPixels0 / (MagnifiedPixels1 - MagnifiedPixels0);
 			Magnified[2] = forward.Quality > 0 && forward.Softness > 0.0f && texelPixels > 0.0f ? forward.MagnifiedSoftness * 2.0f / face : 0.0f;
-			Magnified[3] = 0.0f;
+			Magnified[3] = face;	// TexelFilter (POINT_SHADOW_TEXEL): the face resolution, for its texel grid
 		}
 		// UNOFFICIAL 2026-10-20 FitLevel (above): what the shortest record loaded can do, for every object. 2: no High/Ultra (Medium
 		// at most); 3: also no blocker search (contact hardening and LampSize off: x and w 0 skip it in every shader).

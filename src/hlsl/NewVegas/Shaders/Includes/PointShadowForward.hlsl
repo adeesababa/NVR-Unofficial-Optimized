@@ -59,6 +59,14 @@
     #define POINT_SHADOW_EVEN 0
 #endif
 
+// UNOFFICIAL 2026-10-21 POINT_SHADOW_TEXEL ([Shaders.ShadowsInteriors.Forward] TexelFilter at startup): the lamp shadows filtered the
+// way the sun's PCF is (Shadow.hlsl ShadowPCF3x3): plain compares at exact texel centres, 3 x 3 of them round the point, weighed with a
+// quadratic B-spline by where the point sits between them (PointShadowTexel). The edge is then a smooth curve, not the texel grid's
+// stair-steps. Replaces Quality's taps (Medium, High and Ultra alike) and SmoothEdges' soft compare; NearFade does not apply. 0: as before.
+#ifndef POINT_SHADOW_TEXEL
+    #define POINT_SHADOW_TEXEL 0
+#endif
+
 float4 NVR_PointShadowLight[6]  : register(c174); // per light of the draw, see above
 float4 NVR_PointShadowParams    : register(c180); // x: strength (1 = a blocked light adds nothing), y: depth bias (share of the
                                                   // distance, 0.018 as PointShadows.fx), z: normal offset (world units per
@@ -83,7 +91,8 @@ float4 NVR_PointShadowFocus     : register(c188); // view 3: the focus lamp (cub
                                                   // other view (POINT_SHADOW_MAG): MagnifiedSoftness, x y: how many screen pixels
                                                   // one cube texel covers, as a 0..1 ramp = saturate(lamp distance / camera
                                                   // distance x x + y); z: the spread it then gives at least, per unit of the
-                                                  // direction's major axis (0 = off)
+                                                  // direction's major axis (0 = off); w (POINT_SHADOW_TEXEL): the cube maps'
+                                                  // face resolution (ShadowCubeMapSize)
 float4 NVR_PointShadowSoft      : register(c189); // UNOFFICIAL contact hardening ([Shaders.ShadowsInteriors.Forward] ContactHardening):
                                                   // x: strength (0 = off, the spread as before), y: the narrowest spread, as a
                                                   // share of the Softness spread (where a blocker touches what it shadows);
@@ -190,6 +199,59 @@ float PointShadowRingK(samplerCUBE cube, float3 dir, float s, float threshold, f
 }
 #endif
 
+#if POINT_SHADOW_TEXEL
+// UNOFFICIAL 2026-10-21 TexelFilter: one lattice level of PointShadowTexel. q: the point in the face's texel grid (texel centres at whole
+// numbers); k: the lattice spacing in texels (1, 2, 4 ...: lattice points at multiples of k, on texel centres); M, A, B (w 0): the
+// major axis (the direction's own component) and the face's two axes x the major component, so M + u A + v B points at the face
+// point (u, v); scale: 2 / resolution. The blocked share of the 3 x 3 lattice points round q, quadratic B-spline weights by where q
+// sits between them (as the sun's Shadow.hlsl ShadowPCF3x3). A stored 0 (no data) is lit, as everywhere; NearFade is not applied
+// here (it would cost the six-lamp shaders too many instructions; 0 by default).
+float PointShadowTexelLevel(samplerCUBE cube, float2 q, float k, float4 M, float4 A, float4 B, float scale, float threshold) {
+    float2 g = q / k;
+    float2 c = floor(g + 0.5f);                     // the nearest lattice point
+    float2 f = g - c;                               // -0.5 .. 0.5 from it
+    float3 wx = float3(0.5f * (0.5f - f.x) * (0.5f - f.x), 0.75f - f.x * f.x, 0.5f * (0.5f + f.x) * (0.5f + f.x));
+    float3 wy = float3(0.5f * (0.5f - f.y) * (0.5f - f.y), 0.75f - f.y * f.y, 0.5f * (0.5f + f.y) * (0.5f + f.y));
+    float3 ux = ((c.x + float3(-1.0f, 0.0f, 1.0f)) * k + 0.5f) * scale;  // the lattice columns' face coordinates + 1, x the major component
+    float3 vy = ((c.y + float3(-1.0f, 0.0f, 1.0f)) * k + 0.5f) * scale;  // and rows'
+    float3 rows;
+    [unroll] for (int y = 0; y < 3; y++) {
+        float4 row = M + vy[y] * B;
+        float3 v = float3(texCUBElod(cube, row + ux.x * A).r, texCUBElod(cube, row + ux.y * A).r, texCUBElod(cube, row + ux.z * A).r);
+        rows[y] = dot((float3)(v <= threshold) * (float3)(v > 0.0f), wx);
+    }
+    return dot(rows, wy);
+}
+
+// UNOFFICIAL 2026-10-21 TexelFilter: the blocked share at spread s (direction units, as the taps' spread), filtered as the sun's PCF:
+// plain compares at texel centres of a 3 x 3 lattice round the point, weighed with a quadratic B-spline, so the edge is a smooth curve
+// instead of the texel grid's stair-steps. The lattice spacing is 1.22 x the spread in texels (the same blur width as Ultra's taps at
+// that spread: the quadratic B-spline's sigma is half the spacing), at least one texel (the sun's own filter). A wider blur takes the
+// coarser lattices 2, 4, 8 ... texels apart, blended between the two nearest by the fraction, so the blur widens smoothly where
+// LampSize or contact hardening change the spread from pixel to pixel; the second lattice is read only there (and not at all in the
+// shorter POINT_SHADOW_FIT versions, for a shader the GPU refused whole: there the nearest lattice alone). Taps past a face's edge
+// read the next face (not on its texel centres: a little less smooth along the cube's seams only).
+float PointShadowTexel(samplerCUBE cube, float3 dir, float major, float s, float threshold, float lightW) {
+    float3 ad = abs(dir);
+    float xm = (float)(ad.x >= max(ad.y, ad.z));
+    float zm = (1.0f - xm) * (float)(ad.z > ad.y);
+    float4 A = float4(1.0f - xm, xm, 0.0f, 0.0f) * major;       // the face's first axis: y on the X faces, x on the others
+    float4 B = float4(0.0f, zm, 1.0f - zm, 0.0f) * major;       // and its second: y on the Z faces, z on the others
+    float4 M = float4(dir * float3(xm, 1.0f - xm - zm, zm), 0.0f) - A - B;   // the major axis, less the face's (-1, -1) corner
+    float resolution = NVR_PointShadowFocus.w;
+    float2 q = (float2(dot(dir, A.xyz), dot(dir, B.xyz)) / (major * major) + 1.0f) * (0.5f * resolution) - 0.5f;   // texel centres at whole numbers
+    float spacing = max(1.0f, 0.61f * s * resolution / major);  // 1.22 x the spread in texels (s / major x resolution / 2)
+    float k = exp2(floor(log2(spacing)));
+    float mix = spacing / k - 1.0f;
+    float scale = 2.0f / resolution;                            // texels -> face coordinates (A and B carry the major component)
+    float blocked = PointShadowTexelLevel(cube, q, k, M, A, B, scale, threshold);
+#if POINT_SHADOW_FIT < 1
+    [branch] if (mix > 0.001f) blocked = lerp(blocked, PointShadowTexelLevel(cube, q, 2.0f * k, M, A, B, scale, threshold), mix);
+#endif
+    return blocked;
+}
+#endif
+
 // 1 lit, 0 fully shadowed (before strength). worldPos: camera-relative (GetShadowWorldPos in the VS). normal: the
 // camera-facing geometric normal where the shader has one (GetShadowGeometricNormal), else 0. att: this light's
 // attenuation here; 0 (out of reach, or no valid world position) skips the lookup. texCUBElod only, so it is legal
@@ -262,6 +324,10 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
             s = clamp(t * (size * light.w * major + NVR_PointShadowSoft.x * s * d), NVR_PointShadowSoft.y * s, wide);
         }
 #endif
+#if POINT_SHADOW_TEXEL
+        // UNOFFICIAL 2026-10-21 TexelFilter: the sun-style filter at this spread (PointShadowTexel) instead of Quality's taps.
+        lit = 1.0f - PointShadowTexel(cube, dir, major, s, threshold, light.w);
+#else
         float4 stored = float4(
             texCUBElod(cube, float4(dir + s * float3( 1.0f,  1.0f,  1.0f), 0.0f)).r,
             texCUBElod(cube, float4(dir + s * float3(-1.0f, -1.0f,  1.0f), 0.0f)).r,
@@ -358,6 +424,7 @@ float PointShadowCube(samplerCUBE cube, float4 light, float fade, float3 worldPo
         else lit = 1.0f - dot(blocked, 0.25f);
 #else
         lit = 1.0f - dot(blocked, 0.25f);
+#endif
 #endif
     }
     else {

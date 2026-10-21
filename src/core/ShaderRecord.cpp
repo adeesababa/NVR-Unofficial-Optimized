@@ -153,7 +153,12 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// shaders are exactly what they were (the list is near its 38-entry cap: 29 + 6 template defines + these two).
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "EvenTaps"))
 		AppendDefine("POINT_SHADOW_EVEN", "1");
-	if (TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness") > 0.0f)
+	// TexelFilter: the lamp shadows filtered as the sun's PCF (texel-aligned quadratic B-spline); MagnifiedSoftness is not needed with it
+	// (and not compiled in: the six-lamp shaders have no room for both).
+	const bool texelFilter = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "TexelFilter") != 0;
+	if (texelFilter)
+		AppendDefine("POINT_SHADOW_TEXEL", "1");
+	else if (TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness") > 0.0f)
 		AppendDefine("POINT_SHADOW_MAG", "1");
 
 	// UNOFFICIAL CubeReflections (Includes/LiveCube.hlsl): metal and the env-map pass read the live surroundings cube only when
