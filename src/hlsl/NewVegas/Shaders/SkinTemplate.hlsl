@@ -75,6 +75,7 @@
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
+#define SHADOW_SKIN_SOFTNESS 1   // UNOFFICIAL 2026-10-20 CharacterShadowSoftness (Includes/Shadow.hlsl ShadowMinPenumbra)
 #include "includes/Shadow.hlsl"
 
 #if defined(VS)

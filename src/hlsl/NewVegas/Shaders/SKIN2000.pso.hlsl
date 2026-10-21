@@ -53,6 +53,7 @@ struct VS_OUTPUT {
     float4 color_0 : COLOR0;
 };
 
+#define SHADOW_SKIN_SOFTNESS 1   // UNOFFICIAL 2026-10-20 CharacterShadowSoftness (Includes/Shadow.hlsl ShadowMinPenumbra)
 #include "Includes/Shadow.hlsl"
 #include "Includes/Skin.hlsl"
 
