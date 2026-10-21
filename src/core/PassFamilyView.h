@@ -117,13 +117,15 @@ namespace PassFamilyView {
 		Replaced = true;
 	}
 
-	// SetShadersHook, after the game bound the pass's shaders (only while one of the hooked passes is being drawn).
+	// SetShadersHook, after the game bound a pass's shaders. The game binds once for a run of passes of one kind, BEFORE the run's
+	// draws (run 20261021-014725: nothing was coloured when this waited for a draw in flight), so the bind is noted here and the
+	// colour put on in BeforeDraw for every pass of that kind; a bind made inside a hooked draw is coloured at once.
 	inline bool InPass = false;
 	inline void OnBind(IDirect3DDevice9* device, const char* ps, bool nvr, bool world, UInt32 passIndex) {
-		if (!Mode || !world || !InPass) { LastBind = BindNone; return; }
+		if (!Mode || !world) { LastBind = BindNone; return; }
 		LastBind = Classify(ps, nvr);
 		LastBindPass = (UInt16)passIndex;
-		Apply(device);
+		if (InPass) Apply(device);
 	}
 
 	// Early in the pass hooks: true = skip this pass (the added passes of a several-pass object).
