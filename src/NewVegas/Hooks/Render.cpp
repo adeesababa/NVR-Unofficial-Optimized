@@ -2614,7 +2614,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	}
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
-	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World) == LampScissor::Skip) {
+	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World, BarrelHeat::Active) == LampScissor::Skip) {
 		HiddenObjectCulling::Abandon();	// (a lamp-only pass is never an object's first pass in practice; if it was, its query is not used)
 		ClothWind::AfterDraw(TheRenderManager->device);
 		return;
