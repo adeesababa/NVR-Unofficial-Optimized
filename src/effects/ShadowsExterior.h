@@ -145,6 +145,11 @@ public:
 		float				CharacterShadowSoftness = 0.0f;	// UNOFFICIAL 2026-10-20: with it, sun shadow edges on skin fade over at least this half-width, world units (.z), live
 		bool				SkipWhenFaded;	// UNOFFICIAL 2026-10-16: no sun-shadow work while the fade is 1 (UpdateConstants SunFaded)
 		int					SkipWhenFadedCheck;	// UNOFFICIAL 2026-10-16, DIAGNOSTIC (NVR_TEST_TOOLS): 1 poison what is skipped, 2 also skip ignoring the readers, 3 lookups off at any hour
+		int					CascadeStats = 0;	// UNOFFICIAL 2026-10-21, DIAGNOSTIC (NVR_TEST_TOOLS): SunCascadeStats, where the sun cascades' CPU time goes (SunShadowStats.h)
+		bool				SunSkipFlat = false;	// UNOFFICIAL 2026-10-21 SunCascadeSkipFlat: a cascade whose projection is flat (sun straight overhead) is cleared, not walked or drawn
+		bool				SunOneWalk = false;		// UNOFFICIAL 2026-10-21 SunCascadeOneWalk: one walk of the loaded cells for all sun cascades of a frame
+		bool				SunLeanDraws = false;	// UNOFFICIAL 2026-10-21 SunCascadeLeanDraws: per caster only changed constants, no wind calls for still textures
+		int					SunVerify = 0;			// UNOFFICIAL 2026-10-21, DIAGNOSTIC (NVR_TEST_TOOLS): SunCascadeVerify, 1 lists, 2 also the maps, old way vs new in the same frame
 	};
 
 	struct InteriorsStruct {

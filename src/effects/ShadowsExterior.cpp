@@ -444,10 +444,18 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
 	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;	// UNOFFICIAL 2026-10-16
+	// UNOFFICIAL 2026-10-21 (sunshadow): the same picture for less CPU time (ShadowManager::RenderShadowMaps)
+	Settings.Exteriors.SunSkipFlat = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeSkipFlat") != 0;
+	Settings.Exteriors.SunOneWalk = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeOneWalk") != 0;
+	Settings.Exteriors.SunLeanDraws = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeLeanDraws") != 0;
 #if NVR_TEST_TOOLS
 	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 4);
+	Settings.Exteriors.CascadeStats = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeStats");	// UNOFFICIAL 2026-10-21
+	Settings.Exteriors.SunVerify = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeVerify"), 0, 2);	// UNOFFICIAL 2026-10-21
 #else
 	Settings.Exteriors.SkipWhenFadedCheck = 0;
+	Settings.Exteriors.CascadeStats = 0;
+	Settings.Exteriors.SunVerify = 0;
 #endif
 	Settings.Exteriors.UsePointShadowsDay = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsDay");
 	Settings.Exteriors.UsePointShadowsNight = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsNight");

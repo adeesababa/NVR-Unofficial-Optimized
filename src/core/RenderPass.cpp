@@ -3,6 +3,7 @@
 #include "PlantWind.h"	// UNOFFICIAL 2026-10-20 plant wind: a static plant's shadow moves with it
 #include "ShadowBoneUpload.h"
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools: ortho map caster dump
+#include "SunShadowStats.h"	// UNOFFICIAL 2026-10-21 test tools: where the sun cascades' CPU time goes
 
 
 void RenderPass::BindDiffuseOf(NiGeometry* Geo) {
@@ -32,6 +33,106 @@ void RenderPass::UpdateShadowWorld(NiGeometry* Geo) {
 }
 
 
+// UNOFFICIAL 2026-10-21 (sunshadow) SunCascadeLeanDraws, the shader constants. Measured (evidence\sunshadow\LOG.md): both SetCT
+// were ~15% of a sun-shadow caster's CPU time; every caster uploaded every constant of both shaders again (world matrix, the
+// cascade's view-projection, the shadow data, the plant wind's leaf constants, the camera position), though only the world
+// matrix and the shadow data change between casters. SetCTLean uploads a constant only when its value differs from what this
+// pass last uploaded for it; the first caster of each pass does the full SetCT. Exact: device constants keep their values
+// between draws, and while a pass draws nothing else writes the registers of these TESR_ constants (vertex c0-c8, c131-c134;
+// pixel c0-c1): bones go to c9 up, SpeedTree to c63-c130, terrain LOD to c140-c145, cloth and plant wind to c200 up, and the
+// game's draw calls (OnlyRender, DrawPartition) only draw. Records that bind textures or buffers in SetCT are not trimmed.
+struct ConstantRun { const ShaderRecord* record = nullptr; std::vector<D3DXVECTOR4> sent; bool valid = false; };
+static ConstantRun VertexRun, PixelRun;
+
+static void SetCTLean(ShaderRecord* record, ConstantRun& run) {
+	if (run.valid && run.record == record) {
+		size_t k = 0;
+		for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
+			ShaderFloatValue& constant = record->FloatShaderValues[c];
+			const size_t bytes = constant.RegisterCount * sizeof(D3DXVECTOR4);
+			if (memcmp(constant.Value, &run.sent[k], bytes)) {
+				record->SetShaderConstantF(constant.RegisterIndex, constant.Value, constant.RegisterCount);
+				memcpy(&run.sent[k], constant.Value, bytes);
+			}
+			k += constant.RegisterCount;
+		}
+		return;
+	}
+	record->SetCT();
+	run.record = record;
+	run.valid = !record->TextureShaderValuesCount && !record->HasRenderedBuffer && !record->HasDepthBuffer && !record->HasTerrainBlendDepth && !record->ClearSamplers;
+	size_t registers = 0;
+	for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
+		if (!record->FloatShaderValues[c].Value) run.valid = false;	// (SetCT could not find it: it keeps trying, so do we)
+		registers += record->FloatShaderValues[c].RegisterCount;
+	}
+	if (!run.valid) return;
+	run.sent.resize(registers);
+	size_t k = 0;
+	for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
+		const ShaderFloatValue& constant = record->FloatShaderValues[c];
+		memcpy(&run.sent[k], constant.Value, constant.RegisterCount * sizeof(D3DXVECTOR4));
+		k += constant.RegisterCount;
+	}
+}
+
+// UNOFFICIAL 2026-10-21 (sunshadow) SunCascadeLeanDraws, the wind calls. ClothWind::ForGeometry and PlantWind::ForGeometry were
+// ~20% of a caster's CPU time (property walks, hash lookups and path compares per caster, twice). In a shadow pass both leave a
+// caster exactly as it is -- ClothWind::Zero with nothing to clean, PlantWind returning -- when the caster is not skinned (the
+// cloth AutoDetect and worn-cloth paths are for skinned meshes) and either has no lighting property or diffuse texture, or its
+// diffuse texture is neither cloth (ClothWind::ByTexture) nor plant (PlantWind::ByTexture): both decide per texture, by path.
+// Those verdicts are learnt from their own caches right after a normal call, remembered here per texture object and path (the
+// path compared by content, as theirs), and forgotten at every settings load (SkySettingsGeneration: their keyword lists can
+// change only then, and they clear their caches when they do). Nothing to clean must be pending (the previous caster's AfterDraw
+// leaves it so; else the normal calls run).
+struct StillTexture { const NiSourceTexture* texture = nullptr; std::string path; bool still = false; };
+static StillTexture StillTextures[4096];
+static int StillGeneration = -1;
+
+static inline size_t StillSlot(const void* texture) { return ((uintptr_t)texture >> 4) * 2654435761u >> 20 & 4095; }
+
+static const NiSourceTexture* WindTexture(NiGeometry* Geo, bool& noTexture) {
+	noTexture = false;
+	BSShaderProperty* property = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
+	const UInt32 vtable = property ? *(UInt32*)property : 0;
+	if (vtable != 0x10AE0D0 && vtable != 0x10B9910) { noTexture = true; return nullptr; }	// BSShaderPPLightingProperty, Lighting30ShaderProperty
+	NiSourceTexture** textures = ((BSShaderPPLightingProperty*)property)->ppTextures[0];
+	const NiSourceTexture* diffuse = textures ? *textures : nullptr;
+	if (!diffuse || !diffuse->ddsPath1) { noTexture = true; return nullptr; }
+	return diffuse;
+}
+
+static bool WindLeavesStill(NiGeometry* Geo) {
+	if (Geo->skinInstance || ClothWind::NonZeroSent || ClothWind::ActiveWeights || ClothWind::ActiveWalk || ClothWind::ActiveSkin || ClothWind::ActiveStill)
+		return false;
+	const int generation = TheShaderManager->Effects.ShadowsExteriors->Settings.OrthoMap.SkySettingsGeneration;
+	if (generation != StillGeneration) {
+		for (StillTexture& entry : StillTextures) { entry.texture = nullptr; entry.path.clear(); }
+		StillGeneration = generation;
+	}
+	bool noTexture;
+	const NiSourceTexture* diffuse = WindTexture(Geo, noTexture);
+	if (noTexture) return true;
+	const StillTexture& entry = StillTextures[StillSlot(diffuse)];
+	return entry.texture == diffuse && entry.still && entry.path == diffuse->ddsPath1;
+}
+
+// After the normal calls for a caster WindLeavesStill did not clear: what their caches now say about its texture.
+static void LearnWindVerdict(NiGeometry* Geo) {
+	if (Geo->skinInstance) return;
+	bool noTexture;
+	const NiSourceTexture* diffuse = WindTexture(Geo, noTexture);
+	if (!diffuse) return;
+	auto cloth = ClothWind::ByTexture.find(diffuse);
+	auto plant = PlantWind::ByTexture.find(diffuse);
+	if (cloth == ClothWind::ByTexture.end() || plant == PlantWind::ByTexture.end()) return;	// a call returned before its verdict
+	if (cloth->second.first != diffuse->ddsPath1 || plant->second.first != diffuse->ddsPath1) return;
+	StillTexture& entry = StillTextures[StillSlot(diffuse)];
+	entry.texture = diffuse;
+	entry.path = diffuse->ddsPath1;
+	entry.still = !cloth->second.second && !plant->second.second;
+}
+
 void RenderPass::RenderAccum() {
 	if (GeometryList.empty()) return;
 
@@ -39,6 +140,8 @@ void RenderPass::RenderAccum() {
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
 	RenderState->SetPixelShader(PixelShader->ShaderHandle, false);
 	RenderState->SetVertexShader(VertexShader->ShaderHandle, false);
+	const bool lean = Lean;
+	VertexRun.valid = PixelRun.valid = false;	// a new pass: its first caster does the full SetCT
 
 	// Render normal geometry
 	while (!GeometryList.empty()) {
@@ -47,18 +150,42 @@ void RenderPass::RenderAccum() {
 		NiGeometry* Geo = GeometryList.top();
 		GeometryList.pop();
 		if (!Geo) continue;
+#if NVR_TEST_TOOLS
+		SunShadowStats::Cascade* stats = SunShadowStats::Current;	// UNOFFICIAL 2026-10-21: null unless a sun cascade is measured
+		unsigned long long t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+		if (stats) { SunShadowStats::NoteCaster(Geo); t0 = SunShadowStats::Now(); }
+#endif
 
 		UpdateConstants(Geo);
-		PixelShader->SetCT();
-		VertexShader->SetCT();
-		ClothWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL cloth wind: the cloth's shadow moves with it
-		PlantWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL 2026-10-20 plant wind: so does a static plant's
+#if NVR_TEST_TOOLS
+		if (stats) t1 = SunShadowStats::Now();
+#endif
+		if (lean) { SetCTLean(PixelShader, PixelRun); SetCTLean(VertexShader, VertexRun); }
+		else {
+			PixelShader->SetCT();
+			VertexShader->SetCT();
+		}
+#if NVR_TEST_TOOLS
+		if (stats) t2 = SunShadowStats::Now();
+#endif
+		if (!lean || !WindLeavesStill(Geo)) {
+			ClothWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL cloth wind: the cloth's shadow moves with it
+			PlantWind::ForGeometry(TheRenderManager->device, Geo, true);	// UNOFFICIAL 2026-10-20 plant wind: so does a static plant's
+			if (lean) LearnWindVerdict(Geo);
+		}
 #if NVR_TEST_TOOLS
 		if (OrthoProbe::Recording) OrthoProbe::OnDraw(this, Geo);	// UNOFFICIAL 2026-10-17: only while an ortho dump is recorded
+		if (stats) t3 = SunShadowStats::Now();
 #endif
 
 		RenderGeometry(Geo);
 		ClothWind::AfterDraw(TheRenderManager->device);	// UNOFFICIAL 2026-10-19: no cloth values left behind for other draws
+#if NVR_TEST_TOOLS
+		if (stats) {
+			const unsigned long long t4 = SunShadowStats::Now();
+			stats->tUpdate += t1 - t0; stats->tSetCT += t2 - t1; stats->tWind += t3 - t2; stats->tRender += t4 - t3;
+		}
+#endif
 	}
 }
 
@@ -129,6 +256,9 @@ void RenderPass::DrawSkinnedGeometryBuffer(NiGeometry* Geo, NiGeometryBufferData
 	else
 		TheRenderManager->renderState->SetVertexDeclaration(GeoData->VertexDeclaration, false);
 
+#if NVR_TEST_TOOLS
+	if (SunShadowStats::Current) SunShadowStats::Current->partitions++;
+#endif
 	ClothWind::DrawPartition(NiDX9Renderer::GetSingleton(), GeoData, Partition, nullptr);  // DrawSkinnedGeometry (0xE6D310; UNOFFICIAL 2026-10-19: with worn cloth's per-vertex weights in stream 1 when ForGeometry chose them)
 }
 
