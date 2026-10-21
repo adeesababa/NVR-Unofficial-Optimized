@@ -32,6 +32,8 @@ public:
 		float	MaterialReflect;	// how much a smooth known material reflects
 		float	MaterialMaxRoughness;	// known materials at least this rough do not reflect
 		float	ReflectAdd;		// UNOFFICIAL 2026-10-21: 0 the reflection replaces its share of the surface's colour (as before), 1 it is added on top
+		float	SpecularOcclusion;		// UNOFFICIAL 2026-10-21: how much blurred reflections dim where the surface itself is dark (0 off)
+		float	SpecularOcclusionLevel;	// the surface / reflection brightness ratio that keeps all of the reflection
 	};
 	SettingsStruct	Settings;
 

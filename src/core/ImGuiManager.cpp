@@ -1997,6 +1997,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.PBR.Rmaos",                    "Enabled",            RestartRule::Changed },
 	{ "Shaders.Reflections.Main",             "MaterialAware",      RestartRule::TurnOn },	// REFL_MATERIAL_ON (core/ReflMaterial.h)
 	{ "Shaders.Reflections.Main",             "ReflectAdd",         RestartRule::TurnOn },	// REFL_ADD_ON (Reflections.fx.hlsl)
+	{ "Shaders.Reflections.Main",             "SpecularOcclusion",  RestartRule::TurnOn },	// REFL_SPECOCC_ON (Reflections.fx.hlsl)
 	{ "Shaders.PBR.Linear",                   "Enabled",            RestartRule::TurnOn },	// off at runtime = Gamma 1
 	{ "Shaders.PBR.Linear",                   "PreDecode",          RestartRule::Changed },
 	{ "Shaders.Sky.Physical",                 "Enabled",            RestartRule::TurnOn },

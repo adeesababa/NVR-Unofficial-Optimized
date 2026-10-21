@@ -24,6 +24,9 @@
 // Off (MaterialAware 0 at startup, or the _rmaos maps off): nothing here runs and the shaders are compiled without it.
 #include <d3d9.h>
 #include <unordered_set>
+#include <vector>
+#include <string>
+#include <algorithm>
 #include "PassSums.h"
 
 namespace ReflMaterial {
@@ -31,6 +34,17 @@ namespace ReflMaterial {
 	inline int AddStartup = -1;					// UNOFFICIAL 2026-10-21: [Shaders.Reflections.Main] ReflectAdd > 0 at startup (REFL_ADD_ON in the effect)
 	inline bool Writing = false;				// this frame's world scene writes the material (MaterialAware > 0 now)
 	inline float Current = -1.0f;				// c212.x as last sent (-1: send on the next pass)
+	inline float CurrentRough = -9.0f, CurrentMetalMin = -9.0f;	// c212.y / .z as last sent
+	// UNOFFICIAL 2026-10-21 RoughnessOverrides ([Shaders.Reflections.Main], "keyword:roughness, ..."): the generated _rmaos maps rate some
+	// polished floors too rough to mirror (Ultra-Luxe: centre tiles 0.48, black marble 0.38 against MaxRoughness 0.5). A draw whose _rmaos
+	// file name contains a keyword gives the reflections that roughness instead of its map's (the object's own lighting is untouched).
+	// MaterialMetalMin: the generator's metal is a guess from grey colour (at most ~0.6: grey marble and concrete came out half metal);
+	// only metal above this counts, rescaled to 0-1 (1: none).
+	inline std::vector<std::pair<std::string, float>> Overrides;
+	inline std::string OverrideText = "\x01";	// the setting as last parsed
+	inline unsigned OverrideGeneration = 1;		// bumped whenever the list changes (RmaosDraw caches per map)
+	inline float MetalMin = 0.6f;
+	inline float DrawRough = -1.0f;				// the override for the object being drawn (-1: its map's), set by RmaosDraw::ForObject
 	inline bool StatesSet = false;
 	inline DWORD SavedSeparate = FALSE, SavedSrcAlpha = D3DBLEND_ONE, SavedDstAlpha = D3DBLEND_ZERO, SavedOpAlpha = D3DBLEND_ONE;
 	// Pass numbers that drew blended with the flag on (never flagged again). Seeded with the ones the first in-game run found (2026-10-21,
@@ -53,16 +67,61 @@ namespace ReflMaterial {
 		return Startup > 0;
 	}
 
+	inline int OccStartup = -1;	// UNOFFICIAL 2026-10-21: [Shaders.Reflections.Main] SpecularOcclusion > 0 at startup (REFL_SPECOCC_ON)
+	inline bool OccCompiledIn() {
+		if (OccStartup < 0) OccStartup = TheSettingManager->GetSettingF("Shaders.Reflections.Main", "SpecularOcclusion") > 0.0f ? 1 : 0;
+		return OccStartup > 0;
+	}
+
 	inline bool AddCompiledIn() {
 		if (AddStartup < 0) AddStartup = TheSettingManager->GetSettingF("Shaders.Reflections.Main", "ReflectAdd") > 0.0f ? 1 : 0;
 		return AddStartup > 0;
 	}
 
+	// c212: x the flag, y the reflections' roughness override (-1: the map's), z MaterialMetalMin.
 	inline void Send(IDirect3DDevice9* device, float v) {
-		if (v == Current) return;
-		Current = v;
-		const float c[4] = { v, 0.0f, 0.0f, 0.0f };
+		const float rough = v > 0.0f ? DrawRough : -1.0f;
+		if (v == Current && rough == CurrentRough && MetalMin == CurrentMetalMin) return;
+		Current = v; CurrentRough = rough; CurrentMetalMin = MetalMin;
+		const float c[4] = { v, rough, MetalMin, 0.0f };
 		device->SetPixelShaderConstantF(212, c, 1);
+	}
+
+	// Reads RoughnessOverrides / MaterialMetalMin (once a frame, at the world scene's start; parsed only when the text changed).
+	inline void ReadSettings() {
+		MetalMin = std::clamp(TheSettingManager->GetSettingF("Shaders.Reflections.Main", "MaterialMetalMin"), 0.0f, 1.0f);
+		SettingManager::Configuration::ConfigNode node;	// a String setting's whole text is in LongValue (Value is cut at 79 characters)
+		std::string text = TheSettingManager->Config.FillNode(&node, "Shaders.Reflections.Main", "RoughnessOverrides") ?
+			(node.LongValue.empty() ? std::string(node.Value) : node.LongValue) : std::string();
+		if (OverrideText == text) return;
+		OverrideText = text;
+		Overrides.clear();
+		OverrideGeneration++;
+		const std::string& s = text;
+		size_t start = 0;
+		while (start < s.size()) {
+			size_t end = s.find(',', start);
+			if (end == std::string::npos) end = s.size();
+			std::string item = s.substr(start, end - start);
+			start = end + 1;
+			const size_t colon = item.rfind(':');
+			if (colon == std::string::npos) continue;
+			std::string key = item.substr(0, colon);
+			key.erase(std::remove_if(key.begin(), key.end(), [](char c) { return c == ' ' || c == '\t' || c == '"'; }), key.end());
+			std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+			const float r = (float)atof(item.c_str() + colon + 1);
+			if (!key.empty()) Overrides.push_back({ key, std::clamp(r, 0.02f, 1.0f) });
+		}
+		if (!Overrides.empty()) Logger::Log("MaterialAware reflections: %u roughness override(s) from RoughnessOverrides", (unsigned)Overrides.size());
+	}
+
+	// The override for an _rmaos file (lower case compare; first keyword found wins), -1 for none.
+	inline float RoughFor(const std::string& file) {
+		if (Overrides.empty()) return -1.0f;
+		std::string f(file);
+		std::transform(f.begin(), f.end(), f.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+		for (const auto& o : Overrides) if (f.find(o.first) != std::string::npos) return o.second;
+		return -1.0f;
 	}
 
 	// The world scene starts: the blended passes keep off the alpha (through the game's render state cache, so its own later
@@ -71,6 +130,7 @@ namespace ReflMaterial {
 		Writing = CompiledIn() && live;
 		Current = -1.0f;
 		if (!Writing || !state || !device) return;
+		ReadSettings();
 		device->GetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, &SavedSeparate);
 		device->GetRenderState(D3DRS_SRCBLENDALPHA, &SavedSrcAlpha);
 		device->GetRenderState(D3DRS_DESTBLENDALPHA, &SavedDstAlpha);

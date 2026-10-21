@@ -31,6 +31,9 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.MaterialMaxRoughness = std::clamp(TheSettingManager->GetSettingF(section, "MaterialMaxRoughness"), 0.05f, 1.0f);
 	// UNOFFICIAL 2026-10-21 ReflectAdd: live, but only compiled into the effect when above 0 at startup (ReflMaterial::AddCompiledIn).
 	Settings.ReflectAdd = ReflMaterial::AddCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "ReflectAdd"), 0.0f, 1.0f) : 0.0f;
+	// UNOFFICIAL 2026-10-21 SpecularOcclusion: live, compiled into the effect only when above 0 at startup (ReflMaterial::OccCompiledIn).
+	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
+	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -149,6 +152,8 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data3.w = exterior && Settings.SkyFallback ? 1.0f : 0.0f;
 	Constants.Data4.x = Settings.DrawDistance;
 	Constants.Data4.z = Settings.ReflectAdd;
+	Constants.Data4.w = Settings.SpecularOcclusion;
+	Constants.Layout.z = Settings.SpecularOcclusionLevel;
 	// UNOFFICIAL 2026-10-20 MaterialAware: x is set again by CaptureMaterial (1 only when the buffer was filled this frame).
 	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect, 0.0f);
 }

@@ -36,9 +36,9 @@ float4 TESR_WaterSettings;           // x: height of the water in view
 float4 TESR_ReflectionsData;         // x: dry reflectivity of floors now, y: wetness now (0-1), z: dry roughness, w: wet roughness
 float4 TESR_ReflectionsData2;        // x: ray length (game units), y: steps, z: thickness scale, w: noise frame offset
 float4 TESR_ReflectionsData3;        // x: history weight (0 = none this frame), y: blur radius, z: debug view, w: 1 = sky fallback
-float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), z: ReflectAdd (REFL_ADD_ON), w: unused
+float4 TESR_ReflectionsData4;        // x: draw distance, y: 1 = rain wets only open ground (the ortho map is kept up), z: ReflectAdd (REFL_ADD_ON), w: SpecularOcclusion (REFL_SPECOCC_ON)
 float4x4 TESR_ShadowCameraToLightTransformOrtho;   // camera-relative world position -> the top-down ortho map (as Wet World)
-float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV
+float4 TESR_ReflectionsLayout;       // xy: one half-resolution texel in screen UV, z: SpecularOcclusionLevel (REFL_SPECOCC_ON)
 float4x4 TESR_ReflectionsReproject;  // camera-relative world position -> last frame's clip space
 float4 TESR_ReflectionsCube;         // x: face being drawn (0-5, D3D order), y: its size in texels, z: mip level, w: 1 = empty the cube
 float4 TESR_ReflectionsCube2;        // x: capture blend, y: fade per frame, z: last mip level, w: 1 = the cube is in use
@@ -623,6 +623,23 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	float share = saturate(amount * EnvironmentFresnel(roughness, saturate(dot(-V, N)))) * saturate(reflection.a);
 #endif
 	float3 reflected = Untame(reflection.rgb / max(reflection.a, 1.0e-4));
+#ifndef REFL_SPECOCC_ON
+    #define REFL_SPECOCC_ON 0
+#endif
+#if REFL_SPECOCC_ON
+	// UNOFFICIAL 2026-10-21 SpecularOcclusion ([Shaders.Reflections.Main], compiled in only when above 0 at startup: REFL_SPECOCC_ON). A
+	// blurred reflection is about the room's average light, the same over the whole floor, while the floor's own light varies with the
+	// lamps: in shadow it stood out (Ultra-Luxe carpet: +31 % in shadow, +7 % lit). Here the reflection is scaled down where the surface
+	// itself is much darker than what it reflects: by (its lit brightness / (the reflection's x Level)), capped at 1, so a floor at least
+	// Level times as bright as its reflection keeps all of it. Only for blurred reflections: a sharp one (a wet street, a polished
+	// floor) shows lights whatever the floor's own light, as a mirror does.
+	[branch] if (TESR_ReflectionsData4.w > 0.0) {
+		float surfaceLight = luma(linearize(color.rgb));
+		float reflectedLight = max(luma(reflected) * TESR_ReflectionsLayout.z, 1.0e-6);
+		float occlusion = lerp(1.0, saturate(surfaceLight / reflectedLight), TESR_ReflectionsData4.w * smoothstep(0.15, 0.4, roughness));
+		share *= occlusion;
+	}
+#endif
 
 	[branch] if (DebugView > 4.5) return float4(delinearize(reflected), 1.0);   // 5, 6: the trace's diagnostic colours as they are
 	[branch] if (DebugView > 1.5) return float4(1.0 - reflection.a, reflection.a, amount * 0.5, 1.0);   // red: nothing found

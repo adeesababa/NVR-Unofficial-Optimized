@@ -116,11 +116,12 @@ float3 RmaosDebug(float3 color, float3 albedo) { return color; }
 // (REFL_MATERIAL_ON, with RMAOS_ON); otherwise the shaders are exactly what they were. Kept to a few instructions: the 6-lamp
 // interior shader (SLS2035) is near the slot count the driver refuses.
 #if defined(RMAOS) && defined(REFL_MATERIAL_ON) && REFL_MATERIAL_ON
-float4 NVR_ReflMaterial : register(c212); // x: 1 = this pass leaves its material in the alpha (pinned clear of every other object-shader constant; NVR_, not TESR_: ShaderRecord re-uploads every TESR_ constant when the shader binds, after the pass hook set it)
+float4 NVR_ReflMaterial : register(c212); // y: roughness override for the reflections (-1: the map's), z: MaterialMetalMin // x: 1 = this pass leaves its material in the alpha (pinned clear of every other object-shader constant; NVR_, not TESR_: ShaderRecord re-uploads every TESR_ constant when the shader binds, after the pass hook set it)
 float ReflMaterialAlpha(float alpha) {
     // (the map's own roughness: the shader's, after SpecularAA, would bring back its whole computation into the shaders without a highlight)
-    float metal = floor(saturate(RmaosValue.g) * 3.0f + 0.5f);
-    float encoded = 2.0f + metal * 0.25f + saturate(RmaosValue.r) * 0.24f;
+    float metal = floor(saturate((RmaosValue.g - NVR_ReflMaterial.z) / max(1.0f - NVR_ReflMaterial.z, 0.001f)) * 3.0f + 0.5f);
+    float roughness = NVR_ReflMaterial.y >= 0.0f ? NVR_ReflMaterial.y : RmaosValue.r;   // RoughnessOverrides (core/ReflMaterial.h)
+    float encoded = 2.0f + metal * 0.25f + saturate(roughness) * 0.24f;
     return lerp(alpha, encoded, NVR_ReflMaterial.x * (alpha >= 0.999f ? 1.0f : 0.0f));
 }
 #else

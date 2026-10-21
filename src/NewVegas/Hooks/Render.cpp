@@ -1660,7 +1660,8 @@ namespace MaterialRulesDraw {
 // area's maps arrive over a few frames instead of stalling one (until then those objects draw as they did). The textures are
 // kept (GPU memory only, D3DPOOL_DEFAULT, so nothing of them sits in the game's 4 GB) for the rest of the session.
 namespace RmaosDraw {
-	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0; };
+	struct Map { std::string File; IDirect3DTexture9* Texture = nullptr; bool Missing = false; bool Queued = false; double ArrivedMs = 0.0;
+		float ReflRough = -1.0f; unsigned ReflGeneration = 0; };	// UNOFFICIAL 2026-10-21 RoughnessOverrides (core/ReflMaterial.h), cached per map
 	static std::unordered_map<std::string, Map> ByPath;			// normalised diffuse path -> its map
 	struct Entry { std::string Path; Map* Found; };
 	static std::unordered_map<const NiSourceTexture*, Entry> ByTexture;
@@ -1850,6 +1851,11 @@ namespace RmaosDraw {
 		if (on && FadeSeconds > 0.0f) share = std::clamp((float)((FrameNowMs - map->ArrivedMs) / (1000.0 * FadeSeconds)), 0.001f, 1.0f);
 		values[0] = on ? share : 0.0f;
 		ThisDraw = on;
+		if (on && ReflMaterial::Writing && map->ReflGeneration != ReflMaterial::OverrideGeneration) {
+			map->ReflRough = ReflMaterial::RoughFor(map->File);
+			map->ReflGeneration = ReflMaterial::OverrideGeneration;
+		}
+		ReflMaterial::DrawRough = on ? map->ReflRough : -1.0f;
 		Send(values, on ? map->Texture : nullptr);
 	}
 
