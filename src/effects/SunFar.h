@@ -28,6 +28,7 @@ public:
 		D3DXVECTOR4	CloudWeight;     // per layer share (0: no texture)
 		D3DXVECTOR4	CloudBlend;      // per layer blend toward the incoming texture
 		D3DXVECTOR4	Apply;           // x: 1 while TESR_SunFarBuffer holds this frame's factor (the composites read it then)
+		D3DXVECTOR4	Volume;          // UNOFFICIAL 2026-10-21 the volumetric clouds' shadow: x strength (0 off), y map width (m), z map texels, w cloud base (m)
 	};
 	ConstantsStruct	Constants = {};
 

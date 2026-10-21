@@ -417,22 +417,53 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	ProbeLayer(Device);
 	// UNOFFICIAL 2026-10-13: F10 timers per pass.
 	static GpuTimer marchTimer("  Clouds march (quarter, 1 in 4)"), temporalTimer("  Clouds temporal (quarter)"),
-		shadowTimer("  Clouds shadow map"), compositeTimer("  Clouds composite (full)");
+		compositeTimer("  Clouds composite (full)");
 	// fixes-b #19: technique 6 only if it is the one NAMED MarchFixedExit (an older effect file with another technique 6 stays on March)
 	static CachedHandle fixedExitCache;
 	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
 		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
 	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, fixedExit ? 6 : 1); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit)
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
-	if (Constants.Extra.x > 0.0f) { GpuProfileScope gpu(shadowTimer, Device); TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4); }	// UNOFFICIAL: cloud shadow map
+	RenderShadowMap(Device);	// UNOFFICIAL: cloud shadow map (already drawn this frame when SunFar asked first)
 	read = 1 - read;
 	Textures.HistoryRead = Textures.HistoryTexture[read];
 	Device->SetRenderTarget(0, RenderTarget);
-	{ GpuProfileScope gpu(compositeTimer, Device); Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface); }					// composite
+	{
+		// UNOFFICIAL 2026-10-21: when SunFar took the shadows to the land this frame, the composite only draws the sky (strength 0
+		// for its own apply). Its own apply darkened the whole pixel, ambient and sky light too, on top of the sun's shadows,
+		// weighted by the depth-rebuilt normals (flat per triangle, striped by the depth's precision): a P82 tester's triangles.
+		const float strength = Constants.Extra.x;
+		if (shadowsViaSunFar) Constants.Extra.x = 0.0f;
+		GpuProfileScope gpu(compositeTimer, Device);
+		Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);	// composite
+		Constants.Extra.x = strength;
+	}
 
 	lastViewProj = viewProj;
 	lastRenderTime = now;
 	frame++;
+}
+
+// UNOFFICIAL 2026-10-21: the cloud shadow map, once a frame. SunFar asks first (it runs before the clouds in the frame), so the
+// land shadow and the map's centre are this frame's; otherwise RenderClouds draws it.
+void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
+	if (shadowMapFrame == frame || Constants.Extra.x <= 0.0f || !Textures.ShadowSurface || !Enabled || !Effect || !ShouldRender()) return;
+	static GpuTimer shadowTimer("  Clouds shadow map");
+	GpuProfileScope gpu(shadowTimer, Device);
+	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4);
+	shadowMapFrame = frame;
+}
+
+// UNOFFICIAL 2026-10-21: the shadows' strength on the land as the composite works it out (fainter at night, gone with a low sun);
+// 0 with no shadows, or with ShadowDebug (that view is the composite's).
+float VolumetricCloudsEffect::ShadowStrengthForSunFar() {
+	if (!Enabled || !Effect || !ShouldRender() || !Textures.ShadowTexture || Constants.Extra.x <= 0.0f || Settings.ShadowDebug) return 0.0f;
+	const D3DXVECTOR4& sun = TheShaderManager->ShaderConst.SunDir;
+	const float length = sqrtf(sun.x * sun.x + sun.y * sun.y + sun.z * sun.z);
+	const float z = length > 0.0f ? sun.z / length : 0.0f;
+	const float t = std::clamp((z - 0.08f) / (0.35f - 0.08f), 0.0f, 1.0f);
+	const float day = std::clamp(TheShaderManager->ShaderConst.SunAmount.x, 0.0f, 1.0f);
+	return Constants.Extra.x * (0.3f + 0.7f * day) * t * t * (3.0f - 2.0f * t);
 }
 
 // ---- UNOFFICIAL 2026-10-12: the clouds in the game's water reflection ----

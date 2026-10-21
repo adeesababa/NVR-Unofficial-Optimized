@@ -26,6 +26,7 @@ void SunFarEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SunFarCloudWeight", &Constants.CloudWeight);
 	TheShaderManager->RegisterConstant("TESR_SunFarCloudBlend", &Constants.CloudBlend);
 	TheShaderManager->RegisterConstant("TESR_SunFarApply", &Constants.Apply);
+	TheShaderManager->RegisterConstant("TESR_SunFarVolume", &Constants.Volume);
 }
 
 void SunFarEffect::RegisterTextures() {
@@ -64,9 +65,16 @@ void SunFarEffect::UpdateConstants() {
 	lastTick = tick;
 
 	Sky* sky = Sky::Get();
-	// Not with the volumetric clouds' own shadow (they replace the game's layers and shade the land themselves).
+	// Not with the volumetric clouds' own shadow (they replace the game's layers). UNOFFICIAL 2026-10-21: theirs go on the land here
+	// instead, from their shadow map, the same way (only the sun's share, and not twice where the cascades already shade).
 	VolumetricCloudsEffect* volumetric = TheShaderManager->Effects.VolumetricClouds;
 	const bool volumetricShadows = volumetric && volumetric->Enabled && volumetric->Constants.Extra.x > 0.0f;
+	Constants.Volume = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	if (volumetric && TheShaderManager->GameState.isExterior) {
+		const float strength = volumetric->ShadowStrengthForSunFar();
+		if (strength > 0.0f) Constants.Volume = D3DXVECTOR4(strength, (std::max)(volumetric->Constants.Extra.y, 1000.0f),
+			(std::max)(volumetric->Constants.Detail.z, 256.0f), volumetric->Constants.Shape.x);
+	}
 	// What the cloud shadows found (or why not), logged when it changes.
 	std::string state;
 	struct StateLog { std::string& s; ~StateLog() { static std::string last; if (s != last) { last = s; if (!s.empty()) Logger::Log("UNOFFICIAL cloud shadows: %s", s.c_str()); } } } stateLog{ state };
@@ -134,11 +142,13 @@ bool SunFarEffect::ShouldRender() {
 	if (!TheShaderManager->GameState.isExterior || !Texture || !Surface) return false;
 	ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 	if (!shadows || !shadows->Enabled) return false;
-	return shadows->TerrainShadows.Active() || Constants.Data.x > 0.0f || (Constants.Data.y > 0.0f && (shadows->TerrainShadows.Settings.Enabled || Settings.Clouds));
+	return shadows->TerrainShadows.Active() || Constants.Data.x > 0.0f || Constants.Volume.x > 0.0f || (Constants.Data.y > 0.0f && (shadows->TerrainShadows.Settings.Enabled || Settings.Clouds));
 }
 
 void SunFarEffect::RenderFactor(IDirect3DDevice9* Device) {
 	Constants.Apply.x = 0.0f;
+	VolumetricCloudsEffect* volumetric = TheShaderManager->Effects.VolumetricClouds;
+	if (volumetric) volumetric->shadowsViaSunFar = false;
 	if (!Enabled || !Effect || !ShouldRender()) return;
 	static GpuTimer timer("Sun far shadows (land, clouds)");
 	GpuProfileScope gpu(timer, Device);
@@ -147,13 +157,20 @@ void SunFarEffect::RenderFactor(IDirect3DDevice9* Device) {
 		SetPassTexture(5 + i, layerTextures[i]);
 		SetPassTexture(9 + i, blendTextures[i]);
 	}
+	// UNOFFICIAL 2026-10-21: the volumetric clouds' shadow map on stage 13 (NVR_VolumeCloudShadow), drawn for this frame first.
+	const bool volume = volumetric && Constants.Volume.x > 0.0f;
+	if (volume) {
+		volumetric->RenderShadowMap(Device);
+		SetPassTexture(13, volumetric->Textures.ShadowTexture);
+	}
 	TheShaderManager->RenderEffectToRT(Surface, this, false, 0);
 	ClearPassTextures();
 	Constants.Apply.x = 1.0f;
+	if (volume) volumetric->shadowsViaSunFar = true;
 	static bool reported = false;
 	if (!reported) {
 		reported = true;
-		Logger::Log("UNOFFICIAL sun far shadows: drawn (land %s, clouds %s); the sun-shadow composites take the factor",
-			TheShaderManager->Effects.ShadowsExteriors->TerrainShadows.Active() ? "on" : "off", Constants.Data.x > 0.0f ? "on" : "off");
+		Logger::Log("UNOFFICIAL sun far shadows: drawn (land %s, clouds %s, volumetric clouds %s); the sun-shadow composites take the factor",
+			TheShaderManager->Effects.ShadowsExteriors->TerrainShadows.Active() ? "on" : "off", Constants.Data.x > 0.0f ? "on" : "off", volume ? "on" : "off");
 	}
 }

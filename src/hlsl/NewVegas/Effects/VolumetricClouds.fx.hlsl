@@ -450,7 +450,10 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 			// keep their light. In the open ground and roofs take the full strength.
 			float3 sunDir = normalize(TESR_SunDirection.xyz);
 			float day = saturate(TESR_SunAmount.x);
-			float facing = sqrt(saturate(dot(normal, sunDir)));
+			// UNOFFICIAL 2026-10-21: only the surfaces turned (nearly) away from the sun are let off. The normal here is rebuilt from
+			// depth (flat per triangle, striped by the depth's precision): weighting every surface by it (the old square root of N.L)
+			// drew triangles and stripes on rocks. (With SunFar running, the shadow is put on the land there instead.)
+			float facing = smoothstep(0.0, 0.25, dot(normal, sunDir));
 			float strength = ShadowStrength * lerp(0.3, 1.0, day) * smoothstep(0.08, 0.35, sunDir.z) * facing;   // fades with a low sun
 			float shadow = CloudShadowAt(world);
 			[branch] if (TESR_CloudsExtra.w > 0.0) return float4(shadow.xxx * lerp(0.4, 1.0, facing), 1.0);   // ShadowDebug: white lit, black shaded

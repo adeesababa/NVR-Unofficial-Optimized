@@ -95,6 +95,12 @@ public:
 	// March, temporal, then the composite into the frame chain.
 	void	RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		IDirect3DSurface9* SourceSurface);
+	// UNOFFICIAL 2026-10-21 cloud shadows through SunFar: the shadow map for this frame (once; RenderClouds draws it if nothing
+	// asked earlier), the strength SunFar puts on the land (0: no shadows to hand over), and whether SunFar drew them this frame
+	// (it sets this; the composite then leaves the land alone).
+	void	RenderShadowMap(IDirect3DDevice9* Device);
+	float	ShadowStrengthForSunFar();
+	bool	shadowsViaSunFar = false;
 
 private:
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;	// eased toward the weather's
@@ -102,6 +108,7 @@ private:
 	double		windX = 0.0, windY = 0.0, windZ = 0.0;	// UNOFFICIAL: the wind offset, kept in doubles (wind holds it as floats for the shader)
 	D3DXMATRIX	lastViewProj;
 	UINT		frame = 0, read = 0;
+	UINT		shadowMapFrame = UINT_MAX;	// UNOFFICIAL 2026-10-21: the frame the shadow map was last drawn for
 	double		lastRenderTime = -1.0;	// TheFrameRateManager->Time of the last frame drawn
 	UINT		lowWidth = 0, lowHeight = 0, blockWidth = 0, blockHeight = 0;
 	double		lastCloudTime = -1.0;	// UNOFFICIAL GameTime: the clouds' own smooth clock, in seconds at the normal time scale, held to the game's

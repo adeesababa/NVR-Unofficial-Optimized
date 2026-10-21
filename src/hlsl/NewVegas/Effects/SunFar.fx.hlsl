@@ -36,6 +36,8 @@ float4 TESR_SunFarClouds;         // x: the cloud layer's height above the camer
 float4 TESR_SunFarCloudOffset[2]; // the layers' drift in uv: [0].xy layer 0, [0].zw layer 1, [1].xy layer 2, [1].zw layer 3
 float4 TESR_SunFarCloudWeight;    // per layer: its share (0: no texture)
 float4 TESR_SunFarCloudBlend;     // per layer: how far it has blended to the incoming weather's texture
+float4 TESR_SunFarVolume;         // UNOFFICIAL 2026-10-21 the volumetric clouds' shadow: x strength (0 off), y map width (m), z map texels, w cloud base (m)
+float4 TESR_SunDirection;         // the light the volumetric clouds' shadow map was made with
 
 // In register order: NVR binds TESR_ samplers in declaration order.
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -52,6 +54,9 @@ sampler2D NVR_CloudBlend0 : register(s9) = sampler_state { ADDRESSU = WRAP; ADDR
 sampler2D NVR_CloudBlend1 : register(s10) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_CloudBlend2 : register(s11) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_CloudBlend3 : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// UNOFFICIAL 2026-10-21: the volumetric clouds' shadow map (VolumetricClouds.fx ShadowMap: the sunlight through the layer, 1 clear),
+// bound by SunFarEffect::RenderFactor.
+sampler2D NVR_VolumeCloudShadow : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -157,6 +162,24 @@ float CloudShadow(float3 rel) {
 	return saturate(1.0f - (1.0f - clear) * TESR_SunFarData.x);
 }
 
+// UNOFFICIAL 2026-10-21: 1 lit, toward 0 under the volumetric clouds. The same lookup as their own composite (VolumetricClouds.fx
+// CloudShadowAt, in metres: the light from the point meets the cloud base; the map's centre is the camera snapped to whole texels),
+// so the shadow lands where the clouds are. Their composite used to darken the whole pixel by it, weighted by the depth-rebuilt
+// normal: flat per triangle and striped (a P82 tester's rocks), and on top of the cascades' shadow.
+float VolumeCloudShadow(float3 world) {
+	[branch] if (TESR_SunFarVolume.x <= 0.0f) return 1.0f;
+	float3 light = normalize(TESR_SunDirection.xyz);
+	light.z = max(light.z, 0.25f);
+	light = normalize(light);
+	float3 p = world / 70.0f;
+	float texel = TESR_SunFarVolume.y / TESR_SunFarVolume.z;
+	float2 centre = floor(TESR_CameraPosition.xy / 70.0f / texel) * texel;
+	float2 q = p.xy + light.xy * ((TESR_SunFarVolume.w - p.z) / light.z);
+	float2 suv = (q - centre) / TESR_SunFarVolume.y + 0.5f;
+	float2 edge = min(suv, 1.0f - suv);
+	float inside = saturate(min(edge.x, edge.y) * 10.0f);
+	return lerp(1.0f, tex2Dlod(NVR_VolumeCloudShadow, float4(suv, 0.0f, 0.0f)).r, inside * TESR_SunFarVolume.x);
+}
 float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	// Not on the sky (at the far plane, as the volumetric clouds test it) nor on nothing at all. From the linear depth (.x): with
@@ -167,7 +190,7 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float3 world = TESR_CameraPosition.xyz + rel;
 
 	float terrain = TerrainShadow(world);
-	float cloud = CloudShadow(rel);
+	float cloud = CloudShadow(rel) * VolumeCloudShadow(world);
 	float blocked = terrain * cloud;
 	// [TerrainShadows] Darkness: in the land's shadow, a share of the ambient and sky light goes too (a valley under a
 	// mountain sees less of the sky). (Conor.)
