@@ -30,6 +30,9 @@ namespace FoldHighlights {
 	constexpr UInt32 kBaseStage = 3;		// ObjectTemplate.hlsl FoldBaseMap
 	inline IDirect3DBaseTexture9* LastBase = nullptr;	// bound for the extra-lamp pass being drawn (nullptr: none)
 	inline unsigned long long BaseLost = 0;
+	inline unsigned LostLogged = 0;
+	inline const NiGeometry* LastGeometry = nullptr;	// diagnostic (AfterDraw): the extra-lamp pass being drawn
+	inline UInt16 LastPass = 0;
 
 	// Objects whose light-only pass was folded this frame (state 1), or folded but one of their extra-lamp passes could not be (2: their
 	// highlight passes are drawn after all). Open addressing, tagged with the frame number (no clearing).
@@ -147,7 +150,7 @@ namespace FoldHighlights {
 			if (!texture) { *state = 2; Broken++; return; }
 			device->SetTexture(kBaseStage, texture);
 			TheRenderManager->renderState->NoteDeviceTexture(kBaseStage, texture);
-			LastBase = texture;
+			LastBase = texture; LastGeometry = geometry; LastPass = pass->passEnum;
 			static const D3DSAMPLERSTATETYPE kStates[] = { D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MAGFILTER, D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER,
 				D3DSAMP_MAXANISOTROPY, D3DSAMP_MIPMAPLODBIAS };
 			for (D3DSAMPLERSTATETYPE type : kStates) {	// as the normal map on sampler 0 (the texture pass reads the base texture alike)
@@ -167,7 +170,22 @@ namespace FoldHighlights {
 		if (!LastBase) return;
 		IDirect3DBaseTexture9* now = nullptr;
 		if (SUCCEEDED(device->GetTexture(kBaseStage, &now)) && now) now->Release();
-		if (now != LastBase) BaseLost++;
+		if (now != LastBase) {
+			BaseLost++;
+			if (LostLogged < 24 && LastGeometry) {
+				LostLogged++;
+				const BSShaderPPLightingProperty* property = (const BSShaderPPLightingProperty*)PbrPop::LitProperty(LastGeometry);
+				int which = -1;	// which of the property's own textures the game put there, if any
+				for (int i = 0; i < 6 && property; i++) {
+					const NiSourceTexture* t = property->ppTextures[i] ? property->ppTextures[i][0] : nullptr;
+					if (t && t->rendererData && t->rendererData->dTexture == now) which = i;
+				}
+				const NiAVObject* parent = (const NiAVObject*)LastGeometry->m_parent;
+				Logger::Log("FOLD BASE LOST '%s' (in '%s') pass %03X %s flags %08X %08X: sampler %u now %p (property texture %d)", LastGeometry->m_pcName ? LastGeometry->m_pcName : "",
+					parent && parent->m_pcName ? parent->m_pcName : "", (unsigned)LastPass, Pointers::Functions::GetPassDescription(LastPass),
+					property ? property->ulFlags[0] : 0u, property ? property->ulFlags[1] : 0u, kBaseStage, now, which);
+			}
+		}
 		LastBase = nullptr;
 	}
 #endif
