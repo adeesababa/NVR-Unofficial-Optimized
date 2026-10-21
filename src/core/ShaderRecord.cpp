@@ -199,6 +199,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// objects with 3+ lamps can draw their lamps' highlights (and metal) themselves, as the one-pass shaders do. Compiled in only when on at
 	// startup (the per-draw switch then turns it on live: 0 = the old result exactly).
 	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
+	// UNOFFICIAL 2026-10-21 LampSums (ObjectTemplate.hlsl NVR_LAMP_SUMS, core/PassSums.h): the extra lamp passes add their light to the light-only
+	// pass's in linear light (exact where one such pass covers a pixel). Compiled in only when on at startup (with linear lighting); the
+	// per-run switch then turns it on live: 0 = the old result exactly.
+	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");

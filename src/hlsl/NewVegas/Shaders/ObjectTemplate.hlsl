@@ -222,6 +222,21 @@
         #define LIN_PREDECODED
     #endif
 #endif
+// UNOFFICIAL 2026-10-21 LampSums ([Shaders.PBR.Main] LampSums, restart: LAMP_SUMS_ON from ShaderRecord::BuildDefines, only with linear
+// lighting; per run c210 y, core/PassSums.h; bench\deep-roadmap\evidence\lampsums\LOG.md). An object lit by more lamps than its first
+// pass holds gets extra lamp passes (these DIFFUSE shaders) ADDED onto its light-only pass, each encoded on its own: the frame held
+// enc(A) + enc(L) instead of enc(A + L) (FoldHighlights' leftover: the Ultra-Luxe's lamp-rich floors still +60%). While NVR sets
+// TESR_PassRedirect.y (the world's run of extra lamp passes), the pass reads the frame as it was when the run began (NVR_LampRunStart,
+// a copy: the light-only pass's result) and adds exactly enough to get there in linear light: enc(dec(s) + L) - s. Exact where one
+// extra lamp pass covers a pixel (3-5 lamps); where two do (6+ lamps), each starts from the run's s. s9 is the sun's atlas, which no
+// DIFFUSE pass reads; no sampler_state (the DLL sets point / clamp). Off (not compiled): the shaders exactly as before.
+#ifndef LAMP_SUMS_ON
+    #define LAMP_SUMS_ON 0
+#endif
+#if defined(PS) && defined(DIFFUSE) && LAMP_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s9);
+#endif
 // UNOFFICIAL 2026-10-18 SmithCorrelated ([Shaders.PBR.Main], restart: SMITH_CORRELATED_ON from ShaderRecord::BuildDefines): the object
 // pixel shaders take the exact height-correlated Smith masking term and its coupled diffuse (Includes/PBR.hlsl BRDF and
 // SmithCorrelatedKeep; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0). Off: the shaders exactly as before.
@@ -821,6 +836,9 @@ struct PS_INPUT {
 #if defined(NVR_FOLD) && defined(NO_VERTEX_COLOR)
     float4 foldColor : COLOR0;	// UNOFFICIAL FoldHighlights: the vertex colour
 #endif
+#ifdef NVR_LAMP_SUMS
+    float2 vpos : VPOS;	// UNOFFICIAL LampSums: the pixel, to read the run's copy of the frame
+#endif
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;    // METAL: .a = world up's z in tangent space, encoded (see the VS)
 #endif
@@ -1304,6 +1322,13 @@ PS_OUTPUT main(PS_INPUT IN) {
         // (the extra lamp passes use the DIFFUSE and the plain light-only shaders; the flag is set only during a redirected run)
         // the pass gives its LINEAR light; the buffer is folded into the frame once, in linear light, when the run ends.
         [flatten] if (TESR_PassRedirect.x > 0.5f) finalColor = max(lighting.rgb, 0.0f);
+    #endif
+    #ifdef NVR_LAMP_SUMS
+        // UNOFFICIAL 2026-10-21 LampSums (see the top): c210 y 1 during the world's run of extra lamp passes, zw 1 / the frame's size.
+        [branch] if (TESR_PassRedirect.y > 0.5f) {
+            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((IN.vpos + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
+            finalColor = LinEncode(LinColor(runStart) + max(lighting.rgb, 0.0f)) - runStart;
+        }
     #endif
     finalColor = MaterialRulesDebug(finalColor, albedoStored);   // UNOFFICIAL [Shaders.PBR.MaterialRules] DebugView
     finalColor = RmaosDebug(finalColor, albedoStored);           // UNOFFICIAL [Shaders.PBR.Rmaos] DebugView

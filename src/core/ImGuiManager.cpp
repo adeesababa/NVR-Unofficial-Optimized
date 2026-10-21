@@ -1991,6 +1991,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.PBR.Main",                     "SmithCorrelated",    RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "SpecularFade",       RestartRule::Changed },	// SPEC_FADE_ON (deep/pbrpop)
 	{ "Shaders.PBR.Main",                     "FoldHighlights",     RestartRule::TurnOn },	// FOLD_HIGHLIGHTS_ON (deep/pbrtiles); off is live
+	{ "Shaders.PBR.Main",                     "LampSums",           RestartRule::TurnOn },	// LAMP_SUMS_ON (deep/lampsums); off is live
 	{ "Shaders.PBR.Main",                     "SkylightingMode",    RestartRule::Changed },
 	{ "Shaders.PBR.Metal",                    "CubeReflections",    RestartRule::TurnOn },	// LIVE_CUBE: either above 0 at start
 	{ "Shaders.PBR.EnvMaps",                  "CubeReflections",    RestartRule::TurnOn },
