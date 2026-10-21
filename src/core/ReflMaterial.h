@@ -34,16 +34,14 @@ namespace ReflMaterial {
 	inline int AddStartup = -1;					// UNOFFICIAL 2026-10-21: [Shaders.Reflections.Main] ReflectAdd > 0 at startup (REFL_ADD_ON in the effect)
 	inline bool Writing = false;				// this frame's world scene writes the material (MaterialAware > 0 now)
 	inline float Current = -1.0f;				// c212.x as last sent (-1: send on the next pass)
-	inline float CurrentRough = -9.0f, CurrentMetalMin = -9.0f;	// c212.y / .z as last sent
+	inline float CurrentRough = -9.0f;	// the override as last sent in c212.yz
 	// UNOFFICIAL 2026-10-21 RoughnessOverrides ([Shaders.Reflections.Main], "keyword:roughness, ..."): the generated _rmaos maps rate some
 	// polished floors too rough to mirror (Ultra-Luxe: centre tiles 0.48, black marble 0.38 against MaxRoughness 0.5). A draw whose _rmaos
 	// file name contains a keyword gives the reflections that roughness instead of its map's (the object's own lighting is untouched).
-	// MaterialMetalMin: the generator's metal is a guess from grey colour (at most ~0.6: grey marble and concrete came out half metal);
-	// only metal above this counts, rescaled to 0-1 (1: none).
+	// (The generator's metal is a guess from grey colour, at most ~0.6: Object.hlsl counts only metal above 0.6, a fixed literal.)
 	inline std::vector<std::pair<std::string, float>> Overrides;
 	inline std::string OverrideText = "\x01";	// the setting as last parsed
 	inline unsigned OverrideGeneration = 1;		// bumped whenever the list changes (RmaosDraw caches per map)
-	inline float MetalMin = 0.6f;
 	inline float DrawRough = -1.0f;				// the override for the object being drawn (-1: its map's), set by RmaosDraw::ForObject
 	inline bool StatesSet = false;
 	inline DWORD SavedSeparate = FALSE, SavedSrcAlpha = D3DBLEND_ONE, SavedDstAlpha = D3DBLEND_ZERO, SavedOpAlpha = D3DBLEND_ONE;
@@ -78,18 +76,17 @@ namespace ReflMaterial {
 		return AddStartup > 0;
 	}
 
-	// c212: x the flag, y the reflections' roughness override (-1: the map's), z MaterialMetalMin.
+	// c212: x the flag, yz the reflections' roughness = the map's x y + z (1, 0: the map's; 0, r: the override r).
 	inline void Send(IDirect3DDevice9* device, float v) {
 		const float rough = v > 0.0f ? DrawRough : -1.0f;
-		if (v == Current && rough == CurrentRough && MetalMin == CurrentMetalMin) return;
-		Current = v; CurrentRough = rough; CurrentMetalMin = MetalMin;
-		const float c[4] = { v, rough, MetalMin, 0.0f };
+		if (v == Current && rough == CurrentRough) return;
+		Current = v; CurrentRough = rough;
+		const float c[4] = { v, rough >= 0.0f ? 0.0f : 1.0f, rough >= 0.0f ? rough : 0.0f, 0.0f };
 		device->SetPixelShaderConstantF(212, c, 1);
 	}
 
-	// Reads RoughnessOverrides / MaterialMetalMin (once a frame, at the world scene's start; parsed only when the text changed).
+	// Reads RoughnessOverrides (once a frame, at the world scene's start; parsed only when the text changed).
 	inline void ReadSettings() {
-		MetalMin = std::clamp(TheSettingManager->GetSettingF("Shaders.Reflections.Main", "MaterialMetalMin"), 0.0f, 1.0f);
 		SettingManager::Configuration::ConfigNode node;	// a String setting's whole text is in LongValue (Value is cut at 79 characters)
 		std::string text = TheSettingManager->Config.FillNode(&node, "Shaders.Reflections.Main", "RoughnessOverrides") ?
 			(node.LongValue.empty() ? std::string(node.Value) : node.LongValue) : std::string();
