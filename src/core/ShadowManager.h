@@ -21,6 +21,27 @@ public:
 	bool					OrthoSkipBlendOnly = false;	// UNOFFICIAL Skylighting v2 clean ortho map: leave out alpha-blended-only geometry (FX meshes, glass)
 	void					RenderAccums();
 	void					RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj);
+	// UNOFFICIAL 2026-10-21 (sunshadow): RenderShadowMap in its three parts -- the state (matrices, render states, the land drop),
+	// the walk (LOD roots and loaded cells into the passes' lists) and the draws (viewport, clear, the lists). keepLandSet: the sun
+	// cascades' one walk filled RenderPass::LandSet for all of them, so the parts leave it alone.
+	void					BeginShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj, bool keepLandSet = false);
+	void					WalkShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);
+	void					DrawShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, bool keepLandSet = false);
+	// UNOFFICIAL 2026-10-21 (sunshadow) SunCascadeOneWalk: one walk of the LOD roots and loaded cells for every sun cascade drawn in a
+	// frame, each object tested against each cascade (bit c of a mask = cascade c), each cascade's casters kept in the order its own
+	// walk would have found them, then handed to the passes cascade by cascade (PushSunCasters).
+	enum SunPass : UInt8 { kSunOpaque, kSunLodLand, kSunAlpha, kSunSkinned, kSunTree };
+	struct SunCaster { NiGeometry* geometry; UInt8 pass; };
+	std::vector<SunCaster>	SunCasters[4];
+	std::vector<std::pair<NiAVObject*, unsigned>> SunContainers;
+	ShadowsExteriorEffect::FormsStruct* SunForms[4] = {};
+	NiFrustumPlanes*		SunPlanes[4] = {};
+	void					WalkSunCascades(unsigned mask);
+	void					WalkSunCell(TESObjectCELL* Cell, unsigned mask);
+	void					WalkSunChildren(NiAVObject* Object, unsigned mask, bool isLand, bool isLOD);
+	void					WalkSunObject(NiAVObject* Object, unsigned mask, bool isLODLand);
+	RenderPass*				SunPassOf(UInt8 pass);
+	void					PushSunCasters(int cascade);
 	void					AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);
 	// UNOFFICIAL RedrawActorsOnly (PointShadowSchedule.h): which casters RenderShadowCubeMap draws, into which cube map.
 	// All: every caster into the live cube map (as before). StaticOnly: those that never move, into the slot's static cube

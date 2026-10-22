@@ -147,6 +147,12 @@ public:
 		float				CharacterShadowReach = 0.0f;	// UNOFFICIAL 2026-10-22: cap on the skin shaders' PCF slack, world units on the Near cascade (TESR_ShadowBlur.w), live; 0 = off
 		bool				SkipWhenFaded;	// UNOFFICIAL 2026-10-16: no sun-shadow work while the fade is 1 (UpdateConstants SunFaded)
 		int					SkipWhenFadedCheck;	// UNOFFICIAL 2026-10-16, DIAGNOSTIC (NVR_TEST_TOOLS): 1 poison what is skipped, 2 also skip ignoring the readers, 3 lookups off at any hour
+		int					CascadeStats = 0;	// UNOFFICIAL 2026-10-21, DIAGNOSTIC (NVR_TEST_TOOLS): SunCascadeStats, where the sun cascades' CPU time goes (SunShadowStats.h)
+		bool				SunSkipFlat = false;	// UNOFFICIAL 2026-10-21 SunCascadeSkipFlat: a cascade whose projection is flat (sun straight overhead) is cleared, not walked or drawn
+		bool				SunOneWalk = false;		// UNOFFICIAL 2026-10-21 SunCascadeOneWalk: one walk of the loaded cells for all sun cascades of a frame
+		bool				SunLeanDraws = false;	// UNOFFICIAL 2026-10-21 SunCascadeLeanDraws: per caster only changed constants, no wind calls for still textures
+		bool				OverheadSunFix = false;	// UNOFFICIAL 2026-10-21 (sunfix): GetCascadeViewProj takes +Y as up for a sun (nearly) straight overhead (its cascades were empty)
+		int					SunVerify = 0;			// UNOFFICIAL 2026-10-21, DIAGNOSTIC (NVR_TEST_TOOLS): SunCascadeVerify, 1 lists, 2 also the maps, old way vs new in the same frame
 	};
 
 	struct InteriorsStruct {
@@ -317,6 +323,9 @@ public:
 
 	void		GetCascadeDepths();
 	D3DXMATRIX	GetCascadeViewProj(ShadowMapSettings* ShadowMap, D3DXVECTOR3* SunDir);
+	// UNOFFICIAL 2026-10-21 (sunfix) OverheadSunFix: the direction is within ~2.6 degrees of straight up (or down), where the
+	// cascades' up direction (0, 0, 1) degenerates. Need not be a unit vector.
+	static bool	SunOverhead(const D3DXVECTOR3& dir) { return fabsf(dir.z) > 0.999f * D3DXVec3Length(&dir); }
 
 private:
 	bool		texturesInitialized;

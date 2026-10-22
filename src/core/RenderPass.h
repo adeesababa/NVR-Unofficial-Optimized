@@ -27,6 +27,10 @@ public:
 	// by d moves its sun-map depth by d / sin(sun elevation), exactly what a point buried by d is behind the surface. The
 	// shader is untouched: the offset is in the caster's world matrix (UpdateShadowWorld).
 	static inline float LandDrop = 0.0f;
+	// UNOFFICIAL 2026-10-21 (sunshadow) SunCascadeLeanDraws: set by ShadowManager around a sun cascade's draws. Each caster after a
+	// pass's first uploads only the shader constants whose values changed (SetCTLean), and the cloth / plant wind calls are left
+	// out for a caster they would leave as it is (WindLeavesStill). The same draws with the same values: see RenderPass.cpp.
+	static inline bool Lean = false;
 	static inline std::unordered_set<NiGeometry*> LandSet;	// this map's land geometry (filled while its cells' land is accumulated)
 	static void UpdateShadowWorld(NiGeometry* Geo);
 	static void BindDiffuseOf(NiGeometry* Geo);
