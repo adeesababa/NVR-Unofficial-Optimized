@@ -58,9 +58,12 @@ namespace ReflMaterial {
 	inline UInt32 DiagBound = 0, DiagChanged = 0, DiagFlagged = 0, DiagMask[16] = {};	// diagnostic counts for the log (per report)
 
 	// Whether the object shaders were compiled with it (asked by ShaderRecord::BuildDefines, at the first shader load).
+	// UNOFFICIAL 2026-10-22: only while Reflections itself is on at startup, so MaterialAware can be on by default while the effect
+	// is off without touching the object shaders or the world draw (turning Reflections on then needs a restart for the materials).
 	inline bool CompiledIn() {
 		if (Startup < 0)
 			Startup = TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0 &&
+				TheSettingManager->GetSettingI("Shaders.Reflections.Status", "Enabled") &&
 				TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? 1 : 0;
 		return Startup > 0;
 	}

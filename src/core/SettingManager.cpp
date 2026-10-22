@@ -373,7 +373,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 67;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 68;  // 53 was an enhanced-water step, since removed
 extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -496,6 +496,31 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 				Logger::Log("UNOFFICIAL settings: cloth now has separate indoor settings; your Shaders.Cloth.Main Interiors = true "
 					"was carried over to Shaders.Cloth.Interiors Enabled (indoor cloth now moves with the gentler indoor values).");
 			}
+		}
+	}
+	// 68 (2026-10-22): AmbientLight on by default with its fixes (NoEdgeOutline, NormalSmoothing), the shadow fixes on (OverheadSunFix:
+	// midday sun shadows; interior lamp shadows' EvenTaps + MagnifiedSoftness 2) and the reflections' material settings on
+	// (MaterialAware 1, SpecularOcclusion 1, RoughnessOverrides); Reflections itself stays off.
+	if (version < 68) {
+		auto replaceBool = [&](const char* section, const char* key, bool oldDefault, bool newDefault) {
+			tomlValue* saved = UserSection(section);
+			if (!saved || !saved->contains(key) || !saved->at(key).is_boolean() || saved->at(key).as_boolean() != oldDefault) return;
+			(*saved)[key] = newDefault;
+			char entry[160];
+			sprintf_s(entry, "%s%s.%s %s -> %s", changed.empty() ? "" : ", ", section, key, oldDefault ? "true" : "false", newDefault ? "true" : "false");
+			changed += entry;
+		};
+		replaceBool("Shaders.AmbientLight.Status", "Enabled", false, true);
+		replaceBool("Shaders.ShadowsExteriors.Main", "OverheadSunFix", false, true);
+		replaceBool("Shaders.ShadowsInteriors.Forward", "EvenTaps", false, true);
+		replace("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness", 0.0, 2.0, false);
+		replace("Shaders.Reflections.Main", "MaterialAware", 0, 1, true);
+		replace("Shaders.Reflections.Main", "SpecularOcclusion", 0.0, 1.0, false);
+		tomlValue* saved = UserSection("Shaders.Reflections.Main");
+		if (saved && saved->contains("RoughnessOverrides") && saved->at("RoughnessOverrides").is_string() &&
+			std::string(saved->at("RoughnessOverrides").as_string()).empty()) {
+			(*saved)["RoughnessOverrides"] = "nv_ultralux_centertiles:0.1, ul_marbleblack:0.12";
+			changed += changed.empty() ? "Shaders.Reflections.Main.RoughnessOverrides" : ", Shaders.Reflections.Main.RoughnessOverrides";
 		}
 	}
 	if (!changed.empty())
