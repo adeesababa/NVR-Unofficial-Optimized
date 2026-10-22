@@ -439,7 +439,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// (Shadow.hlsl ShadowMinPenumbra; contact hardening's disc lookup, so it needs that compiled in, as it is by default).
 	Settings.Exteriors.CharacterShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowSoftness"), 0.0f, 4.0f);
 	Constants.ForwardData.z = Settings.Exteriors.SmoothCharacterShadows ? Settings.Exteriors.CharacterShadowSoftness : 0.0f;
-	Constants.ForwardData.w = 0.0f;
+	// UNOFFICIAL 2026-10-21 HandoverBlend (P82 tester: the hair's shadow on the brow popping as the third-person camera zooms): how
+	// far inside each sun cascade's edge the cross-fade into the next starts, in world units (Shadow.hlsl ShadowCascadeBands, read
+	// by both the forward and the deferred lookups). 0 = the old rule, a tenth of the radius. Every Quality level; live.
+	Settings.ShadowMaps.HandoverBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "HandoverBlend"), 0.0f, 2000.0f);
+	Constants.ForwardData.w = Settings.ShadowMaps.HandoverBlend;
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");

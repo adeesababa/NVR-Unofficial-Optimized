@@ -118,6 +118,7 @@ public:
 		float				Distance;
 		float				CascadeLambda;
 		bool				SmoothFilter;	// UNOFFICIAL 2026-10-15: PCF (Mode 3) with a 4 x 4 cubic B-spline instead of the 3 x 3
+		float				HandoverBlend = 70.0f;	// UNOFFICIAL 2026-10-21: width of the cross-fade band between sun cascades, world units (TESR_ShadowForwardData.w), live
 	};
 
 	struct OrthoStruct {
