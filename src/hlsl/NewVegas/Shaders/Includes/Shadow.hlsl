@@ -785,9 +785,11 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // HandoverBlend: this point's normal offset, the same whichever of the two cascades the dither picks below.
     float offsetHere = cascade < 0.5f ? lerp(offsetDistance.x, offsetDistance.y, fade) : cascade < 1.5f ? lerp(offsetDistance.y, offsetDistance.z, fade) :
                        cascade < 2.5f ? lerp(offsetDistance.z, offsetDistance.w, fade) : offsetDistance.w;
-#if CONTACT_HARDENING
-    float capScale = cascade < 0.5f ? lerp(radii.x / max(radii.y, 0.001f), 1.0f, fade) : 1.0f;
-#endif
+    // The Middle lookup's slack is in ITS texels (3-4 times Near's in world units): a hair 1-2 cm off the brow is outside
+    // Near's slack (it casts) and inside Middle's (taken for the brow's own surface: no shadow), which is the pop itself.
+    // Inside the Near-Middle band a Middle lookup keeps Near's world slack at the band's start, fading to its own: the
+    // receiver-plane slope bias (and, with contact hardening, the blocker search's slack and the widest penumbra).
+    float slackScale = cascade < 0.5f ? lerp(radii.x / max(radii.y, 0.001f), 1.0f, fade) : 1.0f;
     // UNOFFICIAL 2026-10-14: in a cascade's outer band each point takes this cascade or the next by a fine dither (share = fade)
     // instead of looking both up and blending: two inlined lookups put 30 of the 55 outdoor object shaders over ps_3_0's 32 temp
     // registers with PCSS on, and the game silently drew those objects with its own shaders. Past the Lod cascade: unshadowed.
@@ -797,13 +799,16 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     hashP += dot(hashP, hashP.yzx + 33.33f);
     float dither = frac((hashP.x + hashP.y) * hashP.z);
     cascade += fade > dither ? 1.0f : 0.0f;
+    slackScale = cascade > 0.5f ? slackScale : 1.0f;   // 1 for a Near lookup (and for the far cascades)
+    float slopeBiasHere = ShadowSlopeBias;
+    ShadowSlopeBias *= slackScale;
 #if CONTACT_HARDENING
-    // A Middle lookup taken inside the Near-Middle band keeps Near's widest penumbra (in world units), fading to its own.
-    ShadowSoftnessCap = cascade > 0.5f ? capScale : 1.0f;
+    ShadowSoftnessCap = slackScale;
 #endif
     float shadow = 1.0f;
     [branch] if (cascade >= 0.0f && cascade < 3.5f)
         shadow = SunCascadeTap(cascade, worldPos, worldNormal, offsetHere, bias);
+    ShadowSlopeBias = slopeBiasHere;
 #if CONTACT_HARDENING
     ShadowSoftnessCap = 1.0f;
 #endif
