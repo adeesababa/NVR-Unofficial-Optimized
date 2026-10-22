@@ -25,6 +25,8 @@ void AmbientLightEffect::UpdateSettings() {
 	gridColour = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridColour"), 0.0f, 1.0f);
 	interiorBalance = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "InteriorBalance") != 0;
 	interiorBounceShare = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "InteriorBounceShare"), 0.0f, 4.0f);
+	normalSmoothing = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NormalSmoothing"), 0, 2);	// UNOFFICIAL 2026-10-21 (alrocks)
+	horizonBias = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "HorizonBias"), 0.0f, 45.0f);
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -453,6 +455,11 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	if (D3DXHANDLE h = ParameterHandle(paramInterior, "NVR_ALInterior")) {
 		D3DXVECTOR4 data(interiorMode ? 1.0f : 0.0f, balanceValid ? 1.0f : 0.0f, interiorBounceShare, 0.9f);
 		Effect->SetVector(h, &data);
+	}
+	// UNOFFICIAL 2026-10-21 (alrocks): the normal smoothing's reach and the horizon bias (radians) for Prepare and Estimate.
+	if (D3DXHANDLE h = ParameterHandle(paramEdges, "NVR_ALEdges")) {
+		D3DXVECTOR4 edges((float)normalSmoothing, horizonBias * (3.14159265f / 180.0f), 0.0f, 0.0f);
+		Effect->SetVector(h, &edges);
 	}
 	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
 	const bool shadow = foldShadow && flagsHandle;

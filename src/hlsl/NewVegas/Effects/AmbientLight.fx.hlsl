@@ -40,6 +40,7 @@ float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager 
 float4 NVR_ALInterior;          // UNOFFICIAL 2026-10-18 (ambfix2): x 1 = indoor balance (InteriorBalance), y 1 = last frames' balance usable, z InteriorBounceShare, w share of last frames' balance kept per frame
 float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: share of the grid light's colour kept (GridColour)
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
+float4 NVR_ALEdges;             // UNOFFICIAL 2026-10-21 (alrocks): x how far Prepare smooths the normal (half-resolution texels, 0 off), y the horizon bias (radians, 0 off)
 float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
 float4 TESR_WaterSettings;      // x: water height, z: camera underwater
 float4 TESR_ShadowData;         // y: darkness
@@ -162,11 +163,45 @@ float3 OctDecode(float2 e) {
 // Pass 1: x = view depth (world units), y = normal, z = colour red and green (square-root encoded), w = colour blue (linear light, capped
 // so small bright glints do not spray light around).
 // UNOFFICIAL 2026-10-14 (user: remove the screen bounce; the light grid is the bounce light): depth and normal only.
+// UNOFFICIAL 2026-10-21 (alrocks; user: with AmbientLight on, in the dark, the occlusion cuts off hard along the triangle edges of
+// low-poly rocks, one face dark and its neighbour light). The normal this effect works from is Normals.fx.hlsl's: rebuilt from the
+// depth buffer, so every triangle gets one flat normal and it flips at each edge (no smooth vertex normal exists: the object shaders
+// keep theirs in tangent space, and the game's MSAA rules out a second target). Estimate starts each horizon at the normal's
+// tangent plane, so at an edge of 150-170 degrees each face takes its neighbour for an occluder and the darkening steps with the
+// normal. Two mends, both live ([Shaders.AmbientLight.Main]), neither needs a new buffer:
+//  - NormalSmoothing (here): the normal is averaged over the (2 r + 1)^2 half-resolution texels round the pixel, each counted as far
+//    as it lies on the pixel's own tangent plane (a crease has continuous depth, a silhouette is a depth step and keeps its edge)
+//    and as far as its normal is within about 40-60 degrees of the pixel's (a wall meeting the floor stays a crease).
+//  - HorizonBias (Estimate): each horizon starts a few degrees above the tangent plane (HBAO's angle bias), so a shallow bend
+//    counts for little while a real crevice still counts; the open-ground normalisation uses the same start, so open ground stays 1.
+float3 SmoothedNormal(float2 uv, float3 origin, float3 normal, float viewZ, uniform int reach) {
+	float tolerance = max(viewZ * 0.01f, 0.5f);	// off the tangent plane: a 30-degree bend two texels away lies well within it, a step of a rock's thickness does not
+	float3 sum = normal;
+	[unroll] for (int j = -reach; j <= reach; j++) {
+		[unroll] for (int i = -reach; i <= reach; i++) {
+			if (i == 0 && j == 0) continue;
+			float2 tapUV = uv + float2(i, j) * NVR_ALLayout.zw;
+			float tapZ = PositionFromLinear(tapUV, tex2Dlod(TESR_DepthBuffer, float4(tapUV, 0.0f, 0.0f)).x).z;
+			float3 tapNormal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(tapUV, 0.0f, 0.0f)).xyz * 2 - 1);
+			float plane = abs(dot(PositionFromViewZ(tapUV, tapZ) - origin, normal));
+			float weight = saturate(1.0f - plane / tolerance) * smoothstep(0.5f, 0.8f, dot(tapNormal, normal));
+			sum += tapNormal * weight;
+		}
+	}
+	return normalize(sum);
+}
+
 float4 Prepare(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
 	if (IsViewModel(uv)) viewZ = 1.0e6f;	// the weapon: as if open sky behind (nothing done, hides nothing)
 	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
+	// UNOFFICIAL 2026-10-21 (alrocks) NormalSmoothing, see SmoothedNormal above (not on the weapon, not beyond the draw distance).
+	[branch] if (NVR_ALEdges.x > 0.5f && viewZ < DrawDistance) {
+		float3 origin = PositionFromViewZ(uv, viewZ);
+		if (NVR_ALEdges.x > 1.5f) normal = SmoothedNormal(uv, origin, normal, viewZ, 2);
+		else normal = SmoothedNormal(uv, origin, normal, viewZ, 1);
+	}
 	return float4(viewZ, Pack2(OctEncode(normal)), 0.0f, 0.0f);
 }
 
@@ -215,7 +250,9 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 		float cosNormal = saturate(dot(projectedNormal, viewVec) / projectedLength);
 		float n = signNormal * acos(cosNormal);
 		// Start each side's horizon at the pixel's own tangent plane: nothing below it can hide anything.
-		float lowCos0 = cos(n + 1.5707963f), lowCos1 = cos(n - 1.5707963f);
+		// UNOFFICIAL 2026-10-21 (alrocks) HorizonBias: a few degrees above it (NVR_ALEdges.y, radians; see Prepare), the same for the
+		// open-ground normalisation below (weightSum), so open ground stays exactly 1.
+		float lowCos0 = cos(n + 1.5707963f - NVR_ALEdges.y), lowCos1 = cos(n - 1.5707963f + NVR_ALEdges.y);
 		float horizonCos0 = lowCos0, horizonCos1 = lowCos1;
 		[unroll] for (int k = 0; k < STEPS; k++) {
 			float s = (k + frac(noise.y + k * 0.618034f)) / STEPS;
@@ -266,6 +303,7 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	float looseTolerance = max(depth * 0.25f, 16.0f);
 	static const float weights[4] = { 0.30f, 0.23f, 0.11f, 0.05f };
 	float4 center = tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f));
+	[branch] if (DebugView > 2.5f && DebugView < 6.5f) return center;	// UNOFFICIAL 2026-10-21 (alrocks): the diagnostics 3-6 unblurred
 	float3 bounce = center.rgb * weights[0];
 	float visibility = center.a * weights[0];
 	float2 total = weights[0];	// x occlusion, y bounce
@@ -738,7 +776,9 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 		return float4(saturate(m.x * 4.0f), m.x != 0.0f ? 0.5f : 0.0f, saturate(gridBounce.b * 4.0f), 1.0f);
 	}
 	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));	// 7: the grid's bounce alone
-	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);	// diagnostics: the estimate's raw values
+	// UNOFFICIAL 2026-10-21 (alrocks): diagnostics 3-6 (the estimate's raw values: normal, depth, reach, horizons) read from the estimate's
+	// buffer (NVR_ALBuffer is bufferTexture[0] here); since the screen bounce went they came through the upsample's rgb, which is 0.
+	[branch] if (DebugView > 2.5f) return float4(tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f)).rgb, 1.0f);
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));	// 2: the bounce (the light grid's)
 	// UNOFFICIAL 2026-10-18 (ambfix2): indoors the occlusion takes only from the ambient share (see above StatsSample).
 	[branch] if (NVR_ALInterior.x > 0.5f) lin = lin - (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb) + gridBounce * albedo;

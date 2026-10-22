@@ -55,6 +55,11 @@ public:
 	static const int	StatsWidth = 16, StatsHeight = 9;	// 2 x 2 samples per texel (StatsSample)
 	bool				interiorBalance = true;
 	float				interiorBounceShare = 1.0f;
+	// UNOFFICIAL 2026-10-21 (alrocks; the occlusion cut off hard along low-poly rocks' triangle edges): NormalSmoothing (half-resolution
+	// texels Prepare averages the normal over, 0 off) and HorizonBias (degrees above the tangent plane each horizon starts, 0 off); NVR_ALEdges.
+	int					normalSmoothing = 2;
+	float				horizonBias = 12.0f;
+	CachedHandle		paramEdges;
 	IDirect3DTexture9*	statsTexture = nullptr;			// per sample: light, the occlusion's darkening, the bounce (luma)
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};		// x: the bounce's scale (eased), yzw: the averages
