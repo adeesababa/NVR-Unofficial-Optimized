@@ -943,10 +943,9 @@ HeightTop = 95.0                     # SkinMask 1 (and 0): units above the actor
 HeightBottom = 25.0                  # SkinMask 1 (and 0): units above the feet where worn cloth is loosest (coat hem)
 LegCut = 14.0                        # (2026-10-18) SkinMask 1: below this height above the feet (boots, ankles) nothing moves; full strength 10 units higher
 HeightFromFeet = true                # SkinMask 0 only: measure those heights from the actor's feet (true) or from the skeleton's root (false)
-UseGameWind = true                   # Take direction and strength from the weather's wind (the values below still scale it)
+UseGameWind = true                   # Take direction and strength from the weather's wind (the values below still scale it). Outdoors only: indoors there is no weather, see Cloth > Interiors
 CalmFactor = 0.6                     # (2026-10-18) With the game's wind: the strength in dead calm as a fraction of WindIntensity (0-1.7; it rises to 1.7 in a gale). It was 0.3: in the calm desert cloth moved 4 cm, which nobody sees
-Interiors = false                    # Cloth moves indoors too (no wind indoors, so off)
-WindDirX = 1.0                       # Wind direction (world, used when UseGameWind is off)
+WindDirX = 1.0                       # Wind direction (world, used when UseGameWind is off; indoors with Cloth > Interiors on, the draught blows this way)
 WindDirY = 0.0
 WindDirZ = 0.0
 WindSpeed = 220.0                    # How fast the billow travels along the wind (units per second)
@@ -963,7 +962,7 @@ MotionDamping = 0.25                 # (2026-10-19) 0.05 = swings on and on, 1 =
 StrideSwing = 6.0                    # (2026-10-19) Side-to-side swish of the hem with your steps at a run (units; about half walking, none standing). 0 = off
 StrideLength = 250.0                 # (2026-10-19) Units run per swish (one left and one right step); steps are shorter when walking
 TurnLag = 0.12                       # (2026-10-19) Seconds the hem lags behind a turn, so the coat flares out. 0 = off
-MotionIndoors = true                 # (2026-10-19) Worn coats follow the wearer indoors too (the wind part stays outdoors)
+MotionIndoors = true                 # (2026-10-19) Worn coats follow the wearer indoors too (the wind part indoors: Cloth > Interiors)
 UseSkeleton = true                   # (2026-10-19) Worn clothing: only what stands off the legs and arms moves, and only below the hips, found from each garment's own skeleton (no per-armour numbers; legs, trousers, hands and torso stay still). Off = the height mask below (SkinMask)
 LimbGap = 1.0                        # (2026-10-19) UseSkeleton: how far beyond the garment's own leg thickness (measured from its mesh: the trousers under a coat) cloth starts to move, in units. Raise it if trousers move
 LimbFade = 6.0                       # (2026-10-19) UseSkeleton: how many units further off the legs cloth moves fully. Smaller = more of a coat moves but its lining and shell drift apart; larger = calmer
@@ -985,6 +984,16 @@ ForceOff = "gore/,meatcap,creatures/" # (2026-10-20) Textures whose path holds o
 LogAuto = true                       # (2026-10-20) AutoDetect: writes each garment's verdict to the log once (moves or still, and why)
 LogMatches = false                   # Diagnostic: writes every worn texture (cloth or not) and every matched texture to the log with its mesh numbers
 TimeOffset = 0.0                     # Test only: seconds the wave pattern is ahead (for pictures at set moments)
+
+[_Shaders.Cloth.Interiors]
+Enabled = false                      # UNOFFICIAL (2026-10-21): cloth indoors (curtains, banners, flags, drapes, tents -- and the wind part on worn coats) sways gently, with the values below instead of the outdoor ones: there is no weather indoors, so the game's wind never changes them, and the draught blows along Cloth > Main WindDirX/Y/Z. Off = cloth stays still indoors, as before (worn coats still follow you there: Cloth > Main MotionIndoors). It replaces Cloth > Main's old Interiors switch, which moved indoor cloth as much as outdoors (a saved 'true' carries over). Needs Cloth > Main Enabled. Applies immediately
+Strength = 1.0                       # [0.0-2.0] (2026-10-21) Indoors: one knob for all of it -- how much indoor cloth moves, as a share of WindIntensity (0 = still, 0.5 = half as far, 2 = twice). Applies immediately
+WindIntensity = 2.0                  # [0.0-12.0] (2026-10-21) Indoors: how far loose cloth moves (units; 2 is about 3 cm -- outdoors it moves 4 to 10 by the weather). Applies immediately
+WindSpeed = 80.0                     # [0-400] (2026-10-21) Indoors: how fast the slow sway travels across the cloth (units per second; outdoors 220). With Wavelength it sets the pace: 80 / 400 = one sway every 5 seconds. Applies immediately
+Wavelength = 400.0                   # [16-1000] (2026-10-21) Indoors: the length of one sway across the cloth (units; outdoors 260). Longer = a curtain sways more as one piece. Applies immediately
+FlutterSpeed = 0.8                   # [0.0-6.0] (2026-10-21) Indoors: the small quiver on top of the sway (cycles per second; outdoors 3). Applies immediately
+FlutterAmount = 0.1                  # [0.0-1.0] (2026-10-21) Indoors: how strong that quiver is (outdoors 0.35). Applies immediately
+RippleAmount = 0.3                   # [0.0-1.0] (2026-10-21) Indoors: how much the cloth billows out of its own plane (outdoors 0.5). Applies immediately
 
 [_Shaders.PBR.Linear]
 ExactPassSums = 0                    # UNOFFICIAL TEST (2026-10-16): objects lit in several passes add them up in linear light (the extra lamp passes and the highlight passes were each added in the stored curve: up to 3.7x too bright indoors). 0 off, 1 highlights, 2 lamps, 3 both. Applies immediately

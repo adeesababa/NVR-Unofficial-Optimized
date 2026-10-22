@@ -18,7 +18,7 @@
 // SAFETY: every pass of an object must move it the same way (lamp passes test depth EQUAL). Some passes use the game's own
 // (vanilla) vertex shaders, which do not move it -- the texture pass of multi-pass objects then misses and the cloth turns white.
 // So an object gets cloth only if, last frame, every one of its passes had an NVR vertex shader (SetShadersHook notes them).
-// Interiors: no wind, so no cloth.
+// Interiors: no wind, so no cloth (2026-10-21: unless [Shaders.Cloth.Interiors] is on: its own gentle values, see BeginFrame).
 // 2026-10-18 (cloth round 3, 'cloth does nothing'): keywords match as substrings (with an exclusion list), worn clothing is masked by
 // the garment's own BIND-POSE height (pinned shoulders, loose hem), the calm-weather strength is higher, and non-cloth draws can no
 // longer inherit c248 from the grass shaders (they relocate their shadow matrices to c248..c255). See evidence\cloth3-LOG.md.
@@ -43,6 +43,7 @@
 #include "ClothWeights.h"	// 2026-10-19 round 5: per-vertex weights of worn meshes (mask 5)
 #include "ClothWalk.h"		// 2026-10-20 round 9: the walking simulation of worn coats (hem ring)
 #include "ClothStatic.h"	// 2026-10-20: per-vertex weights of still cloth (mask 6: tents, flags, banners)
+#include "TestTools.h"		// NVR_TEST_TOOLS (2026-10-21 diagnostic DiagStillDraw)
 
 namespace ClothWind {
 
@@ -92,6 +93,8 @@ namespace ClothWind {
 		float LimbGap = 1.0f;			// units off the limb (beyond the garment's own measured leg thickness) where cloth starts to move
 		float LimbFade = 6.0f;			// ...and how many units further it moves fully (2026-10-19: was 2.5 -- a coat's lining 1 unit inside
 										// its shell lagged up to 12 units behind it, 'the coat splits into pieces by layer'; now <= 5)
+		// 2026-10-21 indoors ([Shaders.Cloth.Interiors], read while Enabled; see BeginFrame): a slow, gentle sway of its own
+		struct Indoor { float Speed = 80.0f, Intensity = 2.0f, Wavelength = 400.0f, Flutter = 0.8f, FlutterAmount = 0.1f, Ripple = 0.3f, Strength = 1.0f; } In;
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
@@ -112,6 +115,10 @@ namespace ClothWind {
 	inline float LastHour = -1.0f;
 	inline double RealStart = -1.0, ClockStart = 0.0;
 	inline float SpeedNow = 220.0f, IntensityNow = 6.0f;
+	inline float WavelengthNow = 260.0f, FlutterNow = 3.0f, FlutterAmountNow = 0.35f, RippleNow = 0.5f;	// 2026-10-21 Main's, or the indoor set's
+	inline bool Interior = false;		// 2026-10-21 this frame is indoors
+	inline bool IndoorWind = false;		// ...and the indoor set is on ([Shaders.Cloth.Interiors] Enabled)
+	inline UInt32 IndoorLogs = 0;
 	inline bool NonZeroSent = false;	// the device's c248 may hold a cloth draw's values (or the grass shaders' matrices: see NoteVertexShader)
 	inline bool GrassInC248 = false;	// 2026-10-19: ...and it is the grass shaders' matrices (cleared when a cloth-carrying shader is bound)
 	inline UInt32 ClothDraws = 0, Frames = 0;
@@ -147,6 +154,7 @@ namespace ClothWind {
 	// The grass vertex shaders (GRASS23x00x) keep their shadow matrices in c248..c255: after one of them c248 is not zero, and the
 	// next object with cloth code would move although it is no cloth. Mark the register as 'to be zeroed' (the next non-cloth draw does it).
 	inline bool CurrentVSCapable = false;	// 2026-10-19: the vertex shader the last SetShaders bound carries the cloth code
+	inline const char* CurrentVSName = nullptr;	// 2026-10-21 diagnostic (DiagStillDraw): its name
 	inline std::unordered_map<const void*, bool> TentativeNow;	// 2026-10-19: per object this frame, did the BOUND vertex shader carry it at each lit pass
 	// 2026-10-19 (test on the user's flicker save NVRAutoTest13, run 20261019-204305: with the cloth code compiled in but cloth switched
 	// OFF, 8.4 % of the picture changed -- houses and the road white, rocks and poles bent -- vs 0.02 % frame-to-frame noise): the grass
@@ -170,6 +178,7 @@ namespace ClothWind {
 		if (!capable) { NonZeroSent = true; GrassInC248 = true; }
 		if (capable && GrassInC248 && TheRenderManager) Zero(TheRenderManager->device);
 		CurrentVSCapable = (S.On || PlantsOn) && capable;
+		CurrentVSName = name;
 	}
 	// 2026-10-19 (P81 report 'cloth: only the player's SHADOW moves'): the object the render-pass hooks are drawing right now. SetShadersHook
 	// used the game's 'current geometry' global, which for worn (skinned) meshes is not the mesh being drawn: their lit passes were never
@@ -966,10 +975,36 @@ namespace ClothWind {
 	// 6 for it, else exactly the game's call.
 	typedef void(__thiscall* OnlyRenderFn)(void*, NiGeometry*);
 	inline OnlyRenderFn OnlyRenderShapeOriginal = (OnlyRenderFn)0x00E745A0, OnlyRenderStripsOriginal = (OnlyRenderFn)0x00E74840;
+#if NVR_TEST_TOOLS
+	// 2026-10-21 diagnostic (LogMatches, test builds): one frame's every draw of a still cloth mesh with its cloth values and depth state
+	// (indoors a Gomorrah curtain vanished with any wind at all: a draw that writes its depth unmoved?)
+	inline UInt32 DiagFrame = 0, DiagLines = 0;
+	inline void DiagStillDraw(IDirect3DDevice9* device, NiGeometry* geometry, const StillMesh* active) {
+		if (!DiagFrame || FrameId < DiagFrame || FrameId > DiagFrame + 2 || DiagLines >= 900 || !device || !geometry || !geometry->geomData) return;
+		auto it = Stills.find(geometry->geomData);
+		if (it == Stills.end() || it->second.state != 2) return;
+		DiagLines++;
+		DWORD zenable = 0, zfunc = 0, zwrite = 0, colorwrite = 0, alphablend = 0, alphatest = 0;
+		device->GetRenderState(D3DRS_ZENABLE, &zenable); device->GetRenderState(D3DRS_ZFUNC, &zfunc); device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
+		device->GetRenderState(D3DRS_COLORWRITEENABLE, &colorwrite); device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphablend); device->GetRenderState(D3DRS_ALPHATESTENABLE, &alphatest);
+		float c[4] = {};
+		device->GetVertexShaderConstantF(248, c, 1);
+		IDirect3DVertexShader9* vs = nullptr; device->GetVertexShader(&vs);
+		IDirect3DSurface9* rt = nullptr; device->GetRenderTarget(0, &rt);
+		Logger::Log("Cloth wind: still draw (frame %u) '%s): geometry %p, chosen %d, in a pass hook %d, c248 %.2f %.2f, z %u func %u write %u, colour write %X, blend %u, alpha test %u, VS %p %s (carries cloth %d), target %p | seen last frame %d, vanilla VS last frame %d",
+			FrameId, it->second.name.c_str(), geometry, active == &it->second, PassGeometry == geometry, c[0], c[1], zenable, zfunc, zwrite, colorwrite, alphablend, alphatest, vs, CurrentVSName ? CurrentVSName : "?", CurrentVSCapable, rt,
+			(int)SeenLast.count(geometry), (int)VanillaLast.count(geometry));
+		if (vs) vs->Release();
+		if (rt) rt->Release();
+	}
+#endif
 	inline void OnlyRender(bool strips, void* renderer, NiGeometry* geometry) {
 		const OnlyRenderFn original = strips ? OnlyRenderStripsOriginal : OnlyRenderShapeOriginal;
 		StillMesh* m = ActiveStill;
 		IDirect3DDevice9* device = TheRenderManager ? TheRenderManager->device : nullptr;
+#if NVR_TEST_TOOLS
+		DiagStillDraw(device, geometry, m);
+#endif
 		if (!m || !device || !geometry || geometry->geomData != m->data) { original(renderer, geometry); return; }
 		const NiGeometryBufferData* buffer = geometry->geomData->m_pkBuffData;
 		IDirect3DVertexDeclaration9* decl = nullptr;
@@ -1115,7 +1150,12 @@ namespace ClothWind {
 	}
 
 	inline void BeginFrame(const Sky* sky, bool exterior) {
-		Exterior = exterior || TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Interiors") != 0;	// (named Exterior: 'cloth may move here')
+		// 2026-10-21 (testers: still cloth indoors 'moves around too much'): indoors cloth moves only with the indoor set on, and with its
+		// own values ([Shaders.Cloth.Interiors]). It took over [Shaders.Cloth.Main] Interiors, which moved it with the outdoor ones (a
+		// saved 'true' carries over: SettingManager's UpdateOldDefaults, version 67).
+		Interior = !exterior;
+		IndoorWind = Interior && TheSettingManager->GetSettingI("Shaders.Cloth.Interiors", "Enabled") != 0;
+		Exterior = exterior || IndoorWind;	// (named Exterior: 'cloth may move here')
 		// 2026-10-19: objects whose passes the game drew without setting shaders (not noted by SetShadersHook) count by the shader bound then
 		for (const auto& [g, capable] : TentativeNow)
 			if (!SeenNow.count(g)) { SeenNow.insert(g); if (!capable) VanillaNow.insert(g); }
@@ -1196,9 +1236,27 @@ namespace ClothWind {
 		S.SkinSpace = std::clamp(TheSettingManager->GetSettingI(section, "SkinSpace"), 0, 2);
 		S.CalmFactor = std::clamp(TheSettingManager->GetSettingF(section, "CalmFactor"), 0.0f, 1.7f);
 		S.LogMatches = TheSettingManager->GetSettingI(section, "LogMatches") != 0;
+#if NVR_TEST_TOOLS
+		if (S.LogMatches && !DiagFrame) { DiagFrame = FrameId + 60; DiagLines = 0; }	// 2026-10-21 diagnostic (DiagStillDraw)
+#endif
 		float d[3] = { S.Dir[0], S.Dir[1], S.Dir[2] };
 		float speed = S.Speed, intensity = S.Intensity;
-		if (S.UseGameWind && sky) {
+		WavelengthNow = S.Wavelength; FlutterNow = S.Flutter; FlutterAmountNow = S.FlutterAmount; RippleNow = S.Ripple;
+		if (IndoorWind) {
+			// 2026-10-21 indoors: the indoor set alone. There is no weather wind indoors (the sky still holds the last exterior's), so
+			// neither its strength nor its direction: a still draught along WindDirX/Y/Z.
+			const char* in = "Shaders.Cloth.Interiors";
+			S.In.Strength = std::clamp(TheSettingManager->GetSettingF(in, "Strength"), 0.0f, 4.0f);
+			S.In.Intensity = std::clamp(TheSettingManager->GetSettingF(in, "WindIntensity"), 0.0f, 40.0f);
+			S.In.Speed = std::clamp(TheSettingManager->GetSettingF(in, "WindSpeed"), 0.0f, 2000.0f);
+			S.In.Wavelength = (std::max)(TheSettingManager->GetSettingF(in, "Wavelength"), 16.0f);
+			S.In.Flutter = std::clamp(TheSettingManager->GetSettingF(in, "FlutterSpeed"), 0.0f, 20.0f);
+			S.In.FlutterAmount = std::clamp(TheSettingManager->GetSettingF(in, "FlutterAmount"), 0.0f, 1.0f);
+			S.In.Ripple = std::clamp(TheSettingManager->GetSettingF(in, "RippleAmount"), 0.0f, 1.0f);
+			speed = S.In.Speed; intensity = S.In.Intensity * S.In.Strength;
+			WavelengthNow = S.In.Wavelength; FlutterNow = S.In.Flutter; FlutterAmountNow = S.In.FlutterAmount; RippleNow = S.In.Ripple;
+		}
+		else if (S.UseGameWind && sky) {
 			// The sky's wind (weather): direction as an angle around up, speed 0-1. Calm weather still moves cloth a little.
 			const float a = sky->windDirection;
 			d[0] = sinf(a); d[1] = cosf(a); d[2] = 0.0f;
@@ -1210,12 +1268,19 @@ namespace ClothWind {
 		const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 		for (int i = 0; i < 3; i++) WorldDir[i] = len > 1e-4f ? d[i] / len : (i == 0 ? 1.0f : 0.0f);
 		SpeedNow = speed; IntensityNow = intensity;
+		static bool wasIndoorWind = false;
+		if (IndoorWind && !wasIndoorWind && IndoorLogs < 8) {	// (once per interior entered, for the first few)
+			IndoorLogs++;
+			Logger::Log("Cloth wind: indoors with the indoor set: %.2f units (WindIntensity %.2f x Strength %.2f), speed %.0f, wavelength %.0f, flutter %.2f Hz x %.2f, ripple %.2f, motion indoors %s",
+				intensity, S.In.Intensity, S.In.Strength, speed, WavelengthNow, FlutterNow, FlutterAmountNow, RippleNow, S.MotionIndoors ? "on" : "off");
+		}
+		wasIndoorWind = IndoorWind;
 		// The clock runs only while cloth is on (BeginFrame returns above when off); the phases are integrated.
 		const double before = ClockSeconds;
 		AdvanceClock();
 		const double dt = ClockSeconds - before;
 		S.TimeOffset = TheSettingManager->GetSettingF(section, "TimeOffset");
-		Rate[0] = speed / S.Wavelength; Rate[1] = 0.061 * (0.5 + speed / 300.0); Rate[2] = S.Flutter; Rate[3] = S.Flutter * 1.31;
+		Rate[0] = speed / WavelengthNow; Rate[1] = 0.061 * (0.5 + speed / 300.0); Rate[2] = FlutterNow; Rate[3] = FlutterNow * 1.31;
 		for (int i = 0; i < 4; i++) {
 			Cycles[i] += dt * Rate[i]; Cycles[i] -= floor(Cycles[i]);
 			const double c = Cycles[i] + (double)S.TimeOffset * Rate[i];
@@ -1341,6 +1406,7 @@ namespace ClothWind {
 		if (!device) return;
 		ActiveWeights = nullptr;
 		// 2026-10-19: indoors (no wind) worn clothing still follows its wearer (MotionIndoors); everything else stays still there
+		// (2026-10-21: unless the indoor set is on -- then Exterior is true and all cloth gets its gentle wind)
 		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
 		// 2026-10-19 (P81 'only the player's SHADOW moves'; measured on NVRAutoTest12: the Combat Ranger coat's lit pass skipped 600 of 600
 		// frames, 'not seen by SetShaders'): the game sets no shaders for a pass whose shaders are already bound (the coat follows its
@@ -1438,7 +1504,7 @@ namespace ClothWind {
 					mode = 5.0f; limbs[54] = mw->center[0]; limbs[55] = mw->center[1]; ActiveWeights = mw;
 					// 2026-10-20 round 9: the walking simulation (DrawPartition sends its constants); without it c219.x = 0 (round 8's path)
 					ActiveSkin = geometry->skinInstance; ActiveBonesBase = shadowPass ? 9 : 44;
-					ActiveWalk = S.WalkSim ? WalkOf(geometry, *skeleton, *mw) : nullptr;
+					ActiveWalk = S.WalkSim && (!Interior || S.MotionIndoors) ? WalkOf(geometry, *skeleton, *mw) : nullptr;	// (2026-10-21: indoors only with MotionIndoors, as the trail below)
 					if (!ActiveWalk) { const float off[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; device->SetVertexShaderConstantF(219, off, 1); }
 				}
 				device->SetVertexShaderConstantF(226, limbs, 14);
@@ -1489,7 +1555,10 @@ namespace ClothWind {
 			// BIND-POSE position around its own upright axis (garments are made centred on x = y = 0), carried into the space by the
 			// wearer's heading: turn = bind.x * c253.xy + bind.y * c253.zw. (The first version turned the posed point around the root
 			// relative to the camera: wrong wherever that camera is not the one the pass draws with.)
-			const float* mo = MotionOf(root);
+			// 2026-10-21: indoors with the indoor set on and MotionIndoors off, worn coats get its wind but do not follow their wearer
+			// (before, Main's Interiors switch gave them both whatever MotionIndoors said)
+			static const float still[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			const float* mo = !Interior || S.MotionIndoors ? MotionOf(root) : still;
 			const float th = mo[3];
 			if (S.SkinSpace == 0 && !shadowPass) {	// the skin root's space
 				const NiTransform& w = root->m_worldTransform;
@@ -1523,7 +1592,7 @@ namespace ClothWind {
 		// not the world's (camera-relative skinned meshes), shift the phases so the pattern stays where the wind put it.
 		float ph[4] = { Phase[0], Phase[1], Phase[2], Phase[3] };
 		if (origin[0] != 0.0f || origin[1] != 0.0f || origin[2] != 0.0f) {
-			const double w = (double)scale / S.Wavelength, r = (double)S.RippleScale * scale;
+			const double w = (double)scale / WavelengthNow, r = (double)S.RippleScale * scale;
 			const double d0 = (origin[0] * dir[0] + origin[1] * dir[1] + origin[2] * dir[2]) * w;
 			const double d1 = origin[0] * 0.0021 + origin[1] * 0.0027 + origin[2] * 0.0013;
 			const double d2 = (origin[0] * 0.71 + origin[1] * 0.53 + origin[2] * 0.37) * r;
@@ -1533,10 +1602,10 @@ namespace ClothWind {
 		}
 		if (ActiveWalk) { for (float& v : motion) v = 0.0f; for (float& v : turn) v = 0.0f; }	// 2026-10-20: the hem ring replaces the one-offset trail
 		const float c[24] = {
-			1.0f, mode, S.Ripple, S.FlutterAmount,
-			dir[0], dir[1], dir[2], scale / S.Wavelength,
+			1.0f, mode, RippleNow, FlutterAmountNow,	// (2026-10-21: Main's, or indoors the indoor set's)
+			dir[0], dir[1], dir[2], scale / WavelengthNow,
 			ph[0], ph[1], ph[2], ph[3],
-			(Exterior ? IntensityNow : 0.0f) / scale, S.RippleScale * scale, top, invRange,	// (indoors: no wind, the movement part only)
+			(Exterior ? IntensityNow : 0.0f) / scale, S.RippleScale * scale, top, invRange,	// (indoors without the indoor set: no wind, the movement part only)
 			motion[0], motion[1], motion[2], 0.0f,
 			turn[0], turn[1], turn[2], turn[3] };
 		device->SetVertexShaderConstantF(248, c, 6);
