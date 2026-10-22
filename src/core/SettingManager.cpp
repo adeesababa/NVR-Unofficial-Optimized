@@ -349,7 +349,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	return FindSection(&TomlConfig, &keys);
 }
 
-static const int UnofficialSettingsVersion = 66;
+static const int UnofficialSettingsVersion = 68;
 extern bool ParallaxLiteDistanceMigrationPending;
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -443,6 +443,42 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 	if (version < 66) {
 		replace("Shaders.Skin.Scattering", "Width", 8.0, 28.6, false);
 		replace("Shaders.Skin.Interiors", "Width", 8.0, 28.6, false);
+	}
+	if (version < 67) {
+		tomlValue* saved = UserSection("Shaders.Cloth.Main");
+		if (saved && saved->is_table() && saved->contains("Interiors")) {
+			const tomlValue old = saved->at("Interiors");
+			saved->as_table().erase("Interiors");
+			tomlValue* parentTable = UserSection("Shaders.Cloth");
+			if (old.is_boolean() && old.as_boolean() && parentTable && parentTable->is_table()) {
+				if (!parentTable->contains("Interiors") || !parentTable->at("Interiors").is_table()) (*parentTable)["Interiors"] = toml::table();
+				(*parentTable)["Interiors"]["Enabled"] = true;
+				Logger::Log("UNOFFICIAL settings: cloth now has separate indoor settings; your Shaders.Cloth.Main Interiors = true "
+					"was carried over to Shaders.Cloth.Interiors Enabled (indoor cloth now moves with the gentler indoor values).");
+			}
+		}
+	}
+	if (version < 68) {
+		auto replaceBool = [&](const char* section, const char* key, bool oldDefault, bool newDefault) {
+			tomlValue* saved = UserSection(section);
+			if (!saved || !saved->contains(key) || !saved->at(key).is_boolean() || saved->at(key).as_boolean() != oldDefault) return;
+			(*saved)[key] = newDefault;
+			char entry[160];
+			sprintf_s(entry, "%s%s.%s %s -> %s", changed.empty() ? "" : ", ", section, key, oldDefault ? "true" : "false", newDefault ? "true" : "false");
+			changed += entry;
+		};
+		replaceBool("Shaders.AmbientLight.Status", "Enabled", false, true);
+		replaceBool("Shaders.ShadowsExteriors.Main", "OverheadSunFix", false, true);
+		replaceBool("Shaders.ShadowsInteriors.Forward", "EvenTaps", false, true);
+		replace("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness", 0.0, 2.0, false);
+		replace("Shaders.Reflections.Main", "MaterialAware", 0, 1, true);
+		replace("Shaders.Reflections.Main", "SpecularOcclusion", 0.0, 1.0, false);
+		tomlValue* saved = UserSection("Shaders.Reflections.Main");
+		if (saved && saved->contains("RoughnessOverrides") && saved->at("RoughnessOverrides").is_string() &&
+			std::string(saved->at("RoughnessOverrides").as_string()).empty()) {
+			(*saved)["RoughnessOverrides"] = "nv_ultralux_centertiles:0.1, ul_marbleblack:0.12";
+			changed += changed.empty() ? "Shaders.Reflections.Main.RoughnessOverrides" : ", Shaders.Reflections.Main.RoughnessOverrides";
+		}
 	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
@@ -649,6 +685,8 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkinnedShadowFaceTest = boolSetting(performance, "SkinnedShadowFaceTest", true);
 	SettingsMain.Main.ShaderWarmUp = boolSetting(performance, "ShaderWarmUp", false);
 	SettingsMain.Main.HiddenObjectCulling = boolSetting(performance, "HiddenObjectCulling", false);
+	SettingsMain.Main.PreDecodeCache = boolSetting(performance, "PreDecodeCache", false);
+	SettingsMain.Main.FastCasterHash = boolSetting(performance, "FastCasterHash", false);
 	SettingsMain.Main.TrimLampPasses = boolSetting(performance, "TrimLampPasses", true);
 	{
 		Configuration::ConfigNode node;

@@ -3,6 +3,7 @@
 #include "PlantWind.h"
 #include "ShadowBoneUpload.h"
 #include "OrthoProbe.h"
+#include "SunShadowStats.h"
 
 
 void RenderPass::BindDiffuseOf(NiGeometry* Geo) {
@@ -31,6 +32,88 @@ void RenderPass::UpdateShadowWorld(NiGeometry* Geo) {
 }
 
 
+struct ConstantRun { const ShaderRecord* record = nullptr; std::vector<D3DXVECTOR4> sent; bool valid = false; };
+static ConstantRun VertexRun, PixelRun;
+
+static void SetCTLean(ShaderRecord* record, ConstantRun& run) {
+	if (run.valid && run.record == record) {
+		size_t k = 0;
+		for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
+			ShaderFloatValue& constant = record->FloatShaderValues[c];
+			const size_t bytes = constant.RegisterCount * sizeof(D3DXVECTOR4);
+			if (memcmp(constant.Value, &run.sent[k], bytes)) {
+				record->SetShaderConstantF(constant.RegisterIndex, constant.Value, constant.RegisterCount);
+				memcpy(&run.sent[k], constant.Value, bytes);
+			}
+			k += constant.RegisterCount;
+		}
+		return;
+	}
+	record->SetCT();
+	run.record = record;
+	run.valid = !record->TextureShaderValuesCount && !record->HasRenderedBuffer && !record->HasDepthBuffer && !record->HasTerrainBlendDepth && !record->ClearSamplers;
+	size_t registers = 0;
+	for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
+		if (!record->FloatShaderValues[c].Value) run.valid = false;
+		registers += record->FloatShaderValues[c].RegisterCount;
+	}
+	if (!run.valid) return;
+	run.sent.resize(registers);
+	size_t k = 0;
+	for (UInt32 c = 0; c < record->FloatShaderValuesCount; c++) {
+		const ShaderFloatValue& constant = record->FloatShaderValues[c];
+		memcpy(&run.sent[k], constant.Value, constant.RegisterCount * sizeof(D3DXVECTOR4));
+		k += constant.RegisterCount;
+	}
+}
+
+struct StillTexture { const NiSourceTexture* texture = nullptr; std::string path; bool still = false; };
+static StillTexture StillTextures[4096];
+static int StillGeneration = -1;
+
+static inline size_t StillSlot(const void* texture) { return ((uintptr_t)texture >> 4) * 2654435761u >> 20 & 4095; }
+
+static const NiSourceTexture* WindTexture(NiGeometry* Geo, bool& noTexture) {
+	noTexture = false;
+	BSShaderProperty* property = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
+	const UInt32 vtable = property ? *(UInt32*)property : 0;
+	if (vtable != 0x10AE0D0 && vtable != 0x10B9910) { noTexture = true; return nullptr; }
+	NiSourceTexture** textures = ((BSShaderPPLightingProperty*)property)->ppTextures[0];
+	const NiSourceTexture* diffuse = textures ? *textures : nullptr;
+	if (!diffuse || !diffuse->ddsPath1) { noTexture = true; return nullptr; }
+	return diffuse;
+}
+
+static bool WindLeavesStill(NiGeometry* Geo) {
+	if (Geo->skinInstance || ClothWind::NonZeroSent || ClothWind::ActiveWeights || ClothWind::ActiveWalk || ClothWind::ActiveSkin || ClothWind::ActiveStill)
+		return false;
+	const int generation = TheShaderManager->Effects.ShadowsExteriors->Settings.OrthoMap.SkySettingsGeneration;
+	if (generation != StillGeneration) {
+		for (StillTexture& entry : StillTextures) { entry.texture = nullptr; entry.path.clear(); }
+		StillGeneration = generation;
+	}
+	bool noTexture;
+	const NiSourceTexture* diffuse = WindTexture(Geo, noTexture);
+	if (noTexture) return true;
+	const StillTexture& entry = StillTextures[StillSlot(diffuse)];
+	return entry.texture == diffuse && entry.still && entry.path == diffuse->ddsPath1;
+}
+
+static void LearnWindVerdict(NiGeometry* Geo) {
+	if (Geo->skinInstance) return;
+	bool noTexture;
+	const NiSourceTexture* diffuse = WindTexture(Geo, noTexture);
+	if (!diffuse) return;
+	auto cloth = ClothWind::ByTexture.find(diffuse);
+	auto plant = PlantWind::ByTexture.find(diffuse);
+	if (cloth == ClothWind::ByTexture.end() || plant == PlantWind::ByTexture.end()) return;
+	if (cloth->second.first != diffuse->ddsPath1 || plant->second.first != diffuse->ddsPath1) return;
+	StillTexture& entry = StillTextures[StillSlot(diffuse)];
+	entry.texture = diffuse;
+	entry.path = diffuse->ddsPath1;
+	entry.still = !cloth->second.second && !plant->second.second;
+}
+
 void RenderPass::RenderAccum() {
 	if (GeometryList.empty()) return;
 
@@ -38,24 +121,50 @@ void RenderPass::RenderAccum() {
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
 	RenderState->SetPixelShader(PixelShader->ShaderHandle, false);
 	RenderState->SetVertexShader(VertexShader->ShaderHandle, false);
+	const bool lean = Lean;
+	VertexRun.valid = PixelRun.valid = false;
 
 	// Render normal geometry
 	while (!GeometryList.empty()) {
 		NiGeometry* Geo = GeometryList.top();
 		GeometryList.pop();
 		if (!Geo) continue;
+#if NVR_TEST_TOOLS
+		SunShadowStats::Cascade* stats = SunShadowStats::Current;
+		unsigned long long t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+		if (stats) { SunShadowStats::NoteCaster(Geo); t0 = SunShadowStats::Now(); }
+#endif
 
 		UpdateConstants(Geo);
-		PixelShader->SetCT();
-		VertexShader->SetCT();
-		ClothWind::ForGeometry(TheRenderManager->device, Geo, true);
-		PlantWind::ForGeometry(TheRenderManager->device, Geo, true);
+#if NVR_TEST_TOOLS
+		if (stats) t1 = SunShadowStats::Now();
+#endif
+		if (lean) { SetCTLean(PixelShader, PixelRun); SetCTLean(VertexShader, VertexRun); }
+		else {
+			PixelShader->SetCT();
+			VertexShader->SetCT();
+		}
+#if NVR_TEST_TOOLS
+		if (stats) t2 = SunShadowStats::Now();
+#endif
+		if (!lean || !WindLeavesStill(Geo)) {
+			ClothWind::ForGeometry(TheRenderManager->device, Geo, true);
+			PlantWind::ForGeometry(TheRenderManager->device, Geo, true);
+			if (lean) LearnWindVerdict(Geo);
+		}
 #if NVR_TEST_TOOLS
 		if (OrthoProbe::Recording) OrthoProbe::OnDraw(this, Geo);
+		if (stats) t3 = SunShadowStats::Now();
 #endif
 
 		RenderGeometry(Geo);
 		ClothWind::AfterDraw(TheRenderManager->device);
+#if NVR_TEST_TOOLS
+		if (stats) {
+			const unsigned long long t4 = SunShadowStats::Now();
+			stats->tUpdate += t1 - t0; stats->tSetCT += t2 - t1; stats->tWind += t3 - t2; stats->tRender += t4 - t3;
+		}
+#endif
 	}
 }
 
@@ -124,6 +233,9 @@ void RenderPass::DrawSkinnedGeometryBuffer(NiGeometry* Geo, NiGeometryBufferData
 	else
 		TheRenderManager->renderState->SetVertexDeclaration(GeoData->VertexDeclaration, false);
 
+#if NVR_TEST_TOOLS
+	if (SunShadowStats::Current) SunShadowStats::Current->partitions++;
+#endif
 	ClothWind::DrawPartition(NiDX9Renderer::GetSingleton(), GeoData, Partition, nullptr);
 }
 

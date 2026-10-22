@@ -352,7 +352,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             [branch]
             if (att > 0.001) {
                 pointlightDir = mul(tbn, pointlightDir);
-                lighting += getPointLightLighting(pointlightDir, att, LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
+                lighting += getPointLightLighting(pointlightDir, LampAttOther(att), LinColor(PointLightColor[i].rgb), eyeDir, combinedNormal, baseColor, gloss, specExponent);
             }
         }
     #endif

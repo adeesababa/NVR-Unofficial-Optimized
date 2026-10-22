@@ -50,7 +50,11 @@ float4 TESR_ShadowFormatData  : register(c129); // x: mode (0 VSM, 1 EVSM2, 2 EV
 float4 TESR_ShadowFade        : register(c130); // x: sunrise/sunset fade, y: shadow maps active
 float4 TESR_SmoothedSunDir    : register(c131);
 float4 TESR_ShadowBlur        : register(c132);
-float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is SUPPRESSED
+float4 TESR_ShadowForwardData : register(c133);
+
+float4 ShadowCascadeBands(float4 radii) {
+    return max(0.1f * radii, min(TESR_ShadowForwardData.w, radii));
+}
 
 // Object templates top out at s7. Override BEFORE including for wider sampler arrays --
 // TerrainTemplate's NormalMap[7] spans s7-s13.
@@ -202,6 +206,22 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 #if SHADOW_FIXED_MODE == 3
 static float ShadowSlopeBias = 0.0f;
 
+#ifndef SHADOW_SLACK_CAP_ALL
+    #define SHADOW_SLACK_CAP_ALL 0
+#endif
+#if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL
+    #define SHADOW_SLACK_CAP 1
+    static float ShadowSlackCap = 1.0e9f;
+    #define SHADOW_SLACK(n) min((n) * ShadowSlopeBias, ShadowSlackCap)
+    #define SHADOW_SLACK_WIDE(n) SHADOW_SLACK(n)
+    #define SHADOW_SLACK_CUBIC_EXTRA (SHADOW_SLACK(2.0f) - SHADOW_SLACK(1.5f))
+#else
+    #define SHADOW_SLACK_CAP 0
+    #define SHADOW_SLACK(n) ((n) * ShadowSlopeBias)
+    #define SHADOW_SLACK_WIDE(n) (ShadowSlopeBias * (n))
+    #define SHADOW_SLACK_CUBIC_EXTRA (0.5f * ShadowSlopeBias)
+#endif
+
 float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffset) {
     float texel = TESR_ShadowBlur.x;
     float2 lo = quadrantOffset + texel * 0.5f;
@@ -213,7 +233,7 @@ float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffse
         float2 t2 = t * t, t3 = t2 * t;
         float4 cx = float4((1.0f - t.x) * (1.0f - t.x) * (1.0f - t.x), 3.0f * t3.x - 6.0f * t2.x + 4.0f, -3.0f * t3.x + 3.0f * t2.x + 3.0f * t.x + 1.0f, t3.x) / 6.0f;
         float4 cy = float4((1.0f - t.y) * (1.0f - t.y) * (1.0f - t.y), 3.0f * t3.y - 6.0f * t2.y + 4.0f, -3.0f * t3.y + 3.0f * t2.y + 3.0f * t.y + 1.0f, t3.y) / 6.0f;
-        float cubicDepth = depth - 0.5f * ShadowSlopeBias;
+        float cubicDepth = depth - SHADOW_SLACK_CUBIC_EXTRA;
         float cubic = 0.0f;
         [unroll] for (int cyi = 0; cyi < 4; cyi++) {
             [unroll] for (int cxi = 0; cxi < 4; cxi++) {
@@ -248,7 +268,7 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);
+    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias - SHADOW_SLACK(1.5f), quadrantOffset);
 #else
     float4 moments = SampleShadowMoments(lightSpace.xy, quadrantOffset);
 
@@ -283,7 +303,7 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);
+    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias - SHADOW_SLACK(1.5f), quadrantOffset);
 #else
     float4 moments = tex2Dlod(TESR_ShadowAtlasOld, float4(lightSpace.xy, 0.0f, 0.0f));
 
@@ -314,40 +334,46 @@ float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, fl
 #if SHADOW_FIXED_MODE == 3
     offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
 #endif
-    const float blend = 0.9f;
+    float4 starts = radii - ShadowCascadeBands(radii);
     float4 distances = float4(
         length(worldPos - TESR_ShadowOldNearCenter.xyz),
         length(worldPos - TESR_ShadowOldMiddleCenter.xyz),
         length(worldPos - TESR_ShadowOldFarCenter.xyz),
         length(worldPos - TESR_ShadowOldLodCenter.xyz));
 
-#define OLD_TAP_NEAR   SampleShadowAtlasOld(mul(float4(worldPos + offsetDistance.x * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformNear),   float2(0.0f, 0.0f), bias, 0.1f)
-#define OLD_TAP_MIDDLE SampleShadowAtlasOld(mul(float4(worldPos + offsetDistance.y * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformMiddle), float2(0.5f, 0.0f), bias, 0.2f)
-#define OLD_TAP_FAR    SampleShadowAtlasOld(mul(float4(worldPos + offsetDistance.z * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformFar),    float2(0.0f, 0.5f), bias, 0.6f)
-#define OLD_TAP_LOD    SampleShadowAtlasOld(mul(float4(worldPos + offsetDistance.w * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformLod),    float2(0.5f, 0.5f), bias, 0.8f)
+#define OLD_TAP_NEAR(o)   SampleShadowAtlasOld(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformNear),   float2(0.0f, 0.0f), bias, 0.1f)
+#define OLD_TAP_MIDDLE(o) SampleShadowAtlasOld(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformMiddle), float2(0.5f, 0.0f), bias, 0.2f)
+#define OLD_TAP_FAR(o)    SampleShadowAtlasOld(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformFar),    float2(0.0f, 0.5f), bias, 0.6f)
+#define OLD_TAP_LOD(o)    SampleShadowAtlasOld(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowOldCameraToLightTransformLod),    float2(0.5f, 0.5f), bias, 0.8f)
 
     covered = 1.0f;
     float shadow = 1.0f;
     [branch] if (distances.x < radii.x) {
-        [branch] if (distances.x < radii.x * blend)
-            shadow = OLD_TAP_NEAR;
+        float f = smoothstep(starts.x, radii.x, distances.x);
+        float o = lerp(offsetDistance.x, offsetDistance.y, f);
+        [branch] if (f <= 0.0f)
+            shadow = OLD_TAP_NEAR(o);
         else
-            shadow = lerp(OLD_TAP_NEAR, OLD_TAP_MIDDLE, smoothstep(radii.x * blend, radii.x, distances.x));
+            shadow = lerp(OLD_TAP_NEAR(o), OLD_TAP_MIDDLE(o), f);
     }
     else if (distances.y < radii.y) {
-        [branch] if (distances.y < radii.y * blend)
-            shadow = OLD_TAP_MIDDLE;
+        float f = smoothstep(starts.y, radii.y, distances.y);
+        float o = lerp(offsetDistance.y, offsetDistance.z, f);
+        [branch] if (f <= 0.0f)
+            shadow = OLD_TAP_MIDDLE(o);
         else
-            shadow = lerp(OLD_TAP_MIDDLE, OLD_TAP_FAR, smoothstep(radii.y * blend, radii.y, distances.y));
+            shadow = lerp(OLD_TAP_MIDDLE(o), OLD_TAP_FAR(o), f);
     }
     else if (distances.z < radii.z) {
-        [branch] if (distances.z < radii.z * blend)
-            shadow = OLD_TAP_FAR;
+        float f = smoothstep(starts.z, radii.z, distances.z);
+        float o = lerp(offsetDistance.z, offsetDistance.w, f);
+        [branch] if (f <= 0.0f)
+            shadow = OLD_TAP_FAR(o);
         else
-            shadow = lerp(OLD_TAP_FAR, OLD_TAP_LOD, smoothstep(radii.z * blend, radii.z, distances.z));
+            shadow = lerp(OLD_TAP_FAR(o), OLD_TAP_LOD(o), f);
     }
     else if (distances.w < radii.w) {
-        shadow = lerp(OLD_TAP_LOD, 1.0f, smoothstep(radii.w * blend, radii.w, distances.w));
+        shadow = lerp(OLD_TAP_LOD(offsetDistance.w), 1.0f, smoothstep(starts.w, radii.w, distances.w));
     }
     else {
         covered = 0.0f;
@@ -369,6 +395,8 @@ float GetOldSunShadow(float3 worldPos, float3 worldNormal, float offsetScale, fl
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 float4 TESR_ContactHardeningData : register(c167);
+
+static float ShadowSoftnessCap = 1.0f;
 
 static const float2 ContactDisc[12] = {
     float2(0.2041f, 0.0000f), float2(-0.2607f, 0.2388f), float2(0.0399f, -0.4547f), float2(0.3286f, 0.4286f),
@@ -410,7 +438,7 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     float worldPerDepth = 1.0f / length(float3(lightTransform[0][2], lightTransform[1][2], lightTransform[2][2]));
     float uvPerWorld = 0.25f * length(float3(lightTransform[0][0], lightTransform[1][0], lightTransform[2][0]));
     float texel = TESR_ShadowBlur.x;
-    float maxRadius = TESR_ContactHardeningData.y * texel;
+    float maxRadius = TESR_ContactHardeningData.y * ShadowSoftnessCap * texel;
     float2 lo = quadrantOffset + texel * 0.5f;
     float2 hi = quadrantOffset + 0.5f - texel * 0.5f;
 
@@ -418,7 +446,7 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     float radius = 0.0f;
     [branch] if (contact) {
         float casterSum = 0.0f, casters = 0.0f;
-        float searchDepth = depth - ShadowSlopeBias * (0.73f * TESR_ContactHardeningData.y + 1.0f);
+        float searchDepth = depth - SHADOW_SLACK_WIDE(0.73f * TESR_ContactHardeningData.y * ShadowSoftnessCap + 1.0f);
         [unroll] for (int s = 0; s < 5; s++) {
             float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
             float blocks = d < searchDepth ? 1.0f : 0.0f;
@@ -433,9 +461,9 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     }
     float w3 = TESR_ContactHardeningData.z > 0.0f ? saturate(2.0f - radius / texel) : (radius <= texel ? 1.0f : 0.0f);
     float lit = 0.0f;
-    [branch] if (w3 > 0.0f) lit = w3 * ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
+    [branch] if (w3 > 0.0f) lit = w3 * ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - SHADOW_SLACK(1.5f), quadrantOffset);
     [branch] if (w3 < 1.0f) {
-        float discDepth = depth - ShadowSlopeBias * (radius / texel + 1.0f);
+        float discDepth = depth - SHADOW_SLACK_WIDE(radius / texel + 1.0f);
         float2 turn = float2(1.0f, 0.0f);
         [branch] if (TESR_ContactHardeningData.z > 0.0f)
             sincos(6.2831853f * frac(52.9829189f * frac(dot(floor(uv / texel * 3.0f), float2(0.06711056f, 0.00583715f)))), turn.y, turn.x);
@@ -458,7 +486,7 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     float worldPerDepth = 1.0f / length(float3(lightTransform[0][2], lightTransform[1][2], lightTransform[2][2]));
     float uvPerWorld = 0.25f * length(float3(lightTransform[0][0], lightTransform[1][0], lightTransform[2][0]));
     float texel = TESR_ShadowBlur.x;
-    float maxRadius = TESR_ContactHardeningData.y * texel;
+    float maxRadius = TESR_ContactHardeningData.y * ShadowSoftnessCap * texel;
     float2 lo = quadrantOffset + texel * 0.5f;
     float2 hi = quadrantOffset + 0.5f - texel * 0.5f;
 
@@ -543,11 +571,10 @@ float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 nor
 }
 
 #if SHADOW_FIXED_MODE == 3
-float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float4 offsetDistance, float bias) {
+float SunCascadeTap(float c, float3 worldPos, float3 worldNormal, float offset, float bias) {
     float4x4 lightTransform = c < 0.5f ? TESR_ShadowCameraToLightTransformNear : c < 1.5f ? TESR_ShadowCameraToLightTransformMiddle :
                               c < 2.5f ? TESR_ShadowCameraToLightTransformFar : TESR_ShadowCameraToLightTransformLod;
     float2 quadrant = c < 0.5f ? float2(0.0f, 0.0f) : c < 1.5f ? float2(0.5f, 0.0f) : c < 2.5f ? float2(0.0f, 0.5f) : float2(0.5f, 0.5f);
-    float offset = c < 0.5f ? offsetDistance.x : c < 1.5f ? offsetDistance.y : c < 2.5f ? offsetDistance.z : offsetDistance.w;
     float3 position = worldPos + offset * worldNormal;
 #if CONTACT_HARDENING
 #if SHADOW_SKIN_SOFTNESS
@@ -597,6 +624,12 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
 #if SHADOW_FIXED_MODE == 3
     offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
     ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
+#if SHADOW_SLACK_CAP
+    [flatten] if (TESR_ShadowBlur.w > 0.0f) {
+        offsetDistance = min(offsetDistance, TESR_ShadowBlur.w * radii / max(radii.x, 0.001f));
+        ShadowSlackCap = TESR_ShadowBlur.w / (2.0f * max(radii.x, 0.001f));
+    }
+#endif
 #endif
 
 #if SHADOW_FIXED_MODE == 0
@@ -611,10 +644,8 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // calling a texel occluded.
     float bias = baseBias * (1.0f + SHADOW_SLOPE_BIAS * offsetScale);
 
-    // Fraction of the way to a cascade's border at which the cross-fade into the next begins.
-    const float blend = 0.9f;
+    float4 starts = radii - ShadowCascadeBands(radii);
 
-    // Distance to each cascade centre, cross-faded over the outer 10%. Circular boundaries,
     // matching SunShadows.fx: selecting on the square light-space NDC box steps visibly.
     float4 distances = float4(
         length(worldPos - TESR_ShadowNearCenter.xyz),
@@ -622,57 +653,83 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
         length(worldPos - TESR_ShadowFarCenter.xyz),
         length(worldPos - TESR_ShadowLodCenter.xyz));
 
-    // Sample inside the branch, not before it. A pixel needs one cascade, or two in the outer
-    // 10% where they cross-fade; sampling all four up front cost four atlas fetches and four
     // matrix transforms on every shadowed pixel, and the forward path pays that per object.
     // Legal here only because SampleShadowAtlas uses tex2Dlod -- a gradient instruction under
     // dynamic flow control is X3528 in ps_3_0. The atlas has no mipmaps, so LOD 0 is exact.
 #if CONTACT_HARDENING
-#define SHADOW_TAP_NEAR   SampleShadowCascade(worldPos + offsetDistance.x * worldNormal, TESR_ShadowCameraToLightTransformNear,   float2(0.0f, 0.0f), bias, 0.1f)
-#define SHADOW_TAP_MIDDLE SampleShadowCascade(worldPos + offsetDistance.y * worldNormal, TESR_ShadowCameraToLightTransformMiddle, float2(0.5f, 0.0f), bias, 0.2f)
+#define SHADOW_TAP_NEAR(o)   SampleShadowCascade(worldPos + (o) * worldNormal, TESR_ShadowCameraToLightTransformNear,   float2(0.0f, 0.0f), bias, 0.1f)
+#define SHADOW_TAP_MIDDLE(o) SampleShadowCascade(worldPos + (o) * worldNormal, TESR_ShadowCameraToLightTransformMiddle, float2(0.5f, 0.0f), bias, 0.2f)
 #else
-#define SHADOW_TAP_NEAR   SampleShadowAtlas(mul(float4(worldPos + offsetDistance.x * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformNear),   float2(0.0f, 0.0f), bias, 0.1f)
-#define SHADOW_TAP_MIDDLE SampleShadowAtlas(mul(float4(worldPos + offsetDistance.y * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformMiddle), float2(0.5f, 0.0f), bias, 0.2f)
+#define SHADOW_TAP_NEAR(o)   SampleShadowAtlas(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformNear),   float2(0.0f, 0.0f), bias, 0.1f)
+#define SHADOW_TAP_MIDDLE(o) SampleShadowAtlas(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformMiddle), float2(0.5f, 0.0f), bias, 0.2f)
 #endif
-#define SHADOW_TAP_FAR    SampleShadowAtlas(mul(float4(worldPos + offsetDistance.z * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformFar),    float2(0.0f, 0.5f), bias, 0.6f)
-#define SHADOW_TAP_LOD    SampleShadowAtlas(mul(float4(worldPos + offsetDistance.w * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformLod),    float2(0.5f, 0.5f), bias, 0.8f)
+#define SHADOW_TAP_FAR(o)    SampleShadowAtlas(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformFar),    float2(0.0f, 0.5f), bias, 0.6f)
+#define SHADOW_TAP_LOD(o)    SampleShadowAtlas(mul(float4(worldPos + (o) * worldNormal, 1.0f), TESR_ShadowCameraToLightTransformLod),    float2(0.5f, 0.5f), bias, 0.8f)
 
 #if SHADOW_FIXED_MODE == 3
     float cascade = -1.0f, fade = 0.0f;
-    [flatten] if (distances.x < radii.x) { cascade = 0.0f; fade = smoothstep(radii.x * blend, radii.x, distances.x); }
-    else if (distances.y < radii.y) { cascade = 1.0f; fade = smoothstep(radii.y * blend, radii.y, distances.y); }
-    else if (distances.z < radii.z) { cascade = 2.0f; fade = smoothstep(radii.z * blend, radii.z, distances.z); }
-    else if (distances.w < radii.w) { cascade = 3.0f; fade = smoothstep(radii.w * blend, radii.w, distances.w); }
+    [flatten] if (distances.x < radii.x) { cascade = 0.0f; fade = smoothstep(starts.x, radii.x, distances.x); }
+    else if (distances.y < radii.y) { cascade = 1.0f; fade = smoothstep(starts.y, radii.y, distances.y); }
+    else if (distances.z < radii.z) { cascade = 2.0f; fade = smoothstep(starts.z, radii.z, distances.z); }
+    else if (distances.w < radii.w) { cascade = 3.0f; fade = smoothstep(starts.w, radii.w, distances.w); }
+    float offsetHere = cascade < 0.5f ? lerp(offsetDistance.x, offsetDistance.y, fade) : cascade < 1.5f ? lerp(offsetDistance.y, offsetDistance.z, fade) :
+                       cascade < 2.5f ? lerp(offsetDistance.z, offsetDistance.w, fade) : offsetDistance.w;
+    float slackScale = cascade < 0.5f ? lerp(radii.x / max(radii.y, 0.001f), 1.0f, fade) : 1.0f;
     float3 hashP = frac(worldPos * 7.1031f);
     hashP += dot(hashP, hashP.yzx + 33.33f);
     float dither = frac((hashP.x + hashP.y) * hashP.z);
     cascade += fade > dither ? 1.0f : 0.0f;
+    slackScale = cascade > 0.5f ? slackScale : 1.0f;
+    float slopeBiasHere = ShadowSlopeBias;
+    ShadowSlopeBias *= slackScale;
+#if CONTACT_HARDENING
+    ShadowSoftnessCap = slackScale;
+#endif
     float shadow = 1.0f;
     [branch] if (cascade >= 0.0f && cascade < 3.5f)
-        shadow = SunCascadeTap(cascade, worldPos, worldNormal, offsetDistance, bias);
+        shadow = SunCascadeTap(cascade, worldPos, worldNormal, offsetHere, bias);
+    ShadowSlopeBias = slopeBiasHere;
+#if CONTACT_HARDENING
+    ShadowSoftnessCap = 1.0f;
+#endif
 #else
     // Initialised: a point beyond the last cascade falls through every branch.
     float shadow = 1.0f;
     [branch] if (distances.x < radii.x) {
-        [branch] if (distances.x < radii.x * blend)
-            shadow = SHADOW_TAP_NEAR;
-        else
-            shadow = lerp(SHADOW_TAP_NEAR, SHADOW_TAP_MIDDLE, smoothstep(radii.x * blend, radii.x, distances.x));
+        float f = smoothstep(starts.x, radii.x, distances.x);
+        float o = lerp(offsetDistance.x, offsetDistance.y, f);
+        [branch] if (f <= 0.0f)
+            shadow = SHADOW_TAP_NEAR(o);
+        else {
+            float nearTap = SHADOW_TAP_NEAR(o);
+#if CONTACT_HARDENING
+            ShadowSoftnessCap = lerp(radii.x / max(radii.y, 0.001f), 1.0f, f);
+#endif
+            float middleTap = SHADOW_TAP_MIDDLE(o);
+#if CONTACT_HARDENING
+            ShadowSoftnessCap = 1.0f;
+#endif
+            shadow = lerp(nearTap, middleTap, f);
+        }
     }
     else if (distances.y < radii.y) {
-        [branch] if (distances.y < radii.y * blend)
-            shadow = SHADOW_TAP_MIDDLE;
+        float f = smoothstep(starts.y, radii.y, distances.y);
+        float o = lerp(offsetDistance.y, offsetDistance.z, f);
+        [branch] if (f <= 0.0f)
+            shadow = SHADOW_TAP_MIDDLE(o);
         else
-            shadow = lerp(SHADOW_TAP_MIDDLE, SHADOW_TAP_FAR, smoothstep(radii.y * blend, radii.y, distances.y));
+            shadow = lerp(SHADOW_TAP_MIDDLE(o), SHADOW_TAP_FAR(o), f);
     }
     else if (distances.z < radii.z) {
-        [branch] if (distances.z < radii.z * blend)
-            shadow = SHADOW_TAP_FAR;
+        float f = smoothstep(starts.z, radii.z, distances.z);
+        float o = lerp(offsetDistance.z, offsetDistance.w, f);
+        [branch] if (f <= 0.0f)
+            shadow = SHADOW_TAP_FAR(o);
         else
-            shadow = lerp(SHADOW_TAP_FAR, SHADOW_TAP_LOD, smoothstep(radii.z * blend, radii.z, distances.z));
+            shadow = lerp(SHADOW_TAP_FAR(o), SHADOW_TAP_LOD(o), f);
     }
     else if (distances.w < radii.w) {
-        shadow = lerp(SHADOW_TAP_LOD, 1.0f, smoothstep(radii.w * blend, radii.w, distances.w));
+        shadow = lerp(SHADOW_TAP_LOD(offsetDistance.w), 1.0f, smoothstep(starts.w, radii.w, distances.w));
     }
 #endif
 

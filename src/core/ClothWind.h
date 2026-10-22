@@ -14,6 +14,7 @@
 #include "ClothWeights.h"
 #include "ClothWalk.h"
 #include "ClothStatic.h"
+#include "TestTools.h"
 
 namespace ClothWind {
 
@@ -60,6 +61,7 @@ namespace ClothWind {
 		bool  LogAuto = true;
 		float LimbGap = 1.0f;
 		float LimbFade = 6.0f;
+		struct Indoor { float Speed = 80.0f, Intensity = 2.0f, Wavelength = 400.0f, Flutter = 0.8f, FlutterAmount = 0.1f, Ripple = 0.3f, Strength = 1.0f; } In;
 		std::string Keywords = "cape,cloak,duster,flag,banner,curtain,drape,tarp,poncho,robe,scarf,tent";
 		std::string Exclude = "scape,probe,microbe,wardrobe,drobe,content,intent,extent,patent,potent,latent,flagpole,flagstone,pole,stone";
 		std::string ExcludeParts = "hat,helmet,head,hair,glove,boot,shoe,mask,goggle,hand,body,beard,mouth,teeth,eyes";
@@ -80,6 +82,10 @@ namespace ClothWind {
 	inline float LastHour = -1.0f;
 	inline double RealStart = -1.0, ClockStart = 0.0;
 	inline float SpeedNow = 220.0f, IntensityNow = 6.0f;
+	inline float WavelengthNow = 260.0f, FlutterNow = 3.0f, FlutterAmountNow = 0.35f, RippleNow = 0.5f;
+	inline bool Interior = false;
+	inline bool IndoorWind = false;
+	inline UInt32 IndoorLogs = 0;
 	inline bool NonZeroSent = false;
 	inline bool GrassInC248 = false;
 	inline UInt32 ClothDraws = 0, Frames = 0;
@@ -110,6 +116,7 @@ namespace ClothWind {
 		return name && CapableNames.count(name) != 0;
 	}
 	inline bool CurrentVSCapable = false;
+	inline const char* CurrentVSName = nullptr;
 	inline std::unordered_map<const void*, bool> TentativeNow;
 	inline void Zero(IDirect3DDevice9* device);
 	inline bool PlantsCompiledIn = false, PlantsOn = false;
@@ -120,6 +127,7 @@ namespace ClothWind {
 		if (!capable) { NonZeroSent = true; GrassInC248 = true; }
 		if (capable && GrassInC248 && TheRenderManager) Zero(TheRenderManager->device);
 		CurrentVSCapable = (S.On || PlantsOn) && capable;
+		CurrentVSName = name;
 	}
 	inline const void* PassGeometry = nullptr;
 	inline std::unordered_map<const void*, std::string> VanillaVSNow, VanillaVSLast;
@@ -825,10 +833,34 @@ namespace ClothWind {
 	}
 	typedef void(__thiscall* OnlyRenderFn)(void*, NiGeometry*);
 	inline OnlyRenderFn OnlyRenderShapeOriginal = (OnlyRenderFn)0x00E745A0, OnlyRenderStripsOriginal = (OnlyRenderFn)0x00E74840;
+#if NVR_TEST_TOOLS
+	inline UInt32 DiagFrame = 0, DiagLines = 0;
+	inline void DiagStillDraw(IDirect3DDevice9* device, NiGeometry* geometry, const StillMesh* active) {
+		if (!DiagFrame || FrameId < DiagFrame || FrameId > DiagFrame + 2 || DiagLines >= 900 || !device || !geometry || !geometry->geomData) return;
+		auto it = Stills.find(geometry->geomData);
+		if (it == Stills.end() || it->second.state != 2) return;
+		DiagLines++;
+		DWORD zenable = 0, zfunc = 0, zwrite = 0, colorwrite = 0, alphablend = 0, alphatest = 0;
+		device->GetRenderState(D3DRS_ZENABLE, &zenable); device->GetRenderState(D3DRS_ZFUNC, &zfunc); device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
+		device->GetRenderState(D3DRS_COLORWRITEENABLE, &colorwrite); device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphablend); device->GetRenderState(D3DRS_ALPHATESTENABLE, &alphatest);
+		float c[4] = {};
+		device->GetVertexShaderConstantF(248, c, 1);
+		IDirect3DVertexShader9* vs = nullptr; device->GetVertexShader(&vs);
+		IDirect3DSurface9* rt = nullptr; device->GetRenderTarget(0, &rt);
+		Logger::Log("Cloth wind: still draw (frame %u) '%s): geometry %p, chosen %d, in a pass hook %d, c248 %.2f %.2f, z %u func %u write %u, colour write %X, blend %u, alpha test %u, VS %p %s (carries cloth %d), target %p | seen last frame %d, vanilla VS last frame %d",
+			FrameId, it->second.name.c_str(), geometry, active == &it->second, PassGeometry == geometry, c[0], c[1], zenable, zfunc, zwrite, colorwrite, alphablend, alphatest, vs, CurrentVSName ? CurrentVSName : "?", CurrentVSCapable, rt,
+			(int)SeenLast.count(geometry), (int)VanillaLast.count(geometry));
+		if (vs) vs->Release();
+		if (rt) rt->Release();
+	}
+#endif
 	inline void OnlyRender(bool strips, void* renderer, NiGeometry* geometry) {
 		const OnlyRenderFn original = strips ? OnlyRenderStripsOriginal : OnlyRenderShapeOriginal;
 		StillMesh* m = ActiveStill;
 		IDirect3DDevice9* device = TheRenderManager ? TheRenderManager->device : nullptr;
+#if NVR_TEST_TOOLS
+		DiagStillDraw(device, geometry, m);
+#endif
 		if (!m || !device || !geometry || geometry->geomData != m->data) { original(renderer, geometry); return; }
 		const NiGeometryBufferData* buffer = geometry->geomData->m_pkBuffData;
 		IDirect3DVertexDeclaration9* decl = nullptr;
@@ -963,7 +995,9 @@ namespace ClothWind {
 	}
 
 	inline void BeginFrame(const Sky* sky, bool exterior) {
-		Exterior = exterior || TheSettingManager->GetSettingI("Shaders.Cloth.Main", "Interiors") != 0;
+		Interior = !exterior;
+		IndoorWind = Interior && TheSettingManager->GetSettingI("Shaders.Cloth.Interiors", "Enabled") != 0;
+		Exterior = exterior || IndoorWind;
 		for (const auto& [g, capable] : TentativeNow)
 			if (!SeenNow.count(g)) { SeenNow.insert(g); if (!capable) VanillaNow.insert(g); }
 		TentativeNow.clear();
@@ -1038,9 +1072,25 @@ namespace ClothWind {
 		S.SkinSpace = std::clamp(TheSettingManager->GetSettingI(section, "SkinSpace"), 0, 2);
 		S.CalmFactor = std::clamp(TheSettingManager->GetSettingF(section, "CalmFactor"), 0.0f, 1.7f);
 		S.LogMatches = TheSettingManager->GetSettingI(section, "LogMatches") != 0;
+#if NVR_TEST_TOOLS
+		if (S.LogMatches && !DiagFrame) { DiagFrame = FrameId + 60; DiagLines = 0; }
+#endif
 		float d[3] = { S.Dir[0], S.Dir[1], S.Dir[2] };
 		float speed = S.Speed, intensity = S.Intensity;
-		if (S.UseGameWind && sky) {
+		WavelengthNow = S.Wavelength; FlutterNow = S.Flutter; FlutterAmountNow = S.FlutterAmount; RippleNow = S.Ripple;
+		if (IndoorWind) {
+			const char* in = "Shaders.Cloth.Interiors";
+			S.In.Strength = std::clamp(TheSettingManager->GetSettingF(in, "Strength"), 0.0f, 4.0f);
+			S.In.Intensity = std::clamp(TheSettingManager->GetSettingF(in, "WindIntensity"), 0.0f, 40.0f);
+			S.In.Speed = std::clamp(TheSettingManager->GetSettingF(in, "WindSpeed"), 0.0f, 2000.0f);
+			S.In.Wavelength = (std::max)(TheSettingManager->GetSettingF(in, "Wavelength"), 16.0f);
+			S.In.Flutter = std::clamp(TheSettingManager->GetSettingF(in, "FlutterSpeed"), 0.0f, 20.0f);
+			S.In.FlutterAmount = std::clamp(TheSettingManager->GetSettingF(in, "FlutterAmount"), 0.0f, 1.0f);
+			S.In.Ripple = std::clamp(TheSettingManager->GetSettingF(in, "RippleAmount"), 0.0f, 1.0f);
+			speed = S.In.Speed; intensity = S.In.Intensity * S.In.Strength;
+			WavelengthNow = S.In.Wavelength; FlutterNow = S.In.Flutter; FlutterAmountNow = S.In.FlutterAmount; RippleNow = S.In.Ripple;
+		}
+		else if (S.UseGameWind && sky) {
 			const float a = sky->windDirection;
 			d[0] = sinf(a); d[1] = cosf(a); d[2] = 0.0f;
 			const float w = std::clamp(sky->windSpeed, 0.0f, 1.0f);
@@ -1051,11 +1101,18 @@ namespace ClothWind {
 		const float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 		for (int i = 0; i < 3; i++) WorldDir[i] = len > 1e-4f ? d[i] / len : (i == 0 ? 1.0f : 0.0f);
 		SpeedNow = speed; IntensityNow = intensity;
+		static bool wasIndoorWind = false;
+		if (IndoorWind && !wasIndoorWind && IndoorLogs < 8) {
+			IndoorLogs++;
+			Logger::Log("Cloth wind: indoors with the indoor set: %.2f units (WindIntensity %.2f x Strength %.2f), speed %.0f, wavelength %.0f, flutter %.2f Hz x %.2f, ripple %.2f, motion indoors %s",
+				intensity, S.In.Intensity, S.In.Strength, speed, WavelengthNow, FlutterNow, FlutterAmountNow, RippleNow, S.MotionIndoors ? "on" : "off");
+		}
+		wasIndoorWind = IndoorWind;
 		const double before = ClockSeconds;
 		AdvanceClock();
 		const double dt = ClockSeconds - before;
 		S.TimeOffset = TheSettingManager->GetSettingF(section, "TimeOffset");
-		Rate[0] = speed / S.Wavelength; Rate[1] = 0.061 * (0.5 + speed / 300.0); Rate[2] = S.Flutter; Rate[3] = S.Flutter * 1.31;
+		Rate[0] = speed / WavelengthNow; Rate[1] = 0.061 * (0.5 + speed / 300.0); Rate[2] = FlutterNow; Rate[3] = FlutterNow * 1.31;
 		for (int i = 0; i < 4; i++) {
 			Cycles[i] += dt * Rate[i]; Cycles[i] -= floor(Cycles[i]);
 			const double c = Cycles[i] + (double)S.TimeOffset * Rate[i];
@@ -1168,6 +1225,7 @@ namespace ClothWind {
 			auto t = TentativeNow.find(geometry);
 			if (t == TentativeNow.end()) TentativeNow.emplace(geometry, CurrentVSCapable);
 			else t->second = t->second && CurrentVSCapable;
+			if (!CurrentVSCapable) VanillaNow.insert(geometry);
 			boundAnswer = !SeenLast.count(geometry) && CurrentVSCapable && !VanillaLast.count(geometry);
 		}
 		if (!shadowPass && !boundAnswer && (!SeenLast.count(geometry) || VanillaLast.count(geometry))) {
@@ -1245,7 +1303,7 @@ namespace ClothWind {
 				if (MeshWeights* mw = S.UseWeights && DrawHookOn ? WeightsOf(device, geometry, *skeleton, autoVerdict ? &autoVerdict->r : nullptr) : nullptr) {
 					mode = 5.0f; limbs[54] = mw->center[0]; limbs[55] = mw->center[1]; ActiveWeights = mw;
 					ActiveSkin = geometry->skinInstance; ActiveBonesBase = shadowPass ? 9 : 44;
-					ActiveWalk = S.WalkSim ? WalkOf(geometry, *skeleton, *mw) : nullptr;
+					ActiveWalk = S.WalkSim && (!Interior || S.MotionIndoors) ? WalkOf(geometry, *skeleton, *mw) : nullptr;
 					if (!ActiveWalk) { const float off[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; device->SetVertexShaderConstantF(219, off, 1); }
 				}
 				device->SetVertexShaderConstantF(226, limbs, 14);
@@ -1286,7 +1344,8 @@ namespace ClothWind {
 				for (int i = 0; i < 3; i++) dir[i] = w.rot.data[0][i] * WorldDir[0] + w.rot.data[1][i] * WorldDir[1] + w.rot.data[2][i] * WorldDir[2];
 			}
 			else if (S.SkinSpace == 1) { origin[0] = TheRenderManager->CameraPosition.x; origin[1] = TheRenderManager->CameraPosition.y; origin[2] = TheRenderManager->CameraPosition.z; }
-			const float* mo = MotionOf(root);
+			static const float still[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			const float* mo = !Interior || S.MotionIndoors ? MotionOf(root) : still;
 			const float th = mo[3];
 			if (S.SkinSpace == 0 && !shadowPass) {
 				const NiTransform& w = root->m_worldTransform;
@@ -1318,7 +1377,7 @@ namespace ClothWind {
 		}
 		float ph[4] = { Phase[0], Phase[1], Phase[2], Phase[3] };
 		if (origin[0] != 0.0f || origin[1] != 0.0f || origin[2] != 0.0f) {
-			const double w = (double)scale / S.Wavelength, r = (double)S.RippleScale * scale;
+			const double w = (double)scale / WavelengthNow, r = (double)S.RippleScale * scale;
 			const double d0 = (origin[0] * dir[0] + origin[1] * dir[1] + origin[2] * dir[2]) * w;
 			const double d1 = origin[0] * 0.0021 + origin[1] * 0.0027 + origin[2] * 0.0013;
 			const double d2 = (origin[0] * 0.71 + origin[1] * 0.53 + origin[2] * 0.37) * r;
@@ -1328,8 +1387,8 @@ namespace ClothWind {
 		}
 		if (ActiveWalk) { for (float& v : motion) v = 0.0f; for (float& v : turn) v = 0.0f; }
 		const float c[24] = {
-			1.0f, mode, S.Ripple, S.FlutterAmount,
-			dir[0], dir[1], dir[2], scale / S.Wavelength,
+			1.0f, mode, RippleNow, FlutterAmountNow,
+			dir[0], dir[1], dir[2], scale / WavelengthNow,
 			ph[0], ph[1], ph[2], ph[3],
 			(Exterior ? IntensityNow : 0.0f) / scale, S.RippleScale * scale, top, invRange,
 			motion[0], motion[1], motion[2], 0.0f,

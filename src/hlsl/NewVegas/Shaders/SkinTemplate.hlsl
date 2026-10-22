@@ -266,7 +266,7 @@ float SkinSunLitBeyond(float3 position) {
 
 float3 PointLight(int i, float3 d, float3 shadow, float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, float3 V, out float3 specular) {
     float3 lightColor = PSLightColor[FIRST_POINT + i].rgb;
-    shadow *= saturate(1.0f - dot(d, d));
+    shadow *= LampAttOther(saturate(1.0f - dot(d, d)));
     #ifdef MANY
         float3 diffuse = 0.0f;
         specular = 0.0f;

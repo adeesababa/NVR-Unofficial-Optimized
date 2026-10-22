@@ -634,11 +634,17 @@ bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 	if (!PixelShader->ShaderProg[ShaderRecordType::Interior] && PixelShader->ShaderProg[ShaderRecordType::Default] &&
 		PointShadowForward::Eligible(PixelShader->Name, Template) &&
 		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled")) {
-		static const D3DXMACRO overrides[4][6] = {
+		static D3DXMACRO overrides[4][7] = {
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "1" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "2" }, { NULL, NULL } },
 			{ { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" }, { "CONTACT_HARDENING", "0" }, { "POINT_SHADOW_FIT", "3" }, { NULL, NULL } } };
+		static const bool lampFalloffOverride = [] {
+			const char* value = PBRShaders::LampFalloffInteriorDefine();
+			if (value) for (auto& level : overrides) for (auto& d : level) if (!d.Name) { d = { "LAMP_FALLOFF_ON", value }; break; }
+			return value != nullptr;
+		}();
+		(void)lampFalloffOverride;
 		static const char* const cache[4] = { "Interiors\\", "Interiors\\Fit1\\", "Interiors\\Fit2\\", "Interiors\\Fit3\\" };
 		static const char* const what[4] = { "", "the High/Ultra taps in a loop (the same shadows)",
 			"no High/Ultra: lamp shadow Quality is held at Medium for every object", "also no blocker search: contact hardening and LampSize are off for every object's lamp shadows" };
@@ -1609,9 +1615,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (ambientLight) {
 		static GpuTimer ambientLightTimer("Ambient light (AO + bounce)");
 		GpuProfileScope gpu(ambientLightTimer, Device);
+		Effects.AmbientLight->RenderPrepare(Device);
 		if (AmbientOcclusionEffect::SkyV2Active() && AO->Effect) {
 			AO->lastLowRes = false;
-			AO->RenderSkyVisibility(Device);
+			AO->RenderSkyVisibility(Device, Effects.AmbientLight->SmoothedNormals());
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;

@@ -99,12 +99,32 @@ namespace ConstantFilter {
 		using namespace LinearPreDecode;
 		if (CopiesValid && CopyGamma == Gamma && SourceKnown[r] && !memcmp(Source[r], v, sizeof(float) * 4)) return;
 		float d[4];
-		Decode(d, v, Gamma);
+		DecodeFast(d, v, Gamma);
 		SendPixel(self, CopyBase + r, d, 1);
 		memcpy(Source[r], v, sizeof(float) * 4);
 		SourceKnown[r] = true;
 		StatCopies++;
 	}
+
+	struct PreDecodeRun {
+		IDirect3DDevice9* device;
+		UINT first = 0, n = 0;
+		float values[LinearPreDecode::Last + 1][4];
+		explicit PreDecodeRun(IDirect3DDevice9* d) : device(d) {}
+		~PreDecodeRun() { Flush(); }
+		void Flush() { if (n) SendPixel(device, LinearPreDecode::CopyBase + first, &values[0][0], n); n = 0; }
+		void Add(UINT r, const float* v) {
+			using namespace LinearPreDecode;
+			if (CopiesValid && CopyGamma == Gamma && SourceKnown[r] && !memcmp(Source[r], v, sizeof(float) * 4)) { Flush(); return; }
+			if (n && first + n != r) Flush();
+			if (!n) first = r;
+			DecodeFast(values[n], v, Gamma);
+			memcpy(Source[r], v, sizeof(float) * 4);
+			SourceKnown[r] = true;
+			StatCopies++;
+			n++;
+		}
+	};
 
 	inline void PreDecodeRefresh(IDirect3DDevice9* self) {
 		using namespace LinearPreDecode;
@@ -113,7 +133,11 @@ namespace ConstantFilter {
 		if (!CopiesValid || CopyGamma != Gamma) for (UINT r = 0; r <= Last; r++) SourceKnown[r] = false;
 		CopiesValid = true;
 		CopyGamma = Gamma;
-		for (UINT r = 1; r <= Last; r++) if (Decodes(r)) PreDecodeCopy(self, r, game + r * 4);
+		if (UseCache) {
+			PreDecodeRun run(self);
+			for (UINT r = 1; r <= Last; r++) { if (Decodes(r)) run.Add(r, game + r * 4); else run.Flush(); }
+		}
+		else for (UINT r = 1; r <= Last; r++) if (Decodes(r)) PreDecodeCopy(self, r, game + r * 4);
 		StatRefreshes++;
 	}
 
@@ -134,6 +158,13 @@ namespace ConstantFilter {
 			if (start <= LinearPreDecode::CopyLast && start + count > LinearPreDecode::CopyFirst) LinearPreDecode::CopiesValid = false;
 			if (LinearPreDecode::Active) {
 				if (!LinearPreDecode::CopiesValid) PreDecodeRefresh(self);
+				else if (start <= LinearPreDecode::Last && LinearPreDecode::UseCache) {
+					PreDecodeRun run(self);
+					for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++) {
+						if (LinearPreDecode::Decodes(start + i)) run.Add(start + i, data + i * 4);
+						else run.Flush();
+					}
+				}
 				else if (start <= LinearPreDecode::Last)
 					for (UINT i = 0; i < count && start + i <= LinearPreDecode::Last; i++)
 						if (LinearPreDecode::Decodes(start + i)) PreDecodeCopy(self, start + i, data + i * 4);
@@ -248,6 +279,7 @@ namespace ConstantFilter {
 	inline void BeginFrame(IDirect3DDevice9* device) {
 		Thread = GetCurrentThreadId();
 		Install(device);
+		LinearPreDecode::UseCache = TheSettingManager->SettingsMain.Main.PreDecodeCache;
 		if (LinearPreDecode::CopyGamma != LinearPreDecode::Gamma) LinearPreDecode::CopiesValid = false;
 		const bool enabled = TheSettingManager->SettingsMain.Main.SkipRedundantConstants;
 		if (enabled && !Enabled) Wipe();
@@ -271,9 +303,11 @@ namespace ConstantFilter {
 				StatPixelCalls > 0 ? 100.0 * StatPixelSkipped / StatPixelCalls : 0.0, StatVertexCalls * perFrame, StatVertexSkipped * perFrame,
 				StatVertexCalls > 0 ? 100.0 * StatVertexSkipped / StatVertexCalls : 0.0, StatWipes * perFrame, StatPauses);
 			if (!LinearPreDecode::Shaders.empty())
-				Logger::Log("LINEAR PREDECODE: %u shaders, %.0f decoded copies and %.0f copy refreshes per frame (gamma %.2f), %u read-back failures | self-check: %u of %u finished draw runs had a stale copy",
+				Logger::Log("LINEAR PREDECODE: %u shaders, %.0f decoded copies and %.0f copy refreshes per frame (gamma %.2f), %u read-back failures | self-check: %u of %u finished draw runs had a stale copy | PreDecodeCache %s: %.0f channel lookups per frame, %.1f%% from the table",
 					(unsigned)LinearPreDecode::Shaders.size(), LinearPreDecode::StatCopies * perFrame, LinearPreDecode::StatRefreshes * perFrame, LinearPreDecode::Gamma,
-					LinearPreDecode::StatReadFailures, LinearPreDecode::StatMismatches, LinearPreDecode::StatChecks);
+					LinearPreDecode::StatReadFailures, LinearPreDecode::StatMismatches, LinearPreDecode::StatChecks, LinearPreDecode::UseCache ? "on" : "off",
+					LinearPreDecode::StatPowLookups * perFrame, LinearPreDecode::StatPowLookups ? 100.0 * (LinearPreDecode::StatPowLookups - LinearPreDecode::StatPowMisses) / LinearPreDecode::StatPowLookups : 0.0);
+			LinearPreDecode::StatPowLookups = LinearPreDecode::StatPowMisses = 0;
 			LinearPreDecode::StatMismatches = LinearPreDecode::StatChecks = 0;
 			LinearPreDecode::StatCopies = LinearPreDecode::StatRefreshes = 0;
 			StatFrames = 0;

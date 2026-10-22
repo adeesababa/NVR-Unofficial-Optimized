@@ -1973,6 +1973,9 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.ContactHardening.Status",      "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "SmoothEdges",        RestartRule::Changed },
+	{ "Shaders.ShadowsInteriors.Forward",     "EvenTaps",           RestartRule::Changed },
+	{ "Shaders.ShadowsInteriors.Forward",     "MagnifiedSoftness",  RestartRule::TurnOn },
+	{ "Shaders.ShadowsInteriors.Forward",     "TexelFilter",        RestartRule::Changed },
 	{ "Shaders.ShadowsInteriors.Main",        "ShadowCubeMapSize",  RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "LampReachSkip",      RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "UnlitShadowSkip",    RestartRule::Changed },
@@ -2140,6 +2143,14 @@ static const char* InactiveReason(const char* section, const char* key) {
 			return "Only used when Softness is above 0: sharp lamp shadows (Softness 0) take a single lookup.";
 		if (is({ "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "ContactHardening") == 0.0f)
 			return "Only used with ContactHardening on.";
+		if (is({ "EvenTaps", "MagnifiedSoftness", "SmoothEdges" }) && NumericSetting(section, "TexelFilter") != 0.0f)
+			return "Not used with TexelFilter on (it filters every lamp shadow edge the way the sun's shadows are; restart after changing TexelFilter).";
+		if (is({ "TexelFilter" }) && (NumericSetting(section, "Softness") <= 0.0f || NumericSetting(section, "Quality") < 1.0f))
+			return "Only used with Softness above 0 and Quality 1 or more (sharp lamp shadows take a single lookup).";
+		if (is({ "EvenTaps" }) && NumericSetting(section, "Quality") < 2.0f)
+			return "Only changes Quality 2 (High) and 3 (Ultra): Low and Medium have no extra lookups.";
+		if (is({ "MagnifiedSoftness" }) && (NumericSetting(section, "Softness") <= 0.0f || NumericSetting(section, "Quality") < 1.0f))
+			return "Only used with Softness above 0 and Quality 1 or more (sharp lamp shadows take a single lookup).";
 		if (is({ "ContactHardening", "ContactHardeningStrength", "ContactHardeningMinSoftness" }) && NumericSetting(section, "LampSize") > 0.0f)
 			return "Not used while LampSize is above 0 (LampSize decides how soft each shadow is).";
 		if (is({ "MaxSoftness" }) && NumericSetting(section, "LampSize") <= 0.0f && NumericSetting(section, "InvisibleLightSize") <= 0.0f)
@@ -2166,6 +2177,15 @@ static const char* InactiveReason(const char* section, const char* key) {
 		return "Only used with the _rmaos maps on ([Shaders.PBR.Rmaos] Enabled): the materials come from them.";
 	if (sec == "Shaders.Reflections.Main" && is({ "MaterialReflect", "MaterialMaxRoughness" }) && NumericSetting(section, "MaterialAware") != 1.0f)
 		return "Only used with MaterialAware 1.";
+	if (sec == "Shaders.Cloth.Interiors" && !is({ "Enabled" }) && NumericSetting(section, "Enabled") == 0.0f)
+		return "Only used with Enabled on (the first switch in this section). With it off cloth stays still indoors "
+			"(worn coats still follow you there: Cloth > Main MotionIndoors).";
+	if (sec == "Shaders.Cloth.Main" && is({ "CalmFactor" }) && NumericSetting(section, "UseGameWind") == 0.0f)
+		return "Only used with UseGameWind on.";
+	if (sec == "Shaders.Cloth.Main" && is({ "WindDirX", "WindDirY", "WindDirZ" }) && NumericSetting(section, "UseGameWind") != 0.0f &&
+		NumericSetting("Shaders.Cloth.Interiors", "Enabled") == 0.0f)
+		return "Not used now: UseGameWind takes the direction from the weather. Used with UseGameWind off, and indoors "
+			"with Cloth > Interiors on (no weather there).";
 	return nullptr;
 }
 
@@ -2483,6 +2503,13 @@ static const std::unordered_map<std::string, FloatRange> kFloatSliders = {
 	{ "Shaders.PBR.Metal.FadeDistance", { 0.0f, 4000.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.NearFade", { 0.0f, 128.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.PlayerLampMargin", { 0.0f, 64.0f, "%.0f" } },
+	{ "Shaders.Cloth.Interiors.Strength", { 0.0f, 2.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.WindIntensity", { 0.0f, 12.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.WindSpeed", { 0.0f, 400.0f, "%.0f" } },
+	{ "Shaders.Cloth.Interiors.Wavelength", { 16.0f, 1000.0f, "%.0f" } },
+	{ "Shaders.Cloth.Interiors.FlutterSpeed", { 0.0f, 6.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.FlutterAmount", { 0.0f, 1.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.RippleAmount", { 0.0f, 1.0f, "%.2f" } },
 };
 
 static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool isShader = false) {

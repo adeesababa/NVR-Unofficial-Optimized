@@ -124,12 +124,12 @@ VS_OUTPUT main(VS_INPUT IN) {
     r0.w = shades(q6.xyz, IN.texcoord_1.xyz);			// partial precision
     q39.xyz = (r0.w * const_3.xyz) + (((q13.x * shades(q5.xyz, -IN.texcoord_1)) * const_3.xyz) * 0.5);			// partial precision
     q14.xyz = (q9.x * const_4.xyz) + ((shades(q5.xyz, -q7.xyz) * q13.x) * lerp(const_4.xyz, r6.xyz, 0.5));			// partial precision
-    q16.xyz = (r0.xyz * q39.xyz) + saturate((1 - att3.x) - att4.x) * ((q11.x * r6.xyz) + q14.xyz);			// partial precision
+    q16.xyz = (r0.xyz * q39.xyz) + LampAttOther(saturate((1 - att3.x) - att4.x)) * ((q11.x * r6.xyz) + q14.xyz);			// partial precision
     r1.yzw = (const_5.zyx * q19.x) + (r6.w * lerp(const_5.zyx, r6.zyx, 0.5));			// partial precision
     // Vanilla ends: texld_pp r8, t0, s0 / add_pp r8.xyz, r0, c1 / mov_pp oC0, r8 -- one
     // register carries the base texture's alpha and then has .xyz overwritten by the lighting
     // sum, so .a comes from texel0 above. This pass applies no albedo.
-    OUT.color_0.rgb = ((saturate((1 - att1.x) - att46.x) * ((q21.x * r6.xyz) + r1.wzy)) + q16.xyz) + PBRAmbient(AmbientColor.rgb);			// partial precision
+    OUT.color_0.rgb = ((LampAttOther(saturate((1 - att1.x) - att46.x)) * ((q21.x * r6.xyz) + r1.wzy)) + q16.xyz) + PBRAmbient(AmbientColor.rgb);			// partial precision
     OUT.color_0.rgb = LinEncode(OUT.color_0.rgb);
 
     return OUT;

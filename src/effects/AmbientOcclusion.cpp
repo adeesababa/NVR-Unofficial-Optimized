@@ -113,7 +113,7 @@ void AmbientOcclusionEffect::UpdateSettings() {
 	SkyData4.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientOcclusion.Skylighting", "SoftWidth"), 1.0f, 500.0f);
 }
 
-void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
+void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device, IDirect3DTexture9* smoothedNormals) {
 	IDirect3DTexture9* orthoMap = TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr;
 	IDirect3DTexture9* sunMask = TheShaderManager->Effects.ShadowsExteriors && TheShaderManager->Effects.ShadowsExteriors->Enabled ?
 		TheShaderManager->Effects.ShadowsExteriors->Textures.ShadowPassTexture : nullptr;
@@ -148,6 +148,9 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	D3DVIEWPORT9 quarter = { 0, 0, desc.Width, desc.Height, 0.0f, 1.0f };
 	SkyData4.z = sunMask ? 1.0f : 0.0f;
 	Effect->SetTechnique(technique);
+	D3DXHANDLE smoothHandle = ParameterHandle(paramSkySmooth, "NVR_SkySmooth");
+	if (!smoothHandle) smoothedNormals = nullptr;
+	if (smoothHandle) { D3DXVECTOR4 smooth(smoothedNormals ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f); Effect->SetVector(smoothHandle, &smooth); }
 	const bool wasEnabled = Enabled;
 	Enabled = true;
 	SetCT();
@@ -164,6 +167,7 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 		if (SUCCEEDED(result)) {
 			Device->SetTexture(6, orthoMap);
 			Device->SetTexture(8, sunMask);
+			if (smoothedNormals) { Device->SetTexture(9, smoothedNormals); TheRenderManager->renderState->NoteDeviceTexture(9, smoothedNormals); }
 			TheRenderManager->renderState->NoteDeviceTexture(6, orthoMap);
 			TheRenderManager->renderState->NoteDeviceTexture(8, sunMask);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
@@ -173,6 +177,7 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device) {
 	}
 	Device->SetTexture(6, nullptr);
 	Device->SetTexture(8, nullptr);
+	if (smoothedNormals) { Device->SetTexture(9, nullptr); TheRenderManager->renderState->NoteDeviceTexture(9, nullptr); }
 	TheRenderManager->renderState->NoteDeviceTexture(6, nullptr);
 	TheRenderManager->renderState->NoteDeviceTexture(8, nullptr);
 	Device->SetViewport(&original);

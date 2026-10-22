@@ -104,7 +104,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     r0.xyz = (q9.x * r1.xyz) + ((q7.x * const_4.xyz) + q91.xyz);			// partial precision
     r2.xyz = ((q12.x * shades(q10.xyz, -IN.texcoord_1)) * const_3.xyz) * 0.5;			// partial precision
     r2.xyz = (shades(q4.xyz, IN.texcoord_1.xyz) * const_3.xyz) + r2.xyz;			// partial precision
-    q17.xyz = (((t13.x * (t1.xyz - 1)) + 1) * r2.xyz) + (r0.xyz * saturate((1 - att2.x) - att14.x));			// partial precision
+    q17.xyz = (((t13.x * (t1.xyz - 1)) + 1) * r2.xyz) + (r0.xyz * LampAttOther(saturate((1 - att2.x) - att14.x)));			// partial precision
     // Vanilla ends: texld_pp r6, t0, s0 / add_pp r6.xyz, r0, c1 / mov_pp oC0, r6 -- one
     // register carries the base texture's alpha and then has .xyz overwritten by the lighting
     // sum, so .a comes from texel0 above. This pass applies no albedo.

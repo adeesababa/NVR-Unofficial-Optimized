@@ -106,13 +106,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 38 && Template.Defines[i].Name != NULL) {
+		while (i < 42 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;
 			i++;
 		}
-		if (i >= 38) {
+		if (i >= 42) {
 			static bool warned = false;
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 38 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 42 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -136,7 +136,15 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0");
 
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
+	AppendDefine("SHADOW_SLACK_CAP_ALL", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CasterReachEverywhere") ? "1" : "0");
 	AppendDefine("POINT_SHADOW_SMOOTH", TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "SmoothEdges") ? "1" : "0");
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "EvenTaps"))
+		AppendDefine("POINT_SHADOW_EVEN", "1");
+	const bool texelFilter = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "TexelFilter") != 0;
+	if (texelFilter)
+		AppendDefine("POINT_SHADOW_TEXEL", "1");
+	else if (TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "MagnifiedSoftness") > 0.0f)
+		AppendDefine("POINT_SHADOW_MAG", "1");
 
 	AppendDefine("LIVE_CUBE", TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections") > 0.0f ||
 		TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "CubeReflections") > 0.0f ? "1" : "0");
@@ -164,6 +172,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
 	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
+	if (PBRShaders::LampFalloffCompiledIn())
+		AppendDefine("LAMP_FALLOFF_ON", PBRShaders::LampFalloffShapeIn() ? "2" : "1");
 
 	AppendDefine("TERRAIN_BLEND", TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") ? "1" : "0");
 	{
@@ -378,7 +388,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
 						bool linear = false, predecode = false;
-						for (int d = 0; d < 40 && Template.Defines[d].Name; d++) {
+						for (int d = 0; d < 44 && Template.Defines[d].Name; d++) {
 							if (!strcmp(Template.Defines[d].Name, "LINEAR_LIGHTING_ON")) linear = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 							if (!strcmp(Template.Defines[d].Name, "LIN_PREDECODE_ON")) predecode = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 						}

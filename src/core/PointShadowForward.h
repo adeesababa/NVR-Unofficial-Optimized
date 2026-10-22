@@ -89,6 +89,7 @@ namespace PointShadowForward {
 	inline float InvisibleSize = 0.0f;
 	inline float Quality = 1.0f;
 	inline float Soft[4] = {};
+	inline float Magnified[4] = {};
 	inline IDirect3DCubeTexture9* Neutral = nullptr;
 	inline const DWORD Stage[6] = { 8, 11, 12, 13, 14, 15 };
 	inline unsigned StatFrames = 0, StatDraws = 0, StatMatchedDraws = 0, StatMatchedLights = 0;
@@ -262,6 +263,15 @@ namespace PointShadowForward {
 			Soft[3] = (std::max)(forward.MaxSoftness, forward.Softness) * 2.0f / face;
 			InvisibleSize = forward.InvisibleLightSize * 0.70710678f;
 		}
+		{
+			const float pixel = 2.0f * fabsf(TheRenderManager->InvProjMatrix._11) / (float)(std::max)(TheRenderManager->width, (UInt32)1);
+			const float texelPixels = pixel > 0.0f ? (2.0f / face) / pixel : 0.0f;
+			static const float MagnifiedPixels0 = 2.0f, MagnifiedPixels1 = 8.0f;
+			Magnified[0] = texelPixels / (MagnifiedPixels1 - MagnifiedPixels0);
+			Magnified[1] = -MagnifiedPixels0 / (MagnifiedPixels1 - MagnifiedPixels0);
+			Magnified[2] = forward.Quality > 0 && forward.Softness > 0.0f && texelPixels > 0.0f ? forward.MagnifiedSoftness * 2.0f / face : 0.0f;
+			Magnified[3] = face;
+		}
 		if (FitLevel >= 2 && Quality > 1.0f) Quality = 1.0f;
 		if (FitLevel >= 3) { Soft[0] = Soft[3] = 0.0f; InvisibleSize = 0.0f; }
 		static int cappedLogged = -1;
@@ -414,7 +424,7 @@ namespace PointShadowForward {
 				}
 			}
 		}
-		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); }
+		if (matched) { memcpy(constants[6], Params, sizeof(Params)); memcpy(constants[15], Soft, sizeof(Soft)); memcpy(constants[14], Magnified, sizeof(Magnified)); }
 		constants[7][0] = matched ? DebugView : 0.0f;
 		constants[7][1] = matched ? NearFade : 0.0f;
 		constants[7][2] = matched ? InvisibleSize : 0.0f;

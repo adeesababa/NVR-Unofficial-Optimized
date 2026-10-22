@@ -4,6 +4,7 @@
 #include "PointShadowForward.h"
 #include "TestTools.h"
 #include "OrthoProbe.h"
+#include "SunShadowStats.h"
 
 struct SkinnedBoundEntry { UInt32 frame; bool ok; NiBound bound; };
 static std::unordered_map<NiGeometry*, SkinnedBoundEntry> SkinnedBounds;
@@ -69,14 +70,36 @@ static UInt64 HashPointShadowBytes(UInt64 hash, const void* data, size_t size) {
 	return hash;
 }
 
-struct CasterMotion { UInt32 seen = 0, changed = 0; UInt64 transform = 0; bool known = false; };
+static bool FastCasterHashOn() { return TheSettingManager->SettingsMain.Main.FastCasterHash; }
+static UInt64 HashPointShadowWords(UInt64 hash, const void* data, size_t size) {
+	const unsigned char* bytes = static_cast<const unsigned char*>(data);
+	UInt32 a = (UInt32)hash, b = (UInt32)(hash >> 32);
+	size_t i = 0;
+	for (; i + 4 <= size; i += 4) {
+		UInt32 w;
+		memcpy(&w, bytes + i, sizeof(w));
+		a = (a ^ w) * 16777619u;
+		b = (b ^ w) * 0x5BD1E995u; b ^= b >> 15;
+	}
+	for (; i < size; ++i) {
+		a = (a ^ bytes[i]) * 16777619u;
+		b = (b ^ bytes[i]) * 0x5BD1E995u; b ^= b >> 15;
+	}
+	return ((UInt64)b << 32) | a;
+}
+static UInt64 HashCasterBytes(UInt64 hash, const void* data, size_t size) {
+	return FastCasterHashOn() ? HashPointShadowWords(hash, data, size) : HashPointShadowBytes(hash, data, size);
+}
+
+struct CasterMotion { UInt32 seen = 0, changed = 0; UInt64 transform = 0; bool known = false; UInt32 hashFrame = 0; UInt64 casterHash = 0; bool hashKnown = false; };
 static std::unordered_map<NiGeometry*, CasterMotion> CasterMotions;
 static const UInt32 MovingSettleFrames = 60;
 
-static bool RecentlyMoved(NiGeometry* geo) {
+static bool RecentlyMoved(NiGeometry* geo, CasterMotion** out = nullptr) {
 	CasterMotion& motion = CasterMotions[geo];
+	if (out) *out = &motion;
 	if (motion.seen != SkinnedBoundFrame || !motion.known) {
-		const UInt64 transform = HashPointShadowBytes(1469598103934665603ULL, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		const UInt64 transform = HashCasterBytes(1469598103934665603ULL, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
 		if (motion.known && transform != motion.transform) motion.changed = SkinnedBoundFrame;
 		motion.transform = transform;
 		motion.known = true;
@@ -85,10 +108,11 @@ static bool RecentlyMoved(NiGeometry* geo) {
 	return motion.changed && SkinnedBoundFrame - motion.changed < MovingSettleFrames;
 }
 
-static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade) {
+static bool IsMovingCaster(NiGeometry* geo, NiShadeProperty* shade, CasterMotion** motion = nullptr) {
+	if (motion) *motion = nullptr;
 	if (!geo) return false;
 	if (geo->skinInstance || (shade && shade->m_eShaderType == NiShadeProperty::kProp_SpeedTreeLeaf)) return true;
-	return RecentlyMoved(geo);
+	return RecentlyMoved(geo, motion);
 }
 
 static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& staticCasters) {
@@ -99,27 +123,36 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
+	const bool fast = FastCasterHashOn();
+	static bool fastBefore = false;
+	if (fast != fastBefore) { fastBefore = fast; CasterMotions.clear(); }
 
 	for (auto entry = light->kGeometryList.start; entry; entry = entry->next) {
 		NiGeometry* geo = entry->data;
 		NiShadeProperty* shade = geo ? static_cast<NiShadeProperty*>(geo->GetProperty(NiProperty::kType_Shade)) : nullptr;
-		if (IsMovingCaster(geo, shade)) {
+		CasterMotion* motion = nullptr;
+		if (IsMovingCaster(geo, shade, &motion)) {
 			staticCasters = false;
 			continue;
 		}
+		if (fast && motion && motion->hashKnown && motion->hashFrame == SkinnedBoundFrame) {
+			hash = PointShadowAddCasterHash(hash, motion->casterHash);
+			continue;
+		}
 		UInt64 casterHash = 1469598103934665603ULL;
-		casterHash = HashPointShadowBytes(casterHash, &geo, sizeof(geo));
+		casterHash = HashCasterBytes(casterHash, &geo, sizeof(geo));
 		if (!geo) continue;
-		casterHash = HashPointShadowBytes(casterHash, &geo->m_flags, sizeof(geo->m_flags));
-		casterHash = HashPointShadowBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
-		if (geo->m_kWorldBound) casterHash = HashPointShadowBytes(casterHash, geo->m_kWorldBound, sizeof(*geo->m_kWorldBound));
+		casterHash = HashCasterBytes(casterHash, &geo->m_flags, sizeof(geo->m_flags));
+		casterHash = HashCasterBytes(casterHash, &geo->m_worldTransform, sizeof(geo->m_worldTransform));
+		if (geo->m_kWorldBound) casterHash = HashCasterBytes(casterHash, geo->m_kWorldBound, sizeof(*geo->m_kWorldBound));
 
 		NiMaterialProperty* material = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
 		if (shade) {
-			casterHash = HashPointShadowBytes(casterHash, &shade->m_usFlags, sizeof(shade->m_usFlags));
-			casterHash = HashPointShadowBytes(casterHash, &shade->m_eShaderType, sizeof(shade->m_eShaderType));
+			casterHash = HashCasterBytes(casterHash, &shade->m_usFlags, sizeof(shade->m_usFlags));
+			casterHash = HashCasterBytes(casterHash, &shade->m_eShaderType, sizeof(shade->m_eShaderType));
 		}
-		if (material) casterHash = HashPointShadowBytes(casterHash, &material->fAlpha, sizeof(material->fAlpha));
+		if (material) casterHash = HashCasterBytes(casterHash, &material->fAlpha, sizeof(material->fAlpha));
+		if (fast && motion) { motion->casterHash = casterHash; motion->hashFrame = SkinnedBoundFrame; motion->hashKnown = true; }
 		hash = PointShadowAddCasterHash(hash, casterHash);
 	}
 }
@@ -454,6 +487,9 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 		else if (!geometryPass->TestObject(geo)) OP_LAND(3);
 	}
 #endif
+#if NVR_TEST_TOOLS
+	if (SunShadowStats::Current) SunShadowStats::Current->geometry++;
+#endif
 	if (!geo->shader) return; // skip Geometry without a shader
 
 	if (!CheckShaderFlags(geo))
@@ -525,6 +561,9 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 #endif
     	if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) continue; // culling containers
 		if (!isLand && Node->GetWorldBoundRadius() < Forms->MinRadius) continue;
+#if NVR_TEST_TOOLS
+		if (SunShadowStats::Current) SunShadowStats::Current->nodes++;
+#endif
 
 		if (Node->IsKindOf<NiSwitchNode>()) {
 			// NiSwitchNode - only render active children (if exists) to the shadow map.
@@ -551,6 +590,9 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 			if (!isLand && child->GetWorldBoundRadius() < Forms->MinRadius) continue;
 
 			// Frustum culling.
+#if NVR_TEST_TOOLS
+			if (SunShadowStats::Current && arPlanes) SunShadowStats::Current->childTests++;
+#endif
 			if (arPlanes && (isLand || isLOD)) {
 				BSMultiBoundNode* multibound = child->IsMultiBoundNode();
 
@@ -576,6 +618,17 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 
 // Go through accumulations and render found objects
 void ShadowManager::RenderAccums() {
+#if NVR_TEST_TOOLS
+	if (SunShadowStats::Current) {
+		SunShadowStats::BeginPass(SunShadowStats::kOpaque); geometryPass->RenderAccum();
+		SunShadowStats::BeginPass(SunShadowStats::kLodLand); terrainLODPass->RenderAccum();
+		SunShadowStats::BeginPass(SunShadowStats::kAlpha); alphaPass->RenderAccum();
+		SunShadowStats::BeginPass(SunShadowStats::kSkinned); skinnedGeoPass->RenderAccum();
+		SunShadowStats::BeginPass(SunShadowStats::kTree); speedTreePass->RenderAccum();
+		SunShadowStats::CurrentPass = -1;
+		return;
+	}
+#endif
 	geometryPass->RenderAccum();
 	terrainLODPass->RenderAccum();
 	alphaPass->RenderAccum();
@@ -586,10 +639,13 @@ void ShadowManager::RenderAccums() {
 
 static float SunLandDropScale = 0.0f;
 
-void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj) {
-	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
+static float ShadowMapLandDrop() {
+	TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+	const bool drop = terrain && terrain->BlendingSettings.Enabled && TheTextureManager->TerrainBlendDepthTexture;
+	return drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop * SunLandDropScale : 0.0f;
+}
 
-	IDirect3DDevice9* Device = TheRenderManager->device;
+void ShadowManager::BeginShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj, bool keepLandSet) {
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
 
 	ShadowMap->ShadowCameraToLight = (*ViewProj);
@@ -607,17 +663,22 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	RenderState->SetRenderState(D3DRS_DEPTHBIAS, (DWORD)0.0f, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, (DWORD)0.0f, RenderStateArgs);
 
-	{
-		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
-		const bool drop = terrain && terrain->BlendingSettings.Enabled && TheTextureManager->TerrainBlendDepthTexture;
-		RenderPass::LandDrop = drop ? terrain->BlendingSettings.BlendDistance * terrain->BlendingSettings.ShadowDrop * SunLandDropScale : 0.0f;
-		RenderPass::LandSet.clear();
-	}
+	RenderPass::LandDrop = ShadowMapLandDrop();
+	if (!keepLandSet) RenderPass::LandSet.clear();
+}
 
+void ShadowManager::WalkShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap) {
+#if NVR_TEST_TOOLS
+	SunShadowStats::Cascade* stats = SunShadowStats::Current;
+	unsigned long long t0 = stats ? SunShadowStats::Now() : 0;
+#endif
 	if (ShadowMap->Forms.Lod) {
 		AccumChildren(BGSTerrainManager::GetRootLandLODNode(), &ShadowMap->Forms, true, true, &ShadowMap->ShadowMapFrustumPlanes);
 		AccumChildren(BGSTerrainManager::GetRootObjectLODNode(), &ShadowMap->Forms, false, true, &ShadowMap->ShadowMapFrustumPlanes);
 	}
+#if NVR_TEST_TOOLS
+	unsigned long long t1 = stats ? SunShadowStats::Now() : 0;
+#endif
 
 	if (Player->GetWorldSpace()) {
 		GridCellArray* CellArray = Tes->gridCellArray;
@@ -630,6 +691,17 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 	else {
 		AccumExteriorCell(Player->parentCell, ShadowMap);
 	}
+#if NVR_TEST_TOOLS
+	if (stats) { const unsigned long long t2 = SunShadowStats::Now(); stats->tWalkLod += t1 - t0; stats->tWalkCells += t2 - t1; }
+#endif
+}
+
+void ShadowManager::DrawShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, bool keepLandSet) {
+	IDirect3DDevice9* Device = TheRenderManager->device;
+#if NVR_TEST_TOOLS
+	SunShadowStats::Cascade* stats = SunShadowStats::Current;
+	unsigned long long t2 = stats ? SunShadowStats::Now() : 0;
+#endif
 
 	Device->SetViewport(&ShadowMap->ShadowMapViewPort);
 	Device->Clear(0L, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f), 1.0f, 0L);
@@ -638,10 +710,25 @@ void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* Sh
 		ClearShadowCascade(&ShadowMap->ShadowMapViewPort, &ShadowMap->ClearColor);
 
 	RenderPass::TwoSided = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "TwoSidedCasters") != 0;
+#if NVR_TEST_TOOLS
+	unsigned long long t3 = stats ? SunShadowStats::Now() : 0;
+#endif
 	RenderAccums();
+#if NVR_TEST_TOOLS
+	if (stats) {
+		const unsigned long long t4 = SunShadowStats::Now();
+		stats->tClear += t3 - t2; stats->tDraws += t4 - t3;
+	}
+#endif
 	RenderPass::TwoSided = false;
 	RenderPass::LandDrop = 0.0f;
-	RenderPass::LandSet.clear();
+	if (!keepLandSet) RenderPass::LandSet.clear();
+}
+
+void ShadowManager::RenderShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj) {
+	BeginShadowMap(ShadowMap, ViewProj);
+	WalkShadowMap(ShadowMap);
+	DrawShadowMap(ShadowMap);
 }
 
 
@@ -665,6 +752,9 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 	TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First;
 	while (Entry) {
 		NiNode* RefNode = GetRefNode(Entry->item, &ShadowMap->Forms);
+#if NVR_TEST_TOOLS
+		if (SunShadowStats::Current) { SunShadowStats::Current->refs++; if (RefNode) SunShadowStats::Current->refNodes++; }
+#endif
 
 		if (!RefNode) {
 			Entry = Entry->next;
@@ -674,6 +764,7 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 		if (RefNode->WithinFrustum(&ShadowMap->ShadowMapFrustumPlanes) && !IsRefracting(Entry->item)) {
 #if NVR_TEST_TOOLS
 			OrthoProbe::CurrentRef = Entry->item;
+			if (SunShadowStats::Current) { SunShadowStats::Current->refsIn++; SunShadowStats::CheckRef(RefNode, Entry->item); }
 #endif
 			AccumChildren(RefNode, &ShadowMap->Forms, false, false, &ShadowMap->ShadowMapFrustumPlanes);
 #if NVR_TEST_TOOLS
@@ -684,6 +775,248 @@ void ShadowManager::AccumExteriorCell(TESObjectCELL* Cell, ShadowsExteriorEffect
 		Entry = Entry->next;
 	}
 }
+
+
+static inline unsigned ForEachSunCascade(unsigned mask, unsigned& bit) {
+	unsigned long index;
+	_BitScanForward(&index, mask);
+	bit = index;
+	return mask & (mask - 1);
+}
+
+void ShadowManager::WalkSunCascades(unsigned mask) {
+	for (int c = 0; c < 4; c++) SunCasters[c].clear();
+	if (!mask) return;
+	unsigned lodMask = 0;
+	for (unsigned m = mask, c; m; ) { m = ForEachSunCascade(m, c); if (SunForms[c]->Lod) lodMask |= 1u << c; }
+	if (lodMask) {
+		WalkSunChildren(BGSTerrainManager::GetRootLandLODNode(), lodMask, true, true);
+		WalkSunChildren(BGSTerrainManager::GetRootObjectLODNode(), lodMask, false, true);
+	}
+	if (Player->GetWorldSpace()) {
+		GridCellArray* CellArray = Tes->gridCellArray;
+		const UInt32 CellArraySize = CellArray->size * CellArray->size;
+		for (UInt32 i = 0; i < CellArraySize; i++) WalkSunCell(CellArray->GetCell(i), mask);
+	}
+	else WalkSunCell(Player->parentCell, mask);
+}
+
+void ShadowManager::WalkSunCell(TESObjectCELL* Cell, unsigned mask) {
+	if (!Cell || Cell->IsInterior()) return;
+
+	unsigned landMask = 0;
+	for (unsigned m = mask, c; m; ) { m = ForEachSunCascade(m, c); if (SunForms[c]->Terrain) landMask |= 1u << c; }
+	if (landMask) {
+		AccumulatingLand = true;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentLand = true; OrthoProbe::CurrentRef = nullptr;
+#endif
+		WalkSunChildren(Cell->GetChildNode(TESObjectCELL::kCellNode_Land), landMask, true, false);
+		AccumulatingLand = false;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentLand = false;
+#endif
+	}
+
+	for (TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First; Entry; Entry = Entry->next) {
+		NiNode* RefNode = nullptr;
+		unsigned inMask = 0;
+		for (unsigned m = mask, c; m; ) {
+			m = ForEachSunCascade(m, c);
+			NiNode* node = GetRefNode(Entry->item, SunForms[c]);
+			if (!node) continue;
+			RefNode = node;
+			if (node->WithinFrustum(SunPlanes[c])) inMask |= 1u << c;
+		}
+		if (!inMask || IsRefracting(Entry->item)) continue;
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentRef = Entry->item;
+#endif
+		WalkSunChildren(RefNode, inMask, false, false);
+#if NVR_TEST_TOOLS
+		OrthoProbe::CurrentRef = nullptr;
+#endif
+	}
+}
+
+void ShadowManager::WalkSunChildren(NiAVObject* NiObject, unsigned mask, bool isLand, bool isLOD) {
+	if (!NiObject) return;
+
+	const bool skipLoadedLod = isLOD && !isLand && TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.LodSkipLoaded;
+	auto bigEnough = [this, isLand](NiAVObject* object, unsigned m) {
+		if (isLand) return m;
+		const float radius = object->GetWorldBoundRadius();
+		unsigned out = 0;
+		for (unsigned c; m; ) { m = ForEachSunCascade(m, c); if (radius >= SunForms[c]->MinRadius) out |= 1u << c; }
+		return out;
+	};
+
+	std::vector<std::pair<NiAVObject*, unsigned>>& containers = SunContainers;
+	containers.clear();
+
+	if (!NiObject->IsGeometry())
+		containers.emplace_back(NiObject, mask);
+	else
+		WalkSunObject(NiObject, mask, isLand && isLOD);
+
+	while (!containers.empty()) {
+		NiAVObject* object = containers.back().first;
+		unsigned m = containers.back().second;
+		containers.pop_back();
+
+		if (!object) continue;
+		NiNode* Node = object->IsNiNode();
+		if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) continue;
+		m = bigEnough(Node, m);
+		if (!m) continue;
+
+		if (Node->IsKindOf<NiSwitchNode>()) {
+			NiSwitchNode* SwitchNode = static_cast<NiSwitchNode*>(Node);
+			if (SwitchNode->m_iIndex < 0 || SwitchNode->m_iIndex >= Node->m_children.end)
+				continue;
+
+			NiAVObject* child = Node->m_children.data[SwitchNode->m_iIndex];
+			if (!child || (skipLoadedLod && IsLodInLoadedCells(child)))
+				continue;
+			if (!child->IsGeometry())
+				containers.emplace_back(child, m);
+			else
+				WalkSunObject(child, m, false);
+			continue;
+		}
+
+		for (int i = 0; i < Node->m_children.end; i++) {
+			NiAVObject* child = Node->m_children.data[i];
+			if (!child || child->m_flags & NiAVObject::NiFlags::APP_CULLED) continue;
+			unsigned cm = bigEnough(child, m);
+			if (!cm) continue;
+
+			if (isLand || isLOD) {
+				BSMultiBoundNode* multibound = child->IsMultiBoundNode();
+				if (multibound) {
+					unsigned in = 0;
+					for (unsigned t = cm, c; t; ) { t = ForEachSunCascade(t, c); if (multibound->spMultiBound->spShape->WithinFrustum(*SunPlanes[c])) in |= 1u << c; }
+					cm = in;
+				}
+			}
+			else {
+				unsigned in = 0;
+				for (unsigned t = cm, c; t; ) { t = ForEachSunCascade(t, c); if (child->WithinFrustum(SunPlanes[c])) in |= 1u << c; }
+				cm = in;
+			}
+			if (!cm) continue;
+
+			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue;
+			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
+			if (!child->IsGeometry())
+				containers.emplace_back(child, cm);
+			else
+				WalkSunObject(child, cm, isLand && isLOD);
+		}
+	}
+}
+
+void ShadowManager::WalkSunObject(NiAVObject* NiObject, unsigned mask, bool isLODLand) {
+	NiGeometry* geo = static_cast<NiGeometry*>(NiObject);
+	if (!geo->shader) return;
+	if (!CheckShaderFlags(geo)) return;
+#if NVR_TEST_TOOLS
+	OrthoProbe::NoteGeometry(geo);
+#endif
+	auto add = [this](unsigned m, NiGeometry* g, UInt8 pass) {
+		for (unsigned c; m; ) { m = ForEachSunCascade(m, c); SunCasters[c].push_back({ g, pass }); }
+	};
+	const int skinned = skinnedGeoPass->TestObject(geo);
+	if (skinned) { if (skinned == 1) add(mask, geo, kSunSkinned); return; }
+	if (speedTreePass->TestObject(geo)) { add(mask, geo, kSunTree); return; }
+
+	int lodLand = -1, alpha = -1, opaque = -1;
+	unsigned lodMask = 0, alphaMask = 0, opaqueMask = 0;
+	for (unsigned m = mask, c; m; ) {
+		m = ForEachSunCascade(m, c);
+		const ShadowsExteriorEffect::FormsStruct* Forms = SunForms[c];
+		if (Forms->Lod && isLODLand) {
+			if (lodLand < 0) lodLand = terrainLODPass->TestObject(geo);
+			if (lodLand) { lodMask |= 1u << c; continue; }
+		}
+		if (Forms->AlphaEnabled) {
+			if (alpha < 0) alpha = alphaPass->TestObject(geo);
+			if (alpha) { alphaMask |= 1u << c; continue; }
+		}
+		if (opaque < 0) opaque = geometryPass->TestObject(geo);
+		if (opaque) opaqueMask |= 1u << c;
+	}
+	for (unsigned m = mask, c; m; ) {
+		m = ForEachSunCascade(m, c);
+		const unsigned bit = 1u << c;
+		if (lodMask & bit) SunCasters[c].push_back({ geo, kSunLodLand });
+		else if (alphaMask & bit) SunCasters[c].push_back({ geo, kSunAlpha });
+		else if (opaqueMask & bit) SunCasters[c].push_back({ geo, kSunOpaque });
+	}
+	if (opaqueMask && AccumulatingLand && RenderPass::LandDrop > 0.0f) RenderPass::LandSet.insert(geo);
+}
+
+RenderPass* ShadowManager::SunPassOf(UInt8 pass) {
+	switch (pass) {
+	case kSunOpaque: return geometryPass;
+	case kSunLodLand: return terrainLODPass;
+	case kSunAlpha: return alphaPass;
+	case kSunSkinned: return skinnedGeoPass;
+	default: return speedTreePass;
+	}
+}
+
+void ShadowManager::PushSunCasters(int cascade) {
+	for (const SunCaster& caster : SunCasters[cascade]) SunPassOf(caster.pass)->GeometryList.push(caster.geometry);
+}
+
+static bool FlatCascade(const D3DXMATRIX& m) {
+	return (m._11 == 0.0f && m._21 == 0.0f && m._31 == 0.0f) || (m._12 == 0.0f && m._22 == 0.0f && m._32 == 0.0f);
+}
+
+#if NVR_TEST_TOOLS
+static unsigned BytesPerTexel(D3DFORMAT format) {
+	switch (format) {
+	case D3DFMT_R16F: case D3DFMT_L16: return 2;
+	case D3DFMT_A16B16G16R16F: case D3DFMT_A16B16G16R16: case D3DFMT_G32R32F: return 8;
+	case D3DFMT_A32B32G32R32F: return 16;
+	default: return 4;
+	}
+}
+static bool ReadCascadeRegion(ShadowsExteriorEffect* Shadows, const D3DVIEWPORT9& viewport, std::vector<UInt8>& out) {
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	static IDirect3DSurface9* resolved = nullptr;
+	static IDirect3DSurface9* readback = nullptr;
+	static D3DSURFACE_DESC have = {};
+	if (!Shadows->ShadowAtlasSurface) return false;
+	D3DSURFACE_DESC d = {};
+	Shadows->ShadowAtlasSurface->GetDesc(&d);
+	if (!resolved || have.Width != d.Width || have.Height != d.Height || have.Format != d.Format) {
+		if (resolved) { resolved->Release(); resolved = nullptr; }
+		if (readback) { readback->Release(); readback = nullptr; }
+		if (FAILED(Device->CreateRenderTarget(d.Width, d.Height, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, NULL)) ||
+			FAILED(Device->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &readback, NULL))) {
+			if (resolved) { resolved->Release(); resolved = nullptr; }
+			return false;
+		}
+		have = d;
+	}
+	RECT r = { (LONG)viewport.X, (LONG)viewport.Y, (LONG)(viewport.X + viewport.Width), (LONG)(viewport.Y + viewport.Height) };
+	IDirect3DSurface9* source = Shadows->ShadowAtlasSurfaceMSAA ? Shadows->ShadowAtlasSurfaceMSAA : Shadows->ShadowAtlasSurface;
+	if (FAILED(Device->StretchRect(source, &r, resolved, &r, D3DTEXF_NONE))) return false;
+	if (FAILED(Device->GetRenderTargetData(resolved, readback))) return false;
+	D3DLOCKED_RECT locked = {};
+	if (FAILED(readback->LockRect(&locked, &r, D3DLOCK_READONLY))) return false;
+	const unsigned row = viewport.Width * BytesPerTexel(d.Format);
+	out.resize((size_t)row * viewport.Height);
+	for (UINT y = 0; y < viewport.Height; y++) memcpy(&out[(size_t)y * row], (const UInt8*)locked.pBits + (size_t)y * locked.Pitch, row);
+	readback->UnlockRect();
+	return true;
+}
+
+struct SunVerifyStats { unsigned frames, cascades, listSame, listDiff, mapSame, mapDiff, mapFailed, flat; unsigned long long casters; };
+static SunVerifyStats SunVerify = {};
+#endif
 
 
 void ShadowManager::RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex) {
@@ -1431,6 +1764,17 @@ void ShadowManager::RenderShadowMaps() {
 			ShadowData->z = 0; // set shader constant to identify other shadow maps
 			auto shadowMapTimer = TimeLogger();
 
+			{
+				static int loggedOverhead = -1;
+				const int overheadState = !ShadowsExteriorEffect::SunOverhead(SunDir) ? 0 : Shadows->Settings.Exteriors.OverheadSunFix ? 2 : 1;
+				if (overheadState != loggedOverhead) {
+					Logger::Log("SUN OVERHEAD STATE: sun %.4f %.4f %.4f %s", SunDir.x, SunDir.y, SunDir.z, overheadState == 2 ?
+						"straight overhead: cascades built with +Y as up (OverheadSunFix)" : overheadState == 1 ?
+						"straight overhead: cascades flat and empty, no sun shadows from them (OverheadSunFix off)" : "not overhead: cascades as always");
+					loggedOverhead = overheadState;
+				}
+			}
+
 			if (Shadows->ShadowAtlasSurfaceMSAA)
 				Device->SetRenderTarget(0, Shadows->ShadowAtlasSurfaceMSAA);
 			else
@@ -1443,9 +1787,113 @@ void ShadowManager::RenderShadowMaps() {
 			static CpuTimer sunCascadesCpuTimer("Sun cascades (CPU)");
 			CpuProfileScope cpu(sunCascadesCpuTimer);
 			GpuProfileScope gpu(sunCascadesTimer, Device);
+#if NVR_TEST_TOOLS
+			SunShadowStats::Mode = Shadows->Settings.Exteriors.CascadeStats;
+			if (SunShadowStats::Mode) SunShadowStats::BeginFrame();
+			const unsigned long long statsLoopStart = SunShadowStats::Mode ? SunShadowStats::Now() : 0;
+#endif
 			const bool staggered = TheSettingManager->SettingsMain.Main.StaggeredSunShadows;
 			const bool cachedDistant = TheSettingManager->SettingsMain.Main.CachedDistantShadows && !staggered;
 			if (cachedDistant) CollectMovers(SunDir);
+			const bool oneWalk = Shadows->Settings.Exteriors.SunOneWalk;
+			const bool skipFlat = Shadows->Settings.Exteriors.SunSkipFlat;
+			const bool leanDraws = Shadows->Settings.Exteriors.SunLeanDraws;
+#if NVR_TEST_TOOLS
+			const int verify = Shadows->Settings.Exteriors.SunVerify;
+#endif
+			D3DXMATRIX cascadeViewProj[4];
+			bool cascadeCached[4] = {};
+			float cascadeInner[4] = {};
+			unsigned flatCascades = 0;
+			auto drawCascade = [&](int i) {
+				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
+				const bool flat = (flatCascades >> i) & 1;
+				Shadows->Constants.ShadowViewProj = cascadeViewProj[i];
+				SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));
+#if NVR_TEST_TOOLS
+				if (SunShadowStats::Mode) SunShadowStats::Sum[i].frames++;
+				SunShadowStats::Current = SunShadowStats::Mode >= 2 ? &SunShadowStats::Sum[i] : nullptr;
+				if (SunShadowStats::Current) {
+					const D3DXVECTOR4& cr = ShadowMap->ShadowMapCascadeCenterRadius;
+					SunShadowStats::CurrentColumn = { D3DXVECTOR3(cr.x + TheRenderManager->CameraPosition.x, cr.y + TheRenderManager->CameraPosition.y,
+						cr.z + TheRenderManager->CameraPosition.z), SunDir, cr.w, &ShadowMap->ShadowMapFrustumPlanes };
+					SunShadowStats::Current->radius = cr.w;
+					static unsigned columnLogs = 0;
+					if (SunShadowStats::Mode >= 3 && columnLogs < 16) {
+						columnLogs++;
+						NiCamera* camera = WorldSceneGraph->camera;
+						Logger::Log("SUN CASCADE COLUMN %d: centre (camera-relative) %.0f %.0f %.0f radius %.1f | slice %.6f..%.6f of the clip range | camera near %.2f far %.0f fov %.1f"
+							" | sun %.3f %.3f %.3f | camera at %.0f %.0f %.0f", i, cr.x, cr.y, cr.z, cr.w, ShadowMap->ShadowMapNear, ShadowMap->ShadowMapRadius,
+							camera->Frustum.Near, camera->Frustum.Far, WorldSceneGraph->cameraFOV, SunDir.x, SunDir.y, SunDir.z,
+							TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+					}
+				}
+				std::vector<UInt8> oldMap;
+				bool oldRead = false;
+				if (verify >= 2 && (oneWalk || flat || leanDraws)) {
+					std::unordered_set<NiGeometry*> sharedLand;
+					if (oneWalk) sharedLand.swap(RenderPass::LandSet);
+					RenderShadowMap(ShadowMap, &cascadeViewProj[i]);
+					if (oneWalk) RenderPass::LandSet.swap(sharedLand);
+					oldRead = ReadCascadeRegion(Shadows, ShadowMap->ShadowMapViewPort, oldMap);
+				}
+#endif
+				BeginShadowMap(ShadowMap, &cascadeViewProj[i], oneWalk);
+#if NVR_TEST_TOOLS
+				if (verify >= 1 && oneWalk && !flat) {
+					std::unordered_set<NiGeometry*> sharedLand;
+					sharedLand.swap(RenderPass::LandSet);
+					WalkShadowMap(ShadowMap);
+					std::vector<std::pair<NiGeometry*, UInt8>> oldOrder, newOrder;
+					for (UInt8 pass = kSunOpaque; pass <= kSunTree; pass++) {
+						std::stack<NiGeometry*>& list = SunPassOf(pass)->GeometryList;
+						while (!list.empty()) { oldOrder.emplace_back(list.top(), pass); list.pop(); }
+						for (auto c = SunCasters[i].rbegin(); c != SunCasters[i].rend(); ++c) if (c->pass == pass) newOrder.emplace_back(c->geometry, pass);
+					}
+					bool same = oldOrder == newOrder;
+					unsigned landDiff = 0;
+					for (const auto& caster : newOrder)
+						if (caster.second == kSunOpaque && (RenderPass::LandSet.count(caster.first) != 0) != (sharedLand.count(caster.first) != 0)) landDiff++;
+					RenderPass::LandSet.swap(sharedLand);
+					if (same && !landDiff) SunVerify.listSame++;
+					else {
+						SunVerify.listDiff++;
+						if (SunVerify.listDiff <= 20) {
+							size_t first = 0;
+							while (first < oldOrder.size() && first < newOrder.size() && oldOrder[first] == newOrder[first]) first++;
+							Logger::Log("SUN CASCADE VERIFY: cascade %d lists DIFFER: old walk %u casters, one walk %u, first difference at %u; land drop differs on %u",
+								i, (unsigned)oldOrder.size(), (unsigned)newOrder.size(), (unsigned)first, landDiff);
+						}
+					}
+					SunVerify.casters += newOrder.size();
+				}
+#endif
+				if (oneWalk) PushSunCasters(i);
+				else if (!flat) WalkShadowMap(ShadowMap);
+				RenderPass::Lean = leanDraws;
+				DrawShadowMap(ShadowMap, oneWalk);
+				RenderPass::Lean = false;
+#if NVR_TEST_TOOLS
+				if (verify >= 2 && (oneWalk || flat || leanDraws)) {
+					std::vector<UInt8> newMap;
+					if (!oldRead || !ReadCascadeRegion(Shadows, ShadowMap->ShadowMapViewPort, newMap)) SunVerify.mapFailed++;
+					else if (oldMap == newMap) SunVerify.mapSame++;
+					else {
+						SunVerify.mapDiff++;
+						if (SunVerify.mapDiff <= 20) {
+							size_t differ = 0;
+							for (size_t b = 0; b < oldMap.size() && b < newMap.size(); b++) differ += oldMap[b] != newMap[b];
+							Logger::Log("SUN CASCADE VERIFY: cascade %d MAPS DIFFER%s: %u of %u bytes", i, flat ? " (flat)" : "", (unsigned)differ, (unsigned)oldMap.size());
+						}
+					}
+				}
+				if (verify) { SunVerify.cascades++; if (flat) SunVerify.flat++; }
+				SunShadowStats::Current = nullptr;
+#endif
+				SunLandDropScale = 0.0f;
+				CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+				CascadeHadMover[i] = cascadeCached[i] && MoversInCascade(i, ShadowMap, cascadeInner[i]);
+			};
 			for (int i = MapNear; i < MapOrtho; i++) {
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
 				const bool cachedCascade = cachedDistant && i != MapNear;
@@ -1461,12 +1909,11 @@ void ShadowManager::RenderShadowMaps() {
 				}
 				if (update) {
 					updatedCascades |= 1u << i;
-					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
-					SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));
-					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
-					SunLandDropScale = 0.0f;
-					CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
-					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
+					cascadeViewProj[i] = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
+					cascadeCached[i] = cachedCascade;
+					cascadeInner[i] = innerDepth;
+					if (skipFlat && FlatCascade(cascadeViewProj[i])) flatCascades |= 1u << i;
+					if (!oneWalk) drawCascade(i);
 				}
 				else {
 					D3DXVECTOR3 newCameraTranslation = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
@@ -1487,9 +1934,39 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			if (oneWalk && updatedCascades) {
+				for (int c = 0; c < 4; c++) { SunForms[c] = &Shadows->ShadowMaps[c].Forms; SunPlanes[c] = &Shadows->ShadowMaps[c].ShadowMapFrustumPlanes; }
+				SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));
+				RenderPass::LandDrop = ShadowMapLandDrop();
+				RenderPass::LandSet.clear();
+#if NVR_TEST_TOOLS
+				const unsigned long long walkStart = SunShadowStats::Mode >= 2 ? SunShadowStats::Now() : 0;
+#endif
+				WalkSunCascades(updatedCascades & ~flatCascades);
+#if NVR_TEST_TOOLS
+				if (SunShadowStats::Mode >= 2) SunShadowStats::tSharedWalk += SunShadowStats::Now() - walkStart;
+#endif
+				RenderPass::LandDrop = 0.0f;
+				SunLandDropScale = 0.0f;
+				for (int i = MapNear; i < MapOrtho; i++) if (updatedCascades & (1u << i)) drawCascade(i);
+				RenderPass::LandSet.clear();
+			}
+#if NVR_TEST_TOOLS
+			if (verify && ++SunVerify.frames >= 240) {
+				Logger::Log("SUN CASCADE VERIFY %u frames, %u cascades drawn (%u flat): lists %u identical, %u differ (%.0f casters each on average); "
+					"maps %u identical, %u differ, %u not read", SunVerify.frames, SunVerify.cascades, SunVerify.flat, SunVerify.listSame, SunVerify.listDiff,
+					SunVerify.listSame + SunVerify.listDiff ? (double)SunVerify.casters / (SunVerify.listSame + SunVerify.listDiff) : 0.0,
+					SunVerify.mapSame, SunVerify.mapDiff, SunVerify.mapFailed);
+				SunVerify = {};
+			}
+			else if (!verify) SunVerify = {};
+#endif
 			if (ForceAllCascades) SunAtlasDrawn = true;
 			ForceAllCascades = false;
 			LogSunShadowStats(cachedDistant);
+#if NVR_TEST_TOOLS
+			if (SunShadowStats::Mode) SunShadowStats::EndFrame(SunShadowStats::Now() - statsLoopStart);
+#endif
 			}
 
 			// Resolve MSAA.

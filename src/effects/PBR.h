@@ -150,6 +150,7 @@ public:
 		D3DXVECTOR4		SharpSky;
 		D3DXVECTOR4		EnvCube = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		D3DXVECTOR4		Linear = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);
+		D3DXVECTOR4		LampFalloff = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	};
 	PBRStruct	Constants;
 
@@ -200,6 +201,30 @@ public:
 	};
 	LinearSettingsStruct	LinearSettings;
 	void	ApplyLinearGamma();
+
+	struct LampFalloffSettingsStruct {
+		bool  Exterior = false;
+		bool  Interior = false;
+		bool  MatchEverywhere = false;
+		float Falloff = 0.25f;
+		float Brightness = 1.0f;
+		float Norm = 1.0f;
+	};
+	LampFalloffSettingsStruct	LampFalloffSettings;
+	static float	LampFalloffNorm(float Falloff);
+	enum LampFalloffSwitchEnum { LampFalloffExterior, LampFalloffInterior, LampFalloffMatch };
+	static bool	LampFalloffAtStartup(int Which) {
+		static const bool on[3] = { TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Exterior") != 0,
+			TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Interior") != 0,
+			TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "MatchEverywhere") != 0 };
+		return on[Which];
+	}
+	static bool	LampFalloffShapeIn() { return LampFalloffAtStartup(LampFalloffExterior) || LampFalloffAtStartup(LampFalloffInterior); }
+	static bool	LampFalloffCompiledIn() { return LampFalloffShapeIn() || LampFalloffAtStartup(LampFalloffMatch); }
+	static const char* LampFalloffInteriorDefine() {
+		if (!LampFalloffShapeIn() || LampFalloffAtStartup(LampFalloffInterior)) return nullptr;
+		return LampFalloffAtStartup(LampFalloffMatch) ? "1" : "0";
+	}
 
 	void	UpdateConstants();
 	void	RegisterConstants();

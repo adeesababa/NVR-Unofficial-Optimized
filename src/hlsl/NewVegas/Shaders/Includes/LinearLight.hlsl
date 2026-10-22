@@ -18,4 +18,10 @@ float LinScale(float s) { return s; }
 float LinFalloff(float a) { return a; }
 #endif
 
+#if defined(__INTELLISENSE__)
+    #include "LampFalloff.hlsl"
+#else
+    #include "includes/LampFalloff.hlsl"
+#endif
+
 #endif

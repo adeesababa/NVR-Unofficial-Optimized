@@ -11,6 +11,7 @@ void PBRShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SharpSky", &Constants.SharpSky);
 	TheShaderManager->RegisterConstant("TESR_EnvCube", &Constants.EnvCube);
 	TheShaderManager->RegisterConstant("TESR_LinearLighting", &Constants.Linear);
+	TheShaderManager->RegisterConstant("TESR_LampFalloff", &Constants.LampFalloff);
 	TheShaderManager->RegisterConstant("TESR_PBREnv", &Constants.Env);
 	TheShaderManager->RegisterConstant("TESR_LampPassTrim", &Constants.LampPassTrim);
 	TheShaderManager->RegisterConstant("TESR_PBRMath", &Constants.Math);
@@ -65,6 +66,31 @@ void PBRShaders::UpdateSettings() {
 	LinearSettings.NightGamma = nightGamma > 0.0f ? std::clamp(nightGamma, 1.0f, 3.0f) : 0.0f;
 	LinearSettings.FalloffMatch = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Linear", "FalloffMatch"), 0.0f, 1.0f);
 	ApplyLinearGamma();
+
+	{
+		LampFalloffSettingsStruct& lamp = LampFalloffSettings;
+		lamp.Exterior = TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Exterior") != 0;
+		lamp.Interior = TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "Interior") != 0;
+		lamp.MatchEverywhere = TheSettingManager->GetSettingI("Shaders.PBR.LampFalloff", "MatchEverywhere") != 0;
+		lamp.Falloff = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.LampFalloff", "Falloff"), 0.05f, 1.0f);
+		lamp.Brightness = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.LampFalloff", "Brightness"), 0.1f, 4.0f);
+		lamp.Norm = LampFalloffNorm(lamp.Falloff);
+		static float last[5] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
+		const float now[5] = { lamp.Exterior ? 1.0f : 0.0f, lamp.Interior ? 1.0f : 0.0f, lamp.MatchEverywhere ? 1.0f : 0.0f, lamp.Falloff, lamp.Brightness };
+		if (memcmp(last, now, sizeof(now))) {
+			memcpy(last, now, sizeof(now));
+			if (!LampFalloffCompiledIn())
+				Logger::Log("UNOFFICIAL LampFalloff: off (not compiled into the shaders)%s", lamp.Exterior || lamp.Interior || lamp.MatchEverywhere ?
+					"; switched on now: it takes effect after a restart" : "");
+			else {
+				const bool later = (lamp.Exterior && !LampFalloffAtStartup(LampFalloffExterior) && !LampFalloffShapeIn()) ||
+					(lamp.Interior && !LampFalloffAtStartup(LampFalloffInterior)) || (lamp.MatchEverywhere && !LampFalloffAtStartup(LampFalloffMatch));
+				Logger::Log("UNOFFICIAL LampFalloff: compiled in; physical falloff outdoors %s, indoors %s (Falloff %.2f, Brightness %.2f, strength %.3f); "
+					"MatchEverywhere %s%s", lamp.Exterior ? "on" : "off", lamp.Interior ? "on" : "off", lamp.Falloff, lamp.Brightness, lamp.Norm * lamp.Brightness,
+					lamp.MatchEverywhere ? "on" : "off", later ? " (a switch turned on since the start needs a restart to apply everywhere)" : "");
+			}
+		}
+	}
 
 	Constants.Math.x = TheSettingManager->GetSettingI("Shaders.PBR.Main", "EnergySplit") ? 1.0f : 0.0f;
 	static const int smithMode = TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmithCorrelated");
@@ -160,8 +186,30 @@ void PBRShaders::ApplyLinearGamma() {
 	LinearPreDecode::Gamma = gamma;
 }
 
+float PBRShaders::LampFalloffNorm(float Falloff) {
+	const double k = 1.0 / ((double)Falloff * Falloff);
+	double game = 0.0, shape = 0.0;
+	const int steps = 2048;
+	for (int i = 0; i < steps; i++) {
+		const double x = (i + 0.5) / steps, q = x * x, window = (1.0 - q * q) * (1.0 - q * q);
+		game += pow(1.0 - q, 2.2) * q;
+		shape += window / (1.0 + q * k) * q;
+	}
+	return shape > 0.0 ? (float)(game / shape) : 1.0f;
+}
+
 void PBRShaders::UpdateConstants() {
 	ApplyLinearGamma();
+
+	{
+		const LampFalloffSettingsStruct& lamp = LampFalloffSettings;
+		const bool indoors = !TheShaderManager->GameState.isExterior;
+		const bool interiorBuilt = LampFalloffInteriorDefine() == nullptr;
+		const bool shaped = indoors ? lamp.Interior && interiorBuilt : lamp.Exterior;
+		const bool match = lamp.MatchEverywhere && (!indoors || interiorBuilt || LampFalloffAtStartup(LampFalloffMatch));
+		Constants.LampFalloff = D3DXVECTOR4(shaped ? 1.0f : 0.0f, 1.0f / (lamp.Falloff * lamp.Falloff), lamp.Norm * lamp.Brightness,
+			match ? 1.0f : 0.0f);
+	}
 
 	Constants.LampPassTrim.x = TheSettingManager->SettingsMain.Main.TrimLampPasses ? 1.0f : 0.0f;
 

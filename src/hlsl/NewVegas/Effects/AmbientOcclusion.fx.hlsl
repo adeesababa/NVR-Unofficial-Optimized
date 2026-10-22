@@ -30,6 +30,16 @@ sampler2D NVR_AOBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRES
 sampler2D NVR_OrthoMap : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D NVR_SkyVis : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_SunMask : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D NVR_SkyPrep : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+float4 NVR_SkySmooth;
+float2 SkyUnpack2(float p) { float high = floor(p / 4096.0f); return float2(high, p - high * 4096.0f) / 4095.0f; }
+float3 SkyOctDecode(float2 e) {
+	e = e * 2.0f - 1.0f;
+	float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+	float t = saturate(-n.z);
+	n.xy += n.xy >= 0.0f ? -t : t;
+	return normalize(n);
+}
 
 static const float AOsamples = TESR_AmbientOcclusionAOData.x;
 static const float AOstrength = TESR_AmbientOcclusionAOData.y;
@@ -491,6 +501,7 @@ float4 SkyVisibilityV2PS(VSOUT IN) : COLOR0
 	float3 depthNormal = normalize(cross(ddxP, ddyP));
 	depthNormal = dot(depthNormal, viewPosition) > 0.0f ? -depthNormal : depthNormal;
 	viewNormal = TESR_AmbientOcclusionSky3.x > 0.5f ? depthNormal : viewNormal;
+	if (NVR_SkySmooth.x > 0.5f) viewNormal = SkyOctDecode(SkyUnpack2(tex2Dlod(NVR_SkyPrep, float4(IN.UVCoord, 0.0f, 0.0f)).y));
 	float result = 1.0f;
 	float skyVisibility = 1.0f;
 	float sunMask = TESR_AmbientOcclusionSky4.z > 0.5f ? lerp(TESR_ShadowFade.x, 1.0f, tex2Dlod(NVR_SunMask, float4(uv, 0.0f, 0.0f)).r) : 1.0f;

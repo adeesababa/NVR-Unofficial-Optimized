@@ -84,7 +84,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     att13.x = tex2D(AttenuationMap, IN.texcoord_5.zw);			// partial precision
     att2.x = tex2D(AttenuationMap, IN.texcoord_4.zw);			// partial precision
     att0.x = tex2D(AttenuationMap, IN.texcoord_4.xy);			// partial precision
-    r0.w = saturate((1 - att0.x) - att2.x);			// partial precision
+    r0.w = LampAttOther(saturate((1 - att0.x) - att2.x));			// partial precision
     q4.xyz = normalize(expand(noxel3.xyz));			// partial precision
     q10.xyz = normalize(IN.texcoord_7.xyz);			// partial precision
     q12.x = sqr(1 - shades(q4.xyz, q10.xyz));			// partial precision
@@ -102,7 +102,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     q14.xyz = (q7.x * const_4.xyz) + ((q12.x * shades(q10.xyz, -q5.xyz)) * lerp(const_4.xyz, r3.xyz, -r3.w));			// partial precision
     r1.yzw = (const_3.zyx * q17.x) + ((q12.x * shades(q10.xyz, -q15.xyz)) * lerp(const_3.zyx, r3.zyx, -r3.w));			// partial precision
     q258.xyz = (saturate(((3 - (q18.x * 2)) * sqr(q18.x)) - ((3 - (q17.x * 2)) * sqr(q17.x))) * const_2.xyz) + r1.wzy;			// partial precision
-    q44.xyz = (r0.w * q258.xyz) + (((q9.x * const_2.xyz) + q14.xyz) * saturate((1 - att1.x) - att13.x));			// partial precision
+    q44.xyz = (r0.w * q258.xyz) + (((q9.x * const_2.xyz) + q14.xyz) * LampAttOther(saturate((1 - att1.x) - att13.x)));			// partial precision
     OUT.color_0.a = 1;			// partial precision
     OUT.color_0.rgb = LinEncode(q44.xyz);
 

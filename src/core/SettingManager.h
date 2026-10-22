@@ -36,6 +36,8 @@ struct SettingsMainStruct {
         bool    ShaderWarmUp;
         bool    SkinnedShadowFaceTest;
         bool    HiddenObjectCulling;
+        bool    PreDecodeCache;
+        bool    FastCasterHash;
         int     HiddenObjectCullingMaxAge;
         bool    ReShadeDepthCompat;
         bool    ReShadeNVRDepth;

@@ -105,8 +105,9 @@ namespace ShaderPrecompile {
 		Started = true;
 		if (!TheSettingManager->GetSettingI("Main.Main.Performance", "ParallelShaderCompile")) return;
 		StartTime = (double)GetTickCount64();
-		static const D3DXMACRO interior[] = { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" },
-			{ "CONTACT_HARDENING", "0" }, { NULL, NULL } };
+		static D3DXMACRO interior[] = { { "INTERIOR_SHADOWS", "1" }, { "FORWARD_SHADOWS", "0" }, { "SUN_CROSSFADE", "0" },
+			{ "CONTACT_HARDENING", "0" }, { NULL, NULL }, { NULL, NULL } };
+		if (const char* lampFalloff = PBRShaders::LampFalloffInteriorDefine()) interior[4] = { "LAMP_FALLOFF_ON", lampFalloff };
 		const bool interiorShadows = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") != 0;
 		std::unordered_set<std::string> templated;
 		for (const auto& [CollectionName, Pointer] : TheShaderManager->ShaderNames) {

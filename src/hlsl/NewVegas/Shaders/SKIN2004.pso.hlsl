@@ -92,7 +92,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     q76.xyz = (q10.x * shades(q8.xyz, -normalize(IN.texcoord_2.xyz))) * lerp(const_4.xyz, r1.xyz, 0.5);			// partial precision
     r0.xyz = (q7.x * r1.xyz) + ((q5.x * const_4.xyz) + q76.xyz);			// partial precision
     r2.xyz = ((q10.x * shades(q8.xyz, -IN.texcoord_1)) * const_3.xyz) * 0.5;			// partial precision
-    q14.xyz = (saturate((1 - att11.x) - att12.x) * r0.xyz) + ((shades(q2.xyz, IN.texcoord_1.xyz) * const_3.xyz) + r2.xyz);			// partial precision
+    q14.xyz = (LampAttOther(saturate((1 - att11.x) - att12.x)) * r0.xyz) + ((shades(q2.xyz, IN.texcoord_1.xyz) * const_3.xyz) + r2.xyz);			// partial precision
     // Vanilla ends: texld_pp r4, t0, s0 / add_pp r4.xyz, r0, c1 / mov_pp oC0, r4 -- one
     // register carries the base texture's alpha and then has .xyz overwritten by the lighting
     // sum, so .a comes from texel0 above. The lighting sum is the output; this pass applies

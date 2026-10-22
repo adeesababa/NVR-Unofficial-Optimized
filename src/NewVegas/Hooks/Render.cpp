@@ -14,6 +14,7 @@
 #include "../../core/ShaderWarmUp.h"
 #include "../../core/ShaderWarmUp2.h"
 #include "../../core/IOWorker2.h"
+#include "../../core/CpuSplit.h"
 #include "../../core/ConstantFilter.h"
 #include "../../core/HiddenObjectCulling.h"
 #include "../../core/LampScissor.h"
@@ -494,9 +495,11 @@ namespace FrameSplit {
 	static PresentFn OriginalPresent = nullptr;
 	static double RenderEnd = 0.0, PresentMs = 0.0;
 	static HRESULT __stdcall PresentHook(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window, const RGNDATA* dirty) {
+		CpuSplit::MarkNow(CpuSplit::kPresentBegin);
 		const double start = CpuTimer::NowMs();
 		const HRESULT result = OriginalPresent(device, source, dest, window, dirty);
 		PresentMs += CpuTimer::NowMs() - start;
+		CpuSplit::MarkNow(CpuSplit::kPresentEnd);
 		return result;
 	}
 	static void Install(IDirect3DDevice9* device) {
@@ -522,6 +525,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	const double renderStart = CpuTimer::NowMs();
 	if (GpuTimer::Enabled) {
 		FrameSplit::Install(TheRenderManager->device);
+		CpuSplit::Install();
 		if (FrameSplit::RenderEnd > 0.0 && FrameSplit::OriginalPresent) {
 			const double between = renderStart - FrameSplit::RenderEnd;
 			presentCpuTimer.Add(FrameSplit::PresentMs);
@@ -529,6 +533,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 		}
 	}
 	FrameSplit::PresentMs = 0.0;
+	CpuSplit::MarkNow(CpuSplit::kRenderBegin);
 #if NVR_TEST_TOOLS
 	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);
 #else
@@ -592,7 +597,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	const double renderEnd = CpuTimer::NowMs();
 	FrameSplit::RenderEnd = GpuTimer::Enabled ? renderEnd : 0.0;
 	if (GpuTimer::Enabled) gameRenderCpuTimer.Add(renderEnd - renderStart);
-
+	CpuSplit::MarkNow(CpuSplit::kRenderEnd);
 }
 
 static bool ForcePixelConstants = false;

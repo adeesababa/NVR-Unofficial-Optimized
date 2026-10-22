@@ -115,6 +115,7 @@ public:
 		float				Distance;
 		float				CascadeLambda;
 		bool				SmoothFilter;
+		float				HandoverBlend = 70.0f;
 	};
 
 	struct OrthoStruct {
@@ -139,8 +140,15 @@ public:
 		float				NightMinDarkness;
 		bool				SmoothCharacterShadows = false;
 		float				CharacterShadowSoftness = 0.0f;
+		float				CharacterShadowReach = 0.0f;
 		bool				SkipWhenFaded;
 		int					SkipWhenFadedCheck;
+		int					CascadeStats = 0;
+		bool				SunSkipFlat = false;
+		bool				SunOneWalk = false;
+		bool				SunLeanDraws = false;
+		bool				OverheadSunFix = false;
+		int					SunVerify = 0;
 	};
 
 	struct InteriorsStruct {
@@ -180,6 +188,9 @@ public:
 			bool LampModelShadows;
 			float LampModelDistance;
 			float InvisibleShadowFromLamp;
+			bool EvenTaps;
+			float MagnifiedSoftness;
+			bool TexelFilter;
 		} Forward;
 	};
 
@@ -292,6 +303,7 @@ public:
 
 	void		GetCascadeDepths();
 	D3DXMATRIX	GetCascadeViewProj(ShadowMapSettings* ShadowMap, D3DXVECTOR3* SunDir);
+	static bool	SunOverhead(const D3DXVECTOR3& dir) { return fabsf(dir.z) > 0.999f * D3DXVec3Length(&dir); }
 
 private:
 	bool		texturesInitialized;

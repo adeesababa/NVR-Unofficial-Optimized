@@ -15,6 +15,7 @@ public:
 	static inline bool TwoSided = false;
 	static inline bool BindDiffuse = false;
 	static inline float LandDrop = 0.0f;
+	static inline bool Lean = false;
 	static inline std::unordered_set<NiGeometry*> LandSet;
 	static void UpdateShadowWorld(NiGeometry* Geo);
 	static void BindDiffuseOf(NiGeometry* Geo);

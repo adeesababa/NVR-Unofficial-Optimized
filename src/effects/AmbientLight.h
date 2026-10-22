@@ -47,6 +47,13 @@ public:
 	static const int	StatsWidth = 16, StatsHeight = 9;
 	bool				interiorBalance = true;
 	float				interiorBounceShare = 1.0f;
+	bool				noEdgeOutline = true;
+	int					normalSmoothing = 36;
+	float				horizonBias = 0.0f;
+	CachedHandle		paramEdges, techSmooth;
+	bool				prepared = false;
+	bool	RenderPrepare(IDirect3DDevice9* Device);
+	IDirect3DTexture9* SmoothedNormals() const { return prepared ? prepTexture : nullptr; }
 	IDirect3DTexture9*	statsTexture = nullptr;
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};

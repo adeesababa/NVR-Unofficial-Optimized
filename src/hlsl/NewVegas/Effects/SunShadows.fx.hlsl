@@ -21,7 +21,7 @@ float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: poi
     #define FORWARD_SHADOWS 0
 #endif
 float4 TESR_ShadowBlur; // x: 1 / atlas resolution, y: whether the lod cascade was updated
-float4 TESR_ShadowForwardData; // x: 1 when the forward path is SUPPRESSED
+float4 TESR_ShadowForwardData;
 float4 TESR_ShadowNearCenter; // x,y,z: center (world space), w: radius
 float4 TESR_ShadowMiddleCenter; // x,y,z: center (world space), w: radius
 float4 TESR_ShadowFarCenter; // x,y,z: center (world space), w: radius
@@ -165,45 +165,52 @@ float GetLightAmount(float4 positionWS, float3 normal)
 	// needs more slack before Chebyshev calls it occluded.
     float bias = (Mode == 0.0f ? 0.00001f : 0.01f) * (1.0f + SlopeBias * offsetScale);
 
-    const float blend = 0.9f;
+    float4 bands = max(0.1f * radii, min(TESR_ShadowForwardData.w, radii));
+    float4 starts = radii - bands;
 
 	// Each cascade is offset in its OWN texel scale -- one shared samplePos cannot suit all
-	// four when their texels differ by more than an order of magnitude.
-#define TAP_NEAR GetLightAmountValue(TESR_ShadowCameraToLightTransformNear, float4(positionWS.xyz + offsetDistance.x * normal, 1), 0, 0, bias, 0.1f)
-#define TAP_MIDDLE GetLightAmountValue(TESR_ShadowCameraToLightTransformMiddle, float4(positionWS.xyz + offsetDistance.y * normal, 1), 0.5, 0, bias, 0.2f)
-#define TAP_FAR GetLightAmountValue(TESR_ShadowCameraToLightTransformFar, float4(positionWS.xyz + offsetDistance.z * normal, 1), 0, 0.5, bias, 0.6f)
-#define TAP_LOD GetLightAmountValue(TESR_ShadowCameraToLightTransformLod, float4(positionWS.xyz + offsetDistance.w * normal, 1), 0.5, 0.5, bias, 0.8f)
+#define TAP_NEAR(o) GetLightAmountValue(TESR_ShadowCameraToLightTransformNear, float4(positionWS.xyz + (o) * normal, 1), 0, 0, bias, 0.1f)
+#define TAP_MIDDLE(o) GetLightAmountValue(TESR_ShadowCameraToLightTransformMiddle, float4(positionWS.xyz + (o) * normal, 1), 0.5, 0, bias, 0.2f)
+#define TAP_FAR(o) GetLightAmountValue(TESR_ShadowCameraToLightTransformFar, float4(positionWS.xyz + (o) * normal, 1), 0, 0.5, bias, 0.6f)
+#define TAP_LOD(o) GetLightAmountValue(TESR_ShadowCameraToLightTransformLod, float4(positionWS.xyz + (o) * normal, 1), 0.5, 0.5, bias, 0.8f)
 
     float4 distances = {
         length(positionWS.xyz - TESR_ShadowNearCenter.xyz),
-		length(positionWS.xyz - TESR_ShadowMiddleCenter.xyz),
-		length(positionWS.xyz - TESR_ShadowFarCenter.xyz),
-		length(positionWS.xyz - TESR_ShadowLodCenter.xyz),
+        length(positionWS.xyz - TESR_ShadowMiddleCenter.xyz),
+        length(positionWS.xyz - TESR_ShadowFarCenter.xyz),
+        length(positionWS.xyz - TESR_ShadowLodCenter.xyz),
     };
-	
-    [branch] if (distances.x < TESR_ShadowNearCenter.w) {
-        [branch] if (distances.x < TESR_ShadowNearCenter.w * blend)
-            return TAP_NEAR;
-		
-        return lerp(TAP_NEAR, TAP_MIDDLE, smoothstep(TESR_ShadowNearCenter.w * blend, TESR_ShadowNearCenter.w, distances.x));
+
+    [branch] if (distances.x < radii.x) {
+        float f = smoothstep(starts.x, radii.x, distances.x);
+        float o = lerp(offsetDistance.x, offsetDistance.y, f);
+        [branch] if (f <= 0.0f)
+            return TAP_NEAR(o);
+
+        return lerp(TAP_NEAR(o), TAP_MIDDLE(o), f);
     }
-    else if (distances.y < TESR_ShadowMiddleCenter.w) {
-        [branch] if (distances.y < TESR_ShadowMiddleCenter.w * blend)
-            return TAP_MIDDLE;
-		
-        return lerp(TAP_MIDDLE, TAP_FAR, smoothstep(TESR_ShadowMiddleCenter.w * blend, TESR_ShadowMiddleCenter.w, distances.y));
+    else if (distances.y < radii.y) {
+        float f = smoothstep(starts.y, radii.y, distances.y);
+        float o = lerp(offsetDistance.y, offsetDistance.z, f);
+        [branch] if (f <= 0.0f)
+            return TAP_MIDDLE(o);
+
+        return lerp(TAP_MIDDLE(o), TAP_FAR(o), f);
     }
-    else if (distances.z < TESR_ShadowFarCenter.w) {
-        [branch] if (distances.z < TESR_ShadowFarCenter.w * blend)
-            return TAP_FAR;
-		
-        return lerp(TAP_FAR, TAP_LOD, smoothstep(TESR_ShadowFarCenter.w * blend, TESR_ShadowFarCenter.w, distances.z));
+    else if (distances.z < radii.z) {
+        float f = smoothstep(starts.z, radii.z, distances.z);
+        float o = lerp(offsetDistance.z, offsetDistance.w, f);
+        [branch] if (f <= 0.0f)
+            return TAP_FAR(o);
+
+        return lerp(TAP_FAR(o), TAP_LOD(o), f);
     }
-    else if (distances.w < TESR_ShadowLodCenter.w) {
-        [branch] if (distances.w < TESR_ShadowLodCenter.w * blend)
-            return TAP_LOD;
-		
-        return lerp(TAP_LOD, 1.0f, smoothstep(TESR_ShadowLodCenter.w * blend, TESR_ShadowLodCenter.w, distances.w));
+    else if (distances.w < radii.w) {
+        float f = smoothstep(starts.w, radii.w, distances.w);
+        [branch] if (f <= 0.0f)
+            return TAP_LOD(offsetDistance.w);
+
+        return lerp(TAP_LOD(offsetDistance.w), 1.0f, f);
     }
     else {
         return 1.0f;

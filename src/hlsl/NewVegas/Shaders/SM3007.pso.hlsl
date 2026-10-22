@@ -138,7 +138,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         float att = 1.0f;
         if (!isDirectional) {
             float d = saturate(length(toLight) / lightVec.w);
-            att = 1.0f - d * d;
+            att = LampAttOther(1.0f - d * d);
         }
 
         // The shadow scales the sun only; point lights and ambient stay untouched.

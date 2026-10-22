@@ -154,6 +154,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     q19.x = saturate((q16.x + 0.3) * 0.769230783);
     q20.x = saturate(((3 - (q19.x * 2)) * sqr(q19.x)) - ((3 - (q17.x * 2)) * sqr(q17.x)));			// partial precision
     r5.xyz = 1 - r5.xyz;			// partial precision
+#if LAMP_FALLOFF_ON
+    r5.xyz = float3(LampAttOther(r5.x), LampAttOther(r5.y), LampAttOther(r5.z));
+#endif
     q13.xyz = (q8.x * const_4.xyz) + lerp(const_4.xyz, const_8.xyz, -r1.x) * (shades(q0.xyz, -q6.xyz) * q12.x);			// partial precision
     q25.xyz = (q23.x * const_6.xyz) + ((q12.x * shades(q0.xyz, -q21.xyz)) * lerp(const_6.xyz, const_8.xyz, -r1.x));			// partial precision
     q18.xyz = (q17.x * const_5.xyz) + ((q12.x * shades(q0.xyz, -q15.xyz)) * lerp(const_5.xyz, const_8.xyz, -r1.x));			// partial precision

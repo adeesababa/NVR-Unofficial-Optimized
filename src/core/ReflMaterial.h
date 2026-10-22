@@ -30,6 +30,7 @@ namespace ReflMaterial {
 	inline bool CompiledIn() {
 		if (Startup < 0)
 			Startup = TheSettingManager->GetSettingI("Shaders.Reflections.Main", "MaterialAware") > 0 &&
+				TheSettingManager->GetSettingI("Shaders.Reflections.Status", "Enabled") &&
 				TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "Enabled") ? 1 : 0;
 		return Startup > 0;
 	}

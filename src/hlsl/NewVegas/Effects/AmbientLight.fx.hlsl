@@ -6,6 +6,7 @@ float4 NVR_ALFlags;
 float4 NVR_ALInterior;
 float4 NVR_ALScene;
 float4 NVR_ALTemporal;
+float4 NVR_ALEdges;
 float4x4 NVR_ALReproject;
 float4 TESR_WaterSettings;
 float4 TESR_ShadowData;
@@ -119,6 +120,35 @@ float4 Prepare(VSOUT IN) : COLOR0 {
 	return float4(viewZ, Pack2(OctEncode(normal)), 0.0f, 0.0f);
 }
 
+float4 SmoothNormal(VSOUT IN, uniform bool alongY) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float viewZ; float3 normal;
+	if (alongY) { float4 c = tex2Dlod(NVR_ALBuffer, float4(uv, 0.0f, 0.0f)); normal = c.xyz; viewZ = c.w; }
+	else { float4 c = tex2Dlod(NVR_ALPrep, float4(uv, 0.0f, 0.0f)); viewZ = c.x; normal = OctDecode(Unpack2(c.y)); }
+	[branch] if (viewZ < DrawDistance && NVR_ALEdges.x > 0.5f) {
+		float3 origin = PositionFromViewZ(uv, viewZ);
+		float2 axis = alongY ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f);
+		float spacing = NVR_ALEdges.x / 3.0f;
+		float3 sum = normal;
+		[unroll] for (int k = -3; k <= 3; k++) {
+			if (k == 0) continue;
+			float dist = abs((float)k) * spacing;
+			float2 tapUV = uv + axis * (k * spacing) * NVR_ALLayout.zw;
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, 1.0f) * step(0.0f, tapUV.y) * step(tapUV.y, 1.0f);
+			tapUV = saturate(tapUV);
+			float tapZ; float3 tapNormal;
+			if (alongY) { float4 t = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)); tapNormal = t.xyz; tapZ = t.w; }
+			else { float4 t = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)); tapZ = t.x; tapNormal = OctDecode(Unpack2(t.y)); }
+			float tolerance = max(viewZ * 0.001f * dist, 0.5f);
+			float plane = abs(dot(PositionFromViewZ(tapUV, tapZ) - origin, normal));
+			float weight = saturate(1.0f - plane / tolerance) * smoothstep(0.5f, 0.8f, dot(tapNormal, normal)) * onScreen;
+			sum += tapNormal * weight;
+		}
+		normal = normalize(sum);
+	}
+	return alongY ? float4(viewZ, Pack2(OctEncode(normal)), 0.0f, 0.0f) : float4(normal, viewZ);
+}
+
 float SliceArc(float horizonCos0, float horizonCos1, float n, float cosNormal, float sinN) {
 	float h0 = n + clamp(-acos(clamp(horizonCos1, -1.0f, 1.0f)) - n, -1.5707963f, 1.5707963f);
 	float h1 = n + clamp(acos(clamp(horizonCos0, -1.0f, 1.0f)) - n, -1.5707963f, 1.5707963f);
@@ -157,7 +187,7 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 		float signNormal = dot(orthoDirection, projectedNormal) >= 0.0f ? 1.0f : -1.0f;
 		float cosNormal = saturate(dot(projectedNormal, viewVec) / projectedLength);
 		float n = signNormal * acos(cosNormal);
-		float lowCos0 = cos(n + 1.5707963f), lowCos1 = cos(n - 1.5707963f);
+		float lowCos0 = cos(n + 1.5707963f - NVR_ALEdges.y), lowCos1 = cos(n - 1.5707963f + NVR_ALEdges.y);
 		float horizonCos0 = lowCos0, horizonCos1 = lowCos1;
 		[unroll] for (int k = 0; k < STEPS; k++) {
 			float s = (k + frac(noise.y + k * 0.618034f)) / STEPS;
@@ -194,6 +224,7 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	float looseTolerance = max(depth * 0.25f, 16.0f);
 	static const float weights[4] = { 0.30f, 0.23f, 0.11f, 0.05f };
 	float4 center = tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f));
+	[branch] if (DebugView > 2.5f && DebugView < 6.5f) return center;
 	float3 bounce = center.rgb * weights[0];
 	float visibility = center.a * weights[0];
 	float2 total = weights[0];
@@ -545,9 +576,18 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 	float ao = lerp(DarkestAO, 1.0f, ambient.a);
 	ao = lerp(ao, 1.0f, saturate((luma(lin) - BrightFade) * 3.0f));
 	float2 px = TESR_ReciprocalResolution.xy;
-	float bendX = abs(readDepthLod(IN.UVCoord + float2(px.x, 0.0f)) + readDepthLod(IN.UVCoord - float2(px.x, 0.0f)) - 2.0f * depth);
-	float bendY = abs(readDepthLod(IN.UVCoord + float2(0.0f, px.y)) + readDepthLod(IN.UVCoord - float2(0.0f, px.y)) - 2.0f * depth);
+	float left = readDepthLod(IN.UVCoord - float2(px.x, 0.0f)), right = readDepthLod(IN.UVCoord + float2(px.x, 0.0f));
+	float up = readDepthLod(IN.UVCoord - float2(0.0f, px.y)), down = readDepthLod(IN.UVCoord + float2(0.0f, px.y));
+	float bendX = abs(left + right - 2.0f * depth);
+	float bendY = abs(up + down - 2.0f * depth);
+	[branch] if (NVR_ALFlags.y > 0.5f) {
+		float left2 = readDepthLod(IN.UVCoord - float2(2.0f * px.x, 0.0f)), right2 = readDepthLod(IN.UVCoord + float2(2.0f * px.x, 0.0f));
+		float up2 = readDepthLod(IN.UVCoord - float2(0.0f, 2.0f * px.y)), down2 = readDepthLod(IN.UVCoord + float2(0.0f, 2.0f * px.y));
+		bendX = min(bendX, min(abs(left2 + depth - 2.0f * left), abs(depth + right2 - 2.0f * right)));
+		bendY = min(bendY, min(abs(up2 + depth - 2.0f * up), abs(depth + down2 - 2.0f * down)));
+	}
 	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
+	[branch] if (DebugView > 10.5f) return float4(busy.xxx, 1.0f);
 	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
 	float3 albedo = SurfaceColour(lin);
 	float3 gridBounce = 0.0f;
@@ -565,7 +605,7 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 		return float4(saturate(m.x * 4.0f), m.x != 0.0f ? 0.5f : 0.0f, saturate(gridBounce.b * 4.0f), 1.0f);
 	}
 	[branch] if (DebugView > 6.5f) return delinearize(float4(gridBounce * albedo, 1.0f));
-	[branch] if (DebugView > 2.5f) return float4(ambient.rgb, 1.0f);
+	[branch] if (DebugView > 2.5f) return float4(tex2Dlod(NVR_ALBuffer, float4(IN.UVCoord, 0.0f, 0.0f)).rgb, 1.0f);
 	[branch] if (DebugView > 0.5f) return delinearize(float4(DebugView < 1.5f ? ao.xxx : gridBounce * albedo, 1.0f));
 	[branch] if (NVR_ALInterior.x > 0.5f) lin = lin - (1.0f - ao) * min(lin, albedo * NVR_ALScene.rgb) + gridBounce * albedo;
 	else {
@@ -603,4 +643,9 @@ technique AmbientLightSky {
 	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
 	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(true); }
+}
+
+technique AmbientLightSmooth {
+	pass SmoothX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormal(false); }
+	pass SmoothY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormal(true); }
 }

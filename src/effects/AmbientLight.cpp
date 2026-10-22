@@ -14,7 +14,7 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
-	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 10);
+	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 11);
 	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 	gridBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBounce"), 0.0f, 10.0f);
 	gridCell = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridCellSize"), 50.0f, 800.0f);
@@ -25,6 +25,9 @@ void AmbientLightEffect::UpdateSettings() {
 	gridColour = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridColour"), 0.0f, 1.0f);
 	interiorBalance = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "InteriorBalance") != 0;
 	interiorBounceShare = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "InteriorBounceShare"), 0.0f, 4.0f);
+	noEdgeOutline = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NoEdgeOutline") != 0;
+	normalSmoothing = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NormalSmoothing"), 0, 64);
+	horizonBias = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "HorizonBias"), 0.0f, 45.0f);
 }
 
 void AmbientLightEffect::EnsureBuffers() {
@@ -285,6 +288,85 @@ bool AmbientLightEffect::ShouldRender() {
 	return Enabled && Effect && !TheShaderManager->GameState.isUnderwater;
 }
 
+bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
+	prepared = false;
+	if (normalSmoothing <= 0 || !Effect) return false;
+	EnsureBuffers();
+	D3DXHANDLE technique = Effect->GetTechnique(0);
+	D3DXHANDLE smooth = TechniqueHandle(techSmooth, "AmbientLightSmooth");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_ALLayout");
+	D3DXHANDLE edgesHandle = ParameterHandle(paramEdges, "NVR_ALEdges");
+	D3DVIEWPORT9 original = {};
+	D3DSURFACE_DESC half = {};
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || !smooth || !layoutHandle || !edgesHandle || !prepTexture || !prepSurface || !bufferTexture[1] || !bufferSurface[1] ||
+		FAILED(Effect->GetTechniqueDesc(smooth, &description)) || description.Passes != 2 || FAILED(Device->GetViewport(&original)) ||
+		FAILED(bufferSurface[1]->GetDesc(&half))) return false;
+	D3DVIEWPORT9 reduced = original;
+	reduced.Width = half.Width;
+	reduced.Height = half.Height;
+	D3DXVECTOR4 layout((float)half.Width / original.Width, (float)half.Height / original.Height, 1.0f / half.Width, 1.0f / half.Height);
+	D3DXVECTOR4 edges((float)normalSmoothing, horizonBias * (3.14159265f / 180.0f), 0.0f, 0.0f);
+	IDirect3DSurface9* depthSurface = nullptr;
+	Device->GetDepthStencilSurface(&depthSurface);
+	if (!ReShadeIntegration::KeepDepthBound()) Device->SetDepthStencilSurface(nullptr);
+	IDirect3DSurface9* target = nullptr;
+	Device->GetRenderTarget(0, &target);
+	static GpuTimer timer("  Ambient light prepare + smooth (half)");
+	GpuProfileScope gpu(timer, Device);
+	Effect->SetTechnique(technique);
+	SetCT();
+	Effect->SetVector(layoutHandle, &layout);
+	Effect->SetVector(edgesHandle, &edges);
+	Device->SetTexture(5, nullptr);
+	Device->SetTexture(6, nullptr);
+	Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);
+	UINT passes = 0;
+	HRESULT result = Device->SetRenderTarget(0, prepSurface);
+	if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
+	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
+	if (SUCCEEDED(result)) {
+		result = Effect->BeginPass(0);
+		if (SUCCEEDED(result)) {
+			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Effect->EndPass();
+		}
+		Effect->End();
+	}
+	if (SUCCEEDED(result)) {
+		Effect->SetTechnique(smooth);
+		result = Effect->Begin(&passes, 0);
+		if (SUCCEEDED(result)) {
+			for (UINT p = 0; p < 2 && SUCCEEDED(result); ++p) {
+				Device->SetTexture(5, p == 0 ? prepTexture : nullptr);
+				Device->SetTexture(6, p == 1 ? bufferTexture[1] : nullptr);
+				result = Device->SetRenderTarget(0, p == 0 ? bufferSurface[1] : prepSurface);
+				if (SUCCEEDED(result)) result = Effect->BeginPass(p);
+				if (FAILED(result)) break;
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				Effect->EndPass();
+			}
+			Effect->End();
+		}
+		Effect->SetTechnique(technique);
+	}
+	Device->SetTexture(5, nullptr);
+	Device->SetTexture(6, nullptr);
+	Device->SetTexture(15, nullptr);
+	Device->SetRenderTarget(0, target);
+	if (target) target->Release();
+	Device->SetViewport(&original);
+	Device->SetDepthStencilSurface(depthSurface);
+	if (depthSurface) depthSurface->Release();
+	prepared = SUCCEEDED(result);
+	static int reported = -1;
+	if ((prepared ? 1 : 0) != reported) {
+		reported = prepared ? 1 : 0;
+		Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %s.", prepared ? "on (reach set, technique AmbientLightSmooth drawn)" : "NOT drawn this frame (a draw failed)");
+	}
+	return prepared;
+}
+
 void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
@@ -411,10 +493,14 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		D3DXVECTOR4 data(interiorMode ? 1.0f : 0.0f, balanceValid ? 1.0f : 0.0f, interiorBounceShare, 0.9f);
 		Effect->SetVector(h, &data);
 	}
+	if (D3DXHANDLE h = ParameterHandle(paramEdges, "NVR_ALEdges")) {
+		D3DXVECTOR4 edges((float)normalSmoothing, horizonBias * (3.14159265f / 180.0f), 0.0f, 0.0f);
+		Effect->SetVector(h, &edges);
+	}
 	D3DXHANDLE flagsHandle = ParameterHandle(paramFlags, "NVR_ALFlags");
 	const bool shadow = foldShadow && flagsHandle;
 	if (flagsHandle) {
-		D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		D3DXVECTOR4 flags(shadow ? 1.0f : 0.0f, noEdgeOutline ? 1.0f : 0.0f, 0.0f, 0.0f);
 		Effect->SetVector(flagsHandle, &flags);
 	}
 	IDirect3DTexture9* sunFar = shadow && TheShaderManager->Effects.SunFar ? TheShaderManager->Effects.SunFar->FactorTexture() : nullptr;
@@ -450,6 +536,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	if (SUCCEEDED(result)) {
 		for (UINT p = 0; p < 8 && SUCCEEDED(result); ++p) {
 			if ((p == 5 || p == 6) && !balanceRuns) continue;
+			if (p == 0 && prepared) continue;
 			const bool apply = p == 7;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
 				p == 5 ? statsSurface : p == 6 ? balanceSurface[balanceWrite] : bufferSurface[p == 2 ? 1 : 0];
@@ -512,6 +599,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
+	prepared = false;
 	if (SUCCEEDED(result) && balanceRuns) {
 		balanceIndex = balanceWrite;
 		balanceValid = true;

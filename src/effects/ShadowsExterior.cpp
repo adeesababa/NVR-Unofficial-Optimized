@@ -405,15 +405,26 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ForwardData.y = Settings.Exteriors.SmoothCharacterShadows ? 1.0f : 0.0f;
 	Settings.Exteriors.CharacterShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowSoftness"), 0.0f, 4.0f);
 	Constants.ForwardData.z = Settings.Exteriors.SmoothCharacterShadows ? Settings.Exteriors.CharacterShadowSoftness : 0.0f;
-	Constants.ForwardData.w = 0.0f;
+	Settings.Exteriors.CharacterShadowReach = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowReach"), 0.0f, 8.0f);
+	Constants.ShadowBlur.w = Settings.Exteriors.CharacterShadowReach;
+	Settings.ShadowMaps.HandoverBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "HandoverBlend"), 0.0f, 2000.0f);
+	Constants.ForwardData.w = Settings.ShadowMaps.HandoverBlend;
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
 	Settings.Exteriors.SkipWhenFaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFaded") != 0;
+	Settings.Exteriors.SunSkipFlat = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeSkipFlat") != 0;
+	Settings.Exteriors.SunOneWalk = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeOneWalk") != 0;
+	Settings.Exteriors.SunLeanDraws = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeLeanDraws") != 0;
+	Settings.Exteriors.OverheadSunFix = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "OverheadSunFix") != 0;
 #if NVR_TEST_TOOLS
 	Settings.Exteriors.SkipWhenFadedCheck = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SkipWhenFadedCheck"), 0, 4);
+	Settings.Exteriors.CascadeStats = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeStats");
+	Settings.Exteriors.SunVerify = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "SunCascadeVerify"), 0, 2);
 #else
 	Settings.Exteriors.SkipWhenFadedCheck = 0;
+	Settings.Exteriors.CascadeStats = 0;
+	Settings.Exteriors.SunVerify = 0;
 #endif
 	Settings.Exteriors.UsePointShadowsDay = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsDay");
 	Settings.Exteriors.UsePointShadowsNight = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "UsePointShadowsNight");
@@ -528,6 +539,9 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);
 		forward.InvisibleShadowFromLamp = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleShadowFromLamp"), 0.0f, 1024.0f);
 		forward.InvisibleLightSize = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightSize"), 0.0f, 128.0f);
+		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;
+		forward.MagnifiedSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MagnifiedSoftness"), 0.0f, 8.0f);
+		forward.TexelFilter = TheSettingManager->GetSettingI(section, "TexelFilter") != 0;
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
@@ -1101,6 +1115,8 @@ D3DXMATRIX ShadowsExteriorEffect::GetCascadeViewProj(ShadowMapSettings* ShadowMa
 	
 	// Must be kept stable.
 	D3DXVECTOR3 upDir(0.0f, 0.0f, 1.0f);
+	if (Settings.Exteriors.OverheadSunFix && SunOverhead(*SunDir))
+		upDir = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
 
 	D3DXVECTOR3 minExtents, maxExtents;
 
