@@ -53,7 +53,7 @@ float4 TESR_ShadowData        : register(c128); // y: darkness (z is INTERIOR cu
 float4 TESR_ShadowFormatData  : register(c129); // x: mode (0 VSM, 1 EVSM2, 2 EVSM4), y: format bits
 float4 TESR_ShadowFade        : register(c130); // x: sunrise/sunset fade, y: shadow maps active
 float4 TESR_SmoothedSunDir    : register(c131);
-float4 TESR_ShadowBlur        : register(c132); // x: 1 / atlas resolution, y: lod cascade updated, z: 1 = SmoothFilter (PCF)
+float4 TESR_ShadowBlur        : register(c132); // x: 1 / atlas resolution, y: lod cascade updated, z: 1 = SmoothFilter (PCF), w: CharacterShadowReach (world units)
 float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is SUPPRESSED, w: HandoverBlend (world units)
 
 // UNOFFICIAL 2026-10-21 HandoverBlend ([Shaders.ShadowsExteriors.ShadowMaps], TESR_ShadowForwardData.w, world units, live): how far
@@ -232,6 +232,43 @@ float4 SampleShadowMoments(float2 uv, float2 quadrantOffset) {
 // 1 - N.L), and the contact-hardening disc reaches several texels out with no slack at all. 0 for callers that don't set it.
 static float ShadowSlopeBias = 0.0f;
 
+// UNOFFICIAL 2026-10-22 CharacterShadowReach ([Shaders.ShadowsExteriors.Main], TESR_ShadowBlur.w, world units, live; P82 tester,
+// after the cascade handover: the hair's shadow on the brow, and the nose's on the cheek, gone on a face that is still big on
+// screen in third person). All of the PCF slack above is in shadow-map texels: 1.5 of them for the 3 x 3 (2 with SmoothFilter),
+// 0.73 * MaxSoftness + 1 for the contact-hardening blocker search, radius + 1 for its disc, each times the slope's tan (up to 5),
+// plus the normal offset of 1.5-2.5 texels. On the Middle cascade (past about 3 m at the shipped CascadeLambda 0.9, past 1 m at
+// the tester's 0.997) a texel is 1.1 world units, so the search's slack reaches 2-5 cm at a lowish sun and a hair 1-2 cm off the
+// brow is taken for the brow's own surface: no caster found, no shadow (measured 2026-10-21, run 20261021-231115: at 1.5 m and
+// lambda 0.997 none at all, with the cap the hair's shadow again; on Near the lookup already found it, and with the sky's and the
+// ambient light off the forward shadow is as full as the deferred path's). With the setting above 0, every slack of a Near lookup
+// is capped at that many world units (its depth slack and its normal offset each), and the coarser cascades keep the same cap in
+// their map's depth units (so it grows with their texels, times 3-4 per cascade, and a face far away never gets less slack than a
+// flat face needs; the handover band already holds a Middle lookup's slack to Near's). 0.1 is too tight (the face shadows itself).
+// 0 = off (the texel slack alone, as before). Compiled into the skin shaders only (SHADOW_SKIN_SOFTNESS):
+// skin is smooth and curved, so its own surface never slopes away from the sun over a whole texel run the way the flat plates
+// of the power armour do (the 2026-10-14 stripes above), and the deferred path's fixed 0.0002 bias already shows that faces take
+// a far smaller slack; SHADOW_SLACK_CAP_ALL (ShaderRecord::LoadShader, [Shaders.ShadowsExteriors.Main] CasterReachEverywhere,
+// needs a restart, a TEST switch) compiles it into every forward shader for an A/B. Everywhere else: none of it is compiled.
+#ifndef SHADOW_SLACK_CAP_ALL
+    #define SHADOW_SLACK_CAP_ALL 0
+#endif
+#if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL
+    #define SHADOW_SLACK_CAP 1
+    // The cap in light-space depth (the cascades are 2 radii deep: ShadowsExterior.cpp's far plane). Set by GetSunShadow; the
+    // callers that never set it (none today) get no cap.
+    static float ShadowSlackCap = 1.0e9f;
+    #define SHADOW_SLACK(n) min((n) * ShadowSlopeBias, ShadowSlackCap)
+    #define SHADOW_SLACK_WIDE(n) SHADOW_SLACK(n)
+    // SmoothFilter's cubic reaches half a texel further than the 3 x 3 it is called in place of (whose 1.5 is already off depth).
+    #define SHADOW_SLACK_CUBIC_EXTRA (SHADOW_SLACK(2.0f) - SHADOW_SLACK(1.5f))
+#else
+    // The two spellings keep the other shaders' bytecode exactly what it was (fxc orders the product as written).
+    #define SHADOW_SLACK_CAP 0
+    #define SHADOW_SLACK(n) ((n) * ShadowSlopeBias)
+    #define SHADOW_SLACK_WIDE(n) (ShadowSlopeBias * (n))
+    #define SHADOW_SLACK_CUBIC_EXTRA (0.5f * ShadowSlopeBias)
+#endif
+
 // UNOFFICIAL 2026-10-14 PCF ([Shaders.ShadowsExteriors.ShadowMaps] Mode 3). The atlas holds the light-space depth itself; each
 // lookup compares the 3 x 3 texels round the point with the point's depth and weighs the results with a quadratic B-spline
 // centred on the point (smooth, about two texels of penumbra, no stair steps as the point moves across texels). Nothing to
@@ -253,7 +290,7 @@ float ShadowPCF3x3(sampler2D atlas, float2 uv, float depth, float2 quadrantOffse
         float2 t2 = t * t, t3 = t2 * t;
         float4 cx = float4((1.0f - t.x) * (1.0f - t.x) * (1.0f - t.x), 3.0f * t3.x - 6.0f * t2.x + 4.0f, -3.0f * t3.x + 3.0f * t2.x + 3.0f * t.x + 1.0f, t3.x) / 6.0f;
         float4 cy = float4((1.0f - t.y) * (1.0f - t.y) * (1.0f - t.y), 3.0f * t3.y - 6.0f * t2.y + 4.0f, -3.0f * t3.y + 3.0f * t2.y + 3.0f * t.y + 1.0f, t3.y) / 6.0f;
-        float cubicDepth = depth - 0.5f * ShadowSlopeBias;
+        float cubicDepth = depth - SHADOW_SLACK_CUBIC_EXTRA;
         float cubic = 0.0f;
         [unroll] for (int cyi = 0; cyi < 4; cyi++) {
             [unroll] for (int cxi = 0; cxi < 4; cxi++) {
@@ -288,7 +325,7 @@ float SampleShadowAtlas(float4 lightSpace, float2 quadrantOffset, float bias, fl
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);   // UNOFFICIAL PCF (3 x 3: taps up to 1.5 texels out)
+    return ShadowPCF3x3(TESR_ShadowAtlas, lightSpace.xy, lightSpace.z - bias - SHADOW_SLACK(1.5f), quadrantOffset);   // UNOFFICIAL PCF (3 x 3: taps up to 1.5 texels out)
 #else
     float4 moments = SampleShadowMoments(lightSpace.xy, quadrantOffset);
 
@@ -326,7 +363,7 @@ float SampleShadowAtlasOld(float4 lightSpace, float2 quadrantOffset, float bias,
     lightSpace.xy = lightSpace.xy * 0.5f + quadrantOffset;
 
 #if SHADOW_FIXED_MODE == 3
-    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias - 1.5f * ShadowSlopeBias, quadrantOffset);   // UNOFFICIAL PCF
+    return ShadowPCF3x3(TESR_ShadowAtlasOld, lightSpace.xy, lightSpace.z - bias - SHADOW_SLACK(1.5f), quadrantOffset);   // UNOFFICIAL PCF
 #else
     float4 moments = tex2Dlod(TESR_ShadowAtlasOld, float4(lightSpace.xy, 0.0f, 0.0f));
 
@@ -504,7 +541,7 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     float radius = 0.0f;
     [branch] if (contact) {
         float casterSum = 0.0f, casters = 0.0f;
-        float searchDepth = depth - ShadowSlopeBias * (0.73f * TESR_ContactHardeningData.y * ShadowSoftnessCap + 1.0f);
+        float searchDepth = depth - SHADOW_SLACK_WIDE(0.73f * TESR_ContactHardeningData.y * ShadowSoftnessCap + 1.0f);
         [unroll] for (int s = 0; s < 5; s++) {   // one read at a time: the terrain shaders are at the temp register limit
             float d = tex2Dlod(TESR_ShadowAtlas, float4(clamp(uv + search[s] * maxRadius, lo, hi), 0.0f, 0.0f)).x;
             float blocks = d < searchDepth ? 1.0f : 0.0f;
@@ -528,9 +565,9 @@ float SampleShadowAtlasPCSS(float3 position, float4x4 lightTransform, float2 qua
     // same arithmetic as before.
     float w3 = TESR_ContactHardeningData.z > 0.0f ? saturate(2.0f - radius / texel) : (radius <= texel ? 1.0f : 0.0f);
     float lit = 0.0f;
-    [branch] if (w3 > 0.0f) lit = w3 * ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - 1.5f * ShadowSlopeBias, quadrantOffset);
+    [branch] if (w3 > 0.0f) lit = w3 * ShadowPCF3x3(TESR_ShadowAtlas, uv, depth - SHADOW_SLACK(1.5f), quadrantOffset);
     [branch] if (w3 < 1.0f) {
-        float discDepth = depth - ShadowSlopeBias * (radius / texel + 1.0f);
+        float discDepth = depth - SHADOW_SLACK_WIDE(radius / texel + 1.0f);
         float2 turn = float2(1.0f, 0.0f);
         [branch] if (TESR_ContactHardeningData.z > 0.0f)
             sincos(6.2831853f * frac(52.9829189f * frac(dot(floor(uv / texel * 3.0f), float2(0.06711056f, 0.00583715f)))), turn.y, turn.x);
@@ -727,6 +764,15 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // face is barely lit anyway), times one texel of light-space depth (the cascades are 2 radii deep and 2 radii / (0.5 /
     // TESR_ShadowBlur.x) texels wide, so a texel is 2 * TESR_ShadowBlur.x of depth in every cascade).
     ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
+#if SHADOW_SLACK_CAP
+    // CharacterShadowReach (see ShadowSlackCap): the normal offset capped at the reach, in world units on Near and growing with
+    // the map's texel on the coarser cascades; the depth slacks capped at the reach in Near's depth units (the same on every
+    // cascade, which is that same growth). Off (0): no cap, the texel slack alone.
+    [flatten] if (TESR_ShadowBlur.w > 0.0f) {
+        offsetDistance = min(offsetDistance, TESR_ShadowBlur.w * radii / max(radii.x, 0.001f));
+        ShadowSlackCap = TESR_ShadowBlur.w / (2.0f * max(radii.x, 0.001f));
+    }
+#endif
 #endif
 
 #if SHADOW_FIXED_MODE == 0

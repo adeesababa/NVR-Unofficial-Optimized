@@ -144,6 +144,7 @@ public:
 		float				NightMinDarkness;
 		bool				SmoothCharacterShadows = false;	// UNOFFICIAL 2026-10-20: skin shaders' shadow lookups take the smooth vertex normal (TESR_ShadowForwardData.y), live
 		float				CharacterShadowSoftness = 0.0f;	// UNOFFICIAL 2026-10-20: with it, sun shadow edges on skin fade over at least this half-width, world units (.z), live
+		float				CharacterShadowReach = 0.0f;	// UNOFFICIAL 2026-10-22: cap on the skin shaders' PCF slack, world units on the Near cascade (TESR_ShadowBlur.w), live; 0 = off
 		bool				SkipWhenFaded;	// UNOFFICIAL 2026-10-16: no sun-shadow work while the fade is 1 (UpdateConstants SunFaded)
 		int					SkipWhenFadedCheck;	// UNOFFICIAL 2026-10-16, DIAGNOSTIC (NVR_TEST_TOOLS): 1 poison what is skipped, 2 also skip ignoring the readers, 3 lookups off at any hour
 	};

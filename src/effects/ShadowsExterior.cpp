@@ -439,6 +439,12 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// (Shadow.hlsl ShadowMinPenumbra; contact hardening's disc lookup, so it needs that compiled in, as it is by default).
 	Settings.Exteriors.CharacterShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowSoftness"), 0.0f, 4.0f);
 	Constants.ForwardData.z = Settings.Exteriors.SmoothCharacterShadows ? Settings.Exteriors.CharacterShadowSoftness : 0.0f;
+	// UNOFFICIAL 2026-10-22 CharacterShadowReach (P82 tester, after the cascade handover: hair and nose shadows faint or missing on faces
+	// close up in forward mode): a cap, in world units, on the slack the skin shaders' PCF sun lookups give the receiver's own surface
+	// (Shadow.hlsl ShadowSlackCap: the normal offset and every depth slack, on the Near cascade; growing with the map's texel on the
+	// coarser ones), so casters closer than that to the skin still cast. 0 = off, the texel slack alone. Live: TESR_ShadowBlur.w.
+	Settings.Exteriors.CharacterShadowReach = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "CharacterShadowReach"), 0.0f, 8.0f);
+	Constants.ShadowBlur.w = Settings.Exteriors.CharacterShadowReach;
 	// UNOFFICIAL 2026-10-21 HandoverBlend (P82 tester: the hair's shadow on the brow popping as the third-person camera zooms): how
 	// far inside each sun cascade's edge the cross-fade into the next starts, in world units (Shadow.hlsl ShadowCascadeBands, read
 	// by both the forward and the deferred lookups). 0 = the old rule, a tenth of the radius. Every Quality level; live.
