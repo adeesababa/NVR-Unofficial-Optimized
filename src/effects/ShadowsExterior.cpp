@@ -582,6 +582,9 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);
 		forward.InvisibleShadowFromLamp = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleShadowFromLamp"), 0.0f, 1024.0f);
 		forward.InvisibleLightSize = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightSize"), 0.0f, 128.0f);
+		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;	// compiled in at startup (ShaderRecord::BuildDefines)
+		forward.MagnifiedSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MagnifiedSoftness"), 0.0f, 8.0f);	// POINT_SHADOW_MAG if above 0 at startup
+		forward.TexelFilter = TheSettingManager->GetSettingI(section, "TexelFilter") != 0;	// POINT_SHADOW_TEXEL, compiled in at startup
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
