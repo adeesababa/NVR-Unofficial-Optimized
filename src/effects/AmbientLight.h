@@ -56,10 +56,13 @@ public:
 	bool				interiorBalance = true;
 	float				interiorBounceShare = 1.0f;
 	// UNOFFICIAL 2026-10-21 (alrocks; the occlusion cut off hard along low-poly rocks' triangle edges): NormalSmoothing (half-resolution
-	// texels Prepare averages the normal over, 0 off) and HorizonBias (degrees above the tangent plane each horizon starts, 0 off); NVR_ALEdges.
-	int					normalSmoothing = 2;
-	float				horizonBias = 12.0f;
-	CachedHandle		paramEdges;
+	// texels the normal is averaged over after Prepare, 0 off) and HorizonBias (degrees above the tangent plane each horizon starts, 0 off); NVR_ALEdges.
+	int					normalSmoothing = 36;
+	float				horizonBias = 0.0f;
+	CachedHandle		paramEdges, techSmooth;
+	bool				prepared = false;			// RenderPrepare drew Prepare + the smoothing this frame (Render skips its Prepare)
+	bool	RenderPrepare(IDirect3DDevice9* Device);	// ShaderManager, before the AO's sky pass: Prepare, then technique AmbientLightSmooth
+	IDirect3DTexture9* SmoothedNormals() const { return prepared ? prepTexture : nullptr; }
 	IDirect3DTexture9*	statsTexture = nullptr;			// per sample: light, the occlusion's darkening, the bounce (luma)
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};		// x: the bounce's scale (eased), yzw: the averages

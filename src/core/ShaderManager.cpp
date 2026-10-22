@@ -1788,9 +1788,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(ambientLightTimer, Device);
 		// UNOFFICIAL 2026-10-20 (skyamb) Skylighting (AmbientOcclusion.h): the AO's sky pass first, at AmbientLight's half resolution;
 		// AmbientLight's Apply takes its factor.
+		// UNOFFICIAL 2026-10-21 (alrocks): AmbientLight's Prepare and its normal smoothing first, so the sky test reads the smoothed normal.
+		Effects.AmbientLight->RenderPrepare(Device);
 		if (AmbientOcclusionEffect::SkyV2Active() && AO->Effect) {
 			AO->lastLowRes = false;
-			AO->RenderSkyVisibility(Device);
+			AO->RenderSkyVisibility(Device, Effects.AmbientLight->SmoothedNormals());
 			Device->SetRenderTarget(0, RenderTarget);
 		}
 		Effects.AmbientLight->foldShadow = shadowIntoAmbientLight;

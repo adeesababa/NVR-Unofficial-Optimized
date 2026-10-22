@@ -30,6 +30,7 @@ public:
 	IDirect3DSurface9* skySurfaceLow = nullptr;
 	bool skyReady = false;
 	CachedHandle techSky;
+	CachedHandle paramSkySmooth;	// UNOFFICIAL 2026-10-21 (alrocks) NVR_SkySmooth
 	static bool SkyV2Active();
 	IDirect3DTexture9* SkyTexture() const { return skyReady ? (lastLowRes ? skyTextureLow : skyTexture) : nullptr; }
 	// UNOFFICIAL 2026-10-19 Skylighting v3 phase 1 ([Shaders.AmbientOcclusion.Skylighting] Reflections): the same texture (its b: the
@@ -39,7 +40,8 @@ public:
 	// UNOFFICIAL 2026-10-20 (skyamb): no '&& Enabled' any more: AmbientLight switches this effect off while it renders and can host the
 	// sky test (below); SkyTexture() is null unless this frame's sky target was written.
 	IDirect3DTexture9* SkyReflectionTexture() const { return SkyReflections ? SkyTexture() : nullptr; }
-	void RenderSkyVisibility(IDirect3DDevice9* Device);
+	// UNOFFICIAL 2026-10-21 (alrocks): smoothedNormals = AmbientLight's prep with the normal smoothed over low-poly faces (NVR_SkyPrep), or null.
+	void RenderSkyVisibility(IDirect3DDevice9* Device, IDirect3DTexture9* smoothedNormals = nullptr);
 	// UNOFFICIAL 2026-10-20 (skyamb) Skylighting under AmbientLight: while AmbientLight renders it switches this effect off (it does its own
 	// AO), and the sky test that lives here went with it. Now AmbientLight hosts it outdoors whether or not this effect is on: the sky
 	// constants are kept up (UpdateSkyConstants, also called by ShaderManager while this effect is off), this effect's sky pass runs just

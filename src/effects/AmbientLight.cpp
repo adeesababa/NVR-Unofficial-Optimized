@@ -25,7 +25,7 @@ void AmbientLightEffect::UpdateSettings() {
 	gridColour = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridColour"), 0.0f, 1.0f);
 	interiorBalance = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "InteriorBalance") != 0;
 	interiorBounceShare = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "InteriorBounceShare"), 0.0f, 4.0f);
-	normalSmoothing = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NormalSmoothing"), 0, 2);	// UNOFFICIAL 2026-10-21 (alrocks)
+	normalSmoothing = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NormalSmoothing"), 0, 64);	// UNOFFICIAL 2026-10-21 (alrocks)
 	horizonBias = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "HorizonBias"), 0.0f, 45.0f);
 }
 
@@ -307,6 +307,89 @@ bool AmbientLightEffect::ShouldRender() {
 	return Enabled && Effect && !TheShaderManager->GameState.isUnderwater;
 }
 
+// UNOFFICIAL 2026-10-21 (alrocks): Prepare and then the prep's normal smoothed (technique AmbientLightSmooth, two half-resolution passes
+// through the ping-pong buffer), drawn by ShaderManager BEFORE the AO's sky pass, so the sky test reads the smoothed normal too (the black
+// faces on low-poly rocks at night were its). Render then skips its own Prepare. False (nothing drawn) when off or anything is missing.
+bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
+	prepared = false;
+	if (normalSmoothing <= 0 || !Effect) return false;
+	EnsureBuffers();
+	D3DXHANDLE technique = Effect->GetTechnique(0);
+	D3DXHANDLE smooth = TechniqueHandle(techSmooth, "AmbientLightSmooth");
+	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_ALLayout");
+	D3DXHANDLE edgesHandle = ParameterHandle(paramEdges, "NVR_ALEdges");
+	D3DVIEWPORT9 original = {};
+	D3DSURFACE_DESC half = {};
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || !smooth || !layoutHandle || !edgesHandle || !prepTexture || !prepSurface || !bufferTexture[1] || !bufferSurface[1] ||
+		FAILED(Effect->GetTechniqueDesc(smooth, &description)) || description.Passes != 2 || FAILED(Device->GetViewport(&original)) ||
+		FAILED(bufferSurface[1]->GetDesc(&half))) return false;
+	D3DVIEWPORT9 reduced = original;
+	reduced.Width = half.Width;
+	reduced.Height = half.Height;
+	D3DXVECTOR4 layout((float)half.Width / original.Width, (float)half.Height / original.Height, 1.0f / half.Width, 1.0f / half.Height);
+	D3DXVECTOR4 edges((float)normalSmoothing, horizonBias * (3.14159265f / 180.0f), 0.0f, 0.0f);
+	IDirect3DSurface9* depthSurface = nullptr;
+	Device->GetDepthStencilSurface(&depthSurface);
+	if (!ReShadeIntegration::KeepDepthBound()) Device->SetDepthStencilSurface(nullptr);
+	IDirect3DSurface9* target = nullptr;
+	Device->GetRenderTarget(0, &target);
+	static GpuTimer timer("  Ambient light prepare + smooth (half)");
+	GpuProfileScope gpu(timer, Device);
+	Effect->SetTechnique(technique);
+	SetCT();
+	Effect->SetVector(layoutHandle, &layout);
+	Effect->SetVector(edgesHandle, &edges);
+	Device->SetTexture(5, nullptr);
+	Device->SetTexture(6, nullptr);
+	Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);	// NVR_ALViewModel (Prepare)
+	UINT passes = 0;
+	HRESULT result = Device->SetRenderTarget(0, prepSurface);
+	if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
+	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
+	if (SUCCEEDED(result)) {
+		result = Effect->BeginPass(0);	// Prepare -> prep
+		if (SUCCEEDED(result)) {
+			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Effect->EndPass();
+		}
+		Effect->End();
+	}
+	if (SUCCEEDED(result)) {
+		Effect->SetTechnique(smooth);
+		result = Effect->Begin(&passes, 0);
+		if (SUCCEEDED(result)) {
+			for (UINT p = 0; p < 2 && SUCCEEDED(result); ++p) {
+				// X: prep (stage 5) -> buffer 1 (normal, depth); Y: buffer 1 (stage 6) -> prep (packed again)
+				Device->SetTexture(5, p == 0 ? prepTexture : nullptr);
+				Device->SetTexture(6, p == 1 ? bufferTexture[1] : nullptr);
+				result = Device->SetRenderTarget(0, p == 0 ? bufferSurface[1] : prepSurface);
+				if (SUCCEEDED(result)) result = Effect->BeginPass(p);
+				if (FAILED(result)) break;
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				Effect->EndPass();
+			}
+			Effect->End();
+		}
+		Effect->SetTechnique(technique);
+	}
+	Device->SetTexture(5, nullptr);
+	Device->SetTexture(6, nullptr);
+	Device->SetTexture(15, nullptr);
+	Device->SetRenderTarget(0, target);
+	if (target) target->Release();
+	Device->SetViewport(&original);
+	Device->SetDepthStencilSurface(depthSurface);
+	if (depthSurface) depthSurface->Release();
+	prepared = SUCCEEDED(result);
+	static int reported = -1;
+	if ((prepared ? 1 : 0) != reported) {
+		reported = prepared ? 1 : 0;
+		Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %s.", prepared ? "on (reach set, technique AmbientLightSmooth drawn)" : "NOT drawn this frame (a draw failed)");
+	}
+	return prepared;
+}
+
 void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
@@ -506,6 +589,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			// frame's history; (indoors) balance samples -> stats, balance (stats, last balance) -> this frame's balance;
 			// Apply (0 for the occlusion, this frame's history for the bounce) -> the frame.
 			if ((p == 5 || p == 6) && !balanceRuns) continue;
+			if (p == 0 && prepared) continue;	// UNOFFICIAL 2026-10-21 (alrocks): RenderPrepare drew Prepare (and the smoothing) already
 			const bool apply = p == 7;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
 				p == 5 ? statsSurface : p == 6 ? balanceSurface[balanceWrite] : bufferSurface[p == 2 ? 1 : 0];
@@ -569,6 +653,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->SetRenderTarget(1, nullptr);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeMask1);
 	Device->SetTexture(1, TheTextureManager->SourceTexture);
+	prepared = false;	// UNOFFICIAL 2026-10-21 (alrocks): consumed
 	// UNOFFICIAL Temporal: this frame's history is next frame's "last frame".
 	if (SUCCEEDED(result) && balanceRuns) {
 		balanceIndex = balanceWrite;	// this frame's balance is next frame's "last"

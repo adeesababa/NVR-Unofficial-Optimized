@@ -40,7 +40,7 @@ float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager 
 float4 NVR_ALInterior;          // UNOFFICIAL 2026-10-18 (ambfix2): x 1 = indoor balance (InteriorBalance), y 1 = last frames' balance usable, z InteriorBounceShare, w share of last frames' balance kept per frame
 float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: share of the grid light's colour kept (GridColour)
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
-float4 NVR_ALEdges;             // UNOFFICIAL 2026-10-21 (alrocks): x how far Prepare smooths the normal (half-resolution texels, 0 off), y the horizon bias (radians, 0 off)
+float4 NVR_ALEdges;             // UNOFFICIAL 2026-10-21 (alrocks): x how far the normal is smoothed (reach, half-resolution texels, 0 off; technique AmbientLightSmooth), y the horizon bias (radians, 0 off)
 float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
 float4 TESR_WaterSettings;      // x: water height, z: camera underwater
 float4 TESR_ShadowData;         // y: darkness
@@ -163,46 +163,57 @@ float3 OctDecode(float2 e) {
 // Pass 1: x = view depth (world units), y = normal, z = colour red and green (square-root encoded), w = colour blue (linear light, capped
 // so small bright glints do not spray light around).
 // UNOFFICIAL 2026-10-14 (user: remove the screen bounce; the light grid is the bounce light): depth and normal only.
-// UNOFFICIAL 2026-10-21 (alrocks; user: with AmbientLight on, in the dark, the occlusion cuts off hard along the triangle edges of
-// low-poly rocks, one face dark and its neighbour light). The normal this effect works from is Normals.fx.hlsl's: rebuilt from the
-// depth buffer, so every triangle gets one flat normal and it flips at each edge (no smooth vertex normal exists: the object shaders
-// keep theirs in tangent space, and the game's MSAA rules out a second target). Estimate starts each horizon at the normal's
-// tangent plane, so at an edge of 150-170 degrees each face takes its neighbour for an occluder and the darkening steps with the
-// normal. Two mends, both live ([Shaders.AmbientLight.Main]), neither needs a new buffer:
-//  - NormalSmoothing (here): the normal is averaged over the (2 r + 1)^2 half-resolution texels round the pixel, each counted as far
-//    as it lies on the pixel's own tangent plane (a crease has continuous depth, a silhouette is a depth step and keeps its edge)
-//    and as far as its normal is within about 40-60 degrees of the pixel's (a wall meeting the floor stays a crease).
-//  - HorizonBias (Estimate): each horizon starts a few degrees above the tangent plane (HBAO's angle bias), so a shallow bend
-//    counts for little while a real crevice still counts; the open-ground normalisation uses the same start, so open ground stays 1.
-float3 SmoothedNormal(float2 uv, float3 origin, float3 normal, float viewZ, uniform int reach) {
-	float tolerance = max(viewZ * 0.01f, 0.5f);	// off the tangent plane: a 30-degree bend two texels away lies well within it, a step of a rock's thickness does not
-	float3 sum = normal;
-	[unroll] for (int j = -reach; j <= reach; j++) {
-		[unroll] for (int i = -reach; i <= reach; i++) {
-			if (i == 0 && j == 0) continue;
-			float2 tapUV = uv + float2(i, j) * NVR_ALLayout.zw;
-			float tapZ = PositionFromLinear(tapUV, tex2Dlod(TESR_DepthBuffer, float4(tapUV, 0.0f, 0.0f)).x).z;
-			float3 tapNormal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(tapUV, 0.0f, 0.0f)).xyz * 2 - 1);
-			float plane = abs(dot(PositionFromViewZ(tapUV, tapZ) - origin, normal));
-			float weight = saturate(1.0f - plane / tolerance) * smoothstep(0.5f, 0.8f, dot(tapNormal, normal));
-			sum += tapNormal * weight;
-		}
-	}
-	return normalize(sum);
-}
-
+// UNOFFICIAL 2026-10-21 (alrocks; user: with AmbientLight on, in the dark, the light cuts off hard along the triangle edges of low-poly
+// rocks, one face dark and its neighbour light). Every normal this effect and Skylighting's sky test work from is Normals.fx.hlsl's:
+// rebuilt from the depth buffer, so every triangle gets one flat normal that flips at each edge (no smooth vertex normal exists: the
+// object shaders keep theirs in tangent space, and the game's MSAA rules out a second target). Measured 2026-10-21 (rocks24, 20.5 h):
+// the black faces are Skylighting's (its rays count by their cosine to that normal, so a face turned from the sky sees none and
+// SkyTake takes all its light at night: 30 % of the rock black, 0.4 % with Skylighting off); the occlusion here steps too, mildly.
+// Mend, live ([Shaders.AmbientLight.Main] NormalSmoothing = reach r in half-resolution texels, 0 off): after Prepare, technique
+// AmbientLightSmooth averages the prep's normal along x then along y (3 taps each side at r/3, 2r/3 and r), each tap counted as far as
+// it lies on the pixel's own tangent plane (a crease has continuous depth, a silhouette is a depth step and keeps its edge; the
+// tolerance grows with the distance so a neighbouring face bent up to ~30 degrees still counts) and as far as its normal is within
+// about 40-60 degrees of the pixel's (a wall meeting the floor stays a crease). Estimate reads the smoothed prep, and the sky test runs
+// after it and reads the same texel (AmbientOcclusion.fx.hlsl NVR_SkyPrep). A 5 x 5 or 24-tap kernel inside Prepare was tried first:
+// +0.21 / +0.64 ms, and the faces are 50-150 pixels across. HorizonBias (Estimate, degrees above the tangent plane each horizon starts)
+// measured no help on the faces (it only lightens): default 0.
 float4 Prepare(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float viewZ = PositionFromLinear(uv, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x).z;
 	if (IsViewModel(uv)) viewZ = 1.0e6f;	// the weapon: as if open sky behind (nothing done, hides nothing)
 	float3 normal = normalize(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2 - 1);
-	// UNOFFICIAL 2026-10-21 (alrocks) NormalSmoothing, see SmoothedNormal above (not on the weapon, not beyond the draw distance).
-	[branch] if (NVR_ALEdges.x > 0.5f && viewZ < DrawDistance) {
-		float3 origin = PositionFromViewZ(uv, viewZ);
-		if (NVR_ALEdges.x > 1.5f) normal = SmoothedNormal(uv, origin, normal, viewZ, 2);
-		else normal = SmoothedNormal(uv, origin, normal, viewZ, 1);
-	}
 	return float4(viewZ, Pack2(OctEncode(normal)), 0.0f, 0.0f);
+}
+
+// Technique AmbientLightSmooth (see above): pass X reads the prep (NVR_ALPrep) and writes (normal, view depth) into the ping-pong
+// buffer; pass Y reads that (NVR_ALBuffer) and writes the prep again, packed as Prepare does.
+float4 SmoothNormal(VSOUT IN, uniform bool alongY) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float viewZ; float3 normal;
+	if (alongY) { float4 c = tex2Dlod(NVR_ALBuffer, float4(uv, 0.0f, 0.0f)); normal = c.xyz; viewZ = c.w; }
+	else { float4 c = tex2Dlod(NVR_ALPrep, float4(uv, 0.0f, 0.0f)); viewZ = c.x; normal = OctDecode(Unpack2(c.y)); }
+	[branch] if (viewZ < DrawDistance && NVR_ALEdges.x > 0.5f) {
+		float3 origin = PositionFromViewZ(uv, viewZ);
+		float2 axis = alongY ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f);
+		float spacing = NVR_ALEdges.x / 3.0f;
+		float3 sum = normal;
+		[unroll] for (int k = -3; k <= 3; k++) {
+			if (k == 0) continue;
+			float dist = abs((float)k) * spacing;
+			float2 tapUV = uv + axis * (k * spacing) * NVR_ALLayout.zw;
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, 1.0f) * step(0.0f, tapUV.y) * step(tapUV.y, 1.0f);
+			tapUV = saturate(tapUV);
+			float tapZ; float3 tapNormal;
+			if (alongY) { float4 t = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)); tapNormal = t.xyz; tapZ = t.w; }
+			else { float4 t = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)); tapZ = t.x; tapNormal = OctDecode(Unpack2(t.y)); }
+			float tolerance = max(viewZ * 0.001f * dist, 0.5f);	// a 30-degree bend at this distance stays within it; a rock's thickness does not
+			float plane = abs(dot(PositionFromViewZ(tapUV, tapZ) - origin, normal));
+			float weight = saturate(1.0f - plane / tolerance) * smoothstep(0.5f, 0.8f, dot(tapNormal, normal)) * onScreen;
+			sum += tapNormal * weight;
+		}
+		normal = normalize(sum);
+	}
+	return alongY ? float4(viewZ, Pack2(OctEncode(normal)), 0.0f, 0.0f) : float4(normal, viewZ);
 }
 
 // GTAO's cosine-weighted visible arc of one slice between its two horizons (cosines), each kept within the hemisphere round the
@@ -820,4 +831,11 @@ technique AmbientLightSky {
 	pass StatsSample { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsSample(); }
 	pass StatsReduce { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 StatsReduce(); }
 	pass Apply { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 Apply(true); }
+}
+
+// (after the main technique: AmbientLight.cpp takes GetTechnique(0) for it)
+// UNOFFICIAL 2026-10-21 (alrocks): the prep's normal smoothed, drawn between Prepare and the sky test (AmbientLight.cpp RenderPrepare).
+technique AmbientLightSmooth {
+	pass SmoothX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormal(false); }
+	pass SmoothY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormal(true); }
 }
