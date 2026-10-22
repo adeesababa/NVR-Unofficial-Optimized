@@ -2200,6 +2200,17 @@ static const char* InactiveReason(const char* section, const char* key) {
 		return "Only used with the _rmaos maps on ([Shaders.PBR.Rmaos] Enabled): the materials come from them.";
 	if (sec == "Shaders.Reflections.Main" && is({ "MaterialReflect", "MaterialMaxRoughness" }) && NumericSetting(section, "MaterialAware") != 1.0f)
 		return "Only used with MaterialAware 1.";
+	// UNOFFICIAL 2026-10-21 cloth indoors (core/ClothWind.h BeginFrame): the indoor set is read only while its switch is on; indoors
+	// there is no weather, so the weather's wind is never used there.
+	if (sec == "Shaders.Cloth.Interiors" && !is({ "Enabled" }) && NumericSetting(section, "Enabled") == 0.0f)
+		return "Only used with Enabled on (the first switch in this section). With it off cloth stays still indoors "
+			"(worn coats still follow you there: Cloth > Main MotionIndoors).";
+	if (sec == "Shaders.Cloth.Main" && is({ "CalmFactor" }) && NumericSetting(section, "UseGameWind") == 0.0f)
+		return "Only used with UseGameWind on.";
+	if (sec == "Shaders.Cloth.Main" && is({ "WindDirX", "WindDirY", "WindDirZ" }) && NumericSetting(section, "UseGameWind") != 0.0f &&
+		NumericSetting("Shaders.Cloth.Interiors", "Enabled") == 0.0f)
+		return "Not used now: UseGameWind takes the direction from the weather. Used with UseGameWind off, and indoors "
+			"with Cloth > Interiors on (no weather there).";
 	return nullptr;
 }
 
@@ -2522,6 +2533,14 @@ static const std::unordered_map<std::string, FloatRange> kFloatSliders = {
 	{ "Shaders.PBR.Metal.FadeDistance", { 0.0f, 4000.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.NearFade", { 0.0f, 128.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.PlayerLampMargin", { 0.0f, 64.0f, "%.0f" } },
+	// UNOFFICIAL 2026-10-21 cloth indoors (core/ClothWind.h BeginFrame)
+	{ "Shaders.Cloth.Interiors.Strength", { 0.0f, 2.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.WindIntensity", { 0.0f, 12.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.WindSpeed", { 0.0f, 400.0f, "%.0f" } },
+	{ "Shaders.Cloth.Interiors.Wavelength", { 16.0f, 1000.0f, "%.0f" } },
+	{ "Shaders.Cloth.Interiors.FlutterSpeed", { 0.0f, 6.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.FlutterAmount", { 0.0f, 1.0f, "%.2f" } },
+	{ "Shaders.Cloth.Interiors.RippleAmount", { 0.0f, 1.0f, "%.2f" } },
 };
 
 static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool isShader = false) {

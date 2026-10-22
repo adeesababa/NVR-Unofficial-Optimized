@@ -373,7 +373,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 66;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 67;  // 53 was an enhanced-water step, since removed
 extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -480,6 +480,23 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 	if (version < 66) {
 		replace("Shaders.Skin.Scattering", "Width", 8.0, 28.6, false);
 		replace("Shaders.Skin.Interiors", "Width", 8.0, 28.6, false);
+	}
+	// 67 (2026-10-21): cloth got its own indoor settings, [Shaders.Cloth.Interiors] (testers: still cloth indoors moved far too
+	// much with the outdoor values). [Shaders.Cloth.Main] Interiors became its Enabled: a saved 'true' carries over (cloth keeps
+	// moving indoors, now with the gentle indoor values); the old key goes.
+	if (version < 67) {
+		tomlValue* saved = UserSection("Shaders.Cloth.Main");
+		if (saved && saved->is_table() && saved->contains("Interiors")) {
+			const tomlValue old = saved->at("Interiors");
+			saved->as_table().erase("Interiors");
+			tomlValue* parentTable = UserSection("Shaders.Cloth");
+			if (old.is_boolean() && old.as_boolean() && parentTable && parentTable->is_table()) {
+				if (!parentTable->contains("Interiors") || !parentTable->at("Interiors").is_table()) (*parentTable)["Interiors"] = toml::table();
+				(*parentTable)["Interiors"]["Enabled"] = true;
+				Logger::Log("UNOFFICIAL settings: cloth now has separate indoor settings; your Shaders.Cloth.Main Interiors = true "
+					"was carried over to Shaders.Cloth.Interiors Enabled (indoor cloth now moves with the gentler indoor values).");
+			}
+		}
 	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
