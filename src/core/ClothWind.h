@@ -1417,6 +1417,12 @@ namespace ClothWind {
 			auto t = TentativeNow.find(geometry);
 			if (t == TentativeNow.end()) TentativeNow.emplace(geometry, CurrentVSCapable);
 			else t->second = t->second && CurrentVSCapable;	// every pass of the object this frame
+			// 2026-10-21 (indoor cloth test, Gomorrah: a curtain broke apart with any wind at all, even 0.02 units): an object whose
+			// other passes SetShaders noted as carrying the cloth code, but with a pass drawn with a vertex shader that does not (the
+			// game set no shaders for it: the lamp passes of a batch share theirs), counted as all-NVR -- the tentative answer above is
+			// only used for objects never noted -- so its passes no longer met. Any lit pass drawn without the cloth code keeps the
+			// object still from the next frame on.
+			if (!CurrentVSCapable) VanillaNow.insert(geometry);
 			boundAnswer = !SeenLast.count(geometry) && CurrentVSCapable && !VanillaLast.count(geometry);
 		}
 		if (!shadowPass && !boundAnswer && (!SeenLast.count(geometry) || VanillaLast.count(geometry))) {	// see SAFETY above
