@@ -58,6 +58,14 @@ public:
 	// UNOFFICIAL 2026-10-21 (aloutline) NoEdgeOutline: the busy-depth rule (Apply) needs a bend at three pixels in a row, so the edges
 	// of things no longer count as grass (NVR_ALFlags.y).
 	bool				noEdgeOutline = true;
+	// UNOFFICIAL 2026-10-21 (alrocks; the occlusion cut off hard along low-poly rocks' triangle edges): NormalSmoothing (half-resolution
+	// texels the normal is averaged over after Prepare, 0 off) and HorizonBias (degrees above the tangent plane each horizon starts, 0 off); NVR_ALEdges.
+	int					normalSmoothing = 36;
+	float				horizonBias = 0.0f;
+	CachedHandle		paramEdges, techSmooth;
+	bool				prepared = false;			// RenderPrepare drew Prepare + the smoothing this frame (Render skips its Prepare)
+	bool	RenderPrepare(IDirect3DDevice9* Device);	// ShaderManager, before the AO's sky pass: Prepare, then technique AmbientLightSmooth
+	IDirect3DTexture9* SmoothedNormals() const { return prepared ? prepTexture : nullptr; }
 	IDirect3DTexture9*	statsTexture = nullptr;			// per sample: light, the occlusion's darkening, the bounce (luma)
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};		// x: the bounce's scale (eased), yzw: the averages
