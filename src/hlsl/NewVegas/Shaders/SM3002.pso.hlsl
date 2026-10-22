@@ -124,7 +124,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         // 1 - (dist/radius)^2. None for directional.
         float dist = length(toLight);
         float d = saturate(dist / max(lightVec.w, 0.0001f));
-        float atten = isDirectional ? 1.0f : saturate(1.0f - d * d);
+        float atten = isDirectional ? 1.0f : LampAttOther(saturate(1.0f - d * d)); // UNOFFICIAL 2026-10-21 LampFalloff (Includes/LampFalloff.hlsl): as before, the objects' decode or the shape
 
         float3 L = normalize(mul(tbn, toLight));
 

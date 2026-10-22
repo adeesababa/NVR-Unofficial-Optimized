@@ -1006,6 +1006,13 @@ Gamma = 2.2                          # [1.0-3.0] The gamma the colours are decod
 NightGamma = 0.0                     # [0, 1.0-3.0] UNOFFICIAL (2026-10-20), live: linear lighting's gamma outside at night; Gamma blends into it over dusk and dawn like the other day/night settings (Transitions curve). Interiors keep Gamma. 0 = the same as Gamma (off).
 FalloffMatch = 1.0                   # [0.0-1.0] UNOFFICIAL (2026-10-20), live: 1 = each lamp reaches exactly as far and as strongly as in the game (its distance falloff is decoded like its colour); lamps still add up in linear light. 0 = the falloff used as is in linear light, as before: lamps 2-3.5x brighter along their reach, big rooms like Rivet City's hangar about twice too bright
 
+[_Shaders.PBR.LampFalloff]
+Exterior = false                     # UNOFFICIAL (2026-10-21) Lamps outdoors (street lights, lanterns, fires) fall off like real light: bright by the lamp, dimming smoothly over its reach to nothing at its edge, instead of the game's evenly lit disc that stops at a hard edge (inverse-square light with a smooth end, as in Unreal Engine 4: Karis 2013). The lamp gives off as much light in all as before. Changes the look; off = exactly as before. Needs a restart the first time one of Exterior, Interior or MatchEverywhere is switched on (they are then built into the shaders); after that it switches live
+Interior = false                     # UNOFFICIAL (2026-10-21) The same for lamps indoors: pools of light by the lamps, darker between them. Changes the look; off = exactly as before (restart the first time, as Exterior)
+Falloff = 0.25                       # [0.05-1.0] UNOFFICIAL (2026-10-21), live: how fast a lamp's light dims with distance (the bright core's size, as a share of the lamp's reach). Small = a bright spot by the lamp and a long dim tail; 0.5 = close to the game's own curve; 1 = flatter still
+Brightness = 1.0                     # [0.1-4.0] UNOFFICIAL (2026-10-21), live: the lamps' strength with Exterior / Interior on. 1 = as much light in all as the game's lamps give
+MatchEverywhere = false              # UNOFFICIAL (2026-10-21) With linear lighting on: the ground, skin and hair fall off from each lamp as objects do (Shaders.PBR.Linear FalloffMatch). Off = as before: on them a lamp stays nearly full bright almost to the edge of its reach and then stops (the flat disc with a hard edge on the ground, brighter than the road next to it). Exterior / Interior shape them too. Restart the first time, as Exterior
+
 [_Shaders.PBR.Status]
 Enabled = true                       # Adds PBR specular formula to object shaders
 
