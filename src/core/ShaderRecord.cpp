@@ -146,6 +146,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// shaders are exactly what they were. Read here for the same reason as FORWARD_SHADOWS; takes effect on restart.
 	// UNOFFICIAL optional contact-hardening sun shadows: compiled in only when on at startup, like SUN_CROSSFADE.
 	AppendDefine("CONTACT_HARDENING", TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") ? "1" : "0");
+	// UNOFFICIAL 2026-10-22 CasterReachEverywhere, a TEST switch: CharacterShadowReach's slack cap (Includes/Shadow.hlsl ShadowSlackCap)
+	// compiled into every forward shader instead of the skin shaders only. Off (the default): the other shaders are exactly what they were.
+	AppendDefine("SHADOW_SLACK_CAP_ALL", TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CasterReachEverywhere") ? "1" : "0");
 	// UNOFFICIAL 2026-10-15: interior forward lamp shadows with smooth edges (Includes/PointShadowForward.hlsl)
 	AppendDefine("POINT_SHADOW_SMOOTH", TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "SmoothEdges") ? "1" : "0");
 
