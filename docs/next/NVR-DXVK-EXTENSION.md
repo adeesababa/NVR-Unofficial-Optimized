@@ -82,8 +82,12 @@ Cost: one read of the frame plus a tiny second dispatch (phase 0 at 2560x1440 is
   `dxvk.enableDescriptorBuffer = False`). On the default path (descriptor heap) the layer available here (1.3.275) is older
   than the extension DXVK 3.0 uses and reports "set not bound" for DXVK's own draws as well as ours: the layer's
   blindness, not a finding, but the heap path is only verified by the results, not by a layer.
-- `DxvkCompute.cpp` compiles with MinGW (syntax check); the rest of the NVR side is checked by the repository's own
-  Windows build workflow on push (see the branch's Actions run).
+- The GitHub workflow built the DLL from the branch: Actions run "NVR DXVK d3d9.dll" of 2026-10-23, artifact
+  `nvr-dxvk-x32` (d3d9.dll 9.9 MB; the same size as the local build).
+- NOT compiled with MSVC: `DxvkCompute.cpp` passes a MinGW syntax check, but the repository's "Build New Vegas Reloaded"
+  workflow never starts (its `windows-2019` runner no longer exists on GitHub; the runs of every branch sit queued), so
+  the NVR-side C++ (AvgLuma, Normals, DxvkCompute, the ShaderManager/SettingManager edits) and the new HLSL technique
+  were reviewed, not built. The owner's VS2019 build is the first compile; expect at most small fixes.
 
 ## NOT verified: what the owner must test in game
 1. Install the fork's d3d9.dll (from the Actions artifact, or build.sh) next to FalloutNV.exe in a DXVK slot, with the
