@@ -169,6 +169,12 @@ Unknowns to watch: the storage-image path (`ensureImageCompatibility`) is unused
 context-state restores were exercised by the test's alpha-tested draws, not by the game's full state (a wrong fog colour,
 alpha test, viewport or render target right after a pass would point at them); the win32 DLL was built, not run.
 
+## Phase 2 (the game's own shaders)
+Researched, not started: NVR-DXVK-PHASE2-NOTES.md says where a replacement plugs into DXVK 3.0.1 (one `if` in
+`D3D9ShaderModuleSet::GetShaderModule`, keyed by the bytecode hash) and the exact contract a replacement SPIR-V must
+honour (constant buffer layout, texture bindings, sampler heap indices, shared push data, spec-constant block, IO
+locations), with the risks in order.
+
 ## Next candidates (after the go/no-go)
 Full-screen graphics passes with own SPIR-V (the next extension method), then AmbientLight's blurs/accumulate, the light
 grid, froxel fog, the cloud march, BloodFlow, reflections (DXVK-FORK-PLAN.md step 5). Each keeps its setting names; NVR
