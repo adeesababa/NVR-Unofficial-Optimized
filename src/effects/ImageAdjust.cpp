@@ -67,28 +67,14 @@ bool ImageAdjustEffect::ShouldRender() {
 		Constants.LightColor.x != 1.0f || Constants.LightColor.y != 1.0f || Constants.LightColor.z != 1.0f;
 }
 
-// UNOFFICIAL 2026-10-23 (NVR DXVK): ImageAdjust.frag; the texture and three constants the technique reads.
+// UNOFFICIAL 2026-10-23 (NVR DXVK): ImageAdjust.frag; the textures and constants the technique reads (EffectRecord::ExtTexturePass).
 bool ImageAdjustEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (techniqueIndex != 0) return false;
-	struct Push { D3DXVECTOR4 data, darkColor, lightColor; UInt32 samplerIndex; UInt32 pad[3]; };
-	if (!extTried) {
-		extTried = true;
-		static const NVR_EXT_BINDING_DESC bindings[] = {
-			{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },		// t_rendered
-			{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 48 },		// samplerIndex
-		};
-		extPipeline = DxvkCompute::CreateGraphicsPipeline("ImageAdjust", bindings, _countof(bindings), sizeof(Push), true);
-	}
-	ID3D9NvrExtSampler* sampler = DxvkCompute::LinearClamp();
-	if (!extPipeline || !sampler || !TheTextureManager->RenderedTexture) return false;
-	Push push = {};
+	struct Push { D3DXVECTOR4 data, darkColor, lightColor; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
 	push.data = Constants.Data;
 	push.darkColor = Constants.DarkColor;
 	push.lightColor = Constants.LightColor;
-	NVR_EXT_RESOURCE_BINDING resources[] = {
-		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE, TheTextureManager->RenderedTexture, 0, 0, 0, FALSE },
-		{ 0, NVR_EXT_BIND_SAMPLER,       sampler,                           0, 0, 0, FALSE },
-	};
-	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extPipeline, resources, _countof(resources), &push, sizeof(push));
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "ImageAdjust", textures, _countof(textures), &push, sizeof(push), 48);
 }
 

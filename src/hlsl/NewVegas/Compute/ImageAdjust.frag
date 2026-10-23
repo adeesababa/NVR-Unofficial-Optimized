@@ -23,7 +23,8 @@ void main() {
 
     color.rgb = pows(color.rgb, 2.2);   // linearise
 
-    vec3 darks = smoothstep(vec3(1.0), vec3(0.0), color.rgb) * color.rgb * pows(pc.darkAdjustColor.rgb, 2.2);
+    // HLSL smoothstep(1, 0, x) = smoothstep(0, 1, 1 - x); GLSL leaves edge0 > edge1 undefined
+    vec3 darks = smoothstep(vec3(0.0), vec3(1.0), vec3(1.0) - color.rgb) * color.rgb * pows(pc.darkAdjustColor.rgb, 2.2);
     vec3 lights = smoothstep(vec3(0.0), vec3(1.0), color.rgb) * color.rgb * pows(pc.lightAdjustColor.rgb, 2.2);
 
     vec3 newColor = darks + lights;

@@ -603,3 +603,28 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	return true;
 }
 
+// UNOFFICIAL 2026-10-23 (NVR DXVK): see EffectRecord.h.
+bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler) {
+	if (TextureCount > 8) return false;
+	if (!Pass.Tried) {
+		Pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[9] = {};
+		for (UINT i = 0; i < TextureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[TextureCount].Set = 0; bindings[TextureCount].Binding = 0; bindings[TextureCount].Type = NVR_EXT_BIND_SAMPLER;
+		bindings[TextureCount].Slot = 0; bindings[TextureCount].ViewType = NVR_EXT_VIEW_2D; bindings[TextureCount].PushOffset = SamplerPushOffset;
+		Pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvName, bindings, TextureCount + 1, PushSize, true);
+	}
+	ID3D9NvrExtSampler* sampler = PointSampler ? DxvkCompute::PointClamp() : DxvkCompute::LinearClamp();
+	if (!Pass.Pipeline || !sampler) return false;
+	NVR_EXT_RESOURCE_BINDING resources[9] = {};
+	for (UINT i = 0; i < TextureCount; i++) {
+		if (!Textures[i]) return false;
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = Textures[i];
+	}
+	resources[TextureCount].Slot = 0; resources[TextureCount].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount].pResource = sampler;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, Pass.Pipeline, resources, TextureCount + 1, Push, PushSize);
+}
+

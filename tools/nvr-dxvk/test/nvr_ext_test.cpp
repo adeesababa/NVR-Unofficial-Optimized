@@ -399,6 +399,47 @@ int main(int argc, char** argv) {
     pipeG->Release(); pipeC->Release(); nearest->Release(); rbuf->Release(); tA->Release(); tB->Release();
   }
 
+  // ---- NVR's ported passes: each .spv must be accepted with the binding table and push size NVR's C++ declares
+  // (EffectRecord::ExtTexturePass), and draw once without an error. Values are not checked here (line-for-line ports).
+  if (argc > 5) {
+    struct Port { const char* name; UINT textures; UINT pushSize; UINT samplerOffset; };
+    const Port ports[] = {
+      { "Exposure", 2, 32, 16 }, { "ImageAdjust", 1, 64, 48 }, { "Sharpening", 2, 64, 48 },
+      { "FXAA", 1, 32, 16 }, { "LowHF", 1, 32, 16 }, { "SkyDither", 2, 32, 16 },
+    };
+    IDirect3DTexture9* out; CHECK(dev->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &out, nullptr), "port target");
+    for (const Port& port : ports) {
+      std::string path = std::string(argv[5]) + "/" + port.name + ".spv";
+      std::vector<char> code = readFile(path.c_str());
+      NVR_EXT_BINDING_DESC bindings[9] = {};
+      for (UINT i = 0; i < port.textures; i++) { bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; }
+      bindings[port.textures].Type = NVR_EXT_BIND_SAMPLER; bindings[port.textures].PushOffset = port.samplerOffset;
+      NVR_EXT_GRAPHICS_PIPELINE_DESC pd = {};
+      pd.pFragmentSpirv = code.data(); pd.FragmentSpirvSize = UINT(code.size());
+      pd.BindingCount = port.textures + 1; pd.pBindings = bindings; pd.PushConstantSize = port.pushSize;
+      pd.UsesSamplerHeap = TRUE; pd.ColorTargetCount = 1; pd.pDebugName = port.name;
+      ID3D9NvrExtPipeline* pipe = nullptr;
+      if (FAILED(ext->CreateGraphicsPipeline(&pd, &pipe))) { std::printf("FAIL: port %s refused\n", port.name); return 1; }
+      NVR_EXT_RESOURCE_BINDING rb[9] = {};
+      for (UINT i = 0; i < port.textures; i++) { rb[i].Slot = i; rb[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; rb[i].pResource = i == 0 ? (IUnknown*)color : (IUnknown*)depth; }
+      rb[port.textures].Type = NVR_EXT_BIND_SAMPLER; rb[port.textures].pResource = sampler;
+      float push[16] = { 0.5f, 1.f, 1.f, 1.f,  1.f / W, 1.f / H, 1.f, 1.f,  0.1f, 1.f, 1.f, 1.f,  0, 0, 0, 0 };
+      NVR_EXT_DRAW_DESC dd = {};
+      dd.pPipeline = pipe; dd.TargetCount = 1; dd.Targets[0] = { out, 0, 0, FALSE };
+      dd.BindingCount = port.textures + 1; dd.pBindings = rb; dd.pPushData = push; dd.PushDataSize = port.pushSize;
+      if (FAILED(ext->Draw(&dd))) { std::printf("FAIL: port %s did not draw\n", port.name); return 1; }
+      float probe[4] = {};
+      NVR_EXT_BUFFER_DESC pbd = { W * H * 8, NVR_EXT_BUFFER_TRANSFER_DST | NVR_EXT_BUFFER_TRANSFER_SRC, "probe" };
+      ID3D9NvrExtBuffer* pbuf; CHECK(ext->CreateBuffer(&pbd, &pbuf), "probe");
+      CHECK(ext->CopyTextureToBuffer(pbuf, 0, out, 0, 0), "probe copy");
+      uint16_t h4[4]; CHECK(ext->ReadBuffer(pbuf, (7 * W + 5) * 8, 8, h4), "probe read");
+      for (int c = 0; c < 4; c++) probe[c] = halfToFloat(h4[c]);
+      std::printf("port %-12s ok: texel (5,7) = (%.4f %.4f %.4f %.3f)\n", port.name, probe[0], probe[1], probe[2], probe[3]);
+      pbuf->Release(); pipe->Release();
+    }
+    out->Release();
+  }
+
   // ---- Device Reset: default-pool resources go away, the extension's objects stay usable.
   {
     colorS->Release(); depthS->Release(); avgS->Release(); bb->Release(); color->Release(); depth->Release(); avg->Release();

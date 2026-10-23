@@ -3,6 +3,17 @@
 Plan: DXVK-FORK-PLAN.md. Why not the public interop: DXVK-INTEROP-REVIEW.md. This note: what was built, what was verified
 here, what the owner has to test in game, and how NVR talks to it.
 
+## Status (2026-10-23, evening): extension 1.1, six effects ported, nothing run in game yet
+Since the first report: (1) the extension gained full-screen graphics passes (own SPIR-V fragment shaders over a built-in
+full-screen triangle, up to four targets, viewport, blend; DXVK's whole context state is saved and put back, so the game's
+D3D9 state is untouched); (2) a real bug found by the hardening tests was fixed (a buffer the compute shader writes was
+tracked as a read, so a later copy or readback could be moved in front of the dispatch; written storage buffers now go
+through tracked buffer views); (3) NVR got a generic "ported effect" hook, and Exposure, ImageAdjust, Sharpening, FXAA,
+LowHF and SkyDither run as Vulkan passes when `[Main.Main.Performance] NvrDxvkPasses` is on and the extension is there
+(their GLSL is the .fx.hlsl line for line, in `src/hlsl/NewVegas/Compute`); (4) the test program now also covers storage
+images, uniform buffers, buffer updates and copies, device Reset, the passes, and loads every ported .spv with the layout
+NVR declares. Everything passes on software Vulkan; the Windows DLL has been built (GitHub artifact) but not run (see Wine).
+
 ## In one paragraph
 An NVR-built DXVK d3d9.dll ("NVR DXVK": DXVK v3.0.1 + one patch) offers a small COM interface on the D3D9 device,
 `ID3D9NvrExt`. Through it NVR creates compute pipelines from SPIR-V, binds D3D9 textures and its own buffers, pushes
@@ -45,6 +56,13 @@ a `git am` plus, at worst, a look at those four spots. DXVK's version string bec
 - `Dispatch(pipeline, resources per slot, push data, groups)`: the D3D9 textures bound may be render targets of earlier
   passes (DXVK orders and transitions them); a texture must not be the device's current render target at the time.
 - `ReadBuffer`: TEST ONLY, waits for the GPU (a whole frame's work).
+- `CreateGraphicsPipeline` / `Draw` (1.1): a fragment shader (SPIR-V) over a full-screen triangle, into 1-4 D3D9 render
+  targets of one size, optional viewport rectangle, blend none/alpha/add/multiply. The fragment shader's inputs are the
+  same binding types as compute (sampled images, samplers via the heap, uniform/storage buffers, storage images) and a push
+  block at offset 0; `layout(location = 0) in vec2 uv` is the texture coordinate ((0,0) top left). DXVK's context state is
+  snapshotted before and restored after (`dxvk_context.h` nvrGetState/nvrSetState, which ends the pass and marks everything
+  dirty), so the device's own render targets, viewport, shaders, blend/depth state and push data are re-applied at its next
+  draw. Multisampled targets are refused (the pass would need its own sample count).
 Slots are the extension's own (DXVK resource indices 64+), so a dispatch never touches what the game or NVR has bound in
 D3D9. Push block: up to 240 bytes, the shader's block starts at offset 0.
 
@@ -69,6 +87,28 @@ The push block carries the five float4 constants (112 bytes); the samplers are L
 Cost: one read of the frame plus a tiny second dispatch (phase 0 at 2560x1440 is 14,400 groups); the D3D9 pass costs
 112 taps and a 1x1 draw, so this is a measurement of the route, not a saving. F10's "Average luma" timer covers either path.
 
+## Ported effects (NVR side) and how to port the next one
+`[Main.Main.Performance] NvrDxvkPasses = false` (needs NVR DXVK; off = the D3D9 techniques as always). On, each ported
+effect draws through the extension; if its pass ever fails, that effect alone goes back to its D3D9 technique for the
+session (logged: `pass <Name> failed to draw`). Ported so far, all single-pass full-screen effects, line for line:
+Exposure, ImageAdjust, Sharpening, FXAA, LowHF, SkyDither. The frame chain is honoured exactly as `EffectRecord::Render`
+does it (the chain's spare texture and Commit, the direct final write into the game target, or the legacy copy).
+The plumbing (`src/core/EffectRecord.{h,cpp}`):
+- `virtual bool ExtRender(...)`: Render calls it first when the switch is on; a port returns true when it drew.
+- `ExtTexturePass(...)`: the common case, N textures through one sampler plus a push block of constants; makes the
+  pipeline on first use from `Shaders\NewVegasReloaded\Compute\<Name>.spv`. `ExtFullScreen(...)` is the general one
+  (any bindings).
+Recipe for another effect (about 30 lines + the GLSL): copy its .fx.hlsl into `src/hlsl/NewVegas/Compute/<Name>.frag` as
+GLSL (`Common.glsl` has linearize/delinearize/luma/pows/saturate; samplers come from the heap: `NVR_SAMPLER(index)`;
+`VPOS` is `floor(gl_FragCoord.xy)`; watch `smoothstep` with edge0 > edge1, undefined in GLSL), put the TESR_ float4s it
+reads into the push block in order and the `uint samplerIndex` after them, compile with
+`glslangValidator -V --target-env vulkan1.1 -o <Name>.spv <Name>.frag`, then override `ExtRender` in the effect and call
+`ExtTexturePass` with the textures in binding order (see Exposure.cpp). Multi-pass effects and effects that draw into
+their own buffers (bloom, AmbientLight, ...) need `ExtFullScreen` per pass with explicit targets; effects that sample
+file textures (Lens, BloodLens, WaterLens, LUT) need the loaded texture from their `TextureShaderValues` and a WRAP
+sampler (not added yet). The point of the ports is the route: once an effect runs on this path, its next version is free
+of the SM3 limits.
+
 ## Verified here (Linux container, no game)
 - Stock DXVK v3.0.1 builds from source as the release does (32-bit, MinGW-w64 gcc 13, Meson 1.9, glslang 15):
   `d3d9.dll`, PE32 i386. The patched tree builds the same way (`tools/nvr-dxvk/build.sh` was run from a clean clone).
@@ -78,12 +118,24 @@ Cost: one read of the frame plus a tiny second dispatch (phase 0 at 2560x1440 is
   results match the D3D9 pass's arithmetic to 1e-6 (luma 0.010450 / 0.019594 / 0.027595 over the three frames, focus
   0.271895), and the 1x1 texture read back through GetRenderTargetData holds the same values as half floats. Bad input
   (an undeclared slot, truncated SPIR-V) fails cleanly with a log line.
+- The same program, extended: storage image writes into a D3D9 render target (DXVK relocates the image once; the
+  result reads back both through the extension and through D3D9's GetRenderTargetData), uniform buffer + UpdateBuffer,
+  CopyTextureToBuffer, the push-data restore under a real alpha-tested D3D9 draw (the alpha reference byte sits exactly
+  where the compute push block writes), a device Reset with the extension's objects kept, a two-target gradient pass, a
+  pass that samples a target into a 20x15 viewport rectangle of another texture (the rest untouched), the alpha test
+  again after the passes, and every ported .spv created and drawn with NVR's binding table. All pass on lavapipe. The
+  tracked-write bug above was found by this: the first readback after a dispatch returned the previous frame's value.
 - Vulkan validation layers: no errors on DXVK's legacy descriptor path (`dxvk.enableDescriptorHeap = False`,
   `dxvk.enableDescriptorBuffer = False`). On the default path (descriptor heap) the layer available here (1.3.275) is older
   than the extension DXVK 3.0 uses and reports "set not bound" for DXVK's own draws as well as ours: the layer's
   blindness, not a finding, but the heap path is only verified by the results, not by a layer.
 - The GitHub workflow built the DLL from the branch: Actions run "NVR DXVK d3d9.dll" of 2026-10-23, artifact
   `nvr-dxvk-x32` (d3d9.dll 9.9 MB; the same size as the local build).
+- Wine: the 32-bit Windows `d3d9.dll` loads under Wine 9.0 and reports `DXVK: v3.0.1-nvr1`, but DXVK 3.0 needs
+  `VK_KHR_load_store_op_none`, which Wine 9.0's winevulkan does not expose ("No adapters found"); a newer Wine is not
+  reachable from here (WineHQ's download host is blocked). So the Windows build is built and loads, but has not executed a
+  frame anywhere. The test program builds as a Win32 exe with MinGW (`tools/nvr-dxvk/test`, `-DNVR_TEST_WIN32`): on a
+  Windows machine, put it next to the fork's d3d9.dll and run it with the five shader arguments to get the same checks.
 - NOT compiled with MSVC: `DxvkCompute.cpp` passes a MinGW syntax check, but the repository's "Build New Vegas Reloaded"
   workflow never starts (its `windows-2019` runner no longer exists on GitHub; the runs of every branch sit queued), so
   the NVR-side C++ (AvgLuma, Normals, DxvkCompute, the ShaderManager/SettingManager edits) and the new HLSL technique
@@ -105,11 +157,14 @@ Cost: one read of the frame plus a tiny second dispatch (phase 0 at 2560x1440 is
    `AvgLuma check (frame N): compute exact average A -> luma ... | D3D9 112 taps: luma ... | diff luma ...`. The diff is the
    sampling error of the old pass; the go/no-go number. Those frames stall (ReadBuffer waits): set it back to 0 afterwards.
 5. F10 timings: "  Average luma" with the option on and off.
-6. Alt-tab, a device reset (fullscreen toggle), resolution change (the buffers are re-made when width/height change),
+6. `NvrDxvkPasses = true`: the log says `<Name> runs as a Vulkan pass.` for Exposure, ImageAdjust, Sharpening, FXAA,
+   LowHF and SkyDither (those that are on). The picture must not change when the switch is toggled live; compare F10
+   timings of those passes on and off (expect about the same). Any `pass <Name> failed to draw` line is a finding.
+7. Alt-tab, a device reset (fullscreen toggle), resolution change (the buffers are re-made when width/height change),
    ReShade chained, and the game's loading screens: nothing crashes, no DXVK log errors (`NVR ext:` lines).
-Unknowns to watch: the `ensureImageCompatibility` path is unused by AvgLuma (no storage images yet); the push-data
-restore has been exercised only by the test's clears, not by the game's fog/alpha-test draws (a wrong fog colour or alpha
-test right after the AvgLuma pass would point at it); the win32 DLL was built, not run.
+Unknowns to watch: the storage-image path (`ensureImageCompatibility`) is unused by NVR so far; the push-data and
+context-state restores were exercised by the test's alpha-tested draws, not by the game's full state (a wrong fog colour,
+alpha test, viewport or render target right after a pass would point at them); the win32 DLL was built, not run.
 
 ## Next candidates (after the go/no-go)
 Full-screen graphics passes with own SPIR-V (the next extension method), then AmbientLight's blurs/accumulate, the light

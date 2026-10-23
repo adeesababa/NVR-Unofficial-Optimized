@@ -3,7 +3,7 @@
 DXVK v3.0.1 (zlib licence, github.com/doitsujin/dxvk) plus the NVR extension, as a patch series on the v3.0.1 tag.
 Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets stay as they are.
 
-- `patches/`   the fork: one patch on top of v3.0.1 (new files `src/d3d9/d3d9_nvr_ext*.{h,cpp}`, plus small edits
+- `patches/`   the fork: two patches on top of v3.0.1 (new files `src/d3d9/d3d9_nvr_ext*.{h,cpp}`, plus small edits
                to `d3d9_device.{h,cpp}`, `src/d3d9/meson.build` and `dxvk_context.h`). Re-apply onto a newer DXVK with `git am`.
 - `build.sh`   clone + patch + build the 32-bit d3d9.dll (Linux or WSL, MinGW-w64). The GitHub workflow
                `.github/workflows/nvr-dxvk.yml` runs the same and uploads the DLL as an artifact.

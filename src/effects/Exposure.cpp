@@ -33,29 +33,12 @@ void ExposureEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ExposureData", &Constants.Data);
 }
 
-// UNOFFICIAL 2026-10-23 (NVR DXVK): Exposure.frag; the same two textures and constant the technique reads.
+// UNOFFICIAL 2026-10-23 (NVR DXVK): Exposure.frag; the textures and constants the technique reads (EffectRecord::ExtTexturePass).
 bool ExposureEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (techniqueIndex != 0) return false;
-	struct Push { D3DXVECTOR4 exposureData; UInt32 samplerIndex; UInt32 pad[3]; };
-	if (!extTried) {
-		extTried = true;
-		static const NVR_EXT_BINDING_DESC bindings[] = {
-			{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },		// t_rendered
-			{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },		// t_avgLuma
-			{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 16 },		// samplerIndex
-		};
-		extPipeline = DxvkCompute::CreateGraphicsPipeline("Exposure", bindings, _countof(bindings), sizeof(Push), true);
-	}
-	IDirect3DTexture9* avgLuma = TheShaderManager->Effects.AvgLuma ? TheShaderManager->Effects.AvgLuma->Textures.AvgLumaTexture : nullptr;
-	ID3D9NvrExtSampler* sampler = DxvkCompute::LinearClamp();
-	if (!extPipeline || !avgLuma || !sampler || !TheTextureManager->RenderedTexture) return false;
-	Push push = {};
+	struct Push { D3DXVECTOR4 exposureData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
 	push.exposureData = Constants.Data;
-	NVR_EXT_RESOURCE_BINDING resources[] = {
-		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE, TheTextureManager->RenderedTexture, 0, 0, 0, FALSE },
-		{ 1, NVR_EXT_BIND_SAMPLED_IMAGE, avgLuma,                           0, 0, 0, FALSE },
-		{ 0, NVR_EXT_BIND_SAMPLER,       sampler,                           0, 0, 0, FALSE },
-	};
-	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extPipeline, resources, _countof(resources), &push, sizeof(push));
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture, TheShaderManager->Effects.AvgLuma ? TheShaderManager->Effects.AvgLuma->Textures.AvgLumaTexture : nullptr };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "Exposure", textures, _countof(textures), &push, sizeof(push), 16);
 }
 
