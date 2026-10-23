@@ -30,6 +30,7 @@
 #include "../../core/FoldHighlights.h"
 #include "../../core/NewGrass.h"
 #include "../../core/ReflMaterial.h"
+#include "../../core/CharacterObjectReach.h"
 
 namespace RmaosDraw { static void Upload(); }
 
@@ -577,6 +578,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampsInOnePass::BeginFrame();
 	PbrPop::LodPasses::BeginFrame();
 	PbrPop::SpecFade::BeginFrame();
+	CharacterObjectReach::BeginFrame();
 	FoldHighlights::BeginFrame();
 	PbrPop::ActorPasses::BeginFrame();
 #if NVR_TEST_TOOLS
@@ -2161,6 +2163,15 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	if (MarkShadersTo > 0 && VertexShader && PixelShader) {
+		static std::unordered_set<std::string> pairs;
+		if (pairs.size() < 120) {
+			std::string key = std::string(VertexShader->Name ? VertexShader->Name : "?") + " + " + (PixelShader->Name ? PixelShader->Name : "?");
+			if (pairs.insert(key).second)
+				Logger::Log("MarkShaders: pair %s (pass %s) vs %s ps %s", key.c_str(), Pointers::Functions::GetPassDescription(PassIndex),
+					VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup ? "NVR" : "game", PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup ? "NVR" : "game");
+		}
+	}
 	ReflMaterial::OnShadersBound(TheRenderManager->device);
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);
 	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;
@@ -2340,6 +2351,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
 		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
 	}
+	CharacterObjectReach::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World);
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World, BarrelHeat::Active) == LampScissor::Skip) {
@@ -2388,6 +2400,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
 		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
 	}
+	CharacterObjectReach::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World);
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);
 	ForwardShadowsForPass(Pass);
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;

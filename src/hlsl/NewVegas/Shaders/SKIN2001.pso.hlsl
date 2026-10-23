@@ -55,6 +55,7 @@ struct VS_OUTPUT {
 };
 
 // Code:
+#define SHADOW_CHARACTER_MAP_IN 1
 #include "Includes/Shadow.hlsl"
 #include "Includes/Skin.hlsl"
 

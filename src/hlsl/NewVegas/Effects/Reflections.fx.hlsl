@@ -200,7 +200,7 @@ static const float GridX = 32.0, GridY = 32.0, GridZ = 16.0;
 static const float GridAlbedo = 0.4;
 static const float GridIrradianceScale = 1.5;
 float4 GridShBasis(float3 d) { return float4(0.282095, 0.488603 * d); }
-float2 GridCellUV(float3 c) { return (float2(fmod(c.z, 4.0), floor(c.z / 4.0)) * 32.0 + c.xy + 0.5) / 128.0; }
+float2 GridCellUV(float3 c) { return (float2(fmod(c.z, 4.0), floor(c.z / 4.0)) * 32.0 + c.xy + 0.5) / float2(256.0, 128.0); }
 
 float CoveredAt(float3 p) {
 	float4 m = mul(float4(p, 1.0), TESR_ShadowCameraToLightTransformOrtho);

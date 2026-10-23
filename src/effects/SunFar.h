@@ -13,6 +13,12 @@ public:
 		float	CloudTile;
 		float	CloudSpeed;
 		int		DebugView;
+		bool	WaterFade;
+		float	WaterDeepShare;
+		bool	TargetFix;
+		int		HazardLog;
+		int		FlickerWatch;
+		float	FlickerThreshold;
 	};
 	SettingsStruct	Settings = {};
 
@@ -23,6 +29,7 @@ public:
 		D3DXVECTOR4	CloudWeight;
 		D3DXVECTOR4	CloudBlend;
 		D3DXVECTOR4	Apply;
+		D3DXVECTOR4	Water;
 		D3DXVECTOR4	Volume;
 	};
 	ConstantsStruct	Constants = {};
@@ -35,6 +42,7 @@ public:
 	void	RegisterTextures();
 	void	UpdateConstants();
 	bool	ShouldRender();
+	void	BeforeDraw(IDirect3DDevice9* Device);
 	void	RenderFactor(IDirect3DDevice9* Device);
 	IDirect3DTexture9*	FactorTexture() const { return Constants.Apply.x > 0.5f ? Texture : nullptr; }
 

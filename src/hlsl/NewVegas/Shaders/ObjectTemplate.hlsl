@@ -163,6 +163,18 @@
     #define FOLD_DECL float3
 #endif
 
+#ifndef LAMP_VECTOR_ATT_ON
+    #define LAMP_VECTOR_ATT_ON 0
+#endif
+#if LAMP_VECTOR_ATT_ON
+    #define LAMP_ATT_SQ(distSq, dir) vanillaAttSq(dot((dir).xyz, (dir).xyz), (dir).w)
+    #define LAMP_VS_DIR(tbn, light) LampVectorAtLength(mul(tbn, light), light)
+    float3 LampVectorAtLength(float3 t, float3 light) { return t * sqrt(dot(light, light) / max(dot(t, t), 1e-12f)); }
+#else
+    #define LAMP_ATT_SQ(distSq, dir) vanillaAttSq(distSq, (dir).w)
+    #define LAMP_VS_DIR(tbn, light) mul(tbn, light)
+#endif
+
 #include "includes/Helpers.hlsl"
 #ifndef LIVE_CUBE
     #define LIVE_CUBE 0
@@ -218,6 +230,12 @@
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
+#endif
+#if defined(PS) && defined(SHADOW_CHARACTER_OBJECTS)
+    #define SHADOW_SLACK_CAP_ACTOR 1
+#endif
+#if defined(PS) && !defined(NVR_SLOT_TIGHT) && !(defined(LIGHTS) && LIGHTS > 3)
+    #define SHADOW_CHARACTER_MAP_IN 1
 #endif
 #include "includes/Shadow.hlsl"
 #ifdef PS
@@ -470,7 +488,11 @@ VS_OUTPUT main(VS_INPUT IN) {
     #endif
 
     OUT.lightDir.w = LightData[0].w;
-    OUT.lightDir.xyz = mul(tbn, light);
+    #if defined(DIFFUSE) || defined(POINT)
+        OUT.lightDir.xyz = LAMP_VS_DIR(tbn, light);
+    #else
+        OUT.lightDir.xyz = mul(tbn, light);
+    #endif
 
     OUT.viewDir.xyz = mul(tbn, EyePosition.xyz - position.xyz);
     OUT.viewDir.w = position.z;
@@ -478,14 +500,14 @@ VS_OUTPUT main(VS_INPUT IN) {
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         light = LightData[1].xyz - position.xyz;
         OUT.light2Dir.w = LightData[1].w;
-        OUT.light2Dir.xyz = mul(tbn, light);
+        OUT.light2Dir.xyz = LAMP_VS_DIR(tbn, light);
         OUT.lightDistSq.y = dot(light, light);
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
         light = LightData[2].xyz - position.xyz;
         OUT.light3Dir.w = LightData[2].w;
-        OUT.light3Dir.xyz = mul(tbn, light);
+        OUT.light3Dir.xyz = LAMP_VS_DIR(tbn, light);
         OUT.lightDistSq.z = dot(light, light);
     #endif
     
@@ -986,13 +1008,13 @@ PS_OUTPUT main(PS_INPUT IN) {
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             #if defined(DIFFUSE) || defined(POINT)
-                ptShadow0 = POINT_SHADOW_LOOKUP(0, vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w));
+                ptShadow0 = POINT_SHADOW_LOOKUP(0, LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir));
             #endif
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-                ptShadow1 = POINT_SHADOW_LOOKUP(1, vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w));
+                ptShadow1 = POINT_SHADOW_LOOKUP(1, LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir));
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-                ptShadow2 = POINT_SHADOW_LOOKUP(2, vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w));
+                ptShadow2 = POINT_SHADOW_LOOKUP(2, LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir));
             #endif
         }
         float pointWeight = 0.0f;
@@ -1021,20 +1043,20 @@ PS_OUTPUT main(PS_INPUT IN) {
                                                         0.0f, 0.0f, IN.shadowWorldPos.xyz, shadowGeometricNormal);
             float foldReach = 1.0f;
         #else
-            const float foldAtt0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
+            const float foldAtt0 = LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir);
             lighting = 0.0f;
             LAMP_IF(foldAtt0)
                 lighting = getPointLightLightingAttFull(IN.lightDir.xyz, foldAtt0, SHADOWED(PSLightColor[0].rgb, 0, foldAtt0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
             float foldReach = foldAtt0;
         #endif
         #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-            const float foldAtt2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            const float foldAtt2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
             LAMP_IF(foldAtt2)
                 lighting += getPointLightLightingAttFull(IN.light2Dir.xyz, foldAtt2, SHADOWED(PSLightColor[1].rgb, 1, foldAtt2), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
             foldReach = max(foldReach, foldAtt2);
         #endif
         #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-            const float foldAtt3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            const float foldAtt3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
             LAMP_IF(foldAtt3)
                 lighting += getPointLightLightingAttFull(IN.light3Dir.xyz, foldAtt3, SHADOWED(PSLightColor[2].rgb, 2, foldAtt3), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
             foldReach = max(foldReach, foldAtt3);
@@ -1052,11 +1074,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
         float skyValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
         #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-            float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            float att2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
             float3 light2Color = SHADOWED(PSLightColor[1].rgb, 1, att2);
         #endif
         #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-            float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            float att3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
             float3 light3Color = SHADOWED(PSLightColor[2].rgb, 2, att3);
         #endif
         float3 lighting;
@@ -1109,7 +1131,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Pointlights only. Attenuate from the object-space lightDistSq.x carried from the VS,
         // not length(IN.lightDir.xyz) -- that vector is tangent-space (TBN-transformed) and its
         // length is only correct if the TBN basis is orthonormal.
-        float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
+        float att0 = LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir);
         #if INTERIOR_SHADOWS && defined(POINT)
             FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0) {
@@ -1139,7 +1161,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // Other light sources. Same object-space attenuation fix as light0 above.
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-        float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+        float att2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
         #if INTERIOR_SHADOWS && defined(POINT)
             LAMP_IF(att2) {
                 float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
@@ -1153,7 +1175,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-        float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+        float att3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
         #if INTERIOR_SHADOWS && defined(POINT)
             LAMP_IF(att3) {
                 float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);

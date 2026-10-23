@@ -38,6 +38,9 @@ public:
 		float	SplatReach;
 		float	SplatSpray;
 		float	SplatDrips;
+		bool	SplatFast;
+		bool	SplatMask;
+		int		TestSplats;
 		float	Merge;
 		float	GibPools;
 		float	GibHold;
@@ -86,6 +89,15 @@ public:
 	int					PathIndex = 0;
 	IDirect3DTexture9*	BoundsTexture = nullptr;
 	IDirect3DSurface9*	BoundsSurface = nullptr;
+	IDirect3DTexture9*	MaskTexture = nullptr;
+	IDirect3DSurface9*	MaskSurface = nullptr;
+	bool				MaskFailed = false;
+	BloodFlowBoxes::SplatMask Mask;
+	float				MaskShape[3] = { -1.0f, -1.0f, -1.0f };
+	VolumetricSmokeQuads::Vertex MaskBakeVertices[BloodFlowBoxes::SplatMask::Cells * 6];
+	VolumetricSmokeQuads::Vertex SplatVertices[ItemMax * 36];
+	D3DXVECTOR4			MaskConstants = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	D3DXVECTOR4			MaskSizeConstants = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 
 	struct SlotState { UInt64 Key = 0; bool Used = false; UInt32 SeenFrame = 0; int WrittenPass = -10; };
 	SlotState			Slots[ItemMax];
@@ -93,6 +105,9 @@ public:
 	int					ProbePasses = 0;
 
 private:
+	void	AddTestSplats();
+	D3DXVECTOR3	TestAnchor = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+	double		TestStart = -1.0;
 	void	GatherSplats();
 	void	GatherPools();
 	int		SlotFor(UInt64 key);

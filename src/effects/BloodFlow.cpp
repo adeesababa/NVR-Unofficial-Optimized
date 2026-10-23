@@ -344,6 +344,8 @@ void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowPool", &Constants.Pool);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowProbe", &Constants.Probe);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFlow", &Constants.Flow);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowMask", &MaskConstants);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowMaskSize", &MaskSizeConstants);
 }
 
 void BloodFlowEffect::RegisterTextures() {
@@ -352,6 +354,7 @@ void BloodFlowEffect::RegisterTextures() {
 	PathRead = PathTexture[0];
 	TheTextureManager->RegisterTexture("TESR_BloodFlowPaths", (IDirect3DBaseTexture9**)&PathRead);
 	TheTextureManager->InitTexture("TESR_BloodFlowBounds", &BoundsTexture, &BoundsSurface, 2, ItemMax, D3DFMT_A32B32G32R32F);
+	TheTextureManager->RegisterTexture("TESR_BloodSplatMask", (IDirect3DBaseTexture9**)&MaskTexture);
 }
 
 int BloodFlowEffect::SlotFor(UInt64 key) {
@@ -411,6 +414,13 @@ void BloodFlowEffect::UpdateSettings() {
 	Settings.SplatReach = std::clamp(TheSettingManager->GetSettingF(section, "SplatReach"), 0.2f, 3.0f);
 	Settings.SplatSpray = std::clamp(TheSettingManager->GetSettingF(section, "SplatSpray"), 0.0f, 2.0f);
 	Settings.SplatDrips = std::clamp(TheSettingManager->GetSettingF(section, "SplatDrips"), 0.0f, 3.0f);
+	Settings.SplatFast = TheSettingManager->GetSettingI(section, "SplatFast") != 0;
+	Settings.SplatMask = TheSettingManager->GetSettingI(section, "SplatMask") != 0;
+	Settings.TestSplats = std::clamp(TheSettingManager->GetSettingI(section, "TestSplats"), 0, 48);
+	if (MaskShape[0] != Settings.SplatReach || MaskShape[1] != Settings.SplatSpray || MaskShape[2] != Settings.SplatDrips) {
+		Mask.Reset();
+		MaskShape[0] = Settings.SplatReach; MaskShape[1] = Settings.SplatSpray; MaskShape[2] = Settings.SplatDrips;
+	}
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
 	static int loggedAtlas = -1;
 	if (loggedAtlas != (Settings.SplatterAtlas ? 1 : 0)) {
@@ -734,6 +744,35 @@ void BloodFlowEffect::GatherPools() {
 	}
 }
 
+void BloodFlowEffect::AddTestSplats() {
+	if (Settings.TestSplats <= 0 || !Player) { TestStart = -1.0; return; }
+	if (TestStart < 0.0) {
+		D3DXVECTOR3 forward(TheRenderManager->viewMatrix._13, TheRenderManager->viewMatrix._23, 0.0f);
+		const float l = BloodFlowBoxes::Length(forward);
+		forward = l > 1e-4f ? forward / l : D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+		TestAnchor = D3DXVECTOR3(Player->pos.x, Player->pos.y, Player->pos.z) + forward * 150.0f;
+		TestStart = Clock;
+		Logger::Log("BloodFlow: TEST %d made-up splats round (%.1f %.1f %.1f)", Settings.TestSplats, TestAnchor.x, TestAnchor.y, TestAnchor.z);
+	}
+	const int columns = 4;
+	for (int i = 0; i < Settings.TestSplats && Count < ItemMax; i++) {
+		const float h = (float)fmod(sin(i * 12.9898 + 4.1) * 43758.5453, 1.0);
+		const float hash = h < 0.0f ? h + 1.0f : h;
+		const int slot = SlotFor(0x7E57000000000000ull + (UInt64)i);
+		if (slot < 0) break;
+		Item& item = Items[Count++];
+		item = Item();
+		item.Center = TestAnchor + D3DXVECTOR3(((i % columns) - 1.5f) * 70.0f, (float)(i / columns) * 70.0f - 70.0f, 0.0f);
+		item.Normal = D3DXVECTOR3(0.05f, -0.05f, 1.0f);
+		item.Radius = 20.0f + 40.0f * hash;
+		item.Age = (float)(Clock - TestStart);
+		item.Seed = hash;
+		item.Fade = 1.0f;
+		item.Pool = false;
+		item.Slot = slot;
+	}
+}
+
 void BloodFlowEffect::UpdateConstants() {
 	static double lastFrameTime = -1.0, lastGatherTime = -1.0;
 	static CpuTimer gatherTimer("Blood gather (CPU)");
@@ -746,6 +785,7 @@ void BloodFlowEffect::UpdateConstants() {
 		Count = 0;
 		if (Settings.Splats) GatherSplats();
 		if (Settings.Pools) GatherPools();
+		AddTestSplats();
 	}
 	{
 		const D3DXVECTOR4& c = TheRenderManager->CameraPosition;
@@ -789,7 +829,7 @@ bool BloodFlowEffect::ShouldRender() {
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
 	UINT technique, bool clear, IDirect3DSurface9* source) {
 	if (!Enabled || !Effect || !ShouldRender()) { renderTime = 0; return; }
-	static CachedHandle techniqueCache, probeCache, boundsCache, beadsCache, splatCache;
+	static CachedHandle techniqueCache, probeCache, boundsCache, beadsCache, splatCache, splatFastCache, splatMaskCache, maskBakeCache;
 	D3DXHANDLE boxes = TechniqueHandle(techniqueCache, "BloodFlow");
 	D3DXHANDLE probe = TechniqueHandle(probeCache, "BloodFlowProbe");
 	D3DXHANDLE boundsTechnique = TechniqueHandle(boundsCache, "BloodFlowBounds");
@@ -858,6 +898,59 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		Effect->EndPass();
 		Effect->End();
 	}
+
+	static GpuTimer maskTimer("  Blood splat mask");
+	D3DXHANDLE maskBake = TechniqueHandle(maskBakeCache, "BloodSplatMaskBake");
+	bool masked = Settings.SplatMask && Settings.Splat > 0.0f && !MaskFailed && maskBake && TechniqueHandle(splatMaskCache, "BloodSplatMask");
+	if (masked && !MaskTexture) {
+		IDirect3D9* d3d = nullptr;
+		D3DDEVICE_CREATION_PARAMETERS creation = {};
+		D3DDISPLAYMODE mode = {};
+		bool usable = false;
+		if (SUCCEEDED(device->GetDirect3D(&d3d)) && d3d) {
+			if (SUCCEEDED(device->GetCreationParameters(&creation)) && SUCCEEDED(device->GetDisplayMode(0, &mode)))
+				usable = SUCCEEDED(d3d->CheckDeviceFormat(creation.AdapterOrdinal, creation.DeviceType, mode.Format,
+					D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_FILTER, D3DRTYPE_TEXTURE, D3DFMT_R16F));
+			d3d->Release();
+		}
+		if (!usable || FAILED(device->CreateTexture(BloodFlowBoxes::SplatMask::AtlasWidth, BloodFlowBoxes::SplatMask::AtlasHeight, 1, D3DUSAGE_RENDERTARGET,
+				D3DFMT_R16F, D3DPOOL_DEFAULT, &MaskTexture, NULL))) {
+			MaskTexture = nullptr;
+			MaskFailed = true;
+			masked = false;
+		}
+		else {
+			MaskTexture->GetSurfaceLevel(0, &MaskSurface);
+			Mask.Reset();
+		}
+		Logger::Log("BloodFlow: splat shapes' mask atlas (%d x %d, R16F): %s", BloodFlowBoxes::SplatMask::AtlasWidth, BloodFlowBoxes::SplatMask::AtlasHeight,
+			masked ? "made" : "NOT made (the card cannot draw into or filter R16F); splat shapes worked out per pixel");
+	}
+	if (masked) {
+		MaskConstants = D3DXVECTOR4(1.0f, BloodFlowBoxes::SplatMask::E(Settings.SplatReach), BloodFlowBoxes::SplatMask::D(Settings.SplatReach, Settings.SplatDrips),
+			(float)BloodFlowBoxes::SplatMask::CellsPerRow);
+		MaskSizeConstants = D3DXVECTOR4(1.0f / BloodFlowBoxes::SplatMask::AtlasWidth, 1.0f / BloodFlowBoxes::SplatMask::AtlasHeight, (float)BloodFlowBoxes::SplatMask::CellSize, 0.0f);
+		const int bakeTriangles = Mask.Update(Items, Count, Settings.SplatReach, Settings.SplatDrips, eye, h, TheRenderManager->projMatrix._22, MaskBakeVertices);
+		static int loggedMask = 0;
+		if (loggedMask < 5 && Mask.baked > 0) { loggedMask++; Logger::Log("BloodFlow: splat mask: %d cells worked out, %d splats drawn from their cell", Mask.baked, Mask.masked); }
+		if (bakeTriangles) {
+			device->SetRenderTarget(0, MaskSurface);
+			device->SetDepthStencilSurface(nullptr);
+			Effect->SetTechnique(maskBake);
+			SetCT();
+			device->SetTexture(12, nullptr);
+			TheRenderManager->renderState->NoteDeviceTexture(12, nullptr);
+			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
+				GpuProfileScope gpu(maskTimer, device);
+				Effect->BeginPass(0);
+				device->SetVertexDeclaration(Declaration);
+				device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, bakeTriangles, MaskBakeVertices, sizeof(VolumetricSmokeQuads::Vertex));
+				Effect->EndPass();
+				Effect->End();
+			}
+		}
+	}
+	else MaskConstants.x = 0.0f;
 	device->SetDepthStencilSurface(previousDepth);
 
 	for (int i = 0; i < Count; i++) Items[i].Fresh = false;
@@ -914,14 +1007,22 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 			Effect->EndPass();
 			Effect->End();
 		}
-		D3DXHANDLE splatShape = TechniqueHandle(splatCache, "BloodSplat");
+		D3DXHANDLE splatShape = masked ? TechniqueHandle(splatMaskCache, "BloodSplatMask") : (D3DXHANDLE)nullptr;
+		VolumetricSmokeQuads::Vertex* splatVertices = Vertices;
+		if (splatShape) {
+			memcpy(SplatVertices, Vertices, sizeof(VolumetricSmokeQuads::Vertex) * splatTriangles * 3);
+			Mask.Mark(SplatVertices, splatTriangles * 3);
+			splatVertices = SplatVertices;
+		}
+		if (!splatShape && Settings.SplatFast) splatShape = TechniqueHandle(splatFastCache, "BloodSplatFast");
+		if (!splatShape) splatShape = TechniqueHandle(splatCache, "BloodSplat");
 		if (splatShape && Settings.Splat > 0.0f && splatTriangles > 0) {
 			Effect->SetTechnique(splatShape);
 			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
 				GpuProfileScope gpu(splatTimer, device);
 				Effect->BeginPass(0);
 				device->SetVertexDeclaration(Declaration);
-				device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, splatTriangles, Vertices, sizeof(VolumetricSmokeQuads::Vertex));
+				device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, splatTriangles, splatVertices, sizeof(VolumetricSmokeQuads::Vertex));
 				Effect->EndPass();
 				Effect->End();
 			}

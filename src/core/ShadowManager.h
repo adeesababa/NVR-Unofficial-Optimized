@@ -41,6 +41,7 @@ public:
 	bool					RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex, CubeLayer Layer = CubeLayer::All);
 	void					RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex);
 	void					RenderShadowMaps();
+	void					RenderCharacterShadowMap(const D3DXVECTOR3& SunDir);
 	void					ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* ClearColor);
 	void                    BlurShadowAtlas(unsigned cascadeMask);
 

@@ -42,7 +42,6 @@ void WaterShaders::UpdateConstants() {
 		Constants.Fog.x = currentWater->properties.fogNearUW;
 		Constants.Fog.y = currentWater->properties.fogFarUW;
 		Constants.Fog.z = currentWater->properties.fogAmountUW;
-		Constants.Fog.z = 1;
 	}
 
 	// caustics strength

@@ -3,7 +3,7 @@
 class MotionBlurEffect : public EffectRecord
 {
 public:
-	MotionBlurEffect() : EffectRecord("MotionBlur") {};
+	MotionBlurEffect() : EffectRecord("MotionBlur") { ZeroMemory(&Constants, sizeof(Constants)); };
 
 	struct ValuesStruct {
 		float BlurCutOff;

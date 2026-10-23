@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -165,4 +166,108 @@ namespace BloodFlowBoxes {
 		}
 		return triangles;
 	}
+
+	struct SplatMask {
+		static const int CellSize = 512;
+		static const int CellsPerRow = 8;
+		static const int Cells = 48;
+		static const int AtlasWidth = CellSize * CellsPerRow, AtlasHeight = CellSize * (Cells / CellsPerRow);
+		static const int FreshFrames = 6;
+		static const int MaxBakes = 4;
+		static constexpr float MaxTexelSpeed = 16.0f;
+
+		struct Cell { int Slot = -1; float Seed = -1.0f; int N = 0; float Run = -1.0f; bool Valid = false; int Fresh = 0; unsigned LastUsed = 0; };
+		Cell		cells[Cells];
+		float		codeOfSlot[1024] = {};
+		unsigned	frame = 0;
+		int			baked = 0;
+		int			masked = 0;
+		bool		always = false;
+
+		static float E(float reach) { return 1.15f + 3.12f * reach; }
+		static float D(float reach, float drips) { return drips * (std::max)(1.3f, 2.4f * reach) + 0.2f; }
+
+		static void GrowRun(const Item& item, float drips, float& grow, float& run) {
+			const float g = (std::min)((std::max)(item.Age / 0.12f, 0.0f), 1.0f);
+			grow = g * g * (3.0f - 2.0f * g);
+			const float l = Length(item.Normal);
+			const D3DXVECTOR3 n = l > 1e-6f ? item.Normal / l : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+			const float steep = Length(D3DXVECTOR3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0f));
+			run = drips * (std::min)((std::max)(steep * 3.0f - 0.15f, 0.0f), 1.0f) * (1.0f - expf(-(std::max)(item.Age - 0.3f, 0.0f) / 4.0f));
+		}
+
+		int Update(const Item* items, int count, float reach, float drips, const D3DXVECTOR3& eye, float screenHeight, float proj22,
+			VolumetricSmokeQuads::Vertex* out) {
+			frame++;
+			baked = masked = 0;
+			for (int s = 0; s < 1024; s++) codeOfSlot[s] = 0.0f;
+			const float e = E(reach), d = D(reach, drips), span = 2.0f * e + d;
+			const float kMax = (std::max)(2.4f * reach, 1.26f);
+			int triangles = 0;
+			for (int i = 0; i < count; i++) {
+				const Item& item = items[i];
+				if (item.Pool || !item.Visible || item.Slot < 0 || item.Slot >= 1024) continue;
+				int c = -1;
+				for (int k = 0; k < Cells; k++) if (cells[k].Slot == item.Slot && cells[k].LastUsed + 1 >= frame) { c = k; break; }
+				if (c < 0) {
+					for (int k = 0; k < Cells && c < 0; k++) if (cells[k].Slot < 0 || cells[k].LastUsed + 1 < frame) c = k;
+					if (c < 0) continue;
+					cells[c] = Cell();
+					cells[c].Slot = item.Slot;
+				}
+				Cell& cell = cells[c];
+				cell.LastUsed = frame;
+				const float r = (std::max)((std::min)(item.Radius, 24.0f), 1.0f);
+				const float distance = (std::max)(Length(item.Center - eye) - (e + d) * r, 5.0f);
+				const float pixels = span * r / distance * screenHeight * proj22 * 0.5f;
+				int n = 32;
+				while (n < CellSize && n < pixels) n *= 2;
+				float grow, run;
+				GrowRun(item, drips, grow, run);
+				if (item.Fresh) cell.Fresh = FreshFrames;
+				if (cell.Seed != item.Seed) cell.Valid = false;
+				const float l = Length(item.Normal);
+				const D3DXVECTOR3 nn = l > 1e-6f ? item.Normal / l : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+				const float slope = (std::min)((std::max)(Length(D3DXVECTOR3(nn.x * nn.z, nn.y * nn.z, nn.z * nn.z - 1.0f)) * 3.0f - 0.15f, 0.0f), 1.0f);
+				const float runSpeed = drips * slope * 0.25f * expf(-(std::max)(item.Age - 0.3f, 0.0f) / 4.0f);
+				const int texels = (std::max)(n, cell.N);
+				const bool settled = cell.Fresh == 0 && grow >= 1.0f && runSpeed * kMax * texels / span < MaxTexelSpeed;
+				if (cell.Fresh > 0) cell.Fresh--;
+				if (!settled && !always) { cell.Valid = false; continue; }
+				const bool stale = !cell.Valid || n > cell.N || fabsf(run - cell.Run) > span / ((float)texels * kMax);
+				const bool bake = always || (stale && baked < MaxBakes);
+				if (!bake && !cell.Valid) continue;
+				if (bake) {
+					cell.Seed = item.Seed; cell.N = texels; cell.Run = run; cell.Valid = true;
+					const float x0 = (float)((c % CellsPerRow) * CellSize), y0 = (float)((c / CellsPerRow) * CellSize);
+					VolumetricSmokeQuads::Vertex data = {};
+					ItemData(item, D3DXVECTOR3(x0, y0, (float)cell.N), 0.0f, data);
+					const float u0 = x0 / AtlasWidth * 2.0f - 1.0f, u1 = (x0 + cell.N) / AtlasWidth * 2.0f - 1.0f;
+					const float v0 = 1.0f - y0 / AtlasHeight * 2.0f, v1 = 1.0f - (y0 + cell.N) / AtlasHeight * 2.0f;
+					const float corner[4][2] = { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v1 } };
+					static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+					for (int t = 0; t < 6; t++) {
+						VolumetricSmokeQuads::Vertex& v = out[triangles * 3 + t];
+						v = data;
+						v.x = corner[order[t]][0]; v.y = corner[order[t]][1]; v.z = 0.5f; v.w = 1.0f;
+					}
+					triangles += 2;
+					baked++;
+				}
+				codeOfSlot[item.Slot] = 1.0f + (float)c * 1024.0f + (float)cell.N;
+				masked++;
+			}
+			return triangles;
+		}
+
+		void Mark(VolumetricSmokeQuads::Vertex* v, int vertices) const {
+			for (int i = 0; i < vertices; i++) {
+				const float code = floorf(v[i].a[3] + 0.5f);
+				const int slot = (int)fmodf(code, 1000.0f);
+				v[i].c[3] = slot >= 0 && slot < 1024 ? codeOfSlot[slot] : 0.0f;
+			}
+		}
+
+		void Reset() { for (int k = 0; k < Cells; k++) cells[k] = Cell(); }
+	};
 }

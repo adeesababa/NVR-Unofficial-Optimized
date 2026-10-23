@@ -1,4 +1,5 @@
 #include "OrthoProbe.h"
+#include "FlickerWatch.h"
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
@@ -260,6 +261,29 @@ void ShaderManager::UpdateConstants() {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 
 	auto timer = TimeLogger();
+	MarkShadersFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersFrom");
+	MarkShadersTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersTo");
+	MarkShadersFamily = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersFamily");
+	MarkShadersVanilla = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVanilla");
+	MarkShadersVsFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsFrom");
+	MarkShadersVsTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsTo");
+	if (MarkShadersVanilla == 2) {
+		static bool dumped = false;
+		if (!dumped) {
+			dumped = true;
+			const UInt32 addrs[2] = { 0x011F9534, 0x011F9538 };
+			for (int i = 0; i < 2; i++) {
+				NiTexture* tex = *(NiTexture**)addrs[i];
+				IDirect3DBaseTexture9* d3d = (tex && tex->rendererData) ? tex->rendererData->dTexture : nullptr;
+				char path[MAX_PATH];
+				sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NVR-attenuation-%s.png", i ? "Z" : "XY");
+				HRESULT hr = d3d ? D3DXSaveTextureToFileA(path, D3DXIFF_PNG, d3d, NULL) : E_FAIL;
+				D3DSURFACE_DESC desc = {};
+				if (d3d && d3d->GetType() == D3DRTYPE_TEXTURE) ((IDirect3DTexture9*)d3d)->GetLevelDesc(0, &desc);
+				Logger::Log("MarkShaders: attenuation %s texture %p d3d %p type %d %ux%u format %d saved %s (hr %08X)", i ? "Z" : "XY", tex, d3d, d3d ? (int)d3d->GetType() : -1, desc.Width, desc.Height, (int)desc.Format, path, (unsigned)hr);
+			}
+		}
+	}
 
 	bool IsThirdPersonView = !TheCameraManager->IsFirstPerson();
 	Sky* WorldSky = Tes->sky;
@@ -1475,6 +1499,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 
 	Effects.SunFar->RenderFactor(Device);
+	if (Effects.SunFar->Constants.Apply.x > 0.5f) FlickerWatch::Flags |= FlickerWatch::kSunFar;
 
 	Device->SetRenderTarget(0, RenderTarget);
 
@@ -1556,6 +1581,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	AO->skyReady = false;
 	const bool shadowIntoAmbientLight = ambientLight && shadowApplies && !composite && !pairApply && !wouldRender(Effects.SnowAccumulation) &&
 		!TheSettingManager->SettingsMain.Main.DisableCompositeApply;
+	if (GameState.isExterior) {
+		if (composite && shadowApplies) FlickerWatch::Flags |= FlickerWatch::kComposite;
+		if (pairApply) FlickerWatch::Flags |= FlickerWatch::kPair;
+		if (shadowIntoAmbientLight) FlickerWatch::Flags |= FlickerWatch::kIntoAL;
+		if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight) FlickerWatch::Flags |= FlickerWatch::kShadowPass;
+		if (Effects.ShadowsExteriors->Constants.ShadowBlur.y > 0.5f) FlickerWatch::Flags |= FlickerWatch::kLodUpdated;
+		if (GameState.isCellChanged) FlickerWatch::Flags |= FlickerWatch::kCellChanged;
+	}
 
 	{
 		GpuProfileScope gpu(shadowApplyTimer, Device);
@@ -1625,8 +1658,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.AmbientLight->shadowApplied = false;
 		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.AmbientLight->foldShadow = false;
-		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied)
+		if (Effects.AmbientLight->shadowApplied) FlickerWatch::Flags |= FlickerWatch::kALApplied;
+		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied) {
+			FlickerWatch::Flags |= FlickerWatch::kShadowPass;
 			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
 	}
 #if NVR_TEST_TOOLS
 	SettingShots::CaptureStage(Device, TheTextureManager->RenderedSurface);
@@ -2044,6 +2080,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Debug->RenderClipView(Device, RenderTarget);
 	}
+	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior)
+		FlickerWatch::OnFrame(Device, RenderTarget, Effects.SunFar->Settings.FlickerThreshold);
+	else FlickerWatch::Flags = 0;
 
 	timer.LogTime("ShaderManager::RenderEffects");
 }

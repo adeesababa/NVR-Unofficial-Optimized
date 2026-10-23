@@ -1607,6 +1607,7 @@ void ShadowManager::RenderShadowMaps() {
 	auto timer = TimeLogger();
 	static CpuTimer shadowMapsCpuTimer("Shadow maps (CPU)");
 	CpuProfileScope shadowMapsCpu(shadowMapsCpuTimer);
+	Shadows->Constants.CharacterData.w = 0.0f;
 
 	// prepare some pointers to the device and surfaces
 	IDirect3DDevice9* Device = TheRenderManager->device;
@@ -1998,6 +1999,8 @@ void ShadowManager::RenderShadowMaps() {
 
 			if (Shadows->Settings.ShadowMaps.Mipmaps)
 				Shadows->ShadowAtlasTexture->GenerateMipSubLevels();
+
+			RenderCharacterShadowMap(SunDir);
 		}
 #if NVR_TEST_TOOLS
 		if (Shadows->Settings.Exteriors.SkipWhenFadedCheck == 4 && Shadows->ShadowAtlasSurface) {
@@ -2413,6 +2416,66 @@ void ShadowManager::RenderShadowMaps() {
 	shadowMapsRenderTime = timer.LogTime("ShadowManager::RenderShadowMaps");
 }
 
+
+void ShadowManager::RenderCharacterShadowMap(const D3DXVECTOR3& SunDir) {
+	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
+	if (!Shadows->Settings.ShadowMaps.CharacterMap || !Shadows->CharacterMapCompiled) return;
+	if (!Shadows->EnsureCharacterMap()) return;
+	D3DXMATRIX viewProj;
+	if (!Shadows->GetCharacterViewProj(SunDir, viewProj)) return;
+
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	static GpuTimer characterMapTimer("Character shadow map");
+	static CpuTimer characterMapCpuTimer("Character shadow map (CPU)");
+	CpuProfileScope cpu(characterMapCpuTimer);
+	GpuProfileScope gpu(characterMapTimer, Device);
+
+	ShadowsExteriorEffect::ShadowMapSettings* map = &Shadows->CharacterMap;
+	D3DXVECTOR4* ShadowData = &Shadows->Constants.Data;
+	const float zWas = ShadowData->z;
+	ShadowData->z = 1.0f;
+	Shadows->Constants.ShadowViewProj = viewProj;
+	Device->SetRenderTarget(0, Shadows->CharacterMapSurface);
+	Device->SetDepthStencilSurface(Shadows->CharacterMapDepthSurface);
+
+	BeginShadowMap(map, &viewProj);
+	NiNode* playerNode = Player->GetNode();
+	AccumChildren(playerNode, &map->Forms, false, false, &map->ShadowMapFrustumPlanes);
+	unsigned others = 0;
+	if (Shadows->Settings.ShadowMaps.CharacterMapOthers && Player->GetWorldSpace() && Tes && Tes->gridCellArray) {
+		GridCellArray* CellArray = Tes->gridCellArray;
+		const UInt32 CellArraySize = CellArray->size * CellArray->size;
+		for (UInt32 c = 0; c < CellArraySize; c++) {
+			TESObjectCELL* Cell = CellArray->GetCell(c);
+			if (!Cell || Cell->IsInterior()) continue;
+			for (TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First; Entry; Entry = Entry->next) {
+				TESObjectREFR* Ref = Entry->item;
+				if (!Ref || !Ref->baseForm || Ref == (TESObjectREFR*)Player) continue;
+				const UInt8 type = Ref->baseForm->formType;
+				if (type != TESForm::FormType::kFormType_NPC && type != TESForm::FormType::kFormType_Creature && type != TESForm::FormType::kFormType_LeveledCreature) continue;
+				NiNode* node = Ref->GetNode();
+				if (!node || node == playerNode || (node->m_flags & NiAVObject::APP_CULLED) || !node->WithinFrustum(&map->ShadowMapFrustumPlanes)) continue;
+				AccumChildren(node, &map->Forms, false, false, &map->ShadowMapFrustumPlanes);
+				others++;
+			}
+		}
+	}
+	const unsigned casters = (unsigned)(geometryPass->GeometryList.size() + alphaPass->GeometryList.size() + skinnedGeoPass->GeometryList.size());
+	DrawShadowMap(map);
+	ShadowData->z = zWas;
+	Shadows->Constants.CharacterData.w = 1.0f;
+
+	if (Shadows->Settings.ShadowMaps.CharacterMapLog) {
+		static DWORD lastLog = 0;
+		if (GetTickCount() - lastLog > 1000) {
+			lastLog = GetTickCount();
+			const float radius = Shadows->Constants.CharacterCenter.w;
+			Logger::Log("CharacterShadowMap: fit %d, half-extent %.0f units (texel %.3f units = %.2f cm), %u casters (%u other actors), sun %.3f %.3f %.3f, bias %.5f, band %.3f",
+				Shadows->Settings.ShadowMaps.CharacterMapFit, radius, 2.0f * radius / map->ShadowMapResolution, 2.0f * radius / map->ShadowMapResolution * 1.428f,
+				casters, others, SunDir.x, SunDir.y, SunDir.z, Shadows->Constants.CharacterData.z, Shadows->Constants.CharacterData.y);
+		}
+	}
+}
 
 /*
  * Clear a part of the shadow map atlas based on the shadow mapping mode.

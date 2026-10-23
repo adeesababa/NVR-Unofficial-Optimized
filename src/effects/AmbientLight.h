@@ -34,6 +34,12 @@ public:
 
 	static const int	GridSunMapSize = 256;
 	static const int	GridAtlasSize = 128;
+	static const int	GridAtlasWidth = 256;
+	bool				gridFine = true;
+	double				gridPendingOrigin1[3] = {};
+	double				gridOrigin1[3] = {};
+	bool				gridFineValid = false;
+	CachedHandle		paramGridOrigin1;
 	float				gridBounce = 0.0f;
 	float				gridCell = 200.0f;
 	int					gridSteps = 8;
@@ -65,6 +71,15 @@ public:
 	IDirect3DSurface9*	gridScreenSurface[2] = {};
 	IDirect3DTexture9*	gridScreenColor[2] = {};
 	IDirect3DSurface9*	gridScreenColorSurface[2] = {};
+	bool				gridWallMemory = true;
+	IDirect3DTexture9*	gridScreenWalls[2] = {};
+	IDirect3DSurface9*	gridScreenWallsSurface[2] = {};
+	bool				gridWallsValid = false;
+	CachedHandle		paramGridWalls;
+	static const int	GridLampsMax = 32;
+	float				gridLamps = 4.0f;
+	CachedHandle		paramGridLamps, paramGridLampColors, paramGridLampInfo;
+	int		SetGridLamps();
 	int					gridScreenIndex = 0;
 	bool				gridScreenValid = false;
 	double				gridScreenOrigin[3] = {};

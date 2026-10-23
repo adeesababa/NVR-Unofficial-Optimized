@@ -135,6 +135,63 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
 #endif
 
 // ---------------------------------------------------------------------------
+#ifndef CHARACTER_SHADOW_MAP
+    #define CHARACTER_SHADOW_MAP 0
+#endif
+#ifndef SHADOW_CHARACTER_MAP_IN
+    #define SHADOW_CHARACTER_MAP_IN 0
+#endif
+#if CHARACTER_SHADOW_MAP && SHADOW_CHARACTER_MAP_IN && FORWARD_SHADOWS && !(defined(INTERIOR_SHADOWS) && INTERIOR_SHADOWS)
+    #define SHADOW_CHARACTER_MAP 1
+#else
+    #define SHADOW_CHARACTER_MAP 0
+#endif
+#if SHADOW_CHARACTER_MAP
+row_major float4x4 TESR_CharShadowCameraToLight : register(c206);
+float4 TESR_CharShadowCenter : register(c213);
+float4 TESR_CharShadowData   : register(c214);
+#ifdef POINT
+    #undef POINT
+    #define NVR_CHARMAP_POINT_WAS_DEFINED
+#endif
+sampler2D TESR_CharShadowMap : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+#ifdef NVR_CHARMAP_POINT_WAS_DEFINED
+    #define POINT
+    #undef NVR_CHARMAP_POINT_WAS_DEFINED
+#endif
+
+float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float cascadeShadow) {
+    float texel = max(TESR_CharShadowData.x, 1.0f / 16384.0f);
+    float halfExtent = max(TESR_CharShadowCenter.w, 1.0f);
+    float offsetScale = saturate(1.0f - NdotL);
+    float3 position = worldPos + worldNormal * (offsetScale * 1.5f * 2.0f * halfExtent * texel);
+    float4 lightSpace = mul(float4(position, 1.0f), TESR_CharShadowCameraToLight);
+    float edge = max(abs(lightSpace.x), abs(lightSpace.y));
+    float band = max(TESR_CharShadowData.y, 0.01f);
+    float weight = 1.0f - smoothstep(1.0f - band, 1.0f, edge);
+    [branch] if (weight <= 0.0f) return cascadeShadow;
+    float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f);
+    float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
+    float depth = lightSpace.z - TESR_CharShadowData.z - 1.5f * texel * slope;
+    float2 lo = texel * 0.5f;
+    float2 hi = 1.0f - texel * 0.5f;
+    float2 p = uv / texel - 0.5f;
+    float2 c = floor(p + 0.5f);
+    float2 f = p - c;
+    float3 wx = float3(0.5f * (0.5f - f.x) * (0.5f - f.x), 0.75f - f.x * f.x, 0.5f * (0.5f + f.x) * (0.5f + f.x));
+    float3 wy = float3(0.5f * (0.5f - f.y) * (0.5f - f.y), 0.75f - f.y * f.y, 0.5f * (0.5f + f.y) * (0.5f + f.y));
+    float lit = 0.0f;
+    [unroll] for (int y = 0; y < 3; y++) {
+        [unroll] for (int x = 0; x < 3; x++) {
+            float2 tapUV = clamp((c + float2(x - 1, y - 1) + 0.5f) * texel, lo, hi);
+            lit += (depth <= tex2Dlod(TESR_CharShadowMap, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * wx[x] * wy[y];
+        }
+    }
+    return lerp(cascadeShadow, min(cascadeShadow, lit), weight);
+}
+#endif
+
+// ---------------------------------------------------------------------------
 // VSM / EVSM evaluation. Mirrors Effects/Includes/Shadows.hlsl, duplicated because the two
 // trees compile independently.
 // ---------------------------------------------------------------------------
@@ -209,7 +266,16 @@ static float ShadowSlopeBias = 0.0f;
 #ifndef SHADOW_SLACK_CAP_ALL
     #define SHADOW_SLACK_CAP_ALL 0
 #endif
+#ifndef SHADOW_SLACK_CAP_ACTOR
+    #define SHADOW_SLACK_CAP_ACTOR 0
+#endif
 #if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL
+    #define SHADOW_CHARACTER_REACH TESR_ShadowBlur.w
+#elif SHADOW_SLACK_CAP_ACTOR
+    float4 NVR_ShadowCharacterDraw : register(c204);
+    #define SHADOW_CHARACTER_REACH (TESR_ShadowBlur.w * NVR_ShadowCharacterDraw.x)
+#endif
+#if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL || SHADOW_SLACK_CAP_ACTOR
     #define SHADOW_SLACK_CAP 1
     static float ShadowSlackCap = 1.0e9f;
     #define SHADOW_SLACK(n) min((n) * ShadowSlopeBias, ShadowSlackCap)
@@ -548,7 +614,6 @@ float3 GetShadowWorldPos(float4 clipPos) {
 //
 // MUST be called from the top level of the pixel shader: ddx/ddy are illegal inside dynamic
 // flow control.
-// ---------------------------------------------------------------------------
 float3 GetShadowGeometricNormal(float3 worldPos) {
     float3 n = normalize(cross(ddx(worldPos), ddy(worldPos)));
 
@@ -625,9 +690,9 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     offsetDistance = max(offsetDistance, offsetScale * 1.5f * texelWorld);
     ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
 #if SHADOW_SLACK_CAP
-    [flatten] if (TESR_ShadowBlur.w > 0.0f) {
-        offsetDistance = min(offsetDistance, TESR_ShadowBlur.w * radii / max(radii.x, 0.001f));
-        ShadowSlackCap = TESR_ShadowBlur.w / (2.0f * max(radii.x, 0.001f));
+    [flatten] if (SHADOW_CHARACTER_REACH > 0.0f) {
+        offsetDistance = min(offsetDistance, SHADOW_CHARACTER_REACH * radii / max(radii.x, 0.001f));
+        ShadowSlackCap = SHADOW_CHARACTER_REACH / (2.0f * max(radii.x, 0.001f));
     }
 #endif
 #endif
@@ -746,6 +811,11 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
         float oldShadow = GetOldSunShadow(worldPos, worldNormal, offsetScale, bias, covered);
         shadow = lerp(shadow, oldShadow, TESR_ShadowCrossFade.x * covered);
     }
+#endif
+
+#if SHADOW_CHARACTER_MAP
+    [branch] if (TESR_CharShadowData.w > 0.0f)
+        shadow = CharacterMapShadow(worldPos, worldNormal, NdotL, shadow);
 #endif
 
     // Fade out as the sun approaches the horizon, matching SunShadows.fx.

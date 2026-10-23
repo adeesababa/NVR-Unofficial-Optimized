@@ -283,6 +283,7 @@ AccumulateOut Accumulate(VSOUT IN) {
 }
 
 float4 NVR_GridOrigin;
+float4 NVR_GridOrigin1;
 float4 NVR_GridData;
 float4 NVR_GridLight;
 float4x4 NVR_GridSunToGrid;
@@ -299,19 +300,21 @@ static const float3 GridGroundColor = float3(0.55f, 0.42f, 0.30f);
 
 static const float GridX = 32.0f, GridY = 32.0f, GridZ = 16.0f;
 static const float AtlasSize = 128.0f;
+static const float2 AtlasDims = float2(256.0f, 128.0f);
 static const float SunMapSize = 256.0f;
 
 float4 CosineLobe(float3 n) { return float4(0.886227f, 1.023328f * n); }
 float4 ShBasis(float3 d) { return float4(0.282095f, 0.488603f * d); }
 
-float2 CellUV(float3 c) {
+float2 CellUV(float3 c, float level = 0.0f) {
 	float tile = c.z;
 	float2 t = float2(fmod(tile, 4.0f), floor(tile / 4.0f));
-	return (t * 32.0f + c.xy + 0.5f) / AtlasSize;
+	return (t * 32.0f + c.xy + 0.5f + float2(level * AtlasSize, 0.0f)) / AtlasDims;
 }
 
 float3 AtlasCell(float2 uv) {
-	float2 texel = floor(uv * AtlasSize);
+	float2 texel = floor(uv * AtlasDims);
+	texel.x -= texel.x >= AtlasSize ? AtlasSize : 0.0f;
 	float2 t = floor(texel / 32.0f);
 	return float3(texel - t * 32.0f, t.y * 4.0f + t.x);
 }
@@ -328,16 +331,28 @@ struct GridOut { float4 wave : COLOR0; float4 accum : COLOR1; float4 waveColor :
 float4 NVR_GridShift;
 float4 NVR_GridScreen;
 
-struct ScreenOut { float4 sh : COLOR0; float4 colour : COLOR1; };
+float4 NVR_GridWalls;
+#define NVR_GridWallsOld NVR_GridWave
+#define NVR_GridWallMemory NVR_GridWaveColor
+
+#define GridLampsMax 32
+float4 NVR_GridLamps[GridLampsMax];
+float4 NVR_GridLampColors[GridLampsMax];
+float4 NVR_GridLampInfo;
+static const float GridLampReflectance = 0.4f;
+
+struct ScreenOut { float4 sh : COLOR0; float4 colour : COLOR1; float4 walls : COLOR2; };
 
 ScreenOut ScreenInject(VSOUT IN) {
 	ScreenOut OUT;
+	[branch] if (IN.UVCoord.x * AtlasDims.x >= AtlasSize) { OUT.sh = 0.0f; OUT.colour = 0.0f; OUT.walls = 0.0f; return OUT; }
 	float3 cell = AtlasCell(IN.UVCoord);
 	float size = NVR_GridOrigin.w;
 	float3 oldCell = cell + NVR_GridShift.xyz;
 	bool had = NVR_GridShift.w > 0.5f && all(oldCell >= 0.0f) && oldCell.x < GridX && oldCell.y < GridY && oldCell.z < GridZ;
 	OUT.sh = had ? tex2Dlod(NVR_GridScreenOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
 	OUT.colour = had ? tex2Dlod(NVR_GridScreenColorOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
+	OUT.walls = had && NVR_GridWalls.z > 0.5f ? tex2Dlod(NVR_GridWallsOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
 	float3 centre = NVR_GridOrigin.xyz + (cell + 0.5f) * size;
 	float3 view = mul(float4(centre, 0.0f), TESR_ViewTransform).xyz;
 	[branch] if (view.z < 0.5f * size) return OUT;
@@ -346,6 +361,7 @@ ScreenOut ScreenInject(VSOUT IN) {
 	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z);
 	float3 low = centre - 0.5f * size;
 	float4 sh = 0.0f, colour = 0.0f;
+	float3 axes = 0.0f;
 	float hits = 0.0f, empty = 0.0f;
 	[loop] for (int j = 0; j < 4; j++) {
 		[loop] for (int i = 0; i < 4; i++) {
@@ -357,8 +373,10 @@ ScreenOut ScreenInject(VSOUT IN) {
 			[branch] if (all(inCell >= 0.0f) && all(inCell < size)) {
 				float3 light = min(pows(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb, 2.2f), 4.0f);
 				float l = luma(light);
-				sh += CosineLobe(normalize(GetWorldNormalLod(uv))) * l;
+				float3 n = normalize(GetWorldNormalLod(uv));
+				sh += CosineLobe(n) * l;
 				colour += float4(light, l);
+				axes += abs(n);
 				hits += 1.0f;
 			}
 			else if (depth > view.z + size) empty += 1.0f;
@@ -368,13 +386,15 @@ ScreenOut ScreenInject(VSOUT IN) {
 	float share = 1.44f / 16.0f * NVR_GridScreen.x;
 	OUT.sh = lerp(OUT.sh, sh * share, 0.5f);
 	OUT.colour = lerp(OUT.colour, colour * share, 0.5f);
+	OUT.walls = NVR_GridWalls.x > 0.5f ? lerp(OUT.walls, float4(axes * (1.44f / 16.0f), hits / 16.0f), 0.5f) : 0.0f;
 	return OUT;
 }
 
 GridOut GridInject(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
-	float size = NVR_GridOrigin.w;
-	float3 low = cell * size;
+	bool fine = IN.UVCoord.x * AtlasDims.x >= AtlasSize;
+	float size = fine ? NVR_GridOrigin1.w : NVR_GridOrigin.w;
+	float3 low = (fine ? NVR_GridOrigin1.xyz - NVR_GridOrigin.xyz : 0.0f) + cell * size;
 	float4 sh = 0.0f;
 	float4 colour = 0.0f;
 	float3 normals = 0.0f;
@@ -420,7 +440,38 @@ GridOut GridInject(VSOUT IN) {
 	GridOut OUT;
 	OUT.wave = sh;
 	float normalLength = length(normals);
-	OUT.accum = float4(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f), count * faceShare);
+	float cover = count * faceShare;
+	OUT.accum = float4(cover * abs(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f)), cover);
+	[branch] if (NVR_GridWalls.y > 0.5f) OUT.accum = max(OUT.accum, tex2Dlod(NVR_GridWallMemory, float4(IN.UVCoord, 0.0f, 0.0f)));
+	[branch] if (NVR_GridLampInfo.x > 0.5f && any(OUT.accum.xyz > 0.0f)) {
+		float3 centre = low + 0.5f * size;
+		[loop] for (int k = 0; k < GridLampsMax; k++) {
+			if (k >= (int)NVR_GridLampInfo.x) break;
+			float4 lamp = NVR_GridLamps[k];
+			float3 v = (lamp.xyz - NVR_GridOrigin.xyz) - centre;
+			float d = length(v);
+			[branch] if (d >= lamp.w + 0.5f * size) continue;
+			float3 dir = d > 1e-3f ? v / d : float3(0.0f, 0.0f, 1.0f);
+			float fall = saturate(1.0f - max(d - 0.5f * size, 0.0f) / lamp.w);
+			fall *= fall;
+			float through = 1.0f;
+			[branch] if (NVR_GridWalls.y > 0.5f && NVR_GridLampInfo.z > 0.0f && d > size) {
+				[unroll] for (int s = 1; s <= 3; s++) {
+					float3 c = floor((centre + v * (s / 4.0f)) / NVR_GridOrigin.w);
+					if (any(c < 0.0f) || c.x >= GridX || c.y >= GridY || c.z >= GridZ) continue;
+					float3 w = tex2Dlod(NVR_GridWallMemory, float4(CellUV(c), 0.0f, 0.0f)).xyz;
+					through *= 1.0f - saturate(dot(w, abs(dir)) * NVR_GridLampInfo.z);
+				}
+			}
+			float facing = min(dot(OUT.accum.xyz, abs(dir)), 1.0f);
+			float3 light = NVR_GridLampColors[k].rgb * (fall * through * facing * GridLampReflectance * NVR_GridLampInfo.y);
+			float l = luma(light);
+			sh += CosineLobe(dir) * l;
+			colour += float4(light, l);
+		}
+		OUT.wave = sh;
+		OUT.waveColor = colour;
+	}
 	OUT.waveColor = colour;
 	OUT.accumColor = 0.0f;
 	return OUT;
@@ -428,6 +479,7 @@ GridOut GridInject(VSOUT IN) {
 
 GridOut GridPropagate(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
+	float level = IN.UVCoord.x * AtlasDims.x >= AtlasSize ? 1.0f : 0.0f;
 	float4 sh = 0.0f;
 	float4 colour = 0.0f;
 	float4 blocker = tex2Dlod(NVR_GridGeometry, float4(IN.UVCoord, 0.0f, 0.0f));
@@ -435,11 +487,11 @@ GridOut GridPropagate(VSOUT IN) {
 		float3 axis = k == 0 ? float3(1, 0, 0) : k == 1 ? float3(-1, 0, 0) : k == 2 ? float3(0, 1, 0) : k == 3 ? float3(0, -1, 0) : k == 4 ? float3(0, 0, 1) : float3(0, 0, -1);
 		float3 neighbour = cell - axis;
 		if (any(neighbour < 0.0f) || neighbour.x >= GridX || neighbour.y >= GridY || neighbour.z >= GridZ) continue;
-		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour), 0.0f, 0.0f));
+		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour, level), 0.0f, 0.0f));
 		float sent = max(dot(from, ShBasis(axis)), 0.0f);
-		sent *= 1.0f - saturate(blocker.w * abs(dot(blocker.xyz, axis)) * NVR_GridStep.y);
+		sent *= 1.0f - saturate(dot(blocker.xyz, abs(axis)) * NVR_GridStep.y);
 		sh += CosineLobe(axis) * (sent * NVR_GridData.y);
-		float4 fromColour = tex2Dlod(NVR_GridWaveColor, float4(CellUV(neighbour), 0.0f, 0.0f));
+		float4 fromColour = tex2Dlod(NVR_GridWaveColor, float4(CellUV(neighbour, level), 0.0f, 0.0f));
 		colour += float4(fromColour.rgb / max(fromColour.a, 1e-5f), 1.0f) * (sent * NVR_GridData.y);
 	}
 	GridOut OUT;
@@ -450,25 +502,41 @@ GridOut GridPropagate(VSOUT IN) {
 	return OUT;
 }
 
-float3 GridBounce(float3 cameraRelative, float3 normal) {
-	float size = NVR_GridOrigin.w;
-	float3 g = (cameraRelative - NVR_GridOrigin.xyz + normal * (0.5f * size)) / size - 0.5f;
+float4 GridLevel(float3 cameraRelative, float3 normal, float4 origin, float level, float edgeCells, out float4 colourLight, out float fade) {
+	float size = origin.w;
+	float3 g = (cameraRelative - origin.xyz + normal * (0.5f * size)) / size - 0.5f;
 	float3 dims = float3(GridX, GridY, GridZ);
 	float3 edge = min(g + 0.5f, dims - 0.5f - g);
-	float fade = saturate(min(min(edge.x, edge.y), edge.z) / 2.0f);
+	fade = saturate(min(min(edge.x, edge.y), edge.z) / edgeCells);
+	colourLight = 0.0f;
 	[branch] if (fade <= 0.0f) return 0.0f;
 	g = clamp(g, 0.0f, dims - 1.0f);
 	float z0 = floor(g.z);
 	float z1 = min(z0 + 1.0f, GridZ - 1.0f);
 	float fz = g.z - z0;
-	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
-	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
-	float4 sh = lerp(a, b, fz);
+	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0), level), 0.0f, 0.0f));
+	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1), level), 0.0f, 0.0f));
+	[branch] if (NVR_GridData.w > 0.5f) {
+		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0), level), 0.0f, 0.0f));
+		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1), level), 0.0f, 0.0f));
+		colourLight = lerp(ca, cb, fz);
+	}
+	return lerp(a, b, fz);
+}
+
+float3 GridBounce(float3 cameraRelative, float3 normal) {
+	float4 c, cFine;
+	float fade, fadeFine;
+	float4 sh = GridLevel(cameraRelative, normal, NVR_GridOrigin, 0.0f, 2.0f, c, fade);
+	[branch] if (NVR_GridOrigin1.w > 0.0f) {
+		float4 shFine = GridLevel(cameraRelative, normal, NVR_GridOrigin1, 1.0f, 4.0f, cFine, fadeFine);
+		sh = lerp(sh, shFine, fadeFine);
+		c = lerp(c, cFine, fadeFine);
+		fade = max(fade, fadeFine);
+	}
+	[branch] if (fade <= 0.0f) return 0.0f;
 	float3 colour = 1.0f;
 	[branch] if (NVR_GridData.w > 0.5f) {
-		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
-		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
-		float4 c = lerp(ca, cb, fz);
 		colour = c.a > 1e-5f ? lerp(1.0f, c.rgb / c.a, NVR_ALScene.w) : 1.0f;
 	}
 	float irradiance = max(dot(sh, CosineLobe(-normal)), 0.0f) * 1.5f;
@@ -587,6 +655,11 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 		bendY = min(bendY, min(abs(up2 + depth - 2.0f * up), abs(depth + down2 - 2.0f * down)));
 	}
 	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
+	[branch] if (DebugView > 11.5f) {
+		float3 c = floor((toWorld(IN.UVCoord) * depth - NVR_GridOrigin.xyz) / NVR_GridOrigin.w);
+		float4 m = tex2Dlod(NVR_GridWave, float4(CellUV(clamp(c, 0.0f, float3(GridX, GridY, GridZ) - 1.0f)), 0.0f, 0.0f));
+		return float4(saturate(m.xyz * NVR_GridStep.y), 1.0f);
+	}
 	[branch] if (DebugView > 10.5f) return float4(busy.xxx, 1.0f);
 	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
 	float3 albedo = SurfaceColour(lin);

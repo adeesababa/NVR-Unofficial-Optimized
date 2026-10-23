@@ -32,7 +32,7 @@ void BinkManager::CreateTextures() {
 			Textures.Textures[i].cBsize = Buffers->cRcBBufferWidth * Buffers->cRcBBufferHeight;
 		}
 		if (Buffers->Frames[i].APlane.Allocate) {
-			Device->CreateTexture(Buffers->YABufferHeight, Buffers->YABufferHeight, 1, 0, D3DFMT_A8, D3DPOOL_MANAGED, &Textures.Textures[i].A, NULL);
+			Device->CreateTexture(Buffers->YABufferWidth, Buffers->YABufferHeight, 1, 0, D3DFMT_A8, D3DPOOL_MANAGED, &Textures.Textures[i].A, NULL);
 			Textures.Textures[i].Asize = Buffers->YABufferWidth * Buffers->YABufferHeight;
 		}
     }
@@ -184,6 +184,9 @@ void BinkManager::Render(const char* MovieFilename) {
 			Device->SetTexture(0, Texture0);
 			Device->SetTexture(1, Texture1);
 			Device->SetTexture(2, Texture2);
+			if (Texture0) Texture0->Release();
+			if (Texture1) Texture1->Release();
+			if (Texture2) Texture2->Release();
 		}
 		if (NewFrame) BinkNextFrame(Bink);
 	}

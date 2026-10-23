@@ -23,6 +23,9 @@
     #define SHADOW_INVVIEW_REG c244
 #endif
 #define SHADOW_SKIN_SOFTNESS 1
+#ifdef PS
+    #define SHADOW_CHARACTER_MAP_IN 1
+#endif
 #include "includes/Shadow.hlsl"
 
 #if defined(VS)

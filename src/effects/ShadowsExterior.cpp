@@ -409,6 +409,24 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ShadowBlur.w = Settings.Exteriors.CharacterShadowReach;
 	Settings.ShadowMaps.HandoverBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "HandoverBlend"), 0.0f, 2000.0f);
 	Constants.ForwardData.w = Settings.ShadowMaps.HandoverBlend;
+	Settings.ShadowMaps.PlayerInNear = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNear"), 0.0f, 1400.0f);
+	Settings.ShadowMaps.PlayerInNearLog = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNearLog") != 0;
+	{
+		const char* section = "Shaders.ShadowsExteriors.ShadowMaps";
+		Settings.ShadowMaps.CharacterMap = TheSettingManager->GetSettingI(section, "CharacterShadowMap") != 0;
+		const int resolution = std::clamp(TheSettingManager->GetSettingI(section, "CharacterShadowMapResolution"), 256, 4096);
+		Settings.ShadowMaps.CharacterMapResolution = (resolution + 128) / 256 * 256;
+		Settings.ShadowMaps.CharacterMapFit = std::clamp(TheSettingManager->GetSettingI(section, "CharacterShadowMapFit"), 0, 1);
+		Settings.ShadowMaps.CharacterMapMargin = std::clamp(TheSettingManager->GetSettingF(section, "CharacterShadowMapMargin"), 4.0f, 200.0f);
+		Settings.ShadowMaps.CharacterMapBlend = std::clamp(TheSettingManager->GetSettingF(section, "CharacterShadowMapBlend"), 1.0f, 100.0f);
+		Settings.ShadowMaps.CharacterMapBias = std::clamp(TheSettingManager->GetSettingF(section, "CharacterShadowMapBias"), 0.0f, 4.0f);
+		Settings.ShadowMaps.CharacterMapOthers = TheSettingManager->GetSettingI(section, "CharacterShadowMapOthers") != 0;
+		Settings.ShadowMaps.CharacterMapLog = TheSettingManager->GetSettingI(section, "CharacterShadowMapLog") != 0;
+		if (Settings.ShadowMaps.CharacterMap && !CharacterMapCompiled) {
+			static bool hinted = false;
+			if (!hinted) { hinted = true; Logger::Log("UNOFFICIAL CharacterShadowMap was turned on after startup: restart the game once to apply it."); }
+		}
+	}
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
@@ -605,7 +623,7 @@ void ShadowsExteriorEffect::clearShadowsBuffer() {
 	TheRenderManager->device->SetRenderTarget(0, Textures.ShadowPassSurface);
 	TheRenderManager->device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 255, 0, 0), 1.0f, 0L);
 	TheRenderManager->device->SetRenderTarget(0, currentRT);
-	currentRT->Release();
+	if (currentRT) currentRT->Release();
 }
 
 
@@ -648,6 +666,12 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowLightPosition", (D3DXVECTOR4*)&Constants.ShadowLightPosition);
 	TheShaderManager->RegisterConstant("TESR_ShadowSunLight", &SunLight);
 	TheShaderManager->RegisterConstant("TESR_ShadowAmbientLight", &AmbientLight);
+	TheShaderManager->RegisterConstant("TESR_CharShadowCameraToLight", (D3DXVECTOR4*)&Constants.CharacterCameraToLight);
+	TheShaderManager->RegisterConstant("TESR_CharShadowCenter", &Constants.CharacterCenter);
+	TheShaderManager->RegisterConstant("TESR_CharShadowData", &Constants.CharacterData);
+	D3DXMatrixIdentity(&Constants.CharacterCameraToLight);
+	Constants.CharacterCenter = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+	Constants.CharacterData = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	TerrainShadows.RegisterConstants();
 }
 
@@ -725,6 +749,13 @@ void ShadowsExteriorEffect::RegisterTextures() {
 
 	//TheShadowManager->ShadowCubeMapViewPort = { 0, 0, ShadowCubeMapSize, ShadowCubeMapSize, 0.0f, 1.0f };
 	//memset(TheShadowManager->ShadowCubeMapLights, NULL, sizeof(ShadowCubeMapLights));
+
+	CharacterMapCompiled = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap") != 0;
+	if (CharacterMapCompiled) {
+		EnsureCharacterMap();
+		Logger::Log("UNOFFICIAL CharacterShadowMap: compiled into the skin and object shaders and the sun pass (%s, %u x %u)",
+			CharacterMapTexture ? "map made" : "the map could NOT be made", CharacterMapSizeCreated, CharacterMapSizeCreated);
+	}
 
 	// Initialize shadow buffer
 	TheTextureManager->InitTexture("TESR_PointShadowBuffer", &Textures.ShadowPassTexture, &Textures.ShadowPassSurface, TheRenderManager->width, TheRenderManager->height, D3DFMT_G16R16);
@@ -880,6 +911,105 @@ void ShadowsExteriorEffect::RecreateTextures(bool cascades, bool ortho, bool cub
 }
 
 
+bool ShadowsExteriorEffect::EnsureCharacterMap() {
+	const UINT size = (UINT)Settings.ShadowMaps.CharacterMapResolution;
+	if (CharacterMapTexture && CharacterMapDepthSurface && CharacterMapSizeCreated == size) return true;
+	if (CharacterMapSurface) { CharacterMapSurface->Release(); CharacterMapSurface = nullptr; }
+	if (CharacterMapTexture) { CharacterMapTexture->Release(); CharacterMapTexture = nullptr; }
+	if (CharacterMapDepthSurface) { CharacterMapDepthSurface->Release(); CharacterMapDepthSurface = nullptr; }
+	TheTextureManager->InitTexture("TESR_CharShadowMap", &CharacterMapTexture, &CharacterMapSurface, size, size, D3DFMT_R32F);
+	if (!CharacterMapTexture || !CharacterMapSurface) {
+		CharacterMapTexture = nullptr; CharacterMapSurface = nullptr;
+		Logger::Log("UNOFFICIAL CharacterShadowMap: could not make the %u x %u map (video memory?); off until it can be.", size, size);
+		CharacterMapSizeCreated = 0;
+		return false;
+	}
+	if (FAILED(TheRenderManager->device->CreateDepthStencilSurface(size, size, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, true, &CharacterMapDepthSurface, NULL)) || !CharacterMapDepthSurface) {
+		CharacterMapDepthSurface = nullptr;
+		Logger::Log("UNOFFICIAL CharacterShadowMap: could not make the %u x %u depth surface; off until it can be.", size, size);
+		CharacterMapSizeCreated = 0;
+		return false;
+	}
+	if (CharacterMapSizeCreated) {
+		if (TheShaderManager->Effects.SunShadows) TheShaderManager->Effects.SunShadows->ClearSampler("TESR_CharShadowMap", 18);
+		TheShaderManager->ClearShaderSamplers("TESR_CharShadowMap", 18);
+		Logger::Log("UNOFFICIAL CharacterShadowMap: map remade at %u x %u", size, size);
+	}
+	CharacterMapSizeCreated = size;
+	CharacterMap.ShadowMapViewPort = { 0, 0, size, size, 0.0f, 1.0f };
+	CharacterMap.ShadowMapResolution = (float)size;
+	CharacterMap.ShadowMapInverseResolution = 1.0f / (float)size;
+	return true;
+}
+
+bool ShadowsExteriorEffect::GetCharacterViewProj(const D3DXVECTOR3& sunDir, D3DXMATRIX& viewProj) {
+	if (!Player || !Player->isThirdPerson) return false;
+	NiNode* node = Player->GetNode();
+	if (!node || (node->m_flags & NiAVObject::APP_CULLED)) return false;
+	const NiPoint3 cameraPosition = WorldSceneGraph->camera->m_worldTransform.pos;
+	D3DXVECTOR3 centre;
+	float radius;
+	if (Settings.ShadowMaps.CharacterMapFit == 0 && Player->ActorSkinInfo && Player->ActorSkinInfo->HeadNode && Player->ActorSkinInfo->Spine2Node) {
+		const NiPoint3& h = Player->ActorSkinInfo->HeadNode->m_worldTransform.pos;
+		const NiPoint3& t = Player->ActorSkinInfo->Spine2Node->m_worldTransform.pos;
+		const D3DXVECTOR3 head(h.x, h.y, h.z), torso(t.x, t.y, t.z);
+		const D3DXVECTOR3 axis = head - torso;
+		centre = torso + axis * 0.5f;
+		radius = 0.5f * D3DXVec3Length(&axis) + Settings.ShadowMaps.CharacterMapMargin;
+	}
+	else {
+		NiBound* bound = node->GetWorldBound();
+		if (!bound) return false;
+		centre = D3DXVECTOR3(bound->Center.x, bound->Center.y, bound->Center.z);
+		radius = bound->Radius + Settings.ShadowMaps.CharacterMapMargin;
+	}
+	if (!std::isfinite(radius) || !std::isfinite(centre.x) || !std::isfinite(centre.y) || !std::isfinite(centre.z) || radius <= 0.0f) return false;
+	radius = std::ceil(radius / 8.0f) * 8.0f;
+	radius = (std::min)(radius, 2048.0f);
+
+	centre -= D3DXVECTOR3(cameraPosition.x, cameraPosition.y, cameraPosition.z);
+	D3DXVECTOR3 dir = sunDir;
+	D3DXVec3Normalize(&dir, &dir);
+	D3DXVECTOR3 up(0.0f, 0.0f, 1.0f);
+	if (SunOverhead(dir)) up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+	const D3DXVECTOR3 eye = centre + dir * radius;
+	D3DXMATRIX view, proj;
+	D3DXMatrixLookAtRH(&view, &eye, &centre, &up);
+	D3DXMatrixOrthoOffCenterRH(&proj, -radius, radius, -radius, radius, 0.0f, 2.0f * radius);
+	viewProj = view * proj;
+
+	const float mapSize = CharacterMap.ShadowMapResolution > 0.0f ? CharacterMap.ShadowMapResolution : (float)Settings.ShadowMaps.CharacterMapResolution;
+	D3DXVECTOR4 origin(-cameraPosition.x, -cameraPosition.y, -cameraPosition.z, 1.0f);
+	D3DXVec4Transform(&origin, &origin, &viewProj);
+	const float ox = origin.x * mapSize * 0.5f, oy = origin.y * mapSize * 0.5f;
+	proj._41 += (floorf(ox + 0.5f) - ox) * 2.0f / mapSize;
+	proj._42 += (floorf(oy + 0.5f) - oy) * 2.0f / mapSize;
+	viewProj = view * proj;
+
+	ShadowMapSettings& map = CharacterMap;
+	map.Forms = {};
+	map.Forms.Actors = true;
+	map.Forms.AlphaEnabled = true;
+	map.Forms.MinRadius = 0.0f;
+	map.Forms.OrigMinRadius = 0.0f;
+	map.ShadowMapRadius = radius;
+	map.ShadowMapNear = 0.0f;
+	map.CustomClearRequired = false;
+	map.ClearColor = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 1.0f);
+	map.ShadowMapCascadeCenterRadius = D3DXVECTOR4(centre.x, centre.y, centre.z, radius);
+	map.CameraTranslation = D3DXVECTOR3(cameraPosition.x, cameraPosition.y, cameraPosition.z);
+	NiFrustum frustum(-radius, radius, radius, -radius, 0.0f, 2.0f * radius, true);
+	TheCameraManager->SetFrustumPlanes(&map.ShadowMapFrustumPlanes, &viewProj, eye, frustum);
+	map.ShadowMapFrustumPlanes.SetActivePlaneState(62);
+
+	Constants.CharacterCameraToLight = viewProj;
+	Constants.CharacterCenter = D3DXVECTOR4(centre.x, centre.y, centre.z, radius);
+	Constants.CharacterData.x = 1.0f / mapSize;
+	Constants.CharacterData.y = (std::min)(Settings.ShadowMaps.CharacterMapBlend / radius, 0.9f);
+	Constants.CharacterData.z = Settings.ShadowMaps.CharacterMapBias / (2.0f * radius);
+	return true;
+}
+
 /*
 * Produce a smooth sun direction.
 */
@@ -896,7 +1026,7 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 
 	if (quantizeSun) {
 		float theta = atan2f(SunDir.y, SunDir.x);   // Yaw
-		float phi = acosf(SunDir.z);				// Pitch
+		float phi = acosf(std::clamp(SunDir.z, -1.0f, 1.0f));
 
 		theta = roundf(theta / yawStepSize) * yawStepSize;
 		phi = roundf(phi / pitchStepSize) * pitchStepSize;
@@ -1135,6 +1265,30 @@ D3DXMATRIX ShadowsExteriorEffect::GetCascadeViewProj(ShadowMapSettings* ShadowMa
 	float currentWorldFOV = WorldSceneGraph->cameraFOV;
 	float radiusFOVCompensation = tan(defaultWorldFOV * 0.5f * (3.1416f / 180.0f)) / tan(currentWorldFOV * 0.5f * (3.1416f / 180.0f));
 	sphereRadius *= radiusFOVCompensation;
+
+	if (Settings.ShadowMaps.PlayerInNear > 0.0f && ShadowMap == &ShadowMaps[MapNear] && Player && Player->isThirdPerson &&
+		Player->ActorSkinInfo && Player->ActorSkinInfo->HeadNode) {
+		const NiPoint3& h = Player->ActorSkinInfo->HeadNode->m_worldTransform.pos;
+		const D3DXVECTOR3 head(h.x - cameraPosition.x, h.y - cameraPosition.y, h.z - cameraPosition.z);
+		const D3DXVECTOR3 toHead = head - frustumCenter;
+		const float headDistance = D3DXVec3Length(&head);
+		const float centerToHead = D3DXVec3Length(&toHead);
+		float margin = 24.0f + Settings.ShadowMaps.HandoverBlend;
+		if (headDistance <= Settings.ShadowMaps.PlayerInNear && std::isfinite(centerToHead) && centerToHead + margin > sphereRadius) {
+			float grown = 0.5f * (sphereRadius + centerToHead + margin);
+			margin += (std::max)(0.0f, 0.1f * grown - Settings.ShadowMaps.HandoverBlend);
+			grown = std::ceil(0.5f * (sphereRadius + centerToHead + margin) / 16.0f) * 16.0f;
+			frustumCenter += toHead * ((grown - sphereRadius) / (std::max)(centerToHead, 0.001f));
+			sphereRadius = grown;
+		}
+		static DWORD lastLog = 0;
+		if (Settings.ShadowMaps.PlayerInNearLog && GetTickCount() - lastLog > 1000) {
+			lastLog = GetTickCount();
+			const D3DXVECTOR3 fromCenter = head - frustumCenter;
+			Logger::Log("PlayerInNear: head %.0f units from the camera, Near radius %.0f (FOV %.1f, default %.1f), head %.0f from its centre",
+				headDistance, sphereRadius, currentWorldFOV, defaultWorldFOV, D3DXVec3Length(&fromCenter));
+		}
+	}
 
 	maxExtents = D3DXVECTOR3(sphereRadius, sphereRadius, sphereRadius);
 	minExtents = -maxExtents;

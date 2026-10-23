@@ -106,13 +106,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 42 && Template.Defines[i].Name != NULL) {
+		while (i < 46 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;
 			i++;
 		}
-		if (i >= 42) {
+		if (i >= 46) {
 			static bool warned = false;
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 42 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 46 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -170,6 +170,7 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	}
 	AppendDefine("SPEC_FADE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SpecularFade") ? "1" : "0");
 	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
+	AppendDefine("LAMP_VECTOR_ATT_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampDistanceFix") ? "1" : "0");
 	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
 	if (PBRShaders::LampFalloffCompiledIn())
@@ -232,6 +233,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		}
 		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
 	}
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CharacterObjectReach"))
+		AppendDefine("SHADOW_CHARACTER_OBJECTS", "1");
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		AppendDefine("CHARACTER_SHADOW_MAP", "1");
 
 }
 
@@ -670,6 +675,14 @@ void NiD3DVertexShaderEx::SetupShader(IDirect3DVertexShader9* CurrentVertexHandl
 		return;
 	}
 
+	if ((MarkShadersVanilla == 1 || MarkShadersVanilla == 3) && MarkShadersVsTo > 0 && ShaderHandleBackup && Name && !memcmp(Name, "SLS", 3)) {
+		const int number = atoi(Name + 3);
+		if (number >= MarkShadersVsFrom && number <= MarkShadersVsTo) {
+			ShaderHandle = (IDirect3DVertexShader9*)ShaderHandleBackup;
+			return;
+		}
+	}
+
 	if (GetShaderRecord(ShaderRecordType::Exterior) && Player->GetWorldSpace()) {
 		ShaderHandle = GetShaderRecord(ShaderRecordType::Exterior)->ShaderHandle;
 		if (CurrentVertexHandle != ShaderHandle) GetShaderRecord(ShaderRecordType::Exterior)->SetCT();
@@ -735,6 +748,37 @@ void NiD3DPixelShaderEx::SetupShader(IDirect3DPixelShader9* CurrentPixelHandle) 
 	if (!Enabled || !TheSettingManager->SettingsMain.Main.RenderEffects) {
 		ShaderHandle = (IDirect3DPixelShader9*)ShaderHandleBackup;
 		return;
+	}
+
+	if (MarkShadersTo > 0) {
+		static int logged = 0;
+		if (logged < 40) { logged++; Logger::Log("MarkShaders: pixel shader '%s' (range %d-%d)", Name ? Name : "(null)", MarkShadersFrom, MarkShadersTo); }
+	}
+	const bool isSLS = Name && !memcmp(Name, "SLS", 3), isPAR = Name && !memcmp(Name, "PAR", 3);
+	if (MarkShadersTo > 0 && Name && (MarkShadersFamily == 2 ? !isSLS && !isPAR : MarkShadersFamily == 1 ? isPAR : isSLS)) {
+		const int number = atoi(Name + 3);
+		if (MarkShadersFamily == 2 || (number >= MarkShadersFrom && number <= MarkShadersTo)) {
+			static IDirect3DPixelShader9* magenta = nullptr;
+			static bool tried = false;
+			if (!tried) {
+				tried = true;
+				static const char src[] = "float4 main() : COLOR0 { return float4(1, 0, 1, 1); }";
+				ID3DXBuffer* code = nullptr;
+				if (SUCCEEDED(D3DXCompileShader(src, sizeof(src) - 1, NULL, NULL, "main", "ps_2_0", 0, &code, NULL, NULL)) && code) {
+					TheRenderManager->device->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &magenta);
+					code->Release();
+				}
+				Logger::Log("MarkShaders: magenta shader %s", magenta ? "ready" : "FAILED");
+			}
+			if (MarkShadersVanilla == 1) {
+				ShaderHandle = (IDirect3DPixelShader9*)ShaderHandleBackup;
+				return;
+			}
+			if (magenta && MarkShadersVanilla != 3) {
+				ShaderHandle = magenta;
+				return;
+			}
+		}
 	}
 
 	if (GetShaderRecord(ShaderRecordType::Exterior) && Player->GetWorldSpace()) {

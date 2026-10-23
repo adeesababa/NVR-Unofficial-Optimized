@@ -45,6 +45,9 @@
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
+#ifdef PS
+    #define SHADOW_CHARACTER_MAP_IN 1
+#endif
 #include "Includes/Shadow.hlsl"
 #ifdef PS
     #include "Includes/PointShadowForward.hlsl"

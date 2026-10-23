@@ -18,6 +18,7 @@ float4 TESR_SunFarCloudWeight;
 float4 TESR_SunFarCloudBlend;
 float4 TESR_SunFarVolume;
 float4 TESR_SunDirection;
+float4 TESR_SunFarWater;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_NormalsBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -33,6 +34,7 @@ sampler2D NVR_CloudBlend1 : register(s10) = sampler_state { ADDRESSU = WRAP; ADD
 sampler2D NVR_CloudBlend2 : register(s11) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_CloudBlend3 : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_VolumeCloudShadow : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D NVR_WaterDepth : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -136,6 +138,15 @@ float VolumeCloudShadow(float3 world) {
 	float inside = saturate(min(edge.x, edge.y) * 10.0f);
 	return lerp(1.0f, tex2Dlod(NVR_VolumeCloudShadow, float4(suv, 0.0f, 0.0f)).r, inside * TESR_SunFarVolume.x);
 }
+bool OnWater(float3 world, float3 normal, float depth) {
+	return normal.z > 0.7f && abs(world.z - TESR_WaterSettings.x) < max(2.0f, depth * 0.002f);
+}
+
+float WaterDeep(float2 uv, float3 rel) {
+	float deep = saturate(tex2Dlod(NVR_WaterDepth, float4(uv, 0.0f, 0.0f)).x);
+	return lerp(deep, 1.0f, smoothstep(4096.0f, 8192.0f, length(rel.xy)));
+}
+
 float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	float depth = readDepthLod(uv);
@@ -151,15 +162,21 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	[branch] if (TESR_SunFarData.y > 0.5f) {
 		float3 tint = lerp(1.0f, float3(0.25f, 1.0f, 0.25f), (1.0f - terrain) * 0.8f) * lerp(1.0f, float3(0.35f, 0.5f, 1.0f), (1.0f - cloud) * 0.8f);
 		if (TESR_SunFarData.y > 1.5f) tint *= lerp(1.0f, float3(0.85f, 0.9f, 1.0f), TerrainShadowCoverage(world));
+		float water = TESR_SunFarWater.z * step(2.5f, TESR_SunFarData.y) * (OnWater(world, GetWorldNormalLod(uv), depth) ? 1.0f : 0.0f);
+		tint *= lerp(1.0f, lerp(float3(1.0f, 1.0f, 1.0f), float3(1.0f, 0.15f, 0.15f), WaterDeep(uv, rel)), water);
 		return float4(tint, 1.0f);
 	}
 	[branch] if (blocked >= 0.999f && shade <= 0.001f) return 1.0f;
 	float3 normal = GetWorldNormalLod(uv);
 
-	[branch] if (normal.z > 0.7f && abs(world.z - TESR_WaterSettings.x) < max(2.0f, depth * 0.002f)) return float4(1.0f, 1.0f, 1.0f, blocked);
+	float keep = 1.0f;
+	[branch] if (OnWater(world, normal, depth)) {
+		keep = TESR_SunFarWater.x * lerp(1.0f, TESR_SunFarWater.y, WaterDeep(uv, rel));
+		[branch] if (keep <= 0.0f) return float4(1.0f, 1.0f, 1.0f, blocked);
+	}
 
 	float cascade = 1.0f;
-	[branch] if (TESR_ShadowFade.y > 0.0f) cascade = saturate(lerp(CascadeLight(rel, normal), 1.0f, TESR_ShadowFade.x));
+	[branch] if (TESR_ShadowFade.y > 0.0f && keep >= 1.0f) cascade = saturate(lerp(CascadeLight(rel, normal), 1.0f, TESR_ShadowFade.x));
 
 	float terrainWeight = (TESR_TerrainData.z + TESR_TerrainData.w > 0.0f) ? smoothstep(0.5f, 0.8f, normal.z) : 0.0f;
 	float3 scales = lerp(float3(TESR_PBRData.z, TESR_PBRData.w, TESR_PBRExtraData.y),
@@ -169,6 +186,7 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float3 ambientLight = LightColor(TESR_ShadowAmbientLight.rgb) * LightScale(scales.y) + LightColor(SkyIrradiance(normal)) * LightScale(scales.z);
 	float3 litNow = ambientLight + sunLight * cascade;
 	float3 factor = saturate((ambientLight * (1.0f - shade) + sunLight * (cascade * blocked)) / max(litNow, 0.0001f));
+	factor = keep < 1.0f ? lerp(1.0f, factor, keep) : factor;
 	factor = pow(max(factor, 1e-6f), TESR_SunFarData.w);
 	return float4(factor, blocked);
 }

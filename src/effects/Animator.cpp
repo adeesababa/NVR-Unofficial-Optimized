@@ -46,7 +46,7 @@ float Animator::GetValue() {
 	float currenttime = time->GameDaysPassed->data * 24;
 	if (!running) return startValue;
 
-	if (currenttime > endTime) {
+	if (currenttime >= endTime) {
 		running = false;
 		startValue = endValue;
 		return endValue;

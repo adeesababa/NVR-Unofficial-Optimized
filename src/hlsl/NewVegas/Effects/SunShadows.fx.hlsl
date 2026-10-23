@@ -32,6 +32,15 @@ sampler2D TESR_ShadowAtlas : register(s1) = sampler_state { ADDRESSU = CLAMP; AD
 sampler2D TESR_NormalsBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_PointShadowBuffer : register(s3)  = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NoiseSampler : register(s4) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+#ifndef CHARACTER_SHADOW_MAP
+    #define CHARACTER_SHADOW_MAP 0
+#endif
+#if CHARACTER_SHADOW_MAP
+float4x4 TESR_CharShadowCameraToLight;
+float4 TESR_CharShadowCenter;
+float4 TESR_CharShadowData;
+sampler2D TESR_CharShadowMap : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+#endif
 
 #define SSS_STEPNUM 5
 
@@ -142,7 +151,7 @@ float GetLightAmountValue(float4x4 lightTransform, float4 coord, float offsetX, 
     return shadow;
 }
 
-float GetLightAmount(float4 positionWS, float3 normal)
+float GetLightAmountCascades(float4 positionWS, float3 normal)
 {
 	// Normal offset.
     float NdotL = dot(normal, TESR_SmoothedSunDir.xyz);
@@ -223,6 +232,30 @@ float GetLightAmount(float4 positionWS, float3 normal)
 #undef TAP_MIDDLE
 #undef TAP_FAR
 #undef TAP_LOD
+
+float GetLightAmount(float4 positionWS, float3 normal)
+{
+    float shadow = GetLightAmountCascades(positionWS, normal);
+#if CHARACTER_SHADOW_MAP
+    float texel = max(TESR_CharShadowData.x, 1.0f / 16384.0f);
+    float halfExtent = max(TESR_CharShadowCenter.w, 1.0f);
+    float NdotL = dot(normal, TESR_SmoothedSunDir.xyz);
+    float offsetScale = saturate(1.0f - NdotL);
+    float3 position = positionWS.xyz + normal * (offsetScale * 1.5f * 2.0f * halfExtent * texel);
+    float4 lightSpace = mul(float4(position, 1.0f), TESR_CharShadowCameraToLight);
+    float edge = max(abs(lightSpace.x), abs(lightSpace.y));
+    float band = max(TESR_CharShadowData.y, 0.01f);
+    float weight = (1.0f - smoothstep(1.0f - band, 1.0f, edge)) * TESR_CharShadowData.w;
+    [branch] if (weight > 0.0f) {
+        float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f);
+        float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
+        float depth = lightSpace.z - TESR_CharShadowData.z - texel * slope;
+        float lit = ShadowPCF2x2(TESR_CharShadowMap, clamp(uv, texel, 1.0f - texel), depth, texel);
+        shadow = lerp(shadow, min(shadow, lit), weight);
+    }
+#endif
+    return shadow;
+}
 float3 random(float2 seed)
 {
 	return tex2D(TESR_NoiseSampler, (seed/256 + 0.5) / TESR_ReciprocalResolution.xy).xyz;

@@ -365,8 +365,13 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			if (Index < Count && Mods.loadedMods[Index]) Request.DefiningFile = Mods.loadedMods[Index]->name;
 		}
 		if (Map && Map->WorldSpace != World) Map.reset();
-		LoadJob = std::async(std::launch::async, &TerrainShadowMap::Load, std::move(Request));
-		Loading = true;
+		try {
+			LoadJob = std::async(std::launch::async, &TerrainShadowMap::Load, std::move(Request));
+			Loading = true;
+		}
+		catch (const std::exception& e) {
+			Logger::Log("[ERROR] Terrain shadows: could not start loading the heights (%s)", e.what());
+		}
 	}
 
 	if ((Sweeping || Uploading) && !StallLogged && GetTickCount64() - BusySince > 15000) {

@@ -64,6 +64,9 @@ public:
 		D3DXVECTOR4		OldCenter[4];
 		D3DXVECTOR4		CrossFade;
 		D3DXVECTOR4		PointShadowNear;
+		D3DXMATRIX		CharacterCameraToLight;
+		D3DXVECTOR4		CharacterCenter;
+		D3DXVECTOR4		CharacterData;
 	};
 
 	// Settings
@@ -116,6 +119,16 @@ public:
 		float				CascadeLambda;
 		bool				SmoothFilter;
 		float				HandoverBlend = 70.0f;
+		bool				PlayerInNearLog = false;
+		float				PlayerInNear = 0.0f;
+		bool				CharacterMap = false;
+		int					CharacterMapResolution = 1024;
+		int					CharacterMapFit = 0;
+		float				CharacterMapMargin = 24.0f;
+		float				CharacterMapBlend = 12.0f;
+		float				CharacterMapBias = 0.15f;
+		bool				CharacterMapOthers = false;
+		bool				CharacterMapLog = false;
 	};
 
 	struct OrthoStruct {
@@ -273,6 +286,15 @@ public:
 	IDirect3DTexture9* ShadowMapOrthoTexture;
 	IDirect3DSurface9* ShadowMapOrthoSurface;
 	IDirect3DSurface9* ShadowMapOrthoDepthSurface;
+
+	IDirect3DTexture9* CharacterMapTexture = nullptr;
+	IDirect3DSurface9* CharacterMapSurface = nullptr;
+	IDirect3DSurface9* CharacterMapDepthSurface = nullptr;
+	UINT		CharacterMapSizeCreated = 0;
+	bool		CharacterMapCompiled = false;
+	ShadowMapSettings CharacterMap = {};
+	bool		EnsureCharacterMap();
+	bool		GetCharacterViewProj(const D3DXVECTOR3& sunDir, D3DXMATRIX& viewProj);
 
 	void		clearShadowsBuffer();
 	bool		ShouldRender() override;

@@ -31,6 +31,7 @@ float4 TESR_DebugVar;
 
 #include "Includes/helpers.hlsl"
 #define SHADOW_SKIN_SOFTNESS 1
+#define SHADOW_CHARACTER_MAP_IN 1
 #include "Includes/Shadow.hlsl"
 
 // Structures:

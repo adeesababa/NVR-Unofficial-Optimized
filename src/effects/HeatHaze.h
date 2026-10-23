@@ -3,7 +3,7 @@
 class HeatHazeEffect : public EffectRecord
 {
 public:
-	HeatHazeEffect() : EffectRecord("HeatHaze") {};
+	HeatHazeEffect() : EffectRecord("HeatHaze") { ZeroMemory(&Constants, sizeof(Constants)); };
 
 	struct HeatHazeSettingsStruct {
 		float	Strength;
