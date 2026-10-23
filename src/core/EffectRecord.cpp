@@ -80,7 +80,7 @@ bool EffectRecord::LoadEffect() {
 	// Effects get the same compile-time defines the game shaders do. Only the PREPROCESS call
 	// needs them -- D3DXCreateEffectCompiler below is handed the already-preprocessed source.
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
-	D3DXMACRO EffectMacros[7];
+	D3DXMACRO EffectMacros[8];	// UNOFFICIAL 2026-10-23: 8 (CHARACTER_SHADOW_MAP)
 	int macroCount = 0;
 	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
 		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
@@ -97,6 +97,10 @@ bool EffectRecord::LoadEffect() {
 		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
 	if (ReflMaterial::OccCompiledIn())	// UNOFFICIAL 2026-10-21 SpecularOcclusion (Reflections.fx.hlsl), likewise
 		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap (SunShadows.fx.hlsl's deferred lookup): only when on at startup, as the game shaders
+	// (ShaderRecord::BuildDefines reads the same setting), so that off the effect's preprocessed source is exactly what it was.
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		EffectMacros[macroCount++] = { "CHARACTER_SHADOW_MAP", "1" };
 	EffectMacros[macroCount] = { NULL, NULL };
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);

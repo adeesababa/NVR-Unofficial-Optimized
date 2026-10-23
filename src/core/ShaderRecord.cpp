@@ -112,13 +112,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 42 && Template.Defines[i].Name != NULL) {
+		while (i < 46 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
 			i++;
 		}
-		if (i >= 42) {  // out of room (Defines[44]: 42 entries and the terminator); skip rather than overrun
+		if (i >= 46) {  // out of room (Defines[48]: 46 entries and the terminator); skip rather than overrun
 			static bool warned = false;	// fixes-a #12: say so once (a dropped define = the shader compiled without that option)
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 42 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 46 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -310,6 +310,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// only when on, and last, so that off the list and the shaders are exactly what they were and it never pushes another define out.
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CharacterObjectReach"))
 		AppendDefine("SHADOW_CHARACTER_OBJECTS", "1");
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap ([Shaders.ShadowsExteriors.ShadowMaps]; Includes/Shadow.hlsl CharacterMapShadow): the
+	// player's own sun shadow map, read by the skin shaders and the object pixel shaders. Defined only when on, and last, as above.
+	// (ShadowsExteriorEffect::RegisterTextures reads the same setting for CharacterMapCompiled.)
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		AppendDefine("CHARACTER_SHADOW_MAP", "1");
 
 }
 

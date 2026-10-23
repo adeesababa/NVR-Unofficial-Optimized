@@ -295,6 +295,13 @@
 #if defined(PS) && defined(SHADOW_CHARACTER_OBJECTS)
     #define SHADOW_SLACK_CAP_ACTOR 1
 #endif
+// UNOFFICIAL 2026-10-23 CharacterShadowMap (Includes/Shadow.hlsl CharacterMapShadow; compiled in only when on at startup): the object pixel
+// shaders read the player's own sun shadow map too (hats, bandanas, face masks, armour: drawn with these shaders, not the skin's), except
+// the shaders with four or more lamps (the six-lamp OPT specular 4+ shader is at the driver's slot limit, NVR_SLOT_TIGHT above, and the
+// four-lamp ones were at ps_3_0's 32 temporaries with two cascade lookups): a hat lit by four lamps and the sun keeps the cascades.
+#if defined(PS) && !defined(NVR_SLOT_TIGHT) && !(defined(LIGHTS) && LIGHTS > 3)
+    #define SHADOW_CHARACTER_MAP_IN 1
+#endif
 #include "includes/Shadow.hlsl"
 #ifdef PS
     // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS): SHADOWED(colour, k, att) gives light k of the draw

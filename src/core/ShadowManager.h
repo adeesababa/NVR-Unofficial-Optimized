@@ -50,6 +50,10 @@ public:
 	bool					RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex, CubeLayer Layer = CubeLayer::All);	// false: MovingOnto's copy failed, nothing drawn
 	void					RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex);
 	void					RenderShadowMaps();
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap (docs/next/CHARACTER-SHADOW-MAP-DESIGN.md): the player's own small sun shadow map, drawn
+	// after the sun cascades from the same sun direction; actors only (the player, optionally other actors inside it). Sets
+	// Constants.CharacterData.w = 1 when the map holds this frame's draw.
+	void					RenderCharacterShadowMap(const D3DXVECTOR3& SunDir);
 	void					ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* ClearColor);
 	void                    BlurShadowAtlas(unsigned cascadeMask);
 

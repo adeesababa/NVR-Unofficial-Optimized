@@ -38,3 +38,5 @@ pixel is inside its bounds, blending to the cascades at its edge. Estimated < 0.
 - No MRT with MSAA. The game's own render-state cache must be kept truthful (NoteDeviceTexture for direct SetTexture calls).
 - Native D3D9 must keep working (the planned NVR DXVK fork may relax limits later, but this feature must not depend on it).
 - Off by default, with a setting; the existing cascade path unchanged when off.
+
+Design and prototype (2026-10-23): CHARACTER-SHADOW-MAP-DESIGN.md, branch character-shadow-map.

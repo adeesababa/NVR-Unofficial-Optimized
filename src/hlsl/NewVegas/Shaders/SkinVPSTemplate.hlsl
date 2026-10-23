@@ -48,6 +48,9 @@
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
+#ifdef PS
+    #define SHADOW_CHARACTER_MAP_IN 1   // UNOFFICIAL 2026-10-23 CharacterShadowMap (Includes/Shadow.hlsl CharacterMapShadow; compiled in only when on at startup)
+#endif
 #include "Includes/Shadow.hlsl"
 #ifdef PS
     #include "Includes/PointShadowForward.hlsl"  // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS, interiors)
