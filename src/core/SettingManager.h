@@ -28,6 +28,7 @@ struct SettingsMainStruct {
         bool    SkipIdentityExposure; // [Main.Main.Performance] SkipIdentityExposure (no exposure pass while MaxBrightness is 0: it then leaves the picture as it is), live
         bool    AvgLumaCompute; // [Main.Main.Performance] AvgLumaCompute (UNOFFICIAL 2026-10-23: the average-luma pass as a compute reduction; needs NVR DXVK, otherwise the D3D9 pass runs as before), live
         int     AvgLumaComputeCheck; // [Main.Main.Performance] AvgLumaComputeCheck (test tool: every N frames both paths run and are logged side by side; 0 off), live
+        bool    NvrDxvkPasses; // [Main.Main.Performance] NvrDxvkPasses (UNOFFICIAL 2026-10-23: the ported full-screen effects as Vulkan passes; needs NVR DXVK), live
         int     SmoothNormals; // [Main.Main.Quality] SmoothNormals (UNOFFICIAL 2026-10-23: reach in pixels of the shared normal smoothing after the normals pass; 0 off), live
         bool    LampMaskScissor; // [Main.Main.Performance] LampMaskScissor (the lamp-mask pass drawn only inside its lamps' screen rectangle, not at all with none on screen; exact), live
         bool    InteriorShadowFold; // [Main.Main.Performance] InteriorShadowFold (indoors the unblurred lamp darkening applied in the fog composite, not its own pass), live

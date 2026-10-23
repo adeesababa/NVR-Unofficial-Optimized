@@ -3,9 +3,15 @@
 // a readback, then a D3D9 clear + present to make sure the device keeps working.
 #include <windows.h>
 #include <d3d9.h>
+#ifdef NVR_TEST_WIN32
+// Real Win32 (MinGW build, run on Windows or under Wine with the fork's d3d9.dll next to the exe)
+static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
+#else
 #include <SDL.h>
+#endif
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -38,9 +44,16 @@ int main(int argc, char** argv) {
   const char* spvPath = argc > 1 ? argv[1] : "AvgLuma.spv";
   const UINT W = 67, H = 41; // odd sizes: partial tiles
 
+#ifdef NVR_TEST_WIN32
+  WNDCLASSA wc = {}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleA(nullptr); wc.lpszClassName = "nvrtest";
+  RegisterClassA(&wc);
+  HWND win = CreateWindowExA(0, "nvrtest", "nvrtest", WS_OVERLAPPEDWINDOW, 0, 0, 64, 48, nullptr, nullptr, wc.hInstance, nullptr);
+  if (!win) { std::printf("window failed\n"); return 1; }
+#else
   SDL_Init(SDL_INIT_VIDEO);
   SDL_Window* win = SDL_CreateWindow("nvrtest", 0, 0, 64, 48, SDL_WINDOW_VULKAN);
   if (!win) { std::printf("SDL window failed: %s\n", SDL_GetError()); return 1; }
+#endif
 
   IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION);
   D3DPRESENT_PARAMETERS pp = {};
@@ -169,10 +182,263 @@ int main(int argc, char** argv) {
   NVR_EXT_COMPUTE_PIPELINE_DESC badPd = pd; badPd.SpirvSize = 8; ID3D9NvrExtPipeline* badPipe = nullptr;
   if (SUCCEEDED(ext->CreateComputePipeline(&badPd, &badPipe))) { std::printf("FAIL: bad SPIR-V accepted\n"); return 1; }
 
+  // ---- Push-data restore: D3D9's alpha reference lives in the shared push data a dispatch overwrites.
+  // A quad with alpha 64 against ALPHAREF 128 / GREATER must stay rejected before AND after a dispatch.
+  {
+    struct V { float x, y, z, rhw; DWORD color; };
+    auto drawQuad = [&](DWORD ref) -> int {
+      V quad[4] = { { 0, 0, 0, 1, 0x40FF0000 }, { 64, 0, 0, 1, 0x40FF0000 }, { 0, 48, 0, 1, 0x40FF0000 }, { 64, 48, 0, 1, 0x40FF0000 } };
+      CHECK(dev->SetRenderTarget(0, bb), "SetRenderTarget bb");
+      CHECK(dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 10, 20, 30), 1.f, 0), "clear bb");
+      dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+      dev->SetRenderState(D3DRS_ALPHAREF, ref);
+      dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);
+      dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+      dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+      dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+      dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+      CHECK(dev->BeginScene(), "BeginScene");
+      CHECK(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V)), "DrawPrimitiveUP");
+      CHECK(dev->EndScene(), "EndScene");
+      IDirect3DSurface9* sys; CHECK(dev->CreateOffscreenPlainSurface(64, 48, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr), "sysmem bb");
+      CHECK(dev->GetRenderTargetData(bb, sys), "GetRenderTargetData bb");
+      D3DLOCKED_RECT lr; CHECK(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY), "LockRect bb");
+      DWORD px = *(DWORD*)((char*)lr.pBits + 20 * lr.Pitch + 32 * 4) & 0xFFFFFF;
+      sys->UnlockRect(); sys->Release();
+      return int(px);
+    };
+    int control = drawQuad(32);            // alpha 64 > 32: the quad shows (red)
+    int before  = drawQuad(128);           // 64 > 128 is false: rejected
+    NVR_EXT_RESOURCE_BINDING rb[] = {
+      { 0, NVR_EXT_BIND_SAMPLED_IMAGE,  color,    0, 0, 0, FALSE }, { 1, NVR_EXT_BIND_SAMPLED_IMAGE,  depth,  0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_STORAGE_BUFFER, partials, 0, 0, 0, FALSE }, { 1, NVR_EXT_BIND_STORAGE_BUFFER, stateA, 0, 0, 0, FALSE },
+      { 2, NVR_EXT_BIND_STORAGE_BUFFER, stateB,   0, 0, 0, FALSE }, { 0, NVR_EXT_BIND_SAMPLER,        sampler, 0, 0, 0, FALSE },
+    };
+    NVR_EXT_DISPATCH_DESC dd = {};
+    dd.pPipeline = pipe; dd.BindingCount = 6; dd.pBindings = rb; dd.pPushData = &push; dd.PushDataSize = sizeof(push);
+    push.phase = 0; dd.GroupsX = gx; dd.GroupsY = gy; dd.GroupsZ = 1;   // push dword 0 = width = 67: alphaRef byte would become 0 without the restore
+    CHECK(ext->Dispatch(&dd), "dispatch (push restore test)");
+    int after = drawQuad(128);
+    std::printf("push restore: control %06x (quad), before %06x, after dispatch %06x (both must be 0a141e)\n", control, before, after);
+    if (control != 0xFF0000 || before != 0x0A141E || after != 0x0A141E) { std::printf("FAIL: push data not restored\n"); return 1; }
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+  }
+
+  // ---- Storage image + uniform buffer + UpdateBuffer + CopyTextureToBuffer, on a D3D9 render target (DXVK adds storage usage).
+  {
+    const char* spv2 = argc > 2 ? argv[2] : "nvr_ext_test_storage.spv";
+    std::vector<char> code = readFile(spv2);
+    NVR_EXT_BINDING_DESC b2[] = {
+      { 1, 0, NVR_EXT_BIND_STORAGE_IMAGE,  0, NVR_EXT_VIEW_2D, TRUE,  0 },
+      { 1, 1, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+    };
+    NVR_EXT_COMPUTE_PIPELINE_DESC pd2 = {};
+    pd2.pSpirv = code.data(); pd2.SpirvSize = UINT(code.size()); pd2.BindingCount = 2; pd2.pBindings = b2; pd2.PushConstantSize = 8; pd2.pDebugName = "storage test";
+    ID3D9NvrExtPipeline* pipe2; CHECK(ext->CreateComputePipeline(&pd2, &pipe2), "CreateComputePipeline storage");
+    NVR_EXT_BUFFER_DESC ub = { 16, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, "params" };
+    ID3D9NvrExtBuffer* params; CHECK(ext->CreateBuffer(&ub, &params), "params buffer");
+    float value[4] = { 0.5f, 0.25f, 2.f, 1.f };
+    CHECK(ext->UpdateBuffer(params, 0, 16, value), "UpdateBuffer");
+    NVR_EXT_RESOURCE_BINDING rb[] = {
+      { 0, NVR_EXT_BIND_STORAGE_IMAGE,  color,  0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_UNIFORM_BUFFER, params, 0, 0, 0, FALSE },
+    };
+    uint32_t p2[2] = { W, H };
+    NVR_EXT_DISPATCH_DESC dd = {};
+    dd.pPipeline = pipe2; dd.BindingCount = 2; dd.pBindings = rb; dd.pPushData = p2; dd.PushDataSize = 8;
+    dd.GroupsX = (W + 7) / 8; dd.GroupsY = (H + 7) / 8; dd.GroupsZ = 1;
+    CHECK(ext->Dispatch(&dd), "dispatch storage");
+    NVR_EXT_BUFFER_DESC rbd = { W * H * 8, NVR_EXT_BUFFER_TRANSFER_DST | NVR_EXT_BUFFER_TRANSFER_SRC, "readback" };
+    ID3D9NvrExtBuffer* rbuf; CHECK(ext->CreateBuffer(&rbd, &rbuf), "readback buffer");
+    CHECK(ext->CopyTextureToBuffer(rbuf, 0, color, 0, 0), "CopyTextureToBuffer");
+    std::vector<uint16_t> texels(W * H * 4);
+    CHECK(ext->ReadBuffer(rbuf, 0, W * H * 8, texels.data()), "ReadBuffer texels");
+    int bad = 0;
+    for (UINT y = 0; y < H; y++) for (UINT x = 0; x < W; x++) {
+      const uint16_t* t = &texels[(y * W + x) * 4];
+      float e[4] = { 0.5f + x, 0.25f + y, 2.f, 1.f };
+      for (int c = 0; c < 4; c++) if (std::fabs(halfToFloat(t[c]) - e[c]) > 0.05f) bad++;
+    }
+    // The same through D3D9 (GetRenderTargetData): the texture is still a valid D3D9 render target after the relocation.
+    IDirect3DSurface9* sys; CHECK(dev->CreateOffscreenPlainSurface(W, H, D3DFMT_A16B16G16R16F, D3DPOOL_SYSTEMMEM, &sys, nullptr), "sysmem color");
+    CHECK(dev->GetRenderTargetData(colorS, sys), "GetRenderTargetData color");
+    D3DLOCKED_RECT lr; CHECK(sys->LockRect(&lr, nullptr, D3DLOCK_READONLY), "LockRect color");
+    const uint16_t* t = (const uint16_t*)((const char*)lr.pBits + 7 * lr.Pitch + 5 * 8);
+    float d9[4] = { halfToFloat(t[0]), halfToFloat(t[1]), halfToFloat(t[2]), halfToFloat(t[3]) };
+    sys->UnlockRect(); sys->Release();
+    std::printf("storage image: %d bad components of %u; texel (5,7) via D3D9 = (%.2f %.2f %.2f %.2f), expected (5.5 7.25 2 1)\n", bad, W * H * 4, d9[0], d9[1], d9[2], d9[3]);
+    if (bad || std::fabs(d9[0] - 5.5f) > 0.05f || std::fabs(d9[1] - 7.25f) > 0.05f || std::fabs(d9[2] - 2.f) > 0.05f) { std::printf("FAIL: storage image\n"); return 1; }
+
+    // AvgLuma once more on the rewritten texture (sampled view after the relocation): exact expectation from the same formulas.
+    double sum = 0;
+    for (UINT y = 0; y < H; y++) for (UINT x = 0; x < W; x++) {
+      float hx = halfToFloat(texels[(y * W + x) * 4]), hy = halfToFloat(texels[(y * W + x) * 4 + 1]), hz = halfToFloat(texels[(y * W + x) * 4 + 2]);
+      sum += 0.2126f * lin(hx) + 0.7152f * lin(hy) + 0.0722f * lin(hz);
+    }
+    float avg2 = float(sum / (W * H));
+    NVR_EXT_RESOURCE_BINDING rb3[] = {
+      { 0, NVR_EXT_BIND_SAMPLED_IMAGE,  color,    0, 0, 0, FALSE }, { 1, NVR_EXT_BIND_SAMPLED_IMAGE,  depth,  0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_STORAGE_BUFFER, partials, 0, 0, 0, FALSE }, { 1, NVR_EXT_BIND_STORAGE_BUFFER, stateB, 0, 0, 0, FALSE },
+      { 2, NVR_EXT_BIND_STORAGE_BUFFER, stateA,   0, 0, 0, FALSE }, { 0, NVR_EXT_BIND_SAMPLER,        sampler, 0, 0, 0, FALSE },
+    };
+    NVR_EXT_DISPATCH_DESC d3 = {};
+    d3.pPipeline = pipe; d3.BindingCount = 6; d3.pBindings = rb3; d3.pPushData = &push; d3.PushDataSize = sizeof(push);
+    push.phase = 0; d3.GroupsX = gx; d3.GroupsY = gy; d3.GroupsZ = 1; CHECK(ext->Dispatch(&d3), "dispatch 0 (after storage)");
+    push.phase = 1; d3.GroupsX = 1; d3.GroupsY = 1; CHECK(ext->Dispatch(&d3), "dispatch 1 (after storage)");
+    float cur[4] = {}; CHECK(ext->ReadBuffer(stateA, 0, 16, cur), "ReadBuffer after storage");
+    { float a[8] = {}, b[8] = {}, pt[4] = {};
+      ext->ReadBuffer(stateA, 0, 32, a); ext->ReadBuffer(stateB, 0, 32, b); ext->ReadBuffer(partials, 0, 16, pt);
+      std::printf("debug: stateA (%.5f %.5f %.5f %.3f | avg %.5f) stateB (%.5f %.5f %.5f %.3f | avg %.5f) partials[0..3] %.3f %.3f %.3f %.3f\n",
+        a[0], a[1], a[2], a[3], a[6], b[0], b[1], b[2], b[3], b[6], pt[0], pt[1], pt[2], pt[3]); }
+    // stateB held frame 1's result, then the push-restore test wrote stateB again from stateA (frame 2's): prev = frame 2 mixed once more
+    std::printf("sampled after relocation: luma %.5f (exact average of the new texture %.5f, expected (avg + 7*prev)/8 within 1%%)\n", cur[0], avg2);
+    if (!(cur[0] > 0.f) || std::fabs(cur[0] - (avg2 + 7 * prev[0]) / 8) > 0.01f * std::fmax(1.f, cur[0])) {
+      std::printf("note: prev differs from the simple model after the push-restore dispatch; checking only that the average dominates\n");
+      if (std::fabs(cur[0] * 8 - avg2) > 0.2f * avg2) { std::printf("FAIL: sampled read after relocation\n"); return 1; }
+    }
+    pipe2->Release(); params->Release(); rbuf->Release();
+  }
+
+  // ---- Full-screen graphics passes: two targets from one pass, then a pass that samples a target into a
+  // viewport sub-rectangle of another texture (scissor), then D3D9's own state must be back (alpha test again).
+  {
+    std::vector<char> grad = readFile(argc > 3 ? argv[3] : "nvr_ext_test_grad.spv");
+    std::vector<char> copy = readFile(argc > 4 ? argv[4] : "nvr_ext_test_copy.spv");
+    IDirect3DTexture9 *tA, *tB;
+    CHECK(dev->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &tA, nullptr), "tA");
+    CHECK(dev->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &tB, nullptr), "tB");
+
+    NVR_EXT_GRAPHICS_PIPELINE_DESC gp = {};
+    gp.pFragmentSpirv = grad.data(); gp.FragmentSpirvSize = UINT(grad.size());
+    gp.PushConstantSize = 16; gp.ColorTargetCount = 2; gp.Blend = NVR_EXT_BLEND_NONE; gp.pDebugName = "gradient";
+    ID3D9NvrExtPipeline* pipeG; CHECK(ext->CreateGraphicsPipeline(&gp, &pipeG), "CreateGraphicsPipeline gradient");
+
+    float value[4] = { 0.25f, 0.75f, 0, 0 };
+    NVR_EXT_DRAW_DESC draw = {};
+    draw.pPipeline = pipeG; draw.TargetCount = 2;
+    draw.Targets[0] = { tA, 0, 0, FALSE }; draw.Targets[1] = { tB, 0, 0, FALSE };
+    draw.pPushData = value; draw.PushDataSize = 16;
+    CHECK(ext->Draw(&draw), "Draw gradient");
+
+    NVR_EXT_BUFFER_DESC rbd = { W * H * 8, NVR_EXT_BUFFER_TRANSFER_DST | NVR_EXT_BUFFER_TRANSFER_SRC, "readback2" };
+    ID3D9NvrExtBuffer* rbuf; CHECK(ext->CreateBuffer(&rbd, &rbuf), "readback2");
+    std::vector<uint16_t> ta(W * H * 4), tb(W * H * 4);
+    CHECK(ext->CopyTextureToBuffer(rbuf, 0, tA, 0, 0), "copy tA"); CHECK(ext->ReadBuffer(rbuf, 0, W * H * 8, ta.data()), "read tA");
+    CHECK(ext->CopyTextureToBuffer(rbuf, 0, tB, 0, 0), "copy tB"); CHECK(ext->ReadBuffer(rbuf, 0, W * H * 8, tb.data()), "read tB");
+    int bad = 0;
+    for (UINT y = 0; y < H; y++) for (UINT x = 0; x < W; x++) {
+      float u = (x + 0.5f) / W, v = (y + 0.5f) / H;
+      const uint16_t* a = &ta[(y * W + x) * 4]; const uint16_t* b = &tb[(y * W + x) * 4];
+      float ea[4] = { u, v, 0.25f, 1 }, eb[4] = { 1 - u, 1 - v, 0.75f, 1 };
+      for (int c = 0; c < 4; c++) { if (std::fabs(halfToFloat(a[c]) - ea[c]) > 3e-3f) bad++; if (std::fabs(halfToFloat(b[c]) - eb[c]) > 3e-3f) bad++; }
+    }
+    std::printf("graphics pass: %d bad components of %u in two targets; texel (0,0) of A = (%.4f %.4f %.3f %.1f)\n", bad, 2 * W * H * 4,
+      halfToFloat(ta[0]), halfToFloat(ta[1]), halfToFloat(ta[2]), halfToFloat(ta[3]));
+    if (bad) { std::printf("FAIL: gradient pass\n"); return 1; }
+
+    // Sample tA into a 20x15 rectangle of 'color' at (10,5); the rest of 'color' keeps the storage test's values.
+    NVR_EXT_BINDING_DESC cb[] = {
+      { 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+      { 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 0 },
+    };
+    NVR_EXT_GRAPHICS_PIPELINE_DESC cp = {};
+    cp.pFragmentSpirv = copy.data(); cp.FragmentSpirvSize = UINT(copy.size());
+    cp.BindingCount = 2; cp.pBindings = cb; cp.PushConstantSize = 4;
+    cp.UsesSamplerHeap = TRUE; cp.SamplerHeapSet = 0; cp.SamplerHeapBinding = 0;
+    cp.ColorTargetCount = 1; cp.pDebugName = "copy half";
+    ID3D9NvrExtPipeline* pipeC; CHECK(ext->CreateGraphicsPipeline(&cp, &pipeC), "CreateGraphicsPipeline copy");
+    NVR_EXT_SAMPLER_DESC nsd = { NVR_EXT_FILTER_NEAREST, NVR_EXT_ADDRESS_CLAMP };
+    ID3D9NvrExtSampler* nearest; CHECK(ext->CreateSampler(&nsd, &nearest), "nearest sampler");
+    NVR_EXT_RESOURCE_BINDING crb[] = {
+      { 0, NVR_EXT_BIND_SAMPLED_IMAGE, tA,      0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_SAMPLER,       nearest, 0, 0, 0, FALSE },
+    };
+    uint32_t zero = 0;
+    NVR_EXT_DRAW_DESC d2 = {};
+    d2.pPipeline = pipeC; d2.TargetCount = 1; d2.Targets[0] = { color, 0, 0, FALSE };
+    d2.ViewportX = 10; d2.ViewportY = 5; d2.ViewportWidth = 20; d2.ViewportHeight = 15;
+    d2.BindingCount = 2; d2.pBindings = crb; d2.pPushData = &zero; d2.PushDataSize = 4;
+    CHECK(ext->Draw(&d2), "Draw copy");
+    std::vector<uint16_t> tc(W * H * 4);
+    CHECK(ext->CopyTextureToBuffer(rbuf, 0, color, 0, 0), "copy color"); CHECK(ext->ReadBuffer(rbuf, 0, W * H * 8, tc.data()), "read color");
+    bad = 0;
+    for (UINT y = 0; y < H; y++) for (UINT x = 0; x < W; x++) {
+      const uint16_t* t = &tc[(y * W + x) * 4];
+      bool inside = x >= 10 && x < 30 && y >= 5 && y < 20;
+      float e[4];
+      if (inside) {
+        // uv across the 20x15 rectangle, nearest sample of tA at that uv
+        float u = (x - 10 + 0.5f) / 20, v = (y - 5 + 0.5f) / 15;
+        UINT sx = UINT(u * W), sy = UINT(v * H);
+        float su = (sx + 0.5f) / W, sv = (sy + 0.5f) / H;
+        e[0] = su * 0.5f; e[1] = sv * 0.5f; e[2] = 0.125f; e[3] = 0.5f;
+      } else { e[0] = 0.5f + x; e[1] = 0.25f + y; e[2] = 2.f; e[3] = 1.f; }
+      for (int c = 0; c < 4; c++) if (std::fabs(halfToFloat(t[c]) - e[c]) > 0.05f) bad++;
+    }
+    std::printf("sampled pass into a sub-rectangle: %d bad components (inside and outside the rectangle)\n", bad);
+    if (bad) { std::printf("FAIL: sampled pass / scissor\n"); return 1; }
+
+    // D3D9's own state must be back: the alpha-tested quad again
+    {
+      struct V { float x, y, z, rhw; DWORD color; };
+      auto quadPixel = [&](DWORD ref) -> int {
+        V quad[4] = { { 0, 0, 0, 1, 0x40FF0000 }, { 64, 0, 0, 1, 0x40FF0000 }, { 0, 48, 0, 1, 0x40FF0000 }, { 64, 48, 0, 1, 0x40FF0000 } };
+        dev->SetRenderTarget(0, bb); dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 10, 20, 30), 1.f, 0);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE); dev->SetRenderState(D3DRS_ALPHAREF, ref); dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);
+        dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+        dev->BeginScene(); dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V)); dev->EndScene();
+        IDirect3DSurface9* sys; dev->CreateOffscreenPlainSurface(64, 48, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr);
+        dev->GetRenderTargetData(bb, sys); D3DLOCKED_RECT lr; sys->LockRect(&lr, nullptr, D3DLOCK_READONLY);
+        DWORD px = *(DWORD*)((char*)lr.pBits + 20 * lr.Pitch + 32 * 4) & 0xFFFFFF; sys->UnlockRect(); sys->Release(); return int(px);
+      };
+      int rejected = quadPixel(128), shown = quadPixel(32);
+      std::printf("D3D9 after the passes: alpha-tested quad rejected %06x (0a141e), shown %06x (ff0000)\n", rejected, shown);
+      if (rejected != 0x0A141E || shown != 0xFF0000) { std::printf("FAIL: D3D9 state after Draw\n"); return 1; }
+      dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    }
+    pipeG->Release(); pipeC->Release(); nearest->Release(); rbuf->Release(); tA->Release(); tB->Release();
+  }
+
+  // ---- Device Reset: default-pool resources go away, the extension's objects stay usable.
+  {
+    colorS->Release(); depthS->Release(); avgS->Release(); bb->Release(); color->Release(); depth->Release(); avg->Release();
+    pp.BackBufferWidth = 80; pp.BackBufferHeight = 60;
+    CHECK(dev->Reset(&pp), "Reset");
+    CHECK(dev->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &color, nullptr), "color tex 2");
+    CHECK(dev->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &depth, nullptr), "depth tex 2");
+    CHECK(dev->CreateTexture(1, 1, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &avg, nullptr), "avg tex 2");
+    color->GetSurfaceLevel(0, &colorS); depth->GetSurfaceLevel(0, &depthS); avg->GetSurfaceLevel(0, &avgS);
+    dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb);
+    CHECK(dev->SetRenderTarget(0, colorS), "rt color 2");
+    CHECK(dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 128, 64, 32), 1.f, 0), "clear color 2");
+    CHECK(dev->SetRenderTarget(0, depthS), "rt depth 2");
+    CHECK(dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 64, 0, 0), 1.f, 0), "clear depth 2");
+    CHECK(dev->SetRenderTarget(0, bb), "rt bb 2");
+    CHECK(ext->ClearBuffer(stateA, 0, 0, 0), "clear A 2");
+    NVR_EXT_RESOURCE_BINDING rb[] = {
+      { 0, NVR_EXT_BIND_SAMPLED_IMAGE,  color,    0, 0, 0, FALSE }, { 1, NVR_EXT_BIND_SAMPLED_IMAGE,  depth,  0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_STORAGE_BUFFER, partials, 0, 0, 0, FALSE }, { 1, NVR_EXT_BIND_STORAGE_BUFFER, stateA, 0, 0, 0, FALSE },
+      { 2, NVR_EXT_BIND_STORAGE_BUFFER, stateB,   0, 0, 0, FALSE }, { 0, NVR_EXT_BIND_SAMPLER,        sampler, 0, 0, 0, FALSE },
+    };
+    NVR_EXT_DISPATCH_DESC dd = {};
+    dd.pPipeline = pipe; dd.BindingCount = 6; dd.pBindings = rb; dd.pPushData = &push; dd.PushDataSize = sizeof(push);
+    push.phase = 0; dd.GroupsX = gx; dd.GroupsY = gy; dd.GroupsZ = 1; CHECK(ext->Dispatch(&dd), "dispatch 0 after reset");
+    push.phase = 1; dd.GroupsX = 1; dd.GroupsY = 1; CHECK(ext->Dispatch(&dd), "dispatch 1 after reset");
+    CHECK(ext->CopyBufferToTexture(avg, 0, 0, stateB, 16), "copy after reset");
+    CHECK(dev->Present(nullptr, nullptr, nullptr, nullptr), "Present after reset");
+    float cur[4] = {}; CHECK(ext->ReadBuffer(stateB, 0, 16, cur), "ReadBuffer after reset");
+    std::printf("after Reset: luma %.6f (expected %.6f: first frame again from a cleared state)\n", cur[0], expectedAvg / 8);
+    if (std::fabs(cur[0] - expectedAvg / 8) > 1e-4f) { std::printf("FAIL: after reset\n"); return 1; }
+  }
+
   pipe->Release(); partials->Release(); stateA->Release(); stateB->Release(); sampler->Release();
   colorS->Release(); depthS->Release(); avgS->Release(); bb->Release(); color->Release(); depth->Release(); avg->Release();
   ext->Release(); dev->Release(); d3d->Release();
+#ifdef NVR_TEST_WIN32
+  DestroyWindow(win);
+#else
   SDL_DestroyWindow(win); SDL_Quit();
+#endif
   std::printf("PASS\n");
   return 0;
 }

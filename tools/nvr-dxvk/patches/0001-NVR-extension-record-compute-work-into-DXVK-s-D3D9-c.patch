@@ -1,8 +1,8 @@
-From ebeed4543afe33b672d299ad626b63f25c2200a8 Mon Sep 17 00:00:00 2001
+From da858c77c42aa24cfc0fe948244a3fcd03f9f76a Mon Sep 17 00:00:00 2001
 From: NVR <rkwastavich@gmail.com>
 Date: Fri, 23 Oct 2026 18:12:54 +0000
-Subject: [PATCH] NVR extension: record compute work into DXVK's D3D9 command
- stream (ID3D9NvrExt)
+Subject: [PATCH 1/2] NVR extension: record compute work into DXVK's D3D9
+ command stream (ID3D9NvrExt)
 
 New COM interface on the D3D9 device (own files d3d9_nvr_ext*.{h,cpp}):
 compute pipelines from SPIR-V, D3D9 textures/surfaces bound as sampled or
@@ -16,12 +16,12 @@ state snapshot/restore, since graphics and compute share it).
 ---
  src/d3d9/d3d9_device.cpp    |   6 +
  src/d3d9/d3d9_device.h      |   3 +
- src/d3d9/d3d9_nvr_ext.cpp   | 911 ++++++++++++++++++++++++++++++++++++
- src/d3d9/d3d9_nvr_ext.h     | 192 ++++++++
- src/d3d9/d3d9_nvr_ext_api.h | 266 +++++++++++
+ src/d3d9/d3d9_nvr_ext.cpp   | 937 ++++++++++++++++++++++++++++++++++++
+ src/d3d9/d3d9_nvr_ext.h     | 193 ++++++++
+ src/d3d9/d3d9_nvr_ext_api.h | 266 ++++++++++
  src/d3d9/meson.build        |   3 +-
  src/dxvk/dxvk_context.h     |  17 +
- 7 files changed, 1397 insertions(+), 1 deletion(-)
+ 7 files changed, 1424 insertions(+), 1 deletion(-)
  create mode 100644 src/d3d9/d3d9_nvr_ext.cpp
  create mode 100644 src/d3d9/d3d9_nvr_ext.h
  create mode 100644 src/d3d9/d3d9_nvr_ext_api.h
@@ -80,10 +80,10 @@ index de0890e..dfe4c75 100644
      DxvkD3D8Bridge                  m_d3d8Bridge;
 diff --git a/src/d3d9/d3d9_nvr_ext.cpp b/src/d3d9/d3d9_nvr_ext.cpp
 new file mode 100644
-index 0000000..96f2932
+index 0000000..384d892
 --- /dev/null
 +++ b/src/d3d9/d3d9_nvr_ext.cpp
-@@ -0,0 +1,911 @@
+@@ -0,0 +1,937 @@
 +#include "d3d9_nvr_ext.h"
 +#include "d3d9_device.h"
 +#include "d3d9_common_texture.h"
@@ -324,10 +324,17 @@ index 0000000..96f2932
 +          break;
 +
 +        case NVR_EXT_BIND_STORAGE_BUFFER:
-+          info.resourceIndex  = NvrExtBufferSlotBase + b.Slot;
++          // A buffer the shader writes goes through a raw buffer view: DXVK then tracks the write, so a later
++          // transfer (copy, readback) cannot be reordered in front of the dispatch. Read-only ones sit in the
++          // UBO set like DXVK's own (cheaper, tracked as reads).
 +          info.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 +          info.access         = VK_ACCESS_SHADER_READ_BIT | (own.writes ? VkAccessFlags(VK_ACCESS_SHADER_WRITE_BIT) : VkAccessFlags(0u));
-+          info.flags.set(DxvkDescriptorFlag::UniformBuffer);
++          if (own.writes) {
++            info.resourceIndex = NvrExtBufferViewSlotBase + b.Slot;
++          } else {
++            info.resourceIndex = NvrExtBufferSlotBase + b.Slot;
++            info.flags.set(DxvkDescriptorFlag::UniformBuffer);
++          }
 +          break;
 +
 +        case NVR_EXT_BIND_UNIFORM_BUFFER:
@@ -707,6 +714,18 @@ index 0000000..96f2932
 +          } break;
 +
 +          case NVR_EXT_BIND_STORAGE_BUFFER:
++            if (b.writes) {
++              DxvkBufferViewKey viewKey = { };
++              viewKey.format = VK_FORMAT_UNDEFINED;
++              viewKey.usage  = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
++              viewKey.offset = b.buffer.offset();
++              viewKey.size   = b.buffer.length();
++              ctx->bindResourceBufferView(Stage, NvrExtBufferViewSlotBase + b.slot, b.buffer.buffer()->createView(viewKey));
++              break;
++            }
++            ctx->bindUniformBuffer(Stage, NvrExtBufferSlotBase + b.slot, DxvkBufferSlice(b.buffer));
++            break;
++
 +          case NVR_EXT_BIND_UNIFORM_BUFFER:
 +            ctx->bindUniformBuffer(Stage, NvrExtBufferSlotBase + b.slot, DxvkBufferSlice(b.buffer));
 +            break;
@@ -737,6 +756,13 @@ index 0000000..96f2932
 +            break;
 +
 +          case NVR_EXT_BIND_STORAGE_BUFFER:
++            if (b.writes) {
++              ctx->bindResourceBufferView(Stage, NvrExtBufferViewSlotBase + b.slot, nullptr);
++              break;
++            }
++            ctx->bindUniformBuffer(Stage, NvrExtBufferSlotBase + b.slot, DxvkBufferSlice());
++            break;
++
 +          case NVR_EXT_BIND_UNIFORM_BUFFER:
 +            ctx->bindUniformBuffer(Stage, NvrExtBufferSlotBase + b.slot, DxvkBufferSlice());
 +            break;
@@ -997,10 +1023,10 @@ index 0000000..96f2932
 +}
 diff --git a/src/d3d9/d3d9_nvr_ext.h b/src/d3d9/d3d9_nvr_ext.h
 new file mode 100644
-index 0000000..bc62405
+index 0000000..19611bb
 --- /dev/null
 +++ b/src/d3d9/d3d9_nvr_ext.h
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,193 @@
 +#pragma once
 +
 +/*
@@ -1026,9 +1052,10 @@ index 0000000..bc62405
 +  class D3D9CommonTexture;
 +
 +  /** Binding slot bases, chosen above everything the D3D9 side uses. */
-+  constexpr uint32_t NvrExtImageSlotBase   = 64u;  // DxvkContext m_resources (views)
-+  constexpr uint32_t NvrExtBufferSlotBase  = 64u;  // DxvkContext m_uniformBuffers (raw buffers)
-+  constexpr uint32_t NvrExtSamplerSlotBase = 64u;  // DxvkContext m_samplers
++  constexpr uint32_t NvrExtImageSlotBase      = 64u;  // DxvkContext m_resources (image views)
++  constexpr uint32_t NvrExtBufferViewSlotBase = 96u;  // DxvkContext m_resources (raw buffer views: storage buffers the shader writes)
++  constexpr uint32_t NvrExtBufferSlotBase     = 64u;  // DxvkContext m_uniformBuffers (read-only buffers in the UBO set)
++  constexpr uint32_t NvrExtSamplerSlotBase    = 64u;  // DxvkContext m_samplers
 +
 +  struct D3D9NvrExtBindingInfo {
 +    uint32_t          slot = 0u;

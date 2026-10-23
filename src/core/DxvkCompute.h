@@ -25,8 +25,15 @@ public:
 	// Reads Data\Shaders\NewVegasReloaded\Compute\<Name>.spv; empty on failure (logged once per name).
 	static bool					LoadSpirv(const char* Name, std::vector<char>& Words);
 
-	// Helpers; null on failure (logged). The sampler heap is set 0, binding 0 in every NVR .comp.
+	// Helpers; null on failure (logged). The sampler heap is set 0, binding 0 in every NVR .comp and .frag.
 	static ID3D9NvrExtPipeline*	CreatePipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers);
+	// A full-screen pass: <Name>.spv is the fragment shader (built-in vertex shader, uv at location 0).
+	static ID3D9NvrExtPipeline*	CreateGraphicsPipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers, UINT TargetCount = 1, NVR_EXT_BLEND Blend = NVR_EXT_BLEND_NONE);
+	// The samplers every pass uses (made once): the effects' LINEAR/CLAMP and POINT/CLAMP states.
+	static ID3D9NvrExtSampler*	LinearClamp();
+	static ID3D9NvrExtSampler*	PointClamp();
+	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
+	static bool					PassesOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 	static ID3D9NvrExtSampler*	CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address);
 
@@ -40,4 +47,6 @@ private:
 	static NVR_EXT_INFO			ExtInfo;
 	static bool					Failed;
 	static char					StatusText[160];
+	static ID3D9NvrExtSampler*	SamplerLinear;
+	static ID3D9NvrExtSampler*	SamplerPoint;
 };

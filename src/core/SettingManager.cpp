@@ -728,6 +728,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.SkipIdentityExposure = boolSetting(performance, "SkipIdentityExposure", true);
 	// UNOFFICIAL 2026-10-23 (NVR DXVK, core\DxvkCompute.h): off by default; does nothing without the NVR DXVK extension.
 	SettingsMain.Main.AvgLumaCompute = boolSetting(performance, "AvgLumaCompute", false);
+	SettingsMain.Main.NvrDxvkPasses = boolSetting(performance, "NvrDxvkPasses", false);
 	{
 		Configuration::ConfigNode node;
 		const int every = Config.FillNode(&node, performance, "AvgLumaComputeCheck") ? node.IntValue : 0;

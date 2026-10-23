@@ -46,7 +46,7 @@
 #include <unknwn.h>
 
 #define NVR_EXT_VERSION_MAJOR 1
-#define NVR_EXT_VERSION_MINOR 0
+#define NVR_EXT_VERSION_MINOR 1
 
 #define NVR_EXT_MAX_SLOTS       32
 #define NVR_EXT_MAX_BINDINGS    32
@@ -85,6 +85,15 @@ enum NVR_EXT_ADDRESS {
   NVR_EXT_ADDRESS_MIRROR = 2,
   NVR_EXT_ADDRESS_BORDER = 3,  // transparent black
 };
+
+enum NVR_EXT_BLEND {
+  NVR_EXT_BLEND_NONE     = 0,  // write
+  NVR_EXT_BLEND_ALPHA    = 1,  // src.a * src + (1 - src.a) * dst
+  NVR_EXT_BLEND_ADD      = 2,  // src + dst
+  NVR_EXT_BLEND_MULTIPLY = 3,  // src * dst
+};
+
+#define NVR_EXT_MAX_TARGETS 4
 
 /** One descriptor the SPIR-V declares. */
 struct NVR_EXT_BINDING_DESC {
@@ -142,6 +151,51 @@ struct NVR_EXT_DISPATCH_DESC {
   UINT                            GroupsZ;
 };
 
+/**
+ * A full-screen graphics pass: a fragment shader over a triangle that covers the
+ * target(s). The vertex shader is built in (location 0 input in the fragment
+ * shader: vec2 uv, (0,0) top left) unless one is given. Bindings are the
+ * fragment stage's, same types and rules as for compute. The push block is the
+ * fragment shader's, offset 0. Color outputs: location 0..ColorTargetCount-1.
+ */
+struct NVR_EXT_GRAPHICS_PIPELINE_DESC {
+  const void*                 pVertexSpirv;     // optional
+  UINT                        VertexSpirvSize;
+  const void*                 pFragmentSpirv;
+  UINT                        FragmentSpirvSize;
+  UINT                        BindingCount;
+  const NVR_EXT_BINDING_DESC* pBindings;
+  UINT                        PushConstantSize;
+  BOOL                        UsesSamplerHeap;
+  UINT                        SamplerHeapSet;
+  UINT                        SamplerHeapBinding;
+  UINT                        ColorTargetCount; // 1..NVR_EXT_MAX_TARGETS
+  NVR_EXT_BLEND               Blend;            // same for every target
+  UINT                        ColorWriteMask;   // bits R=1 G=2 B=4 A=8; 0 = all
+  const char*                 pDebugName;
+};
+
+struct NVR_EXT_TARGET {
+  IUnknown* pResource;  // IDirect3DSurface9* or IDirect3DBaseTexture9* (render-target usage)
+  UINT      MipLevel;   // textures only
+  UINT      Layer;      // cube faces / array layers, textures only
+  BOOL      Srgb;       // write through the sRGB view of a sRGB-capable format
+};
+
+struct NVR_EXT_DRAW_DESC {
+  struct ID3D9NvrExtPipeline*     pPipeline;
+  UINT                            TargetCount;      // = the pipeline's ColorTargetCount; all the same size
+  NVR_EXT_TARGET                  Targets[NVR_EXT_MAX_TARGETS];
+  INT                             ViewportX;        // 0,0,0,0 = the whole target
+  INT                             ViewportY;
+  UINT                            ViewportWidth;
+  UINT                            ViewportHeight;
+  UINT                            BindingCount;
+  const NVR_EXT_RESOURCE_BINDING* pBindings;
+  const void*                     pPushData;
+  UINT                            PushDataSize;
+};
+
 struct NVR_EXT_INFO {
   UINT  ExtVersionMajor;
   UINT  ExtVersionMinor;
@@ -186,6 +240,21 @@ ID3D9NvrExt : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE CreateComputePipeline(
     const NVR_EXT_COMPUTE_PIPELINE_DESC*  pDesc,
           ID3D9NvrExtPipeline**           ppPipeline) = 0;
+
+  /** Creates a full-screen graphics pipeline (since 1.1). */
+  virtual HRESULT STDMETHODCALLTYPE CreateGraphicsPipeline(
+    const NVR_EXT_GRAPHICS_PIPELINE_DESC* pDesc,
+          ID3D9NvrExtPipeline**           ppPipeline) = 0;
+
+  /**
+   * Records a full-screen pass (since 1.1): the pipeline's fragment shader over
+   * the given targets, after everything the D3D9 device recorded so far. The
+   * device's own state (render targets, viewport, shaders, blend, depth ...) is
+   * untouched afterwards. A target must not also be bound as an input, and must
+   * not be the device's current render target.
+   */
+  virtual HRESULT STDMETHODCALLTYPE Draw(
+    const NVR_EXT_DRAW_DESC*              pDesc) = 0;
 
   /** Creates a device-local buffer. Contents are undefined until written. */
   virtual HRESULT STDMETHODCALLTYPE CreateBuffer(

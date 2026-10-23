@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include "NvrDxvkExt.h"
 
 class EffectRecord : public ShaderProgram {
 public:
@@ -16,6 +17,17 @@ public:
 	virtual void			BeforeDraw(IDirect3DDevice9* Device) {};	// UNOFFICIAL 2026-10-22: right before each pass's draw (legacy path; SunFar's HazardLog)
 	virtual bool			SwitchEffect();
 	virtual void			Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer);
+	// UNOFFICIAL 2026-10-23 (NVR DXVK, core\DxvkCompute.h): an effect ported to the extension's full-screen passes overrides
+	// ExtRender; Render calls it first and returns when it drew (true). It must draw the same picture as the D3D9 technique
+	// (its GLSL in src\hlsl\NewVegas\Compute, kept beside the .fx.hlsl). ExtFullScreen does one pass through the frame
+	// chain exactly as Render does (the chain's spare texture, the direct final write, or the legacy copy): the pipeline's
+	// inputs are bound by the caller; TESR_RenderedBuffer is TheTextureManager->RenderedTexture at that moment.
+	// ExtFailed: a failed pass turns the effect's ported path off for the session (logged once); Render then uses D3D9.
+	virtual bool			ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) { return false; }
+	bool					ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+								ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize);
+	bool					ExtFailed = false;
+	UInt32					ExtFrames = 0;
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.
 	void					DisposeEffect();
 	bool					LoadEffect();

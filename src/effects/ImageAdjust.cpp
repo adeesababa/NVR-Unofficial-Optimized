@@ -1,4 +1,5 @@
 #include "ImageAdjust.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 
 void ImageAdjustEffect::UpdateConstants() {
 	Constants.Data.x = TheShaderManager->GetTransitionValue(Settings.Main.Brightness, Settings.Night.Brightness, Settings.Interiors.Brightness);
@@ -65,3 +66,29 @@ bool ImageAdjustEffect::ShouldRender() {
 		Constants.DarkColor.x != 1.0f || Constants.DarkColor.y != 1.0f || Constants.DarkColor.z != 1.0f ||
 		Constants.LightColor.x != 1.0f || Constants.LightColor.y != 1.0f || Constants.LightColor.z != 1.0f;
 }
+
+// UNOFFICIAL 2026-10-23 (NVR DXVK): ImageAdjust.frag; the texture and three constants the technique reads.
+bool ImageAdjustEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 data, darkColor, lightColor; UInt32 samplerIndex; UInt32 pad[3]; };
+	if (!extTried) {
+		extTried = true;
+		static const NVR_EXT_BINDING_DESC bindings[] = {
+			{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },		// t_rendered
+			{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 48 },		// samplerIndex
+		};
+		extPipeline = DxvkCompute::CreateGraphicsPipeline("ImageAdjust", bindings, _countof(bindings), sizeof(Push), true);
+	}
+	ID3D9NvrExtSampler* sampler = DxvkCompute::LinearClamp();
+	if (!extPipeline || !sampler || !TheTextureManager->RenderedTexture) return false;
+	Push push = {};
+	push.data = Constants.Data;
+	push.darkColor = Constants.DarkColor;
+	push.lightColor = Constants.LightColor;
+	NVR_EXT_RESOURCE_BINDING resources[] = {
+		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE, TheTextureManager->RenderedTexture, 0, 0, 0, FALSE },
+		{ 0, NVR_EXT_BIND_SAMPLER,       sampler,                           0, 0, 0, FALSE },
+	};
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extPipeline, resources, _countof(resources), &push, sizeof(push));
+}
+

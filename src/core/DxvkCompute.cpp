@@ -4,6 +4,8 @@ ID3D9NvrExt*	DxvkCompute::Ext = nullptr;
 NVR_EXT_INFO	DxvkCompute::ExtInfo = {};
 bool			DxvkCompute::Failed = false;
 char			DxvkCompute::StatusText[160] = "not checked yet";
+ID3D9NvrExtSampler* DxvkCompute::SamplerLinear = nullptr;
+ID3D9NvrExtSampler* DxvkCompute::SamplerPoint = nullptr;
 
 void DxvkCompute::Initialize(IDirect3DDevice9* device) {
 	Ext = nullptr;
@@ -125,3 +127,56 @@ ID3D9NvrExtSampler* DxvkCompute::CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_AD
 	}
 	return sampler;
 }
+
+ID3D9NvrExtPipeline* DxvkCompute::CreateGraphicsPipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers, UINT TargetCount, NVR_EXT_BLEND Blend) {
+	if (!Available()) return nullptr;
+	if (ExtInfo.ExtVersionMinor < 1) {
+		Logger::Log("UNOFFICIAL NVR DXVK: full-screen passes need extension 1.1 (this d3d9.dll has %u.%u): %s stays a D3D9 pass", ExtInfo.ExtVersionMajor, ExtInfo.ExtVersionMinor, Name);
+		return nullptr;
+	}
+
+	std::vector<char> words;
+	if (!LoadSpirv(Name, words)) {
+		Fail("a pass shader file is missing (see the line above)");
+		return nullptr;
+	}
+
+	NVR_EXT_GRAPHICS_PIPELINE_DESC desc = {};
+	desc.pFragmentSpirv = words.data();
+	desc.FragmentSpirvSize = (UINT)words.size();
+	desc.BindingCount = Count;
+	desc.pBindings = Bindings;
+	desc.PushConstantSize = PushSize;
+	desc.UsesSamplerHeap = UsesSamplers ? TRUE : FALSE;
+	desc.SamplerHeapSet = 0;
+	desc.SamplerHeapBinding = 0;
+	desc.ColorTargetCount = TargetCount;
+	desc.Blend = Blend;
+	desc.ColorWriteMask = 0;
+	desc.pDebugName = Name;
+
+	ID3D9NvrExtPipeline* pipeline = nullptr;
+	HRESULT result = Ext->CreateGraphicsPipeline(&desc, &pipeline);
+	if (FAILED(result) || !pipeline) {
+		Logger::Log("UNOFFICIAL NVR DXVK: CreateGraphicsPipeline(%s) failed (%08lX); DXVK's log says why", Name, result);
+		Fail("a pass pipeline was refused");
+		return nullptr;
+	}
+	Logger::Log("UNOFFICIAL NVR DXVK: pass %s ready (%u bindings, %u push bytes, %u target%s)", Name, Count, PushSize, TargetCount, TargetCount == 1 ? "" : "s");
+	return pipeline;
+}
+
+ID3D9NvrExtSampler* DxvkCompute::LinearClamp() {
+	if (!SamplerLinear) SamplerLinear = CreateSampler(NVR_EXT_FILTER_LINEAR, NVR_EXT_ADDRESS_CLAMP);
+	return SamplerLinear;
+}
+
+ID3D9NvrExtSampler* DxvkCompute::PointClamp() {
+	if (!SamplerPoint) SamplerPoint = CreateSampler(NVR_EXT_FILTER_NEAREST, NVR_EXT_ADDRESS_CLAMP);
+	return SamplerPoint;
+}
+
+bool DxvkCompute::PassesOn() {
+	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
+}
+

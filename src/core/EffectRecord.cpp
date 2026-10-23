@@ -1,4 +1,5 @@
 #include <regex>
+#include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
@@ -466,6 +467,14 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 
 	auto timer = TimeLogger();
 
+	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
+	if (!ExtFailed && DxvkCompute::PassesOn() && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+		Device->SetRenderTarget(0, RenderTarget);
+		std::string name = "EffectRecord::ExtRender " + std::string(Name);
+		renderTime = timer.LogTime(name.c_str());
+		return;
+	}
+
 	FrameChain& chain = TheShaderManager->Chain;
 	if (chain.Owns(RenderTarget, RenderedSurface)) {
 		// Copy-free path: each pass renders into the chain's spare texture, which then becomes the
@@ -550,3 +559,47 @@ D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) 
 	}
 	return cache.Handle;
 }
+
+// UNOFFICIAL 2026-10-23 (NVR DXVK): see EffectRecord.h. One full-screen pass through the frame chain, as Render's single-pass
+// case: into the chain's spare texture and Commit, straight into the game target when the chain predicted this effect last, or
+// (no chain) into RenderTarget with the copy into RenderedSurface afterwards. The pass writes every pixel (no pre-fill).
+bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize) {
+	if (!Pipeline || !DxvkCompute::Available()) return false;
+	ID3D9NvrExt* ext = DxvkCompute::Extension();
+
+	NVR_EXT_DRAW_DESC draw = {};
+	draw.pPipeline = Pipeline;
+	draw.TargetCount = 1;
+	draw.BindingCount = BindingCount;
+	draw.pBindings = Bindings;
+	draw.pPushData = Push;
+	draw.PushDataSize = PushSize;
+
+	FrameChain& chain = TheShaderManager->Chain;
+	HRESULT result;
+	if (chain.Owns(RenderTarget, RenderedSurface)) {
+		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
+			Device->StretchRect(TheTextureManager->RenderedSurface, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
+		const bool direct = chain.IsDirectFinal(this);
+		draw.Targets[0].pResource = direct ? chain.FinalSurface() : chain.Output();
+		result = ext->Draw(&draw);
+		if (SUCCEEDED(result)) { if (direct) chain.CommitFinal(); else chain.Commit(); }
+	}
+	else {
+		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
+			Device->StretchRect(RenderTarget, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
+		draw.Targets[0].pResource = RenderTarget;
+		result = ext->Draw(&draw);
+		if (SUCCEEDED(result) && RenderedSurface && RenderedSurface != RenderTarget)
+			Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR);	// the result into the texture, as the legacy path
+	}
+	if (FAILED(result)) {
+		ExtFailed = true;
+		Logger::Log("UNOFFICIAL NVR DXVK: pass %s failed to draw (%08lX; DXVK's log says why): its D3D9 technique is used from now on", Name, result);
+		return false;
+	}
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as a Vulkan pass.", Name);
+	return true;
+}
+
