@@ -1,6 +1,10 @@
 float4 TESR_ReciprocalResolution;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = NONE; MINFILTER = NONE; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-23 (sharednormals): technique NormalsSmooth, see the end of the file.
+float4 TESR_NormalsSmoothData;	// x: reach in pixels (0 off)
+sampler2D TESR_NormalsBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_NormalsSmoothTemp : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 
 struct VSOUT
@@ -102,4 +106,50 @@ technique
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ComputeNormals();
 	}
+}
+
+// UNOFFICIAL 2026-10-23 (sharednormals; [Main.Main.Quality] SmoothNormals = reach in pixels, 0 off): every effect rebuilds its surface
+// normal from the depth buffer (above), so a low-poly rock or terrain gets one flat normal per triangle and the cloud shadows
+// (SunFar, N.L), the sun shadows' face offset (SunShadows) and the snow (SnowAccumulation) step at every triangle edge. This smooths
+// TESR_NormalsBuffer ONCE, right after it is drawn, in place (pass X into a spare texture, pass Y back), so every effect that reads it
+// gets the same smoothed normal; AmbientLight then skips its own half-resolution NormalSmoothing (same method, Effects/AmbientLight.fx.hlsl
+// SmoothNormal): 3 taps each side at r/3, 2r/3 and r, each counted as far as it lies on the pixel's tangent plane (a silhouette is a
+// depth step and keeps its edge; the tolerance grows with the distance so a neighbouring face bent up to ~30 degrees still counts)
+// and as far as its normal is within about 40-60 degrees of the pixel's (a wall meeting the floor stays a crease). Full resolution:
+// the tolerance per pixel is half the half-resolution one's per texel.
+float3 PositionFromViewZ(float2 uv, float z) {
+	return float3((uv.x * 2.0f - 1.0f) / TESR_ProjectionTransform[0][0], (1.0f - uv.y * 2.0f) / TESR_ProjectionTransform[1][1], 1.0f) * z;
+}
+
+float4 SmoothNormals(VSOUT IN, uniform bool alongY) : COLOR0 {
+	float2 uv = IN.UVCoord;
+	float4 source = alongY ? tex2Dlod(TESR_NormalsSmoothTemp, float4(uv, 0.0f, 0.0f)) : tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f));
+	float3 normal = normalize(expand(source.xyz));
+	float viewZ = readDepthLod(uv);
+	[branch] if (TESR_NormalsSmoothData.x > 0.5f && viewZ < farZ * 0.99f) {
+		float3 origin = PositionFromViewZ(uv, viewZ);
+		float2 axis = alongY ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f);
+		float spacing = TESR_NormalsSmoothData.x / 3.0f;
+		float3 sum = normal;
+		[unroll] for (int k = -3; k <= 3; k++) {
+			if (k == 0) continue;
+			float dist = abs((float)k) * spacing;
+			float2 tapUV = uv + axis * (k * spacing) * TESR_ReciprocalResolution.xy;
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, 1.0f) * step(0.0f, tapUV.y) * step(tapUV.y, 1.0f);
+			tapUV = saturate(tapUV);
+			float3 tapNormal = normalize(expand((alongY ? tex2Dlod(TESR_NormalsSmoothTemp, float4(tapUV, 0.0f, 0.0f)) : tex2Dlod(TESR_NormalsBuffer, float4(tapUV, 0.0f, 0.0f))).xyz));
+			float tapZ = readDepthLod(tapUV);
+			float tolerance = max(viewZ * 0.0005f * dist, 0.5f);	// a 30-degree bend at this distance stays within it; a rock's thickness does not
+			float plane = abs(dot(PositionFromViewZ(tapUV, tapZ) - origin, normal));
+			float weight = saturate(1.0f - plane / tolerance) * smoothstep(0.5f, 0.8f, dot(tapNormal, normal)) * onScreen;
+			sum += tapNormal * weight;
+		}
+		normal = normalize(sum);
+	}
+	return float4(compress(normal), source.w);
+}
+
+technique NormalsSmooth {
+	pass SmoothX { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormals(false); }
+	pass SmoothY { VertexShader = compile vs_3_0 FrameVS(); PixelShader = compile ps_3_0 SmoothNormals(true); }
 }

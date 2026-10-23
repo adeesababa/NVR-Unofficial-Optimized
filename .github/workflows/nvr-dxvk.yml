@@ -1,0 +1,33 @@
+name: NVR DXVK d3d9.dll
+
+# Builds DXVK v3.0.1 + the NVR extension (tools/nvr-dxvk/patches) as the 32-bit d3d9.dll.
+# Runs by hand (Actions tab -> this workflow -> Run workflow) and whenever the patches or the script change.
+# The result is the artifact "nvr-dxvk-x32": d3d9.dll + dxvk.conf.reference.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/nvr-dxvk/**'
+      - '.github/workflows/nvr-dxvk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the 32-bit MinGW-w64 toolchain, glslang, ninja and meson
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build python3-pip g++-mingw-w64-i686 gcc-mingw-w64-i686 binutils-mingw-w64-i686 mingw-w64-i686-dev glslang-tools
+          pip3 install --user meson
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: bash tools/nvr-dxvk/build.sh "$RUNNER_TEMP/nvr-dxvk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nvr-dxvk-x32
+          path: ${{ runner.temp }}/nvr-dxvk/out/x32/

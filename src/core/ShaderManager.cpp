@@ -1466,6 +1466,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		GpuProfileScope gpu(normalsTimer, Device);
 		if (!mergedNormals)
 			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
+		// UNOFFICIAL 2026-10-23 (sharednormals; [Main.Main.Quality] SmoothNormals): the buffer smoothed in place, once, for every reader.
+		Effects.Normals->RenderSmooth(Device);
+		Device->SetRenderTarget(0, RenderTarget);
 	}
 #if NVR_TEST_TOOLS
 	OrthoProbe::AfterCombine(Device);	// UNOFFICIAL 2026-10-17 test tools: the depth the effects read, after an ortho dump
@@ -2025,8 +2028,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// calculate average luma for use by shaders
 		if (avglumaRequired) {
 			GpuProfileScope gpuLuma(avgLumaTimer, Device);
-			RenderEffectToRT(Effects.AvgLuma->Textures.AvgLumaSurface, Effects.AvgLuma, NULL);
-			Device->SetRenderTarget(0, RenderTarget); 	// restore device used for effects
+			// UNOFFICIAL 2026-10-23 (NVR DXVK): the compute version when AvgLumaCompute is on and the NVR DXVK extension is
+			// present (effects\AvgLuma.cpp); otherwise, and when it fails, the D3D9 pass as before.
+			const bool computed = Effects.AvgLuma->RenderCompute(Device);
+			if (!computed) {
+				RenderEffectToRT(Effects.AvgLuma->Textures.AvgLumaSurface, Effects.AvgLuma, NULL);
+				Device->SetRenderTarget(0, RenderTarget); 	// restore device used for effects
+			}
+			Effects.AvgLuma->CheckCompute(Device, !computed && TheSettingManager->SettingsMain.Main.AvgLumaComputeCheck > 0);	// test tool, off by default
 		}
 		{
 			GpuProfileScope gpuExposure(exposureTimer, Device);

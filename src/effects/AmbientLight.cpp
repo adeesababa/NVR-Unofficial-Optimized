@@ -412,6 +412,7 @@ bool AmbientLightEffect::ShouldRender() {
 bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	prepared = false;
 	if (normalSmoothing <= 0 || !Effect) return false;
+	if (TheShaderManager->Effects.Normals->Smoothed()) return false;	// UNOFFICIAL 2026-10-23 (sharednormals): TESR_NormalsBuffer is smoothed already, for every effect
 	EnsureBuffers();
 	D3DXHANDLE technique = Effect->GetTechnique(0);
 	D3DXHANDLE smooth = TechniqueHandle(techSmooth, "AmbientLightSmooth");

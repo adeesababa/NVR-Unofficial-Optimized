@@ -726,6 +726,19 @@ void SettingManager::LoadSettings() {
 	// an error, leaving depth and normals stale.
 	SettingsMain.Main.DisableMergedNormals = !boolSetting(performance, "MergedDepthNormals", false);
 	SettingsMain.Main.SkipIdentityExposure = boolSetting(performance, "SkipIdentityExposure", true);
+	// UNOFFICIAL 2026-10-23 (NVR DXVK, core\DxvkCompute.h): off by default; does nothing without the NVR DXVK extension.
+	SettingsMain.Main.AvgLumaCompute = boolSetting(performance, "AvgLumaCompute", false);
+	{
+		Configuration::ConfigNode node;
+		const int every = Config.FillNode(&node, performance, "AvgLumaComputeCheck") ? node.IntValue : 0;
+		SettingsMain.Main.AvgLumaComputeCheck = max(0, min(every, 100000));
+	}
+	{
+		// UNOFFICIAL 2026-10-23 (sharednormals): off by default (the image changes: smoother shading on low-poly ground and rocks).
+		Configuration::ConfigNode node;
+		const int reach = Config.FillNode(&node, "Main.Main.Quality", "SmoothNormals") ? node.IntValue : 0;
+		SettingsMain.Main.SmoothNormals = max(0, min(reach, 256));
+	}
 	SettingsMain.Main.LampMaskScissor = boolSetting(performance, "LampMaskScissor", true);
 	SettingsMain.Main.InteriorShadowFold = boolSetting(performance, "InteriorShadowFold", false);	// off: not bit-exact next to the void (intshadow-LOG.md)
 	{

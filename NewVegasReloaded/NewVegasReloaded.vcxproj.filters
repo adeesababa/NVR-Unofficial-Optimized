@@ -313,6 +313,12 @@
     <ClInclude Include="..\src\core\RenderManager.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\DxvkCompute.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\core\NvrDxvkExt.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\RenderPass.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -606,6 +612,9 @@
     <ClCompile Include="..\src\core\RenderManager.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\core\DxvkCompute.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\core\RenderPass.cpp">
       <Filter>Core</Filter>
     </ClCompile>
@@ -681,4 +690,4 @@
       <Filter>Main</Filter>
     </ResourceCompile>
   </ItemGroup>
-</Project>
+</Project>
