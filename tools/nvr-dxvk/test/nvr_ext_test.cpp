@@ -439,6 +439,49 @@ int main(int argc, char** argv) {
       uint16_t h4[4]; CHECK(ext->ReadBuffer(pbuf, (7 * W + 5) * 8, 8, h4), "probe read");
       for (int c = 0; c < 4; c++) probe[c] = halfToFloat(h4[c]);
       std::printf("port %-12s ok: texel (5,7) = (%.4f %.4f %.4f %.3f)\n", port.name, probe[0], probe[1], probe[2], probe[3]);
+      // Independent C++ transcriptions of the HLSL for the single-texture ports: the GLSL must agree.
+      {
+        float c[3] = { 5.5f, 7.25f, 2.f }; float e[3] = { NAN, NAN, NAN };
+        auto linz = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+        auto delin = [](float v) { return v <= 0.0031308f ? v * 12.92f : std::pow(v, 1.f / 2.4f) * 1.055f - 0.055f; };
+        auto pows = [](float a, float b) { return std::pow(std::fabs(a), b) * (a > 0 ? 1.f : a < 0 ? -1.f : 0.f); };
+        auto sstep = [](float a, float b, float x) { float t = std::fmin(1.f, std::fmax(0.f, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+        if (!std::strcmp(port.name, "Exposure")) {
+          float minB = 0.5f, maxB = 1.f, avg = 1.f;   // the R32F "avg luma" texture reads (r, 1, 1, 1): g = 1
+          float neg = std::fmax(std::log(minB / avg), 0.f) + 1, add = std::fmax(std::log(avg / minB), 0.f) + 1, diff = add / neg;
+          for (int i = 0; i < 3; i++) { float l = linz(c[i]); e[i] = delin(l + (l / diff - l) * maxB); }
+        } else if (!std::strcmp(port.name, "ImageAdjust")) {
+          float data[4] = { 0.5f, 1.f, 1.f, 1.f }, dark[3] = { 1.f / W, 1.f / H, 1.f }, light[3] = { 0.1f, 1.f, 1.f };
+          float lum = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+          for (int i = 0; i < 3; i++) {
+            float v = lum + (c[i] - lum) * data[2]; v = pows(v, 2.2f);
+            float darks = sstep(1, 0, v) * v * pows(dark[i], 2.2f), lights = sstep(0, 1, v) * v * pows(light[i], 2.2f);
+            float n = (darks + lights) * std::fmax(0.f, data[0]); v = v + (n - v) * data[3]; v = pows(v, 1.f / 2.2f);
+            n = (v - 0.5f) * data[1] + 0.5f; e[i] = v + (n - v) * data[3];
+          }
+        } else if (!std::strcmp(port.name, "LowHF")) {
+          float d[4] = { 0.5f, 1.f, 1.f, 1.f }; float col[3];
+          for (int i = 0; i < 3; i++) col[i] = c[i];
+          if (d[1] > 0) { // blur taps at uv +- y, +- 2y: the texture is a ramp, clamped at the edges; taps of 1.0 and 2.0 uv land on the far corner / clamp
+            float u = (5 + 0.5f) / W, v = (7 + 0.5f) / H;
+            auto tex = [&](float uu, float vv, int ch) { uu = std::fmin(1.f, std::fmax(0.f, uu)); vv = std::fmin(1.f, std::fmax(0.f, vv));
+              float x = std::fmin(W - 1.f, std::fmax(0.f, uu * W - 0.5f)), y = std::fmin(H - 1.f, std::fmax(0.f, vv * H - 0.5f));
+              return ch == 0 ? 0.5f + x : ch == 1 ? 0.25f + y : 2.f; };
+            for (int i = 0; i < 3; i++) col[i] = (tex(u, v, i) + tex(u + d[1], v + d[1], i) + tex(u + 2 * d[1], v + 2 * d[1], i) + tex(u - d[1], v - d[1], i) + tex(u - 2 * d[1], v - 2 * d[1], i)) / 5;
+          }
+          float lum = 0.2125f * col[0] + 0.7154f * col[1] + 0.0721f * col[2];
+          for (int i = 0; i < 3; i++) col[i] = col[i] + (lum - col[i]) * d[0];
+          float iu = (5 + 0.5f) / W - 0.5f, iv = (7 + 0.5f) / H - 0.5f, vig = 1 - (iu * iu + iv * iv);
+          float f = std::fmin(1.f, std::fmax(0.f, std::pow(std::fabs(vig), d[2]) + d[3]));
+          for (int i = 0; i < 3; i++) e[i] = col[i] * f;
+        }
+        if (!std::isnan(e[0])) {
+          bool same = true;
+          for (int i = 0; i < 3; i++) same &= std::fabs(probe[i] - e[i]) <= 0.02f * std::fmax(1.f, std::fabs(e[i]));
+          std::printf("  C++ reference: (%.4f %.4f %.4f) %s\n", e[0], e[1], e[2], same ? "agrees" : "DIFFERS");
+          if (!same) { std::printf("FAIL: port %s differs from the HLSL transcription\n", port.name); return 1; }
+        }
+      }
       pbuf->Release(); pipe->Release();
     }
     out->Release();

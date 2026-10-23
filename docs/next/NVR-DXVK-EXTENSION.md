@@ -124,7 +124,9 @@ of the SM3 limits.
   CopyTextureToBuffer, the push-data restore under a real alpha-tested D3D9 draw (the alpha reference byte sits exactly
   where the compute push block writes), a device Reset with the extension's objects kept, a two-target gradient pass, a
   pass that samples a target into a 20x15 viewport rectangle of another texture (the rest untouched), the alpha test
-  again after the passes, and every ported .spv created and drawn with NVR's binding table. All pass on lavapipe. The
+  again after the passes, and every ported .spv created and drawn with NVR's binding table; for Exposure, ImageAdjust
+  and LowHF an independent C++ transcription of the HLSL agrees with the GLSL's output (within half-float precision).
+  All pass on lavapipe. The
   tracked-write bug above was found by this: the first readback after a dispatch returned the previous frame's value.
 - Vulkan validation layers: no errors on DXVK's legacy descriptor path (`dxvk.enableDescriptorHeap = False`,
   `dxvk.enableDescriptorBuffer = False`). On the default path (descriptor heap) the layer available here (1.3.275) is older
