@@ -32,6 +32,7 @@ public:
 	// The samplers every pass uses (made once): the effects' LINEAR/CLAMP and POINT/CLAMP states.
 	static ID3D9NvrExtSampler*	LinearClamp();
 	static ID3D9NvrExtSampler*	PointClamp();
+	static ID3D9NvrExtSampler*	LinearWrap();	// the file textures' (dirt, blood, water noise) WRAP state
 	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
 	static bool					PassesOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
@@ -49,4 +50,5 @@ private:
 	static char					StatusText[160];
 	static ID3D9NvrExtSampler*	SamplerLinear;
 	static ID3D9NvrExtSampler*	SamplerPoint;
+	static ID3D9NvrExtSampler*	SamplerWrap;
 };

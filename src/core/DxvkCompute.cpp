@@ -6,6 +6,7 @@ bool			DxvkCompute::Failed = false;
 char			DxvkCompute::StatusText[160] = "not checked yet";
 ID3D9NvrExtSampler* DxvkCompute::SamplerLinear = nullptr;
 ID3D9NvrExtSampler* DxvkCompute::SamplerPoint = nullptr;
+ID3D9NvrExtSampler* DxvkCompute::SamplerWrap = nullptr;
 
 void DxvkCompute::Initialize(IDirect3DDevice9* device) {
 	Ext = nullptr;
@@ -178,5 +179,10 @@ ID3D9NvrExtSampler* DxvkCompute::PointClamp() {
 
 bool DxvkCompute::PassesOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
+}
+
+ID3D9NvrExtSampler* DxvkCompute::LinearWrap() {
+	if (!SamplerWrap) SamplerWrap = CreateSampler(NVR_EXT_FILTER_LINEAR, NVR_EXT_ADDRESS_WRAP);
+	return SamplerWrap;
 }
 

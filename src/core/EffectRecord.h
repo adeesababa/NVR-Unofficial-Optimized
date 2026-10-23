@@ -29,12 +29,15 @@ public:
 	bool					ExtFailed = false;
 	UInt32					ExtFrames = 0;
 	// The common case: a pass whose fragment shader reads N textures (set 1, binding 0..N-1, slots 0..N-1) through one sampler
-	// (slot 0, its heap index at SamplerPushOffset of the push block) and a push block of constants. The pipeline is made on
-	// first use from Shaders\NewVegasReloaded\Compute\<SpvName>.spv and kept in Pass.
+	// (slot 0, its heap index at SamplerPushOffset of the push block; WrapSamplerPushOffset > 0: a LINEAR/WRAP sampler at
+	// slot 1 for file textures) and a push block of constants. The pipeline is made on first use from
+	// Shaders\NewVegasReloaded\Compute\<SpvName>.spv and kept in Pass.
 	struct ExtPass { ID3D9NvrExtPipeline* Pipeline = nullptr; bool Tried = false; };
 	bool					ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 								ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount,
-								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false);
+								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false, UINT WrapSamplerPushOffset = 0);
+	// The loaded file texture behind one of the effect's samplers (e.g. "TESR_BloodLensSampler"), null if none.
+	IDirect3DBaseTexture9*	ExtFileTexture(const char* SamplerName);
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.
 	void					DisposeEffect();
 	bool					LoadEffect();
