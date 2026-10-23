@@ -394,6 +394,12 @@ AccumulateOut Accumulate(VSOUT IN) {
 //    falling on its surface, and adds it as the screen bounce was added.
 // The grid moves with the player in whole cells, so it does not crawl; it has no occlusion, so light can cross a thin wall.
 float4 NVR_GridOrigin;          // xyz: the grid's corner relative to the camera now, w: cell size (world units)
+// UNOFFICIAL 2026-10-22 (lightgrid2) fine level ([Shaders.AmbientLight.Main] GridFine): outdoors with the sun map, a second grid of
+// 32 x 32 x 16 cells a quarter the size (50 units at the default 200: about 16 x 16 x 8 m round the camera), in the right half of a
+// 256 x 128 atlas, made from the same sun map in the same passes. Near the camera the bounce takes it (light and shade the size of a
+// door or a car instead of a room), fading to the coarse grid toward its edges. The sun map and its matrices stay in the coarse grid's
+// space: a fine cell's corner there is NVR_GridOrigin1 - NVR_GridOrigin + cell x its size. Indoors and at night it is off (w 0).
+float4 NVR_GridOrigin1;         // xyz: the fine grid's corner relative to the camera now, w: its cell size (0: no fine level)
 float4 NVR_GridData;            // x: strength (0: no grid), y: share of a neighbour's light passed on per step, z: sun map texel size (world units), w: 1 the grid carries the surfaces' colours
 float4 NVR_GridLight;           // rgb: the sun's colour (linear; the sun map's surfaces send their colour x it), w: injection scale
 float4x4 NVR_GridSunToGrid;     // sun depth map clip space (x, y, depth) -> position relative to the grid's corner
@@ -407,14 +413,15 @@ sampler2D NVR_GridSunColor : register(s12) = sampler_state { ADDRESSU = CLAMP; A
 sampler2D NVR_GridWaveColor : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D NVR_GridAccumColor : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 // UNOFFICIAL 2026-10-14 blocking: per cell the surfaces in it (xyz: their average normal, w: how much of a cell face they cover),
-// from the sun map at injection. Read through stage 5 during the grid passes (every sampler register is taken; NVR_ALPrep is not
+// from the sun map at injection. (lightgrid2, 2026-10-22: xyz is now the cover per axis, see NVR_GridWalls.) Read through stage 5 during the grid passes (every sampler register is taken; NVR_ALPrep is not
 // used by them), so it is NVR_ALPrep under another name.
 #define NVR_GridGeometry NVR_ALPrep
 float4 NVR_GridStep;            // x: 1 on the first spreading step (the running total starts at 0), y: blocking strength, z: 1 sun map in, w: 1 screen memory in
 static const float3 GridGroundColor = float3(0.55f, 0.42f, 0.30f);	// without colours: a desert ground (linear)
 
 static const float GridX = 32.0f, GridY = 32.0f, GridZ = 16.0f;
-static const float AtlasSize = 128.0f;   // 4 x 4 tiles of 32 x 32
+static const float AtlasSize = 128.0f;   // 4 x 4 tiles of 32 x 32 (one level)
+static const float2 AtlasDims = float2(256.0f, 128.0f);	// (lightgrid2) two levels side by side: coarse left, fine right
 static const float SunMapSize = 256.0f;
 
 // Order-1 spherical harmonics: a clamped cosine lobe round n, and a function's value in direction d.
@@ -422,15 +429,16 @@ float4 CosineLobe(float3 n) { return float4(0.886227f, 1.023328f * n); }
 float4 ShBasis(float3 d) { return float4(0.282095f, 0.488603f * d); }
 
 // The atlas texel (centre, uv) of cell (x, y, z).
-float2 CellUV(float3 c) {
+float2 CellUV(float3 c, float level = 0.0f) {
 	float tile = c.z;
 	float2 t = float2(fmod(tile, 4.0f), floor(tile / 4.0f));
-	return (t * 32.0f + c.xy + 0.5f) / AtlasSize;
+	return (t * 32.0f + c.xy + 0.5f + float2(level * AtlasSize, 0.0f)) / AtlasDims;
 }
 
 // The cell an atlas texel holds.
 float3 AtlasCell(float2 uv) {
-	float2 texel = floor(uv * AtlasSize);
+	float2 texel = floor(uv * AtlasDims);
+	texel.x -= texel.x >= AtlasSize ? AtlasSize : 0.0f;	// (lightgrid2) the fine level's half
 	float2 t = floor(texel / 32.0f);
 	return float3(texel - t * 32.0f, t.y * 4.0f + t.x);
 }
@@ -453,10 +461,34 @@ struct GridOut { float4 wave : COLOR0; float4 accum : COLOR1; float4 waveColor :
 float4 NVR_GridShift;           // xyz: the grid's move since the screen memory was stored (cells), w: 1 the memory is usable
 float4 NVR_GridScreen;          // x: the screen memory's strength (GridScreenStrength)
 
-struct ScreenOut { float4 sh : COLOR0; float4 colour : COLOR1; };
+// UNOFFICIAL 2026-10-22 (lightgrid2) wall memory ([Shaders.AmbientLight.Main] GridWallMemory): indoors and at night there is no sun map,
+// so no cell had any surfaces and GridBlocking stopped nothing: the light of one room crossed the wall into the next. The screen memory
+// now also keeps, per cell, how much of each axis's cell face its surfaces cover (x, y, z: |normal| per axis x the share of the face a
+// hit stands for), from the same reads, remembered and moved with the grid as the light is. GridInject takes the larger of it and the
+// sun map's cover. The blocking target is per axis now; for the sun map's surfaces it is cover x |average normal| per axis, which
+// GridPropagate turns into exactly the stop it gave before (cover x |normal . axis|).
+float4 NVR_GridWalls;           // x: 1 the screen memory keeps the walls, y: 1 GridInject reads them (wall memory usable this update), z: 1 the last update kept them
+#define NVR_GridWallsOld NVR_GridWave            // ScreenInject reads the last update's wall memory through NVR_GridWave's stage (s8)
+#define NVR_GridWallMemory NVR_GridWaveColor     // GridInject reads it through NVR_GridWaveColor's stage (s13; it reads no colour)
+
+// UNOFFICIAL 2026-10-22 (lightgrid2) lamps ([Shaders.AmbientLight.Main] GridLamps): indoors and at night the grid's light came only from
+// what the screen showed lit, which is little (measured: the grid's bounce added about 1/255 in the saloon and the Lucky 38, and the
+// InteriorBalance cap was never reached). GridInject now also lights each cell's surfaces from the game's lamps round the grid (the
+// nearest GridLampsMax, AmbientLight.cpp): the surfaces' cover facing the lamp (the walls above), the lamp's colour x dimmer (linear)
+// x a game-like falloff over its radius, x a grey reflectance, sent back toward the lamp as the sun map's surfaces send theirs; light
+// stopped on the way by the remembered walls (three reads between the lamp and the cell). Then it spreads as all the grid's light.
+#define GridLampsMax 32
+float4 NVR_GridLamps[GridLampsMax];      // xyz: the lamp relative to the camera, w: its radius (0: none)
+float4 NVR_GridLampColors[GridLampsMax]; // rgb: colour x dimmer (linear)
+float4 NVR_GridLampInfo;                 // x: lamps in the list, y: strength (GridLamps), z: blocking along the way (GridBlocking)
+static const float GridLampReflectance = 0.4f;
+
+struct ScreenOut { float4 sh : COLOR0; float4 colour : COLOR1; float4 walls : COLOR2; };
 
 ScreenOut ScreenInject(VSOUT IN) {
 	ScreenOut OUT;
+	// (lightgrid2) the fine level keeps no screen memory (it is made from the sun map only).
+	[branch] if (IN.UVCoord.x * AtlasDims.x >= AtlasSize) { OUT.sh = 0.0f; OUT.colour = 0.0f; OUT.walls = 0.0f; return OUT; }
 	float3 cell = AtlasCell(IN.UVCoord);
 	float size = NVR_GridOrigin.w;
 	// What this cell held before (from where it was in the grid then).
@@ -464,6 +496,7 @@ ScreenOut ScreenInject(VSOUT IN) {
 	bool had = NVR_GridShift.w > 0.5f && all(oldCell >= 0.0f) && oldCell.x < GridX && oldCell.y < GridY && oldCell.z < GridZ;
 	OUT.sh = had ? tex2Dlod(NVR_GridScreenOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
 	OUT.colour = had ? tex2Dlod(NVR_GridScreenColorOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
+	OUT.walls = had && NVR_GridWalls.z > 0.5f ? tex2Dlod(NVR_GridWallsOld, float4(CellUV(oldCell), 0.0f, 0.0f)) : 0.0f;
 	// The cell on screen: its centre in view space (camera-relative world -> view: the view matrix's rotation alone).
 	float3 centre = NVR_GridOrigin.xyz + (cell + 0.5f) * size;
 	float3 view = mul(float4(centre, 0.0f), TESR_ViewTransform).xyz;
@@ -473,6 +506,7 @@ ScreenOut ScreenInject(VSOUT IN) {
 	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z);
 	float3 low = centre - 0.5f * size;
 	float4 sh = 0.0f, colour = 0.0f;
+	float3 axes = 0.0f;	// (lightgrid2) the hits' |normal| per axis
 	float hits = 0.0f, empty = 0.0f;
 	[loop] for (int j = 0; j < 4; j++) {
 		[loop] for (int i = 0; i < 4; i++) {
@@ -485,8 +519,10 @@ ScreenOut ScreenInject(VSOUT IN) {
 				// A surface in the cell: the light it shows (linear, capped), round its normal.
 				float3 light = min(pows(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb, 2.2f), 4.0f);
 				float l = luma(light);
-				sh += CosineLobe(normalize(GetWorldNormalLod(uv))) * l;
+				float3 n = normalize(GetWorldNormalLod(uv));
+				sh += CosineLobe(n) * l;
 				colour += float4(light, l);
+				axes += abs(n);
 				hits += 1.0f;
 			}
 			else if (depth > view.z + size) empty += 1.0f;	// seen through: the cell is open air there
@@ -497,13 +533,17 @@ ScreenOut ScreenInject(VSOUT IN) {
 	float share = 1.44f / 16.0f * NVR_GridScreen.x;
 	OUT.sh = lerp(OUT.sh, sh * share, 0.5f);
 	OUT.colour = lerp(OUT.colour, colour * share, 0.5f);
+	// (lightgrid2) the walls: the same share of a face per hit, without the light's strength; a cell seen open fades its walls out.
+	OUT.walls = NVR_GridWalls.x > 0.5f ? lerp(OUT.walls, float4(axes * (1.44f / 16.0f), hits / 16.0f), 0.5f) : 0.0f;
 	return OUT;
 }
 
 GridOut GridInject(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
-	float size = NVR_GridOrigin.w;
-	float3 low = cell * size;
+	// (lightgrid2) the fine level: its own cell size, its corner in the coarse grid's space (where the sun map's positions are).
+	bool fine = IN.UVCoord.x * AtlasDims.x >= AtlasSize;
+	float size = fine ? NVR_GridOrigin1.w : NVR_GridOrigin.w;
+	float3 low = (fine ? NVR_GridOrigin1.xyz - NVR_GridOrigin.xyz : 0.0f) + cell * size;
 	float4 sh = 0.0f;
 	float4 colour = 0.0f;	// the surfaces' colour x light (rgb) and light (a), added up
 	float3 normals = 0.0f;	// their normals added up (blocking)
@@ -555,8 +595,43 @@ GridOut GridInject(VSOUT IN) {
 	OUT.wave = sh;
 	// The second target holds the cell's surfaces for blocking (not the running total: that starts at 0 on the first step,
 	// NVR_GridStep.x; injection is kept out of it, else a surface's own cell lit the surface with what it sends out).
+	// (lightgrid2) per axis: the cover x |average normal| (GridPropagate's stop is then the same as before), and with the wall memory
+	// the larger of that and the cover the screen remembered.
 	float normalLength = length(normals);
-	OUT.accum = float4(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f), count * faceShare);
+	float cover = count * faceShare;
+	OUT.accum = float4(cover * abs(normalLength > 1e-4f ? normals / normalLength : float3(0.0f, 0.0f, 1.0f)), cover);
+	[branch] if (NVR_GridWalls.y > 0.5f) OUT.accum = max(OUT.accum, tex2Dlod(NVR_GridWallMemory, float4(IN.UVCoord, 0.0f, 0.0f)));
+	// (lightgrid2) the lamps (GridLamps, see NVR_GridLamps): only where the cell has surfaces to light.
+	[branch] if (NVR_GridLampInfo.x > 0.5f && any(OUT.accum.xyz > 0.0f)) {
+		float3 centre = low + 0.5f * size;
+		[loop] for (int k = 0; k < GridLampsMax; k++) {
+			if (k >= (int)NVR_GridLampInfo.x) break;
+			float4 lamp = NVR_GridLamps[k];
+			float3 v = (lamp.xyz - NVR_GridOrigin.xyz) - centre;	// cell centre -> lamp, in the grid's space
+			float d = length(v);
+			[branch] if (d >= lamp.w + 0.5f * size) continue;
+			float3 dir = d > 1e-3f ? v / d : float3(0.0f, 0.0f, 1.0f);
+			float fall = saturate(1.0f - max(d - 0.5f * size, 0.0f) / lamp.w);
+			fall *= fall;
+			// The walls between: three points along the way (the cell's own and the lamp's cells left out).
+			float through = 1.0f;
+			[branch] if (NVR_GridWalls.y > 0.5f && NVR_GridLampInfo.z > 0.0f && d > size) {
+				[unroll] for (int s = 1; s <= 3; s++) {
+					float3 c = floor((centre + v * (s / 4.0f)) / NVR_GridOrigin.w);	// (the wall memory is the coarse level's)
+					if (any(c < 0.0f) || c.x >= GridX || c.y >= GridY || c.z >= GridZ) continue;
+					float3 w = tex2Dlod(NVR_GridWallMemory, float4(CellUV(c), 0.0f, 0.0f)).xyz;
+					through *= 1.0f - saturate(dot(w, abs(dir)) * NVR_GridLampInfo.z);
+				}
+			}
+			float facing = min(dot(OUT.accum.xyz, abs(dir)), 1.0f);
+			float3 light = NVR_GridLampColors[k].rgb * (fall * through * facing * GridLampReflectance * NVR_GridLampInfo.y);
+			float l = luma(light);
+			sh += CosineLobe(dir) * l;
+			colour += float4(light, l);
+		}
+		OUT.wave = sh;
+		OUT.waveColor = colour;
+	}
 	OUT.waveColor = colour;
 	OUT.accumColor = 0.0f;
 	return OUT;
@@ -564,6 +639,7 @@ GridOut GridInject(VSOUT IN) {
 
 GridOut GridPropagate(VSOUT IN) {
 	float3 cell = AtlasCell(IN.UVCoord);
+	float level = IN.UVCoord.x * AtlasDims.x >= AtlasSize ? 1.0f : 0.0f;	// (lightgrid2) light spreads within its own level
 	float4 sh = 0.0f;
 	float4 colour = 0.0f;
 	float4 blocker = tex2Dlod(NVR_GridGeometry, float4(IN.UVCoord, 0.0f, 0.0f));
@@ -571,14 +647,14 @@ GridOut GridPropagate(VSOUT IN) {
 		float3 axis = k == 0 ? float3(1, 0, 0) : k == 1 ? float3(-1, 0, 0) : k == 2 ? float3(0, 1, 0) : k == 3 ? float3(0, -1, 0) : k == 4 ? float3(0, 0, 1) : float3(0, 0, -1);
 		float3 neighbour = cell - axis;	// the neighbour on the far side; its light travels along +axis to this cell
 		if (any(neighbour < 0.0f) || neighbour.x >= GridX || neighbour.y >= GridY || neighbour.z >= GridZ) continue;
-		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour), 0.0f, 0.0f));
+		float4 from = tex2Dlod(NVR_GridWave, float4(CellUV(neighbour, level), 0.0f, 0.0f));
 		float sent = max(dot(from, ShBasis(axis)), 0.0f);
 		// Blocking: the surfaces in this cell stop the light crossing them, as far as they face across its path (a floor does
 		// not stop light running along it).
-		sent *= 1.0f - saturate(blocker.w * abs(dot(blocker.xyz, axis)) * NVR_GridStep.y);
+		sent *= 1.0f - saturate(dot(blocker.xyz, abs(axis)) * NVR_GridStep.y);	// (lightgrid2) per-axis cover (was cover x |normal . axis|, the same for the sun map)
 		sh += CosineLobe(axis) * (sent * NVR_GridData.y);
 		// The neighbour's colour travels with the light it sends.
-		float4 fromColour = tex2Dlod(NVR_GridWaveColor, float4(CellUV(neighbour), 0.0f, 0.0f));
+		float4 fromColour = tex2Dlod(NVR_GridWaveColor, float4(CellUV(neighbour, level), 0.0f, 0.0f));
 		colour += float4(fromColour.rgb / max(fromColour.a, 1e-5f), 1.0f) * (sent * NVR_GridData.y);
 	}
 	GridOut OUT;
@@ -589,29 +665,48 @@ GridOut GridPropagate(VSOUT IN) {
 	return OUT;
 }
 
-// The grid's bounce light falling on a surface at a camera-relative position with a world normal (0 outside the grid).
-float3 GridBounce(float3 cameraRelative, float3 normal) {
-	float size = NVR_GridOrigin.w;
+// (lightgrid2) one level's harmonics at a surface (between the eight nearest cell centres), its colour x light and light, and how far
+// inside the level the surface is (fade: 1 well inside, 0 outside; over edgeCells cells).
+float4 GridLevel(float3 cameraRelative, float3 normal, float4 origin, float level, float edgeCells, out float4 colourLight, out float fade) {
+	float size = origin.w;
 	// Half a cell off the surface along its normal: a surface's own cell holds the light it sends out, not what it receives.
-	float3 g = (cameraRelative - NVR_GridOrigin.xyz + normal * (0.5f * size)) / size - 0.5f;
+	float3 g = (cameraRelative - origin.xyz + normal * (0.5f * size)) / size - 0.5f;
 	float3 dims = float3(GridX, GridY, GridZ);
 	float3 edge = min(g + 0.5f, dims - 0.5f - g);
-	float fade = saturate(min(min(edge.x, edge.y), edge.z) / 2.0f);
+	fade = saturate(min(min(edge.x, edge.y), edge.z) / edgeCells);
+	colourLight = 0.0f;
 	[branch] if (fade <= 0.0f) return 0.0f;
 	g = clamp(g, 0.0f, dims - 1.0f);
 	float z0 = floor(g.z);
 	float z1 = min(z0 + 1.0f, GridZ - 1.0f);
 	float fz = g.z - z0;
 	// Within a layer the atlas's own bilinear filter (kept inside the tile: g.xy is clamped to the cell centres).
-	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
-	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
-	float4 sh = lerp(a, b, fz);
+	float4 a = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z0), level), 0.0f, 0.0f));
+	float4 b = tex2Dlod(NVR_GridAccum, float4(CellUV(float3(g.xy, z1), level), 0.0f, 0.0f));
+	[branch] if (NVR_GridData.w > 0.5f) {
+		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0), level), 0.0f, 0.0f));
+		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1), level), 0.0f, 0.0f));
+		colourLight = lerp(ca, cb, fz);
+	}
+	return lerp(a, b, fz);
+}
+
+// The grid's bounce light falling on a surface at a camera-relative position with a world normal (0 outside the grid).
+// (lightgrid2) Near the camera the fine level takes over (GridFine), fading to the coarse one over its outer four cells.
+float3 GridBounce(float3 cameraRelative, float3 normal) {
+	float4 c, cFine;
+	float fade, fadeFine;
+	float4 sh = GridLevel(cameraRelative, normal, NVR_GridOrigin, 0.0f, 2.0f, c, fade);
+	[branch] if (NVR_GridOrigin1.w > 0.0f) {
+		float4 shFine = GridLevel(cameraRelative, normal, NVR_GridOrigin1, 1.0f, 4.0f, cFine, fadeFine);
+		sh = lerp(sh, shFine, fadeFine);
+		c = lerp(c, cFine, fadeFine);
+		fade = max(fade, fadeFine);
+	}
+	[branch] if (fade <= 0.0f) return 0.0f;
 	// The colour of the light arriving (colour x light over light: its brightness is in the harmonics), white without colours.
 	float3 colour = 1.0f;
 	[branch] if (NVR_GridData.w > 0.5f) {
-		float4 ca = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z0)), 0.0f, 0.0f));
-		float4 cb = tex2Dlod(NVR_GridAccumColor, float4(CellUV(float3(g.xy, z1)), 0.0f, 0.0f));
-		float4 c = lerp(ca, cb, fz);
 		// UNOFFICIAL 2026-10-18 (ambfix): only GridColour of it (0.25). Until today the colour never arrived (the alphas of targets 1-3 were
 		// dropped, see AmbientLight.cpp RenderGrid), so the bounce was white; at full strength it takes the colour of the brightest
 		// emitters in reach (Gomorrah: the flames, rgb/luma 2.32 0.70 0.04) and fire-lit rooms turned orange (Lab: bright areas |dab|
@@ -780,6 +875,13 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 		bendY = min(bendY, min(abs(up2 + depth - 2.0f * up), abs(depth + down2 - 2.0f * down)));
 	}
 	float busy = saturate((bendX + bendY) / depth * 20.0f - 0.1f);
+	// 12 (lightgrid2, diagnostic): the walls the grid knows in the pixel's own cell (r, g, b: cover across x, y, z; the wall memory merged
+	// with the sun map's, as GridPropagate reads it), NVR_GridWave's stage bound to the blocking buffer for it.
+	[branch] if (DebugView > 11.5f) {
+		float3 c = floor((toWorld(IN.UVCoord) * depth - NVR_GridOrigin.xyz) / NVR_GridOrigin.w);
+		float4 m = tex2Dlod(NVR_GridWave, float4(CellUV(clamp(c, 0.0f, float3(GridX, GridY, GridZ) - 1.0f)), 0.0f, 0.0f));
+		return float4(saturate(m.xyz * NVR_GridStep.y), 1.0f);
+	}
 	[branch] if (DebugView > 10.5f) return float4(busy.xxx, 1.0f);	// 11 (diagnostic): where the busy-depth rule lifts the occlusion
 	ao = lerp(ao, lerp(1.0f, ao, 0.25f), busy);
 	float3 albedo = SurfaceColour(lin);                                  // UNOFFICIAL 2026-10-18 (ambfix): was lin / max channel * 0.6

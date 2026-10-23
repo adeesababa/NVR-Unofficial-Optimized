@@ -178,6 +178,27 @@
     #define FOLD_DECL float3
 #endif
 
+// UNOFFICIAL 2026-10-22 LampDistanceFix ([Shaders.PBR.Main], restart: LAMP_VECTOR_ATT_ON from ShaderRecord::BuildDefines;
+// bench\deep-roadmap\evidence\pbrdark\NOTE.md). The 2- and 3-lamp shaders (this LIGHTS < 4 path) took each lamp's falloff from
+// lightDistSq: the squared distance to the lamp worked out at each VERTEX and blended across the triangle. A squared distance does not
+// blend linearly: on a big flat triangle with a lamp over its middle (a rug, a floor tile, a poster, a wall) every corner is far from the
+// lamp, so the blended distance stays large everywhere and the lamp lit almost nothing (the Prospector saloon's rug: its lamps' light
+// about 4x too weak, the room 3-4x darker than the game). The game's shaders blend the lamp VECTOR and square it per pixel, which is
+// exact. On, the vertex shader sends the lamp vector (light2Dir / light3Dir, and lightDir in the lamp-only passes) at its object-space
+// length (the tangent-space vector rescaled, so a sheared tangent basis -- what lightDistSq was for, 2026-09-07 -- still gives the
+// right distance at the vertices) and the pixel shader squares it: the game's falloff exactly on flat surfaces. Off: as before.
+#ifndef LAMP_VECTOR_ATT_ON
+    #define LAMP_VECTOR_ATT_ON 0
+#endif
+#if LAMP_VECTOR_ATT_ON
+    #define LAMP_ATT_SQ(distSq, dir) vanillaAttSq(dot((dir).xyz, (dir).xyz), (dir).w)
+    #define LAMP_VS_DIR(tbn, light) LampVectorAtLength(mul(tbn, light), light)
+    float3 LampVectorAtLength(float3 t, float3 light) { return t * sqrt(dot(light, light) / max(dot(t, t), 1e-12f)); }
+#else
+    #define LAMP_ATT_SQ(distSq, dir) vanillaAttSq(distSq, (dir).w)
+    #define LAMP_VS_DIR(tbn, light) mul(tbn, light)
+#endif
+
 #include "includes/Helpers.hlsl"
 // UNOFFICIAL: the live surroundings cube for metal (includes/LiveCube.hlsl), before Object.hlsl, whose getMetalAmbient reads
 // it. Compiled in only when a CubeReflections setting is above 0 at startup (LIVE_CUBE, ShaderRecord::LoadShader), and not with
@@ -269,6 +290,10 @@
 #ifdef VS
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
+#endif
+// UNOFFICIAL 2026-10-23 CharacterObjectReach (Includes/Shadow.hlsl SHADOW_SLACK_CAP_ACTOR): defined only when on at startup.
+#if defined(PS) && defined(SHADOW_CHARACTER_OBJECTS)
+    #define SHADOW_SLACK_CAP_ACTOR 1
 #endif
 #include "includes/Shadow.hlsl"
 #ifdef PS
@@ -554,7 +579,11 @@ VS_OUTPUT main(VS_INPUT IN) {
     #endif
 
     OUT.lightDir.w = LightData[0].w;
-    OUT.lightDir.xyz = mul(tbn, light);
+    #if defined(DIFFUSE) || defined(POINT)
+        OUT.lightDir.xyz = LAMP_VS_DIR(tbn, light);	// UNOFFICIAL LampDistanceFix (see the top): a lamp here
+    #else
+        OUT.lightDir.xyz = mul(tbn, light);
+    #endif
 
     OUT.viewDir.xyz = mul(tbn, EyePosition.xyz - position.xyz);
     OUT.viewDir.w = position.z;
@@ -562,14 +591,14 @@ VS_OUTPUT main(VS_INPUT IN) {
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         light = LightData[1].xyz - position.xyz;
         OUT.light2Dir.w = LightData[1].w;
-        OUT.light2Dir.xyz = mul(tbn, light);
+        OUT.light2Dir.xyz = LAMP_VS_DIR(tbn, light);	// UNOFFICIAL LampDistanceFix
         OUT.lightDistSq.y = dot(light, light);
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
         light = LightData[2].xyz - position.xyz;
         OUT.light3Dir.w = LightData[2].w;
-        OUT.light3Dir.xyz = mul(tbn, light);
+        OUT.light3Dir.xyz = LAMP_VS_DIR(tbn, light);	// UNOFFICIAL LampDistanceFix
         OUT.lightDistSq.z = dot(light, light);
     #endif
     
@@ -1104,13 +1133,13 @@ PS_OUTPUT main(PS_INPUT IN) {
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             // Light k of the draw is PSLightColor[k]; light 0 is a point light only in the DIFFUSE and POINT passes.
             #if defined(DIFFUSE) || defined(POINT)
-                ptShadow0 = POINT_SHADOW_LOOKUP(0, vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w));
+                ptShadow0 = POINT_SHADOW_LOOKUP(0, LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir));
             #endif
             #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-                ptShadow1 = POINT_SHADOW_LOOKUP(1, vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w));
+                ptShadow1 = POINT_SHADOW_LOOKUP(1, LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir));
             #endif
             #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-                ptShadow2 = POINT_SHADOW_LOOKUP(2, vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w));
+                ptShadow2 = POINT_SHADOW_LOOKUP(2, LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir));
             #endif
         }
         float pointWeight = 0.0f;   // ONLY_SPECULAR POINT: this pass's blend weight without the point shadows (see the alpha)
@@ -1141,20 +1170,20 @@ PS_OUTPUT main(PS_INPUT IN) {
                                                         0.0f, 0.0f, IN.shadowWorldPos.xyz, shadowGeometricNormal);
             float foldReach = 1.0f;
         #else
-            const float foldAtt0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
+            const float foldAtt0 = LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir);
             lighting = 0.0f;
             LAMP_IF(foldAtt0)
                 lighting = getPointLightLightingAttFull(IN.lightDir.xyz, foldAtt0, SHADOWED(PSLightColor[0].rgb, 0, foldAtt0) * shadowMultiplier, IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
             float foldReach = foldAtt0;
         #endif
         #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-            const float foldAtt2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            const float foldAtt2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
             LAMP_IF(foldAtt2)
                 lighting += getPointLightLightingAttFull(IN.light2Dir.xyz, foldAtt2, SHADOWED(PSLightColor[1].rgb, 1, foldAtt2), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
             foldReach = max(foldReach, foldAtt2);
         #endif
         #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-            const float foldAtt3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            const float foldAtt3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
             LAMP_IF(foldAtt3)
                 lighting += getPointLightLightingAttFull(IN.light3Dir.xyz, foldAtt3, SHADOWED(PSLightColor[2].rgb, 2, foldAtt3), IN.viewDir.xyz, normal.xyz, foldAlbedo, foldRough, foldMetal);
             foldReach = max(foldReach, foldAtt3);
@@ -1177,11 +1206,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
         float skyValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
         #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-            float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+            float att2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
             float3 light2Color = SHADOWED(PSLightColor[1].rgb, 1, att2);
         #endif
         #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-            float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+            float att3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
             float3 light3Color = SHADOWED(PSLightColor[2].rgb, 2, att3);
         #endif
         float3 lighting;
@@ -1235,7 +1264,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // Pointlights only. Attenuate from the object-space lightDistSq.x carried from the VS,
         // not length(IN.lightDir.xyz) -- that vector is tangent-space (TBN-transformed) and its
         // length is only correct if the TBN basis is orthonormal.
-        float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
+        float att0 = LAMP_ATT_SQ(IN.lightDistSq.x, IN.lightDir);
         #if INTERIOR_SHADOWS && defined(POINT)
             FOLD_DECL lighting = 0.0f;
             LAMP_IF(att0) {   // UNOFFICIAL LampReachSkip
@@ -1265,7 +1294,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // Other light sources. Same object-space attenuation fix as light0 above.
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
-        float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
+        float att2 = LAMP_ATT_SQ(IN.lightDistSq.y, IN.light2Dir);
         #if INTERIOR_SHADOWS && defined(POINT)
             LAMP_IF(att2) {   // UNOFFICIAL LampReachSkip
                 float3 light2Term = getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
@@ -1279,7 +1308,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
-        float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
+        float att3 = LAMP_ATT_SQ(IN.lightDistSq.z, IN.light3Dir);
         #if INTERIOR_SHADOWS && defined(POINT)
             LAMP_IF(att3) {   // UNOFFICIAL LampReachSkip
                 float3 light3Term = getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);

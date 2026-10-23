@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -210,4 +211,131 @@ namespace BloodFlowBoxes {
 		}
 		return triangles;
 	}
+
+	// UNOFFICIAL 2026-10-22 (perf, user: very hard fps drops; F10 'Blood splat shapes' 30-44 ms with 13-22 splats; DeepSeek-V4-Pro's
+	// review, bench\deep-roadmap\evidence\deepseek-review\answers\q-blood.md): the splat shapes' mask (SplatMask setting). The splat's
+	// shape (BloodFlow.fx.hlsl SplatThickness: core, arms, spray lines, drips, mist) is a field T over the splat's own plane, in splat
+	// radii, that depends only on the splat (its seed, how far it has grown and its drips have run, which arms have a real stream)
+	// and never on the camera. It is worked out once into a cell of a mask atlas (technique BloodSplatMaskBake, one texel per point)
+	// and the splat pass reads it there (BloodSplatMask) instead of working it out again for every pixel of every frame. A cell's
+	// texels follow the splat's size on screen (32 to CellSize across, so a texel is about a pixel: the picture stays as it was).
+	// While a splat still changes quickly (growing, its paths just found by the probe, its drips running on faster than MaxTexelSpeed)
+	// it works its shape out per pixel as before (SplatFast): working its cell out every frame would cost more than that (offline:
+	// 7.7 ms for 18 cells against 3.0). Once it has settled its cell is worked out, and again when its drips have run on a texel or
+	// it is seen closer (more texels); at most MaxBakes cells a frame (the others wait, per pixel or a texel behind). A splat without
+	// a cell (more splats than cells) works its shape out per pixel. Kept free of NVR's globals: tests\blood_preview.cpp runs this.
+	struct SplatMask {
+		static const int CellSize = 512;	// texels across a cell at most
+		static const int CellsPerRow = 8;
+		static const int Cells = 48;		// the atlas: 8 x 6 cells of 512 = 4096 x 3072 texels (R16F, 24 MB)
+		static const int AtlasWidth = CellSize * CellsPerRow, AtlasHeight = CellSize * (Cells / CellsPerRow);
+		static const int FreshFrames = 6;	// frames a splat is not settled after its paths start afresh (the probe keeps a path after 3)
+		static const int MaxBakes = 4;		// cells worked out in one frame at most
+		static constexpr float MaxTexelSpeed = 16.0f;	// texels a second its drips may still run on and the splat count as settled
+
+		struct Cell { int Slot = -1; float Seed = -1.0f; int N = 0; float Run = -1.0f; bool Valid = false; int Fresh = 0; unsigned LastUsed = 0; };
+		Cell		cells[Cells];
+		float		codeOfSlot[1024] = {};	// per item slot: 1 + cell x 1024 + texels across (0: no cell); written into c.w for the splat pass
+		unsigned	frame = 0;
+		int			baked = 0;				// cells worked out this frame
+		int			masked = 0;				// splats drawn from their cell this frame (the rest per pixel)
+		bool		always = false;			// test only: every cell worked out every frame (the worst case, all splats changing)
+
+		// The cell's square, in splat radii: x from -E to E across, y (down the surface) from -E to E + D (D: room for the drips).
+		// reach, drips: SplatReach, SplatDrips (TESR_BloodFlowSplat y, w).
+		static float E(float reach) { return 1.15f + 3.12f * reach; }
+		static float D(float reach, float drips) { return drips * (std::max)(1.3f, 2.4f * reach) + 0.2f; }
+
+		// As SplatPS: how far the splat has grown (0-1) and its drips have run (0-1 x drips), from its normal and age.
+		static void GrowRun(const Item& item, float drips, float& grow, float& run) {
+			const float g = (std::min)((std::max)(item.Age / 0.12f, 0.0f), 1.0f);
+			grow = g * g * (3.0f - 2.0f * g);
+			const float l = Length(item.Normal);
+			const D3DXVECTOR3 n = l > 1e-6f ? item.Normal / l : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+			const float steep = Length(D3DXVECTOR3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0f));
+			run = drips * (std::min)((std::max)(steep * 3.0f - 0.15f, 0.0f), 1.0f) * (1.0f - expf(-(std::max)(item.Age - 0.3f, 0.0f) / 4.0f));
+		}
+
+		// Once a frame, before the splat pass: gives each splat on screen a cell, works out which cells need working out again and
+		// writes their quads (6 vertices each, technique BloodSplatMaskBake) into out; returns the triangle count. eye: the camera's
+		// absolute position; screenHeight in pixels; proj22: the projection's y scale.
+		int Update(const Item* items, int count, float reach, float drips, const D3DXVECTOR3& eye, float screenHeight, float proj22,
+			VolumetricSmokeQuads::Vertex* out) {
+			frame++;
+			baked = masked = 0;
+			for (int s = 0; s < 1024; s++) codeOfSlot[s] = 0.0f;
+			const float e = E(reach), d = D(reach, drips), span = 2.0f * e + d;
+			const float kMax = (std::max)(2.4f * reach, 1.26f);	// the drips' longest run per unit of run (the curtain; an arm's)
+			int triangles = 0;
+			for (int i = 0; i < count; i++) {
+				const Item& item = items[i];
+				if (item.Pool || !item.Visible || item.Slot < 0 || item.Slot >= 1024) continue;
+				int c = -1;
+				for (int k = 0; k < Cells; k++) if (cells[k].Slot == item.Slot && cells[k].LastUsed + 1 >= frame) { c = k; break; }
+				if (c < 0) {	// a free cell: never used, or its slot not drawn last frame
+					for (int k = 0; k < Cells && c < 0; k++) if (cells[k].Slot < 0 || cells[k].LastUsed + 1 < frame) c = k;
+					if (c < 0) continue;	// none: this splat works its shape out per pixel
+					cells[c] = Cell();
+					cells[c].Slot = item.Slot;
+				}
+				Cell& cell = cells[c];
+				cell.LastUsed = frame;
+				// Texels across: the cell's span on screen where the splat is nearest (a power of two, 32 to CellSize); never fewer
+				// than it has (seen from further off the extra texels cost nothing).
+				const float r = (std::max)((std::min)(item.Radius, 24.0f), 1.0f);	// as ShapeR
+				const float distance = (std::max)(Length(item.Center - eye) - (e + d) * r, 5.0f);
+				const float pixels = span * r / distance * screenHeight * proj22 * 0.5f;
+				int n = 32;
+				while (n < CellSize && n < pixels) n *= 2;
+				float grow, run;
+				GrowRun(item, drips, grow, run);
+				if (item.Fresh) cell.Fresh = FreshFrames;
+				if (cell.Seed != item.Seed) cell.Valid = false;
+				// How fast its drips run on now, in texels a second (d run / d age, from GrowRun).
+				const float l = Length(item.Normal);
+				const D3DXVECTOR3 nn = l > 1e-6f ? item.Normal / l : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+				const float slope = (std::min)((std::max)(Length(D3DXVECTOR3(nn.x * nn.z, nn.y * nn.z, nn.z * nn.z - 1.0f)) * 3.0f - 0.15f, 0.0f), 1.0f);
+				const float runSpeed = drips * slope * 0.25f * expf(-(std::max)(item.Age - 0.3f, 0.0f) / 4.0f);
+				const int texels = (std::max)(n, cell.N);
+				const bool settled = cell.Fresh == 0 && grow >= 1.0f && runSpeed * kMax * texels / span < MaxTexelSpeed;
+				if (cell.Fresh > 0) cell.Fresh--;
+				if (!settled && !always) { cell.Valid = false; continue; }	// (per pixel for now)
+				const bool stale = !cell.Valid || n > cell.N || fabsf(run - cell.Run) > span / ((float)texels * kMax);	// (a texel's run)
+				const bool bake = always || (stale && baked < MaxBakes);
+				if (!bake && !cell.Valid) continue;	// (waits its turn, per pixel)
+				if (bake) {
+					cell.Seed = item.Seed; cell.N = texels; cell.Run = run; cell.Valid = true;
+					const float x0 = (float)((c % CellsPerRow) * CellSize), y0 = (float)((c / CellsPerRow) * CellSize);
+					VolumetricSmokeQuads::Vertex data = {};
+					ItemData(item, D3DXVECTOR3(x0, y0, (float)cell.N), 0.0f, data);	// (a.xyz: the cell's corner in texels, its texels across)
+					// D3D9 puts pixel centres on whole coordinates: the quad from x0 to x0 + N covers texels x0 .. x0 + N - 1.
+					const float u0 = x0 / AtlasWidth * 2.0f - 1.0f, u1 = (x0 + cell.N) / AtlasWidth * 2.0f - 1.0f;
+					const float v0 = 1.0f - y0 / AtlasHeight * 2.0f, v1 = 1.0f - (y0 + cell.N) / AtlasHeight * 2.0f;
+					const float corner[4][2] = { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v1 } };
+					static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+					for (int t = 0; t < 6; t++) {
+						VolumetricSmokeQuads::Vertex& v = out[triangles * 3 + t];
+						v = data;
+						v.x = corner[order[t]][0]; v.y = corner[order[t]][1]; v.z = 0.5f; v.w = 1.0f;
+					}
+					triangles += 2;
+					baked++;
+				}
+				codeOfSlot[item.Slot] = 1.0f + (float)c * 1024.0f + (float)cell.N;
+				masked++;
+			}
+			return triangles;
+		}
+
+		// The splat pass's vertices with each item's cell code in c.w (the longest drip, which the splat pass does not read).
+		void Mark(VolumetricSmokeQuads::Vertex* v, int vertices) const {
+			for (int i = 0; i < vertices; i++) {
+				const float code = floorf(v[i].a[3] + 0.5f);
+				const int slot = (int)fmodf(code, 1000.0f);	// (slot + 1000 if a pool + 2000 if fresh: ItemData)
+				v[i].c[3] = slot >= 0 && slot < 1024 ? codeOfSlot[slot] : 0.0f;
+			}
+		}
+
+		void Reset() { for (int k = 0; k < Cells; k++) cells[k] = Cell(); }
+	};
 }

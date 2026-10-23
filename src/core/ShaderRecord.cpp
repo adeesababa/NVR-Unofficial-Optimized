@@ -220,6 +220,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// objects with 3+ lamps can draw their lamps' highlights (and metal) themselves, as the one-pass shaders do. Compiled in only when on at
 	// startup (the per-draw switch then turns it on live: 0 = the old result exactly).
 	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
+	// UNOFFICIAL 2026-10-22 LampDistanceFix (ObjectTemplate.hlsl LAMP_ATT_SQ): the 2- and 3-lamp object shaders take each lamp's falloff from the
+	// lamp vector squared per pixel (as the game's shaders do) instead of a squared distance blended from the vertices, which left big flat
+	// surfaces near a lamp (rugs, floors, posters, walls) almost unlit. Compiled in only when on at startup; off = the shaders as before.
+	AppendDefine("LAMP_VECTOR_ATT_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampDistanceFix") ? "1" : "0");
 	// UNOFFICIAL 2026-10-21 LampSums (ObjectTemplate.hlsl NVR_LAMP_SUMS, core/PassSums.h): the extra lamp passes add their light to the light-only
 	// pass's in linear light (exact where one such pass covers a pixel). Compiled in only when on at startup (with linear lighting); the
 	// per-run switch then turns it on live: 0 = the old result exactly.
@@ -301,6 +305,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		}
 		AppendDefine("SHADOW_FIXED_MODE", shadowMode == 0 ? "0" : shadowMode == 1 ? "1" : shadowMode == 2 ? "2" : "3");
 	}
+	// UNOFFICIAL 2026-10-23 CharacterObjectReach: CharacterShadowReach's slack cap compiled into the object pixel shaders for the draws
+	// flagged as an actor's head, hair, face mask or headgear (ObjectTemplate.hlsl, Includes/Shadow.hlsl SHADOW_SLACK_CAP_ACTOR). Defined
+	// only when on, and last, so that off the list and the shaders are exactly what they were and it never pushes another define out.
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CharacterObjectReach"))
+		AppendDefine("SHADOW_CHARACTER_OBJECTS", "1");
 
 }
 
@@ -756,6 +765,15 @@ void NiD3DVertexShaderEx::SetupShader(IDirect3DVertexShader9* CurrentVertexHandl
 		return;
 	}
 
+	// UNOFFICIAL 2026-10-22 MarkShaders, vanilla mode (test only): the vertex shaders SLS<VsFrom>..SLS<VsTo> as the game's own.
+	if ((MarkShadersVanilla == 1 || MarkShadersVanilla == 3) && MarkShadersVsTo > 0 && ShaderHandleBackup && Name && !memcmp(Name, "SLS", 3)) {
+		const int number = atoi(Name + 3);
+		if (number >= MarkShadersVsFrom && number <= MarkShadersVsTo) {
+			ShaderHandle = (IDirect3DVertexShader9*)ShaderHandleBackup;
+			return;
+		}
+	}
+
 	if (GetShaderRecord(ShaderRecordType::Exterior) && Player->GetWorldSpace()) {
 		ShaderHandle = GetShaderRecord(ShaderRecordType::Exterior)->ShaderHandle;
 		if (CurrentVertexHandle != ShaderHandle) GetShaderRecord(ShaderRecordType::Exterior)->SetCT();
@@ -824,6 +842,41 @@ void NiD3DPixelShaderEx::SetupShader(IDirect3DPixelShader9* CurrentPixelHandle) 
 	if (!Enabled || !TheSettingManager->SettingsMain.Main.RenderEffects) {
 		ShaderHandle = (IDirect3DPixelShader9*)ShaderHandleBackup;
 		return;
+	}
+
+	// UNOFFICIAL 2026-10-22 MarkShaders (test only, [Shaders.PBR.Main] MarkShadersFrom/To, read each frame in UpdateConstants): the
+	// pixel shaders SLS<from>..SLS<to> draw flat magenta, to see which shader draws a surface. ps_2_0, so any vertex shader fits.
+	// Both 0 = off (the default): nothing below changes.
+	if (MarkShadersTo > 0) {
+		static int logged = 0;
+		if (logged < 40) { logged++; Logger::Log("MarkShaders: pixel shader '%s' (range %d-%d)", Name ? Name : "(null)", MarkShadersFrom, MarkShadersTo); }
+	}
+	// MarkShadersFamily: 0 the SLS shaders, 1 the parallax (PAR) ones, 2 every other pixel shader (the range is ignored).
+	const bool isSLS = Name && !memcmp(Name, "SLS", 3), isPAR = Name && !memcmp(Name, "PAR", 3);
+	if (MarkShadersTo > 0 && Name && (MarkShadersFamily == 2 ? !isSLS && !isPAR : MarkShadersFamily == 1 ? isPAR : isSLS)) {
+		const int number = atoi(Name + 3);
+		if (MarkShadersFamily == 2 || (number >= MarkShadersFrom && number <= MarkShadersTo)) {
+			static IDirect3DPixelShader9* magenta = nullptr;
+			static bool tried = false;
+			if (!tried) {
+				tried = true;
+				static const char src[] = "float4 main() : COLOR0 { return float4(1, 0, 1, 1); }";
+				ID3DXBuffer* code = nullptr;
+				if (SUCCEEDED(D3DXCompileShader(src, sizeof(src) - 1, NULL, NULL, "main", "ps_2_0", 0, &code, NULL, NULL)) && code) {
+					TheRenderManager->device->CreatePixelShader((const DWORD*)code->GetBufferPointer(), &magenta);
+					code->Release();
+				}
+				Logger::Log("MarkShaders: magenta shader %s", magenta ? "ready" : "FAILED");
+			}
+			if (MarkShadersVanilla == 1) {	// the game's own shader instead (with MarkShadersVsFrom/To for the vertex shaders that feed it)
+				ShaderHandle = (IDirect3DPixelShader9*)ShaderHandleBackup;
+				return;
+			}
+			if (magenta && MarkShadersVanilla != 3) {	// 3: the vertex shaders only (the pixel shaders stay NVR's)
+				ShaderHandle = magenta;
+				return;
+			}
+		}
 	}
 
 	if (GetShaderRecord(ShaderRecordType::Exterior) && Player->GetWorldSpace()) {

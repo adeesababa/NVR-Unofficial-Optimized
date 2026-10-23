@@ -3,7 +3,7 @@
 class MotionBlurEffect : public EffectRecord
 {
 public:
-	MotionBlurEffect() : EffectRecord("MotionBlur") {};
+	MotionBlurEffect() : EffectRecord("MotionBlur") { ZeroMemory(&Constants, sizeof(Constants)); };	// UNOFFICIAL 2026-10-22: zeroed (the old angles were read on the first frame before ever being set)
 
 	struct ValuesStruct {
 		float BlurCutOff;

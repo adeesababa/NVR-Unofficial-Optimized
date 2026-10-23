@@ -30,6 +30,7 @@
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
+#include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
 
@@ -637,6 +638,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	LampsInOnePass::BeginFrame();	// UNOFFICIAL 2026-10-18 LampsInOnePass (before the scene walk builds the objects' passes)
 	PbrPop::LodPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularLODPasses (likewise before the scene walk)
 	PbrPop::SpecFade::BeginFrame();	// UNOFFICIAL 2026-10-18 SpecularFade
+	CharacterObjectReach::BeginFrame();	// UNOFFICIAL 2026-10-23 CharacterObjectReach
 	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
@@ -2425,6 +2427,17 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	else {
 		Logger::Log("Error getting pixel shader for pass %s", Pointers::Functions::GetPassDescription(PassIndex));
 	}
+	// UNOFFICIAL 2026-10-22 MarkShaders (test only, [Shaders.PBR.Main] MarkShadersTo > 0): the vertex + pixel shader pairs the game draws with,
+	// each pair once (first 120), with whether NVR replaced each.
+	if (MarkShadersTo > 0 && VertexShader && PixelShader) {
+		static std::unordered_set<std::string> pairs;
+		if (pairs.size() < 120) {
+			std::string key = std::string(VertexShader->Name ? VertexShader->Name : "?") + " + " + (PixelShader->Name ? PixelShader->Name : "?");
+			if (pairs.insert(key).second)
+				Logger::Log("MarkShaders: pair %s (pass %s) vs %s ps %s", key.c_str(), Pointers::Functions::GetPassDescription(PassIndex),
+					VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup ? "NVR" : "game", PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup ? "NVR" : "game");
+		}
+	}
 	ReflMaterial::OnShadersBound(TheRenderManager->device);	// UNOFFICIAL 2026-10-21 MaterialAware reflections: alpha writes for a flagged pass
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->SetForDraw(VertexShader, PixelShader);	// UNOFFICIAL 2026-10-17 grass lighting fix
 	TerrainProbe::LastPixel = PixelShader ? PixelShader->Name : nullptr;	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
@@ -2628,6 +2641,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
 		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
 	}
+	CharacterObjectReach::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-23
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	if (LampScissor::Before((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World, BarrelHeat::Active) == LampScissor::Skip) {
@@ -2676,6 +2690,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 		FoldHighlights::ForDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World, fold, foldVertexColor);
 		PbrPop::SpecFade::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, fold, foldVertexColor);
 	}
+	CharacterObjectReach::ForDraw(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL 2026-10-23
 	BarrelHeat::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL GunFX barrel glow, per object
 	ForwardShadowsForPass(Pass);
 	ClothWind::PassGeometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;	// UNOFFICIAL 2026-10-19 cloth: SetShadersHook notes this object

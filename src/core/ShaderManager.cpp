@@ -1,4 +1,5 @@
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools (AfterCombine)
+#include "FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "GpuProfiler.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
@@ -260,6 +261,31 @@ void ShaderManager::UpdateConstants() {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 
 	auto timer = TimeLogger();
+	MarkShadersFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersFrom");	// UNOFFICIAL 2026-10-22 MarkShaders (test only)
+	MarkShadersTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersTo");
+	MarkShadersFamily = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersFamily");
+	MarkShadersVanilla = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVanilla");
+	MarkShadersVsFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsFrom");
+	MarkShadersVsTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsTo");
+	// MarkShadersVanilla 2 (test only, once): the game's lamp falloff textures (BSShaderManager::spAttenuationXY 0x011F9534 / Z 0x011F9538)
+	// saved next to the log as PNG, to compare their shape with the shaders' 1 - (d / r)^2.
+	if (MarkShadersVanilla == 2) {
+		static bool dumped = false;
+		if (!dumped) {
+			dumped = true;
+			const UInt32 addrs[2] = { 0x011F9534, 0x011F9538 };
+			for (int i = 0; i < 2; i++) {
+				NiTexture* tex = *(NiTexture**)addrs[i];
+				IDirect3DBaseTexture9* d3d = (tex && tex->rendererData) ? tex->rendererData->dTexture : nullptr;
+				char path[MAX_PATH];
+				sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NVR-attenuation-%s.png", i ? "Z" : "XY");
+				HRESULT hr = d3d ? D3DXSaveTextureToFileA(path, D3DXIFF_PNG, d3d, NULL) : E_FAIL;
+				D3DSURFACE_DESC desc = {};
+				if (d3d && d3d->GetType() == D3DRTYPE_TEXTURE) ((IDirect3DTexture9*)d3d)->GetLevelDesc(0, &desc);
+				Logger::Log("MarkShaders: attenuation %s texture %p d3d %p type %d %ux%u format %d saved %s (hr %08X)", i ? "Z" : "XY", tex, d3d, d3d ? (int)d3d->GetType() : -1, desc.Width, desc.Height, (int)desc.Format, path, (unsigned)hr);
+			}
+		}
+	}
 
 	bool IsThirdPersonView = !TheCameraManager->IsFirstPerson();
 	Sky* WorldSky = Tes->sky;
@@ -1619,6 +1645,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// UNOFFICIAL 2026-10-19 SunFar: the land's and the clouds' shadows as a factor the sun-shadow composites below take (outdoors,
 	// while either is on; otherwise it marks the factor unused and draws nothing).
 	Effects.SunFar->RenderFactor(Device);
+	if (Effects.SunFar->Constants.Apply.x > 0.5f) FlickerWatch::Flags |= FlickerWatch::kSunFar;	// UNOFFICIAL 2026-10-23 test only
 
 	Device->SetRenderTarget(0, RenderTarget);
 
@@ -1733,6 +1760,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// unless snow accumulates); if it does not render after all, the shadow pass runs after it (below).
 	const bool shadowIntoAmbientLight = ambientLight && shadowApplies && !composite && !pairApply && !wouldRender(Effects.SnowAccumulation) &&
 		!TheSettingManager->SettingsMain.Main.DisableCompositeApply;
+	if (GameState.isExterior) {	// UNOFFICIAL 2026-10-23 FlickerWatch (test only): which pass applies the sun shadow this frame
+		if (composite && shadowApplies) FlickerWatch::Flags |= FlickerWatch::kComposite;
+		if (pairApply) FlickerWatch::Flags |= FlickerWatch::kPair;
+		if (shadowIntoAmbientLight) FlickerWatch::Flags |= FlickerWatch::kIntoAL;
+		if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight) FlickerWatch::Flags |= FlickerWatch::kShadowPass;
+		if (Effects.ShadowsExteriors->Constants.ShadowBlur.y > 0.5f) FlickerWatch::Flags |= FlickerWatch::kLodUpdated;
+		if (GameState.isCellChanged) FlickerWatch::Flags |= FlickerWatch::kCellChanged;
+	}
 
 	{
 		GpuProfileScope gpu(shadowApplyTimer, Device);
@@ -1813,8 +1848,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.AmbientLight->shadowApplied = false;
 		Effects.AmbientLight->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.AmbientLight->foldShadow = false;
-		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied)
+		if (Effects.AmbientLight->shadowApplied) FlickerWatch::Flags |= FlickerWatch::kALApplied;
+		if (shadowIntoAmbientLight && !Effects.AmbientLight->shadowApplied) {
+			FlickerWatch::Flags |= FlickerWatch::kShadowPass;
 			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		}
 	}
 #if NVR_TEST_TOOLS
 	SettingShots::CaptureStage(Device, TheTextureManager->RenderedSurface);	// UNOFFICIAL, test only: 'stage' shots (ambfix 2026-10-18)
@@ -2291,6 +2329,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Debug->RenderClipView(Device, RenderTarget); // UNOFFICIAL: [Shaders.Debug.Main] ClipView
 	}
+	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior)	// UNOFFICIAL 2026-10-23 test only (core\FlickerWatch.h)
+		FlickerWatch::OnFrame(Device, RenderTarget, Effects.SunFar->Settings.FlickerThreshold);
+	else FlickerWatch::Flags = 0;
 
 	timer.LogTime("ShaderManager::RenderEffects");
 }

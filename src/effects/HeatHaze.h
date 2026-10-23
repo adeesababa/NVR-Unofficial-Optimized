@@ -10,7 +10,7 @@
 class HeatHazeEffect : public EffectRecord
 {
 public:
-	HeatHazeEffect() : EffectRecord("HeatHaze") {};
+	HeatHazeEffect() : EffectRecord("HeatHaze") { ZeroMemory(&Constants, sizeof(Constants)); };	// UNOFFICIAL 2026-10-22: zeroed (Noise.z, the ripple clock, was read before ever being set)
 
 	struct HeatHazeSettingsStruct {
 		float	Strength;		// largest offset, in pixels at 1080p, at full heat

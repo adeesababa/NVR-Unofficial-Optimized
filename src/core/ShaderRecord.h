@@ -139,6 +139,9 @@ public:
 	static void __fastcall Free(NiD3DVertexShaderEx* shader);
 };
 
+// UNOFFICIAL 2026-10-22 MarkShaders (test only, ShaderRecord.cpp NiD3DPixelShaderEx::SetupShader): SLS pixel shader range drawn magenta; 0 = off.
+inline int MarkShadersFrom = 0, MarkShadersTo = 0, MarkShadersFamily = 0, MarkShadersVanilla = 0, MarkShadersVsFrom = 0, MarkShadersVsTo = 0;
+
 class NiD3DPixelShaderEx : public NiD3DPixelShader {
 public:
 	void					SetupShader(IDirect3DPixelShader9* CurrentPixelHandle);

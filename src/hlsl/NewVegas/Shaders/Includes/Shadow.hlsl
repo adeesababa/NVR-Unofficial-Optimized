@@ -252,7 +252,22 @@ static float ShadowSlopeBias = 0.0f;
 #ifndef SHADOW_SLACK_CAP_ALL
     #define SHADOW_SLACK_CAP_ALL 0
 #endif
+// UNOFFICIAL 2026-10-23 CharacterObjectReach ([Shaders.ShadowsExteriors.Main], restart to compile in, live after; P82 tester: a facemask
+// drawn with the object shaders faded out of the hair's and nose's shadow sooner than the skin face beside it as the camera zoomed): the
+// object templates define SHADOW_SLACK_CAP_ACTOR (ObjectTemplate.hlsl, from SHADOW_CHARACTER_OBJECTS) so their draws can take the skin
+// shaders' cap above, but only a draw the CPU flags (NVR_ShadowCharacterDraw.x = 1, c204, set per draw in the RenderPass hooks for an
+// actor's head, hair, face mask and headgear: every bone a head/neck bone, or under the head bone): never the armour, whose flat plates
+// need the full slack at a low sun (the 2026-10-14 stripes). Every other draw: 0, no cap, the texel slack as before.
+#ifndef SHADOW_SLACK_CAP_ACTOR
+    #define SHADOW_SLACK_CAP_ACTOR 0
+#endif
 #if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL
+    #define SHADOW_CHARACTER_REACH TESR_ShadowBlur.w
+#elif SHADOW_SLACK_CAP_ACTOR
+    float4 NVR_ShadowCharacterDraw : register(c204); // x: 1 = this draw is an actor's head/face/headgear (cap on), 0 = not
+    #define SHADOW_CHARACTER_REACH (TESR_ShadowBlur.w * NVR_ShadowCharacterDraw.x)
+#endif
+#if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL || SHADOW_SLACK_CAP_ACTOR
     #define SHADOW_SLACK_CAP 1
     // The cap in light-space depth (the cascades are 2 radii deep: ShadowsExterior.cpp's far plane). Set by GetSunShadow; the
     // callers that never set it (none today) get no cap.
@@ -768,9 +783,9 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // CharacterShadowReach (see ShadowSlackCap): the normal offset capped at the reach, in world units on Near and growing with
     // the map's texel on the coarser cascades; the depth slacks capped at the reach in Near's depth units (the same on every
     // cascade, which is that same growth). Off (0): no cap, the texel slack alone.
-    [flatten] if (TESR_ShadowBlur.w > 0.0f) {
-        offsetDistance = min(offsetDistance, TESR_ShadowBlur.w * radii / max(radii.x, 0.001f));
-        ShadowSlackCap = TESR_ShadowBlur.w / (2.0f * max(radii.x, 0.001f));
+    [flatten] if (SHADOW_CHARACTER_REACH > 0.0f) {
+        offsetDistance = min(offsetDistance, SHADOW_CHARACTER_REACH * radii / max(radii.x, 0.001f));
+        ShadowSlackCap = SHADOW_CHARACTER_REACH / (2.0f * max(radii.x, 0.001f));
     }
 #endif
 #endif

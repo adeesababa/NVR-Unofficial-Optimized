@@ -342,7 +342,7 @@ float3 DICE(float3 color, float contrast, float brightness, float hdrMax, float 
     float highlightsShoulderStart = HIGHLIGHTS_SHOULDER_START_ALPHA * maxOutputLuminance;
     float compressedHDRLuminance = lumaCompress(HDRLuminance, maxOutputLuminance, highlightsShoulderStart, HIGHLIGHTS_SHOULDER_POW);
     
-    return color * (compressedHDRLuminance / HDRLuminance);
+    return color * (HDRLuminance != 0.0 ? compressedHDRLuminance / HDRLuminance : 1.0); // UNOFFICIAL 2026-10-22: black pixels were 0/0 = NaN
 }
 
 

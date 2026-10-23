@@ -38,6 +38,7 @@ float4 TESR_SunFarCloudWeight;    // per layer: its share (0: no texture)
 float4 TESR_SunFarCloudBlend;     // per layer: how far it has blended to the incoming weather's texture
 float4 TESR_SunFarVolume;         // UNOFFICIAL 2026-10-21 the volumetric clouds' shadow: x strength (0 off), y map width (m), z map texels, w cloud base (m)
 float4 TESR_SunDirection;         // the light the volumetric clouds' shadow map was made with
+float4 TESR_SunFarWater;          // UNOFFICIAL 2026-10-23 [Shaders.CloudShadows.Main] WaterShadows: x 1 on (0: water left alone), y deep water's share, z 1 the depth map is bound
 
 // In register order: NVR binds TESR_ samplers in declaration order.
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -57,6 +58,9 @@ sampler2D NVR_CloudBlend3 : register(s12) = sampler_state { ADDRESSU = WRAP; ADD
 // UNOFFICIAL 2026-10-21: the volumetric clouds' shadow map (VolumetricClouds.fx ShadowMap: the sunlight through the layer, 1 clear),
 // bound by SunFarEffect::RenderFactor.
 sampler2D NVR_VolumeCloudShadow : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-23: the game's water depth map (PlaceableWaterGroup::spDepthMap, as the water shaders read it per screen
+// position: x 0 at the shore, 1 deep), bound by SunFarEffect::RenderFactor with WaterShadows on.
+sampler2D NVR_WaterDepth : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -180,6 +184,18 @@ float VolumeCloudShadow(float3 world) {
 	float inside = saturate(min(edge.x, edge.y) * 10.0f);
 	return lerp(1.0f, tex2Dlod(NVR_VolumeCloudShadow, float4(suv, 0.0f, 0.0f)).r, inside * TESR_SunFarVolume.x);
 }
+// The water's surface: facing up at the water's height (as the other effects test it).
+bool OnWater(float3 world, float3 normal, float depth) {
+	return normal.z > 0.7f && abs(world.z - TESR_WaterSettings.x) < max(2.0f, depth * 0.002f);
+}
+
+// UNOFFICIAL 2026-10-23 WaterShadows: how deep the water is here, 0 at the shore to 1 deep, from the game's water depth map;
+// far off 1, as the water shader fades to its LOD colour there (WATER000 LODfade, 4096-8192 units).
+float WaterDeep(float2 uv, float3 rel) {
+	float deep = saturate(tex2Dlod(NVR_WaterDepth, float4(uv, 0.0f, 0.0f)).x);
+	return lerp(deep, 1.0f, smoothstep(4096.0f, 8192.0f, length(rel.xy)));
+}
+
 float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
 	// Not on the sky (at the far plane, as the volumetric clouds test it) nor on nothing at all. From the linear depth (.x): with
@@ -201,17 +217,28 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	[branch] if (TESR_SunFarData.y > 0.5f) {
 		float3 tint = lerp(1.0f, float3(0.25f, 1.0f, 0.25f), (1.0f - terrain) * 0.8f) * lerp(1.0f, float3(0.35f, 0.5f, 1.0f), (1.0f - cloud) * 0.8f);
 		if (TESR_SunFarData.y > 1.5f) tint *= lerp(1.0f, float3(0.85f, 0.9f, 1.0f), TerrainShadowCoverage(world));
+		// 3: also the water's depth as WaterShadows reads it, white at the shore to red deep (with the depth map bound).
+		float water = TESR_SunFarWater.z * step(2.5f, TESR_SunFarData.y) * (OnWater(world, GetWorldNormalLod(uv), depth) ? 1.0f : 0.0f);
+		tint *= lerp(1.0f, lerp(float3(1.0f, 1.0f, 1.0f), float3(1.0f, 0.15f, 0.15f), WaterDeep(uv, rel)), water);
 		return float4(tint, 1.0f);
 	}
 	[branch] if (blocked >= 0.999f && shade <= 0.001f) return 1.0f;   // most of the screen
 	float3 normal = GetWorldNormalLod(uv);   // (read only past the early-out above: nothing before it needs it)
 
 	// Water is left alone, as the volumetric clouds' shadow leaves it: what it shows is mostly the reflection of things far off.
-	[branch] if (normal.z > 0.7f && abs(world.z - TESR_WaterSettings.x) < max(2.0f, depth * 0.002f)) return float4(1.0f, 1.0f, 1.0f, blocked);
+	// UNOFFICIAL 2026-10-23 WaterShadows (off: as before): shallow water shows the ground under it, which should be in the
+	// shadow too (cut at the waterline, the shadow drew a hard line along every shore). The share it keeps fades from all of it
+	// at the shore to WaterDeepShare in deep water, by the game's own water depth map.
+	float keep = 1.0f;   // the share of the change this pixel takes (1 off the water)
+	[branch] if (OnWater(world, normal, depth)) {
+		keep = TESR_SunFarWater.x * lerp(1.0f, TESR_SunFarWater.y, WaterDeep(uv, rel));
+		[branch] if (keep <= 0.0f) return float4(1.0f, 1.0f, 1.0f, blocked);
+	}
 
-	// What the cascades already took (faded as GetSunShadow fades them).
+	// What the cascades already took (faded as GetSunShadow fades them). Not on water (keep < 1): the outdoor water shaders
+	// draw no sun shadow-map shadows, so nothing there was taken (and the lookup was most of the water's cost).
 	float cascade = 1.0f;
-	[branch] if (TESR_ShadowFade.y > 0.0f) cascade = saturate(lerp(CascadeLight(rel, normal), 1.0f, TESR_ShadowFade.x));
+	[branch] if (TESR_ShadowFade.y > 0.0f && keep >= 1.0f) cascade = saturate(lerp(CascadeLight(rel, normal), 1.0f, TESR_ShadowFade.x));
 
 	// Terrain lights with its own [Shaders.Terrain.*] scales, and nothing in the frame says which pixels are terrain:
 	// surfaces facing up take the terrain scales, walls and objects the PBR ones. The terrain constants are only filled
@@ -224,6 +251,7 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float3 ambientLight = LightColor(TESR_ShadowAmbientLight.rgb) * LightScale(scales.y) + LightColor(SkyIrradiance(normal)) * LightScale(scales.z);
 	float3 litNow = ambientLight + sunLight * cascade;
 	float3 factor = saturate((ambientLight * (1.0f - shade) + sunLight * (cascade * blocked)) / max(litNow, 0.0001f));
+	factor = keep < 1.0f ? lerp(1.0f, factor, keep) : factor;   // (a select: off the water exactly as before)
 	// Into the stored space: with linear lighting the shaders encoded their result with 1 / gamma (w; 1 with it off).
 	factor = pow(max(factor, 1e-6f), TESR_SunFarData.w);
 	// a: what reaches the sun (1 lit): the Specular effect takes it off the sun's highlight (Specular.fx NVR_SpecularSunFar).

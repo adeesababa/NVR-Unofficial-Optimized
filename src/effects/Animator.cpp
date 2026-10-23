@@ -46,7 +46,7 @@ float Animator::GetValue() {
 	float currenttime = time->GameDaysPassed->data * 24;
 	if (!running) return startValue;
 
-	if (currenttime > endTime) {
+	if (currenttime >= endTime) {	// UNOFFICIAL 2026-10-22: >= so a zero-length animation (WaterLens' Start(0, ...)) ends instead of dividing 0 by 0
 		running = false;
 		startValue = endValue;
 		return endValue;

@@ -53,6 +53,9 @@ public:
 		float	SplatReach;		// how far the arms and spray reach, in splat radii
 		float	SplatSpray;		// how many spray lines and how much mist (0-2)
 		float	SplatDrips;		// how far its drips run on walls and slopes, in splat radii (0 none)
+		bool	SplatFast;		// UNOFFICIAL 2026-10-22: the splat shapes drawn the cheaper way, same picture (technique BloodSplatFast; false: the old way, A/B)
+		bool	SplatMask;		// UNOFFICIAL 2026-10-22: each splat's shape worked out once into a mask atlas and read from there (BloodFlowBoxes::SplatMask; false: SplatFast)
+		int		TestSplats;		// UNOFFICIAL 2026-10-22, TEST ONLY: this many made-up splats on the ground ahead (fresh game splats cannot be made from a save)
 		float	Merge;			// splats closer than this x their radii merge into one item (0 off)
 		float	GibPools;		// a pool under each cut-off limb, this x the body's pool size (0 off)
 		float	GibHold;		// UNOFFICIAL 2026-10-20: seconds a gib's landing splat waits (dropped if the gib bounces on; 0 off)
@@ -103,6 +106,17 @@ public:
 	// The box round each item's real paths (2 x ItemMax: lowest and highest corner), from the latest paths.
 	IDirect3DTexture9*	BoundsTexture = nullptr;
 	IDirect3DSurface9*	BoundsSurface = nullptr;
+	// UNOFFICIAL 2026-10-22 (SplatMask): the splat shapes' mask atlas (made the first time it is used: 24 MB), its cells, the splat
+	// pass's vertices with each splat's cell, and the constants (TESR_BloodFlowMask, TESR_BloodFlowMaskSize).
+	IDirect3DTexture9*	MaskTexture = nullptr;
+	IDirect3DSurface9*	MaskSurface = nullptr;
+	bool				MaskFailed = false;	// the card cannot draw into or filter R16F: the mask stays off
+	BloodFlowBoxes::SplatMask Mask;
+	float				MaskShape[3] = { -1.0f, -1.0f, -1.0f };	// SplatReach, SplatSpray, SplatDrips the cells were worked out with
+	VolumetricSmokeQuads::Vertex MaskBakeVertices[BloodFlowBoxes::SplatMask::Cells * 6];
+	VolumetricSmokeQuads::Vertex SplatVertices[ItemMax * 36];
+	D3DXVECTOR4			MaskConstants = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	D3DXVECTOR4			MaskSizeConstants = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 
 	// Each item keeps its slot (rows in the path texture) while it is gathered every frame.
 	struct SlotState { UInt64 Key = 0; bool Used = false; UInt32 SeenFrame = 0; int WrittenPass = -10; };
@@ -111,6 +125,9 @@ public:
 	int					ProbePasses = 0;	// probe passes drawn
 
 private:
+	void	AddTestSplats();
+	D3DXVECTOR3	TestAnchor = D3DXVECTOR3(0.0f, 0.0f, 0.0f);	// TestSplats: the ground point they lie round, and when they were made
+	double		TestStart = -1.0;
 	void	GatherSplats();
 	void	GatherPools();
 	int		SlotFor(UInt64 key);

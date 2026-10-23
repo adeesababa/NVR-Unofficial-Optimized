@@ -276,7 +276,8 @@ static const float GridX = 32.0, GridY = 32.0, GridZ = 16.0;
 static const float GridAlbedo = 0.4;   // a typical surface (desert ground, plaster) for the ambient share
 static const float GridIrradianceScale = 1.5;   // AmbientLight's GridBounce reads the grid x 1.5 (its spreading loses light)
 float4 GridShBasis(float3 d) { return float4(0.282095, 0.488603 * d); }
-float2 GridCellUV(float3 c) { return (float2(fmod(c.z, 4.0), floor(c.z / 4.0)) * 32.0 + c.xy + 0.5) / 128.0; }
+// (2026-10-22 lightgrid2: the atlas is 256 x 128 now, AmbientLight's coarse level in its left half; GridFallback reads that one.)
+float2 GridCellUV(float3 c) { return (float2(fmod(c.z, 4.0), floor(c.z / 4.0)) * 32.0 + c.xy + 0.5) / float2(256.0, 128.0); }
 
 // 1 where the top-down ortho map has something above the camera-relative point p (inside or under a building, a rock, a
 // roof: a ray that got there met it), 0 in the open or outside the map's square. Only while the map is kept up (RoofMaskOn).

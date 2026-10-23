@@ -140,7 +140,7 @@ bool EffectRecord::LoadEffect() {
 				Enabled = false;
 				return success;
 			}
-			if (Errors) Logger::Log((char*)Errors->GetBufferPointer());
+			if (Errors) { Logger::Log((char*)Errors->GetBufferPointer()); Errors->Release(); Errors = NULL; }	// UNOFFICIAL 2026-10-22: freed before the next call reuses it
 
 			compiled = Compiler->CompileEffect(NULL, &EffectBuffer, &Errors);
 			if (FAILED(compiled)) {
@@ -519,6 +519,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 			if (ClearRenderTarget) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);
 			Effect->BeginPass(p);
 			BindPassTextures();	// UNOFFICIAL 2026-10-19
+			BeforeDraw(Device);	// UNOFFICIAL 2026-10-22
 			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture

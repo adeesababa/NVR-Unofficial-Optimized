@@ -46,7 +46,7 @@ float4 getFresnelBelowWater(float3 surfaceNormal, float3 eyeDirection, float4 re
 }
 
 float4 skyColor(float3 eyeDirection, float4 sunColor){
-    float3 skyColor = lerp(linearize(TESR_HorizonColor), linearize(TESR_SkyLowColor), pow(dot(eyeDirection, float3(0, 0, 1)), 0.5)).rgb; //linearise
+    float3 skyColor = lerp(linearize(TESR_HorizonColor), linearize(TESR_SkyLowColor), pow(abs(dot(eyeDirection, float3(0, 0, 1))), 0.5)).rgb; //linearise (UNOFFICIAL 2026-10-22: abs() written out; D3D9's pow already used the absolute value, so the picture is the same)
     skyColor += sunColor.rgb * 5 * pow(shades(eyeDirection, -TESR_SunDirection.xyz), 20);
     return float4(skyColor, 1);
 }

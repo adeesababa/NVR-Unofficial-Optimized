@@ -119,6 +119,8 @@ public:
 		float				CascadeLambda;
 		bool				SmoothFilter;	// UNOFFICIAL 2026-10-15: PCF (Mode 3) with a 4 x 4 cubic B-spline instead of the 3 x 3
 		float				HandoverBlend = 70.0f;	// UNOFFICIAL 2026-10-21: width of the cross-fade band between sun cascades, world units (TESR_ShadowForwardData.w), live
+		bool				PlayerInNearLog = false;
+		float				PlayerInNear = 0.0f;	// UNOFFICIAL 2026-10-23: third person, the player's head kept inside the Near cascade up to this camera distance (world units), 0 = off, live
 	};
 
 	struct OrthoStruct {

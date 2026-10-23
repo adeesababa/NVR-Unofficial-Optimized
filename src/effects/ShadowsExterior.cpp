@@ -450,6 +450,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// by both the forward and the deferred lookups). 0 = the old rule, a tenth of the radius. Every Quality level; live.
 	Settings.ShadowMaps.HandoverBlend = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "HandoverBlend"), 0.0f, 2000.0f);
 	Constants.ForwardData.w = Settings.ShadowMaps.HandoverBlend;
+	// UNOFFICIAL 2026-10-23 PlayerInNear (P82 tester, after HandoverBlend and CharacterShadowReach: the hair's, nose's and brow's sun
+	// shadows on the face still fading in only as the third-person camera zooms in to about 1.5-2 m): in third person the Near cascade
+	// grows (GetCascadeViewProj) to hold the player's head while the camera is within this many world units of it (420 = 6 m). 0 = off.
+	Settings.ShadowMaps.PlayerInNear = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNear"), 0.0f, 1400.0f);
+	Settings.ShadowMaps.PlayerInNearLog = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNearLog") != 0;	// diagnostic: Near's radius once a second
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
 	Settings.Exteriors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "Darkness");
 	Settings.Exteriors.NightMinDarkness = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.Main", "NightMinDarkness");
@@ -682,7 +687,7 @@ void ShadowsExteriorEffect::clearShadowsBuffer() {
 	TheRenderManager->device->SetRenderTarget(0, Textures.ShadowPassSurface);
 	TheRenderManager->device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 255, 0, 0), 1.0f, 0L);
 	TheRenderManager->device->SetRenderTarget(0, currentRT);
-	currentRT->Release();
+	if (currentRT) currentRT->Release();
 }
 
 
@@ -987,7 +992,7 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 
 	if (quantizeSun) {
 		float theta = atan2f(SunDir.y, SunDir.x);   // Yaw
-		float phi = acosf(SunDir.z);				// Pitch
+		float phi = acosf(std::clamp(SunDir.z, -1.0f, 1.0f));	// Pitch (UNOFFICIAL 2026-10-22: clamped, a rounding step past 1 gave NaN)
 
 		theta = roundf(theta / yawStepSize) * yawStepSize;
 		phi = roundf(phi / pitchStepSize) * pitchStepSize;
@@ -1249,6 +1254,39 @@ D3DXMATRIX ShadowsExteriorEffect::GetCascadeViewProj(ShadowMapSettings* ShadowMa
 	float currentWorldFOV = WorldSceneGraph->cameraFOV;
 	float radiusFOVCompensation = tan(defaultWorldFOV * 0.5f * (3.1416f / 180.0f)) / tan(currentWorldFOV * 0.5f * (3.1416f / 180.0f));
 	sphereRadius *= radiusFOVCompensation;
+
+	// UNOFFICIAL 2026-10-23 PlayerInNear ([Shaders.ShadowsExteriors.ShadowMaps], world units, live, 0 = off). P82 tester: in third person
+	// the face's own sun shadows (hair strands on the brow, the nose's on the cheek, 1-2 cm wide) showed only once the camera zoomed in to
+	// about 1.5-2 m: further out the head is in the Middle cascade, whose texels (about 1 cm at CascadeResolution 1536, CascadeLambda 0.9)
+	// and 3 x 3 filter blur a strand away, and the zoom also narrows the FOV, which scales every radius above, so the border moves with it.
+	// With this, while the camera is within PlayerInNear of the player's head, the Near sphere is grown to the smallest one holding both
+	// its own slice sphere and the head (24 units round the head bone, plus the hand-over band, so the face reads Near alone): the face
+	// keeps Near's texels at every zoom up to that distance, and Near's texels grow with the sphere (at 6 m about twice today's Near
+	// texel, still about half Middle's). The radius is rounded up to 16 units so walking does not change the texel size every frame.
+	if (Settings.ShadowMaps.PlayerInNear > 0.0f && ShadowMap == &ShadowMaps[MapNear] && Player && Player->isThirdPerson &&
+		Player->ActorSkinInfo && Player->ActorSkinInfo->HeadNode) {
+		const NiPoint3& h = Player->ActorSkinInfo->HeadNode->m_worldTransform.pos;
+		const D3DXVECTOR3 head(h.x - cameraPosition.x, h.y - cameraPosition.y, h.z - cameraPosition.z);	// camera-relative, as the corners
+		const D3DXVECTOR3 toHead = head - frustumCenter;
+		const float headDistance = D3DXVec3Length(&head);
+		const float centerToHead = D3DXVec3Length(&toHead);
+		float margin = 24.0f + Settings.ShadowMaps.HandoverBlend;
+		if (headDistance <= Settings.ShadowMaps.PlayerInNear && std::isfinite(centerToHead) && centerToHead + margin > sphereRadius) {
+			float grown = 0.5f * (sphereRadius + centerToHead + margin);
+			margin += (std::max)(0.0f, 0.1f * grown - Settings.ShadowMaps.HandoverBlend);	// the band is never under a tenth of the radius
+			grown = std::ceil(0.5f * (sphereRadius + centerToHead + margin) / 16.0f) * 16.0f;
+			// the new centre: on the line to the head, so the old sphere's far side stays inside
+			frustumCenter += toHead * ((grown - sphereRadius) / (std::max)(centerToHead, 0.001f));
+			sphereRadius = grown;
+		}
+		static DWORD lastLog = 0;
+		if (Settings.ShadowMaps.PlayerInNearLog && GetTickCount() - lastLog > 1000) {
+			lastLog = GetTickCount();
+			const D3DXVECTOR3 fromCenter = head - frustumCenter;
+			Logger::Log("PlayerInNear: head %.0f units from the camera, Near radius %.0f (FOV %.1f, default %.1f), head %.0f from its centre",
+				headDistance, sphereRadius, currentWorldFOV, defaultWorldFOV, D3DXVec3Length(&fromCenter));
+		}
+	}
 
 	maxExtents = D3DXVECTOR3(sphereRadius, sphereRadius, sphereRadius);
 	minExtents = -maxExtents;

@@ -400,8 +400,13 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			if (Index < Count && Mods.loadedMods[Index]) Request.DefiningFile = Mods.loadedMods[Index]->name;
 		}
 		if (Map && Map->WorldSpace != World) Map.reset();   // free the old worldspace's heights before reading the next
-		LoadJob = std::async(std::launch::async, &TerrainShadowMap::Load, std::move(Request));
-		Loading = true;
+		try {
+			LoadJob = std::async(std::launch::async, &TerrainShadowMap::Load, std::move(Request));
+			Loading = true;
+		}
+		catch (const std::exception& e) {   // UNOFFICIAL 2026-10-22: no thread to be had, as the sweep's: tried again on the next worldspace or setting change
+			Logger::Log("[ERROR] Terrain shadows: could not start loading the heights (%s)", e.what());
+		}
 	}
 
 	// Neither should take more than a second or two: say so (once) if one has, as that leaves the shadows still.

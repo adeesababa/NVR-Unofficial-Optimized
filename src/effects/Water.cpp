@@ -41,8 +41,7 @@ void WaterShaders::UpdateConstants() {
 		Constants.shallowColor = currentWater->GetShallowColor()->toD3DXVECTOR4();
 		Constants.Fog.x = currentWater->properties.fogNearUW;
 		Constants.Fog.y = currentWater->properties.fogFarUW;
-		Constants.Fog.z = currentWater->properties.fogAmountUW;
-		Constants.Fog.z = 1;
+		Constants.Fog.z = currentWater->properties.fogAmountUW;	// UNOFFICIAL 2026-10-22: no longer overwritten with 1 straight after; no shader reads Fog.z today
 	}
 
 	// caustics strength

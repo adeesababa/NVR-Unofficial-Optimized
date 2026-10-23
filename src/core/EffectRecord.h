@@ -13,6 +13,7 @@ public:
 	virtual void			RegisterConstants() {};
 	virtual void			RegisterTextures() {};
 	virtual bool			ShouldRender() { return true; }; // reimplement in subclasses to disable render under certain conditions
+	virtual void			BeforeDraw(IDirect3DDevice9* Device) {};	// UNOFFICIAL 2026-10-22: right before each pass's draw (legacy path; SunFar's HazardLog)
 	virtual bool			SwitchEffect();
 	virtual void			Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer);
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.

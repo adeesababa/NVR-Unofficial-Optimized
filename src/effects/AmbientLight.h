@@ -41,6 +41,12 @@ public:
 	// grid of cells round the player, from a small depth map of the world seen from the sun (drawn by ShadowManager).
 	static const int	GridSunMapSize = 256;
 	static const int	GridAtlasSize = 128;	// 4 x 4 tiles of 32 x 32 cells
+	static const int	GridAtlasWidth = 256;	// UNOFFICIAL 2026-10-22 (lightgrid2): two levels side by side (coarse, fine; GridFine)
+	bool				gridFine = true;		// GridFine: the fine level (a quarter the cell size) round the camera, outdoors with the sun map
+	double				gridPendingOrigin1[3] = {};	// the fine level's corner for the grid being made (absolute world)
+	double				gridOrigin1[3] = {};		// ... and for the finished grid
+	bool				gridFineValid = false;		// the finished grid has a fine level
+	CachedHandle		paramGridOrigin1;
 	float				gridBounce = 0.0f;		// strength (0: off, nothing made or drawn)
 	float				gridCell = 200.0f;		// cell size, world units
 	int					gridSteps = 8;			// spreading steps
@@ -78,6 +84,18 @@ public:
 	IDirect3DSurface9*	gridScreenSurface[2] = {};
 	IDirect3DTexture9*	gridScreenColor[2] = {};	// colour x light
 	IDirect3DSurface9*	gridScreenColorSurface[2] = {};
+	// UNOFFICIAL 2026-10-22 (lightgrid2) GridWallMemory: per cell the cover of its surfaces per axis, from the screen memory's reads
+	// (blocking indoors and at night, where the sun map gives none). Ping-pong with gridScreen (same index).
+	bool				gridWallMemory = true;
+	IDirect3DTexture9*	gridScreenWalls[2] = {};	// A16B16G16R16F, the atlas
+	IDirect3DSurface9*	gridScreenWallsSurface[2] = {};
+	bool				gridWallsValid = false;		// the memory at gridScreenIndex holds walls
+	CachedHandle		paramGridWalls;
+	// UNOFFICIAL 2026-10-22 (lightgrid2) GridLamps: the game's lamps light the grid's surfaces (indoors and at night).
+	static const int	GridLampsMax = 32;			// AmbientLight.fx.hlsl GridLampsMax
+	float				gridLamps = 4.0f;			// strength (0: off)
+	CachedHandle		paramGridLamps, paramGridLampColors, paramGridLampInfo;
+	int		SetGridLamps();						// fills NVR_GridLamps*; returns how many
 	int					gridScreenIndex = 0;
 	bool				gridScreenValid = false;
 	double				gridScreenOrigin[3] = {};	// the grid corner the memory was stored for

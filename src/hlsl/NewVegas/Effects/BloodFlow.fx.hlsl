@@ -89,6 +89,11 @@ sampler2D TESR_BloodSpatterSmall : register(s10) < string ResourceName = "Effect
 // UNOFFICIAL 2026-10-13: domed blood drops (Textures\Effects\BloodDrops.dds, Fable, same brief): r height, gb normal xy, a a random
 // value per drop. The wet beads over the game's splats (BeadsPS). Last: it takes the next stage.
 sampler2D TESR_BloodDrops : register(s11) < string ResourceName = "Effects\BloodDrops.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// UNOFFICIAL 2026-10-22 (SplatMask, perf): the splat shapes' mask atlas (BloodFlowBoxes::SplatMask): each splat's shape field T
+// worked out once into its own cell (BloodSplatMaskBake), read by the splat pass (BloodSplatMask). R16F. Last: it takes the next stage.
+sampler2D TESR_BloodSplatMask : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+float4 TESR_BloodFlowMask;		// x: 1 the mask is there; y: E, z: D (a cell's square in splat radii: -E to E across, -E to E + D down); w: cells per atlas row
+float4 TESR_BloodFlowMaskSize;	// xy: 1 / the atlas's size in texels; z: a cell's size in texels
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
@@ -1491,7 +1496,29 @@ technique BloodFlowProbe
 // A thickness field: the core and the arms' roots thick, the tips and the mist thin (thin dries first, as in BloodPS).
 // The splat's thickness at q (in splat radii; +y down the surface; > 0 inside). grow 0-1: the impact; run 0-1: how far the drips
 // have run (0 on the ground: nothing drips there).
-float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[6]) {
+// UNOFFICIAL 2026-10-22 (SplatMask): T read from the splat's cell of the mask atlas at q (in splat radii). code: 1 + cell x 1024 +
+// the texels across it (BloodFlowBoxes::SplatMask, in VSIN c.w for the splat pass). Between texels it is blended (T is a smooth
+// field there; a texel is about a pixel on screen).
+float MaskT(float2 q, float code) {
+	float c = floor(code + 0.5) - 1.0;
+	float cell = floor(c / 1024.0);
+	float n = c - cell * 1024.0;
+	float E = TESR_BloodFlowMask.y;
+	float2 local = float2((q.x + E) / (2.0 * E), (q.y + E) / (2.0 * E + TESR_BloodFlowMask.z));
+	float row = floor(cell / TESR_BloodFlowMask.w);
+	float2 corner = float2(cell - row * TESR_BloodFlowMask.w, row) * TESR_BloodFlowMaskSize.z;
+	float2 texel = corner + clamp(local * n, 0.5, n - 0.5);
+	return tex2Dlod(TESR_BloodSplatMask, float4(texel * TESR_BloodFlowMaskSize.xy, 0.0, 0.0)).x;
+}
+
+// UNOFFICIAL 2026-10-22 (perf, user: very hard fps drops; F10 'Blood splat shapes' 30-44 ms with 13-22 splats): fast (SplatFast,
+// technique BloodSplatFast) gives the same picture with less work. Every part of the shape adds to T only as max(T, part), and a
+// part at or below -0.15 can never show (SplatShade: cover is 0 below -0.15 whatever the rest is), so a part whose cheap bounds
+// put the pixel too far from it for more than that is skipped: an arm (its direction is cheap, its root radius is not) unless the
+// pixel lies near the ray it is on or in the strip its drip can hang in; a spray line's drips unless the pixel is above where they
+// can reach; the drip curtain unless the pixel is near the core's lower edge. armDrip is then read from the path texture only for
+// an arm that is near (slot: the item's slot). fast false: the old path, exactly as before (A/B).
+float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[6], bool fast, float slot) {
 	float r = length(q);
 	float a = atan2(q.y, q.x);
 	float slant = 0.3 + 0.7 * hash1(seed * 3.71);	// a little glancing (nothing hits dead straight on) .. a glancing throw
@@ -1506,9 +1533,30 @@ float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[
 
 	// Thick arms: blobs thrown out of the core, tapering, ending in a droplet, a drip running down from it on a wall.
 	float arms = SplatArms(seed);
+	// (fast: no arm's root reaches past 0.7 x the core's largest radius, SplatCoreRadius's base x 1.38.)
+	float rootMax = 0.966 * (0.45 + 0.18 * hash1(seed * 7.13)) * (0.6 + 0.4 * grow);
 	[loop] for (float i = 0.0; i < 12.0; i += 1.0) {
 		if (i >= arms) break;
 		float h1 = hash1(seed * 13.7 + i * 7.31), h3 = hash1(seed * 41.9 + i * 5.53), h4 = hash1(seed * 57.1 + i * 2.29);
+		[branch] if (fast) {
+			// The arm's direction as SplatArm works it out; everything it draws lies within 1.69 x its width of the ray from the centre
+			// out to its longest possible tip (its body: 1.12 widths + 0.02; its droplet: 1.69), or in the strip below that its drip can
+			// hang down (1.0 widths either side of the drip and its bead).
+			float h2 = hash1(seed * 29.3 + i * 3.17);
+			float2 dir = float2(cos(h1 * 6.2832), sin(h1 * 6.2832));
+			float2 bent = lerp(dir, leanDir, slant * 0.6 * h4);
+			dir = dot(bent, bent) > 1e-4 ? normalize(bent) : dir;
+			float width = 0.05 + 0.1 * h3;
+			float far = max(rootMax, (rootMax + (0.3 + 0.9 * h2 * h2) * reach * (1.0 + dot(dir, leanDir) * slant * 0.7)) * grow) + width * 0.5;
+			float2 tipMax = dir * far;
+			float tq;
+			bool nearArm = SegmentDistance(q, float2(0.0, 0.0), tipMax, tq) < 1.7 * width + 0.03;
+			float dripMax = run * (0.15 + 0.9 * h4 * h4) * (0.6 + 0.6 * width / 0.15);
+			float edge = width + 0.03;
+			bool nearDrip = dripMax > 0.01 && q.x > min(0.0, tipMax.x) - edge && q.x < max(0.0, tipMax.x) + edge
+				&& q.y > min(0.0, tipMax.y) - edge && q.y < max(0.0, tipMax.y) + dripMax + edge;
+			if (!nearArm && !nearDrip) continue;
+		}
 		float2 dir;
 		float rootR, len, width;
 		SplatArm(i, seed, grow, dir, rootR, len, width);
@@ -1521,7 +1569,11 @@ float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[
 		T = max(T, (dropR - length(q - tip)) / max(dropR, 0.02) * 1.2);
 		// The drip down from the tip (walls): its own length, a bead at its end.
 		// (Not when this arm has a real stream, which runs over the true surface instead: the probe's row for it, see ProbePS.)
-		float dripLen = run * (0.15 + 0.9 * h4 * h4) * (0.6 + 0.6 * width / 0.15) * (i < Streams ? armDrip[(int)i] : 1.0);
+		float dripLen = run * (0.15 + 0.9 * h4 * h4) * (0.6 + 0.6 * width / 0.15);
+		[branch] if (fast) {
+			[branch] if (dripLen > 0.01 && i < Streams) dripLen *= PathTexel(0.0, slot * Streams + i).w < -0.5 ? 1.0 : 0.0;
+		}
+		else dripLen *= i < Streams ? armDrip[(int)i] : 1.0;
 		[branch] if (dripLen > 0.01) {
 			float dw = dropR * 0.45;
 			float dd = SegmentDistance(q, tip, tip + float2(0.0, dripLen), t);
@@ -1554,6 +1606,8 @@ float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[
 		bool nearLine = along > 0.0 && along < lenBound + 0.03 && across < 0.03;
 		float2 tip = dir * lenBound;
 		bool nearDrips = run > 0.0 && q.x > min(0.0, tip.x) - 0.03 && q.x < max(0.0, tip.x) + 0.03 && q.y > min(0.0, tip.y) - 0.03;
+		// (fast: and not below where its drips can reach: at most run x reach x 0.63 under the line, the bead 0.033 more.)
+		if (fast) nearDrips = nearDrips && q.y < max(0.0, tip.y) + run * reach * 0.63 + 0.04;
 		[branch] if (!nearLine && !nearDrips) continue;
 		float start = SplatCoreRadius(ang, seed, grow) * (0.75 + 0.35 * g2);
 		float len = (start + (0.2 + 2.2 * g3 * g3) * reach * lerp(0.5, 1.3, toward) * (1.0 - 0.6 * loner)) * grow;
@@ -1582,14 +1636,18 @@ float SplatThickness(float2 q, float seed, float grow, float run, float armDrip[
 
 	// The drip curtain: from the core's lower edge, side by side, each its own length (growing over the first seconds), a bead at
 	// its end; the thickest near the middle of the edge.
-	[branch] if (run > 0.0 && q.y > 0.0) {
+	// (fast: the core's radius straight down worked out once, not per drip; and nothing here reaches more than 0.15 past it sideways
+	// or below the lowest a drip can hang: its top at most 1.173 x the core's base radius, its length run x 2.4 x reach.)
+	float coreDown = fast ? SplatCoreRadius(1.5708, seed, grow) : 0.0;
+	bool curtain = !fast || (abs(q.x) < coreDown + 0.15 && q.y < 1.18 * (0.45 + 0.18 * hash1(seed * 7.13)) * (0.6 + 0.4 * grow) + run * 2.4 * reach + 0.15);
+	[branch] if (run > 0.0 && q.y > 0.0 && curtain) {
 		float cellW = 0.13;
 		float cell = floor(q.x / cellW);
 		[unroll] for (int k = -1; k <= 1; k++) {
 			float c = cell + k;
 			float e1 = hash1(seed * 97.3 + c * 1.37), e2 = hash1(seed * 31.1 + c * 2.71), e3 = hash1(seed * 53.9 + c * 0.93);
 			float x = (c + 0.25 + 0.5 * e1) * cellW;
-			float edge = 1.0 - saturate(abs(x) / max(SplatCoreRadius(1.5708, seed, grow), 0.05));	// 1 under the middle, 0 at the sides
+			float edge = 1.0 - saturate(abs(x) / max(fast ? coreDown : SplatCoreRadius(1.5708, seed, grow), 0.05));	// 1 under the middle, 0 at the sides
 			[branch] if (e2 < 0.85 * sqrt(edge)) {
 				float top = SplatCoreRadius(atan2(1.0, x), seed, grow) * sqrt(saturate(1.0 - x * x / 0.36)) * 0.85;
 				float len = run * (0.2 + 2.2 * e3 * e3) * (0.4 + 0.6 * edge) * reach;
@@ -1643,15 +1701,56 @@ VSOUT SplatVS(VSIN IN) {
 	return OUT;
 }
 
+// UNOFFICIAL 2026-10-22 (SplatMask; DeepSeek-V4-Pro's review: draw tight boxes, not world-axis cuboids): the splat's box in its own
+// plane instead of the world's axes: across it and down it only as far as the shape reaches (SplatMaskPS's reach test, with the
+// room its 2-pixel margin needs at the box's nearest point), the drips' room below; along the normal as far as SplatVS's cube
+// reaches that way. Seen face on that is under half the cube's area on screen. The CPU's box (BloodFlowBoxes::Build) gives each
+// vertex its corner (which side of each axis: the sign) and its face (w), as for CutBox.
+VSOUT SplatTightVS(VSIN IN) {
+	VSOUT OUT;
+	OUT.a = IN.a; OUT.b = IN.b; OUT.c = IN.c; OUT.d = IN.d;
+	float R = max(ShapeR(IN.b.w), 1.0);
+	float3 n = normalize(IN.b.xyz);
+	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
+	float steep = length(down);
+	down = steep > 0.05 ? down / steep : float3(1.0, 0.0, 0.0);
+	float3 across = normalize(cross(n, down));
+	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(IN.c.x - 0.3, 0.0) / 4.0));
+	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
+	float E = 1.15 + 3.12 * TESR_BloodFlowSplat.y;
+	float limit = ShapeR(IN.b.w) * (1.2 + 2.4 * TESR_BloodFlowSplat.y + 2.4 * TESR_BloodFlowSplat.w) + 2.0;
+	// The PS's margin (2 pixels' worth of aa) where it is widest, at the box's farthest point, plus a unit.
+	float farthest = length(IN.a.xyz) + limit * 1.8;
+	float margin = 2.0 * max(farthest * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05) + 1.0;
+	float depthRoom = limit * (abs(n.x) + abs(n.y) + abs(n.z));
+	float3 lo = float3(-E * R - margin, -E * R - margin, -depthRoom);
+	float3 hi = float3(E * R + margin, (E + dripMax) * R + margin, depthRoom);
+	float3 local = IN.position.xyz > 0.0 ? hi : lo;
+	float3 rel = IN.a.xyz + across * local.x + down * local.y + n * local.z;
+	float face = floor(IN.position.w + 0.5);
+	float axis = floor(face * 0.5);
+	float side = face - axis * 2.0 > 0.5 ? 1.0 : -1.0;
+	float3 outward = axis < 0.5 ? across : (axis < 1.5 ? down : n);
+	OUT.position = side * dot(rel, outward) > 0.0 ? mul(float4(rel + TESR_BloodFlowShape.xyz, 1.0), TESR_ViewProjectionTransform) : float4(0.0, 0.0, -2.0, 1.0);
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	if (pool > 0.5 || TESR_BloodFlowSplat.x <= 0.0) OUT.position = float4(0.0, 0.0, -2.0, 1.0);
+	return OUT;
+}
+
 // UNOFFICIAL 2026-10-20 (perf: splat shapes 38 ms, user debug shot: most of each box cut away): the shape and look, in a
 // function SplatPS calls only inside a real branch. ps_3_0 'discard' does not stop a pixel, so every cut-away or out-of-reach
 // pixel used to run all of it.
 float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R, float3 N, float keep, bool cutView,
-		float3 down, float3 across, float2 q, float seed, float age, float grow, float run, float aa) {
+		float3 down, float3 across, float2 q, float seed, float age, float grow, float run, float aa, bool fast, float maskCode) {
 	// The arms with a real stream (the probe found one: its row's end code is not 'none') draw no drip of their own.
+	// (fast: read in SplatThickness, only for the arms near this pixel.)
 	float armDrip[6];
-	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = PathTexel(0.0, slot * Streams + ai).w < -0.5 ? 1.0 : 0.0;
-	float T = SplatThickness(q, seed, grow, run, armDrip);
+	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = fast ? 1.0 : (PathTexel(0.0, slot * Streams + ai).w < -0.5 ? 1.0 : 0.0);
+	float T;
+	// (SplatMask: from the splat's cell when it has one; 2026-10-22.)
+	[branch] if (maskCode > 0.5) T = MaskT(q, maskCode);
+	else T = SplatThickness(q, seed, grow, run, armDrip, fast, slot);
 	float cover = saturate(T / max(aa * 2.0, 0.02) + 0.5) * saturate(T * 4.0 + 0.6);
 	[branch] if (cutView) {
 		// UNOFFICIAL 2026-10-16 debug view 2 (the cuts): where the splat's shape has blood, red above the top of the box it had
@@ -1716,7 +1815,7 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 	return float4(delinearize(max(colour, 0.0)), alpha);
 }
 
-float4 SplatPS(PSIN IN) : COLOR0 {
+float4 SplatBody(PSIN IN, bool fast, bool mask) {
 	float2 uv = (IN.vpos + 0.5) * TESR_ReciprocalResolution.xy;
 	float slot, pool, fresh;
 	DecodeSlot(IN.a.w, slot, pool, fresh);
@@ -1759,8 +1858,72 @@ float4 SplatPS(PSIN IN) : COLOR0 {
 	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
 	float2 qq = float2(q.x, q.y > 0.0 ? max(q.y - dripMax, 0.0) : q.y);
 	[branch] if (off || dot(qq, qq) > reachMax * reachMax) discard;
-	else return SplatShade(IN, uv, slot, rel, pp, R, N, keep, cutView, down, across, q, seed, age, grow, run, aa);
+	else return SplatShade(IN, uv, slot, rel, pp, R, N, keep, cutView, down, across, q, seed, age, grow, run, aa, fast, mask ? IN.c.w : 0.0);
 	return float4(0.0, 0.0, 0.0, 0.0);
+}
+
+float4 SplatPS(PSIN IN) : COLOR0 { return SplatBody(IN, false, false); }
+// UNOFFICIAL 2026-10-22: the same picture, cheaper (SplatThickness, fast; BloodFlow.cpp SplatFast).
+float4 SplatFastPS(PSIN IN) : COLOR0 { return SplatBody(IN, true, false); }
+// UNOFFICIAL 2026-10-22 (SplatMask): the shape read from the mask atlas (splats without a cell: as SplatFastPS), in the tight box
+// SplatTightVS draws. As SplatBody, but the cheap test whether the pixel is in the splat's reach comes before the surface normal is
+// read and the slab worked out (most pixels of the box are out of reach), and a pixel whose surface lies outside the box SplatVS
+// drew (the old cube, `limit` round the centre) is dropped, as that box never reached it.
+float4 SplatMaskPS(PSIN IN) : COLOR0 {
+	float2 uv = (IN.vpos + 0.5) * TESR_ReciprocalResolution.xy;
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	if (pool > 0.5 || TESR_BloodFlowSplat.x <= 0.0) discard;
+	float viewmodelDepth = tex2D(TESR_DepthBufferViewModel, uv).x;
+	if ((TESR_DepthConstants.z == 0 && viewmodelDepth < 0.9) || (TESR_DepthConstants.z > 0 && viewmodelDepth > 0.01)) discard;
+	float depth = readDepth(uv);
+	if (depth >= farZ * 0.979) discard;
+	float3 rel = toWorld(uv) * depth;
+	float3 pp = rel - IN.a.xyz;
+	float R = max(ShapeR(IN.b.w), 1.0);
+	float3 n = normalize(IN.b.xyz);
+	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
+	float steep = length(down);
+	down = steep > 0.05 ? down / steep : float3(1.0, 0.0, 0.0);
+	float3 across = normalize(cross(n, down));
+	float2 q = float2(dot(pp, across), dot(pp, down)) / R;
+	float age = IN.c.x;
+	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(age - 0.3, 0.0) / 4.0));
+	float aa = max(depth * TESR_ReciprocalResolution.y * 2.0 / TESR_ProjectionTransform[1][1], 0.05) / R;
+	float reachMax = 1.15 + 3.12 * TESR_BloodFlowSplat.y + 2.0 * aa;
+	float dripMax = run > 0.0 ? run * max(1.3, 2.4 * TESR_BloodFlowSplat.y) + 0.2 : 0.0;
+	float2 qq = float2(q.x, q.y > 0.0 ? max(q.y - dripMax, 0.0) : q.y);
+	float limit = ShapeR(IN.b.w) * (1.2 + 2.4 * TESR_BloodFlowSplat.y + 2.4 * TESR_BloodFlowSplat.w) + 2.0;	// (SplatVS's cube)
+	[branch] if (dot(qq, qq) > reachMax * reachMax || any(abs(pp) > limit + 1.0)) discard;
+	else {
+		float3 N = normalize(GetWorldNormalLod(uv));
+		float3 slabN = N.z > 0.7 ? float3(0.0, 0.0, 1.0) : n;	// (as SplatBody)
+		float keep = SlabKeep(pp, slabN, N, R * 0.6 + 4.0, aa * R, 0.3);
+		bool cutView = TESR_BloodFlowInfo.y > 1.5;
+		[branch] if (keep <= 0.0 && !cutView) discard;
+		else return SplatShade(IN, uv, slot, rel, pp, R, N, keep, cutView, down, across, q, ItemSeed(IN.c.z), age,
+			smoothstep(0.0, 1.0, saturate(age / 0.12)), run, aa, true, IN.c.w);
+	}
+	return float4(0.0, 0.0, 0.0, 0.0);
+}
+
+// UNOFFICIAL 2026-10-22 (SplatMask): one cell of the mask atlas: T at each texel's point of the splat's square (BloodFlowBoxes::SplatMask:
+// VSIN a.xy the cell's corner in texels, a.z its texels across; the rest as the splat pass), grown and run as SplatPS works it out.
+float4 MaskBakePS(PSIN IN) : COLOR0 {
+	float slot, pool, fresh;
+	DecodeSlot(IN.a.w, slot, pool, fresh);
+	float2 local = (IN.vpos - IN.a.xy + 0.5) / IN.a.z;
+	float E = TESR_BloodFlowMask.y;
+	float2 q = float2(local.x * 2.0 * E - E, local.y * (2.0 * E + TESR_BloodFlowMask.z) - E);
+	float3 n = normalize(IN.b.xyz);
+	float3 down = float3(n.x * n.z, n.y * n.z, n.z * n.z - 1.0);
+	float steep = length(down);
+	float age = IN.c.x;
+	float grow = smoothstep(0.0, 1.0, saturate(age / 0.12));
+	float run = TESR_BloodFlowSplat.w * saturate(steep * 3.0 - 0.15) * (1.0 - exp(-max(age - 0.3, 0.0) / 4.0));	// (as SplatPS)
+	float armDrip[6];
+	[unroll] for (int ai = 0; ai < 6; ai++) armDrip[ai] = 1.0;	// (fast: read inside)
+	return float4(SplatThickness(q, ItemSeed(IN.c.z), grow, run, armDrip, true, slot), 0.0, 0.0, 1.0);
 }
 
 technique BloodSplat
@@ -1781,5 +1944,67 @@ technique BloodSplat
 		CullMode = None;
 		ScissorTestEnable = false;
 		ColorWriteEnable = 7;
+	}
+}
+
+// UNOFFICIAL 2026-10-22 (perf): the splat shapes, the same picture with less work per pixel (Shaders.BloodFlow.Main SplatFast).
+technique BloodSplatFast
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 SplatVS();
+		PixelShader = compile ps_3_0 SplatFastPS();
+		AlphaBlendEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		BlendOp = Add;
+		SeparateAlphaBlendEnable = false;
+		AlphaTestEnable = false;
+		ZEnable = false;
+		ZWriteEnable = false;
+		StencilEnable = false;
+		CullMode = None;
+		ScissorTestEnable = false;
+		ColorWriteEnable = 7;
+	}
+}
+
+// UNOFFICIAL 2026-10-22 (SplatMask): the splat shapes read from the mask atlas (Shaders.BloodFlow.Main SplatMask).
+technique BloodSplatMask
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 SplatTightVS();
+		PixelShader = compile ps_3_0 SplatMaskPS();
+		AlphaBlendEnable = true;
+		SrcBlend = SrcAlpha;
+		DestBlend = InvSrcAlpha;
+		BlendOp = Add;
+		SeparateAlphaBlendEnable = false;
+		AlphaTestEnable = false;
+		ZEnable = false;
+		ZWriteEnable = false;
+		StencilEnable = false;
+		CullMode = None;
+		ScissorTestEnable = false;
+		ColorWriteEnable = 7;
+	}
+}
+
+// UNOFFICIAL 2026-10-22 (SplatMask): the cells of the mask atlas that need working out (one quad each, BloodFlowBoxes::SplatMask).
+technique BloodSplatMaskBake
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 BoxVS();
+		PixelShader = compile ps_3_0 MaskBakePS();
+		AlphaBlendEnable = false;
+		AlphaTestEnable = false;
+		ZEnable = false;
+		ZWriteEnable = false;
+		StencilEnable = false;
+		CullMode = None;
+		ScissorTestEnable = false;
+		ColorWriteEnable = 15;
 	}
 }
