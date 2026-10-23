@@ -181,7 +181,16 @@ row_major float4x4 TESR_CharShadowCameraToLight : register(c206); // camera-rela
 float4 TESR_CharShadowCenter : register(c213); // xyz: the box's centre (camera-relative world), w: its half-extent (world units)
 float4 TESR_CharShadowData   : register(c214); // x: 1 / resolution, y: hand-over band (share of the half-extent), z: depth bias (map depth), w: 1 = live
 // One line, like TESR_ShadowAtlas above.
+// UNOFFICIAL 2026-10-23 (P82 v4 fix): the POINT-light object shaders (SLS2051-2056) are compiled with POINT defined (empty), which emptied the filter names below: lifted round this one line.
+#ifdef POINT
+    #undef POINT
+    #define NVR_CHARMAP_POINT_WAS_DEFINED
+#endif
 sampler2D TESR_CharShadowMap : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+#ifdef NVR_CHARMAP_POINT_WAS_DEFINED
+    #define POINT
+    #undef NVR_CHARMAP_POINT_WAS_DEFINED
+#endif
 
 // The map's shadow at a point, blended with the cascades' (cascadeShadow) by where the point is in the box: 1 lit, towards 0 in shadow.
 // NdotL: the surface's cosine to the sun (the receiver-plane slack and the normal offset grow as the sun grazes it, as GetSunShadow's).
