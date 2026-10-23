@@ -407,6 +407,7 @@ int main(int argc, char** argv) {
       { "Exposure", 2, 32, 16, 0 }, { "ImageAdjust", 1, 64, 48, 0 }, { "Sharpening", 2, 64, 48, 0 },
       { "FXAA", 1, 32, 16, 0 }, { "LowHF", 1, 32, 16, 0 }, { "SkyDither", 2, 32, 16, 0 },
       { "BloodLens", 2, 48, 32, 36 }, { "WaterLens", 2, 48, 32, 36 },
+      { "LUT", 4, 48, 32, 0 }, { "Lens", 3, 32, 16, 20 }, { "MotionBlur", 1, 64, 48, 0 },   // MotionBlur prints NaN here: the dummy constants give exp() an overflow, as the HLSL would
     };
     IDirect3DTexture9* out; CHECK(dev->CreateTexture(W, H, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &out, nullptr), "port target");
     for (const Port& port : ports) {

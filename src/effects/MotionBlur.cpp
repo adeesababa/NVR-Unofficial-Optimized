@@ -1,4 +1,5 @@
 #include "MotionBlur.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 
 void MotionBlurEffect::UpdateConstants() {
 	// UNOFFICIAL fixes-b #42 (LOOK CHANGE, MotionBlur is off by default): UpdateConstants runs twice a rendered frame. The turn history
@@ -64,3 +65,19 @@ bool MotionBlurEffect::ShouldRender()
 {
 	return Constants.Data.x || Constants.Data.y; 
 };
+
+// UNOFFICIAL 2026-10-23 (NVR DXVK): MotionBlur.frag, drawn twice as the technique's two passes are (the second reads the first's
+// result: the chain's current image moves on each Commit).
+bool MotionBlurEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	struct Push { D3DXVECTOR4 reciprocalResolution, blurParams, blurData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.reciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	push.blurParams = Constants.BlurParams;
+	push.blurData = Constants.Data;
+	for (int pass = 0; pass < 2; pass++) {
+		IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture };
+		if (!ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "MotionBlur", textures, _countof(textures), &push, sizeof(push), 48))
+			return pass == 1;	// the first pass drew and committed: finish with D3D9 would blur twice more; keep what is there
+	}
+	return true;
+}

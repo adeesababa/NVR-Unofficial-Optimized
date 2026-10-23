@@ -91,7 +91,7 @@ Cost: one read of the frame plus a tiny second dispatch (phase 0 at 2560x1440 is
 `[Main.Main.Performance] NvrDxvkPasses = false` (needs NVR DXVK; off = the D3D9 techniques as always). On, each ported
 effect draws through the extension; if its pass ever fails, that effect alone goes back to its D3D9 technique for the
 session (logged: `pass <Name> failed to draw`). Ported so far, all single-pass full-screen effects, line for line:
-Exposure, ImageAdjust, Sharpening, FXAA, LowHF, SkyDither, BloodLens, WaterLens (the last two sample their file textures
+Exposure, ImageAdjust, Sharpening, FXAA, LowHF, SkyDither, BloodLens, WaterLens, LUT, Lens, MotionBlur (BloodLens, WaterLens and Lens sample their file textures
 through a WRAP sampler). The frame chain is honoured exactly as `EffectRecord::Render`
 does it (the chain's spare texture and Commit, the direct final write into the game target, or the legacy copy).
 The plumbing (`src/core/EffectRecord.{h,cpp}`):
@@ -161,7 +161,7 @@ of the SM3 limits.
    sampling error of the old pass; the go/no-go number. Those frames stall (ReadBuffer waits): set it back to 0 afterwards.
 5. F10 timings: "  Average luma" with the option on and off.
 6. `NvrDxvkPasses = true`: the log says `<Name> runs as a Vulkan pass.` for Exposure, ImageAdjust, Sharpening, FXAA,
-   LowHF, SkyDither, BloodLens and WaterLens (those that are on). The picture must not change when the switch is toggled live; compare F10
+   LowHF, SkyDither, BloodLens, WaterLens, LUT, Lens and MotionBlur (those that are on). The picture must not change when the switch is toggled live; compare F10
    timings of those passes on and off (expect about the same). Any `pass <Name> failed to draw` line is a finding.
 7. Alt-tab, a device reset (fullscreen toggle), resolution change (the buffers are re-made when width/height change),
    ReShade chained, and the game's loading screens: nothing crashes, no DXVK log errors (`NVR ext:` lines).
