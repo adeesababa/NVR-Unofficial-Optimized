@@ -168,9 +168,10 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
 #ifndef CHARACTER_SHADOW_MAP
     #define CHARACTER_SHADOW_MAP 0
 #endif
-// UNOFFICIAL 2026-10-24 SmoothObjectNormals (see the helpers after GetShadowSmoothNormal): 0 unless ShaderRecord::BuildDefines sets it.
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals (see the helpers after GetShadowSmoothNormal). ON unless ShaderRecord::BuildDefines says 0
+// ([Shaders.PBR.Main] SmoothObjectNormals = false): a DLL from before the switch existed defines nothing, and the fix still applies.
 #ifndef OBJECT_SMOOTH_NORMALS
-    #define OBJECT_SMOOTH_NORMALS 0
+    #define OBJECT_SMOOTH_NORMALS 1
 #endif
 #ifndef SHADOW_CHARACTER_MAP_IN
     #define SHADOW_CHARACTER_MAP_IN 0
