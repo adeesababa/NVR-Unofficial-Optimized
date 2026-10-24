@@ -289,8 +289,13 @@ namespace PassSums {
 				"off (not compiled into the shaders)");
 		}
 		const int exact = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums");
-		if (exact) return exact;
-		return LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? (kIncrements | Lamps) : 0;
+		const bool lampSums = LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums");
+		// UNOFFICIAL 2026-10-24: ExactPassSums 1 (highlights only) and LampSums combine: the highlights through the buffer, the lamps through
+		// their own exact increments. (Owner: the lamp fold-in, mode 2, whitened rubble on floors -- a run of lamp passes the hooks closed only
+		// after the object's colour pass, so its light was added on top of the colour; the increments add each pass's light at once.)
+		if (exact & Lamps) return exact;
+		if (lampSums) return exact | kIncrements | Lamps;
+		return exact;
 	}
 
 	inline void BeforePass(const void* pass, bool world, IDirect3DDevice9* device) {
