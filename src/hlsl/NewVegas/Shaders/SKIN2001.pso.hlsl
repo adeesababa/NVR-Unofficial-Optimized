@@ -45,7 +45,7 @@ struct VS_INPUT {
     float2 BaseUV : TEXCOORD0;
     float4 shadowWorldPos : TEXCOORD4;   // from ObjectTemplate VS			
     float3 texcoord_6 : TEXCOORD6_centroid;			
-    float4 texcoord_7 : TEXCOORD7;			
+    float4 smoothNormal : TEXCOORD7;     // UNOFFICIAL 2026-10-24: SKIN2001.vso's vertex normal (GetShadowSmoothNormal), .w = sentinel; was the unused texcoord_7
     float3 color_0 : COLOR0;
     float4 color_1 : COLOR1;
     float3 texcoord_1 : TEXCOORD1_centroid;			
@@ -85,6 +85,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+    shadowNormal = ShadowLookupNormal(shadowNormal, IN.smoothNormal);   // UNOFFICIAL 2026-10-24: the vertex normal for the sun lookup and the sky light (SmoothCharacterShadows / SmoothObjectNormals)
 #if FORWARD_SHADOWS
     // Forward sun shadow. Scales the SUN terms only; ambient-driven terms are untouched.
     // ddx/ddy must stay at top level, outside dynamic flow control.

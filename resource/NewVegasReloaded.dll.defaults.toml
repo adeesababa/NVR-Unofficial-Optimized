@@ -847,6 +847,7 @@ Metallicness = 0.0                   # Metalicness scale - unused, no metalic ma
 AmbientScale = 0.5                   # Ambient lighting scale.
 SkylightingScale = 0.5               # Sky-colour ambient boost. 0 disables it.
 SkylightingMode = 0                  # 0 spherical harmonics, 1 directional sample. Recompiles shaders.
+SmoothObjectNormals = true           # UNOFFICIAL (2026-10-24), needs a restart (recompiles shaders): clothing, armour, hair and the older skin shaders take the smooth vertex normal for their sun and lamp shadow lookups and for the sky-colour ambient, instead of a normal built per triangle. Fixes characters whose every triangle showed as a flat facet with hard edges in lamp-lit interiors (and softer versions of it outdoors). false = as before.
 SkylightingDirectionality = 0.6      # Mode 1 only: 0 samples straight up, 1 along the normal.
 SkylightingSaturation = 1.0           # UNOFFICIAL: colour strength of the sky light (0 = grey, 1 = as the sky, above 1 = more colourful). Default skylighting mode (0) only.
 LightingScale = 0.725                # Directional and point light scale.
