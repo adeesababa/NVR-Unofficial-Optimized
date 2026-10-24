@@ -49,3 +49,12 @@ character's triangles. Same taps, same cost; only their spacing changes. Effects
 Diagnostics: `[Shaders.AmbientLight.Main] DebugView = 1` shows the occlusion alone (facets there = this effect).
 If the facets are still there with AmbientLight off, the next suspect is lamp-shadow self-shadowing (constant 1.8 % bias, no
 normal offset): `[Shaders.ShadowsInteriors.Forward] Strength = 0` (live) to confirm, then NormalOffset 1.5 / Bias 0.04.
+
+## Resolution (2026-10-24): the facets near interior lamps were the screen-space darkening pass
+Owner's tests: lamp-shadow debug view showed nothing, sky/ambient/metal/linear/falloff switches did nothing,
+`[Shaders.ShadowsInteriors.Main] LampReachMask = true` removed the facets. With the per-object (forward) lamp shadows on,
+PointShadows.fx still runs as the room darkening (KeepDarkening); each lamp's amount there was falloff x N.L, with N from
+the depth-rebuilt normals buffer (one flat normal per triangle), so near a lamp every triangle got its own darkening.
+Fix: the reach mask (distance only) is used whenever [Shaders.ShadowsInteriors.Forward] Enabled is on
+(ShadowsExteriorEffect::UpdateSettings, TESR_PointShadowNear.z); the object shaders already apply each lamp's angle.
+DLL only. AutoNormalOffset and NormalSmoothingWorld (earlier guesses) are kept as options, default off.

@@ -70,7 +70,7 @@ public:
 	// UNOFFICIAL 2026-10-24 (charfacets; owner: indoors every triangle of a character showed, flat, hard-edged, even with SmoothObjectNormals):
 	// NormalSmoothingWorld, the smoothing's reach in WORLD units, used where it is wider than NormalSmoothing's texels (close to the camera,
 	// where a character's triangles are 100-300 pixels across and the pixel reach covered only a band at each edge). NVR_ALEdges.z, 0 off.
-	float				normalSmoothingWorld = 8.0f;
+	float				normalSmoothingWorld = 0.0f;
 	float				horizonBias = 0.0f;
 	CachedHandle		paramEdges, techSmooth;
 	bool				prepared = false;			// RenderPrepare drew Prepare + the smoothing this frame (Render skips its Prepare)
