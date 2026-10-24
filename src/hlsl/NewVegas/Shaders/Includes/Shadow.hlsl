@@ -204,7 +204,9 @@ float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float
     // receiver-plane slack: tan of the sun's angle to the face (capped at 5) per texel of depth (the box is 2R wide and 2R deep: one
     // texel is 1 / res of depth), 1.5 texels for the 3 x 3's reach, plus the constant bias (CharacterShadowMapBias, world units)
     float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
-    float depth = lightSpace.z - TESR_CharShadowData.z - 1.5f * texel * slope;
+    // Past the far plane (depth above 1) the point compares just under 1: an empty texel (cleared to 1) leaves it lit, a caster
+    // in front of it (any depth under 1) shadows it. Without the clamp everything past the far plane inside the box was in shadow.
+    float depth = min(lightSpace.z, 0.9999f) - TESR_CharShadowData.z - 1.5f * texel * slope;
     float2 lo = texel * 0.5f;
     float2 hi = 1.0f - texel * 0.5f;
     float2 p = uv / texel - 0.5f;
@@ -218,6 +220,14 @@ float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float
             float2 tapUV = clamp((c + float2(x - 1, y - 1) + 0.5f) * texel, lo, hi);
             lit += (depth <= tex2Dlod(TESR_CharShadowMap, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * wx[x] * wy[y];
         }
+    }
+    // CharacterShadowMapDebug (TESR_CharShadowData.w = 1 + the setting): inside the box, 2 = the map's own verdict alone (no cascades),
+    // 3 = the depth the map holds at this point (0 black = nothing bound or nothing drawn, 1 white = empty, gray = a caster),
+    // 4 = this point's own depth in the box (what the map is compared with).
+    [branch] if (TESR_CharShadowData.w > 1.5f) {
+        if (TESR_CharShadowData.w > 3.5f) return saturate(lightSpace.z);
+        if (TESR_CharShadowData.w > 2.5f) return tex2Dlod(TESR_CharShadowMap, float4(clamp(uv, lo, hi), 0.0f, 0.0f)).x;
+        return lit;
     }
     return lerp(cascadeShadow, min(cascadeShadow, lit), weight);
 }

@@ -139,6 +139,7 @@ public:
 		float				CharacterMapBias = 0.15f;		// world units of constant depth bias at the lookup
 		bool				CharacterMapOthers = false;		// other actors inside the map are drawn into it too (they can shade the player)
 		bool				CharacterMapLog = false;		// diagnostic: fit, texel size and caster count once a second
+		int					CharacterMapDebug = 0;			// diagnostic view (Shadow.hlsl CharacterMapShadow): 0 off, 1 the map's verdict alone, 2 the map's depth, 3 the point's depth
 	};
 
 	struct OrthoStruct {

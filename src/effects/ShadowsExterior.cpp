@@ -469,6 +469,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		Settings.ShadowMaps.CharacterMapBias = std::clamp(TheSettingManager->GetSettingF(section, "CharacterShadowMapBias"), 0.0f, 4.0f);
 		Settings.ShadowMaps.CharacterMapOthers = TheSettingManager->GetSettingI(section, "CharacterShadowMapOthers") != 0;
 		Settings.ShadowMaps.CharacterMapLog = TheSettingManager->GetSettingI(section, "CharacterShadowMapLog") != 0;
+		Settings.ShadowMaps.CharacterMapDebug = std::clamp(TheSettingManager->GetSettingI(section, "CharacterShadowMapDebug"), 0, 3);
 		if (Settings.ShadowMaps.CharacterMap && !CharacterMapCompiled) {
 			static bool hinted = false;
 			if (!hinted) { hinted = true; Logger::Log("UNOFFICIAL CharacterShadowMap was turned on after startup: restart the game once to apply it."); }
