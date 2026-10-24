@@ -307,8 +307,17 @@
 // for the shadow lookups and the sky ambient, in place of the per-triangle derivative normal. The LIGHTS < 4 family carries it in its own
 // interpolator (TEXCOORD8; vs_3_0 has 12 outputs and ps_3_0 10 inputs: with PROJ_SHADOW every one is taken, so those variants keep the flat
 // normal); the LIGHTS >= 4 family has no interpolator spare and carries it octahedrally in uv.zw (OBJ_WORLD_NORMAL below).
-#if OBJECT_SMOOTH_NORMALS && !(defined(LIGHTS) && LIGHTS >= 4) && !defined(PROJ_SHADOW)
-    #define OBJ_SMOOTH_NORMAL_INTERP 1
+// 2026-10-24 (second round; owner: still faceted, skin and clothes, indoors, gone only with PBR off): characters are often drawn with the
+// projected-shadow (PROJ_SHADOW) variants, which had no interpolator spare and kept the per-triangle normal for the sky term, the sun lookup
+// and the metal reflection (grey cloth counts as metal, [Shaders.PBR.Metal] World). Now the full passes (not ONLY_LIGHT) carry the normal
+// octahedrally in lightDistSq.w / lightDir.w, the two channels METAL_UP used for world up (the metal reflection's sky test now works in world
+// space from it, OBJ_SMOOTH_NORMAL_W); the light-only passes (ONLY_LIGHT: no vertex colour, no fog) have TEXCOORD8 free even with PROJ_SHADOW.
+#if OBJECT_SMOOTH_NORMALS && !(defined(LIGHTS) && LIGHTS >= 4)
+    #ifdef ONLY_LIGHT
+        #define OBJ_SMOOTH_NORMAL_INTERP 1
+    #else
+        #define OBJ_SMOOTH_NORMAL_W 1
+    #endif
 #endif
 #ifdef PS
     // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS): SHADOWED(colour, k, att) gives light k of the draw
@@ -677,6 +686,17 @@ VS_OUTPUT main(VS_INPUT IN) {
         OUT.lightDistSq.w = upTangent.x;
         OUT.lightDir.w = upTangent.y;
         OUT.vertexColor.a = upTangent.z * 0.5f + 0.5f;
+    #endif
+    #ifdef OBJ_SMOOTH_NORMAL_W
+        {	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal, camera-relative world, octahedral, in METAL_UP's two channels
+            #ifndef SKIN
+                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+            #else
+                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+            #endif
+            OUT.lightDistSq.w = smoothOct.x;
+            OUT.lightDir.w = smoothOct.y;
+        }
     #endif
 
     return OUT;
@@ -1142,6 +1162,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if !defined(DIFFUSE) && !defined(POINT)
         #ifdef OBJ_SMOOTH_NORMAL_INTERP
             float3 shadowGeometricNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal
+        #elif defined(OBJ_SMOOTH_NORMAL_W)
+            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowDecodeNormal(float2(IN.lightDistSq.w, IN.lightDir.w)), IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24
         #else
             float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
         #endif
@@ -1271,10 +1293,17 @@ PS_OUTPUT main(PS_INPUT IN) {
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), shadowGeometricNormal, skyValid);
             [branch] if (metallic > 0.0f) {
                 float3 metalView = normalize(IN.viewDir.xyz);
+                #ifdef OBJ_SMOOTH_NORMAL_W
+                // UNOFFICIAL 2026-10-24: lightDistSq.w / lightDir.w carry the smooth normal now; the reflection's height in world space from it
+                // (camera-relative position: the eye is at the origin; world up is +z), without the normal map's detail.
+                bool upKnown = skyValid > 0.0f;
+                float upReflect = upKnown ? reflect(normalize(IN.shadowWorldPos.xyz), shadowGeometricNormal).z : 0.0f;
+                #else
                 float3 upTangent = float3(IN.lightDistSq.w, IN.lightDir.w, IN.vertexColor.a * 2.0f - 1.0f);
                 float upLength = length(upTangent);
                 bool upKnown = upLength > 0.5f && skyValid > 0.0f;
                 float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
+                #endif
                 lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
                                                        upReflect, upKnown ? 1.0f : 0.0f,
                                                        IN.shadowWorldPos.xyz, shadowGeometricNormal);
