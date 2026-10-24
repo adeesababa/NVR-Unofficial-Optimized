@@ -29,14 +29,17 @@ if not exist "%VSWHERE%" (
     goto :fail
 )
 set "VS="
-for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -version "[16.0,17.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS=%%I"
+for /f "usebackq delims=" %%I in (`""%VSWHERE%" -latest -version "[16.0,17.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"`) do set "VS=%%I"
 if "%VS%"=="" (
     REM no VS 2019: a newer VS with the v142 toolset component also works
-    for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -requires Microsoft.VisualStudio.Component.VC.v142.x86.x64 -property installationPath`) do set "VS=%%I"
+    for /f "usebackq delims=" %%I in (`""%VSWHERE%" -latest -requires Microsoft.VisualStudio.Component.VC.v142.x86.x64 -property installationPath"`) do set "VS=%%I"
 )
 if "%VS%"=="" (
     echo.
-    echo ERROR: no Visual Studio with the C++ v142 toolset found.
+    echo Visual Studio installs seen by vswhere:
+    ""%VSWHERE%" -all -property installationPath"
+    echo.
+    echo ERROR: none of them has the C++ v142 toolset.
     echo        Install Visual Studio 2019 with "Desktop development with C++", or in VS 2022's installer tick
     echo        "MSVC v142 - VS 2019 C++ x64/x86 build tools".
     goto :fail
