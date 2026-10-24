@@ -729,6 +729,7 @@ void SettingManager::LoadSettings() {
 	// UNOFFICIAL 2026-10-23 (NVR DXVK, core\DxvkCompute.h): off by default; does nothing without the NVR DXVK extension.
 	SettingsMain.Main.AvgLumaCompute = boolSetting(performance, "AvgLumaCompute", false);
 	SettingsMain.Main.NvrDxvkPasses = boolSetting(performance, "NvrDxvkPasses", false);
+	SettingsMain.Main.NvrDxvkReplacements = boolSetting(performance, "NvrDxvkReplacements", false);
 	{
 		Configuration::ConfigNode node;
 		const int every = Config.FillNode(&node, performance, "AvgLumaComputeCheck") ? node.IntValue : 0;

@@ -1,4 +1,5 @@
 #include "ShaderRecord.h"
+#include "DxvkCompute.h"	// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2)
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
 #include "ShaderPrecompile.h"
@@ -460,6 +461,9 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				}
 				else {
 					ShaderProg = new ShaderRecordPixel(Name);
+					// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2, core\DxvkCompute.h): a Compute\Replace\<Name>.spv is registered before the
+					// device sees the bytecode, so DXVK binds it in this shader's place. No file, no extension: nothing happens.
+					DxvkCompute::RegisterReplacement(Name, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreatePixelShader((const DWORD*)Function, &((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 				}
 				

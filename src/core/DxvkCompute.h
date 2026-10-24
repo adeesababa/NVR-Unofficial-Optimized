@@ -36,6 +36,16 @@ public:
 	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
 	static bool					PassesOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
+
+	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device
+	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>.spv exists, DXVK binds that SPIR-V
+	// fragment shader wherever the game binds this shader. The .txt next to it says what the replacement reads from the game:
+	//   textures=0,1,2        the D3D9 samplers it declares (set 1, binding i); must be ones the original uses
+	//   floats=0-3,8-15       the float registers it wants in its constant block (set 2, binding 6), packed in that order;
+	//                         absent: the original's own compacted register list (DXVK's layout, harder to write against)
+	// True when registered. A problem leaves the shader as it is (logged); it does not turn the other compute paths off.
+	static bool					ReplacementsOn();
+	static bool					RegisterReplacement(const char* Name, const void* Bytecode, UINT Size);
 	static ID3D9NvrExtSampler*	CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address);
 
 	// Marks every compute path off for the session (logged once with the reason).

@@ -488,6 +488,87 @@ int main(int argc, char** argv) {
     out->Release();
   }
 
+  // ---- Shader replacement (1.2): a hand-assembled ps_3_0 "oC0 = tex2D(s0, v0) * c5" gets a SPIR-V replacement that
+  // also multiplies by an NVR uniform buffer and adds an NVR texture. The game's texture, sampler and constant must
+  // still arrive; an unregistered shader (same but c6) must keep DXVK's own conversion.
+  if (argc > 6) {
+    std::vector<char> rep = readFile(argv[6]);
+    // ps_3_0: dcl_texcoord0 v0 / dcl_2d s0 / texld r0, v0, s0 / mul oC0, r0, cN / end
+    auto makePs = [](DWORD constIndex) {
+      return std::vector<DWORD>{ 0xFFFF0300, 0x0200001F, 0x80000005, 0x900F0000, 0x0200001F, 0x90000000, 0xA00F0800,
+                                 0x03000042, 0x800F0000, 0x90E40000, 0xA0E40800, 0x03000005, 0x800F0800, 0x80E40000, 0xA0E40000 | constIndex, 0x0000FFFF };
+    };
+    std::vector<DWORD> psA = makePs(5), psB = makePs(6);
+
+    NVR_EXT_BINDING_DESC extras[] = {
+      { 4, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
+      { 4, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },
+      { 4, 2, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },
+    };
+    NVR_EXT_SHADER_REPLACEMENT_DESC rd = {};
+    rd.pBytecode = psA.data(); rd.BytecodeSize = UINT(psA.size() * 4);
+    rd.pSpirv = rep.data(); rd.SpirvSize = UINT(rep.size());
+    rd.TextureMask = 1; rd.FloatRegisterMask[0] = 1u << 5;
+    rd.ExtraCount = 3; rd.pExtra = extras; rd.pDebugName = "replace test";
+    CHECK(ext->RegisterShaderReplacement(&rd), "RegisterShaderReplacement");
+    NVR_EXT_SHADER_REPLACEMENT_DESC badRd = rd; badRd.TextureMask = 3;   // s1 is not used by the original
+    if (SUCCEEDED(ext->RegisterShaderReplacement(&badRd))) { std::printf("FAIL: TextureMask beyond the original accepted\n"); return 1; }
+
+    IDirect3DPixelShader9 *shA, *shB;
+    CHECK(dev->CreatePixelShader(psA.data(), &shA), "CreatePixelShader A (replaced)");
+    CHECK(dev->CreatePixelShader(psB.data(), &shB), "CreatePixelShader B (original)");
+
+    IDirect3DTexture9 *tex, *extraTex;
+    CHECK(dev->CreateTexture(8, 8, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &tex, nullptr), "tex");
+    CHECK(dev->CreateTexture(8, 8, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &extraTex, nullptr), "extraTex");
+    IDirect3DSurface9 *texS, *extraS; tex->GetSurfaceLevel(0, &texS); extraTex->GetSurfaceLevel(0, &extraS);
+    dev->SetRenderTarget(0, texS);   dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 128, 64, 255), 1.f, 0);  // (0.502 0.251 1 1)
+    dev->SetRenderTarget(0, extraS); dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 64), 1.f, 0);       // (0 0 0.251 0)
+    texS->Release(); extraS->Release();
+
+    NVR_EXT_BUFFER_DESC ub = { 16, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, "extra ubo" };
+    ID3D9NvrExtBuffer* extraUbo; CHECK(ext->CreateBuffer(&ub, &extraUbo), "extra ubo");
+    float scale[4] = { 2.f, 1.f, 1.f, 1.f };
+    CHECK(ext->UpdateBuffer(extraUbo, 0, 16, scale), "UpdateBuffer extra");
+    NVR_EXT_RESOURCE_BINDING stage[] = {
+      { 0, NVR_EXT_BIND_UNIFORM_BUFFER, extraUbo, 0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_SAMPLED_IMAGE,  extraTex, 0, 0, 0, FALSE },
+      { 0, NVR_EXT_BIND_SAMPLER,        sampler,  0, 0, 0, FALSE },
+    };
+    CHECK(ext->SetReplacementResources(3, stage), "SetReplacementResources");
+
+    struct V { float x, y, z, rhw, u, v; };
+    auto drawWith = [&](IDirect3DPixelShader9* ps, const float* c, DWORD reg) -> int {
+      V quad[4] = { { 0, 0, 0, 1, 0, 0 }, { 64, 0, 0, 1, 1, 0 }, { 0, 48, 0, 1, 0, 1 }, { 64, 48, 0, 1, 1, 1 } };
+      dev->SetRenderTarget(0, bb); dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 10, 20, 30), 1.f, 0);
+      dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE); dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE); dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+      dev->SetTexture(0, tex); dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR); dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+      dev->SetPixelShader(ps); dev->SetPixelShaderConstantF(reg, c, 1);
+      dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+      dev->BeginScene(); dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V)); dev->EndScene();
+      IDirect3DSurface9* sys; dev->CreateOffscreenPlainSurface(64, 48, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, nullptr);
+      dev->GetRenderTargetData(bb, sys); D3DLOCKED_RECT lr; sys->LockRect(&lr, nullptr, D3DLOCK_READONLY);
+      DWORD px = *(DWORD*)((char*)lr.pBits + 20 * lr.Pitch + 32 * 4) & 0xFFFFFF; sys->UnlockRect(); sys->Release();
+      dev->SetPixelShader(nullptr); dev->SetTexture(0, nullptr);
+      return int(px);
+    };
+    float c5[4] = { 0.5f, 2.f, 0.5f, 1.f };
+    int replaced = drawWith(shA, c5, 5);   // replacement: tex * c5 * scale + extra = (0.502 0.502 0.751 1) -> 80 80 bf
+    int original = drawWith(shB, c5, 6);   // DXVK's conversion: tex * c6 = (0.251 0.502 0.5 1) -> 40 80 80
+    auto near3 = [](int px, int r, int g, int b) { return std::abs(((px >> 16) & 255) - r) <= 2 && std::abs(((px >> 8) & 255) - g) <= 2 && std::abs((px & 255) - b) <= 2; };
+    std::printf("shader replacement: replaced shader gives %06x (expected ~8080bf), untouched shader gives %06x (expected ~408080)\n", replaced, original);
+    if (!near3(replaced, 0x80, 0x80, 0xBF) || !near3(original, 0x40, 0x80, 0x80)) { std::printf("FAIL: shader replacement\n"); return 1; }
+
+    // The extra resources are persistent: change the uniform buffer, draw again
+    scale[0] = 1.f; scale[2] = 0.f;
+    CHECK(ext->UpdateBuffer(extraUbo, 0, 16, scale), "UpdateBuffer extra 2");
+    int again = drawWith(shA, c5, 5);      // (0.251 0.502 0.251 1) -> 40 80 40
+    std::printf("shader replacement after an extra-buffer update: %06x (expected ~408040)\n", again);
+    if (!near3(again, 0x40, 0x80, 0x40)) { std::printf("FAIL: replacement extras not live\n"); return 1; }
+
+    shA->Release(); shB->Release(); tex->Release(); extraTex->Release(); extraUbo->Release();
+  }
+
   // ---- Device Reset: default-pool resources go away, the extension's objects stay usable.
   {
     colorS->Release(); depthS->Release(); avgS->Release(); bb->Release(); color->Release(); depth->Release(); avg->Release();

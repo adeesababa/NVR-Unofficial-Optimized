@@ -1,7 +1,7 @@
 From 882537f807315bcef83d21d95da561ee2d704c8d Mon Sep 17 00:00:00 2001
 From: NVR <rkwastavich@gmail.com>
 Date: Fri, 23 Oct 2026 20:40:46 +0000
-Subject: [PATCH 2/2] NVR extension 1.1: full-screen graphics passes (own
+Subject: [PATCH 2/3] NVR extension 1.1: full-screen graphics passes (own
  SPIR-V fragment/vertex shaders, up to 4 targets, viewport, blend)
 
 CreateGraphicsPipeline/Draw record a full-screen triangle through DxvkContext with the

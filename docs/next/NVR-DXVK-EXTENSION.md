@@ -3,6 +3,18 @@
 Plan: DXVK-FORK-PLAN.md. Why not the public interop: DXVK-INTEROP-REVIEW.md. This note: what was built, what was verified
 here, what the owner has to test in game, and how NVR talks to it.
 
+## Status (2026-10-24): extension 1.2, phase 2's mechanism works in the test harness
+Since the evening report: the extension can now replace one of the game's (or NVR's) pixel shaders with a SPIR-V fragment
+shader of ours (`RegisterShaderReplacement`, extension 1.2). DXVK matches the shader by its bytecode when the shader is
+created and binds our SPIR-V wherever that shader is bound, with the game's textures, samplers and float constants still
+arriving, plus NVR's own buffers/textures in a set of their own (`SetReplacementResources`). Proven end to end on software
+Vulkan with a hand-assembled ps_3_0 (`oC0 = tex2D(s0, v0) * c5`): the replacement's output, the game constant, texture
+and sampler, NVR's extra uniform buffer and texture, a later buffer update, and an unregistered shader keeping DXVK's own
+conversion all check out (section "Verified here"). On the NVR side `[Main.Main.Performance] NvrDxvkReplacements` loads a
+`Compute\Replace\<shader name>.spv` (+ `.txt` listing the textures and constants it reads) when a pixel shader is loaded;
+no replacement ships yet, so the switch does nothing until one does. The Windows DLL builds (local and the Actions
+workflow). Still nothing run in game. Earlier status below.
+
 ## Status (2026-10-23, evening): extension 1.1, six effects ported, nothing run in game yet
 Since the first report: (1) the extension gained full-screen graphics passes (own SPIR-V fragment shaders over a built-in
 full-screen triangle, up to four targets, viewport, blend; DXVK's whole context state is saved and put back, so the game's
@@ -63,6 +75,7 @@ a `git am` plus, at worst, a look at those four spots. DXVK's version string bec
   snapshotted before and restored after (`dxvk_context.h` nvrGetState/nvrSetState, which ends the pass and marks everything
   dirty), so the device's own render targets, viewport, shaders, blend/depth state and push data are re-applied at its next
   draw. Multisampled targets are refused (the pass would need its own sample count).
+- `RegisterShaderReplacement` / `SetReplacementResources` (1.2): see "Phase 2" below.
 Slots are the extension's own (DXVK resource indices 64+), so a dispatch never touches what the game or NVR has bound in
 D3D9. Push block: up to 240 bytes, the shader's block starts at offset 0.
 
@@ -128,6 +141,12 @@ of the SM3 limits.
   and LowHF an independent C++ transcription of the HLSL agrees with the GLSL's output (within half-float precision).
   All pass on lavapipe. The
   tracked-write bug above was found by this: the first readback after a dispatch returned the previous frame's value.
+- Shader replacement (1.2), same program: a ps_3_0 assembled by hand (`dcl_texcoord0 v0, dcl_2d s0, texld, mul oC0 by
+  c5`) is registered with a GLSL replacement that computes `tex * c5 * extraUbo + extraTex`; drawn with the fixed-function
+  vertex path (XYZRHW + TEX1) and the game-style `SetTexture(0)`, `SetPixelShaderConstantF(5)`, the pixel reads
+  (0.50, 0.50, 0.75): texture, sampler and constant arrived, the extra uniform buffer and texture too; updating the extra
+  buffer changes the next draw; the same shader with c6 instead of c5 (not registered) gives DXVK's own result
+  (0.25, 0.50, 0.50); a registration naming a sampler the original does not use is refused with a log line.
 - Vulkan validation layers: no errors on DXVK's legacy descriptor path (`dxvk.enableDescriptorHeap = False`,
   `dxvk.enableDescriptorBuffer = False`). On the default path (descriptor heap) the layer available here (1.3.275) is older
   than the extension DXVK 3.0 uses and reports "set not bound" for DXVK's own draws as well as ours: the layer's
@@ -165,15 +184,42 @@ of the SM3 limits.
    timings of those passes on and off (expect about the same). Any `pass <Name> failed to draw` line is a finding.
 7. Alt-tab, a device reset (fullscreen toggle), resolution change (the buffers are re-made when width/height change),
    ReShade chained, and the game's loading screens: nothing crashes, no DXVK log errors (`NVR ext:` lines).
+8. `NvrDxvkReplacements = true` with no `Compute\Replace` folder: nothing changes and the log stays quiet (the first
+   replacement to test will be a straight port of one lit-object variant; it will come with its own checklist).
 Unknowns to watch: the storage-image path (`ensureImageCompatibility`) is unused by NVR so far; the push-data and
 context-state restores were exercised by the test's alpha-tested draws, not by the game's full state (a wrong fog colour,
 alpha test, viewport or render target right after a pass would point at them); the win32 DLL was built, not run.
 
-## Phase 2 (the game's own shaders)
-Researched, not started: NVR-DXVK-PHASE2-NOTES.md says where a replacement plugs into DXVK 3.0.1 (one `if` in
-`D3D9ShaderModuleSet::GetShaderModule`, keyed by the bytecode hash) and the exact contract a replacement SPIR-V must
-honour (constant buffer layout, texture bindings, sampler heap indices, shared push data, spec-constant block, IO
-locations), with the risks in order.
+## Phase 2 (the game's own shaders): the mechanism is in (1.2), no shader ported yet
+What the extension does: `RegisterShaderReplacement({bytecode, SPIR-V, TextureMask, FloatRegisterMask[7], extras})`
+stores the SPIR-V under the md5 of the bytecode. When D3D9's `CreatePixelShader` later sees that bytecode (the hook is
+one `if` in `D3D9DeviceEx::CreateShaderModule`), DXVK builds our SPIR-V as the shader instead of converting the bytecode;
+the original's analysis (sampler mask, render-target mask, input signature) stays in use, so hazard tracking, framebuffer
+decisions and vertex linking are unchanged. Only pixel shaders for now.
+What a replacement GLSL declares (the contract, also in `NvrDxvkExt.h` at the struct):
+- `layout(set = 1, binding = i) uniform texture2D` for D3D9 sampler i (one bit of TextureMask; must be a sampler the
+  original uses, or the registration is refused); its sampler comes from the heap: `layout(set = 0, binding = 0) uniform
+  sampler s_samplers[]`, index `pushBlock.d3d9Samplers[i / 2] >> ((i & 1) * 16) & 0xFFFF` with the push block declared
+  `layout(offset = 32) uint d3d9Samplers[8]`.
+- `layout(set = 2, binding = 6, std140) uniform Consts { vec4 c[N]; }`: the float registers. With FloatRegisterMask set,
+  `c[]` holds exactly those registers in ascending order (c5 alone becomes `c[0]`); DXVK uploads that layout for this
+  shader. With the mask all zero it is the original's own compacted list (DXVK's layout: used registers, ascending), which
+  is correct but means knowing what the compiler kept.
+- Inputs at the fixed D3D9 locations: TEXCOORD0..7 at 1..8, COLOR0 9, COLOR1 10, NORMAL0 0 (the vertex shader is the
+  game's or NVR's, unchanged). Output `layout(location = 0) out vec4`.
+- NVR's own resources in `set = 4`: uniform/read-only storage buffers and sampled textures from the extension's slots, up
+  to 8 samplers with their heap indices at `layout(offset = 64) uint extraSamplers[4]`; bound once with
+  `SetReplacementResources` and persistent across draws (NVR's shadow maps, light buffers, ...).
+- The shared push data (fog colour, alpha reference) is available at offset 0 (`D3D9SharedPushData`) but not consumed by
+  the test; alpha test and fixed-function fog are things DXVK emulates INSIDE its converted pixel shader, so a replacement
+  that must behave identically where the game enables them has to implement them (fog mode and alpha function come from
+  the spec-constant block, set 3 binding 0, same layout as DXVK's fixed-function shaders). Int and bool constants: not
+  wired (the lit-object shaders do not use them).
+NVR side: `DxvkCompute::RegisterReplacement` (called from `ShaderRecord::LoadShader` right before `CreatePixelShader`)
+loads `Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>.spv` and `<Name>.txt` (`textures=0,1,2` / `floats=0-3,8-15`)
+when `NvrDxvkReplacements` is on; a missing or refused file leaves that shader as it is and does not touch the other paths.
+Next: port one SLS20xx variant line for line (same picture) to prove the contract against the game's real state, then the
+many-lamp version reading lamps from an NVR buffer in set 4 (NVR-DXVK-PHASE2-NOTES.md).
 
 ## Next candidates (after the go/no-go)
 Full-screen graphics passes with own SPIR-V (the next extension method), then AmbientLight's blurs/accumulate, the light

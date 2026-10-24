@@ -1,7 +1,7 @@
 From da858c77c42aa24cfc0fe948244a3fcd03f9f76a Mon Sep 17 00:00:00 2001
 From: NVR <rkwastavich@gmail.com>
 Date: Fri, 23 Oct 2026 18:12:54 +0000
-Subject: [PATCH 1/2] NVR extension: record compute work into DXVK's D3D9
+Subject: [PATCH 1/3] NVR extension: record compute work into DXVK's D3D9
  command stream (ID3D9NvrExt)
 
 New COM interface on the D3D9 device (own files d3d9_nvr_ext*.{h,cpp}):

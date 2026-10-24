@@ -4,7 +4,26 @@ DXVK-FORK-PLAN.md, "Phase 2": the hard walls left in D3D9 are in the game's lit-
 native driver's ~3,600-instruction refusal, no room for a character shadow map). The idea: the NVR extension registers a
 SPIR-V replacement for a given D3D9 shader and DXVK binds ours wherever the game binds that shader, with the game's
 constants and textures still flowing. These notes say exactly where that plugs into DXVK 3.0.1 and what a replacement
-has to look like. Nothing of this is implemented; it is the map for the next session.
+has to look like. Written before the implementation; the status below says what was built and where it differs.
+
+## Status (2026-10-24): implemented as extension 1.2 and verified in the test harness
+- Built: `RegisterShaderReplacement` + `SetReplacementResources` in `d3d9_nvr_ext.cpp` (patch 0003), the hook in
+  `D3D9DeviceEx::CreateShaderModule` (not `GetShaderModule`: the hook sits before DXVK's module cache so a replaced shader
+  never shares a cache entry with the original; a new `D3D9CommonShader(analysis, shader)` constructor carries it). The
+  contract as implemented is in NVR-DXVK-EXTENSION.md "Phase 2" and in `NvrDxvkExt.h` at `NVR_EXT_SHADER_REPLACEMENT_DESC`.
+- Differences from the notes below: (1) the constant buffer is floats first, then ints (then bools, vertex only): the
+  "ints first" sentence under "What a replacement must declare" was wrong; both are compacted to the registers the shader
+  uses, so a replacement either reads the original's compacted list or gives its own `FloatRegisterMask` and DXVK uploads
+  that layout instead. (2) The sampler heap indices are gathered into the replacement's own push block (D3D9 samplers at
+  offset 32, extras at 64), no `D3D9FsPushData` layout to match. (3) Extras live in set 4 (own slots), bound once and
+  persistent. (4) The spec-constant block is declared but a replacement need not read it; alpha test and fixed-function
+  fog are emulated inside DXVK's converted shaders, so a replacement that needs them must do them itself. (5) Vertex
+  shaders are not replaceable yet (the lit-object work is in the pixel shaders).
+- Verified: a hand-assembled ps_3_0 replaced end to end on software Vulkan (texture, sampler, constant from the game side;
+  an NVR uniform buffer and texture from set 4; an unregistered shader untouched). Not verified: the game's real state
+  (fog, alpha test, cube/volume samplers, many variants), the win32 DLL in game.
+- Open: DXVK's on-disk shader cache is bypassed for replacements (they are already SPIR-V, nothing to cache); each
+  `CreatePixelShader` of a replaced bytecode builds a fresh `DxvkShader` (the game creates each shader once).
 
 ## Where a replacement plugs in
 - `D3D9DeviceEx::CreateVertexShader/CreatePixelShader` -> `CreateShaderModule` (d3d9_device.cpp ~7884): the bytecode is

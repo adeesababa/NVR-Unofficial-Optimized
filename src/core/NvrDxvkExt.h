@@ -46,7 +46,7 @@
 #include <unknwn.h>
 
 #define NVR_EXT_VERSION_MAJOR 1
-#define NVR_EXT_VERSION_MINOR 1
+#define NVR_EXT_VERSION_MINOR 2
 
 #define NVR_EXT_MAX_SLOTS       32
 #define NVR_EXT_MAX_BINDINGS    32
@@ -196,6 +196,45 @@ struct NVR_EXT_DRAW_DESC {
   UINT                            PushDataSize;
 };
 
+/**
+ * A SPIR-V replacement for one of the game's (or NVR's own) D3D9 pixel shaders (since 1.2).
+ *
+ * Registered before the D3D9 shader object is created (NVR: right before its CreatePixelShader
+ * for that shader). When any CreatePixelShader call later presents the same bytecode, DXVK builds
+ * the shader from this SPIR-V instead of converting the bytecode; everything the game sets for the
+ * shader (constants, textures, sampler states, render states) keeps flowing. The original
+ * bytecode's analysis (which samplers and render targets it uses) stays in force, so the
+ * replacement must not read D3D9 samplers the original did not use.
+ *
+ * GLSL contract (fragment shader, compiled with glslangValidator -V --target-env vulkan1.1):
+ *   layout(set = 0, binding = 0) uniform sampler s_samplers[];           // DXVK's sampler heap
+ *   layout(set = 1, binding = i) uniform texture2D t_i;                   // D3D9 sampler s_i (the original's type: 2D / cube / 3D)
+ *   layout(set = 2, binding = 6, std140) uniform Consts { vec4 c[N]; };   // the float constants, ascending register order
+ *                                                                        // (N = bits set in FloatRegisterMask, or the original's set)
+ *   layout(set = 3, binding = 0, scalar) uniform SpecConsts { ... };      // D3D9's spec data (alpha test, fog, sampler types; see the
+ *                                                                        // fork's d3d9_fixed_function_common.glsl); optional
+ *   layout(set = 4, binding = j) ...;                                     // NVR's own resources (pExtra[j]), bound with SetReplacementResources
+ *   layout(push_constant) uniform Push {
+ *     uint packedFogColorAndAlphaRef; float fogDistanceScale; float fogDistanceEnd; float fogDensity;   // D3D9's shared data, offset 0
+ *     layout(offset = 32) uint d3d9SamplerIndices[8];   // heap index of D3D9 sampler i: bits 16*(i&1).. of [i/2]
+ *     uint extraSamplerIndices[4];                       // heap index of extra sampler k (pExtra entries of type sampler), same packing
+ *   };
+ *   Inputs by D3D9 semantic: location 0 NORMAL0, 1..8 TEXCOORD0..7, 9 COLOR0, 10 COLOR1, 11 FOG; outputs location 0..3 = oC0..oC3.
+ *   The alpha test and fixed-function fog that DXVK adds to a D3D9 pixel shader are NOT added here: a
+ *   replacement that needs them does them itself from the spec data and the shared push data.
+ */
+struct NVR_EXT_SHADER_REPLACEMENT_DESC {
+  const void*                 pBytecode;            // the D3D9 pixel shader bytecode this replaces
+  UINT                        BytecodeSize;         // bytes (may be larger than the shader; the shader's own length is used)
+  const void*                 pSpirv;
+  UINT                        SpirvSize;
+  UINT                        TextureMask;          // D3D9 samplers s0..s15 the replacement declares (set 1, binding i)
+  UINT                        FloatRegisterMask[7]; // c0..c223 the replacement reads; all zero = the original's own set
+  UINT                        ExtraCount;           // NVR's own resources: set 4, binding j; Slot in the extension's slot space
+  const NVR_EXT_BINDING_DESC* pExtra;               // (sampled image, uniform buffer, read-only storage buffer, sampler; PushOffset ignored)
+  const char*                 pDebugName;
+};
+
 struct NVR_EXT_INFO {
   UINT  ExtVersionMajor;
   UINT  ExtVersionMinor;
@@ -255,6 +294,18 @@ ID3D9NvrExt : public IUnknown {
    */
   virtual HRESULT STDMETHODCALLTYPE Draw(
     const NVR_EXT_DRAW_DESC*              pDesc) = 0;
+
+  /** Registers a pixel shader replacement (since 1.2). D3DERR_INVALIDCALL when the bytecode or description is unusable. */
+  virtual HRESULT STDMETHODCALLTYPE RegisterShaderReplacement(
+    const NVR_EXT_SHADER_REPLACEMENT_DESC* pDesc) = 0;
+
+  /**
+   * Binds NVR's own resources for the replacements' extra slots (since 1.2): sampled images, buffers and
+   * samplers by Slot, as every replacement's pExtra names them. They stay bound until set again.
+   */
+  virtual HRESULT STDMETHODCALLTYPE SetReplacementResources(
+          UINT                            Count,
+    const NVR_EXT_RESOURCE_BINDING*       pBindings) = 0;
 
   /** Creates a device-local buffer. Contents are undefined until written. */
   virtual HRESULT STDMETHODCALLTYPE CreateBuffer(
