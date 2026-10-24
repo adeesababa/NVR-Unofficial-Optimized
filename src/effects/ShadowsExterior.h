@@ -217,6 +217,7 @@ public:
 			bool EvenTaps;				// UNOFFICIAL (2026-10-21): High/Ultra's extra taps spread evenly (POINT_SHADOW_EVEN, read at startup)
 			float MagnifiedSoftness;	// UNOFFICIAL (2026-10-21): texels; the least spread where a cube texel covers many pixels (0 off; compiled in when above 0 at startup)
 			bool TexelFilter;			// UNOFFICIAL (2026-10-21): the sun-style texel-aligned B-spline filter (POINT_SHADOW_TEXEL, read at startup)
+			bool AutoNormalOffset;		// UNOFFICIAL (2026-10-24): NormalOffset at least the filter's reach in texels (PointShadowForward::Publish), live
 		} Forward;
 	};
 

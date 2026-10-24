@@ -619,6 +619,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;	// compiled in at startup (ShaderRecord::BuildDefines)
 		forward.MagnifiedSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MagnifiedSoftness"), 0.0f, 8.0f);	// POINT_SHADOW_MAG if above 0 at startup
 		forward.TexelFilter = TheSettingManager->GetSettingI(section, "TexelFilter") != 0;	// POINT_SHADOW_TEXEL, compiled in at startup
+		forward.AutoNormalOffset = TheSettingManager->GetSettingI(section, "AutoNormalOffset") != 0;	// UNOFFICIAL 2026-10-24 (charfacets)
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
