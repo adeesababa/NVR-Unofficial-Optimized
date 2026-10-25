@@ -2,6 +2,12 @@
 
 static float CloudsVolumetricSetting = 0.0f;	// UNOFFICIAL: [Shaders.Sky.Clouds] Volumetric as set (UpdateSettings)
 
+// UNOFFICIAL 2026-10-25: a setting that may be missing from an older defaults file (GetSettingF would read 0: a black sky)
+static float SettingOr(const char* section, const char* key, float fallback) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, section, key) ? node.FloatValue : fallback;
+}
+
 void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_CloudData", &Constants.CloudData);
@@ -359,11 +365,11 @@ void SkyShaders::UpdateSettings() {
 	Constants.CloudData.y = TheSettingManager->GetSettingF("Shaders.Sky.Main", "StarTwinkle");
 
 	// UNOFFICIAL 2026-10-25 sky tint and moon brightness (applied in UpdateConstants / UpdateMoonlight)
-	Settings.TintDay = D3DXVECTOR4((std::max)(TheSettingManager->GetSettingF("Shaders.Sky.Main", "TintDayR"), 0.0f),
-		(std::max)(TheSettingManager->GetSettingF("Shaders.Sky.Main", "TintDayG"), 0.0f), (std::max)(TheSettingManager->GetSettingF("Shaders.Sky.Main", "TintDayB"), 0.0f), 1.0f);
-	Settings.TintNight = D3DXVECTOR4((std::max)(TheSettingManager->GetSettingF("Shaders.Sky.Main", "TintNightR"), 0.0f),
-		(std::max)(TheSettingManager->GetSettingF("Shaders.Sky.Main", "TintNightG"), 0.0f), (std::max)(TheSettingManager->GetSettingF("Shaders.Sky.Main", "TintNightB"), 0.0f), 1.0f);
-	Settings.MoonBrightness = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Main", "MoonBrightness"), 0.0f, 4.0f);
+	Settings.TintDay = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintDayR", 1.0f), 0.0f),
+		(std::max)(SettingOr("Shaders.Sky.Main", "TintDayG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintDayB", 1.0f), 0.0f), 1.0f);
+	Settings.TintNight = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintNightR", 1.0f), 0.0f),
+		(std::max)(SettingOr("Shaders.Sky.Main", "TintNightG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintNightB", 1.0f), 0.0f), 1.0f);
+	Settings.MoonBrightness = std::clamp(SettingOr("Shaders.Sky.Main", "MoonBrightness", 1.0f), 0.0f, 4.0f);
 
 	// UNOFFICIAL physical sky (Effects/Includes/Atmosphere.hlsl). Enabled is read at startup too (ShaderRecord compiles it in).
 	PhysicalSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") != 0;
