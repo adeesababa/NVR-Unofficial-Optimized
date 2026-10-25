@@ -86,7 +86,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
-    // UNOFFICIAL 2026-10-25 SmoothCharacterShadows here too (facetskin: DeepSeek's review, bench/deep-roadmap/evidence/facetskin):
+    // UNOFFICIAL 2026-10-25 SmoothCharacterShadows / SmoothObjectNormals here too (facetskin; also done 2026-10-24 on character-shadow-map: DeepSeek's review, bench/deep-roadmap/evidence/facetskin):
     // this was the one old skin shader whose sky light and sun shadow kept the flat triangle normal, so skin it drew showed
     // its triangles. Our SKIN2001.vso sends the smooth normal on TEXCOORD7; a vanilla VS puts its shadow-map UV there, so the
     // shadowWorldPos sentinel must be ours as well.

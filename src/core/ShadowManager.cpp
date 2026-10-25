@@ -2676,6 +2676,7 @@ void ShadowManager::RenderShadowMaps() {
 			if (GetFileAttributesA(Filename) == INVALID_FILE_ATTRIBUTES) CreateDirectoryA(Filename, NULL);
 			D3DXSaveSurfaceToFileA(".\\Test\\shadowmapatlas.jpg", D3DXIFF_JPG, Shadows->ShadowAtlasSurface, NULL, NULL);
 			D3DXSaveSurfaceToFileA(".\\Test\\shadowmaportho.jpg", D3DXIFF_JPG, Shadows->ShadowMapOrthoSurface, NULL, NULL);
+			if (Shadows->CharacterMapSurface) D3DXSaveSurfaceToFileA(".\\Test\\charshadowmap.jpg", D3DXIFF_JPG, Shadows->CharacterMapSurface, NULL, NULL);	// UNOFFICIAL 2026-10-24 CharacterShadowMap
 
 			InterfaceManager->ShowMessage("Textures taken!");
 		}
@@ -2744,7 +2745,7 @@ void ShadowManager::RenderCharacterShadowMap(const D3DXVECTOR3& SunDir) {
 	const unsigned casters = (unsigned)(geometryPass->GeometryList.size() + alphaPass->GeometryList.size() + skinnedGeoPass->GeometryList.size());
 	DrawShadowMap(map);
 	ShadowData->z = zWas;
-	Shadows->Constants.CharacterData.w = 1.0f;	// the map holds this frame's draw: the lookups read it
+	Shadows->Constants.CharacterData.w = 1.0f + (float)Shadows->Settings.ShadowMaps.CharacterMapDebug;	// the map holds this frame's draw: the lookups read it (2-4: a debug view, Shadow.hlsl)
 
 	if (Shadows->Settings.ShadowMaps.CharacterMapLog) {
 		static DWORD lastLog = 0;

@@ -315,6 +315,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// (ShadowsExteriorEffect::RegisterTextures reads the same setting for CharacterMapCompiled.)
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
 		AppendDefine("CHARACTER_SHADOW_MAP", "1");
+	// UNOFFICIAL 2026-10-24 SmoothObjectNormals ([Shaders.PBR.Main], restart): the object and skin shaders' shadow lookups and sky ambient take
+	// the vertex normal instead of the per-triangle one (Includes/Shadow.hlsl ShadowFacingNormal). 0: the shaders exactly as before.
+	AppendDefine("OBJECT_SMOOTH_NORMALS", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmoothObjectNormals") ? "1" : "0");
 
 }
 
