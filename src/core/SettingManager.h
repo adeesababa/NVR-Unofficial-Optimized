@@ -45,6 +45,7 @@ struct SettingsMainStruct {
         bool    ReShadeDepthNearRemap; // [Main.Main.Performance] ReShadeDepthNearRemap (ReShadeIntegration.cpp: first-person depths past the world near plane folded below 1; identity for g <= 0.5), live
         bool    ReShadeMenuGuard; // [Main.Main.Performance] ReShadeMenuGuard (ReShadeIntegration.cpp: the ReShadeMenuGuardEffects files paused while menus are open), live
         bool    ReShadeMenuGuardVATS; // [Main.Main.Performance] ReShadeMenuGuardVATS (the menu guard also in VATS), live
+        bool    ReShadeGameValues; // [Main.Main.Performance] ReShadeGameValues (ReShadeIntegration.cpp: game weather/hour/worldspace/interior to ReShade uniforms with a source annotation, FNV ReShade Helper names), live
         bool    LampScissor; // [Main.Main.Performance] LampScissor (LampScissor.h: lamp-only passes drawn only inside their lamps' screen rectangle), live
         bool    LampScissorExact; // [Main.Main.Performance] LampScissorExact (LampScissor.h, 2026-10-21: the exact rectangle, also for lamps near the camera), live
         bool    NeonSpillSelfTest;    // [Shaders.BounceLight.Main] NeonSpillSelfTest (EffectSelfTest.h, DIAGNOSTIC: ticking it runs one in-game A/B test of the neon spill), live
