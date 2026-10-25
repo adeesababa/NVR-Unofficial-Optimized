@@ -411,6 +411,9 @@
     <ClCompile Include="..\src\effects\BloodLens.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\BarrelHaze.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\BloomLegacy.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
