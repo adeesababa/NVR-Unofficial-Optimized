@@ -52,7 +52,21 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
    - AvgLumaCompute on: picture 0.7/255 darker on average. AvgLuma check: exact average luma 0.0230 vs the D3D9 pass's
      112 taps 0.0163 (+0.0068, the old pass reads about 30 % low in this casino scene), so exposure adapts a bit darker.
      A real (and expected) difference, not a bug; whether Exposure's defaults should be retuned for it is the owner's call.
-   Next: timing (F10) in a full slot, the remaining checks (alt-tab/reset, ReShade, loading screens), then phase 2 step 1.
+   TIMING 2026-10-25 16:44 (run 20261025-164255-slotC, list dxvkfork-2-timing-lucky22: slot C 1920x1080 alone, Lucky 38,
+   D3D9 / Vulkan alternated 3 times in one launch, 600 frames per shot, F10 GPU timers; a slim slot, so ms are relative,
+   not the user's 1440p numbers; no full slot exists and rebuilding one needs the real install at a restore point):
+   | timer (ms, mean of 3) | D3D9 | fork | diff |
+   |---|---|---|---|
+   | Exposure | 0.1045 | 0.1049 | +0.0005 |
+   | FXAA | 0.0834 | 0.0814 | -0.0020 |
+   | Sharpening | 0.1213 | 0.1188 | -0.0026 |
+   | Average luma (112 taps vs exact compute) | 0.0440 | 0.1473 | +0.1033 |
+   | Game frame total | 7.17 | 7.07 | -0.10 (scene noise, +-0.5 between rounds) |
+   So the route itself costs nothing: a pass through the extension costs what its D3D9 technique costs. The exact
+   AvgLuma is 0.1 ms dearer (it reads all 2.07 M pixels; the old pass reads 112): a correctness gain, not a speed gain;
+   a two-level reduction or reading a mip would cut it if it ships. ImageAdjust, LowHF and SkyDither had no timer line in
+   either mode (they did not run in this scene: idle at their defaults), so they are still unmeasured in game.
+   Next: the remaining checks (alt-tab/reset, ReShade, loading screens), then phase 2 step 1.
    Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
    extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
