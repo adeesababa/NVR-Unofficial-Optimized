@@ -92,6 +92,32 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
    - The replacement is tied to the bytecode, i.e. to the settings that compiled it (defaults here); a shipping version needs
      one per variant the settings produce, or (better) hand-written GLSL keyed by shader name that reads its options from
      constants. That is step 4: the first fork-only gain (all lamps in one pass, or the character shadow map) in this shader.
+   STEP 4 (2026-10-25 19:05): "all lamps in one pass" made cheaper; lossless, but still not a win. Details:
+   - Why one pass was slow (LampsInOnePass, +1.08 ms Ultra-Luxe on 10-18): the 6-lamp shaders (SLS2034/2035/2036) computed
+     all 6 lamp slots and their 6 shadow-cube lookups on every pixel, unused slots multiplied by 0; LampReachSkip's branches
+     were left out of exactly these shaders because the native driver refuses them past ~3,600 slots.
+   - Built (089ff9d9): [Shaders.PBR.Main] DxvkLampBranches (default on, restart; only when the runtime is DXVK, stock or
+     fork; NO_SLOT_LIMIT define, ObjectTemplate.hlsl LAMP_IFK + ManyLightsDirect.hlsl): per pixel, a lamp slot the draw does
+     not use (k >= lightsUsed) or a lamp out of reach is skipped, its shadow lookup too. fxc: compiles in all four checked
+     variants (OPT 3,581 -> 3,821 slots, +HandBlood 4,238; no 32-temp failure). Native D3D9: unchanged (define 0).
+   - Same picture: branches off vs on 8.4 % / 1.11 / -0.006 (one pass) and 8.2 % / 1.11 / -0.001 (multi-pass), below
+     same-launch noise (11.5 % / 1.37).
+   - Timing (slot C 1080p, list dxvkfork-3-onepass, LampsInOnePass off/on x3 per launch, world scene GPU ms):
+     | | branches off: multi / one | branches on: multi / one |
+     |---|---|---|
+     | Ultra-Luxe | 4.44 / 5.80 (+1.36) | 4.28 / 5.45 (+1.16) |
+     | Lucky 38 | 4.08 / 4.06 (-0.02) | 4.10 / 4.00 (-0.10) |
+     Split (dxvkfork-4, Ultra-Luxe, branches on): one pass +0.49 with lamp shadows, +0.55 with them off (Strength 0): the
+     remaining cost is NOT the shadow lookups. Most likely the multi-pass path is already cheap per pixel (LampScissor draws
+     each extra lamp pass only inside that lamp's screen rectangle, TrimLampPasses drops out-of-reach pixels), while one pass
+     shades the whole object with every lamp's branch. Run-to-run spread +-0.4 ms per round: the gain from the branches is
+     about 0.1-0.35 ms on the one-pass path, not more.
+   - Verdict: keep DxvkLampBranches on (free, lossless, DXVK only); LampsInOnePass stays off. The fork's lamp gain is not
+     "one pass" but would need the one pass to do what LampScissor does (light lists per screen tile from an NVR buffer in
+     set 4, a clustered/tiled light loop): a real SPIR-V-only design, est. 8-12 session-hours, with no guarantee it beats
+     the scissored passes at 6 lamps. Better next fork targets: compute versions of the full-screen effects that cost the
+     most (AmbientLight 0.4 ms, point shadow cube maps 0.5 ms, volumetric fog 0.26 ms at 1080p), where compute's shared
+     memory and atomics do help.
    Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
    extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
