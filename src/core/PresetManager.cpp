@@ -65,6 +65,7 @@ static const std::unordered_set<std::string> kBlacklistedSections = {
 	"Main.Main.Quality",
 	"Main.Main.ReducedQuality",
 	"Main.Menu.NewInPatch",
+	"Main.Menu.Developer",	// UNOFFICIAL 2026-10-25: the menu's Developer options box
 	"Shaders.AmbientOcclusion.FastPaths",
 	"Shaders.Debug.Main",
 	"Shaders.Skin.Debug",
