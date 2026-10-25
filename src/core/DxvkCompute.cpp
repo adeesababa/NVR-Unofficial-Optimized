@@ -217,9 +217,27 @@ static bool ParseReplacementManifest(const char* Path, UINT& TextureMask, UINT* 
 bool DxvkCompute::RegisterReplacement(const char* Name, const void* Bytecode, UINT Size) {
 	if (!Name || !Bytecode || !Size || !ReplacementsOn()) return false;
 
-	char path[MAX_PATH];
-	_snprintf_s(path, sizeof(path), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\%s.spv", Name);
-	if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return false;	// the normal case: no replacement for this shader
+	// 2026-10-25: the interior and exterior records of a shader share its name but not its bytecode, so a replacement is
+	// looked up as <Name>@<hash>.spv first (FNV-1a of the bytecode, 8 hex digits), then <Name>.spv. With a Replace\dump
+	// folder present, every pixel shader is written there as <Name>@<hash>.pso (the exact bytes a replacement is made from).
+	UINT hash = 2166136261u;
+	for (UINT i = 0; i < Size; i++) hash = (hash ^ ((const unsigned char*)Bytecode)[i]) * 16777619u;
+	char dump[MAX_PATH];
+	_snprintf_s(dump, sizeof(dump), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\dump\\%s@%08X.pso", Name, hash);
+	if (GetFileAttributesA("Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\dump") != INVALID_FILE_ATTRIBUTES &&
+		GetFileAttributesA(dump) == INVALID_FILE_ATTRIBUTES) {
+		std::ofstream out(dump, std::ios::binary);
+		out.write((const char*)Bytecode, Size);
+	}
+
+	char path[MAX_PATH], key[MAX_PATH];
+	_snprintf_s(key, sizeof(key), _TRUNCATE, "%s@%08X", Name, hash);
+	_snprintf_s(path, sizeof(path), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\%s.spv", key);
+	if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+		_snprintf_s(key, sizeof(key), _TRUNCATE, "%s", Name);
+		_snprintf_s(path, sizeof(path), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\%s.spv", key);
+		if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return false;	// the normal case: no replacement for this shader
+	}
 
 	if (ExtInfo.ExtVersionMinor < 2) {
 		static bool said = false;
@@ -241,7 +259,7 @@ bool DxvkCompute::RegisterReplacement(const char* Name, const void* Bytecode, UI
 	if (!file) { Logger::Log("UNOFFICIAL NVR DXVK: could not read %s", path); return false; }
 
 	char manifest[MAX_PATH];
-	_snprintf_s(manifest, sizeof(manifest), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\%s.txt", Name);
+	_snprintf_s(manifest, sizeof(manifest), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\%s.txt", key);
 	NVR_EXT_SHADER_REPLACEMENT_DESC desc = {};
 	bool floatsGiven = false;
 	if (!ParseReplacementManifest(manifest, desc.TextureMask, desc.FloatRegisterMask, floatsGiven)) {

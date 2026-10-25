@@ -38,7 +38,8 @@ public:
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 
 	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device
-	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>.spv exists, DXVK binds that SPIR-V
+	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>@<hash>.spv (FNV-1a of the bytecode,
+	// 8 hex digits; a Replace\dump folder collects every shader as <Name>@<hash>.pso) or <Name>.spv exists, DXVK binds that SPIR-V
 	// fragment shader wherever the game binds this shader. The .txt next to it says what the replacement reads from the game:
 	//   textures=0,1,2        the D3D9 samplers it declares (set 1, binding i); must be ones the original uses
 	//   floats=0-3,8-15       the float registers it wants in its constant block (set 2, binding 6), packed in that order;
