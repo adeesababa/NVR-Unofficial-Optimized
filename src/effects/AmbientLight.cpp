@@ -1,6 +1,7 @@
 #include "AmbientLight.h"
 #include "BounceLightMath.h"
 #include "../core/FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 AmbientLightBlurCompute
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -490,6 +491,80 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	return prepared;
 }
 
+// UNOFFICIAL 2026-10-25 (NVR DXVK) AmbientLightBlurCompute: see AmbientLight.h and src\hlsl\NewVegas\Compute\AmbientLightBlur.comp.
+namespace {
+	// Bindings as AmbientLightBlur.comp declares them (set 1; the sampler heap is set 0 binding 0).
+	const NVR_EXT_BINDING_DESC BlurBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },		// t_buffer: NVR_ALBuffer (bufferTexture[0])
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },		// t_depth: TESR_DepthBuffer
+		{ 1, 2, NVR_EXT_BIND_STORAGE_IMAGE, 2, NVR_EXT_VIEW_2D, TRUE,  0 },		// i_dst: bufferTexture[1]
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 44 },		// samplerIndex at push offset 44
+	};
+	struct BlurPush {	// AmbientLightBlur.comp's push block, 64 bytes
+		D3DXVECTOR4	layout;
+		float		uvOffset[2], blurRadius, debugView, farZ;
+		UINT32		apron, wholeStep, samplerIndex, width, height, pad0, pad1;
+	};
+	static_assert(sizeof(BlurPush) == 64, "AmbientLightBlur.comp push block");
+}
+
+bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width, UINT height) {
+	if (!TheSettingManager->SettingsMain.Main.AmbientLightBlurCompute || !DxvkCompute::Available()) return false;
+	if (!blurComputeOk) {
+		if (blurComputeTried) return false;
+		blurComputeTried = true;
+		blurPipeline = DxvkCompute::CreatePipeline("AmbientLightBlur", BlurBindings, _countof(BlurBindings), sizeof(BlurPush), true);
+		if (!blurPipeline || !DxvkCompute::PointClamp()) {	// (the passes' samplers: POINT, CLAMP)
+			DxvkCompute::Drop(blurPipeline);
+			Logger::Log("UNOFFICIAL AmbientLight: blur compute path could not be set up; the D3D9 blur passes are used");
+			return false;
+		}
+		blurComputeOk = true;
+		Logger::Log("UNOFFICIAL AmbientLight: blur compute path ready");
+	}
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	if (!depth || !bufferTexture[0] || !bufferTexture[1]) return false;
+
+	BlurPush push = {};
+	push.layout = layout;
+	push.uvOffset[0] = (1.0f / (float)TheRenderManager->width) * 0.5f;	// as ShaderManager::CreateFrameVertex
+	push.uvOffset[1] = (1.0f / (float)TheRenderManager->height) * 0.5f;
+	push.blurRadius = Constants.Data2.z;
+	push.debugView = Constants.Data2.w;
+	push.farZ = TheRenderManager->CameraData.y;
+	const float step = (std::max)(Constants.Data2.z, 0.5f);	// the shader's BlurStep
+	push.apron = (UINT32)(std::min)(13.0f, ceilf(3.0f * step) + 1.0f);
+	push.wholeStep = step == floorf(step) ? 1 : 0;
+	push.width = width;
+	push.height = height;
+
+	NVR_EXT_RESOURCE_BINDING bindings[] = {
+		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE, bufferTexture[0], 0, 0, 0, FALSE },
+		{ 1, NVR_EXT_BIND_SAMPLED_IMAGE, depth,            0, 0, 0, FALSE },
+		{ 2, NVR_EXT_BIND_STORAGE_IMAGE, bufferTexture[1], 0, 0, 0, FALSE },
+		{ 0, NVR_EXT_BIND_SAMPLER,       DxvkCompute::PointClamp(), 0, 0, 0, FALSE },
+	};
+	NVR_EXT_DISPATCH_DESC dispatch = {};
+	dispatch.pPipeline = blurPipeline;
+	dispatch.BindingCount = _countof(bindings);
+	dispatch.pBindings = bindings;
+	dispatch.pPushData = &push;
+	dispatch.PushDataSize = sizeof(push);
+	dispatch.GroupsX = (width + 15) / 16;
+	dispatch.GroupsY = (height + 15) / 16;
+	dispatch.GroupsZ = 1;
+	HRESULT result = DxvkCompute::Extension()->Dispatch(&dispatch);
+	if (FAILED(result)) {
+		Logger::Log("UNOFFICIAL AmbientLight: blur compute dispatch failed (%08lX); the D3D9 blur passes are used from now on", result);
+		DxvkCompute::Drop(blurPipeline);
+		blurComputeOk = false;
+		DxvkCompute::Fail("an AmbientLight blur dispatch failed");
+		return false;
+	}
+	if (++blurComputeFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: blur compute path running (%ux%u, one dispatch for BlurX + BlurY).", width, height);
+	return true;
+}
+
 void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 	IDirect3DSurface9* SourceBuffer) {
@@ -691,6 +766,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &writeMask1);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
 	UINT passes = 0;
+	int blurred = 0;	// UNOFFICIAL 2026-10-25 (NVR DXVK): the buffer holding the blurred result (1 after the compute blur)
 	HRESULT result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
 		for (UINT p = 0; p < 8 && SUCCEEDED(result); ++p) {
@@ -699,6 +775,18 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			// Apply (0 for the occlusion, this frame's history for the bounce) -> the frame.
 			if ((p == 5 || p == 6) && !balanceRuns) continue;
 			if (p == 0 && prepared) continue;	// UNOFFICIAL 2026-10-21 (alrocks): RenderPrepare drew Prepare (and the smoothing) already
+			if (p == 3 && blurred) continue;	// the compute dispatch did blur Y too
+			// UNOFFICIAL 2026-10-25 (NVR DXVK) AmbientLightBlurCompute: blur X + Y as one dispatch, 0 -> 1, timed as blur X. Buffer 0 is the
+			// current target after Estimate: the dispatch must not read it as such, so the target is moved to Accumulate's first.
+			if (p == 2 && TheSettingManager->SettingsMain.Main.AmbientLightBlurCompute && DxvkCompute::Available()) {
+				Device->SetTexture(5, nullptr);
+				Device->SetTexture(6, nullptr);
+				Device->SetTexture(7, nullptr);
+				result = Device->SetRenderTarget(0, historySurface[writeIndex]);
+				if (FAILED(result)) break;
+				GpuProfileScope gpu(passTimers[2], Device);
+				if (RenderBlurCompute(layout, half.Width, half.Height)) { blurred = 1; continue; }
+			}
 			const bool apply = p == 7;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
 				p == 5 ? statsSurface : p == 6 ? balanceSurface[balanceWrite] : bufferSurface[p == 2 ? 1 : 0];
@@ -714,7 +802,8 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			if (p > 0) Device->SetTexture(5, prepTexture);
 			Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);	// NVR_ALViewModel (Prepare, Apply)
 			const bool applyLike = p == 5 || p == 7;	// the balance samples read what Apply reads
-			if (p == 2 || p == 4 || p == 7) Device->SetTexture(6, bufferTexture[0]);
+			if (p == 2) Device->SetTexture(6, bufferTexture[0]);
+			else if (p == 4 || p == 7) Device->SetTexture(6, bufferTexture[blurred]);
 			else if (p == 3) Device->SetTexture(6, bufferTexture[1]);
 			else if (p == 6) Device->SetTexture(6, statsTexture);								// NVR_ALStats
 			if (p == 4) Device->SetTexture(7, historyTexture[readIndex]);

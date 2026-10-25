@@ -123,6 +123,13 @@ file textures (Lens, BloodLens, WaterLens, LUT) need the loaded texture from the
 sampler (`ExtFileTexture`, the WRAP sampler slot; see BloodLens.cpp). The point of the ports is the route: once an effect runs on this path, its next version is free
 of the SM3 limits.
 
+AmbientLight's blurs (2026-10-25): `[Main.Main.Performance] AmbientLightBlurCompute = false` runs passes BlurX + BlurY as
+one compute dispatch (`Compute/AmbientLightBlur.comp`, `AmbientLightEffect::RenderBlurCompute`): 16x16 tiles with the apron
+in shared memory, the intermediate rounded to half floats as the D3D9 target stores it, the result in NVR_AmbientLight1
+(the passes after it read it there). F10 "Ambient light blur X (half)" times the dispatch. A CPU transcription of both
+versions (point sampling at the frame quad's uv, BlurRadius 0.5-4 whole and fractional, odd sizes, DebugView 4) agreed bit
+for bit; not run on a GPU.
+
 ## Verified here (Linux container, no game)
 - Stock DXVK v3.0.1 builds from source as the release does (32-bit, MinGW-w64 gcc 13, Meson 1.9, glslang 15):
   `d3d9.dll`, PE32 i386. The patched tree builds the same way (`tools/nvr-dxvk/build.sh` was run from a clean clone).

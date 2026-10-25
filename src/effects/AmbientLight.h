@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../core/NvrDxvkExt.h"
+
 // UNOFFICIAL 2026-10-14: ambient occlusion and bounce light in one pass (Effects\AmbientLight.fx.hlsl). Off by default
 // ([Shaders.AmbientLight.Status] Enabled); while it renders, ShaderManager skips the AmbientOcclusion and BounceLight effects
 // (it replaces both). Four half-resolution passes into the buffers below, then the apply in the frame chain.
@@ -137,6 +139,16 @@ public:
 	// skipped; shadowApplied reports that it was done.
 	bool				foldShadow = false;
 	bool				shadowApplied = false;
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK, core\DxvkCompute.h) [Main.Main.Performance] AmbientLightBlurCompute: passes BlurX and BlurY as
+	// one compute dispatch (src\hlsl\NewVegas\Compute\AmbientLightBlur.comp), the same result, written into bufferTexture[1] (the
+	// D3D9 BlurY writes bufferTexture[0], which the dispatch reads); the passes after it read it there. False = not done (off, no
+	// extension, or a failure: logged once, then the D3D9 passes for the session).
+	bool	RenderBlurCompute(const D3DXVECTOR4& layout, UINT width, UINT height);
+	ID3D9NvrExtPipeline*	blurPipeline = nullptr;
+	bool				blurComputeTried = false;
+	bool				blurComputeOk = false;
+	UINT				blurComputeFrames = 0;
 
 	void	EnsureBuffers();
 	void	UpdateConstants() {};
