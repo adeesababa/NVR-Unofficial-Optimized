@@ -165,8 +165,18 @@ public:
 		float FadeDistance = 0.0f;	// FadeDistance; 0: where the game starts dropping highlights
 		float CubeReflections = 0.0f;	// UNOFFICIAL [Shaders.PBR.Metal] CubeReflections: share of the live surroundings cube
 		float EnvCubeReflections = 0.0f;	// UNOFFICIAL [Shaders.PBR.EnvMaps] CubeReflections: the same for the env-map pass
+		float Reflections = 0.0f;	// [Shaders.PBR.Metal] Reflections, before Reflectivity (UpdateConstants)
 	};
 	MetalSettingsStruct	MetalSettings;
+
+	// UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] ReflectivityExterior / ReflectivityInterior: one multiplier on everything PBR surfaces
+	// reflect (highlights through F0/F90 in Includes/PBR.hlsl, metal's surroundings, the env-map pass); Reflections.cpp reads the
+	// same two for the floor sheen. 1 = as before.
+	struct ReflectivitySettingsStruct {
+		float Exterior = 1.0f;
+		float Interior = 1.0f;
+	};
+	ReflectivitySettingsStruct	ReflectivitySettings;
 
 	// UNOFFICIAL [Shaders.PBR.MaterialRules] (core/MaterialRules.h, Object.hlsl): per-texture classes from the editable
 	// table NewVegasReloaded.dll.materials.txt, sent before each object by Render.cpp MaterialRulesDraw. The registered

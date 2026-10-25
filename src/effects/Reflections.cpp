@@ -34,6 +34,10 @@ void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-21 SpecularOcclusion: live, compiled into the effect only when above 0 at startup (ReflMaterial::OccCompiledIn).
 	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
+	// UNOFFICIAL 2026-10-25 Reflectivity: the PBR section's one reflectivity control reaches the floor reflections too (a missing key: 1).
+	SettingManager::Configuration::ConfigNode node;
+	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
+	Settings.ReflectivityInterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityInterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -137,7 +141,8 @@ void ReflectionsEffect::UpdateConstants() {
 	// while Wet World itself had dried everything but the puddles in hollows. The puddles keep their own wet look (Wet World).
 	const float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
 
-	Constants.Data.x = exterior ? Settings.GroundSheen : Settings.InteriorFloors;
+	const float reflectivity = exterior ? Settings.ReflectivityExterior : Settings.ReflectivityInterior;	// UNOFFICIAL 2026-10-25
+	Constants.Data.x = (exterior ? Settings.GroundSheen : Settings.InteriorFloors) * reflectivity;
 	Constants.Data.y = exterior ? wet * Settings.RainWetness : 0.0f;
 	// UNOFFICIAL 2026-10-19: the rain wets only open ground (the ortho map's roof test, as Wet World): kept up while it rains here.
 	Constants.Data4.y = Constants.Data.y > 0.0f ? 1.0f : 0.0f;
@@ -155,7 +160,7 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data4.w = Settings.SpecularOcclusion;
 	Constants.Layout.z = Settings.SpecularOcclusionLevel;
 	// UNOFFICIAL 2026-10-20 MaterialAware: x is set again by CaptureMaterial (1 only when the buffer was filled this frame).
-	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect, 0.0f);
+	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect * reflectivity, 0.0f);
 }
 
 // UNOFFICIAL 2026-10-20 MaterialAware (core/ReflMaterial.h): the world scene left each known material in the scene's alpha; it is

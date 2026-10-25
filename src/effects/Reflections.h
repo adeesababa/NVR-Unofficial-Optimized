@@ -34,6 +34,8 @@ public:
 		float	ReflectAdd;		// UNOFFICIAL 2026-10-21: 0 the reflection replaces its share of the surface's colour (as before), 1 it is added on top
 		float	SpecularOcclusion;		// UNOFFICIAL 2026-10-21: how much blurred reflections dim where the surface itself is dark (0 off)
 		float	SpecularOcclusionLevel;	// the surface / reflection brightness ratio that keeps all of the reflection
+		float	ReflectivityExterior;	// UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] ReflectivityExterior / Interior: times the dry sheen and
+		float	ReflectivityInterior;	// MaterialReflect (not the rain's wetness); 1 = as before
 	};
 	SettingsStruct	Settings;
 
