@@ -1648,6 +1648,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (Effects.SunFar->Constants.Apply.x > 0.5f) FlickerWatch::Flags |= FlickerWatch::kSunFar;	// UNOFFICIAL 2026-10-23 test only
 
 	Device->SetRenderTarget(0, RenderTarget);
+	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior) FlickerWatch::OnProbe(FlickerWatch::World, Device, RenderTarget);	// (2026-10-25) test only
 
 	// Start the copy-free chain (FrameChain), or seed the rendered texture for the legacy path in
 	// which every effect keeps it equal to the render target. TESR_SourceBuffer is refreshed by
@@ -1767,6 +1768,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight) FlickerWatch::Flags |= FlickerWatch::kShadowPass;
 		if (Effects.ShadowsExteriors->Constants.ShadowBlur.y > 0.5f) FlickerWatch::Flags |= FlickerWatch::kLodUpdated;
 		if (GameState.isCellChanged) FlickerWatch::Flags |= FlickerWatch::kCellChanged;
+		ShadowsExteriorEffect* sx = Effects.ShadowsExteriors;
+		if (sx->SunGlideValid && GetTickCount64() - sx->SunGlideStart < (ULONGLONG)(1000.0f * sx->Settings.SunSmoothing.GlideSeconds))
+			FlickerWatch::Flags |= FlickerWatch::kSunGlide;
+		FlickerWatch::Hour = ShaderConst.GameTime.y;
+		FlickerWatch::SunZ = sx->Constants.SmoothedSunDir.z;
 	}
 
 	{
@@ -1853,6 +1859,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			FlickerWatch::Flags |= FlickerWatch::kShadowPass;
 			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
+	}
+	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior) {	// (2026-10-25) test only: after the sun-shadow / AO / AmbientLight step
+		FlickerWatch::OnProbe(FlickerWatch::Lit, Device, TheTextureManager->RenderedSurface);
+		Device->SetRenderTarget(0, RenderTarget);
 	}
 #if NVR_TEST_TOOLS
 	SettingShots::CaptureStage(Device, TheTextureManager->RenderedSurface);	// UNOFFICIAL, test only: 'stage' shots (ambfix 2026-10-18)
