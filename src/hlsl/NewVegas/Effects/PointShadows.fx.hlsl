@@ -125,7 +125,12 @@ float LampReach(float distance) {
 }
 
 // The light amount this pass gives a lamp at a normalised distance: the old attenuation, or LampReach with the switch.
+// UNOFFICIAL 2026-10-25 ForwardReachMask 2 (TESR_PointShadowNear.z < 0): the old attenuation without its angle term. The angle came
+// from TESR_NormalsBuffer, rebuilt from depth (one flat normal per triangle): near a lamp every triangle of a character got its own
+// darkening (the facets). The distance falloff stays, so the room keeps its old brightness (LampReach lightens it).
 float LampAmount(float3 lightDir, float distance, float4 normal) {
+	// The normal along the lamp makes GetPointLightAtten's angle term 1 (no new literals: this effect sits at the constant limit).
+	if (TESR_PointShadowNear.z < 0.0f) return GetPointLightAtten(lightDir, distance, float4(normalize(lightDir), 0));
 	return TESR_PointShadowNear.z > 0.0f ? LampReach(distance) : GetPointLightAtten(lightDir, distance, normal);
 }
 
