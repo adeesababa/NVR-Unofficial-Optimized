@@ -40,6 +40,7 @@ public:
 		float	CumulusShape;				// UNOFFICIAL 2026-10-20: heaped fair-weather clouds (flat bases, domed tops, no wispy fringe); 0 the older slabs
 		float	Towering;					// UNOFFICIAL 2026-10-25: 0 off .. 1: the strongest heaps rise on as towers, TowerHeight times the layer's Thickness
 		float	TowerHeight;				// UNOFFICIAL 2026-10-25: how tall the towers get, in layer thicknesses
+		float	TowerAnvil;					// UNOFFICIAL 2026-10-25: 0 .. 1: the towers spread into a flat-topped anvil at the top (cumulonimbus)
 		float	Sharpness;					// UNOFFICIAL: 0 the old soft look .. 1 crisp (sharper history, sharpened composite, finer noise far off)
 		float	FromWeatherTextures;		// UNOFFICIAL: share of the coverage taken from the weather's own cloud textures (0: its type alone)
 		bool	FixedMarchExit;				// UNOFFICIAL 2026-10-17: technique 6 (MarchFixedExit): the march stops at Steps / when opaque (the compiler had killed the exit)
@@ -63,7 +64,7 @@ public:
 		D3DXVECTOR4	ReflectData;		// UNOFFICIAL x: strength, yz: the reflection's size, w: the far plane's depth
 		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size (texels)
 		D3DXVECTOR4	Motion;			// UNOFFICIAL xy: the cloud pattern's move this frame (m), w: sharpness 0..1
-		D3DXVECTOR4	Tower;			// UNOFFICIAL 2026-10-25 x: the ordinary layer's share of the taller one (1 off), y: towering 0..1
+		D3DXVECTOR4	Tower;			// UNOFFICIAL 2026-10-25 x: the ordinary layer's share of the taller one (1 off), y: towering 0..1, z: anvil 0..1
 	};
 	ConstantsStruct	Constants = {};
 

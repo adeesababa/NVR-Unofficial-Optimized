@@ -43,7 +43,8 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
 	Settings.CumulusShape = std::clamp(TheSettingManager->GetSettingF(section, "CumulusShape"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-20
 	Settings.Towering = std::clamp(TheSettingManager->GetSettingF(section, "Towering"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-25
-	Settings.TowerHeight = std::clamp(TheSettingManager->GetSettingF(section, "TowerHeight"), 1.0f, 4.0f);
+	Settings.TowerHeight = std::clamp(TheSettingManager->GetSettingF(section, "TowerHeight"), 1.0f, 8.0f);
+	Settings.TowerAnvil = std::clamp(TheSettingManager->GetSettingF(section, "TowerAnvil"), 0.0f, 1.0f);
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);	// UNOFFICIAL 2026-10-15: was 0-1
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
@@ -379,7 +380,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	const float towering = Settings.Towering * towerFade * towerFade * (3.0f - 2.0f * towerFade);	// smoothstep, as the shader's Cumulus
 	const float towerScale = 1.0f + (Settings.TowerHeight - 1.0f) * towering;
 	const int marchSteps = (std::min)(64, (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f))));
-	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, 0.0f, 0.0f);
+	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, 0.0f);
 	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness * towerScale, coverage, Settings.Density);
 	Constants.Noise = D3DXVECTOR4(Settings.ShapeSize, Settings.DetailSize, Settings.Erosion, Settings.WeatherSize);
 	Constants.Light = D3DXVECTOR4(Settings.SunStrength, Settings.AmbientStrength, Settings.Forward, rain);
@@ -426,6 +427,14 @@ void VolumetricCloudsEffect::ProbeLayer(IDirect3DDevice9* Device) {
 		job.lod, fill * 100.0f, fill < 0.0f ? " (could not be read: left out)" : "");
 }
 
+// UNOFFICIAL 2026-10-25 Towering: while it is on (and the effect file has them: ShadowMapTowers is the last), the march, reflection
+// and shadow map passes take their *Towers techniques (7-10: the storms and the taller heaps). Off, the older ones, unchanged.
+static bool TowersOn(VolumetricCloudsEffect* clouds) {
+	static EffectRecord::CachedHandle last;
+	return clouds->Constants.Tower.y > 0.0f && clouds->Effect && clouds->TechniqueHandle(last, "ShadowMapTowers") != NULL &&
+		clouds->Effect->GetTechnique(10) == clouds->TechniqueHandle(last, "ShadowMapTowers");
+}
+
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
 	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
@@ -449,7 +458,8 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	static CachedHandle fixedExitCache;
 	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
 		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, fixedExit ? 6 : 1); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit)
+	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false,
+		TowersOn(this) ? (fixedExit ? 8 : 7) : (fixedExit ? 6 : 1)); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit; 2026-10-25: 7, 8 = with Towering)
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
 	RenderShadowMap(Device);	// UNOFFICIAL: cloud shadow map (already drawn this frame when SunFar asked first)
 	read = 1 - read;
@@ -477,7 +487,7 @@ void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
 	if (shadowMapFrame == frame || Constants.Extra.x <= 0.0f || !Textures.ShadowSurface || !Enabled || !Effect || !ShouldRender()) return;
 	static GpuTimer shadowTimer("  Clouds shadow map");
 	GpuProfileScope gpu(shadowTimer, Device);
-	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4);
+	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, TowersOn(this) ? 10 : 4);
 	shadowMapFrame = frame;
 }
 
@@ -599,7 +609,7 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			Device->SetViewport(&viewport);
 			Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, 5 * sizeof(float));
 			Device->SetFVF(FrameFVF);
-			Effect->SetTechnique(Effect->GetTechnique(3));
+			Effect->SetTechnique(Effect->GetTechnique(TowersOn(this) ? 9 : 3));
 			SetCT();
 			UINT passes = 0;
 			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
