@@ -88,3 +88,11 @@ Reading it: world moves too -> the game's shaders (forward shadows, cascades); w
 shadow apply; both flat -> something later (fog, clouds composite, bloom, tonemap). One tester log with one FLICKER line is enough.
 Also new: the shot-list command `turn <deg/s>` (SettingShots.h) for panning test runs; sun step log lines carry the hour.
 Test gotcha: outdoors with time running, the game's auto vanity camera switches to 3rd person after a few idle minutes.
+
+### 2026-10-25 afternoon: the two cloud settings in real cloud cover
+- Under the user's weather mod (RWL), gWastelandCloudy (0005C8BD) is nearly clear sky, so sweeps 5-6 with it had almost no cloud
+  shadow on the ground (20261025-115718 flat layers, -120915 volumetric: 0 flickers, but weak). Use RWL's overcast 3500A326.
+- sweep-7 (20261025-121742): flat cloud shadows ([Shaders.CloudShadows.Main] Enabled) on, overcast 3500A326, panning, 10->15.5 h:
+  15,000 frames, 0 flickers (pictures checked: full overcast).
+- sweep-8 (volumetric clouds, overcast) NOT run: the install no longer matched the restore point (WATER001/WATER018.pso.hlsl
+  changed by someone else after sweep-7), so the runner refused. Lists bench\foundations\lists\flicker-sweep-7/8.txt.
