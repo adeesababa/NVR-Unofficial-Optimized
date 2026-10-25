@@ -1187,9 +1187,9 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 			const bool oneStep = stepAngle < 1.5f * max(yawStepSize, pitchStepSize);
 			SunCrossFading = oneStep && crossFade && StartSunCrossFade();
 			static int logged = 0;
-			if (logged < 20) {
+			if (logged < 20 || (TheSettingManager->GetSettingI("Shaders.CloudShadows.Main", "FlickerWatch") && logged < 2000)) {	// (2026-10-25: more while FlickerWatch tests run)
 				logged++;
-				Logger::Log("UNOFFICIAL sun step %.1f degrees: %s", D3DXToDegree(stepAngle),
+				Logger::Log("UNOFFICIAL sun step %.1f degrees at hour %.2f (to %.3f %.3f %.3f): %s", D3DXToDegree(stepAngle), TheShaderManager->ShaderConst.GameTime.y, SunDir.x, SunDir.y, SunDir.z,
 					!oneStep ? "jumps (bigger than one step: waiting, sleeping or loading)" : SunCrossFading ? "cross-fades" : "glides");
 			}
 			SunGlideFrom = oneStep && !SunCrossFading ? SmoothedSunDir : SunDir;
