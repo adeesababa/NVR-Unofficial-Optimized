@@ -115,6 +115,7 @@ static float s_savedTimeScale = -1.0f; // session snapshot; -1 = not yet taken
 static bool  s_devFreecamOn   = false;
 static bool  s_devMenusHidden = false;
 static bool  s_screenshotMode = false;
+static bool  s_revealSelected = false;	// UNOFFICIAL 2026-10-25, test shots: the sidebar unfolded down to the page shown
 static bool  s_showTestSettings = false;	// UNOFFICIAL 2026-10-19 menu honesty: Display > "Show test settings"
 
 // ---- Preset Manager panel ------------------------------------------------
@@ -1418,6 +1419,7 @@ static void SetOverlayVisible(bool visible);
 void ImGuiManager::TestShowMenu(const char* Section, bool ShowTests) {
 	if (!Initialized) return;
 	s_showTestSettings = Section && ShowTests;
+	s_revealSelected = Section != nullptr;
 	if (Section) SelectedSection = Section;
 	SetOverlayVisible(Section != nullptr);
 }
@@ -3208,6 +3210,27 @@ static void RenderContent() {
 	}
 }
 
+// UNOFFICIAL 2026-10-25: settings-only Shaders entries shown under the entry they belong with, so the list does not hold pages that
+// read like effects of their own (a tester could not tell the flat clouds' shadows from the volumetric clouds' ones, and Foliage
+// stood out as the one entry with no switch). Only the menu moves: their settings keep their own sections ([Shaders.<name>.Main]),
+// so saved settings and the toml are unchanged; each page keeps its header (Cloud Shadows its on/off button).
+struct MenuMove { const char* name; const char* under; const char* label; };
+static const MenuMove kMenuMoves[] = {
+	{ "CloudShadows", "ShadowsExteriors", "Cloud Shadows (flat clouds)" },
+	{ "Foliage", "Plants", "Foliage glow" },
+};
+// Test shots (s_revealSelected): whether this node leads to the page shown, so the shot's sidebar shows it.
+static bool LeadsToSelected(const std::string& path) {
+	if (SelectedSection.compare(0, path.size() + 1, path + ".") == 0) return true;
+	for (const MenuMove& m : kMenuMoves)
+		if (SelectedSection == std::string("Shaders.") + m.name + ".Main" && (path == "Shaders" || path == std::string("Shaders.") + m.under)) return true;
+	return false;
+}
+static bool IsMovedShaderEntry(const std::string& name) {
+	for (const MenuMove& m : kMenuMoves) if (name == m.name) return true;
+	return false;
+}
+
 // Recursive sidebar tree — path is the full dotted section path, name is the display label.
 static void RenderSectionNode(const std::string& path, const std::string& name, bool parentIsShaders) {
 	if (ShouldHideSection(name)) return;
@@ -3242,6 +3265,7 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		ImGui::PushStyleColor(ImGuiCol_Text, enabled
 			? ImVec4(0.40f, 1.00f, 0.40f, 1.0f)
 			: ImVec4(0.55f, 0.55f, 0.55f, 1.0f));
+		if (s_revealSelected && LeadsToSelected(path)) ImGui::SetNextItemOpen(true);
 		open = ImGui::TreeNode("##node");
 		ImGui::PopStyleColor();
 
@@ -3281,6 +3305,7 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 			}
 		}
 	} else {
+		if (s_revealSelected && LeadsToSelected(path)) ImGui::SetNextItemOpen(true);
 		open = ImGui::TreeNode("##node");
 		ImGui::SameLine();
 		ImGui::TextUnformatted(name.c_str());
@@ -3288,8 +3313,22 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 
 	if (open) {
 		bool childrenAreShaders = (path == "Shaders");
-		for (auto& sub : subsections)
+		for (auto& sub : subsections) {
+			if (childrenAreShaders && IsMovedShaderEntry(sub)) continue;	// UNOFFICIAL 2026-10-25: shown under its own entry (kMenuMoves)
 			RenderSectionNode(path + "." + sub, sub, childrenAreShaders);
+		}
+		// UNOFFICIAL 2026-10-25: the pages moved under this entry (kMenuMoves), as leaves to their Main section
+		for (const MenuMove& m : kMenuMoves) {
+			if (path != std::string("Shaders.") + m.under) continue;
+			const std::string target = std::string("Shaders.") + m.name + ".Main";
+			ImGui::PushID(target.c_str());
+			const bool selected = (SelectedSection == target);
+			if (!selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.68f, 0.75f, 1.0f));
+			if (ImGui::Selectable(m.label, selected)) SelectedSection = target;
+			if (selected && s_revealSelected) ImGui::SetScrollHereY(0.5f);	// test shots: the entry in view
+			if (!selected) ImGui::PopStyleColor();
+			ImGui::PopID();
+		}
 		ImGui::TreePop();
 	}
 

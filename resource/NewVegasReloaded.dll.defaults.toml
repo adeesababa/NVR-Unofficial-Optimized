@@ -528,7 +528,7 @@ Enabled = true                         # Volumetric light shaft in the air along
 
 
 [_Shaders.Foliage.Main]
-Translucency = 0.0                   # UNOFFICIAL: grass and tree leaves glow softly when the sun is behind them (light passing through). 0 = off, identical to before. Try 0.5.
+Translucency = 0.0                   # UNOFFICIAL: grass and tree leaves glow softly when the sun is behind them (light passing through). 0 = off (the default): this page does nothing until you raise it. Try 0.5 and look toward the sun. In the menu: under Plants.
 Power = 4.0                          # [0.5-16] how tightly the glow gathers around the sun: higher = only when looking almost straight into it.
 SunGate = 4.0                        # [0-20] fades the glow out as the sun nears the horizon; it is off at night.
 
@@ -1221,7 +1221,7 @@ UseHeightMapFile = true              # (2026-10-19) Use an xLODGen height map wh
 DebugView = 0                        # (2026-10-19) 1: the land's shadow tinted green (and the clouds' blue) over the picture. 2: also tints the area the height map covers.
 
 [_Shaders.CloudShadows.Main]
-Enabled = false                      # UNOFFICIAL (2026-10-19) Cloud shadows: the game's own cloud layers cast moving shadows on the land, dimming only the sunlight (shade keeps its sky light). Cheap (a few texture reads per pixel); no volumetric clouds needed. When the volumetric clouds draw their own shadows, theirs are used instead. After Community Shaders' Cloud Shadows (GPL-3.0); this build's own version for DirectX 9.
+Enabled = false                      # UNOFFICIAL (2026-10-19) Cloud shadows: the game's own cloud layers cast moving shadows on the land, dimming only the sunlight (shade keeps its sky light). Cheap (a few texture reads per pixel); no volumetric clouds needed. Not the same as the volumetric clouds' shadows (Volumetric Clouds, Shadows): while those are on, they are used and this switch does nothing. In the menu: under Shadows Exteriors. After Community Shaders' Cloud Shadows (GPL-3.0); this build's own version for DirectX 9.
 Strength = 0.6                       # [0-1] (2026-10-19) How much of the sun a fully clouded patch of sky takes.
 Density = 3.0                        # [0-8] (2026-10-19) How solid the clouds count: their pictures' cover times this. Thin, wispy cloud pictures need more to cast a visible shadow (faint, wispy clear-sky clouds still cast little shade at 3).
 Height = 140000.0                    # [1000-1000000] (2026-10-19) How high above you the clouds' shadows are cast from, in game units (140000 = about 2 km, as Community Shaders). Higher: the shadows move further from the clouds' spot overhead as the sun gets low.
@@ -1499,7 +1499,7 @@ History = 0.8                          # [0-0.95] How much of the earlier frames
 Brightness = 1.0                       # [0-5] Overall brightness of the clouds.
 HideGameClouds = true                  # Hide the game's own flat cloud layers while these clouds are drawn (they stay in the water's reflection).
 GameTime = true                        # UNOFFICIAL: the clouds move by the game's clock: waiting or sleeping moves them on as far as that time would, a pause or a menu stops them, and the same save shows the same sky. Off: they move by the real time on screen, as before.
-Shadows = 0.6                          # UNOFFICIAL [0-1]: how much the clouds shade the ground in the sunlight (drifting cloud shadows across the land). 0: no cloud shadows.
+Shadows = 0.6                          # UNOFFICIAL [0-1]: how much the clouds shade the ground in the sunlight (drifting cloud shadows across the land). 0: no cloud shadows. While above 0 these replace the flat clouds' Cloud Shadows (Shadows Exteriors, Cloud Shadows), which then do nothing.
 ShadowRange = 30000.0                  # UNOFFICIAL [4000-100000]: how far round you the cloud shadows reach, in metres across. Larger reaches farther but each shadow is a little softer.
 ShadowResolution = 256                 # UNOFFICIAL [256-2048]: detail of the cloud shadows: 256, 512, 1024 or 2048 texels across ShadowRange (256 over 30000 m is about 120 m per texel, soft edges). Higher: crisper cloud shadow edges, but the shadow map is redrawn every frame, so 1024 costs about 16 times 256 (check with F10). Needs a restart.
 WaterReflections = 1.0                 # UNOFFICIAL [0-1]: these clouds in the water's reflection, drawn into the game's own reflection where it shows sky (so the water waves and tints them like the rest), in place of the game's flat cloud layers there. 0: the game's clouds in the water, as before.
