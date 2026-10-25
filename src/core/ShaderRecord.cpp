@@ -228,6 +228,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// pass's in linear light (exact where one such pass covers a pixel). Compiled in only when on at startup (with linear lighting); the
 	// per-run switch then turns it on live: 0 = the old result exactly.
 	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
+	// UNOFFICIAL 2026-10-25 HighlightSums (ObjectTemplate.hlsl / ParallaxTemplate.hlsl NVR_LAMP_SUMS in the ONLY_SPECULAR variants, core/PassSums.h):
+	// the highlight passes FoldHighlights leaves to the game (parallax objects above all) add their light in linear light the same way.
+	// Compiled in only when on at startup (with linear lighting); the per-run switch then turns it on live: 0 = the old result exactly.
+	AppendDefine("HIGHLIGHT_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "HighlightSums") ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
