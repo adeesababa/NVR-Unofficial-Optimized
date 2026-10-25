@@ -2,6 +2,12 @@
 
 static float CloudsVolumetricSetting = 0.0f;	// UNOFFICIAL: [Shaders.Sky.Clouds] Volumetric as set (UpdateSettings)
 
+// UNOFFICIAL 2026-10-25: a setting that may be missing from an older defaults file (GetSettingF would read 0: a black sky)
+static float SettingOr(const char* section, const char* key, float fallback) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, section, key) ? node.FloatValue : fallback;
+}
+
 void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_CloudData", &Constants.CloudData);
@@ -14,6 +20,8 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyIrradianceObjects", &Constants.IrradianceObjects[0]);	// UNOFFICIAL 2026-10-25 LightsObjects
 	TheShaderManager->RegisterConstant("TESR_PhysSky", &Constants.PhysSky);
 	TheShaderManager->RegisterConstant("TESR_PhysSkySun", &Constants.PhysSkySun);
+	TheShaderManager->RegisterConstant("TESR_SkyTint", &Constants.SkyTint);	// UNOFFICIAL 2026-10-25
+	TheShaderManager->RegisterConstant("TESR_MoonData", &Constants.MoonData);
 }
 
 // UNOFFICIAL 2026-10-14 physical sky: Effects/Includes/Atmosphere.hlsl AtmSky, line for line (see there). Kept in step by
@@ -132,6 +140,13 @@ void SkyShaders::UpdateConstants() {
 	else
 		Constants.SunsetColor.w = 1.0;
 
+	// UNOFFICIAL 2026-10-25 TintDay / TintNight: the sky's colour multiplied by the tint for this hour (the same day/night curve
+	// as SkyMultiplier), on screen (SKY.pso, and the sky the flat clouds blend with in SKYTEX.pso) and in the sky light on objects
+	// below. MoonBrightness: the moon disc (SKYTEX.pso); its light is UpdateMoonlight's.
+	for (int c = 0; c < 3; c++)
+		Constants.SkyTint[c] = TheShaderManager->GetTransitionValue(Settings.TintDay[c], Settings.TintNight[c], 1.0f);
+	Constants.MoonData.x = Settings.MoonBrightness;
+
 	// Order-2 spherical harmonic projection of the sky, convolved with the clamped-cosine
 	// kernel: E(N) = INTEGRAL L(w) max(N.w, 0) dw. The cosine kernel is a severe low-pass
 	// filter, so 9 coefficients carry that integral to within about 1% (Ramamoorthi & Hanrahan
@@ -163,7 +178,7 @@ void SkyShaders::UpdateConstants() {
 			D3DXVECTOR4(PhysicalSettings.Enabled ? 1.0f : 0.0f, PhysicalSettings.Brightness, PhysicalSettings.WeatherTint, PhysicalSettings.Haze),
 			TheShaderManager->ShaderConst.SunAmount.x,
 			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f,
-			D3DXVECTOR4(physExact ? 1.0f : 0.0f, physMs ? 1.0f : 0.0f, PhysicalSettings.GroundAlbedo, 0.0f) };
+			D3DXVECTOR4(physExact ? 1.0f : 0.0f, physMs ? 1.0f : 0.0f, PhysicalSettings.GroundAlbedo, 0.0f), Constants.SkyTint };
 		inputs.sunsetColor.w = 0.0f;	// only rgb is read below
 		const bool sunStill = lastProjectionValid &&
 			inputs.sunPos.x * lastProjection.sunPos.x + inputs.sunPos.y * lastProjection.sunPos.y + inputs.sunPos.z * lastProjection.sunPos.z >= 0.9999985f;
@@ -316,11 +331,12 @@ void SkyShaders::UpdateConstants() {
 	// cost. 1 leaves the coefficients untouched.
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	const float saturation = pbr ? max(pbr->SkylightSaturation, 0.0f) : 1.0f;
+	const D3DXVECTOR3 tint(Constants.SkyTint.x, Constants.SkyTint.y, Constants.SkyTint.z);	// UNOFFICIAL 2026-10-25 TintDay / TintNight
 	for (int i = 0; i < 9; i++) {
-		D3DXVECTOR3 c = sh[i] * (band[i] * basis[i]);
+		D3DXVECTOR3 c = PhysAtmosphere::Mul(sh[i] * (band[i] * basis[i]), tint);
 		// UNOFFICIAL 2026-10-18 ClassicLook: the original NVR's coefficients (the game's sky, unsaturated); without the physical sky
 		// blending in, the same projection as below.
-		const D3DXVECTOR3 g = physical ? shGame[i] * (band[i] * basis[i]) : c;
+		const D3DXVECTOR3 g = physical ? PhysAtmosphere::Mul(shGame[i] * (band[i] * basis[i]), tint) : c;
 		Constants.IrradianceGame[i] = D3DXVECTOR4(g.x, g.y, g.z, 0.0f);
 		if (saturation != 1.0f) {
 			const float luminance = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
@@ -356,6 +372,13 @@ void SkyShaders::UpdateSettings() {
 	Constants.CloudData.w = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Brightness");
 
 	Constants.CloudData.y = TheSettingManager->GetSettingF("Shaders.Sky.Main", "StarTwinkle");
+
+	// UNOFFICIAL 2026-10-25 sky tint and moon brightness (applied in UpdateConstants / UpdateMoonlight)
+	Settings.TintDay = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintDayR", 1.0f), 0.0f),
+		(std::max)(SettingOr("Shaders.Sky.Main", "TintDayG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintDayB", 1.0f), 0.0f), 1.0f);
+	Settings.TintNight = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintNightR", 1.0f), 0.0f),
+		(std::max)(SettingOr("Shaders.Sky.Main", "TintNightG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintNightB", 1.0f), 0.0f), 1.0f);
+	Settings.MoonBrightness = std::clamp(SettingOr("Shaders.Sky.Main", "MoonBrightness", 1.0f), 0.0f, 4.0f);
 
 	// UNOFFICIAL physical sky (Effects/Includes/Atmosphere.hlsl). Enabled is read at startup too (ShaderRecord compiles it in).
 	PhysicalSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") != 0;
@@ -396,4 +419,29 @@ void SkyShaders::UpdateSettings() {
 		Constants.SunsetColor.z = 0;
 	}
 
-}
+}
+
+// UNOFFICIAL 2026-10-25 MoonBrightness: the light of the moon. At night the game's directional light (the sun's, dimmed and
+// recoloured by the weather) is the moonlight; its colour is scaled here, before the world is drawn, so the game's own lighting
+// shaders and NVR's effects (TESR_SunColor) light by the same moon. The game sets the light again whenever the weather or hour
+// moves it: a colour that is not the one written last time is the game's new value (this runs twice a frame). Outdoors only, and
+// by the day/night curve, so the sun and interiors are untouched; 1 writes the game's own colour back.
+void SkyShaders::UpdateMoonlight() {
+	static NiColor gameColor = {}, written = {};
+	static bool haveWritten = false;
+	NiDirectionalLight* light = Tes ? Tes->directionalLight : nullptr;
+	if (!light) return;
+	const float scale = TheShaderManager->GetTransitionValue(1.0f, Settings.MoonBrightness, 1.0f);
+	if (!haveWritten || light->Diff.r != written.r || light->Diff.g != written.g || light->Diff.b != written.b) {
+		if (scale == 1.0f) { haveWritten = false; return; }	// nothing of ours is in the light
+		gameColor = light->Diff;
+	}
+	light->Diff.r = gameColor.r * scale;
+	light->Diff.g = gameColor.g * scale;
+	light->Diff.b = gameColor.b * scale;
+	written = light->Diff;
+	haveWritten = true;
+	TheShaderManager->ShaderConst.sunColor.x *= scale;
+	TheShaderManager->ShaderConst.sunColor.y *= scale;
+	TheShaderManager->ShaderConst.sunColor.z *= scale;
+}
