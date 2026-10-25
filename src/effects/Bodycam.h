@@ -83,15 +83,7 @@ public:
 	bool	ShouldRender() { return true; };
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex,
 		bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
-	// UNOFFICIAL 2026-10-25 (NVR DXVK): the picture as src\hlsl\NewVegas\Compute\Bodycam.frag (technique 0) and the brightness
-	// measure as BodycamMeasure.frag (technique 1); the held frame, the text and the copies stay on the D3D9 side.
-	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 
 private:
 	void	WriteText(const char* line1, const char* line2);
-	// Two samplers in one pass (ExtTexturePass has one): slot 0 LINEAR/CLAMP, slot 1 POINT/CLAMP, heap indices at samplerPushOffset
-	// and samplerPushOffset + 4 of the push block; the textures bind in order (set 1, binding i).
-	bool	ExtTwoSamplers(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
-				ExtPass& pass, const char* spvName, IDirect3DBaseTexture9* const* textures, UINT count, const void* push, UINT pushSize, UINT samplerPushOffset);
-	ExtPass	extPass, extMeasure;
 };

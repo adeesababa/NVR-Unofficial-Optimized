@@ -6,7 +6,6 @@
 
 #include "Bodycam.h"
 #include "BodycamAudio.h"
-#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 // UNOFFICIAL 2026-10-13: the microphone's settings ([Shaders.Bodycam.Main] Mic...), handed to the audio filter every frame while
 // Bodycam is on (BodycamAudio.h). Kept here, not in Bodycam.h (included everywhere).
@@ -375,65 +374,6 @@ void BodycamEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	}
 	HoldValid = SUCCEEDED(Device->StretchRect(result, NULL, HoldSurface, NULL, D3DTEXF_NONE));
 	HoldTick = tick;
-}
-
-// UNOFFICIAL 2026-10-25 (NVR DXVK): the two passes as Bodycam.frag and BodycamMeasure.frag (EffectRecord::ExtFullScreen; the frame
-// chain, the direct final write and the copies are its). The textures and constants are those the D3D9 techniques read. The
-// picture reads the hold frame, the text and the measure as they are at this moment, as the D3D9 pass does.
-bool BodycamEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex,
-	bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
-	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
-	if (techniqueIndex == 1) {
-		struct Push { D3DXVECTOR4 adapt; UInt32 linearIndex; UInt32 pointIndex; } push = {};
-		push.adapt = Constants.Adapt;
-		IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture, MeasureRead, depth };
-		return ExtTwoSamplers(Device, RenderTarget, RenderedSurface, SourceBuffer, extMeasure, "BodycamMeasure", textures, _countof(textures), &push, sizeof(push), 16);
-	}
-	if (techniqueIndex != 0) return false;
-	struct Push {
-		D3DXVECTOR4 reciprocal, lens, image, noise, text, frame, motion, grade, video, adapt, body, flash, glitch;
-		UInt32 linearIndex, pointIndex;	// the sampler heap indices: the extension fills them in
-	} push = {};
-	push.reciprocal = TheShaderManager->ShaderConst.ReciprocalResolution;
-	push.lens = Constants.Lens;
-	push.image = Constants.Image;
-	push.noise = Constants.Noise;
-	push.text = Constants.Text;
-	push.frame = Constants.Frame;
-	push.motion = Constants.Motion;
-	push.grade = Constants.Grade;
-	push.video = Constants.Video;
-	push.adapt = Constants.Adapt;
-	push.body = Constants.Body;
-	push.flash = Constants.Flash;
-	push.glitch = Constants.Glitch;
-	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture, TextTexture, HoldTexture, MeasureRead, depth };
-	return ExtTwoSamplers(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "Bodycam", textures, _countof(textures), &push, sizeof(push), 208);
-}
-
-bool BodycamEffect::ExtTwoSamplers(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
-	ExtPass& pass, const char* spvName, IDirect3DBaseTexture9* const* textures, UINT count, const void* push, UINT pushSize, UINT samplerPushOffset) {
-	if (!pass.Tried) {
-		pass.Tried = true;
-		NVR_EXT_BINDING_DESC bindings[7] = {};
-		for (UINT i = 0; i < count; i++) {
-			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
-		}
-		bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = 0; bindings[count].PushOffset = samplerPushOffset;
-		bindings[count + 1].Type = NVR_EXT_BIND_SAMPLER; bindings[count + 1].Slot = 1; bindings[count + 1].PushOffset = samplerPushOffset + 4;
-		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count + 2, pushSize, true);
-	}
-	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
-	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
-	if (!pass.Pipeline || !linear || !point) return false;
-	NVR_EXT_RESOURCE_BINDING resources[7] = {};
-	for (UINT i = 0; i < count; i++) {
-		if (!textures[i]) return false;
-		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
-	}
-	resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = linear;
-	resources[count + 1].Slot = 1; resources[count + 1].Type = NVR_EXT_BIND_SAMPLER; resources[count + 1].pResource = point;
-	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, count + 2, push, pushSize);
 }
 
 // UNOFFICIAL 2026-10-13 (user: the wide view as an option): [Shaders.Bodycam.Main] WideView, the world's field of view while
