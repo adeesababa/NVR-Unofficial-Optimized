@@ -343,7 +343,7 @@ void SkyShaders::UpdateConstants() {
 			c = D3DXVECTOR3(luminance, luminance, luminance) + (c - D3DXVECTOR3(luminance, luminance, luminance)) * saturation;
 		}
 		Constants.Irradiance[i] = D3DXVECTOR4(c.x, c.y, c.z, 0.0f);
-		// UNOFFICIAL 2026-10-25 LightsObjects off (Iro: the physical sky's light on surfaces double-dips with the terrain / PBR sky
+		// UNOFFICIAL 2026-10-25 LightsObjects off (the physical sky's light on surfaces double-dips with the terrain / PBR sky
 		// settings): the lighting shaders take the game's own sky, saturated as before; the physical sky stays in the sky, fog and clouds.
 		D3DXVECTOR3 o = g;
 		if (!PhysicalSettings.LightsObjects && physical && saturation != 1.0f) {
