@@ -88,6 +88,7 @@
 #include <string>
 #include <vector>
 #include "TestTools.h"
+#include "ImGuiManager.h"	// BeforeNVRMenu: is the menu open
 #if NVR_TEST_TOOLS
 #include "SettingShots.h"	// test only: the auto-test's 'final' pictures
 #endif
@@ -116,6 +117,7 @@ namespace {
 	bool ReportedOther = false;
 	UInt32 PresentCount = 0;			// presents of Runtime, to tell this frame's depth copy from an older one
 	UInt32 DepthCopiedAt = ~0u;
+	UInt32 EffectsDrawnAt = ~0u;		// PresentCount of the last frame whose effects NVR had ReShade draw (render_effects)
 	bool DepthBound = false;			// DEPTH points at NVR's copy for the effects running now (D3D9)
 
 	IDirect3DTexture9* DepthTexture = nullptr;
@@ -848,6 +850,7 @@ technique Copy {
 		for (DWORD i = 1; i < 4; ++i) Device->SetRenderTarget(i, nullptr);
 		const uintptr_t handle = reinterpret_cast<uintptr_t>(OutputSurface);
 		Runtime->render_effects(Runtime->get_command_queue()->get_immediate_command_list(), resource_view{ handle }, resource_view{ handle | 1 });
+		EffectsDrawnAt = PresentCount;
 	}
 
 }
@@ -862,6 +865,27 @@ void ReShadeIntegration::Initialize() {
 	GetModuleFileNameA(ReShadeModule, path, MAX_PATH);
 	Logger::Log("UNOFFICIAL ReShade: found %s; ReShadeDepthCompat on while it is loaded.", path);
 	TryRegister();
+}
+
+void ReShadeIntegration::BeforeNVRMenu() {
+	// UNOFFICIAL 2026-10-25 (ReShadeUnderNVRMenu): frames where ReShade has not drawn yet (ReShadeBeforeHUD off, or NVR's
+	// image space did not run: main menu, loading screens, some game menus) would get ReShade at present, over NVR's own
+	// menu (bloom and the like on the menu). With the menu open, ReShade's effects are drawn here instead, after the HUD
+	// and the game's menus but before NVR's menu; ReShade then skips its own draw for that frame.
+	if (!Loaded || !Registered || !Runtime || !ImGuiManager::IsVisible()) return;
+	if (!TheSettingManager->SettingsMain.Main.ReShadeUnderNVRMenu || EffectsDrawnAt == PresentCount) return;
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	if (!SavedState && FAILED(Device->CreateStateBlock(D3DSBT_ALL, &SavedState))) return;
+	SavedState->Capture();
+	IDirect3DSurface9* targets[4] = {};
+	for (DWORD i = 0; i < 4; ++i)
+		if (FAILED(Device->GetRenderTarget(i, &targets[i]))) targets[i] = nullptr;
+	if (targets[0]) DrawEffects(Device, targets[0]);
+	for (DWORD i = 0; i < 4; ++i) {
+		Device->SetRenderTarget(i, targets[i]);
+		if (targets[i]) targets[i]->Release();
+	}
+	SavedState->Apply();
 }
 
 void ReShadeIntegration::SetMenuGuardEffects(const char* list) {

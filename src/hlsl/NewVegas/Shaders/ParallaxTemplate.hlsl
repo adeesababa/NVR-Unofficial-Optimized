@@ -568,7 +568,14 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
     #endif
     
+    float3 lightingLinear = lighting.rgb;
     lighting.rgb = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space, before the fog
+    #if defined(ONLY_LIGHT)
+        // UNOFFICIAL 2026-10-25 ExactPassSums (core/PassSums.h), as ObjectTemplate.hlsl: while NVR redirects a run of added passes into its
+        // own buffer, the pass gives its LINEAR light. Without this the parallax objects' lamp passes (rubble, rock piles) put their stored
+        // (gamma) light into that buffer, which is then read as linear: those objects came out far too bright (user, 2026-10-25).)
+        [flatten] if (TESR_PassRedirect.x > 0.5f) lighting.rgb = max(lightingLinear, 0.0f);
+    #endif
     lighting.rgb = RmaosDebug(lighting.rgb, baseColor.rgb);	// UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
 
     // Fog.

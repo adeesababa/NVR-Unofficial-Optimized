@@ -42,6 +42,7 @@ struct SettingsMainStruct {
         bool    ReShadeDepthCompat; // [Main.Main.Performance] ReShadeDepthCompat (keep the game's depth-stencil bound through NVR's passes, for ReShade; also on while ReShade is loaded, ReShadeIntegration::KeepDepthBound), live
         bool    ReShadeNVRDepth; // [Main.Main.Performance] ReShadeNVRDepth (ReShadeIntegration.cpp: ReShade's DEPTH = NVR's combined depth, world + first-person model), live
         bool    ReShadeBeforeHUD; // [Main.Main.Performance] ReShadeBeforeHUD (ReShadeIntegration.cpp: ReShade's effects drawn after NVR's, before the HUD), live
+        bool    ReShadeUnderNVRMenu; // [Main.Main.Performance] ReShadeUnderNVRMenu (ReShadeIntegration::BeforeNVRMenu: ReShade drawn before NVR's menu when it has not drawn yet), live
         bool    ReShadeDepthNearRemap; // [Main.Main.Performance] ReShadeDepthNearRemap (ReShadeIntegration.cpp: first-person depths past the world near plane folded below 1; identity for g <= 0.5), live
         bool    ReShadeMenuGuard; // [Main.Main.Performance] ReShadeMenuGuard (ReShadeIntegration.cpp: the ReShadeMenuGuardEffects files paused while menus are open), live
         bool    ReShadeMenuGuardVATS; // [Main.Main.Performance] ReShadeMenuGuardVATS (the menu guard also in VATS), live

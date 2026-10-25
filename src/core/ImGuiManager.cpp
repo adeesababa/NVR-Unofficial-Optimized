@@ -1239,9 +1239,8 @@ static void RenderDevPanel() {
 		}
 		ImGui::SameLine();
 		ImGui::TextDisabled("(Press NVR key to restore)");
-
-		ImGui::Spacing();
-		DevOptionsCheckbox();	// UNOFFICIAL 2026-10-25: was "Show test settings" (2026-10-19); the same switch as the menu's top row
+		// (UNOFFICIAL 2026-10-25: "Developer options" is only on the menu's top row now; it was here too, and as a setting under
+		// Main > Menu > Developer: three places for one switch, user.)
 	}
 
 	ImGui::Spacing();
@@ -1972,7 +1971,7 @@ void ImGuiManager::Render() {
 // ---- Menu UI -----------------------------------------------------------------
 
 static bool ShouldHideSection(const std::string& name) {
-	return name == "WeatherMode" || name == "Status" || name == "NewInPatch";
+	return name == "WeatherMode" || name == "Status" || name == "NewInPatch" || name == "Developer";	// (Developer: the top row's "Developer options")
 }
 
 static bool ShouldHideKey(const char* key) {
@@ -1982,6 +1981,7 @@ static bool ShouldHideKey(const char* key) {
 	// UNOFFICIAL 2026-10-18: the data of the "New in this patch" tab ([Main.Menu.NewInPatch]) is not a setting to edit
 	if (strcmp(key, "NewSince") == 0 || strcmp(key, "NewInclude") == 0 || strcmp(key, "NewExclude") == 0 || strcmp(key, "NewDiagnostics") == 0) return true;
 	if (strcmp(key, "DevOnly") == 0) return true;	// UNOFFICIAL 2026-10-25: [Main.Menu.Developer]'s list, read from the defaults file only
+	if (strcmp(key, "SidebarWidth") == 0) return true;	// UNOFFICIAL 2026-10-25: set by dragging the gap between the menu's columns, not a setting to edit (user)
 	return false;
 }
 
@@ -3120,7 +3120,7 @@ static std::vector<SearchKey> s_searchIndex;
 static std::vector<NewEntry>  s_searchResults;
 static std::vector<NewGroup>  s_searchGroups;
 static std::string s_searchQuery;	// the lower-case text the results were built for
-static bool        s_searchTests   = false;	// s_showTestSettings the results were built with
+static bool        s_searchTests   = false;	// DevOptionsShown() the results were built with
 static size_t      s_searchTotal   = 0;	// matches before the cap
 static UInt32      s_searchRevision = 0xFFFFFFFFu;
 static int         s_searchFrames   = 0;
@@ -3163,7 +3163,7 @@ static void SearchIndexSection(const std::string& path, const std::string& name,
 
 static void SearchRebuild(const std::string& query) {
 	s_searchQuery = query;
-	s_searchTests = s_showTestSettings;
+	s_searchTests = DevOptionsShown();
 	s_searchResults.clear();
 	s_searchGroups.clear();
 	s_searchTotal = 0;
@@ -3188,7 +3188,7 @@ static void SearchRebuild(const std::string& query) {
 		e.ShaderName = k.ShaderName;
 		e.Valid = TheSettingManager->Config.FillNode(&e.Node, e.Section.c_str(), e.Key.c_str());
 		if (!e.Valid) continue;
-		if (!s_showTestSettings && IsTestSetting(e.Node)) continue;	// as hidden here as in its own section
+		if (!DevOptionsShown() && IsTestSetting(e.Node)) continue;	// as hidden here as in its own section
 		if (++s_searchTotal <= kSearchMax) s_searchResults.push_back(std::move(e));
 	}
 	NewMakeGroups(s_searchResults, s_searchGroups);
@@ -3209,7 +3209,7 @@ static void SearchEnsure() {
 		for (auto& section : topSections)
 			if (section != "Weathers") SearchIndexSection(section, section, false);
 	}
-	if (query != s_searchQuery || s_searchTests != s_showTestSettings) SearchRebuild(query);
+	if (query != s_searchQuery || s_searchTests != DevOptionsShown()) SearchRebuild(query);
 	else if (s_searchRevision != TheSettingManager->SettingsRevision || ++s_searchFrames >= 30) {
 		s_searchFrames = 0;
 		s_searchRevision = TheSettingManager->SettingsRevision;
@@ -3260,7 +3260,7 @@ static void RenderSearchResults() {
 	ImGui::Spacing();
 	if (s_searchTotal == 0) {
 		ImGui::TextDisabled("No setting or section matches. Weather sections are not searched.");
-		if (!s_showTestSettings) ImGui::TextDisabled("Test settings are hidden (Display > Show test settings).");
+		if (!DevOptionsShown()) ImGui::TextDisabled("Developer settings are hidden (tick Developer options at the top).");
 		return;
 	}
 	if (s_searchTotal > kSearchMax) {

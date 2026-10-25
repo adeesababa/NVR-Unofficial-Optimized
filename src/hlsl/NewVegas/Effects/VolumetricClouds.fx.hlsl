@@ -260,6 +260,12 @@ float Phase(float cosT, float g) {
 // behind still shows. stepScale < 1 marches with fewer steps (the reflection's fallback).
 float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = false, bool towers = false) {
 	float steps = max(Steps * stepScale, 4.0);
+	// UNOFFICIAL 2026-10-25 Towering (user: "very very noisy on the edges"): the layer is up to TowerHeight times deeper with the
+	// storms, so the same number of steps were up to five times longer (hundreds of metres): where a ray met a cloud's edge came out
+	// different in each pixel. The storm techniques march with all 64 steps the loop allows (Steps 48: a third shorter). (A search
+	// for the edge between two steps, three extra density reads, took the game's compiler past five minutes: dropped.) Unchanged
+	// with Towering off.
+	if (towers) steps = max(64.0 * stepScale, 4.0);
 	float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
 	float baseAbove = max(Base - camera.z, 50.0);
 	float tStart = ShellDistance(dir.z, baseAbove);

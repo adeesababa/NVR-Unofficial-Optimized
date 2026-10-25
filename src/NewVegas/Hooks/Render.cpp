@@ -3166,6 +3166,7 @@ void __fastcall RenderInterfaceHook(void* apThis, void*, void* apCuller, bool ab
 	RenderMainMenuMovie();
 	ImGuiManager::NewFrame();
 	ThisCall(kRenderInterfaceDetour.GetOverwrittenAddr(), apThis, apCuller, abPipboyVisible);
+	ReShadeIntegration::BeforeNVRMenu();	// UNOFFICIAL 2026-10-25: ReShade's effects under NVR's menu, never on it
 	ImGuiManager::Render();
 #if NVR_TEST_TOOLS
 	SettingShots::CaptureMenu();	// UNOFFICIAL 2026-10-19, test only: 'menu' shots (the menu drawn on the picture)
