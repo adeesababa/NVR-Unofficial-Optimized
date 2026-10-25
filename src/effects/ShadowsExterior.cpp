@@ -632,10 +632,12 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// with the per-object lamp shadows on, this pass is only the room darkening, and its old per-lamp amount took the angle to the lamp
 	// from the depth-rebuilt normals buffer (one flat normal per triangle), so near a lamp every triangle got its own darkening. The object
 	// shaders already give each lamp its falloff and angle (smooth normals), so in that mode the reach mask is used.
-	// UNOFFICIAL 2026-10-25 ForwardReachMask (live; only while the per-object lamp shadows are on): 0 = only LampReachMask decides, as
-	// before; 1 = the reach mask (it also drops the darkening's distance falloff: rooms lighter, interior look 2026-10-20); 2 (default) =
-	// the old falloff without the angle term (z < 0, PointShadows.fx LampAmount): no facets, the old brightness. LampReachMask wins.
-	const int forwardMode = Settings.Interiors.Forward.Enabled ? std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ForwardReachMask"), 0, 2) : 0;
+	// UNOFFICIAL 2026-10-25 ForwardReachMask (live): 0 = only LampReachMask decides, as before; 1 = the reach mask (it also drops the
+	// darkening's distance falloff: rooms lighter, interior look 2026-10-20); 2 (default) = the old falloff without the angle term (z < 0,
+	// PointShadows.fx LampAmount): no facets, the old brightness. LampReachMask wins. Later the same day (owner): with the per-object lamp
+	// shadows OFF too, where this pass is the lamp shadow itself: its angle term came from the same flat per-triangle normal and doubled the
+	// object shaders' own angle, so that no setting combination brings the facets back.
+	const int forwardMode = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ForwardReachMask"), 0, 2);
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") || forwardMode == 1)
 		Constants.PointShadowNear.z = 1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f);
 	else
