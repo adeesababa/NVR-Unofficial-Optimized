@@ -52,6 +52,8 @@ float4 TESR_CloudsReflectData;       // UNOFFICIAL x: strength in the reflection
 float4 TESR_CloudsMotion;       // UNOFFICIAL 2026-10-15 xy: the cloud pattern's move this frame (m), w: sharpness 0..1
 float4 TESR_CloudsTint;         // UNOFFICIAL 2026-10-25 xyz: the weather's cloud colour now (linear, brightness 1), w: WeatherTint 0..1
 float4 TESR_WaterSettings;     // x: height of the water in view (game units)
+float4 TESR_CloudsTower;       // UNOFFICIAL 2026-10-25 Towering: x: the ordinary clouds' share of the (taller) layer (1 = off),
+                               // y: towering 0..1, z: (2026-10-25) anvil 0..1
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -104,6 +106,20 @@ static const float Sharpness = max(TESR_CloudsMotion.w, 0.0);
 // overcast deck is a layer, not heaps, and keeps the older look.
 static const float Cumulus = saturate(TESR_CloudsDetail.w) * (1.0 - smoothstep(0.6, 0.9, saturate(TESR_CloudsShape.z)));   // UNOFFICIAL 2026-10-15: up to 3 (the sharpening; the rest uses up to 1)
 
+// UNOFFICIAL 2026-10-25 Towering: the layer (Thickness above) is made taller on the CPU; the ordinary clouds keep to their old
+// share of it at the bottom (TowerShare), and only the strongest heaps climb on toward the new top. Like Cumulus, it fades out as
+// the sky closes over (an overcast deck has no towers standing out of it): the CPU eases both values back to off then.
+// (Worked out once here, not per sample: this shader is close to ps_3_0's register limits.)
+static const float TowerShare = TESR_CloudsTower.x > 0.0 ? clamp(TESR_CloudsTower.x, 0.05, 1.0) : 1.0;   // (never set: off)
+static const float InvTowerShare = 1.0 / TowerShare;
+static const float TowerGrow = InvTowerShare - 1.0;   // how much taller a full tower is, in ordinary layers, less one
+static const float Towering = saturate(TESR_CloudsTower.y);
+static const float Anvil = saturate(TESR_CloudsTower.z);
+static const float HeapGrow = min(TowerGrow, 1.5);   // the heaps climb at most this many ordinary layers higher (towering cumulus)
+static const float StormSpacing = 1.5 * WeatherTile;   // metres: one storm cell at most per square this wide
+static const float StormRadius = 0.55 * Thickness;      // metres: a storm column's radius at its base (the tall layer's depth)
+static const float BaseThickness = Thickness * TowerShare;   // the depth of the ordinary layer (the Thickness setting)
+
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
 static const float Extinction = 0.04;   // per metre at density 1: about 25 m into a thick cloud half the light is gone
@@ -127,27 +143,69 @@ float ShellDistance(float dz, float above) {
 }
 
 // The cloud's vertical profile by type (0 flat layer .. 1 tall heap), h 0 at the base and 1 at the top of the layer.
-float HeightProfile(float h, float type) {
+// hb: the height in the ordinary layer (the same as h but up a tower, Towering), for the base.
+float HeightProfile(float h, float hb, float type) {
 	float top = lerp(0.3, 1.0, type);
 	float bottom = lerp(0.08, 0.12, type);
-	return smoothstep(0.0, bottom, h) * (1.0 - smoothstep(top * 0.6, top, h));
+	return smoothstep(0.0, bottom, hb) * (1.0 - smoothstep(top * 0.6, top, h));
 }
 
 // Cloud density at a point: the weather map decides where and how much, the shape texture the billows and the detail
 // texture wears away their edges (wispy underneath, billowy on top). cheap skips the detail (for the light march).
-float CloudDensity(float3 p, float h, float lod, bool cheap) {
+// h runs 0..1 through the whole layer (with Towering on, taller than the ordinary clouds). towers (a literal from the technique:
+// the *Towers techniques, used only while Towering is on) adds the storms and the taller heaps; without it this is the code as it
+// was before Towering, instruction for instruction (no cost for anyone with it off).
+float CloudDensity(float3 p, float h, float lod, bool cheap, bool towers = false) {
 	if (h <= 0.0 || h >= 1.0) return 0.0;
 	float4 weather = tex2Dlod(TESR_CloudWeather, float4(p.xy / WeatherTile, 0.0, 0.0));
 	float local = saturate(Remap(weather.r, 1.0 - Coverage, 1.0, 0.0, 1.0));
-	if (local <= 0.0) return 0.0;
 	float type = saturate(weather.g + TESR_CloudsWind.w);
+	// UNOFFICIAL 2026-10-25 Towering (the huge desert cumulus of a western): where the weather map's cloud field is at its
+	// strongest and of the heaped kind, that cloud's own top is raised from the ordinary layer's top toward the top of the
+	// taller layer: h below becomes the height up this cloud's own column, so a tower is one of the ordinary heaps drawn taller
+	// (the noise is read in world space, not stretched: more billows up its sides). The weather map is large and soft, so the
+	// towers rise smoothly out of the middle of a field of ordinary heaps. Exactly the old h with Towering off.
+	float tower = 0.0, hb = h, storm = 0.0;
+	if (towers) {
+	tower = saturate(local * type * 4.0 - 0.6) * Towering;
+	hb = h * InvTowerShare;   // the height in the ordinary layer: the base's fades keep their depth in metres up a tower
+	// UNOFFICIAL 2026-10-25 storms (cumulonimbus, after the user's photos): a few lone storm cells, at most one per StormSpacing
+	// square (a random place in it, a random size; how many: Towering), each a broad column from the cloud base to the top of
+	// the tall layer that flares out under the top into a flat-topped anvil (TowerAnvil), the anvil pushed a little to one side
+	// as the high wind shears it. The outline is the shape noise (big billows), then the detail wears it like the other clouds.
+	[branch] if (hb * Towering > 0.0) {
+		float2 cell = floor(p.xy / StormSpacing);
+		float4 r = tex3Dlod(TESR_NoiseVolume, float4((cell + 0.5) / 64.0, 0.5 / 64.0, 0.0));   // four smooth noises per cell
+		float exists = saturate((0.75 * Towering - r.a) * 8.0);
+		float2 centre = (cell + 0.3 + 0.4 * r.gb) * StormSpacing;
+		float radius = StormRadius * (0.75 + 0.5 * r.r);
+		float flare = smoothstep(0.72, 0.97, h);   // h: up the tall layer (the anvil: about its top quarter)
+		flare *= flare * Anvil;                   // the underside slopes up and out, steepest near the top
+		float2 shear = (r.bg - 0.5) * (2.0 * radius * flare);
+		float width = radius * lerp(1.0 - 0.1 * h, 2.2, flare);
+		float d = length(p.xy - centre - shear) / width;
+		[branch] if (d < 1.6) {
+			// big rounded billows on the column and the anvil's rim (the noises a storm's width across), so it is no cylinder
+			float4 n = tex3Dlod(TESR_NoiseVolume, float4(p / (2.0 * width), 0.0));
+			d += (0.5 - n.b) * 0.6 + (0.5 - n.g) * 0.4;
+		}
+		storm = saturate((1.0 - d) * 3.0) * exists * smoothstep(0.0, 0.03, hb);
+	}
+	}
+	if (local <= 0.0 && storm <= 0.0) return 0.0;
+	if (towers) {
+		h = hb / (1.0 + tower * HeapGrow);   // up this heap's own column
+		if (h >= 1.0 && storm <= 0.0) return 0.0;
+		type += tower * (1.0 - type);   // a tower is the tallest heap of its kind
+	}
 	// Turbulence: the shape is read through a slow, large distortion, so the noise's cells do not line up into rows of
 	// look-alike heaps.
 	float3 s = p / ShapeTile;
 	// (CumulusShape: less of it, the big twist pulled heaps into smoky streaks)
 	s += (tex3Dlod(TESR_NoiseVolume, float4(s * 0.5, lod)).rga - 0.5) * (0.15 * TESR_CloudsLook.z * lerp(1.0, 0.4, Cumulus));
 	float shape = tex3Dlod(TESR_CloudShape, float4(s, lod + TESR_CloudsLook.y)).r;   // a mip down: fewer lone puffs
-	float base = saturate(Remap(shape * HeightProfile(h, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+	float base = saturate(Remap(shape * HeightProfile(h, hb, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+	float stormCloud = towers ? saturate((storm - 0.5 * (1.0 - shape)) * 2.0) : 0.0;   // solid inside, billowed at the rim
 	// UNOFFICIAL 2026-10-20 CumulusShape (after photos of Mojave fair-weather cumulus): the older profile cut every cloud off at
 	// the same top height, so they came out as flat slabs (boxy). Here the base stays flat and crisp (the condensation level)
 	// but the cloud needs a stronger core the higher it goes, so it narrows as it rises: only the cores climb, into rounded
@@ -156,12 +214,13 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 	{
 		float top = lerp(0.45, 1.0, type);
 		float rise = saturate(h / top);
-		float threshold = lerp(1.0 - local, 1.0, 0.9 * rise);
+		float threshold = lerp(1.0 - local, 1.0, 0.9 * rise * (1.0 - 0.5 * tower));   // (Towering: a tower stays broad as it climbs)
 		float core = saturate(Remap(shape, threshold, 1.0, 0.0, 1.0));
-		core *= smoothstep(0.0, 0.03, h) * (1.0 - smoothstep(0.85, 1.0, rise));
+		core *= smoothstep(0.0, 0.03, hb) * (1.0 - smoothstep(0.85, 1.0, rise));
 		core = saturate(Remap(core, 0.1, 1.0, 0.0, 1.0)) * local;   // no faint fringe round the cores: those were the wisps
 		base = lerp(base, core, Cumulus);
 	}
+	if (towers) base = max(base, stormCloud);
 	if (base <= 0.0) return 0.0;
 	if (!cheap) {
 		float3 q = (p + float3(0.0, 0.0, TESR_CloudsWind.z)) / DetailTile;
@@ -178,11 +237,11 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 			float fine = tex3Dlod(TESR_CloudDetail, float4(f, lod)).r;
 			detail = lerp(detail, detail * 0.65 + fine * 0.35, TESR_CloudsDetail.x);
 		}
-		float wisps = lerp(detail, 1.0 - detail, saturate(h * 6.0));
+		float wisps = lerp(detail, 1.0 - detail, saturate(hb * 6.0));
 		float erosion = Erosion;
 		// CumulusShape: billows all the way down (no wispy underside), and less wear near the base so it stays flat
 		wisps = lerp(wisps, 1.0 - detail, Cumulus);
-		erosion *= lerp(1.0, lerp(0.35, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+		erosion *= lerp(1.0, lerp(0.35, 1.0, smoothstep(0.0, 0.2, hb)), Cumulus);
 		base = saturate(Remap(base, wisps * erosion, 1.0, 0.0, 1.0));
 	}
 	// edge sharpness: thin cloud at the rim reaches full density sooner, so the outline is crisp instead of a long fade
@@ -199,7 +258,7 @@ float Phase(float cosT, float g) {
 // ---- 1: March, quarter resolution ----
 // The clouds along one world direction from the camera: rgb the light they send toward it (linear), a how much of the sky
 // behind still shows. stepScale < 1 marches with fewer steps (the reflection's fallback).
-float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = false) {
+float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = false, bool towers = false) {
 	float steps = max(Steps * stepScale, 4.0);
 	float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
 	float baseAbove = max(Base - camera.z, 50.0);
@@ -239,7 +298,7 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 		ambientBottom = lerp(ambientBottom, lerp(physLow, physTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark), share);
 	}
 #endif
-	float lightStep = Thickness / 12.0;
+	float lightStep = (towers ? BaseThickness : Thickness) / 12.0;   // (Towering: the ordinary clouds keep their light march)
 	float lightRise = max(light.z, 0.1);                     // a low sun still climbs out of the layer
 
 	float3 wind = float3(TESR_CloudsWind.xy, 0.0);
@@ -259,18 +318,37 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 		float h = (altitude - Base) / Thickness;
 		float3 p = float3(camera.xy + dir.xy * t, altitude) + wind;
 		float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * saturate(Sharpness));   // far away, smoother noise: less shimmer (Sharpness: less of it)
-		float density = CloudDensity(p, h, lod, false);
+		float density = CloudDensity(p, h, lod, false, towers);
 		[branch] if (density > 0.0) {
 			// light reaching this point: six samples toward the light, each twice as far as the last
 			float opticalDepth = 0.0;
 			float reach = 0.0;
-			[unroll] for (int j = 0; j < 6; j++) {
-				float stepLength = lightStep * exp2((float)j) * 0.5;
-				reach += stepLength;
-				float3 q = p + light * reach;
-				float hq = h + reach * lightRise / Thickness;
-				opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2) * stepLength;
+			[branch] if (towers) {
+				// (UNOFFICIAL 2026-10-25 Towering: a real loop here: six inlined copies of CloudDensity with the storms ran out of
+				// ps_3_0's temp registers. The same six samples. Without towers, the unrolled loop as before: it is faster.)
+				float stepLength = lightStep * 0.5;
+				[loop] for (float j = 0.0; j < 6.0; j += 1.0) {
+					reach += stepLength;
+					float3 q = p + light * reach;
+					float hq = h + reach * lightRise / Thickness;
+					opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2.5, true) * stepLength;
+					stepLength *= 2.0;
+				}
 			}
+			else {
+				[unroll] for (int j = 0; j < 6; j++) {
+					float stepLength = lightStep * exp2((float)j) * 0.5;
+					reach += stepLength;
+					float3 q = p + light * reach;
+					float hq = h + reach * lightRise / Thickness;
+					opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2) * stepLength;
+				}
+			}
+			// UNOFFICIAL 2026-10-25 Towering: a storm is kilometres deep, and a march sample lands hundreds of metres inside its surface:
+			// the sunlight there would be gone and the storm lit by the blue sky alone (a flat blue cut-out). Light scatters on through
+			// the whole storm, so from half way up the ordinary layer the sun's way in counts for less, down to a fifth two ordinary
+			// layers up (bright towers; the bases stay shaded). Unchanged with Towering off.
+			if (towers) opticalDepth *= 1.0 - 0.8 * Towering * saturate((h * InvTowerShare - 0.5) / 1.5);
 			// several scattering orders, each weaker, less shadowed and more even (Wrenninge's approximation):
 			// thick clouds stay bright inside instead of going black
 			float3 sunLight = 0.0;
@@ -282,11 +360,15 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 			}
 			// powder: the edges facing the light are darker than a plain exponential says
 			float powder = 1.0 - exp(-2.0 * Extinction * density * 40.0);
-			float3 ambient = lerp(ambientBottom, ambientTop, saturate(h));
+			float hb = towers ? h * InvTowerShare : h;   // Towering: the height in the ordinary layer (above 1 up a tower)
+			float3 ambient = lerp(ambientBottom, ambientTop, saturate(hb));
+			// UNOFFICIAL 2026-10-25 Towering: inside a storm most of the light in the shade is sunlight scattered through the cloud
+			// itself, not the blue sky: grey shaded sides, as in photos, instead of a sky-blue cut-out. Unchanged with Towering off.
+			if (towers) ambient = lerp(ambient, luma(ambient) * 1.15, 0.7 * Towering * saturate((hb - 0.5) / 1.5));
 			// UNOFFICIAL 2026-10-20 CumulusShape: the bottom of a heap gets less of the light scattered down to it from the bright
 			// cloud above (Schneider's height term in Nubis): grey bases under white tops, as in the photos, instead of grey patches
 			// in the middle of an evenly white slab.
-			float lowLight = lerp(1.0, lerp(0.75, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+			float lowLight = lerp(1.0, lerp(0.75, 1.0, smoothstep(0.0, 0.2, hb)), Cumulus);
 			float3 radiance = (sun * sunLight * lerp(0.5, 1.0, powder) + ambient) * lowLight;
 			float sigma = Extinction * density;
 			float stepTransmittance = exp(-sigma * dt);
@@ -302,17 +384,23 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 	// overcast, blue at night), over the light from the sun and sky; brightness unchanged (the tint's own is 1).
 	scattered *= lerp(1.0, TESR_CloudsTint.rgb, TESR_CloudsTint.w);
 	float distance = depthWeight > 0.0 ? depthSum / depthWeight : tStart;
+	// UNOFFICIAL 2026-10-25 Towering: the haze is low air: the high tops of towers far off show through less of it (as the storm
+	// on the horizon in a photo), so from half way up the ordinary layer the distance counts for less (down to a quarter of it, a third of the way up the tall layer). Unchanged with Towering off.
+	if (towers) {
+		float hitAltitude = camera.z + distance * dir.z + distance * distance / (2.0 * EarthRadius);
+		distance *= 1.0 - 0.75 * Towering * saturate(3.0 * (hitAltitude - Base - 0.5 * BaseThickness) / max(Thickness - BaseThickness, 1.0));
+	}
 	float haze = exp(-(distance * distance) / (HazeDistance * HazeDistance)) * saturate((MaxDistance - distance) / (0.4 * MaxDistance));
 	scattered *= haze;
 	transmittance = lerp(1.0, transmittance, haze);
 	return float4(scattered, transmittance);
 }
 
-float4 MarchPS(VSOUT IN, float2 vpos : VPOS, uniform bool fixedExit) : COLOR0 {
+float4 MarchPS(VSOUT IN, float2 vpos : VPOS, uniform bool fixedExit, uniform bool towers) : COLOR0 {
 	float2 pixel = vpos * 2.0 + TESR_CloudsBlocks.zw;          // this frame's quarter-resolution pixel of the block
 	float2 uv = (pixel + 0.5) * LowTexel;
 	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
-	return MarchRay(normalize(toWorld(uv)), jitter, 1.0, fixedExit);
+	return MarchRay(normalize(toWorld(uv)), jitter, 1.0, fixedExit, towers);
 }
 
 // Catmull-Rom upsampling of the quarter-resolution history in nine bilinear taps (the sharp bicubic: plain bilinear
@@ -376,7 +464,7 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 		// a typical depth into the layer): without this, each pixel kept last frame's cloud until its turn to be marched came
 		// round (one frame in four), so drifting clouds crept in small steps and trailed.
 		float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
-		float reach = ShellDistance(dir.z, max(Base + 0.4 * Thickness - camera.z, 50.0));
+		float reach = ShellDistance(dir.z, max(Base + 0.4 * BaseThickness - camera.z, 50.0));
 		previousDir = dir * reach + float3(TESR_CloudsMotion.xy, 0.0);
 	}
 	float4 clip = mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj);
@@ -408,17 +496,27 @@ float3 ShadowLight() {
 }
 
 // ---- 3: ShadowMap ----
-float4 ShadowMapPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+float4 ShadowMapPS(VSOUT IN, float2 vpos : VPOS, uniform bool towers) : COLOR0 {
 	float2 at = ShadowCentre() + ((vpos + 0.5) / ShadowMapSize - 0.5) * ShadowRange;
 	float3 light = ShadowLight();
 	float length = Thickness / light.z;
 	float stepLength = length / 8.0;
 	float3 wind = float3(TESR_CloudsWind.xy, 0.0);
 	float opticalDepth = 0.0;
-	[unroll] for (int i = 0; i < 8; i++) {
-		float s = (i + 0.5) * stepLength;
-		float3 p = float3(at, Base) + light * s;
-		opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false) * stepLength;   // the full shape, as the clouds seen
+	[branch] if (towers) {
+		// UNOFFICIAL 2026-10-25 Towering: a real loop here (unrolled, eight copies of CloudDensity with the storms are past ps_3_0's
+		// 224 constant registers). The same samples.
+		[loop] for (float i = 0.5; i < 8.0; i += 1.0) {
+			float3 p = float3(at, Base) + light * (i * stepLength);
+			opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false, true) * stepLength;
+		}
+	}
+	else {
+		[unroll] for (int i = 0; i < 8; i++) {
+			float s = (i + 0.5) * stepLength;
+			float3 p = float3(at, Base) + light * s;
+			opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false) * stepLength;   // the full shape, as the clouds seen
+		}
 	}
 	return float4(exp(-Extinction * opticalDepth), 0.0, 0.0, 1.0);
 }
@@ -507,7 +605,7 @@ VSOUT ReflectionVS(VSIN IN) {
 	return OUT;
 }
 
-float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS, uniform bool towers) : COLOR0 {
 	float2 ndc = float2((vpos.x + 0.5) / TESR_CloudsReflectData.y * 2.0 - 1.0, 1.0 - (vpos.y + 0.5) / TESR_CloudsReflectData.z * 2.0);
 	float4 far = mul(float4(ndc, 0.5, 1.0), TESR_CloudsReflectInvVP);
 	float3 dir = normalize(far.xyz / far.w);
@@ -521,7 +619,7 @@ float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	[branch] if (seen > 0.0) clouds = tex2Dlod(TESR_CloudHistory, float4(saturate(at), 0, 0));
 	[branch] if (seen < 1.0) {
 		float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(vpos / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
-		clouds = lerp(MarchRay(dir, jitter, 0.5), clouds, seen);
+		clouds = lerp(MarchRay(dir, jitter, 0.5, false, towers), clouds, seen);
 	}
 	float strength = saturate(TESR_CloudsReflectData.x);
 	float transmittance = lerp(1.0, saturate(clouds.a), strength);
@@ -551,7 +649,7 @@ technique Composite {
 technique March {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 MarchPS(false);
+		PixelShader = compile ps_3_0 MarchPS(false, false);
 		Texture[6] = <NoTexture>;
 	}
 }
@@ -566,14 +664,14 @@ technique Temporal {
 technique Reflection {
 	pass {
 		VertexShader = compile vs_3_0 ReflectionVS();
-		PixelShader = compile ps_3_0 ReflectionPS();
+		PixelShader = compile ps_3_0 ReflectionPS(false);
 	}
 }
 
 technique ShadowMap {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 ShadowMapPS();
+		PixelShader = compile ps_3_0 ShadowMapPS(false);
 		Texture[10] = <NoTexture>;   // writes the shadow map
 	}
 }
@@ -589,7 +687,40 @@ technique LayerProbe {
 technique MarchFixedExit {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 MarchPS(true);
+		PixelShader = compile ps_3_0 MarchPS(true, false);
 		Texture[6] = <NoTexture>;
+	}
+}
+
+// UNOFFICIAL 2026-10-25 Towering ([Shaders.VolumetricClouds.Main] Towering above 0): techniques 7-10 = March, MarchFixedExit,
+// Reflection and ShadowMap with the storms and the taller heaps. Without Towering the effect uses 1, 6, 3 and 4 as before.
+technique MarchTowers {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 MarchPS(false, true);
+		Texture[6] = <NoTexture>;
+	}
+}
+
+technique MarchTowersFixedExit {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 MarchPS(true, true);
+		Texture[6] = <NoTexture>;
+	}
+}
+
+technique ReflectionTowers {
+	pass {
+		VertexShader = compile vs_3_0 ReflectionVS();
+		PixelShader = compile ps_3_0 ReflectionPS(true);
+	}
+}
+
+technique ShadowMapTowers {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 ShadowMapPS(true);
+		Texture[10] = <NoTexture>;   // writes the shadow map
 	}
 }
