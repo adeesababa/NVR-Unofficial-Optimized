@@ -8,6 +8,34 @@ work without a CPU wait (Flush is async, LockSubmissionQueue does not wait, no s
 problem disappears: our commands run on DXVK's CS thread, in its context, with its resource tracking and barriers.
 Licence: DXVK is zlib (fork and ship OK; credit it). NVR stays GPL.
 
+## Where it stands (2026-10-25)
+Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself is the patch series in `tools/nvr-dxvk/`
+(DXVK v3.0.1 + NVR extension 1.2), built by the "NVR DXVK d3d9.dll" workflow. Details: NVR-DXVK-EXTENSION.md.
+- Done: steps 2-4 (stock build, extension, AvgLuma compute) and the "later" full-screen passes (1.1: eleven effects
+  ported line for line), phase 2's mechanism (1.2: pixel shader replacement). All verified on software Vulkan only.
+- CI fixed 2026-10-25: "Build New Vegas Reloaded" moved from the retired `windows-2019` runner to `windows-2022` (v143
+  toolset in CI only; the owner's VS2019 projects are unchanged). First green run 2026-10-25 (run 40190791536, 3 min, no errors, no warnings in the new files): the
+  NVR-side C++ (DxvkCompute, AvgLuma compute, the eleven ported effects, replacements) compiles under MSVC for the first
+  time. Packaging fix: build.bat and check-package.ps1 now ship `Shaders\NewVegasReloaded\Compute\` (the .spv files;
+  before, a built package had none, so every fork path would have failed to load its shader and fallen back to D3D9).
+- Not done: nothing has run in the game yet (Wine could not run DXVK 3.0). That in-game smoke test is the gate for
+  everything else.
+- What the fork buys and does not (plain answers): NVR-DXVK-WHAT-IT-BUYS.md.
+
+## Next steps, in order (session-hours)
+1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
+   for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).
+   Checks 1-3 and 6 of NVR-DXVK-EXTENSION.md "what the owner must test": log lines, stock-like behaviour with the options
+   off, AvgLumaCompute and NvrDxvkPasses toggled live with A/B shots (same picture). Tools built 2026-10-25: run_slot.sh
+   `FORK_D3D9=<folder>` (copies d3d9.dll [+ dxvk.conf] into the slot after 'native'; the reset moves it out again),
+   game_swap.py `dev` now also copies Compute, shots list bench\foundations\lists\dxvkfork-1-lucky22.txt, tree
+   work\NVR-dxvkfork-ci (holds the CI-built DLL). Run: `LOCKTAG=<own> FORK_D3D9=<folder> sh run_slot_when_free.sh lucky22
+   dxvkfork-1-lucky22 dxvkfork1 NVR-dxvkfork-ci`.
+2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
+3. Phase 2 first real replacement (4-8 h): one SLS20xx variant ported line for line, same picture in A/B shots.
+4. Only then: the first fork-only gain (all lamps in one pass, or the character shadow map lookup) and a timing A/B in
+   a full slot (slim slots are for pictures, never timing).
+
 ## Scope
 - In: NVR's post effects and new GPU work (compute + modern full-screen passes): no 16-sampler, 224-constant, 16-bool,
   32-temp or instruction-slot limits; shared memory, structured buffers, atomics.
