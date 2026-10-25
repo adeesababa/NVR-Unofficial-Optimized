@@ -36,9 +36,24 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
    paths available`; DXVK's log is clean (no `NVR ext:` lines). But the game never reached its main loop (presents ~20 fps
    for 600 s, "game loops 0", twice), so no pictures. CONTROL: stock DXVK 3.0.1 (the user's d3d9.dll.dxvk301) in the same
    slot hangs the same way, while stock DXVK passed in the real game folder on 2026-10-21. So this is DXVK in a slim slot
-   copy (or with this CI-built v143 NVR DLL), NOT the fork. Next: (a) the same control with the native-built combo-1023 DLL
-   to split "slot" from "DLL"; (b) if it is the slot, find what the slim profile changes that DXVK minds (OneTweak removed,
-   own INIs, the child window). Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
+   copy (or with this CI-built v143 NVR DLL), NOT the fork.
+   CAUSE FOUND (hangstack on the stuck slot game, same with the combo-1023 DLL): the main thread sat in a MessageBox from
+   the user's xNVSE plugin DepthResolve.dll: "Incompatible DXVK version" (its log: DXVK status 1, RESZ status 0). It
+   pops on every DXVK 3.0.1 launch, stock or fork (the user saw it). NVR does not use DepthResolve (NVR resolves depth
+   itself); it feeds DoF-Fix.dll. run_slot.sh now renames the slot's DepthResolve.dll aside for FORK_D3D9 runs only
+   and back on reset (the hard link is kept, so make_slot verify passes).
+   PASS 2026-10-25 14:53 (run 20261025-145232-slotA, shots H:\_NVR-autotest-shots\20261025-145232-slotA, diffs
+   G:\_NVR-build-scratch\dxvkfork2-diffs): the game runs on the fork, loads the save, all 8 shots, no `failed` lines.
+   - `AvgLuma: compute path running`; `Exposure / FXAA / Sharpening runs as a Vulkan pass` (ImageAdjust, LowHF and
+     SkyDither printed no line: probably inactive in that shot; recheck).
+   - Vulkan passes vs their D3D9 techniques: 10.4 % of pixels > 2/255, mean 1.2/255, signed +0.02 = the same as two
+     identical shots (11.7 %, 1.36, +0.02): same picture within scene noise (a few brighter edge pixels around one neon
+     sign to recheck at full resolution).
+   - AvgLumaCompute on: picture 0.7/255 darker on average. AvgLuma check: exact average luma 0.0230 vs the D3D9 pass's
+     112 taps 0.0163 (+0.0068, the old pass reads about 30 % low in this casino scene), so exposure adapts a bit darker.
+     A real (and expected) difference, not a bug; whether Exposure's defaults should be retuned for it is the owner's call.
+   Next: timing (F10) in a full slot, the remaining checks (alt-tab/reset, ReShade, loading screens), then phase 2 step 1.
+   Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
    extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
 3. Phase 2 first real replacement (4-8 h): one SLS20xx variant ported line for line, same picture in A/B shots.
