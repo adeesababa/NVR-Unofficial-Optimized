@@ -72,6 +72,18 @@ public:
 	bool				prepared = false;			// RenderPrepare drew Prepare + the smoothing this frame (Render skips its Prepare)
 	bool	RenderPrepare(IDirect3DDevice9* Device);	// ShaderManager, before the AO's sky pass: Prepare, then technique AmbientLightSmooth
 	IDirect3DTexture9* SmoothedNormals() const { return prepared ? prepTexture : nullptr; }
+	// UNOFFICIAL 2026-10-25 (NVR DXVK) [Main.Main.Performance] AmbientLightSmoothCompute: technique AmbientLightSmooth's two passes as
+	// one compute dispatch (src\hlsl\NewVegas\Compute\AmbientLightSmooth.comp) into smoothResult, copied into the prep. False = not
+	// done (off, no extension, reach above SmoothComputeMaxReach, or failed: logged once, the D3D9 passes for the session).
+	static const int	SmoothComputeMaxReach = 64;	// the shader's shared memory holds pass X for 256 rows = a tile + 2 x the reach
+	ID3D9NvrExtPipeline*	smoothPipeline = nullptr;
+	ID3D9NvrExtBuffer*		smoothResult = nullptr;	// width x height RGBA32F (the prep's format)
+	UINT				smoothWidth = 0, smoothHeight = 0;
+	bool				smoothComputeFailed = false;
+	bool				smoothComputeReachLogged = false;
+	UINT				smoothComputeFrames = 0;
+	bool	SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height);
+	void	SmoothComputeRelease();
 	IDirect3DTexture9*	statsTexture = nullptr;			// per sample: light, the occlusion's darkening, the bounce (luma)
 	IDirect3DSurface9*	statsSurface = nullptr;
 	IDirect3DTexture9*	balanceTexture[2] = {};		// x: the bounce's scale (eased), yzw: the averages
