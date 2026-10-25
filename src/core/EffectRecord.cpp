@@ -564,7 +564,7 @@ D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) 
 // case: into the chain's spare texture and Commit, straight into the game target when the chain predicted this effect last, or
 // (no chain) into RenderTarget with the copy into RenderedSurface afterwards. The pass writes every pixel (no pre-fill).
 bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
-	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize) {
+	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize, bool last) {
 	if (!Pipeline || !DxvkCompute::Available()) return false;
 	ID3D9NvrExt* ext = DxvkCompute::Extension();
 
@@ -581,7 +581,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	if (chain.Owns(RenderTarget, RenderedSurface)) {
 		if (SourceBuffer && usesSourceBuffer && SourceBuffer != RenderTarget)
 			Device->StretchRect(TheTextureManager->RenderedSurface, NULL, SourceBuffer, NULL, D3DTEXF_LINEAR);
-		const bool direct = chain.IsDirectFinal(this);
+		const bool direct = last && chain.IsDirectFinal(this);
 		draw.Targets[0].pResource = direct ? chain.FinalSurface() : chain.Output();
 		result = ext->Draw(&draw);
 		if (SUCCEEDED(result)) { if (direct) chain.CommitFinal(); else chain.Commit(); }

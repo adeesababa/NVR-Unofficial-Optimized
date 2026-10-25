@@ -95,6 +95,13 @@ public:
 	void	RegisterTextures();
 	void	UpdateSettings();
 	bool	ShouldRender();
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): both blur passes as src\hlsl\NewVegas\Compute\SkinScattering.frag (EffectRecord::ExtRender);
+	// the constants go to a uniform buffer (the kernel does not fit push data).
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	ExtPass				extPass;
+	ID3D9NvrExtBuffer*	extUniforms = nullptr;
+	bool				extUniformsTried = false;
 
 private:
 	std::unordered_map<IDirect3DPixelShader9*, std::pair<UINT, bool>> WritesColor1;   // BindForGameHighlights: per pixel shader, its bytecode size and whether it writes COLOR1
