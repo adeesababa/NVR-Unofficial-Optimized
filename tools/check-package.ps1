@@ -19,6 +19,7 @@ $pkg = (Resolve-Path $Package).Path
 $folders = [ordered]@{
 	'src/hlsl/NewVegas/Effects/' = 'Shaders\NewVegasReloaded\Effects\'
 	'src/hlsl/NewVegas/Shaders/' = 'Shaders\NewVegasReloaded\Shaders\'
+	'src/hlsl/NewVegas/Compute/' = 'Shaders\NewVegasReloaded\Compute\'	# the NVR DXVK SPIR-V (2026-10-25)
 	'resource/Textures/' = 'Textures\'
 }
 function Text([string]$path) { [IO.File]::ReadAllText($path).Replace("`r`n", "`n") }

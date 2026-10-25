@@ -45,6 +45,8 @@ echo F|xcopy "resource\%PROJECT%.dll.defaults.toml" "build\%PROJECT%\%FOLDER%\Pl
 set GAME=%PROJECT:Reloaded=""%
 robocopy /mir .\src\hlsl\%GAME%\Shaders .\build\%PROJECT%\Shaders\%PROJECT%\Shaders
 robocopy /mir .\src\hlsl\%GAME%\Effects .\build\%PROJECT%\Shaders\%PROJECT%\Effects
+@REM Compute: the SPIR-V the NVR DXVK paths load (NewVegas only; unused on native D3D9 and stock DXVK)
+if exist .\src\hlsl\%GAME%\Compute robocopy /mir .\src\hlsl\%GAME%\Compute .\build\%PROJECT%\Shaders\%PROJECT%\Compute
 
 @REM Copy Textures
 robocopy /mir .\resource\Textures\ .\build\%PROJECT%\Textures\
