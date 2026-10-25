@@ -1,6 +1,13 @@
 name: Build New Vegas Reloaded
 
-on: [push]
+on:
+  push:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run (they used to queue up).
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # Path to the solution file relative to the root of the project.
@@ -9,17 +16,19 @@ env:
 
 jobs:
   build:
-    runs-on: windows-2019
+    # windows-2019 was retired by GitHub (runs sat queued forever). windows-2022 has VS2022 only,
+    # so the build uses its v143 toolset in place of the projects' v142 (same ABI; the owner's VS2019 build is unchanged).
+    runs-on: windows-2022
 
  # Steps
     steps:
       - name: "Checkout from latest commit: '${{ github.event.head_commit.message }}'"
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
             submodules: recursive
 
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v1.0.2
+        uses: microsoft/setup-msbuild@v2
 
       - name: Restore NuGet packages
         working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -29,7 +38,11 @@ jobs:
         working-directory: ${{env.GITHUB_WORKSPACE}}
         # Add additional options to the MSBuild command line here (like platform or verbosity level).
         # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-        run: cmd /c build.bat "NewVegasReloaded"
+        run: |
+          (Get-Content NewVegasReloaded\NewVegasReloaded.vcxproj) -replace '<PlatformToolset>v142<', '<PlatformToolset>v143<' | Set-Content NewVegasReloaded\NewVegasReloaded.vcxproj
+          cmd /c build.bat "NewVegasReloaded"
+          # build.bat ends in PAUSE, which hides msbuild's exit code: check the DLL instead.
+          if (-not (Test-Path NewVegasReloaded\Release\NewVegasReloaded.dll)) { throw "NewVegasReloaded.dll was not built" }
 
       - name: zip files
         uses: vimtor/action-zip@v1
