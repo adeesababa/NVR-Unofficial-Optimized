@@ -38,7 +38,10 @@ float4 TESR_SunFarCloudWeight;    // per layer: its share (0: no texture)
 float4 TESR_SunFarCloudBlend;     // per layer: how far it has blended to the incoming weather's texture
 float4 TESR_SunFarVolume;         // UNOFFICIAL 2026-10-21 the volumetric clouds' shadow: x strength (0 off), y map width (m), z map texels, w cloud base (m)
 float4 TESR_SunDirection;         // the light the volumetric clouds' shadow map was made with
-float4 TESR_SunFarWater;          // UNOFFICIAL 2026-10-23 [Shaders.CloudShadows.Main] WaterShadows: x 1 on (0: water left alone), y deep water's share, z 1 the depth map is bound
+float4 TESR_FogData;              // UNOFFICIAL 2026-10-25: the game's fog as the object and land shaders apply it: x near, y far, w power
+float4 TESR_FogColor;
+float4 TESR_SunFarLand;           // UNOFFICIAL 2026-10-25: xyz the light vector the land shaders lit with (core/LandLight.h), w 1 when read lately
+float4 TESR_SunFarWater;          // UNOFFICIAL 2026-10-23 [Shaders.CloudShadows.Main] WaterShadows: x 1 on (0: water left alone), y deep water's share, z 1 the depth map is bound; w 1 OldSunModel (test, 2026-10-25)
 
 // In register order: NVR binds TESR_ samplers in declaration order.
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -61,6 +64,8 @@ sampler2D NVR_VolumeCloudShadow : register(s13) = sampler_state { ADDRESSU = CLA
 // UNOFFICIAL 2026-10-23: the game's water depth map (PlaceableWaterGroup::spDepthMap, as the water shaders read it per screen
 // position: x 0 at the shore, 1 deep), bound by SunFarEffect::RenderFactor with WaterShadows on.
 sampler2D NVR_WaterDepth : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// UNOFFICIAL 2026-10-25: the world as drawn (the game's scene target, stored space), bound by SunFarEffect::RenderFactor.
+sampler2D NVR_Scene : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -208,13 +213,16 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float terrain = TerrainShadow(world);
 	float cloud = CloudShadow(rel) * VolumeCloudShadow(world);
 	float blocked = terrain * cloud;
+	// DebugView 4 (test): as a fully clouded sky over the whole screen at Strength 1: where the cascades already shade, nothing
+	// changes; everywhere else the pixel should come out as dark as the cascades' own shadows next to it, never darker.
+	blocked = TESR_SunFarData.y > 3.5f ? 0.0f : blocked;
 	// [TerrainShadows] Darkness: in the land's shadow, a share of the ambient and sky light goes too (a valley under a
 	// mountain sees less of the sky). (Conor.)
 	float shade = (1.0f - terrain) * TESR_TerrainShadowParams.z;
 
 	// Debug views: 1 the land's shadow in green and the clouds' in blue, through the composite (the picture tinted);
 	// 2 also the height map's area in a faint blue.
-	[branch] if (TESR_SunFarData.y > 0.5f) {
+	[branch] if (TESR_SunFarData.y > 0.5f && TESR_SunFarData.y < 3.5f) {
 		float3 tint = lerp(1.0f, float3(0.25f, 1.0f, 0.25f), (1.0f - terrain) * 0.8f) * lerp(1.0f, float3(0.35f, 0.5f, 1.0f), (1.0f - cloud) * 0.8f);
 		if (TESR_SunFarData.y > 1.5f) tint *= lerp(1.0f, float3(0.85f, 0.9f, 1.0f), TerrainShadowCoverage(world));
 		// 3: also the water's depth as WaterShadows reads it, white at the shore to red deep (with the depth map bound).
@@ -246,7 +254,20 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float terrainWeight = (TESR_TerrainData.z + TESR_TerrainData.w > 0.0f) ? smoothstep(0.5f, 0.8f, normal.z) : 0.0f;
 	float3 scales = lerp(float3(TESR_PBRData.z, TESR_PBRData.w, TESR_PBRExtraData.y),
 	                     float3(TESR_TerrainData.z, TESR_TerrainData.w, TESR_TerrainSkyData.x), terrainWeight);
-	float NdotL = saturate(dot(normal, TESR_SmoothedSunDir.xyz));
+	// UNOFFICIAL 2026-10-25 (bug: a tree's shadow under a cloud's shadow came out lighter than the clouded ground round it): this
+	// split must use the light vector the surface was lit with, or a cloud takes away more light than the sun gave and the clouded
+	// ground comes out darker than the cascades' own full shadow (which this pass leaves alone).
+	//  - The land: the game hands the land shaders their own SunDir (core/LandLight.h, read back from the land's draws:
+	//    TESR_SunFarLand.w 1), pointing the way the sun does across the ground but much lower (Poseidon gas station, 17.4 h: 10.8
+	//    degrees against the directional light's 27.4), so flat land's NdotL was well under half of what this pass took. This was
+	//    the bug: under a full cloud (DebugView 4) the lit ground came out at 17 against a real full shadow of 27 (cloudy weather,
+	//    8-bit picture), 27 now. The surfaces taken for land (terrainWeight) use it.
+	//  - Everything else: the directional light (TESR_SunDirection), not the shadow maps' sun (with QuantizeSun it moves in
+	//    15-degree steps; a small difference here). The cascades and the clouds' placement keep the shadow maps' sun.
+	// TESR_SunFarWater.w 1 (OldSunModel, test only): as before.
+	float3 lightDir = TESR_SunFarWater.w > 0.5f ? TESR_SmoothedSunDir.xyz : normalize(TESR_SunDirection.xyz);
+	float3 landDir = TESR_SunFarLand.w > 0.5f && TESR_SunFarWater.w < 0.5f ? TESR_SunFarLand.xyz : lightDir;
+	float NdotL = lerp(saturate(dot(normal, lightDir)), saturate(dot(normal, landDir)), terrainWeight);
 	float3 sunLight = LightColor(TESR_ShadowSunLight.rgb) * (NdotL * LightScale(scales.x));
 	float3 ambientLight = LightColor(TESR_ShadowAmbientLight.rgb) * LightScale(scales.y) + LightColor(SkyIrradiance(normal)) * LightScale(scales.z);
 	float3 litNow = ambientLight + sunLight * cascade;
@@ -254,6 +275,15 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	factor = keep < 1.0f ? lerp(1.0f, factor, keep) : factor;   // (a select: off the water exactly as before)
 	// Into the stored space: with linear lighting the shaders encoded their result with 1 / gamma (w; 1 with it off).
 	factor = pow(max(factor, 1e-6f), TESR_SunFarData.w);
+	// UNOFFICIAL 2026-10-25 (with the fix above): the object and land shaders end with the game's fog, lerp(lit, fog colour, fog
+	// amount), and the composites multiply the whole pixel by this factor, so the fog's share was darkened as if it were sunlight.
+	// Now that share keeps its brightness: the fog amount as the shaders work it out (ObjectTemplate.hlsl / TerrainTemplate.hlsl: by
+	// the distance, between the fog's near and far, to its power) times the fog colour, as a share of the pixel as drawn (the
+	// scene target, NVR_Scene). It matters with fog close by (it made most of the difference in a cloudy weather's haze, little in
+	// clear weather). TESR_SunFarWater.w 1 (OldSunModel, test only, or no scene texture): as before.
+	float fogAmount = pow(1.0f - saturate((TESR_FogData.y - length(rel)) / max(TESR_FogData.y - TESR_FogData.x, 1.0f)), max(TESR_FogData.w, 0.0001f));
+	float3 fogShare = saturate(fogAmount * TESR_FogColor.rgb / max(tex2Dlod(NVR_Scene, float4(uv, 0.0f, 0.0f)).rgb, 0.0001f));
+	factor = TESR_SunFarWater.w > 0.5f ? factor : factor + (1.0f - factor) * fogShare;
 	// a: what reaches the sun (1 lit): the Specular effect takes it off the sun's highlight (Specular.fx NVR_SpecularSunFar).
 	return float4(factor, blocked);
 }

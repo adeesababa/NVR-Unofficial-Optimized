@@ -24,6 +24,7 @@ public:
 		int		HazardLog;       // UNOFFICIAL 2026-10-22, test only: log the stages holding the target and the pass's states
 		int		FlickerWatch;    // UNOFFICIAL 2026-10-23, test only: core\FlickerWatch.h
 		float	FlickerThreshold;
+		bool	OldSunModel;     // UNOFFICIAL 2026-10-25, test only: the light split as before that day's fix (SunFar.fx.hlsl)
 	};
 	SettingsStruct	Settings = {};
 
@@ -34,6 +35,7 @@ public:
 		D3DXVECTOR4	CloudWeight;     // per layer share (0: no texture)
 		D3DXVECTOR4	CloudBlend;      // per layer blend toward the incoming texture
 		D3DXVECTOR4	Apply;           // x: 1 while TESR_SunFarBuffer holds this frame's factor (the composites read it then)
+		D3DXVECTOR4	Land;            // UNOFFICIAL 2026-10-25 xyz the land shaders' light vector (core/LandLight.h), w 1 when read lately
 		D3DXVECTOR4	Water;           // UNOFFICIAL 2026-10-23 x: 1 water takes the shadows by its depth (0: left alone, the old way), y: deep water's share, z: 1 the depth map is bound
 		D3DXVECTOR4	Volume;          // UNOFFICIAL 2026-10-21 the volumetric clouds' shadow: x strength (0 off), y map width (m), z map texels, w cloud base (m)
 	};
@@ -49,7 +51,7 @@ public:
 	bool	ShouldRender();
 	void	BeforeDraw(IDirect3DDevice9* Device);
 	// Once a frame outdoors, after the sun's contact shadows (ShaderManager): draws the factor, or marks it unused.
-	void	RenderFactor(IDirect3DDevice9* Device);
+	void	RenderFactor(IDirect3DDevice9* Device, IDirect3DSurface9* Scene);	// Scene: the world as drawn (the game's scene target)
 	// For the composites that bind it themselves (VolumetricFog, AmbientLight): the factor's texture when it holds this frame's.
 	IDirect3DTexture9*	FactorTexture() const { return Constants.Apply.x > 0.5f ? Texture : nullptr; }
 

@@ -1644,7 +1644,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 
 	// UNOFFICIAL 2026-10-19 SunFar: the land's and the clouds' shadows as a factor the sun-shadow composites below take (outdoors,
 	// while either is on; otherwise it marks the factor unused and draws nothing).
-	Effects.SunFar->RenderFactor(Device);
+	Effects.SunFar->RenderFactor(Device, RenderTarget);
 	if (Effects.SunFar->Constants.Apply.x > 0.5f) FlickerWatch::Flags |= FlickerWatch::kSunFar;	// UNOFFICIAL 2026-10-23 test only
 
 	Device->SetRenderTarget(0, RenderTarget);

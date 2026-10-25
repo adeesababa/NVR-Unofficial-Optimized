@@ -6,6 +6,7 @@
 #include "GpuProfiler.h"
 #include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
+#include "LandLight.h"	// UNOFFICIAL 2026-10-25 (SunFar)
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -535,13 +536,18 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 	//Logger::Log("CreateCT: Shader %s has %i constants", Name, ConstantTableDesc.Constants);
 	//Logger::Log("%s", (const char*)ShaderSource->GetBufferPointer());
 
+	bool sunDir18 = false, terrainSky = false;	// UNOFFICIAL 2026-10-25 (LandLight.h): the game's SunDir in c18 of a land pixel shader
 	for (UINT c = 0; c < ConstantTableDesc.Constants; c++) {
 		Handle = ConstantTable->GetConstant(NULL, c);
 		ConstantTable->GetConstantDesc(Handle, &ConstantDesc, &ConstantCount);
+		if (!strcmp(ConstantDesc.Name, "SunDir") && ConstantDesc.RegisterSet == D3DXRS_FLOAT4 && ConstantDesc.RegisterIndex == 18) sunDir18 = true;
+		if (!strcmp(ConstantDesc.Name, "TESR_TerrainSkyData")) terrainSky = true;
 		if (memcmp(ConstantDesc.Name, "TESR_", 5)) continue; // Only treat constants named with TESR prefix
 		if (ConstantDesc.RegisterSet == D3DXRS_FLOAT4) FloatShaderValuesCount += 1;
 		if (ConstantDesc.RegisterSet == D3DXRS_SAMPLER) TextureShaderValuesCount += 1;
 	}
+
+	IsLandLight = sunDir18 && terrainSky && Name && strstr(Name, ".pso");
 
 	auto timer = TimeLogger();
 	if (FloatShaderValuesCount) FloatShaderValues = new ShaderFloatValue[FloatShaderValuesCount];
@@ -706,6 +712,9 @@ void ShaderRecord::SetCT() {
 	// UNOFFICIAL terrain blending: before the constants below are uploaded (it sets whether this draw blends), and the
 	// first land bind of the world scene copies the depth drawn so far.
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	// UNOFFICIAL 2026-10-25 (LandLight.h): the light vector the last land draw lit with, then this bind's own turn.
+	if (LandLight::Pending) LandLight::Read();
+	if (IsLandLight) LandLight::Pending = true;
 
 	// reset samplers
 	if (ClearSamplers) {
