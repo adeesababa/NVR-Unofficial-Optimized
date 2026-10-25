@@ -142,7 +142,8 @@ private:
 	// UNOFFICIAL 2026-10-25 WeatherTint: the colour the game gives its own cloud layers now (the weather's cloud colours at this
 	// hour, blended across a weather change), linear, 0-1.
 	D3DXVECTOR3	WeatherCloudColour(Sky* sky, float hour);
-	D3DXVECTOR3	CloudColourOf(TESWeather* weather, const float weights[4]);
+	D3DXVECTOR3	CloudColourOf(TESWeather* weather, const float weights[6]);
 	int			tintLogs = 0;
-	double		lastTintLog = -100.0;
+	TESWeather*	tintLogWeather = nullptr;
+	float		tintLogHour = -100.0f;
 };
