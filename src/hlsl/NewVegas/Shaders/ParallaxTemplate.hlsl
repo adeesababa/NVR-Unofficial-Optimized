@@ -124,6 +124,13 @@
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON	// 1 on, 2 the test mode (PBR.hlsl)
 #endif
+// UNOFFICIAL 2026-10-25 SpecularFade here too (as ObjectTemplate.hlsl; Includes/PBR.hlsl PBR_SPEC_FADE, per draw NVR_SpecFade.x from the
+// pass hook, core/PbrPop.h). Users' report: crater cliffs (Mesquite Mountains crater, parallax rock) flicked between shiny black and
+// matte grey as the camera moved; PbrPopLog showed them swapping BSSM_ADTS_Px <-> BSSM_ADT_Px / ADT_PxOpt at the game's highlight
+// distance, and the parallax shaders kept the full highlight up to the swap. Off ([Shaders.PBR.Main] SpecularFade false): as before.
+#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+    #define PBR_SPEC_FADE
+#endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
 
