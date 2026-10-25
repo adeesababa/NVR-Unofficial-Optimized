@@ -4,6 +4,7 @@
 
 #include "SkinScattering.h"
 #include "../core/PassSums.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 static const float SkinScatterMMPerUnit = 14.2857f;   // one game unit is 1/70 m
 
@@ -453,5 +454,82 @@ bool SkinScatteringEffect::ShouldRender() {
 	if (SkinShaderDebug) return false;
 	if (MSAASurface) TheRenderManager->device->StretchRect(MSAASurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);
 	if (AlbedoMSAASurface) TheRenderManager->device->StretchRect(AlbedoMSAASurface, NULL, AlbedoTextureSurface, NULL, D3DTEXF_NONE);
+	return true;
+}
+
+// --- The Vulkan passes (NVR DXVK) -----------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-25 (NVR DXVK): SkinScattering.frag, both passes of the technique, line for line. The constants the HLSL
+// reads go to a uniform buffer every frame (the kernel alone is 336 bytes; push data holds 240). Everything is point
+// sampled, as the effect's samplers are. Pass 1 blurs the light horizontally into the chain's current image; pass 2 reads
+// that and the scene (TESR_SourceBuffer, copied once before pass 1 as Render does) and blurs vertically.
+namespace {
+	// The Constants block of SkinScattering.frag (std140).
+	struct SkinScatterUniforms {
+		D3DXVECTOR4	Data;
+		D3DXVECTOR4	Kernel[SkinScatteringEffect::KernelSamples];
+		D3DXVECTOR4	ReciprocalResolution;
+		D3DXVECTOR4	Debug;
+		D3DXVECTOR4	CameraData;
+		D3DXMATRIX	Projection;
+		D3DXMATRIX	View;
+	};
+	// Bindings as SkinScattering.frag declares them (the sampler heap is set 0, binding 0). The sampler's heap index goes to the
+	// push block at offset 0, which DXVK fills in.
+	const NVR_EXT_BINDING_DESC SkinScatterBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_rendered: TESR_RenderedBuffer
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  1, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_depth: TESR_DepthBuffer
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE,  2, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_scatter: TESR_SkinScatterBuffer
+		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE,  3, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_albedo: TESR_SkinAlbedoBuffer
+		{ 1, 4, NVR_EXT_BIND_SAMPLED_IMAGE,  4, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_source: TESR_SourceBuffer
+		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// Constants
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },	// point clamp: index at push offset 0
+	};
+	struct SkinScatterPush { UInt32 samplerIndex; UInt32 firstPass; UInt32 pad[2]; };
+}
+
+bool SkinScatteringEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0 || ClearRenderTarget) return false;
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	if (!Texture || !AlbedoTexture || !depth || !TheTextureManager->SourceTexture || !TheTextureManager->RenderedTexture) return false;
+
+	if (!extPass.Tried) {
+		extPass.Tried = true;
+		extPass.Pipeline = DxvkCompute::CreateGraphicsPipeline("SkinScattering", SkinScatterBindings, _countof(SkinScatterBindings), sizeof(SkinScatterPush), true);
+	}
+	if (!extUniformsTried) {
+		extUniformsTried = true;
+		extUniforms = DxvkCompute::CreateBuffer(sizeof(SkinScatterUniforms), NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, "SkinScattering constants");
+	}
+	ID3D9NvrExtSampler* sampler = DxvkCompute::PointClamp();
+	if (!extPass.Pipeline || !extUniforms || !sampler) return false;
+
+	// The constants as the D3D9 constant table holds them this frame.
+	SkinScatterUniforms uniforms = {};
+	uniforms.Data = Constants.Data;
+	memcpy(uniforms.Kernel, Constants.Kernel, sizeof(uniforms.Kernel));
+	uniforms.ReciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	uniforms.Debug = Constants.Debug;
+	uniforms.CameraData = TheRenderManager->CameraData;
+	uniforms.Projection = TheRenderManager->projMatrix;
+	uniforms.View = TheRenderManager->viewMatrix;
+	if (FAILED(DxvkCompute::Extension()->UpdateBuffer(extUniforms, 0, sizeof(uniforms), &uniforms))) return false;
+
+	for (UINT pass = 0; pass < 2; pass++) {
+		// The current image moves on each Commit: pass 2 reads pass 1's result, with the surface the chain publishes then.
+		IDirect3DBaseTexture9* inputs[5] = { TheTextureManager->RenderedTexture, depth, Texture, AlbedoTexture, TheTextureManager->SourceTexture };
+		NVR_EXT_RESOURCE_BINDING resources[7] = {};
+		for (UINT i = 0; i < 5; i++) {
+			resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i];
+		}
+		resources[5].Slot = 0; resources[5].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[5].pResource = extUniforms;
+		resources[6].Slot = 0; resources[6].Type = NVR_EXT_BIND_SAMPLER; resources[6].pResource = sampler;
+		SkinScatterPush push = {};
+		push.firstPass = pass == 0 ? 1 : 0;
+		// The scene is copied into SourceBuffer by the first pass only (as Render does); pass 2 must read the scene, not pass 1's light.
+		// Pass 1 is not the effect's last pass, so it never writes straight into the game target.
+		IDirect3DSurface9* surface = pass == 0 ? RenderedSurface : TheTextureManager->RenderedSurface;
+		if (!ExtFullScreen(Device, RenderTarget, surface, pass == 0 ? SourceBuffer : nullptr, extPass.Pipeline, resources, _countof(resources), &push, sizeof(push), pass == 1))
+			return pass == 1;	// the first pass drew and committed: finishing with D3D9 would blur twice more; keep what is there
+	}
 	return true;
 }
