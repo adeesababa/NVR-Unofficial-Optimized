@@ -45,6 +45,7 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);	// UNOFFICIAL 2026-10-15: was 0-1
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
+	Settings.WeatherTint = std::clamp(TheSettingManager->GetSettingF(section, "WeatherTint"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-25
 	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change).
 	// UNOFFICIAL 2026-10-21 (P82 tester: "ticking particles menu on and off affects vol clouds"): only a change of the settings the
 	// coverage comes from. Every menu switch and every setting edit re-reads all the effects' settings (LoadSettings), and this
@@ -73,6 +74,7 @@ void VolumetricCloudsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudsHistoryViewProj", (D3DXVECTOR4*)&Constants.HistoryViewProj);
 	TheShaderManager->RegisterConstant("TESR_CloudsReflectData", &Constants.ReflectData);
 	TheShaderManager->RegisterConstant("TESR_CloudsMotion", &Constants.Motion);
+	TheShaderManager->RegisterConstant("TESR_CloudsTint", &Constants.Tint);
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
@@ -247,6 +249,90 @@ void VolumetricCloudsEffect::WeatherLook(TESWeather* weather, float& coverage, f
 	bias = std::lerp(bias, biasFromTextures, Settings.FromWeatherTextures);
 }
 
+// UNOFFICIAL 2026-10-25 WeatherTint. The game paints its flat cloud layers with each weather's cloud colours (four layers, a colour
+// for each of six times of day), as weather makers set them: orange at sunset, grey when overcast, blue at night. The volumetric
+// clouds take their light from the sun and the sky but never saw these. The share of each time's colour at this hour, as the game
+// blends its sky colours (checked in game on the weather's top sky colour against Sky::skyUpper, exact at 5.5, 6, 12.8, 13, 19,
+// 19.5 and 23.5 h): night until the sunrise colours begin (GetSunriseColorBegin), night to sunrise to day through the sunrise,
+// day with high noon (the fifth colour, index 4; Game.h's enum names it midnight) rising to all of it at 12:00 and gone again when
+// the sunset begins, then day to sunset to night (GetSunsetColorEnd). The sixth colour is not used by the game.
+static void TimeWeights(Sky* sky, float hour, float weights[6]) {
+	const float a = sky->GetSunriseColorBegin(), b = sky->GetSunriseEnd(), c = sky->GetSunsetBegin(), d = sky->GetSunsetColorEnd();
+	const float riseMid = 0.5f * (a + b), setMid = 0.5f * (c + d), noon = std::clamp(12.0f, b, c);
+	const int highNoon = 4;
+	for (int t = 0; t < 6; t++) weights[t] = 0.0f;
+	auto blend = [&](int from, int to, float t) { t = std::clamp(t, 0.0f, 1.0f); weights[from] = 1.0f - t; weights[to] = t; };
+	if (hour < a || hour >= d) weights[TESWeather::eTime_Night] = 1.0f;
+	else if (hour < riseMid) blend(TESWeather::eTime_Night, TESWeather::eTime_Sunrise, (hour - a) / (std::max)(riseMid - a, 1e-3f));
+	else if (hour < b) blend(TESWeather::eTime_Sunrise, TESWeather::eTime_Day, (hour - riseMid) / (std::max)(b - riseMid, 1e-3f));
+	else if (hour < noon) blend(TESWeather::eTime_Day, highNoon, (hour - b) / (std::max)(noon - b, 1e-3f));
+	else if (hour < c) blend(TESWeather::eTime_Day, highNoon, (c - hour) / (std::max)(c - noon, 1e-3f));
+	else if (hour < setMid) blend(TESWeather::eTime_Day, TESWeather::eTime_Sunset, (hour - c) / (std::max)(setMid - c, 1e-3f));
+	else blend(TESWeather::eTime_Sunset, TESWeather::eTime_Night, (hour - setMid) / (std::max)(d - setMid, 1e-3f));
+}
+
+static float SrgbToLinear(float v) { return v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f); }
+
+// The weather's cloud colour at these time weights: its layers that show something (not empty, not sky\alpha.dds), each by how
+// much of the sky its texture covers where measured. Linear.
+D3DXVECTOR3 VolumetricCloudsEffect::CloudColourOf(TESWeather* weather, const float weights[6]) {
+	D3DXVECTOR3 sum(0, 0, 0);
+	float total = 0.0f;
+	for (int i = 0; i < 4; i++) {
+		const std::string path = NormalTexturePath(weather->textureLayers[i].ddsPath.m_data);
+		if (path.empty() || path == "sky\\alpha.dds") continue;
+		auto fill = textureFill.find(path);
+		if (fill != textureFill.end() && fill->second >= 0.0f && fill->second < 0.01f) continue;	// measured empty
+		const float w = fill != textureFill.end() && fill->second >= 0.0f ? fill->second : 0.5f;
+		D3DXVECTOR3 colour(0, 0, 0);
+		for (int t = 0; t < 6; t++) {
+			const RGBA& c = *(const RGBA*)&weather->cloudColor[i][t];
+			colour += D3DXVECTOR3(c.r, c.g, c.b) * (weights[t] / 255.0f);
+		}
+		sum += D3DXVECTOR3(SrgbToLinear(colour.x), SrgbToLinear(colour.y), SrgbToLinear(colour.z)) * w;
+		total += w;
+	}
+	return total > 0.0f ? sum / total : D3DXVECTOR3(1, 1, 1);
+}
+
+D3DXVECTOR3 VolumetricCloudsEffect::WeatherCloudColour(Sky* sky, float hour) {
+	TESWeather* current = sky ? sky->firstWeather : nullptr;
+	if (!current) return D3DXVECTOR3(1, 1, 1);
+	float weights[6];
+	TimeWeights(sky, hour, weights);
+	D3DXVECTOR3 colour = CloudColourOf(current, weights);
+	if (sky->secondWeather && sky->secondWeather != current)
+		colour = CloudColourOf(sky->secondWeather, weights) + (colour - CloudColourOf(sky->secondWeather, weights)) * std::clamp(sky->weatherPercent, 0.0f, 1.0f);
+	// The check (the first 16, on a new weather or hour): the same weights on the weather's top sky colour against the game's own
+	// (off by a lot: the hours are wrong), and the weather's cloud colours as read.
+	if (tintLogs < 16 && (current != tintLogWeather || fabsf(hour - tintLogHour) > 0.2f)) {
+		tintLogWeather = current;
+		tintLogHour = hour;
+		tintLogs++;
+		D3DXVECTOR3 top(0, 0, 0);
+		for (int t = 0; t < 6; t++) {
+			const RGBA& c = current->colors[TESWeather::eColor_SkyUpper].colors[t];
+			top += D3DXVECTOR3(c.r, c.g, c.b) * (weights[t] / 255.0f);
+		}
+		Logger::Log("UNOFFICIAL VolumetricClouds WeatherTint: weather %08X (before %08X, %.2f) hour %.2f (colour times %.2f %.2f %.2f %.2f) weights %.2f %.2f %.2f %.2f %.2f %.2f, sky top ours %.3f %.3f %.3f game %.3f %.3f %.3f, cloud colour %.3f %.3f %.3f",
+			current->refID, sky->secondWeather ? sky->secondWeather->refID : 0, sky->weatherPercent, hour,
+			sky->GetSunriseColorBegin(), sky->GetSunriseEnd(), sky->GetSunsetBegin(), sky->GetSunsetColorEnd(), weights[0], weights[1], weights[2], weights[3], weights[4], weights[5],
+			top.x, top.y, top.z, sky->skyUpper.r, sky->skyUpper.g, sky->skyUpper.b, colour.x, colour.y, colour.z);
+		for (int i = 0; i < 4; i++) {
+			const RGBA* c = (const RGBA*)current->cloudColor[i];
+			Logger::Log("UNOFFICIAL VolumetricClouds WeatherTint:   layer %d '%s': sunrise %u %u %u, day %u %u %u, sunset %u %u %u, night %u %u %u, high noon %u %u %u, unused %u %u %u", i,
+				current->textureLayers[i].ddsPath.m_data ? current->textureLayers[i].ddsPath.m_data : "", c[0].r, c[0].g, c[0].b, c[1].r, c[1].g, c[1].b,
+				c[2].r, c[2].g, c[2].b, c[3].r, c[3].g, c[3].b, c[4].r, c[4].g, c[4].b, c[5].r, c[5].g, c[5].b);
+		}
+		{
+			const RGBA* c = current->colors[TESWeather::eColor_SkyUpper].colors;
+			Logger::Log("UNOFFICIAL VolumetricClouds WeatherTint:   sky top: sunrise %u %u %u, day %u %u %u, sunset %u %u %u, night %u %u %u, high noon %u %u %u, unused %u %u %u",
+				c[0].r, c[0].g, c[0].b, c[1].r, c[1].g, c[1].b, c[2].r, c[2].g, c[2].b, c[3].r, c[3].g, c[3].b, c[4].r, c[4].g, c[4].b, c[5].r, c[5].g, c[5].b);
+		}
+	}
+	return colour;
+}
+
 void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
 	// UNOFFICIAL 2026-10-13: once a frame, at the tuned rate (FrameClock.h: UpdateConstants runs twice a frame).
@@ -376,6 +462,20 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	Constants.Layout.w = Settings.Brightness;
 	Constants.Look = D3DXVECTOR4(Settings.EdgeSharpness, Settings.ShapeSmoothing, Settings.Turbulence, Settings.DetailSmoothness);
 	Constants.Detail = D3DXVECTOR4(Settings.FineDetail, Settings.FineDetailSize, (float)shadowMapSize, Settings.CumulusShape);
+	// UNOFFICIAL 2026-10-25 WeatherTint: the weather's cloud colour, its brightness taken out (the clouds keep the light they get
+	// from the sun and sky; only the colour moves), its strongest channel held to twice the brightness so a deep night blue tints
+	// rather than floods.
+	Constants.Tint = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 0.0f);
+	if (Settings.WeatherTint > 0.0f && sky) {
+		const D3DXVECTOR3 colour = WeatherCloudColour(sky, TheShaderManager->ShaderConst.GameTime.y);
+		const float luma = colour.x * 0.2126f + colour.y * 0.7152f + colour.z * 0.0722f;
+		if (luma > 1e-4f) {
+			D3DXVECTOR3 tint = colour / luma;
+			const float peak = (std::max)({ tint.x, tint.y, tint.z });
+			if (peak > 2.0f) tint = D3DXVECTOR3(1, 1, 1) + (tint - D3DXVECTOR3(1, 1, 1)) * ((2.0f - 1.0f) / (peak - 1.0f));
+			Constants.Tint = D3DXVECTOR4(tint.x, tint.y, tint.z, Settings.WeatherTint);
+		}
+	}
 
 	HideGameClouds = (Enabled && Effect && Settings.HideGameClouds && ShouldRender()) ? 1.0f : 0.0f;
 	HideGameCloudsInReflection = HideGameClouds > 0.0f && ReflectionWanted() ? 1.0f : 0.0f;
