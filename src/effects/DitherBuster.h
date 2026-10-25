@@ -28,4 +28,10 @@ public:
 	UINT	TechniqueIndex() const { return (Settings.GateSoftness > 0.0f || Settings.DeDither || Settings.DebugView != 0) ? 1 : 0; }
 
 	DitherBusterStruct	Constants;
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): technique 0 as src\hlsl\NewVegas\Compute\DitherBuster.frag, technique 1 as DitherBusterStable.frag (EffectRecord::ExtRender)
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+private:
+	ExtPass				extPass;
+	ExtPass				extPassStable;
 };
