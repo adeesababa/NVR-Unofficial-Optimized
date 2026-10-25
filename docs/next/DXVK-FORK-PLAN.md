@@ -66,7 +66,15 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
    AvgLuma is 0.1 ms dearer (it reads all 2.07 M pixels; the old pass reads 112): a correctness gain, not a speed gain;
    a two-level reduction or reading a mip would cut it if it ships. ImageAdjust, LowHF and SkyDither had no timer line in
    either mode (they did not run in this scene: idle at their defaults), so they are still unmeasured in game.
-   Next: the remaining checks (alt-tab/reset, ReShade, loading screens), then phase 2 step 1.
+   PHASE 2 STEP 1 ANSWERED 2026-10-25 17:21 (slot A, Lucky 38, defaults + HandBlood on, list dxvkfork-0-lucky22, runs
+   20261025-172054-slotA native / 20261025-172251-slotA fork): native D3D9 refused Interiors\SLS2035.pso (hr 0x8876086C,
+   3727 instruction slots) and NVR stepped it down to its reduced-quality Fit version; on DXVK the same shader loaded at full
+   quality, 0 refusals. So the ~3,600-instruction wall is the native driver's and is already gone under DXVK (stock or fork).
+   What DXVK does NOT lift: fxc's ps_3_0 limits at compile time (32 temps, 224 constants, 16 samplers): those need phase 2's
+   SPIR-V replacements.
+   Not automatable here (the test plugin blocks all input): alt-tab, fullscreen toggle (device Reset; covered only by the
+   harness test), ReShade chained, loading-screen transitions. Owner's 5-minute check when they first try the fork.
+   Next: phase 2 step 3, the first real replacement (one SLS20xx variant line for line, same picture).
    Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
    extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
