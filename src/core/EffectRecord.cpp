@@ -605,7 +605,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 
 // UNOFFICIAL 2026-10-23 (NVR DXVK): see EffectRecord.h.
 bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
-	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler, UINT WrapSamplerPushOffset, bool PointWrapSampler) {
+	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler, UINT WrapSamplerPushOffset, bool PointWrapSampler, bool Last) {
 	if (TextureCount > 8) return false;
 	const UINT samplers = WrapSamplerPushOffset ? 2 : 1;
 	if (!Pass.Tried) {
@@ -628,7 +628,7 @@ bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	}
 	resources[TextureCount].Slot = 0; resources[TextureCount].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount].pResource = sampler;
 	resources[TextureCount + 1].Slot = 1; resources[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount + 1].pResource = wrap;
-	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, Pass.Pipeline, resources, TextureCount + samplers, Push, PushSize);
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, Pass.Pipeline, resources, TextureCount + samplers, Push, PushSize, Last);
 }
 
 IDirect3DBaseTexture9* EffectRecord::ExtFileTexture(const char* SamplerName) {
