@@ -45,7 +45,7 @@ struct VS_INPUT {
     float2 BaseUV : TEXCOORD0;
     float4 shadowWorldPos : TEXCOORD4;   // from ObjectTemplate VS			
     float3 texcoord_6 : TEXCOORD6_centroid;			
-    float4 texcoord_7 : TEXCOORD7;			
+    float4 smoothNormal : TEXCOORD7;     // UNOFFICIAL 2026-10-25: from SKIN2001.vso, .w = sentinel (was the vanilla shadow-map UV, unused in NVR)
     float3 color_0 : COLOR0;
     float4 color_1 : COLOR1;
     float3 texcoord_1 : TEXCOORD1_centroid;			
@@ -56,6 +56,7 @@ struct VS_OUTPUT {
 };
 
 // Code:
+#define SHADOW_SKIN_SOFTNESS 1   // UNOFFICIAL 2026-10-25 CharacterShadowSoftness, as SKIN2000/2002 (Includes/Shadow.hlsl ShadowMinPenumbra)
 #define SHADOW_CHARACTER_MAP_IN 1   // UNOFFICIAL 2026-10-23 CharacterShadowMap (Includes/Shadow.hlsl CharacterMapShadow; compiled in only when on at startup)
 #include "Includes/Shadow.hlsl"
 #include "Includes/Skin.hlsl"
@@ -85,6 +86,11 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Outside the guard: the skylight needs this normal whether or not forward shadows
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+    // UNOFFICIAL 2026-10-25 SmoothCharacterShadows here too (facetskin: DeepSeek's review, bench/deep-roadmap/evidence/facetskin):
+    // this was the one old skin shader whose sky light and sun shadow kept the flat triangle normal, so skin it drew showed
+    // its triangles. Our SKIN2001.vso sends the smooth normal on TEXCOORD7; a vanilla VS puts its shadow-map UV there, so the
+    // shadowWorldPos sentinel must be ours as well.
+    shadowNormal = ShadowLookupNormal(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? IN.smoothNormal : float4(0, 0, 0, 0));
 #if FORWARD_SHADOWS
     // Forward sun shadow. Scales the SUN terms only; ambient-driven terms are untouched.
     // ddx/ddy must stay at top level, outside dynamic flow control.
