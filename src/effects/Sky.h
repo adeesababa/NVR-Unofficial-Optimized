@@ -31,10 +31,14 @@ public:
 		// UNOFFICIAL 2026-10-18 ClassicLook (VolumetricFog.fx TESR_SkyIrradianceGame): the same projection of the game's own sky
 		// alone, as the original NVR (master) had it: no physical sky blend and no SkylightingSaturation.
 		D3DXVECTOR4		IrradianceGame[9];
+		// UNOFFICIAL 2026-10-25 [Shaders.Sky.Physical] LightsObjects: the sky light the lighting shaders (objects, terrain, skin, hair, grass) and
+		// SunFar add: Irradiance, or with the switch off the game's own sky (IrradianceGame, SkylightingSaturation applied) while the physical
+		// sky still draws the sky, the fog and the clouds.
+		D3DXVECTOR4		IrradianceObjects[9];
 	};
 	// UNOFFICIAL [Shaders.Sky.Physical]
-	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; };
-	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f, false, false, 0.3f };
+	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; bool LightsObjects; };
+	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f, false, false, 0.3f, true };
 	// UNOFFICIAL 2026-10-18 ExactSunlight / MultipleScattering: the CPU twin of the sky-view tables (PhysSkyModel.h), built when the settings need it
 	PhysSky::Tables physTables;
 	SkyStruct Constants;

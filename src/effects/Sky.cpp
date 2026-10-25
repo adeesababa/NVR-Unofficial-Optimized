@@ -11,6 +11,7 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SunsetColor", &Constants.SunsetColor);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradiance", &Constants.Irradiance[0]);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradianceGame", &Constants.IrradianceGame[0]);	// UNOFFICIAL 2026-10-18 ClassicLook
+	TheShaderManager->RegisterConstant("TESR_SkyIrradianceObjects", &Constants.IrradianceObjects[0]);	// UNOFFICIAL 2026-10-25 LightsObjects
 	TheShaderManager->RegisterConstant("TESR_PhysSky", &Constants.PhysSky);
 	TheShaderManager->RegisterConstant("TESR_PhysSkySun", &Constants.PhysSkySun);
 }
@@ -326,6 +327,14 @@ void SkyShaders::UpdateConstants() {
 			c = D3DXVECTOR3(luminance, luminance, luminance) + (c - D3DXVECTOR3(luminance, luminance, luminance)) * saturation;
 		}
 		Constants.Irradiance[i] = D3DXVECTOR4(c.x, c.y, c.z, 0.0f);
+		// UNOFFICIAL 2026-10-25 LightsObjects off (Iro: the physical sky's light on surfaces double-dips with the terrain / PBR sky
+		// settings): the lighting shaders take the game's own sky, saturated as before; the physical sky stays in the sky, fog and clouds.
+		D3DXVECTOR3 o = g;
+		if (!PhysicalSettings.LightsObjects && physical && saturation != 1.0f) {
+			const float luminance = 0.2126f * o.x + 0.7152f * o.y + 0.0722f * o.z;
+			o = D3DXVECTOR3(luminance, luminance, luminance) + (o - D3DXVECTOR3(luminance, luminance, luminance)) * saturation;
+		}
+		Constants.IrradianceObjects[i] = PhysicalSettings.LightsObjects || !physical ? Constants.Irradiance[i] : D3DXVECTOR4(o.x, o.y, o.z, 0.0f);
 	}
 }
 
@@ -356,6 +365,7 @@ void SkyShaders::UpdateSettings() {
 	PhysicalSettings.ExactSunlight = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "ExactSunlight") != 0;		// UNOFFICIAL 2026-10-18
 	PhysicalSettings.MultipleScattering = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "MultipleScattering") != 0;
 	PhysicalSettings.GroundAlbedo = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Physical", "GroundAlbedo"), 0.0f, 1.0f);
+	PhysicalSettings.LightsObjects = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "LightsObjects") != 0;	// UNOFFICIAL 2026-10-25, live
 	lastProjectionValid = false;
 
 	// UNOFFICIAL (from Physically-Based-Reloaded, Fable): volumetric clouds (SKYTEX.pso.hlsl). DetailScale and UVScale

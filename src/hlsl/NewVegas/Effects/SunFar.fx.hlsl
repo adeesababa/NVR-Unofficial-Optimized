@@ -27,7 +27,7 @@ float4 TESR_PBRData;              // z: LightingScale, w: AmbientScale, as the o
 float4 TESR_PBRExtraData;         // y: SkylightingScale
 float4 TESR_TerrainData;          // z: LightingScale, w: AmbientScale -- terrain has its own
 float4 TESR_TerrainSkyData;       // x: SkylightingScale
-float4 TESR_SkyIrradiance[9];     // the sky light the object shaders add (Shaders/Includes/SkyAmbient.hlsl, mode 0)
+float4 TESR_SkyIrradianceObjects[9];     // the sky light the object shaders add (Shaders/Includes/SkyAmbient.hlsl, mode 0)
 float4 TESR_TerrainShadowData;    // x west edge, y north edge, z 1 / width, w strength (0 off)
 float4 TESR_TerrainShadowRange;   // x lowest encoded height, y encoded range, z bias, w blur
 float4 TESR_TerrainShadowParams;  // x 1 / height, y DebugView, z Darkness, w Contrast
@@ -101,15 +101,15 @@ float LightScale(float s) { return pow(max(s, 1e-6f), TESR_SunFarData.z); }
 
 // Mirrors SkyAmbientRadiance (mode 0) in Shaders/Includes/SkyAmbient.hlsl, encoded the same way. (Conor.)
 float3 SkyIrradiance(float3 n) {
-	float3 irradiance = TESR_SkyIrradiance[0].rgb
-		+ TESR_SkyIrradiance[1].rgb * n.y
-		+ TESR_SkyIrradiance[2].rgb * n.z
-		+ TESR_SkyIrradiance[3].rgb * n.x
-		+ TESR_SkyIrradiance[4].rgb * (n.x * n.y)
-		+ TESR_SkyIrradiance[5].rgb * (n.y * n.z)
-		+ TESR_SkyIrradiance[6].rgb * (3.0f * n.z * n.z - 1.0f)
-		+ TESR_SkyIrradiance[7].rgb * (n.x * n.z)
-		+ TESR_SkyIrradiance[8].rgb * (n.x * n.x - n.y * n.y);
+	float3 irradiance = TESR_SkyIrradianceObjects[0].rgb
+		+ TESR_SkyIrradianceObjects[1].rgb * n.y
+		+ TESR_SkyIrradianceObjects[2].rgb * n.z
+		+ TESR_SkyIrradianceObjects[3].rgb * n.x
+		+ TESR_SkyIrradianceObjects[4].rgb * (n.x * n.y)
+		+ TESR_SkyIrradianceObjects[5].rgb * (n.y * n.z)
+		+ TESR_SkyIrradianceObjects[6].rgb * (3.0f * n.z * n.z - 1.0f)
+		+ TESR_SkyIrradianceObjects[7].rgb * (n.x * n.z)
+		+ TESR_SkyIrradianceObjects[8].rgb * (n.x * n.x - n.y * n.y);
 	return sqrt(max(irradiance, 0.0f));
 }
 
