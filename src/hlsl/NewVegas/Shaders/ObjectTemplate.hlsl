@@ -258,6 +258,19 @@
     #define NVR_LAMP_SUMS
     sampler2D NVR_LampRunStart : register(s9);
 #endif
+// UNOFFICIAL 2026-10-25 HighlightSums ([Shaders.PBR.Main] HighlightSums, restart: HIGHLIGHT_SUMS_ON from ShaderRecord::BuildDefines; per run
+// c210 y as LampSums, core/PassSums.h): the same increments for the HIGHLIGHT passes (these ONLY_SPECULAR shaders) that FoldHighlights
+// leaves to the game -- parallax objects (it never folds them; ParallaxTemplate.hlsl has the same code), glow-mapped ones, hair, objects
+// whose fold broke, or with it off. Each highlight pass was encoded on its own and ADDED: a 1% highlight came out 12% brighter (the
+// Novac road and rubble pieces lit by 3+ lamps, tester report 2026-10-25). The copy is read on s6: free in every ONLY_SPECULAR variant
+// (the game's normal map s0, its shadow maps s4/s5; s9 is the sun's atlas, which these passes read). Same output code as LampSums.
+#ifndef HIGHLIGHT_SUMS_ON
+    #define HIGHLIGHT_SUMS_ON 0
+#endif
+#if defined(PS) && defined(ONLY_SPECULAR) && HIGHLIGHT_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s6);
+#endif
 // UNOFFICIAL 2026-10-18 SmithCorrelated ([Shaders.PBR.Main], restart: SMITH_CORRELATED_ON from ShaderRecord::BuildDefines): the object
 // pixel shaders take the exact height-correlated Smith masking term and its coupled diffuse (Includes/PBR.hlsl BRDF and
 // SmithCorrelatedKeep; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0). Off: the shaders exactly as before.
