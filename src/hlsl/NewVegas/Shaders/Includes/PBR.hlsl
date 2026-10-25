@@ -35,7 +35,7 @@ float3 ReflectivityF0(float3 f0) { return saturate(f0 + f0 * TESR_PBRMath.y); }
 #define REFLECTIVITY_F90 saturate(1.0f + TESR_PBRMath.y).xxx
 
 // UNOFFICIAL 2026-10-18 SpecularFade ([Shaders.PBR.Main], restart: SPEC_FADE_ON from ShaderRecord::BuildDefines; the object templates
-// define PBR_SPEC_FADE in their highlight-drawing pixel shaders, so terrain, skin, water and parallax keep the old code). The game stops
+// define PBR_SPEC_FADE in their highlight-drawing pixel shaders, so terrain, skin and water keep the old code; parallax since 2026-10-25). The game stops
 // drawing an object's highlights where the object is fSpecularLODStartFade + fSpecularLODRange from the camera (2000 + 300 units by
 // default): there it swaps the object's shaders for ones without a highlight (and, for shiny objects with 3-5 lamps, its whole set of
 // passes). The game's own shaders faded the highlight out before that point (BSShaderPPLightingProperty::GetSpecularLODFade, 0x00B66B80,

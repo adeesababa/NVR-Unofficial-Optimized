@@ -469,6 +469,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		Settings.ShadowMaps.CharacterMapBias = std::clamp(TheSettingManager->GetSettingF(section, "CharacterShadowMapBias"), 0.0f, 4.0f);
 		Settings.ShadowMaps.CharacterMapOthers = TheSettingManager->GetSettingI(section, "CharacterShadowMapOthers") != 0;
 		Settings.ShadowMaps.CharacterMapLog = TheSettingManager->GetSettingI(section, "CharacterShadowMapLog") != 0;
+		Settings.ShadowMaps.CharacterMapDebug = std::clamp(TheSettingManager->GetSettingI(section, "CharacterShadowMapDebug"), 0, 3);
 		if (Settings.ShadowMaps.CharacterMap && !CharacterMapCompiled) {
 			static bool hinted = false;
 			if (!hinted) { hinted = true; Logger::Log("UNOFFICIAL CharacterShadowMap was turned on after startup: restart the game once to apply it."); }
@@ -618,6 +619,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;	// compiled in at startup (ShaderRecord::BuildDefines)
 		forward.MagnifiedSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MagnifiedSoftness"), 0.0f, 8.0f);	// POINT_SHADOW_MAG if above 0 at startup
 		forward.TexelFilter = TheSettingManager->GetSettingI(section, "TexelFilter") != 0;	// POINT_SHADOW_TEXEL, compiled in at startup
+		forward.AutoNormalOffset = TheSettingManager->GetSettingI(section, "AutoNormalOffset") != 0;	// UNOFFICIAL 2026-10-24 (charfacets)
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
@@ -626,8 +628,18 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.ContactHardening.AtNight = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "AtNight") != 0;
 	// UNOFFICIAL LampReachMask (PointShadows.fx LampReach): z = 1 / LightRadiusMult, the game radius as a share of the cube
 	// map's radius, so a lamp counts in full out to its game radius and fades over the rest; 0 = off (the old falloff).
-	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
-		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
+	// UNOFFICIAL 2026-10-24 (charfacets; owner: indoors near lamps every triangle of a character showed, hard-edged; LampReachMask cured it):
+	// with the per-object lamp shadows on, this pass is only the room darkening, and its old per-lamp amount took the angle to the lamp
+	// from the depth-rebuilt normals buffer (one flat normal per triangle), so near a lamp every triangle got its own darkening. The object
+	// shaders already give each lamp its falloff and angle (smooth normals), so in that mode the reach mask is used.
+	// UNOFFICIAL 2026-10-25 ForwardReachMask (live; only while the per-object lamp shadows are on): 0 = only LampReachMask decides, as
+	// before; 1 = the reach mask (it also drops the darkening's distance falloff: rooms lighter, interior look 2026-10-20); 2 (default) =
+	// the old falloff without the angle term (z < 0, PointShadows.fx LampAmount): no facets, the old brightness. LampReachMask wins.
+	const int forwardMode = Settings.Interiors.Forward.Enabled ? std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ForwardReachMask"), 0, 2) : 0;
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") || forwardMode == 1)
+		Constants.PointShadowNear.z = 1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f);
+	else
+		Constants.PointShadowNear.z = forwardMode == 2 ? -1.0f : 0.0f;
 
 	TerrainShadows.UpdateSettings();	// UNOFFICIAL 2026-10-19 [Shaders.ShadowsExteriors.TerrainShadows]
 
@@ -1175,9 +1187,9 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 			const bool oneStep = stepAngle < 1.5f * max(yawStepSize, pitchStepSize);
 			SunCrossFading = oneStep && crossFade && StartSunCrossFade();
 			static int logged = 0;
-			if (logged < 20) {
+			if (logged < 20 || (TheSettingManager->GetSettingI("Shaders.CloudShadows.Main", "FlickerWatch") && logged < 2000)) {	// (2026-10-25: more while FlickerWatch tests run)
 				logged++;
-				Logger::Log("UNOFFICIAL sun step %.1f degrees: %s", D3DXToDegree(stepAngle),
+				Logger::Log("UNOFFICIAL sun step %.1f degrees at hour %.2f (to %.3f %.3f %.3f): %s", D3DXToDegree(stepAngle), TheShaderManager->ShaderConst.GameTime.y, SunDir.x, SunDir.y, SunDir.z,
 					!oneStep ? "jumps (bigger than one step: waiting, sleeping or loading)" : SunCrossFading ? "cross-fades" : "glides");
 			}
 			SunGlideFrom = oneStep && !SunCrossFading ? SmoothedSunDir : SunDir;

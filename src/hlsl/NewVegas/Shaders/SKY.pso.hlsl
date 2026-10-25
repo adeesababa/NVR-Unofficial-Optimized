@@ -15,6 +15,7 @@ float4 TESR_SunPosition: register(c13);
 float4 TESR_SunsetColor: register(c14); // sunsetColor.w is sky strength multiplier
 float4 TESR_HDRBloomData: register(c15);
 float4 TESR_SunDiskColor: register(c16);
+float4 TESR_SkyTint: register(c19);     // UNOFFICIAL 2026-10-25 rgb: [Shaders.Sky.Main] TintDay / TintNight for this hour (white = no change)
 // UNOFFICIAL 2026-10-14 physical sky ([Shaders.Sky.Physical], Includes/Atmosphere.hlsl, Sky.cpp). Compiled in only when on at
 // startup (PHYSICAL_SKY_ON, ShaderRecord::LoadShader); otherwise this shader is exactly what it was.
 #ifndef PHYSICAL_SKY_ON
@@ -88,6 +89,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         skyColor = lerp(skyColor, lerp(phys, luma(phys) * weatherHue, TESR_PhysSky.z), TESR_PhysSky.x);
     }
 #endif
+    skyColor *= TESR_SkyTint.rgb;   // UNOFFICIAL 2026-10-25 sky tint (Sky.cpp tints the sky light on objects the same)
 
     OUT.color_0 = delinearize(float4(skyColor * TESR_SunsetColor.w, 1)) ; // multiply sky strength for HDR
 

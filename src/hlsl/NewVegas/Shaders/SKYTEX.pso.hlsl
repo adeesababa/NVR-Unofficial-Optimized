@@ -24,6 +24,8 @@ float4 TESR_CloudVolumeData2 : register(c19);  // x:Density y:Absorption z:Detai
 float4 TESR_CloudVolumeLight : register(c21);  // x:Scattering (g) y:SilverLining z:AmbientStrength w:DetailSpeed
 float4 TESR_GameTime : register(c22);          // z: running time in seconds
 float4 TESR_CloudsHide : register(c23);        // UNOFFICIAL: x 1 = NVR's volumetric clouds replace these layers (VolumetricClouds.cpp)
+float4 TESR_SkyTint : register(c24);           // UNOFFICIAL 2026-10-25 rgb: the sky's tint for this hour (SKY.pso), for the sky the clouds blend with
+float4 TESR_MoonData : register(c25);          // UNOFFICIAL 2026-10-25 x: MoonBrightness (the moon disc)
 
 
 // Registers:
@@ -121,6 +123,7 @@ float4 ShadeSun(SunValues Sun, float4 texColor, float4 vertexColor){
         texColor.a *= Sun.isDayTime; // force alpha 1 for sun disk in the daytime
     }else{
         texColor.rgb *= vertexColor.rgb * Params.y * lerp(TESR_SunAmount.w, 1, isMoon); // vertex color (animated by the engine)
+        if (isMoon) texColor.rgb *= TESR_MoonData.x; // UNOFFICIAL 2026-10-25 MoonBrightness
         texColor.a *= vertexColor.a;
     }
 
@@ -387,7 +390,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     } else {
         // UNOFFICIAL: the volumetric clouds draw the clouds; the layer adds nothing (blended by its alpha)
         if (TESR_CloudsHide.x > 0.5) { OUT.color_0 = float4(0.0, 0.0, 0.0, 0.0); return OUT; }
-        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor);
+        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor) * TESR_SkyTint.rgb;
         OUT.color_0 = ShadeClouds(finalColor, color, skyColor, Sun, eyeDir);
         // Volumetric = 0 leaves the flat result above exactly as it is
         if (TESR_CloudVolumeData.x > 0.5) OUT.color_0 = ShadeVolumetricClouds(OUT.color_0, finalColor.w, IN.TexUV, IN.TexBlendUV, IN.position, color, skyColor, Sun, eyeDir);

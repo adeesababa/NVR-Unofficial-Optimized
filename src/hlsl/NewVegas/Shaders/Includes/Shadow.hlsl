@@ -168,6 +168,11 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
 #ifndef CHARACTER_SHADOW_MAP
     #define CHARACTER_SHADOW_MAP 0
 #endif
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals (see the helpers after GetShadowSmoothNormal). ON unless ShaderRecord::BuildDefines says 0
+// ([Shaders.PBR.Main] SmoothObjectNormals = false): a DLL from before the switch existed defines nothing, and the fix still applies.
+#ifndef OBJECT_SMOOTH_NORMALS
+    #define OBJECT_SMOOTH_NORMALS 1
+#endif
 #ifndef SHADOW_CHARACTER_MAP_IN
     #define SHADOW_CHARACTER_MAP_IN 0
 #endif
@@ -213,7 +218,9 @@ float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float
     // receiver-plane slack: tan of the sun's angle to the face (capped at 5) per texel of depth (the box is 2R wide and 2R deep: one
     // texel is 1 / res of depth), 1.5 texels for the 3 x 3's reach, plus the constant bias (CharacterShadowMapBias, world units)
     float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
-    float depth = lightSpace.z - TESR_CharShadowData.z - 1.5f * texel * slope;
+    // Past the far plane (depth above 1) the point compares just under 1: an empty texel (cleared to 1) leaves it lit, a caster
+    // in front of it (any depth under 1) shadows it. Without the clamp everything past the far plane inside the box was in shadow.
+    float depth = min(lightSpace.z, 0.9999f) - TESR_CharShadowData.z - 1.5f * texel * slope;
     float2 lo = texel * 0.5f;
     float2 hi = 1.0f - texel * 0.5f;
     float2 p = uv / texel - 0.5f;
@@ -227,6 +234,14 @@ float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float
             float2 tapUV = clamp((c + float2(x - 1, y - 1) + 0.5f) * texel, lo, hi);
             lit += (depth <= tex2Dlod(TESR_CharShadowMap, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * wx[x] * wy[y];
         }
+    }
+    // CharacterShadowMapDebug (TESR_CharShadowData.w = 1 + the setting): inside the box, 2 = the map's own verdict alone (no cascades),
+    // 3 = the depth the map holds at this point (0 black = nothing bound or nothing drawn, 1 white = empty, gray = a caster),
+    // 4 = this point's own depth in the box (what the map is compared with).
+    [branch] if (TESR_CharShadowData.w > 1.5f) {
+        if (TESR_CharShadowData.w > 3.5f) return saturate(lightSpace.z);
+        if (TESR_CharShadowData.w > 2.5f) return tex2Dlod(TESR_CharShadowMap, float4(clamp(uv, lo, hi), 0.0f, 0.0f)).x;
+        return lit;
     }
     return lerp(cascadeShadow, min(cascadeShadow, lit), weight);
 }
@@ -787,7 +802,8 @@ float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
     ShadowMinPenumbra = TESR_ShadowForwardData.z;
 #endif
     float len2 = dot(smoothNormal.xyz, smoothNormal.xyz);
-    return (TESR_ShadowForwardData.y > 0.0f && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
+    // UNOFFICIAL 2026-10-24 SmoothObjectNormals (OBJECT_SMOOTH_NORMALS below): with it the smooth normal is taken whatever the live switch says.
+    return ((TESR_ShadowForwardData.y > 0.0f || OBJECT_SMOOTH_NORMALS) && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
 }
 
 // The vertex shader side: the vertex normal in camera-relative world space, by the same projection round trip as
@@ -795,6 +811,41 @@ float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
 float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 normal, float3 shadowWorldPos) {
     float3 along = GetShadowWorldPos(mul(modelViewProj, float4(position + 2.0f * normalize(normal), 1.0f)));
     return float4(normalize(along - shadowWorldPos), SHADOW_VS_SENTINEL);
+}
+
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals ([Shaders.PBR.Main] SmoothObjectNormals, restart: OBJECT_SMOOTH_NORMALS from
+// ShaderRecord::BuildDefines; user 2026-10-24: in lamp-lit interiors every triangle of a character's clothes showed, flat with hard
+// edges). The object shaders get their normal in tangent space and had no world normal in the pixel shader, so GetShadowGeometricNormal
+// above built one from screen derivatives: one per TRIANGLE. It fed the sun lookup's normal offset and slope slack, the lamp lookups'
+// normal offset and the sky ambient term (Object.hlsl getAmbientLighting), so all three stepped at every triangle edge. With the switch
+// the vertex shaders send the vertex normal in camera-relative world space (GetShadowSmoothNormal above) and the pixel shaders take it
+// instead, through the helpers below; the derivative normal is not computed at all then (the slot cost of the two is about the same).
+// Where no interpolator is spare the normal rides octahedrally encoded in two channels. Every reader of the normal is already gated by
+// the vertex shader's sentinel (a vanilla vertex shader: the sun lookup, the lamp lookups and the sky term are skipped), so an unwritten
+// normal is never used; ShadowFacingNormal still returns a unit vector for one. Off: the shaders exactly as before.
+// (OBJECT_SMOOTH_NORMALS's default is set near the top of this file, before ShadowLookupNormal reads it.)
+
+// Octahedral encoding of a unit vector in two numbers (Cigolle et al. 2014) and back.
+float2 ShadowEncodeNormal(float3 n) {
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-6f);
+    float2 e = n.xy;
+    if (n.z < 0.0f) e = (1.0f - abs(n.yx)) * float2(n.x >= 0.0f ? 1.0f : -1.0f, n.y >= 0.0f ? 1.0f : -1.0f);
+    return e;
+}
+float3 ShadowDecodeNormal(float2 e) {
+    float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+    float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0f ? -t : t, n.y >= 0.0f ? -t : t);
+    return normalize(n);
+}
+
+// The smooth normal as a unit vector facing the camera (worldPos is camera-relative, so the camera is at the origin), the side
+// GetShadowGeometricNormal gives: two-sided geometry seen from behind (hair cards, cloth) pushes its lookups out on the visible side.
+// A zero or unwritten normal gives (0, 0, 1).
+float3 ShadowFacingNormal(float3 n, float3 worldPos) {
+    float len2 = dot(n, n);
+    n = len2 > 1.0e-6f ? n * rsqrt(len2) : float3(0.0f, 0.0f, 1.0f);
+    return n * (dot(n, worldPos) > 0.0f ? -1.0f : 1.0f);
 }
 
 #if SHADOW_FIXED_MODE == 3

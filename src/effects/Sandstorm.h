@@ -43,6 +43,7 @@ public:
 		bool	SoftEdges;		// UNOFFICIAL speed: the 3x3 depth tent at edges (theirs on)
 		bool	FineShelter;	// UNOFFICIAL speed: 8 upwind taps per streak (theirs on; off 4)
 		bool	ThroughBlended;	// glass and other see-through blended surfaces write no depth while the storm blows
+		bool	CharactersKeepDepth;	// with ThroughBlended: characters' blended parts keep their depth (Physically-Based-Reloaded 432ed1e6)
 		bool	ForceStorm;		// debugging: the full storm outdoors in any weather (theirs: Force)
 		bool	FastPath;		// UNOFFICIAL 2026-10-18 (sandfast): the dust on a grid, streaks at half and glow at quarter resolution (0: the full-resolution original)
 		float	FixedTime;		// UNOFFICIAL 2026-10-18 (sandfast), testing: >= 0 holds the dust's clock at this many seconds (-1: real time)

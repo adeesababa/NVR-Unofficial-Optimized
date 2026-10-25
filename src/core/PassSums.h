@@ -315,10 +315,15 @@ namespace PassSums {
 				"off (not compiled into the shaders)");
 		}
 		const int exact = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums");
-		if (exact) return exact;
 		int mode = 0;
 		if (LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums")) mode |= kIncrements | Lamps;
 		if (HighlightSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "HighlightSums")) mode |= kHighlightIncrements | Highlights;
+		// UNOFFICIAL 2026-10-24 / 2026-10-25: ExactPassSums (test) and the increments combine per kind: a kind the test asks for (1 lamps,
+		// 2 highlights, 3 both) goes through the fold-in buffer instead of its increments; the other kind keeps its increments. (2026-10-24,
+		// owner: the lamp fold-in whitened rubble on floors -- a run of lamp passes the hooks closed only after the object's colour pass, so
+		// its light was added on top of the colour; the increments add each pass's light at once.)
+		if (exact & Lamps) mode = (mode & ~(kIncrements | Lamps)) | Lamps;
+		if (exact & Highlights) mode = (mode & ~(kHighlightIncrements | Highlights)) | Highlights;
 		return mode;
 	}
 

@@ -24,6 +24,12 @@
 //   ReShade's overlay or preset can see the change (nothing is ever saved). Menu state from the game's own
 //   InterfaceManager. Design after NVR Depth Bridge's MenuGuard.
 //
+//   ReShadeGameValues (2026-10-25, on by default; only effects that ask for them see a difference): uniforms with
+//   source = "ModLoaded" / "Weather" / "WorldspaceID" / "InteriorID" get the game's values, the names FNV ReShade
+//   Helper (doodlum and Wall_SoGB, github.com/doodlum/fnv-reshade-helper) uses, so presets written for it work with NVR.
+//   Weather = (current weather form ID, previous weather form ID, transition 0..1, game hour); IDs are the low 24
+//   bits of the form ID (no load-order byte). Written from scratch: that repository carries no licence.
+//
 // Two ReShade runtimes are served (the game has one swap chain, so one of them):
 //   D3D9 (ReShade installed as d3d9.dll, also when DXVK sits behind it): view handles are the D3D9 objects themselves
 //   (the low bit marks the sRGB variant). DEPTH is bound in reshade_begin_effects and unbound after the effects.
@@ -154,6 +160,21 @@ namespace {
 		std::vector<effect_technique> paused;
 		bool reportedPause = false;
 	} Guard;
+
+	// Game values. Read from the game on the render thread (RenderEffects), handed to ReShade where it runs its effects.
+	struct GameValueSnapshot {
+		float weather[4] = {};		// current weather form ID, previous (fading) weather form ID, transition 0..1, game hour
+		int32_t worldspace = 0;		// form ID (low 24 bits) of the player's worldspace, 0 in interiors
+		int32_t interior = 0;		// form ID (low 24 bits) of the player's interior cell, 0 outside
+	};
+	std::mutex ValuesMutex;
+	GameValueSnapshot Values;
+	enum class ValueSource { ModLoaded, Weather, WorldspaceID, InteriorID };
+	struct ValueState {
+		bool dirty = true;			// variable handles are found again after an effect reload or a runtime change
+		bool wasOn = false;
+		std::vector<std::pair<effect_uniform_variable, ValueSource>> variables;
+	} GameValues;
 
 	// Combined depth -> projected depth in the game's direction. The source is NVR's TESR_DepthBuffer: R32F with
 	// SlimDepthBuffer (view Z / far), otherwise G32R32F (.x view Z / far, .y reversed projected depth).
@@ -448,6 +469,71 @@ technique Copy {
 		Guard.paused.clear();
 	}
 
+	// ---- Game values (ReShadeGameValues) ----
+
+	// Render thread: the values ReShade effects can ask for, taken from the frame NVR just drew.
+	void SnapshotGameValues() {
+		GameValueSnapshot now;
+		if (Tes && Tes->sky) {
+			const Sky* sky = Tes->sky;
+			now.weather[0] = sky->firstWeather ? (float)(sky->firstWeather->refID & 0x00FFFFFF) : 0.0f;
+			now.weather[1] = sky->secondWeather ? (float)(sky->secondWeather->refID & 0x00FFFFFF) : 0.0f;
+			now.weather[2] = sky->weatherPercent;
+		}
+		now.weather[3] = TheShaderManager->ShaderConst.GameTime.y;	// hours 0..24 (ShaderManager::UpdateConstants)
+		if (Player && Player->parentCell) {
+			TESObjectCELL* cell = Player->parentCell;
+			if (cell->IsInterior()) now.interior = (int32_t)(cell->refID & 0x00FFFFFF);
+			else if (cell->worldSpace) now.worldspace = (int32_t)(cell->worldSpace->refID & 0x00FFFFFF);
+		}
+		std::lock_guard<std::mutex> lock(ValuesMutex);
+		Values = now;
+	}
+
+	// Uniforms with a 'source' annotation of one of the names FNV ReShade Helper (doodlum, Wall_SoGB) gives its effects,
+	// so presets made for it work here: ModLoaded (bool), Weather (float4), WorldspaceID and InteriorID (int).
+	void FindValueVariables(effect_runtime* runtime) {
+		GameValues.dirty = false;
+		GameValues.variables.clear();
+		runtime->enumerate_uniform_variables(nullptr, [](effect_runtime* runtime, effect_uniform_variable variable) {
+			char source[32] = {};
+			if (!runtime->get_annotation_string_from_uniform_variable(variable, "source", source)) return;
+			ValueSource kind;
+			if (!strcmp(source, "ModLoaded")) kind = ValueSource::ModLoaded;
+			else if (!strcmp(source, "Weather")) kind = ValueSource::Weather;
+			else if (!strcmp(source, "WorldspaceID")) kind = ValueSource::WorldspaceID;
+			else if (!strcmp(source, "InteriorID")) kind = ValueSource::InteriorID;
+			else return;
+			GameValues.variables.push_back({ variable, kind });
+		});
+		if (!GameValues.variables.empty())
+			Logger::Log("UNOFFICIAL ReShade: game values go to %u effect variables (ReShadeGameValues).", (unsigned)GameValues.variables.size());
+	}
+
+	void SetGameValues(effect_runtime* runtime) {
+		const bool on = TheSettingManager->SettingsMain.Main.ReShadeGameValues;
+		if (!on && !GameValues.wasOn) return;
+		if (GameValues.dirty) FindValueVariables(runtime);
+		GameValueSnapshot now;
+		{
+			std::lock_guard<std::mutex> lock(ValuesMutex);
+			now = Values;
+		}
+		for (const auto& [variable, kind] : GameValues.variables) {
+			if (!on) {	// switched off: effects see the mod as gone again, the other values are left as they were
+				if (kind == ValueSource::ModLoaded) runtime->set_uniform_value_bool(variable, false);
+				continue;
+			}
+			switch (kind) {
+			case ValueSource::ModLoaded: runtime->set_uniform_value_bool(variable, true); break;
+			case ValueSource::Weather: runtime->set_uniform_value_float(variable, now.weather[0], now.weather[1], now.weather[2], now.weather[3]); break;
+			case ValueSource::WorldspaceID: runtime->set_uniform_value_int(variable, now.worldspace); break;
+			case ValueSource::InteriorID: runtime->set_uniform_value_int(variable, now.interior); break;
+			}
+		}
+		GameValues.wasOn = on;
+	}
+
 	// ---- ReShade events ----
 
 	void OnInitRuntime(effect_runtime* runtime) { TakeRuntime(runtime); }
@@ -462,6 +548,7 @@ technique Copy {
 		else return;
 		Guard.paused.clear();
 		Guard.dirty = true;
+		GameValues.dirty = true;
 	}
 
 	// Every present; also how the runtime is found when NVR registered after ReShade created it (the usual case).
@@ -483,6 +570,7 @@ technique Copy {
 		if (runtime != Runtime && runtime != VkRuntime.load()) return;
 		Guard.paused.clear();
 		Guard.dirty = true;
+		GameValues.dirty = true;
 		if (runtime == VkRuntime.load()) {
 			Vk.rebind = true;
 			Vk.depthVariables.clear();
@@ -501,6 +589,7 @@ technique Copy {
 		}
 		else if (runtime == VkRuntime.load()) VulkanBegin(runtime, cmd);
 		else return;
+		SetGameValues(runtime);
 		GuardBegin(runtime);
 	}
 
@@ -800,6 +889,7 @@ void ReShadeIntegration::RenderEffects(IDirect3DSurface9* OutputSurface) {
 	}
 	const bool vulkan = VkRuntime.load() != nullptr;
 	if (!Runtime && !vulkan && !check) return;
+	if (Runtime || vulkan) SnapshotGameValues();
 	const auto& Main = TheSettingManager->SettingsMain.Main;
 	const bool copy = (Main.ReShadeNVRDepth && (Runtime || vulkan)) || check;
 	const bool draw = Runtime && Main.ReShadeBeforeHUD;

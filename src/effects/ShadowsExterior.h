@@ -139,6 +139,7 @@ public:
 		float				CharacterMapBias = 0.15f;		// world units of constant depth bias at the lookup
 		bool				CharacterMapOthers = false;		// other actors inside the map are drawn into it too (they can shade the player)
 		bool				CharacterMapLog = false;		// diagnostic: fit, texel size and caster count once a second
+		int					CharacterMapDebug = 0;			// diagnostic view (Shadow.hlsl CharacterMapShadow): 0 off, 1 the map's verdict alone, 2 the map's depth, 3 the point's depth
 	};
 
 	struct OrthoStruct {
@@ -216,6 +217,7 @@ public:
 			bool EvenTaps;				// UNOFFICIAL (2026-10-21): High/Ultra's extra taps spread evenly (POINT_SHADOW_EVEN, read at startup)
 			float MagnifiedSoftness;	// UNOFFICIAL (2026-10-21): texels; the least spread where a cube texel covers many pixels (0 off; compiled in when above 0 at startup)
 			bool TexelFilter;			// UNOFFICIAL (2026-10-21): the sun-style texel-aligned B-spline filter (POINT_SHADOW_TEXEL, read at startup)
+			bool AutoNormalOffset;		// UNOFFICIAL (2026-10-24): NormalOffset at least the filter's reach in texels (PointShadowForward::Publish), live
 		} Forward;
 	};
 

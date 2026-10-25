@@ -185,3 +185,25 @@ In-game test (the owner):
    line where the map ends (raise Blend), a gray halo round thin shadows (section 4's min(); report its width), the
    first-person view unchanged, interiors unchanged.
 5. F10: the "Character shadow map" rows; compare the frame with the setting on and off.
+
+## 9. First in-game result (2026-10-24) and the diagnostics added for it
+The owner's screenshot (third person, afternoon sun): everything on the character from the head down to the knees is
+in shadow, flat, with a hard horizontal line at the knees; below the knees the suit is sunlit. Reading:
+- The line IS the map's box: a 96-unit box round the chest (Fit 0, R 48), seen from a sun about 45 degrees up, reaches
+  about 68 units above and below the chest on the body, which is the knees. So the fit, the matrix and the live flag all
+  reach the shaders (the edge is in the right place; the hand-over band is 12 units, which reads as a hard line next to
+  a fully dark interior). Fit 1 would move the line to the feet and the ground, not remove it.
+- The fault is the inside: every pixel inside the box reads "shadowed", including sunlit skin and cloth. That means the
+  map's compare fails everywhere, which happens if the sampler reads black (the texture not bound on s11, or the map never
+  cleared / drawn) or if the depth the map holds is systematically nearer the sun than the point looked up.
+- One real bug found and fixed: a point past the box's far plane (depth above 1) compared against a texel cleared to 1
+  and was always shadowed; it now compares just under 1 (an empty texel leaves it lit, any caster shadows it). That only
+  covers a sliver at the knees, not the whole upper body.
+- Added for the next run: `CharacterShadowMapDebug` (live): 1 = inside the box the sun shadow is the map's own verdict
+  alone (white lit / black shadowed), 2 = the depth the map holds at the point (black = empty or unbound texture, white =
+  nothing drawn there, gray = a caster), 3 = the point's own depth in the box. With `[Main.Develop] DebugMode = true`
+  the test-image key (the one that writes Test\shadowmapatlas.jpg) also writes Test\charshadowmap.jpg: the map itself.
+  The log already says, once per shader, "Texture TESR_CharShadowMap Successfully bound" or "was not bound".
+- What each answer means: debug 2 black over the body and debug 3 gray = the texture is not reaching the shaders (bind
+  path); debug 2 white everywhere = nothing is drawn into the map (walk or draw); debug 2 gray but debug 1 black = the
+  compare / bias / transform disagree between the draw and the lookup.

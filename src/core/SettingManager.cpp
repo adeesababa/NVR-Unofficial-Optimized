@@ -373,7 +373,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 68;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 69;  // 53 was an enhanced-water step, since removed
 extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -521,6 +521,15 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 			std::string(saved->at("RoughnessOverrides").as_string()).empty()) {
 			(*saved)["RoughnessOverrides"] = "nv_ultralux_centertiles:0.1, ul_marbleblack:0.12";
 			changed += changed.empty() ? "Shaders.Reflections.Main.RoughnessOverrides" : ", Shaders.Reflections.Main.RoughnessOverrides";
+		}
+	}
+	// 69 (2026-10-25): LampSums on by default (owner: the hard steps in indoor lamp light at tile and object edges; exact lamp sums,
+	// no whitening, about 0.3-0.4 ms in lamp-rich rooms). The other PBR fixes of that day are new settings (default on by themselves).
+	if (version < 69) {
+		tomlValue* saved = UserSection("Shaders.PBR.Main");
+		if (saved && saved->contains("LampSums") && saved->at("LampSums").is_boolean() && !saved->at("LampSums").as_boolean()) {
+			(*saved)["LampSums"] = true;
+			changed += changed.empty() ? "Shaders.PBR.Main.LampSums false -> true" : ", Shaders.PBR.Main.LampSums false -> true";
 		}
 	}
 	if (!changed.empty())
@@ -760,6 +769,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.ReShadeDepthNearRemap = boolSetting(performance, "ReShadeDepthNearRemap", true);
 	SettingsMain.Main.ReShadeMenuGuard = boolSetting(performance, "ReShadeMenuGuard", false);
 	SettingsMain.Main.ReShadeMenuGuardVATS = boolSetting(performance, "ReShadeMenuGuardVATS", false);
+	SettingsMain.Main.ReShadeGameValues = boolSetting(performance, "ReShadeGameValues", true);
 	{
 		Configuration::ConfigNode node;	// a String setting: the whole text is in LongValue (Value is cut at 79 characters)
 		ReShadeIntegration::SetMenuGuardEffects(Config.FillNode(&node, performance, "ReShadeMenuGuardEffects") ? (node.LongValue.empty() ? node.Value : node.LongValue.c_str()) : "");
