@@ -115,6 +115,7 @@ static float s_savedTimeScale = -1.0f; // session snapshot; -1 = not yet taken
 static bool  s_devFreecamOn   = false;
 static bool  s_devMenusHidden = false;
 static bool  s_screenshotMode = false;
+static float s_sidebarW = 0.0f;	// UNOFFICIAL 2026-10-25: the sidebar's dragged width (0 = read [Main.Menu.Style] SidebarWidth)
 static bool  s_revealSelected = false;	// UNOFFICIAL 2026-10-25, test shots: the sidebar unfolded down to the page shown
 static bool  s_showTestSettings = false;	// UNOFFICIAL 2026-10-19 menu honesty; since 2026-10-25 only the auto-test's 'menu' shots set it (TestShowMenu)
 static bool  s_devOptions = false;	// UNOFFICIAL 2026-10-25 menu tidy: [Main.Menu.Developer] DeveloperOptions, read each frame the menu is drawn
@@ -3936,14 +3937,40 @@ void ImGuiManager::BuildUI() {
 	ImGui::Separator();
 
 	// Two-panel layout
-	float sidebarW = 260.0f;
+	// UNOFFICIAL 2026-10-25: the sidebar's width is dragged at the gap between the panels (double-click: back to the default) and
+	// kept in [Main.Menu.Style] SidebarWidth, written when the drag ends.
+	const float kSidebarDefault = 260.0f, kSidebarMin = 120.0f, kSplitW = 8.0f;
+	if (s_sidebarW <= 0.0f) {
+		int w = TheSettingManager->GetSettingI("Main.Menu.Style", "SidebarWidth");
+		s_sidebarW = w > 0 ? (float)w : kSidebarDefault;
+	}
+	const float sidebarMax = ImMax(kSidebarMin, ImGui::GetContentRegionAvail().x - kSplitW - 200.0f);
+	s_sidebarW = ImClamp(s_sidebarW, kSidebarMin, sidebarMax);
 	float contentH = ImGui::GetContentRegionAvail().y;
 
-	ImGui::BeginChild("##sidebar", ImVec2(sidebarW, contentH), true);
+	ImGui::BeginChild("##sidebar", ImVec2(s_sidebarW, contentH), true);
 	RenderSidebar();
 	ImGui::EndChild();
 
-	ImGui::SameLine();
+	ImGui::SameLine(0.0f, 0.0f);
+	ImGui::InvisibleButton("##sidebarSplit", ImVec2(kSplitW, contentH));
+	{
+		const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+		if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+		if (active) s_sidebarW = ImClamp(s_sidebarW + ImGui::GetIO().MouseDelta.x, kSidebarMin, sidebarMax);
+		if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) s_sidebarW = kSidebarDefault;
+		if (ImGui::IsItemDeactivated() || (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))) {
+			TheSettingManager->SetSetting("Main.Menu.Style", "SidebarWidth", (int)(s_sidebarW + 0.5f));
+			TheSettingManager->LoadSettings();
+		}
+		if (hovered || active) {
+			const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+			const float x = (a.x + b.x) * 0.5f;
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(x, a.y), ImVec2(x, b.y),
+				ImGui::GetColorU32(active ? ImGuiCol_SeparatorActive : ImGuiCol_SeparatorHovered), 2.0f);
+		}
+	}
+	ImGui::SameLine(0.0f, 0.0f);
 
 	ImGui::BeginChild("##content", ImVec2(0.0f, contentH), true);
 	RenderContent();

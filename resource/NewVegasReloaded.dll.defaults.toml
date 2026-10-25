@@ -188,6 +188,7 @@ TextShadowColorEnabled = '50,50,50'     # Custom shadow color for enabled/disabl
 TextShadowColorNormal = '50,50,50'      # Custom shadow color for normal text.
 TextShadowColorSelected = '50,50,50'    # Custom shadow color for selected text.
 TextSize = 22                           # Font size for normal text.
+SidebarWidth = 260                      # UNOFFICIAL (2026-10-25): width of the menu's left column (effects and shaders) in pixels. Drag the gap between the two columns to change it; double-click it for 260 again.
 TextSizeStatus = 12                     # Font size for enabled/disabled text.
 TitleColumnSize = 850                   # Custom size for title column.
 
