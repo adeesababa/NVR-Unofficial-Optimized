@@ -74,7 +74,24 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
    SPIR-V replacements.
    Not automatable here (the test plugin blocks all input): alt-tab, fullscreen toggle (device Reset; covered only by the
    harness test), ReShade chained, loading-screen transitions. Owner's 5-minute check when they first try the fork.
-   Next: phase 2 step 3, the first real replacement (one SLS20xx variant line for line, same picture).
+   PHASE 2 STEP 3 PASSES 2026-10-25 18:30: the game's own 6-lamp shiny-object shader runs as our SPIR-V, same picture.
+   - Tool: tools/nvr-dxvk/replace/psasm2glsl.py translates a ps_3_0 shader (fxc /dumpbin disassembly) line for line into
+     GLSL under the fork's contract (D3D9 textures + heap samplers, listed float registers, DXVK's alpha test, null-sampler
+     rule, bool constants from spec data, DXVK's float clamps); compile.sh = glslangValidator + spirv-val (WSL; glslang and
+     spirv-tools unpacked from Ubuntu's packages into ~/vktools, no root).
+   - NVR (c1ae0245): a replacement is found as `Compute\Replace\<Name>@<FNV-1a of the bytecode>.spv` first (the interior and
+     exterior records share a name, not bytecode); a `Replace\dump` folder collects every pixel shader's exact bytecode.
+   - Found by colour canaries (138 SLS shaders as solid colours, then halving): the Lucky 38 carpet, walls and ceiling are
+     SLS2034/SLS2036 @8FF9A125 (same bytecode), 3,162 instruction slots, 8 samplers (3 2D + 5 lamp-shadow cubes), 55 float
+     registers. Translated: 2,778 GLSL lines, 532 KB of SPIR-V, validated.
+   - Run 20261025-182602 (replacement) vs 20261025-182939 (none), same slot/settings: 8.5 % of pixels > 2/255, mean
+     1.02/255, signed +0.02, i.e. below two identical shots of one launch (11.7 %, 1.36); diff image = flicker only (neon,
+     securitron), nothing on the replaced surfaces. DXVK log: registered + replaced, no errors.
+   - Gotcha found on the way (crash in dxvk-shader thread): DXVK rewrites the spec-data block (set 3) into spec constants
+     member by member; it must be a struct of plain uint members, never an array. psasm2glsl declares it that way.
+   - The replacement is tied to the bytecode, i.e. to the settings that compiled it (defaults here); a shipping version needs
+     one per variant the settings produce, or (better) hand-written GLSL keyed by shader name that reads its options from
+     constants. That is step 4: the first fork-only gain (all lamps in one pass, or the character shadow map) in this shader.
    Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
    extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
