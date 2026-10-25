@@ -335,6 +335,8 @@ D3DXVECTOR3 VolumetricCloudsEffect::WeatherCloudColour(Sky* sky, float hour) {
 		}
 	}
 	return colour;
+}
+
 // UNOFFICIAL 2026-10-25 (test tool: the shot list's 'facemoon').
 // Where the moon is: its disc mesh's world bound (the moon's node sits at the sky's centre, the disc is placed inside it), as a
 // direction and distance from the sky's centre, and its radius. False when there is no moon to see.
