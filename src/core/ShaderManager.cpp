@@ -461,6 +461,7 @@ void ShaderManager::UpdateConstants() {
 	else {
 		ShaderConst.sunDiskColor = ShaderConst.sunColor; // override with the color of the lighting
 	}
+	Shaders.Sky->UpdateMoonlight();	// UNOFFICIAL 2026-10-25 MoonBrightness: the night light (and sunColor) scaled; the sky's own colours keep the game's
 
 	ShaderConst.windSpeed = WorldSky->windSpeed;
 

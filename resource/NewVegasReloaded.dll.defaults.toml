@@ -1764,6 +1764,13 @@ SunsetR = 0.5                       # Color boost for sunset/sunrise sun color (
 SunsetG = 0.0                       # Color boost for sunset/sunrise sun color (Green)
 SunsetB = 0.03                      # Color boost for sunset/sunrise sun color (Blue)
 StarTwinkle = 1.0                   # Speed of the star twinkling
+TintDayR = 1.0                      # UNOFFICIAL (2026-10-25), live: colour of the sky by day (a colour wheel in the menu). The sky, the sky the clouds blend into, and the sky light on objects are multiplied by it. White = no change. Fades into TintNight over dusk on the same curve as SkyMultiplier.
+TintDayG = 1.0
+TintDayB = 1.0
+TintNightR = 1.0                    # UNOFFICIAL (2026-10-25), live: colour of the sky at night (a colour wheel in the menu), e.g. a little blue for moonlit nights. White = no change.
+TintNightG = 1.0
+TintNightB = 1.0
+MoonBrightness = 1.0                # UNOFFICIAL (2026-10-25), live [0.0-4.0]: how bright the moon is at night: the moon disc in the sky and the moonlight on the world (the game's night light, and NVR's effects that use it). 1 = no change, 0.5 half as bright, 2 twice. Outdoors only; the sun is untouched.
 
 
 [_Shaders.Sky.Physical]

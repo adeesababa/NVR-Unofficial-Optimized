@@ -9,6 +9,9 @@ public:
 	struct SettingsStruct{
 		float SkyMultiplierDay;
 		float SkyMultiplierNight;
+		// UNOFFICIAL 2026-10-25 [Shaders.Sky.Main] TintDay/TintNight (R, G, B; white = no change) and MoonBrightness (1 = no change)
+		D3DXVECTOR4 TintDay = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f), TintNight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		float MoonBrightness = 1.0f;
 	};
 	SettingsStruct Settings;
 
@@ -31,6 +34,10 @@ public:
 		// UNOFFICIAL 2026-10-18 ClassicLook (VolumetricFog.fx TESR_SkyIrradianceGame): the same projection of the game's own sky
 		// alone, as the original NVR (master) had it: no physical sky blend and no SkylightingSaturation.
 		D3DXVECTOR4		IrradianceGame[9];
+		// UNOFFICIAL 2026-10-25: rgb the sky's tint at this hour (TintDay to TintNight on the day/night curve; white indoors)
+		D3DXVECTOR4		SkyTint = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		// UNOFFICIAL 2026-10-25: x the moon disc's brightness (MoonBrightness, SKYTEX.pso.hlsl)
+		D3DXVECTOR4		MoonData = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);
 	};
 	// UNOFFICIAL [Shaders.Sky.Physical]
 	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; };
@@ -42,11 +49,12 @@ public:
 	// UNOFFICIAL: the spherical-harmonic projection in UpdateConstants (512 samples of the sky model, and UpdateConstants
 	// runs twice a frame) is redone only when something it reads has changed: these are the last run's inputs. The sun's
 	// direction counts as changed when it has turned by more than a tenth of a degree (it creeps every frame outdoors).
-	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; D3DXVECTOR4 physicalMS; };
+	struct ProjectionInputs { D3DXVECTOR4 sunPos, skyColor, skyLowColor, horizonColor, skyData, sunDiskColor, sunsetColor, physical; float sunAmount, saturation, exterior; D3DXVECTOR4 physicalMS, skyTint; };
 	ProjectionInputs lastProjection = {};
 	bool lastProjectionValid = false;
 
 	void	UpdateConstants();
+	void	UpdateMoonlight();	// UNOFFICIAL 2026-10-25 MoonBrightness: the game's night directional light (ShaderManager::UpdateConstants)
 	void	RegisterConstants();
 	void	UpdateSettings();
 };
