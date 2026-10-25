@@ -7,6 +7,7 @@ char			DxvkCompute::StatusText[160] = "not checked yet";
 ID3D9NvrExtSampler* DxvkCompute::SamplerLinear = nullptr;
 ID3D9NvrExtSampler* DxvkCompute::SamplerPoint = nullptr;
 ID3D9NvrExtSampler* DxvkCompute::SamplerWrap = nullptr;
+ID3D9NvrExtSampler* DxvkCompute::SamplerPointWrap = nullptr;
 
 void DxvkCompute::Initialize(IDirect3DDevice9* device) {
 	Ext = nullptr;
@@ -284,5 +285,11 @@ bool DxvkCompute::RegisterReplacement(const char* Name, const void* Bytecode, UI
 ID3D9NvrExtSampler* DxvkCompute::LinearWrap() {
 	if (!SamplerWrap) SamplerWrap = CreateSampler(NVR_EXT_FILTER_LINEAR, NVR_EXT_ADDRESS_WRAP);
 	return SamplerWrap;
+}
+
+// UNOFFICIAL 2026-10-25 (Cinema): NEAREST min and mag, WRAP (mips are not filtered either way).
+ID3D9NvrExtSampler* DxvkCompute::PointWrap() {
+	if (!SamplerPointWrap) SamplerPointWrap = CreateSampler(NVR_EXT_FILTER_NEAREST, NVR_EXT_ADDRESS_WRAP);
+	return SamplerPointWrap;
 }
 
