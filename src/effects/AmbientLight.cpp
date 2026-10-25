@@ -406,6 +406,96 @@ bool AmbientLightEffect::ShouldRender() {
 	return Enabled && Effect && !TheShaderManager->GameState.isUnderwater;
 }
 
+// UNOFFICIAL 2026-10-25 (NVR DXVK, core\DxvkCompute.h) AmbientLightSmoothCompute: technique AmbientLightSmooth's passes X and Y as one
+// compute dispatch (src\hlsl\NewVegas\Compute\AmbientLightSmooth.comp: the same taps, weights and packing, X's result rounded to 16-bit
+// floats as NVR_AmbientLight1 holds it). The dispatch reads the prep across its tiles' borders, so it writes a buffer, which is then
+// copied into the prep (both recorded in order, no wait). Called by RenderPrepare right after Prepare, inside its F10 timer, so
+// "Ambient light prepare + smooth (half)" covers Prepare + the smoothing on either path. False = not done: the D3D9 passes run.
+#include "../core/DxvkCompute.h"
+
+namespace {
+	const NVR_EXT_BINDING_DESC SmoothBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_prep: NVR_AmbientLightPrep
+		{ 1, 1, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, TRUE,  0 },	// Result
+	};
+	struct SmoothPush {	// AmbientLightSmooth.comp's push block, 48 bytes
+		UINT32	width, height, tileRows, reachTexels;
+		float	reach, drawDistance, invWidth, invHeight, uvOffsetX, uvOffsetY, proj00, proj11;
+	};
+	const UINT SmoothRegionRows = 256;	// the shader's REGION_ROWS
+}
+
+void AmbientLightEffect::SmoothComputeRelease() {
+	DxvkCompute::Drop(smoothPipeline);
+	DxvkCompute::Drop(smoothResult);
+	smoothWidth = smoothHeight = 0;
+}
+
+bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height) {
+	if (!TheSettingManager->SettingsMain.Main.AmbientLightSmoothCompute || smoothComputeFailed || !DxvkCompute::Available()) return false;
+	if (normalSmoothing > SmoothComputeMaxReach) {
+		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d is above the compute version's %d: the D3D9 passes are used.", normalSmoothing, SmoothComputeMaxReach);
+		smoothComputeReachLogged = true;
+		return false;
+	}
+	if (!Width || !Height || !Target) return false;
+
+	if (!smoothPipeline) smoothPipeline = DxvkCompute::CreatePipeline("AmbientLightSmooth", SmoothBindings, _countof(SmoothBindings), sizeof(SmoothPush), false);
+	if (smoothPipeline && (!smoothResult || smoothWidth != Width || smoothHeight != Height)) {
+		DxvkCompute::Drop(smoothResult);
+		smoothResult = DxvkCompute::CreateBuffer(Width * Height * 16, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_SRC, "AmbientLight smoothed prep");
+		smoothWidth = Width;
+		smoothHeight = Height;
+	}
+	if (!smoothPipeline || !smoothResult) {
+		SmoothComputeRelease();
+		smoothComputeFailed = true;
+		Logger::Log("UNOFFICIAL AmbientLight: the NormalSmoothing compute path could not be set up; the D3D9 passes are used.");
+		return false;
+	}
+
+	SmoothPush push = {};
+	push.width = Width;
+	push.height = Height;
+	push.reachTexels = (UINT32)normalSmoothing;
+	push.tileRows = SmoothRegionRows - 2 * push.reachTexels;
+	push.reach = (float)normalSmoothing;										// NVR_ALEdges.x
+	push.drawDistance = max(Constants.Data.w, 100.0f);							// DrawDistance
+	push.invWidth = 1.0f / Width;												// NVR_ALLayout.zw
+	push.invHeight = 1.0f / Height;
+	push.uvOffsetX = (1.0f / (float)TheRenderManager->width) * 0.5f;			// ShaderManager::CreateFrameVertex's offset
+	push.uvOffsetY = (1.0f / (float)TheRenderManager->height) * 0.5f;
+	push.proj00 = TheRenderManager->projMatrix._11;								// TESR_ProjectionTransform[0][0]
+	push.proj11 = TheRenderManager->projMatrix._22;								// TESR_ProjectionTransform[1][1]
+
+	NVR_EXT_RESOURCE_BINDING bindings[] = {
+		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE,  prepTexture,  0, 0, 0, FALSE },
+		{ 0, NVR_EXT_BIND_STORAGE_BUFFER, smoothResult, 0, 0, 0, FALSE },
+	};
+	NVR_EXT_DISPATCH_DESC dispatch = {};
+	dispatch.pPipeline = smoothPipeline;
+	dispatch.BindingCount = _countof(bindings);
+	dispatch.pBindings = bindings;
+	dispatch.pPushData = &push;
+	dispatch.PushDataSize = sizeof(push);
+	dispatch.GroupsX = (Width + 7) / 8;
+	dispatch.GroupsY = (Height + push.tileRows - 1) / push.tileRows;
+	dispatch.GroupsZ = 1;
+
+	HRESULT result = Device->SetRenderTarget(0, Target);	// the prep (Prepare's target) must not be the render target while the dispatch reads it
+	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->Dispatch(&dispatch);
+	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->CopyBufferToTexture(prepTexture, 0, 0, smoothResult, 0);
+	if (FAILED(result)) {
+		Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing compute dispatch failed (%08lX); the D3D9 passes are used from now on.", result);
+		SmoothComputeRelease();
+		smoothComputeFailed = true;
+		DxvkCompute::Fail("an AmbientLightSmooth dispatch failed");
+		return false;
+	}
+	if (++smoothComputeFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing compute path running (%ux%u, reach %d, %ux%u groups).", Width, Height, normalSmoothing, dispatch.GroupsX, dispatch.GroupsY);
+	return true;
+}
+
 // UNOFFICIAL 2026-10-21 (alrocks): Prepare and then the prep's normal smoothed (technique AmbientLightSmooth, two half-resolution passes
 // through the ping-pong buffer), drawn by ShaderManager BEFORE the AO's sky pass, so the sky test reads the smoothed normal too (the black
 // faces on low-poly rocks at night were its). Render then skips its own Prepare. False (nothing drawn) when off or anything is missing.
@@ -455,7 +545,7 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 		}
 		Effect->End();
 	}
-	if (SUCCEEDED(result)) {
+	if (SUCCEEDED(result) && !SmoothCompute(Device, target, half.Width, half.Height)) {	// UNOFFICIAL 2026-10-25: the compute version, when on
 		Effect->SetTechnique(smooth);
 		result = Effect->Begin(&passes, 0);
 		if (SUCCEEDED(result)) {
