@@ -341,10 +341,23 @@
     #ifndef LAMP_REACH_SKIP
         #define LAMP_REACH_SKIP 0
     #endif
-    #if LAMP_REACH_SKIP && !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !(defined(OPT) && defined(SPECULAR) && LIGHTS > 3 && SPECULAR_LAMPS6)
+    // UNOFFICIAL 2026-10-25 NO_SLOT_LIMIT ([Shaders.PBR.Main] DxvkLampBranches, restart; ShaderRecord::BuildDefines sets it only
+    // when the game runs on DXVK, which creates shaders of any length): the 6-lamp shaders (LIGHTS 4 + SPECULAR + MoreLampsPerObject,
+    // OPT or not) take the branches too, and in them a lamp slot the draw does not use (k >= lightsUsed: the game leaves its constants
+    // stale, the term was computed and multiplied by 0) and its cube-map shadow lookup are skipped as well (LAMP_IFK).
+    #ifndef NO_SLOT_LIMIT
+        #define NO_SLOT_LIMIT 0
+    #endif
+    #if NO_SLOT_LIMIT && LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6 && !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         #define LAMP_IF(att) [branch] if ((att) > 0.0f)
+        #define LAMP_IFK(k, att) [branch] if ((att) > 0.0f && (k) < lightsUsed)
+        #define LAMP_SLOT_SKIP 1
+    #elif LAMP_REACH_SKIP && !defined(DIFFUSE) && !defined(ONLY_SPECULAR) && !(defined(OPT) && defined(SPECULAR) && LIGHTS > 3 && SPECULAR_LAMPS6)
+        #define LAMP_IF(att) [branch] if ((att) > 0.0f)
+        #define LAMP_IFK(k, att) LAMP_IF(att)
     #else
         #define LAMP_IF(att)
+        #define LAMP_IFK(k, att)
     #endif
 #endif
 
@@ -1609,6 +1622,20 @@ PS_OUTPUT main(PS_INPUT IN) {
         // ones the lighting further down computes, so the compiler shares them.
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
+        #ifdef LAMP_SLOT_SKIP
+        // UNOFFICIAL 2026-10-25 NO_SLOT_LIMIT (DXVK only, see LAMP_IFK): a slot's cube lookup only where its lamp is used and reaches.
+        [branch] if (NVR_PointShadowParams.x > 0.0f) {
+            float a;
+            #ifdef OPT
+                a = PT_ATT(0);				[branch] if (a > 0.0f && 0 < lightsUsed) ptShadow0 = POINT_SHADOW_LOOKUP(0, a);
+            #endif
+            a = PT_ATT(lightOffset + 0);	[branch] if (a > 0.0f && 1 < lightsUsed) ptShadow1 = POINT_SHADOW_LOOKUP(1, a);
+            a = PT_ATT(lightOffset + 1);	[branch] if (a > 0.0f && 2 < lightsUsed) ptShadow2 = POINT_SHADOW_LOOKUP(2, a);
+            a = PT_ATT(lightOffset + 2);	[branch] if (a > 0.0f && 3 < lightsUsed) ptShadow3 = POINT_SHADOW_LOOKUP(3, a);
+            a = PT_ATT(lightOffset + 3);	[branch] if (a > 0.0f && 4 < lightsUsed) ptShadow4 = POINT_SHADOW_LOOKUP(4, a);
+            a = PT_ATT(lightOffset + 4);	[branch] if (a > 0.0f && 5 < lightsUsed) ptShadow5 = POINT_SHADOW_LOOKUP(5, a);
+        }
+        #else
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             #ifdef OPT
                 ptShadow0 = POINT_SHADOW_LOOKUP(0, PT_ATT(0));
@@ -1625,6 +1652,7 @@ PS_OUTPUT main(PS_INPUT IN) {
                 ptShadow5 = POINT_SHADOW_LOOKUP(5, PT_ATT(lightOffset + 4));
             #endif
         }
+        #endif
         #undef PT_ATT
     #endif
 

@@ -201,6 +201,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl LAMP_IF, ManyLightsDirect.hlsl): each lamp's light term in a branch on
 	// its attenuation, skipped where the lamp cannot reach (it adds exactly 0 there). Compile time (a live switch cost 0.6 ms indoors).
 	AppendDefine("LAMP_REACH_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampReachSkip") ? "1" : "0");
+	// UNOFFICIAL 2026-10-25 DxvkLampBranches (ObjectTemplate.hlsl NO_SLOT_LIMIT): on DXVK, which has no ~3,600-slot limit, the 6-lamp
+	// object shaders skip unused lamp slots, out-of-reach lamps and their shadow lookups. Native D3D9 would refuse those shaders: 0 there.
+	AppendDefine("NO_SLOT_LIMIT", (TheSettingManager->GetSettingI("Shaders.PBR.Main", "DxvkLampBranches") &&
+		TheRenderManager && !strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
 	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");
