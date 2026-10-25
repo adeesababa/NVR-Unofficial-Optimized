@@ -86,3 +86,21 @@ bool DepthOfFieldEffect::ShouldRender() {
 	}
 	return !skip;
 };
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): DistantBlurOnly (technique 1, the common gameplay case) as one Vulkan pass: DepthOfField.frag
+// is DistantOnly line for line. The autofocus pipeline (technique 0, six passes through the frame chain) stays on D3D9: its passes
+// need the chain's direct-final write and the SourceBuffer copy once, which ExtFullScreen does per draw.
+// The push block mirrors the constants the technique reads, in the order of the GLSL block (offsets in its comments).
+bool DepthOfFieldEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 1 || ClearRenderTarget) return false;
+	struct Push { D3DXMATRIX viewTransform, projectionTransform; D3DXVECTOR4 reciprocalResolution, blur, data, cameraPosition, cameraData; UInt32 samplerIndex; UInt32 pad[3]; } push = {};
+	push.viewTransform = TheRenderManager->viewMatrix;
+	push.projectionTransform = TheRenderManager->projMatrix;
+	push.reciprocalResolution = TheShaderManager->ShaderConst.ReciprocalResolution;
+	push.blur = Constants.Blur;
+	push.data = Constants.Data;
+	push.cameraPosition = TheRenderManager->CameraPosition;
+	push.cameraData = TheRenderManager->CameraData;
+	IDirect3DBaseTexture9* textures[] = { TheTextureManager->RenderedTexture, TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr };
+	return ExtTexturePass(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass, "DepthOfField", textures, _countof(textures), &push, sizeof(push), 208);
+}
