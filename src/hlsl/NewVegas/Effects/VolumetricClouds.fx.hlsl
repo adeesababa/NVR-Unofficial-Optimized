@@ -50,6 +50,7 @@ float4x4 TESR_CloudsReflectInvVP;    // UNOFFICIAL: the water reflection camera'
 float4x4 TESR_CloudsHistoryViewProj; // UNOFFICIAL: the view-projection the history in TESR_CloudHistory was made with
 float4 TESR_CloudsReflectData;       // UNOFFICIAL x: strength in the reflection, yz: its size (texels), w: the depth of the far plane
 float4 TESR_CloudsMotion;       // UNOFFICIAL 2026-10-15 xy: the cloud pattern's move this frame (m), w: sharpness 0..1
+float4 TESR_CloudsTint;         // UNOFFICIAL 2026-10-25 xyz: the weather's cloud colour now (linear, brightness 1), w: WeatherTint 0..1
 float4 TESR_WaterSettings;     // x: height of the water in view (game units)
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
@@ -297,6 +298,9 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 	}
 	// far clouds thin out into the sky (the sky's own colour is the haze): they hold near and fade quickly far off,
 	// before the horizon squeezes them into slivers thinner than the march's texels
+	// UNOFFICIAL 2026-10-25 WeatherTint: the colour the weather gives its own cloud layers at this hour (orange at sunset, grey
+	// overcast, blue at night), over the light from the sun and sky; brightness unchanged (the tint's own is 1).
+	scattered *= lerp(1.0, TESR_CloudsTint.rgb, TESR_CloudsTint.w);
 	float distance = depthWeight > 0.0 ? depthSum / depthWeight : tStart;
 	float haze = exp(-(distance * distance) / (HazeDistance * HazeDistance)) * saturate((MaxDistance - distance) / (0.4 * MaxDistance));
 	scattered *= haze;

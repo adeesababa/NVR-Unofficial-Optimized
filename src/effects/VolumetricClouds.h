@@ -41,6 +41,7 @@ public:
 		float	Sharpness;					// UNOFFICIAL: 0 the old soft look .. 1 crisp (sharper history, sharpened composite, finer noise far off)
 		float	FromWeatherTextures;		// UNOFFICIAL: share of the coverage taken from the weather's own cloud textures (0: its type alone)
 		bool	FixedMarchExit;				// UNOFFICIAL 2026-10-17: technique 6 (MarchFixedExit): the march stops at Steps / when opaque (the compiler had killed the exit)
+		float	WeatherTint;				// UNOFFICIAL 2026-10-25: how much the weather's own cloud colours (sunset orange, overcast grey, night blue) tint the clouds (0 off)
 	};
 	SettingsStruct	Settings = {};
 
@@ -61,6 +62,7 @@ public:
 		D3DXVECTOR4	ReflectData;		// UNOFFICIAL x: strength, yz: the reflection's size, w: the far plane's depth
 		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size (texels)
 		D3DXVECTOR4	Motion;			// UNOFFICIAL xy: the cloud pattern's move this frame (m), w: sharpness 0..1
+		D3DXVECTOR4	Tint;			// UNOFFICIAL 2026-10-25 xyz: the weather's cloud colour now (linear, its brightness taken out), w: WeatherTint
 	};
 	ConstantsStruct	Constants = {};
 
@@ -137,4 +139,10 @@ private:
 	IDirect3DSurface9*	probeReadback = nullptr;	// the probe's 1 x 1 copy in system memory
 	void		ProbeLayer(IDirect3DDevice9* Device);
 	void		WeatherLook(TESWeather* weather, float& coverage, float& rain, float& bias);
+	// UNOFFICIAL 2026-10-25 WeatherTint: the colour the game gives its own cloud layers now (the weather's cloud colours at this
+	// hour, blended across a weather change), linear, 0-1.
+	D3DXVECTOR3	WeatherCloudColour(Sky* sky, float hour);
+	D3DXVECTOR3	CloudColourOf(TESWeather* weather, const float weights[4]);
+	int			tintLogs = 0;
+	double		lastTintLog = -100.0;
 };
