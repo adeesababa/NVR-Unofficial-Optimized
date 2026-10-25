@@ -35,7 +35,7 @@ public:
 	struct ExtPass { ID3D9NvrExtPipeline* Pipeline = nullptr; bool Tried = false; };
 	bool					ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 								ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount,
-								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false, UINT WrapSamplerPushOffset = 0);
+								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false, UINT WrapSamplerPushOffset = 0, bool PointWrapSampler = false);
 	// The loaded file texture behind one of the effect's samplers (e.g. "TESR_BloodLensSampler"), null if none.
 	IDirect3DBaseTexture9*	ExtFileTexture(const char* SamplerName);
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.

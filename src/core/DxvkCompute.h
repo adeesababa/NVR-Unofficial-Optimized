@@ -33,6 +33,7 @@ public:
 	static ID3D9NvrExtSampler*	LinearClamp();
 	static ID3D9NvrExtSampler*	PointClamp();
 	static ID3D9NvrExtSampler*	LinearWrap();	// the file textures' (dirt, blood, water noise) WRAP state
+	static ID3D9NvrExtSampler*	PointWrap();	// UNOFFICIAL 2026-10-25 (Cinema): POINT/WRAP, the blue noise file texture (MIN/MAG NONE)
 	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
 	static bool					PassesOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
@@ -62,4 +63,5 @@ private:
 	static ID3D9NvrExtSampler*	SamplerLinear;
 	static ID3D9NvrExtSampler*	SamplerPoint;
 	static ID3D9NvrExtSampler*	SamplerWrap;
+	static ID3D9NvrExtSampler*	SamplerPointWrap;
 };

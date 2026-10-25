@@ -605,7 +605,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 
 // UNOFFICIAL 2026-10-23 (NVR DXVK): see EffectRecord.h.
 bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
-	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler, UINT WrapSamplerPushOffset) {
+	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler, UINT WrapSamplerPushOffset, bool PointWrapSampler) {
 	if (TextureCount > 8) return false;
 	const UINT samplers = WrapSamplerPushOffset ? 2 : 1;
 	if (!Pass.Tried) {
@@ -619,7 +619,7 @@ bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		Pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvName, bindings, TextureCount + samplers, PushSize, true);
 	}
 	ID3D9NvrExtSampler* sampler = PointSampler ? DxvkCompute::PointClamp() : DxvkCompute::LinearClamp();
-	ID3D9NvrExtSampler* wrap = WrapSamplerPushOffset ? DxvkCompute::LinearWrap() : nullptr;
+	ID3D9NvrExtSampler* wrap = WrapSamplerPushOffset ? (PointWrapSampler ? DxvkCompute::PointWrap() : DxvkCompute::LinearWrap()) : nullptr;
 	if (!Pass.Pipeline || !sampler || (WrapSamplerPushOffset && !wrap)) return false;
 	NVR_EXT_RESOURCE_BINDING resources[10] = {};
 	for (UINT i = 0; i < TextureCount; i++) {
