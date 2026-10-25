@@ -2445,6 +2445,9 @@ static void RenderColorTriple(
 
 	bool changed = false;
 
+	// UNOFFICIAL 2026-10-25: the wheel otherwise takes the default item width (about two thirds of the page), which on a wide menu
+	// window made it fill the whole page. Capped to a size that follows the text size (Text A-/A+).
+	ImGui::SetNextItemWidth((std::min)(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 22.0f));
 	if (ImGui::ColorPicker3("##col", cs.col,
 		ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_NoSidePreview))
 		changed = true;
