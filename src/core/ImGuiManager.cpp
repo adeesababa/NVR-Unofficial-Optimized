@@ -1412,13 +1412,21 @@ static void BlockGameInput(bool block) {
 // ---- Visibility --------------------------------------------------------------
 
 static void SetOverlayVisible(bool visible);
+static char* SearchTestBuffer();	// UNOFFICIAL 2026-10-25: the menu search box (defined with the search, above RenderContent)
 #if NVR_TEST_TOOLS
 // UNOFFICIAL 2026-10-19: the auto-test's 'menu <section>' shots open the menu at that page (the picture is taken after it is
 // drawn, SettingShots::CaptureMenu) and close it again; ShowTests ticks Display > "Show test settings" for that shot.
 void ImGuiManager::TestShowMenu(const char* Section, bool ShowTests) {
 	if (!Initialized) return;
 	s_showTestSettings = Section && ShowTests;
-	if (Section) SelectedSection = Section;
+	// 2026-10-25: 'menu search:<text>' = the menu search box filled with <text> ('+' for a space, e.g. search:shadow+bias)
+	char* searchBuf = SearchTestBuffer();
+	searchBuf[0] = '\0';
+	if (Section && strncmp(Section, "search:", 7) == 0) {
+		strncpy_s(searchBuf, 64, Section + 7, _TRUNCATE);
+		for (char* c = searchBuf; *c; c++) if (*c == '+') *c = ' ';
+	}
+	else if (Section) SelectedSection = Section;
 	SetOverlayVisible(Section != nullptr);
 }
 #endif
@@ -1798,11 +1806,15 @@ void ImGuiManager::NewFrame() {
 			else if (s_masterMod == 2) modHeld = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
 			else if (s_masterMod == 3) modHeld = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
 
+			// UNOFFICIAL 2026-10-25 menu search: while a text box has the keyboard, a toggle key that types a character
+			// (a letter, a digit) is text, not the menu key. Keys that type nothing (End, F-keys) still close the menu.
+			const bool typing = Visible && ImGui::GetIO().WantTextInput && MapVirtualKey(vk, MAPVK_VK_TO_CHAR) != 0;
+
 			// Open/close overlay — bare key only, never when FX modifier is held.
 			// While in screenshot mode the key exits screenshot mode instead of closing.
 			{
 				static bool prev = false;
-				if (keyDown && !prev && !modHeld) {
+				if (keyDown && !prev && !modHeld && !typing) {
 					if (s_screenshotMode)
 						s_screenshotMode = false;
 					else
@@ -1815,7 +1827,7 @@ void ImGuiManager::NewFrame() {
 			if (s_masterMod > 0) {
 				static bool prevMaster = false;
 				bool masterDown = modHeld && keyDown;
-				if (masterDown && !prevMaster) {
+				if (masterDown && !prevMaster && !typing) {
 					bool cur = TheSettingManager->SettingsMain.Main.RenderEffects;
 					TheSettingManager->SetSetting("Main.Main.Misc", "RenderEffects", !cur);
 					TheSettingManager->LoadSettings();
@@ -1844,7 +1856,7 @@ void ImGuiManager::NewFrame() {
 	if (Visible && !SelectedSection.empty() && SelectedSection.find("Shaders.") == 0) {
 		static bool prevInsert = false;
 		bool curInsert = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-		if (curInsert && !prevInsert) {
+		if (curInsert && !prevInsert && !ImGui::GetIO().WantTextInput) {	// UNOFFICIAL 2026-10-25: not while typing in a text box
 			size_t dot1 = SelectedSection.find('.');
 			size_t dot2 = SelectedSection.find('.', dot1 + 1);
 			if (dot1 != std::string::npos && dot2 != std::string::npos) {
@@ -1922,8 +1934,9 @@ void ImGuiManager::NewFrame() {
 		             || (GetAsyncKeyState(VK_OEM_PLUS)  & 0x8000) != 0;
 		bool curMinus = (GetAsyncKeyState(VK_SUBTRACT)  & 0x8000) != 0
 		             || (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
-		s_plusPressed  = curPlus  && !prevPlus;
-		s_minusPressed = curMinus && !prevMinus;
+		// UNOFFICIAL 2026-10-25: a '-' typed in a text box (the menu search) must not step the setting under the cursor
+		s_plusPressed  = curPlus  && !prevPlus  && !io.WantTextInput;
+		s_minusPressed = curMinus && !prevMinus && !io.WantTextInput;
 		prevPlus  = curPlus;
 		prevMinus = curMinus;
 	}
@@ -3032,7 +3045,176 @@ static void RenderNewInPatch() {
 	}
 }
 
+// UNOFFICIAL 2026-10-25: menu search. The box at the top of the sidebar filters every menu section and setting by name: the
+// text is split into words and a setting matches when every word is in its "Section.Key" (case-insensitive), so "shadow
+// bias" or "ambient" both work. A shader's name also finds its on/off switch. The results are the very same settings, drawn
+// by the "New in this patch" renderer and grouped under their section; the sidebar lists those sections (a click opens one).
+// Weathers (generated per weather) are left out. Clearing the box (the x, or Escape while typing) brings the normal menu back.
+static char s_searchBuf[64] = "";
+static char* SearchTestBuffer() { return s_searchBuf; }
+
+struct SearchKey { std::string Section, Key, Haystack; bool Status; std::string ShaderName; };
+static std::vector<SearchKey> s_searchIndex;
+static std::vector<NewEntry>  s_searchResults;
+static std::vector<NewGroup>  s_searchGroups;
+static std::string s_searchQuery;	// the lower-case text the results were built for
+static bool        s_searchTests   = false;	// s_showTestSettings the results were built with
+static size_t      s_searchTotal   = 0;	// matches before the cap
+static UInt32      s_searchRevision = 0xFFFFFFFFu;
+static int         s_searchFrames   = 0;
+static const size_t kSearchMax = 400;	// more than this is not a search any more: ask for another word
+
+static std::string SearchLower(const std::string& s) {
+	std::string out(s);
+	for (char& c : out) c = (char)tolower((unsigned char)c);
+	return out;
+}
+
+static std::string SearchQueryText() {
+	std::string q = SearchLower(s_searchBuf);
+	const size_t b = q.find_first_not_of(' ');
+	if (b == std::string::npos) return std::string();
+	return q.substr(b, q.find_last_not_of(' ') - b + 1);
+}
+
+static bool SearchActive() { return !SearchQueryText().empty(); }
+
+// The same tree as the sidebar (FillMenuSections / FillMenuSettings, the same hidden sections and keys), leaves only.
+static void SearchIndexSection(const std::string& path, const std::string& name, bool parentIsShaders) {
+	if (ShouldHideSection(name)) return;
+	StringList subs;
+	TheSettingManager->FillMenuSections(&subs, path.c_str());
+	if (subs.empty()) {
+		SettingManager::Configuration::SettingList settings;
+		TheSettingManager->FillMenuSettings(&settings, path.c_str());
+		for (auto& s : settings) {
+			if (ShouldHideKey(s.Key)) continue;
+			s_searchIndex.push_back({ path, s.Key, SearchLower(path + "." + s.Key), false, std::string() });
+		}
+		return;
+	}
+	if (parentIsShaders && TheSettingManager->GetMenuShaderSwitch(name.c_str()) != SettingManager::MenuSwitch::None)
+		s_searchIndex.push_back({ path + ".Status", "Enabled", SearchLower(path + ".Enabled on off"), true, name });	// the sidebar's checkbox
+	for (auto& sub : subs)
+		SearchIndexSection(path + "." + sub, sub, path == "Shaders");
+}
+
+static void SearchRebuild(const std::string& query) {
+	s_searchQuery = query;
+	s_searchTests = s_showTestSettings;
+	s_searchResults.clear();
+	s_searchGroups.clear();
+	s_searchTotal = 0;
+	s_searchRevision = TheSettingManager->SettingsRevision;
+	s_searchFrames = 0;
+
+	std::vector<std::string> words;
+	for (size_t i = 0; i < query.size();) {
+		const size_t j = query.find(' ', i);
+		const size_t end = (j == std::string::npos) ? query.size() : j;
+		if (end > i) words.push_back(query.substr(i, end - i));
+		i = end + 1;
+	}
+	for (const SearchKey& k : s_searchIndex) {
+		bool all = true;
+		for (const std::string& w : words) if (k.Haystack.find(w) == std::string::npos) { all = false; break; }
+		if (!all) continue;
+		NewEntry e;
+		e.Section = k.Section;
+		e.Key = k.Key;
+		e.Status = k.Status;
+		e.ShaderName = k.ShaderName;
+		e.Valid = TheSettingManager->Config.FillNode(&e.Node, e.Section.c_str(), e.Key.c_str());
+		if (!e.Valid) continue;
+		if (!s_showTestSettings && IsTestSetting(e.Node)) continue;	// as hidden here as in its own section
+		if (++s_searchTotal <= kSearchMax) s_searchResults.push_back(std::move(e));
+	}
+	NewMakeGroups(s_searchResults, s_searchGroups);
+	for (NewGroup& g : s_searchGroups)	// a shader's switch: "Shaders > Name", not its hidden Status section
+		if (NewEndsWith(g.Display, " > Status")) g.Display.resize(g.Display.size() - 9);
+}
+
+// Keeps the results in step with the box. The index is read again when a search starts (the sections can change with "Disk").
+static void SearchEnsure() {
+	const std::string query = SearchQueryText();
+	if (query.empty()) {
+		if (!s_searchQuery.empty()) { s_searchQuery.clear(); s_searchResults.clear(); s_searchGroups.clear(); s_searchIndex.clear(); }
+		return;
+	}
+	if (s_searchIndex.empty()) {
+		StringList topSections;
+		TheSettingManager->FillMenuSections(&topSections, nullptr);
+		for (auto& section : topSections)
+			if (section != "Weathers") SearchIndexSection(section, section, false);
+	}
+	if (query != s_searchQuery || s_searchTests != s_showTestSettings) SearchRebuild(query);
+	else if (s_searchRevision != TheSettingManager->SettingsRevision || ++s_searchFrames >= 30) {
+		s_searchFrames = 0;
+		s_searchRevision = TheSettingManager->SettingsRevision;
+		NewRefreshNodes(s_searchResults);
+	}
+}
+
+static void RenderSearchBox() {
+	const char* clearLabel = "x##menusearchclear";
+	const float clearW = ImGui::CalcTextSize("x").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - clearW - ImGui::GetStyle().ItemSpacing.x);
+	ImGui::InputTextWithHint("##menusearch", "Search settings...", s_searchBuf, sizeof(s_searchBuf), ImGuiInputTextFlags_EscapeClearsAll);
+	if (ImGui::IsItemHovered() && !ImGui::IsItemActive())
+		ImGui::SetTooltip("Type part of a setting's or a section's name (for example \"shadow bias\").\nEvery word must match. Escape or x clears it.");
+	ImGui::SameLine();
+	ImGui::BeginDisabled(s_searchBuf[0] == '\0');
+	if (ImGui::Button(clearLabel, ImVec2(clearW, 0.0f))) s_searchBuf[0] = '\0';
+	ImGui::EndDisabled();
+	SearchEnsure();
+}
+
+// Sidebar while searching: the sections that hold a match. A click opens that section and clears the search.
+static void RenderSearchSidebar() {
+	ImGui::TextDisabled("%u in %u sections", (UInt32)s_searchTotal, (UInt32)s_searchGroups.size());
+	ImGui::Separator();
+	for (const NewGroup& g : s_searchGroups) {
+		ImGui::PushID(g.Section.c_str());
+		const bool isSwitch = NewEndsWith(g.Section, ".Status");
+		const size_t n = g.End - g.Begin;
+		const std::string label = g.Display + (isSwitch ? " (on / off)" : " (" + std::to_string(n) + ")");
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.68f, 0.75f, 1.0f));
+		if (ImGui::Selectable(label.c_str(), false) && !isSwitch) {
+			SelectedSection = g.Section;
+			s_searchBuf[0] = '\0';
+		}
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(isSwitch ? "The shader's on/off switch, shown on the right." : "Open this section (clears the search).");
+		ImGui::PopID();
+	}
+}
+
+static void RenderSearchResults() {
+	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "Search: %s", s_searchBuf);
+	ImGui::SameLine();
+	ImGui::TextDisabled("%u setting%s", (UInt32)s_searchTotal, s_searchTotal == 1 ? "" : "s");
+	ImGui::Separator();
+	ImGui::Spacing();
+	if (s_searchTotal == 0) {
+		ImGui::TextDisabled("No setting or section matches. Weather sections are not searched.");
+		if (!s_showTestSettings) ImGui::TextDisabled("Test settings are hidden (Display > Show test settings).");
+		return;
+	}
+	if (s_searchTotal > kSearchMax) {
+		ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Showing the first %u: add a word to narrow it down.", (UInt32)kSearchMax);
+		ImGui::Spacing();
+	}
+	ImGui::PushID("##searchresults");
+	NewRenderGroups(s_searchResults, s_searchGroups, false);
+	ImGui::PopID();
+}
+
 static void RenderContent() {
+	if (SearchActive()) {
+		RenderSearchResults();
+		return;
+	}
 	if (SelectedSection == kNewTabId) {
 		RenderNewInPatch();
 		return;
@@ -3297,6 +3479,12 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 }
 
 static void RenderSidebar() {
+	RenderSearchBox();	// UNOFFICIAL 2026-10-25: menu search
+	if (SearchActive()) {
+		RenderSearchSidebar();
+		return;
+	}
+	ImGui::Spacing();
 	// UNOFFICIAL 2026-10-18: "New in this patch" first. The menu opens on it (and "Disk" returns to it) when nothing is selected.
 	NewPatchEnsure();
 	if (NewPatchCount() > 0) {
@@ -3389,7 +3577,8 @@ void ImGuiManager::BuildUI() {
 	// Wait for Escape or Alt release before closing so the game doesn't see them held.
 	static bool escapePending = false;
 	static bool altPending    = false;
-	if (ImGui::IsKeyPressed(ImGuiKey_Escape))   escapePending = true;
+	// UNOFFICIAL 2026-10-25: Escape in a text box only leaves the box (the menu search clears its text), it does not close the menu
+	if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::GetIO().WantTextInput) escapePending = true;
 	if (ImGui::IsKeyPressed(ImGuiKey_LeftAlt) ||
 	    ImGui::IsKeyPressed(ImGuiKey_RightAlt))  altPending    = true;
 	if (escapePending && !ImGui::IsKeyDown(ImGuiKey_Escape)) {
