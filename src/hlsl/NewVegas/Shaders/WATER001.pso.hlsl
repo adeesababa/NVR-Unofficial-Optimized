@@ -78,12 +78,17 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     refractionPos.y = refractionPos.w - reflectionPos.y;
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * placedWaterDepthModifier;
 
-    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 refraction = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 color = refraction;
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, color);
     // UNOFFICIAL placed-water fog: the fog colour must be linear like the rest of the maths here (it was the raw sRGB colour,
     // about twice too bright after delinearize: small placed water - wells, troughs - turned into a flat milky green)
     color = getTurbidityFog(refractedDepth, linShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linShallowColor, color);
+    // UNOFFICIAL placed water as the game's own shader: the water tint (light travel + haze) only where the water depth map
+    // has depth (vanilla multiplies its haze by this same depthFog). Where the depth map is empty - a narrow well, a small
+    // trough - the game shows the bottom; NVR painted the haze over it (a flat opaque green puddle).
+    color = lerp(refraction, color, depthFog);
     color = getFresnel(surfaceNormal, eyeDirection, linHorizonColor, TESR_PlacedWaveParams.w, color);
     color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);
 
@@ -93,6 +98,6 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float fogStrength = pow(1 - saturate((FogParam.x - depth) / FogParam.y), FresnelRI.y);
     
     OUT.color_0.rgb = fogStrength * (FogColor.rgb - color.rgb) + color.rgb;
-    OUT.color_0.a = 1;
+    OUT.color_0.a = alpha; // UNOFFICIAL: the mesh's vertex alpha, as the game's own placed-water shaders (was always opaque)
     return OUT;
 };
