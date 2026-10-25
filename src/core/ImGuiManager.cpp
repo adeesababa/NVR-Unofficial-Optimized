@@ -3108,6 +3108,17 @@ static void RenderContent() {
 		return;
 	}
 
+	// UNOFFICIAL 2026-10-25: the settings players look for first go to the top of their section (the rest stay alphabetical).
+	static const char* const kPinnedFirst[][2] = {
+		{ "Shaders.PBR.Main", "ReflectivityExterior" },
+		{ "Shaders.PBR.Main", "ReflectivityInterior" },
+	};
+	std::stable_partition(settings.begin(), settings.end(), [](const SettingManager::Configuration::ConfigNode& n) {
+		for (const auto& pin : kPinnedFirst)
+			if (SelectedSection == pin[0] && strcmp(n.Key, pin[1]) == 0) return true;
+		return false;
+	});
+
 	bool isShader = (SelectedSection.find("Shaders") == 0);
 
 	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "%s", SelectedSection.c_str());

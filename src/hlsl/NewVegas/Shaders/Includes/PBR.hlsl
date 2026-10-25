@@ -26,7 +26,13 @@ float SpecularAA(float3 normal, float roughness) {
 
 // UNOFFICIAL 2026-10-16 EnergySplit ([Shaders.PBR.Main], PBR.cpp; live). c223: clear of every other pixel shader constant
 // NVR sets. Zero (not set) = off.
-float4 TESR_PBRMath : register(c223); // x: EnergySplit (1 = on)
+float4 TESR_PBRMath : register(c223); // x: EnergySplit (1 = on), y: Reflectivity - 1 (below), z/w: Object.hlsl RmaosRead
+
+// UNOFFICIAL 2026-10-25 Reflectivity ([Shaders.PBR.Main] ReflectivityExterior / ReflectivityInterior, PBR.cpp; live): the share of
+// light a surface reflects head-on (F0) and at grazing angles (F90) times the setting, so highlights from the sun and lamps follow
+// it. TESR_PBRMath.y carries Reflectivity - 1: 0 (also a register never written) is the old picture exactly.
+float3 ReflectivityF0(float3 f0) { return saturate(f0 + f0 * TESR_PBRMath.y); }
+#define REFLECTIVITY_F90 saturate(1.0f + TESR_PBRMath.y).xxx
 
 // UNOFFICIAL 2026-10-18 SpecularFade ([Shaders.PBR.Main], restart: SPEC_FADE_ON from ShaderRecord::BuildDefines; the object templates
 // define PBR_SPEC_FADE in their highlight-drawing pixel shaders, so terrain, skin and water keep the old code; parallax since 2026-10-25). The game stops
@@ -197,7 +203,7 @@ float3 PBRDiffuse(float metallicness, float roughness, float3 albedo, float3 nor
 }
 
 float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -209,7 +215,7 @@ float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 no
     const float NdotH = shades(normal, halfway);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
 
     float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
 #ifdef PBR_SPEC_FADE
@@ -220,7 +226,7 @@ float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 no
 }
 
 float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -232,7 +238,7 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
     const float NdotH = shades(normal, halfway);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
     
     float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
 
@@ -251,7 +257,7 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
 #define SUN_RADIUS 0.00918043
 
 float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -276,7 +282,7 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
     const float NdotL = shades(normal, lightDir);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
 
     float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
 #ifdef PBR_SPEC_FADE
@@ -287,7 +293,7 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
 }
 
 float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -312,7 +318,7 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
     const float NdotL = shades(normal, lightDir);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
     
     float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
 
