@@ -143,6 +143,7 @@
     <ClCompile Include="..\src\effects\SkyView.cpp" />
     <ClCompile Include="..\src\effects\AmbientLight.cpp" />
     <ClCompile Include="..\src\effects\BloodLens.cpp" />
+    <ClCompile Include="..\src\effects\BarrelHaze.cpp" />
     <ClCompile Include="..\src\effects\Bloom.cpp" />
     <ClCompile Include="..\src\effects\BloomLegacy.cpp" />
     <ClCompile Include="..\src\effects\Cinema.cpp" />
