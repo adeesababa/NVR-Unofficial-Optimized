@@ -25,6 +25,7 @@ float4 TESR_WetWorldData : register(c20);
 float4 TESR_PlacedWaterShorelineParams : register(c21);
 float4 TESR_WaterLODColor : register(c22);
 float4 TESR_DebugVar : register(c23);
+float4 TESR_SunAmount : register(c24);
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
@@ -54,7 +55,9 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float distance = length(eyeVector.xy);              // surface distance to eye
     float depth = length(eyeVector);                    // depth distance to eye
 
-	float sunLuma = luma(linSunColor);
+	// UNOFFICIAL placed-water fog: no sun fog at night, as the world water (WATER000)
+	float isDayTime = smoothstep(0, 0.5, TESR_SunAmount.x);
+	float sunLuma = luma(linSunColor) * isDayTime;
 	float placedWaterRefractionModifier = TESR_PlacedWaterSettings.w;		// reduce refraction because of the way placed depth is encoded
 	float placedWaterDepthModifier = 0.2;			// reduce depth value for fog because of the way placed depth is encoded
 
@@ -77,7 +80,9 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, color);
-    color = getTurbidityFog(refractedDepth, ShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
+    // UNOFFICIAL placed-water fog: the fog colour must be linear like the rest of the maths here (it was the raw sRGB colour,
+    // about twice too bright after delinearize: small placed water - wells, troughs - turned into a flat milky green)
+    color = getTurbidityFog(refractedDepth, linShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linShallowColor, color);
     color = getFresnel(surfaceNormal, eyeDirection, linHorizonColor, TESR_PlacedWaveParams.w, color);
     color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);

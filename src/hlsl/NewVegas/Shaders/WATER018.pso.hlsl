@@ -24,6 +24,7 @@ float4 TESR_SunDirection : register(c19);
 float4 TESR_WetWorldData : register(c20);
 float4 TESR_PlacedWaterShorelineParams : register(c21);
 float4 TESR_DebugVar : register(c22);
+float4 TESR_SunAmount : register(c23);
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
@@ -50,7 +51,9 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float distance = length(eyeVector.xy);              // surface distance to eye
     float depth = length(eyeVector);                    // depth distance to eye
 
-	float sunLuma = luma(linSunColor);
+	// UNOFFICIAL placed-water fog: no sun fog at night, as the world water (WATER017)
+	float isDayTime = smoothstep(0, 0.5, TESR_SunAmount.x);
+	float sunLuma = luma(linSunColor) * isDayTime;
 	float placedWaterRefractionModifier = TESR_PlacedWaterSettings.w;		// reduce refraction because of the way placed depth is encoded
 	float placedWaterDepthModifier = 0.1;			// reduce depth value for fog because of the way placed depth is encoded
 
