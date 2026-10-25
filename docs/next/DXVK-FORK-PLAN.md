@@ -31,6 +31,15 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
    game_swap.py `dev` now also copies Compute, shots list bench\foundations\lists\dxvkfork-1-lucky22.txt, tree
    work\NVR-dxvkfork-ci (holds the CI-built DLL). Run: `LOCKTAG=<own> FORK_D3D9=<folder> sh run_slot_when_free.sh lucky22
    dxvkfork-1-lucky22 dxvkfork1 NVR-dxvkfork-ci`.
+   FIRST RESULT 2026-10-25 (slot A, CI DLL b85cd6e7, fork d3d9.dll 76d69219): the fork loads in the real game and NVR finds
+   it: `UNOFFICIAL NVR DXVK: NVR DXVK extension 1.2 on DXVK v3.0.1-3-gb794414d (push 240 bytes, subgroup 32): compute
+   paths available`; DXVK's log is clean (no `NVR ext:` lines). But the game never reached its main loop (presents ~20 fps
+   for 600 s, "game loops 0", twice), so no pictures. CONTROL: stock DXVK 3.0.1 (the user's d3d9.dll.dxvk301) in the same
+   slot hangs the same way, while stock DXVK passed in the real game folder on 2026-10-21. So this is DXVK in a slim slot
+   copy (or with this CI-built v143 NVR DLL), NOT the fork. Next: (a) the same control with the native-built combo-1023 DLL
+   to split "slot" from "DLL"; (b) if it is the slot, find what the slim profile changes that DXVK minds (OneTweak removed,
+   own INIs, the child window). Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
+   extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
 3. Phase 2 first real replacement (4-8 h): one SLS20xx variant ported line for line, same picture in A/B shots.
 4. Only then: the first fork-only gain (all lamps in one pass, or the character shadow map lookup) and a timing A/B in
