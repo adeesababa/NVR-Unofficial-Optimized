@@ -51,6 +51,8 @@ float4x4 TESR_CloudsHistoryViewProj; // UNOFFICIAL: the view-projection the hist
 float4 TESR_CloudsReflectData;       // UNOFFICIAL x: strength in the reflection, yz: its size (texels), w: the depth of the far plane
 float4 TESR_CloudsMotion;       // UNOFFICIAL 2026-10-15 xy: the cloud pattern's move this frame (m), w: sharpness 0..1
 float4 TESR_WaterSettings;     // x: height of the water in view (game units)
+float4 TESR_CloudsTower;       // UNOFFICIAL 2026-10-25 Towering: x: the ordinary clouds' share of the (taller) layer (1 = off),
+                               // y: towering 0..1
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -103,6 +105,15 @@ static const float Sharpness = max(TESR_CloudsMotion.w, 0.0);
 // overcast deck is a layer, not heaps, and keeps the older look.
 static const float Cumulus = saturate(TESR_CloudsDetail.w) * (1.0 - smoothstep(0.6, 0.9, saturate(TESR_CloudsShape.z)));   // UNOFFICIAL 2026-10-15: up to 3 (the sharpening; the rest uses up to 1)
 
+// UNOFFICIAL 2026-10-25 Towering: the layer (Thickness above) is made taller on the CPU; the ordinary clouds keep to their old
+// share of it at the bottom (TowerShare), and only the strongest heaps climb on toward the new top. Like Cumulus, it fades out as
+// the sky closes over (an overcast deck has no towers standing out of it): the CPU eases both values back to off then.
+// (Worked out once here, not per sample: this shader is close to ps_3_0's register limits.)
+static const float TowerShare = TESR_CloudsTower.x > 0.0 ? clamp(TESR_CloudsTower.x, 0.05, 1.0) : 1.0;   // (never set: off)
+static const float InvTowerShare = 1.0 / TowerShare;
+static const float TowerGrow = (InvTowerShare - 1.0) * saturate(TESR_CloudsTower.y);   // how much taller a full tower is, in ordinary layers, less one
+static const float BaseThickness = Thickness * TowerShare;   // the depth of the ordinary layer (the Thickness setting)
+
 static const float EarthRadius = 6371000.0;
 static const float MetresPerUnit = 1.0 / 70.0;
 static const float Extinction = 0.04;   // per metre at density 1: about 25 m into a thick cloud half the light is gone
@@ -126,27 +137,39 @@ float ShellDistance(float dz, float above) {
 }
 
 // The cloud's vertical profile by type (0 flat layer .. 1 tall heap), h 0 at the base and 1 at the top of the layer.
-float HeightProfile(float h, float type) {
+// hb: the height in the ordinary layer (the same as h but up a tower, Towering), for the base.
+float HeightProfile(float h, float hb, float type) {
 	float top = lerp(0.3, 1.0, type);
 	float bottom = lerp(0.08, 0.12, type);
-	return smoothstep(0.0, bottom, h) * (1.0 - smoothstep(top * 0.6, top, h));
+	return smoothstep(0.0, bottom, hb) * (1.0 - smoothstep(top * 0.6, top, h));
 }
 
 // Cloud density at a point: the weather map decides where and how much, the shape texture the billows and the detail
 // texture wears away their edges (wispy underneath, billowy on top). cheap skips the detail (for the light march).
+// h runs 0..1 through the whole layer (with Towering on, taller than the ordinary clouds).
 float CloudDensity(float3 p, float h, float lod, bool cheap) {
 	if (h <= 0.0 || h >= 1.0) return 0.0;
 	float4 weather = tex2Dlod(TESR_CloudWeather, float4(p.xy / WeatherTile, 0.0, 0.0));
 	float local = saturate(Remap(weather.r, 1.0 - Coverage, 1.0, 0.0, 1.0));
 	if (local <= 0.0) return 0.0;
 	float type = saturate(weather.g + TESR_CloudsWind.w);
+	// UNOFFICIAL 2026-10-25 Towering (the huge desert cumulus of a western): where the weather map's cloud field is at its
+	// strongest and of the heaped kind, that cloud's own top is raised from the ordinary layer's top toward the top of the
+	// taller layer: h below becomes the height up this cloud's own column, so a tower is one of the ordinary heaps drawn taller
+	// (the noise is read in world space, not stretched: more billows up its sides). The weather map is large and soft, so the
+	// towers rise smoothly out of the middle of a field of ordinary heaps. Exactly the old h with Towering off.
+	float tower = saturate(local * type * 4.0 - 0.6);
+	float hb = h * InvTowerShare;   // the height in the ordinary layer: the base's fades keep their depth in metres up a tower
+	h = hb / (1.0 + tower * TowerGrow);   // up this cloud's own column
+	if (h >= 1.0) return 0.0;
+	type += tower * saturate(TESR_CloudsTower.y) * (1.0 - type);   // a tower is the tallest heap of its kind
 	// Turbulence: the shape is read through a slow, large distortion, so the noise's cells do not line up into rows of
 	// look-alike heaps.
 	float3 s = p / ShapeTile;
 	// (CumulusShape: less of it, the big twist pulled heaps into smoky streaks)
 	s += (tex3Dlod(TESR_NoiseVolume, float4(s * 0.5, lod)).rga - 0.5) * (0.15 * TESR_CloudsLook.z * lerp(1.0, 0.4, Cumulus));
 	float shape = tex3Dlod(TESR_CloudShape, float4(s, lod + TESR_CloudsLook.y)).r;   // a mip down: fewer lone puffs
-	float base = saturate(Remap(shape * HeightProfile(h, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+	float base = saturate(Remap(shape * HeightProfile(h, hb, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
 	// UNOFFICIAL 2026-10-20 CumulusShape (after photos of Mojave fair-weather cumulus): the older profile cut every cloud off at
 	// the same top height, so they came out as flat slabs (boxy). Here the base stays flat and crisp (the condensation level)
 	// but the cloud needs a stronger core the higher it goes, so it narrows as it rises: only the cores climb, into rounded
@@ -157,7 +180,7 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 		float rise = saturate(h / top);
 		float threshold = lerp(1.0 - local, 1.0, 0.9 * rise);
 		float core = saturate(Remap(shape, threshold, 1.0, 0.0, 1.0));
-		core *= smoothstep(0.0, 0.03, h) * (1.0 - smoothstep(0.85, 1.0, rise));
+		core *= smoothstep(0.0, 0.03, hb) * (1.0 - smoothstep(0.85, 1.0, rise));
 		core = saturate(Remap(core, 0.1, 1.0, 0.0, 1.0)) * local;   // no faint fringe round the cores: those were the wisps
 		base = lerp(base, core, Cumulus);
 	}
@@ -177,11 +200,11 @@ float CloudDensity(float3 p, float h, float lod, bool cheap) {
 			float fine = tex3Dlod(TESR_CloudDetail, float4(f, lod)).r;
 			detail = lerp(detail, detail * 0.65 + fine * 0.35, TESR_CloudsDetail.x);
 		}
-		float wisps = lerp(detail, 1.0 - detail, saturate(h * 6.0));
+		float wisps = lerp(detail, 1.0 - detail, saturate(hb * 6.0));
 		float erosion = Erosion;
 		// CumulusShape: billows all the way down (no wispy underside), and less wear near the base so it stays flat
 		wisps = lerp(wisps, 1.0 - detail, Cumulus);
-		erosion *= lerp(1.0, lerp(0.35, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+		erosion *= lerp(1.0, lerp(0.35, 1.0, smoothstep(0.0, 0.2, hb)), Cumulus);
 		base = saturate(Remap(base, wisps * erosion, 1.0, 0.0, 1.0));
 	}
 	// edge sharpness: thin cloud at the rim reaches full density sooner, so the outline is crisp instead of a long fade
@@ -238,7 +261,7 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 		ambientBottom = lerp(ambientBottom, lerp(physLow, physTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark), share);
 	}
 #endif
-	float lightStep = Thickness / 12.0;
+	float lightStep = BaseThickness / 12.0;   // (Towering: the ordinary clouds keep their light march)
 	float lightRise = max(light.z, 0.1);                     // a low sun still climbs out of the layer
 
 	float3 wind = float3(TESR_CloudsWind.xy, 0.0);
@@ -281,11 +304,12 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 			}
 			// powder: the edges facing the light are darker than a plain exponential says
 			float powder = 1.0 - exp(-2.0 * Extinction * density * 40.0);
-			float3 ambient = lerp(ambientBottom, ambientTop, saturate(h));
+			float hb = h * InvTowerShare;   // Towering: the height in the ordinary layer (above 1 up a tower)
+			float3 ambient = lerp(ambientBottom, ambientTop, saturate(hb));
 			// UNOFFICIAL 2026-10-20 CumulusShape: the bottom of a heap gets less of the light scattered down to it from the bright
 			// cloud above (Schneider's height term in Nubis): grey bases under white tops, as in the photos, instead of grey patches
 			// in the middle of an evenly white slab.
-			float lowLight = lerp(1.0, lerp(0.75, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+			float lowLight = lerp(1.0, lerp(0.75, 1.0, smoothstep(0.0, 0.2, hb)), Cumulus);
 			float3 radiance = (sun * sunLight * lerp(0.5, 1.0, powder) + ambient) * lowLight;
 			float sigma = Extinction * density;
 			float stepTransmittance = exp(-sigma * dt);
@@ -372,7 +396,7 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 		// a typical depth into the layer): without this, each pixel kept last frame's cloud until its turn to be marched came
 		// round (one frame in four), so drifting clouds crept in small steps and trailed.
 		float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
-		float reach = ShellDistance(dir.z, max(Base + 0.4 * Thickness - camera.z, 50.0));
+		float reach = ShellDistance(dir.z, max(Base + 0.4 * BaseThickness - camera.z, 50.0));
 		previousDir = dir * reach + float3(TESR_CloudsMotion.xy, 0.0);
 	}
 	float4 clip = mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj);

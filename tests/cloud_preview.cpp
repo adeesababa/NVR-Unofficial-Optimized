@@ -6,6 +6,7 @@
 #include <d3d9.h>
 #include <d3dx9.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -158,8 +159,14 @@ int main(int argc, char** argv) {
 			auto env = [](const char* n, float d) { const char* e = getenv(n); return e ? (float)atof(e) : d; };
 			// CLOUD_USER=1: the user's own toml (2026-10-20) instead of the defaults
 			const bool user = getenv("CLOUD_USER") != NULL;
-			const float steps = user ? 24.0f : 48.0f, haze = user ? 15555.0f : 30000.0f, bright = user ? 3.5f : 1.0f;
-			vec("TESR_CloudsShape", user ? 5555.0f : 1500.0f, user ? 3333.0f : 1800.0f, v.coverage, env("CLOUD_DENSITY", user ? 0.5f : 1.0f));
+			const float haze = user ? 15555.0f : 30000.0f, bright = user ? 3.5f : 1.0f;
+			// UNOFFICIAL 2026-10-25 Towering (CLOUD_TOWER 0-1, CLOUD_TOWERH 1-4): as VolumetricCloudsEffect::UpdateConstants
+			const float towerFade = 1.0f - (std::min)((std::max)((v.coverage - 0.6f) / 0.3f, 0.0f), 1.0f);
+			const float towering = env("CLOUD_TOWER", 0.0f) * towerFade * towerFade * (3.0f - 2.0f * towerFade);
+			const float towerScale = 1.0f + (env("CLOUD_TOWERH", 2.5f) - 1.0f) * towering;
+			const float steps = (std::min)(64.0f, roundf((user ? 24.0f : 48.0f) * (1.0f + env("CLOUD_TOWERSTEPS", 0.25f) * (towerScale - 1.0f))));
+			vec("TESR_CloudsTower", 1.0f / towerScale, towering, 0.0f, 0.0f);
+			vec("TESR_CloudsShape", user ? 5555.0f : 1500.0f, (user ? 3333.0f : 1800.0f) * towerScale, v.coverage, env("CLOUD_DENSITY", user ? 0.5f : 1.0f));
 			vec("TESR_CloudsLook", env("CLOUD_SHARP", user ? 1.0f : 2.0f), env("CLOUD_MIP", user ? 1.0f : 0.0f), env("CLOUD_WARP", user ? 0.0f : 1.0f), env("CLOUD_SMOOTH", user ? 0.0f : 0.5f));
 			vec("TESR_CloudsNoise", env("CLOUD_SHAPE", user ? 33333.0f : 9000.0f), env("CLOUD_DETAIL", user ? 1888.0f : 500.0f), env("CLOUD_EROSION", user ? 0.33f : 0.5f), user ? 82222.0f : 30000.0f);
 			vec("TESR_CloudsDetail", env("CLOUD_FINE", user ? 0.2f : 0.0f), user ? 4221.5f : 140.0f, 256.0f, env("CLOUD_CUMULUS", 1.0f));
