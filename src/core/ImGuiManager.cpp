@@ -115,7 +115,26 @@ static float s_savedTimeScale = -1.0f; // session snapshot; -1 = not yet taken
 static bool  s_devFreecamOn   = false;
 static bool  s_devMenusHidden = false;
 static bool  s_screenshotMode = false;
-static bool  s_showTestSettings = false;	// UNOFFICIAL 2026-10-19 menu honesty: Display > "Show test settings"
+static bool  s_showTestSettings = false;	// UNOFFICIAL 2026-10-19 menu honesty; since 2026-10-25 only the auto-test's 'menu' shots set it (TestShowMenu)
+static bool  s_devOptions = false;	// UNOFFICIAL 2026-10-25 menu tidy: [Main.Menu.Developer] DeveloperOptions, read each frame the menu is drawn
+
+static bool DevOptionsShown() { return s_devOptions || s_showTestSettings; }
+
+// UNOFFICIAL 2026-10-25 menu tidy: one switch (off by default) for everything a player does not need: test and fault-finding switches,
+// the bug fixes and same-picture speed-ups that are on by default, A/B test paths, measuring hooks ([Main.Menu.Developer] DevOnly),
+// the Step and -/+ buttons and Retro-Encab. Hidden only: every setting keeps working with its saved value.
+static void DevOptionsCheckbox() {
+	bool on = s_devOptions;
+	if (ImGui::Checkbox("Developer options", &on)) {
+		TheSettingManager->SetSetting("Main.Menu.Developer", "DeveloperOptions", on);
+		TheSettingManager->LoadSettings();
+		s_devOptions = on;
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Also show what players should not need to touch: test and fault-finding switches, the bug fixes and\n"
+			"speed-ups that are on by default, A/B test paths, measuring tools, options that change almost nothing,\n"
+			"and the Step / - / + buttons. Hidden settings keep working with their saved values.");
+}
 
 // ---- Preset Manager panel ------------------------------------------------
 // Session 2: minimal read-only skeleton. Session 5 (current): promoted into
@@ -1220,10 +1239,7 @@ static void RenderDevPanel() {
 		ImGui::TextDisabled("(Press NVR key to restore)");
 
 		ImGui::Spacing();
-		ImGui::Checkbox("Show test settings", &s_showTestSettings);	// UNOFFICIAL 2026-10-19 menu honesty (not saved: off each start)
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Also show the switches used for testing and finding faults (debug views, logs, checks) and the old "
-				"settings nothing reads any more. Leave them at their defaults when playing.");
+		DevOptionsCheckbox();	// UNOFFICIAL 2026-10-25: was "Show test settings" (2026-10-19); the same switch as the menu's top row
 	}
 
 	ImGui::Spacing();
@@ -1949,6 +1965,7 @@ static bool ShouldHideKey(const char* key) {
 	if (strcmp(key, "DayLUT") == 0 || strcmp(key, "NightLUT") == 0 || strcmp(key, "InteriorLUT") == 0) return true;
 	// UNOFFICIAL 2026-10-18: the data of the "New in this patch" tab ([Main.Menu.NewInPatch]) is not a setting to edit
 	if (strcmp(key, "NewSince") == 0 || strcmp(key, "NewInclude") == 0 || strcmp(key, "NewExclude") == 0 || strcmp(key, "NewDiagnostics") == 0) return true;
+	if (strcmp(key, "DevOnly") == 0) return true;	// UNOFFICIAL 2026-10-25: [Main.Menu.Developer]'s list, read from the defaults file only
 	return false;
 }
 
@@ -2217,9 +2234,31 @@ static const char* InactiveReason(const char* section, const char* key) {
 // 3. Test switches (the "New in this patch" tab's Diagnostics rule) and settings nothing reads: hidden unless ticked.
 static bool NewIsDiagnostic(const std::string& key, const std::string& description, const std::vector<std::string>& extra, const std::string& section);
 
+static bool IsDevOnlySetting(const std::string& section, const std::string& key);
+
+// Shown only with Developer options (2026-10-25: also the [Main.Menu.Developer] DevOnly list).
 static bool IsTestSetting(const SettingManager::Configuration::ConfigNode& node) {
 	static const std::vector<std::string> none;
-	return IsDeadSetting(node.Section, node.Key) || NewIsDiagnostic(node.Key, node.Description, none, node.Section);
+	return IsDeadSetting(node.Section, node.Key) || NewIsDiagnostic(node.Key, node.Description, none, node.Section) ||
+		IsDevOnlySetting(node.Section, node.Key);
+}
+
+// UNOFFICIAL 2026-10-25 menu tidy: whole-number settings that are plain 0/1 switches are drawn as a checkbox (it writes 0 or 1, the
+// type in the file stays). The ones listed here, and any whose description starts with "[0-1]"; a value other than 0 or 1 keeps the
+// number box.
+static bool IsOnOffInteger(const SettingManager::Configuration::ConfigNode& node) {
+	static const char* const onOff[][2] = {
+		{ "Main.Main.Performance", "ArrivalSampler" }, { "Main.Main.Performance", "IOWorker2" },
+		{ "Main.Main.Performance", "FogReferenceTest" }, { "Main.Main.Performance", "LampMaskScissorCheck" },
+		{ "Main.Main.Performance", "CubeFaceViewCullCheck" },
+		{ "Shaders.Grass.NewGrass", "Log" }, { "Shaders.Grass.Wind", "Log" }, { "Shaders.Plants.Wind", "Log" },
+		{ "Shaders.DitherBuster.Main", "DebugView" }, { "Shaders.PBR.Metal", "DebugView" },
+		{ "Shaders.ShadowsExteriors.SunSmoothing", "SmoothSun" }, { "Shaders.ShadowsExteriors.SunSmoothing", "QuantizeSun" },
+		{ "Shaders.CloudShadows.Main", "HazardLog" }, { "Shaders.CloudShadows.Main", "FlickerWatch" },
+		{ "Shaders.HandBlood.Main", "DebugView" }, { "Shaders.WetWorld.Main", "HudDebug" },
+	};
+	for (const auto& o : onOff) if (!strcmp(o[0], node.Section) && !strcmp(o[1], node.Key)) return true;
+	return node.Description.compare(0, 5, "[0-1]") == 0;
 }
 
 // The tooltip of a setting's row: why it is greyed (if it is), then its description from the settings file.
@@ -2619,7 +2658,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			TheSettingManager->LoadSettings();
 		}
-		if (isShader) {
+		if (isShader && DevOptionsShown()) {	// UNOFFICIAL 2026-10-25: the same as dragging or the +/- keys over the box
 			ImGui::SameLine();
 			if (ImGui::SmallButton("-")) {
 				val -= s_shaderStepSize;
@@ -2645,7 +2684,10 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		int newVal = val;
 		std::string enumKey = std::string(node.Section) + "." + node.Key;
 		auto enumIt = kEnumSettings.find(enumKey);
-		if (enumIt != kEnumSettings.end()) {
+		if (enumIt == kEnumSettings.end() && (val == 0 || val == 1) && IsOnOffInteger(node)) {
+			bool on = val != 0;
+			if (ImGui::Checkbox(node.Key, &on)) newVal = on ? 1 : 0;
+		} else if (enumIt != kEnumSettings.end()) {
 			const char* const* names = enumIt->second.Names;
 			int count = enumIt->second.Count;
 			int clamped = ImClamp(val, 0, count - 1);
@@ -2753,15 +2795,16 @@ static const tomlValue* NewFind(const tomlValue* table, const char* name) {
 	return it == map.end() ? nullptr : &it->second;
 }
 
-// A hidden string from [Main.Menu.NewInPatch], read from the defaults file only ("" if the section, the key or its text is missing).
-static std::string NewMeta(const char* key) {
+// A hidden string from [Main.Menu.<page>], read from the defaults file only ("" if the section, the key or its text is missing).
+static std::string MenuMeta(const char* page, const char* key) {
 	try {
-		const tomlValue* section = NewFind(NewFind(NewFind(&TheSettingManager->Config.DefaultConfig, "_Main"), "Menu"), "NewInPatch");
+		const tomlValue* section = NewFind(NewFind(NewFind(&TheSettingManager->Config.DefaultConfig, "_Main"), "Menu"), page);
 		const tomlValue* value = NewFind(section, key);
 		if (value && value->is_string()) return value->as_string();
 	} catch (...) {}
 	return std::string();
 }
+static std::string NewMeta(const char* key) { return MenuMeta("NewInPatch", key); }
 
 static void NewSplitList(const std::string& text, std::vector<std::string>& out) {
 	std::string cur;
@@ -2786,6 +2829,19 @@ static bool NewListMatches(const std::vector<std::string>& list, const std::stri
 		}
 	}
 	return false;
+}
+
+// UNOFFICIAL 2026-10-25 menu tidy: [Main.Menu.Developer] DevOnly (defaults file only, the same format as NewInclude): settings shown
+// only with Developer options. An empty key asks about a whole section (true for a "Section.*" entry at or above it).
+static bool IsDevOnlySetting(const std::string& section, const std::string& key) {
+	static std::vector<std::string> list;
+	static UInt32 generation = 0xFFFFFFFFu;
+	if (generation != TheSettingManager->Config.DefaultsGeneration) {	// the defaults were read again ("Disk")
+		generation = TheSettingManager->Config.DefaultsGeneration;
+		list.clear();
+		NewSplitList(MenuMeta("Developer", "DevOnly"), list);
+	}
+	return NewListMatches(list, section, key);
 }
 
 // The latest YYYY-MM-DD (20xx, month 1-12, day 1-31, not part of a longer number) in the text, or "" if none.
@@ -3018,9 +3074,9 @@ static void RenderNewInPatch() {
 
 	NewRenderGroups(s_newMain, s_newMainGroups, false);
 
-	if (!s_newDiag.empty() && !s_showTestSettings) {	// UNOFFICIAL 2026-10-19 menu honesty
+	if (!s_newDiag.empty() && !DevOptionsShown()) {	// UNOFFICIAL 2026-10-19 menu honesty
 		ImGui::Spacing();
-		ImGui::TextDisabled("%u test settings hidden (Display > Show test settings)", (UInt32)s_newDiag.size());
+		ImGui::TextDisabled("%u test settings hidden (tick Developer options at the top)", (UInt32)s_newDiag.size());
 	}
 	else if (!s_newDiag.empty()) {
 		ImGui::Spacing();
@@ -3066,19 +3122,17 @@ static void RenderContent() {
 			if (kind != SettingManager::MenuSwitch::None) {	// UNOFFICIAL 2026-10-19: no button for an entry without a switch
 				ImGui::SameLine();
 				ImGui::BeginDisabled(forced);
-				ImGui::PushStyleColor(ImGuiCol_Button, enabled
-					? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
-					: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
 				// UNOFFICIAL: this switches the whole shader (every one of its sections), not just the section shown: the tooltip says so.
-				const std::string label = shaderName + ": " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
-				if (ImGui::SmallButton(label.c_str())) {
+				// 2026-10-25: a checkbox (was a coloured button), like the sidebar's.
+				const std::string label = shaderName + " on  [Ins]##headerSwitch";
+				bool on = enabled;
+				if (ImGui::Checkbox(label.c_str(), &on)) {
 					TheShaderManager->SwitchShaderStatus(shaderName.c_str());
 					TheSettingManager->LoadSettings();
 				}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("Turns all of %s on or off (every %s section), not just this section.\nThis section's own switches are in the list below.",
 						shaderName.c_str(), shaderName.c_str());
-				ImGui::PopStyleColor();
 				ImGui::EndDisabled();
 				if (kind == SettingManager::MenuSwitch::MainEnabled)	// e.g. Cloth: read at start, so the same badge as its Main page
 					RestartBadge(("Shaders." + shaderName + ".Main").c_str(), "Enabled");
@@ -3171,7 +3225,7 @@ static void RenderContent() {
 		std::string key(s.Key);
 		if (handled.count(key)) continue;
 		if (ShouldHideKey(s.Key)) continue;
-		if (!s_showTestSettings && IsTestSetting(s)) { testHidden++; continue; }	// UNOFFICIAL 2026-10-19: test switches, dead keys
+		if (!DevOptionsShown() && IsTestSetting(s)) { testHidden++; continue; }	// UNOFFICIAL 2026-10-19: test switches, dead keys (2026-10-25: + DevOnly)
 		shown++;
 
 		// Hide HDRCompat when PreTonemapping is off — it's meaningless in post-tonemapping mode
@@ -3203,7 +3257,7 @@ static void RenderContent() {
 	}
 	if (testHidden) {
 		ImGui::Spacing();
-		ImGui::TextDisabled(shown ? "%d test setting%s hidden (Display > Show test settings)" : "Only test settings here: %d hidden%s (Display > Show test settings)",
+		ImGui::TextDisabled(shown ? "%d developer setting%s hidden (tick Developer options at the top)" : "Only developer settings here: %d hidden%s (tick Developer options at the top)",
 			testHidden, shown ? (testHidden == 1 ? "" : "s") : "");
 	}
 }
@@ -3211,6 +3265,7 @@ static void RenderContent() {
 // Recursive sidebar tree — path is the full dotted section path, name is the display label.
 static void RenderSectionNode(const std::string& path, const std::string& name, bool parentIsShaders) {
 	if (ShouldHideSection(name)) return;
+	if (!DevOptionsShown() && IsDevOnlySetting(path, std::string())) return;	// UNOFFICIAL 2026-10-25: a "Section.*" DevOnly entry
 
 	StringList subsections;
 	TheSettingManager->FillMenuSections(&subsections, path.c_str());
@@ -3378,6 +3433,7 @@ void ImGuiManager::BuildUI() {
 
 	if (!Visible) return;
 
+	s_devOptions = TheSettingManager->GetSettingI("Main.Menu.Developer", "DeveloperOptions") != 0;	// UNOFFICIAL 2026-10-25
 	CfabUpdate();
 	if (s_screenshotMode) return;
 
@@ -3419,14 +3475,10 @@ void ImGuiManager::BuildUI() {
 	// Toolbar row 1: FX toggle | Max Quality toggle | title/status | Revert / Disk / Save Copy / Save
 	{
 		bool renderFX = TheSettingManager->SettingsMain.Main.RenderEffects;
-		ImGui::PushStyleColor(ImGuiCol_Button, renderFX
-			? ImVec4(0.15f, 0.50f, 0.15f, 1.0f)
-			: ImVec4(0.45f, 0.15f, 0.15f, 1.0f));
-		if (ImGui::Button(renderFX ? "FX ON" : "FX OFF")) {
-			TheSettingManager->SetSetting("Main.Main.Misc", "RenderEffects", !renderFX);
+		if (ImGui::Checkbox("Effects", &renderFX)) {	// UNOFFICIAL 2026-10-25: a checkbox (was the FX ON / FX OFF button)
+			TheSettingManager->SetSetting("Main.Main.Misc", "RenderEffects", renderFX);
 			TheSettingManager->LoadSettings();
 		}
-		ImGui::PopStyleColor();
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Toggle all NVR effects (hotkey: modifier + %s)",
 				DikToName(TheSettingManager->SettingsMain.Menu.KeyEnable));
@@ -3437,14 +3489,13 @@ void ImGuiManager::BuildUI() {
 	{
 		const bool wanted = TheSettingManager->GetSettingI("Main.Main.Quality", "MaxQuality") != 0;
 		ImGui::SameLine();
-		ImGui::PushStyleColor(ImGuiCol_Button, wanted
-			? ImVec4(0.60f, 0.12f, 0.12f, 1.0f)
-			: ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
-		if (ImGui::Button(wanted ? "MAX QUALITY ON" : "MAX QUALITY OFF")) {
-			TheSettingManager->SetSetting("Main.Main.Quality", "MaxQuality", !wanted);
+		bool maxOn = wanted;	// UNOFFICIAL 2026-10-25: a checkbox (was the MAX QUALITY ON / OFF button), its text red while on
+		if (wanted) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+		if (ImGui::Checkbox("Max Quality", &maxOn)) {
+			TheSettingManager->SetSetting("Main.Main.Quality", "MaxQuality", maxOn);
 			TheSettingManager->LoadSettings();
 		}
-		ImGui::PopStyleColor();
+		if (wanted) ImGui::PopStyleColor();
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Max Quality: for screenshots, not for playing.\n"
 				"Runs every reduced-resolution effect at full resolution, turns off every reduced-quality shortcut and\n"
@@ -3564,20 +3615,22 @@ void ImGuiManager::BuildUI() {
 		}
 	}
 
-	// Toolbar row 2: step size selector + text scale
+	// Toolbar row 2: step size selector (Developer options only, 2026-10-25) + text scale
 	{
-		ImGui::Text("Step:");
-		static const float kSteps[]  = { 0.001f, 0.01f, 0.1f, 1.0f };
-		static const char* kLabels[] = { "0.001", "0.01", "0.1", "1.0" };
-		for (int i = 0; i < 4; i++) {
-			ImGui::SameLine();
-			bool active = fabsf(s_shaderStepSize - kSteps[i]) < 1e-6f;
-			if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
-			if (ImGui::SmallButton(kLabels[i])) s_shaderStepSize = kSteps[i];
-			if (active) ImGui::PopStyleColor();
+		if (DevOptionsShown()) {
+			ImGui::Text("Step:");
+			static const float kSteps[]  = { 0.001f, 0.01f, 0.1f, 1.0f };
+			static const char* kLabels[] = { "0.001", "0.01", "0.1", "1.0" };
+			for (int i = 0; i < 4; i++) {
+				ImGui::SameLine();
+				bool active = fabsf(s_shaderStepSize - kSteps[i]) < 1e-6f;
+				if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+				if (ImGui::SmallButton(kLabels[i])) s_shaderStepSize = kSteps[i];
+				if (active) ImGui::PopStyleColor();
+			}
+			ImGui::SameLine(0.0f, 20.0f);
 		}
 		ImGuiIO& io = ImGui::GetIO();
-		ImGui::SameLine(0.0f, 20.0f);
 		ImGui::Text("Text:");
 		ImGui::SameLine();
 		if (ImGui::SmallButton("A-")) {
@@ -3613,8 +3666,10 @@ void ImGuiManager::BuildUI() {
 			}
 			if (active) ImGui::PopStyleColor();
 		}
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Retro-Encab.")) s_cfabOpen = !s_cfabOpen;
+		if (DevOptionsShown()) {	// UNOFFICIAL 2026-10-25: Developer options only
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Retro-Encab.")) s_cfabOpen = !s_cfabOpen;
+		}
 		if (s_cfabActive) {
 			ImGui::SameLine();
 			ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.7f, 1.0f), "[active]");
@@ -3628,6 +3683,8 @@ void ImGuiManager::BuildUI() {
 		if (ImGui::SmallButton("Presets")) s_presetManagerOpen = !s_presetManagerOpen;
 		ImGui::SameLine();
 		if (ImGui::SmallButton("Lighting")) s_lightingPanelOpen = !s_lightingPanelOpen;
+		ImGui::SameLine(0.0f, 20.0f);
+		DevOptionsCheckbox();
 		if (s_devFreecamOn) {
 			ImGui::SameLine();
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.1f, 1.0f), "[freecam]");
