@@ -335,6 +335,26 @@ D3DXVECTOR3 VolumetricCloudsEffect::WeatherCloudColour(Sky* sky, float hour) {
 		}
 	}
 	return colour;
+// UNOFFICIAL 2026-10-25 (test tool: the shot list's 'facemoon').
+// Where the moon is: its disc mesh's world bound (the moon's node sits at the sky's centre, the disc is placed inside it), as a
+// direction and distance from the sky's centre, and its radius. False when there is no moon to see.
+bool VolumetricCloudsEffect::MoonPlace(Sky* sky, D3DXVECTOR3& direction, float& distance, float& radius, const char** why) {
+	const char* dummy;
+	if (!why) why = &dummy;
+	if (!sky || !sky->nodeSkyRoot || !sky->masserMoon) { *why = "no sky or no moon object"; return false; }
+	Moon* moon = sky->masserMoon;
+	if (!moon->MoonNode || (moon->MoonNode->m_flags & 1)) { *why = "the moon is hidden"; return false; }	// (flag 1: hidden)
+	NiAVObject* disc = reinterpret_cast<NiAVObject*>(moon->MoonMesh ? moon->MoonMesh : moon->ShadowMesh);	// (NiTriShape is only declared here; an NiAVObject at offset 0)
+	if (!disc || !disc->m_kWorldBound || (disc->m_flags & 1)) { *why = "the moon's disc is not drawn"; return false; }
+	const NiPoint3& centre = sky->nodeSkyRoot->m_worldTransform.pos;
+	const NiPoint3& at = disc->m_kWorldBound->Center;
+	direction = D3DXVECTOR3(at.x - centre.x, at.y - centre.y, at.z - centre.z);
+	distance = D3DXVec3Length(&direction);
+	radius = disc->m_kWorldBound->Radius;
+	if (NiAVObject* shadow = reinterpret_cast<NiAVObject*>(moon->ShadowMesh)) if (shadow->m_kWorldBound) radius = max(radius, shadow->m_kWorldBound->Radius);
+	if (distance <= 1.0f || radius <= 0.0f || radius >= distance) { *why = "the moon's size or distance is not usable"; return false; }
+	direction /= distance;
+	return true;
 }
 
 void VolumetricCloudsEffect::UpdateConstants() {

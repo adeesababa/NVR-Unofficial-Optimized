@@ -95,6 +95,7 @@ public:
 
 	void	UpdateConstants();
 	void	RegisterConstants();
+	static bool MoonPlace(Sky* sky, D3DXVECTOR3& direction, float& distance, float& radius, const char** why = nullptr);
 	void	RegisterTextures();
 	void	UpdateSettings();
 	bool	ShouldRender();

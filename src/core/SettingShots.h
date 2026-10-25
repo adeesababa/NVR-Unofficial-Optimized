@@ -35,6 +35,8 @@
 //   affinity <hex mask>                          (2026-10-21, cpulimits) at the start of the shot the game process may use only these
 //                                                logical processors (SetProcessAffinityMask on this process only; e.g. 3 = two, F = four):
 //                                                a weaker CPU emulated in the same launch. NOT undone: it stays for the later shots.
+//   facemoon                                     (2026-10-25, moon behind clouds) at the start of the shot the player looks at the moon
+//                                                (player.setangle x and z from the moon's position in the sky)
 //   turn <degrees per second>                    (2026-10-25, cloudflicker) the player turns on the spot at this rate for the whole run
 //                                                (player.setangle z on the main loop each tick), so the camera pans as in play
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
@@ -148,6 +150,11 @@ namespace SettingShots {
 				Change c; c.console = true; c.value = rest.substr(start);
 				List.back().changes.push_back(c);
 			}
+			else if (command == "facemoon") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a facemoon before the first 'shot'"; return false; }
+				Change c; c.console = true; c.value = "facemoon";
+				List.back().changes.push_back(c);
+			}
 			else if (command == "wait") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a wait before the first 'shot'"; return false; }
 				words >> List.back().frames;
@@ -203,6 +210,23 @@ namespace SettingShots {
 				(unsigned long long)want, (unsigned long long)process, (unsigned long long)system, set ? "set" : "NOT set", threads, outside);
 		}
 		for (const Change& c : s.changes) {
+			if (c.console && c.value == "facemoon") {	// 2026-10-25: look at the moon (its direction from the sky's centre)
+				D3DXVECTOR3 d;
+				float distance, radius;
+				const char* why = "";
+				if (VolumetricCloudsEffect::MoonPlace(Tes ? Tes->sky : nullptr, d, distance, radius, &why)) {
+					float yaw = D3DXToDegree(atan2f(d.x, d.y));
+					if (yaw < 0.0f) yaw += 360.0f;
+					const float pitch = -D3DXToDegree(asinf(d.z));
+					char line[64];
+					sprintf_s(line, "player.setangle z %.2f", yaw); Commands.push_back(line);
+					sprintf_s(line, "player.setangle x %.2f", pitch); Commands.push_back(line);
+					Moves = true;
+					Logger::Log("SETTING SHOTS %s: shot '%s': facemoon: yaw %.1f pitch %.1f", Run, s.slug.c_str(), yaw, pitch);
+				}
+				else Logger::Log("SETTING SHOTS %s: shot '%s': facemoon: %s", Run, s.slug.c_str(), why);
+				continue;
+			}
 			if (c.console) { Commands.push_back(c.value); Moves = true; continue; }
 			if (c.coverage) {
 				if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) clouds->TestSetCoverage((float)atof(c.value.c_str()));
