@@ -1,6 +1,7 @@
 #include <regex>
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 #include "Sm6Pass.h"	// UNOFFICIAL 2026-10-26 (deep/fork-sm6)
+#include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
@@ -479,6 +480,10 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 		renderTime = 0.0f;
 		return; // skip rendering of disabled effects
 	}
+
+	// UNOFFICIAL 2026-10-26 pixel inspector ([Main.Develop.PixelInspector]): when this effect has drawn, the picture after it (or its
+	// own target) is recorded at the inspected pixel. Off: one bool test at the end of the call.
+	PixelInspector::EffectScope inspect(this, RenderTarget, RenderedSurface, techniqueIndex);
 
 	auto timer = TimeLogger();
 

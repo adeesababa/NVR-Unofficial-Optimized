@@ -3,6 +3,8 @@
 #include "../core/ReflMaterial.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz)
+#include "../core/ShaderCounters.h"	// UNOFFICIAL 2026-10-26 debugging tools (the Hi-Z trace's counters)
+#include "../core/PixelInspector.h"
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -398,6 +400,13 @@ namespace {
 	const UINT ReflTextureCount = 16;
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + NVR_HiZ on set 1, binding 16 (slot 16).
 	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_SAMPLED_IMAGE, 16, NVR_EXT_VIEW_2D, FALSE, 0 };
+	// UNOFFICIAL 2026-10-26 debugging tool: the counting build (-DNVR_COUNTERS=1) adds Counters.glsl's block (set 3, binding 0) as a
+	// written storage buffer on slot 7. Counter and probe names as ReflectionsTraceHiZ.frag uses them.
+	const UINT ReflCounterSlot = 7;
+	ShaderCounters HiZCounters("Reflections Hi-Z trace",
+		{ "rays", "walked to the end / off screen", "walk hit", "hit thrown away", "hit by the fixed-step rest", "out of cells, rest found nothing",
+		  "not started", "cells walked", "skipped facing", "skipped own plane", "skipped behind (thickness)", "no reflection" },
+		{ "endRule/cells/hitT/confidence", "facing/plane/thick/roughness", "hit.xy/depth/amount" });
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
 		std::string slotName = name;
@@ -431,7 +440,29 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		}
 	}
 	if (!extTraceHiZ.Pipeline) hiz = nullptr;
-	ExtPass& pass = hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	// UNOFFICIAL 2026-10-26 debugging tool ([Main.Develop.ShaderCounters] ReflectionsHiZ, needs NVR DXVK 1.5-debug): the Hi-Z trace's
+	// counting build, with the counter block bound; its probe pixel is the pixel inspector's, in this half-resolution target. Any
+	// problem (file missing, pipeline refused, no 1.5-debug readback): the normal Hi-Z trace, as with the setting off.
+	ID3D9NvrExtBuffer* counters = nullptr;
+	if (hiz && TheSettingManager->GetSettingI("Main.Develop.ShaderCounters", "ReflectionsHiZ") != 0) {
+		if (!extTraceHiZCount.Tried) {
+			extTraceHiZCount.Tried = true;
+			NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 2];
+			memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+			bindings[_countof(ReflBindings)] = ReflHiZBinding;
+			bindings[_countof(ReflBindings) + 1] = ShaderCounters::Binding(ReflCounterSlot);
+			if (DebugReadback::Interface() && DxvkCompute::HasSpirv("ReflectionsTraceHiZCount"))
+				extTraceHiZCount.Pipeline = DxvkCompute::CreateGraphicsPipeline("ReflectionsTraceHiZCount", bindings, _countof(bindings), sizeof(ReflPush), true, 1, NVR_EXT_BLEND_NONE, false);
+			if (!extTraceHiZCount.Pipeline) Logger::Log("UNOFFICIAL Reflections: the Hi-Z trace's counting build is not available (needs NVR DXVK 1.5-debug and the shader file ReflectionsTraceHiZCount.spv); the normal trace runs.");
+		}
+		if (extTraceHiZCount.Pipeline) {
+			D3DSURFACE_DESC target = {};
+			int px = -1, py = -1;
+			if (RenderTarget && SUCCEEDED(RenderTarget->GetDesc(&target))) PixelInspector::PixelFor(target.Width, target.Height, px, py);
+			counters = HiZCounters.Begin(px, py);
+		}
+	}
+	ExtPass& pass = counters ? extTraceHiZCount : hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
 	if (!pass.Tried) {
 		pass.Tried = true;
 		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
@@ -514,7 +545,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		ReflUploaded = uniforms;
 	}
 
-	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 1] = {};
+	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 2] = {};
 	for (UINT i = 0; i < ReflTextureCount; i++) {
 		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
 	}
@@ -528,11 +559,14 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		resourceCount++;
 		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
 	}
+	if (counters) resources[resourceCount++] = ShaderCounters::Bind(ReflCounterSlot, counters);	// UNOFFICIAL 2026-10-26 debugging tool
 	ReflPush push = {};
 	push.cube = Constants.Cube;
 	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;	// Blur Y; the composite: the cube is bound
 
 	if (techniqueIndex == 0)
 		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, resourceCount, &push, sizeof(push));
-	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
+	const bool drawn = ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
+	if (counters) HiZCounters.End();	// UNOFFICIAL 2026-10-26: queued for the non-waiting readback
+	return drawn;
 }

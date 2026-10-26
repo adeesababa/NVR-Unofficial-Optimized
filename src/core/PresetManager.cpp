@@ -50,6 +50,8 @@ static const std::unordered_set<std::string> kBlacklistedSections = {
 	"Main.CameraMode.Main",
 	"Main.CameraMode.Positioning",
 	"Main.Develop.Main",
+	"Main.Develop.PixelInspector",	// UNOFFICIAL 2026-10-26: debugging tools
+	"Main.Develop.ShaderCounters",
 	"Main.FlyCam.Main",
 	"Main.FrameRate.SmartControl",
 	"Main.FrameRate.Stuttering",

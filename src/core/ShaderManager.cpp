@@ -2,6 +2,7 @@
 #include "FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "GpuProfiler.h"
 #include "HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
+#include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
 #include "LampFixtures.h"
@@ -1458,6 +1459,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
 	Device->SetFVF(FrameFVF);
 
+	// UNOFFICIAL 2026-10-26 pixel inspector (core\PixelInspector.h, off by default): the scene as the game drew it, before any NVR effect.
+	PixelInspector::CaptureIf("Scene in (HDR, before NVR)", RenderTarget);
+
 	// render post process normals for use by shaders
 	// When the normals pass would run anyway, try producing depth and normals in one draw.
 	bool mergedNormals = false;
@@ -1477,6 +1481,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.Normals->RenderSmooth(Device);
 		Device->SetRenderTarget(0, RenderTarget);
 	}
+	// UNOFFICIAL 2026-10-26 pixel inspector: the linear depth and the view normal every effect reads.
+	PixelInspector::CaptureIf("Depth (TESR_DepthBuffer, linear / farZ)", Effects.CombineDepth->Textures.CombinedDepthTexture, PixelInspector::Depth);
+	PixelInspector::CaptureIf("View normal (TESR_NormalsBuffer)", Effects.Normals->Textures.NormalsTexture, PixelInspector::Normal);
 #if NVR_TEST_TOOLS
 	OrthoProbe::AfterCombine(Device);	// UNOFFICIAL 2026-10-17 test tools: the depth the effects read, after an ortho dump
 #endif
@@ -2240,6 +2247,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 			Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
+	// UNOFFICIAL 2026-10-26 pixel inspector: the picture out of the tonemapper, before NVR's post effects.
+	PixelInspector::CaptureIf("Tonemapped (before the post effects)", TheTextureManager->RenderedSurface);
 	// UNOFFICIAL: the clipping view's modes 2 and 3 compare with the picture as it arrives here, straight out of the tonemapper.
 	Effects.Debug->CaptureClipStart(Device, RenderTarget);
 

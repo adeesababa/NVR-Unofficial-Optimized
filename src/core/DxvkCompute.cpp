@@ -117,6 +117,18 @@ ID3D9NvrExtBuffer* DxvkCompute::CreateBuffer(UINT Size, UINT Flags, const char* 
 	return buffer;
 }
 
+ID3D9NvrExtBuffer* DxvkCompute::CreateBufferNoFail(UINT Size, UINT Flags, const char* Name) {
+	if (!Available()) return nullptr;
+	NVR_EXT_BUFFER_DESC desc = { Size, Flags, Name };
+	ID3D9NvrExtBuffer* buffer = nullptr;
+	HRESULT result = Ext->CreateBuffer(&desc, &buffer);
+	if (FAILED(result) || !buffer) {
+		Logger::Log("UNOFFICIAL NVR DXVK: CreateBuffer(%s, %u bytes) failed (%08lX)", Name ? Name : "", Size, result);
+		return nullptr;
+	}
+	return buffer;
+}
+
 ID3D9NvrExtSampler* DxvkCompute::CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address) {
 	if (!Available()) return nullptr;
 	NVR_EXT_SAMPLER_DESC desc = { Filter, Address };
@@ -130,7 +142,7 @@ ID3D9NvrExtSampler* DxvkCompute::CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_AD
 	return sampler;
 }
 
-ID3D9NvrExtPipeline* DxvkCompute::CreateGraphicsPipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers, UINT TargetCount, NVR_EXT_BLEND Blend) {
+ID3D9NvrExtPipeline* DxvkCompute::CreateGraphicsPipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers, UINT TargetCount, NVR_EXT_BLEND Blend, bool FailAll) {
 	if (!Available()) return nullptr;
 	if (ExtInfo.ExtVersionMinor < 1) {
 		Logger::Log("UNOFFICIAL NVR DXVK: full-screen passes need extension 1.1 (this d3d9.dll has %u.%u): %s stays a D3D9 pass", ExtInfo.ExtVersionMajor, ExtInfo.ExtVersionMinor, Name);
@@ -139,7 +151,7 @@ ID3D9NvrExtPipeline* DxvkCompute::CreateGraphicsPipeline(const char* Name, const
 
 	std::vector<char> words;
 	if (!LoadSpirv(Name, words)) {
-		Fail("a pass shader file is missing (see the line above)");
+		if (FailAll) Fail("a pass shader file is missing (see the line above)");
 		return nullptr;
 	}
 
@@ -161,7 +173,7 @@ ID3D9NvrExtPipeline* DxvkCompute::CreateGraphicsPipeline(const char* Name, const
 	HRESULT result = Ext->CreateGraphicsPipeline(&desc, &pipeline);
 	if (FAILED(result) || !pipeline) {
 		Logger::Log("UNOFFICIAL NVR DXVK: CreateGraphicsPipeline(%s) failed (%08lX); DXVK's log says why", Name, result);
-		Fail("a pass pipeline was refused");
+		if (FailAll) Fail("a pass pipeline was refused");
 		return nullptr;
 	}
 	Logger::Log("UNOFFICIAL NVR DXVK: pass %s ready (%u bindings, %u push bytes, %u target%s)", Name, Count, PushSize, TargetCount, TargetCount == 1 ? "" : "s");

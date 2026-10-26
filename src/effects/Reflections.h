@@ -109,6 +109,8 @@ private:
 	ExtPass				extTraceHiZ;		// UNOFFICIAL 2026-10-26: Compute\ReflectionsTraceHiZ.spv (HiZ)
 	bool				hizTraceFailed = false;	// its pipeline could not be made: the normal trace for the session
 	UINT				hizTraceFrames = 0;
+	ExtPass				extTraceHiZCount;	// UNOFFICIAL 2026-10-26 debugging tool: Compute\ReflectionsTraceHiZCount.spv (the trace + shader counters,
+											// [Main.Develop.ShaderCounters] ReflectionsHiZ; core/ShaderCounters.h). Failed: the normal Hi-Z trace.
 	ExtUniformBuffer	extUniforms;
 	D3DXVECTOR4			extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// NVR_ReflectionsSky as RenderBuffers set it
 	IDirect3DTexture9*	extSkyTexture = nullptr;	// the sky visibility it bound on stage 14 (null: none)

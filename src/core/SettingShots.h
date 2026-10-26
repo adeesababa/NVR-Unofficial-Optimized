@@ -39,6 +39,9 @@
 //                                                (player.setangle x and z from the moon's position in the sky)
 //   turn <degrees per second>                    (2026-10-25, cloudflicker) the player turns on the spot at this rate for the whole run
 //                                                (player.setangle z on the main loop each tick), so the camera pans as in play
+//   inspect <x> <y>                              (2026-10-26, debugging tools) this shot switches the pixel inspector on for screen pixel
+//                                                (x, y): [Main.Develop.PixelInspector] Enabled true, X, Y (undone after the shot like any
+//                                                'set'); its first result is logged ("PIXEL INSPECTOR" lines). Needs NVR DXVK 1.5-debug.
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -173,6 +176,18 @@ namespace SettingShots {
 				words >> mask;
 				List.back().affinity = (DWORD_PTR)strtoull(mask.c_str(), nullptr, 16);
 				if (!List.back().affinity) { error = "line " + std::to_string(number) + ": affinity needs a hex mask"; return false; }
+			}
+			else if (command == "inspect") {	// 2026-10-26: = set Main.Develop.PixelInspector Enabled true / X x / Y y
+				if (List.empty()) { error = "line " + std::to_string(number) + ": an inspect before the first 'shot'"; return false; }
+				std::string x, y;
+				words >> x >> y;
+				if (x.empty() || y.empty()) { error = "line " + std::to_string(number) + ": inspect needs <x> <y>"; return false; }
+				const char* keys[3] = { "Enabled", "X", "Y" };
+				const std::string values[3] = { "true", x, y };
+				for (int k = 0; k < 3; k++) {
+					Change c; c.section = "Main.Develop.PixelInspector"; c.key = keys[k]; c.value = values[k];
+					List.back().changes.push_back(c);
+				}
 			}
 			else if (command == "set" || command == "effect") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a change before the first 'shot'"; return false; }

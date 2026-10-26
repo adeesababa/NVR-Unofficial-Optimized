@@ -10,6 +10,7 @@
 #include <thread>
 #include "../../core/GpuProfiler.h"
 #include "../../core/GpuTimeline.h"
+#include "../../core/PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "../../core/PointShadowForward.h"
 #include "../../core/ShaderWarmUp.h"
 #include "../../core/ShaderWarmUp2.h"
@@ -3280,6 +3281,10 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 			HdrOutput::RenderGain(Device, OutputSurface);
 		}
 		TheShaderManager->RenderEffects(OutputSurface);
+		// UNOFFICIAL 2026-10-26 pixel inspector ([Main.Develop.PixelInspector], off by default, needs NVR DXVK 1.5-debug): the final
+		// picture before the HUD, then this frame's records go to the non-waiting readback and the settings are read for the next one.
+		PixelInspector::CaptureIf("Final (before the HUD)", OutputSurface);
+		PixelInspector::EndFrame();
 #if NVR_TEST_TOOLS
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);	// UNOFFICIAL, diagnostic
 		SettingShots::Capture(OutputSurface);	// UNOFFICIAL, test only
