@@ -58,7 +58,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
 	float placedWaterRefractionModifier = TESR_PlacedWaterSettings.w;		// reduce refraction because of the way placed depth is encoded
 	float placedWaterDepthModifier = 0.2;			// reduce depth value for fog because of the way placed depth is encoded
 	// UNOFFICIAL 2026-10-25: was 0.1, WATER001 (the same water without ripples) uses 0.2: the game swaps to this shader while anything
-	// touches the water (wading displacement) and back after, so the depth fog halved and doubled at every splash (Iro: placed water
+	// touches the water (wading displacement) and back after, so the depth fog halved and doubled at every splash (a tester: placed water
 	// "flickers whenever something collides with it"). Both now 0.2. WATER001's other two differences are fixed on the green-well branch.
 
     // calculate fog coeffs
