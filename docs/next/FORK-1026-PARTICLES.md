@@ -21,7 +21,7 @@ NVR (`src/effects/GpuParticles.{h,cpp}`, shaders `src/hlsl/NewVegas/Compute/GpuP
   when crossing into cover in the rain's top-down occlusion map (roofs, trees, ground, also off screen; the map is
   requested while the effect runs) or when going behind the surface the camera sees in the depth buffer (by less than one
   step + 30 units; snapped onto that surface along the camera ray; nothing nearer than 60 units, so the first-person gun
-  never collects drops). A landed rain drop is a splash for 0.3 s, a landed flake settles for 4 s; then the particle
+  never collects drops). A landed rain drop is a splash for 0.4 s, a landed flake settles for 4 s; then the particle
   starts again at the top of the box (never under cover).
 - Drawing (geometry pass, 6 vertices per particle, instanced): falling rain = a streak along its last 0.03 s of motion,
   at least ~0.6 px wide (thinner drops fade instead of flickering); splash = a small crown standing on the surface,

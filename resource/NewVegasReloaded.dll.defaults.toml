@@ -1064,7 +1064,7 @@ Size = 1.0                           # [0.2-4] Drop width / splash and flake siz
 Speed = 1.0                          # [0.2-3] Fall speed multiplier (rain ~650 units/s, snow ~70 units/s at 1).
 Opacity = 0.8                        # [0-1] How strongly the drops show.
 Radius = 1200                        # [200-4000] Half the width of the box round the camera the drops live in (game units). Larger reaches further but spreads the same Count thinner.
-Splashes = true                      # A landed rain drop is a small splash for 0.3 s (a snow flake settles for 4 s). Off: it simply starts again at the top.
+Splashes = true                      # A landed rain drop is a small splash for 0.4 s (a snow flake settles for 4 s). Off: it simply starts again at the top.
 
 [_Shaders.ShadowsExteriors.Main]
 TwoSidedCasters = false                # UNOFFICIAL: sun shadows (and the volumetric light, which reads them) are cast by both sides of every object. Fixes sunlight and light shafts shining through one-sided walls (the game uses them where you never see the other side). Same picture for closed objects; a little more shadow-map drawing.

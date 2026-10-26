@@ -67,8 +67,10 @@ void main() {
         o_kind = 2.0;
     }
     else {
-        float s = size * mix(2.0, 6.0, sqrt(o_age));
-        world = p.a.xyz + right * (c.x * s) + vec3(0.0, 0.0, c.y * s * 0.8);
+        // 2026-10-26 run 2: a crown standing on the ground was a sliver seen from above; the splash now faces the camera,
+        // centred a little above its point, and reads as an expanding ring with thrown droplets from any angle
+        float s = size * mix(3.0, 10.0, sqrt(o_age));
+        world = p.a.xyz + vec3(0.0, 0.0, s * 0.3) + (f.camRight.xyz * c.x + f.camUp.xyz * (c.y * 2.0 - 1.0)) * s;
         o_kind = 1.0;
     }
     vec4 cp = project(world);

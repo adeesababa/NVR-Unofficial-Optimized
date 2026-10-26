@@ -40,13 +40,15 @@ void main() {
     }
     else if (i_kind < 1.5) {
         // splash crown: thin droplet arcs thrown up and out, spreading and fading over its short life
-        vec2 q = vec2(i_local.x, i_local.y * 1.25);
+        // (camera-facing quad, centred: a ring that expands with age, brighter along a few droplet rays)
+        vec2 q = vec2(i_local.x, i_local.y * 2.0 - 1.0);
         float r = length(q);
-        float ang = atan(q.x, max(q.y, 1e-3));
-        float rays = pow(abs(cos(ang * 4.0 + 1.3)), 8.0);
-        float ring = smoothstep(0.25, 0.75, r) * (1.0 - smoothstep(0.75, 1.0, r));
-        float base = (1.0 - smoothstep(0.0, 0.18, i_local.y)) * (1.0 - abs(i_local.x));   // the flat spray at its foot
-        shape = max(ring * mix(0.35, 1.0, rays), base * 0.6) * (1.0 - i_age) * 0.8;
+        float ang = atan(q.x, q.y);
+        float rays = pow(abs(cos(ang * 3.5 + 1.3)), 6.0);
+        float rr = mix(0.35, 0.85, i_age);
+        float ring = 1.0 - smoothstep(0.0, 0.18, abs(r - rr));
+        float core = (1.0 - smoothstep(0.0, 0.35, r)) * (1.0 - smoothstep(0.0, 0.4, i_age));   // the impact itself
+        shape = max(ring * mix(0.5, 1.0, rays), core) * (1.0 - i_age);
     }
     else {
         // snow flake: soft round dot; a settled one fades out over its time on the ground
@@ -59,7 +61,7 @@ void main() {
     if (alpha < 1.0 / 512.0) discard;
 
     vec3 behind = texelFetch(t_scene, px, 0).rgb;
-    float brighten = i_kind > 1.5 ? 0.8 : 0.45;                       // snow takes the light, water mostly what is behind it
+    float brighten = i_kind > 0.5 ? 0.8 : 0.45;                     // snow takes the light, water mostly what is behind it
     vec3 color = mix(behind, pc.tint.rgb, brighten);                  // tint: the sky's light (the fog colour, brightened)
     o_color = vec4(clamp(color, 0.0, 1.0), alpha);
 }
