@@ -10,7 +10,7 @@ Licence: DXVK is zlib (fork and ship OK; credit it). NVR stays GPL.
 
 ## Where it stands (2026-10-25)
 Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself is the patch series in `tools/nvr-dxvk/`
-(DXVK v3.0.1 + NVR extension 1.2), built by the "NVR DXVK d3d9.dll" workflow. Details: NVR-DXVK-EXTENSION.md.
+(DXVK v3.0.1 + NVR extension 1.4 since 2026-10-26), built by the "NVR DXVK d3d9.dll" workflow. Details: NVR-DXVK-EXTENSION.md.
 - Done: steps 2-4 (stock build, extension, AvgLuma compute) and the "later" full-screen passes (1.1: eleven effects
   ported line for line), phase 2's mechanism (1.2: pixel shader replacement). All verified on software Vulkan only.
 - CI fixed 2026-10-25: "Build New Vegas Reloaded" moved from the retired `windows-2019` runner to `windows-2022` (v143
@@ -47,9 +47,16 @@ sweep_timing.py (reports sweep-*.report there).
   og-desert is inside noise in all nine pairs (signed -0.02). The one left (fog off, +0.32 on the whole frame) was the
   exposure still settling after the switch (dxvkfork-13: brightness kept rising shot to shot; the settled pair is +0.02).
   Not judged: Sandstorm (the dust moves: two Vulkan shots already differ by 25-49 %).
-- The same half-texel rule applies to EVERY port that draws into a target smaller than the screen and uses the built-in
-  `uv` (half-resolution fog estimate, bloom chain, AO, sandstorm half/quarter buffers, ...): a quarter texel at half
-  resolution. All measured inside noise, but not exact: follow-up audit (NVR-DXVK-EXTENSION.md "half-pixel rule").
+- Half-pixel audit of every other port (2026-10-26, NVR-DXVK-EXTENSION.md "half-pixel rule"): only passes whose D3D9
+  version drew the frame quad (FrameVS) into a smaller target AND whose GLSL reads the built-in `uv` were off. Fork
+  extension 1.4 (patch 0006, `DrawShifted`: a sub-pixel viewport move, CI run 40269237701) + `ExtDrawTo(...,
+  ExtUv::ScreenQuad)` fix them: Reflections, Specular (low passes), SunShadows, ShadowsInteriors, SunFar, FlashlightBeam,
+  CombineDepth. HalfVS / PackedVS passes (AO, BounceLight, GodRays, VolumetricFog's estimate), Bloom's own quads and the
+  VPOS passes were already exact. Re-test with fork 1.4 (lists dxvkfork-11-sweep): lucky22 (20261026-005913-slotC) and
+  og-desert (20261026-012439-slotC): no crash, every pair inside noise (desert default pairs signed +0.01, the noise pairs
+  +0.02); the log shows the shift in use ("Reflections's passes into smaller targets read at the D3D9 frame quad's uv
+  (shift 0.483, 0.470 px)", Specular 0.375). og-night not re-run (Steam closed after a Steam load error); it was inside
+  noise before, and no pass the fix changed is night-only.
 - Timing (F10 GPU timers, ms, D3D9 -> Vulkan, same scene and launch; frame totals are within the game's own +-1 ms swing):
   | pass | lucky22 | og-desert | og-night | og-lake |
   |---|---|---|---|---|
