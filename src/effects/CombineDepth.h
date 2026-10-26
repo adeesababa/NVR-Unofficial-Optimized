@@ -27,4 +27,12 @@ public:
 	bool	RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface);
 	bool	mergedNormalsFailed = false;
 	CachedHandle techDepthNormals;	// UNOFFICIAL: looked up once per loaded effect
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the depth pass as src\hlsl\NewVegas\Compute\CombineDepth.frag (EffectRecord::ExtRender); the
+	// merged pass as DepthNormals.frag, two targets (ExtDepthNormals, called first by RenderWithNormals when the merged pass is on).
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+private:
+	bool	ExtDepthNormals(IDirect3DDevice9* Device, IDirect3DSurface9* NormalsSurface);
+	ExtPass	extPass;
+	ExtPass	extPassDepthNormals;
 };
