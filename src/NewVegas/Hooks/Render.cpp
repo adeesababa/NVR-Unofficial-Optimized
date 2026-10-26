@@ -3128,14 +3128,22 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		// UNOFFICIAL 2026-10-26 HDR output (core\HdrOutput.h; off by default, needs NVR DXVK): settings, then the highlight gain from
 		// the scene before tonemapping and the tonemapper's SDR result (OutputSurface still holds it here).
 		HdrOutput::BeginFrame(Device, SourceTarget ? SourceTarget->GetD3DTexture(0) : nullptr);
-		HdrOutput::RenderGain(Device, OutputSurface);
+		if (HdrOutput::S.Active) {
+			static GpuTimer hdrGainTimer("HDR gain pass");
+			GpuProfileScope gpu(hdrGainTimer, Device);
+			HdrOutput::RenderGain(Device, OutputSurface);
+		}
 		TheShaderManager->RenderEffects(OutputSurface);
 #if NVR_TEST_TOOLS
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);	// UNOFFICIAL, diagnostic
 		SettingShots::Capture(OutputSurface);	// UNOFFICIAL, test only
 #endif
 		ReShadeIntegration::RenderEffects(OutputSurface);	// UNOFFICIAL: with ReShade loaded, its effects here (before the HUD) on NVR's depth
-		HdrOutput::MarkScene(OutputSurface);	// UNOFFICIAL 2026-10-26: the finished picture before the HUD (HUD pixels stay at paper white)
+		if (HdrOutput::S.Active) {
+			static GpuTimer hdrMarkTimer("HDR scene copy (mark)");
+			GpuProfileScope gpu(hdrMarkTimer, Device);
+			HdrOutput::MarkScene(OutputSurface);	// UNOFFICIAL 2026-10-26: the finished picture before the HUD (HUD pixels stay at paper white)
+		}
 		HdrOutput::Capture();					// UNOFFICIAL 2026-10-26 test tool ([Shaders.HDR.Main] CaptureFrame)
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 		ReflectionProbe::EndFrame();
