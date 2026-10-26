@@ -30,7 +30,8 @@ public:
 	// Helpers; null on failure (logged). The sampler heap is set 0, binding 0 in every NVR .comp and .frag.
 	static ID3D9NvrExtPipeline*	CreatePipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers);
 	// A full-screen pass: <Name>.spv is the fragment shader (built-in vertex shader, uv at location 0).
-	static ID3D9NvrExtPipeline*	CreateGraphicsPipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers, UINT TargetCount = 1, NVR_EXT_BLEND Blend = NVR_EXT_BLEND_NONE);
+	// UNOFFICIAL 2026-10-26 FailAll false (debugging tools): a missing file or refused pipeline is only logged; the other paths stay on.
+	static ID3D9NvrExtPipeline*	CreateGraphicsPipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers, UINT TargetCount = 1, NVR_EXT_BLEND Blend = NVR_EXT_BLEND_NONE, bool FailAll = true);
 	// The samplers every pass uses (made once): the effects' LINEAR/CLAMP and POINT/CLAMP states.
 	static ID3D9NvrExtSampler*	LinearClamp();
 	static ID3D9NvrExtSampler*	PointClamp();
@@ -45,6 +46,8 @@ public:
 	// (Compute\variants.txt, the D3D9 techniques' fixed switches) where the .spv exists; off: the run-time switched shaders (A/B).
 	static bool					VariantsOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
+	// UNOFFICIAL 2026-10-26 (debugging tools): as CreateBuffer, but a failure is only logged (the other compute paths stay on).
+	static ID3D9NvrExtBuffer*	CreateBufferNoFail(UINT Size, UINT Flags, const char* Name);
 
 	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device
 	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>@<hash>.spv (FNV-1a of the bytecode,

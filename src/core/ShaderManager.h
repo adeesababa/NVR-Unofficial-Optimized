@@ -84,6 +84,7 @@ public:
 	bool					IsDirectFinal(const void* effect) const { return Active && !GameTexture && GameTarget && FinalEffect == effect; }
 	IDirect3DSurface9*		FinalSurface() const { return GameTarget; }
 	void					CommitFinal() { FinalWritten = true; } // the game target holds the finished image
+	bool					FinalIsWritten() const { return FinalWritten; }	// UNOFFICIAL 2026-10-26 (pixel inspector)
 
 private:
 	void					ReclaimFinal();

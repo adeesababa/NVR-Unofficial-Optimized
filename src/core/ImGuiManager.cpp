@@ -5,6 +5,7 @@
 #include "imgui_impl_win32.h"
 #include "GpuProfiler.h"
 #include "TestTools.h"
+#include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -3679,6 +3680,7 @@ void ImGuiManager::BuildUI() {
 	s_devOptions = TheSettingManager->GetSettingI("Main.Menu.Developer", "DeveloperOptions") != 0;	// UNOFFICIAL 2026-10-25
 	CfabUpdate();
 	if (s_screenshotMode) return;
+	PixelInspector::DrawUI();	// UNOFFICIAL 2026-10-26: [Main.Develop.PixelInspector] / shader counters window (only while one is on)
 
 	// Dev Tools coc/cow picker's "visited this session" list -- see
 	// TrackVisitedInteriorCell's own comment for why this, not an engine

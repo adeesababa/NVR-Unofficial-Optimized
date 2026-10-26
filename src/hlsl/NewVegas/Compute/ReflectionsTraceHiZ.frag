@@ -12,6 +12,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
+#include "Counters.glsl"   // UNOFFICIAL 2026-10-26: empty unless built with -DNVR_COUNTERS=1 (ReflectionsTraceHiZCount.spv)
 
 layout(set = 1, binding = 16) uniform texture2D t_hiz;   // NVR_HiZ: r nearest, g farthest linear depth / farZ; level k = 2^(k+1) pixels
 
@@ -35,7 +36,7 @@ void main() {
     vec3 N = ViewNormal(pixelUV);
     float roughness;
     float amount = Reflectivity(pixelUV, depth, N, roughness);
-    if (amount <= 0.0) { o_color = vec4(0.0); return; }
+    if (amount <= 0.0) { NVR_COUNT(11); o_color = vec4(0.0); return; }
 
     vec3 position = ViewPosition(pixelUV, depth);
     vec3 V = normalize(position);   // eye -> surface
@@ -62,6 +63,7 @@ void main() {
     // DebugView 9 / 10 (diagnostic): how the walk ended, and what it skipped on the way.
     int endRule = 5;   // 5 not started (behind the near plane at once, or the start off the screen)
     float nFacing = 0.0, nPlane = 0.0, nThick = 0.0;
+    int cellsWalked = 0;   // (shader counters)
     if (tEnd > tStart) {
         vec3 P0 = position + R * tStart, P1 = position + R * tEnd;
         float k0 = 1.0 / P0.z, k1 = 1.0 / P1.z;   // 1/z is linear in screen space
@@ -128,6 +130,7 @@ void main() {
                 break;
             }
         }
+        cellsWalked = i;
         // Out of cells before the end of the ray (a ray grazing a floor: every coarse cell holds floor nearer than the ray, so the walk
         // goes pixel by pixel): the rest of the ray is searched as the fixed-step trace does it, from where the walk stopped, with its own
         // samples, hit rule and bisection (ReflectionsTrace.frag), so the walk never finds less than the old trace.
@@ -179,6 +182,18 @@ void main() {
         }
         else if (endRule == 1 || endRule == 3) endRule = 2;   // found, then thrown away (the weapon, or the back of something)
     }
+    // UNOFFICIAL 2026-10-26 shader counters ([Main.Develop.ShaderCounters] ReflectionsHiZ; only in ReflectionsTraceHiZCount.spv, built
+    // with -DNVR_COUNTERS=1; Counters.glsl, core/ShaderCounters.h): 0 rays, 1-6 how the walk ended (endRule 0-5 as DebugView 9),
+    // 7 cells walked, 8-10 the skips of DebugView 10 (facing, own plane, behind by more than the thickness), 11 pixels with no reflection.
+    NVR_COUNT(0);
+    NVR_COUNT(1 + endRule);
+    NVR_COUNT_N(7, cellsWalked);
+    NVR_COUNT_N(8, nFacing);
+    NVR_COUNT_N(9, nPlane);
+    NVR_COUNT_N(10, nThick);
+    NVR_PROBE(0, vec4(float(endRule), float(cellsWalked), hitT, confidence));
+    NVR_PROBE(1, vec4(nFacing, nPlane, nThick, roughness));
+    NVR_PROBE(2, vec4(hit, depth, amount));
     // DebugView 9: green a walk hit, cyan a hit of the fixed-step rest after the cell limit, yellow a hit thrown away, red walked to the
     // end / off the screen with nothing, magenta out of cells and the rest found nothing, blue not started.
     // DebugView 10: red the pixels skipped as facing along the ray, green those on the surface's own plane, blue the cells skipped as

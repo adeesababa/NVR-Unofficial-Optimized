@@ -29,6 +29,15 @@ GpuDebugLabels = false  # Debug only (2026-10-26): every NVR step (each effect, 
 RenderDocCaptureKey = 0 # Debug only: keyboard key (DirectInput code, e.g. 87 = F11) that asks RenderDoc for a capture of the next frame(s). Works only when the game was started from RenderDoc (on the DXVK d3d9.dll); NVR never loads RenderDoc. 0 = no key.
 RenderDocCaptureFrames = 1  # Debug only: how many frames the RenderDocCaptureKey captures (1-10).
 
+[_Main.Develop.PixelInspector]
+Enabled = false         # UNOFFICIAL DEBUGGING TOOL (2026-10-26), needs NVR DXVK with extension 1.5-debug (fork patch 0015; does nothing on native D3D9 or stock DXVK, and says so once in the log): for the screen pixel X, Y, records the value it has at every stage NVR can see each frame (the scene before NVR, the linear depth, the view normal, the picture after each effect that drew, the effects' own buffers such as the shadow buffer, the tonemapped picture, the final picture before the HUD) and shows them in a window while the menu is open (pick the pixel with the mouse there); the log gets them ('PIXEL INSPECTOR') when the pixel changes and every LogEvery frames. One tiny GPU copy per stage, read back a few frames later without ever waiting. Off: nothing is created. Applies immediately.
+X = 960                 # UNOFFICIAL DEBUGGING TOOL (2026-10-26): the inspected pixel's column, in the game's render pixels (0 = left). Also the probe pixel of the shader counters.
+Y = 540                 # UNOFFICIAL DEBUGGING TOOL (2026-10-26): the inspected pixel's row, in the game's render pixels (0 = top).
+LogEvery = 0            # UNOFFICIAL DEBUGGING TOOL (2026-10-26): with Enabled, also log every stage every this many frames (0: only when the pixel changes, or with the window's 'Log now').
+
+[_Main.Develop.ShaderCounters]
+ReflectionsHiZ = false  # UNOFFICIAL DEBUGGING TOOL (2026-10-26), needs NVR DXVK 1.5-debug and Reflections' HiZ trace running (NvrDxvkPasses, HiZ, outdoors): the trace runs its counting build (Compute\ReflectionsTraceHiZCount.spv) that counts how every reflected ray's walk ended (the DebugView 9 rules), the cells walked and the DebugView 10 skips, plus the values of the pixel inspector's pixel; per-frame averages logged once a second ('SHADER COUNTERS') and shown in the pixel inspector window. Read back without waiting. Costs a little GPU time while on (atomic counters in every trace pixel). Off: the normal trace, nothing created. Applies immediately.
+
 [_Main.Transitions.Main]
 TransitionCurvePower = 1.0             # Day/night transition curve exponent. 1.0 = current smoothstep behavior. Higher values sharpen the transition; lower values soften it.
 
