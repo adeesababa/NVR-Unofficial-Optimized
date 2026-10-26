@@ -44,6 +44,9 @@ public:
 	// [Main.Main.Performance] NvrDxvkVariants (UNOFFICIAL 2026-10-26): Vulkan passes use their compile-time variants
 	// (Compute\variants.txt, the D3D9 techniques' fixed switches) where the .spv exists; off: the run-time switched shaders (A/B).
 	static bool					VariantsOn();
+	// [Main.Main.Performance] NvrDxvkStencil (UNOFFICIAL 2026-10-26): Vulkan passes test a stencil where their D3D9 technique does
+	// (extension 1.6 DrawDepthStencil; SMAA's weight pass only on the edge pixels); off, or an older NVR DXVK: without (A/B).
+	static bool					StencilOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 
 	// UNOFFICIAL 2026-10-26 (extension 1.5, diagnostic): while On (F10 profiling), a "DXVK PROFILE" line every 120 frames: where a frame

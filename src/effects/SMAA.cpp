@@ -72,8 +72,18 @@ void SMAAEffect::UpdateConstants() {
 	Constants.Pred = D3DXVECTOR4(Settings.Main.Predication ? 1.0f : 0.0f, Settings.Main.PredicationScale, Settings.Main.PredicationStrength, Settings.Main.DeDither ? 1.0f : 0.0f);
 };
 
+// UNOFFICIAL: SMAA's own edge mask (D24S8, screen size, no MSAA), made on first use by either path; a failure is logged once.
+static void MakeStencil(IDirect3DDevice9* Device, IDirect3DSurface9*& Surface, bool& Failed) {
+	if (Surface || Failed) return;
+	if (FAILED(Device->CreateDepthStencilSurface(TheRenderManager->width, TheRenderManager->height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, TRUE, &Surface, NULL))) {
+		Surface = nullptr;
+		Failed = true;
+		Logger::Log("UNOFFICIAL SMAA: no depth-stencil surface of its own; uses the bound one as before");
+	}
+}
+
 /*
- * Render SMAA by performing the three main passes (edge detection, blending weight calculation, and final blending). 
+ * Render SMAA by performing the three main passes (edge detection, blending weight calculation, and final blending).
  */
 void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	if (!Enabled) {
@@ -95,13 +105,7 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	// size or none), so the mask may have done nothing. SMAA now binds its own screen-size D24S8 for its three passes and
 	// puts the old one back after. Same picture (pixels without an edge get weight 0 either way), less work.
 	IDirect3DSurface9* previousDepth = nullptr;
-	if (!Textures.StencilSurface && !Textures.StencilFailed) {
-		if (FAILED(Device->CreateDepthStencilSurface(TheRenderManager->width, TheRenderManager->height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, TRUE, &Textures.StencilSurface, NULL))) {
-			Textures.StencilSurface = nullptr;
-			Textures.StencilFailed = true;
-			Logger::Log("UNOFFICIAL SMAA: no depth-stencil surface of its own; uses the bound one as before");
-		}
-	}
+	MakeStencil(Device, Textures.StencilSurface, Textures.StencilFailed);
 	// UNOFFICIAL ReShadeDepthCompat: keep the game's depth-stencil bound and clear its stencil, as before P78.
 	const bool ownStencil = Textures.StencilSurface != nullptr && !ReShadeIntegration::KeepDepthBound();
 	if (ownStencil) {
@@ -207,13 +211,16 @@ void SMAAEffect::NeighborhoodBlendingPass(IDirect3DSurface9* RenderTarget) {
 }
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): the three passes through the extension. Edges and weights go into SMAA's own targets
-// (ExtDrawTo), the neighborhood blend writes the frame through the chain (ExtFullScreen). No stencil there: the edge pass writes
+// (ExtDrawTo), the neighborhood blend writes the frame through the chain (ExtFullScreen). Without a stencil the edge pass writes
 // its mark (the pixel was not discarded) into the edges' alpha and the weight pass writes 0 where it is missing, as the D3D9
-// stencil test leaves the cleared target. Every pixel of both targets is written, so neither needs the D3D9 clear.
+// stencil test leaves the cleared target; every pixel of both targets is written, so neither needs the D3D9 clear.
+// 2026-10-26 (extension 1.6, NvrDxvkStencil): as the D3D9 techniques instead: both targets and SMAA's own stencil cleared (D3D9
+// Clear, in order with the passes), the edge pass discards the pixels without an edge and marks the others (REPLACE 1), the weight
+// pass (32-step searches) runs only where the mark is (EQUAL 1). Measured before it: SMAA +0.10-0.15 ms over its D3D9 passes.
 namespace {
 	struct SMAAPush {
 		D3DXVECTOR4 Resolution, Data, DepthData, Pred, ToneMappingClip;	// TESR_SMAA*, TESR_ToneMappingClip
-		UInt32 samplerIndex, pointSamplerIndex, mode, pad;				// LINEAR/CLAMP at 80, POINT/CLAMP at 84
+		UInt32 samplerIndex, pointSamplerIndex, mode, flags;			// LINEAR/CLAMP at 80, POINT/CLAMP at 84; flags 1: the edge pass discards
 	};
 	const NVR_EXT_BINDING_DESC SMAAEdgesBindings[] = {
 		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_rendered: TESR_RenderedBuffer
@@ -262,8 +269,11 @@ bool SMAAEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 			masked = desc.Format == D3DFMT_D24S8 || desc.Format == D3DFMT_D24FS8 || desc.Format == D3DFMT_D24X4S4 || desc.Format == D3DFMT_D15S1;
 		if (bound) bound->Release();
 	}
+	// UNOFFICIAL 2026-10-26: the D3D9 techniques' stencil itself (extension 1.6), on SMAA's own surface (not the ReShadeDepthCompat one).
+	const bool stencil = masked && DxvkCompute::StencilOn() && !ReShadeIntegration::KeepDepthBound()
+		&& (MakeStencil(Device, Textures.StencilSurface, Textures.StencilFailed), Textures.StencilSurface != nullptr);
 
-	auto make = [](ExtPass& pass, const char* spvName, const NVR_EXT_BINDING_DESC* bindings, UINT count) {
+	auto make =[](ExtPass& pass, const char* spvName, const NVR_EXT_BINDING_DESC* bindings, UINT count) {
 		if (!pass.Tried) {
 			pass.Tried = true;
 			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(SMAAPush), true);
@@ -291,23 +301,50 @@ bool SMAAEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	if (TheShaderManager->Shaders.Tonemapping) push.ToneMappingClip = TheShaderManager->Shaders.Tonemapping->Constants.Clip;
 	push.mode = mode;
 
+	// The stencil route clears what the D3D9 path clears: both targets and the stencil (render target 0 is put back by Render).
+	NVR_EXT_DEPTH_STENCIL mark = {}, test = {};
+	if (stencil) {
+		IDirect3DSurface9* previousDepth = nullptr;
+		if (FAILED(Device->GetDepthStencilSurface(&previousDepth))) previousDepth = nullptr;	// none bound
+		Device->SetRenderTarget(0, Textures.SMAA_Edges_Surface);
+		Device->SetDepthStencilSurface(Textures.StencilSurface);
+		Device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_STENCIL, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+		Device->SetRenderTarget(0, Textures.SMAA_Blend_Surface);
+		Device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+		Device->SetDepthStencilSurface(previousDepth);
+		if (previousDepth) previousDepth->Release();
+
+		mark.pResource = test.pResource = Textures.StencilSurface;
+		mark.StencilTest = test.StencilTest = TRUE;
+		mark.StencilReference = test.StencilReference = 1;
+		mark.StencilReadMask = test.StencilReadMask = 0xFF;
+		mark.StencilCompare = NVR_EXT_COMPARE_ALWAYS;	// the edge techniques: StencilFunc ALWAYS, StencilPass REPLACE, StencilRef 1
+		mark.StencilPassOp = NVR_EXT_STENCIL_REPLACE;
+		mark.StencilWriteMask = 0xFF;
+		test.StencilCompare = NVR_EXT_COMPARE_EQUAL;	// BlendWeightCalculation: StencilFunc EQUAL, StencilPass KEEP, StencilRef 1
+	}
+
 	// Edge detection into TESR_SMAA_Edges. Nothing of the frame is touched before the last pass, so a failure here still leaves
 	// this frame to the D3D9 technique.
+	push.flags = stencil ? 1u : 0u;
 	NVR_EXT_RESOURCE_BINDING edges[3] = {};
 	edges[0].Slot = 0; edges[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[0].pResource = TheTextureManager->RenderedTexture;
 	edges[1].Slot = 1; edges[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[1].pResource = depth;
 	edges[2].Slot = 0; edges[2].Type = NVR_EXT_BIND_SAMPLER; edges[2].pResource = linear;
-	if (!ExtDrawTo(edgesPipeline, &Textures.SMAA_Edges_Surface, 1, edges, _countof(edges), &push, sizeof(push))) return false;
+	if (!ExtDrawTo(edgesPipeline, &Textures.SMAA_Edges_Surface, 1, edges, _countof(edges), &push, sizeof(push), nullptr, ExtUv::TexelCentre,
+		stencil ? &mark : nullptr)) return false;
 
-	// Blending weights into TESR_SMAA_Blend, only where the edge pass marked (mode 1).
-	push.mode = masked ? 1 : 0;
+	// Blending weights into TESR_SMAA_Blend, only where the edge pass marked: the stencil test, else the edges' alpha (mode 1).
+	push.flags = 0u;
+	push.mode = masked && !stencil ? 1 : 0;
 	NVR_EXT_RESOURCE_BINDING weights[5] = {};
 	weights[0].Slot = 0; weights[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[0].pResource = Textures.SMAA_Edges_Texture;
 	weights[1].Slot = 1; weights[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[1].pResource = area;
 	weights[2].Slot = 2; weights[2].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[2].pResource = search;
 	weights[3].Slot = 0; weights[3].Type = NVR_EXT_BIND_SAMPLER; weights[3].pResource = linear;
 	weights[4].Slot = 1; weights[4].Type = NVR_EXT_BIND_SAMPLER; weights[4].pResource = point;
-	if (!ExtDrawTo(extWeights.Pipeline, &Textures.SMAA_Blend_Surface, 1, weights, _countof(weights), &push, sizeof(push))) return false;
+	if (!ExtDrawTo(extWeights.Pipeline, &Textures.SMAA_Blend_Surface, 1, weights, _countof(weights), &push, sizeof(push), nullptr, ExtUv::TexelCentre,
+		stencil ? &test : nullptr)) return false;
 
 	// Neighborhood blending: the frame. SMAA's D3D9 path never refreshes TESR_SourceBuffer (it declares no such sampler): no SourceBuffer.
 	push.mode = 0;

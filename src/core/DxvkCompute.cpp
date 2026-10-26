@@ -188,6 +188,10 @@ bool DxvkCompute::VariantsOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkVariants;
 }
 
+bool DxvkCompute::StencilOn() {
+	return TheSettingManager->SettingsMain.Main.NvrDxvkStencil && Available() && ExtInfo.ExtVersionMinor >= 6;
+}
+
 bool DxvkCompute::PassesOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
 }

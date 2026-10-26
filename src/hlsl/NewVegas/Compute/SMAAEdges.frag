@@ -2,8 +2,10 @@
 // DepthEdgeDetection, LumaDepthEdgeDetection and LumaDepthEdgeDetectionStable (pc.mode 0-4) line for line, with the parts of
 // Includes/SMAA.hlsl (SMAA_HLSL_3) and Includes/DitherNoise.hlsl they use inlined. effects/SMAA.cpp ExtRender.
 // D3D9 clears the edges target, then each pass discards the pixels without an edge and marks the others in the stencil (REPLACE 1)
-// for the weight pass. No stencil here: a discarded pixel writes the cleared value (0) and alpha carries the mark (1 = the pass
+// for the weight pass. Without a stencil: a discarded pixel writes the cleared value (0) and alpha carries the mark (1 = the pass
 // did not discard; the D3D9 pass writes alpha 0 and nothing reads the edges' alpha but SMAAWeights.frag). VPOS = floor(gl_FragCoord.xy).
+// 2026-10-26 pc.flags 1 (NVR DXVK 1.6, NvrDxvkStencil): as D3D9, a real discard; SMAA.cpp cleared the target and binds the stencil
+// (REPLACE 1 where a pixel is written).
 // Every sampler of the .fx is LINEAR, CLAMP (SMAASamplePoint is tex2D through it under SMAA_HLSL_3); the targets have no mips.
 #version 450
 #extension GL_GOOGLE_include_directive : enable
@@ -21,6 +23,7 @@ layout(push_constant) uniform Push {
     uint samplerIndex;          // 80: LINEAR, CLAMP
     uint pointSamplerIndex;     // 84: (weights pass only)
     uint mode;                  // 88: 0 luma, 1 color, 2 depth, 3 luma or depth, 4 the same with the aastab options
+    uint flags;                 // 92: 1 = discard (the stencil route)
 } pc;
 
 // UNOFFICIAL 2026-10-26: the variant .spv fixes this (-DSMAA_EDGE_MODE, Compute/variants.txt, EffectRecord::ExtVariant), as the D3D9
@@ -53,7 +56,7 @@ float LumaWithoutDither(float luma, vec2 pixel) {
 }
 
 // discard in the D3D9 pass: the cleared value, no stencil mark
-#define DISCARD { o_color = vec4(0.0); return; }
+#define DISCARD { if ((pc.flags & 1u) != 0u) discard; o_color = vec4(0.0); return; }
 #define MARKED(edges) o_color = vec4(edges, 0.0, 1.0)
 
 // SMAALumaEdgeDetectionPS (SMAA_PREDICATION 0)

@@ -55,10 +55,14 @@ public:
 	// D3D9 pass drew the frame quad (FrameVS over ShaderManager::CreateFrameVertex) into a target smaller than the screen, so it
 	// read at x / W + 0.5 / screen; the pass is moved by that sub-pixel amount (extension 1.4 DrawShifted; zero for a screen-size
 	// target, so ScreenQuad is always safe for a FrameVS pass). Audit 2026-10-26: docs/next/NVR-DXVK-EXTENSION.md, half-pixel rule.
+	// UNOFFICIAL 2026-10-26 DepthStencil (extension 1.6 DrawDepthStencil): a depth-stencil surface of the targets' size and its tests,
+	// e.g. a pass that runs only where an earlier one left a stencil mark (SMAA's weights). False without 1.6 (no ExtFailed: the
+	// caller keeps its path without the attachment).
 	enum class ExtUv { ScreenQuad, TexelCentre };
 	bool					ExtShiftLogged = false;
 	bool					ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
-								UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport = nullptr, ExtUv Uv = ExtUv::TexelCentre);
+								UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport = nullptr, ExtUv Uv = ExtUv::TexelCentre,
+								const NVR_EXT_DEPTH_STENCIL* DepthStencil = nullptr);
 	// UNOFFICIAL 2026-10-25: constants over the 240 push bytes (big kernels, matrices): Data uploaded into a uniform buffer the
 	// effect keeps (made on first use, remade when Size changes; recorded in order with the draws, no waits). Bind the returned
 	// buffer as NVR_EXT_BIND_UNIFORM_BUFFER (GLSL: layout(set = 2, binding = 0, std140) uniform ...). Null: no extension or failed.

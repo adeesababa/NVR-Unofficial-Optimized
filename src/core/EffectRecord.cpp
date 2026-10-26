@@ -609,8 +609,9 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h. A pass into the effect's own targets; the frame chain is not touched.
 bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
-	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv) {
+	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv, const NVR_EXT_DEPTH_STENCIL* DepthStencil) {
 	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
+	if (DepthStencil && DxvkCompute::Info().ExtVersionMinor < 6) return false;
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
 	draw.TargetCount = TargetCount;
@@ -648,7 +649,8 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 			said = true; shiftX = shiftY = 0.0f;
 		}
 	}
-	HRESULT result = (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
+	HRESULT result = DepthStencil ? DxvkCompute::Extension()->DrawDepthStencil(&draw, DepthStencil, shiftX, shiftY)
+		: (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
 	if (SUCCEEDED(result) && (shiftX != 0.0f || shiftY != 0.0f) && !ExtShiftLogged) {
 		ExtShiftLogged = true;
 		Logger::Log("UNOFFICIAL NVR DXVK: %s's passes into smaller targets read at the D3D9 frame quad's uv (first: shift %.3f, %.3f px)", Name, shiftX, shiftY);

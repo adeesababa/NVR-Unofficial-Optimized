@@ -739,6 +739,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.AvgLumaCompute = boolSetting(performance, "AvgLumaCompute", false);
 	SettingsMain.Main.NvrDxvkPasses = boolSetting(performance, "NvrDxvkPasses", false);
 	SettingsMain.Main.NvrDxvkVariants = boolSetting(performance, "NvrDxvkVariants", true);	// UNOFFICIAL 2026-10-26 (DxvkCompute::VariantsOn)
+	SettingsMain.Main.NvrDxvkStencil = boolSetting(performance, "NvrDxvkStencil", true);	// UNOFFICIAL 2026-10-26 (DxvkCompute::StencilOn)
 	SettingsMain.Main.AmbientLightSmoothCompute = boolSetting(performance, "AmbientLightSmoothCompute", false);	// UNOFFICIAL 2026-10-25 (AmbientLight.cpp SmoothCompute)
 	SettingsMain.Main.NvrDxvkReplacements = boolSetting(performance, "NvrDxvkReplacements", false);
 	SettingsMain.Main.AmbientLightBlurCompute = boolSetting(performance, "AmbientLightBlurCompute", false);	// UNOFFICIAL 2026-10-25
