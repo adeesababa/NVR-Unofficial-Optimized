@@ -179,6 +179,23 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
      Open "same picture" doubts to check when testing: Specular's SunFar sampler (LINEAR via BindExtras vs POINT in the
      .fx), Reflections' INTZ viewmodel-depth sampling, VolumetricLight's 3D noise view (first 3D view), Reflections' 48
      extension draws a frame for the cube (cost).
+   - PORT ROUND 3 2026-10-26 (17 agents from a4158cb9; all merged, build clean, NOT run in game): ported AmbientLight
+     (all 4 techniques, every pass; per-pass fallback; its compute switches still take precedence), AmbientOcclusion (4
+     dedicated techniques + the sky pass AmbientLight uses), VolumetricFog (9 dedicated/composite techniques, ShadowAO,
+     full-res), VolumetricClouds (march/temporal/shadow map/composite), Flashlight (4 techniques), BounceLight (35 live
+     passes), SunShadows (5 techniques via the scratch ping-pong), Bloom (whole chain as passes), TAA, Sandstorm (7),
+     SnowAccumulation (5), PointShadows (5; scissored draws stay D3D9), PointShadows2 (inert in the shipped build),
+     Normals + NormalsSmooth + CombineDepth + merged DepthNormals (core passes), DepthOfField's autofocus technique,
+     VolumetricSmoke (haze/room light/composite). Not ported: BloodFlow (every technique draws per-item geometry; a
+     compute mask bake/probe is possible later). Still D3D9 by design: occlusion-query and probe passes, hand-drawn
+     reflection clouds, packed/legacy fallbacks, diagnostics, smoke segment geometry.
+     Findings worth keeping: VolumetricClouds' D3D9 march never exits early (fxc compiled the break to a never-taken
+     branch: always 64 steps; the port mirrors it); VolumetricFog's getSky had an implicit float2->float truncation
+     (mirrored). Open doubts for testing (per port in G:\_NVR-build-scratch\port-results.txt): Bloom's D3D9 upsample reads
+     its own target, Flashlight pows->pow, SnowAccumulation pow->pows, SunShadows' march techniques share the fast
+     layout, AmbientOcclusion's white-border emulation, AmbientLight's D3D9 uv offsets rebuilt per pass.
+     Effects now on the Vulkan path when NvrDxvkPasses is on: essentially every NVR post effect; what remains D3D9 is the
+     game's own object/terrain shaders (phase 2 replacements) and BloodFlow.
    - Fixed on the way: MotionBlur's Vulkan port fed its second pass a stale surface (fell off the frame chain) and its
      first pass could write straight into the game target (aa5c8398; found by the SkinScattering agent).
    - Extension gaps found: samplers without mips/anisotropy; no uniform-buffer path in ExtTexturePass (SkinScattering does
