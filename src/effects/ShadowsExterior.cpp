@@ -1,6 +1,7 @@
 #include "ShadowsExterior.h"
 #include "../core/TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 #include "../core/LampFixtures.h"	// UNOFFICIAL 2026-10-20: LampModelOwnDistance
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 // UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS, technique 2; drawn by ShaderManager after the lamp
 // pass): every number the shader needs (see the constants' comments there). Kept out of ShadowsExterior.h (widely included).
@@ -641,6 +642,97 @@ bool ShadowsExteriorEffect::ShouldRender() {
 		reported = true;
 	}
 	return false;
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the push block of ShadowsExteriors.frag (208 bytes; the shader reads the first 200).
+struct ShadowsExteriorPush {
+	D3DXVECTOR4 viewColumn[4];		// 0: TESR_ViewTransform's HLSL columns 0-3 (see ExtRender)
+	D3DXVECTOR4 cameraPosition;		// 64: TESR_CameraPosition
+	D3DXVECTOR4 projectionFar;		// 80: x TESR_ProjectionTransform[0][0], y [1][1], z TESR_CameraData.y (farZ)
+	D3DXVECTOR4 shadowFade;			// 96: TESR_ShadowFade
+	D3DXVECTOR4 shadowData;			// 112: TESR_ShadowData
+	D3DXVECTOR4 waterSettings;		// 128: TESR_WaterSettings
+	D3DXVECTOR4 sunFarApply;		// 144: TESR_SunFarApply
+	D3DXVECTOR4 sunAmbient;			// 160: TESR_SunAmbient
+	D3DXVECTOR4 skyColor;			// 176: TESR_SkyColor
+	UInt32		samplerIndex;		// 192: LINEAR, CLAMP (filled in by the binding)
+	UInt32		pointSamplerIndex;	// 196: POINT, CLAMP (filled in by the binding)
+	UInt32		pad[2];
+};
+
+// The constant registered under a name: the memory the D3D9 path uploads (SetCT reads it at each draw). Null if absent.
+static const D3DXVECTOR4* ShadowConstant(const char* name) {
+	auto found = TheShaderManager->ConstantsTable.find(name);
+	return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+}
+
+// The texture registered under a sampler name (InitTexture / RegisterTexture). Null if absent.
+static IDirect3DBaseTexture9* ShadowTexture(const char* name) {
+	auto found = TheTextureManager->TextureNames.find(name);
+	return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the shadow apply's one pass (technique Shadow), as ShadowsExteriors.frag. The matrix: the D3D9
+// path uploads TESR_ViewTransform with ID3DXEffect::SetMatrix, so the shader's M[i][j] is the matrix's logical element (row i,
+// column j). The matrix's memory is row-major, so the push block takes its columns: viewColumn[j] = (M(0,j), M(1,j), M(2,j), M(3,j)).
+// TESR_ProjectionTransform's [0][0] and [1][1] are on the diagonal, the same either way. Samplers: LINEAR for the rendered buffer,
+// the point shadows, the depth and the normals; POINT for the sun factor (its tex2Dlod sampler in the .fx). Every texture is at one
+// mip (InitTexture without mipmaps), so the implicit LOD of tex2D is level 0, as the explicit ones are.
+bool ShadowsExteriorEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex != 0) return false;
+	const D3DXMATRIX* view = (const D3DXMATRIX*)ShadowConstant("TESR_ViewTransform");
+	const D3DXMATRIX* projection = (const D3DXMATRIX*)ShadowConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* cameraPosition = ShadowConstant("TESR_CameraPosition");
+	const D3DXVECTOR4* cameraData = ShadowConstant("TESR_CameraData");
+	const D3DXVECTOR4* shadowFade = ShadowConstant("TESR_ShadowFade");
+	const D3DXVECTOR4* shadowData = ShadowConstant("TESR_ShadowData");
+	const D3DXVECTOR4* waterSettings = ShadowConstant("TESR_WaterSettings");
+	const D3DXVECTOR4* sunFarApply = ShadowConstant("TESR_SunFarApply");
+	const D3DXVECTOR4* sunAmbient = ShadowConstant("TESR_SunAmbient");
+	const D3DXVECTOR4* skyColor = ShadowConstant("TESR_SkyColor");
+	if (!view || !projection || !cameraPosition || !cameraData || !shadowFade || !shadowData || !waterSettings || !sunFarApply || !sunAmbient || !skyColor) return false;
+
+	ShadowsExteriorPush push = {};
+	for (int j = 0; j < 4; j++) push.viewColumn[j] = D3DXVECTOR4((*view)(0, j), (*view)(1, j), (*view)(2, j), (*view)(3, j));
+	push.cameraPosition = *cameraPosition;
+	push.projectionFar = D3DXVECTOR4((*projection)(0, 0), (*projection)(1, 1), cameraData->y, 0.0f);
+	push.shadowFade = *shadowFade;
+	push.shadowData = *shadowData;
+	push.waterSettings = *waterSettings;
+	push.sunFarApply = *sunFarApply;
+	push.sunAmbient = *sunAmbient;
+	push.skyColor = *skyColor;
+
+	// The rendered buffer as the chain has it now; the others by their sampler names (one missing: the D3D9 pass, as before).
+	IDirect3DBaseTexture9* textures[5] = {
+		TheTextureManager->RenderedTexture,
+		ShadowTexture("TESR_SunFarBuffer"),
+		ShadowTexture("TESR_PointShadowBuffer"),
+		ShadowTexture("TESR_DepthBuffer"),
+		ShadowTexture("TESR_NormalsBuffer") };
+	for (IDirect3DBaseTexture9* texture : textures) if (!texture) return false;
+
+	const UINT TextureCount = 5, SamplerCount = 2;	// samplers: slot 0 LINEAR, slot 1 POINT (their heap indices at 192 and 196)
+	if (!extPass.Tried) {
+		extPass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[TextureCount + SamplerCount] = {};
+		for (UINT i = 0; i < TextureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[TextureCount].Type = NVR_EXT_BIND_SAMPLER; bindings[TextureCount].Slot = 0; bindings[TextureCount].PushOffset = 192;
+		bindings[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; bindings[TextureCount + 1].Slot = 1; bindings[TextureCount + 1].PushOffset = 196;
+		extPass.Pipeline = DxvkCompute::CreateGraphicsPipeline("ShadowsExteriors", bindings, TextureCount + SamplerCount, sizeof(push), true);
+	}
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!extPass.Pipeline || !linear || !point) return false;
+	NVR_EXT_RESOURCE_BINDING resources[TextureCount + SamplerCount] = {};
+	for (UINT i = 0; i < TextureCount; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[TextureCount].Slot = 0; resources[TextureCount].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount].pResource = linear;
+	resources[TextureCount + 1].Slot = 1; resources[TextureCount + 1].Type = NVR_EXT_BIND_SAMPLER; resources[TextureCount + 1].pResource = point;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extPass.Pipeline, resources, TextureCount + SamplerCount, &push, sizeof(push), true);
 }
 
 /*
