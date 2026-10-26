@@ -367,6 +367,8 @@ void ShaderManager::UpdateConstants() {
 	// UNOFFICIAL 2026-10-19: [Shaders.Snow.Main] ForceSnow -- the snow effects act as if it snowed (no snow weathers in the game or
 	// most load orders, so macintroll's snow shaders could not be seen otherwise)
 	if (!GameState.isSnow && TheSettingManager->GetSettingI("Shaders.Snow.Main", "ForceSnow")) { GameState.isSnow = true; GameState.isRainy = false; }
+	// UNOFFICIAL 2026-10-25: [Shaders.Precipitations.Main] ForceRain, the same for rain (FalloutNV.esm has no rainy weather at all)
+	else if (!GameState.isRainy && TheSettingManager->GetSettingI("Shaders.Precipitations.Main", "ForceRain")) GameState.isRainy = true;
 	GameState.isCloudy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Cloudy : false;
 
 	TimeGlobals* GameTimeGlobals = TimeGlobals::Get();
