@@ -26,6 +26,8 @@ float4 TESR_GameTime : register(c22);          // z: running time in seconds
 float4 TESR_CloudsHide : register(c23);        // UNOFFICIAL: x 1 = NVR's volumetric clouds replace these layers (VolumetricClouds.cpp)
 float4 TESR_SkyTint : register(c24);           // UNOFFICIAL 2026-10-25 rgb: the sky's tint for this hour (SKY.pso), for the sky the clouds blend with
 float4 TESR_MoonData : register(c25);          // UNOFFICIAL 2026-10-25 x: MoonBrightness (the moon disc)
+float4 TESR_SkyTintHorizon : register(c26);    // UNOFFICIAL 2026-10-26 rgb: the sky's horizon tint for this hour (SKY.pso)
+float4 TESR_SkyLook : register(c27);           // UNOFFICIAL 2026-10-26 x: the sky's Saturation, y: TintGradientHeight (SKY.pso)
 
 
 // Registers:
@@ -390,7 +392,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     } else {
         // UNOFFICIAL: the volumetric clouds draw the clouds; the layer adds nothing (blended by its alpha)
         if (TESR_CloudsHide.x > 0.5) { OUT.color_0 = float4(0.0, 0.0, 0.0, 0.0); return OUT; }
-        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor) * TESR_SkyTint.rgb;
+        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor);
+        skyColor = SkyLook(skyColor, eyeDir.z, TESR_SkyTint.rgb, TESR_SkyTintHorizon.rgb, TESR_SkyLook);   // UNOFFICIAL 2026-10-26 as SKY.pso
         OUT.color_0 = ShadeClouds(finalColor, color, skyColor, Sun, eyeDir);
         // Volumetric = 0 leaves the flat result above exactly as it is
         if (TESR_CloudVolumeData.x > 0.5) OUT.color_0 = ShadeVolumetricClouds(OUT.color_0, finalColor.w, IN.TexUV, IN.TexBlendUV, IN.position, color, skyColor, Sun, eyeDir);

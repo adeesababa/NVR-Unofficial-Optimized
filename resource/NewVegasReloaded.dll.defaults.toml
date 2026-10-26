@@ -1791,6 +1791,16 @@ TintDayB = 1.0
 TintNightR = 1.0                    # UNOFFICIAL (2026-10-25), live: colour of the sky at night (a colour wheel in the menu), e.g. a little blue for moonlit nights. White = no change.
 TintNightG = 1.0
 TintNightB = 1.0
+TintKeepsBrightness = true          # UNOFFICIAL (2026-10-26), live: the sky colour wheels (TintDay, TintNight and the horizon ones) change only the sky's colour, not how bright it is: a paler or deeper colour on the wheel no longer makes the whole sky brighter or darker. false = the colour multiplies the sky as it is (a pale colour brightens it, a dark one darkens it).
+TintHorizonDayR = 1.0               # UNOFFICIAL (2026-10-26), live: an extra colour for the sky near the horizon by day (a colour wheel in the menu), fading out going up to TintGradientHeight, on top of TintDay; e.g. a pale grey-blue for a hazy desert horizon under a deeper blue overhead. White = no change.
+TintHorizonDayG = 1.0
+TintHorizonDayB = 1.0
+TintHorizonNightR = 1.0             # UNOFFICIAL (2026-10-26), live: the same at night. White = no change.
+TintHorizonNightG = 1.0
+TintHorizonNightB = 1.0
+TintGradientHeight = 0.3            # UNOFFICIAL (2026-10-26), live [0.01-1.0]: how high up the horizon colour reaches before it has faded out (0.3 = about 17 degrees above the horizon, 1 = all the way overhead).
+SaturationDay = 1.0                 # UNOFFICIAL (2026-10-26), live [0.0-2.0]: how colourful the sky is by day, without changing its brightness. 1 = no change, lower = paler and greyer (e.g. 0.6 tones down a strong weather blue), higher = more colourful. Also the sky the clouds blend into and the sky light on objects.
+SaturationNight = 1.0               # UNOFFICIAL (2026-10-26), live [0.0-2.0]: the same at night.
 MoonBrightness = 1.0                # UNOFFICIAL (2026-10-25), live [0.0-4.0]: how bright the moon is at night: the moon disc in the sky and the moonlight on the world (the game's night light, and NVR's effects that use it). 1 = no change, 0.5 half as bright, 2 twice. Outdoors only; the sun is untouched.
 
 
