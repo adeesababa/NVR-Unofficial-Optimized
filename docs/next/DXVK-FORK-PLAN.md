@@ -136,6 +136,19 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
      reverted (3a9830dd, the HeatHaze revert). Untested ports that build their own bindings (BarrelHaze, DepthOfField,
      Snow, Precipitations, SkinScattering) may hit it too: test each before trusting it. Next: a symbol build of the fork
      (keep DWARF, addr2line) and a harness repro of the two passes' exact bindings.
+   - CRASH FIXED 2026-10-25 20:55 (fork patch 0004, d447c933): symbolised with the new symbols build (workflow artifact
+     nvr-dxvk-x32-symbols; NVR_DXVK_DEBUG=1 in build.sh): nvrSetState -> DxvkContextState move -> DxvkXfbState ->
+     Rc<DxvkBuffer>::decRef on garbage. Cause: DXVK 3.0 gives each graphics stage a fixed push-data slot in its
+     "independent" (graphics pipeline library, fast-linked) layout, the fragment stage 48 bytes at offset 192; the
+     extension's passes declare fragment push blocks of up to 240 bytes, so in a fast-linked pipeline their constants and
+     sampler heap indices (offsets 96, 100, 192, 208...) were written past DxvkPushDataState into DxvkXfbState. Every
+     pass with more than 48 push bytes did this while its full pipeline was still compiling (Cinema, Coloring, Snow,
+     DepthOfField, Precipitations too; HeatHaze and Bodycam happened to hit live pointers). Fix: such a shader never gets
+     a pipeline library (DxvkShaderPipelineLibrary::canCreatePipelineLibraryForShader); D3D9's own shaders fit their
+     slots and are unaffected. HeatHaze and Bodycam ports restored (28a8e638, 58e59f2b). In game (fork 0004, slot C):
+     no crash; HeatHaze, Snow, DepthOfField distant blur (desert view defaults) and Bodycam ran as Vulkan passes;
+     Bodycam = D3D9 within its own film-grain noise (72.9 % / 8.95 both); HeatHaze and Snow at noise but the effects
+     hardly change that scene even in D3D9, so their "same picture" still needs a scene where they show.
    - Fixed on the way: MotionBlur's Vulkan port fed its second pass a stale surface (fell off the frame chain) and its
      first pass could write straight into the game target (aa5c8398; found by the SkinScattering agent).
    - Extension gaps found: samplers without mips/anisotropy; no uniform-buffer path in ExtTexturePass (SkinScattering does
