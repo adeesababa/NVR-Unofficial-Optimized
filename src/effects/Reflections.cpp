@@ -42,6 +42,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
 	Settings.ReflectivityInterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityInterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
 	Settings.HiZInteriorsTest = TheSettingManager->GetSettingI(section, "HiZInteriorsTest") != 0;	// test only: HiZ indoors too
+	Settings.HiZSafeCells = TheSettingManager->GetSettingI(section, "HiZSafeCells") != 0;	// test only: the pyramid-channel fix
 }
 
 // UNOFFICIAL 2026-10-26 (deep/fork-hiz): outdoors only for now. Indoors (Lucky 38, a 3rd-person view looking down) the walk found no
@@ -169,6 +170,9 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data4.z = Settings.ReflectAdd;
 	Constants.Data4.w = Settings.SpecularOcclusion;
 	Constants.Layout.z = Settings.SpecularOcclusionLevel;
+	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): HiZSafeCells (test): the Hi-Z walk reads the coarse cells' two channels as min/max and does its
+	// "behind" skip on the finest level only (ReflectionsTraceHiZ.frag). Indoors HiZ itself still needs HiZInteriorsTest.
+	Constants.Layout.w = Settings.HiZSafeCells ? 1.0f : 0.0f;
 	// UNOFFICIAL 2026-10-20 MaterialAware: x is set again by CaptureMaterial (1 only when the buffer was filled this frame).
 	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect * reflectivity, 0.0f);
 }
