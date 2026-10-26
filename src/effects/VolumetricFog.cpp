@@ -494,8 +494,17 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		target.MultiSampleType != D3DMULTISAMPLE_NONE)
 		return false;
 
+	// UNOFFICIAL 2026-10-26 (deep/fork-sm6, NvrSm6Shaders): both passes from their SM6 build when it is there; the D3D9 code below then
+	// sets everything up as always and only the two draws go to Sm6Pass (null: the D3D9 draws, or the hand-ported passes below).
+	Sm6Pass* sm6[2] = { nullptr, nullptr };
+	if (!targetOverride && !sceneOverride && Sm6Pass::On()) {
+		sm6[0] = Sm6For(technique, 0);
+		sm6[1] = Sm6For(technique, 1);
+		if (!sm6[0] || !sm6[1]) sm6[0] = sm6[1] = nullptr;
+	}
+
 	// UNOFFICIAL 2026-10-25 (NVR DXVK): the two passes as Vulkan passes when NvrDxvkPasses is on (not for the diagnostic overrides).
-	if (!targetOverride && !sceneOverride && !ExtFailed && DxvkCompute::PassesOn()) {
+	if (!sm6[0] && !targetOverride && !sceneOverride && !ExtFailed && DxvkCompute::PassesOn()) {
 		const D3DXVECTOR4 extLayout((float)fog.Width / original.Width, (float)fog.Height / original.Height, 1.0f / fog.Width, 1.0f / fog.Height);
 		bool extGrid = false;
 		if (ExtDedicated(Device, RenderTarget, RenderedSurface, scene, composite, extLayout, extGrid)) {
@@ -585,7 +594,11 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 				if (composite && compositeAO && compositeAOTexture && compositeSkyTexture) BindSky(Device, compositeSkyTexture);
 				if (sunFar) BindSunFar(Device, sunFar);
 			}
-			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			// UNOFFICIAL 2026-10-26: the SM6 build reads what this draw would (the effect's parameters, the stages bound above); a failed
+			// SM6 draw falls back to the D3D9 draw right here.
+			Sm6Pass* sm6Pass = sm6[0] ? sm6[p] : nullptr;
+			if (sm6Pass && sm6Pass->Draw(Device, combine ? &finalTarget : fogSurface, combine ? 1 : 2, combine ? ExtUv::ScreenQuad : ExtUv::TexelCentre)) result = D3D_OK;
+			else result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
 		}
@@ -642,6 +655,14 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		reported = true;
 	}
 	return true;
+}
+
+// UNOFFICIAL 2026-10-26 (deep/fork-sm6): see VolumetricFog.h.
+Sm6Pass* VolumetricFogEffect::Sm6For(D3DXHANDLE technique, UINT pass) {
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || !Effect || FAILED(Effect->GetTechniqueDesc(technique, &description)) || !description.Name) return nullptr;
+	Sm6Pass& sm6 = sm6Passes[std::string(description.Name) + "." + std::to_string(pass)];
+	return sm6.Prepare(this, description.Name, pass) ? &sm6 : nullptr;
 }
 
 /*

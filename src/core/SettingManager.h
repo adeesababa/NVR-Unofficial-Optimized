@@ -33,6 +33,7 @@ struct SettingsMainStruct {
         bool    AmbientLightSmoothCompute; // [Main.Main.Performance] AmbientLightSmoothCompute (UNOFFICIAL 2026-10-25: AmbientLight's NormalSmoothing as one compute dispatch; needs NVR DXVK, otherwise the two D3D9 passes run as before), live
         bool    NvrDxvkReplacements; // [Main.Main.Performance] NvrDxvkReplacements (UNOFFICIAL 2026-10-24: pixel shaders with a Compute\Replace\<name>.spv run as that SPIR-V through the NVR DXVK extension; needs NVR DXVK 1.2), at load
         bool    AmbientLightBlurCompute; // [Main.Main.Performance] AmbientLightBlurCompute (UNOFFICIAL 2026-10-25: AmbientLight's BlurX + BlurY as one compute dispatch; needs NVR DXVK), live
+        bool    NvrSm6Shaders; // [Main.Main.Performance] NvrSm6Shaders (UNOFFICIAL 2026-10-26: NVR's own effect passes with an SM6 build in Compute\Sm6 run from that SPIR-V, compiled from the same .hlsl without ps_3_0's limits; needs NVR DXVK; core\Sm6Pass.h), live
         int     SmoothNormals; // [Main.Main.Quality] SmoothNormals (UNOFFICIAL 2026-10-23: reach in pixels of the shared normal smoothing after the normals pass; 0 off), live
         bool    LampMaskScissor; // [Main.Main.Performance] LampMaskScissor (the lamp-mask pass drawn only inside its lamps' screen rectangle, not at all with none on screen; exact), live
         bool    InteriorShadowFold; // [Main.Main.Performance] InteriorShadowFold (indoors the unblurred lamp darkening applied in the fog composite, not its own pass), live
@@ -50,9 +51,11 @@ struct SettingsMainStruct {
         bool    ReShadeDepthCompat; // [Main.Main.Performance] ReShadeDepthCompat (keep the game's depth-stencil bound through NVR's passes, for ReShade; also on while ReShade is loaded, ReShadeIntegration::KeepDepthBound), live
         bool    ReShadeNVRDepth; // [Main.Main.Performance] ReShadeNVRDepth (ReShadeIntegration.cpp: ReShade's DEPTH = NVR's combined depth, world + first-person model), live
         bool    ReShadeBeforeHUD; // [Main.Main.Performance] ReShadeBeforeHUD (ReShadeIntegration.cpp: ReShade's effects drawn after NVR's, before the HUD), live
+        bool    ReShadeUnderNVRMenu; // [Main.Main.Performance] ReShadeUnderNVRMenu (ReShadeIntegration::BeforeNVRMenu: ReShade drawn before NVR's menu when it has not drawn yet), live
         bool    ReShadeDepthNearRemap; // [Main.Main.Performance] ReShadeDepthNearRemap (ReShadeIntegration.cpp: first-person depths past the world near plane folded below 1; identity for g <= 0.5), live
         bool    ReShadeMenuGuard; // [Main.Main.Performance] ReShadeMenuGuard (ReShadeIntegration.cpp: the ReShadeMenuGuardEffects files paused while menus are open), live
         bool    ReShadeMenuGuardVATS; // [Main.Main.Performance] ReShadeMenuGuardVATS (the menu guard also in VATS), live
+        bool    ReShadeGameValues; // [Main.Main.Performance] ReShadeGameValues (ReShadeIntegration.cpp: game weather/hour/worldspace/interior to ReShade uniforms with a source annotation, FNV ReShade Helper names), live
         bool    LampScissor; // [Main.Main.Performance] LampScissor (LampScissor.h: lamp-only passes drawn only inside their lamps' screen rectangle), live
         bool    LampScissorExact; // [Main.Main.Performance] LampScissorExact (LampScissor.h, 2026-10-21: the exact rectangle, also for lamps near the camera), live
         bool    NeonSpillSelfTest;    // [Shaders.BounceLight.Main] NeonSpillSelfTest (EffectSelfTest.h, DIAGNOSTIC: ticking it runs one in-game A/B test of the neon spill), live

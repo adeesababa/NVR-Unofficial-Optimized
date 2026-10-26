@@ -1,4 +1,5 @@
 #pragma once
+#include "../core/Sm6Pass.h"	// UNOFFICIAL 2026-10-26 (deep/fork-sm6)
 
 class VolumetricFogEffect : public EffectRecord
 {
@@ -152,4 +153,11 @@ public:
 		bool composite, const D3DXVECTOR4& layout, bool& grid);
 	bool	ExtShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, bool shadow, IDirect3DTexture9* aoTexture);
 	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	// UNOFFICIAL 2026-10-26 (deep/fork-sm6, [Main.Main.Performance] NvrSm6Shaders): RenderDedicated's two passes drawn from their SM6 build
+	// (core\Sm6Pass.h, tools\nvr-sm6: the same .fx.hlsl without ps_3_0's limits, so with the sky look at the horizon), per technique
+	// name and pass. Sm6Dedicated: both passes of the technique ready (else null: the D3D9 passes, or the hand-ported ones).
+	std::map<std::string, Sm6Pass> sm6Passes;
+	Sm6Pass*	Sm6For(D3DXHANDLE technique, UINT pass);
+	bool	sm6Logged = false;
 };

@@ -35,6 +35,8 @@ public:
 		float	SpecularOcclusion;		// UNOFFICIAL 2026-10-21: how much blurred reflections dim where the surface itself is dark (0 off)
 		float	SpecularOcclusionLevel;	// the surface / reflection brightness ratio that keeps all of the reflection
 		bool	HiZ;			// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h): the hierarchical ray march on the Hi-Z pyramid (Vulkan trace only)
+		float	ReflectivityExterior;	// UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] ReflectivityExterior / Interior: times the dry sheen and
+		float	ReflectivityInterior;	// MaterialReflect (not the rain's wetness); 1 = as before
 	};
 	SettingsStruct	Settings;
 

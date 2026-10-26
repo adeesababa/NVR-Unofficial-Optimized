@@ -9,6 +9,7 @@ class ReShadeIntegration {
 public:
 	static void Initialize();
 	static void RenderEffects(IDirect3DSurface9* OutputSurface);
+	static void BeforeNVRMenu();	// ReShadeUnderNVRMenu: right before NVR's menu is drawn (RenderInterfaceHook)
 	static void SetMenuGuardEffects(const char* list);	// ReShadeMenuGuardEffects (SettingManager::LoadSettings)
 
 	// ReShadeDepthCompat, also on by itself while ReShade is loaded: NVR's passes leave the game's depth buffer bound.

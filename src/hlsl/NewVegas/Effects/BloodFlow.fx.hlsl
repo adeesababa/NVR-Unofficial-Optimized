@@ -1183,6 +1183,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	// times the decal's colour; the blood takes that (MatchGameColor), dried darker and browner as the settings' colours say.
 	float3 freshColour = TESR_BloodFlowFresh.rgb;
 	float3 dryColour = TESR_BloodFlowDry.rgb;
+	float3 glintTint = float3(0.02, 0.004, 0.004);
 	[branch] if (TESR_BloodFlowMatch.w > 0.5 && IN.d.w > 0.5) {
 		float t = floor(IN.d.w + 0.5);
 		float r = floor(t / 65536.0);
@@ -1194,6 +1195,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		// (Dried: a bit darker and a touch browner. The settings' dried/fresh ratio was made for FreshColor's bright red and
 		// took the game's own dark red down to a third, near black: user, 2026-10-13, old pools far darker than the decals.)
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
+		glintTint = 0.004 + 0.016 * freshColour / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4);	// (the bead's tint in the blood's own hue)
 	}
 	float3 albedo = lerp(freshColour, dryColour, dry);
 	// Dried blood is uneven: thicker and thinner patches, fixed to the surface.
@@ -1203,7 +1205,9 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	// its colour: each channel's extinction is 1.2 plus how much darker it is than red), so a thin film tints what it is on
 	// a clear, saturated red and a thick layer shows only the light scattered inside it: the blood's own deep red, darker
 	// where deep, with a dark ring at a dried pool's edge.
-	float3 through = exp(-(1.2 + log(max(albedo.r, 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * p.thick));
+	// (UNOFFICIAL 2026-10-25: light passes the blood in its own colour, measured from its strongest channel. It was from red,
+	// which made green, yellow or other matched blood glow or go red; for red blood the strongest channel is red: unchanged.)
+	float3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * p.thick));
 	float3 blood = (sceneLin * through + light * albedo * lerp(1.0, 0.6, saturate(p.thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
 	// Outdoors, where the sun reaches: looking toward the sun, it shines through thin fresh blood (a red glow at edges and
 	// in thin films; no more than the light here).
@@ -1238,7 +1242,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * (1.0 - rough) * 0.5) * gloss;
 	}
 	// A falling drop: a dark red bead with a faint glint, in front of whatever is behind it (lit about as that is).
-	float3 drop = light * (freshColour * 0.7 + float3(0.02, 0.004, 0.004) * TESR_BloodFlowFresh.w);
+	float3 drop = light * (freshColour * 0.7 + glintTint * TESR_BloodFlowFresh.w);
 	colour = lerp(colour, drop, p.air);
 	// UNOFFICIAL 2026-10-13 (user: crushed bright blue where a muzzle flash lit the blood through smoke): this pass runs on the
 	// HDR picture (before the tonemap), where a flash-lit floor is far above 1. Capped at 1, the colour fell below what the
@@ -1788,7 +1792,7 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
 	}
 	float3 albedo = lerp(freshColour, dryColour, dry) * lerp(1.0, 0.8 + 0.4 * valueNoise(q * R * 0.35 + seed * 31.0), dry);
-	float3 through = exp(-(1.2 + log(max(albedo.r, 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * thick));
+	float3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * thick));
 	float3 colour = sceneLin * through + light * albedo * lerp(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through);
 	// Wet and glossy while fresh: the sun's and the lamps' highlights, a reflection at low angles, on a surface rounded at the
 	// splat's edges (the thickness falling off).

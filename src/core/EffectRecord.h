@@ -5,6 +5,9 @@
 #include <functional>
 #include "NvrDxvkExt.h"
 
+class Sm6Pass;		// UNOFFICIAL 2026-10-26 (core\Sm6Pass.h)
+struct Sm6PassSet;
+
 class EffectRecord : public ShaderProgram {
 public:
 	EffectRecord(const char* effectName);
@@ -69,6 +72,13 @@ public:
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.
 	void					DisposeEffect();
 	bool					LoadEffect();
+	static int				BuildMacros(D3DXMACRO* EffectMacros);	// UNOFFICIAL 2026-10-26: the effects' compile-time defines (room for 8; core\Sm6Pass)
+	// UNOFFICIAL 2026-10-26 (deep/fork-sm6, NvrSm6Shaders): a pass of this effect's technique with an SM6 build (core\Sm6Pass.h), ready;
+	// null otherwise. Render draws such a pass from it when it is Plain (FrameVS, no render states); Sm6Covers: every pass of the
+	// technique is, so the hand-ported ExtRender is skipped for it.
+	struct Sm6PassSet*		Sm6Set = nullptr;
+	class Sm6Pass*			Sm6For(UINT techniqueIndex, UINT pass);
+	bool					Sm6Covers(UINT techniqueIndex);
 
 	bool 					IsLoaded();
 	bool					Enabled;

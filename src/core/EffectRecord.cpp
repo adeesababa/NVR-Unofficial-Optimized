@@ -1,5 +1,6 @@
 #include <regex>
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
+#include "Sm6Pass.h"	// UNOFFICIAL 2026-10-26 (deep/fork-sm6)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
@@ -81,24 +82,8 @@ bool EffectRecord::LoadEffect() {
 	// Effects get the same compile-time defines the game shaders do. Only the PREPROCESS call
 	// needs them -- D3DXCreateEffectCompiler below is handed the already-preprocessed source.
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
-	D3DXMACRO EffectMacros[7];
-	int macroCount = 0;
-	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
-		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
-	// UNOFFICIAL physical sky (VolumetricFog.fx.hlsl): compiled in only when on at startup.
-	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
-		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
-	if (TheRenderManager->IsReversedDepth())
-		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
-	// UNOFFICIAL 2026-10-20 MaterialAware reflections (Reflections.fx.hlsl, core/ReflMaterial.h): only when on at startup, so that otherwise
-	// the effects' preprocessed sources are exactly what they were.
-	if (ReflMaterial::CompiledIn())
-		EffectMacros[macroCount++] = { "REFL_MATERIAL_ON", "1" };
-	if (ReflMaterial::AddCompiledIn())	// UNOFFICIAL 2026-10-21 ReflectAdd (Reflections.fx.hlsl), likewise
-		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
-	if (ReflMaterial::OccCompiledIn())	// UNOFFICIAL 2026-10-21 SpecularOcclusion (Reflections.fx.hlsl), likewise
-		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
-	EffectMacros[macroCount] = { NULL, NULL };
+	D3DXMACRO EffectMacros[8];	// UNOFFICIAL 2026-10-23: 8 (CHARACTER_SHADOW_MAP)
+	BuildMacros(EffectMacros);
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);
 	if (prepass == D3D_OK) {
@@ -211,6 +196,36 @@ bool EffectRecord::LoadEffect() {
 	timer.LogTime("EffectRecord::LoadEffect");
 
 	return success;
+}
+
+/*
+* UNOFFICIAL 2026-10-26 (deep/fork-sm6): the compile-time defines every effect is preprocessed with, terminated by { NULL, NULL };
+* EffectMacros needs room for 8. Shared by LoadEffect and core\Sm6Pass (which picks the SM6 build made with the same defines; keep
+* tools\nvr-sm6\build.py MACROS in step with this list). Returns the number of defines.
+*/
+int EffectRecord::BuildMacros(D3DXMACRO* EffectMacros) {
+	int macroCount = 0;
+	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
+		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
+	// UNOFFICIAL physical sky (VolumetricFog.fx.hlsl): compiled in only when on at startup.
+	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
+		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
+	if (TheRenderManager->IsReversedDepth())
+		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
+	// UNOFFICIAL 2026-10-20 MaterialAware reflections (Reflections.fx.hlsl, core/ReflMaterial.h): only when on at startup, so that otherwise
+	// the effects' preprocessed sources are exactly what they were.
+	if (ReflMaterial::CompiledIn())
+		EffectMacros[macroCount++] = { "REFL_MATERIAL_ON", "1" };
+	if (ReflMaterial::AddCompiledIn())	// UNOFFICIAL 2026-10-21 ReflectAdd (Reflections.fx.hlsl), likewise
+		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
+	if (ReflMaterial::OccCompiledIn())	// UNOFFICIAL 2026-10-21 SpecularOcclusion (Reflections.fx.hlsl), likewise
+		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap (SunShadows.fx.hlsl's deferred lookup): only when on at startup, as the game shaders
+	// (ShaderRecord::BuildDefines reads the same setting), so that off the effect's preprocessed source is exactly what it was.
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		EffectMacros[macroCount++] = { "CHARACTER_SHADOW_MAP", "1" };
+	EffectMacros[macroCount] = { NULL, NULL };
+	return macroCount;
 }
 
 
@@ -468,7 +483,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	auto timer = TimeLogger();
 
 	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
-	if (!ExtFailed && DxvkCompute::PassesOn() && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+	// (UNOFFICIAL 2026-10-26: not for a technique whose passes all have an SM6 build while NvrSm6Shaders is on: those draw below.)
+	if (!ExtFailed && DxvkCompute::PassesOn() && !Sm6Covers(techniqueIndex) && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
 		Device->SetRenderTarget(0, RenderTarget);
 		std::string name = "EffectRecord::ExtRender " + std::string(Name);
 		renderTime = timer.LogTime(name.c_str());
@@ -500,7 +516,9 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				Effect->BeginPass(p);
 				RebindSlotTextures(); // the current image moved after the previous pass
 				BindPassTextures();	// UNOFFICIAL 2026-10-19
-				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				// UNOFFICIAL 2026-10-26 (NvrSm6Shaders): the pass's SM6 build, fed what this draw would read; else (or failed) the D3D9 draw
+				Sm6Pass* sm6 = Sm6For(techniqueIndex, p);
+				if (!sm6 || !sm6->Plain() || !sm6->Draw(Device, &destination, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
 				else chain.Commit();
@@ -529,7 +547,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 			Effect->BeginPass(p);
 			BindPassTextures();	// UNOFFICIAL 2026-10-19
 			BeforeDraw(Device);	// UNOFFICIAL 2026-10-22
-			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Sm6Pass* sm6 = Sm6For(techniqueIndex, p);	// UNOFFICIAL 2026-10-26 (NvrSm6Shaders), as above
+			if (!sm6 || !sm6->Plain() || !sm6->Draw(Device, &RenderTarget, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture
 		}

@@ -125,7 +125,7 @@ float4 EnvToggles : register(c27);       // x: tint by the vertex colour, z: ref
 float4 TESR_PBRData : register(c32);     // w: AmbientScale
 float4 TESR_PBRExtraData : register(c33); // y: SkylightingScale, z: SkylightingDirectionality, w: where the metal has faded out
 float4 TESR_PBRMetal : register(c34);    // x: the metal look's strength for this pass (Object.hlsl)
-float4 TESR_PBREnv : register(c35);      // x: Lighting (0 the game's fixed brightness, 1 by the light), y: Strength, z: WithMetal
+float4 TESR_PBREnv : register(c35);      // x: Lighting (0 the game's fixed brightness, 1 by the light), y: Strength, z: WithMetal, w: Reflectivity - 1 (PBR.cpp, 0 = as before)
 
 float4 main(PS_INPUT IN) : COLOR0 {
     // The game's reflection, as it worked it out.
@@ -168,6 +168,7 @@ float4 main(PS_INPUT IN) : COLOR0 {
     // (Object.hlsl getMetalFade, by TESR_PBRExtraData.w).
     float metalFade = TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, IN.fog.y) : 1.0f;
     color *= lerp(1.0f, TESR_PBREnv.z, saturate(TESR_PBRMetal.x) * metalFade);
+    color *= 1.0f + TESR_PBREnv.w;  // UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] Reflectivity
     return float4(color * IN.fog.x, 1.0f);
 }
 

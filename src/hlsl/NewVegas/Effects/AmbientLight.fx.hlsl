@@ -40,7 +40,7 @@ float4 NVR_ALFlags;             // x: apply the sun shadows here (ShaderManager 
 float4 NVR_ALInterior;          // UNOFFICIAL 2026-10-18 (ambfix2): x 1 = indoor balance (InteriorBalance), y 1 = last frames' balance usable, z InteriorBounceShare, w share of last frames' balance kept per frame
 float4 NVR_ALScene;             // UNOFFICIAL 2026-10-18 (ambfix): rgb the light every surface gets (linear, on a white surface: the cell's ambient + half its directional indoors, the sky's ambient outdoors), w: share of the grid light's colour kept (GridColour)
 float4 NVR_ALTemporal;          // x: share of last frame's bounce kept (0 none), y: moved pixels that halve it, z: frame number (0-1023)
-float4 NVR_ALEdges;             // UNOFFICIAL 2026-10-21 (alrocks): x how far the normal is smoothed (reach, half-resolution texels, 0 off; technique AmbientLightSmooth), y the horizon bias (radians, 0 off)
+float4 NVR_ALEdges;             // UNOFFICIAL 2026-10-21 (alrocks): x how far the normal is smoothed (reach, half-resolution texels, 0 off; technique AmbientLightSmooth), y the horizon bias (radians, 0 off), z (2026-10-24) the reach in world units where wider (0 off)
 float4x4 NVR_ALReproject;       // this frame's view space -> last frame's clip space (BounceLightMath.h)
 float4 TESR_WaterSettings;      // x: water height, z: camera underwater
 float4 TESR_ShadowData;         // y: darkness
@@ -195,7 +195,12 @@ float4 SmoothNormal(VSOUT IN, uniform bool alongY) : COLOR0 {
 	[branch] if (viewZ < DrawDistance && NVR_ALEdges.x > 0.5f) {
 		float3 origin = PositionFromViewZ(uv, viewZ);
 		float2 axis = alongY ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f);
-		float spacing = NVR_ALEdges.x / 3.0f;
+		// UNOFFICIAL 2026-10-24 (charfacets) NormalSmoothingWorld: the reach is at least NVR_ALEdges.z world units (one half-resolution texel
+		// is 2 viewZ / (P00 x half width) world units here, PositionFromViewZ's slope), at most 192 texels; so near the camera, where a
+		// character's triangles are hundreds of pixels across, the average still spans a couple of them (as vertex normals would blend).
+		float texelWorld = 2.0f * viewZ * NVR_ALLayout.z / max(TESR_ProjectionTransform[0][0], 1.0e-3f);
+		float reach = clamp(NVR_ALEdges.z / max(texelWorld, 1.0e-4f), NVR_ALEdges.x, 192.0f);
+		float spacing = reach / 3.0f;
 		float3 sum = normal;
 		[unroll] for (int k = -3; k <= 3; k++) {
 			if (k == 0) continue;

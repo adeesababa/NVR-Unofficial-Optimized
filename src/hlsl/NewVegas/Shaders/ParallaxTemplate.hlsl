@@ -112,6 +112,26 @@
 #if defined(PS) && LINEAR_LIGHTING_ON
     #define LINEAR_LIGHTING
 #endif
+// UNOFFICIAL 2026-10-25 pass sums for parallax objects, as ObjectTemplate.hlsl: ExactPassSums' redirect (c210 x: the pass gives its
+// linear light) and LampSums' / HighlightSums' increments (c210 y: enc(dec(s) + light) - s, s the run's copy of the frame) in the
+// extra-lamp (DIFFUSE) and highlight (ONLY_SPECULAR) passes. A parallax object lit by 3 or more lamps is drawn in several passes like any
+// other, but FoldHighlights never folds it and these shaders had none of the sum code, so every added pass was summed in the stored
+// curve: lamp-rich parallax rubble and road pieces came out lighter than the pieces next to them (tester report, Novac, 2026-10-25).
+// The copy is read on s9 in the lamp passes (the sun's atlas, which they never read) and s6 in the highlight passes (free there: the
+// game's normal map s0, height map s2, attenuation s3-s5 or shadow maps s4/s5). Off (not compiled): the shaders exactly as before.
+#ifndef LAMP_SUMS_ON
+    #define LAMP_SUMS_ON 0
+#endif
+#ifndef HIGHLIGHT_SUMS_ON
+    #define HIGHLIGHT_SUMS_ON 0
+#endif
+#if defined(PS) && defined(DIFFUSE) && LAMP_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s9);
+#elif defined(PS) && defined(ONLY_SPECULAR) && HIGHLIGHT_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s6);
+#endif
 // UNOFFICIAL _rmaos maps (Object.hlsl): the main lit passes only (the lamp-only and specular-only passes take s2 for the height
 // map). Compiled in only when [Shaders.PBR.Rmaos] Enabled is on at startup (RMAOS_ON, ShaderRecord::LoadShader).
 #ifndef RMAOS_ON
@@ -123,6 +143,13 @@
 // UNOFFICIAL 2026-10-18 SmithCorrelated: as ObjectTemplate.hlsl (Includes/PBR.hlsl). Off: exactly as before.
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON	// 1 on, 2 the test mode (PBR.hlsl)
+#endif
+// UNOFFICIAL 2026-10-25 SpecularFade here too (as ObjectTemplate.hlsl; Includes/PBR.hlsl PBR_SPEC_FADE, per draw NVR_SpecFade.x from the
+// pass hook, core/PbrPop.h). Users' report: crater cliffs (Mesquite Mountains crater, parallax rock) flicked between shiny black and
+// matte grey as the camera moved; PbrPopLog showed them swapping BSSM_ADTS_Px <-> BSSM_ADT_Px / ADT_PxOpt at the game's highlight
+// distance, and the parallax shaders kept the full highlight up to the swap. Off ([Shaders.PBR.Main] SpecularFade false): as before.
+#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+    #define PBR_SPEC_FADE
 #endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
@@ -287,6 +314,9 @@ VS_OUTPUT main(VS_INPUT IN)
 
 struct PS_INPUT
 {
+#ifdef NVR_LAMP_SUMS
+    float2 vpos : VPOS;	// UNOFFICIAL LampSums / HighlightSums: the pixel, to read the run's copy of the frame
+#endif
 #ifndef NO_VERTEX_COLOR
     float3 vertexColor : COLOR0;
 #endif
@@ -561,7 +591,20 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
     #endif
     
-    lighting.rgb = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space, before the fog
+    float3 finalColor = LinEncode(lighting.rgb);	// UNOFFICIAL linear lighting: back to the stored (gamma) space, before the fog
+    #if defined(ONLY_LIGHT)
+        // UNOFFICIAL 2026-10-25 ExactPassSums (core/PassSums.h): while NVR redirects this run of added passes into its own buffer, the pass
+        // gives its LINEAR light (as ObjectTemplate.hlsl).
+        [flatten] if (TESR_PassRedirect.x > 0.5f) finalColor = max(lighting.rgb, 0.0f);
+    #endif
+    #ifdef NVR_LAMP_SUMS
+        // UNOFFICIAL 2026-10-25 LampSums / HighlightSums (see the top): c210 y 1 during the world's run of these passes, zw 1 / the frame's size.
+        [branch] if (TESR_PassRedirect.y > 0.5f) {
+            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((IN.vpos + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
+            finalColor = LinEncode(LinColor(runStart) + max(lighting.rgb, 0.0f)) - runStart;
+        }
+    #endif
+    lighting.rgb = finalColor;
     lighting.rgb = RmaosDebug(lighting.rgb, baseColor.rgb);	// UNOFFICIAL [Shaders.PBR.Rmaos] DebugView
 
     // Fog.

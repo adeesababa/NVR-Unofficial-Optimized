@@ -319,6 +319,7 @@ namespace {
 		D3DXVECTOR3 Last = D3DXVECTOR3(0, 0, 0);	// body centre last frame
 		D3DXVECTOR3 Pool = D3DXVECTOR3(0, 0, 0);	// the pool's centre on the ground
 		float MaxRadius = 0.0f;
+		float Tint = 0.0f;			// UNOFFICIAL 2026-10-25: its own blood's colour (Item::Tint packing), from a splat next to it; 0: none yet
 		// UNOFFICIAL 2026-10-13: a pool of its own under each cut-off part (GibPools), from when the cut is first seen; its place
 		// follows the stump until the body comes to rest.
 		UInt16 GibMask = 0;
@@ -781,6 +782,22 @@ void BloodFlowEffect::GatherPools() {
 	}
 	std::sort(candidates, candidates + kept, [](const Candidate& a, const Candidate& b) { return a.Distance < b.Distance; });
 	kept = min(kept, Settings.MaxPools);
+	// UNOFFICIAL 2026-10-25 (user: blood is red where it should match the game's colours): a pool took the colour of the last
+	// splat seen anywhere, and red FreshColor before the first one, so a green- or yellow-blooded creature's pool came out in
+	// someone else's colour. Each body now takes the colour of the nearest of this frame's splats within about 3 m of it
+	// (its own blood, thrown when it was hit), kept until it gets up again; the last colour seen is only the fallback.
+	const int splatCount = Count;
+	for (int c = 0; c < kept && Settings.MatchGameColor; c++) {
+		Body& body = Bodies[candidates[c].RefID];
+		if (body.Tint > 0.0f) continue;
+		float best = 200.0f * 200.0f;
+		for (int i = 0; i < splatCount; i++) {
+			if (Items[i].Pool || !(Items[i].Tint > 0.0f)) continue;
+			const D3DXVECTOR3 d = Items[i].Center - body.Last;
+			const float d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+			if (d2 < best) { best = d2; body.Tint = Items[i].Tint; }
+		}
+	}
 	for (int c = 0; c < kept && Count < ItemMax; c++) {
 		const Body& body = Bodies[candidates[c].RefID];
 		// Pools' keys have the top bit set (splats' never do); a pool started afresh (body moved away) gets a new one.
@@ -800,7 +817,8 @@ void BloodFlowEffect::GatherPools() {
 		item.DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 		item.DecalCode = 0;
 		item.Tint = 0.0f;
-		if (Settings.MatchGameColor && HaveTint) {
+		if (Settings.MatchGameColor && body.Tint > 0.0f) item.Tint = body.Tint;
+		else if (Settings.MatchGameColor && HaveTint) {
 			int t[3];
 			for (int i = 0; i < 3; i++) t[i] = std::clamp((int)lroundf(LastTint[i] * 255.0f), 0, 255);
 			item.Tint = (float)(t[0] * 65536 + t[1] * 256 + t[2]);
@@ -844,7 +862,8 @@ void BloodFlowEffect::GatherPools() {
 			item.DecalU = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 			item.DecalCode = 0;
 			item.Tint = 0.0f;
-			if (Settings.MatchGameColor && HaveTint) {
+			if (Settings.MatchGameColor && body.Tint > 0.0f) item.Tint = body.Tint;
+			else if (Settings.MatchGameColor && HaveTint) {
 				int t[3];
 				for (int i = 0; i < 3; i++) t[i] = std::clamp((int)lroundf(LastTint[i] * 255.0f), 0, 255);
 				item.Tint = (float)(t[0] * 65536 + t[1] * 256 + t[2]);

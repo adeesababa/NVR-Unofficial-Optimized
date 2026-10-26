@@ -45,9 +45,13 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
 	Settings.CumulusShape = std::clamp(TheSettingManager->GetSettingF(section, "CumulusShape"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-20
+	Settings.Towering = std::clamp(TheSettingManager->GetSettingF(section, "Towering"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-25
+	Settings.TowerHeight = std::clamp(TheSettingManager->GetSettingF(section, "TowerHeight"), 1.0f, 8.0f);
+	Settings.TowerAnvil = std::clamp(TheSettingManager->GetSettingF(section, "TowerAnvil"), 0.0f, 1.0f);
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF(section, "Sharpness"), 0.0f, 3.0f);	// UNOFFICIAL 2026-10-15: was 0-1
 	Settings.FromWeatherTextures = std::clamp(TheSettingManager->GetSettingF(section, "FromWeatherTextures"), 0.0f, 1.0f);
 	Settings.FixedMarchExit = TheSettingManager->GetSettingI(section, "FixedMarchExit") != 0;
+	Settings.WeatherTint = std::clamp(TheSettingManager->GetSettingF(section, "WeatherTint"), 0.0f, 1.0f);	// UNOFFICIAL 2026-10-25
 	// UNOFFICIAL 2026-10-15: a changed setting shows at once (not eased in over a minute like a weather change).
 	// UNOFFICIAL 2026-10-21 (P82 tester: "ticking particles menu on and off affects vol clouds"): only a change of the settings the
 	// coverage comes from. Every menu switch and every setting edit re-reads all the effects' settings (LoadSettings), and this
@@ -76,6 +80,8 @@ void VolumetricCloudsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudsHistoryViewProj", (D3DXVECTOR4*)&Constants.HistoryViewProj);
 	TheShaderManager->RegisterConstant("TESR_CloudsReflectData", &Constants.ReflectData);
 	TheShaderManager->RegisterConstant("TESR_CloudsMotion", &Constants.Motion);
+	TheShaderManager->RegisterConstant("TESR_CloudsTint", &Constants.Tint);
+	TheShaderManager->RegisterConstant("TESR_CloudsTower", &Constants.Tower);
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
@@ -250,6 +256,112 @@ void VolumetricCloudsEffect::WeatherLook(TESWeather* weather, float& coverage, f
 	bias = std::lerp(bias, biasFromTextures, Settings.FromWeatherTextures);
 }
 
+// UNOFFICIAL 2026-10-25 WeatherTint. The game paints its flat cloud layers with each weather's cloud colours (four layers, a colour
+// for each of six times of day), as weather makers set them: orange at sunset, grey when overcast, blue at night. The volumetric
+// clouds take their light from the sun and the sky but never saw these. The share of each time's colour at this hour, as the game
+// blends its sky colours (checked in game on the weather's top sky colour against Sky::skyUpper, exact at 5.5, 6, 12.8, 13, 19,
+// 19.5 and 23.5 h): night until the sunrise colours begin (GetSunriseColorBegin), night to sunrise to day through the sunrise,
+// day with high noon (the fifth colour, index 4; Game.h's enum names it midnight) rising to all of it at 12:00 and gone again when
+// the sunset begins, then day to sunset to night (GetSunsetColorEnd). The sixth colour is not used by the game.
+static void TimeWeights(Sky* sky, float hour, float weights[6]) {
+	const float a = sky->GetSunriseColorBegin(), b = sky->GetSunriseEnd(), c = sky->GetSunsetBegin(), d = sky->GetSunsetColorEnd();
+	const float riseMid = 0.5f * (a + b), setMid = 0.5f * (c + d), noon = std::clamp(12.0f, b, c);
+	const int highNoon = 4;
+	for (int t = 0; t < 6; t++) weights[t] = 0.0f;
+	auto blend = [&](int from, int to, float t) { t = std::clamp(t, 0.0f, 1.0f); weights[from] = 1.0f - t; weights[to] = t; };
+	if (hour < a || hour >= d) weights[TESWeather::eTime_Night] = 1.0f;
+	else if (hour < riseMid) blend(TESWeather::eTime_Night, TESWeather::eTime_Sunrise, (hour - a) / (std::max)(riseMid - a, 1e-3f));
+	else if (hour < b) blend(TESWeather::eTime_Sunrise, TESWeather::eTime_Day, (hour - riseMid) / (std::max)(b - riseMid, 1e-3f));
+	else if (hour < noon) blend(TESWeather::eTime_Day, highNoon, (hour - b) / (std::max)(noon - b, 1e-3f));
+	else if (hour < c) blend(TESWeather::eTime_Day, highNoon, (c - hour) / (std::max)(c - noon, 1e-3f));
+	else if (hour < setMid) blend(TESWeather::eTime_Day, TESWeather::eTime_Sunset, (hour - c) / (std::max)(setMid - c, 1e-3f));
+	else blend(TESWeather::eTime_Sunset, TESWeather::eTime_Night, (hour - setMid) / (std::max)(d - setMid, 1e-3f));
+}
+
+static float SrgbToLinear(float v) { return v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f); }
+
+// The weather's cloud colour at these time weights: its layers that show something (not empty, not sky\alpha.dds), each by how
+// much of the sky its texture covers where measured. Linear.
+D3DXVECTOR3 VolumetricCloudsEffect::CloudColourOf(TESWeather* weather, const float weights[6]) {
+	D3DXVECTOR3 sum(0, 0, 0);
+	float total = 0.0f;
+	for (int i = 0; i < 4; i++) {
+		const std::string path = NormalTexturePath(weather->textureLayers[i].ddsPath.m_data);
+		if (path.empty() || path == "sky\\alpha.dds") continue;
+		auto fill = textureFill.find(path);
+		if (fill != textureFill.end() && fill->second >= 0.0f && fill->second < 0.01f) continue;	// measured empty
+		const float w = fill != textureFill.end() && fill->second >= 0.0f ? fill->second : 0.5f;
+		D3DXVECTOR3 colour(0, 0, 0);
+		for (int t = 0; t < 6; t++) {
+			const RGBA& c = *(const RGBA*)&weather->cloudColor[i][t];
+			colour += D3DXVECTOR3(c.r, c.g, c.b) * (weights[t] / 255.0f);
+		}
+		sum += D3DXVECTOR3(SrgbToLinear(colour.x), SrgbToLinear(colour.y), SrgbToLinear(colour.z)) * w;
+		total += w;
+	}
+	return total > 0.0f ? sum / total : D3DXVECTOR3(1, 1, 1);
+}
+
+D3DXVECTOR3 VolumetricCloudsEffect::WeatherCloudColour(Sky* sky, float hour) {
+	TESWeather* current = sky ? sky->firstWeather : nullptr;
+	if (!current) return D3DXVECTOR3(1, 1, 1);
+	float weights[6];
+	TimeWeights(sky, hour, weights);
+	D3DXVECTOR3 colour = CloudColourOf(current, weights);
+	if (sky->secondWeather && sky->secondWeather != current)
+		colour = CloudColourOf(sky->secondWeather, weights) + (colour - CloudColourOf(sky->secondWeather, weights)) * std::clamp(sky->weatherPercent, 0.0f, 1.0f);
+	// The check (the first 16, on a new weather or hour): the same weights on the weather's top sky colour against the game's own
+	// (off by a lot: the hours are wrong), and the weather's cloud colours as read.
+	if (tintLogs < 16 && (current != tintLogWeather || fabsf(hour - tintLogHour) > 0.2f)) {
+		tintLogWeather = current;
+		tintLogHour = hour;
+		tintLogs++;
+		D3DXVECTOR3 top(0, 0, 0);
+		for (int t = 0; t < 6; t++) {
+			const RGBA& c = current->colors[TESWeather::eColor_SkyUpper].colors[t];
+			top += D3DXVECTOR3(c.r, c.g, c.b) * (weights[t] / 255.0f);
+		}
+		Logger::Log("UNOFFICIAL VolumetricClouds WeatherTint: weather %08X (before %08X, %.2f) hour %.2f (colour times %.2f %.2f %.2f %.2f) weights %.2f %.2f %.2f %.2f %.2f %.2f, sky top ours %.3f %.3f %.3f game %.3f %.3f %.3f, cloud colour %.3f %.3f %.3f",
+			current->refID, sky->secondWeather ? sky->secondWeather->refID : 0, sky->weatherPercent, hour,
+			sky->GetSunriseColorBegin(), sky->GetSunriseEnd(), sky->GetSunsetBegin(), sky->GetSunsetColorEnd(), weights[0], weights[1], weights[2], weights[3], weights[4], weights[5],
+			top.x, top.y, top.z, sky->skyUpper.r, sky->skyUpper.g, sky->skyUpper.b, colour.x, colour.y, colour.z);
+		for (int i = 0; i < 4; i++) {
+			const RGBA* c = (const RGBA*)current->cloudColor[i];
+			Logger::Log("UNOFFICIAL VolumetricClouds WeatherTint:   layer %d '%s': sunrise %u %u %u, day %u %u %u, sunset %u %u %u, night %u %u %u, high noon %u %u %u, unused %u %u %u", i,
+				current->textureLayers[i].ddsPath.m_data ? current->textureLayers[i].ddsPath.m_data : "", c[0].r, c[0].g, c[0].b, c[1].r, c[1].g, c[1].b,
+				c[2].r, c[2].g, c[2].b, c[3].r, c[3].g, c[3].b, c[4].r, c[4].g, c[4].b, c[5].r, c[5].g, c[5].b);
+		}
+		{
+			const RGBA* c = current->colors[TESWeather::eColor_SkyUpper].colors;
+			Logger::Log("UNOFFICIAL VolumetricClouds WeatherTint:   sky top: sunrise %u %u %u, day %u %u %u, sunset %u %u %u, night %u %u %u, high noon %u %u %u, unused %u %u %u",
+				c[0].r, c[0].g, c[0].b, c[1].r, c[1].g, c[1].b, c[2].r, c[2].g, c[2].b, c[3].r, c[3].g, c[3].b, c[4].r, c[4].g, c[4].b, c[5].r, c[5].g, c[5].b);
+		}
+	}
+	return colour;
+}
+
+// UNOFFICIAL 2026-10-25 (test tool: the shot list's 'facemoon').
+// Where the moon is: its disc mesh's world bound (the moon's node sits at the sky's centre, the disc is placed inside it), as a
+// direction and distance from the sky's centre, and its radius. False when there is no moon to see.
+bool VolumetricCloudsEffect::MoonPlace(Sky* sky, D3DXVECTOR3& direction, float& distance, float& radius, const char** why) {
+	const char* dummy;
+	if (!why) why = &dummy;
+	if (!sky || !sky->nodeSkyRoot || !sky->masserMoon) { *why = "no sky or no moon object"; return false; }
+	Moon* moon = sky->masserMoon;
+	if (!moon->MoonNode || (moon->MoonNode->m_flags & 1)) { *why = "the moon is hidden"; return false; }	// (flag 1: hidden)
+	NiAVObject* disc = reinterpret_cast<NiAVObject*>(moon->MoonMesh ? moon->MoonMesh : moon->ShadowMesh);	// (NiTriShape is only declared here; an NiAVObject at offset 0)
+	if (!disc || !disc->m_kWorldBound || (disc->m_flags & 1)) { *why = "the moon's disc is not drawn"; return false; }
+	const NiPoint3& centre = sky->nodeSkyRoot->m_worldTransform.pos;
+	const NiPoint3& at = disc->m_kWorldBound->Center;
+	direction = D3DXVECTOR3(at.x - centre.x, at.y - centre.y, at.z - centre.z);
+	distance = D3DXVec3Length(&direction);
+	radius = disc->m_kWorldBound->Radius;
+	if (NiAVObject* shadow = reinterpret_cast<NiAVObject*>(moon->ShadowMesh)) if (shadow->m_kWorldBound) radius = max(radius, shadow->m_kWorldBound->Radius);
+	if (distance <= 1.0f || radius <= 0.0f || radius >= distance) { *why = "the moon's size or distance is not usable"; return false; }
+	direction /= distance;
+	return true;
+}
+
 void VolumetricCloudsEffect::UpdateConstants() {
 	Sky* sky = Tes ? Tes->sky : nullptr;
 	// UNOFFICIAL 2026-10-13: once a frame, at the tuned rate (FrameClock.h: UpdateConstants runs twice a frame).
@@ -371,14 +483,37 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	Constants.Motion.w = Settings.Sharpness;
 	Constants.Extra = D3DXVECTOR4(Textures.ShadowSurface ? Settings.Shadows : 0.0f, Settings.ShadowRange, (float)Settings.ReflectionDebug, Settings.ShadowDebug ? 1.0f : 0.0f);
 
-	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness, coverage, Settings.Density);
+	// UNOFFICIAL 2026-10-25 Towering: the layer grows to TowerHeight times Thickness (the ordinary clouds keep to the bottom
+	// Thickness of it, the shader raises only the strongest heaps), eased back to off as the sky closes over (as CumulusShape).
+	// The march takes a quarter more steps for each extra layer depth (the shader stops at 64): the history averages the
+	// rest of the coarser sampling away (offline at 1280 x 720 no visible change against a full half, ~0.3 ms less).
+	const float towerFade = 1.0f - std::clamp((coverage - 0.6f) / 0.3f, 0.0f, 1.0f);
+	const float towering = Settings.Towering * towerFade * towerFade * (3.0f - 2.0f * towerFade);	// smoothstep, as the shader's Cumulus
+	const float towerScale = 1.0f + (Settings.TowerHeight - 1.0f) * towering;
+	const int marchSteps = (std::min)(64, (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f))));
+	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, 0.0f);
+	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness * towerScale, coverage, Settings.Density);
 	Constants.Noise = D3DXVECTOR4(Settings.ShapeSize, Settings.DetailSize, Settings.Erosion, Settings.WeatherSize);
 	Constants.Light = D3DXVECTOR4(Settings.SunStrength, Settings.AmbientStrength, Settings.Forward, rain);
 	Constants.Wind = D3DXVECTOR4(wind.x, wind.y, wind.z, typeBias);
-	Constants.March = D3DXVECTOR4((float)(std::min)(Settings.Steps, 64), Settings.MaxDistance, (float)frame, Settings.HazeDistance);
+	Constants.March = D3DXVECTOR4((float)marchSteps, Settings.MaxDistance, (float)frame, Settings.HazeDistance);
 	Constants.Layout.w = Settings.Brightness;
 	Constants.Look = D3DXVECTOR4(Settings.EdgeSharpness, Settings.ShapeSmoothing, Settings.Turbulence, Settings.DetailSmoothness);
 	Constants.Detail = D3DXVECTOR4(Settings.FineDetail, Settings.FineDetailSize, (float)shadowMapSize, Settings.CumulusShape);
+	// UNOFFICIAL 2026-10-25 WeatherTint: the weather's cloud colour, its brightness taken out (the clouds keep the light they get
+	// from the sun and sky; only the colour moves), its strongest channel held to twice the brightness so a deep night blue tints
+	// rather than floods.
+	Constants.Tint = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 0.0f);
+	if (Settings.WeatherTint > 0.0f && sky) {
+		const D3DXVECTOR3 colour = WeatherCloudColour(sky, TheShaderManager->ShaderConst.GameTime.y);
+		const float luma = colour.x * 0.2126f + colour.y * 0.7152f + colour.z * 0.0722f;
+		if (luma > 1e-4f) {
+			D3DXVECTOR3 tint = colour / luma;
+			const float peak = (std::max)({ tint.x, tint.y, tint.z });
+			if (peak > 2.0f) tint = D3DXVECTOR3(1, 1, 1) + (tint - D3DXVECTOR3(1, 1, 1)) * ((2.0f - 1.0f) / (peak - 1.0f));
+			Constants.Tint = D3DXVECTOR4(tint.x, tint.y, tint.z, Settings.WeatherTint);
+		}
+	}
 
 	HideGameClouds = (Enabled && Effect && Settings.HideGameClouds && ShouldRender()) ? 1.0f : 0.0f;
 	HideGameCloudsInReflection = HideGameClouds > 0.0f && ReflectionWanted() ? 1.0f : 0.0f;
@@ -417,6 +552,14 @@ void VolumetricCloudsEffect::ProbeLayer(IDirect3DDevice9* Device) {
 		job.lod, fill * 100.0f, fill < 0.0f ? " (could not be read: left out)" : "");
 }
 
+// UNOFFICIAL 2026-10-25 Towering: while it is on (and the effect file has them: ShadowMapTowers is the last), the march, reflection
+// and shadow map passes take their *Towers techniques (7-10: the storms and the taller heaps). Off, the older ones, unchanged.
+static bool TowersOn(VolumetricCloudsEffect* clouds) {
+	static EffectRecord::CachedHandle last;
+	return clouds->Constants.Tower.y > 0.0f && clouds->Effect && clouds->TechniqueHandle(last, "ShadowMapTowers") != NULL &&
+		clouds->Effect->GetTechnique(10) == clouds->TechniqueHandle(last, "ShadowMapTowers");
+}
+
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
 	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
@@ -440,7 +583,8 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	static CachedHandle fixedExitCache;
 	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
 		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false, fixedExit ? 6 : 1); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit)
+	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false,
+		TowersOn(this) ? (fixedExit ? 8 : 7) : (fixedExit ? 6 : 1)); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit; 2026-10-25: 7, 8 = with Towering)
 	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
 	RenderShadowMap(Device);	// UNOFFICIAL: cloud shadow map (already drawn this frame when SunFar asked first)
 	read = 1 - read;
@@ -468,7 +612,7 @@ void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
 	if (shadowMapFrame == frame || Constants.Extra.x <= 0.0f || !Textures.ShadowSurface || !Enabled || !Effect || !ShouldRender()) return;
 	static GpuTimer shadowTimer("  Clouds shadow map");
 	GpuProfileScope gpu(shadowTimer, Device);
-	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, 4);
+	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, TowersOn(this) ? 10 : 4);
 	shadowMapFrame = frame;
 }
 
@@ -590,7 +734,7 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			Device->SetViewport(&viewport);
 			Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, 5 * sizeof(float));
 			Device->SetFVF(FrameFVF);
-			Effect->SetTechnique(Effect->GetTechnique(3));
+			Effect->SetTechnique(Effect->GetTechnique(TowersOn(this) ? 9 : 3));
 			SetCT();
 			UINT passes = 0;
 			if (SUCCEEDED(Effect->Begin(&passes, 0))) {

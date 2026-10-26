@@ -22,3 +22,13 @@ float3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float 
 
     return color;
 }
+
+// UNOFFICIAL 2026-10-26 [Shaders.Sky.Main] sky look, for SKY.pso and the sky the flat clouds blend with (SKYTEX.pso). Sky.cpp SkyLook
+// mirrors it for the sky light on objects: change one and change the other. Saturation first (look.x, 1 = no change), then the tint,
+// which is the main tint times the horizon tint at the horizon, fading to the main tint alone at look.y (TintGradientHeight, the view
+// direction's up component). With TintKeepsBrightness on, Sky.cpp hands both tints over already divided by their own brightness.
+float3 SkyLook(float3 color, float up, float3 tint, float3 horizonTint, float4 look) {
+    if (look.x != 1.0f) color = max(lerp(luma(color).xxx, color, look.x), 0.0f);
+    float overhead = smoothstep(0.0f, look.y, saturate(up));
+    return color * tint * lerp(horizonTint, 1.0f, overhead);
+}

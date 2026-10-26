@@ -7,6 +7,7 @@
 #include "GpuProfiler.h"
 #include "LinearPreDecode.h"	// UNOFFICIAL 2026-10-17
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
+#include "LandLight.h"	// UNOFFICIAL 2026-10-25 (SunFar)
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -113,13 +114,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 42 && Template.Defines[i].Name != NULL) {
+		while (i < 46 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
 			i++;
 		}
-		if (i >= 42) {  // out of room (Defines[44]: 42 entries and the terminator); skip rather than overrun
+		if (i >= 46) {  // out of room (Defines[48]: 46 entries and the terminator); skip rather than overrun
 			static bool warned = false;	// fixes-a #12: say so once (a dropped define = the shader compiled without that option)
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 42 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 46 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -233,6 +234,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// pass's in linear light (exact where one such pass covers a pixel). Compiled in only when on at startup (with linear lighting); the
 	// per-run switch then turns it on live: 0 = the old result exactly.
 	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
+	// UNOFFICIAL 2026-10-25 HighlightSums (ObjectTemplate.hlsl / ParallaxTemplate.hlsl NVR_LAMP_SUMS in the ONLY_SPECULAR variants, core/PassSums.h):
+	// the highlight passes FoldHighlights leaves to the game (parallax objects above all) add their light in linear light the same way.
+	// Compiled in only when on at startup (with linear lighting); the per-run switch then turns it on live: 0 = the old result exactly.
+	AppendDefine("HIGHLIGHT_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "HighlightSums") ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h, ObjectTemplate.hlsl LIN_PREDECODED): with linear lighting on, the lit
 	// objects' colour constants are decoded once on the CPU instead of per pixel. Read at startup, like LINEAR_LIGHTING_ON.
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
@@ -315,6 +320,14 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// only when on, and last, so that off the list and the shaders are exactly what they were and it never pushes another define out.
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "CharacterObjectReach"))
 		AppendDefine("SHADOW_CHARACTER_OBJECTS", "1");
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap ([Shaders.ShadowsExteriors.ShadowMaps]; Includes/Shadow.hlsl CharacterMapShadow): the
+	// player's own sun shadow map, read by the skin shaders and the object pixel shaders. Defined only when on, and last, as above.
+	// (ShadowsExteriorEffect::RegisterTextures reads the same setting for CharacterMapCompiled.)
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		AppendDefine("CHARACTER_SHADOW_MAP", "1");
+	// UNOFFICIAL 2026-10-24 SmoothObjectNormals ([Shaders.PBR.Main], restart): the object and skin shaders' shadow lookups and sky ambient take
+	// the vertex normal instead of the per-triangle one (Includes/Shadow.hlsl ShadowFacingNormal). 0: the shaders exactly as before.
+	AppendDefine("OBJECT_SMOOTH_NORMALS", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmoothObjectNormals") ? "1" : "0");
 
 }
 
@@ -538,13 +551,18 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 	//Logger::Log("CreateCT: Shader %s has %i constants", Name, ConstantTableDesc.Constants);
 	//Logger::Log("%s", (const char*)ShaderSource->GetBufferPointer());
 
+	bool sunDir18 = false, terrainSky = false;	// UNOFFICIAL 2026-10-25 (LandLight.h): the game's SunDir in c18 of a land pixel shader
 	for (UINT c = 0; c < ConstantTableDesc.Constants; c++) {
 		Handle = ConstantTable->GetConstant(NULL, c);
 		ConstantTable->GetConstantDesc(Handle, &ConstantDesc, &ConstantCount);
+		if (!strcmp(ConstantDesc.Name, "SunDir") && ConstantDesc.RegisterSet == D3DXRS_FLOAT4 && ConstantDesc.RegisterIndex == 18) sunDir18 = true;
+		if (!strcmp(ConstantDesc.Name, "TESR_TerrainSkyData")) terrainSky = true;
 		if (memcmp(ConstantDesc.Name, "TESR_", 5)) continue; // Only treat constants named with TESR prefix
 		if (ConstantDesc.RegisterSet == D3DXRS_FLOAT4) FloatShaderValuesCount += 1;
 		if (ConstantDesc.RegisterSet == D3DXRS_SAMPLER) TextureShaderValuesCount += 1;
 	}
+
+	IsLandLight = sunDir18 && terrainSky && Name && strstr(Name, ".pso");
 
 	auto timer = TimeLogger();
 	if (FloatShaderValuesCount) FloatShaderValues = new ShaderFloatValue[FloatShaderValuesCount];
@@ -709,6 +727,9 @@ void ShaderRecord::SetCT() {
 	// UNOFFICIAL terrain blending: before the constants below are uploaded (it sets whether this draw blends), and the
 	// first land bind of the world scene copies the depth drawn so far.
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	// UNOFFICIAL 2026-10-25 (LandLight.h): the light vector the last land draw lit with, then this bind's own turn.
+	if (LandLight::Pending) LandLight::Read();
+	if (IsLandLight) LandLight::Pending = true;
 
 	// reset samplers
 	if (ClearSamplers) {

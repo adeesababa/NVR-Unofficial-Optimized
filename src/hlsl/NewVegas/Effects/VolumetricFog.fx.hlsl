@@ -27,6 +27,19 @@ float4 TESR_SkyIrradiance[9]; // order-2 SH sky irradiance, linear radiance (Sky
 // original NVR fog (upstream master ab16e86c) had it; TESR_SkyIrradiance above also carries the physical sky when that is on.
 // Only the *Classic techniques and FogReference read it, and only in their preshaders (no shader constant registers).
 float4 TESR_SkyIrradianceGame[9];
+#if NVR_SM6
+// UNOFFICIAL 2026-10-26 (deep/fork-sm6) [Shaders.Sky.Main] sky look, ONLY in the SM6 build of these passes (NVR DXVK fork,
+// tools/nvr-sm6: no 224-register limit). Near the horizon the fog lies over the sky and colours itself with the weather's untinted
+// sky, so the sky's horizon tint and saturation were painted over. Here the fog's sky colour takes them as the sky does at the
+// horizon (Includes/Sky.hlsl SkyLook): TESR_FogSkyLook.rgb = SkyTint x SkyTintHorizon (Sky.cpp), TESR_SkyLook.x = saturation.
+// The ps_3_0 build (native D3D9, stock DXVK) cannot take it: with the physical sky the composite pass is at 224 constants and even
+// one more register failed to compile (X4507, cfe15f2b reverted by 595a7c22), so there the fog stays as it was.
+float4 TESR_FogSkyLook;
+float4 TESR_SkyLook;
+#define NVR_FOG_SKY_LOOK(c) c = SkyLook(c, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_SkyLook.x, 1, 0, 0))
+#else
+#define NVR_FOG_SKY_LOOK(c)
+#endif
 
 // sun shadow cascade data -- registered globally by ShadowsExteriorEffect, same constants
 // SunShadows.fx.hlsl consumes. Declared here independently since each .fx effect compiles on
@@ -623,6 +636,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 #if PHYSICAL_SKY_ON
 		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
 #endif
+		NVR_FOG_SKY_LOOK(skyColor.rgb);	// UNOFFICIAL 2026-10-26 SM6 build only (see TESR_FogSkyLook)
 
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
 		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
@@ -824,6 +838,7 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 			[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
 		}
 #endif
+		NVR_FOG_SKY_LOOK(skyColor.rgb);	// UNOFFICIAL 2026-10-26 SM6 build only (see TESR_FogSkyLook)
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);

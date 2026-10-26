@@ -149,6 +149,105 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
 #endif
 
 // ---------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-23 CharacterShadowMap ([Shaders.ShadowsExteriors.ShadowMaps] CharacterShadowMap; docs/next/CHARACTER-SHADOW-MAP-
+// DESIGN.md). P82 testers: the hair's, nose's and brim's sun shadows on a face fade away as the third-person camera zooms out, because
+// the cascade that holds the head then has 1 cm texels (Middle at the default 1536 atlas) and a 3 x 3 filter, and a 1-2 cm shadow does
+// not survive that. The DLL draws a small sun shadow map of the player alone (ShadowManager::RenderCharacterShadowMap: R32F plain
+// depth, 1024^2 by default, fitted round the head and upper body, 1-3 mm texels, the same quantised sun as the cascades, independent
+// of the camera's zoom), and this lookup takes the darker of the cascades' shadow and that map's where the point is inside the map's
+// box, fading back to the cascades alone over the box's outer band (TESR_CharShadowData.y). The cascades still hold the player, so
+// the player's shadow on the ground and the world's shadows on the player are unchanged; the map only adds back the fine self-shadow.
+// Compiled in only when the setting was on at startup (CHARACTER_SHADOW_MAP from ShaderRecord::BuildDefines) AND the including
+// shader opts in (SHADOW_CHARACTER_MAP_IN 1: SkinTemplate / SkinVPSTemplate / the hand-written skin shaders, and ObjectTemplate's
+// pixel shaders except the six-lamp one at the driver's slot limit), with the forward path, outdoors (the Interior records compile
+// the sun's code out, and their s11 is a lamp's cube map): everywhere else none of it is compiled and the shaders are exactly what
+// they were. Registers: c206-c209 and c213-c214 are free in every pixel shader that opts in (c204 CharacterObjectReach, c205 LampFalloff,
+// c210-c212 ExactPassSums / SpecularFade / MaterialAware; nothing between, nothing at c213-c217); s11 is free in the Default (outdoor)
+// records (s0-s7 the game's textures, s8 unused outdoors, s9 the atlas, s10 its cross-fade copy or the live cube).
+// Whether it RUNS is TESR_CharShadowData.w (1 while the map holds this frame's draw: third person, the sun up, the map made).
+#ifndef CHARACTER_SHADOW_MAP
+    #define CHARACTER_SHADOW_MAP 0
+#endif
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals (see the helpers after GetShadowSmoothNormal). ON unless ShaderRecord::BuildDefines says 0
+// ([Shaders.PBR.Main] SmoothObjectNormals = false): a DLL from before the switch existed defines nothing, and the fix still applies.
+#ifndef OBJECT_SMOOTH_NORMALS
+    #define OBJECT_SMOOTH_NORMALS 1
+#endif
+#ifndef SHADOW_CHARACTER_MAP_IN
+    #define SHADOW_CHARACTER_MAP_IN 0
+#endif
+#if CHARACTER_SHADOW_MAP && SHADOW_CHARACTER_MAP_IN && FORWARD_SHADOWS && !(defined(INTERIOR_SHADOWS) && INTERIOR_SHADOWS)
+    #define SHADOW_CHARACTER_MAP 1
+#else
+    #define SHADOW_CHARACTER_MAP 0
+#endif
+#if SHADOW_CHARACTER_MAP
+row_major float4x4 TESR_CharShadowCameraToLight : register(c206); // camera-relative world -> the map's clip space (ortho: w = 1)
+float4 TESR_CharShadowCenter : register(c213); // xyz: the box's centre (camera-relative world), w: its half-extent (world units)
+float4 TESR_CharShadowData   : register(c214); // x: 1 / resolution, y: hand-over band (share of the half-extent), z: depth bias (map depth), w: 1 = live
+// One line, like TESR_ShadowAtlas above.
+// UNOFFICIAL 2026-10-23 (P82 v4 fix): the POINT-light object shaders (SLS2051-2056) are compiled with POINT defined (empty), which emptied the filter names below: lifted round this one line.
+#ifdef POINT
+    #undef POINT
+    #define NVR_CHARMAP_POINT_WAS_DEFINED
+#endif
+sampler2D TESR_CharShadowMap : register(s11) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+#ifdef NVR_CHARMAP_POINT_WAS_DEFINED
+    #define POINT
+    #undef NVR_CHARMAP_POINT_WAS_DEFINED
+#endif
+
+// The map's shadow at a point, blended with the cascades' (cascadeShadow) by where the point is in the box: 1 lit, towards 0 in shadow.
+// NdotL: the surface's cosine to the sun (the receiver-plane slack and the normal offset grow as the sun grazes it, as GetSunShadow's).
+// A 3 x 3 PCF weighed with a quadratic B-spline centred on the point (ShadowPCF3x3's plain path, on this one map), the taps kept half a
+// texel inside the map. Receivers past the box's far plane compare at depth 1 and are shadowed by any caster in the map in front of
+// them (the player's shadow on the ground, when the ground is inside the box's footprint); receivers nearer the sun than its near
+// plane compare below 0 and are lit, as nothing is drawn in front of them (ShadowMap.vso pancakes to 0).
+float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float cascadeShadow) {
+    float texel = max(TESR_CharShadowData.x, 1.0f / 16384.0f);
+    float halfExtent = max(TESR_CharShadowCenter.w, 1.0f);
+    float offsetScale = saturate(1.0f - NdotL);
+    // normal offset: 1.5 of this map's texels (2R world units across res texels) at a grazing sun, none facing it
+    float3 position = worldPos + worldNormal * (offsetScale * 1.5f * 2.0f * halfExtent * texel);
+    float4 lightSpace = mul(float4(position, 1.0f), TESR_CharShadowCameraToLight);
+    float edge = max(abs(lightSpace.x), abs(lightSpace.y));
+    float band = max(TESR_CharShadowData.y, 0.01f);
+    float weight = 1.0f - smoothstep(1.0f - band, 1.0f, edge);
+    [branch] if (weight <= 0.0f) return cascadeShadow;
+    float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f);
+    // receiver-plane slack: tan of the sun's angle to the face (capped at 5) per texel of depth (the box is 2R wide and 2R deep: one
+    // texel is 1 / res of depth), 1.5 texels for the 3 x 3's reach, plus the constant bias (CharacterShadowMapBias, world units)
+    float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
+    // Past the far plane (depth above 1) the point compares just under 1: an empty texel (cleared to 1) leaves it lit, a caster
+    // in front of it (any depth under 1) shadows it. Without the clamp everything past the far plane inside the box was in shadow.
+    float depth = min(lightSpace.z, 0.9999f) - TESR_CharShadowData.z - 1.5f * texel * slope;
+    float2 lo = texel * 0.5f;
+    float2 hi = 1.0f - texel * 0.5f;
+    float2 p = uv / texel - 0.5f;
+    float2 c = floor(p + 0.5f);
+    float2 f = p - c;
+    float3 wx = float3(0.5f * (0.5f - f.x) * (0.5f - f.x), 0.75f - f.x * f.x, 0.5f * (0.5f + f.x) * (0.5f + f.x));
+    float3 wy = float3(0.5f * (0.5f - f.y) * (0.5f - f.y), 0.75f - f.y * f.y, 0.5f * (0.5f + f.y) * (0.5f + f.y));
+    float lit = 0.0f;
+    [unroll] for (int y = 0; y < 3; y++) {
+        [unroll] for (int x = 0; x < 3; x++) {
+            float2 tapUV = clamp((c + float2(x - 1, y - 1) + 0.5f) * texel, lo, hi);
+            lit += (depth <= tex2Dlod(TESR_CharShadowMap, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * wx[x] * wy[y];
+        }
+    }
+    // CharacterShadowMapDebug (TESR_CharShadowData.w = 1 + the setting): inside the box, 2 = the map's own verdict alone (no cascades),
+    // 3 = the depth the map holds at this point (0 black = nothing bound or nothing drawn, 1 white = empty, gray = a caster),
+    // 4 = this point's own depth in the box (what the map is compared with).
+    [branch] if (TESR_CharShadowData.w > 1.5f) {
+        if (TESR_CharShadowData.w > 3.5f) return saturate(lightSpace.z);
+        if (TESR_CharShadowData.w > 2.5f) return tex2Dlod(TESR_CharShadowMap, float4(clamp(uv, lo, hi), 0.0f, 0.0f)).x;
+        return lit;
+    }
+    return lerp(cascadeShadow, min(cascadeShadow, lit), weight);
+}
+#endif
+
+// ---------------------------------------------------------------------------
 // VSM / EVSM evaluation. Mirrors Effects/Includes/Shadows.hlsl, duplicated because the two
 // trees compile independently.
 // ---------------------------------------------------------------------------
@@ -703,7 +802,8 @@ float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
     ShadowMinPenumbra = TESR_ShadowForwardData.z;
 #endif
     float len2 = dot(smoothNormal.xyz, smoothNormal.xyz);
-    return (TESR_ShadowForwardData.y > 0.0f && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
+    // UNOFFICIAL 2026-10-24 SmoothObjectNormals (OBJECT_SMOOTH_NORMALS below): with it the smooth normal is taken whatever the live switch says.
+    return ((TESR_ShadowForwardData.y > 0.0f || OBJECT_SMOOTH_NORMALS) && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
 }
 
 // The vertex shader side: the vertex normal in camera-relative world space, by the same projection round trip as
@@ -711,6 +811,41 @@ float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
 float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 normal, float3 shadowWorldPos) {
     float3 along = GetShadowWorldPos(mul(modelViewProj, float4(position + 2.0f * normalize(normal), 1.0f)));
     return float4(normalize(along - shadowWorldPos), SHADOW_VS_SENTINEL);
+}
+
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals ([Shaders.PBR.Main] SmoothObjectNormals, restart: OBJECT_SMOOTH_NORMALS from
+// ShaderRecord::BuildDefines; user 2026-10-24: in lamp-lit interiors every triangle of a character's clothes showed, flat with hard
+// edges). The object shaders get their normal in tangent space and had no world normal in the pixel shader, so GetShadowGeometricNormal
+// above built one from screen derivatives: one per TRIANGLE. It fed the sun lookup's normal offset and slope slack, the lamp lookups'
+// normal offset and the sky ambient term (Object.hlsl getAmbientLighting), so all three stepped at every triangle edge. With the switch
+// the vertex shaders send the vertex normal in camera-relative world space (GetShadowSmoothNormal above) and the pixel shaders take it
+// instead, through the helpers below; the derivative normal is not computed at all then (the slot cost of the two is about the same).
+// Where no interpolator is spare the normal rides octahedrally encoded in two channels. Every reader of the normal is already gated by
+// the vertex shader's sentinel (a vanilla vertex shader: the sun lookup, the lamp lookups and the sky term are skipped), so an unwritten
+// normal is never used; ShadowFacingNormal still returns a unit vector for one. Off: the shaders exactly as before.
+// (OBJECT_SMOOTH_NORMALS's default is set near the top of this file, before ShadowLookupNormal reads it.)
+
+// Octahedral encoding of a unit vector in two numbers (Cigolle et al. 2014) and back.
+float2 ShadowEncodeNormal(float3 n) {
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-6f);
+    float2 e = n.xy;
+    if (n.z < 0.0f) e = (1.0f - abs(n.yx)) * float2(n.x >= 0.0f ? 1.0f : -1.0f, n.y >= 0.0f ? 1.0f : -1.0f);
+    return e;
+}
+float3 ShadowDecodeNormal(float2 e) {
+    float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+    float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0f ? -t : t, n.y >= 0.0f ? -t : t);
+    return normalize(n);
+}
+
+// The smooth normal as a unit vector facing the camera (worldPos is camera-relative, so the camera is at the origin), the side
+// GetShadowGeometricNormal gives: two-sided geometry seen from behind (hair cards, cloth) pushes its lookups out on the visible side.
+// A zero or unwritten normal gives (0, 0, 1).
+float3 ShadowFacingNormal(float3 n, float3 worldPos) {
+    float len2 = dot(n, n);
+    n = len2 > 1.0e-6f ? n * rsqrt(len2) : float3(0.0f, 0.0f, 1.0f);
+    return n * (dot(n, worldPos) > 0.0f ? -1.0f : 1.0f);
 }
 
 #if SHADOW_FIXED_MODE == 3
@@ -955,6 +1090,12 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
         float oldShadow = GetOldSunShadow(worldPos, worldNormal, offsetScale, bias, covered);
         shadow = lerp(shadow, oldShadow, TESR_ShadowCrossFade.x * covered);
     }
+#endif
+
+#if SHADOW_CHARACTER_MAP
+    // UNOFFICIAL 2026-10-23 CharacterShadowMap: the darker of the cascades' shadow and the player's own map's, inside its box.
+    [branch] if (TESR_CharShadowData.w > 0.0f)
+        shadow = CharacterMapShadow(worldPos, worldNormal, NdotL, shadow);
 #endif
 
     // Fade out as the sun approaches the horizon, matching SunShadows.fx.

@@ -1799,6 +1799,7 @@ void ShadowManager::RenderShadowMaps() {
 	auto timer = TimeLogger();
 	static CpuTimer shadowMapsCpuTimer("Shadow maps (CPU)");
 	CpuProfileScope shadowMapsCpu(shadowMapsCpuTimer);
+	Shadows->Constants.CharacterData.w = 0.0f;	// UNOFFICIAL 2026-10-23 CharacterShadowMap: read only once this frame's draw is in it (RenderCharacterShadowMap)
 
 	// prepare some pointers to the device and surfaces
 	IDirect3DDevice9* Device = TheRenderManager->device;
@@ -2223,6 +2224,9 @@ void ShadowManager::RenderShadowMaps() {
 
 			if (Shadows->Settings.ShadowMaps.Mipmaps)
 				Shadows->ShadowAtlasTexture->GenerateMipSubLevels();
+
+			// UNOFFICIAL 2026-10-23 CharacterShadowMap: the player's own map, from the same (quantised) sun, after the cascades.
+			RenderCharacterShadowMap(SunDir);
 		}
 #if NVR_TEST_TOOLS
 		// DIAGNOSTIC SkipWhenFadedCheck 4: the atlas set to 0 at any hour, nothing skipped (shows that the poison of 1 and 2
@@ -2672,6 +2676,7 @@ void ShadowManager::RenderShadowMaps() {
 			if (GetFileAttributesA(Filename) == INVALID_FILE_ATTRIBUTES) CreateDirectoryA(Filename, NULL);
 			D3DXSaveSurfaceToFileA(".\\Test\\shadowmapatlas.jpg", D3DXIFF_JPG, Shadows->ShadowAtlasSurface, NULL, NULL);
 			D3DXSaveSurfaceToFileA(".\\Test\\shadowmaportho.jpg", D3DXIFF_JPG, Shadows->ShadowMapOrthoSurface, NULL, NULL);
+			if (Shadows->CharacterMapSurface) D3DXSaveSurfaceToFileA(".\\Test\\charshadowmap.jpg", D3DXIFF_JPG, Shadows->CharacterMapSurface, NULL, NULL);	// UNOFFICIAL 2026-10-24 CharacterShadowMap
 
 			InterfaceManager->ShowMessage("Textures taken!");
 		}
@@ -2683,6 +2688,76 @@ void ShadowManager::RenderShadowMaps() {
 	shadowMapsRenderTime = timer.LogTime("ShadowManager::RenderShadowMaps");
 }
 
+
+// UNOFFICIAL 2026-10-23 CharacterShadowMap (docs/next/CHARACTER-SHADOW-MAP-DESIGN.md). A small sun shadow map (R32F, plain depth
+// whatever the cascades' Mode: TESR_ShadowData.z = 1 makes ShadowMap.pso write depth, as for the ortho map) fitted round the player
+// (ShadowsExteriorEffect::GetCharacterViewProj), drawn every frame the cascades are, with the cascade passes' shaders and states
+// (BeginShadowMap / DrawShadowMap) but its own walk: the player's node alone (and, with CharacterShadowMapOthers, the other actors of
+// the loaded cells whose bound touches the box), not the loaded cells. The lookups (Includes/Shadow.hlsl CharacterMapShadow,
+// SunShadows.fx.hlsl) take the darker of the cascades' shadow and this map's where a pixel is inside the box, fading to the cascades
+// alone over the box's outer band; so the cascades keep drawing the player as before (the player's shadow on the ground, and the
+// shadows of walls and trees on the player, stay theirs), and this map only adds the fine self-shadow the cascades' texels lose.
+// Off, or not compiled in, or in first person: nothing here, CharacterData.w stays 0, every shader skips the lookup.
+void ShadowManager::RenderCharacterShadowMap(const D3DXVECTOR3& SunDir) {
+	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
+	if (!Shadows->Settings.ShadowMaps.CharacterMap || !Shadows->CharacterMapCompiled) return;
+	if (!Shadows->EnsureCharacterMap()) return;
+	D3DXMATRIX viewProj;
+	if (!Shadows->GetCharacterViewProj(SunDir, viewProj)) return;
+
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	static GpuTimer characterMapTimer("Character shadow map");
+	static CpuTimer characterMapCpuTimer("Character shadow map (CPU)");
+	CpuProfileScope cpu(characterMapCpuTimer);
+	GpuProfileScope gpu(characterMapTimer, Device);
+
+	ShadowsExteriorEffect::ShadowMapSettings* map = &Shadows->CharacterMap;
+	D3DXVECTOR4* ShadowData = &Shadows->Constants.Data;
+	const float zWas = ShadowData->z;
+	ShadowData->z = 1.0f;	// plain depth (as the ortho map), whatever the cascades' Mode
+	Shadows->Constants.ShadowViewProj = viewProj;
+	Device->SetRenderTarget(0, Shadows->CharacterMapSurface);
+	Device->SetDepthStencilSurface(Shadows->CharacterMapDepthSurface);
+
+	BeginShadowMap(map, &viewProj);
+	// The walk: the player's node (the body, hair, headgear, the held weapon: all under it), culled against the box's planes.
+	NiNode* playerNode = Player->GetNode();
+	AccumChildren(playerNode, &map->Forms, false, false, &map->ShadowMapFrustumPlanes);
+	unsigned others = 0;
+	if (Shadows->Settings.ShadowMaps.CharacterMapOthers && Player->GetWorldSpace() && Tes && Tes->gridCellArray) {
+		GridCellArray* CellArray = Tes->gridCellArray;
+		const UInt32 CellArraySize = CellArray->size * CellArray->size;
+		for (UInt32 c = 0; c < CellArraySize; c++) {
+			TESObjectCELL* Cell = CellArray->GetCell(c);
+			if (!Cell || Cell->IsInterior()) continue;
+			for (TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First; Entry; Entry = Entry->next) {
+				TESObjectREFR* Ref = Entry->item;
+				if (!Ref || !Ref->baseForm || Ref == (TESObjectREFR*)Player) continue;
+				const UInt8 type = Ref->baseForm->formType;
+				if (type != TESForm::FormType::kFormType_NPC && type != TESForm::FormType::kFormType_Creature && type != TESForm::FormType::kFormType_LeveledCreature) continue;
+				NiNode* node = Ref->GetNode();
+				if (!node || node == playerNode || (node->m_flags & NiAVObject::APP_CULLED) || !node->WithinFrustum(&map->ShadowMapFrustumPlanes)) continue;
+				AccumChildren(node, &map->Forms, false, false, &map->ShadowMapFrustumPlanes);
+				others++;
+			}
+		}
+	}
+	const unsigned casters = (unsigned)(geometryPass->GeometryList.size() + alphaPass->GeometryList.size() + skinnedGeoPass->GeometryList.size());
+	DrawShadowMap(map);
+	ShadowData->z = zWas;
+	Shadows->Constants.CharacterData.w = 1.0f + (float)Shadows->Settings.ShadowMaps.CharacterMapDebug;	// the map holds this frame's draw: the lookups read it (2-4: a debug view, Shadow.hlsl)
+
+	if (Shadows->Settings.ShadowMaps.CharacterMapLog) {
+		static DWORD lastLog = 0;
+		if (GetTickCount() - lastLog > 1000) {
+			lastLog = GetTickCount();
+			const float radius = Shadows->Constants.CharacterCenter.w;
+			Logger::Log("CharacterShadowMap: fit %d, half-extent %.0f units (texel %.3f units = %.2f cm), %u casters (%u other actors), sun %.3f %.3f %.3f, bias %.5f, band %.3f",
+				Shadows->Settings.ShadowMaps.CharacterMapFit, radius, 2.0f * radius / map->ShadowMapResolution, 2.0f * radius / map->ShadowMapResolution * 1.428f,
+				casters, others, SunDir.x, SunDir.y, SunDir.z, Shadows->Constants.CharacterData.z, Shadows->Constants.CharacterData.y);
+		}
+	}
+}
 
 /*
  * Clear a part of the shadow map atlas based on the shadow mapping mode.
