@@ -127,3 +127,18 @@ SHADER COUNTERS lines; no "needs NVR DXVK", no "could not be set up", no DXVK `N
   come from ShaderManager's call sites, taken only when the frame was written (FrameChain write count), and own targets from
   RenderEffectToRT; (2) the reflection capture's cube faces filled the 64 stages: cube faces are left out; (3) a ring slot left from the
   previous switch-on was logged as the next shot's "first result" (old pixel): results from before the switch-on are dropped.
+
+## Second run (2026-10-26, 20261026-170842-slotC, combo a3f41491 = d33554ce + Hi-Z pyramid v2)
+- Inspector fixes confirmed: 18-24 stages with SunShadows' shadow buffer, AmbientLight, VolumetricFog, Reflections (its 4 own passes and
+  the frame after it), Exposure, SMAA, Cinema; no cube faces; the counters+inspect shot's first result is its own pixel (960, 800).
+  One spurious "after SnowAccumulation" stage (same values as the scene) on the first frame after a switch-on: fixed (the frame-write
+  count is taken at the end of every frame).
+- Pictures within noise (adjacent pairs 16-20k pixels over 8 levels, mean 1.5-1.65, same as inspector-vs-inspector).
+- Counters run with the new layout (0 skipped, probe (480, 400) arrives) but report every one of the 518,400 trace pixels as "not started"
+  and none as "no reflection"; the probe's depth reads 0.0037 units where the inspector shows 2841. Cause (Hi-Z branch, not the counters):
+  the pyramid buffer is a READ-ONLY storage buffer on buffer slot 0, and the extension puts read-only storage buffers and uniform buffers
+  in the same DXVK slot range (NvrExtBufferSlotBase + slot), so it replaces the trace's uniform constants (slot 0): farZ and the
+  matrices are read from the pyramid. The normal Hi-Z trace has the same binding table, so it is broken the same way. Fix: give the
+  pyramid any buffer slot other than 0 (e.g. 1) in ReflHiZBinding and in the resource it binds.
+- With every pixel hitting the same two counters the counting build cost +1.0 ms (trace 0.17 -> 1.19 ms); in the first run, with the
+  rules spread over many counters, +0.33 ms.

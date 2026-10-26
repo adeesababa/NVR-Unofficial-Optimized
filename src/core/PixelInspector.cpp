@@ -272,6 +272,7 @@ void EndFrame() {
 	if (!Active && wasActive) { LoggedX = LoggedY = -2; LoggedFrame = 0; HaveLatest = false; }	// the next switch-on logs its first result again
 	if (Active && !wasActive) ActiveSince = FrameNumber + 1;
 	LastFrameEffect = nullptr;
+	LastWrites = TheShaderManager->Chain.WriteCount();	// the next frame's first effect is a stage only if it writes the frame (was: one spurious stage after a switch-on)
 	Current.count = 0;
 	Current.x = PixelX; Current.y = PixelY;
 	Current.width = TheRenderManager->width; Current.height = TheRenderManager->height;
