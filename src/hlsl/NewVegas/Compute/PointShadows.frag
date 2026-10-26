@@ -1,0 +1,89 @@
+// PointShadows as Vulkan passes (needs NVR DXVK): Effects/PointShadows.fx.hlsl, line for line. Three of its techniques, by push mode:
+// 0 MergedPointShadows (Shadow(false)), 1 AddShadowedLamps (Shadow(true), added onto the buffer by blending), 2 LampMaskHalf
+// (the half-resolution mask in R, the depth in G, at the top-left full-resolution texel of each half-resolution pixel).
+// effects/PointShadows.cpp ExtRender runs it.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "PointShadowsCommon.glsl"
+
+layout(set = 1, binding = 0) uniform textureCube t_cube0;     // TESR_ShadowCubeMapBuffer0 (LINEAR, CLAMP)
+layout(set = 1, binding = 1) uniform textureCube t_cube1;
+layout(set = 1, binding = 2) uniform textureCube t_cube2;
+layout(set = 1, binding = 3) uniform textureCube t_cube3;
+layout(set = 1, binding = 4) uniform textureCube t_cube4;
+layout(set = 1, binding = 5) uniform textureCube t_cube5;
+layout(set = 1, binding = 6) uniform textureCube t_cube6;
+layout(set = 1, binding = 7) uniform textureCube t_cube7;
+layout(set = 1, binding = 8) uniform textureCube t_cube8;
+layout(set = 1, binding = 9) uniform textureCube t_cube9;
+layout(set = 1, binding = 10) uniform textureCube t_cube10;   // TESR_ShadowCubeMapBuffer10
+layout(set = 1, binding = 11) uniform texture2D t_depth;      // TESR_DepthBuffer (LINEAR, CLAMP)
+layout(set = 1, binding = 12) uniform texture2D t_normals;    // TESR_NormalsBuffer (POINT, CLAMP)
+
+layout(push_constant) uniform Push {
+    uint linearSampler;   // 0: LINEAR, CLAMP heap index (filled by the host)
+    uint pointSampler;    // 4: POINT, CLAMP heap index
+    uint mode;            // 8: 0 merged, 1 batch (AddShadowedLamps), 2 half-resolution mask (LampMaskHalf)
+    uint pad;
+} pc;
+
+#define LINEAR_CLAMP NVR_SAMPLER(pc.linearSampler)
+#define POINT_CLAMP NVR_SAMPLER(pc.pointSampler)
+
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 o_color;
+
+void main() {
+    // HalfMaskVS: the half-resolution pixel reads the full-resolution texel at its top-left
+    vec2 uvh = uv + (pc.mode == 2u ? 0.5 * cb.reciprocalResolution.xy : vec2(0.0));
+    bool batch = pc.mode == 1u;
+
+    float depth = readDepthAt(t_depth, LINEAR_CLAMP, uvh);
+    vec3 cameraVector = toWorld(uvh) * depth;
+    vec3 worldPos = cb.cameraPosition.xyz + cameraVector;
+    vec3 normal = worldNormalAt(t_normals, POINT_CLAMP, uvh);
+
+    float shadow = shadowedLight(t_cube0, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[0], normal, luma(cb.lightColor[0].rgb) * cb.lightColor[0].w);
+    shadow += shadowedLight(t_cube1, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[1], normal, luma(cb.lightColor[1].rgb) * cb.lightColor[1].w);
+    shadow += shadowedLight(t_cube2, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[2], normal, luma(cb.lightColor[2].rgb) * cb.lightColor[2].w);
+    shadow += shadowedLight(t_cube3, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[3], normal, luma(cb.lightColor[3].rgb) * cb.lightColor[3].w);
+    shadow += shadowedLight(t_cube4, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[4], normal, luma(cb.lightColor[4].rgb) * cb.lightColor[4].w);
+    shadow += shadowedLight(t_cube5, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[5], normal, luma(cb.lightColor[5].rgb) * cb.lightColor[5].w);
+    shadow += shadowedLight(t_cube6, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[6], normal, luma(cb.lightColor[6].rgb) * cb.lightColor[6].w);
+    shadow += shadowedLight(t_cube7, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[7], normal, luma(cb.lightColor[7].rgb) * cb.lightColor[7].w);
+    shadow += shadowedLight(t_cube8, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[8], normal, luma(cb.lightColor[8].rgb) * cb.lightColor[8].w);
+    shadow += shadowedLight(t_cube9, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[9], normal, luma(cb.lightColor[9].rgb) * cb.lightColor[9].w);
+    shadow += shadowedLight(t_cube10, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[10], normal, luma(cb.lightColor[10].rgb) * cb.lightColor[10].w);
+
+    if (!batch && cb.shadowLightPosition[11].w != 0.0) {
+        vec4 light11 = pointLightDistance(worldPos, cb.shadowLightPosition[11]);
+        shadow += saturate(lampAmount(light11.xyz, light11.w, normal)) * edgeWindow(light11.w);
+    }
+
+    if (!batch && cb.spotLightPosition.w != 0.0)
+        shadow += spotLightAmount(worldPos, cb.spotLightPosition, cb.spotLightDirection, normal) * luma(cb.spotLightColor.rgb) * cb.spotLightColor.w;
+
+    for (int i = 0; i < 12 && !batch; i++) {
+        if (cb.lightPosition[i].w != 0.0) {
+            vec4 light = pointLightDistance(worldPos, cb.lightPosition[i]);
+            if (light.w < 1.0 || cb.pointShadowNear.w < 0.5)
+                shadow += saturate(lampAmount(light.xyz, light.w, normal) * luma(cb.lightColor[i + 12].rgb) * cb.lightColor[i + 12].w) * edgeWindow(light.w);
+        }
+    }
+
+    for (int e = 0; e < 16 && !batch; e++) {
+        if (cb.extraLights[e].w == 0.0 || shadow >= 1.0) break;
+        float radius = floor(cb.extraLights[e].w * 0.125);
+        float weight = cb.extraLights[e].w - radius * 8.0;
+        vec4 light = pointLightDistance(worldPos, vec4(cb.extraLights[e].xyz, radius));
+        if (light.w < 1.0 || cb.pointShadowNear.w < 0.5)
+            shadow += saturate(lampAmount(light.xyz, light.w, normal) * weight) * edgeWindow(light.w);
+    }
+
+    shadow = saturate(shadow);
+
+    if (pc.mode == 2u)
+        o_color = vec4(shadow, depth, 0.0, 1.0);	// LampMaskHalfPS
+    else
+        o_color = vec4(shadow, shadow, shadow, 1.0);
+}
