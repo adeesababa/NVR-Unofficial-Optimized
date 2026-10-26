@@ -56,7 +56,8 @@ void PBRShaders::UpdateSettings() {
 	Constants.Metal.w = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "ColourEnd"), 0.0f, 1.0f);
 	Constants.MetalLook.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "Roughness"), 0.05f, 1.0f);
 	Constants.MetalLook.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "PolishedRoughness"), 0.05f, 1.0f);
-	Constants.MetalLook.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "Reflections"), 0.0f, 4.0f);
+	MetalSettings.Reflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "Reflections"), 0.0f, 4.0f);
+	Constants.MetalLook.z = MetalSettings.Reflections;	// times Reflectivity in UpdateConstants
 	Constants.MetalLook.w = TheSettingManager->GetSettingI("Shaders.PBR.Metal", "DebugView") ? 1.0f : 0.0f;
 	// UNOFFICIAL SharpSky (SkyAmbient.hlsl SkyAmbientSharpened): metal and the env maps take the sky from the direction they
 	// reflect, sharper, rather than its smooth average. 0 = the plain sky.
@@ -65,7 +66,10 @@ void PBRShaders::UpdateSettings() {
 	Constants.Env.x = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Lighting"), 0.0f, 1.0f);
 	Constants.Env.y = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "Strength"), 0.0f, 8.0f);
 	Constants.Env.z = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.EnvMaps", "WithMetal"), 0.0f, 1.0f);
-	Constants.Env.w = 0.0f;
+	Constants.Env.w = 0.0f;	// Reflectivity - 1, UpdateConstants
+	// UNOFFICIAL 2026-10-25 Reflectivity (live): applied in UpdateConstants by whether the player is outdoors or in.
+	ReflectivitySettings.Exterior = std::clamp(RmaosScaleOr1("Shaders.PBR.Main", "ReflectivityExterior"), 0.0f, 3.0f);
+	ReflectivitySettings.Interior = std::clamp(RmaosScaleOr1("Shaders.PBR.Main", "ReflectivityInterior"), 0.0f, 3.0f);
 	// UNOFFICIAL CubeReflections (Includes/LiveCube.hlsl): metal and the env maps reflect the live surroundings cube that the
 	// Reflections effect keeps (CubeMap); applied in UpdateConstants only while that cube is kept up.
 	MetalSettings.CubeReflections = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Metal", "CubeReflections"), 0.0f, 1.0f);
@@ -319,4 +323,11 @@ void PBRShaders::UpdateConstants() {
 	Constants.Math.z = std::clamp(weather(&PBRSettings::RmaosMetalnessScale), 0.0f, 1.0f) - 1.0f;
 	Constants.Math.w = std::clamp(weather(&PBRSettings::RmaosRoughnessScale), 1.0f, 2.0f) - 1.0f;
 	RmaosSettings.OcclusionNow = RmaosSettings.Occlusion * std::clamp(weather(&PBRSettings::RmaosAOScale), 0.0f, 1.0f);
+
+	// UNOFFICIAL 2026-10-25 Reflectivity ([Shaders.PBR.Main] ReflectivityExterior / ReflectivityInterior): the highlights (TESR_PBRMath.y,
+	// Includes/PBR.hlsl ReflectivityF0), metal's reflections of its surroundings and the env-map pass (TESR_PBREnv.w). 1 = as before.
+	const float reflectivity = TheShaderManager->GameState.isExterior ? ReflectivitySettings.Exterior : ReflectivitySettings.Interior;
+	Constants.Math.y = reflectivity - 1.0f;
+	Constants.MetalLook.z = MetalSettings.Reflections * reflectivity;
+	Constants.Env.w = reflectivity - 1.0f;
 };

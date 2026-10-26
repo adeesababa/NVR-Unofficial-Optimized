@@ -57,3 +57,42 @@ Leave it off; it is not a proposed fix.
   Native smoke (20261023-102941): 1,500 frames, 0 flagged; normal path "intoAL ALapplied".
 - Installed for the user with default settings: deep/combo-1023 (DLL D16144E9), FlickerWatch 1. Our DXVK = v2.6.1 x86 + dxvk.conf
   useD32forD24 (changes the depth format the effects read): ask the testers for their DXVK version and dxvk.conf.
+
+## 2026-10-25: time-of-day sweeps under DXVK (not reproduced) + FlickerWatch "where"
+Branch claude/musing-haslett-60f9a6 (off combo-1023 52152565). All runs: DXVK 3.0.1, GTX 1070, noon spot, sunny 000FFC88,
+defaults + FlickerWatch, time RUNNING, real install restored after each (restore point snap-user-native-20261025-sandchar).
+
+| run (W\bench\autotest) | what | frames | real flickers |
+|---|---|---|---|
+| 20261025-091738 (+ -090819) | sweep-1: still camera, timescale 120, 8->17 h and 21->4 h, 2 launches | ~45,000 | 0 (one -20.8 % flag at 11.70 h in both launches = the game's auto vanity camera going 3rd person) |
+| 20261025-093627 | sweep-2: camera panning 8 deg/s (new `turn` command), timescale 60, 10->15.4 h | 15,000 | 0 |
+| 20261025-095823 | sweep-3: as sweep-2 + VolumetricClouds on (their shadows via SunFar) | 15,000 | 0 |
+| 20261025-101705 | sweep-4: as sweep-2 + SunSmoothing CrossFade on at startup (a tester's log has it on) | 15,000 | 0 (every sun step cross-faded) |
+| 20261025-103500 | probe check: AmbientLight off/on | - | flags as expected: `where: world +0.0% lit +18.0%` |
+
+What the sweeps show about the time window:
+- With QuantizeSun (15 deg steps) the shadows' sun sits at pitch 15 deg (z 0.966) from 10.45 h to 14.55 h and exactly overhead
+  12.29-12.71 h here. In that window yaw steps (3.9 deg) come every 15-30 game minutes instead of one step an hour. The tester's
+  start (~10:27) is where the quantized sun reaches pitch 15 deg. Steps glide or cross-fade cleanly here (no flagged frame at any step).
+- So the hour alone, the sun steps, camera motion, the volumetric clouds' shadows and CrossFade do not cause it on this PC.
+
+Still unknown, needs a tester log: their DXVK version + dxvk.conf, GPU/driver, full toml, weather/climate mods (a tester runs the
+Nuclear Sunset list: TTW weathers, other climate -> other sun path). A tester log from 2026-10-22 (RTX 4070 SUPER, DXVK) had
+VolumetricClouds + CloudShadows + CrossFade on and StaggeredSunShadows off.
+
+New in FlickerWatch (test build of this branch): each FLICKER line now has `hour`, `sun z`, a `glide` flag (a sun step was gliding or
+fading that frame) and `where: world X% lit Y%` = the lower-half change measured at two more points of the same frame:
+- `world`: the scene as the game drew it (forward sun shadows, objects, terrain), before NVR's post chain;
+- `lit`: right after the sun-shadow apply / AO / AmbientLight step.
+Reading it: world moves too -> the game's shaders (forward shadows, cascades); world flat but lit moves -> SunFar / AmbientLight /
+shadow apply; both flat -> something later (fog, clouds composite, bloom, tonemap). One tester log with one FLICKER line is enough.
+Also new: the shot-list command `turn <deg/s>` (SettingShots.h) for panning test runs; sun step log lines carry the hour.
+Test gotcha: outdoors with time running, the game's auto vanity camera switches to 3rd person after a few idle minutes.
+
+### 2026-10-25 afternoon: the two cloud settings in real cloud cover
+- Under the user's weather mod (RWL), gWastelandCloudy (0005C8BD) is nearly clear sky, so sweeps 5-6 with it had almost no cloud
+  shadow on the ground (20261025-115718 flat layers, -120915 volumetric: 0 flickers, but weak). Use RWL's overcast 3500A326.
+- sweep-7 (20261025-121742): flat cloud shadows ([Shaders.CloudShadows.Main] Enabled) on, overcast 3500A326, panning, 10->15.5 h:
+  15,000 frames, 0 flickers (pictures checked: full overcast).
+- sweep-8 (volumetric clouds, overcast) NOT run: the install no longer matched the restore point (WATER001/WATER018.pso.hlsl
+  changed by someone else after sweep-7), so the runner refused. Lists bench\foundations\lists\flicker-sweep-7/8.txt.

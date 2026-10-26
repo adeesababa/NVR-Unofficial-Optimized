@@ -69,9 +69,6 @@ ShadowResolution = 2048
 MaxDistance = 160000.0
 ShadowRange = 60000.0
 
-[_Shaders.Sky.Clouds]
-Steps = 16
-
 [_Shaders.Terrain.Parallax]
 HighQuality = true
 ShadowsAtNight = true

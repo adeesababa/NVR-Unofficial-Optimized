@@ -38,9 +38,13 @@ public:
 		float	FineDetail;					// UNOFFICIAL: a second, finer layer of edge detail (0 off)
 		float	FineDetailSize;				// UNOFFICIAL: its size, metres per tile
 		float	CumulusShape;				// UNOFFICIAL 2026-10-20: heaped fair-weather clouds (flat bases, domed tops, no wispy fringe); 0 the older slabs
+		float	Towering;					// UNOFFICIAL 2026-10-25: 0 off .. 1: the strongest heaps rise on as towers, TowerHeight times the layer's Thickness
+		float	TowerHeight;				// UNOFFICIAL 2026-10-25: how tall the towers get, in layer thicknesses
+		float	TowerAnvil;					// UNOFFICIAL 2026-10-25: 0 .. 1: the towers spread into a flat-topped anvil at the top (cumulonimbus)
 		float	Sharpness;					// UNOFFICIAL: 0 the old soft look .. 1 crisp (sharper history, sharpened composite, finer noise far off)
 		float	FromWeatherTextures;		// UNOFFICIAL: share of the coverage taken from the weather's own cloud textures (0: its type alone)
 		bool	FixedMarchExit;				// UNOFFICIAL 2026-10-17: technique 6 (MarchFixedExit): the march stops at Steps / when opaque (the compiler had killed the exit)
+		float	WeatherTint;				// UNOFFICIAL 2026-10-25: how much the weather's own cloud colours (sunset orange, overcast grey, night blue) tint the clouds (0 off)
 	};
 	SettingsStruct	Settings = {};
 
@@ -61,6 +65,8 @@ public:
 		D3DXVECTOR4	ReflectData;		// UNOFFICIAL x: strength, yz: the reflection's size, w: the far plane's depth
 		D3DXVECTOR4	Detail;			// UNOFFICIAL x: fine detail strength (0 off), y: fine detail tile (m), z: cloud shadow map size (texels)
 		D3DXVECTOR4	Motion;			// UNOFFICIAL xy: the cloud pattern's move this frame (m), w: sharpness 0..1
+		D3DXVECTOR4	Tint;			// UNOFFICIAL 2026-10-25 xyz: the weather's cloud colour now (linear, its brightness taken out), w: WeatherTint
+		D3DXVECTOR4	Tower;			// UNOFFICIAL 2026-10-25 x: the ordinary layer's share of the taller one (1 off), y: towering 0..1, z: anvil 0..1
 	};
 	ConstantsStruct	Constants = {};
 
@@ -89,6 +95,7 @@ public:
 
 	void	UpdateConstants();
 	void	RegisterConstants();
+	static bool MoonPlace(Sky* sky, D3DXVECTOR3& direction, float& distance, float& radius, const char** why = nullptr);
 	void	RegisterTextures();
 	void	UpdateSettings();
 	bool	ShouldRender();
@@ -108,6 +115,7 @@ public:
 	// and 4 (shadow map) as Vulkan passes (Compute/VolumetricClouds*.frag), line for line. The reflection (3, drawn by hand into the
 	// game's reflection with its depth test) and the layer probe (5, a game texture bound by hand) stay D3D9.
 	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	int		ExtMarchSteps = 48;	// UNOFFICIAL 2026-10-26: the march's step count without the D3D9 shader's 64 cap (UpdateConstants), for ExtRender
 
 private:
 	ExtPass		extPasses[4];				// composite, march, temporal, shadow map
@@ -144,4 +152,11 @@ private:
 	IDirect3DSurface9*	probeReadback = nullptr;	// the probe's 1 x 1 copy in system memory
 	void		ProbeLayer(IDirect3DDevice9* Device);
 	void		WeatherLook(TESWeather* weather, float& coverage, float& rain, float& bias);
+	// UNOFFICIAL 2026-10-25 WeatherTint: the colour the game gives its own cloud layers now (the weather's cloud colours at this
+	// hour, blended across a weather change), linear, 0-1.
+	D3DXVECTOR3	WeatherCloudColour(Sky* sky, float hour);
+	D3DXVECTOR3	CloudColourOf(TESWeather* weather, const float weights[6]);
+	int			tintLogs = 0;
+	TESWeather*	tintLogWeather = nullptr;
+	float		tintLogHour = -100.0f;
 };
