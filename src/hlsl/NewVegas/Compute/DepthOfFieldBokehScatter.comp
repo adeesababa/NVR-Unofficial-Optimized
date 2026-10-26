@@ -6,7 +6,7 @@
 // resolution, then DepthOfFieldCombineBokeh.frag adds the result in Combine (effects/DepthOfField.cpp ExtRender):
 //   phase 0 (detect): one thread per half-resolution pixel. Its colour (the sharp image before the effect) and blur
 //            amounts (the DoF pass's .r near / .g far, the same focus and autofocus as the gather passes) are read;
-//            a pixel becomes a sprite when it is brighter than BokehThreshold AND brighter than its 5x5 neighbourhood
+//            a pixel becomes a sprite when it is brighter than BokehThreshold AND brighter than its surroundings (two rings of taps)
 //            (an isolated highlight, not the middle of the sky) and its blur radius is at least a pixel. Sprites are
 //            appended to a buffer with an atomic counter (at most maxSprites; the rest are dropped).
 //   phase 1 (splat): one 256-thread group per sprite slot (the CPU does not know the count: groups past it return at
@@ -65,8 +65,6 @@ layout(push_constant) uniform Push {
 
 const float FIXED = 65536.0;
 
-shared float s_luma[20 * 20];
-
 float lumaAt(ivec2 h) {
     h = clamp(h, ivec2(0), ivec2(pc.halfW - 1u, pc.halfH - 1u));
     vec2 uv = (vec2(h) * 2.0 + 1.0) / vec2(pc.fullW, pc.fullH);     // the corner of the 2x2 block: the bilinear tap is its average
@@ -91,23 +89,22 @@ float shapeArea(float radius) {
 }
 
 void detect() {
-    ivec2 group = ivec2(gl_WorkGroupID.xy) * 16;
-    uint t = gl_LocalInvocationIndex;
-    for (uint i = t; i < 400u; i += 256u)
-        s_luma[i] = lumaAt(group + ivec2(int(i % 20u), int(i / 20u)) - 2);
-    barrier();
-
     ivec2 h = ivec2(gl_GlobalInvocationID.xy);
     if (h.x >= int(pc.halfW) || h.y >= int(pc.halfH)) return;
-    ivec2 l = ivec2(gl_LocalInvocationID.xy) + 2;
-    float center = s_luma[l.y * 20 + l.x];
+    float center = lumaAt(h);
     if (center <= pc.threshold) return;
 
+    // the surroundings: 16 taps on two rings (6 and 12 half-res px at 1080p). A lamp smaller than the rings stands out over its
+    // whole face (a disc of sprites, not a ring of its edge); the middle of a bright sky or wall does not.
+    float ringScale = float(pc.fullH) / 1080.0;
     float neighbours = 0.0;
-    for (int y = -2; y <= 2; y++)
-        for (int x = -2; x <= 2; x++)
-            neighbours += s_luma[(l.y + y) * 20 + l.x + x];
-    neighbours = (neighbours - center) / 24.0;
+    for (int k = 0; k < 8; k++) {
+        float a = float(k) * 0.785398163 + 0.3927;
+        vec2 dir = vec2(cos(a), sin(a));
+        neighbours += lumaAt(h + ivec2(round(dir * 6.0 * ringScale)));
+        neighbours += lumaAt(h + ivec2(round(dir * 12.0 * ringScale)));
+    }
+    neighbours /= 16.0;
 
     vec2 uv = (vec2(h) * 2.0 + 1.0) / vec2(pc.fullW, pc.fullH);
     vec2 blur = textureLod(sampler2D(t_blur, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).rg;
