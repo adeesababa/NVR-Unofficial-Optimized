@@ -38,6 +38,9 @@ public:
 	bool Draw(IDirect3DDevice9* Device, IDirect3DSurface9* const* Targets, UINT Count, EffectRecord::ExtUv Uv, const RECT* Viewport = nullptr);
 	bool Ready() const { return Pipeline != nullptr && !Failed; }
 	UINT Targets() const { return TargetCount; }
+	// The pass's own vertex shader is FrameVS (the frame quad) and it sets no render states (blending etc.): the generic hook in
+	// EffectRecord::Render may draw it.
+	bool Plain() const { return VertexShader == "FrameVS" && StateCount == 0; }
 	UInt32 Frames = 0;
 
 private:
@@ -70,9 +73,14 @@ private:
 	std::vector<ID3D9NvrExtSampler*> Samplers;
 	std::vector<unsigned char> UboData;
 	UINT UboSize = 0, PushSize = 0, TargetCount = 1;
+	std::string VertexShader;
+	int StateCount = 0;
 	ID3D9NvrExtPipeline* Pipeline = nullptr;
 	EffectRecord::ExtUniformBuffer Ubo;
 	std::map<std::string, IDirect3DBaseTexture9*> TextureOverrides;
 	std::map<std::string, D3DXVECTOR4> VectorOverrides;
 	std::vector<std::string> Missing;	// constants with no value (logged once)
 };
+
+// An effect's SM6 passes by technique and pass (EffectRecord::Sm6Set).
+struct Sm6PassSet { std::map<std::string, Sm6Pass> Passes; };

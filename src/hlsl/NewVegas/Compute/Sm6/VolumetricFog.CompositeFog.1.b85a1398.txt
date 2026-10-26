@@ -100,5 +100,7 @@ sampler 0 LINEAR_MIPMAPS CLAMP
 sampler 1 NEAREST CLAMP
 sampler 2 LINEAR_MIPMAPS WRAP
 sampler 3 LINEAR CLAMP
+vs FrameVS
+states 0
 push 16
 targets 1

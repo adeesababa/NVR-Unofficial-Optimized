@@ -1,5 +1,6 @@
 #include <regex>
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
+#include "Sm6Pass.h"	// UNOFFICIAL 2026-10-26 (deep/fork-sm6)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
@@ -482,7 +483,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	auto timer = TimeLogger();
 
 	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
-	if (!ExtFailed && DxvkCompute::PassesOn() && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+	// (UNOFFICIAL 2026-10-26: not for a technique whose passes all have an SM6 build while NvrSm6Shaders is on: those draw below.)
+	if (!ExtFailed && DxvkCompute::PassesOn() && !Sm6Covers(techniqueIndex) && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
 		Device->SetRenderTarget(0, RenderTarget);
 		std::string name = "EffectRecord::ExtRender " + std::string(Name);
 		renderTime = timer.LogTime(name.c_str());
@@ -514,7 +516,9 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				Effect->BeginPass(p);
 				RebindSlotTextures(); // the current image moved after the previous pass
 				BindPassTextures();	// UNOFFICIAL 2026-10-19
-				Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				// UNOFFICIAL 2026-10-26 (NvrSm6Shaders): the pass's SM6 build, fed what this draw would read; else (or failed) the D3D9 draw
+				Sm6Pass* sm6 = Sm6For(techniqueIndex, p);
+				if (!sm6 || !sm6->Plain() || !sm6->Draw(Device, &destination, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
 				else chain.Commit();
@@ -543,7 +547,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 			Effect->BeginPass(p);
 			BindPassTextures();	// UNOFFICIAL 2026-10-19
 			BeforeDraw(Device);	// UNOFFICIAL 2026-10-22
-			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			Sm6Pass* sm6 = Sm6For(techniqueIndex, p);	// UNOFFICIAL 2026-10-26 (NvrSm6Shaders), as above
+			if (!sm6 || !sm6->Plain() || !sm6->Draw(Device, &RenderTarget, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture
 		}

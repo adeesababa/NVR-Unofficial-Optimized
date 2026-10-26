@@ -319,7 +319,7 @@ def main():
     for t in technique_items:
         tm = re.match(r"^\s*technique\w*\s*(\w*)\s*\{", t)
         tname = tm.group(1) if tm else ""
-        if tname == a.technique or (a.technique in ("-", "") and tname == ""):
+        if tname == a.technique or (a.technique in ("-", "", "default") and tname == ""):
             tech = t
             break
     if tech is None:
@@ -474,7 +474,7 @@ def main():
 
     # 6. compile
     os.makedirs(a.out, exist_ok=True)
-    base = "%s.%s.%d%s" % (effect_name, a.technique or "default", pidx, ("." + a.variant) if a.variant else "")
+    base = "%s.%s.%d%s" % (effect_name, a.technique if a.technique not in ("-", "") else "default", pidx, ("." + a.variant) if a.variant else "")
     hlsl_path = os.path.join(a.out, base + ".sm6.hlsl") if a.keep else "/tmp/nvr-sm6-%d.hlsl" % os.getpid()
     open(hlsl_path, "w").write(source)
     spv_path = os.path.join(a.out, base + ".spv")
@@ -578,6 +578,8 @@ def main():
         lines.append("texture %s %d %s %d %s" % (s["name"], s["binding"], s["view"], s["slot"], "used" if present else "unused"))
     for state, slot in sorted(slot_of_state.items(), key=lambda x: x[1]):
         lines.append("sampler %d %s %s" % (slot, state[0], state[1]))
+    lines.append("vs %s" % (vsm.group(1) if vsm else "-"))
+    lines.append("states %d%s" % (len(states), "".join(" | " + " ".join(s.split()) for s in states)))
     lines.append("push %d" % (4 * nslots))
     lines.append("targets %d" % targets)
     open(os.path.join(a.out, base + ".txt"), "w").write("\n".join(lines) + "\n")

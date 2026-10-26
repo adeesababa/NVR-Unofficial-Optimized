@@ -117,6 +117,8 @@ bool Sm6Pass::LoadLayout(const char* Path) {
 			Samplers[slot] = s;
 		}
 		else if (tag == "push") in >> PushSize;
+		else if (tag == "vs") in >> VertexShader;
+		else if (tag == "states") in >> StateCount;
 		else if (tag == "targets") in >> TargetCount;
 	}
 	if (!header) return Fail("not an nvr-sm6 layout");
@@ -130,7 +132,7 @@ bool Sm6Pass::Prepare(EffectRecord* Effect, const char* Technique, UINT Pass) {
 
 	DxvkCompute::Drop(Pipeline);
 	Constants.clear(); Textures.clear(); SamplerStates.clear(); Samplers.clear(); Missing.clear();
-	UboSize = PushSize = 0; TargetCount = 1; Frames = 0;
+	UboSize = PushSize = 0; TargetCount = 1; Frames = 0; VertexShader.clear(); StateCount = 0;
 	Owner = Effect;
 	Generation = Effect->LoadGeneration;
 	Tried = true;
@@ -142,7 +144,7 @@ bool Sm6Pass::Prepare(EffectRecord* Effect, const char* Technique, UINT Pass) {
 	// which of the effects' defines this pass was built for, and the variant matching the ones this effect was compiled with
 	std::string index = std::string(Sm6Folder) + Key + ".txt";
 	std::ifstream indexFile(index);
-	if (!indexFile) { Failed = true; Logger::Log("UNOFFICIAL NVR SM6: %s has no SM6 build (%s): D3D9 pass", Key.c_str(), index.c_str()); return false; }
+	if (!indexFile) { Failed = true; return false; }	// the normal case: no SM6 build of this pass (quiet)
 	D3DXMACRO macros[8];
 	EffectRecord::BuildMacros(macros);
 	std::string line, variant;
@@ -168,6 +170,7 @@ bool Sm6Pass::Prepare(EffectRecord* Effect, const char* Technique, UINT Pass) {
 
 	// the D3D9 pass: each sampler's register (what it would sample), each constant's parameter (what it would read)
 	D3DXHANDLE technique = Effect->Effect->GetTechniqueByName(Technique);
+	if (!technique && !strcmp(Technique, "default")) technique = Effect->Effect->GetTechnique(0);	// (the unnamed technique)
 	D3DXHANDLE pass = technique ? Effect->Effect->GetPass(technique, Pass) : NULL;
 	D3DXPASS_DESC passDesc = {};
 	ID3DXConstantTable* table = nullptr;
@@ -203,7 +206,9 @@ bool Sm6Pass::Prepare(EffectRecord* Effect, const char* Technique, UINT Pass) {
 		b.Type = NVR_EXT_BIND_SAMPLER; b.Slot = s; b.PushOffset = s * 4;
 		bindings.push_back(b);
 	}
-	if (bindings.size() > NVR_EXT_MAX_BINDINGS) return Fail("more bindings than the extension takes");
+	// 32 bindings per pipeline up to extension 1.4; the 1.5-sm6 build (fork patch 0013) says 64 slots and takes 96
+	const UINT maxBindings = DxvkCompute::Info().MaxSlots >= 64 ? 96u : 32u;
+	if (bindings.size() > maxBindings) return Fail("more bindings than this NVR DXVK takes");
 	if (PushSize > DxvkCompute::Info().MaxPushBytes || PushSize < Samplers.size() * 4) return Fail("bad push size");
 	if (!TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return Fail("bad target count");
 
@@ -351,5 +356,29 @@ bool Sm6Pass::Draw(IDirect3DDevice9* Device, IDirect3DSurface9* const* Targets, 
 	Owner->ExtFailed = wasFailed;	// (the effect's hand-ported passes are not this pass)
 	if (!drawn) return Fail("the draw was refused");
 	if (++Frames == 1) Logger::Log("UNOFFICIAL NVR SM6: %s runs from its SM6 build.", Key.c_str());
+	return true;
+}
+
+// UNOFFICIAL 2026-10-26: EffectRecord's generic hook (EffectRecord.h). Nothing is looked up while NvrSm6Shaders is off or the fork is absent.
+Sm6Pass* EffectRecord::Sm6For(UINT techniqueIndex, UINT pass) {
+	if (!Effect || !Sm6Pass::On()) return nullptr;
+	D3DXHANDLE technique = Effect->GetTechnique(techniqueIndex);
+	D3DXTECHNIQUE_DESC description = {};
+	if (!technique || FAILED(Effect->GetTechniqueDesc(technique, &description))) return nullptr;
+	const char* name = description.Name && *description.Name ? description.Name : "default";
+	if (!Sm6Set) Sm6Set = new Sm6PassSet();
+	Sm6Pass& sm6 = Sm6Set->Passes[std::string(name) + "." + std::to_string(pass)];
+	return sm6.Prepare(this, name, pass) ? &sm6 : nullptr;
+}
+
+bool EffectRecord::Sm6Covers(UINT techniqueIndex) {
+	if (!Effect || !Sm6Pass::On()) return false;
+	D3DXTECHNIQUE_DESC description = {};
+	D3DXHANDLE technique = Effect->GetTechnique(techniqueIndex);
+	if (!technique || FAILED(Effect->GetTechniqueDesc(technique, &description)) || !description.Passes) return false;
+	for (UINT p = 0; p < description.Passes; p++) {
+		Sm6Pass* sm6 = Sm6For(techniqueIndex, p);
+		if (!sm6 || !sm6->Plain()) return false;
+	}
 	return true;
 }

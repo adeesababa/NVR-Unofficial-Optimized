@@ -8,3 +8,7 @@ VolumetricFog DedicatedFog 0
 VolumetricFog DedicatedFog 1
 VolumetricFog CompositeFog 0
 VolumetricFog CompositeFog 1
+
+# PointShadows' lamp mask (MergedPointShadows: 11 shadow cubes + depth + normals = 13 of ps_3_0's 16 samplers, its constants at the
+# 224 limit once the preshader has run): the second SM6 proof, through EffectRecord::Render's generic hook (FrameVS, no states).
+PointShadows MergedPointShadows 0
