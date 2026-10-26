@@ -1,6 +1,6 @@
 """nolimits.py: build the NVR DXVK fork's no-limits replacements for NVR's own pixel shaders (2026-10-26, FORK-1026-LIMITS.md).
 
-  py -3 nolimits.py dump <dump folder> <Shaders source folder> <out folder> [--only NAME,NAME] [--plain]
+  py -3 nolimits.py dump <dump folder> <Shaders source folder> <out folder> [--only NAME,NAME] [--templates T,T] [--plain]
       For every <Name>@<hash>.defines in the dump folder (NVR writes it next to <Name>@<hash>.pso when
       Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\dump exists, the fork is present and NvrDxvkReplacements is on):
       compiles that exact variant again WITHOUT ps_3_0's limits (fxc /T ps_4_0 /Gec, NVR_SM4=1 NVR_NO_SM3_LIMITS=1),
@@ -51,6 +51,7 @@ def spirv(frag, spv):
 
 def build(src_dir, template, defines, original_asm, prefix, plain=False):
     """-> (ok, message). Writes <prefix>.sm4.asm, .frag, .txt, .spv."""
+    src_dir, prefix = os.path.abspath(src_dir), os.path.abspath(prefix)
     extra = [("NVR_SM4", "1")] + ([] if plain else [("NVR_NO_SM3_LIMITS", "1")])
     hlsl = os.path.join(src_dir, template + ".hlsl")
     if not os.path.exists(hlsl): return False, "no source " + hlsl
@@ -71,7 +72,7 @@ def build(src_dir, template, defines, original_asm, prefix, plain=False):
         t.temps, len(t.used_tex), len(t.used_regs), os.path.getsize(spv), (" (WARNING: %s not in the original's table)" % ",".join(t.missing)) if t.missing else "")
 
 
-def cmd_dump(dump_dir, src_dir, out_dir, only=None, plain=False):
+def cmd_dump(dump_dir, src_dir, out_dir, only=None, plain=False, templates=None):
     os.makedirs(out_dir, exist_ok=True)
     work = os.path.join(out_dir, "_work")
     os.makedirs(work, exist_ok=True)
@@ -84,6 +85,7 @@ def cmd_dump(dump_dir, src_dir, out_dir, only=None, plain=False):
         if not os.path.exists(pso): print("SKIP %s: no .pso" % key); continue
         lines = open(dpath, encoding="utf-8").read().splitlines()
         template = lines[0].split("=", 1)[1]
+        if templates and template not in templates: continue
         defines = [tuple(l.split("=", 1)) for l in lines[1:] if "=" in l]
         orig = os.path.join(work, key + ".ps30.asm")
         code, err = fxc(["/dumpbin", "/Fc", orig, pso], work)
@@ -114,7 +116,8 @@ def main():
     if len(a) >= 4 and a[0] == "dump":
         only = None
         if "--only" in a: only = set(a[a.index("--only") + 1].split(","))
-        cmd_dump(a[1], a[2], a[3], only, "--plain" in a)
+        templates = set(a[a.index("--templates") + 1].split(",")) if "--templates" in a else None
+        cmd_dump(a[1], a[2], a[3], only, "--plain" in a, templates)
     elif len(a) >= 4 and a[0] == "variant":
         cmd_variant(a[1], a[2], a[3], a[4:])
     else:
