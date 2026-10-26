@@ -21,8 +21,7 @@
 #include <string>
 #include <vector>
 #include "NvrDxvkExt.h"
-
-class EffectRecord;
+#include "EffectRecord.h"
 
 class Sm6Pass {
 public:
@@ -36,7 +35,7 @@ public:
 	// One full-screen draw into Targets (Count = the pass's target count; Viewport null = the whole target). Uv: as for
 	// EffectRecord::ExtDrawTo (ScreenQuad for a FrameVS pass, TexelCentre for HalfVS-style vertex shaders). False (logged once,
 	// the pass then stays off for the session): draw the D3D9 pass instead.
-	bool Draw(IDirect3DDevice9* Device, IDirect3DSurface9* const* Targets, UINT Count, int Uv, const RECT* Viewport = nullptr);
+	bool Draw(IDirect3DDevice9* Device, IDirect3DSurface9* const* Targets, UINT Count, EffectRecord::ExtUv Uv, const RECT* Viewport = nullptr);
 	bool Ready() const { return Pipeline != nullptr && !Failed; }
 	UINT Targets() const { return TargetCount; }
 	UInt32 Frames = 0;
@@ -72,7 +71,7 @@ private:
 	std::vector<unsigned char> UboData;
 	UINT UboSize = 0, PushSize = 0, TargetCount = 1;
 	ID3D9NvrExtPipeline* Pipeline = nullptr;
-	struct { ID3D9NvrExtBuffer* Buffer = nullptr; UINT Size = 0; bool Tried = false; } Ubo;
+	EffectRecord::ExtUniformBuffer Ubo;
 	std::map<std::string, IDirect3DBaseTexture9*> TextureOverrides;
 	std::map<std::string, D3DXVECTOR4> VectorOverrides;
 	std::vector<std::string> Missing;	// constants with no value (logged once)

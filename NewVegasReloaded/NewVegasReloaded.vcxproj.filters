@@ -313,6 +313,9 @@
     <ClInclude Include="..\src\core\RenderManager.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\Sm6Pass.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\DxvkCompute.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -619,6 +622,9 @@
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\RenderManager.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\Sm6Pass.cpp">
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\DxvkCompute.cpp">
