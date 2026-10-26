@@ -93,27 +93,38 @@ namespace {
 		UInt32 halfW, halfH, fullW, fullH, phase, maxSprites, shape, samplerIndex;
 		float threshold, intensity, maxRadius, rotation;
 	};
-	const UINT BokehSpriteBytes = 32;	// struct Sprite in the .comp (std430)
 	const UINT BokehSpriteHeader = 16;	// uint count + 3 pad
 }
 
 void DepthOfFieldEffect::BokehRelease() {
 	DxvkCompute::Drop(bokehScatter);
 	DxvkCompute::Drop(bokehCombine);
+	DxvkCompute::Drop(bokehResolve);
 	DxvkCompute::Drop(bokehSprites);
 	DxvkCompute::Drop(bokehAccum);
+	DxvkCompute::Drop(bokehSurface);
+	DxvkCompute::Drop(bokehTexture);
+}
+
+// The buffers and the resolve texture for the current size (half resolution) and sprite budget; false: not all made.
+static bool MakeBokehTargets(UINT w, UINT h, UINT budget, ID3D9NvrExtBuffer*& sprites, ID3D9NvrExtBuffer*& accum, IDirect3DTexture9*& texture, IDirect3DSurface9*& surface) {
+	sprites = DxvkCompute::CreateBuffer(16 + budget * 32, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "DoF bokeh sprites");	// count + 3 pad, 32-byte sprites
+	accum = DxvkCompute::CreateBuffer(w * h * 12, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "DoF bokeh accumulation");
+	if (FAILED(TheRenderManager->device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &texture, NULL))) texture = nullptr;
+	if (texture && FAILED(texture->GetSurfaceLevel(0, &surface))) surface = nullptr;
+	return sprites && accum && texture && surface;
 }
 
 bool DepthOfFieldEffect::BokehReady() {
 	const UINT w = (TheRenderManager->width + 1) / 2, h = (TheRenderManager->height + 1) / 2, budget = (UINT)Bokeh.BokehMaxSprites;
-	if (bokehScatter && bokehCombine && bokehSprites && bokehAccum) {
+	if (bokehScatter && bokehCombine && bokehResolve && bokehSprites && bokehAccum && bokehSurface) {
 		if (w == bokehW && h == bokehH && budget == bokehMax) return true;
-		DxvkCompute::Drop(bokehSprites);	// resolution or sprite budget changed: new buffers, same pipelines
+		DxvkCompute::Drop(bokehSprites);	// resolution or sprite budget changed: new buffers and texture, same pipelines
 		DxvkCompute::Drop(bokehAccum);
+		DxvkCompute::Drop(bokehSurface);
+		DxvkCompute::Drop(bokehTexture);
 		bokehW = w; bokehH = h; bokehMax = budget;
-		bokehSprites = DxvkCompute::CreateBuffer(BokehSpriteHeader + budget * BokehSpriteBytes, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "DoF bokeh sprites");
-		bokehAccum = DxvkCompute::CreateBuffer(w * h * 12, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "DoF bokeh accumulation");
-		if (bokehSprites && bokehAccum) return true;
+		if (MakeBokehTargets(w, h, budget, bokehSprites, bokehAccum, bokehTexture, bokehSurface)) return true;
 		BokehRelease();
 		bokehFailed = true;
 		Logger::Log("UNOFFICIAL DepthOfField: bokeh buffers could not be made (%ux%u); bokeh off for this session", w, h);
@@ -132,18 +143,21 @@ bool DepthOfFieldEffect::BokehReady() {
 	const NVR_EXT_BINDING_DESC combineBindings[] = {
 		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_rendered
 		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  1, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_source
-		{ 1, 2, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// Accum (read)
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE,  2, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_bokeh (the resolved sprites)
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 208 },	// DofPush.samplerIndex
+	};
+	const NVR_EXT_BINDING_DESC resolveBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// Accum (read)
 	};
 	bokehScatter = DxvkCompute::CreatePipeline("DepthOfFieldBokehScatter", scatterBindings, _countof(scatterBindings), sizeof(BokehPush), true);
 	bokehCombine = DxvkCompute::CreateGraphicsPipeline("DepthOfFieldCombineBokeh", combineBindings, _countof(combineBindings), 224, true);
+	bokehResolve = DxvkCompute::CreateGraphicsPipeline("DepthOfFieldBokehResolve", resolveBindings, _countof(resolveBindings), 16, false);
 	bokehW = w; bokehH = h; bokehMax = budget;
-	bokehSprites = DxvkCompute::CreateBuffer(BokehSpriteHeader + budget * BokehSpriteBytes, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "DoF bokeh sprites");
-	bokehAccum = DxvkCompute::CreateBuffer(w * h * 12, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "DoF bokeh accumulation");
-	if (!bokehScatter || !bokehCombine || !bokehSprites || !bokehAccum) {
+	const bool targets = MakeBokehTargets(w, h, budget, bokehSprites, bokehAccum, bokehTexture, bokehSurface);
+	if (!bokehScatter || !bokehCombine || !bokehResolve || !targets) {
 		BokehRelease();
 		bokehFailed = true;
-		Logger::Log("UNOFFICIAL DepthOfField: bokeh could not be set up (needs NVR DXVK and Compute\\DepthOfFieldBokehScatter.spv + DepthOfFieldCombineBokeh.spv); bokeh off for this session");
+		Logger::Log("UNOFFICIAL DepthOfField: bokeh could not be set up (needs NVR DXVK and Compute\\DepthOfFieldBokehScatter.spv, DepthOfFieldBokehResolve.spv, DepthOfFieldCombineBokeh.spv); bokeh off for this session");
 		return false;
 	}
 	Logger::Log("UNOFFICIAL DepthOfField: bokeh ready (%ux%u half resolution, up to %u sprites)", w, h, budget);
@@ -192,6 +206,20 @@ bool DepthOfFieldEffect::BokehScatter(IDirect3DDevice9* Device, IDirect3DBaseTex
 	push.phase = 1;		// splat: one group per sprite slot
 	dispatch.GroupsX = bokehMax; dispatch.GroupsY = 1;
 	if (SUCCEEDED(result)) result = ext->Dispatch(&dispatch);
+	if (SUCCEEDED(result)) {
+		// the sprite buffer into the half-resolution texture the bokeh Combine samples
+		struct { UInt32 width, height, pad0, pad1; } resolvePush = { bokehW, bokehH, 0, 0 };
+		NVR_EXT_RESOURCE_BINDING resolveResources[] = { { 0, NVR_EXT_BIND_STORAGE_BUFFER, bokehAccum, 0, 0, 0, FALSE } };
+		NVR_EXT_DRAW_DESC draw = {};
+		draw.pPipeline = bokehResolve;
+		draw.TargetCount = 1;
+		draw.Targets[0].pResource = bokehSurface;
+		draw.BindingCount = _countof(resolveResources);
+		draw.pBindings = resolveResources;
+		draw.pPushData = &resolvePush;
+		draw.PushDataSize = sizeof(resolvePush);
+		result = ext->Draw(&draw);
+	}
 	if (FAILED(result)) {
 		Logger::Log("UNOFFICIAL DepthOfField: bokeh dispatch failed (%08lX); bokeh off for this session", result);
 		BokehRelease();
@@ -315,13 +343,13 @@ bool DepthOfFieldEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* 
 	// Combine writes the frame, straight into the game target when the chain predicts this effect last.
 	IDirect3DBaseTexture9* combineTextures[] = { TheTextureManager->RenderedTexture, TheTextureManager->SourceTexture };
 	if (bokeh) {
-		// DepthOfFieldCombineBokeh: Combine's textures, then the bokeh buffer (read), the sampler; the buffer's size in pad[0..1].
+		// DepthOfFieldCombineBokeh: Combine's textures, then the resolved sprites, the sampler.
 		push.useBokeh = 0.0f;
 		push.pad[0] = bokehW; push.pad[1] = bokehH;
 		NVR_EXT_RESOURCE_BINDING resources[] = {
 			{ 0, NVR_EXT_BIND_SAMPLED_IMAGE,  combineTextures[0], 0, 0, 0, FALSE },
 			{ 1, NVR_EXT_BIND_SAMPLED_IMAGE,  combineTextures[1], 0, 0, 0, FALSE },
-			{ 0, NVR_EXT_BIND_STORAGE_BUFFER, bokehAccum,         0, 0, 0, FALSE },
+			{ 2, NVR_EXT_BIND_SAMPLED_IMAGE,  bokehTexture,       0, 0, 0, FALSE },
 			{ 0, NVR_EXT_BIND_SAMPLER,        sampler,            0, 0, 0, FALSE },
 		};
 		ExtFullScreen(Device, RenderTarget, TheTextureManager->RenderedSurface, nullptr, bokehCombine, resources, _countof(resources), &push, sizeof(push), true);

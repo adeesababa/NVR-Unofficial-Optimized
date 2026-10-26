@@ -1,6 +1,6 @@
 // DepthOfField, technique 0, pass 6 (Combine) plus the bokeh sprites (needs NVR DXVK; fork-only, [Shaders.DepthOfField.Bokeh]
-// Bokeh): DepthOfFieldCombine.frag line for line, then the sprites DepthOfFieldBokehScatter.comp scattered (a half-resolution
-// fixed-point RGB buffer, read with a bilinear filter) are added in linear light with a soft limit, 1 - (1 - c) * exp(-b):
+// Bokeh): DepthOfFieldCombine.frag line for line, then the sprites DepthOfFieldBokehScatter.comp scattered (resolved into a
+// half-resolution RGBA16F texture by DepthOfFieldBokehResolve.frag, read with one bilinear tap) are added in linear light with a soft limit, 1 - (1 - c) * exp(-b):
 // a plain add while the sum is dark, never past white. effects/DepthOfField.cpp ExtRender.
 #version 450
 #extension GL_GOOGLE_include_directive : enable
@@ -9,20 +9,12 @@
 layout(set = 1, binding = 0) uniform texture2D t_rendered;   // TESR_RenderedBuffer
 layout(set = 1, binding = 1) uniform texture2D t_source;     // TESR_SourceBuffer
 
-layout(set = 1, binding = 2, std430) readonly buffer Accum {
-    uint accum[];                                            // (r, g, b) * 65536 per half-resolution pixel
-};
+layout(set = 1, binding = 2) uniform texture2D t_bokeh;      // the resolved sprites (half resolution, LINEAR, CLAMP)
 
 #include "DepthOfField.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 o_color;
-
-vec3 bokehAt(ivec2 p, ivec2 size) {
-    p = clamp(p, ivec2(0), size - 1);
-    uint base = (uint(p.y) * uint(size.x) + uint(p.x)) * 3u;
-    return vec3(accum[base], accum[base + 1u], accum[base + 2u]) * (1.0 / 65536.0);
-}
 
 void main() {
     vec2 uv = inUV;
@@ -43,13 +35,7 @@ void main() {
     vec4 color = mix(baseColor, farBlurImage, farBlurAmount);
     color = mix(color, nearBlurImage, nearBlurAmount);
 
-    // the bokeh sprites (push pad[0], pad[1]: the buffer's half-resolution size)
-    ivec2 size = ivec2(pc.pad[0], pc.pad[1]);
-    vec2 p = uv * vec2(size) - 0.5;
-    ivec2 i0 = ivec2(floor(p));
-    vec2 f = p - vec2(i0);
-    vec3 bokeh = mix(mix(bokehAt(i0, size), bokehAt(i0 + ivec2(1, 0), size), f.x),
-                     mix(bokehAt(i0 + ivec2(0, 1), size), bokehAt(i0 + ivec2(1, 1), size), f.x), f.y);
+    vec3 bokeh = textureLod(sampler2D(t_bokeh, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).rgb;
     vec3 lin = saturate(linearize(color.rgb));
     lin = 1.0 - (1.0 - lin) * exp(-bokeh);
 

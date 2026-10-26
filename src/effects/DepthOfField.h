@@ -66,6 +66,9 @@ private:
 	void	BokehRelease();
 	ID3D9NvrExtPipeline*	bokehScatter = nullptr;
 	ID3D9NvrExtPipeline*	bokehCombine = nullptr;
+	ID3D9NvrExtPipeline*	bokehResolve = nullptr;	// the sprite buffer into bokehTexture (half resolution, RGBA16F)
+	IDirect3DTexture9*		bokehTexture = nullptr;
+	IDirect3DSurface9*		bokehSurface = nullptr;
 	ID3D9NvrExtBuffer*		bokehSprites = nullptr;
 	ID3D9NvrExtBuffer*		bokehAccum = nullptr;
 	UINT					bokehW = 0, bokehH = 0, bokehMax = 0;
