@@ -491,7 +491,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 
 	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
 	// (UNOFFICIAL 2026-10-26: not for a technique whose passes all have an SM6 build while NvrSm6Shaders is on: those draw below.)
-	if (!ExtFailed && DxvkCompute::PassesOn() && !Sm6Covers(techniqueIndex) && [&] { GpuDebug::LabelScope ext(Name, " (DXVK extension)");
+	if (!ExtFailed && DxvkCompute::PassesOn() && !DxvkCompute::KeptOnD3D9(Name) && !Sm6Covers(techniqueIndex) && [&] { GpuDebug::LabelScope ext(Name, " (DXVK extension)");
 			return ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer); }()) {
 		Device->SetRenderTarget(0, RenderTarget);
 		std::string name = "EffectRecord::ExtRender " + std::string(Name);
@@ -592,7 +592,7 @@ D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) 
 // (no chain) into RenderTarget with the copy into RenderedSurface afterwards. The pass writes every pixel (no pre-fill).
 bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize, bool last) {
-	if (!Pipeline || !DxvkCompute::Available()) return false;
+	if (!Pipeline || !DxvkCompute::Available() || DxvkCompute::KeptOnD3D9(Name)) return false;
 	ID3D9NvrExt* ext = DxvkCompute::Extension();
 
 	NVR_EXT_DRAW_DESC draw = {};
@@ -633,7 +633,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h. A pass into the effect's own targets; the frame chain is not touched.
 bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
 	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv) {
-	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
+	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS || DxvkCompute::KeptOnD3D9(Name)) return false;
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
 	draw.TargetCount = TargetCount;

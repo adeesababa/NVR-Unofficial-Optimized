@@ -200,6 +200,18 @@ bool DxvkCompute::VariantsOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkVariants;
 }
 
+bool DxvkCompute::KeptOnD3D9(const char* Name) {
+	const char* list = TheSettingManager->SettingsMain.Main.NvrDxvkKeepD3D9;
+	if (!list[0] || !Name || !Name[0]) return false;
+	const size_t length = strlen(Name);
+	for (const char* p = list; (p = strstr(p, Name)) != nullptr; p += length) {
+		const bool startOk = p == list || p[-1] == ',' || p[-1] == ' ';
+		const bool endOk = p[length] == '\0' || p[length] == ',' || p[length] == ' ';
+		if (startOk && endOk) return true;
+	}
+	return false;
+}
+
 bool DxvkCompute::PassesOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
 }

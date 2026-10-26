@@ -42,6 +42,10 @@ public:
 	static ID3D9NvrExtSampler*	MipSampler(bool Anisotropic, NVR_EXT_ADDRESS Address);
 	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
 	static bool					PassesOn();
+	// [Main.Main.Performance] NvrDxvkKeepD3D9 (UNOFFICIAL 2026-10-26, test tool): whether this effect (its EffectRecord name, e.g.
+	// PointShadows; names separated by commas or spaces) keeps its D3D9 passes while the others run as Vulkan passes. Checked in
+	// EffectRecord::Render and in ExtDrawTo / ExtFullScreen, so effects with their own Render (AmbientLight, BounceLight ...) honour it too.
+	static bool					KeptOnD3D9(const char* Name);
 	// [Main.Main.Performance] NvrDxvkVariants (UNOFFICIAL 2026-10-26): Vulkan passes use their compile-time variants
 	// (Compute\variants.txt, the D3D9 techniques' fixed switches) where the .spv exists; off: the run-time switched shaders (A/B).
 	static bool					VariantsOn();

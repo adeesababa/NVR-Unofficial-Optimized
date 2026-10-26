@@ -739,6 +739,11 @@ void SettingManager::LoadSettings() {
 	// UNOFFICIAL 2026-10-23 (NVR DXVK, core\DxvkCompute.h): off by default; does nothing without the NVR DXVK extension.
 	SettingsMain.Main.AvgLumaCompute = boolSetting(performance, "AvgLumaCompute", false);
 	SettingsMain.Main.NvrDxvkPasses = boolSetting(performance, "NvrDxvkPasses", false);
+	{	// UNOFFICIAL 2026-10-26 (DxvkCompute::KeptOnD3D9; a String setting keeps its whole text in LongValue)
+		Configuration::ConfigNode node;
+		const std::string keep = Config.FillNode(&node, performance, "NvrDxvkKeepD3D9") ? node.LongValue : std::string();
+		strncpy_s(SettingsMain.Main.NvrDxvkKeepD3D9, keep.c_str(), _TRUNCATE);
+	}
 	SettingsMain.Main.NvrDxvkVariants = boolSetting(performance, "NvrDxvkVariants", true);	// UNOFFICIAL 2026-10-26 (DxvkCompute::VariantsOn)
 	SettingsMain.Main.AmbientLightSmoothCompute = boolSetting(performance, "AmbientLightSmoothCompute", false);	// UNOFFICIAL 2026-10-25 (AmbientLight.cpp SmoothCompute)
 	SettingsMain.Main.NvrDxvkReplacements = boolSetting(performance, "NvrDxvkReplacements", false);
