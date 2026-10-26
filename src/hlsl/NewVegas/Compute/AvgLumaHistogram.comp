@@ -1,0 +1,223 @@
+// AvgLuma with a luminance histogram (needs NVR DXVK; fork-only, [Shaders.Exposure.Histogram] Histogram, off by default).
+//
+// Same output and state layout as AvgLuma.comp (the 1x1 TESR_AvgLumaBuffer: r this frame's luma averaged over 8 frames,
+// g the animated luma the exposure pass reads, b the animated focal distance, a 1; the 8-frame average, the adaptation
+// speeds and the focus are AvgLuma.fx.hlsl's, line for line). What changes is the frame's luma: instead of the plain
+// average of every pixel, the average of the pixels left after dropping the darkest LowPercent and the brightest
+// HighPercent of the screen, read off a 256-bin log2 histogram built with atomics (shared-memory bins per 16x16 tile,
+// then added into one global histogram). A neon sign or the sun filling a few percent of the screen no longer drags
+// the exposure down; a black corner no longer pulls it up. LowPercent = HighPercent = 0 gives (within the bins'
+// resolution, ~2.7 %) the exact average again.
+//
+// Build: glslangValidator -V --target-env vulkan1.1 -o AvgLumaHistogram.spv AvgLumaHistogram.comp
+//
+// Dispatch (effects/AvgLuma.cpp RenderCompute): the histogram buffer is cleared first (ClearBuffer), then
+//   phase 0: groups (ceil(w/16), ceil(h/16)): the tile's 256-bin histogram in shared memory, added into the global one;
+//            the tile's exact luma sum into Partials (as AvgLuma.comp does), for the check tool's side-by-side line
+//   phase 1: one group: the percentile-trimmed mean from the histogram, then the pass's per-frame logic; writes StateOut
+//   then NVR copies StateOut.packed (8 bytes at offset 16) into the 1x1 RGBA16F texture.
+
+#version 450
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_samplerless_texture_functions : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler s_samplers[];
+
+layout(set = 1, binding = 0) uniform texture2D t_color;   // TESR_RenderedBuffer (the chain's current image)
+layout(set = 1, binding = 1) uniform texture2D t_depth;   // TESR_DepthBuffer
+
+layout(set = 1, binding = 2, std430) buffer Partials {
+    float partial[];                                    // one exact luma sum per tile
+};
+
+layout(set = 1, binding = 3, std430) readonly buffer StateIn {
+    vec4  prev;                                         // last frame's (newLuma, animatedLuma, focus, 1)
+    uvec2 prevPacked;
+};
+
+layout(set = 1, binding = 4, std430) writeonly buffer StateOut {
+    vec4  cur;
+    uvec2 packed;
+    float average;                                      // this frame's trimmed (histogram) average luma
+    float exactAverage;                                 // this frame's exact average luma (check tool)
+};
+
+layout(set = 1, binding = 5, std430) buffer Histogram {
+    uint bins[256];                                     // cleared to 0 before phase 0
+};
+
+layout(push_constant) uniform Push {
+    uint  width;                                        // 0
+    uint  height;                                       // 4
+    uint  groupsX;                                      // 8
+    uint  groupsY;                                      // 12
+    uint  phase;                                        // 16
+    uint  samplerIndex;                                 // 20: linear, clamp (low 16 bits)
+    float lowFraction;                                  // 24: darkest share ignored (LowPercent / 100)
+    float highFraction;                                 // 28: brightest share ignored (HighPercent / 100)
+    vec4  motionBlurData;                               // 32
+    vec4  depthOfFieldData;                             // 48
+    vec4  gameTime;                                     // 64
+    vec4  exposureData;                                 // 80
+    vec4  cameraData;                                   // 96
+} pc;                                                   // 112 bytes, the same as AvgLuma.comp's (pad0/pad1 carry the percentiles)
+
+// The histogram's range: log2(luma) from MIN_LOG2 to MAX_LOG2 in 256 bins (0.078 stops each). Luma below the range
+// (black) lands in bin 0, above it in bin 255.
+const float MIN_LOG2 = -16.0;
+const float MAX_LOG2 = 4.0;
+const float BIN_SCALE = 256.0 / (MAX_LOG2 - MIN_LOG2);
+
+shared uint  s_bins[256];
+shared float s_sum[256];
+shared uint  s_scan[256];
+
+vec3 linearize(vec3 c) {
+    vec3 lo = c / 12.92;
+    vec3 hi = pow(abs((c + 0.055) / 1.055), vec3(2.4));
+    return mix(hi, lo, lessThanEqual(c, vec3(0.04045)));
+}
+
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+float readDepth(vec2 uv) {
+    return texture(sampler2D(t_depth, s_samplers[nonuniformEXT(pc.samplerIndex & 0xFFFFu)]), uv).x * pc.cameraData.y;
+}
+
+const vec2 taps[12] = vec2[12](
+    vec2(-0.326212, -0.405810), vec2(-0.840144, -0.073580), vec2(-0.695914,  0.457137), vec2(-0.203345,  0.620716),
+    vec2( 0.962340, -0.194983), vec2( 0.473434, -0.480026), vec2( 0.519456,  0.767022), vec2( 0.185461, -0.893124),
+    vec2( 0.507431,  0.064425), vec2( 0.896420,  0.412458), vec2(-0.321940, -0.932615), vec2(-0.791559, -0.597710)
+);
+const vec2 center = vec2(0.5, 0.5);
+
+float stepTo(float startValue, float endValue, float minStep, float maxStep) {
+    minStep = abs(minStep) * -1.0;
+    maxStep = abs(maxStep);
+    float diff = clamp(endValue - startValue, minStep, maxStep);
+    return startValue + diff;
+}
+
+// AvgLuma.fx.hlsl's focal distance, as AvgLuma.comp has it
+float getFocalDistance(float oldFocus) {
+    float hyperFocalDistance = max(0.0000001, pc.depthOfFieldData.x * 1000.0);
+    vec2 speed = clamp(abs(pc.motionBlurData.xy), 0.0, 1.0) + 0.1;
+    float centerDepth = readDepth(center);
+    float depth = centerDepth;
+    vec2 samplingRange = speed;
+    for (int i = 0; i < 12; i++)
+        depth += readDepth(center + 0.3 * taps[i] * samplingRange);
+    depth /= 12.0;
+    depth = centerDepth > depth ? centerDepth : depth;
+    depth = clamp(depth / hyperFocalDistance, 0.0, 1.0);
+    float step = pow(max(oldFocus, depth), 0.1);
+    return stepTo(oldFocus, depth, 3.0 * step * pc.gameTime.w, 1.0 * step * pc.gameTime.w);
+}
+
+uint binOf(float l) {
+    if (!(l > 0.0)) return 0u;                          // black (and NaN)
+    float b = (log2(l) - MIN_LOG2) * BIN_SCALE;
+    return uint(clamp(b, 0.0, 255.0));
+}
+
+float binLuma(uint i) {
+    return exp2(MIN_LOG2 + (float(i) + 0.5) / BIN_SCALE);
+}
+
+void main() {
+    uint t = gl_LocalInvocationIndex;
+    if (pc.phase == 0u) {
+        s_bins[t] = 0u;
+        barrier();
+
+        ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+        float value = 0.0;
+        if (pos.x < int(pc.width) && pos.y < int(pc.height)) {
+            value = luma(linearize(texelFetch(t_color, pos, 0).rgb));
+            atomicAdd(s_bins[binOf(value)], 1u);
+        }
+        s_sum[t] = value;
+        barrier();
+        // the tile's bins into the global histogram (one atomic per non-empty bin)
+        uint c = s_bins[t];
+        if (c != 0u) atomicAdd(bins[t], c);
+        // the tile's exact sum (AvgLuma.comp's reduction)
+        for (uint s = 128u; s > 0u; s >>= 1u) {
+            if (t < s) s_sum[t] += s_sum[t + s];
+            barrier();
+        }
+        if (t == 0u)
+            partial[gl_WorkGroupID.y * pc.groupsX + gl_WorkGroupID.x] = s_sum[0];
+    }
+    else {
+        // exact average (for the check tool)
+        uint tiles = pc.groupsX * pc.groupsY;
+        float sum = 0.0;
+        for (uint i = t; i < tiles; i += 256u)
+            sum += partial[i];
+        s_sum[t] = sum;
+
+        // inclusive prefix sum of the bin counts (Hillis-Steele)
+        uint count = bins[t];
+        s_scan[t] = count;
+        barrier();
+        for (uint off = 1u; off < 256u; off <<= 1u) {
+            uint add = t >= off ? s_scan[t - off] : 0u;
+            barrier();
+            s_scan[t] += add;
+            barrier();
+        }
+        for (uint s = 128u; s > 0u; s >>= 1u) {
+            if (t < s) s_sum[t] += s_sum[t + s];
+            barrier();
+        }
+        float exact = s_sum[0] / float(pc.width * pc.height);
+        barrier();
+
+        // the part of this bin inside [low, high) of the sorted pixels
+        float total = float(s_scan[255]);
+        float lowCount = total * clamp(pc.lowFraction, 0.0, 0.99);
+        float highCount = total * (1.0 - clamp(pc.highFraction, 0.0, 0.99));
+        if (highCount < lowCount + 1.0) { float mid = 0.5 * (lowCount + highCount); lowCount = mid - 0.5; highCount = mid + 0.5; }
+        float end = float(s_scan[t]);
+        float start = end - float(count);
+        float kept = max(0.0, min(end, highCount) - max(start, lowCount));
+        // the kept pixels' luma sum (bin centres), then their count: two reductions
+        s_sum[t] = kept * binLuma(t);
+        barrier();
+        for (uint s = 128u; s > 0u; s >>= 1u) {
+            if (t < s) s_sum[t] += s_sum[t + s];
+            barrier();
+        }
+        float keptSum = s_sum[0];
+        barrier();
+        s_sum[t] = kept;
+        barrier();
+        for (uint s = 128u; s > 0u; s >>= 1u) {
+            if (t < s) s_sum[t] += s_sum[t + s];
+            barrier();
+        }
+        float keptCount = s_sum[0];
+
+        if (t == 0u) {
+            float average_ = keptCount > 0.0 ? keptSum / keptCount : exact;
+
+            vec2 oldLuma = prev.rg;
+            float newLuma = (average_ + (7.0 * oldLuma.r)) / 8.0;  // average over 8 frames
+
+            float decreaseRate = -pc.exposureData.z;
+            float increaseRate = pc.exposureData.w;
+            float animatedLuma = stepTo(oldLuma.g, newLuma, pc.gameTime.w * decreaseRate, pc.gameTime.w * increaseRate);
+
+            float focus = getFocalDistance(prev.b);
+
+            vec4 result = vec4(newLuma, animatedLuma, focus, 1.0);
+            cur = result;
+            packed = uvec2(packHalf2x16(result.rg), packHalf2x16(result.ba));
+            average = average_;
+            exactAverage = exact;
+        }
+    }
+}

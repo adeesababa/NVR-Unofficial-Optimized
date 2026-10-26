@@ -27,6 +27,11 @@ void ExposureEffect::UpdateSettings(){
 	Settings.Interiors.MaxBrightness = TheSettingManager->GetSettingF("Shaders.Exposure.Interiors", "MaxBrightness");
 	Settings.Interiors.DarkAdaptSpeed = TheSettingManager->GetSettingF("Shaders.Exposure.Interiors", "DarkAdaptSpeed");
 	Settings.Interiors.LightAdaptSpeed = TheSettingManager->GetSettingF("Shaders.Exposure.Interiors", "LightAdaptSpeed");
+
+	// UNOFFICIAL 2026-10-26 (NVR DXVK, fork-only): see Exposure.h HistogramStruct.
+	Histogram.Histogram = TheSettingManager->GetSettingI("Shaders.Exposure.Histogram", "Histogram") != 0;
+	Histogram.LowPercent = max(0.0f, min(TheSettingManager->GetSettingF("Shaders.Exposure.Histogram", "LowPercent"), 49.0f));
+	Histogram.HighPercent = max(0.0f, min(TheSettingManager->GetSettingF("Shaders.Exposure.Histogram", "HighPercent"), 49.0f));
 }
 
 void ExposureEffect::RegisterConstants() {
