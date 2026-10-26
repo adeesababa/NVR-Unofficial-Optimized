@@ -46,6 +46,11 @@ public:
 	static bool					VariantsOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 
+	// UNOFFICIAL 2026-10-26 (extension 1.5, diagnostic): while On (F10 profiling), a "DXVK PROFILE" line every 120 frames: where a frame
+	// goes between the game thread (the game and NVR outside D3D9 calls; inside them DXVK's own work and its waits), DXVK's command
+	// thread and the GPU. RenderHook calls it once a frame; an older NVR DXVK, native D3D9 or stock DXVK: nothing.
+	static void					ProfileTick(bool On);
+
 	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device
 	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>@<hash>.spv (FNV-1a of the bytecode,
 	// 8 hex digits; a Replace\dump folder collects every shader as <Name>@<hash>.pso) or <Name>.spv exists, DXVK binds that SPIR-V

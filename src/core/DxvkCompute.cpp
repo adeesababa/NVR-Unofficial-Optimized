@@ -192,6 +192,47 @@ bool DxvkCompute::PassesOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
 }
 
+void DxvkCompute::ProfileTick(bool On) {
+	static bool profiling = false;
+	static unsigned frames = 0;
+	static NVR_EXT_PROFILE last = {};
+	if (!Ext || ExtInfo.ExtVersionMinor < 5) return;
+	if (On != profiling) {
+		profiling = On;
+		Ext->SetProfiling(On ? TRUE : FALSE);
+		if (On) { Ext->GetProfile(&last); frames = 0; }
+		Logger::Log("DXVK PROFILE %s (every 8th frame's D3D9 calls timed; a line every 120 frames)", On ? "on" : "off");
+		return;
+	}
+	if (!On || ++frames < 120) return;
+	frames = 0;
+
+	NVR_EXT_PROFILE now = {};
+	if (FAILED(Ext->GetProfile(&now))) return;
+	const double f = (double)(now.Frames - last.Frames), timed = (double)(now.TimedFrames - last.TimedFrames);
+	const double us = (double)(now.TimeUs - last.TimeUs);
+	if (f < 1.0 || us <= 0.0) { last = now; return; }
+	const double ticksPerMs = (double)(now.Tsc - last.Tsc) / us * 1000.0;
+	const double calls = (double)(now.ApiCalls - last.ApiCalls);
+	const double frameMs = us / 1000.0 / f;
+	// The game thread inside D3D9 calls (timed frames, the timer's own cost taken off), and the waits inside that.
+	const double apiMs = timed > 0.0 ? ((double)(now.ApiTicks - last.ApiTicks) - calls * (double)now.OverheadTicks100 / 100.0) / ticksPerMs / timed : 0.0;
+	const double presentWaitMs = timed > 0.0 ? (double)(now.TimedWaitTicks - last.TimedWaitTicks) / ticksPerMs / timed : 0.0;
+	const double csSyncMs = (double)(now.CsSyncUs - last.CsSyncUs) / 1000.0 / f;
+	const double gpuSyncMs = (double)(now.GpuSyncUs - last.GpuSyncUs) / 1000.0 / f;
+	const double dxvkWorkMs = apiMs - presentWaitMs - csSyncMs - gpuSyncMs;
+	const double csBusyMs = frameMs - (double)(now.CsIdleUs - last.CsIdleUs) / 1000.0 / f;
+	const double gpuBusyMs = frameMs - (double)(now.GpuIdleUs - last.GpuIdleUs) / 1000.0 / f;
+	Logger::Log("DXVK PROFILE frame %.2f ms (%.0f frames, passes %s) | game thread: outside D3D9 %.2f, inside D3D9 %.2f = DXVK work %.2f + "
+		"present wait %.2f + wait for DXVK thread %.2f + wait for GPU %.2f (%.0f calls) | DXVK thread busy %.2f | GPU busy %.2f | per frame: "
+		"draws %.0f, render passes %.0f, barriers %.0f, submits %.1f, chunks %.0f | new pipelines %llu",
+		frameMs, f, PassesOn() ? "Vulkan" : "D3D9", frameMs - apiMs, apiMs, dxvkWorkMs, presentWaitMs, csSyncMs, gpuSyncMs, timed > 0.0 ? calls / timed : 0.0,
+		csBusyMs, gpuBusyMs, (double)(now.Draws - last.Draws) / f, (double)(now.RenderPasses - last.RenderPasses) / f,
+		(double)(now.Barriers - last.Barriers) / f, (double)(now.Submits - last.Submits) / f, (double)(now.CsChunks - last.CsChunks) / f,
+		(unsigned long long)(now.GraphicsPipelines - last.GraphicsPipelines));
+	last = now;
+}
+
 bool DxvkCompute::ReplacementsOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkReplacements && Available();
 }

@@ -46,7 +46,7 @@
 #include <unknwn.h>
 
 #define NVR_EXT_VERSION_MAJOR 1
-#define NVR_EXT_VERSION_MINOR 4
+#define NVR_EXT_VERSION_MINOR 5
 
 #define NVR_EXT_MAX_SLOTS       32
 #define NVR_EXT_MAX_BINDINGS    32
@@ -237,6 +237,29 @@ struct NVR_EXT_SHADER_REPLACEMENT_DESC {
   const char*                 pDebugName;
 };
 
+/** Profiling counters since SetProfiling(TRUE) (since 1.5). Ticks: the CPU's time stamp counter (Tsc, the same clock). */
+struct NVR_EXT_PROFILE {
+  UINT64  TimeUs;             // steady clock now (microseconds)
+  UINT64  Tsc;                // time stamp counter now (with TimeUs: its rate)
+  UINT64  Frames;             // presents
+  UINT64  TimedFrames;        // frames whose D3D9 calls were timed (every 8th)
+  UINT64  ApiTicks;           // the game thread's outermost D3D9 calls on timed frames (ticks; waits included)
+  UINT64  ApiCalls;           // those calls
+  UINT64  OverheadTicks100;   // the timer's own cost per timed call, x 100 (subtract ApiCalls x this / 100)
+  UINT64  PresentWaitTicks;   // the frame-latency wait in Present, every frame (ticks)
+  UINT64  TimedWaitTicks;     // that wait on the timed frames (it is inside ApiTicks)
+  UINT64  CsSyncUs;           // the game thread waiting for DXVK's command thread (microseconds)
+  UINT64  CsIdleUs;           // DXVK's command thread idle
+  UINT64  GpuSyncUs;          // the game thread waiting for the GPU
+  UINT64  GpuIdleUs;          // the GPU idle
+  UINT64  Draws;
+  UINT64  RenderPasses;
+  UINT64  Barriers;
+  UINT64  Submits;
+  UINT64  CsChunks;
+  UINT64  GraphicsPipelines;
+};
+
 struct NVR_EXT_INFO {
   UINT  ExtVersionMajor;
   UINT  ExtVersionMinor;
@@ -391,6 +414,14 @@ ID3D9NvrExt : public IUnknown {
     const NVR_EXT_DRAW_DESC*              pDesc,
           FLOAT                           ShiftX,
           FLOAT                           ShiftY) = 0;
+
+  /** Profiling on / off (since 1.5): on, every 8th frame times the game thread's D3D9 calls. */
+  virtual HRESULT STDMETHODCALLTYPE SetProfiling(
+          BOOL                            Enable) = 0;
+
+  /** The profiling counters (since 1.5); cumulative, read twice and subtract. */
+  virtual HRESULT STDMETHODCALLTYPE GetProfile(
+          NVR_EXT_PROFILE*                pProfile) = 0;
 };
 
 #ifndef _MSC_VER

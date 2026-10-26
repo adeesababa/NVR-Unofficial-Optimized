@@ -32,6 +32,7 @@
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 #include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
+#include "../../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-26: DXVK PROFILE lines (F10 profiling on NVR DXVK 1.5)
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
 
@@ -594,6 +595,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	}
 	FrameSplit::PresentMs = 0.0;
 	CpuSplit::MarkNow(CpuSplit::kRenderBegin);
+	DxvkCompute::ProfileTick(GpuTimer::Enabled);	// UNOFFICIAL 2026-10-26: game thread vs DXVK thread vs GPU (NVR DXVK 1.5)
 #if NVR_TEST_TOOLS
 	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);	// UNOFFICIAL ShaderWarmUp2: frame times + new setups (shot index: picture frames)
 #else
