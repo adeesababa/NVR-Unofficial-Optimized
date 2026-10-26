@@ -41,7 +41,8 @@ void AttachHooks() {
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled") ||
 		TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "ScopeFix") ||
 		SettingsMain->Main.HiddenObjectCulling || SettingsMain->Main.LampScissor ||
-		TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled")) {
+		TheSettingManager->GetSettingI("Shaders.PBR.MaterialRules", "Enabled") ||
+		TheSettingManager->GetSettingI("Main.Main.Misc", "LampsDepthFirst")) {	// UNOFFICIAL 2026-10-26 LampsDepthFirst draws its depth step there
 		DetourAttach(&(PVOID&)RenderPassStandard, &RenderPassStandardHook);
 		DetourAttach(&(PVOID&)RenderPassSkinned, &RenderPassSkinnedHook);
 	}
