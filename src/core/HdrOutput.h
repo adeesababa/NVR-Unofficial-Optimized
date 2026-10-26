@@ -172,7 +172,7 @@ namespace HdrOutput {
 		if (!S.GainPipeline || !sampler) return;
 
 		struct { float peak, knee, strength, sceneGamma, exposure, outGamma, pad0, pad1; UINT sampler; } push = {};
-		push.peak = std::max(1.0f, S.Applied.PeakNits / S.Applied.PaperWhiteNits);
+		push.peak = (std::max)(1.0f, S.Applied.PeakNits / S.Applied.PaperWhiteNits);
 		push.knee = std::clamp(SettingF("HighlightKnee"), 0.0f, 0.99f);
 		push.strength = std::clamp(SettingF("HighlightStrength"), 0.0f, 1.0f);
 		const D3DXVECTOR4 toneMapping = TheShaderManager->Shaders.Tonemapping ? TheShaderManager->Shaders.Tonemapping->Constants.ToneMapping : D3DXVECTOR4(0, 0, 0, 2.2f);
@@ -236,7 +236,7 @@ namespace HdrOutput {
 			}
 			for (size_t i = 0; i < total; i++) {
 				const float y = (0.2126f * toFloat(half[i * 4]) + 0.7152f * toFloat(half[i * 4 + 1]) + 0.0722f * toFloat(half[i * 4 + 2])) * 80.0f;
-				sum += y; peak = std::max(peak, y);
+				sum += y; peak = (std::max)(peak, y);
 				if (y > S.Applied.PaperWhiteNits * 1.02f) above++;
 			}
 			Logger::Log("UNOFFICIAL HDR output: capture %u (%ux%u, nits, linear): mean %.1f, max %.1f, %.3f %% of pixels above paper white %.0f -> %s",
