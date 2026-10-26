@@ -118,6 +118,28 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
      the scissored passes at 6 lamps. Better next fork targets: compute versions of the full-screen effects that cost the
      most (AmbientLight 0.4 ms, point shadow cube maps 0.5 ms, volumetric fog 0.26 ms at 1080p), where compute's shared
      memory and atomics do help.
+   PARALLEL PORT ROUND 2026-10-25 20:15 (15 agents at the user's request: 3 Opus medium, 12 Haiku high; each in its own
+   worktree, compile-checked locally, merged here; outcomes G:\_NVR-build-scratch\port-results.txt):
+   - Compute (Opus): AmbientLightBlurCompute and AmbientLightSmoothCompute built, CPU models exact, IN GAME same picture
+     (12.6 % / 1.45 and 10.2 % / 1.21 vs noise 11.9 % / 1.40) but SLOWER on the GTX 1070 at 1080p (half-res buffers):
+     blur 0.20 ms vs D3D9 X+Y 0.09; prepare+smooth 0.32 vs 0.11 (smooth writes a buffer and copies it back). Both off,
+     marked in the defaults. Bloom: judged not worth porting (chain already ~82 % of memory bandwidth; exact compute
+     saves ~0.02 ms). Lesson: at these sizes the D3D9 passes are already bandwidth-cheap; compute only pays where it
+     removes whole passes or full-resolution traffic, not by tiling small separable filters.
+   - Vulkan passes (Haiku), all behind NvrDxvkPasses: IN GAME same picture (Lucky 38 pairs at noise level): Coloring
+     (10.7 % / 1.27), DitherBuster (12.6 % / 1.47), Cinema (12.9 % / 1.49), BloomLegacy (11.2 % / 1.32). Merged, not yet
+     run in game: BarrelHaze (needs GunFX firing), DepthOfField distant blur, SkinScattering (needs NewSkin at startup;
+     first uniform-buffer port), Snow, Precipitations (need snow/rain). Not ported: Underwater (constants > 240 push bytes,
+     caustics need mipmapped/anisotropic samplers the extension does not offer).
+   - CRASH (fork bug, open): the Bodycam and HeatHaze ports crashed DXVK's CS thread in D3D9NvrExt::Draw's command
+     (dereference of a pointer valued 1 after the draw, fork d3d9.dll +0x6FCA5, in the state put-back / unbind code). Both
+     reverted (3a9830dd, the HeatHaze revert). Untested ports that build their own bindings (BarrelHaze, DepthOfField,
+     Snow, Precipitations, SkinScattering) may hit it too: test each before trusting it. Next: a symbol build of the fork
+     (keep DWARF, addr2line) and a harness repro of the two passes' exact bindings.
+   - Fixed on the way: MotionBlur's Vulkan port fed its second pass a stale surface (fell off the frame chain) and its
+     first pass could write straight into the game target (aa5c8398; found by the SkinScattering agent).
+   - Extension gaps found: samplers without mips/anisotropy; no uniform-buffer path in ExtTexturePass (SkinScattering does
+     its own); passes over 240 push bytes.
    Note: the version string is `git describe` (v3.0.1-3-g...), not `v3.0.1-nvr1` as the
    extension doc says; and the fork shares stock DXVK's state cache (%LOCALAPPDATA%\dxvk) unless dxvk.conf moves it.
 2. Phase 2 step 1 (1 h, stock DXVK, slot): does the ~3,600-instruction refusal (HandBlood indoors, 6 lamps) go away?
