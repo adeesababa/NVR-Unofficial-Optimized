@@ -331,8 +331,11 @@ class Translator:
 
     @staticmethod
     def location(sem, idx):
-        if sem == "TEXCOORD": return 1 + idx, "texcoord%d" % idx
-        if sem == "COLOR": return 9 + idx, "color%d" % idx
+        # DXVK (dxbc-spirv sm3_io_map.cpp s_ffLocations): only NORMAL0, TEXCOORD0-7, COLOR0-1 and FOG have fixed locations; any
+        # other semantic (TEXCOORD8, ...) gets the next free location in the shader's own declaration order, which a
+        # replacement cannot know: such a shader stays as the game's ps_3_0 shader.
+        if sem == "TEXCOORD" and idx <= 7: return 1 + idx, "texcoord%d" % idx
+        if sem == "COLOR" and idx <= 1: return 9 + idx, "color%d" % idx
         if sem == "NORMAL" and idx == 0: return 0, "normal0"
         if sem == "FOG": return 11, "fog%d" % idx
         raise Err("input semantic %s%d has no fixed location in DXVK's D3D9 linkage" % (sem, idx))
