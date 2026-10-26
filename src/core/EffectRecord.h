@@ -60,6 +60,7 @@ public:
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.
 	void					DisposeEffect();
 	bool					LoadEffect();
+	static int				BuildMacros(D3DXMACRO* EffectMacros);	// UNOFFICIAL 2026-10-26: the effects' compile-time defines (room for 8; core\Sm6Pass)
 
 	bool 					IsLoaded();
 	bool					Enabled;

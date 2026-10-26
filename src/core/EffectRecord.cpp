@@ -82,27 +82,7 @@ bool EffectRecord::LoadEffect() {
 	// needs them -- D3DXCreateEffectCompiler below is handed the already-preprocessed source.
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
 	D3DXMACRO EffectMacros[8];	// UNOFFICIAL 2026-10-23: 8 (CHARACTER_SHADOW_MAP)
-	int macroCount = 0;
-	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
-		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
-	// UNOFFICIAL physical sky (VolumetricFog.fx.hlsl): compiled in only when on at startup.
-	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
-		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
-	if (TheRenderManager->IsReversedDepth())
-		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
-	// UNOFFICIAL 2026-10-20 MaterialAware reflections (Reflections.fx.hlsl, core/ReflMaterial.h): only when on at startup, so that otherwise
-	// the effects' preprocessed sources are exactly what they were.
-	if (ReflMaterial::CompiledIn())
-		EffectMacros[macroCount++] = { "REFL_MATERIAL_ON", "1" };
-	if (ReflMaterial::AddCompiledIn())	// UNOFFICIAL 2026-10-21 ReflectAdd (Reflections.fx.hlsl), likewise
-		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
-	if (ReflMaterial::OccCompiledIn())	// UNOFFICIAL 2026-10-21 SpecularOcclusion (Reflections.fx.hlsl), likewise
-		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
-	// UNOFFICIAL 2026-10-23 CharacterShadowMap (SunShadows.fx.hlsl's deferred lookup): only when on at startup, as the game shaders
-	// (ShaderRecord::BuildDefines reads the same setting), so that off the effect's preprocessed source is exactly what it was.
-	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
-		EffectMacros[macroCount++] = { "CHARACTER_SHADOW_MAP", "1" };
-	EffectMacros[macroCount] = { NULL, NULL };
+	BuildMacros(EffectMacros);
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);
 	if (prepass == D3D_OK) {
@@ -215,6 +195,36 @@ bool EffectRecord::LoadEffect() {
 	timer.LogTime("EffectRecord::LoadEffect");
 
 	return success;
+}
+
+/*
+* UNOFFICIAL 2026-10-26 (deep/fork-sm6): the compile-time defines every effect is preprocessed with, terminated by { NULL, NULL };
+* EffectMacros needs room for 8. Shared by LoadEffect and core\Sm6Pass (which picks the SM6 build made with the same defines; keep
+* tools\nvr-sm6\build.py MACROS in step with this list). Returns the number of defines.
+*/
+int EffectRecord::BuildMacros(D3DXMACRO* EffectMacros) {
+	int macroCount = 0;
+	EffectMacros[macroCount++] = { "FORWARD_SHADOWS",
+		TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") ? "1" : "0" };
+	// UNOFFICIAL physical sky (VolumetricFog.fx.hlsl): compiled in only when on at startup.
+	EffectMacros[macroCount++] = { "PHYSICAL_SKY_ON",
+		TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") ? "1" : "0" };
+	if (TheRenderManager->IsReversedDepth())
+		EffectMacros[macroCount++] = { "REVERSED_DEPTH", "" };
+	// UNOFFICIAL 2026-10-20 MaterialAware reflections (Reflections.fx.hlsl, core/ReflMaterial.h): only when on at startup, so that otherwise
+	// the effects' preprocessed sources are exactly what they were.
+	if (ReflMaterial::CompiledIn())
+		EffectMacros[macroCount++] = { "REFL_MATERIAL_ON", "1" };
+	if (ReflMaterial::AddCompiledIn())	// UNOFFICIAL 2026-10-21 ReflectAdd (Reflections.fx.hlsl), likewise
+		EffectMacros[macroCount++] = { "REFL_ADD_ON", "1" };
+	if (ReflMaterial::OccCompiledIn())	// UNOFFICIAL 2026-10-21 SpecularOcclusion (Reflections.fx.hlsl), likewise
+		EffectMacros[macroCount++] = { "REFL_SPECOCC_ON", "1" };
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap (SunShadows.fx.hlsl's deferred lookup): only when on at startup, as the game shaders
+	// (ShaderRecord::BuildDefines reads the same setting), so that off the effect's preprocessed source is exactly what it was.
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
+		EffectMacros[macroCount++] = { "CHARACTER_SHADOW_MAP", "1" };
+	EffectMacros[macroCount] = { NULL, NULL };
+	return macroCount;
 }
 
 

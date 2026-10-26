@@ -741,6 +741,7 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.AmbientLightSmoothCompute = boolSetting(performance, "AmbientLightSmoothCompute", false);	// UNOFFICIAL 2026-10-25 (AmbientLight.cpp SmoothCompute)
 	SettingsMain.Main.NvrDxvkReplacements = boolSetting(performance, "NvrDxvkReplacements", false);
 	SettingsMain.Main.AmbientLightBlurCompute = boolSetting(performance, "AmbientLightBlurCompute", false);	// UNOFFICIAL 2026-10-25
+	SettingsMain.Main.NvrSm6Shaders = boolSetting(performance, "NvrSm6Shaders", false);	// UNOFFICIAL 2026-10-26 (core\Sm6Pass.h)
 	{
 		Configuration::ConfigNode node;
 		const int every = Config.FillNode(&node, performance, "AvgLumaComputeCheck") ? node.IntValue : 0;
