@@ -1,0 +1,115 @@
+// VolumetricClouds techniques March (1) and MarchFixedExit (6) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricClouds.fx.hlsl
+// MarchPS and MarchRay line for line, one texel per 2 x 2 block, into TESR_CloudCurrent. effects/VolumetricClouds.cpp ExtRender.
+// pc.fixedExit picks MarchPS(true); pc.physicalSky stands for PHYSICAL_SKY_ON.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+#include "SkyAtmosphere.glsl"
+
+layout(set = 1, binding = 0) uniform texture2D t_weather;    // TESR_CloudWeather (LINEAR, WRAP, LINEAR mips)
+layout(set = 1, binding = 1) uniform texture3D t_shape;      // TESR_CloudShape (LINEAR, WRAP, LINEAR mips)
+layout(set = 1, binding = 2) uniform texture3D t_detail;     // TESR_CloudDetail (LINEAR, WRAP, LINEAR mips)
+layout(set = 1, binding = 3) uniform texture3D t_noise;      // TESR_NoiseVolume (LINEAR, WRAP, LINEAR mips)
+layout(set = 1, binding = 4) uniform texture2D t_blueNoise;  // TESR_BlueNoiseSampler (POINT, WRAP)
+layout(set = 1, binding = 5) uniform texture2D t_skyView;    // TESR_SkyViewLUT (LINEAR, CLAMP; a stand-in, never read, without PHYSICAL_SKY_ON)
+
+#define CLOUDS_DENSITY
+#include "VolumetricClouds.glsl"
+
+float Phase(float cosT, float g) {
+    return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
+}
+
+vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit) {
+    float steps = max(Steps * stepScale, 4.0);
+    vec3 camera = cb.cameraPosition.xyz * MetresPerUnit;
+    float baseAbove = max(Base - camera.z, 50.0);
+    float tStart = ShellDistance(dir.z, baseAbove);
+    float tEnd = ShellDistance(dir.z, baseAbove + Thickness);
+    if (dir.z < -0.15 || tStart > MaxDistance) return vec4(0.0, 0.0, 0.0, 1.0);
+    tEnd = min(tEnd, tStart + 4.0 * Thickness + 8000.0);
+    float dt = (tEnd - tStart) / steps;
+
+    vec3 light = normalize(cb.sunDirection.xyz);
+    float day = saturate(cb.sunAmount.x);
+    float cosT = dot(dir, light);
+    vec3 sun = linearize(cb.sunColor.rgb) * SunStrength * mix(0.15, 1.0, day) * (1.0 - 0.6 * RainDark);
+    vec3 skyTop = linearize(cb.skyColor.rgb);
+    vec3 skyLow = linearize(cb.horizonColor.rgb);
+    vec3 ambientTop = skyTop * AmbientStrength * (1.0 - 0.4 * RainDark);
+    vec3 ambientBottom = mix(skyLow, skyTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark);
+    // #if PHYSICAL_SKY_ON
+    if (pc.physicalSky != 0u && cb.physSky.x > 0.0) {
+        float share = cb.physSky.x, tint = cb.physSky.z, tableScale = 0.001 * cb.physSky.y;
+        vec3 through = exp(-AtmSunDepth(AtmGround + Base + 0.5 * Thickness, cb.physSkySun.z, cb.physSky.w));
+        vec3 physSun = luma(sun) * through / max(luma(through), 1e-4);
+        sun = mix(sun, mix(physSun, sun, tint), share);
+        vec3 zenith = LINEAR_LOD(t_skyView, vec2(0.5, 1.0)).rgb * tableScale;
+        vec3 low = (LINEAR_LOD(t_skyView, vec2(0.0, 0.35)).rgb + LINEAR_LOD(t_skyView, vec2(0.5, 0.35)).rgb +
+            LINEAR_LOD(t_skyView, vec2(1.0, 0.35)).rgb) * (tableScale / 3.0);
+        zenith *= luma(skyTop) / max(luma(zenith), 1e-6);
+        low *= luma(skyLow) / max(luma(low), 1e-6);
+        vec3 physTop = mix(zenith, skyTop, tint);
+        vec3 physLow = mix(low, skyLow, tint);
+        ambientTop = mix(ambientTop, physTop * AmbientStrength * (1.0 - 0.4 * RainDark), share);
+        ambientBottom = mix(ambientBottom, mix(physLow, physTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark), share);
+    }
+    float lightStep = Thickness / 12.0;
+    float lightRise = max(light.z, 0.1);
+
+    vec3 wind = vec3(cb.wind.xy, 0.0);
+    vec3 scattered = vec3(0.0);
+    float transmittance = 1.0;
+    float depthSum = 0.0, depthWeight = 0.0;
+    // The D3D9 technique March never leaves this loop early: the compiler writes its 'break' as 'break_ne -c, -c' (the same value
+    // on both sides, never taken; checked with fxc), so every ray runs all 64 steps. That is kept here (no exit unless fixedExit).
+    for (float i = 0.0; i < 64.0 && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+        float t = tStart + (i + jitter) * dt;
+        float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
+        float h = (altitude - Base) / Thickness;
+        vec3 p = vec3(camera.xy + dir.xy * t, altitude) + wind;
+        float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * saturate(Sharpness));
+        float density = CloudDensity(p, h, lod, false);
+        if (density > 0.0) {
+            float opticalDepth = 0.0;
+            float reach = 0.0;
+            for (int j = 0; j < 6; j++) {
+                float stepLength = lightStep * exp2(float(j)) * 0.5;
+                reach += stepLength;
+                vec3 q = p + light * reach;
+                float hq = h + reach * lightRise / Thickness;
+                opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2) * stepLength;
+            }
+            vec3 sunLight = vec3(0.0);
+            float a = 1.0, b = 1.0, c = 1.0;
+            for (int k = 0; k < 3; k++) {
+                float g = Forward * c;
+                sunLight += b * exp(-Extinction * opticalDepth * a) * mix(Phase(cosT, g), Phase(cosT, -0.3 * c), 0.5);
+                a *= 0.25; b *= 0.5; c *= 0.5;
+            }
+            float powder = 1.0 - exp(-2.0 * Extinction * density * 40.0);
+            vec3 ambient = mix(ambientBottom, ambientTop, saturate(h));
+            float lowLight = mix(1.0, mix(0.75, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+            vec3 radiance = (sun * sunLight * mix(0.5, 1.0, powder) + ambient) * lowLight;
+            float sigma = Extinction * density;
+            float stepTransmittance = exp(-sigma * dt);
+            scattered += transmittance * radiance * (1.0 - stepTransmittance);
+            depthSum += t * transmittance * (1.0 - stepTransmittance);
+            depthWeight += transmittance * (1.0 - stepTransmittance);
+            transmittance *= stepTransmittance;
+        }
+    }
+    float dist = depthWeight > 0.0 ? depthSum / depthWeight : tStart;
+    float haze = exp(-(dist * dist) / (HazeDistance * HazeDistance)) * saturate((MaxDistance - dist) / (0.4 * MaxDistance));
+    scattered *= haze;
+    transmittance = mix(1.0, transmittance, haze);
+    return vec4(scattered, transmittance);
+}
+
+void main() {
+    vec2 vpos = floor(gl_FragCoord.xy);
+    vec2 pixel = vpos * 2.0 + cb.blocks.zw;
+    vec2 coord = (pixel + 0.5) * LowTexel;
+    float jitter = fract(textureLod(sampler2D(t_blueNoise, NVR_SAMPLER(pc.pointWrapIndex)), pixel / 256.0, 0.0).r + cb.march.z * 0.61803398875);
+    o_color = MarchRay(normalize(toWorld(coord)), jitter, 1.0, pc.fixedExit != 0u);
+}
