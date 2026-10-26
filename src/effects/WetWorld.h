@@ -49,4 +49,11 @@ public:
 		if (fixedTrace && Effect && Effect->GetTechnique(fastPaths ? 4 : 3)) return fastPaths ? 4 : 3;
 		return fastPaths && Effect && Effect->GetTechnique(2) ? 2 : 0;
 	}
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): techniques 2, 3 and 4 as Vulkan passes (WetWorld.cpp ExtRender; Compute\WetWorldMap.frag and
+	// Compute\WetWorld.frag). Technique 0 (FastPaths off, the original trace) and the cover test (1) stay on the D3D9 passes.
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	ExtPass				extMap;
+	ExtPass				extWet;
+	ExtUniformBuffer	extUniforms;
 };
