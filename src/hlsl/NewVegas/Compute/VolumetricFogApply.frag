@@ -1,0 +1,51 @@
+// VolumetricFog's full-resolution passes as one Vulkan pass shader (needs NVR DXVK), line for line from Effects/VolumetricFog.fx.hlsl;
+// push mode picks the pixel shader: 0 DedicatedFogCombine, 1 DedicatedFogComposite, 2 DedicatedFogCompositeInterior (the second pass
+// of DedicatedFog, CompositeFog and CompositeFogInterior, and of their Legacy and Classic forms), 3 ShadowAOApply (technique
+// ApplyShadowAO), 4 VolumetricFog (the full-resolution techniques: the unnamed one, VolumetricFogLegacy, VolumetricFogClassic).
+// effects/VolumetricFog.cpp ExtDedicated, ExtShadowAO, ExtRender.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+#define FOG_APPLY
+#include "VolumetricFog.glsl"
+
+layout(location = 0) out vec4 o_color;
+
+void main() {
+    bool legacy = pc.legacy != 0u, classic = pc.classic != 0u;
+    if (pc.mode == 4u) {
+        // VolumetricFog
+        vec4 color = linearize(LINEAR_LOD(t_scene, uv));
+        vec3 fogMul, fogAdd;
+        float nightAmount;
+        FogTerms(uv, fogMul, fogAdd, nightAmount, legacy, false, classic);
+        vec4 finalColor = max(vec4(color.rgb * fogMul + fogAdd, mix(color.a, 1.0, nightAmount)), vec4(0.0));
+        o_color = delinearize(finalColor);
+        return;
+    }
+    vec3 color;
+    if (pc.mode == 2u) {
+        // DedicatedFogCompositeInterior
+        color = InteriorStoreRound(ApplyInteriorShadowDepth(uv, LINEAR_LOD(t_scene, uv), LINEAR_LOD(t_pointShadow, uv).r, readDepthLod(uv)).rgb);
+        color = pows(color, 2.2);
+        if (pc.compositeFlags.y > 0.5) color = CompositeAO(color, uv);
+        color = pows(color, 1.0 / 2.2);
+        color = FogApply(color, uv, legacy, true, classic);
+    }
+    else if (pc.mode == 0u) {
+        // DedicatedFogCombine
+        color = FogApply(LINEAR_LOD(t_scene, uv).rgb, uv, legacy, false, classic);
+    }
+    else {
+        // DedicatedFogComposite (1), ShadowAOApply (3)
+        color = LINEAR_LOD(t_scene, uv).rgb;
+        color = pows(color, 2.2);
+        if (pc.compositeFlags.x > 0.5) color = CompositeSunShadow(color, uv);
+        if (pc.compositeFlags.y > 0.5) color = CompositeAO(color, uv);
+        color = pows(color, 1.0 / 2.2);
+        if (pc.mode == 3u) { o_color = vec4(color, 1.0); return; }
+        color = FogApply(color, uv, legacy, false, classic);
+    }
+    if (pc.gridFlags.y > 0.5) color = FogGridLight(color, uv);	// UNOFFICIAL froxel grid
+    o_color = vec4(color, 1.0);
+}
