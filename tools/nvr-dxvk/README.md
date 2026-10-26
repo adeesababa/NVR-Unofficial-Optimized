@@ -6,7 +6,9 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
 - `patches/`   the fork: three patches on top of v3.0.1 (1.0 compute, 1.1 full-screen passes, 1.2 pixel shader
                replacements; new files `src/d3d9/d3d9_nvr_ext*.{h,cpp}`, plus small edits to `d3d9_device.{h,cpp}`,
                `d3d9_shader.h`, `d3d9_shader_analysis.h`, `src/d3d9/meson.build` and `dxvk_context.h`). Re-apply onto a
-               newer DXVK with `git am`.
+               newer DXVK with `git am`. 0009 (1.5-particles, branch deep/fork-particles): `ID3D9NvrExtGeometry`, a
+               separate interface queried from ID3D9NvrExt (own vertex shader reading buffers, instanced draws; used by
+               GPU particles, docs/next/FORK-1026-PARTICLES.md); only the three d3d9_nvr_ext* files change.
 - `build.sh`   clone + patch + build the 32-bit d3d9.dll (Linux or WSL, MinGW-w64). The GitHub workflow
                `.github/workflows/nvr-dxvk.yml` runs the same and uploads the DLL as an artifact.
 - `test/`      `nvr_ext_test.cpp`: an end-to-end test of the extension on dxvk-native (Linux, any Vulkan device, also

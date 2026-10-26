@@ -5,6 +5,7 @@
 #include "PointShadowForward.h"
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
+#include "../effects/GpuParticles.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK 1.5-particles)
 
 #define RESZ_CODE 0x7FA05000
 
@@ -369,6 +370,8 @@ void ShaderManager::UpdateConstants() {
 	if (!GameState.isSnow && TheSettingManager->GetSettingI("Shaders.Snow.Main", "ForceSnow")) { GameState.isSnow = true; GameState.isRainy = false; }
 	// UNOFFICIAL 2026-10-25: [Shaders.Precipitations.Main] ForceRain, the same for rain (FalloutNV.esm has no rainy weather at all)
 	else if (!GameState.isRainy && TheSettingManager->GetSettingI("Shaders.Precipitations.Main", "ForceRain")) GameState.isRainy = true;
+	// UNOFFICIAL 2026-10-26 GPU particles (NVR DXVK 1.5-particles): their drops land on the ortho map's roofs and ground
+	if (GpuParticles::Wanted()) orthoRequired = true;
 	GameState.isCloudy = currentWeather?currentWeather->GetWeatherType() == TESWeather::WeatherType::kType_Cloudy : false;
 
 	TimeGlobals* GameTimeGlobals = TimeGlobals::Get();
@@ -2260,6 +2263,12 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		GpuProfileScope gpu(weatherTimer, Device);
 		Effects.Rain->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Snow->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		// UNOFFICIAL 2026-10-26: GPU-simulated rain / snow drops (off by default; needs NVR DXVK 1.5-particles, nothing without it)
+		{
+			static GpuTimer gpuParticlesTimer("GPU particles (sim + draw)");
+			GpuProfileScope gpuParticles(gpuParticlesTimer, Device);
+			GpuParticles::Render(Device, RenderTarget);
+		}
 		Effects.BloomLegacy->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
 	{
