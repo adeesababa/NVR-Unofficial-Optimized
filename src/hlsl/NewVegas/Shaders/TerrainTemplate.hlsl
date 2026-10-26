@@ -7,6 +7,17 @@
 
 #define TERRAIN
 
+// UNOFFICIAL 2026-10-26 (NVR DXVK fork, docs\next\FORK-1026-LIMITS.md): NVR_NO_SM3_LIMITS and NVR_SM4 are defined only for the
+// no-limits build of these shaders (tools\nvr-dxvk\replace\nolimits.py: fxc ps_4_0 -> GLSL -> SPIR-V, which the fork runs in place of
+// the ps_3_0 shader the game loads). That build has no 32-temp or instruction limit, so the cuts ps_3_0 forced (marked
+// NVR_NO_SM3_LIMITS here and in the includes) are left out there. The ps_3_0 build never defines them: it is exactly as before.
+#ifndef NVR_NO_SM3_LIMITS
+    #define NVR_NO_SM3_LIMITS 0
+#endif
+#ifndef NVR_SM4
+    #define NVR_SM4 0
+#endif
+
 #define REVERSED_DEPTH
 
 #ifndef TEX_COUNT
@@ -50,7 +61,8 @@
 // HeightEdge 2's height contrast (terrainBlendEdge) takes 7 layers with SkylightingMode 1 past ps_3_0's 32 temporary registers
 // (2026-10-20, d3dx9_43 with the game's defines; the shader would fail and that land keep the game's own shader). There
 // HeightEdge 2 keeps its band but weighs the plain height, like HeightEdge 1.
-#if TEX_COUNT >= 7 && SKYLIGHTING_MODE
+// (Not in the no-limits build, NVR_NO_SM3_LIMITS at the top: no 32-temp limit there, so HeightEdge 2 keeps its contrast.)
+#if TEX_COUNT >= 7 && SKYLIGHTING_MODE && !NVR_NO_SM3_LIMITS
     #define HEIGHT_EDGE2_CONTRAST 0
 #else
     #define HEIGHT_EDGE2_CONTRAST 1
@@ -134,7 +146,11 @@ struct PS_INPUT
     float3 viewPosition : TEXCOORD7_centroid;
     float4 sPosition : POSITION1;
 #if TERRAIN_BLEND_ACTIVE
+#if NVR_SM4
+    float4 screenPos4 : VPOS;   // SM4 (no-limits build): SV_Position, the pixel centre; screenPos below takes D3D9's VPOS from it
+#else
     float2 screenPos : VPOS;
+#endif
 #endif
 };
 
@@ -327,6 +343,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
 
 #if TERRAIN_BLEND_ACTIVE
+#if NVR_SM4
+    const float2 screenPos = IN.screenPos4.xy - 0.5f;   // D3D9's VPOS: the pixel's corner
+#else
+    const float2 screenPos = IN.screenPos;
+#endif
     // First, so a dithered-away pixel skips the rest where the GPU can (whole quads).
     float terrainKeep = -1.0f;
     // (The derivatives at the top level: every pixel of the 2 x 2 quad.)
@@ -337,7 +358,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // width and angle came out wrong along every edge of the land's mesh, and the fade cut lines there.
     float blendViewDepth = IN.lPosition.w;
     float3 blendNormal = normalize(IN.normal.xyz);
-    TerrainBlendGap blendGap = terrainBlendGap(IN.screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
+    TerrainBlendGap blendGap = terrainBlendGap(screenPos, blendLandPos, blendViewDepth, ddx(blendLandPos), ddy(blendLandPos),
         ddx(blendViewDepth), ddy(blendViewDepth), IN.viewPosition.xyz, blendNormal);
     [branch] if (TESR_TerrainBlendData.x > 0.0f) {
         terrainKeep = getTerrainBlend(blendGap, blendViewDepth, 1.0f - blendNormal.z);
@@ -406,7 +427,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     [branch] if (terrainKeep >= 0.0f && terrainKeep < 1.0f && TESR_TerrainBlendShape.y != 0.0f)   // < 0: HeightEdge 1
         terrainKeep = terrainBlendEdge(terrainKeep, terrainBlendHeight(offsetUV, dx, dy, texCount, BaseMap, weights, heightStatus));
     if (TESR_TerrainBlendData.w <= 0.0f && TESR_TerrainBlendExtra.w <= 0.5f && terrainKeep >= 0.0f && terrainKeep < 1.0f)
-        clip(terrainKeep - terrainBlendNoise(IN.screenPos));
+        clip(terrainKeep - terrainBlendNoise(screenPos));
 #endif
 #if TERRAIN_VARIATION
     // NormalMaps off: the normal maps take the single tap (tap1Weight 1 takes the plain path in blendNormalMapsVaried).

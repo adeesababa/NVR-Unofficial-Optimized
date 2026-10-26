@@ -879,7 +879,13 @@ struct PS_INPUT {
     float4 foldColor : COLOR0;	// UNOFFICIAL FoldHighlights: the vertex colour
 #endif
 #ifdef NVR_LAMP_SUMS
+#if defined(NVR_SM4) && NVR_SM4
+    float4 vpos4 : VPOS;	// the no-limits build (NVR DXVK fork, TerrainTemplate.hlsl): SV_Position, the pixel centre
+    #define NVR_IN_VPOS (IN.vpos4.xy - 0.5f)
+#else
     float2 vpos : VPOS;	// UNOFFICIAL LampSums: the pixel, to read the run's copy of the frame
+    #define NVR_IN_VPOS IN.vpos
+#endif
 #endif
 #ifndef NO_VERTEX_COLOR
     float4 vertexColor : COLOR0;    // METAL: .a = world up's z in tangent space, encoded (see the VS)
@@ -1368,7 +1374,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #ifdef NVR_LAMP_SUMS
         // UNOFFICIAL 2026-10-21 LampSums (see the top): c210 y 1 during the world's run of extra lamp passes, zw 1 / the frame's size.
         [branch] if (TESR_PassRedirect.y > 0.5f) {
-            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((IN.vpos + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
+            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((NVR_IN_VPOS + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
             finalColor = LinEncode(LinColor(runStart) + max(lighting.rgb, 0.0f)) - runStart;
         }
     #endif

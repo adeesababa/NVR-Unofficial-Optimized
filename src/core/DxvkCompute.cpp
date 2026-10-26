@@ -225,7 +225,7 @@ static bool ParseReplacementManifest(const char* Path, UINT& TextureMask, UINT* 
 	return true;
 }
 
-bool DxvkCompute::RegisterReplacement(const char* Name, const void* Bytecode, UINT Size) {
+bool DxvkCompute::RegisterReplacement(const char* Name, const void* Bytecode, UINT Size, const char* Template, const D3DXMACRO* Defines) {
 	if (!Name || !Bytecode || !Size || !ReplacementsOn()) return false;
 
 	// 2026-10-25: the interior and exterior records of a shader share its name but not its bytecode, so a replacement is
@@ -239,6 +239,16 @@ bool DxvkCompute::RegisterReplacement(const char* Name, const void* Bytecode, UI
 		GetFileAttributesA(dump) == INVALID_FILE_ATTRIBUTES) {
 		std::ofstream out(dump, std::ios::binary);
 		out.write((const char*)Bytecode, Size);
+		// UNOFFICIAL 2026-10-26 (FORK-1026-LIMITS.md): the source and defines this bytecode came from, one per line:
+		// "template=<file name without .hlsl>" then "<NAME>=<value>" (the no-limits tool compiles the same variant without ps_3_0's limits).
+		if (Template) {
+			char definesPath[MAX_PATH];
+			_snprintf_s(definesPath, sizeof(definesPath), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\Replace\\dump\\%s@%08X.defines", Name, hash);
+			std::ofstream defs(definesPath, std::ios::binary);
+			defs << "template=" << Template << "\n";
+			for (int d = 0; Defines && d < 64 && Defines[d].Name; d++)
+				defs << Defines[d].Name << "=" << (Defines[d].Definition ? Defines[d].Definition : "") << "\n";
+		}
 	}
 
 	char path[MAX_PATH], key[MAX_PATH];
