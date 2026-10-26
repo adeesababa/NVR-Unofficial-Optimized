@@ -63,3 +63,16 @@ through the SM4 route (first translator version); R3 20261026-112728-slotC = the
 - No DXVK change was needed (extension 1.2's replacement path carries it): fork patch 0012 is not used.
 - Settings: `[Main.Main.Performance] NvrDxvkReplacements` (existing, off by default, read at load); everything else is the existing
   IsoHeightTaps / HeightEdge / Mode settings, which now also work where ps_3_0 cut them.
+
+### Combined build check 2026-10-26 14:24-14:41 (deep/fork-combo-1026 5f96ca01, fork d3d9 nvr-dxvk-combo, list fork1026-limits-bulk)
+A = ps_3_0 path + dump (bench\autotest\20261026-142451-slotC), B = 124 no-limits replacements (20261026-143705-slotC). 134 object/land
+variants dumped; 10 (SLS2037-2046) read TEXCOORD8, which DXVK places at a per-shader location: they stay ps_3_0 (tool fixed, 6edf9518).
+B log: 124 x "will run as", no refusals, no crash. World scene GPU ms, Goodsprings (shots before the idle camera took over):
+| | IsoHeightTaps on | IsoHeightTaps off |
+|---|---|---|
+| A (ps_3_0) | 9.15 / 9.18 | 8.94 / 8.98 |
+| B (no-limits) | 6.12 / 6.07 (HeightEdge 1: 6.11) | 9.24 / 9.62 |
+=> -3.1 ms (-34 %) with IsoHeightTaps on; with it off the route costs about the same (+0.1-0.6). Desert: 2.46-2.50 in B, A drifting
+2.35-3.8 (camera moved). Pictures A vs B Goodsprings, shots 1-2: 36-38 % of pixels > 2/255, all of it clouds, tumbleweed, grass and
+dust; the land, house and rocks show no difference. Later shots (and A's desert list) were taken after the game's idle third-person
+camera started moving (600-frame shots make the list long): not comparable.
