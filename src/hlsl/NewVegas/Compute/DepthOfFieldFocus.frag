@@ -2,6 +2,7 @@
 // line; effects/DepthOfField.cpp ExtRender. Writes the blur amounts (.r near, .g far) into the frame chain. showDepth is 0 there, so
 // the debug output is not ported. t_depth is TESR_DepthBuffer (CombinedDepth), t_avgLuma is TESR_AvgLumaBuffer (1x1).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

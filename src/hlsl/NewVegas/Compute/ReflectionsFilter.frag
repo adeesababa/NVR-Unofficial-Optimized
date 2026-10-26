@@ -1,6 +1,7 @@
 // Reflections technique 6 (Filter, one face of one mip level per draw) as a Vulkan pass: Effects/Reflections.fx.hlsl FilterPS
 // line for line.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 
@@ -11,8 +12,8 @@ void main() {
     if (CubeMip < 0.5) { o_color = textureLod(samplerCube(t_captureNew, LINEAR_S), dir, 0.0); return; }
     vec2 texel = vec2(2.0 / CubeSize);
     vec4 sum = vec4(0.0);
-    for (int y = 0; y < 4; y++) {
-        for (int x = 0; x < 4; x++) {
+    [[unroll]] for (int y = 0; y < 4; y++) {
+        [[unroll]] for (int x = 0; x < 4; x++) {
             vec2 offset = (vec2(x, y) - 1.5) / 4.0 * 1.5 * texel;
             sum += textureLod(samplerCube(t_captureNew, LINEAR_S), FaceDirection(CubeFace, st + offset), 0.0);
         }

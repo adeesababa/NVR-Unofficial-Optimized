@@ -1,6 +1,7 @@
 // AmbientLight pass Accumulate as a Vulkan pass (needs NVR DXVK): Effects/AmbientLight.fx.hlsl Accumulate, line for line
 // (AmbientLight.glsl). Two targets: this frame's history (bounce) and the occlusion's. All POINT. effects/AmbientLight.cpp ExtDraw.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 

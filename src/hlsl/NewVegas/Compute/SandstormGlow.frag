@@ -1,6 +1,7 @@
 // Sandstorm technique 6 (Glow, quarter resolution) as a Vulkan pass (needs NVR DXVK): Effects/Sandstorm.fx.hlsl GlowPS line
 // for line, into the glow buffer (rgb the glow, a the depth). effects/Sandstorm.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

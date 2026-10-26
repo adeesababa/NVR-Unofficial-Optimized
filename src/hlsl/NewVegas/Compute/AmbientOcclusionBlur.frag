@@ -2,6 +2,7 @@
 // Vulkan pass (needs NVR DXVK): Effects/AmbientOcclusion.fx.hlsl line for line; pc.axis is the passes' uniform axis ((1, 0), (0, 1)).
 // Reads one AO buffer and writes the other (effects/AmbientOcclusion.cpp Render). uv is PackedVS's: the AO target's texel centre.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientOcclusion.glsl"
 
@@ -25,7 +26,7 @@ void main() {
     float depthTolerance = blurDrop * (0.5 + 2.0 * compress(GetNormal(uv).z));
     float sum = center.x * 0.114725602;
     float weights = 0.114725602;
-    for (int i = 0; i < cKernelSize; ++i) {
+    [[unroll]] for (int i = 0; i < cKernelSize; ++i) {
         vec2 tapUV = uv + BlurOffsets(i) * pc.axis * blurRadius / max(rawDepth, 1.0e-6);
         vec2 tap = LINEAR_LOD(t_ao, DedicatedUV(tapUV)).rg;
         float weight = BlurWeights[i] * (abs(center.y - tap.y) <= depthTolerance ? 1.0 : 0.0);

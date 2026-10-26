@@ -3,6 +3,7 @@
 // block holds the shadow matrix's memory as stored (rows as GLSL columns), so mul(v, M) is M * v; toWorld's view columns are
 // filled by Snow.cpp from the matrix's columns (2026-10-25: they were its rows, a transposed view ray).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -86,7 +87,7 @@ void main() {
 
     float totalSnow = 0.0;
 
-    for (int i = 1; i < SnowLayers; i++) {
+    [[unroll]] for (int i = 1; i < SnowLayers; i++) {
         float fi = float(i);
         vec2 noiseSurfacePosition = cyl * (1.0 + fi * DEPTH); // scale cylinder coordinates with iterations
         float wind = sin(timetick * 0.5 + fi) * angle; // horizontal offset animated over time

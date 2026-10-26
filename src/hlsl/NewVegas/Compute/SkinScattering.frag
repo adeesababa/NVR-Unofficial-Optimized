@@ -1,6 +1,7 @@
 // SkinScattering as a Vulkan pass (needs NVR DXVK): Effects/SkinScattering.fx.hlsl line for line, both passes (push firstPass
 // picks the direction, as BlurHorizontal and BlurVertical do). effects/SkinScattering.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -129,7 +130,7 @@ vec4 SkinBlur(vec2 coord, vec2 dir, bool firstPass) {
     vec2 stepUV = dir * vec2(cb.projectionTransform[0][0], cb.projectionTransform[1][1]) * (0.5 * cb.scatterData.x / max(depthM, 1.0));
 
     vec3 blurred = lightM * cb.scatterKernel[0].rgb;
-    for (int i = 1; i < SAMPLES; i++) {
+    [[unroll]] for (int i = 1; i < SAMPLES; i++) {
         vec2 sampleUV = coord + cb.scatterKernel[i].a * stepUV;
         vec4 color = SAMPLE_LOD(t_rendered, sampleUV);
         vec4 scatter = SAMPLE_LOD(t_scatter, sampleUV);

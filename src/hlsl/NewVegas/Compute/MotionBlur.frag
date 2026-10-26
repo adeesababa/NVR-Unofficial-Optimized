@@ -1,6 +1,7 @@
 // MotionBlur as a Vulkan pass (needs NVR DXVK): Effects/MotionBlur.fx.hlsl line for line; the technique runs this pass twice
 // in a row (effects/MotionBlur.cpp ExtRender does the same through the frame chain).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

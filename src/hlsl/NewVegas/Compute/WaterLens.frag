@@ -2,6 +2,7 @@
 // linear in the texture coordinate, so they are computed here per pixel (the half-texel shift it adds is D3D9's pixel-centre
 // convention; the pass's uv is already at pixel centres). effects/WaterLens.cpp ExtRender. t_noise is Effects\water_NRM_lens.dds (WRAP).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

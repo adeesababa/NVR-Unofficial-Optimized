@@ -2,6 +2,7 @@
 // Two targets: 0 the combined depth (R32F or G32R32F, as CombineDepth), 1 the normals (A16B16G16R16F, as Normals). Normals.glsl has
 // the normal maths. effects/CombineDepth.cpp ExtDepthNormals (MergedDepthNormals, off by default).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 #include "Normals.glsl"

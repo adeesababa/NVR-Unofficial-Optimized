@@ -1,6 +1,7 @@
 // VolumetricLight technique Composite (0) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricLight.fx.hlsl CompositePS and
 // CompositeAir line for line, full resolution, through the frame chain. effects/VolumetricLight.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -24,8 +25,8 @@ void main() {
     float tolerance = max(depth01 * 0.04, 0.00002);
     vec2 air = vec2(0.0);
     float weights = 1.0e-5;
-    for (int y = 0; y < 2; y++) {
-        for (int x = 0; x < 2; x++) {
+    [[unroll]] for (int y = 0; y < 2; y++) {
+        [[unroll]] for (int x = 0; x < 2; x++) {
             vec4 tap = POINT_LOD(t_buffer, (base + vec2(x, y) + 0.5) * LowTexel);
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);
             weight /= 1.0 + abs(tap.b - depth01) / tolerance;

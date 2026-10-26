@@ -6,6 +6,7 @@
 // every pixel runs, as D3D9 then does). round() is floor(x + 0.5), what fxc compiles HLSL round to for ps_3_0 (add 0.5, frc, sub).
 // Samplers as the .fx: edges and area LINEAR, CLAMP; search POINT, CLAMP; none has mips.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

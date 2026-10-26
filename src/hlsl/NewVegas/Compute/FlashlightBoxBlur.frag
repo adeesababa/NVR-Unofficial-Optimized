@@ -2,6 +2,7 @@
 // Effects/Flashlight.fx.hlsl line for line; pc.mode 0 is BoxBlurMin, 1 BoxBlurAvg. effects/Flashlight.cpp ExtRender.
 // The clip() keeps the cleared target's (0, 0, 0, 1) (ClearRenderTarget); at scaleFactor 1 it never kills a pixel on screen.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Flashlight.glsl"
 

@@ -1,6 +1,7 @@
 // GodRays pass LightMask (DedicatedGodRays pass 1, DedicatedLightMask) as a Vulkan pass (needs NVR DXVK): Effects/GodRays.fx.hlsl
 // line for line, from NVR_GodRaysBuffer0 into Buffer1 (or the Low pair).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "GodRays.glsl"
 

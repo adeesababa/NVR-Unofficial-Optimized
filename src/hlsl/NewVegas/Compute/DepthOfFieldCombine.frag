@@ -2,6 +2,7 @@
 // effects/DepthOfField.cpp ExtRender. t_rendered is TESR_RenderedBuffer (the bokeh output packed in quadrants), t_source is
 // TESR_SourceBuffer (the image before the effect). Both LINEAR, CLAMP. showDepth is 0 there (not ported).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

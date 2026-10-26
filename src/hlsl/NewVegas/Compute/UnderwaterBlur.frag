@@ -2,6 +2,7 @@
 // line; pass 2 uses OffsetMaskV (0, 1), pass 3 OffsetMaskH (1, 0). Outside the upper left quarter (uv > 0.5) the pass keeps the
 // current image, as the D3D9 pass's pre-fill did. effects/Underwater.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_samplerless_texture_functions : enable
 #include "Common.glsl"

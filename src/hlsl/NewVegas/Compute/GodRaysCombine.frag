@@ -1,6 +1,7 @@
 // GodRays pass Combine (DedicatedGodRays pass 5, DedicatedCombine) as a Vulkan pass (needs NVR DXVK): Effects/GodRays.fx.hlsl
 // line for line, full resolution through the frame chain (effects/GodRays.cpp RenderDedicated).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "GodRays.glsl"
 

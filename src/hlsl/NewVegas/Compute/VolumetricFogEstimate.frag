@@ -3,6 +3,7 @@
 // The first pass of DedicatedFog, CompositeFog, CompositeFogInterior and their Legacy and Classic forms (push: legacy, classic,
 // interior). effects/VolumetricFog.cpp ExtDedicated.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 #include "VolumetricFog.glsl"
@@ -15,7 +16,7 @@ void main() {
     vec2 best = uv - h;
     float bestDepth = readDepthLod(best);
     const vec2 signs[3] = vec2[3](vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));	// others: (h.x, -h.y), (-h.x, h.y), (h.x, h.y)
-    for (int i = 0; i < 3; i++) {
+    [[unroll]] for (int i = 0; i < 3; i++) {
         vec2 candidate = uv + signs[i] * h;
         float candidateDepth = readDepthLod(candidate);
         if (candidateDepth < bestDepth) { best = candidate; bestDepth = candidateDepth; }

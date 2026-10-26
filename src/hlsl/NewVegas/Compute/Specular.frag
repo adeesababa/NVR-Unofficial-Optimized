@@ -1,6 +1,7 @@
 // Specular, technique 0 (needs NVR DXVK): adds the sun's highlight and the sky's reflection to the image, as Effects/
 // Specular.fx.hlsl's SpecularPS line for line. effects/Specular.cpp ExtRender (technique 0) runs it through the frame chain.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SpecularCommon.glsl"
 

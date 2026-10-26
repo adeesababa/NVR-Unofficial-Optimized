@@ -3,6 +3,7 @@
 // TESR_RenderedBuffer (LINEAR, CLAMP). The push block holds the TESR_ values the technique reads (the matrices reduced to the
 // terms toWorld uses), 104 bytes.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

@@ -4,6 +4,7 @@
 // (stepLen 0 gives transmittance 1 and no scatter, the same (0, 0, 0, 1)), so every texture read stays in uniform
 // control flow and its implicit derivatives are defined; and the result is chosen by the hit test at the end.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

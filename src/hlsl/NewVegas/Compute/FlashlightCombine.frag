@@ -1,6 +1,7 @@
 // Flashlight's composite (Combine(false), and Combine(true) of the EdgeFix techniques with pc.mode 1) as a Vulkan pass (needs
 // NVR DXVK): Effects/Flashlight.fx.hlsl line for line, with its EdgeFix helpers. effects/Flashlight.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Flashlight.glsl"
 
@@ -45,7 +46,7 @@ EdgeSplit FindEdgeSplit(vec2 coord, float dc, vec3 C, bool sourceIsLinear) {
     vec2 offsets[8] = vec2[8](vec2(-px.x, 0.0), vec2(px.x, 0.0), vec2(0.0, -px.y), vec2(0.0, px.y),
         vec2(-px.x, -px.y), vec2(px.x, -px.y), vec2(-px.x, px.y), vec2(px.x, px.y));
     float depths[8];
-    for (int i = 0; i < 8; i++) {
+    [[unroll]] for (int i = 0; i < 8; i++) {
         depths[i] = readDepthLod(coord + offsets[i]);
         dNear = min(dNear, depths[i]);
         if (depths[i] > dFar) { dFar = depths[i]; uvFar = coord + offsets[i]; }
@@ -62,7 +63,7 @@ EdgeSplit FindEdgeSplit(vec2 coord, float dc, vec3 C, bool sourceIsLinear) {
     vec2 uvNear = uvFar;
     float nearSplit = mix(dNear, dFar, 0.5);
     float purest = -1.0;
-    for (int k = 0; k < 4; k++) {
+    [[unroll]] for (int k = 0; k < 4; k++) {
         if (depths[k] < nearSplit) {
             vec2 t = coord + offsets[k];
             vec3 c = SourceColorLod(t, sourceIsLinear);
@@ -109,7 +110,7 @@ vec3 BeamUpsampled(vec2 coord, float dc, bool isFlat) {
     vec2 f = pos - base;
     vec2 corners[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
     vec4 rel;
-    for (int i = 0; i < 4; i++)
+    [[unroll]] for (int i = 0; i < 4; i++)
         rel[i] = abs(readDepthLod(0.5 * px + (base + corners[i]) * halfPx) - dc) / max(dc, 1.0);
     if (max(max(rel.x, rel.y), max(rel.z, rel.w)) < 0.04)
         return LINEAR_LOD(t_volumetric, (pos + 0.5) * halfPx).rgb;
@@ -118,7 +119,7 @@ vec3 BeamUpsampled(vec2 coord, float dc, bool isFlat) {
     float wsum = 0.0;
     vec3 closest = vec3(0.0);
     float closestRel = 1e30;
-    for (int k = 0; k < 4; k++) {
+    [[unroll]] for (int k = 0; k < 4; k++) {
         vec3 v = LINEAR_LOD(t_volumetric, (base + corners[k] + 0.5) * halfPx).rgb;
         vec2 wb2 = mix(1.0 - f, f, corners[k]);
         float wb = wb2.x * wb2.y;

@@ -2,6 +2,7 @@
 // lutPass 0 is the technique Coloring (ColorPass); lutPass 1 is ColoringLUT (ColorLUTPass): the colouring, then the LUT
 // (LUT.frag's SampleLUT and LUTGrade) in the same pass. The LUT textures are only read when lutPass is 1.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

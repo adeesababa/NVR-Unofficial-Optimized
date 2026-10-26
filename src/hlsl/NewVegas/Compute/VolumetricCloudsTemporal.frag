@@ -1,6 +1,7 @@
 // VolumetricClouds technique Temporal (2) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricClouds.fx.hlsl TemporalPS,
 // SharpHistory and CatmullRom line for line, quarter resolution, into the history being written. effects/VolumetricClouds.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -27,8 +28,8 @@ void main() {
     vec2 blockUV = (block + 0.5) * cb.blocks.xy;
     vec4 current = POINT_LOD(t_current, blockUV);
     vec4 lo = current, hi = current;
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
+    [[unroll]] for (int y = -1; y <= 1; y++) {
+        [[unroll]] for (int x = -1; x <= 1; x++) {
             vec4 n = POINT_LOD(t_current, blockUV + vec2(x, y) * cb.blocks.xy);
             lo = min(lo, n); hi = max(hi, n);
         }

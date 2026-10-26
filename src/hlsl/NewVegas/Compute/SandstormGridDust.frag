@@ -1,6 +1,7 @@
 // Sandstorm technique 1 (GridDust, the fast path's dust grid) as a Vulkan pass (needs NVR DXVK): Effects/Sandstorm.fx.hlsl
 // GridDustPS line for line, into the grid atlas. effects/Sandstorm.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

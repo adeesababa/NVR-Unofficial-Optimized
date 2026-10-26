@@ -2,6 +2,7 @@
 // Vulkan pass (needs NVR DXVK): Effects/VolumetricSmoke.fx.hlsl HazePS and SegmentCut line for line.
 // effects/VolumetricSmoke.cpp ExtHaze (two targets, no blending: the whole target is written).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -53,7 +54,7 @@ void main() {
     vec3 dir = toPixel / max(sceneDist, 0.0001);
     const vec2 corners[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
     vec2 reach = (0.5 * scale - 0.5) * TESR_ReciprocalResolution.xy;
-    for (int k = 0; k < 4; k++) {
+    [[unroll]] for (int k = 0; k < 4; k++) {
         float cornerDepth;
         vec3 corner = reconstructWorldPosition(uv + corners[k] * reach, cornerDepth).xyz;
         sceneDist = min(sceneDist, length(corner - cam));

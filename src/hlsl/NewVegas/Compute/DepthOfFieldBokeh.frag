@@ -2,6 +2,7 @@
 // for line; effects/DepthOfField.cpp ExtRender. The bokeh passes run with useBokeh 1 (push block), the plain blur with 0.
 // t_rendered is TESR_RenderedBuffer (the quadrant mosaic, or the previous blur pass), LINEAR, CLAMP.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

@@ -295,14 +295,14 @@ float OpenAboveAt(vec4 ortho) {
 // every other reach, for the dust that is asked many times per pixel).
 float InTheWind(vec3 relative, vec2 wind) {
     float reached = 1.0;
-    for (int k = 0; k < 8; k++)
+    [[unroll]] for (int k = 0; k < 8; k++)
         reached *= OpenAbove(relative + vec3(-wind * LeeReach[k], LeeReach[k] * 0.2));
     return reached;
 }
 
 float InTheWindCoarse(vec3 relative, vec2 wind) {
     float reached = 1.0;
-    for (int k = 1; k < 8; k += 2)
+    [[unroll]] for (int k = 1; k < 8; k += 2)
         reached *= OpenAbove(relative + vec3(-wind * LeeReach[k], LeeReach[k] * 0.2));
     return reached;
 }
@@ -344,8 +344,8 @@ vec3 GlowAt(vec2 where, float depth01) {
     float tolerance = max(depth01 * 0.04, 0.00002);
     vec3 glow = vec3(0.0);
     float weights = 1.0e-5;
-    for (int y = 0; y < 2; y++) {
-        for (int x = 0; x < 2; x++) {
+    [[unroll]] for (int y = 0; y < 2; y++) {
+        [[unroll]] for (int x = 0; x < 2; x++) {
             vec4 tap = POINT_LOD(t_glow, (base + vec2(float(x), float(y)) + 0.5) * QuarterTexel);
             float weight = (x == 1 ? fracPos.x : 1.0 - fracPos.x) * (y == 1 ? fracPos.y : 1.0 - fracPos.y);
             weight /= 1.0 + abs(tap.a - depth01) / tolerance;

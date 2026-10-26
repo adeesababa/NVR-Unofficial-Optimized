@@ -2,6 +2,7 @@
 // line for line; the push block's blurStep and storeAttenuation are the passes' uniform arguments (0.1, 0.01, 0.001; 0, 0, 1).
 // Reads one ray buffer and writes the other (effects/GodRays.cpp RenderDedicated).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "GodRays.glsl"
 

@@ -1,6 +1,7 @@
 // VolumetricLight technique Temporal (3) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricLight.fx.hlsl TemporalPS and
 // HistoryAt line for line, half resolution, into the effect's own buffer. effects/VolumetricLight.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -32,8 +33,8 @@ void main() {
 
     float tolerance = max(current.b * 0.05, 0.00002);
     vec2 low = current.rg, high = current.rg;
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
+    [[unroll]] for (int y = -1; y <= 1; y++) {
+        [[unroll]] for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             vec4 tap = POINT_LOD(t_march, coord + vec2(x, y) * LowTexel);
             if (abs(tap.b - current.b) < tolerance) { low = min(low, tap.rg); high = max(high, tap.rg); }

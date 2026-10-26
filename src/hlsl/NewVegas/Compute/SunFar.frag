@@ -2,6 +2,7 @@
 // Shadows, SunCascades). effects/SunFar.cpp ExtRender. Matrices: cb.m[a][b] is the HLSL's m[a][b] (the D3DX matrix as stored,
 // the effect framework's logical matrix, as SkinScattering.frag reads them): mul(v, M) is M * v, mul(M, v) is v * M.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

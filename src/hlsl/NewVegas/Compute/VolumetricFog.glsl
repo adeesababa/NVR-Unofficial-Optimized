@@ -773,7 +773,7 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         else {
             float noiseReach = min(length(eyeVector), 12000.0);
             float invNoiseScale = 1.0 / (1500.0 * NoiseScale);   // UNOFFICIAL 2026-10-26: once, not three divisions a step (fxc: rcp + mul)
-            for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
+            [[unroll]] for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
                 float noiseT = mix(min(300.0, noiseReach), noiseReach, (float(noiseStep) + 0.5) * 0.25);
                 vec3 noisePos = (cb.cameraPosition.xyz + eyeDirection * noiseT + windOffset) * invNoiseScale;
                 noiseVal += textureLod(sampler3D(t_noise, NVR_SAMPLER(pc.wrapIndex)), noisePos * 0.25, 0.0).g;
@@ -977,8 +977,8 @@ vec3 CompositeAO(vec3 linearColor, vec2 coord) {
     float sum = 0.0, weights = 0.0;
     vec2 skySum = vec2(0.0);
     bool sky = pc.compositeFlags.z > 0.5;
-    for (int y = 0; y < 2; ++y) {
-        for (int x = 0; x < 2; ++x) {
+    [[unroll]] for (int y = 0; y < 2; ++y) {
+        [[unroll]] for (int x = 0; x < 2; ++x) {
             vec2 sampleUV = clamp((base + vec2(x, y) + 0.5) * texel, 0.5 * texel, 1.0 - 0.5 * texel);
             vec2 aoSample = LINEAR_LOD(t_ao, sampleUV).rg;
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);

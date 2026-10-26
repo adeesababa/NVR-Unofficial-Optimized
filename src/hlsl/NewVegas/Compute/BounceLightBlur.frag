@@ -3,6 +3,7 @@
 // (NVR_BounceSpill.x 0) the slope is 0 and `hard` changes nothing, so both variants are this one.
 // pc.pass_.xy: the axis ((1, 0) BlurX, (0, 1) BlurY).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "BounceLight.glsl"
 
@@ -24,7 +25,7 @@ void main() {
     float tolerance = max(center.a * 0.03, 2.0);
     vec3 sum = center.rgb * 0.114725602;
     float weights = 0.114725602;
-    for (int i = 0; i < cKernelSize; i++) {
+    [[unroll]] for (int i = 0; i < cKernelSize; i++) {
         // BlurOffsets are in full-resolution pixels; this buffer is half or quarter resolution.
         vec2 blurOffset = vec2(BlurSteps[i] * cb.reciprocalResolution.x, BlurSteps[i] * cb.reciprocalResolution.y);
         vec2 tapUV = uv + blurOffset * axis * BlurRadius * (cb.bounceLayout.zw / cb.reciprocalResolution.xy);

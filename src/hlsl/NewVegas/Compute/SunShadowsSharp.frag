@@ -1,6 +1,7 @@
 // SunShadows' sharp contact shadows (technique ForwardContactSharp, first pass) as a Vulkan pass: Effects/SunShadows.fx.hlsl
 // SharpContactShadow line for line.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SunShadows.glsl"
 
@@ -23,7 +24,7 @@ void main() {
     float invZ0 = 1.0 / pos.z, invZ1 = 1.0 / max(endPos.z, nearZ);
 
     float occlusion = 0.0, total = 0.0;
-    for (int i = 1; i <= SHARP_STEPS; i++) {
+    [[unroll]] for (int i = 1; i <= SHARP_STEPS; i++) {
         float t = float(i) / float(SHARP_STEPS);
         float rayZ = 1.0 / mix(invZ0, invZ1, t);
         float delta = rayZ - readDepthLod(mix(uv, endUV, t));

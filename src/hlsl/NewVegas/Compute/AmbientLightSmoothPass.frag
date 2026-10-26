@@ -2,6 +2,7 @@
 // line for line (AmbientLight.glsl). variant bit 0: alongY. X reads the prep (NVR_ALPrep), Y the ping-pong buffer (NVR_ALBuffer);
 // both POINT. effects/AmbientLight.cpp ExtDraw. (AmbientLightSmooth.comp is the compute version, AmbientLightSmoothCompute.)
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 
@@ -23,7 +24,7 @@ void main() {
         float reach = clamp(cb.alEdges.z / max(texelWorld, 1.0e-4), cb.alEdges.x, 192.0);
         float spacing = reach / 3.0;
         vec3 sum = normal;
-        for (int k = -3; k <= 3; k++) {
+        [[unroll]] for (int k = -3; k <= 3; k++) {
             if (k == 0) continue;
             float dist = abs(float(k)) * spacing;
             vec2 tapUV = uv + axis * (float(k) * spacing) * cb.alLayout.zw;

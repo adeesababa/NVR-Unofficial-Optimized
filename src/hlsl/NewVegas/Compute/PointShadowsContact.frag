@@ -1,6 +1,7 @@
 // PointShadows technique 2 (LampContact) as a Vulkan pass (needs NVR DXVK): Effects/PointShadows.fx.hlsl's LampContactPS, line for
 // line. The pass multiplies the lamp mask in the buffer by its result (blend: multiply). effects/PointShadows.cpp ExtRender runs it.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "PointShadowsCommon.glsl"
 
@@ -56,7 +57,7 @@ void main() {
         vec3 worldPos = cb.cameraPosition.xyz + cameraVector;
         float total = 0.0, b1 = 0.0;
         vec3 L1 = vec3(0.0);
-        for (int i = 0; i < 11; i++) {
+        [[unroll]] for (int i = 0; i < 11; i++) {
             vec4 lp = cb.shadowLightPosition[i];
             vec3 lightDir = lp.xyz - worldPos;
             float s2 = clamp(dot(lightDir, lightDir) / max(lp.w * lp.w, 1.0), 0.0, 1.0);

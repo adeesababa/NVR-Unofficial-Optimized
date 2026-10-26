@@ -1,5 +1,6 @@
 // Reflections technique 1 (Trace, half resolution) as a Vulkan pass: Effects/Reflections.fx.hlsl TracePS line for line.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 
@@ -53,7 +54,7 @@ void main() {
     float confidence = 0.0;
     if (hitT > 0.0) {
         float lo = lastT, hi = hitT;
-        for (int r = 0; r < RefineSteps; r++) {
+        [[unroll]] for (int r = 0; r < RefineSteps; r++) {
             float m = 0.5 * (lo + hi);
             vec3 q = position + R * m;
             if (q.z > readDepthLod(ToScreen(q))) hi = m; else lo = m;

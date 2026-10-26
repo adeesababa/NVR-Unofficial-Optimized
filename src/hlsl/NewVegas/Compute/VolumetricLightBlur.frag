@@ -2,6 +2,7 @@
 // BlurAxis line for line (push axis (1, 0): BlurXPS from Temp; (0, 1): BlurYPS from March), half resolution, into the
 // effect's own buffer. effects/VolumetricLight.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

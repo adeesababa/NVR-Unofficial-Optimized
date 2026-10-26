@@ -1,6 +1,7 @@
 // AmbientLight pass StatsReduce (indoors) as a Vulkan pass (needs NVR DXVK): Effects/AmbientLight.fx.hlsl StatsReduce, line for line
 // (AmbientLight.glsl). Into this frame's NVR_AmbientLightBalance (1 x 1). Both POINT. effects/AmbientLight.cpp ExtDraw.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 

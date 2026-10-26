@@ -18,6 +18,7 @@
 //   then NVR copies StateOut.packed (8 bytes at offset 16) into the 1x1 RGBA16F texture.
 
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 #extension GL_EXT_samplerless_texture_functions : enable
 

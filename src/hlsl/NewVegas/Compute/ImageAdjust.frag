@@ -1,5 +1,6 @@
 // ImageAdjust as a Vulkan pass (needs NVR DXVK): Effects/ImageAdjust.fx.hlsl line for line. effects/ImageAdjust.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

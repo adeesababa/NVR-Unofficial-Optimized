@@ -1,6 +1,7 @@
 // SkyView technique 3 (SkyViewX: the sky-view table with the sun's depth from the SkyTrans table, no multiple scattering) as a
 // Vulkan pass (needs NVR DXVK): Effects/SkyView.fx.hlsl SkyViewXPS line for line. effects/SkyView.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

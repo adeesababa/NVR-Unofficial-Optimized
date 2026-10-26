@@ -1,6 +1,7 @@
 // Reflections technique 0 (Composite, full resolution, in the frame chain) as a Vulkan pass: Effects/Reflections.fx.hlsl
 // CompositePS line for line (REFL_MATERIAL_ON / REFL_SPECOCC_ON / REFL_ADD_ON: cb.flags).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 
@@ -39,8 +40,8 @@ void main() {
     float tolerance = depth * 0.03 + 4.0;
     vec4 reflection = vec4(0.0);
     float weights = 1.0e-5;
-    for (int y = 0; y < 2; y++) {
-        for (int x = 0; x < 2; x++) {
+    [[unroll]] for (int y = 0; y < 2; y++) {
+        [[unroll]] for (int x = 0; x < 2; x++) {
             vec2 at = (base + vec2(x, y) + 0.5) * LowTexel;
             float tapDepth = readDepthLod(at - 0.5 * (LowTexel - cb.reciprocalResolution.xy));
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);

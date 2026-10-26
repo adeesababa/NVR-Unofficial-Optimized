@@ -1,6 +1,7 @@
 // Sandstorm technique 4 (Streaks, half resolution) as a Vulkan pass (needs NVR DXVK): Effects/Sandstorm.fx.hlsl StreaksPS
 // line for line, into the streak buffer. effects/Sandstorm.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -30,9 +31,9 @@ void main() {
         float jitter = fract((group.x + 2.0 * group.y + 0.5) / (4.0 * float(SANDFAST_STREAK_SAMPLES)) + time * 7.123);
         vec2 across = vec2(-wind.y, wind.x);
         const bool fine = TESR_SandstormQuality.w > 0.5;
-        for (int s = 0; s < 3; s++) {
+        [[unroll]] for (int s = 0; s < 3; s++) {
             float grain = 0.0;
-            for (int m = 0; m < SANDFAST_STREAK_SAMPLES; m++) {
+            [[unroll]] for (int m = 0; m < SANDFAST_STREAK_SAMPLES; m++) {
                 float t = 50.0 + 120.0 * float(s) + 30.0 * fract(jitter + float(m) / float(SANDFAST_STREAK_SAMPLES));
                 vec3 p = camera + dir * t - vec3(wind * speed * time * (2.5 + float(s)), 0.0);
                 vec3 q = vec3(dot(p.xy, wind) / 240.0, dot(p.xy, across) / 8.0, p.z / 6.0);

@@ -2,6 +2,7 @@
 // MarchPS and MarchRay line for line, one texel per 2 x 2 block, into TESR_CloudCurrent. effects/VolumetricClouds.cpp ExtRender.
 // pc.fixedExit picks MarchPS(true); pc.physicalSky stands for PHYSICAL_SKY_ON.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 #include "SkyAtmosphere.glsl"
@@ -89,7 +90,7 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit, bool towe
                 }
             }
             else {
-                for (int j = 0; j < 6; j++) {
+                [[unroll]] for (int j = 0; j < 6; j++) {
                     float stepLength = lightStep * exp2(float(j)) * 0.5;
                     reach += stepLength;
                     vec3 q = p + light * reach;
@@ -101,7 +102,7 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit, bool towe
             if (towers) opticalDepth *= 1.0 - 0.8 * Towering * saturate((h * InvTowerShare - 0.5) / 1.5);
             vec3 sunLight = vec3(0.0);
             float a = 1.0, b = 1.0, c = 1.0;
-            for (int k = 0; k < 3; k++) {
+            [[unroll]] for (int k = 0; k < 3; k++) {
                 float g = Forward * c;
                 sunLight += b * exp(-Extinction * opticalDepth * a) * mix(Phase(cosT, g), Phase(cosT, -0.3 * c), 0.5);
                 a *= 0.25; b *= 0.5; c *= 0.5;

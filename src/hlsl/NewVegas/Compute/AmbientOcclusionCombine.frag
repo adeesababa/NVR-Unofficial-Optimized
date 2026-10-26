@@ -1,6 +1,7 @@
 // AmbientOcclusion pass Combine of the Dedicated techniques (DedicatedCombine) as a Vulkan pass (needs NVR DXVK):
 // Effects/AmbientOcclusion.fx.hlsl line for line (viewao 0), through the frame chain (effects/AmbientOcclusion.cpp Render).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientOcclusion.glsl"
 
@@ -23,8 +24,8 @@ void main() {
     float depth = readDepth(uv);
     if (depth >= endFade) { o_color = vec4(LINEAR_LOD(t_source, uv).rgb, 1.0); return; }
     float sum = 0.0, weights = 0.0;
-    for (int y = 0; y < 2; ++y) {
-        for (int x = 0; x < 2; ++x) {
+    [[unroll]] for (int y = 0; y < 2; ++y) {
+        [[unroll]] for (int x = 0; x < 2; ++x) {
             vec2 tapUV = (base + vec2(x, y) + 0.5) * cb.aoLayout.zw;
             vec2 tap = LINEAR_LOD(t_ao, DedicatedUV(tapUV)).rg;
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);
@@ -41,8 +42,8 @@ void main() {
     if (cb.sky4.w > 0.5) {	// Skylighting v2: the sky factor, with the AO's upsample weights
         vec2 skySum = vec2(0.0);	// x the factor, y the visibility (LightCap)
         float skyWeights = 0.0;
-        for (int sy = 0; sy < 2; ++sy) {
-            for (int sx = 0; sx < 2; ++sx) {
+        [[unroll]] for (int sy = 0; sy < 2; ++sy) {
+            [[unroll]] for (int sx = 0; sx < 2; ++sx) {
                 vec2 tapUV = (base + vec2(sx, sy) + 0.5) * cb.aoLayout.zw;
                 vec2 tap = LINEAR_LOD(t_ao, DedicatedUV(tapUV)).rg;
                 float weight = (sx != 0 ? fraction.x : 1.0 - fraction.x) * (sy != 0 ? fraction.y : 1.0 - fraction.y);

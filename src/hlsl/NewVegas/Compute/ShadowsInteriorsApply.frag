@@ -2,6 +2,7 @@
 // with Includes/InteriorShadowApply.hlsl, Helpers.hlsl and Depth.hlsl, line for line. effects/ShadowsInteriors.cpp ExtRender.
 // Matrices are copied as stored: m[i][j] here is the HLSL's m[i][j] (the D3DX element (i, j)), as in SkinScattering.frag.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

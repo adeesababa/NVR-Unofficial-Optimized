@@ -1,6 +1,7 @@
 // LUT as a Vulkan pass (needs NVR DXVK): Effects/LUT.fx.hlsl line for line. effects/LUT.cpp ExtRender. A slot without a
 // usable LUT (N < 2) passes the colour through, as the technique does; NVR then binds any texture there.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

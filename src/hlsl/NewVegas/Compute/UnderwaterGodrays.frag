@@ -2,6 +2,7 @@
 // The rays are drawn into the upper left quarter (uv * 2); outside it the pass keeps the current image (what the D3D9 pass's
 // pre-fill copied there). t_noise is Effects\bluenoise256.dds (POINT, WRAP; no mips: level 0). Depth: CombineDepth's.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_samplerless_texture_functions : enable
 #include "Common.glsl"

@@ -1,6 +1,7 @@
 // Reflections technique 7 (MaterialCapture, full resolution; only with REFL_MATERIAL_ON) as a Vulkan pass:
 // Effects/Reflections.fx.hlsl MaterialCapturePS line for line.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 

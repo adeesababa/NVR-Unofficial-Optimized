@@ -2,6 +2,7 @@
 // Five textures: t_rendered (LINEAR, CLAMP); t_text, t_hold, t_exposure, t_depth (POINT, CLAMP). The two sampler heap indices
 // are at the end of the push block (linearIndex, pointIndex).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -125,7 +126,7 @@ vec4 Picture() {
         vec3 ring = vec3(0.0);
         // The rings turned by a different angle at each pixel (interleaved gradient noise), so a wide blur is a soft grainy disc.
         float turn = fract(52.9829189 * fract(dot(uv / px, vec2(0.06711056, 0.00583715)))) * 1.570796;
-        for (int k = 0; k < 4; k++) {
+        [[unroll]] for (int k = 0; k < 4; k++) {
             float a = float(k) * 1.570796 + turn;
             ring += Read(at + r * vec2(cos(a), sin(a)) * 0.5);							// inner ring
             ring += Read(at + r * vec2(cos(a + 0.785398), sin(a + 0.785398)));			// outer ring, turned 45 degrees
@@ -140,7 +141,7 @@ vec4 Picture() {
 
     // Highlight glow: bright areas bleed over what is near them. Two rings of eight reads, the near ring stronger.
     vec3 glow = vec3(0.0);
-    for (int i = 0; i < 8; i++) {
+    [[unroll]] for (int i = 0; i < 8; i++) {
         float a = float(i) * 0.785398;
         vec2 way = vec2(cos(a), sin(a)) * vec2(px.x / px.y, 1.0);
         vec2 way2 = vec2(cos(a + 0.3927), sin(a + 0.3927)) * vec2(px.x / px.y, 1.0);
@@ -152,7 +153,7 @@ vec4 Picture() {
     if (pc.flashC.w > 0.0) {
         float jitter = fract(52.9829189 * fract(dot(uv / px, vec2(0.06711056, 0.00583715))));
         vec3 streak = vec3(0.0);
-        for (int i = 1; i <= 6; i++) {
+        [[unroll]] for (int i = 1; i <= 6; i++) {
             float o = (float(i) - 0.5 + jitter) * 0.045;
             float weight = 1.0 - float(i) / 7.0;
             streak += (max(Read(at + vec2(0.0, o)) - 0.85, 0.0) + max(Read(at - vec2(0.0, o)) - 0.85, 0.0)) * weight;

@@ -1,6 +1,7 @@
 // VolumetricLight technique March (1) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricLight.fx.hlsl MarchPS line for line,
 // half resolution, into the effect's own buffer. effects/VolumetricLight.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

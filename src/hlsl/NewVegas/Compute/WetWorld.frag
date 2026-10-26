@@ -3,6 +3,7 @@
 // techniques 3 and 4). Technique 0 (FastPaths off, the original trace) is not ported: the D3D9 pass runs it.
 // Without fixTrace the fast path traces nothing (its ssrHit stays 0, as the D3D9 fast path does).
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -749,7 +750,7 @@ vec4 WetPass(vec2 uv, bool fast, bool fixTrace) {
         vec3 pointSpecCol = vec3(0.0);
         vec3 streakPointCol = vec3(0.0);
 
-        for (int i = 0; i < 12; i++)
+        [[unroll]] for (int i = 0; i < 12; i++)
         {
             if (c.shadowLightPosition[i].w > 0.0)
             {
@@ -886,11 +887,11 @@ vec4 WetPass(vec2 uv, bool fast, bool fixTrace) {
     vec3 streakPointCol = vec3(0.0);
 
     float anyLamp = 0.0;
-    for (int j = 0; j < 12; j++)
+    [[unroll]] for (int j = 0; j < 12; j++)
         anyLamp = max(anyLamp, max(c.shadowLightPosition[j].w, c.lightPosition[j].w));
     if (anyLamp > 0.0)
     {
-        for (int i = 0; i < 12; i++)
+        [[unroll]] for (int i = 0; i < 12; i++)
         {
             AddLampHighlightFast(c.shadowLightPosition[i], c.lightColor[i].rgb, worldPos.xyz, V, N, specMask, streakMask,
                 pointSpecCol, streakPointCol);

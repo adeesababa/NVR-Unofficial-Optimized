@@ -1,6 +1,7 @@
 // Normals as a Vulkan pass (needs NVR DXVK): Effects/Normals.fx.hlsl technique 0 (ComputeNormals), line for line. Normals.glsl has the maths.
 // effects/Normals.cpp ExtRender.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 #include "Normals.glsl"

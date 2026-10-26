@@ -240,8 +240,8 @@ bool addBounce(vec2 uv, float depth, uint pointS, texture2D bounce, inout vec3 l
     float tolerance = max(depth * 0.03, 2.0);
     vec3 sum = vec3(0.0);
     float weights = 1.0e-5;
-    for (int y = 0; y < 2; y++) {
-        for (int x = 0; x < 2; x++) {
+    [[unroll]] for (int y = 0; y < 2; y++) {
+        [[unroll]] for (int x = 0; x < 2; x++) {
             vec4 tap = sampleLod(bounce, pointS, (base + vec2(float(x), float(y)) + 0.5) * cb.bounceLayout.zw);
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);
             weight /= 1.0 + abs(tap.a - depth) / tolerance;

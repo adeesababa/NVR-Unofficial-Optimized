@@ -2,6 +2,7 @@
 // SmoothY (alongY 1), line for line. t_source is TESR_NormalsBuffer for pass X and TESR_NormalsSmoothTemp for pass Y.
 // effects/Normals.cpp ExtSmooth.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -42,7 +43,7 @@ void main() {
         vec2 axis = alongY ? vec2(0.0, 1.0) : vec2(1.0, 0.0);
         float spacing = pc.smoothData.x / 3.0;
         vec3 sum = normal;
-        for (int k = -3; k <= 3; k++) {
+        [[unroll]] for (int k = -3; k <= 3; k++) {
             if (k == 0) continue;
             float dist = abs(float(k)) * spacing;
             vec2 tapUV = uv + axis * (float(k) * spacing) * pc.reciprocalResolution.xy;

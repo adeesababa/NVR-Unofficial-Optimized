@@ -2,6 +2,7 @@
 // line, with SMAANeighborhoodBlendingPS from Includes/SMAA.hlsl inlined (SMAA_HLSL_3, SMAA_REPROJECTION 0). effects/SMAA.cpp
 // ExtRender. Both samplers of the .fx are LINEAR, CLAMP; the targets have no mips.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

@@ -1,6 +1,7 @@
 // Sharpening as a Vulkan pass (needs NVR DXVK): Effects/Sharpening.fx.hlsl (kernelSize 3, falloffExponent 4) line for line.
 // effects/Sharpening.cpp ExtRender. readDepth: linear depth / farZ in TESR_DepthBuffer's first channel, times farZ.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

@@ -4,6 +4,7 @@
 // block's viewColumn[j] is the HLSL column j (M[0..3][j]), so the GLSL mat4 built from them has viewT[j][i] = M[i][j], and
 // HLSL mul(M, v) is viewT * v, HLSL M[i][j] is viewT[j][i].
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

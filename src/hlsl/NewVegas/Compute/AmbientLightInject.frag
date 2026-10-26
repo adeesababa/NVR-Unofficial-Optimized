@@ -2,6 +2,7 @@
 // for line (AmbientLight.glsl). Into the grid atlas (2 or 4 targets: the colours only when the grid carries them). All POINT.
 // effects/AmbientLight.cpp ExtDraw.
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 
@@ -87,7 +88,7 @@ void main() {
             fall *= fall;
             float through = 1.0;
             if (cb.gridWalls.y > 0.5 && cb.gridLampInfo.z > 0.0 && d > size) {
-                for (int s = 1; s <= 3; s++) {
+                [[unroll]] for (int s = 1; s <= 3; s++) {
                     vec3 c = floor((centre + v * (float(s) / 4.0)) / cb.gridOrigin.w);
                     if (any(lessThan(c, vec3(0.0))) || c.x >= GridX || c.y >= GridY || c.z >= GridZ) continue;
                     vec3 w = pointLod(t_wallMemory, CellUV(c)).xyz;
