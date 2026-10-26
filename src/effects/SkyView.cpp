@@ -1,4 +1,5 @@
 #include "SkyView.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void SkyViewEffect::RegisterTextures() {
 	TheTextureManager->InitTexture("TESR_SkyViewLUT", &Textures.TableTexture, &Textures.TableSurface, 128, 64, D3DFMT_A16B16G16R16F);
@@ -47,4 +48,53 @@ void SkyViewEffect::RenderTable(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	}
 	TheShaderManager->RenderEffectToRT(Textures.TableSurface, this, false, technique);
 	Device->SetRenderTarget(0, RenderTarget);
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the push block of the five SkyView passes (src\hlsl\NewVegas\Compute\SkyView.frag and the
+// others): TESR_PhysSky and TESR_PhysSkySun, then the LINEAR/CLAMP sampler's heap index (written by the extension at offset 32).
+struct SkyViewPush {
+	D3DXVECTOR4	physSky;
+	D3DXVECTOR4	physSkySun;
+	UInt32		samplerIndex;
+};
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the five techniques as Vulkan passes, SkyView.fx.hlsl line for line (Compute\SkyView, SkyTrans,
+// SkyMS, SkyViewX, SkyViewXMS). Render gives this the surface a technique draws into (the sky table, or the transmittance or
+// multiple scattering table), so each pass is one ExtDrawTo into it; the frame chain is not touched. The constants are the ones the
+// D3D9 pass uploads (Sky.cpp sets them before the tables are drawn). Techniques 2 and 3 read the transmittance table, 4 both.
+bool SkyViewEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex > 4 || ClearRenderTarget || !RenderTarget) return false;
+	SkyShaders* sky = TheShaderManager->Shaders.Sky;
+	if (!sky) return false;
+
+	static const char* const names[5] = { "SkyView", "SkyTrans", "SkyMS", "SkyViewX", "SkyViewXMS" };
+	const UINT textures = techniqueIndex == 4 ? 2 : techniqueIndex >= 2 ? 1 : 0;
+	const UINT resourceCount = textures ? textures + 1 : 0;	// the sampler after the textures, none for techniques 0 and 1
+	ExtPass& pass = extPass[techniqueIndex];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[3] = {};
+		for (UINT i = 0; i < textures; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		if (textures) { bindings[textures].Type = NVR_EXT_BIND_SAMPLER; bindings[textures].Slot = 0; bindings[textures].PushOffset = 32; }
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(names[techniqueIndex], bindings, resourceCount, sizeof(SkyViewPush), textures != 0);
+	}
+	ID3D9NvrExtSampler* sampler = textures ? DxvkCompute::LinearClamp() : nullptr;
+	if (!pass.Pipeline || (textures && !sampler)) return false;
+
+	IDirect3DBaseTexture9* inputs[2] = { Textures.TransTexture, Textures.MSTexture };
+	NVR_EXT_RESOURCE_BINDING resources[3] = {};
+	for (UINT i = 0; i < textures; i++) {
+		if (!inputs[i]) return false;
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i];
+	}
+	if (textures) { resources[textures].Slot = 0; resources[textures].Type = NVR_EXT_BIND_SAMPLER; resources[textures].pResource = sampler; }
+
+	SkyViewPush push = {};
+	push.physSky = sky->Constants.PhysSky;
+	push.physSkySun = sky->Constants.PhysSkySun;
+	if (!ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push))) return false;
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes (the physical sky's tables).", Name);
+	return true;
 }
