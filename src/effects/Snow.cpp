@@ -56,7 +56,7 @@ bool SnowEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 
 	struct Push {
 		D3DXVECTOR4 shadowToLight[4];	// 0: TESR_ShadowCameraToLightTransformOrtho, registers 0-3
-		D3DXVECTOR4 view[3];			// 64: TESR_ViewTransform, registers 0-2
+		D3DXVECTOR4 view[3];			// 64: TESR_ViewTransform, columns 0-2 (HLSL M[i][j] is element (i+1, j+1): SetMatrix)
 		D3DXVECTOR4 gameTime;			// 112: TESR_GameTime
 		D3DXVECTOR4 snowData;			// 128: TESR_SnowData
 		D3DXVECTOR4 sunColor;			// 144: TESR_SunColor
@@ -66,7 +66,8 @@ bool SnowEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 		UInt32		pad[3];
 	} push = {};
 	memcpy(push.shadowToLight, shadowToLight, sizeof(push.shadowToLight));
-	memcpy(push.view, view, sizeof(push.view));
+	for (int c = 0; c < 3; c++)	// 2026-10-25: the columns toWorld reads (the memory rows were a transposed view ray)
+		push.view[c] = D3DXVECTOR4(((const float*)&view[0])[c], ((const float*)&view[1])[c], ((const float*)&view[2])[c], ((const float*)&view[3])[c]);
 	push.gameTime = *gameTime;
 	push.snowData = Constants.Data;
 	push.sunColor = *sunColor;

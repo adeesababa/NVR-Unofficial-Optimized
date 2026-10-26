@@ -1,7 +1,7 @@
 // Snow as a Vulkan pass (needs NVR DXVK): Effects/Snow.fx.hlsl line for line. effects/Snow.cpp ExtRender.
-// The matrices are the constant registers as D3D9 uploads them: HLSL M[i][j] is register j's component i (fxc: mul(v, M)
-// is dp4(v, register j)), so the push block's mat4 (column j = register j) gives mul(v, M) as v * M, and toWorld's
-// TESR_ViewTransform[i][j] is column j's component i.
+// The matrices reach the effect through ID3DXEffect::SetMatrix, so HLSL M[i][j] is the D3DXMATRIX element (i+1, j+1). The push
+// block holds the shadow matrix's memory as stored (rows as GLSL columns), so mul(v, M) is M * v; toWorld's view columns are
+// filled by Snow.cpp from the matrix's columns (2026-10-25: they were its rows, a transposed view ray).
 #version 450
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
@@ -12,7 +12,7 @@ layout(set = 1, binding = 2) uniform texture2D t_ortho;      // TESR_OrthoMapBuf
 
 layout(push_constant) uniform Push {
     mat4 shadowToLight;    // 0: TESR_ShadowCameraToLightTransformOrtho
-    vec4 viewColumn0;      // 64: TESR_ViewTransform, registers 0-2 (the HLSL columns 0-2)
+    vec4 viewColumn0;      // 64: TESR_ViewTransform, the HLSL columns 0-2 (rows 0-3 of each)
     vec4 viewColumn1;      // 80
     vec4 viewColumn2;      // 96
     vec4 gameTime;         // 112: TESR_GameTime
@@ -74,8 +74,8 @@ void main() {
     // calculating the ray along which the volumetric snow will be calculated
     vec3 rayStart = toWorld(uv);
     vec3 rayEnd = rayStart * DEPTH * float(SnowLayers);
-    vec4 orthoStart = vec4(rayStart, 1.0) * pc.shadowToLight;
-    vec4 orthoEnd = vec4(rayEnd, 1.0) * pc.shadowToLight;
+    vec4 orthoStart = pc.shadowToLight * vec4(rayStart, 1.0);
+    vec4 orthoEnd = pc.shadowToLight * vec4(rayEnd, 1.0);
     vec4 rayStep = (orthoEnd - orthoStart) / float(SnowLayers);
 
     // each iteration adds a cylindrical layer of drops
