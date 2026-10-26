@@ -396,8 +396,8 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
 	};
 	const UINT ReflTextureCount = 16;
-	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 0).
-	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 1).
+	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_STORAGE_BUFFER, 1, NVR_EXT_VIEW_2D, FALSE, 0 };	// buffer slot 1: read-only storage and uniform buffers share one slot range (the Constants block is slot 0)
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
 		std::string slotName = name;
@@ -524,7 +524,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
 	UINT resourceCount = _countof(ReflBindings);
 	if (hiz) {
-		resources[resourceCount].Slot = 0; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
+		resources[resourceCount].Slot = 1; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
 		resourceCount++;
 		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
 	}
