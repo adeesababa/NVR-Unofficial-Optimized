@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <cstddef>
 
 #include "Bloom.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void BloomEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloomData", &Constants.Data);
@@ -138,6 +140,97 @@ void BloomEffect::RenderPass(IDirect3DDevice9* Device, UINT techniqueIndex, bool
 	}
 }
 
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the push block of every Bloom*.frag (Bloom.glsl), the same layout.
+struct BloomExtPush {
+	D3DXVECTOR4	data;			// TESR_BloomData
+	D3DXVECTOR4	resolution;		// TESR_BloomResolution
+	D3DXVECTOR4	glow;			// TESR_BloomGlow
+	D3DXVECTOR4	glowExtra;		// TESR_BloomGlowExtra
+	UInt32		samplerIndex;	// LINEAR, CLAMP: the extension writes the sampler heap index here (PushOffset)
+	UInt32		pad[3];
+};
+
+/*
+* UNOFFICIAL 2026-10-25 (NVR DXVK): the chain as Vulkan passes (src\hlsl\NewVegas\Compute\Bloom*.frag). The same passes, the same
+* constants (the Data.xy and Resolution changes included), each one a pass into its own target (ExtDrawTo; the frame chain is not
+* touched). The D3D9 upsample reads a level and writes that same level (the sum over it), which a Vulkan pass cannot do: the
+* downsample levels below the top one go to extLevels, and the upsamples write the chain's own levels, so nothing is read and
+* written at once. The top level is the downsample's in both paths. Only BloomTexture[0] is read outside the chain (Lens, Rain,
+* Precipitations, the game's HDR blend shaders, Debug). Returns false when a pass is refused; the D3D9 chain then does the frame
+* from the same image.
+*/
+bool BloomEffect::RenderBloomExt(IDirect3DDevice9* Device, int passes) {
+	// The pipelines are made on first use. Bindings: the textures in order (set 1, binding i, slot i), then the sampler.
+	auto make = [](ExtPass& pass, const char* spvName, UINT textureCount) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[3] = {};
+		for (UINT i = 0; i < textureCount; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i; bindings[i].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[textureCount].Type = NVR_EXT_BIND_SAMPLER; bindings[textureCount].Slot = 0; bindings[textureCount].PushOffset = (UINT)offsetof(BloomExtPush, samplerIndex);
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, textureCount + 1, sizeof(BloomExtPush), true);
+	};
+	make(extDownFirst, "BloomDownFirst", 1);
+	make(extDown, "BloomDown", 1);
+	make(extUp, "BloomUp", 2);
+	make(extUpLast, "BloomUpLast", 2);
+	ID3D9NvrExtSampler* sampler = DxvkCompute::LinearClamp();
+	if (!extDownFirst.Pipeline || !extDown.Pipeline || !extUp.Pipeline || !extUpLast.Pipeline || !sampler) return false;
+
+	// The downsample levels below the top: the chain's own format and sizes, made once when this path first runs.
+	if (!extLevelsTried) {
+		extLevelsTried = true;
+		for (int i = 0; i < MaxPasses - 1; i++) {
+			std::string name = "NVR_BloomLevel" + std::to_string(i);
+			TheTextureManager->InitTexture(name.c_str(), &extLevels.Texture[i], &extLevels.Surface[i], (int)Settings.Resolution[i].x, (int)Settings.Resolution[i].y, D3DFMT_A16B16G16R16F);
+		}
+	}
+	for (int i = 0; i < passes - 1; i++) {
+		if (!extLevels.Texture[i] || !extLevels.Surface[i]) return false;
+	}
+
+	// Level i as the chain holds it between its passes: the downsample's own texture below the top, the chain's at the top.
+	auto levelTexture = [&](int i) -> IDirect3DBaseTexture9* { return i < passes - 1 ? extLevels.Texture[i] : Textures.BloomTexture[i]; };
+	auto levelSurface = [&](int i) -> IDirect3DSurface9* { return i < passes - 1 ? extLevels.Surface[i] : Textures.BloomSurface[i]; };
+
+	// One pass into one target: the textures in binding order, then the LINEAR/CLAMP sampler.
+	auto draw = [&](ExtPass& pass, IDirect3DBaseTexture9* const* textures, UINT textureCount, IDirect3DSurface9* target, const BloomExtPush& push) {
+		NVR_EXT_RESOURCE_BINDING resources[3] = {};
+		for (UINT i = 0; i < textureCount; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i]; }
+		resources[textureCount].Slot = 0; resources[textureCount].Type = NVR_EXT_BIND_SAMPLER; resources[textureCount].pResource = sampler;
+		return ExtDrawTo(pass.Pipeline, &target, 1, resources, textureCount + 1, &push, sizeof(push));
+	};
+	auto pushConstants = [this]() {
+		BloomExtPush push = {};
+		push.data = Constants.Data;
+		push.resolution = Constants.Resolution;
+		push.glow = Constants.Glow;
+		push.glowExtra = Constants.GlowExtra;
+		return push;
+	};
+
+	// Downsample: level 0 from the image, each further level from the one above (techniques 0 to passes - 1 of the D3D9 chain).
+	for (int i = 0; i < passes; i++) {
+		Constants.Resolution = Settings.Resolution[i];
+		IDirect3DBaseTexture9* textures[1] = { i == 0 ? TheTextureManager->RenderedTexture : levelTexture(i - 1) };
+		if (!draw(i == 0 ? extDownFirst : extDown, textures, 1, levelSurface(i), pushConstants())) return false;
+	}
+
+	// Upsample from the top down: level i gets the level above it (the chain's BloomTexture[i + 1]) with its own downsample added.
+	// The last one (i = 0, technique 14 of the D3D9 chain) is the frame's bloom.
+	for (int i = passes - 2; i >= 0; i--) {
+		if (Constants.Data.z > 0.0f) {
+			Constants.Data.x = Settings.Resolution[i + 1].z; // Pixel size x axis of the upsampled texture.
+			Constants.Data.y = Settings.Resolution[i + 1].w; // Pixel size y axis of the upsampled texture.
+		}
+		Constants.Resolution = Settings.Resolution[i];
+		IDirect3DBaseTexture9* textures[2] = { Textures.BloomTexture[i + 1], levelTexture(i) };
+		if (!draw(i == 0 ? extUpLast : extUp, textures, 2, Textures.BloomSurface[i], pushConstants())) return false;
+	}
+	return true;
+}
+
 /*
 * Renders the final bloom buffer by iteratively downsampling and upsampling with intermediary blur.
 */
@@ -153,6 +246,15 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
 
 	const int passes = std::clamp((int) TheShaderManager->GetTransitionValue(Settings.Main.Passes, Settings.Night.Passes, Settings.Interiors.Passes), 2, 8);
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): [Main.Main.Performance] NvrDxvkPasses runs the chain as Vulkan passes (RenderBloomExt); otherwise,
+	// or when a pass is refused, the D3D9 chain below does the frame.
+	if (!ExtFailed && DxvkCompute::PassesOn() && RenderBloomExt(Device, passes)) {
+		Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, sizeof(FrameVS)); // as the D3D9 chain leaves it
+		Device->SetRenderTarget(0, RenderTarget);
+		renderTime = timer.LogTime("EffectRecord::ExtRender Bloom");
+		return;
+	}
 
 	int passNumber = 0;
 
