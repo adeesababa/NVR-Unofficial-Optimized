@@ -65,9 +65,12 @@ def include_files(path, seen=None):
     seen.append(path)
     text = open(path, "rb").read().decode("latin-1")
     for m in re.finditer(r'^\s*#\s*include\s*"([^"]+)"', text, re.M):
-        inc = os.path.join(os.path.dirname(path), m.group(1).replace("\\", "/"))
-        if os.path.exists(inc):
-            include_files(inc, seen)
+        rel = m.group(1).replace("\\", "/")
+        for base_dir in (os.path.dirname(path), os.path.dirname(seen[0])):   # the includer's folder, then the effect's (D3DX finds both)
+            inc = os.path.join(base_dir, rel)
+            if os.path.exists(inc):
+                include_files(inc, seen)
+                break
     return seen
 
 
@@ -123,6 +126,11 @@ def split_items(text):
                     i += 1
                     break
             elif c == ";" and depth == 0 and paren == 0:
+                head = text[start:i]
+                # a ";" inside an annotation (<string ResourceName = "x.dds";>) of a non-static declaration does not end it
+                if head.count("<") > head.count(">") and re.match(r"\s*(uniform\s+|extern\s+)?(sampler\w*|texture\w*|float\w*|half\w*|int\w*|bool\w*)\s", head):
+                    i += 1
+                    continue
                 items.append(text[start:i + 1])
                 i += 1
                 break
@@ -251,12 +259,23 @@ def main():
     defines = ["NVR_SM6=1"] + a.defines
     hash_root = os.path.abspath(a.hash_root) if a.hash_root else os.path.dirname(os.path.dirname(effect))
 
-    # 1. preprocess (glslang's preprocessor, HLSL mode, the variant's defines)
-    cmd = [tool("glslang"), "-E", "-D", "-S", "frag"] + ["-D" + d for d in defines] + [effect]
+    # 1. preprocess (glslang's preprocessor, HLSL mode, the variant's defines), on a copy of the sources whose annotation strings
+    # ("Precipitations\splash.dds") have their backslashes turned round (glslang's preprocessor rejects them as escapes)
+    import tempfile, shutil
+    tmp = tempfile.mkdtemp(prefix="nvr-sm6-")
+    root = os.path.dirname(os.path.dirname(effect))
+    for f in include_files(effect):
+        dst = os.path.join(tmp, os.path.relpath(f, root))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        src_text = open(f, "rb").read().decode("latin-1")
+        src_text = re.sub(r'"[^"\n]*"', lambda m: m.group(0).replace("\\", "/"), src_text)
+        open(dst, "wb").write(src_text.encode("latin-1"))
+    cmd = [tool("glslang"), "-E", "-D", "-S", "frag", "-I" + os.path.join(tmp, os.path.relpath(os.path.dirname(effect), root))] + ["-D" + d for d in defines] + [os.path.join(tmp, os.path.relpath(effect, root))]
     pp = subprocess.run(cmd, capture_output=True)
     if pp.returncode != 0:
         die("preprocess failed:\n" + pp.stdout.decode(errors="replace") + pp.stderr.decode(errors="replace"))
     text = pp.stdout.decode("latin-1")
+    shutil.rmtree(tmp, ignore_errors=True)
     text = re.sub(r"^\s*#\s*line\b.*$", "", text, flags=re.M)
 
     items = split_items(text)
@@ -272,7 +291,7 @@ def main():
         if re.match(r"^technique\w*\b", flat):
             technique_items.append(it)
             continue
-        m = re.match(r"^(?:uniform\s+)?(sampler|sampler1D|sampler2D|sampler3D|samplerCUBE)\s+(\w+)\s*(?::\s*register\s*\(\s*\w+\s*\))?\s*"
+        m = re.match(r"^(?:uniform\s+)?(sampler|sampler1D|sampler2D|sampler3D|samplerCUBE)\s+(\w+)\s*(?::\s*register\s*\(\s*\w+\s*\))?\s*(?:<[^>]*>)?\s*"
                      r"(?:=\s*sampler_state\s*\{(.*)\})?\s*;$", flat, re.S | re.I)
         if m:
             kind = SAMPLER_TYPES.get(m.group(1), None) or SAMPLER_TYPES[[k for k in SAMPLER_TYPES if k.lower() == m.group(1).lower()][0]]
@@ -375,7 +394,8 @@ def main():
                 new_params.append("%s %s__t, uint %s__s" % (TEXTURE_TYPE[kind], pm.group(2), pm.group(2)))
                 local.add(pm.group(2))
             else:
-                new_params.append(p)
+                # HLSL lets a function change its uniform parameters (a technique's arguments); here they are plain inputs
+                new_params.append(re.sub(r"^\s*uniform\s+", "", p))
         rest = code[p1 + 1:]
         return code[:p0 + 1] + ", ".join(new_params) + ")" + expand_names(rest, sampler_names | local)
 
@@ -425,7 +445,7 @@ def main():
         uni, ptype, pname, psem, pdef = dm.groups()
         if uni:
             if ai < len(entry_args):
-                call.append(entry_args[ai])
+                call.append(expand_names(entry_args[ai], sampler_names))
                 ai += 1
             elif pdef is not None:
                 call.append(pdef)
