@@ -91,3 +91,18 @@ What is still missing / next steps:
   at bright edges in motion). Semi-transparent menus fall back to paper white for the whole covered area (intended).
 - The EDID path in DXVK fails on this monitor ("Failed to parse edid"); NVR takes the display's peak from DXGI instead (418 nits).
 - Menu: the settings live in `[Shaders.HDR.Main]` (a settings-only section like Cloth); not checked whether the menu lists it.
+
+## Combined build check (deep/fork-combo-1026 5f96ca01, NVR DLL 42b2dfba, fork v3.0.1-10-g02b00593, no dxvk.conf): PASS
+Analysis only (runs 20261026-131417-slotB lucky22 960x540, 20261026-133747-slotC desert view 1080p).
+- DXVK log (slot B, copied to `G:\_NVR-build-scratch\nvr-dxvk-hdr\runlogs\20261026-131417-slotB-combo_d3d9.log`): the same
+  sequence as on deep/fork-hdr: SRGB -> HDR10_ST2084 (A2B10G10R10) -> SRGB -> HDR10 -> EXTENDED_SRGB_LINEAR (R16G16B16A16_SFLOAT)
+  -> SRGB -> HDR10 -> SRGB; one EDID line only (the read-once fix holds). Depth: RESZ, even without the vendor spoof.
+- Paper white, desert: capture/picture mid-tone ratio 0.9998 (5-95 % 0.963-1.040), as before. Highlights: towards the sun max
+  259.8 nits (before 259.9), 0.068 % of pixels above paper white (0.089); PeakNits 1000: max 369.7 (384.9), 0.76 % (0.81).
+- Cost: HDR gain pass 0.081 ms, scene copy 0.104 ms (before 0.081 / 0.105).
+- lucky22: highlights to 395.5 nits (limit 418), HUD mask 1.1 % of pixels, at most 130 nits; HighlightStrength 0 max 163 nits.
+  The per-pixel ratio is not usable in this run because the camera keeps moving through every shot (off-1 vs off-2: 82.7 % of
+  pixels > 2/255, mean 14.0; before 10.8 % / 1.27), so capture (frame 60) and picture (frame 150) show different frames. An
+  alignment-free check (luminance quantiles, HUD bands excluded) gives capture/picture 1.02 / 1.02 / 1.01 at p25 / p50 / p75
+  (0.98-1.02 across captures), i.e. paper white holds. The moving camera affects every feature's pictures in that run (an
+  issue with the batched lucky22 run or the combo, not with HDR): re-run lucky22 solo before trusting any lucky22 A/B from it.
