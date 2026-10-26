@@ -23,6 +23,18 @@ float3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float 
     return color;
 }
 
+// UNOFFICIAL 2026-10-26: the true world direction of a sky pixel, for SkyLook's horizon fade. The sky shaders' own eye direction is
+// the dome mesh's vertex position, and the dome sits so that even the visible horizon has a large up component (the horizon tint
+// never showed). Rebuilt from the pixel and the camera: the shader declares TESR_ReciprocalResolution, TESR_InvProjectionTransform
+// and TESR_InvViewTransform (row_major). Only the main view's camera: in the water reflection the fade is approximate.
+#ifdef SKY_VIEW_DIRECTION
+float3 SkyViewDirection(float2 vpos) {
+    float2 ndc = float2((vpos.x + 0.5f) * TESR_ReciprocalResolution.x * 2.0f - 1.0f, 1.0f - (vpos.y + 0.5f) * TESR_ReciprocalResolution.y * 2.0f);
+    float4 view = mul(float4(ndc, 0.5f, 1.0f), TESR_InvProjectionTransform);
+    return normalize(mul(float4(view.xyz / view.w, 0.0f), TESR_InvViewTransform).xyz);
+}
+#endif
+
 // UNOFFICIAL 2026-10-26 [Shaders.Sky.Main] sky look, for SKY.pso and the sky the flat clouds blend with (SKYTEX.pso). Sky.cpp SkyLook
 // mirrors it for the sky light on objects: change one and change the other. Saturation first (look.x, 1 = no change), then the tint,
 // which is the main tint times the horizon tint at the horizon, fading to the main tint alone at look.y (TintGradientHeight, the view
