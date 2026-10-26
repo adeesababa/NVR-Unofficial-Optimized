@@ -24,6 +24,19 @@ jobs:
           pip3 install --user meson
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # UNOFFICIAL 2026-10-26: the debugging tools' SPIR-V (tools/nvr-dxvk/compile-debug.sh), as the artifact "nvr-debug-spv".
+      - name: Compile the debugging tools' shaders
+        run: |
+          sudo apt-get install -y spirv-tools
+          bash tools/nvr-dxvk/compile-debug.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nvr-debug-spv
+          path: |
+            src/hlsl/NewVegas/Compute/PixelInspect.spv
+            src/hlsl/NewVegas/Compute/ReflectionsTraceHiZCount.spv
+
       - name: Build
         run: bash tools/nvr-dxvk/build.sh "$RUNNER_TEMP/nvr-dxvk"
 

@@ -511,6 +511,59 @@ ID3D9NvrExtHdr : public IUnknown {
           UINT                            Size) = 0;
 };
 
+/*
+ * 1.5-debug: readback that never waits (debugging tools: pixel inspector, shader counters).
+ *
+ * A separate interface, queried from ID3D9NvrExt (QueryInterface with its GUID), so a d3d9.dll
+ * without it simply returns E_NOINTERFACE and ID3D9NvrExt's own method table is untouched.
+ *
+ * A readback buffer lives in host-visible memory (TRANSFER_DST only). CopyToReadback records a
+ * copy into it, in order with everything recorded before, and remembers where in the command
+ * stream that copy sits. TryReadback then copies the bytes out if and only if that copy has run
+ * on the GPU; otherwise it returns S_FALSE at once (no flush, no wait). Use a ring of a few
+ * buffers and read each one a few frames after its copy: the normal case never stalls.
+ * ReadBuffer (above) stays the waiting, test-only path.
+ *
+ * Also since 1.5-debug: buffers made with NVR_EXT_BUFFER_STORAGE are usable (read and write) by
+ * the vertex and fragment stages of the full-screen and geometry passes too, with DXVK's barriers
+ * covering those stages (a fragment shader can atomicAdd into a counter buffer).
+ */
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d315")
+ID3D9NvrExtReadback : public IUnknown {
+  /** A host-visible buffer for CopyToReadback / TryReadback only (not bindable to a pass). */
+  virtual HRESULT STDMETHODCALLTYPE CreateReadbackBuffer(
+          UINT                            Size,
+    const char*                           pDebugName,
+          ID3D9NvrExtBuffer**             ppBuffer) = 0;
+
+  /**
+   * Records a copy of Size bytes (4-aligned) from pSrc (a buffer made with NVR_EXT_BUFFER_TRANSFER_SRC)
+   * at SrcOffset into the readback buffer pDst at DstOffset. Any earlier copy into pDst that has not
+   * been read is superseded (TryReadback then waits for this one).
+   */
+  virtual HRESULT STDMETHODCALLTYPE CopyToReadback(
+          ID3D9NvrExtBuffer*              pDst,
+          UINT                            DstOffset,
+          ID3D9NvrExtBuffer*              pSrc,
+          UINT                            SrcOffset,
+          UINT                            Size) = 0;
+
+  /**
+   * S_OK: the last CopyToReadback into pBuffer has finished on the GPU; Size bytes at Offset are in pData.
+   * S_FALSE: not finished yet (nothing copied; never waits). D3DERR_INVALIDCALL: not a readback buffer,
+   * no copy recorded into it, or a bad range.
+   */
+  virtual HRESULT STDMETHODCALLTYPE TryReadback(
+          ID3D9NvrExtBuffer*              pBuffer,
+          UINT                            Offset,
+          UINT                            Size,
+          void*                           pData) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtReadback, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x15);
+#endif
+
 #ifndef _MSC_VER
 __CRT_UUID_DECL(ID3D9NvrExtHdr,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x10);
 __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
