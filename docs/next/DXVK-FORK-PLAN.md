@@ -260,6 +260,34 @@ What it says:
   readback runs per frame: AvgLuma's ReadBuffer is the self-test only).
 - Caveat: slot copies (slim game copies); at the user's full resolution the GPU share is likely larger still.
 
+## GPU capture: barriers and the two slow passes (2026-10-26 evening, user asked; fork patch 0009, CI run 40401407253, v3.0.1-9)
+How (repeatable): RenderDoc 1.46 is installed with its 32-bit Vulkan layer registered. One slot launch with
+`ENABLE_VULKAN_RENDERDOC_CAPTURE=1 DXVK_DEBUG=markers` in the environment (run_autotest.py passes it on to the game) loads it;
+the new shot command `renderdoc <path template>` (SettingShots.h, test only, 0186421f) asks RenderDoc's in-app API for one frame
+two frames before the shot's picture. List dxvkfork-18-capture (lucky22, one D3D9-pass frame, one Vulkan-pass frame); captures
+G:\_NVR-build-scratch\rdc\lucky22-d3d9_frame1850.rdc / lucky22-vk_frame2150.rdc (~840 MB each). Analysis without the UI:
+`qrenderdoc.exe --python G:\_NVR-build-scratch\rdc\rdc_analyze.py` with RDC_IN / RDC_OUT set (every action, its replay GPU time,
+the barriers before it with layouts, totals) -> report-d3d9.txt / report-vk.txt there.
+Found:
+- The barrier structure is nearly the same: D3D9 passes 178 barrier commands / 217 image barriers a frame, Vulkan passes
+  191 / 226. The one real difference: DXVK ends its own passes suspended and moves the last target back to its read layout at
+  the start of the next pass, with a global memory barrier only where a hazard needs one; the extension's nvrSetState ended
+  every injected pass fully (endCurrentPass(false)): a global memory barrier and a layout change right after each pass.
+  Patch 0009 ends them suspended (one line in dxvk_context.h). RESULT (list dxvkfork-17-profile, ABAB, og-desert
+  20261026-171321, lucky22 20261026-171530): barriers a frame 155 -> 151 (desert, D3D9 140) and 190 -> 186 (Lucky 38, D3D9
+  176); frame time unchanged within noise; same picture (D3D9 vs Vulkan differs no more than D3D9 vs D3D9). Kept: correct
+  and the same handling as DXVK's own passes, but barriers are NOT where the Vulkan passes lose time.
+- Where they do lose it (F10 per-effect GPU timers, both forks, two runs each): SMAA +0.10-0.15 ms in both scenes (the
+  D3D9 weight pass, 32-step searches, runs only on edge pixels through SMAA's stencil; the port has no stencil and runs
+  every pixel, returning 0 off the edges), point-shadow lighting +0.28-0.32 ms in Lucky 38 (neither path uses depth or
+  stencil tests there and both sample the cubes LINEAR at LOD 0: something in the shader itself), fog estimate +0.04 ms
+  in the desert. Most other ported passes are 0.01-0.08 ms faster than their D3D9 shaders. Lucky 38 frame total +0.22-0.28.
+- RenderDoc's replay times per draw cannot compare the two paths (the same copies took 1.9 ms in one capture and 3.4 ms in
+  the other); use the in-game F10 timers.
+Next (session-hours): (1) extension 1.6: a depth-stencil attachment and stencil test for full-screen passes, the SMAA weight
+pass tests SMAA's own stencil as the D3D9 pass does (1-2 h; expected back to D3D9's time). (2) Point-shadow lighting: put
+DXVK's SPIR-V of the D3D9 shader (RenderDoc shows it) beside ours and find the extra work (1-2 h; risk: nothing obvious).
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).
