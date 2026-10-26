@@ -1,29 +1,20 @@
-# Fork feature 2026-10-26: histogram auto-exposure + bokeh depth of field (deep/fork-bokeh)
+# Fork feature 2026-10-26: bokeh depth of field (deep/fork-bokeh)
 
-Two compute-only things D3D9 cannot do, on the NVR DXVK fork (extension 1.4). Both are OFF by default and do nothing on
+Compute scatter bokeh (a thing D3D9 cannot do) on the NVR DXVK fork (extension 1.4). OFF by default and do nothing on
 native D3D9 or stock DXVK (the old paths run unchanged).
 
 ## No DXVK patch needed (patch number 0011 left unused)
-Everything both parts need is already in extension 1.4: compute pipelines, storage buffers written by compute and read by a
+Everything the bokeh needs is already in extension 1.4: compute pipelines, storage buffers written by compute and read by a
 fragment pass, ClearBuffer, push data, the sampler heap. GLSL atomics on storage buffers and shared memory need nothing from the
 host side. So no `0011` patch: the fork DLL is the existing `G:\_NVR-build-scratch\nvr-dxvk-0006` (DXVK 3.0.1 + patches
 0001-0006). An indirect dispatch (sized by the GPU's sprite count) would save the bokeh splat's empty groups; measured below, it
 is not worth a patch yet.
 
-## Part 1: histogram auto-exposure
-Settings `[Shaders.Exposure.Histogram]`: `Histogram = false`, `LowPercent = 10.0`, `HighPercent = 5.0` (0-49 each).
-- `src/hlsl/NewVegas/Compute/AvgLumaHistogram.comp`: phase 0, one 16x16 group per tile: every pixel's linear luma goes into a
-  256-bin log2 histogram (log2 luma -16..4, 0.078 stops per bin) in shared memory with `atomicAdd`, then each non-empty bin is
-  added into the global 256-bin buffer (one global atomic per bin per tile); the tile's exact sum is reduced as in AvgLuma.comp.
-  Phase 1, one group: an inclusive prefix sum over the bins, the part of each bin inside [LowPercent, 100 - HighPercent] of the
-  sorted pixels, the mean luma of what is left (bin centres). Then AvgLuma.fx.hlsl's own per-frame logic unchanged (8-frame
-  average, DarkAdaptSpeed/LightAdaptSpeed steps, the DoF focus), into the same 1x1 TESR_AvgLumaBuffer, so Exposure, DoF,
-  GodRays and Debug read it as before. "Smooth adaptation" is the existing 8-frame average + the adapt-speed limiter.
-- `src/effects/AvgLuma.cpp`: `RenderCompute` runs the histogram when `Histogram` is on (with or without `AvgLumaCompute`);
-  the bins are cleared with ClearBuffer every frame. Any failure: logged once, the histogram is off for the session and the
-  exact average / the D3D9 112-tap pass carries on. `AvgLumaComputeCheck = N` logs `histogram average A (exact E, ratio R)`
-  next to the 112 taps.
-- `src/effects/Exposure.{h,cpp}`: the three settings (read in UpdateSettings, live).
+## Part 1: histogram auto-exposure -> dropped in favour of the shipped one
+This branch had its own histogram exposure (256-bin log2 histogram with shared + global atomics, percentile trim, AvgLuma's
+smoothing). Before it was tested, the same design shipped on mine/nvr-dxvk-compute (8cf821b7: `[Shaders.Exposure.Main]
+Histogram`, `HistogramLowPercent`, `HistogramHighPercent`, ~0.075 ms). Mine added nothing clearly better (same percentiles,
+same smoothing), so it was removed (6fcd2338) and the shipped one merged (7a74ab00). Only the bokeh is this branch's work.
 
 ## Part 2: bokeh depth of field
 Settings `[Shaders.DepthOfField.Bokeh]`: `Bokeh = false`, `BokehShape = 6` (0 disc, 5-8 polygon sides), `BokehThreshold = 0.75`,
