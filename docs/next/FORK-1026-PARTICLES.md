@@ -47,3 +47,31 @@ requested: the old picture.
 
 ## Results
 (see the section appended below)
+
+## Result (2026-10-26, slot C 1920x1080, GTX 1070, og-desert / og-night, ForceRain / ForceSnow)
+Builds: fork d3d9.dll from CI run 40284996130 (patches 0001-0006 + 0009) in `G:\_NVR-build-scratch\nvr-dxvk-particles\nvr-dxvk-x32`
+(+ `dxvk.conf` with `d3d9.customVendorId = 1002`, the slot depth fix); NVR DLL F6C2C908 (tip b9c10109 + base 7a74ab00 merged).
+- Works: no crash, no fallback, in all three runs (66 + 22 + 17 shots); log `UNOFFICIAL GPU particles: ready` / `running (rain,
+  N particles, ortho map)`. With the depth fix the log says `Depth resolve: RESZ` and the drops are hidden behind the hills and
+  stop at the ground; seen looking down, streaks end on the road and leave expanding splash rings; snow flakes fall and lie on the
+  road for their 4 s (pictures `H:\_NVR-autotest-shots\20261026-095528-slotC\1-particles2` and `...\20261026-105058-slotC\1-particles3`,
+  crops in `G:\_NVR-build-scratch\particles-diffs\r2d, r3d`). At night (og-night) the drops take the dark sky light and show only
+  faintly near lit areas (no glowing rain).
+- Off = old picture: off has no code path that touches the device (no extension call, no ortho map request); off/off pairs differ
+  only by the scene's own noise (og-desert 19-29 % of pixels > 2/255, signed ~0.1-0.4: exposure still settling). On vs off:
+  +1/255 on average, 2-2.6 % of pixels > 16/255 (the drops).
+- Cost (F10 "GPU particles (sim + draw)", includes the frame copy; og-desert, 600-frame windows, run 20261026-105058-slotC):
+  | Count | ms |
+  |---|---|
+  | 8192 | 0.09 |
+  | 32768 (default) | 0.15 (three ABAB rounds 0.149 / 0.153 / 0.149) |
+  | 131072 | 0.42 (looking down at splashes 0.38; same with Splashes off 0.28) |
+  | 262144 | 0.63 (run 2) |
+  Game frame total off 7.70-7.86 vs on 7.83-7.85 ms (inside the scene's swing).
+- Missing / next: (1) the drops are lit only by the fog colour + the scene behind them (no lamps, no sun glint, no wind from the
+  weather); (2) splashes are camera-facing rings, fine on flat ground, not shaped to walls; (3) only rain and snow: GunFX smoke
+  puffs as GPU particles (second target) not started; the geometry interface (any instanced quads with a buffer-reading vertex
+  shader) is what it needs; (4) the hit test against the depth buffer uses a 30-unit margin, so a drop passing just behind a thin
+  pole lands on it; (5) runs in the post-tonemap chain like the screen-space rain, so no bloom or fog on the drops.
+- Settings: [Shaders.GPUParticles.Main] Enabled (false), Count (32768), Size (1.0), Speed (1.0), Opacity (0.8), Radius (1200),
+  Splashes (true). Needs ForceRain/ForceSnow or a rain/snow weather, outdoors, and the fork's d3d9.dll.
