@@ -21,6 +21,7 @@
 
 #include "TAA.h"
 #include "../core/DxvkCompute.h"
+#include "../core/GpuProfiler.h"
 
 namespace {
 	// cbFSR2 in ffx_fsr2_callbacks_nvr.h (std140; the same layout as AMD's FfxFsr2Constants).
@@ -222,6 +223,10 @@ bool TAAEffect::FSRDispatch(int index, const NVR_EXT_RESOURCE_BINDING* bindings,
 	dispatch.GroupsX = groupsX;
 	dispatch.GroupsY = groupsY;
 	dispatch.GroupsZ = 1;
+	// F10: one GPU timer per pass, inside TAA's ("TAA" covers the whole FSR path).
+	static GpuTimer timers[FSRPipelineCount] = { GpuTimer("  FSR prep (NVR)"), GpuTimer("  FSR luma mip (NVR)"), GpuTimer("  FSR reconstruct"),
+		GpuTimer("  FSR depth clip"), GpuTimer("  FSR lock"), GpuTimer("  FSR accumulate"), GpuTimer("  FSR accumulate (sharpen)"), GpuTimer("  FSR RCAS") };
+	GpuProfileScope gpu(timers[index], TheRenderManager->device);
 	if (FAILED(DxvkCompute::Extension()->Dispatch(&dispatch))) {
 		Logger::Log("[ERROR] UNOFFICIAL NVR DXVK: TAA FSR pass %s failed to dispatch; FSR is off for this session (TAA's own resolve runs)", Pipelines[index].name);
 		fsrFailed = true;
@@ -392,6 +397,8 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, fsrOutput.Texture), Image(1, source), Image(2, viewModel), Image(3, fsrMotion.Texture),
 			Image(4, fsrDepth.Texture), Sampler(0, point) };
 		struct { UInt32 pointIndex; float debugView; float w, h; } compositePush = { 0, (float)Settings.DebugView, (float)width, (float)height };
+		static GpuTimer compositeTimer("  FSR composite (NVR)");
+		GpuProfileScope gpu(compositeTimer, Device);
 		if (!ExtDrawTo(fsrComposite.Pipeline, &RenderTarget, 1, b, _countof(b), &compositePush, sizeof(compositePush))) return fail("the composite pass failed");
 	}
 
