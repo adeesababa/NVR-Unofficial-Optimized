@@ -1708,8 +1708,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	if (ambientLight) Effects.AmbientOcclusion->Enabled = Effects.BounceLight->Enabled = false;
 	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz; core/HiZ.h): the Hi-Z pyramid, one compute dispatch after the depth and normals,
 	// only for the readers that want it this frame ([Shaders.Reflections.Main] HiZ, [Shaders.AmbientLight.Main] HiZ, both Vulkan passes).
-	HiZ::Build(Device, DxvkCompute::PassesOn() && ((ambientLight && Effects.AmbientLight->HiZWanted()) ||
-		(Effects.Reflections->HiZWanted() && wouldRender(Effects.Reflections))));
+	// (Reflections alone builds it right before its own passes, below: built here, the dispatch slowed AmbientLight's prepare by ~0.015 ms.)
+	HiZ::Build(Device, DxvkCompute::PassesOn() && ambientLight && Effects.AmbientLight->HiZWanted());
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
@@ -1952,6 +1952,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		static GpuTimer reflectionsTimer("Reflections (SSR)");
 		GpuProfileScope gpu(reflectionsTimer, Device);
 		if (wouldRender(Effects.Reflections)) {
+			// UNOFFICIAL 2026-10-26 (deep/fork-hiz): the Hi-Z pyramid for the trace, once a frame (nothing new if AmbientLight's HiZ built it).
+			if (DxvkCompute::PassesOn() && Effects.Reflections->HiZWanted()) HiZ::Build(Device, true);
 			Effects.Reflections->RenderBuffers(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 			Effects.Reflections->BindMaterial();	// UNOFFICIAL 2026-10-20 MaterialAware (stage 15; nothing without it)

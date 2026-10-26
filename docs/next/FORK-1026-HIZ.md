@@ -71,6 +71,22 @@ AmbientLight HiZ (far taps on coarse levels): NO WIN. Estimate pass 0.157 -> 0.1
 samples out of reach). The 16-byte prep reads are not this pass's bottleneck. Left in, off by default; the better AO use of the
 pyramid (a GTAO horizon search walking coarse levels) is not built.
 
+## Combined-build bulk run (deep/fork-combo-1026 5f96ca01, list fork1026-hiz-bulk, fix 2 in game)
+Runs: lucky22 20261026-131314-slotA (slot A = 960x540), og-desert 20261026-133053-slotC, og-lake 20261026-140324-slotC (1080p).
+No crash, no fallback or error line, all Hi-Z log lines present, "Depth resolve: RESZ".
+| scene | trace off -> HiZ | pyramid | net | reflection-only pair off/HiZ vs noise |
+|---|---|---|---|---|
+| lucky22 (960x540) | 0.108 -> 0.074 | 0.025 | -0.009 | 19.6 / 18.6 % vs 9.7 % (bottom half 24 % vs 9 %): FAIL |
+| og-desert | 0.535 -> 0.223 | 0.071 | -0.24 | 10.1 / 10.2 % vs 10.5 %: PASS |
+| og-lake | 0.081 -> 0.081 (nothing reflected) | 0.071 | +0.07 | 18-20 % vs 23 % (scene moves): PASS |
+Fix 2 did not change lucky22. Cause found in the reflection-only view: under HiZ the near floor shows the floor's OWN pattern (the
+circle decals) where the old trace shows the dark mirrored rail: rough-floor rays spread almost along the floor pass the facing test
+(dot < 0.2) and hit the floor's own nearby pixels (self-hits), averaged over frames into a faint copy of the floor. Also seen:
+AmbientLight's prepare +0.015 ms in every scene whenever the pyramid was built right before it.
+Fix 3 (code only, after the bulk run; built, not run in game): a level-0 pixel whose point lies on the reflecting surface's own plane
+is no hit; and Reflections builds the pyramid right before its own passes (inside "Reflections (SSR)"), AmbientLight's HiZ alone
+still builds it early.
+
 ## Settings (all off by default; need NVR DXVK + [Main.Main.Performance] NvrDxvkPasses)
 - `[Shaders.Reflections.Main] HiZ = false`: recommended ON with the fork once fix 2 is confirmed in the bulk run.
 - `[Shaders.AmbientLight.Main] HiZ = 0` (0-6): keep 0 (measured no win).
