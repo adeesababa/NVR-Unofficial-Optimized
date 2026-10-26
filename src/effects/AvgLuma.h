@@ -32,12 +32,19 @@ public:
 	void	CheckCompute(IDirect3DDevice9* Device, bool computeRan);
 
 private:
-	struct ComputePush {	// AvgLuma.comp's push block, 112 bytes
+	struct ComputePush {	// AvgLuma.comp's push block (112 bytes), and AvgLumaHistogram.comp's (+ histogram: 128)
 		UINT32		width, height, groupsX, groupsY, phase, samplerIndex, pad0, pad1;
 		D3DXVECTOR4	motionBlurData, depthOfFieldData, gameTime, exposureData, cameraData;
+		D3DXVECTOR4	histogram;	// x low fraction, y high fraction, z log2 of the lowest bin's top, w log2 of the top bin's bottom
 	};
 	bool	ComputeReady();		// creates the pipeline and buffers on first use; false once anything failed
 	void	ComputeRelease();
+
+	// UNOFFICIAL 2026-10-26 [Shaders.Exposure.Main] Histogram: the trimmed average (Compute\AvgLumaHistogram.comp) instead of the exact
+	// one; same buffers and texture, its own pipeline and a 128-bin count buffer (cleared every frame). Needs NVR DXVK, not AvgLumaCompute.
+	ID3D9NvrExtPipeline*	histogramPipeline = nullptr;
+	ID3D9NvrExtBuffer*		histogramBins = nullptr;
+	UINT					histogramFrames = 0;
 
 	ID3D9NvrExtPipeline*	computePipeline = nullptr;
 	ID3D9NvrExtBuffer*		computePartials = nullptr;

@@ -270,7 +270,13 @@ bool SMAAEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 		}
 		return pass.Pipeline != nullptr;
 	};
-	if (!make(extEdges, "SMAAEdges", SMAAEdgesBindings, _countof(SMAAEdgesBindings)) ||
+	// UNOFFICIAL 2026-10-26: the edge technique's own variant (one D3D9 technique per mode; Compute\variants.txt), else the general shader.
+	char edgeSuffix[8];
+	_snprintf_s(edgeSuffix, sizeof(edgeSuffix), _TRUNCATE, "m%u", mode);
+	ID3D9NvrExtPipeline* edgesPipeline = ExtVariant(extVariants, extEdges, "SMAAEdges", edgeSuffix, [](const char* name) {
+		return DxvkCompute::CreateGraphicsPipeline(name, SMAAEdgesBindings, _countof(SMAAEdgesBindings), sizeof(SMAAPush), true);
+	});
+	if (!edgesPipeline ||
 		!make(extWeights, "SMAAWeights", SMAAWeightsBindings, _countof(SMAAWeightsBindings)) ||
 		!make(extNeighborhood, "SMAANeighborhood", SMAANeighborhoodBindings, _countof(SMAANeighborhoodBindings))) return false;
 	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
@@ -291,7 +297,7 @@ bool SMAAEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 	edges[0].Slot = 0; edges[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[0].pResource = TheTextureManager->RenderedTexture;
 	edges[1].Slot = 1; edges[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[1].pResource = depth;
 	edges[2].Slot = 0; edges[2].Type = NVR_EXT_BIND_SAMPLER; edges[2].pResource = linear;
-	if (!ExtDrawTo(extEdges.Pipeline, &Textures.SMAA_Edges_Surface, 1, edges, _countof(edges), &push, sizeof(push))) return false;
+	if (!ExtDrawTo(edgesPipeline, &Textures.SMAA_Edges_Surface, 1, edges, _countof(edges), &push, sizeof(push))) return false;
 
 	// Blending weights into TESR_SMAA_Blend, only where the edge pass marked (mode 1).
 	push.mode = masked ? 1 : 0;

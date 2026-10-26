@@ -29,6 +29,7 @@ struct SettingsMainStruct {
         bool    AvgLumaCompute; // [Main.Main.Performance] AvgLumaCompute (UNOFFICIAL 2026-10-23: the average-luma pass as a compute reduction; needs NVR DXVK, otherwise the D3D9 pass runs as before), live
         int     AvgLumaComputeCheck; // [Main.Main.Performance] AvgLumaComputeCheck (test tool: every N frames both paths run and are logged side by side; 0 off), live
         bool    NvrDxvkPasses; // [Main.Main.Performance] NvrDxvkPasses (UNOFFICIAL 2026-10-23: the ported full-screen effects as Vulkan passes; needs NVR DXVK), live
+        bool    NvrDxvkVariants; // [Main.Main.Performance] NvrDxvkVariants (UNOFFICIAL 2026-10-26: Vulkan passes use their compile-time variants; DxvkCompute::VariantsOn), live
         bool    AmbientLightSmoothCompute; // [Main.Main.Performance] AmbientLightSmoothCompute (UNOFFICIAL 2026-10-25: AmbientLight's NormalSmoothing as one compute dispatch; needs NVR DXVK, otherwise the two D3D9 passes run as before), live
         bool    NvrDxvkReplacements; // [Main.Main.Performance] NvrDxvkReplacements (UNOFFICIAL 2026-10-24: pixel shaders with a Compute\Replace\<name>.spv run as that SPIR-V through the NVR DXVK extension; needs NVR DXVK 1.2), at load
         bool    AmbientLightBlurCompute; // [Main.Main.Performance] AmbientLightBlurCompute (UNOFFICIAL 2026-10-25: AmbientLight's BlurX + BlurY as one compute dispatch; needs NVR DXVK), live

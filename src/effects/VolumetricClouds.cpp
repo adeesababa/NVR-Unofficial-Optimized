@@ -22,7 +22,9 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.SunStrength = std::clamp(TheSettingManager->GetSettingF(section, "SunStrength"), 0.0f, 10.0f);
 	Settings.AmbientStrength = std::clamp(TheSettingManager->GetSettingF(section, "AmbientStrength"), 0.0f, 10.0f);
 	Settings.Forward = std::clamp(TheSettingManager->GetSettingF(section, "ForwardScattering"), 0.0f, 0.95f);
-	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 64);	// UNOFFICIAL 2026-10-15: the shader stops at 64 (the game's compiler unrolls the loop)
+	// UNOFFICIAL 2026-10-15: the D3D9 shader stops at 64 (the game's compiler unrolls the loop). 2026-10-26: up to 256 for the Vulkan
+	// march (NvrDxvkPasses, ExtRender gives it the full count); the D3D9 passes still get at most 64 (Constants.March.x).
+	Settings.Steps = std::clamp(TheSettingManager->GetSettingI(section, "Steps"), 8, 256);
 	Settings.MaxDistance = std::clamp(TheSettingManager->GetSettingF(section, "MaxDistance"), 5000.0f, 200000.0f);
 	Settings.HazeDistance = std::clamp(TheSettingManager->GetSettingF(section, "HazeDistance"), 1000.0f, 200000.0f);
 	Settings.WindSpeed = std::clamp(TheSettingManager->GetSettingF(section, "WindSpeed"), 0.0f, 20.0f);
@@ -883,6 +885,8 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 		const D3DXVECTOR4* value = CloudsRegistered(CloudsVectorNames[i]);
 		if (value) uniforms.Vectors[i] = *value;
 		else if (i < _countof(CloudsVectorNames) - CloudsOptionalVectors) return false;
+		// UNOFFICIAL 2026-10-26: the Vulkan march has no instruction limit: the full Steps (above 64 too; D3D9 gets at most 64).
+		if (!strcmp(CloudsVectorNames[i], "TESR_CloudsMarch")) uniforms.Vectors[i].x = (float)Settings.Steps;
 	}
 	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
 	if (!buffer) return false;

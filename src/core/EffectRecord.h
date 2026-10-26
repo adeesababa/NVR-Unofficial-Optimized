@@ -1,5 +1,8 @@
 #pragma once
 #include <vector>
+#include <map>
+#include <string>
+#include <functional>
 #include "NvrDxvkExt.h"
 
 class EffectRecord : public ShaderProgram {
@@ -37,6 +40,12 @@ public:
 	bool					ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 								ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount,
 								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false, UINT WrapSamplerPushOffset = 0, bool PointWrapSampler = false, bool Last = true);
+	// UNOFFICIAL 2026-10-26: a pass shader's compile-time variant, Compute\<SpvName>-<Suffix>.spv (Compute\variants.txt: the D3D9
+	// technique's fixed switches, so unused paths are compiled out as fxc does), when [Main.Main.Performance] NvrDxvkVariants is
+	// on and the file exists; else Generic (the run-time switched shader). Make creates a pipeline from a .spv name with the
+	// caller's bindings; each variant's pipeline is kept in Variants. Null: Make failed (as for Generic alone).
+	ID3D9NvrExtPipeline*	ExtVariant(std::map<std::string, ExtPass>& Variants, ExtPass& Generic, const char* SpvName, const char* Suffix,
+								const std::function<ID3D9NvrExtPipeline*(const char*)>& Make);
 	// UNOFFICIAL 2026-10-25: a pass into the effect's OWN targets (1-4 surfaces of one size, e.g. its half-resolution buffers),
 	// optional viewport rectangle; the frame chain is not touched. A multi-pass port chains these and ends with ExtFullScreen
 	// (or ExtTexturePass) for the pass that writes the frame. A failure sets ExtFailed (logged), as ExtFullScreen does.

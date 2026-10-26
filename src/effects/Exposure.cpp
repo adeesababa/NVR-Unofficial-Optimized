@@ -1,5 +1,6 @@
 #include "Exposure.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
+#include <algorithm>
 
 void ExposureEffect::UpdateConstants() {
 	TheShaderManager->avglumaRequired = true; // mark average luma calculation as necessary
@@ -27,6 +28,10 @@ void ExposureEffect::UpdateSettings(){
 	Settings.Interiors.MaxBrightness = TheSettingManager->GetSettingF("Shaders.Exposure.Interiors", "MaxBrightness");
 	Settings.Interiors.DarkAdaptSpeed = TheSettingManager->GetSettingF("Shaders.Exposure.Interiors", "DarkAdaptSpeed");
 	Settings.Interiors.LightAdaptSpeed = TheSettingManager->GetSettingF("Shaders.Exposure.Interiors", "LightAdaptSpeed");
+
+	Settings.Histogram = TheSettingManager->GetSettingI("Shaders.Exposure.Main", "Histogram") != 0;	// UNOFFICIAL 2026-10-26
+	Settings.HistogramLowPercent = std::clamp(TheSettingManager->GetSettingF("Shaders.Exposure.Main", "HistogramLowPercent"), 0.0f, 90.0f);
+	Settings.HistogramHighPercent = std::clamp(TheSettingManager->GetSettingF("Shaders.Exposure.Main", "HistogramHighPercent"), 0.0f, 90.0f);
 }
 
 void ExposureEffect::RegisterConstants() {

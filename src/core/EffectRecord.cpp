@@ -671,6 +671,25 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 	return true;
 }
 
+// UNOFFICIAL 2026-10-26 (NVR DXVK): see EffectRecord.h.
+ID3D9NvrExtPipeline* EffectRecord::ExtVariant(std::map<std::string, ExtPass>& Variants, ExtPass& Generic, const char* SpvName, const char* Suffix,
+	const std::function<ID3D9NvrExtPipeline*(const char*)>& Make) {
+	if (Suffix && *Suffix && DxvkCompute::VariantsOn()) {
+		const std::string name = std::string(SpvName) + "-" + Suffix;
+		ExtPass& pass = Variants[name];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			if (DxvkCompute::HasSpirv(name.c_str())) pass.Pipeline = Make(name.c_str());
+		}
+		if (pass.Pipeline) return pass.Pipeline;
+	}
+	if (!Generic.Tried) {
+		Generic.Tried = true;
+		Generic.Pipeline = Make(SpvName);
+	}
+	return Generic.Pipeline;
+}
+
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h.
 ID3D9NvrExtBuffer* EffectRecord::ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size) {
 	if (!DxvkCompute::Available() || !Data || !Size) return nullptr;
