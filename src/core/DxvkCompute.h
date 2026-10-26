@@ -50,7 +50,10 @@ public:
 	//                         absent: the original's own compacted register list (DXVK's layout, harder to write against)
 	// True when registered. A problem leaves the shader as it is (logged); it does not turn the other compute paths off.
 	static bool					ReplacementsOn();
-	static bool					RegisterReplacement(const char* Name, const void* Bytecode, UINT Size);
+	// UNOFFICIAL 2026-10-26 (FORK-1026-LIMITS.md): with the Replace\dump folder, the shader's source file (template) and its defines
+	// are written next to the .pso as <Name>@<hash>.defines, so tools\nvr-dxvk\replace\nolimits.py can build the no-limits version
+	// (NVR_NO_SM3_LIMITS) of exactly that variant. Template/Defines may be null (nothing extra written).
+	static bool					RegisterReplacement(const char* Name, const void* Bytecode, UINT Size, const char* Template = nullptr, const D3DXMACRO* Defines = nullptr);
 	static ID3D9NvrExtSampler*	CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address);
 
 	// Marks every compute path off for the session (logged once with the reason).

@@ -856,6 +856,31 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // registers with PCSS on, and the game silently drew those objects with its own shaders. Past the Lod cascade: unshadowed.
     // A random number per point (a sin-free hash, fine-grained: a new value every ~0.15 units). Not the screen dither formula on
     // world positions: that made diagonal stripes across the band (user: lines over the power armour).
+#if defined(NVR_NO_SM3_LIMITS) && NVR_NO_SM3_LIMITS
+    // UNOFFICIAL 2026-10-26 the no-limits build (NVR DXVK fork, TerrainTemplate.hlsl NVR_NO_SM3_LIMITS): no temp limit, so in the
+    // band both cascades are looked up and blended by fade, as the VSM/EVSM tree below does: a smooth handover instead of the dither.
+    // The lookup in this cascade keeps its own slack; the next one gets slackScale (not 1 only when this cascade is Near).
+    float shadow = 1.0f;
+    [branch] if (cascade >= 0.0f && cascade < 3.5f) {
+        shadow = SunCascadeTap(cascade, worldPos, worldNormal, offsetHere, bias);
+        [branch] if (fade > 0.0f) {
+            float next = 1.0f;   // past the Lod cascade: unshadowed
+            [branch] if (cascade < 2.5f) {
+                float slopeBiasHere = ShadowSlopeBias;
+                ShadowSlopeBias *= slackScale;
+#if CONTACT_HARDENING
+                ShadowSoftnessCap = slackScale;
+#endif
+                next = SunCascadeTap(cascade + 1.0f, worldPos, worldNormal, offsetHere, bias);
+                ShadowSlopeBias = slopeBiasHere;
+#if CONTACT_HARDENING
+                ShadowSoftnessCap = 1.0f;
+#endif
+            }
+            shadow = lerp(shadow, next, fade);
+        }
+    }
+#else
     float3 hashP = frac(worldPos * 7.1031f);
     hashP += dot(hashP, hashP.yzx + 33.33f);
     float dither = frac((hashP.x + hashP.y) * hashP.z);
@@ -873,6 +898,7 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
 #if CONTACT_HARDENING
     ShadowSoftnessCap = 1.0f;
 #endif
+#endif   // NVR_NO_SM3_LIMITS
 #else
     // Initialised: a point beyond the last cascade falls through every branch.
     float shadow = 1.0f;
