@@ -76,7 +76,7 @@ public:
 	bool				hizEstimateFailed = false;	// its shader file is missing: the normal Estimate for the session
 	bool				hizEstimateChecked = false;
 	UINT				hizEstimateFrames = 0;
-	bool	HiZWanted() const { return hizLogQ > 0 && !hizEstimateFailed && ExtOn(); }
+	bool	HiZWanted() const { return false; }	// retired 2026-10-26 (measured no win; see AmbientLight.cpp Estimate)
 	CachedHandle		paramEdges, techSmooth;
 	bool				prepared = false;			// RenderPrepare drew Prepare + the smoothing this frame (Render skips its Prepare)
 	bool	RenderPrepare(IDirect3DDevice9* Device);	// ShaderManager, before the AO's sky pass: Prepare, then technique AmbientLightSmooth

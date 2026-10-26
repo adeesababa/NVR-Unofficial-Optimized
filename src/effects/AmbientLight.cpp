@@ -1025,7 +1025,8 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 				}
 				else if (p == 1) {
 					// UNOFFICIAL 2026-10-26 (deep/fork-hiz) HiZ: the far taps on the Hi-Z pyramid when this frame's is there (core/HiZ.h).
-					IDirect3DTexture9* hiz = hizLogQ > 0 && !hizEstimateFailed ? HiZ::Current() : nullptr;
+					// (2026-10-26: retired with the pyramid's move to a storage buffer: measured no win, and its shader reads the old texture.)
+					IDirect3DTexture9* hiz = nullptr;
 					if (hiz && !hizEstimateChecked) {
 						hizEstimateChecked = true;
 						std::vector<char> words;	// a missing file must not turn the other Vulkan passes off
