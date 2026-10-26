@@ -50,4 +50,16 @@ public:
 
 	void    RenderPass(IDirect3DDevice9* Device, UINT techniqueIndex, bool ClearRenderTarget);
 	void	RenderBloomBuffer(IDirect3DSurface9* RenderTarget);
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the whole chain as Vulkan passes into its own targets (src\hlsl\NewVegas\Compute\Bloom*.frag,
+	// Bloom.glsl). RenderBloomBuffer runs it first; false (or any refused pass) leaves the D3D9 chain to do the frame.
+	bool	RenderBloomExt(IDirect3DDevice9* Device, int passes);
+	ExtPass	extDownFirst, extDown, extUp, extUpLast;
+	// The downsample levels below the top one, as the Vulkan path keeps them (see Bloom.cpp): made on first use.
+	bool	extLevelsTried = false;
+	struct ExtLevelsStruct {
+		IDirect3DTexture9* Texture[MaxPasses - 1];
+		IDirect3DSurface9* Surface[MaxPasses - 1];
+	};
+	ExtLevelsStruct	extLevels = {};
 };
