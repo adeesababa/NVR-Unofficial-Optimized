@@ -1,6 +1,7 @@
 #include "Reflections.h"
 #include "../core/GpuProfiler.h"
 #include "../core/ReflMaterial.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -239,8 +240,10 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	if (D3DXHANDLE handle = ParameterHandle(skyHandle, "NVR_ReflectionsSky")) {
 		D3DXVECTOR4 sky(skyVis ? 1.0f : 0.0f, ao ? ao->SkyMinReflection : 0.1f, 0.0f, 0.0f);
 		Effect->SetVector(handle, &sky);
+		extSky = sky;	// UNOFFICIAL 2026-10-25 (NVR DXVK): the Vulkan trace reads the same
 	}
-	else skyVis = nullptr;
+	else { skyVis = nullptr; extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f); }
+	extSkyTexture = skyVis;
 	BindMaterial();	// UNOFFICIAL 2026-10-20 MaterialAware (stage 15)
 	if (skyVis) {
 		SetPassTexture(14, skyVis);	// set after each pass begins (EffectRecord::PassTextures)
@@ -330,4 +333,165 @@ void ReflectionsEffect::RenderCube(IDirect3DDevice9* Device, bool reset) {
 			Render(Device, face, face, 6, false, nullptr);
 		}
 	}
+}
+
+// --- The Vulkan passes (NVR DXVK) -----------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-25 (NVR DXVK): all eight techniques as Compute\Reflections<Technique>.frag (Reflections.glsl holds what they
+// share), line for line. Render calls this per technique as it calls the D3D9 technique: the half-resolution passes, the cube
+// faces and the material copy draw into the target the caller set (ExtDrawTo), the composite through the frame chain
+// (ExtFullScreen). Every pass declares the same bindings: what a technique does not read, and its own target, get a placeholder
+// (the depth buffer, or the other capture cube), as the techniques unbind their target (Texture[n] = NoTexture). The constants
+// (four matrices: 560 bytes) go to a uniform buffer, uploaded only when they change (the 48 cube draws differ only in
+// TESR_ReflectionsCube, which is in the push block). Sampler states as the .fx declares them; TESR_ReflectionsEnv's LINEAR mip
+// filter needs extension 1.3 (MipSampler), otherwise, or without the three cubes, the effect keeps its D3D9 techniques.
+namespace {
+	// The Constants block of Reflections.glsl (std140; the matrices as the effect's SetMatrix uploads them).
+	struct ReflUniforms {
+		D3DXMATRIX	projection, view, shadowOrtho, reproject;
+		D3DXVECTOR4	reciprocalResolution, skyColor, horizonColor, waterSettings;
+		D3DXVECTOR4	data, data2, data3, data4, layout, cube2, grid, grid2, grid3, material;
+		D3DXVECTOR4	depthConstants, cameraData, cameraPosition, sky, flags;
+	};
+	ReflUniforms ReflUploaded;	// what the uniform buffer holds (one effect instance)
+	struct ReflPush { D3DXVECTOR4 cube; UInt32 linearIndex, pointIndex, mipIndex, pass; };
+
+	// Set 1: the textures in the .fx's sampler order (binding = slot); set 2: the constants; the samplers' heap indices at 16, 20, 24.
+	const NVR_EXT_BINDING_DESC ReflBindings[] = {
+		{ 1, 0,  NVR_EXT_BIND_SAMPLED_IMAGE, 0,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_RenderedBuffer
+		{ 1, 1,  NVR_EXT_BIND_SAMPLED_IMAGE, 1,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_DepthBuffer
+		{ 1, 2,  NVR_EXT_BIND_SAMPLED_IMAGE, 2,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_NormalsBuffer
+		{ 1, 3,  NVR_EXT_BIND_SAMPLED_IMAGE, 3,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_DepthBufferViewModel
+		{ 1, 4,  NVR_EXT_BIND_SAMPLED_IMAGE, 4,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_ReflectionsTrace
+		{ 1, 5,  NVR_EXT_BIND_SAMPLED_IMAGE, 5,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_ReflectionsBuffer
+		{ 1, 6,  NVR_EXT_BIND_SAMPLED_IMAGE, 6,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_ReflectionsTemp
+		{ 1, 7,  NVR_EXT_BIND_SAMPLED_IMAGE, 7,  NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_ReflectionsHistory
+		{ 1, 8,  NVR_EXT_BIND_SAMPLED_IMAGE, 8,  NVR_EXT_VIEW_CUBE, FALSE, 0 },	// TESR_ReflectionsCapture
+		{ 1, 9,  NVR_EXT_BIND_SAMPLED_IMAGE, 9,  NVR_EXT_VIEW_CUBE, FALSE, 0 },	// TESR_ReflectionsCaptureNew
+		{ 1, 10, NVR_EXT_BIND_SAMPLED_IMAGE, 10, NVR_EXT_VIEW_CUBE, FALSE, 0 },	// TESR_ReflectionsEnv
+		{ 1, 11, NVR_EXT_BIND_SAMPLED_IMAGE, 11, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_OrthoMapBuffer
+		{ 1, 12, NVR_EXT_BIND_SAMPLED_IMAGE, 12, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_ReflectionsGridLight
+		{ 1, 13, NVR_EXT_BIND_SAMPLED_IMAGE, 13, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_ReflectionsGridColor
+		{ 1, 14, NVR_EXT_BIND_SAMPLED_IMAGE, 14, NVR_EXT_VIEW_2D,   FALSE, 0 },	// NVR_ReflectionsSkyVis
+		{ 1, 15, NVR_EXT_BIND_SAMPLED_IMAGE, 15, NVR_EXT_VIEW_2D,   FALSE, 0 },	// NVR_ReflectionsMaterial
+		{ 2, 0,  NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D,   FALSE, 0 },	// Constants
+		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D,   FALSE, 16 },	// LINEAR, CLAMP
+		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,   FALSE, 20 },	// POINT, CLAMP
+		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
+	};
+	const UINT ReflTextureCount = 16;
+
+	IDirect3DBaseTexture9* SlotTexture(const char* name) {
+		std::string slotName = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
+		return slot ? *slot : nullptr;
+	}
+	// The constants from the same registered memory the effect's SetCT uploads.
+	const D3DXVECTOR4* Registered(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+}
+
+bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex > 7 || ClearRenderTarget || (techniqueIndex == 7 && !ReflMaterial::CompiledIn())) return false;
+	static const char* const spvNames[8] = { "ReflectionsComposite", "ReflectionsTrace", "ReflectionsBlur", "ReflectionsTemporal", "ReflectionsBlur",
+		"ReflectionsCapture", "ReflectionsFilter", "ReflectionsMaterial" };
+	ExtPass& pass = extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
+	}
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	ID3D9NvrExtSampler* mip = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_CLAMP);
+	if (!pass.Pipeline || !linear || !point || !mip) return false;
+
+	const D3DXVECTOR4* projection = Registered("TESR_ProjectionTransform");
+	const D3DXVECTOR4* view = Registered("TESR_ViewTransform");
+	const D3DXVECTOR4* shadowOrtho = Registered("TESR_ShadowCameraToLightTransformOrtho");
+	const D3DXVECTOR4* reciprocal = Registered("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* skyColor = Registered("TESR_SkyColor");
+	const D3DXVECTOR4* horizonColor = Registered("TESR_HorizonColor");
+	const D3DXVECTOR4* waterSettings = Registered("TESR_WaterSettings");
+	const D3DXVECTOR4* depthConstants = Registered("TESR_DepthConstants");
+	const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
+	const D3DXVECTOR4* cameraPosition = Registered("TESR_CameraPosition");
+	if (!projection || !view || !shadowOrtho || !reciprocal || !skyColor || !horizonColor || !waterSettings || !depthConstants || !cameraData || !cameraPosition)
+		return false;
+
+	// The textures as SetCT binds them. Those read without a guard must exist; the guarded ones (the light grid, the sky
+	// visibility, the material buffer, the ortho map without the roof test) take the placeholder when absent, which is never read.
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* viewModel = SlotTexture("TESR_DepthBufferViewModel");
+	IDirect3DBaseTexture9* ortho = SlotTexture("TESR_OrthoMapBuffer");
+	if (!depth || !normals || !viewModel || !TheTextureManager->RenderedTexture || (!ortho && Constants.Data4.y > 0.5f) ||
+		!Cubes.Capture[0] || !Cubes.Capture[1] || !Cubes.Env)
+		return false;
+	const bool materialBound = materialFilled && Textures.MaterialTexture != nullptr;	// BindMaterial's test
+	IDirect3DBaseTexture9* textures[ReflTextureCount] = {
+		TheTextureManager->RenderedTexture, depth, normals, viewModel,
+		Textures.TraceTexture, Textures.BufferTexture, Textures.TempTexture, Textures.HistoryTexture,
+		Cubes.CaptureLastSlot ? Cubes.CaptureLastSlot : Cubes.Capture[0], Cubes.CaptureNewSlot ? Cubes.CaptureNewSlot : Cubes.Capture[1], Cubes.Env,
+		ortho ? ortho : depth, GridLightSlot ? GridLightSlot : depth, GridColorSlot ? GridColorSlot : depth,
+		extSkyTexture ? extSkyTexture : depth, materialBound ? Textures.MaterialTexture : depth };
+	// A pass never reads its own target.
+	switch (techniqueIndex) {
+		case 1: textures[4] = textures[6] = depth; break;	// Trace -> Trace (Temporal on) or Temp
+		case 2: textures[4] = depth; break;					// Blur X -> Trace
+		case 3: textures[6] = depth; break;					// Temporal -> Temp
+		case 4: textures[5] = depth; break;					// Blur Y -> Buffer
+		case 5: textures[9] = textures[8]; break;			// Capture -> a face of the new capture cube
+		case 6: textures[10] = textures[9]; break;			// Filter -> a face of the reflection cube
+		case 7: textures[15] = depth; break;				// MaterialCapture -> the material buffer
+	}
+	for (UINT i = 0; i < ReflTextureCount; i++) if (!textures[i]) return false;
+
+	ReflUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.view, view, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.shadowOrtho, shadowOrtho, sizeof(D3DXMATRIX));
+	uniforms.reproject = Constants.Reproject;
+	uniforms.reciprocalResolution = *reciprocal;
+	uniforms.skyColor = *skyColor;
+	uniforms.horizonColor = *horizonColor;
+	uniforms.waterSettings = *waterSettings;
+	uniforms.data = Constants.Data;
+	uniforms.data2 = Constants.Data2;
+	uniforms.data3 = Constants.Data3;
+	uniforms.data4 = Constants.Data4;
+	uniforms.layout = Constants.Layout;
+	uniforms.cube2 = Constants.Cube2;
+	uniforms.grid = Constants.Grid;
+	uniforms.grid2 = Constants.Grid2;
+	uniforms.grid3 = Constants.Grid3;
+	uniforms.material = Constants.Material;
+	uniforms.depthConstants = *depthConstants;
+	uniforms.cameraData = *cameraData;
+	uniforms.cameraPosition = *cameraPosition;
+	uniforms.sky = extSky;
+	uniforms.flags = D3DXVECTOR4(ReflMaterial::CompiledIn() ? 1.0f : 0.0f, ReflMaterial::AddCompiledIn() ? 1.0f : 0.0f,
+		ReflMaterial::OccCompiledIn() ? 1.0f : 0.0f, materialBound ? 1.0f : 0.0f);
+	ID3D9NvrExtBuffer* buffer = extUniforms.Buffer;
+	if (!buffer || memcmp(&uniforms, &ReflUploaded, sizeof(uniforms))) {
+		buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+		if (!buffer) return false;
+		ReflUploaded = uniforms;
+	}
+
+	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings)] = {};
+	for (UINT i = 0; i < ReflTextureCount; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[16].Slot = 0; resources[16].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[16].pResource = buffer;
+	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = linear;
+	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = point;
+	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
+	ReflPush push = {};
+	push.cube = Constants.Cube;
+	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;	// Blur Y; the composite: the cube is bound
+
+	if (techniqueIndex == 0)
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, _countof(resources), &push, sizeof(push));
+	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, _countof(resources), &push, sizeof(push));
 }
