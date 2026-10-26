@@ -1,0 +1,70 @@
+# fork1026-hiz diag (2026-10-26, deep/fork-hiz): why the Hi-Z walk misses near-floor reflections indoors. Run at lucky22.
+# Every shot: Vulkan passes on, Reflections on with InteriorFloors 1. HiZ shots force it indoors with the TEST-ONLY HiZInteriorsTest.
+# DebugView 2 off/on (hits: green found, red not), then DebugView 9 (the walk's end rule: green hit, cyan hit after the cell limit,
+# yellow hit thrown away, red nothing to the end / off screen, magenta cell limit + nothing, blue not started) and DebugView 10
+# (skips: red facing along the ray, green own plane, blue behind by more than the thickness), each twice; then interior HiZ off/on for
+# the outdoors-only rule (HiZ true WITHOUT the test switch must give the old picture indoors).
+frames 300
+shot hizdiagsettle
+wait 900
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+shot hizdiag2off-1
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main DebugView 2
+shot hizdiag2on-1
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main DebugView 2
+set Shaders.Reflections.Main HiZ true
+set Shaders.Reflections.Main HiZInteriorsTest true
+shot hizdiag9-1
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main DebugView 9
+set Shaders.Reflections.Main HiZ true
+set Shaders.Reflections.Main HiZInteriorsTest true
+shot hizdiag10-1
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main DebugView 10
+set Shaders.Reflections.Main HiZ true
+set Shaders.Reflections.Main HiZInteriorsTest true
+shot hizdiag9-2
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main DebugView 9
+set Shaders.Reflections.Main HiZ true
+set Shaders.Reflections.Main HiZInteriorsTest true
+shot hizdiag10-2
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main DebugView 10
+set Shaders.Reflections.Main HiZ true
+set Shaders.Reflections.Main HiZInteriorsTest true
+shot hizdiagoff-1
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+shot hizdiagout-1
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main HiZ true
+shot hizdiagoff-2
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+shot hizdiagout-2
+set Main.Main.Performance NvrDxvkPasses true
+effect Reflections 1
+set Shaders.Reflections.Main InteriorFloors 1.0
+set Shaders.Reflections.Main HiZ true
