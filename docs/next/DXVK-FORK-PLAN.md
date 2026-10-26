@@ -55,8 +55,8 @@ sweep_timing.py (reports sweep-*.report there).
   VPOS passes were already exact. Re-test with fork 1.4 (lists dxvkfork-11-sweep): lucky22 (20261026-005913-slotC) and
   og-desert (20261026-012439-slotC): no crash, every pair inside noise (desert default pairs signed +0.01, the noise pairs
   +0.02); the log shows the shift in use ("Reflections's passes into smaller targets read at the D3D9 frame quad's uv
-  (shift 0.483, 0.470 px)", Specular 0.375). og-night not re-run (Steam closed after a Steam load error); it was inside
-  noise before, and no pass the fix changed is night-only.
+  (shift 0.483, 0.470 px)", Specular 0.375). og-night (20261026-013220-slotC): no crash, inside noise (the night
+  scene's noise pairs are 19-42 % of pixels, signed ~0; the D3D9/Vulkan pairs 30-43 %, signed -0.03..+0.06; storm moves).
 - Timing (F10 GPU timers, ms, D3D9 -> Vulkan, same scene and launch; frame totals are within the game's own +-1 ms swing):
   | pass | lucky22 | og-desert | og-night | og-lake |
   |---|---|---|---|---|
