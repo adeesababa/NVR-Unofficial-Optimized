@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "BloodFlow.h"
+#include "BloodFluid.h"
 #include "../core/FrameClock.h"
 
 // Game addresses (FalloutNV.exe 1.4.0.525), checked against the game's code:
@@ -395,6 +396,10 @@ static D3DXVECTOR4 BloodFlowShape(0.0f, 0.0f, 0.0f, 0.0f);
 static D3DXVECTOR4 BloodFlowGround(1.0f, 3.0f, 0.0f, 0.0f);
 static bool BloodFlowGroundFit = true;
 static bool BloodFlowGroundUnseen = false;
+// UNOFFICIAL 2026-10-26 BloodFluid (BloodFluid.h): DripLength and SplatDrips as set; while the fluid replaces the painted streams
+// (ReplaceStreams) both are 0 in Settings (UpdateConstants), and back as set when it does not.
+static float BloodFlowBaseDripLength = 40.0f;
+static float BloodFlowBaseSplatDrips = 1.0f;
 
 void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFresh", &Constants.Fresh);
@@ -494,6 +499,9 @@ void BloodFlowEffect::UpdateSettings() {
 		Mask.Reset();
 		MaskShape[0] = Settings.SplatReach; MaskShape[1] = Settings.SplatSpray; MaskShape[2] = Settings.SplatDrips;
 	}
+	BloodFlowBaseDripLength = Settings.DripLength;
+	BloodFlowBaseSplatDrips = Settings.SplatDrips;
+	TheBloodFluid().ReadSettings();	// UNOFFICIAL 2026-10-26 BloodFluid: [Shaders.BloodFlow.Fluid]
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
 	// UNOFFICIAL fixes-b #53: this runs at every settings refresh (every cell change): log only the first time and when the answer changes
 	static int loggedAtlas = -1;
@@ -892,10 +900,19 @@ void BloodFlowEffect::UpdateConstants() {
 	static CpuTimer gatherTimer("Blood gather (CPU)");	// UNOFFICIAL 2026-10-16: the per-frame CPU cost of reading the game's lists
 	CpuProfileScope cpu(gatherTimer);
 	Clock += ElapsedOncePerFrame(lastFrameTime) * TunedClockRate;
+	{
+		// UNOFFICIAL 2026-10-26 BloodFluid: the fluid's runs replace the painted streams and splat drips while it is on.
+		const bool replace = TheBloodFluid().ReplacesStreams();
+		Settings.DripLength = replace ? 0.0f : BloodFlowBaseDripLength;
+		const float splatDrips = replace ? 0.0f : BloodFlowBaseSplatDrips;
+		if (Settings.SplatDrips != splatDrips) { Settings.SplatDrips = splatDrips; Mask.Reset(); MaskShape[2] = splatDrips; }
+	}
 	if (TheShaderManager->GameState.isUnderwater) { Count = 0; return; }
 	// UNOFFICIAL 2026-10-16 (cheaper): the game's lists are read once a frame; the second call of the frame (before the post
 	// effects) keeps the first call's items (same frame, same decals and bodies).
+	bool gathered = false;
 	if (TheFrameRateManager->Time != lastGatherTime || !Settings.CheapGather) {
+		gathered = true;
 		lastGatherTime = TheFrameRateManager->Time;
 		Frame++;
 		Count = 0;
@@ -915,6 +932,18 @@ void BloodFlowEffect::UpdateConstants() {
 			Items[i].Visible = !Settings.CheapGather || BloodFlowBoxes::OnScreen(Items[i], Settings.DripLength, Settings.MaxFall, eye, origin, TheRenderManager->ViewProjMatrix);
 			OnScreenCount += Items[i].Visible ? 1 : 0;
 		}
+	}
+	// UNOFFICIAL 2026-10-26 BloodFluid (BloodFluid.h): fresh blood becomes fluid (once a frame); the pools it takes are left out here.
+	if (gathered && TheBloodFluid().On()) {
+		int kept = 0;
+		OnScreenCount = 0;
+		for (int i = 0; i < Count; i++) {
+			if (TheBloodFluid().Offer(Items[i].Slot >= 0 ? Slots[Items[i].Slot].Key : 0, Items[i])) continue;
+			OnScreenCount += Items[i].Visible ? 1 : 0;
+			if (kept != i) Items[kept] = Items[i];
+			kept++;
+		}
+		Count = kept;
 	}
 	// UNOFFICIAL 2026-10-13: with F10 on, how many it draws (next to the Blood timers), every 240 frames.
 	if (GpuTimer::Enabled && ++ItemLogTick >= 240) {
@@ -947,7 +976,7 @@ void BloodFlowEffect::UpdateConstants() {
 }
 
 bool BloodFlowEffect::ShouldRender() {
-	return Count > 0 && OnScreenCount > 0;	// UNOFFICIAL 2026-10-16: only blood on screen
+	return (Count > 0 && OnScreenCount > 0) || TheBloodFluid().Active();	// UNOFFICIAL 2026-10-16: only blood on screen (2026-10-26: or the fluid's)
 }
 
 void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
@@ -1187,6 +1216,13 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		}
 	}
 	bindVertexBounds(false);
+	// UNOFFICIAL 2026-10-26 BloodFluid (BloodFluid.h): the simulated blood, over BloodFlow's paint (NVR DXVK only).
+	static GpuTimer fluidTimer("  Blood fluid");
+	bool fluidDrew = false;
+	if (TheBloodFluid().On()) {
+		GpuProfileScope gpu(fluidTimer, device);
+		fluidDrew = TheBloodFluid().Render(device, image, source, this);
+	}
 	if (previousDeclaration) device->SetVertexDeclaration(previousDeclaration);
 	device->SetStreamSource(0, previousStream, previousOffset, previousStride);
 	device->SetRenderTarget(0, previousTarget);
@@ -1195,6 +1231,8 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	if (previousDeclaration) previousDeclaration->Release();
 	if (previousStream) previousStream->Release();
 	// Without the chain the rendered texture is kept equal to the target.
-	if (triangles && area.right > area.left && area.bottom > area.top && !chained && rendered && rendered != target)
+	if (fluidDrew && !chained && rendered && rendered != target)
+		device->StretchRect(target, NULL, rendered, NULL, D3DTEXF_NONE);
+	else if (triangles && area.right > area.left && area.bottom > area.top && !chained && rendered && rendered != target)
 		device->StretchRect(target, &area, rendered, &area, D3DTEXF_NONE);
 }

@@ -72,6 +72,55 @@ sweep_timing.py (reports sweep-*.report there).
   AO / point-shadow apply slower (0.1-0.25 ms each): worth a look per pass (bindings, sampler or format choices), not a
   route problem.
 
+## BloodFluid: BloodFlow v2 as compute work (2026-10-26)
+Fresh blood becomes a real fluid, simulated on the GPU through the extension; off by default (`[Shaders.BloodFlow.Fluid]
+Enabled`, needs NVR DXVK and BloodFlow on; without the extension nothing runs and BloodFlow is exactly as before). Files:
+`src/effects/BloodFluid.{h,cpp}` (BloodFlow.cpp hands it the splats and pools it gathers, ~40 lines there),
+`src/hlsl/NewVegas/Compute/BloodFluidSim.comp`, `BloodFluidDraw.frag`, `BloodFluid.glsl` (+ the two .spv). Design (the
+2026-10-22 spike's model, evidence\fluidsim\FLUIDSIM-SPIKE.md, its numbers kept; ideas from gwater2 and NVIDIA's 2009
+screen-space fluid paper, no code copied):
+- Particles (16k by default, 64 bytes, a ring: the oldest go first) in a storage buffer, positions relative to an anchor
+  near the camera. Fixed 1/120 s steps: each moving particle adds its weight and momentum to the 8 nodes round it in a
+  hashed grid with integer atomics (order-independent: the same start gives the same blood), then reads density, its
+  gradient and the mean velocity back: pressure above the rest density, cohesion below it, viscosity. Collision with the
+  depth buffer (surface and normal from depth): no bounce, a hard hit spreads sideways, film friction that varies per
+  particle, cling. About half of the particles running down a wall stop for good somewhere along the run (a trail).
+  Settled (dried and still) particles leave the grid and cost nothing but their age.
+- Where the camera cannot see: blood lying on a surface is held; blood in the air keeps falling to a fallback ground
+  height (the pool's ground under a body, else the player's floor), and a pool spreads on it even where the body hides
+  the floor. Seen in the air above a lower floor, the fallback is ignored.
+- Drawing: a tiles pass lists every particle in the 16x16 tiles its circle touches; one full-screen fragment pass per
+  pixel sums smooth bumps (1 - d^2/R^2)^2 measured along each particle's surface plane (a film, not beads; drops in the
+  air are spheres), thresholds the sum, bends the normal by its slope, and shades it with BloodFlow's own look
+  (BloodPS: light from the image and sun, the game splat's colour, drying, light through thin blood, sun/lamp glints).
+- Emitters: a fresh game splat on screen throws blood at its surface along the way the game threw it; a body that has
+  just died bleeds a pool for BleedTime s (BloodFlow then leaves that body's own pool out); ReplaceStreams turns
+  BloodFlow's painted streams and splat drips off while the fluid runs. Test only: TestThrow (a throw from the camera at
+  the view centre every N s), TestPour, StatsEvery (read-back counts of air / surface / ground / held / settled).
+In game (slot C, 1080p, GTX 1070, fork 1.4 + the vendor override below; lists bench\foundations\lists\bloodfluid-1..9):
+- Runs, no crash, no "failed" line in 15 launches. Pictures (copies): evidence\fluidsim\bloodfluid-v2\ - saloon-04_wall-2s
+  (a throw at the wainscot running down), saloon-07_wall-15s (the trail it leaves), saloon-05_wall-dots (particles by
+  state), saloon-15_pour-12s / -16_pour-30s (a pool spreading and settling on the floor), saloon-table-* (a splash on a
+  table dripping to the floor), luxe-table-* (a splash on a card table, drying darker). Runs 20261026-053300 / 052219 /
+  051744-slotC.
+- Cost, F10 "Blood fluid" p50 with blood on screen: 0.26-0.39 ms (sim 0.02-0.03 ms for 1-5k particles, draw 0.2-0.36:
+  the full-screen copy of the image and the full-screen pass). Frame total in the same launch, fluid on vs off: +0.3-0.4 ms
+  (8.46-8.65 vs 7.91-8.25 ms). Nothing is dispatched once the blood's lifetime has passed.
+- Look: splashes read as spatters of droplets (they spread wide), pools as one dark film, wall runs as streaks; drying
+  darkens them. Not yet seen: a real game splat (a shot) and a killed NPC's pool in good framing (killall in the saloon put
+  the pools behind tables and bodies; the log shows them emitted and simulated).
+FINDING (affects every depth effect tested on the fork): DXVK 3.0.1 offers AMD's RESZ depth resolve only when the adapter
+reports AMD. On the GTX 1070 NVR fell back to NVAPI, which initializes but cannot copy depth on a DXVK device, so NVR's
+world depth (TESR_DepthBuffer) was EMPTY in every fork slot run (the Depth Resolve plugin, which normally covers this, is
+renamed aside for DXVK runs). Proof: BloodFlow's debug view with test splats draws its rings and splats under native D3D9
+and nothing under the fork (evidence\fluidsim\bloodfluid-v2\native-d3d9-bloodflow-debug.png vs nodepth-dxvk-...png). With
+`DXVK_CONFIG="d3d9.customVendorId = 1002"` in the runner's environment the log says "Depth resolve: RESZ", F10 "Depth
+resolves" goes from 0.00 to 0.065 ms and depth reads are real. So the earlier "same picture D3D9 vs Vulkan" sweeps
+compared two depth-less pictures for the depth-based passes. Fix proposed, not pushed: fork patch
+`tools/nvr-dxvk/patches/0007-NVR-RESZ-depth-resolve-on-every-GPU-vendor.patch` (two lines: offer and honour RESZ on every
+vendor; it applies on top of 0006). Until then: `d3d9.customVendorId = 1002` in dxvk.conf (or DXVK_CONFIG) for NVIDIA.
+BloodFluid logs a WARNING when RESZ is missing.
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).
