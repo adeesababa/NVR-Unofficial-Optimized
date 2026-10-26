@@ -2,6 +2,7 @@
 
 #include "VolumetricSmokeQuads.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK): PassesOn in Render
 
 // GunFX volumetric smoke (prototype). GunFX.dll keeps its smoke as chains of points and hands over one record per tube
 // segment (GunFX_GetVolumeSmoke). Step 1 draws every segment that can be on screen as a quad over the area it reaches,
@@ -266,6 +267,14 @@ class VolumetricSmokeEffect : public EffectRecord {
 public:
     VolumetricSmokeEffect() : EffectRecord("VolumetricSmoke") {}
     void RegisterTextures() override;   // VolumetricSmoke.cpp (needs the texture manager)
+    // UNOFFICIAL 2026-10-25 (NVR DXVK): the haze, the room light and the composite as Vulkan passes (Compute\VolumetricSmoke*.frag,
+    // the GLSL in VolumetricSmoke.glsl; VolumetricSmoke.cpp). The segments (geometry) stay D3D9. Render fills the constants once
+    // (FillExtConstants) when the passes are on; ExtHaze and ExtEnv draw from Render, ExtRender is the composite (technique 0,
+    // through the frame chain, as EffectRecord::Render calls it). A pass that cannot run takes its D3D9 path.
+    bool ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+    bool ExtHaze(const D3DXVECTOR4& look);
+    bool ExtEnv(const D3DXVECTOR4& envInfo);
+    bool FillExtConstants(const D3DXVECTOR4& info, const D3DXVECTOR4& flash);
     bool ShouldRender() override { return VolumetricSmoke::Fetch() > 0; }
     void Render(IDirect3DDevice9* device, IDirect3DSurface9* target, IDirect3DSurface9* rendered,
         UINT technique, bool clear, IDirect3DSurface9* source) override {
@@ -308,6 +317,9 @@ public:
         D3DXVECTOR4 info = Info, flash = Flash;
         info.x = test == 1 ? -1.0f : 0.0f;                    // x: the shader's test colour (it has no other use for x)
         if (test == 2) flash.w = 0.0f;
+        // UNOFFICIAL 2026-10-25 (NVR DXVK): the constants of the Vulkan passes (the haze, the room light, the composite), as the D3D9
+        // path sets them below; extReady when they are all there and the passes are on (nothing is drawn with them otherwise).
+        extReady = DxvkCompute::PassesOn() && !ExtFailed && FillExtConstants(info, flash);
         Effect->SetVector(fx.SmokeInfo, &info);
         Effect->SetVector(fx.SmokeParams, &Params);
         Effect->SetVector(fx.SmokeFlash, &flash);
@@ -419,25 +431,29 @@ public:
                 Effect->SetVectorArray(fx.HazeLook, HazeLook, HazeMax);
                 Effect->SetVector(fx.SmokeLook, &hazeLook);
                 if (HazeSurface) HazeState.Drawn(HazeSurface);
-                // The cut reads the segment smoke just drawn; TESR_SmokeCut is a target here.
-                device->SetTexture(2, Texture);
-                device->SetTexture(4, LowSurface ? LowTexture : nullptr);
-                device->SetTexture(7, nullptr);
-                DWORD oldWriteMask1 = 0xF;
-                device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
-                if (CutSurface) {
-                    device->SetRenderTarget(1, CutSurface);
-                    device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+                // UNOFFICIAL 2026-10-25 (NVR DXVK): the haze as a Vulkan pass into both targets (ExtHaze); the D3D9 pass otherwise.
+                bool drew = extReady && ExtHaze(hazeLook);
+                if (!drew) {
+                    // The cut reads the segment smoke just drawn; TESR_SmokeCut is a target here.
+                    device->SetTexture(2, Texture);
+                    device->SetTexture(4, LowSurface ? LowTexture : nullptr);
+                    device->SetTexture(7, nullptr);
+                    DWORD oldWriteMask1 = 0xF;
+                    device->GetRenderState(D3DRS_COLORWRITEENABLE1, &oldWriteMask1);
+                    if (CutSurface) {
+                        device->SetRenderTarget(1, CutSurface);
+                        device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+                    }
+                    // It was left uncleared because this pass overwrites it (hazeOverwrites above); if it did not draw, clear it now.
+                    drew = fullScreen(fx.HazeTechnique, HazeSurface);
+                    if (CutSurface) {
+                        device->SetRenderTarget(1, nullptr);
+                        device->SetRenderState(D3DRS_COLORWRITEENABLE1, oldWriteMask1);
+                    }
+                    device->SetTexture(2, nullptr);
+                    device->SetTexture(4, nullptr);
+                    if (!drew && HazeSurface) ClearBuffer(device, HazeSurface, HazeState);
                 }
-                // It was left uncleared because this pass overwrites it (hazeOverwrites above); if it did not draw, clear it now.
-                const bool drew = fullScreen(fx.HazeTechnique, HazeSurface);
-                if (CutSurface) {
-                    device->SetRenderTarget(1, nullptr);
-                    device->SetRenderState(D3DRS_COLORWRITEENABLE1, oldWriteMask1);
-                }
-                device->SetTexture(2, nullptr);
-                device->SetTexture(4, nullptr);
-                if (!drew && HazeSurface) ClearBuffer(device, HazeSurface, HazeState);
                 Effect->SetVector(fx.SmokeLook, &Look);
             }
             {   // the room light eases to this frame's value over about a third of a second (at once after a pause)
@@ -453,7 +469,8 @@ public:
                     device->SetRenderTarget(0, EnvSurface);
                     device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
                 }
-                fullScreen(fx.EnvTechnique, EnvSurface);
+                // UNOFFICIAL 2026-10-25 (NVR DXVK): as a Vulkan pass (ExtEnv) when it can; the D3D9 pass otherwise.
+                if (!(extReady && ExtEnv(envInfo))) fullScreen(fx.EnvTechnique, EnvSurface);
             }
         }
         device->SetRenderTarget(0, previousTarget);
@@ -481,4 +498,19 @@ public:
         }
         if (!whole) device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
     }
+
+    // UNOFFICIAL 2026-10-25 (NVR DXVK): the Constants block of Compute\VolumetricSmoke.glsl (std140, the same order: three matrices,
+    // then the float4s, then the arrays). The matrices are copied as the D3D9 effect's registered memory holds them (SetMatrix keeps
+    // the logical matrix; see VolumetricLight.glsl).
+    struct ExtConstantsStruct {
+        D3DXMATRIX	InvView, InvProjection, Projection;
+        D3DXVECTOR4	ReciprocalResolution, SunDirection, SunColor, SunAmbient, CameraData, CameraPosition;
+        D3DXVECTOR4	Info, Params, Flash, FlashColor, Look, HazeInfo, BulletMove, EnvInfo;
+        D3DXVECTOR4	HazeShape[VolumetricSmoke::HazeMax], HazeLook[VolumetricSmoke::HazeMax];
+        D3DXVECTOR4	BulletFrom[VolumetricSmoke::BulletMax], BulletWay[VolumetricSmoke::BulletMax];
+    };
+    ExtConstantsStruct	extConstants = {};
+    bool				extReady = false;	// this frame's constants are filled and the passes are on (set by Render)
+    ExtPass				extHazePass, extEnvPass, extCompositePass;
+    ExtUniformBuffer	extUniforms;
 };
