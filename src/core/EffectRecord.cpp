@@ -571,6 +571,7 @@ D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) 
 bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize, bool last) {
 	if (!Pipeline || !DxvkCompute::Available()) return false;
+	if (DxvkCompute::KeptOnD3D9(Name)) return false;	// (NvrDxvkKeepD3D9 for effects with their own Render: this frame on D3D9)
 	ID3D9NvrExt* ext = DxvkCompute::Extension();
 
 	NVR_EXT_DRAW_DESC draw = {};
@@ -613,6 +614,7 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv, const NVR_EXT_DEPTH_STENCIL* DepthStencil) {
 	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
 	if (DepthStencil && DxvkCompute::Info().ExtVersionMinor < 6) return false;
+	if (DxvkCompute::KeptOnD3D9(Name)) return false;	// (NvrDxvkKeepD3D9, as ExtFullScreen; idea from the conor-fork-flicker session)
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
 	draw.TargetCount = TargetCount;

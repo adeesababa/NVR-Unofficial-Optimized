@@ -49,7 +49,8 @@ public:
 	static bool					StencilOn();
 	// [Main.Main.Performance] NvrDxvkKeepD3D9 (UNOFFICIAL 2026-10-26, test tool): whether this effect (its EffectRecord name, e.g.
 	// PointShadows; names separated by commas or spaces) keeps its D3D9 passes while the others run as Vulkan passes, so one pass's
-	// real cost shows in the frame total. Only effects drawn through EffectRecord::Render (not SMAA's own Render).
+	// real cost shows in the frame total. EffectRecord::Render, ExtFullScreen and ExtDrawTo check it (so effects with their own
+	// Render, AmbientLight, SMAA, AO, ..., fall back to D3D9 for the frame too).
 	static bool					KeptOnD3D9(const char* Name);
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 
