@@ -65,8 +65,17 @@ public:
 	bool	ShouldRender();
 	void	RenderBuffers(IDirect3DDevice9* Device);	// march, history, blur: everything before the composite
 	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface ? 8 : 0; }
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): every technique as src\hlsl\NewVegas\Compute\VolumetricLight<Technique>.frag
+	// (EffectRecord::ExtRender): the half-resolution and grid passes into the effect's own buffers (ExtDrawTo), the two
+	// composites through the frame chain. The constants go to one uniform buffer (four shadow matrices do not fit push data).
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	ExtPass				extPasses[9];	// by technique; Blur X and Blur Y share [2]
+	ExtUniformBuffer	extUniforms;
 
 private:
+	IDirect3DBaseTexture9*	fogNoise = nullptr;	// Textures\Effects\NoiseVolume.dds, loaded on the grid's first frame (stage 9 while the cells are lit)
+	bool		fogNoiseLoaded = false;
 	D3DXMATRIX	lastView, lastInvView, lastProj;
 	UINT		lastRenderedFrame = 0;	// TheFrameRateManager->FrameNumber of the last frame this effect drew (UNOFFICIAL 2026-10-18: it counted
 										// UpdateConstants calls, two a frame, so last frame's history was never accepted)
