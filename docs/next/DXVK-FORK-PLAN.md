@@ -81,7 +81,9 @@ sweep_timing.py (reports sweep-*.report there).
   [Main.Main.Performance] NvrDxvkVariants, default on, live). 48 variants, 1.9 MB; the fog ShadowAO variant is 13 KB
   against 136 KB. RESULT og-desert (20261026-030125-slotC, same launch, 2 shots each): same picture as the general
   shaders and D3D9 (inside noise), but the gain is small: fog 0.408 -> 0.393 ms (D3D9 0.338), fog estimate 0.159 -> 0.155
-  (D3D9 0.099), SMAA 0.237 -> 0.233 (D3D9 0.160). So register pressure is NOT the main cause. Kept on (free, exact).
+  (D3D9 0.099), SMAA 0.237 -> 0.233 (D3D9 0.160). lucky22 (20261026-040838-slotC): same picture, point shadow lighting
+  0.657 -> 0.663 (D3D9 0.513), SMAA 0.428 -> 0.424 (D3D9 0.273); the interior fog is as fast as D3D9 there (0.26 vs 0.28).
+  So register pressure is NOT the main cause. Kept on (free, exact). Histogram indoors: +0.85/255 settled, ~0.075 ms.
   Next suspect (not checked): the fork binds the D3D9 render targets a pass writes in COLOR_ATTACHMENT_OPTIMAL
   (patch 0002) and every sampled texture through a fresh view key, where DXVK's own D3D9 path keeps its layouts: a layout
   transition (and on some GPUs a decompression) per pass and target. Needs a GPU capture (RenderDoc / Nsight) of one
