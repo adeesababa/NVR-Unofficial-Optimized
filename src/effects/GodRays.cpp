@@ -1,6 +1,141 @@
 #include "GodRays.h"
 #include "../core/GpuProfiler.h"
 #include "../core/TestTools.h"	// NVR_TEST_TOOLS (off in release builds)
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+
+/*
+* UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): DedicatedGodRays' six passes and GodRaysMaxReduce as
+* Vulkan passes (Compute\GodRays*.frag, the .fx.hlsl line for line): the five half-resolution passes and the reduction steps into the
+* effect's own targets (ExtDrawTo), the combine through the frame chain (ExtFullScreen). The constants every pass reads go into one
+* uniform buffer per frame (GodRays.glsl's block); what changes per pass goes into the push block.
+*/
+namespace {
+	struct GodRaysPush {
+		D3DXVECTOR4 skip;				// 0: NVR_GodRaysSkip
+		D3DXVECTOR4 reduce;				// 16: NVR_GodRaysReduce
+		float blurStep;					// 32: RadialBlur's step
+		float storeAttenuation;			// 36: RadialBlur's storeAttenuation
+		UInt32 linearSampler;			// 40: LINEAR, CLAMP (filled in by DXVK)
+		UInt32 pointSampler;			// 44: POINT, CLAMP
+	};
+	struct GodRaysUniforms {
+		D3DXMATRIX projection, invProjection;	// TESR_ProjectionTransform, TESR_InvProjectionTransform (as stored)
+		D3DXVECTOR4 reciprocalResolution, sunColor, ray, rayColor, data, viewSpaceLightDir, sunDirection, sunPosition, sunAmount, sunsetColor, cameraData, layout;
+	};
+
+	// The constants from the same registered memory the D3D9 path uploads (SetCT).
+	const D3DXVECTOR4* RegisteredConstant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	IDirect3DTexture9* DepthTexture() {
+		return TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	}
+
+	// Textures in set 1 (binding i, slot i), the constants in set 2 binding 0, the linear sampler's heap index at push offset 40 and,
+	// with point, the point sampler's at 44.
+	void MakePipeline(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount, bool point) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[6] = {};
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) {
+			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[count].Set = 2; bindings[count].Binding = 0; bindings[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[count].Slot = 0; count++;
+		bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = 0; bindings[count].PushOffset = 40; count++;
+		if (point) { bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = 1; bindings[count].PushOffset = 44; count++; }
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(GodRaysPush), true);
+	}
+
+	// The resources of one draw, in MakePipeline's order.
+	UINT Resources(NVR_EXT_RESOURCE_BINDING* resources, IDirect3DBaseTexture9* const* textures, UINT textureCount, ID3D9NvrExtBuffer* uniforms, bool point) {
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) { resources[count].Slot = i; resources[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[count].pResource = textures[i]; }
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = uniforms; count++;
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = DxvkCompute::LinearClamp(); count++;
+		if (point) { resources[count].Slot = 1; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = DxvkCompute::PointClamp(); count++; }
+		return count;
+	}
+}
+
+// The pipelines (made once) and this frame's constants. False: the D3D9 passes draw this frame (nothing was drawn).
+bool GodRaysEffect::ExtPrepare(const D3DXVECTOR4& layout) {
+	MakePipeline(extSkyMask, "GodRaysSkyMask", 2, false);
+	MakePipeline(extLightMask, "GodRaysLightMask", 1, false);
+	MakePipeline(extBlur, "GodRaysBlur", 3, true);
+	MakePipeline(extCombine, "GodRaysCombine", 2, false);
+	MakePipeline(extReduce, "GodRaysMaxReduce", 1, false);
+	if (!extSkyMask.Pipeline || !extLightMask.Pipeline || !extBlur.Pipeline || !extCombine.Pipeline || !extReduce.Pipeline ||
+		!DxvkCompute::LinearClamp() || !DxvkCompute::PointClamp() || !DepthTexture() || !TheTextureManager->RenderedTexture) return false;
+	const D3DXVECTOR4* projection = RegisteredConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* invProjection = RegisteredConstant("TESR_InvProjectionTransform");
+	const D3DXVECTOR4* reciprocalResolution = RegisteredConstant("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* sunColor = RegisteredConstant("TESR_SunColor");
+	const D3DXVECTOR4* viewSpaceLightDir = RegisteredConstant("TESR_ViewSpaceLightDir");
+	const D3DXVECTOR4* sunDirection = RegisteredConstant("TESR_SunDirection");
+	const D3DXVECTOR4* sunPosition = RegisteredConstant("TESR_SunPosition");
+	const D3DXVECTOR4* sunAmount = RegisteredConstant("TESR_SunAmount");
+	const D3DXVECTOR4* sunsetColor = RegisteredConstant("TESR_SunsetColor");
+	const D3DXVECTOR4* cameraData = RegisteredConstant("TESR_CameraData");
+	if (!projection || !invProjection || !reciprocalResolution || !sunColor || !viewSpaceLightDir || !sunDirection || !sunPosition ||
+		!sunAmount || !sunsetColor || !cameraData) return false;
+	GodRaysUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invProjection, invProjection, sizeof(D3DXMATRIX));
+	uniforms.reciprocalResolution = *reciprocalResolution;
+	uniforms.sunColor = *sunColor;
+	uniforms.ray = Constants.Ray;
+	uniforms.rayColor = Constants.RayColor;
+	uniforms.data = Constants.Data;
+	uniforms.viewSpaceLightDir = *viewSpaceLightDir;
+	uniforms.sunDirection = *sunDirection;
+	uniforms.sunPosition = *sunPosition;
+	uniforms.sunAmount = *sunAmount;
+	uniforms.sunsetColor = *sunsetColor;
+	uniforms.cameraData = *cameraData;
+	uniforms.layout = layout;
+	return ExtUniforms(extUniforms, &uniforms, sizeof(uniforms)) != nullptr;
+}
+
+// One pass of DedicatedGodRays (0-5) as RenderDedicated's D3D9 loop draws it: pass p into surfaces[p & 1] reading textures[(p - 1) & 1],
+// the combine through the frame chain. reduced: SkipEmpty's 1 x 1 maximum when the reduction ran (else null: the blurs never read it).
+bool GodRaysEffect::ExtDrawPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT pass,
+	IDirect3DTexture9* const* textures, IDirect3DSurface9* const* surfaces, const D3DXVECTOR4& skip, IDirect3DTexture9* reduced) {
+	if (ExtFailed) return false;
+	static const float stepLength = 1.0f / 10.0f;	// the .fx's 1/samples and the blurs' step arguments
+	static const float steps[3] = { stepLength, stepLength * stepLength, stepLength * stepLength * stepLength };
+	GodRaysPush push = {};
+	push.skip = skip;
+	ID3D9NvrExtBuffer* uniforms = extUniforms.Buffer;
+	NVR_EXT_RESOURCE_BINDING resources[6] = {};
+	if (pass == 5) {
+		IDirect3DBaseTexture9* inputs[2] = { TheTextureManager->RenderedTexture, textures[0] };
+		const UINT count = Resources(resources, inputs, 2, uniforms, false);
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extCombine.Pipeline, resources, count, &push, sizeof(push), true);
+	}
+	ExtPass* pipeline = &extSkyMask;
+	UINT count = 0;
+	if (pass == 0) {
+		IDirect3DBaseTexture9* inputs[2] = { TheTextureManager->RenderedTexture, DepthTexture() };
+		count = Resources(resources, inputs, 2, uniforms, false);
+	}
+	else if (pass == 1) {
+		pipeline = &extLightMask;
+		IDirect3DBaseTexture9* inputs[1] = { textures[0] };
+		count = Resources(resources, inputs, 1, uniforms, false);
+	}
+	else {
+		pipeline = &extBlur;
+		push.blurStep = steps[pass - 2];
+		push.storeAttenuation = pass == 4 ? 1.0f : 0.0f;
+		// Without a reduction skip.x is 0 and the shader never reads NVR_GodRaysMax; any texture not written by this pass stands in.
+		IDirect3DBaseTexture9* inputs[3] = { textures[(pass - 1) & 1], reduced ? (IDirect3DBaseTexture9*)reduced : TheTextureManager->RenderedTexture, DepthTexture() };
+		count = Resources(resources, inputs, 3, uniforms, true);
+	}
+	return ExtDrawTo(pipeline->Pipeline, &surfaces[pass & 1], 1, resources, count, &push, sizeof(push));
+}
 
 void GodRaysEffect::UpdateConstants() {
 	Constants.Data.z = std::lerp(nightMult, dayMult, TheShaderManager->GameState.transitionCurve);
@@ -70,6 +205,21 @@ bool GodRaysEffect::RunReduce(IDirect3DDevice9* Device, IDirect3DTexture9* sourc
 	for (int i = 0; i < maxSteps[set]; i++) if (!maxTexture[set][i] || !maxSurface[set][i]) return false;
 	static GpuTimer reduceTimer("  GR max reduce");
 	GpuProfileScope gpu(reduceTimer, Device);
+	if (extDrawing) {	// UNOFFICIAL 2026-10-25 (NVR DXVK): the same steps as Vulkan passes (GodRaysMaxReduce.frag), each into its whole target
+		IDirect3DTexture9* from = source;
+		UINT w = width, h = height;
+		for (int i = 0; i < maxSteps[set]; i++) {
+			if (ExtFailed) return false;
+			GodRaysPush push = {};
+			push.reduce = D3DXVECTOR4(1.0f / w, 1.0f / h, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* input = from;
+			NVR_EXT_RESOURCE_BINDING resources[3] = {};
+			const UINT count = Resources(resources, &input, 1, extUniforms.Buffer, false);
+			if (!ExtDrawTo(extReduce.Pipeline, &maxSurface[set][i], 1, resources, count, &push, sizeof(push))) return false;
+			from = maxTexture[set][i]; w = maxWidth[set][i]; h = maxHeight[set][i];
+		}
+		return true;
+	}
 	UINT passes = 0;
 	HRESULT result = Effect->SetTechnique(technique);
 	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
@@ -337,9 +487,12 @@ bool GodRaysEffect::ShouldRender() {
 * RenderedSurface already holding the current scene, which every preceding effect guarantees by
 * copying its result there. Returns false without touching the render target if the dedicated
 * path is unavailable.
+* UNOFFICIAL 2026-10-25 (NVR DXVK): ext draws the six passes and the reduction through the extension (see ExtPrepare), the rest
+* (SkipIdle's question, the state, the bookkeeping) as before. False with ext: nothing of the frame was committed, and the D3D9
+* passes draw it (ExtFailed is set when a pass failed).
 */
 bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
-	IDirect3DSurface9* RenderedSurface) {
+	IDirect3DSurface9* RenderedSurface, bool ext) {
 	if (dedicatedRenderFailed) return false;
 	const bool lowRes = TheSettingManager->SettingsMain.Main.GodRaysLowRes &&
 		raysTextureLow[0] && raysTextureLow[1] && raysSurfaceLow[0] && raysSurfaceLow[1];
@@ -374,6 +527,8 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	IDirect3DSurface9* depthSurface = nullptr;
 	DWORD oldScissorEnabled = FALSE;
 	HRESULT result = Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorEnabled);
+	// NVR DXVK: the Vulkan combine writes the whole target; with a scissor on (the D3D9 combine keeps it) the D3D9 passes draw.
+	if (ext && (FAILED(result) || oldScissorEnabled || !ExtPrepare(layout))) return false;
 	if (SUCCEEDED(result)) result = Device->GetDepthStencilSurface(&depthSurface);
 	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (a single smaller target is legal with it).
 	if (SUCCEEDED(result) && !ReShadeIntegration::KeepDepthBound()) result = Device->SetDepthStencilSurface(nullptr);
@@ -392,16 +547,27 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	bool heavySkipped = false;	// UNOFFICIAL SkipIdle: this frame's check found the sky empty and the blurs and combine were left out
 	const bool checkOnly = idleCheckFrame && idleEmptyKnown;	// a check frame of an idle sky: the sky mask and the question, nothing else
 	UINT passes = 0;
+	static GpuTimer passTimers[6] = { GpuTimer("  GR sky mask (half)"), GpuTimer("  GR light mask (half)"),
+		GpuTimer("  GR blur 1 (half)"), GpuTimer("  GR blur 2 (half)"), GpuTimer("  GR blur 3 (half)"),
+		GpuTimer("  GR combine (full)") };
+	extDrawing = ext;
 	for (int stage = 0; stage < 2 && SUCCEEDED(result); stage++) {
+	if (ext) {
+		// NVR DXVK: the passes and skips of the D3D9 loop below (the combine is the last of the six).
+		const D3DXVECTOR4 skip(maskReduced ? 1.0f : 0.0f, skipIdle ? 1.0f : 0.0f, idleLimit, 0.0f);
+		const UINT first = stage == 0 ? 0 : 2, last = stage == 0 ? (checkOnly ? 1 : 2) : 6;
+		for (UINT p = first; p < last && SUCCEEDED(result); ++p) {
+			GpuProfileScope gpuPass(passTimers[p], Device);
+			if (!ExtDrawPass(Device, RenderTarget, RenderedSurface, p, textures, surfaces, skip, maskReduced ? maxTexture[set][maxSteps[set] - 1] : nullptr)) result = E_FAIL;
+		}
+	}
+	else {
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
 	if (skipHandle) { const D3DXVECTOR4 skip(maskReduced ? 1.0f : 0.0f, skipIdle ? 1.0f : 0.0f, idleLimit, 0.0f); Effect->SetVector(skipHandle, &skip); }
 	result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		static GpuTimer passTimers[6] = { GpuTimer("  GR sky mask (half)"), GpuTimer("  GR light mask (half)"),
-			GpuTimer("  GR blur 1 (half)"), GpuTimer("  GR blur 2 (half)"), GpuTimer("  GR blur 3 (half)"),
-			GpuTimer("  GR combine (full)") };
 		const UINT first = stage == 0 ? 0 : 2, last = stage == 0 ? (passes < 2 ? passes : (checkOnly ? 1 : 2)) : passes;
 		for (UINT p = first; p < last && SUCCEEDED(result); ++p) {
 			GpuProfileScope gpuPass(passTimers[p < 6 ? p : 5], Device);
@@ -421,6 +587,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		}
 		Effect->End();
 	}
+	}
 	if (stage == 0 && SUCCEEDED(result)) {
 		// UNOFFICIAL SkipIdle: the question about the sky (first: it uses the same reduction textures as the two below, which then overwrite it).
 		// A check frame of an idle sky stops here: nothing else is drawn and the picture is left as it is.
@@ -436,6 +603,7 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		if (skipEmpty && skipHandle) maskReduced = RunReduce(Device, textures[1], reduced.Width, reduced.Height, set);
 	}
 	}
+	extDrawing = false;
 #if NVR_TEST_TOOLS
 	if (combineCheck && SUCCEEDED(result) && !heavySkipped) CombineCheck(Device, RenderedSurface, finalTarget);
 #endif
@@ -446,11 +614,15 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Device->SetRenderState(D3DRS_SCISSORTESTENABLE, oldScissorEnabled);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
-	if (SUCCEEDED(result) && !heavySkipped) {
+	if (SUCCEEDED(result) && !heavySkipped && !ext) {	// (ext: the combine's ExtFullScreen committed or copied)
 		if (chained) chain.Commit();
 		else result = Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
 	idleCheckSkipped = heavySkipped;
+	if (FAILED(result) && ext) {
+		if (!ExtFailed) { ExtFailed = true; Logger::Log("UNOFFICIAL NVR DXVK: pass GodRays failed to draw: its D3D9 technique is used from now on"); }
+		return false;	// nothing was committed: the D3D9 passes draw this frame
+	}
 	if (FAILED(result)) {
 		// RenderedSurface is only written by the final copy, so it still holds the input.
 		Device->StretchRect(RenderedSurface, NULL, RenderTarget, NULL, D3DTEXF_NONE);
@@ -493,7 +665,12 @@ void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 
 	{
 		auto timer = TimeLogger();
-		if (RenderDedicated(Device, RenderTarget, RenderedSurface)) {
+		// UNOFFICIAL 2026-10-25 (NVR DXVK): the Vulkan passes first (ProbeLog's read-back diagnostics stay on D3D9).
+		bool ext = !ExtFailed && !dedicatedRenderFailed && DxvkCompute::PassesOn();
+#if NVR_TEST_TOOLS
+		if (probeLevel > 0) ext = false;
+#endif
+		if ((ext && RenderDedicated(Device, RenderTarget, RenderedSurface, true)) || RenderDedicated(Device, RenderTarget, RenderedSurface)) {
 			if (idleCheckSkipped) idleCheckOnly++; else idleFull++;
 			renderTime = timer.LogTime("GodRays::DedicatedRender");
 			IdleStats();

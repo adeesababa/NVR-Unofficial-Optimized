@@ -57,8 +57,16 @@ public:
 	IDirect3DTexture9* raysTextureLow[2] = {};
 	IDirect3DSurface9* raysSurfaceLow[2] = {};
 
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): ext = the six passes and the SkipEmpty reduction as Vulkan passes (GodRays*.frag);
+	// SkipIdle's 1 x 1 test inside the occlusion query stays a D3D9 draw.
 	bool RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
-		IDirect3DSurface9* RenderedSurface);
+		IDirect3DSurface9* RenderedSurface, bool ext = false);
+	bool ExtPrepare(const D3DXVECTOR4& layout);
+	bool ExtDrawPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT pass,
+		IDirect3DTexture9* const* textures, IDirect3DSurface9* const* surfaces, const D3DXVECTOR4& skip, IDirect3DTexture9* reduced);
+	ExtPass extSkyMask, extLightMask, extBlur, extCombine, extReduce;
+	ExtUniformBuffer extUniforms;
+	bool extDrawing = false;	// RenderDedicated is on its Vulkan path: RunReduce draws through the extension too
 	void Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 		IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 		IDirect3DSurface9* SourceBuffer) override;
