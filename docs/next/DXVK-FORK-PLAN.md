@@ -161,6 +161,24 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
      lower half in every shot (effect off too): the slot's outdoor picture problem (or DXVK in the slot), which may hide
      rain and snow. BarrelHaze: not testable automatically (needs real firing of a GunFX gun; test saves have the weapon
      holstered and input blocked). Left for the owner's manual check: rain, snow, BarrelHaze.
+   - PORT ROUND 2 2026-10-25 22:40 (all merged, build clean, NOT run in game yet; testing deferred at the user's request):
+     first extension 1.3 (fork patch 0005: trilinear/anisotropic samplers) and the helpers ExtDrawTo (own targets) and
+     ExtUniforms (constants over 240 bytes), 1333f19d; then 12 agents (Opus medium: SMAA, GodRays, VolumetricLight,
+     Reflections; Haiku high: Underwater, Specular, ShadowsInteriors, WetWorld, SkyView, SunFar, ShadowsExteriors,
+     FlashlightBeam). Ported in full: SMAA (all edge modes; the stencil mask replaced by an alpha mark in the edges
+     target), VolumetricLight (all 9 techniques incl. the froxel grid), Reflections (all 8 incl. cube capture/filter),
+     SkyView (5), Specular (4), Underwater (5, unblocked by ExtUniforms + MipSampler), SunFar, FlashlightBeam. Partly:
+     GodRays (dedicated technique + max reduce; the SkipIdle occlusion query stays D3D9), ShadowsInteriors (dedicated
+     path; the generic clip/pre-fill technique stays D3D9), WetWorld (techniques 2-4; technique 0 and the cover query stay
+     D3D9), ShadowsExteriors (its own pass; the merged fog/AO composites belong to other effects). Each lists its A/B
+     shot lines and scene conditions in G:\_NVR-build-scratch\port-results.txt and its merge commit.
+     MATRIX CONVENTION settled: effects get matrices through ID3DXEffect::SetMatrix (EffectRecord::SetCT), so HLSL
+     M[i][j] is the D3DXMATRIX element (i+1, j+1); with the memory copied as stored, mul(v, M) is M * v in GLSL. Snow's
+     port had them transposed (fixed + Snow.spv rebuilt), WetWorld's too (matrices now transposed into its block,
+     82b0b650); flagged independently by four agents. All other ports use the convention consistently.
+     Open "same picture" doubts to check when testing: Specular's SunFar sampler (LINEAR via BindExtras vs POINT in the
+     .fx), Reflections' INTZ viewmodel-depth sampling, VolumetricLight's 3D noise view (first 3D view), Reflections' 48
+     extension draws a frame for the cube (cost).
    - Fixed on the way: MotionBlur's Vulkan port fed its second pass a stale surface (fell off the frame chain) and its
      first pass could write straight into the game target (aa5c8398; found by the SkinScattering agent).
    - Extension gaps found: samplers without mips/anisotropy; no uniform-buffer path in ExtTexturePass (SkinScattering does
