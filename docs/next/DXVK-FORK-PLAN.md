@@ -149,6 +149,18 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
      no crash; HeatHaze, Snow, DepthOfField distant blur (desert view defaults) and Bodycam ran as Vulkan passes;
      Bodycam = D3D9 within its own film-grain noise (72.9 % / 8.95 both); HeatHaze and Snow at noise but the effects
      hardly change that scene even in D3D9, so their "same picture" still needs a scene where they show.
+   - VISIBILITY TESTS 2026-10-25 21:25 (fork 0004, slot C 1080p; lists dxvkfork-9-skin, dxvkfork-10-weather; added
+     [Shaders.Precipitations.Main] ForceRain test aid ac2f8a61, since FalloutNV.esm has no rainy or snowy weather at all):
+     | effect | effect shows? (off vs D3D9) | D3D9 vs Vulkan | Vulkan vs Vulkan (noise) | verdict |
+     |---|---|---|---|---|
+     | HeatHaze (Strength 8, StartDistance 0, FullDistance 1000, HorizonBand 1) | yes, 23.6 % / 2.14 | 25.95 % / 2.37 | 26.11 % / 2.38 | same picture (animated ripples) |
+     | SkinScattering (NewSkin on, int23 3rd person, NPC arms/hands on screen) | small area | 10.22 % / 1.41 | 9.96 % / 1.35 | same picture (small skin area) |
+     | Snow (ForceSnow, Flakes 1) | no, 9.2 % / 1.31 = noise | 9.26 % | 9.14 % | not verifiable here |
+     | Precipitations (ForceRain) | no, 9.9 % / 1.35 = noise | 10.01 % | 10.24 % | not verifiable here |
+     All passes logged "runs as a Vulkan pass", no failures, no crash. The og-desert pictures have a washed-out white
+     lower half in every shot (effect off too): the slot's outdoor picture problem (or DXVK in the slot), which may hide
+     rain and snow. BarrelHaze: not testable automatically (needs real firing of a GunFX gun; test saves have the weapon
+     holstered and input blocked). Left for the owner's manual check: rain, snow, BarrelHaze.
    - Fixed on the way: MotionBlur's Vulkan port fed its second pass a stale surface (fell off the frame chain) and its
      first pass could write straight into the game target (aa5c8398; found by the SkinScattering agent).
    - Extension gaps found: samplers without mips/anisotropy; no uniform-buffer path in ExtTexturePass (SkinScattering does
