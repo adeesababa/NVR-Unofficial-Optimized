@@ -498,7 +498,7 @@ def main():
     hlsl_path = os.path.join(a.out, base + ".sm6.hlsl") if a.keep else "/tmp/nvr-sm6-%d.hlsl" % os.getpid()
     open(hlsl_path, "w").write(source)
     spv_path = os.path.join(a.out, base + ".spv")
-    r = subprocess.run([tool("glslang"), "-D", "-V", "-S", "frag", "-e", "nvr_main", "--target-env", "vulkan1.1",
+    r = subprocess.run([tool("glslang"), "-D", "-V", "-S", "frag", "-e", "main", "--source-entrypoint", "nvr_main", "--target-env", "vulkan1.1",
                         "--hlsl-offsets", "-o", spv_path, hlsl_path], capture_output=True)
     if r.returncode != 0:
         log = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")

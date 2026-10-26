@@ -358,6 +358,24 @@ bool Sm6Pass::Draw(IDirect3DDevice9* Device, IDirect3DSurface9* const* Targets, 
 	Owner->ExtFailed = wasFailed;	// (the effect's hand-ported passes are not this pass)
 	if (!drawn) return Fail("the draw was refused");
 	if (++Frames == 1) Logger::Log("UNOFFICIAL NVR SM6: %s runs from its SM6 build.", Key.c_str());
+	if (Frames == 120) {	// once: what the pass was fed (constants' first four values, textures), for checking against the D3D9 pass
+		std::string line;
+		for (const Constant& c : Constants) {
+			const float* v = (const float*)&UboData[c.Offset];
+			char one[160];
+			_snprintf_s(one, sizeof(one), _TRUNCATE, " %s=(%g %g %g %g)%s", c.Name.c_str(), v[0], c.Size > 4 ? v[1] : 0.0f, c.Size > 8 ? v[2] : 0.0f,
+				c.Size > 12 ? v[3] : 0.0f, c.Handle ? "" : "*");
+			line += one;
+		}
+		Logger::Log("UNOFFICIAL NVR SM6: %s frame 120 constants (* = not from the effect):%s", Key.c_str(), line.c_str());
+		line.clear();
+		for (size_t i = 0; i < Textures.size(); i++) {
+			char one[160];
+			_snprintf_s(one, sizeof(one), _TRUNCATE, " %s@s%d=%p", Textures[i].Name.c_str(), Textures[i].Stage, (void*)textures[i]);
+			line += one;
+		}
+		Logger::Log("UNOFFICIAL NVR SM6: %s frame 120 textures:%s", Key.c_str(), line.c_str());
+	}
 	return true;
 }
 
