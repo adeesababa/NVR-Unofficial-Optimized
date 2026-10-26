@@ -83,8 +83,12 @@ public:
 	void					SetFinalEffect(const void* effect) { FinalEffect = effect; }
 	bool					IsDirectFinal(const void* effect) const { return Active && !GameTexture && GameTarget && FinalEffect == effect; }
 	IDirect3DSurface9*		FinalSurface() const { return GameTarget; }
-	void					CommitFinal() { FinalWritten = true; } // the game target holds the finished image
+	void					CommitFinal() { FinalWritten = true; Writes++; LastWrite = 2; } // the game target holds the finished image
 	bool					FinalIsWritten() const { return FinalWritten; }	// UNOFFICIAL 2026-10-26 (pixel inspector)
+	// UNOFFICIAL 2026-10-26 (pixel inspector): how many times the frame was written (Commit, CommitFinal, Sync) and the last way:
+	// 1 Commit (the image is the current buffer), 2 CommitFinal or 3 Sync (the image is in the game target).
+	UINT					WriteCount() const { return Writes; }
+	int						LastWriteKind() const { return LastWrite; }
 
 private:
 	void					ReclaimFinal();
@@ -108,6 +112,8 @@ private:
 	IDirect3DSurface9*		SavedSurface = nullptr;
 	const void*				FinalEffect = nullptr;	// effect expected to render last in this chain
 	bool					FinalWritten = false;	// its last pass already wrote the game target
+	UINT					Writes = 0;
+	int						LastWrite = 0;
 };
 
 __declspec(align(16)) class ShaderManager : public ShaderManagerBase { // Never disposed
