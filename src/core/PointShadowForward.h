@@ -342,6 +342,20 @@ namespace PointShadowForward {
 		Params[0] = (std::min)(strength, 1.0f);
 		Params[1] = forward.Bias;
 		Params[2] = forward.NormalOffset * 2.0f / face;
+		// UNOFFICIAL 2026-10-24 AutoNormalOffset (owner: indoors, with PBR, every triangle of a character showed as a flat facet with a hard
+		// edge, skin and clothes; nothing else changed it). The lookup compares texels up to the filter's reach away from the point (Softness;
+		// at least MagnifiedSoftness where the map is magnified, i.e. close to the camera: on characters; plus a texel for SmoothEdges' and
+		// TexelFilter's bilinear weights). On a surface tilted by t from the lamp those texels hold the surface's own depth up to reach x
+		// texel x tan t nearer the lamp, and the fixed Bias (1.8 % of the distance) covers that only up to ~57 degrees at the defaults: past
+		// it the surface shadows itself, by an amount set by its tilt. A low-poly body is flat per triangle, so each triangle came out
+		// evenly lit or dimmed: facets. Pushing the lookup off the surface along its normal by the reach covers every tilt (the margin grows
+		// as 1 / cos t, as the error does), the usual cure; the shaders already apply NormalOffset (x the distance: texels at any distance).
+		if (forward.AutoNormalOffset) {
+			float reach = forward.Quality > 0 ? forward.Softness * 1.5f : 0.0f;	// the four taps sit on the diagonals, sqrt 2 x the spread out
+			if (forward.Quality > 0 && forward.Softness > 0.0f) reach = (std::max)(reach, forward.MagnifiedSoftness * 1.5f);	// as Magnified[2] below
+			reach += 1.0f;	// bilinear / smooth-edge weights reach one texel further
+			Params[2] = (std::max)(forward.NormalOffset, reach) * 2.0f / face;
+		}
 		Params[3] = forward.Quality > 0 ? forward.Softness * 2.0f / face : 0.0f;	// Quality 0 (Low): one tap
 		Quality = (float)forward.Quality;
 		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;

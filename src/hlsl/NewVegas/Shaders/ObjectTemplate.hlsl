@@ -258,6 +258,19 @@
     #define NVR_LAMP_SUMS
     sampler2D NVR_LampRunStart : register(s9);
 #endif
+// UNOFFICIAL 2026-10-25 HighlightSums ([Shaders.PBR.Main] HighlightSums, restart: HIGHLIGHT_SUMS_ON from ShaderRecord::BuildDefines; per run
+// c210 y as LampSums, core/PassSums.h): the same increments for the HIGHLIGHT passes (these ONLY_SPECULAR shaders) that FoldHighlights
+// leaves to the game -- parallax objects (it never folds them; ParallaxTemplate.hlsl has the same code), glow-mapped ones, hair, objects
+// whose fold broke, or with it off. Each highlight pass was encoded on its own and ADDED: a 1% highlight came out 12% brighter (the
+// Novac road and rubble pieces lit by 3+ lamps, tester report 2026-10-25). The copy is read on s6: free in every ONLY_SPECULAR variant
+// (the game's normal map s0, its shadow maps s4/s5; s9 is the sun's atlas, which these passes read). Same output code as LampSums.
+#ifndef HIGHLIGHT_SUMS_ON
+    #define HIGHLIGHT_SUMS_ON 0
+#endif
+#if defined(PS) && defined(ONLY_SPECULAR) && HIGHLIGHT_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s6);
+#endif
 // UNOFFICIAL 2026-10-18 SmithCorrelated ([Shaders.PBR.Main], restart: SMITH_CORRELATED_ON from ShaderRecord::BuildDefines): the object
 // pixel shaders take the exact height-correlated Smith masking term and its coupled diffuse (Includes/PBR.hlsl BRDF and
 // SmithCorrelatedKeep; idea from Physically-Based-Reloaded (Balebandro), GPL-3.0). Off: the shaders exactly as before.
@@ -295,7 +308,30 @@
 #if defined(PS) && defined(SHADOW_CHARACTER_OBJECTS)
     #define SHADOW_SLACK_CAP_ACTOR 1
 #endif
+// UNOFFICIAL 2026-10-23 CharacterShadowMap (Includes/Shadow.hlsl CharacterMapShadow; compiled in only when on at startup): the object pixel
+// shaders read the player's own sun shadow map too (hats, bandanas, face masks, armour: drawn with these shaders, not the skin's), except
+// the shaders with four or more lamps (the six-lamp OPT specular 4+ shader is at the driver's slot limit, NVR_SLOT_TIGHT above, and the
+// four-lamp ones were at ps_3_0's 32 temporaries with two cascade lookups): a hat lit by four lamps and the sun keeps the cascades.
+#if defined(PS) && !defined(NVR_SLOT_TIGHT) && !(defined(LIGHTS) && LIGHTS > 3)
+    #define SHADOW_CHARACTER_MAP_IN 1
+#endif
 #include "includes/Shadow.hlsl"
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals (Includes/Shadow.hlsl, OBJECT_SMOOTH_NORMALS): the vertex normal in camera-relative world space
+// for the shadow lookups and the sky ambient, in place of the per-triangle derivative normal. The LIGHTS < 4 family carries it in its own
+// interpolator (TEXCOORD8; vs_3_0 has 12 outputs and ps_3_0 10 inputs: with PROJ_SHADOW every one is taken, so those variants keep the flat
+// normal); the LIGHTS >= 4 family has no interpolator spare and carries it octahedrally in uv.zw (OBJ_WORLD_NORMAL below).
+// 2026-10-24 (second round; owner: still faceted, skin and clothes, indoors, gone only with PBR off): characters are often drawn with the
+// projected-shadow (PROJ_SHADOW) variants, which had no interpolator spare and kept the per-triangle normal for the sky term, the sun lookup
+// and the metal reflection (grey cloth counts as metal, [Shaders.PBR.Metal] World). Now the full passes (not ONLY_LIGHT) carry the normal
+// octahedrally in lightDistSq.w / lightDir.w, the two channels METAL_UP used for world up (the metal reflection's sky test now works in world
+// space from it, OBJ_SMOOTH_NORMAL_W); the light-only passes (ONLY_LIGHT: no vertex colour, no fog) have TEXCOORD8 free even with PROJ_SHADOW.
+#if OBJECT_SMOOTH_NORMALS && !(defined(LIGHTS) && LIGHTS >= 4)
+    #ifdef ONLY_LIGHT
+        #define OBJ_SMOOTH_NORMAL_INTERP 1
+    #else
+        #define OBJ_SMOOTH_NORMAL_W 1
+    #endif
+#endif
 #ifdef PS
     // UNOFFICIAL forward point-light shadows (INTERIOR_SHADOWS): SHADOWED(colour, k, att) gives light k of the draw
     // its own cube-map shadow (looked up once per pixel near the top of main); without INTERIOR_SHADOWS it is just the
@@ -492,6 +528,9 @@ struct VS_OUTPUT {
 #ifdef PROJ_SHADOW
     float4 shadowUVs : TEXCOORD7;
 #endif
+#ifdef OBJ_SMOOTH_NORMAL_INTERP
+    float4 smoothNormal : TEXCOORD8;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal, camera-relative world; .w = SHADOW_VS_SENTINEL
+#endif
 };
 
 #ifndef NO_FOG
@@ -647,6 +686,14 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Model-space shaders: recover a camera-relative world position from the clip position.
     // Written unconditionally, or the interpolator is left undefined.
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
+    #ifdef OBJ_SMOOTH_NORMAL_INTERP
+        // UNOFFICIAL 2026-10-24 SmoothObjectNormals: tbn[2] is the vertex normal in the space position is in (model, or the bones' with SKIN)
+        #ifndef SKIN
+            OUT.smoothNormal = GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz);
+        #else
+            OUT.smoothNormal = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz);
+        #endif
+    #endif
 
     #ifdef METAL_UP
         // UNOFFICIAL: which way is world up in this vertex's tangent space, so the pixel shader can tell how far a
@@ -665,6 +712,17 @@ VS_OUTPUT main(VS_INPUT IN) {
         OUT.lightDistSq.w = upTangent.x;
         OUT.lightDir.w = upTangent.y;
         OUT.vertexColor.a = upTangent.z * 0.5f + 0.5f;
+    #endif
+    #ifdef OBJ_SMOOTH_NORMAL_W
+        {	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal, camera-relative world, octahedral, in METAL_UP's two channels
+            #ifndef SKIN
+                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+            #else
+                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+            #endif
+            OUT.lightDistSq.w = smoothOct.x;
+            OUT.lightDir.w = smoothOct.y;
+        }
     #endif
 
     return OUT;
@@ -705,7 +763,11 @@ struct VS_OUTPUT {
     float4 vertexColor : COLOR0;
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
+#if OBJECT_SMOOTH_NORMALS
+    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: .zw the vertex normal, camera-relative world, octahedral (no interpolator spare here)
+#else
     float2 uv : TEXCOORD0;
+#endif
     float4 lPosition : TEXCOORD1;
     float4 lightDir : TEXCOORD2;  // .w = .x of viewDir
     float4 light2 : TEXCOORD3;   // .w = .y of viewDir
@@ -747,7 +809,7 @@ float4 EyePosition : register(c16);
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
     
-    OUT.uv = IN.uv.xy;
+    OUT.uv.xy = IN.uv.xy;
     
     float4 position = IN.position.xyzw;
     
@@ -867,6 +929,14 @@ VS_OUTPUT main(VS_INPUT IN) {
     // ignores.
     float3 shadowWorldPos = GetShadowWorldPos(OUT.sPosition);
     SHADOW_WP_STORE(OUT, shadowWorldPos);
+    #if OBJECT_SMOOTH_NORMALS
+        // UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal (tbn[2], in position's space) in camera-relative world, octahedral in uv.zw
+        #ifndef SKIN
+            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+        #else
+            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+        #endif
+    #endif
 
     return OUT;
 };
@@ -900,6 +970,9 @@ struct PS_INPUT {
     float4 shadowWorldPos : TEXCOORD4;
 #ifdef PROJ_SHADOW
     float4 shadowUVs : TEXCOORD7;
+#endif
+#ifdef OBJ_SMOOTH_NORMAL_INTERP
+    float4 smoothNormal : TEXCOORD8;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals
 #endif
 };
 
@@ -1113,7 +1186,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     // pixel shader whenever FORWARD_SHADOWS was compiled in, which is fragile enough on its own
     // to corrupt unrelated interpolator reads placed nearby.
     #if !defined(DIFFUSE) && !defined(POINT)
-        float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+        #ifdef OBJ_SMOOTH_NORMAL_INTERP
+            float3 shadowGeometricNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal
+        #elif defined(OBJ_SMOOTH_NORMAL_W)
+            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowDecodeNormal(float2(IN.lightDistSq.w, IN.lightDir.w)), IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24
+        #else
+            float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+        #endif
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
@@ -1138,6 +1217,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
         #if !defined(DIFFUSE) && !defined(POINT)
             float3 ptNormal = shadowGeometricNormal;
+        #elif defined(OBJ_SMOOTH_NORMAL_INTERP)
+            float3 ptNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: free here, no derivatives
         #else
             float3 ptNormal = 0.0f;
         #endif
@@ -1238,10 +1319,17 @@ PS_OUTPUT main(PS_INPUT IN) {
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), shadowGeometricNormal, skyValid);
             [branch] if (metallic > 0.0f) {
                 float3 metalView = normalize(IN.viewDir.xyz);
+                #ifdef OBJ_SMOOTH_NORMAL_W
+                // UNOFFICIAL 2026-10-24: lightDistSq.w / lightDir.w carry the smooth normal now; the reflection's height in world space from it
+                // (camera-relative position: the eye is at the origin; world up is +z), without the normal map's detail.
+                bool upKnown = skyValid > 0.0f;
+                float upReflect = upKnown ? reflect(normalize(IN.shadowWorldPos.xyz), shadowGeometricNormal).z : 0.0f;
+                #else
                 float3 upTangent = float3(IN.lightDistSq.w, IN.lightDir.w, IN.vertexColor.a * 2.0f - 1.0f);
                 float upLength = length(upTangent);
                 bool upKnown = upLength > 0.5f && skyValid > 0.0f;
                 float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
+                #endif
                 lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
                                                        upReflect, upKnown ? 1.0f : 0.0f,
                                                        IN.shadowWorldPos.xyz, shadowGeometricNormal);
@@ -1481,7 +1569,11 @@ struct PS_INPUT {
     float4 vertexColor : COLOR0;
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
+#if OBJECT_SMOOTH_NORMALS
+    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: .zw the vertex normal, camera-relative world, octahedral (no interpolator spare here)
+#else
     float2 uv : TEXCOORD0;
+#endif
     float4 lPosition : TEXCOORD1;
     float4 lightDir : TEXCOORD2_centroid;  // .w = .x of viewDir
     float4 light2 : TEXCOORD3_centroid; // .w = .y of viewDir
@@ -1501,6 +1593,14 @@ struct PS_INPUT {
     #endif
 #endif
 };
+
+// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the world normal at a point of this draw, p its camera-relative world position: the vertex
+// normal the vertex shader sent in uv.zw, facing the camera; off, the per-triangle derivative normal as before (top level only then).
+#if OBJECT_SMOOTH_NORMALS
+    #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), (p))
+#else
+    #define OBJ_WORLD_NORMAL(p) GetShadowGeometricNormal(p)
+#endif
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
@@ -1616,7 +1716,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // UNOFFICIAL forward point-light shadows -- see the LIGHTS < 4 variant. One geometric normal (ddx/ddy) serves the
         // sun, the point lights and the ambient.
         float3 ptWorldPos = SHADOW_WP_LOAD(IN);
-        float3 ptNormal = GetShadowGeometricNormal(ptWorldPos);
+        float3 ptNormal = OBJ_WORLD_NORMAL(ptWorldPos);
         float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
         // Light k of the draw is PSLightColor[k] (k = 0 is the sun's slot without OPT); the attenuations below are the
         // ones the lighting further down computes, so the compiler shares them.
@@ -1663,7 +1763,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         #if INTERIOR_SHADOWS
             float3 sunShadowNormal = ptNormal;
         #else
-            float3 sunShadowNormal = GetShadowGeometricNormal(sunShadowWorldPos);
+            float3 sunShadowNormal = OBJ_WORLD_NORMAL(sunShadowWorldPos);
         #endif
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
@@ -1684,7 +1784,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if INTERIOR_SHADOWS
         float3 ambNormal = ptNormal;
     #else
-        float3 ambNormal = GetShadowGeometricNormal(SHADOW_WP_LOAD(IN));
+        float3 ambNormal = OBJ_WORLD_NORMAL(SHADOW_WP_LOAD(IN));
     #endif
 
     // The sun's and the lamps' light (includes/ManyLightsDirect.hlsl), then the ambient.

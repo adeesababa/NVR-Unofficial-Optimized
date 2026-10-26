@@ -6,6 +6,7 @@
 #include <d3d9.h>
 #include <d3dx9.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -103,6 +104,9 @@ int main(int argc, char** argv) {
 			{ "m2-cumulus-up",       60, 22,   10, 50, 1.0f, 0.45f, 0.0f, 0.2f, 1.0f, 0.96f, 0.88f, 0.25f, 0.45f, 0.85f, 0.62f, 0.74f, 0.90f },
 			{ "m3-storm-build",     240,  8,   10, 35, 1.0f, 0.60f, 0.3f, 0.4f, 1.0f, 0.95f, 0.85f, 0.20f, 0.38f, 0.80f, 0.60f, 0.70f, 0.86f },
 			{ "m4-low-sun",          30,  5,   10, 12, 0.9f, 0.55f, 0.0f, 0.0f, 1.0f, 0.85f, 0.65f, 0.30f, 0.45f, 0.75f, 0.80f, 0.75f, 0.70f },
+			// UNOFFICIAL 2026-10-25 Towering: storms far off, a low warm sun behind the camera (the user's cumulonimbus photos)
+			{ "m5-storm-far",       210,  4,   30,  9, 0.9f, 0.50f, 0.0f, 0.3f, 1.0f, 0.82f, 0.62f, 0.25f, 0.42f, 0.72f, 0.70f, 0.72f, 0.74f },
+			{ "m6-storm-wide",      210, 14,   30,  9, 0.9f, 0.50f, 0.0f, 0.3f, 1.0f, 0.82f, 0.62f, 0.25f, 0.42f, 0.72f, 0.70f, 0.72f, 0.74f },
 			{ "7-night",             90, 20,   10, 50, 0.0f, 0.5f, 0.0f, 0.0f, 0.25f, 0.30f, 0.40f, 0.03f, 0.05f, 0.10f, 0.06f, 0.08f, 0.14f },
 		};
 		const char* only = getenv("CLOUD_VIEWS");
@@ -118,7 +122,10 @@ int main(int argc, char** argv) {
 				if (!wanted) continue;
 			}
 			// the scene: a sky gradient with a band of distant ground across the bottom (not sky in the depth buffer)
-			D3DXVECTOR3 forward = Direction(v.yaw, v.pitch);
+			// UNOFFICIAL 2026-10-25: CLOUD_YAW (added to the view's yaw), CLOUD_PITCH (replaces its pitch) and CLOUD_TAG (file name suffix) for sweeps
+			const float yawAdd = getenv("CLOUD_YAW") ? (float)atof(getenv("CLOUD_YAW")) : 0.0f;
+			const float pitch = getenv("CLOUD_PITCH") ? (float)atof(getenv("CLOUD_PITCH")) : v.pitch;
+			D3DXVECTOR3 forward = Direction(v.yaw + yawAdd, pitch);
 			D3DXVECTOR3 eye(0, 0, 0), up(0, 0, 1), at = forward;
 			D3DXMATRIX view, proj, viewProj;
 			D3DXMatrixLookAtLH(&view, &eye, &at, &up);
@@ -158,8 +165,14 @@ int main(int argc, char** argv) {
 			auto env = [](const char* n, float d) { const char* e = getenv(n); return e ? (float)atof(e) : d; };
 			// CLOUD_USER=1: the user's own toml (2026-10-20) instead of the defaults
 			const bool user = getenv("CLOUD_USER") != NULL;
-			const float steps = user ? 24.0f : 48.0f, haze = user ? 15555.0f : 30000.0f, bright = user ? 3.5f : 1.0f;
-			vec("TESR_CloudsShape", user ? 5555.0f : 1500.0f, user ? 3333.0f : 1800.0f, v.coverage, env("CLOUD_DENSITY", user ? 0.5f : 1.0f));
+			const float haze = user ? 15555.0f : 30000.0f, bright = user ? 3.5f : 1.0f;
+			// UNOFFICIAL 2026-10-25 Towering (CLOUD_TOWER 0-1, CLOUD_TOWERH 1-4): as VolumetricCloudsEffect::UpdateConstants
+			const float towerFade = 1.0f - (std::min)((std::max)((env("CLOUD_COVER", v.coverage) - 0.6f) / 0.3f, 0.0f), 1.0f);
+			const float towering = env("CLOUD_TOWER", 0.0f) * towerFade * towerFade * (3.0f - 2.0f * towerFade);
+			const float towerScale = 1.0f + (env("CLOUD_TOWERH", 5.0f) - 1.0f) * towering;
+			const float steps = (std::min)(64.0f, roundf((user ? 24.0f : 48.0f) * (1.0f + env("CLOUD_TOWERSTEPS", 0.25f) * (towerScale - 1.0f))));
+			vec("TESR_CloudsTower", 1.0f / towerScale, towering, env("CLOUD_ANVIL", 1.0f), 0.0f);
+			vec("TESR_CloudsShape", user ? 5555.0f : 1500.0f, (user ? 3333.0f : 1800.0f) * towerScale, env("CLOUD_COVER", v.coverage), env("CLOUD_DENSITY", user ? 0.5f : 1.0f));
 			vec("TESR_CloudsLook", env("CLOUD_SHARP", user ? 1.0f : 2.0f), env("CLOUD_MIP", user ? 1.0f : 0.0f), env("CLOUD_WARP", user ? 0.0f : 1.0f), env("CLOUD_SMOOTH", user ? 0.0f : 0.5f));
 			vec("TESR_CloudsNoise", env("CLOUD_SHAPE", user ? 33333.0f : 9000.0f), env("CLOUD_DETAIL", user ? 1888.0f : 500.0f), env("CLOUD_EROSION", user ? 0.33f : 0.5f), user ? 82222.0f : 30000.0f);
 			vec("TESR_CloudsDetail", env("CLOUD_FINE", user ? 0.2f : 0.0f), user ? 4221.5f : 140.0f, 256.0f, env("CLOUD_CUMULUS", 1.0f));
@@ -187,7 +200,7 @@ int main(int argc, char** argv) {
 				device->SetRenderTarget(0, currentS.Get());
 				D3DVIEWPORT9 blocks = { 0, 0, BW, BH, 0, 1 }; device->SetViewport(&blocks);
 				D3DVIEWPORT9 low = { 0, 0, LW, LH, 0, 1 };
-				effect->SetTechnique(effect->GetTechniqueByName("March"));
+				effect->SetTechnique(effect->GetTechniqueByName(getenv("CLOUD_TOWER") && atof(getenv("CLOUD_TOWER")) > 0.0 ? "MarchTowers" : "March"));
 				effect->Begin(&passes, 0); effect->BeginPass(0);
 				device->SetTexture(0, scene.Get()); device->SetTexture(1, depth.Get()); device->SetTexture(2, shape.Get());
 				device->SetTexture(3, detail.Get()); device->SetTexture(4, weather.Get()); device->SetTexture(5, blue.Get());
@@ -219,7 +232,7 @@ int main(int argc, char** argv) {
 			ComPtr<IDirect3DQuery9> query; device->CreateQuery(D3DQUERYTYPE_EVENT, &query);
 			query->Issue(D3DISSUE_END); while (query->GetData(NULL, 0, D3DGETDATA_FLUSH) == S_FALSE) Sleep(0);
 			QueryPerformanceCounter(&f1);
-			const std::string path = out + "\\" + v.name + ".png";
+			const std::string path = out + "\\" + v.name + (getenv("CLOUD_TAG") ? getenv("CLOUD_TAG") : "") + ".png";
 			Check(D3DXSaveSurfaceToFileA(path.c_str(), D3DXIFF_PNG, finalS.Get(), NULL, NULL), "save");
 			std::printf("%s  (%d frames, %.2f ms per frame incl. upload)\n", path.c_str(), frames,
 				(f1.QuadPart - f0.QuadPart) * 1000.0 / freq.QuadPart / frames);

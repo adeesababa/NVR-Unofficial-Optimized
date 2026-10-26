@@ -54,6 +54,7 @@ struct VS_OUTPUT {
 };
 
 #define SHADOW_SKIN_SOFTNESS 1   // UNOFFICIAL 2026-10-20 CharacterShadowSoftness (Includes/Shadow.hlsl ShadowMinPenumbra)
+#define SHADOW_CHARACTER_MAP_IN 1   // UNOFFICIAL 2026-10-23 CharacterShadowMap (Includes/Shadow.hlsl CharacterMapShadow; compiled in only when on at startup)
 #include "Includes/Shadow.hlsl"
 #include "Includes/Skin.hlsl"
 

@@ -67,6 +67,12 @@ public:
 		D3DXVECTOR4		CrossFade;
 		// UNOFFICIAL TESR_PointShadowNear (PointShadows.fx): x = [Shaders.ShadowsInteriors.Main] NearFade, world units; y = EdgeFade, fraction of a lamp's radius.
 		D3DXVECTOR4		PointShadowNear;
+		// UNOFFICIAL 2026-10-23 CharacterShadowMap (Includes/Shadow.hlsl, SunShadows.fx.hlsl): the map's camera-relative world -> light clip
+		// transform (ortho), its centre (camera-relative, w = half-extent in world units) and x: 1 / resolution, y: the hand-over band as a share
+		// of the half-extent, z: the constant depth bias in the map's depth units, w: 1 while the map holds this frame's draw (0 = not read).
+		D3DXMATRIX		CharacterCameraToLight;
+		D3DXVECTOR4		CharacterCenter;
+		D3DXVECTOR4		CharacterData;
 	};
 
 	// Settings
@@ -121,6 +127,19 @@ public:
 		float				HandoverBlend = 70.0f;	// UNOFFICIAL 2026-10-21: width of the cross-fade band between sun cascades, world units (TESR_ShadowForwardData.w), live
 		bool				PlayerInNearLog = false;
 		float				PlayerInNear = 0.0f;	// UNOFFICIAL 2026-10-23: third person, the player's head kept inside the Near cascade up to this camera distance (world units), 0 = off, live
+		// UNOFFICIAL 2026-10-23 CharacterShadowMap ([Shaders.ShadowsExteriors.ShadowMaps]; docs/next/CHARACTER-SHADOW-MAP-DESIGN.md): a small
+		// sun shadow map of the player alone, fitted round the head and upper body, read by the skin and object shaders and the deferred
+		// sun pass where a pixel is inside it (Includes/Shadow.hlsl CharacterMapShadow). Compiled into the shaders when on at startup
+		// (CHARACTER_SHADOW_MAP), live after that; off = the shaders and the cascade path exactly as before.
+		bool				CharacterMap = false;
+		int					CharacterMapResolution = 1024;	// texels across (256..4096, a multiple of 256), live (the texture is remade)
+		int					CharacterMapFit = 0;			// 0 = head and upper body (Spine2 to Head), 1 = the whole actor bound
+		float				CharacterMapMargin = 24.0f;		// world units added round the fit (hat brims, hair, shoulders)
+		float				CharacterMapBlend = 12.0f;		// world units inside the map's edge over which it hands over to the cascades
+		float				CharacterMapBias = 0.15f;		// world units of constant depth bias at the lookup
+		bool				CharacterMapOthers = false;		// other actors inside the map are drawn into it too (they can shade the player)
+		bool				CharacterMapLog = false;		// diagnostic: fit, texel size and caster count once a second
+		int					CharacterMapDebug = 0;			// diagnostic view (Shadow.hlsl CharacterMapShadow): 0 off, 1 the map's verdict alone, 2 the map's depth, 3 the point's depth
 	};
 
 	struct OrthoStruct {
@@ -198,6 +217,7 @@ public:
 			bool EvenTaps;				// UNOFFICIAL (2026-10-21): High/Ultra's extra taps spread evenly (POINT_SHADOW_EVEN, read at startup)
 			float MagnifiedSoftness;	// UNOFFICIAL (2026-10-21): texels; the least spread where a cube texel covers many pixels (0 off; compiled in when above 0 at startup)
 			bool TexelFilter;			// UNOFFICIAL (2026-10-21): the sun-style texel-aligned B-spline filter (POINT_SHADOW_TEXEL, read at startup)
+			bool AutoNormalOffset;		// UNOFFICIAL (2026-10-24): NormalOffset at least the filter's reach in texels (PointShadowForward::Publish), live
 		} Forward;
 	};
 
@@ -288,6 +308,22 @@ public:
 	IDirect3DTexture9* ShadowMapOrthoTexture;
 	IDirect3DSurface9* ShadowMapOrthoSurface;
 	IDirect3DSurface9* ShadowMapOrthoDepthSurface;
+
+	// UNOFFICIAL 2026-10-23 CharacterShadowMap: the player's own sun shadow map (R32F plain depth, TESR_CharShadowMap), its depth
+	// surface and the ShadowMapSettings ShadowManager::RenderCharacterShadowMap draws it with (as AmbientLight's gridSunMap). Made
+	// on first use at the size the setting asks for (EnsureCharacterMap), remade when the size changes. CharacterMapCompiled: the
+	// setting was on at startup, so the shaders have the lookup (CHARACTER_SHADOW_MAP in ShaderRecord::BuildDefines).
+	IDirect3DTexture9* CharacterMapTexture = nullptr;
+	IDirect3DSurface9* CharacterMapSurface = nullptr;
+	IDirect3DSurface9* CharacterMapDepthSurface = nullptr;
+	UINT		CharacterMapSizeCreated = 0;
+	bool		CharacterMapCompiled = false;
+	ShadowMapSettings CharacterMap = {};
+	bool		EnsureCharacterMap();
+	// The map's fit for this frame: a sun-aligned ortho box round the player (CharacterMapFit), camera-relative like the cascades, its
+	// origin snapped to a texel; false when there is nothing to fit (first person, no skeleton). Sets CharacterMap up for the draw and
+	// Constants.CharacterCameraToLight / CharacterCenter / CharacterData (w left to the caller).
+	bool		GetCharacterViewProj(const D3DXVECTOR3& sunDir, D3DXMATRIX& viewProj);
 
 	void		clearShadowsBuffer();
 	bool		ShouldRender() override;
