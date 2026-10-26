@@ -1,0 +1,143 @@
+#include <cstring>
+#include <string>
+#include "PointShadows.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+
+IDirect3DTexture9* LampMaskHalfTexture();	// UNOFFICIAL 2026-10-16 MaskHalfRes (effects\ShadowsExterior.cpp)
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the constants block of PointShadowsCommon.glsl, as the D3D9 path uploads its values (std140
+// with vec4s and two mat4s, so this layout; the matrices as stored).
+struct PointShadowsUniforms {
+	D3DXVECTOR4 shadowLightPosition[ShadowCubeMapsScreen];
+	D3DXVECTOR4 lightPosition[TrackedLightsMax];
+	D3DXVECTOR4 lightColor[TrackedLightsMax + ShadowCubeMapsScreen];
+	D3DXVECTOR4 extraLights[ExtraLightsMax];
+	D3DXVECTOR4 shadowFade, pointShadowNear, spotLightPosition, spotLightDirection, spotLightColor;
+	D3DXVECTOR4 lampContact, lampContactFade, lampContactBias, lampContactNoise;
+	D3DXVECTOR4 reciprocalResolution, cameraPosition, cameraData;
+	D3DXMATRIX viewTransform, projectionTransform;
+};
+
+// The push block: the two sampler heap indices (bindings write them at 0 and 4) and the pass's mode.
+struct PointShadowsPush {
+	UInt32 linearSampler;	// 0: slot 0
+	UInt32 pointSampler;	// 4: slot 1
+	UInt32 mode;			// 8: 0 merged, 1 batch (AddShadowedLamps), 2 half-resolution mask (LampMaskHalf)
+	UInt32 pad;
+};
+
+namespace {
+
+// The memory of a constant registered under a name (ShaderManager::RegisterConstant): what the D3D9 path uploads. False if absent.
+bool CopyConstant(void* to, const char* name, UINT vectors) {
+	auto found = TheShaderManager->ConstantsTable.find(name);
+	if (found == TheShaderManager->ConstantsTable.end() || !found->second) return false;
+	memcpy(to, found->second, vectors * sizeof(D3DXVECTOR4));
+	return true;
+}
+
+// The texture registered under a sampler name (InitTexture / RegisterTexture). Null if absent.
+IDirect3DBaseTexture9* TextureNamed(const char* name) {
+	auto found = TheTextureManager->TextureNames.find(name);
+	return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
+}
+
+bool FillUniforms(PointShadowsUniforms& u) {
+	return CopyConstant(u.shadowLightPosition, "TESR_ShadowLightPosition", ShadowCubeMapsScreen) &&
+		CopyConstant(u.lightPosition, "TESR_LightPosition", TrackedLightsMax) &&
+		CopyConstant(u.lightColor, "TESR_LightColor", TrackedLightsMax + ShadowCubeMapsScreen) &&
+		CopyConstant(u.extraLights, "TESR_ExtraLights", ExtraLightsMax) &&
+		CopyConstant(&u.shadowFade, "TESR_ShadowFade", 1) && CopyConstant(&u.pointShadowNear, "TESR_PointShadowNear", 1) &&
+		CopyConstant(&u.spotLightPosition, "TESR_SpotLightPosition", 1) && CopyConstant(&u.spotLightDirection, "TESR_SpotLightDirection", 1) &&
+		CopyConstant(&u.spotLightColor, "TESR_SpotLightColor", 1) &&
+		CopyConstant(&u.lampContact, "TESR_LampContact", 1) && CopyConstant(&u.lampContactFade, "TESR_LampContactFade", 1) &&
+		CopyConstant(&u.lampContactBias, "TESR_LampContactBias", 1) && CopyConstant(&u.lampContactNoise, "TESR_LampContactNoise", 1) &&
+		CopyConstant(&u.reciprocalResolution, "TESR_ReciprocalResolution", 1) && CopyConstant(&u.cameraPosition, "TESR_CameraPosition", 1) &&
+		CopyConstant(&u.cameraData, "TESR_CameraData", 1) &&
+		CopyConstant(&u.viewTransform, "TESR_ViewTransform", 4) && CopyConstant(&u.projectionTransform, "TESR_ProjectionTransform", 4);
+}
+
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): see PointShadows.h. Bindings: the textures at set 1 (binding i, slot i), the constants at set 2
+// binding 0, the samplers at heap slots 0 and 1 (push bytes 0 and 4).
+bool PointShadowsEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+	ExtPass& pass, const char* spvName, NVR_EXT_BLEND blend, IDirect3DBaseTexture9* const* textures, UINT cubeCount, UINT textureCount,
+	ID3D9NvrExtSampler* first, ID3D9NvrExtSampler* second, UINT mode, bool clear) {
+	if (!first || !second) return false;
+	PointShadowsUniforms uniforms;
+	if (!FillUniforms(uniforms)) return false;
+	ID3D9NvrExtBuffer* constants = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!constants) return false;
+
+	if (!pass.Tried) {
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[NVR_EXT_MAX_BINDINGS] = {};
+		UINT c = 0;
+		for (UINT i = 0; i < textureCount; i++, c++) {
+			bindings[c].Set = 1; bindings[c].Binding = i; bindings[c].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[c].Slot = i;
+			bindings[c].ViewType = i < cubeCount ? NVR_EXT_VIEW_CUBE : NVR_EXT_VIEW_2D;
+		}
+		bindings[c].Set = 2; bindings[c].Binding = 0; bindings[c].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[c].Slot = 0; bindings[c].ViewType = NVR_EXT_VIEW_2D; c++;
+		bindings[c].Type = NVR_EXT_BIND_SAMPLER; bindings[c].Slot = 0; bindings[c].PushOffset = 0; c++;
+		bindings[c].Type = NVR_EXT_BIND_SAMPLER; bindings[c].Slot = 1; bindings[c].PushOffset = 4; c++;
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, c, sizeof(PointShadowsPush), true, 1, blend);
+	}
+	if (!pass.Pipeline) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[NVR_EXT_MAX_BINDINGS] = {};
+	UINT r = 0;
+	for (UINT i = 0; i < textureCount; i++, r++) {
+		if (!textures[i]) return false;
+		resources[r].Slot = i; resources[r].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[r].pResource = textures[i];
+	}
+	resources[r].Slot = 0; resources[r].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[r].pResource = constants; r++;
+	resources[r].Slot = 0; resources[r].Type = NVR_EXT_BIND_SAMPLER; resources[r].pResource = first; r++;
+	resources[r].Slot = 1; resources[r].Type = NVR_EXT_BIND_SAMPLER; resources[r].pResource = second; r++;
+
+	PointShadowsPush push = {};
+	push.mode = mode;
+	if (clear) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);	// (EffectRecord::Render's clear)
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, r, &push, sizeof(push), true);
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): see PointShadows.h. The bindings and draws follow the .fx's techniques one for one.
+bool PointShadowsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex,
+	bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (techniqueIndex > 4 || !DxvkCompute::Available()) return false;
+	// The passes ignore the device's scissor rectangle (LampMaskScissor draws inside one): that draw stays on the D3D9 technique.
+	DWORD scissor = FALSE;
+	Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissor);
+	if (scissor) return false;
+
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!linear || !point) return false;
+
+	if (techniqueIndex == 2) {
+		// LampContactPS: the depth and the normals, multiplied onto the buffer.
+		IDirect3DBaseTexture9* textures[] = { TextureNamed("TESR_DepthBuffer"), TextureNamed("TESR_NormalsBuffer") };
+		return ExtDraw(Device, RenderTarget, RenderedSurface, SourceBuffer, extContact, "PointShadowsContact", NVR_EXT_BLEND_MULTIPLY,
+			textures, 0, _countof(textures), linear, point, 0, ClearRenderTarget);
+	}
+
+	if (techniqueIndex == 4) {
+		// LampMaskUpsamplePS: the half-resolution mask (POINT, WRAP: the .fx's state for NVR_LampMaskHalf) and the depth.
+		IDirect3DBaseTexture9* textures[] = { LampMaskHalfTexture(), TextureNamed("TESR_DepthBuffer") };
+		ID3D9NvrExtSampler* pointWrap = DxvkCompute::PointWrap();
+		return ExtDraw(Device, RenderTarget, RenderedSurface, SourceBuffer, extUpsample, "PointShadowsUpsample", NVR_EXT_BLEND_NONE,
+			textures, 0, _countof(textures), linear, pointWrap, 0, ClearRenderTarget);
+	}
+
+	// MergedPointShadows (0), AddShadowedLamps (1, the sum added onto the buffer) and LampMaskHalf (3, the half-resolution mask and depth):
+	// the eleven cube maps, then the depth and the normals.
+	IDirect3DBaseTexture9* textures[ShadowCubeMapsSampled + 2] = {};
+	for (UINT i = 0; i < ShadowCubeMapsSampled; i++) textures[i] = TextureNamed(("TESR_ShadowCubeMapBuffer" + std::to_string(i)).c_str());
+	textures[ShadowCubeMapsSampled] = TextureNamed("TESR_DepthBuffer");
+	textures[ShadowCubeMapsSampled + 1] = TextureNamed("TESR_NormalsBuffer");
+	if (techniqueIndex == 1)
+		return ExtDraw(Device, RenderTarget, RenderedSurface, SourceBuffer, extBatch, "PointShadows", NVR_EXT_BLEND_ADD,
+			textures, ShadowCubeMapsSampled, _countof(textures), linear, point, 1, ClearRenderTarget);
+	return ExtDraw(Device, RenderTarget, RenderedSurface, SourceBuffer, extMerged, "PointShadows", NVR_EXT_BLEND_NONE,
+		textures, ShadowCubeMapsSampled, _countof(textures), linear, point, techniqueIndex == 3 ? 2 : 0, ClearRenderTarget);
+}

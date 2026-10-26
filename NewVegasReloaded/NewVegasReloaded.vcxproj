@@ -166,6 +166,7 @@
     <ClCompile Include="..\src\effects\Normals.cpp" />
     <ClCompile Include="..\src\effects\PBR.cpp" />
     <ClCompile Include="..\src\effects\POM.cpp" />
+    <ClCompile Include="..\src\effects\PointShadows.cpp" />
     <ClCompile Include="..\src\effects\Rain.cpp" />
     <ClCompile Include="..\src\effects\SMAA.cpp" />
     <ClCompile Include="..\src\effects\FXAA.cpp" />

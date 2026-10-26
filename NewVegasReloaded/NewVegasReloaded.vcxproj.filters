@@ -456,6 +456,9 @@
     <ClCompile Include="..\src\effects\POM.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\PointShadows.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\Rain.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
