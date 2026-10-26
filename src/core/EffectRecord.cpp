@@ -698,14 +698,22 @@ ID3D9NvrExtPipeline* EffectRecord::ExtVariant(std::map<std::string, ExtPass>& Va
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h.
 ID3D9NvrExtBuffer* EffectRecord::ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size) {
 	if (!DxvkCompute::Available() || !Data || !Size) return nullptr;
-	if (Uniforms.Buffer && Uniforms.Size != Size) DxvkCompute::Drop(Uniforms.Buffer);
-	if (!Uniforms.Buffer) {
-		if (Uniforms.Tried) return nullptr;
-		Uniforms.Tried = true;
-		Uniforms.Buffer = DxvkCompute::CreateBuffer((Size + 15) & ~15u, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, Name);
-		Uniforms.Size = Size;
-		if (!Uniforms.Buffer) return nullptr;
+	if (Uniforms.Size && Uniforms.Size != Size) {
+		for (UINT i = 0; i < ExtUniformRing; i++) DxvkCompute::Drop(Uniforms.Ring[i]);
+		Uniforms.Buffer = nullptr;
+		Uniforms.Size = 0;
+		Uniforms.Tried = false;
 	}
+	if (Uniforms.Tried && !Uniforms.Size) return nullptr;	// a buffer could not be made: no ring
+	Uniforms.Tried = true;
+	const UINT slot = Uniforms.Next;
+	if (!Uniforms.Ring[slot]) {
+		Uniforms.Ring[slot] = DxvkCompute::CreateBuffer((Size + 15) & ~15u, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, Name);
+		if (!Uniforms.Ring[slot]) { Uniforms.Size = 0; return nullptr; }
+	}
+	Uniforms.Size = Size;
+	Uniforms.Next = (slot + 1) % ExtUniformRing;
+	Uniforms.Buffer = Uniforms.Ring[slot];
 	if (FAILED(DxvkCompute::Extension()->UpdateBuffer(Uniforms.Buffer, 0, Size, Data))) return nullptr;
 	return Uniforms.Buffer;
 }
