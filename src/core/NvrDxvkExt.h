@@ -46,7 +46,7 @@
 #include <unknwn.h>
 
 #define NVR_EXT_VERSION_MAJOR 1
-#define NVR_EXT_VERSION_MINOR 3
+#define NVR_EXT_VERSION_MINOR 4
 
 #define NVR_EXT_MAX_SLOTS       32
 #define NVR_EXT_MAX_BINDINGS    32
@@ -379,6 +379,18 @@ ID3D9NvrExt : public IUnknown {
           UINT                            Offset,
           UINT                            Size,
           void*                           pData) = 0;
+
+  /**
+   * As Draw, with the viewport moved by (ShiftX, ShiftY) pixels (since 1.4; fractions, -1 < shift < 1).
+   * The scissor stays the viewport rectangle, so the same pixels are written; only the interpolated
+   * location 0 texture coordinate moves. A D3D9 full-screen quad whose half-pixel uv offset was made
+   * for a size S, drawn into a viewport of width W, reads at x / W + 0.5 / S; the shift 0.5 - 0.5 * W / S
+   * gives the built-in coordinate the same values (0 when W = S).
+   */
+  virtual HRESULT STDMETHODCALLTYPE DrawShifted(
+    const NVR_EXT_DRAW_DESC*              pDesc,
+          FLOAT                           ShiftX,
+          FLOAT                           ShiftY) = 0;
 };
 
 #ifndef _MSC_VER
