@@ -109,4 +109,12 @@ public:
 	bool	ShouldRender();
 	bool	IsSandstorm(TESWeather* Weather);
 	void	ClearWind();			// no storm wind on the grass and leaves (the effect off, or no storm)
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): every technique as src\hlsl\NewVegas\Compute\Sandstorm<Pass>.frag (EffectRecord::ExtRender):
+	// the dust grid, its two sums, the streaks and the glow into the effect's own buffers (ExtDrawTo), the composite and the
+	// reference through the frame chain. The matrices and the lamp arrays go to one uniform buffer (they do not fit push data).
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	ExtPass				extPasses[7];	// by technique
+	ExtUniformBuffer	extUniforms;
 };

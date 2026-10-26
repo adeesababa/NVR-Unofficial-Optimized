@@ -9,6 +9,7 @@
 #include "Sandstorm.h"
 #include "../core/GpuProfiler.h"
 #include "../core/MaxQuality.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 static const double TwoPi = 6.283185307179586;
 
@@ -256,4 +257,115 @@ void SandstormEffect::UpdateConstants() {
 
 bool SandstormEffect::ShouldRender() {
 	return Intensity > 0.001f;
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): see Sandstorm.h. The constants come from the same registered memory the D3D9 path uploads
+// (ConstantsTable), copied as stored: the matrices (SetMatrix keeps the logical matrix, so HLSL mul(v, M) is M * v in the
+// shaders), then the float4s, in the order of the GLSL block (src\hlsl\NewVegas\Compute\SandstormCommon.glsl).
+namespace {
+	const char* const SandMatrixNames[] = { "TESR_ShadowCameraToLightTransformNear", "TESR_ShadowCameraToLightTransformMiddle",
+		"TESR_ShadowCameraToLightTransformFar", "TESR_ShadowCameraToLightTransformLod", "TESR_ShadowCameraToLightTransformOrtho",
+		"TESR_ViewTransform", "TESR_ProjectionTransform" };
+	const char* const SandVectorNames[] = { "TESR_ShadowNearCenter", "TESR_ShadowMiddleCenter", "TESR_ShadowFarCenter", "TESR_ShadowLodCenter",
+		"TESR_ShadowFormatData", "TESR_ShadowBlur", "TESR_ShadowFade", "TESR_CameraData", "TESR_CameraPosition", "TESR_ReciprocalResolution",
+		"TESR_SunPosition", "TESR_SunAmount", "TESR_SunColor", "TESR_SunAmbient", "TESR_FogColor", "TESR_PBRData",
+		"TESR_SandstormData", "TESR_SandstormWind", "TESR_SandstormShape", "TESR_SandstormColor", "TESR_SandstormCover", "TESR_SandstormLights",
+		"TESR_SandstormEmissive", "TESR_SandstormWater", "TESR_SandstormQuality", "TESR_SandstormGridLayout", "TESR_SandstormLowLayout" };
+	struct SandstormUniforms {
+		D3DXMATRIX	Matrices[_countof(SandMatrixNames)];
+		D3DXVECTOR4	Vectors[_countof(SandVectorNames)];
+		D3DXVECTOR4	LightPosition[12];		// TESR_LightPosition
+		D3DXVECTOR4	ShadowLightPosition[12];	// TESR_ShadowLightPosition
+		D3DXVECTOR4	LightColor[24];			// TESR_LightColor
+	};
+	// The push block: the heap indices of POINT/CLAMP (offset 0) and LINEAR/CLAMP (offset 4), filled in by the extension.
+	struct SandstormPush { UInt32 pointIndex, linearIndex, pad[2]; };
+
+	bool SandCopy(void* dst, const char* name, size_t bytes) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		if (found == TheShaderManager->ConstantsTable.end()) return false;
+		memcpy(dst, found->second, bytes);
+		return true;
+	}
+
+	// Bindings in the order the shaders declare them: textures (set 1, binding i, slot i), the constants block (set 2, binding 0),
+	// then the two samplers (heap index at push offsets 0 and 4).
+	UINT SandBindings(NVR_EXT_BINDING_DESC* out, UINT textures) {
+		UINT n = 0;
+		for (UINT i = 0; i < textures; i++) {
+			out[n].Set = 1; out[n].Binding = i; out[n].Type = NVR_EXT_BIND_SAMPLED_IMAGE; out[n].Slot = i; out[n].ViewType = NVR_EXT_VIEW_2D; n++;
+		}
+		out[n].Set = 2; out[n].Binding = 0; out[n].Type = NVR_EXT_BIND_UNIFORM_BUFFER; out[n].Slot = 0; n++;
+		for (UINT j = 0; j < 2; j++) {
+			out[n].Type = NVR_EXT_BIND_SAMPLER; out[n].Slot = j; out[n].PushOffset = 4 * j; n++;
+		}
+		return n;
+	}
+}
+
+bool SandstormEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	if (ClearRenderTarget || techniqueIndex > 6) return false;
+	// The frame passes (0 reference, 5 composite) go through the chain; the others draw into the effect's own buffers (RenderBuffers
+	// passes those as both the target and the surface).
+	const bool frame = techniqueIndex == 0 || techniqueIndex == 5;
+	if (!frame && RenderTarget != RenderedSurface) return false;
+
+	// Per technique (0 Reference, 1 GridDust, 2 GridRow, 3 GridCarry, 4 Streaks, 5 Composite, 6 Glow): its shader, and its textures in
+	// binding order. The samplers as the .fx declares them: the buffers POINT, the shadow atlas and the grid LINEAR.
+	static const char* const SpvNames[7] = { "SandstormReference", "SandstormGridDust", "SandstormGridRow", "SandstormGridCarry",
+		"SandstormStreaks", "SandstormComposite", "SandstormGlow" };
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	IDirect3DTexture9* atlas = TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowAtlasTexture : nullptr;
+	std::string orthoName = "TESR_OrthoMapBuffer";
+	IDirect3DBaseTexture9* ortho = TheTextureManager->GetTextureByName(orthoName);
+	IDirect3DBaseTexture9* textures[5] = {};
+	UINT count = 0;
+	switch (techniqueIndex) {
+	case 0: textures[0] = TheTextureManager->RenderedTexture; textures[1] = depth; textures[2] = ortho; textures[3] = atlas; count = 4; break;
+	case 1: case 4: textures[0] = ortho; textures[1] = atlas; count = 2; break;
+	case 2: textures[0] = Textures.GridTexture; count = 1; break;
+	case 3: textures[0] = Textures.GridTempTexture; count = 1; break;
+	case 5: textures[0] = TheTextureManager->RenderedTexture; textures[1] = depth; textures[2] = Textures.GridTexture;
+		textures[3] = Textures.StreaksTexture; textures[4] = Textures.GlowTexture; count = 5; break;
+	case 6: textures[0] = depth; count = 1; break;
+	}
+	for (UINT i = 0; i < count; i++) if (!textures[i]) return false;
+
+	ExtPass& pass = extPasses[techniqueIndex];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[8] = {};
+		const UINT n = SandBindings(bindings, count);
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvNames[techniqueIndex], bindings, n, sizeof(SandstormPush), true);
+	}
+	ID3D9NvrExtSampler* pointClamp = DxvkCompute::PointClamp();
+	ID3D9NvrExtSampler* linearClamp = DxvkCompute::LinearClamp();
+	if (!pass.Pipeline || !pointClamp || !linearClamp) return false;
+
+	// The constants as the D3D9 constant table holds them this frame.
+	SandstormUniforms uniforms = {};
+	for (UINT i = 0; i < _countof(SandMatrixNames); i++)
+		if (!SandCopy(&uniforms.Matrices[i], SandMatrixNames[i], sizeof(D3DXMATRIX))) return false;
+	for (UINT i = 0; i < _countof(SandVectorNames); i++)
+		if (!SandCopy(&uniforms.Vectors[i], SandVectorNames[i], sizeof(D3DXVECTOR4))) return false;
+	if (!SandCopy(uniforms.LightPosition, "TESR_LightPosition", sizeof(uniforms.LightPosition))
+		|| !SandCopy(uniforms.ShadowLightPosition, "TESR_ShadowLightPosition", sizeof(uniforms.ShadowLightPosition))
+		|| !SandCopy(uniforms.LightColor, "TESR_LightColor", sizeof(uniforms.LightColor)))
+		return false;
+	ID3D9NvrExtBuffer* constants = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!constants) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[8] = {};
+	UINT n = 0;
+	for (UINT i = 0; i < count; i++) {
+		resources[n].Slot = i; resources[n].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[n].pResource = textures[i]; n++;
+	}
+	resources[n].Slot = 0; resources[n].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[n].pResource = constants; n++;
+	ID3D9NvrExtSampler* samplers[2] = { pointClamp, linearClamp };
+	for (UINT s = 0; s < 2; s++) {
+		resources[n].Slot = s; resources[n].Type = NVR_EXT_BIND_SAMPLER; resources[n].pResource = samplers[s]; n++;
+	}
+	SandstormPush push = {};
+	if (frame) return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, n, &push, sizeof(push), true);
+	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, n, &push, sizeof(push));
 }
