@@ -17,7 +17,8 @@
 // (logged); IgnoreDisplayCheck forces it (tests on an SDR desktop: Windows then maps the HDR signal down itself).
 //
 // Test tool: CaptureFrame (a counter: each new non-zero value) writes, 60 frames later, a frame's HDR output, as the fork sends it (scRGB,
-// 1.0 = 80 nits), to NVR-Unofficial-Optimized-Logs\HdrCapture_<n>.pfm (RGB float, bottom row first) with a summary line in the log.
+// 1.0 = 80 nits), to NVR-Unofficial-Optimized-Logs\NeonSelfTest_HdrCapture_<n>.pfm.world (a PFM: RGB float, bottom row first;
+// the name lets the slot test runner collect it with the pictures) with a summary line in the log.
 
 #include <dxgi1_6.h>
 #include <vector>
@@ -220,7 +221,8 @@ namespace HdrOutput {
 			};
 			char path[MAX_PATH];
 			S.CaptureCount++;
-			sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\HdrCapture_%u.pfm", (unsigned)S.CaptureSetting);
+			// NeonSelfTest_*.world: the name the slot test runner moves to the run's picture folder (multirun run_slot.sh move_world)
+			sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\NeonSelfTest_HdrCapture_%u.pfm.world", (unsigned)S.CaptureSetting);
 			FILE* file = nullptr;
 			double sum = 0.0; float peak = 0.0f; size_t above = 0, total = (size_t)w * h;
 			std::vector<float> row((size_t)w * 3);
