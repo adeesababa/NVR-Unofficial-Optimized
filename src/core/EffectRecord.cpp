@@ -667,6 +667,18 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 // UNOFFICIAL 2026-10-26 (NVR DXVK): see EffectRecord.h.
 ID3D9NvrExtPipeline* EffectRecord::ExtVariant(std::map<std::string, ExtPass>& Variants, ExtPass& Generic, const char* SpvName, const char* Suffix,
 	const std::function<ID3D9NvrExtPipeline*(const char*)>& Make) {
+	// UNOFFICIAL 2026-10-26 test tool ([Main.Main.Performance] NvrDxvkTestSuffix): <SpvName>-<Suffix><test>.spv first, where it exists.
+	const char* test = TheSettingManager->SettingsMain.Main.NvrDxvkTestSuffix;
+	if (Suffix && *Suffix && *test) {
+		const std::string name = std::string(SpvName) + "-" + Suffix + test;
+		ExtPass& pass = Variants[name];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			if (DxvkCompute::HasSpirv(name.c_str())) pass.Pipeline = Make(name.c_str());
+			if (pass.Pipeline) Logger::Log("UNOFFICIAL NVR DXVK: test variant %s in use (NvrDxvkTestSuffix)", name.c_str());
+		}
+		if (pass.Pipeline) return pass.Pipeline;
+	}
 	if (Suffix && *Suffix && DxvkCompute::VariantsOn()) {
 		const std::string name = std::string(SpvName) + "-" + Suffix;
 		ExtPass& pass = Variants[name];

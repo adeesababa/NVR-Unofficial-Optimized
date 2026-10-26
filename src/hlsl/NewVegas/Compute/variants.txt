@@ -52,4 +52,10 @@ AmbientOcclusionEstimate g1 -DAO_GTAO=1
 PointShadows m0 -DPOINT_SHADOW_MODE=0
 PointShadows m1 -DPOINT_SHADOW_MODE=1
 PointShadows m2 -DPOINT_SHADOW_MODE=2
+# TEST 2026-10-26 (NvrDxvkTestSuffix x / y / z / e): the merged pass without its cube map reads / its eleven shadowed lamps /
+# its other lamps / anything but the depth and normal reads, to see what the pass's time is made of (not for play).
+PointShadows m0x -DPOINT_SHADOW_MODE=0 -DPS_TEST_NO_CUBES
+PointShadows m0y -DPOINT_SHADOW_MODE=0 -DPS_TEST_NO_SHADOWED
+PointShadows m0z -DPOINT_SHADOW_MODE=0 -DPS_TEST_NO_LAMPS
+PointShadows m0e -DPOINT_SHADOW_MODE=0 -DPS_TEST_EMPTY
 SunShadowsApply c1 -DCHARACTER_SHADOW_MAP=1

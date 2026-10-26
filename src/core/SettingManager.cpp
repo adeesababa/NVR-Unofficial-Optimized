@@ -744,6 +744,8 @@ void SettingManager::LoadSettings() {
 		Configuration::ConfigNode node;
 		const std::string keep = Config.FillNode(&node, performance, "NvrDxvkKeepD3D9") ? node.LongValue : std::string();
 		strncpy_s(SettingsMain.Main.NvrDxvkKeepD3D9, keep.c_str(), _TRUNCATE);
+		const std::string test = Config.FillNode(&node, performance, "NvrDxvkTestSuffix") ? node.LongValue : std::string();
+		strncpy_s(SettingsMain.Main.NvrDxvkTestSuffix, test.c_str(), _TRUNCATE);
 	}
 	SettingsMain.Main.AmbientLightSmoothCompute = boolSetting(performance, "AmbientLightSmoothCompute", false);	// UNOFFICIAL 2026-10-25 (AmbientLight.cpp SmoothCompute)
 	SettingsMain.Main.NvrDxvkReplacements = boolSetting(performance, "NvrDxvkReplacements", false);

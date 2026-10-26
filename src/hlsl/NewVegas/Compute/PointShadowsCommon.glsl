@@ -57,6 +57,9 @@ vec3 worldNormalAt(texture2D normalsTex, sampler samp, vec2 uv) {
 // Shadows.hlsl: GetPointLightAmountValue, explicit LOD (PointLightAmountValueLod in the .fx)
 float pointLightAmountValueLod(textureCube cubeTex, sampler samp, vec3 lightDir, float dn, float nearFade) {
     if (cb.shadowFade.z == 0.0) return 1.0;
+#ifdef PS_TEST_NO_CUBES
+    return 1.0;   // TEST variant (variants.txt, NvrDxvkTestSuffix): no cube map reads
+#endif
 
     float lightDepth = textureLod(samplerCube(cubeTex, samp), lightDir, 0.0).r;
     float shadow = lightDepth + BIAS * dn > dn ? 1.0 : 0.0;

@@ -51,6 +51,14 @@ void main() {
     vec3 worldPos = cb.cameraPosition.xyz + cameraVector;
     vec3 normal = worldNormalAt(t_normals, POINT_CLAMP, uvh);
 
+    // TEST variants (variants.txt PointShadows m0x/m0y/m0z/m0e, chosen live by NvrDxvkTestSuffix): parts left out to see what costs
+#ifdef PS_TEST_EMPTY
+    o_color = vec4(saturate(depth * 1e-6 + normal.x * 1e-6), 0.0, 0.0, 1.0);
+    return;
+#endif
+#ifdef PS_TEST_NO_SHADOWED
+    float shadow = 0.0;
+#else
     float shadow = shadowedLight(t_cube0, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[0], normal, luma(cb.lightColor[0].rgb) * cb.lightColor[0].w);
     shadow += shadowedLight(t_cube1, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[1], normal, luma(cb.lightColor[1].rgb) * cb.lightColor[1].w);
     shadow += shadowedLight(t_cube2, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[2], normal, luma(cb.lightColor[2].rgb) * cb.lightColor[2].w);
@@ -62,6 +70,10 @@ void main() {
     shadow += shadowedLight(t_cube8, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[8], normal, luma(cb.lightColor[8].rgb) * cb.lightColor[8].w);
     shadow += shadowedLight(t_cube9, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[9], normal, luma(cb.lightColor[9].rgb) * cb.lightColor[9].w);
     shadow += shadowedLight(t_cube10, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[10], normal, luma(cb.lightColor[10].rgb) * cb.lightColor[10].w);
+#endif
+#ifdef PS_TEST_NO_LAMPS
+    batch = true;   // the lamps without shadows left out (the loops and both ifs test it)
+#endif
 
     if (!batch && cb.shadowLightPosition[11].w != 0.0) {
         vec4 light11 = pointLightDistance(worldPos, cb.shadowLightPosition[11]);
