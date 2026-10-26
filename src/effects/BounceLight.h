@@ -120,6 +120,17 @@ public:
 	IDirect3DTexture9*	deferredTexture = nullptr;
 	D3DXVECTOR4			deferredLayout = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	void	UpdateSettings();
+	// UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): the five passes of every bounce technique as Vulkan
+	// passes (Compute\BounceLight*.frag, the .fx.hlsl line for line), in place of Render's D3D9 loop: the low-resolution ones into
+	// the same buffers (ExtDrawTo), the combine through the frame chain (ExtFullScreen). The constants go into one uniform buffer per
+	// frame. False: the combine was not committed and Render's D3D9 loop draws the frame (after a failed draw, every frame).
+	bool	ExtPasses(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, D3DXHANDLE technique,
+		UINT firstPass, UINT endPass, IDirect3DTexture9* scene, IDirect3DTexture9* const* lowTexture, IDirect3DSurface9* const* lowSurface,
+		IDirect3DTexture9* prepTexture, IDirect3DSurface9* prepSurface, IDirect3DTexture9* const* historyTexture,
+		IDirect3DSurface9* const* historySurface, int writeIndex, const D3DXVECTOR4& layout, const D3DXVECTOR4& temporalData,
+		const D3DXVECTOR4& ambientData, const D3DXMATRIX& reproject, class GpuTimer* passTimers);
+	ExtPass				extPrepare, extGather, extBlur, extCombine;
+	ExtUniformBuffer	extUniforms;
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 		IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 		IDirect3DSurface9* SourceBuffer) override;

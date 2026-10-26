@@ -1,6 +1,7 @@
 #include "BounceLight.h"
 #include "BounceLightMath.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void BounceLightEffect::UpdateConstants() {
 }
@@ -313,6 +314,137 @@ IDirect3DTexture9* BounceLightEffect::RenderSpillGather(IDirect3DDevice9* Device
 	return SUCCEEDED(result) ? textures[write] : nullptr;
 }
 
+// ---- UNOFFICIAL 2026-10-25 (NVR DXVK): the five passes as Vulkan passes (see BounceLight.h) ----
+namespace {
+	struct BouncePush {
+		UInt32 pointSampler;			// 0: POINT, CLAMP (filled in by DXVK)
+		UInt32 linearSampler;			// 4: LINEAR, CLAMP
+		UInt32 wrapSampler;				// 8: POINT, WRAP (the blue noise)
+		UInt32 pad;
+		D3DXVECTOR4 pass;				// 16: the pass's uniform arguments (BounceLight*.frag)
+	};
+	struct BounceUniforms {
+		D3DXMATRIX projection, invProjection, reproject;	// TESR_ProjectionTransform, TESR_InvProjectionTransform, NVR_BounceReproject (as stored)
+		D3DXVECTOR4 data, reciprocalResolution, layout, temporal, ambient, cameraData;
+	};
+
+	// The constants from the same registered memory the D3D9 path uploads (SetCT).
+	const D3DXVECTOR4* RegisteredConstant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	IDirect3DBaseTexture9* SlotTexture(const char* name) {
+		std::string slotName = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
+		return slot ? *slot : nullptr;
+	}
+
+	// Textures in set 1 (binding i, slot i), the constants in set 2 binding 0, the three samplers' heap indices at push offsets 0, 4, 8.
+	void MakePipeline(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[8] = {};
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) {
+			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[count].Set = 2; bindings[count].Binding = 0; bindings[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[count].Slot = 0; count++;
+		for (UINT s = 0; s < 3; s++, count++) { bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = s; bindings[count].PushOffset = 4 * s; }
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(BouncePush), true);
+	}
+
+	// The resources of one draw, in MakePipeline's order.
+	UINT Resources(NVR_EXT_RESOURCE_BINDING* resources, IDirect3DBaseTexture9* const* textures, UINT textureCount, ID3D9NvrExtBuffer* uniforms) {
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) { resources[count].Slot = i; resources[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[count].pResource = textures[i]; }
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = uniforms; count++;
+		ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap() };
+		for (UINT s = 0; s < 3; s++, count++) { resources[count].Slot = s; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = samplers[s]; }
+		return count;
+	}
+}
+
+// Render's D3D9 loop as Vulkan passes: pass p of the technique Render set, from the same textures into the same targets.
+bool BounceLightEffect::ExtPasses(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, D3DXHANDLE technique,
+	UINT firstPass, UINT endPass, IDirect3DTexture9* scene, IDirect3DTexture9* const* lowTexture, IDirect3DSurface9* const* lowSurface,
+	IDirect3DTexture9* prepTexture, IDirect3DSurface9* prepSurface, IDirect3DTexture9* const* historyTexture,
+	IDirect3DSurface9* const* historySurface, int writeIndex, const D3DXVECTOR4& layout, const D3DXVECTOR4& temporalData,
+	const D3DXVECTOR4& ambientData, const D3DXMATRIX& reproject, GpuTimer* passTimers) {
+	if (!DxvkCompute::Available()) return false;
+	// The technique's Prepare (x: PreparePlus), Gather (Gather, or GatherPlus(samples, temporal, motionPixels)) and Combine (hard).
+	const bool plus = technique != Effect->GetTechnique(0);
+	D3DXVECTOR4 gather(0.0f, 8.0f, 0.0f, 1.0f);
+	bool hard = false;
+	if (plus) {
+		if (technique == TechniqueHandle(techPlus, "BounceLightPlus") || (hard = technique == TechniqueHandle(techPlusHard, "BounceLightPlusHardEdges")))
+			gather = D3DXVECTOR4(1.0f, 8.0f, 0.0f, 1.0f);
+		else if (technique == TechniqueHandle(techTemporal, "BounceLightTemporal") || (hard = technique == TechniqueHandle(techTemporalHard, "BounceLightTemporalHardEdges")))
+			gather = D3DXVECTOR4(1.0f, 8.0f, 1.0f, 4.0f);
+		else if (technique == TechniqueHandle(techTemporalHalf, "BounceLightTemporalHalf") || (hard = technique == TechniqueHandle(techTemporalHalfHard, "BounceLightTemporalHalfHardEdges")))
+			gather = D3DXVECTOR4(1.0f, 4.0f, 1.0f, 8.0f);
+		else return false;
+	}
+	MakePipeline(extPrepare, "BounceLightPrepare", 4);
+	MakePipeline(extGather, "BounceLightGather", 3);
+	MakePipeline(extBlur, "BounceLightBlur", 1);
+	MakePipeline(extCombine, "BounceLightCombine", 3);
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* noise = ExtFileTexture("TESR_BlueNoiseSampler");
+	const D3DXVECTOR4* projection = RegisteredConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* invProjection = RegisteredConstant("TESR_InvProjectionTransform");
+	const D3DXVECTOR4* reciprocalResolution = RegisteredConstant("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* cameraData = RegisteredConstant("TESR_CameraData");
+	if (!extPrepare.Pipeline || !extGather.Pipeline || !extBlur.Pipeline || !extCombine.Pipeline || !DxvkCompute::PointClamp() ||
+		!DxvkCompute::LinearClamp() || !DxvkCompute::PointWrap() || !depth || !normals || !noise || !projection || !invProjection ||
+		!reciprocalResolution || !cameraData) return false;
+	BounceUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invProjection, invProjection, sizeof(D3DXMATRIX));
+	uniforms.reproject = reproject;
+	uniforms.data = Constants.Data;
+	uniforms.reciprocalResolution = *reciprocalResolution;
+	uniforms.layout = layout;
+	uniforms.temporal = temporalData;
+	uniforms.ambient = ambientData;
+	uniforms.cameraData = *cameraData;
+	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!buffer) return false;
+	const bool useHistory = historyTexture != nullptr;
+	NVR_EXT_RESOURCE_BINDING resources[8] = {};
+	BouncePush push = {};
+	for (UINT p = firstPass; p < endPass; ++p) {
+		GpuProfileScope gpu(passTimers[p], Device);
+		bool drawn = false;
+		if (p == 0) {	// Prepare: into the packed buffer (PreparePlus also reads last frame's result, low buffer 0)
+			push.pass = D3DXVECTOR4(plus ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* inputs[4] = { depth, normals, scene, lowTexture[0] };
+			drawn = ExtDrawTo(extPrepare.Pipeline, &prepSurface, 1, resources, Resources(resources, inputs, 4, buffer), &push, sizeof(push));
+		}
+		else if (p == 1) {	// Gather: into low buffer 0, or with Temporal this frame's history buffer (last frame's read; the packed buffer stands in otherwise)
+			push.pass = gather;
+			IDirect3DBaseTexture9* inputs[3] = { prepTexture, noise, useHistory ? historyTexture[writeIndex ^ 1] : prepTexture };
+			IDirect3DSurface9* target = useHistory ? historySurface[writeIndex] : lowSurface[0];
+			drawn = ExtDrawTo(extGather.Pipeline, &target, 1, resources, Resources(resources, inputs, 3, buffer), &push, sizeof(push));
+		}
+		else if (p == 2 || p == 3) {	// BlurX: (history or) low 0 -> low 1; BlurY: low 1 -> low 0
+			push.pass = p == 2 ? D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f) : D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* inputs[1] = { p == 3 ? lowTexture[1] : useHistory ? historyTexture[writeIndex] : lowTexture[0] };
+			drawn = ExtDrawTo(extBlur.Pipeline, &lowSurface[p == 2 ? 1 : 0], 1, resources, Resources(resources, inputs, 1, buffer), &push, sizeof(push));
+		}
+		else {	// Combine: the frame chain's next image (Commit), as the D3D9 pass into chain.Output()
+			push.pass = D3DXVECTOR4(hard ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+			IDirect3DBaseTexture9* inputs[3] = { scene, depth, lowTexture[0] };
+			drawn = ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extCombine.Pipeline, resources, Resources(resources, inputs, 3, buffer),
+				&push, sizeof(push), false);
+		}
+		if (!drawn) return false;
+	}
+	if (endPass < 5 && ++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
+	return true;
+}
+
 // Prepare, gather, blur X and blur Y at half or quarter resolution, then the combine at full resolution into the
 // frame, the same way the dedicated ambient occlusion runs.
 void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
@@ -453,9 +585,13 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	Effect->SetVector(layoutHandle, &layout);
 	const bool useHistory = historyTexture != nullptr;
 	const int writeIndex = historyIndex ^ 1; // this frame's gather goes to the history buffer last frame's did not
+	// (Kept for ExtPasses: the Vulkan passes take the same values.)
+	D3DXVECTOR4 temporalData(0.0f, 0.0f, 0.0f, 0.0f), ambientData(0.0f, 0.0f, 0.0f, 0.0f);
+	D3DXMATRIX reproject;
+	D3DXMatrixIdentity(&reproject);
 	if (plus && !onlyCombine) {
 		static const float HistoryShare = 0.9f; // last frame's share for a spot that has not moved (less as it moves)
-		D3DXVECTOR4 temporalData(useHistory && continuous && historyValid ? HistoryShare : 0.0f, continuous ? multiBounce : 0.0f,
+		temporalData = D3DXVECTOR4(useHistory && continuous && historyValid ? HistoryShare : 0.0f, continuous ? multiBounce : 0.0f,
 			(float)(frameNumber % 1024), 0.0f);
 		// The ambient light: the weather's outdoors, the cell's own indoors (as the lit particles take it); as a mid-grey
 		// surface (0.25 in linear light) would send it.
@@ -463,9 +599,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		if (!TheShaderManager->GameState.isExterior && Player && Player->parentCell && Player->parentCell->IsInterior() &&
 			Player->parentCell->lighting)
 			ambient = Player->parentCell->lighting->ambient.toD3DXVECTOR4();
-		D3DXVECTOR4 ambientData(0.25f * BounceLinear(ambient.x), 0.25f * BounceLinear(ambient.y), 0.25f * BounceLinear(ambient.z), offScreenLight);
-		D3DXMATRIX reproject;
-		D3DXMatrixIdentity(&reproject);
+		ambientData = D3DXVECTOR4(0.25f * BounceLinear(ambient.x), 0.25f * BounceLinear(ambient.y), 0.25f * BounceLinear(ambient.z), offScreenLight);
 		if (continuous) BounceLightReprojection(TheRenderManager->viewMatrix, TheRenderManager->InvViewMatrix, lastView, lastInvView, lastProj, &reproject);
 		Effect->SetVector(temporalHandle, &temporalData);
 		Effect->SetVector(ambientHandle, &ambientData);
@@ -530,8 +664,14 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	GpuTimer* passTimers = quarter ? quarterTimers : halfTimers;
 	const UINT firstPass = onlyCombine ? 4 : 0, endPass = deferCombine ? 4 : 5;
 	UINT passes = 0;
-	HRESULT result = Effect->Begin(&passes, 0);
-	if (SUCCEEDED(result)) {
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the same passes as Vulkan passes when NvrDxvkPasses is on (not with the retired spill's buffers);
+	// if they cannot draw, this D3D9 loop draws the frame as before.
+	const D3DXHANDLE drawnTechnique = hardEdges || (spill && spillHardEdges > 0.0f) ? spillTechnique : technique;
+	const bool extDrawn = !spill && !debugView && !ExtFailed && DxvkCompute::PassesOn() &&
+		ExtPasses(Device, RenderTarget, RenderedSurface, drawnTechnique, firstPass, endPass, scene, lowTexture, lowSurface, prepTexture, prepSurface,
+			historyTexture, historySurface, writeIndex, layout, temporalData, ambientData, reproject, passTimers);
+	HRESULT result = extDrawn ? S_OK : Effect->Begin(&passes, 0);
+	if (!extDrawn && SUCCEEDED(result)) {
 		for (UINT p = firstPass; p < endPass && SUCCEEDED(result); ++p) {
 			const bool combine = p == 4;
 			// Prepare writes the packed buffer; the gather reads it and writes 0, blur X reads 0 and writes 1,
@@ -598,6 +738,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			deferredTexture = lowTexture[0];
 			deferredLayout = layout;
 		}
+		else if (extDrawn) {}	// ExtFullScreen committed the combine (or made the copy) itself
 		else if (chained) chain.Commit();
 		else Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 	}
