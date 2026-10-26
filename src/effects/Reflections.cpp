@@ -45,6 +45,7 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.ReflectivityInterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityInterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
 	Settings.HiZInteriorsTest = TheSettingManager->GetSettingI(section, "HiZInteriorsTest") != 0;	// test only: HiZ indoors too
 	Settings.HiZSafeCells = TheSettingManager->GetSettingI(section, "HiZSafeCells") != 0;	// test only: the pyramid-channel fix
+	HiZ::CheckEvery = std::clamp(TheSettingManager->GetSettingI(section, "HiZCheck"), 0, 100000);	// test only: pyramid readback check
 }
 
 // UNOFFICIAL 2026-10-26 (deep/fork-hiz): outdoors only for now. Indoors (Lucky 38, a 3rd-person view looking down) the walk found no

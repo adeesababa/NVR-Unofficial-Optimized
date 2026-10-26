@@ -24,8 +24,10 @@ public:
 	// This frame's pyramid, or null (not wanted, not built, failed): the reader takes its normal path.
 	static IDirect3DTexture9*	Current();
 	static bool					Failed() { return failed; }
+	static int					CheckEvery;	// test only ([Shaders.Reflections.Main] HiZCheck): read back and compare every N built frames, 0 off
 
 private:
+	static void					Check(IDirect3DTexture9* depth, float invertedDepth);
 	static bool					Ensure();
 	static void					Release();
 

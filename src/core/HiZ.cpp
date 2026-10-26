@@ -121,6 +121,56 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 	built = true;
 	builtFrame = now;
 	if (++frames == 1) Logger::Log("UNOFFICIAL Hi-Z: pyramid built (first frame).");
+	if (CheckEvery > 0 && frames % (UINT)CheckEvery == 0) Check(depth, depthConstants->z);
+}
+
+// UNOFFICIAL 2026-10-26 (deep/fork-hiz) test only, [Shaders.Reflections.Main] HiZCheck = N: every N built frames the depth buffer and
+// pyramid levels 0 and 3 are read back (ReadBuffer: waits for the GPU, stalls that frame) and compared with min/max worked out on the
+// CPU from the depth (the weapon left out the same way is not checked: the comparison counts a cell as "weapon" when its stored nearest
+// is 4). One log line per check: what the walk reads must equal what the depth says.
+int HiZ::CheckEvery = 0;
+void HiZ::Check(IDirect3DTexture9* depth, float invertedDepth) {
+	ID3D9NvrExt* ext = DxvkCompute::Extension();
+	D3DSURFACE_DESC dd = {};
+	if (!ext || FAILED(depth->GetLevelDesc(0, &dd))) return;
+	const UINT texel = dd.Format == D3DFMT_R32F ? 4 : dd.Format == D3DFMT_G32R32F ? 8 : 0;
+	if (!texel) { Logger::Log("UNOFFICIAL Hi-Z check: depth format %u not readable here", (UINT)dd.Format); return; }
+	const UINT w0 = width, h0 = height, w3 = width >> 3, h3 = height >> 3;
+	const UINT depthBytes = dd.Width * dd.Height * texel, l0Bytes = w0 * h0 * 8, l3Bytes = w3 * h3 * 8;
+	ID3D9NvrExtBuffer* buffer = DxvkCompute::CreateBuffer(depthBytes + l0Bytes + l3Bytes, NVR_EXT_BUFFER_TRANSFER_DST | NVR_EXT_BUFFER_TRANSFER_SRC, "Hi-Z check");
+	if (!buffer) return;
+	std::vector<float> dv(depthBytes / 4), l0(l0Bytes / 4), l3(l3Bytes / 4);
+	bool ok = SUCCEEDED(ext->CopyTextureToBuffer(buffer, 0, depth, 0, 0)) && SUCCEEDED(ext->CopyTextureToBuffer(buffer, depthBytes, texture, 0, 0)) &&
+		SUCCEEDED(ext->CopyTextureToBuffer(buffer, depthBytes + l0Bytes, texture, 3, 0)) &&
+		SUCCEEDED(ext->ReadBuffer(buffer, 0, depthBytes, dv.data())) && SUCCEEDED(ext->ReadBuffer(buffer, depthBytes, l0Bytes, l0.data())) &&
+		SUCCEEDED(ext->ReadBuffer(buffer, depthBytes + l0Bytes, l3Bytes, l3.data()));
+	buffer->Release();
+	if (!ok) { Logger::Log("UNOFFICIAL Hi-Z check: readback failed"); return; }
+	const UINT stride = texel / 4;
+	auto at = [&](UINT x, UINT y) { x = (std::min)(x, dd.Width - 1); y = (std::min)(y, dd.Height - 1); return dv[(y * dd.Width + x) * stride]; };
+	auto compare = [&](const std::vector<float>& lv, UINT w, UINT h, UINT cellPx, const char* name) {
+		UINT cells = 0, weapon = 0, badMin = 0, badMax = 0, zeroMax = 0, swapped = 0; char example[160] = "";
+		for (UINT y = 0; y < h; y += (h > 64 ? 7 : 1))
+			for (UINT x = 0; x < w; x += (w > 64 ? 7 : 1)) {
+				float mn = 1e30f, mx = -1e30f;
+				for (UINT j = 0; j < cellPx; j++) for (UINT i = 0; i < cellPx; i++) { float v = at(x * cellPx + i, y * cellPx + j); mn = (std::min)(mn, v); mx = (std::max)(mx, v); }
+				const float r = lv[(y * w + x) * 2], g = lv[(y * w + x) * 2 + 1];
+				cells++;
+				if (r >= 3.0f) { weapon++; continue; }
+				if (fabsf(r - mn) > 1e-6f + 1e-4f * mn) badMin++;
+				if (fabsf(g - mx) > 1e-6f + 1e-4f * mx) badMax++;
+				if (g == 0.0f) zeroMax++;
+				if (fabsf(r - mx) <= 1e-6f + 1e-4f * mx && fabsf(g - mn) <= 1e-6f + 1e-4f * mn && mn != mx) swapped++;
+				if (!example[0] && (fabsf(r - mn) > 1e-6f + 1e-4f * mn || fabsf(g - mx) > 1e-6f + 1e-4f * mx))
+					_snprintf_s(example, sizeof(example), _TRUNCATE, " first bad cell (%u,%u): stored %.6f / %.6f, depth min %.6f max %.6f", x, y, r, g, mn, mx);
+			}
+		Logger::Log("UNOFFICIAL Hi-Z check %s (frame %u): %u cells, %u 'weapon' (nearest 4), nearest wrong %u, farthest wrong %u (of them 0: %u), swapped %u.%s",
+			name, TheFrameRateManager->FrameNumber, cells, weapon, badMin, badMax, zeroMax, swapped, example);
+	};
+	compare(l0, w0, h0, 2, "level 0");
+	compare(l3, w3, h3, 16, "level 3");
+	Logger::Log("UNOFFICIAL Hi-Z check: depth %ux%u (%s), inverted depth %.0f, centre depth %.6f", dd.Width, dd.Height, texel == 4 ? "R32F" : "G32R32F",
+		invertedDepth, at(dd.Width / 2, dd.Height / 2));
 }
 
 IDirect3DTexture9* HiZ::Current() {
