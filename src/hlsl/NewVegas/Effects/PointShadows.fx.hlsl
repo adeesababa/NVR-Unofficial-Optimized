@@ -94,6 +94,7 @@ float LampReach(float distance) {
 }
 
 float LampAmount(float3 lightDir, float distance, float4 normal) {
+	if (TESR_PointShadowNear.z < 0.0f) return GetPointLightAtten(lightDir, distance, float4(normalize(lightDir), 0));
 	return TESR_PointShadowNear.z > 0.0f ? LampReach(distance) : GetPointLightAtten(lightDir, distance, normal);
 }
 

@@ -115,7 +115,25 @@ static float s_savedTimeScale = -1.0f; // session snapshot; -1 = not yet taken
 static bool  s_devFreecamOn   = false;
 static bool  s_devMenusHidden = false;
 static bool  s_screenshotMode = false;
+static float s_sidebarW = 0.0f;
+static bool  s_revealSelected = false;
 static bool  s_showTestSettings = false;
+static bool  s_devOptions = false;
+
+static bool DevOptionsShown() { return s_devOptions || s_showTestSettings; }
+
+static void DevOptionsCheckbox() {
+	bool on = s_devOptions;
+	if (ImGui::Checkbox("Developer options", &on)) {
+		TheSettingManager->SetSetting("Main.Menu.Developer", "DeveloperOptions", on);
+		TheSettingManager->LoadSettings();
+		s_devOptions = on;
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Also show what players should not need to touch: test and fault-finding switches, the bug fixes and\n"
+			"speed-ups that are on by default, A/B test paths, measuring tools, options that change almost nothing,\n"
+			"and the Step / - / + buttons. Hidden settings keep working with their saved values.");
+}
 
 // ---- Preset Manager panel ------------------------------------------------
 // Session 2: minimal read-only skeleton. Session 5 (current): promoted into
@@ -1218,12 +1236,6 @@ static void RenderDevPanel() {
 		}
 		ImGui::SameLine();
 		ImGui::TextDisabled("(Press NVR key to restore)");
-
-		ImGui::Spacing();
-		ImGui::Checkbox("Show test settings", &s_showTestSettings);
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Also show the switches used for testing and finding faults (debug views, logs, checks) and the old "
-				"settings nothing reads any more. Leave them at their defaults when playing.");
 	}
 
 	ImGui::Spacing();
@@ -1412,11 +1424,19 @@ static void BlockGameInput(bool block) {
 // ---- Visibility --------------------------------------------------------------
 
 static void SetOverlayVisible(bool visible);
+static char* SearchTestBuffer();
 #if NVR_TEST_TOOLS
 void ImGuiManager::TestShowMenu(const char* Section, bool ShowTests) {
 	if (!Initialized) return;
 	s_showTestSettings = Section && ShowTests;
-	if (Section) SelectedSection = Section;
+	s_revealSelected = Section != nullptr;
+	char* searchBuf = SearchTestBuffer();
+	searchBuf[0] = '\0';
+	if (Section && strncmp(Section, "search:", 7) == 0) {
+		strncpy_s(searchBuf, 64, Section + 7, _TRUNCATE);
+		for (char* c = searchBuf; *c; c++) if (*c == '+') *c = ' ';
+	}
+	else if (Section) SelectedSection = Section;
 	SetOverlayVisible(Section != nullptr);
 }
 #endif
@@ -1796,11 +1816,13 @@ void ImGuiManager::NewFrame() {
 			else if (s_masterMod == 2) modHeld = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
 			else if (s_masterMod == 3) modHeld = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
 
+			const bool typing = Visible && ImGui::GetIO().WantTextInput && MapVirtualKey(vk, MAPVK_VK_TO_CHAR) != 0;
+
 			// Open/close overlay — bare key only, never when FX modifier is held.
 			// While in screenshot mode the key exits screenshot mode instead of closing.
 			{
 				static bool prev = false;
-				if (keyDown && !prev && !modHeld) {
+				if (keyDown && !prev && !modHeld && !typing) {
 					if (s_screenshotMode)
 						s_screenshotMode = false;
 					else
@@ -1813,7 +1835,7 @@ void ImGuiManager::NewFrame() {
 			if (s_masterMod > 0) {
 				static bool prevMaster = false;
 				bool masterDown = modHeld && keyDown;
-				if (masterDown && !prevMaster) {
+				if (masterDown && !prevMaster && !typing) {
 					bool cur = TheSettingManager->SettingsMain.Main.RenderEffects;
 					TheSettingManager->SetSetting("Main.Main.Misc", "RenderEffects", !cur);
 					TheSettingManager->LoadSettings();
@@ -1842,7 +1864,7 @@ void ImGuiManager::NewFrame() {
 	if (Visible && !SelectedSection.empty() && SelectedSection.find("Shaders.") == 0) {
 		static bool prevInsert = false;
 		bool curInsert = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-		if (curInsert && !prevInsert) {
+		if (curInsert && !prevInsert && !ImGui::GetIO().WantTextInput) {
 			size_t dot1 = SelectedSection.find('.');
 			size_t dot2 = SelectedSection.find('.', dot1 + 1);
 			if (dot1 != std::string::npos && dot2 != std::string::npos) {
@@ -1920,8 +1942,8 @@ void ImGuiManager::NewFrame() {
 		             || (GetAsyncKeyState(VK_OEM_PLUS)  & 0x8000) != 0;
 		bool curMinus = (GetAsyncKeyState(VK_SUBTRACT)  & 0x8000) != 0
 		             || (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
-		s_plusPressed  = curPlus  && !prevPlus;
-		s_minusPressed = curMinus && !prevMinus;
+		s_plusPressed  = curPlus  && !prevPlus  && !io.WantTextInput;
+		s_minusPressed = curMinus && !prevMinus && !io.WantTextInput;
 		prevPlus  = curPlus;
 		prevMinus = curMinus;
 	}
@@ -1938,7 +1960,7 @@ void ImGuiManager::Render() {
 // ---- Menu UI -----------------------------------------------------------------
 
 static bool ShouldHideSection(const std::string& name) {
-	return name == "WeatherMode" || name == "Status" || name == "NewInPatch";
+	return name == "WeatherMode" || name == "Status" || name == "NewInPatch" || name == "Developer";
 }
 
 static bool ShouldHideKey(const char* key) {
@@ -1946,6 +1968,8 @@ static bool ShouldHideKey(const char* key) {
 	// LUT filenames are rendered as cycle pickers, not raw InputText
 	if (strcmp(key, "DayLUT") == 0 || strcmp(key, "NightLUT") == 0 || strcmp(key, "InteriorLUT") == 0) return true;
 	if (strcmp(key, "NewSince") == 0 || strcmp(key, "NewInclude") == 0 || strcmp(key, "NewExclude") == 0 || strcmp(key, "NewDiagnostics") == 0) return true;
+	if (strcmp(key, "DevOnly") == 0) return true;
+	if (strcmp(key, "SidebarWidth") == 0) return true;
 	return false;
 }
 
@@ -1983,6 +2007,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.PBR.Main",                     "SpecularFade",       RestartRule::Changed },
 	{ "Shaders.PBR.Main",                     "FoldHighlights",     RestartRule::TurnOn },
 	{ "Shaders.PBR.Main",                     "LampSums",           RestartRule::TurnOn },
+	{ "Shaders.PBR.Main",                     "HighlightSums",      RestartRule::TurnOn },
 	{ "Shaders.PBR.Main",                     "SkylightingMode",    RestartRule::Changed },
 	{ "Shaders.PBR.Metal",                    "CubeReflections",    RestartRule::TurnOn },
 	{ "Shaders.PBR.EnvMaps",                  "CubeReflections",    RestartRule::TurnOn },
@@ -2191,9 +2216,27 @@ static const char* InactiveReason(const char* section, const char* key) {
 
 static bool NewIsDiagnostic(const std::string& key, const std::string& description, const std::vector<std::string>& extra, const std::string& section);
 
+static bool IsDevOnlySetting(const std::string& section, const std::string& key);
+
 static bool IsTestSetting(const SettingManager::Configuration::ConfigNode& node) {
 	static const std::vector<std::string> none;
-	return IsDeadSetting(node.Section, node.Key) || NewIsDiagnostic(node.Key, node.Description, none, node.Section);
+	return IsDeadSetting(node.Section, node.Key) || NewIsDiagnostic(node.Key, node.Description, none, node.Section) ||
+		IsDevOnlySetting(node.Section, node.Key);
+}
+
+static bool IsOnOffInteger(const SettingManager::Configuration::ConfigNode& node) {
+	static const char* const onOff[][2] = {
+		{ "Main.Main.Performance", "ArrivalSampler" }, { "Main.Main.Performance", "IOWorker2" },
+		{ "Main.Main.Performance", "FogReferenceTest" }, { "Main.Main.Performance", "LampMaskScissorCheck" },
+		{ "Main.Main.Performance", "CubeFaceViewCullCheck" },
+		{ "Shaders.Grass.NewGrass", "Log" }, { "Shaders.Grass.Wind", "Log" }, { "Shaders.Plants.Wind", "Log" },
+		{ "Shaders.DitherBuster.Main", "DebugView" }, { "Shaders.PBR.Metal", "DebugView" },
+		{ "Shaders.ShadowsExteriors.SunSmoothing", "SmoothSun" }, { "Shaders.ShadowsExteriors.SunSmoothing", "QuantizeSun" },
+		{ "Shaders.CloudShadows.Main", "HazardLog" }, { "Shaders.CloudShadows.Main", "FlickerWatch" },
+		{ "Shaders.HandBlood.Main", "DebugView" }, { "Shaders.WetWorld.Main", "HudDebug" },
+	};
+	for (const auto& o : onOff) if (!strcmp(o[0], node.Section) && !strcmp(o[1], node.Key)) return true;
+	return node.Description.compare(0, 5, "[0-1]") == 0;
 }
 
 static void SettingTooltip(const SettingManager::Configuration::ConfigNode& node, const char* why, const ImVec4& baseText) {
@@ -2363,6 +2406,7 @@ static void RenderColorTriple(
 
 	bool changed = false;
 
+	ImGui::SetNextItemWidth((std::min)(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 22.0f));
 	if (ImGui::ColorPicker3("##col", cs.col,
 		ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_NoSidePreview))
 		changed = true;
@@ -2585,7 +2629,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			TheSettingManager->LoadSettings();
 		}
-		if (isShader) {
+		if (isShader && DevOptionsShown()) {
 			ImGui::SameLine();
 			if (ImGui::SmallButton("-")) {
 				val -= s_shaderStepSize;
@@ -2611,7 +2655,10 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		int newVal = val;
 		std::string enumKey = std::string(node.Section) + "." + node.Key;
 		auto enumIt = kEnumSettings.find(enumKey);
-		if (enumIt != kEnumSettings.end()) {
+		if (enumIt == kEnumSettings.end() && (val == 0 || val == 1) && IsOnOffInteger(node)) {
+			bool on = val != 0;
+			if (ImGui::Checkbox(node.Key, &on)) newVal = on ? 1 : 0;
+		} else if (enumIt != kEnumSettings.end()) {
 			const char* const* names = enumIt->second.Names;
 			int count = enumIt->second.Count;
 			int clamped = ImClamp(val, 0, count - 1);
@@ -2706,14 +2753,15 @@ static const tomlValue* NewFind(const tomlValue* table, const char* name) {
 	return it == map.end() ? nullptr : &it->second;
 }
 
-static std::string NewMeta(const char* key) {
+static std::string MenuMeta(const char* page, const char* key) {
 	try {
-		const tomlValue* section = NewFind(NewFind(NewFind(&TheSettingManager->Config.DefaultConfig, "_Main"), "Menu"), "NewInPatch");
+		const tomlValue* section = NewFind(NewFind(NewFind(&TheSettingManager->Config.DefaultConfig, "_Main"), "Menu"), page);
 		const tomlValue* value = NewFind(section, key);
 		if (value && value->is_string()) return value->as_string();
 	} catch (...) {}
 	return std::string();
 }
+static std::string NewMeta(const char* key) { return MenuMeta("NewInPatch", key); }
 
 static void NewSplitList(const std::string& text, std::vector<std::string>& out) {
 	std::string cur;
@@ -2737,6 +2785,17 @@ static bool NewListMatches(const std::vector<std::string>& list, const std::stri
 		}
 	}
 	return false;
+}
+
+static bool IsDevOnlySetting(const std::string& section, const std::string& key) {
+	static std::vector<std::string> list;
+	static UInt32 generation = 0xFFFFFFFFu;
+	if (generation != TheSettingManager->Config.DefaultsGeneration) {
+		generation = TheSettingManager->Config.DefaultsGeneration;
+		list.clear();
+		NewSplitList(MenuMeta("Developer", "DevOnly"), list);
+	}
+	return NewListMatches(list, section, key);
 }
 
 static std::string NewLatestDate(const std::string& s) {
@@ -2965,9 +3024,9 @@ static void RenderNewInPatch() {
 
 	NewRenderGroups(s_newMain, s_newMainGroups, false);
 
-	if (!s_newDiag.empty() && !s_showTestSettings) {
+	if (!s_newDiag.empty() && !DevOptionsShown()) {
 		ImGui::Spacing();
-		ImGui::TextDisabled("%u test settings hidden (Display > Show test settings)", (UInt32)s_newDiag.size());
+		ImGui::TextDisabled("%u test settings hidden (tick Developer options at the top)", (UInt32)s_newDiag.size());
 	}
 	else if (!s_newDiag.empty()) {
 		ImGui::Spacing();
@@ -2979,7 +3038,168 @@ static void RenderNewInPatch() {
 	}
 }
 
+static char s_searchBuf[64] = "";
+static char* SearchTestBuffer() { return s_searchBuf; }
+
+struct SearchKey { std::string Section, Key, Haystack; bool Status; std::string ShaderName; };
+static std::vector<SearchKey> s_searchIndex;
+static std::vector<NewEntry>  s_searchResults;
+static std::vector<NewGroup>  s_searchGroups;
+static std::string s_searchQuery;
+static bool        s_searchTests   = false;
+static size_t      s_searchTotal   = 0;
+static UInt32      s_searchRevision = 0xFFFFFFFFu;
+static int         s_searchFrames   = 0;
+static const size_t kSearchMax = 400;
+
+static std::string SearchLower(const std::string& s) {
+	std::string out(s);
+	for (char& c : out) c = (char)tolower((unsigned char)c);
+	return out;
+}
+
+static std::string SearchQueryText() {
+	std::string q = SearchLower(s_searchBuf);
+	const size_t b = q.find_first_not_of(' ');
+	if (b == std::string::npos) return std::string();
+	return q.substr(b, q.find_last_not_of(' ') - b + 1);
+}
+
+static bool SearchActive() { return !SearchQueryText().empty(); }
+
+static void SearchIndexSection(const std::string& path, const std::string& name, bool parentIsShaders) {
+	if (ShouldHideSection(name)) return;
+	StringList subs;
+	TheSettingManager->FillMenuSections(&subs, path.c_str());
+	if (subs.empty()) {
+		SettingManager::Configuration::SettingList settings;
+		TheSettingManager->FillMenuSettings(&settings, path.c_str());
+		for (auto& s : settings) {
+			if (ShouldHideKey(s.Key)) continue;
+			s_searchIndex.push_back({ path, s.Key, SearchLower(path + "." + s.Key), false, std::string() });
+		}
+		return;
+	}
+	if (parentIsShaders && TheSettingManager->GetMenuShaderSwitch(name.c_str()) != SettingManager::MenuSwitch::None)
+		s_searchIndex.push_back({ path + ".Status", "Enabled", SearchLower(path + ".Enabled on off"), true, name });
+	for (auto& sub : subs)
+		SearchIndexSection(path + "." + sub, sub, path == "Shaders");
+}
+
+static void SearchRebuild(const std::string& query) {
+	s_searchQuery = query;
+	s_searchTests = DevOptionsShown();
+	s_searchResults.clear();
+	s_searchGroups.clear();
+	s_searchTotal = 0;
+	s_searchRevision = TheSettingManager->SettingsRevision;
+	s_searchFrames = 0;
+
+	std::vector<std::string> words;
+	for (size_t i = 0; i < query.size();) {
+		const size_t j = query.find(' ', i);
+		const size_t end = (j == std::string::npos) ? query.size() : j;
+		if (end > i) words.push_back(query.substr(i, end - i));
+		i = end + 1;
+	}
+	for (const SearchKey& k : s_searchIndex) {
+		bool all = true;
+		for (const std::string& w : words) if (k.Haystack.find(w) == std::string::npos) { all = false; break; }
+		if (!all) continue;
+		NewEntry e;
+		e.Section = k.Section;
+		e.Key = k.Key;
+		e.Status = k.Status;
+		e.ShaderName = k.ShaderName;
+		e.Valid = TheSettingManager->Config.FillNode(&e.Node, e.Section.c_str(), e.Key.c_str());
+		if (!e.Valid) continue;
+		if (!DevOptionsShown() && IsTestSetting(e.Node)) continue;
+		if (++s_searchTotal <= kSearchMax) s_searchResults.push_back(std::move(e));
+	}
+	NewMakeGroups(s_searchResults, s_searchGroups);
+	for (NewGroup& g : s_searchGroups)
+		if (NewEndsWith(g.Display, " > Status")) g.Display.resize(g.Display.size() - 9);
+}
+
+static void SearchEnsure() {
+	const std::string query = SearchQueryText();
+	if (query.empty()) {
+		if (!s_searchQuery.empty()) { s_searchQuery.clear(); s_searchResults.clear(); s_searchGroups.clear(); s_searchIndex.clear(); }
+		return;
+	}
+	if (s_searchIndex.empty()) {
+		StringList topSections;
+		TheSettingManager->FillMenuSections(&topSections, nullptr);
+		for (auto& section : topSections)
+			if (section != "Weathers") SearchIndexSection(section, section, false);
+	}
+	if (query != s_searchQuery || s_searchTests != DevOptionsShown()) SearchRebuild(query);
+	else if (s_searchRevision != TheSettingManager->SettingsRevision || ++s_searchFrames >= 30) {
+		s_searchFrames = 0;
+		s_searchRevision = TheSettingManager->SettingsRevision;
+		NewRefreshNodes(s_searchResults);
+	}
+}
+
+static void RenderSearchBox() {
+	const char* clearLabel = "x##menusearchclear";
+	const float clearW = ImGui::CalcTextSize("x").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - clearW - ImGui::GetStyle().ItemSpacing.x);
+	ImGui::InputTextWithHint("##menusearch", "Search settings...", s_searchBuf, sizeof(s_searchBuf), ImGuiInputTextFlags_EscapeClearsAll);
+	if (ImGui::IsItemHovered() && !ImGui::IsItemActive())
+		ImGui::SetTooltip("Type part of a setting's or a section's name (for example \"shadow bias\").\nEvery word must match. Escape or x clears it.");
+	ImGui::SameLine();
+	ImGui::BeginDisabled(s_searchBuf[0] == '\0');
+	if (ImGui::Button(clearLabel, ImVec2(clearW, 0.0f))) s_searchBuf[0] = '\0';
+	ImGui::EndDisabled();
+	SearchEnsure();
+}
+
+static void RenderSearchSidebar() {
+	ImGui::TextDisabled("%u in %u sections", (UInt32)s_searchTotal, (UInt32)s_searchGroups.size());
+	ImGui::Separator();
+	for (const NewGroup& g : s_searchGroups) {
+		ImGui::PushID(g.Section.c_str());
+		const bool isSwitch = NewEndsWith(g.Section, ".Status");
+		const size_t n = g.End - g.Begin;
+		const std::string label = g.Display + (isSwitch ? " (on / off)" : " (" + std::to_string(n) + ")");
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.68f, 0.75f, 1.0f));
+		if (ImGui::Selectable(label.c_str(), false) && !isSwitch) {
+			SelectedSection = g.Section;
+			s_searchBuf[0] = '\0';
+		}
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip(isSwitch ? "The shader's on/off switch, shown on the right." : "Open this section (clears the search).");
+		ImGui::PopID();
+	}
+}
+
+static void RenderSearchResults() {
+	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "Search: %s", s_searchBuf);
+	ImGui::SameLine();
+	ImGui::TextDisabled("%u setting%s", (UInt32)s_searchTotal, s_searchTotal == 1 ? "" : "s");
+	ImGui::Separator();
+	ImGui::Spacing();
+	if (s_searchTotal == 0) {
+		ImGui::TextDisabled("No setting or section matches. Weather sections are not searched.");
+		if (!DevOptionsShown()) ImGui::TextDisabled("Developer settings are hidden (tick Developer options at the top).");
+		return;
+	}
+	if (s_searchTotal > kSearchMax) {
+		ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Showing the first %u: add a word to narrow it down.", (UInt32)kSearchMax);
+		ImGui::Spacing();
+	}
+	ImGui::PushID("##searchresults");
+	NewRenderGroups(s_searchResults, s_searchGroups, false);
+	ImGui::PopID();
+}
+
 static void RenderContent() {
+	if (SearchActive()) {
+		RenderSearchResults();
+		return;
+	}
 	if (SelectedSection == kNewTabId) {
 		RenderNewInPatch();
 		return;
@@ -2997,6 +3217,16 @@ static void RenderContent() {
 		return;
 	}
 
+	static const char* const kPinnedFirst[][2] = {
+		{ "Shaders.PBR.Main", "ReflectivityExterior" },
+		{ "Shaders.PBR.Main", "ReflectivityInterior" },
+	};
+	std::stable_partition(settings.begin(), settings.end(), [](const SettingManager::Configuration::ConfigNode& n) {
+		for (const auto& pin : kPinnedFirst)
+			if (SelectedSection == pin[0] && strcmp(n.Key, pin[1]) == 0) return true;
+		return false;
+	});
+
 	bool isShader = (SelectedSection.find("Shaders") == 0);
 
 	ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "%s", SelectedSection.c_str());
@@ -3013,18 +3243,15 @@ static void RenderContent() {
 			if (kind != SettingManager::MenuSwitch::None) {
 				ImGui::SameLine();
 				ImGui::BeginDisabled(forced);
-				ImGui::PushStyleColor(ImGuiCol_Button, enabled
-					? ImVec4(0.15f, 0.55f, 0.15f, 1.0f)
-					: ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
-				const std::string label = shaderName + ": " + (enabled ? "Enabled [Ins]" : "Disabled [Ins]");
-				if (ImGui::SmallButton(label.c_str())) {
+				const std::string label = shaderName + " on  [Ins]##headerSwitch";
+				bool on = enabled;
+				if (ImGui::Checkbox(label.c_str(), &on)) {
 					TheShaderManager->SwitchShaderStatus(shaderName.c_str());
 					TheSettingManager->LoadSettings();
 				}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("Turns all of %s on or off (every %s section), not just this section.\nThis section's own switches are in the list below.",
 						shaderName.c_str(), shaderName.c_str());
-				ImGui::PopStyleColor();
 				ImGui::EndDisabled();
 				if (kind == SettingManager::MenuSwitch::MainEnabled)
 					RestartBadge(("Shaders." + shaderName + ".Main").c_str(), "Enabled");
@@ -3117,7 +3344,7 @@ static void RenderContent() {
 		std::string key(s.Key);
 		if (handled.count(key)) continue;
 		if (ShouldHideKey(s.Key)) continue;
-		if (!s_showTestSettings && IsTestSetting(s)) { testHidden++; continue; }
+		if (!DevOptionsShown() && IsTestSetting(s)) { testHidden++; continue; }
 		shown++;
 
 		// Hide HDRCompat when PreTonemapping is off — it's meaningless in post-tonemapping mode
@@ -3149,14 +3376,31 @@ static void RenderContent() {
 	}
 	if (testHidden) {
 		ImGui::Spacing();
-		ImGui::TextDisabled(shown ? "%d test setting%s hidden (Display > Show test settings)" : "Only test settings here: %d hidden%s (Display > Show test settings)",
+		ImGui::TextDisabled(shown ? "%d developer setting%s hidden (tick Developer options at the top)" : "Only developer settings here: %d hidden%s (tick Developer options at the top)",
 			testHidden, shown ? (testHidden == 1 ? "" : "s") : "");
 	}
+}
+
+struct MenuMove { const char* name; const char* under; const char* label; };
+static const MenuMove kMenuMoves[] = {
+	{ "CloudShadows", "ShadowsExteriors", "Cloud Shadows (flat clouds)" },
+	{ "Foliage", "Plants", "Foliage glow" },
+};
+static bool LeadsToSelected(const std::string& path) {
+	if (SelectedSection.compare(0, path.size() + 1, path + ".") == 0) return true;
+	for (const MenuMove& m : kMenuMoves)
+		if (SelectedSection == std::string("Shaders.") + m.name + ".Main" && (path == "Shaders" || path == std::string("Shaders.") + m.under)) return true;
+	return false;
+}
+static bool IsMovedShaderEntry(const std::string& name) {
+	for (const MenuMove& m : kMenuMoves) if (name == m.name) return true;
+	return false;
 }
 
 // Recursive sidebar tree — path is the full dotted section path, name is the display label.
 static void RenderSectionNode(const std::string& path, const std::string& name, bool parentIsShaders) {
 	if (ShouldHideSection(name)) return;
+	if (!DevOptionsShown() && IsDevOnlySetting(path, std::string())) return;
 
 	StringList subsections;
 	TheSettingManager->FillMenuSections(&subsections, path.c_str());
@@ -3188,6 +3432,7 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		ImGui::PushStyleColor(ImGuiCol_Text, enabled
 			? ImVec4(0.40f, 1.00f, 0.40f, 1.0f)
 			: ImVec4(0.55f, 0.55f, 0.55f, 1.0f));
+		if (s_revealSelected && LeadsToSelected(path)) ImGui::SetNextItemOpen(true);
 		open = ImGui::TreeNode("##node");
 		ImGui::PopStyleColor();
 
@@ -3226,6 +3471,7 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 			}
 		}
 	} else {
+		if (s_revealSelected && LeadsToSelected(path)) ImGui::SetNextItemOpen(true);
 		open = ImGui::TreeNode("##node");
 		ImGui::SameLine();
 		ImGui::TextUnformatted(name.c_str());
@@ -3233,8 +3479,21 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 
 	if (open) {
 		bool childrenAreShaders = (path == "Shaders");
-		for (auto& sub : subsections)
+		for (auto& sub : subsections) {
+			if (childrenAreShaders && IsMovedShaderEntry(sub)) continue;
 			RenderSectionNode(path + "." + sub, sub, childrenAreShaders);
+		}
+		for (const MenuMove& m : kMenuMoves) {
+			if (path != std::string("Shaders.") + m.under) continue;
+			const std::string target = std::string("Shaders.") + m.name + ".Main";
+			ImGui::PushID(target.c_str());
+			const bool selected = (SelectedSection == target);
+			if (!selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.68f, 0.75f, 1.0f));
+			if (ImGui::Selectable(m.label, selected)) SelectedSection = target;
+			if (selected && s_revealSelected) ImGui::SetScrollHereY(0.5f);
+			if (!selected) ImGui::PopStyleColor();
+			ImGui::PopID();
+		}
 		ImGui::TreePop();
 	}
 
@@ -3242,6 +3501,12 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 }
 
 static void RenderSidebar() {
+	RenderSearchBox();
+	if (SearchActive()) {
+		RenderSearchSidebar();
+		return;
+	}
+	ImGui::Spacing();
 	NewPatchEnsure();
 	if (NewPatchCount() > 0) {
 		if (SelectedSection.empty()) SelectedSection = kNewTabId;
@@ -3320,6 +3585,7 @@ void ImGuiManager::BuildUI() {
 
 	if (!Visible) return;
 
+	s_devOptions = TheSettingManager->GetSettingI("Main.Menu.Developer", "DeveloperOptions") != 0;
 	CfabUpdate();
 	if (s_screenshotMode) return;
 
@@ -3331,7 +3597,7 @@ void ImGuiManager::BuildUI() {
 	// Wait for Escape or Alt release before closing so the game doesn't see them held.
 	static bool escapePending = false;
 	static bool altPending    = false;
-	if (ImGui::IsKeyPressed(ImGuiKey_Escape))   escapePending = true;
+	if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::GetIO().WantTextInput) escapePending = true;
 	if (ImGui::IsKeyPressed(ImGuiKey_LeftAlt) ||
 	    ImGui::IsKeyPressed(ImGuiKey_RightAlt))  altPending    = true;
 	if (escapePending && !ImGui::IsKeyDown(ImGuiKey_Escape)) {
@@ -3360,14 +3626,10 @@ void ImGuiManager::BuildUI() {
 
 	{
 		bool renderFX = TheSettingManager->SettingsMain.Main.RenderEffects;
-		ImGui::PushStyleColor(ImGuiCol_Button, renderFX
-			? ImVec4(0.15f, 0.50f, 0.15f, 1.0f)
-			: ImVec4(0.45f, 0.15f, 0.15f, 1.0f));
-		if (ImGui::Button(renderFX ? "FX ON" : "FX OFF")) {
-			TheSettingManager->SetSetting("Main.Main.Misc", "RenderEffects", !renderFX);
+		if (ImGui::Checkbox("Effects", &renderFX)) {
+			TheSettingManager->SetSetting("Main.Main.Misc", "RenderEffects", renderFX);
 			TheSettingManager->LoadSettings();
 		}
-		ImGui::PopStyleColor();
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Toggle all NVR effects (hotkey: modifier + %s)",
 				DikToName(TheSettingManager->SettingsMain.Menu.KeyEnable));
@@ -3376,14 +3638,13 @@ void ImGuiManager::BuildUI() {
 	{
 		const bool wanted = TheSettingManager->GetSettingI("Main.Main.Quality", "MaxQuality") != 0;
 		ImGui::SameLine();
-		ImGui::PushStyleColor(ImGuiCol_Button, wanted
-			? ImVec4(0.60f, 0.12f, 0.12f, 1.0f)
-			: ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
-		if (ImGui::Button(wanted ? "MAX QUALITY ON" : "MAX QUALITY OFF")) {
-			TheSettingManager->SetSetting("Main.Main.Quality", "MaxQuality", !wanted);
+		bool maxOn = wanted;
+		if (wanted) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+		if (ImGui::Checkbox("Max Quality", &maxOn)) {
+			TheSettingManager->SetSetting("Main.Main.Quality", "MaxQuality", maxOn);
 			TheSettingManager->LoadSettings();
 		}
-		ImGui::PopStyleColor();
+		if (wanted) ImGui::PopStyleColor();
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Max Quality: for screenshots, not for playing.\n"
 				"Runs every reduced-resolution effect at full resolution, turns off every reduced-quality shortcut and\n"
@@ -3503,20 +3764,21 @@ void ImGuiManager::BuildUI() {
 		}
 	}
 
-	// Toolbar row 2: step size selector + text scale
 	{
-		ImGui::Text("Step:");
-		static const float kSteps[]  = { 0.001f, 0.01f, 0.1f, 1.0f };
-		static const char* kLabels[] = { "0.001", "0.01", "0.1", "1.0" };
-		for (int i = 0; i < 4; i++) {
-			ImGui::SameLine();
-			bool active = fabsf(s_shaderStepSize - kSteps[i]) < 1e-6f;
-			if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
-			if (ImGui::SmallButton(kLabels[i])) s_shaderStepSize = kSteps[i];
-			if (active) ImGui::PopStyleColor();
+		if (DevOptionsShown()) {
+			ImGui::Text("Step:");
+			static const float kSteps[]  = { 0.001f, 0.01f, 0.1f, 1.0f };
+			static const char* kLabels[] = { "0.001", "0.01", "0.1", "1.0" };
+			for (int i = 0; i < 4; i++) {
+				ImGui::SameLine();
+				bool active = fabsf(s_shaderStepSize - kSteps[i]) < 1e-6f;
+				if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+				if (ImGui::SmallButton(kLabels[i])) s_shaderStepSize = kSteps[i];
+				if (active) ImGui::PopStyleColor();
+			}
+			ImGui::SameLine(0.0f, 20.0f);
 		}
 		ImGuiIO& io = ImGui::GetIO();
-		ImGui::SameLine(0.0f, 20.0f);
 		ImGui::Text("Text:");
 		ImGui::SameLine();
 		if (ImGui::SmallButton("A-")) {
@@ -3552,8 +3814,10 @@ void ImGuiManager::BuildUI() {
 			}
 			if (active) ImGui::PopStyleColor();
 		}
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Retro-Encab.")) s_cfabOpen = !s_cfabOpen;
+		if (DevOptionsShown()) {
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Retro-Encab.")) s_cfabOpen = !s_cfabOpen;
+		}
 		if (s_cfabActive) {
 			ImGui::SameLine();
 			ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.7f, 1.0f), "[active]");
@@ -3567,6 +3831,8 @@ void ImGuiManager::BuildUI() {
 		if (ImGui::SmallButton("Presets")) s_presetManagerOpen = !s_presetManagerOpen;
 		ImGui::SameLine();
 		if (ImGui::SmallButton("Lighting")) s_lightingPanelOpen = !s_lightingPanelOpen;
+		ImGui::SameLine(0.0f, 20.0f);
+		DevOptionsCheckbox();
 		if (s_devFreecamOn) {
 			ImGui::SameLine();
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.1f, 1.0f), "[freecam]");
@@ -3576,14 +3842,38 @@ void ImGuiManager::BuildUI() {
 	ImGui::Separator();
 
 	// Two-panel layout
-	float sidebarW = 260.0f;
+	const float kSidebarDefault = 260.0f, kSidebarMin = 120.0f, kSplitW = 8.0f;
+	if (s_sidebarW <= 0.0f) {
+		int w = TheSettingManager->GetSettingI("Main.Menu.Style", "SidebarWidth");
+		s_sidebarW = w > 0 ? (float)w : kSidebarDefault;
+	}
+	const float sidebarMax = ImMax(kSidebarMin, ImGui::GetContentRegionAvail().x - kSplitW - 200.0f);
+	s_sidebarW = ImClamp(s_sidebarW, kSidebarMin, sidebarMax);
 	float contentH = ImGui::GetContentRegionAvail().y;
 
-	ImGui::BeginChild("##sidebar", ImVec2(sidebarW, contentH), true);
+	ImGui::BeginChild("##sidebar", ImVec2(s_sidebarW, contentH), true);
 	RenderSidebar();
 	ImGui::EndChild();
 
-	ImGui::SameLine();
+	ImGui::SameLine(0.0f, 0.0f);
+	ImGui::InvisibleButton("##sidebarSplit", ImVec2(kSplitW, contentH));
+	{
+		const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+		if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+		if (active) s_sidebarW = ImClamp(s_sidebarW + ImGui::GetIO().MouseDelta.x, kSidebarMin, sidebarMax);
+		if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) s_sidebarW = kSidebarDefault;
+		if (ImGui::IsItemDeactivated() || (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))) {
+			TheSettingManager->SetSetting("Main.Menu.Style", "SidebarWidth", (int)(s_sidebarW + 0.5f));
+			TheSettingManager->LoadSettings();
+		}
+		if (hovered || active) {
+			const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+			const float x = (a.x + b.x) * 0.5f;
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(x, a.y), ImVec2(x, b.y),
+				ImGui::GetColorU32(active ? ImGuiCol_SeparatorActive : ImGuiCol_SeparatorHovered), 2.0f);
+		}
+	}
+	ImGui::SameLine(0.0f, 0.0f);
 
 	ImGui::BeginChild("##content", ImVec2(0.0f, contentH), true);
 	RenderContent();

@@ -15,6 +15,7 @@ float4 TESR_SunPosition: register(c13);
 float4 TESR_SunsetColor: register(c14); // sunsetColor.w is sky strength multiplier
 float4 TESR_HDRBloomData: register(c15);
 float4 TESR_SunDiskColor: register(c16);
+float4 TESR_SkyTint: register(c19);
 #ifndef PHYSICAL_SKY_ON
     #define PHYSICAL_SKY_ON 0
 #endif
@@ -80,6 +81,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         skyColor = lerp(skyColor, lerp(phys, luma(phys) * weatherHue, TESR_PhysSky.z), TESR_PhysSky.x);
     }
 #endif
+    skyColor *= TESR_SkyTint.rgb;
 
     OUT.color_0 = delinearize(float4(skyColor * TESR_SunsetColor.w, 1)) ; // multiply sky strength for HDR
 

@@ -55,6 +55,7 @@ public:
 	float				interiorBounceShare = 1.0f;
 	bool				noEdgeOutline = true;
 	int					normalSmoothing = 36;
+	float				normalSmoothingWorld = 0.0f;
 	float				horizonBias = 0.0f;
 	CachedHandle		paramEdges, techSmooth;
 	bool				prepared = false;

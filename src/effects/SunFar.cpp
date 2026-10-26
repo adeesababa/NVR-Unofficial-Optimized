@@ -1,4 +1,5 @@
 #include "SunFar.h"
+#include "../core/LandLight.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,13 +21,14 @@ void SunFarEffect::UpdateSettings() {
 	Settings.CloudHeight = std::clamp(TheSettingManager->GetSettingF(CloudShadowsSection, "Height"), 1000.0f, 1000000.0f);
 	Settings.CloudTile = std::clamp(TheSettingManager->GetSettingF(CloudShadowsSection, "TileSize"), 1000.0f, 10000000.0f);
 	Settings.CloudSpeed = std::clamp(TheSettingManager->GetSettingF(CloudShadowsSection, "Speed"), 0.0f, 20.0f);
-	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(CloudShadowsSection, "DebugView"), 0, 3);
+	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(CloudShadowsSection, "DebugView"), 0, 4);
 	Settings.WaterFade = TheSettingManager->GetSettingI(CloudShadowsSection, "WaterShadows") != 0;
 	Settings.WaterDeepShare = std::clamp(TheSettingManager->GetSettingF(CloudShadowsSection, "WaterDeepShare"), 0.0f, 1.0f);
 	Settings.TargetFix = TheSettingManager->GetSettingI(CloudShadowsSection, "TargetFix") != 0;
 	Settings.HazardLog = TheSettingManager->GetSettingI(CloudShadowsSection, "HazardLog");
 	Settings.FlickerWatch = TheSettingManager->GetSettingI(CloudShadowsSection, "FlickerWatch");
 	Settings.FlickerThreshold = std::clamp(TheSettingManager->GetSettingF(CloudShadowsSection, "FlickerThreshold"), 0.01f, 0.5f);
+	Settings.OldSunModel = TheSettingManager->GetSettingI(CloudShadowsSection, "OldSunModel") != 0;
 }
 
 void SunFarEffect::RegisterConstants() {
@@ -38,6 +40,7 @@ void SunFarEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SunFarApply", &Constants.Apply);
 	TheShaderManager->RegisterConstant("TESR_SunFarVolume", &Constants.Volume);
 	TheShaderManager->RegisterConstant("TESR_SunFarWater", &Constants.Water);
+	TheShaderManager->RegisterConstant("TESR_SunFarLand", &Constants.Land);
 }
 
 void SunFarEffect::RegisterTextures() {
@@ -63,6 +66,9 @@ void SunFarEffect::UpdateConstants() {
 	Constants.Data.y = (float)(std::max)(Settings.DebugView, shadowsFx ? shadowsFx->TerrainShadows.Settings.DebugView : 0);
 	Constants.Data.x = 0.0f;
 	Constants.Water = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	LandLight::Now++;
+	Constants.Land = LandLight::Frame && LandLight::Now - LandLight::Frame < 30 ?
+		D3DXVECTOR4(LandLight::Dir[0], LandLight::Dir[1], LandLight::Dir[2], 1.0f) : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	cloudsReady = false;
 	for (int i = 0; i < 4; i++) layerTextures[i] = blendTextures[i] = nullptr;
 	Constants.CloudWeight = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -206,7 +212,7 @@ void SunFarEffect::BeforeDraw(IDirect3DDevice9* Device) {
 	hazard.lastStates = text;
 }
 
-void SunFarEffect::RenderFactor(IDirect3DDevice9* Device) {
+void SunFarEffect::RenderFactor(IDirect3DDevice9* Device, IDirect3DSurface9* Scene) {
 	Constants.Apply.x = 0.0f;
 	VolumetricCloudsEffect* volumetric = TheShaderManager->Effects.VolumetricClouds;
 	if (volumetric) volumetric->shadowsViaSunFar = false;
@@ -222,8 +228,12 @@ void SunFarEffect::RenderFactor(IDirect3DDevice9* Device) {
 		volumetric->RenderShadowMap(Device);
 		SetPassTexture(13, volumetric->Textures.ShadowTexture);
 	}
+	IDirect3DTexture9* sceneTexture = nullptr;
+	if (Scene && FAILED(Scene->GetContainer(IID_IDirect3DTexture9, (void**)&sceneTexture))) sceneTexture = nullptr;
+	if (sceneTexture) SetPassTexture(15, sceneTexture);
 	IDirect3DTexture9* waterDepth = Settings.WaterFade || Settings.DebugView == 3 ? WaterDepthMap() : nullptr;
 	Constants.Water = waterDepth ? D3DXVECTOR4(Settings.WaterFade ? 1.0f : 0.0f, Settings.WaterDeepShare, 1.0f, 0.0f) : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	Constants.Water.w = Settings.OldSunModel || !sceneTexture ? 1.0f : 0.0f;
 	if (waterDepth) SetPassTexture(14, waterDepth);
 	if (Settings.HazardLog) {
 		hazard.frames++;
@@ -265,6 +275,7 @@ void SunFarEffect::RenderFactor(IDirect3DDevice9* Device) {
 	if (Settings.TargetFix)
 		for (int i = 0; i < 7; i++) Device->SetRenderState(fixStates[i], savedStates[i]);
 	ClearPassTextures();
+	if (sceneTexture) sceneTexture->Release();
 	Constants.Apply.x = 1.0f;
 	if (volume) volumetric->shadowsViaSunFar = true;
 	static int waterReported = -1;

@@ -129,6 +129,7 @@ public:
 		float				CharacterMapBias = 0.15f;
 		bool				CharacterMapOthers = false;
 		bool				CharacterMapLog = false;
+		int					CharacterMapDebug = 0;
 	};
 
 	struct OrthoStruct {
@@ -204,6 +205,7 @@ public:
 			bool EvenTaps;
 			float MagnifiedSoftness;
 			bool TexelFilter;
+			bool AutoNormalOffset;
 		} Forward;
 	};
 

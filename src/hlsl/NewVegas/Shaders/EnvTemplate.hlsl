@@ -131,6 +131,7 @@ float4 main(PS_INPUT IN) : COLOR0 {
     #endif
     float metalFade = TESR_PBRExtraData.w > 0.0f ? 1.0f - smoothstep(0.6f * TESR_PBRExtraData.w, TESR_PBRExtraData.w, IN.fog.y) : 1.0f;
     color *= lerp(1.0f, TESR_PBREnv.z, saturate(TESR_PBRMetal.x) * metalFade);
+    color *= 1.0f + TESR_PBREnv.w;
     return float4(color * IN.fog.x, 1.0f);
 }
 

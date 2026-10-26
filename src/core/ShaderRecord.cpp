@@ -6,6 +6,7 @@
 #include "GpuProfiler.h"
 #include "LinearPreDecode.h"
 #include "ReflMaterial.h"
+#include "LandLight.h"
 ShaderProgram::ShaderProgram() {
 
 	FloatShaderValues = NULL;
@@ -172,6 +173,7 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("FOLD_HIGHLIGHTS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "FoldHighlights") ? "1" : "0");
 	AppendDefine("LAMP_VECTOR_ATT_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampDistanceFix") ? "1" : "0");
 	AppendDefine("LAMP_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? "1" : "0");
+	AppendDefine("HIGHLIGHT_SUMS_ON", TheSettingManager->GetSettingI("Shaders.PBR.Main", "HighlightSums") ? "1" : "0");
 	AppendDefine("LIN_PREDECODE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "PreDecode") ? "1" : "0");
 	if (PBRShaders::LampFalloffCompiledIn())
 		AppendDefine("LAMP_FALLOFF_ON", PBRShaders::LampFalloffShapeIn() ? "2" : "1");
@@ -237,6 +239,7 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 		AppendDefine("SHADOW_CHARACTER_OBJECTS", "1");
 	if (TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap"))
 		AppendDefine("CHARACTER_SHADOW_MAP", "1");
+	AppendDefine("OBJECT_SMOOTH_NORMALS", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmoothObjectNormals") ? "1" : "0");
 
 }
 
@@ -451,13 +454,18 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 	//Logger::Log("CreateCT: Shader %s has %i constants", Name, ConstantTableDesc.Constants);
 	//Logger::Log("%s", (const char*)ShaderSource->GetBufferPointer());
 
+	bool sunDir18 = false, terrainSky = false;
 	for (UINT c = 0; c < ConstantTableDesc.Constants; c++) {
 		Handle = ConstantTable->GetConstant(NULL, c);
 		ConstantTable->GetConstantDesc(Handle, &ConstantDesc, &ConstantCount);
+		if (!strcmp(ConstantDesc.Name, "SunDir") && ConstantDesc.RegisterSet == D3DXRS_FLOAT4 && ConstantDesc.RegisterIndex == 18) sunDir18 = true;
+		if (!strcmp(ConstantDesc.Name, "TESR_TerrainSkyData")) terrainSky = true;
 		if (memcmp(ConstantDesc.Name, "TESR_", 5)) continue; // Only treat constants named with TESR prefix
 		if (ConstantDesc.RegisterSet == D3DXRS_FLOAT4) FloatShaderValuesCount += 1;
 		if (ConstantDesc.RegisterSet == D3DXRS_SAMPLER) TextureShaderValuesCount += 1;
 	}
+
+	IsLandLight = sunDir18 && terrainSky && Name && strstr(Name, ".pso");
 
 	auto timer = TimeLogger();
 	if (FloatShaderValuesCount) FloatShaderValues = new ShaderFloatValue[FloatShaderValuesCount];
@@ -615,6 +623,8 @@ void ShaderRecord::SetCT() {
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 	}
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	if (LandLight::Pending) LandLight::Read();
+	if (IsLandLight) LandLight::Pending = true;
 
 	// reset samplers
 	if (ClearSamplers) {

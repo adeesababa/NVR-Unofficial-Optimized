@@ -25,6 +25,11 @@ namespace PassSums {
 	inline int LastMode = 0;
 	constexpr int kIncrements = 4;
 	constexpr DWORD kRunStartStage = 9;
+	constexpr int kHighlightIncrements = 8;
+	constexpr DWORD kHighlightStartStage = 6;
+	inline DWORD IncStage = kRunStartStage;
+	inline bool HighlightSumsChecked = false, HighlightSumsCompiled = false;
+	inline UInt32 IncHlFrames = 0, IncHlCopies = 0, IncHlPasses = 0, IncHlLeft = 0;
 	inline IDirect3DTexture9* IncTex = nullptr;  inline IDirect3DSurface9* IncSurf = nullptr;
 	inline D3DSURFACE_DESC IncMade = {};
 	inline bool RunIsIncrements = false;
@@ -160,13 +165,13 @@ namespace PassSums {
 	}
 
 	inline void BindRunStart() {
-		TheRenderManager->renderState->SetTexture(kRunStartStage, IncTex);
-		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
-		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-		TheRenderManager->SetSamplerState(kRunStartStage, D3DSAMP_SRGBTEXTURE, FALSE);
+		TheRenderManager->renderState->SetTexture(IncStage, IncTex);
+		TheRenderManager->SetSamplerState(IncStage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+		TheRenderManager->SetSamplerState(IncStage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+		TheRenderManager->SetSamplerState(IncStage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+		TheRenderManager->SetSamplerState(IncStage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		TheRenderManager->SetSamplerState(IncStage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+		TheRenderManager->SetSamplerState(IncStage, D3DSAMP_SRGBTEXTURE, FALSE);
 	}
 
 	inline void BeginIncrements(IDirect3DDevice9* device, Kind kind) {
@@ -175,6 +180,7 @@ namespace PassSums {
 		RunPasses = 0;
 		RunIsIncrements = true;
 		IncLive = false;
+		IncStage = kind == Highlights ? kHighlightStartStage : kRunStartStage;
 		IDirect3DSurface9* target = nullptr;
 		if (FAILED(device->GetRenderTarget(0, &target)) || !target) { IncFailed++; return; }
 		D3DSURFACE_DESC d = {};
@@ -192,18 +198,19 @@ namespace PassSums {
 		Redirect = D3DXVECTOR4(0.0f, 1.0f, 1.0f / (float)d.Width, 1.0f / (float)d.Height);
 		device->SetPixelShaderConstantF(210, (const float*)&Redirect, 1);
 		IncLive = true;
-		IncCopies++;
+		if (kind == Highlights) IncHlCopies++; else IncCopies++;
 	}
 
 	inline void EndIncrements(IDirect3DDevice9* device) {
+		const Kind kind = Active;
 		Active = None;
 		RunIsIncrements = false;
 		if (!IncLive) return;
 		IncLive = false;
-		IncPasses += RunPasses;
+		if (kind == Highlights) IncHlPasses += RunPasses; else IncPasses += RunPasses;
 		Redirect = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 		device->SetPixelShaderConstantF(210, (const float*)&Redirect, 1);
-		TheRenderManager->renderState->SetTexture(kRunStartStage, nullptr);
+		TheRenderManager->renderState->SetTexture(IncStage, nullptr);
 	}
 
 	inline void End(IDirect3DDevice9* device) {
@@ -240,15 +247,21 @@ namespace PassSums {
 		if (mode != LastMode) { LastMode = mode; LogFrames = 3; } else if (LogFrames > 0) LogFrames--;
 		Mode = Failed ? 0 : mode;
 		Runs[0] = Runs[1] = Runs[2] = 0;
-		const bool foldIn = (Mode & Highlights) || ((Mode & Lamps) && !(Mode & kIncrements));
+		const bool foldIn = ((Mode & Highlights) && !(Mode & kHighlightIncrements)) || ((Mode & Lamps) && !(Mode & kIncrements));
 		if (foldIn && ++Frames >= 600) { Logger::Log("ExactPassSums (mode %d): %.2f fold-ins per frame", Mode, Composes / (float)Frames); Frames = Composes = 0; }
 		if ((Mode & kIncrements) && (Mode & Lamps) && ++IncFrames >= 600) {
 			Logger::Log("UNOFFICIAL LampSums: per frame %.2f lamp runs copied (%.1f extra lamp passes each), %.2f extra lamp passes left as before (a third run), "
 				"%.2f copies failed", IncCopies / (float)IncFrames, IncCopies ? IncPasses / (float)IncCopies : 0.0f, IncLeft / (float)IncFrames, IncFailed / (float)IncFrames);
 			IncFrames = IncCopies = IncPasses = IncLeft = IncFailed = 0;
 		}
+		if ((Mode & kHighlightIncrements) && (Mode & Highlights) && ++IncHlFrames >= 600) {
+			Logger::Log("UNOFFICIAL HighlightSums: per frame %.2f highlight runs copied (%.1f highlight passes each), %.2f highlight passes left as before (a third run)",
+				IncHlCopies / (float)IncHlFrames, IncHlCopies ? IncHlPasses / (float)IncHlCopies : 0.0f, IncHlLeft / (float)IncHlFrames);
+			IncHlFrames = IncHlCopies = IncHlPasses = IncHlLeft = 0;
+		}
 		if (!foldIn && AccTex) Release();
-		if (!((Mode & kIncrements) && (Mode & Lamps)) && IncTex) ReleaseIncrements();
+		const bool anyIncrements = ((Mode & kIncrements) && (Mode & Lamps)) || ((Mode & kHighlightIncrements) && (Mode & Highlights));
+		if (!anyIncrements && IncTex) ReleaseIncrements();
 	}
 
 	inline int ModeFromSettings() {
@@ -258,9 +271,19 @@ namespace PassSums {
 			Logger::Log("UNOFFICIAL LampSums: %s", LampSumsCompiled ? "compiled in (the extra lamp passes add their light in linear light)" :
 				"off (not compiled into the shaders)");
 		}
+		if (!HighlightSumsChecked) {
+			HighlightSumsChecked = true;
+			HighlightSumsCompiled = TheSettingManager->GetSettingI("Shaders.PBR.Main", "HighlightSums") != 0 && TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") != 0;
+			Logger::Log("UNOFFICIAL HighlightSums: %s", HighlightSumsCompiled ? "compiled in (the highlight passes FoldHighlights leaves to the game add their light in linear light)" :
+				"off (not compiled into the shaders)");
+		}
 		const int exact = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums");
-		if (exact) return exact;
-		return LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums") ? (kIncrements | Lamps) : 0;
+		int mode = 0;
+		if (LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums")) mode |= kIncrements | Lamps;
+		if (HighlightSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "HighlightSums")) mode |= kHighlightIncrements | Highlights;
+		if (exact & Lamps) mode = (mode & ~(kIncrements | Lamps)) | Lamps;
+		if (exact & Highlights) mode = (mode & ~(kHighlightIncrements | Highlights)) | Highlights;
+		return mode;
 	}
 
 	inline void BeforePass(const void* pass, bool world, IDirect3DDevice9* device) {
@@ -270,20 +293,22 @@ namespace PassSums {
 		const Kind k = KindOf(e);
 		if (k == Active) {
 			RunPasses++; RunLast = e;
-			if (IncLive) TheRenderManager->renderState->SetTexture(kRunStartStage, IncTex);
+			if (IncLive) TheRenderManager->renderState->SetTexture(IncStage, IncTex);
 			return;
 		}
 		if (Active) {
 			if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d (%s), %u passes (%03X..%03X), ended by pass %03X", (int)Active,
-				RunIsIncrements ? "LampSums" : "fold-in", RunPasses, RunFirst, RunLast, e);
+				RunIsIncrements ? (Active == Highlights ? "HighlightSums" : "LampSums") : "fold-in", RunPasses, RunFirst, RunLast, e);
 			End(device);
 		}
 		if (k != None && (Mode & k) && Runs[k] >= 2) {
 			if (LogFrames > 0) Logger::Log("ExactPassSums: pass %03X of kind %d NOT redirected (third run this frame)", e, (int)k);
 			if (k == Lamps && (Mode & kIncrements)) IncLeft++;
+			else if (k == Highlights && (Mode & kHighlightIncrements)) IncHlLeft++;
 		}
 		if (k != None && (Mode & k) && Runs[k] < 2) {
-			if (k == Lamps && (Mode & kIncrements)) BeginIncrements(device, k); else Begin(device, k);
+			const bool increments = (k == Lamps && (Mode & kIncrements)) || (k == Highlights && (Mode & kHighlightIncrements));
+			if (increments) BeginIncrements(device, k); else Begin(device, k);
 			RunPasses = 1; RunFirst = RunLast = e;
 		}
 	}
@@ -291,7 +316,7 @@ namespace PassSums {
 	inline void EndWorld(IDirect3DDevice9* device) {
 		if (!Active || !device) return;
 		if (LogFrames > 0) Logger::Log("ExactPassSums run: kind %d (%s), %u passes (%03X..%03X), ended by the world's end", (int)Active,
-			RunIsIncrements ? "LampSums" : "fold-in", RunPasses, RunFirst, RunLast);
+			RunIsIncrements ? (Active == Highlights ? "HighlightSums" : "LampSums") : "fold-in", RunPasses, RunFirst, RunLast);
 		End(device);
 	}
 }

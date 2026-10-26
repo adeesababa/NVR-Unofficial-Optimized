@@ -31,6 +31,7 @@ public:
 		bool	SoftEdges;
 		bool	FineShelter;
 		bool	ThroughBlended;
+		bool	CharactersKeepDepth;
 		bool	ForceStorm;
 		bool	FastPath;
 		float	FixedTime;

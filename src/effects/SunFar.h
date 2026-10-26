@@ -19,6 +19,7 @@ public:
 		int		HazardLog;
 		int		FlickerWatch;
 		float	FlickerThreshold;
+		bool	OldSunModel;
 	};
 	SettingsStruct	Settings = {};
 
@@ -29,6 +30,7 @@ public:
 		D3DXVECTOR4	CloudWeight;
 		D3DXVECTOR4	CloudBlend;
 		D3DXVECTOR4	Apply;
+		D3DXVECTOR4	Land;
 		D3DXVECTOR4	Water;
 		D3DXVECTOR4	Volume;
 	};
@@ -43,7 +45,7 @@ public:
 	void	UpdateConstants();
 	bool	ShouldRender();
 	void	BeforeDraw(IDirect3DDevice9* Device);
-	void	RenderFactor(IDirect3DDevice9* Device);
+	void	RenderFactor(IDirect3DDevice9* Device, IDirect3DSurface9* Scene);
 	IDirect3DTexture9*	FactorTexture() const { return Constants.Apply.x > 0.5f ? Texture : nullptr; }
 
 private:

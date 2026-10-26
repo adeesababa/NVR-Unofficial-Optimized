@@ -349,7 +349,7 @@ float3 SkyAmbientElevation(float z) {
     #if SKYLIGHTING_MODE == 1
         return SkyAmbientRadiance(float3(sqrt(saturate(1.0f - z * z)), 0.0f, z), TESR_PBRExtraData.z);
     #else
-        float3 irradiance = TESR_SkyIrradiance[0].rgb + TESR_SkyIrradiance[2].rgb * z + TESR_SkyIrradiance[6].rgb * (3.0f * z * z - 1.0f);
+        float3 irradiance = TESR_SkyIrradianceObjects[0].rgb + TESR_SkyIrradianceObjects[2].rgb * z + TESR_SkyIrradianceObjects[6].rgb * (3.0f * z * z - 1.0f);
         return sqrt(max(irradiance, 0.0f));
     #endif
 }

@@ -25,6 +25,7 @@ float4 TESR_WetWorldData : register(c20);
 float4 TESR_PlacedWaterShorelineParams : register(c21);
 float4 TESR_WaterLODColor : register(c22);
 float4 TESR_DebugVar : register(c23);
+float4 TESR_SunAmount : register(c24);
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
@@ -54,7 +55,8 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float distance = length(eyeVector.xy);              // surface distance to eye
     float depth = length(eyeVector);                    // depth distance to eye
 
-	float sunLuma = luma(linSunColor);
+	float isDayTime = smoothstep(0, 0.5, TESR_SunAmount.x);
+	float sunLuma = luma(linSunColor) * isDayTime;
 	float placedWaterRefractionModifier = TESR_PlacedWaterSettings.w;		// reduce refraction because of the way placed depth is encoded
 	float placedWaterDepthModifier = 0.2;			// reduce depth value for fog because of the way placed depth is encoded
 
@@ -75,10 +77,12 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     refractionPos.y = refractionPos.w - reflectionPos.y;
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * placedWaterDepthModifier;
 
-    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 refraction = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 color = refraction;
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, color);
-    color = getTurbidityFog(refractedDepth, ShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
+    color = getTurbidityFog(refractedDepth, linShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linShallowColor, color);
+    color = lerp(refraction, color, depthFog);
     color = getFresnel(surfaceNormal, eyeDirection, linHorizonColor, TESR_PlacedWaveParams.w, color);
     color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);
 
@@ -88,6 +92,6 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float fogStrength = pow(1 - saturate((FogParam.x - depth) / FogParam.y), FresnelRI.y);
     
     OUT.color_0.rgb = fogStrength * (FogColor.rgb - color.rgb) + color.rgb;
-    OUT.color_0.a = 1;
+    OUT.color_0.a = alpha;
     return OUT;
 };

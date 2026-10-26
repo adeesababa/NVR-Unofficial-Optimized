@@ -110,6 +110,19 @@
 #if defined(PS) && LINEAR_LIGHTING_ON
     #define LINEAR_LIGHTING
 #endif
+#ifndef LAMP_SUMS_ON
+    #define LAMP_SUMS_ON 0
+#endif
+#ifndef HIGHLIGHT_SUMS_ON
+    #define HIGHLIGHT_SUMS_ON 0
+#endif
+#if defined(PS) && defined(DIFFUSE) && LAMP_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s9);
+#elif defined(PS) && defined(ONLY_SPECULAR) && HIGHLIGHT_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s6);
+#endif
 #ifndef RMAOS_ON
     #define RMAOS_ON 0
 #endif
@@ -118,6 +131,9 @@
 #endif
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON
+#endif
+#if defined(PS) && defined(SPECULAR) && defined(SPEC_FADE_ON) && SPEC_FADE_ON
+    #define PBR_SPEC_FADE
 #endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
@@ -282,6 +298,9 @@ VS_OUTPUT main(VS_INPUT IN)
 
 struct PS_INPUT
 {
+#ifdef NVR_LAMP_SUMS
+    float2 vpos : VPOS;
+#endif
 #ifndef NO_VERTEX_COLOR
     float3 vertexColor : COLOR0;
 #endif
@@ -555,7 +574,17 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
     #endif
     
-    lighting.rgb = LinEncode(lighting.rgb);
+    float3 finalColor = LinEncode(lighting.rgb);
+    #if defined(ONLY_LIGHT)
+        [flatten] if (TESR_PassRedirect.x > 0.5f) finalColor = max(lighting.rgb, 0.0f);
+    #endif
+    #ifdef NVR_LAMP_SUMS
+        [branch] if (TESR_PassRedirect.y > 0.5f) {
+            const float3 runStart = max(tex2Dlod(NVR_LampRunStart, float4((IN.vpos + 0.5f) * TESR_PassRedirect.zw, 0.0f, 0.0f)).rgb, 0.0f);
+            finalColor = LinEncode(LinColor(runStart) + max(lighting.rgb, 0.0f)) - runStart;
+        }
+    #endif
+    lighting.rgb = finalColor;
     lighting.rgb = RmaosDebug(lighting.rgb, baseColor.rgb);
 
     // Fog.

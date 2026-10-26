@@ -7,7 +7,7 @@ float4 TESR_PBRData;
 float4 TESR_PBRExtraData;
 float4 TESR_TerrainData;
 float4 TESR_TerrainSkyData;
-float4 TESR_SkyIrradiance[9];
+float4 TESR_SkyIrradianceObjects[9];
 float4 TESR_TerrainShadowData;
 float4 TESR_TerrainShadowRange;
 float4 TESR_TerrainShadowParams;
@@ -18,6 +18,9 @@ float4 TESR_SunFarCloudWeight;
 float4 TESR_SunFarCloudBlend;
 float4 TESR_SunFarVolume;
 float4 TESR_SunDirection;
+float4 TESR_FogData;
+float4 TESR_FogColor;
+float4 TESR_SunFarLand;
 float4 TESR_SunFarWater;
 
 sampler2D TESR_DepthBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -35,6 +38,7 @@ sampler2D NVR_CloudBlend2 : register(s11) = sampler_state { ADDRESSU = WRAP; ADD
 sampler2D NVR_CloudBlend3 : register(s12) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D NVR_VolumeCloudShadow : register(s13) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D NVR_WaterDepth : register(s14) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+sampler2D NVR_Scene : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 struct VSOUT { float4 vertPos : POSITION; float2 UVCoord : TEXCOORD0; };
 struct VSIN { float4 vertPos : POSITION0; float2 UVCoord : TEXCOORD0; };
@@ -68,15 +72,15 @@ float3 LightColor(float3 c) { return pow(max(c, 1e-6f), TESR_SunFarData.z); }
 float LightScale(float s) { return pow(max(s, 1e-6f), TESR_SunFarData.z); }
 
 float3 SkyIrradiance(float3 n) {
-	float3 irradiance = TESR_SkyIrradiance[0].rgb
-		+ TESR_SkyIrradiance[1].rgb * n.y
-		+ TESR_SkyIrradiance[2].rgb * n.z
-		+ TESR_SkyIrradiance[3].rgb * n.x
-		+ TESR_SkyIrradiance[4].rgb * (n.x * n.y)
-		+ TESR_SkyIrradiance[5].rgb * (n.y * n.z)
-		+ TESR_SkyIrradiance[6].rgb * (3.0f * n.z * n.z - 1.0f)
-		+ TESR_SkyIrradiance[7].rgb * (n.x * n.z)
-		+ TESR_SkyIrradiance[8].rgb * (n.x * n.x - n.y * n.y);
+	float3 irradiance = TESR_SkyIrradianceObjects[0].rgb
+		+ TESR_SkyIrradianceObjects[1].rgb * n.y
+		+ TESR_SkyIrradianceObjects[2].rgb * n.z
+		+ TESR_SkyIrradianceObjects[3].rgb * n.x
+		+ TESR_SkyIrradianceObjects[4].rgb * (n.x * n.y)
+		+ TESR_SkyIrradianceObjects[5].rgb * (n.y * n.z)
+		+ TESR_SkyIrradianceObjects[6].rgb * (3.0f * n.z * n.z - 1.0f)
+		+ TESR_SkyIrradianceObjects[7].rgb * (n.x * n.z)
+		+ TESR_SkyIrradianceObjects[8].rgb * (n.x * n.x - n.y * n.y);
 	return sqrt(max(irradiance, 0.0f));
 }
 
@@ -157,9 +161,10 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float terrain = TerrainShadow(world);
 	float cloud = CloudShadow(rel) * VolumeCloudShadow(world);
 	float blocked = terrain * cloud;
+	blocked = TESR_SunFarData.y > 3.5f ? 0.0f : blocked;
 	float shade = (1.0f - terrain) * TESR_TerrainShadowParams.z;
 
-	[branch] if (TESR_SunFarData.y > 0.5f) {
+	[branch] if (TESR_SunFarData.y > 0.5f && TESR_SunFarData.y < 3.5f) {
 		float3 tint = lerp(1.0f, float3(0.25f, 1.0f, 0.25f), (1.0f - terrain) * 0.8f) * lerp(1.0f, float3(0.35f, 0.5f, 1.0f), (1.0f - cloud) * 0.8f);
 		if (TESR_SunFarData.y > 1.5f) tint *= lerp(1.0f, float3(0.85f, 0.9f, 1.0f), TerrainShadowCoverage(world));
 		float water = TESR_SunFarWater.z * step(2.5f, TESR_SunFarData.y) * (OnWater(world, GetWorldNormalLod(uv), depth) ? 1.0f : 0.0f);
@@ -181,13 +186,18 @@ float4 SunFarPS(VSOUT IN) : COLOR0 {
 	float terrainWeight = (TESR_TerrainData.z + TESR_TerrainData.w > 0.0f) ? smoothstep(0.5f, 0.8f, normal.z) : 0.0f;
 	float3 scales = lerp(float3(TESR_PBRData.z, TESR_PBRData.w, TESR_PBRExtraData.y),
 	                     float3(TESR_TerrainData.z, TESR_TerrainData.w, TESR_TerrainSkyData.x), terrainWeight);
-	float NdotL = saturate(dot(normal, TESR_SmoothedSunDir.xyz));
+	float3 lightDir = TESR_SunFarWater.w > 0.5f ? TESR_SmoothedSunDir.xyz : normalize(TESR_SunDirection.xyz);
+	float3 landDir = TESR_SunFarLand.w > 0.5f && TESR_SunFarWater.w < 0.5f ? TESR_SunFarLand.xyz : lightDir;
+	float NdotL = lerp(saturate(dot(normal, lightDir)), saturate(dot(normal, landDir)), terrainWeight);
 	float3 sunLight = LightColor(TESR_ShadowSunLight.rgb) * (NdotL * LightScale(scales.x));
 	float3 ambientLight = LightColor(TESR_ShadowAmbientLight.rgb) * LightScale(scales.y) + LightColor(SkyIrradiance(normal)) * LightScale(scales.z);
 	float3 litNow = ambientLight + sunLight * cascade;
 	float3 factor = saturate((ambientLight * (1.0f - shade) + sunLight * (cascade * blocked)) / max(litNow, 0.0001f));
 	factor = keep < 1.0f ? lerp(1.0f, factor, keep) : factor;
 	factor = pow(max(factor, 1e-6f), TESR_SunFarData.w);
+	float fogAmount = pow(1.0f - saturate((TESR_FogData.y - length(rel)) / max(TESR_FogData.y - TESR_FogData.x, 1.0f)), max(TESR_FogData.w, 0.0001f));
+	float3 fogShare = saturate(fogAmount * TESR_FogColor.rgb / max(tex2Dlod(NVR_Scene, float4(uv, 0.0f, 0.0f)).rgb, 0.0001f));
+	factor = TESR_SunFarWater.w > 0.5f ? factor : factor + (1.0f - factor) * fogShare;
 	return float4(factor, blocked);
 }
 

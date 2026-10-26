@@ -349,7 +349,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 	return FindSection(&TomlConfig, &keys);
 }
 
-static const int UnofficialSettingsVersion = 68;
+static const int UnofficialSettingsVersion = 69;
 extern bool ParallaxLiteDistanceMigrationPending;
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -478,6 +478,13 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 			std::string(saved->at("RoughnessOverrides").as_string()).empty()) {
 			(*saved)["RoughnessOverrides"] = "nv_ultralux_centertiles:0.1, ul_marbleblack:0.12";
 			changed += changed.empty() ? "Shaders.Reflections.Main.RoughnessOverrides" : ", Shaders.Reflections.Main.RoughnessOverrides";
+		}
+	}
+	if (version < 69) {
+		tomlValue* saved = UserSection("Shaders.PBR.Main");
+		if (saved && saved->contains("LampSums") && saved->at("LampSums").is_boolean() && !saved->at("LampSums").as_boolean()) {
+			(*saved)["LampSums"] = true;
+			changed += changed.empty() ? "Shaders.PBR.Main.LampSums false -> true" : ", Shaders.PBR.Main.LampSums false -> true";
 		}
 	}
 	if (!changed.empty())
@@ -702,9 +709,11 @@ void SettingManager::LoadSettings() {
 	SettingsMain.Main.ReShadeDepthCompat = boolSetting(performance, "ReShadeDepthCompat", false);
 	SettingsMain.Main.ReShadeNVRDepth = boolSetting(performance, "ReShadeNVRDepth", true);
 	SettingsMain.Main.ReShadeBeforeHUD = boolSetting(performance, "ReShadeBeforeHUD", true);
+	SettingsMain.Main.ReShadeUnderNVRMenu = boolSetting(performance, "ReShadeUnderNVRMenu", true);
 	SettingsMain.Main.ReShadeDepthNearRemap = boolSetting(performance, "ReShadeDepthNearRemap", true);
 	SettingsMain.Main.ReShadeMenuGuard = boolSetting(performance, "ReShadeMenuGuard", false);
 	SettingsMain.Main.ReShadeMenuGuardVATS = boolSetting(performance, "ReShadeMenuGuardVATS", false);
+	SettingsMain.Main.ReShadeGameValues = boolSetting(performance, "ReShadeGameValues", true);
 	{
 		Configuration::ConfigNode node;
 		ReShadeIntegration::SetMenuGuardEffects(Config.FillNode(&node, performance, "ReShadeMenuGuardEffects") ? (node.LongValue.empty() ? node.Value : node.LongValue.c_str()) : "");

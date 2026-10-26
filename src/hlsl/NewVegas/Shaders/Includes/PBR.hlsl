@@ -26,6 +26,9 @@ float SpecularAA(float3 normal, float roughness) {
 
 float4 TESR_PBRMath : register(c223);
 
+float3 ReflectivityF0(float3 f0) { return saturate(f0 + f0 * TESR_PBRMath.y); }
+#define REFLECTIVITY_F90 saturate(1.0f + TESR_PBRMath.y).xxx
+
 #if defined(PBR_SPEC_FADE) || defined(NVR_FOLD)
 float4 NVR_SpecFade : register(c211);
 #endif
@@ -154,7 +157,7 @@ float3 PBRDiffuse(float metallicness, float roughness, float3 albedo, float3 nor
 }
 
 float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -166,7 +169,7 @@ float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 no
     const float NdotH = shades(normal, halfway);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
 
     float3 spec = BRDF(roughness, fresnel, NdotV, NdotL, NdotH);
 #ifdef PBR_SPEC_FADE
@@ -177,7 +180,7 @@ float3 PBRSpecular(float metallicness, float roughness, float3 albedo, float3 no
 }
 
 float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -189,7 +192,7 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
     const float NdotH = shades(normal, halfway);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
     
     float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
 
@@ -207,7 +210,7 @@ float3 PBR(float metallicness, float roughness, float3 albedo, float3 normal, fl
 #define SUN_RADIUS 0.00918043
 
 float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -230,7 +233,7 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
     const float NdotL = shades(normal, lightDir);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
 
     float3 spec = BRDF(roughness, fresnel, NdotV, NdotS, NdotH);
 #ifdef PBR_SPEC_FADE
@@ -241,7 +244,7 @@ float3 PBRSunSpecular(float metallicness, float roughness, float3 albedo, float3
 }
 
 float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal, float3 eyeDir, float3 lightDir, float3 lightColor) {
-    const float3 reflectance = lerp(float(0.04).rrr, albedo, metallicness);
+    const float3 reflectance = ReflectivityF0(lerp(float(0.04).rrr, albedo, metallicness));
     
     normal = normalize(normal);
     eyeDir = normalize(eyeDir);
@@ -264,7 +267,7 @@ float3 PBRSun(float metallicness, float roughness, float3 albedo, float3 normal,
     const float NdotL = shades(normal, lightDir);
     const float LdotH = shades(lightDir, halfway);
 
-    const float3 fresnel = Fresnel(reflectance, (1.0).xxx, LdotH);
+    const float3 fresnel = Fresnel(reflectance, REFLECTIVITY_F90, LdotH);
     
     float3 diffuse = (1 - metallicness) * LambertianDiffuse(albedo, fresnel) * PBRDiffuseKeep;
 

@@ -53,13 +53,14 @@ namespace SettingShots {
 	inline size_t WorldTaken = (size_t)-1;
 	inline bool StageCapture = false;
 	inline bool NoReload = false;
+	inline float TurnRate = 0.0f;
 	inline size_t StageTaken = (size_t)-1;
 	inline IDirect3DSurface9* WorldResolve = nullptr;
 	inline IDirect3DSurface9* WorldReadback = nullptr;
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
-		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false;
+		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false; TurnRate = 0.0f;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
 		std::ifstream in(RequestFile);
@@ -79,6 +80,7 @@ namespace SettingShots {
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
 			else if (command == "noreload") NoReload = true;
+			else if (command == "turn") { words >> TurnRate; TurnRate = std::clamp(TurnRate, -360.0f, 360.0f); }
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			else if (command == "menu" || command == "menutests") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a menu before the first 'shot'"; return false; }
@@ -98,6 +100,11 @@ namespace SettingShots {
 					return false;
 				}
 				Change c; c.console = true; c.value = rest.substr(start);
+				List.back().changes.push_back(c);
+			}
+			else if (command == "facemoon") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a facemoon before the first 'shot'"; return false; }
+				Change c; c.console = true; c.value = "facemoon";
 				List.back().changes.push_back(c);
 			}
 			else if (command == "wait") {
@@ -153,6 +160,23 @@ namespace SettingShots {
 				(unsigned long long)want, (unsigned long long)process, (unsigned long long)system, set ? "set" : "NOT set", threads, outside);
 		}
 		for (const Change& c : s.changes) {
+			if (c.console && c.value == "facemoon") {
+				D3DXVECTOR3 d;
+				float distance, radius;
+				const char* why = "";
+				if (VolumetricCloudsEffect::MoonPlace(Tes ? Tes->sky : nullptr, d, distance, radius, &why)) {
+					float yaw = D3DXToDegree(atan2f(d.x, d.y));
+					if (yaw < 0.0f) yaw += 360.0f;
+					const float pitch = -D3DXToDegree(asinf(d.z));
+					char line[64];
+					sprintf_s(line, "player.setangle z %.2f", yaw); Commands.push_back(line);
+					sprintf_s(line, "player.setangle x %.2f", pitch); Commands.push_back(line);
+					Moves = true;
+					Logger::Log("SETTING SHOTS %s: shot '%s': facemoon: yaw %.1f pitch %.1f", Run, s.slug.c_str(), yaw, pitch);
+				}
+				else Logger::Log("SETTING SHOTS %s: shot '%s': facemoon: %s", Run, s.slug.c_str(), why);
+				continue;
+			}
 			if (c.console) { Commands.push_back(c.value); Moves = true; continue; }
 			if (c.coverage) {
 				if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) clouds->TestSetCoverage((float)atof(c.value.c_str()));
@@ -291,6 +315,18 @@ namespace SettingShots {
 	inline void MainLoop() {
 		if (!MainLoopSeen) { MainLoopSeen = true; Logger::Log("SETTING SHOTS: console commands run on the game's main loop (between frames)"); }
 		if (Running) RunCommands();
+		static ULONGLONG lastTurn = 0;
+		static float turnAngle = 0.0f;
+		if (Running && TurnRate != 0.0f && g_ConsoleInterface && Player) {
+			const ULONGLONG now = GetTickCount64();
+			if (!lastTurn) turnAngle = D3DXToDegree(Player->rot.z);
+			else turnAngle = fmodf(turnAngle + TurnRate * (float)min(now - lastTurn, 100ULL) / 1000.0f, 360.0f);
+			lastTurn = now;
+			char line[64];
+			sprintf_s(line, "player.setangle z %.3f", turnAngle < 0.0f ? turnAngle + 360.0f : turnAngle);
+			g_ConsoleInterface->RunScriptLine(line, nullptr);
+		}
+		else lastTurn = 0;
 	}
 
 	inline void BeginFrame() {

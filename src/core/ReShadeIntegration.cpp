@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include "TestTools.h"
+#include "ImGuiManager.h"
 #if NVR_TEST_TOOLS
 #include "SettingShots.h"
 #endif
@@ -38,6 +39,7 @@ namespace {
 	bool ReportedOther = false;
 	UInt32 PresentCount = 0;
 	UInt32 DepthCopiedAt = ~0u;
+	UInt32 EffectsDrawnAt = ~0u;
 	bool DepthBound = false;
 
 	IDirect3DTexture9* DepthTexture = nullptr;
@@ -79,6 +81,20 @@ namespace {
 		std::vector<effect_technique> paused;
 		bool reportedPause = false;
 	} Guard;
+
+	struct GameValueSnapshot {
+		float weather[4] = {};
+		int32_t worldspace = 0;
+		int32_t interior = 0;
+	};
+	std::mutex ValuesMutex;
+	GameValueSnapshot Values;
+	enum class ValueSource { ModLoaded, Weather, WorldspaceID, InteriorID };
+	struct ValueState {
+		bool dirty = true;
+		bool wasOn = false;
+		std::vector<std::pair<effect_uniform_variable, ValueSource>> variables;
+	} GameValues;
 
 	const char DepthCopyFX[] = R"(
 float4 Params;	// x near, y far, z 1 = the game's depth is reversed, w 1 = single-channel (linear) source
@@ -354,6 +370,66 @@ technique Copy {
 		Guard.paused.clear();
 	}
 
+	void SnapshotGameValues() {
+		GameValueSnapshot now;
+		if (Tes && Tes->sky) {
+			const Sky* sky = Tes->sky;
+			now.weather[0] = sky->firstWeather ? (float)(sky->firstWeather->refID & 0x00FFFFFF) : 0.0f;
+			now.weather[1] = sky->secondWeather ? (float)(sky->secondWeather->refID & 0x00FFFFFF) : 0.0f;
+			now.weather[2] = sky->weatherPercent;
+		}
+		now.weather[3] = TheShaderManager->ShaderConst.GameTime.y;
+		if (Player && Player->parentCell) {
+			TESObjectCELL* cell = Player->parentCell;
+			if (cell->IsInterior()) now.interior = (int32_t)(cell->refID & 0x00FFFFFF);
+			else if (cell->worldSpace) now.worldspace = (int32_t)(cell->worldSpace->refID & 0x00FFFFFF);
+		}
+		std::lock_guard<std::mutex> lock(ValuesMutex);
+		Values = now;
+	}
+
+	void FindValueVariables(effect_runtime* runtime) {
+		GameValues.dirty = false;
+		GameValues.variables.clear();
+		runtime->enumerate_uniform_variables(nullptr, [](effect_runtime* runtime, effect_uniform_variable variable) {
+			char source[32] = {};
+			if (!runtime->get_annotation_string_from_uniform_variable(variable, "source", source)) return;
+			ValueSource kind;
+			if (!strcmp(source, "ModLoaded")) kind = ValueSource::ModLoaded;
+			else if (!strcmp(source, "Weather")) kind = ValueSource::Weather;
+			else if (!strcmp(source, "WorldspaceID")) kind = ValueSource::WorldspaceID;
+			else if (!strcmp(source, "InteriorID")) kind = ValueSource::InteriorID;
+			else return;
+			GameValues.variables.push_back({ variable, kind });
+		});
+		if (!GameValues.variables.empty())
+			Logger::Log("UNOFFICIAL ReShade: game values go to %u effect variables (ReShadeGameValues).", (unsigned)GameValues.variables.size());
+	}
+
+	void SetGameValues(effect_runtime* runtime) {
+		const bool on = TheSettingManager->SettingsMain.Main.ReShadeGameValues;
+		if (!on && !GameValues.wasOn) return;
+		if (GameValues.dirty) FindValueVariables(runtime);
+		GameValueSnapshot now;
+		{
+			std::lock_guard<std::mutex> lock(ValuesMutex);
+			now = Values;
+		}
+		for (const auto& [variable, kind] : GameValues.variables) {
+			if (!on) {
+				if (kind == ValueSource::ModLoaded) runtime->set_uniform_value_bool(variable, false);
+				continue;
+			}
+			switch (kind) {
+			case ValueSource::ModLoaded: runtime->set_uniform_value_bool(variable, true); break;
+			case ValueSource::Weather: runtime->set_uniform_value_float(variable, now.weather[0], now.weather[1], now.weather[2], now.weather[3]); break;
+			case ValueSource::WorldspaceID: runtime->set_uniform_value_int(variable, now.worldspace); break;
+			case ValueSource::InteriorID: runtime->set_uniform_value_int(variable, now.interior); break;
+			}
+		}
+		GameValues.wasOn = on;
+	}
+
 	void OnInitRuntime(effect_runtime* runtime) { TakeRuntime(runtime); }
 
 	void OnDestroyRuntime(effect_runtime* runtime) {
@@ -366,6 +442,7 @@ technique Copy {
 		else return;
 		Guard.paused.clear();
 		Guard.dirty = true;
+		GameValues.dirty = true;
 	}
 
 	void OnPresent(effect_runtime* runtime) {
@@ -385,6 +462,7 @@ technique Copy {
 		if (runtime != Runtime && runtime != VkRuntime.load()) return;
 		Guard.paused.clear();
 		Guard.dirty = true;
+		GameValues.dirty = true;
 		if (runtime == VkRuntime.load()) {
 			Vk.rebind = true;
 			Vk.depthVariables.clear();
@@ -401,6 +479,7 @@ technique Copy {
 		}
 		else if (runtime == VkRuntime.load()) VulkanBegin(runtime, cmd);
 		else return;
+		SetGameValues(runtime);
 		GuardBegin(runtime);
 	}
 
@@ -643,6 +722,7 @@ technique Copy {
 		for (DWORD i = 1; i < 4; ++i) Device->SetRenderTarget(i, nullptr);
 		const uintptr_t handle = reinterpret_cast<uintptr_t>(OutputSurface);
 		Runtime->render_effects(Runtime->get_command_queue()->get_immediate_command_list(), resource_view{ handle }, resource_view{ handle | 1 });
+		EffectsDrawnAt = PresentCount;
 	}
 
 }
@@ -657,6 +737,23 @@ void ReShadeIntegration::Initialize() {
 	GetModuleFileNameA(ReShadeModule, path, MAX_PATH);
 	Logger::Log("UNOFFICIAL ReShade: found %s; ReShadeDepthCompat on while it is loaded.", path);
 	TryRegister();
+}
+
+void ReShadeIntegration::BeforeNVRMenu() {
+	if (!Loaded || !Registered || !Runtime || !ImGuiManager::IsVisible()) return;
+	if (!TheSettingManager->SettingsMain.Main.ReShadeUnderNVRMenu || EffectsDrawnAt == PresentCount) return;
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	if (!SavedState && FAILED(Device->CreateStateBlock(D3DSBT_ALL, &SavedState))) return;
+	SavedState->Capture();
+	IDirect3DSurface9* targets[4] = {};
+	for (DWORD i = 0; i < 4; ++i)
+		if (FAILED(Device->GetRenderTarget(i, &targets[i]))) targets[i] = nullptr;
+	if (targets[0]) DrawEffects(Device, targets[0]);
+	for (DWORD i = 0; i < 4; ++i) {
+		Device->SetRenderTarget(i, targets[i]);
+		if (targets[i]) targets[i]->Release();
+	}
+	SavedState->Apply();
 }
 
 void ReShadeIntegration::SetMenuGuardEffects(const char* list) {
@@ -683,6 +780,7 @@ void ReShadeIntegration::RenderEffects(IDirect3DSurface9* OutputSurface) {
 	}
 	const bool vulkan = VkRuntime.load() != nullptr;
 	if (!Runtime && !vulkan && !check) return;
+	if (Runtime || vulkan) SnapshotGameValues();
 	const auto& Main = TheSettingManager->SettingsMain.Main;
 	const bool copy = (Main.ReShadeNVRDepth && (Runtime || vulkan)) || check;
 	const bool draw = Runtime && Main.ReShadeBeforeHUD;

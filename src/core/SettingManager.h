@@ -42,9 +42,11 @@ struct SettingsMainStruct {
         bool    ReShadeDepthCompat;
         bool    ReShadeNVRDepth;
         bool    ReShadeBeforeHUD;
+        bool    ReShadeUnderNVRMenu;
         bool    ReShadeDepthNearRemap;
         bool    ReShadeMenuGuard;
         bool    ReShadeMenuGuardVATS;
+        bool    ReShadeGameValues;
         bool    LampScissor;
         bool    LampScissorExact;
         bool    NeonSpillSelfTest;

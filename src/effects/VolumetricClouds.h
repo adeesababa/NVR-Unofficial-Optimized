@@ -32,9 +32,13 @@ public:
 		float	FineDetail;
 		float	FineDetailSize;
 		float	CumulusShape;
+		float	Towering;
+		float	TowerHeight;
+		float	TowerAnvil;
 		float	Sharpness;
 		float	FromWeatherTextures;
 		bool	FixedMarchExit;
+		float	WeatherTint;
 	};
 	SettingsStruct	Settings = {};
 
@@ -55,6 +59,8 @@ public:
 		D3DXVECTOR4	ReflectData;
 		D3DXVECTOR4	Detail;
 		D3DXVECTOR4	Motion;
+		D3DXVECTOR4	Tint;
+		D3DXVECTOR4	Tower;
 	};
 	ConstantsStruct	Constants = {};
 
@@ -81,6 +87,7 @@ public:
 
 	void	UpdateConstants();
 	void	RegisterConstants();
+	static bool MoonPlace(Sky* sky, D3DXVECTOR3& direction, float& distance, float& radius, const char** why = nullptr);
 	void	RegisterTextures();
 	void	UpdateSettings();
 	bool	ShouldRender();
@@ -121,4 +128,9 @@ private:
 	IDirect3DSurface9*	probeReadback = nullptr;
 	void		ProbeLayer(IDirect3DDevice9* Device);
 	void		WeatherLook(TESWeather* weather, float& coverage, float& rain, float& bias);
+	D3DXVECTOR3	WeatherCloudColour(Sky* sky, float hour);
+	D3DXVECTOR3	CloudColourOf(TESWeather* weather, const float weights[6]);
+	int			tintLogs = 0;
+	TESWeather*	tintLogWeather = nullptr;
+	float		tintLogHour = -100.0f;
 };

@@ -249,7 +249,7 @@ float GetLightAmount(float4 positionWS, float3 normal)
     [branch] if (weight > 0.0f) {
         float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f);
         float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
-        float depth = lightSpace.z - TESR_CharShadowData.z - texel * slope;
+        float depth = min(lightSpace.z, 0.9999f) - TESR_CharShadowData.z - texel * slope;
         float lit = ShadowPCF2x2(TESR_CharShadowMap, clamp(uv, texel, 1.0f - texel), depth, texel);
         shadow = lerp(shadow, min(shadow, lit), weight);
     }

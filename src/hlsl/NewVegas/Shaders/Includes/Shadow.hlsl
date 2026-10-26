@@ -138,6 +138,9 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
 #ifndef CHARACTER_SHADOW_MAP
     #define CHARACTER_SHADOW_MAP 0
 #endif
+#ifndef OBJECT_SMOOTH_NORMALS
+    #define OBJECT_SMOOTH_NORMALS 1
+#endif
 #ifndef SHADOW_CHARACTER_MAP_IN
     #define SHADOW_CHARACTER_MAP_IN 0
 #endif
@@ -172,7 +175,7 @@ float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float
     [branch] if (weight <= 0.0f) return cascadeShadow;
     float2 uv = float2(lightSpace.x * 0.5f + 0.5f, lightSpace.y * -0.5f + 0.5f);
     float slope = min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
-    float depth = lightSpace.z - TESR_CharShadowData.z - 1.5f * texel * slope;
+    float depth = min(lightSpace.z, 0.9999f) - TESR_CharShadowData.z - 1.5f * texel * slope;
     float2 lo = texel * 0.5f;
     float2 hi = 1.0f - texel * 0.5f;
     float2 p = uv / texel - 0.5f;
@@ -186,6 +189,11 @@ float CharacterMapShadow(float3 worldPos, float3 worldNormal, float NdotL, float
             float2 tapUV = clamp((c + float2(x - 1, y - 1) + 0.5f) * texel, lo, hi);
             lit += (depth <= tex2Dlod(TESR_CharShadowMap, float4(tapUV, 0.0f, 0.0f)).x ? 1.0f : 0.0f) * wx[x] * wy[y];
         }
+    }
+    [branch] if (TESR_CharShadowData.w > 1.5f) {
+        if (TESR_CharShadowData.w > 3.5f) return saturate(lightSpace.z);
+        if (TESR_CharShadowData.w > 2.5f) return tex2Dlod(TESR_CharShadowMap, float4(clamp(uv, lo, hi), 0.0f, 0.0f)).x;
+        return lit;
     }
     return lerp(cascadeShadow, min(cascadeShadow, lit), weight);
 }
@@ -627,12 +635,31 @@ float3 ShadowLookupNormal(float3 flatNormal, float4 smoothNormal) {
     ShadowMinPenumbra = TESR_ShadowForwardData.z;
 #endif
     float len2 = dot(smoothNormal.xyz, smoothNormal.xyz);
-    return (TESR_ShadowForwardData.y > 0.0f && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
+    return ((TESR_ShadowForwardData.y > 0.0f || OBJECT_SMOOTH_NORMALS) && SHADOW_VS_PRESENT(smoothNormal.w) && len2 > 0.01f) ? smoothNormal.xyz * rsqrt(len2) : flatNormal;
 }
 
 float4 GetShadowSmoothNormal(float4x4 modelViewProj, float3 position, float3 normal, float3 shadowWorldPos) {
     float3 along = GetShadowWorldPos(mul(modelViewProj, float4(position + 2.0f * normalize(normal), 1.0f)));
     return float4(normalize(along - shadowWorldPos), SHADOW_VS_SENTINEL);
+}
+
+float2 ShadowEncodeNormal(float3 n) {
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1.0e-6f);
+    float2 e = n.xy;
+    if (n.z < 0.0f) e = (1.0f - abs(n.yx)) * float2(n.x >= 0.0f ? 1.0f : -1.0f, n.y >= 0.0f ? 1.0f : -1.0f);
+    return e;
+}
+float3 ShadowDecodeNormal(float2 e) {
+    float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+    float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0f ? -t : t, n.y >= 0.0f ? -t : t);
+    return normalize(n);
+}
+
+float3 ShadowFacingNormal(float3 n, float3 worldPos) {
+    float len2 = dot(n, n);
+    n = len2 > 1.0e-6f ? n * rsqrt(len2) : float3(0.0f, 0.0f, 1.0f);
+    return n * (dot(n, worldPos) > 0.0f ? -1.0f : 1.0f);
 }
 
 #if SHADOW_FIXED_MODE == 3

@@ -128,7 +128,9 @@ float4 SmoothNormal(VSOUT IN, uniform bool alongY) : COLOR0 {
 	[branch] if (viewZ < DrawDistance && NVR_ALEdges.x > 0.5f) {
 		float3 origin = PositionFromViewZ(uv, viewZ);
 		float2 axis = alongY ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f);
-		float spacing = NVR_ALEdges.x / 3.0f;
+		float texelWorld = 2.0f * viewZ * NVR_ALLayout.z / max(TESR_ProjectionTransform[0][0], 1.0e-3f);
+		float reach = clamp(NVR_ALEdges.z / max(texelWorld, 1.0e-4f), NVR_ALEdges.x, 192.0f);
+		float spacing = reach / 3.0f;
 		float3 sum = normal;
 		[unroll] for (int k = -3; k <= 3; k++) {
 			if (k == 0) continue;

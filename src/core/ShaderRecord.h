@@ -99,6 +99,7 @@ public:
 	bool					ClearSamplers;
 	bool					PointShadowForward = false;
 	bool					UsedOnce = false;
+	bool					IsLandLight = false;
 };
 
 class ShaderRecordVertex : public ShaderRecord {

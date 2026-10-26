@@ -250,17 +250,17 @@ float3 SkinSkyRadiance(float3 r, float roughness) {
 #else
     float band1 = lerp(1.5f, 1.0f, roughness);
     float band2 = lerp(4.0f, 1.0f, roughness);
-    float3 radiance = TESR_SkyIrradiance[0].rgb
-         + band1 * (TESR_SkyIrradiance[1].rgb * r.y
-                  + TESR_SkyIrradiance[2].rgb * r.z
-                  + TESR_SkyIrradiance[3].rgb * r.x)
-         + band2 * (TESR_SkyIrradiance[4].rgb * (r.x * r.y)
-                  + TESR_SkyIrradiance[5].rgb * (r.y * r.z)
-                  + TESR_SkyIrradiance[6].rgb * (3.0f * r.z * r.z - 1.0f)
-                  + TESR_SkyIrradiance[7].rgb * (r.x * r.z)
-                  + TESR_SkyIrradiance[8].rgb * (r.x * r.x - r.y * r.y));
+    float3 radiance = TESR_SkyIrradianceObjects[0].rgb
+         + band1 * (TESR_SkyIrradianceObjects[1].rgb * r.y
+                  + TESR_SkyIrradianceObjects[2].rgb * r.z
+                  + TESR_SkyIrradianceObjects[3].rgb * r.x)
+         + band2 * (TESR_SkyIrradianceObjects[4].rgb * (r.x * r.y)
+                  + TESR_SkyIrradianceObjects[5].rgb * (r.y * r.z)
+                  + TESR_SkyIrradianceObjects[6].rgb * (3.0f * r.z * r.z - 1.0f)
+                  + TESR_SkyIrradianceObjects[7].rgb * (r.x * r.z)
+                  + TESR_SkyIrradianceObjects[8].rgb * (r.x * r.x - r.y * r.y));
 
-    float3 skyOnGround = TESR_SkyIrradiance[0].rgb + TESR_SkyIrradiance[2].rgb + 2.0f * TESR_SkyIrradiance[6].rgb;
+    float3 skyOnGround = TESR_SkyIrradianceObjects[0].rgb + TESR_SkyIrradianceObjects[2].rgb + 2.0f * TESR_SkyIrradianceObjects[6].rgb;
     return max(radiance, 0.0f) + max(skyOnGround, 0.0f) * (SKIN_SKY_GROUND * saturate(-r.z));
 #endif
 }

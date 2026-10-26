@@ -250,6 +250,12 @@ namespace PointShadowForward {
 		Params[0] = (std::min)(strength, 1.0f);
 		Params[1] = forward.Bias;
 		Params[2] = forward.NormalOffset * 2.0f / face;
+		if (forward.AutoNormalOffset) {
+			float reach = forward.Quality > 0 ? forward.Softness * 1.5f : 0.0f;
+			if (forward.Quality > 0 && forward.Softness > 0.0f) reach = (std::max)(reach, forward.MagnifiedSoftness * 1.5f);
+			reach += 1.0f;
+			Params[2] = (std::max)(forward.NormalOffset, reach) * 2.0f / face;
+		}
 		Params[3] = forward.Quality > 0 ? forward.Softness * 2.0f / face : 0.0f;
 		Quality = (float)forward.Quality;
 		Soft[0] = forward.ContactHardening && forward.Quality > 0 ? forward.ContactHardeningStrength : 0.0f;

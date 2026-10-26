@@ -92,7 +92,11 @@ struct VS_OUTPUT {
     float4 fogColor : COLOR1;
 #endif
     float4 sPosition : POSITION;
+#if OBJECT_SMOOTH_NORMALS
+    float4 uv : TEXCOORD0;
+#else
     float2 uv : TEXCOORD0;
+#endif
     float4 lPosition : TEXCOORD1;
     float4 viewPosition : TEXCOORD2;
     float4 curvatureTensor : TEXCOORD3;
@@ -130,7 +134,7 @@ float4 EyePosition : register(c16);
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
 
-    OUT.uv = IN.uv.xy;
+    OUT.uv.xy = IN.uv.xy;
 
     float4 position = IN.position.xyzw;
 
@@ -188,6 +192,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Model-space shader: recover a camera-relative world position from the clip position.
     // Written unconditionally, or the interpolator is left undefined.
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
+    #if OBJECT_SMOOTH_NORMALS
+        #ifndef SKIN
+            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+        #else
+            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+        #endif
+    #endif
 
     return OUT;
 };
@@ -202,7 +213,11 @@ struct PS_INPUT {
     float4 fogColor : COLOR1;
 #endif
     float4 sPosition : POSITION;
+#if OBJECT_SMOOTH_NORMALS
+    float4 uv : TEXCOORD0;
+#else
     float2 uv : TEXCOORD0;
+#endif
     float4 lPosition : TEXCOORD1;
     float4 viewPosition : TEXCOORD2;
     float4 curvatureTensor : TEXCOORD3;
@@ -321,7 +336,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     // treats light0 as a point light, see the branch just below) gets this; PROJ_SHADOW above is
     // vanilla's own per-object projected actor shadow and is unrelated.
     #if FORWARD_SHADOWS && !defined(DIFFUSE)
+        #if OBJECT_SMOOTH_NORMALS
+        float3 sunShadowNormal = ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+        #else
         float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+        #endif
         float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                          ? GetSunShadow(IN.shadowWorldPos.xyz, sunShadowNormal)
                          : 1.0f;
@@ -331,7 +350,11 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #if INTERIOR_SHADOWS
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
+        #if OBJECT_SMOOTH_NORMALS
+        float3 ptNormal = ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+        #else
         float3 ptNormal = 0.0f;
+        #endif
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
         float3 ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f;
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
@@ -457,7 +480,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     // NVR forward sun shadow -- light0 here is always the sun (no DIFFUSE variant exists in
     // this >=4-lights family).
     #if FORWARD_SHADOWS
+        #if OBJECT_SMOOTH_NORMALS
+        float3 sunShadowNormal = ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+        #else
         float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+        #endif
         float sunShadow = SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
                          ? GetSunShadow(IN.shadowWorldPos.xyz, sunShadowNormal)
                          : 1.0f;
@@ -467,7 +494,11 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #if INTERIOR_SHADOWS
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
+        #if OBJECT_SMOOTH_NORMALS
+        float3 ptNormal = ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+        #else
         float3 ptNormal = 0.0f;
+        #endif
         float ptValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
         float3 ptShadow[5] = { (float3)1.0f, (float3)1.0f, (float3)1.0f, (float3)1.0f, (float3)1.0f };
         [branch] if (NVR_PointShadowParams.x > 0.0f) {

@@ -2462,6 +2462,12 @@ namespace SandstormGlass {
 		void* pass = *(void**)0x011F91E0;
 		NiGeometry* geometry = pass ? *(NiGeometry**)pass : nullptr;
 		SandstormEffect* sandstorm = TheShaderManager->Effects.Sandstorm;
+		if (geometry && sandstorm && sandstorm->Settings.CharactersKeepDepth) {
+			if (geometry->skinInstance) return false;
+			NiNode* node = geometry->m_parent;
+			for (int depth = 0; node && depth < 32; ++depth, node = node->m_parent)
+				if (node->m_pcName && !_strnicmp(node->m_pcName, "Bip01", 5)) return false;
+		}
 		if (geometry && !(sandstorm && sandstorm->Underwater))
 			if (NiShadeProperty* shade = (NiShadeProperty*)geometry->GetProperty(NiProperty::kType_Shade))
 				if (shade->m_eShaderType == NiShadeProperty::kProp_Water) return false;
@@ -2826,6 +2832,7 @@ void __fastcall RenderInterfaceHook(void* apThis, void*, void* apCuller, bool ab
 	RenderMainMenuMovie();
 	ImGuiManager::NewFrame();
 	ThisCall(kRenderInterfaceDetour.GetOverwrittenAddr(), apThis, apCuller, abPipboyVisible);
+	ReShadeIntegration::BeforeNVRMenu();
 	ImGuiManager::Render();
 #if NVR_TEST_TOOLS
 	SettingShots::CaptureMenu();

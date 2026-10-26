@@ -29,6 +29,9 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.ReflectAdd = ReflMaterial::AddCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "ReflectAdd"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
+	SettingManager::Configuration::ConfigNode node;
+	Settings.ReflectivityExterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityExterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
+	Settings.ReflectivityInterior = TheSettingManager->Config.FillNode(&node, "Shaders.PBR.Main", "ReflectivityInterior") ? std::clamp(node.FloatValue, 0.0f, 3.0f) : 1.0f;
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -119,7 +122,8 @@ void ReflectionsEffect::UpdateConstants() {
 
 	const float wet = std::clamp(TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue(), 0.0f, 1.0f);
 
-	Constants.Data.x = exterior ? Settings.GroundSheen : Settings.InteriorFloors;
+	const float reflectivity = exterior ? Settings.ReflectivityExterior : Settings.ReflectivityInterior;
+	Constants.Data.x = (exterior ? Settings.GroundSheen : Settings.InteriorFloors) * reflectivity;
 	Constants.Data.y = exterior ? wet * Settings.RainWetness : 0.0f;
 	Constants.Data4.y = Constants.Data.y > 0.0f ? 1.0f : 0.0f;
 	if (Constants.Data4.y > 0.0f) TheShaderManager->orthoRequired = true;
@@ -135,7 +139,7 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data4.z = Settings.ReflectAdd;
 	Constants.Data4.w = Settings.SpecularOcclusion;
 	Constants.Layout.z = Settings.SpecularOcclusionLevel;
-	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect, 0.0f);
+	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect * reflectivity, 0.0f);
 }
 
 void ReflectionsEffect::CaptureMaterial(IDirect3DDevice9* Device) {

@@ -24,6 +24,8 @@ float4 TESR_CloudVolumeData2 : register(c19);
 float4 TESR_CloudVolumeLight : register(c21);
 float4 TESR_GameTime : register(c22);
 float4 TESR_CloudsHide : register(c23);
+float4 TESR_SkyTint : register(c24);
+float4 TESR_MoonData : register(c25);
 
 
 // Registers:
@@ -117,6 +119,7 @@ float4 ShadeSun(SunValues Sun, float4 texColor, float4 vertexColor){
         texColor.a *= Sun.isDayTime; // force alpha 1 for sun disk in the daytime
     }else{
         texColor.rgb *= vertexColor.rgb * Params.y * lerp(TESR_SunAmount.w, 1, isMoon); // vertex color (animated by the engine)
+        if (isMoon) texColor.rgb *= TESR_MoonData.x;
         texColor.a *= vertexColor.a;
     }
 
@@ -336,7 +339,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         return OUT;
     } else {
         if (TESR_CloudsHide.x > 0.5) { OUT.color_0 = float4(0.0, 0.0, 0.0, 0.0); return OUT; }
-        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor);
+        float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor) * TESR_SkyTint.rgb;
         OUT.color_0 = ShadeClouds(finalColor, color, skyColor, Sun, eyeDir);
         if (TESR_CloudVolumeData.x > 0.5) OUT.color_0 = ShadeVolumetricClouds(OUT.color_0, finalColor.w, IN.TexUV, IN.TexBlendUV, IN.position, color, skyColor, Sun, eyeDir);
         return OUT;

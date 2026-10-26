@@ -211,6 +211,13 @@
     #define NVR_LAMP_SUMS
     sampler2D NVR_LampRunStart : register(s9);
 #endif
+#ifndef HIGHLIGHT_SUMS_ON
+    #define HIGHLIGHT_SUMS_ON 0
+#endif
+#if defined(PS) && defined(ONLY_SPECULAR) && HIGHLIGHT_SUMS_ON && LINEAR_LIGHTING_ON
+    #define NVR_LAMP_SUMS
+    sampler2D NVR_LampRunStart : register(s6);
+#endif
 #if defined(PS) && defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
     #define PBR_SMITH_CORRELATED SMITH_CORRELATED_ON
 #endif
@@ -238,6 +245,13 @@
     #define SHADOW_CHARACTER_MAP_IN 1
 #endif
 #include "includes/Shadow.hlsl"
+#if OBJECT_SMOOTH_NORMALS && !(defined(LIGHTS) && LIGHTS >= 4)
+    #ifdef ONLY_LIGHT
+        #define OBJ_SMOOTH_NORMAL_INTERP 1
+    #else
+        #define OBJ_SMOOTH_NORMAL_W 1
+    #endif
+#endif
 #ifdef PS
     #define POINT_SHADOW_SCALAR
     #include "includes/PointShadowForward.hlsl"
@@ -387,6 +401,9 @@ struct VS_OUTPUT {
 
 #ifdef PROJ_SHADOW
     float4 shadowUVs : TEXCOORD7;
+#endif
+#ifdef OBJ_SMOOTH_NORMAL_INTERP
+    float4 smoothNormal : TEXCOORD8;
 #endif
 };
 
@@ -543,6 +560,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     // Model-space shaders: recover a camera-relative world position from the clip position.
     // Written unconditionally, or the interpolator is left undefined.
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
+    #ifdef OBJ_SMOOTH_NORMAL_INTERP
+        #ifndef SKIN
+            OUT.smoothNormal = GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz);
+        #else
+            OUT.smoothNormal = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz);
+        #endif
+    #endif
 
     #ifdef METAL_UP
         float4 upView = mul(TESR_InvProjectionTransform, float4(TESR_InvViewTransform[0][2], TESR_InvViewTransform[1][2], TESR_InvViewTransform[2][2], 0.0f));
@@ -555,6 +579,17 @@ VS_OUTPUT main(VS_INPUT IN) {
         OUT.lightDistSq.w = upTangent.x;
         OUT.lightDir.w = upTangent.y;
         OUT.vertexColor.a = upTangent.z * 0.5f + 0.5f;
+    #endif
+    #ifdef OBJ_SMOOTH_NORMAL_W
+        {
+            #ifndef SKIN
+                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+            #else
+                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+            #endif
+            OUT.lightDistSq.w = smoothOct.x;
+            OUT.lightDir.w = smoothOct.y;
+        }
     #endif
 
     return OUT;
@@ -593,7 +628,11 @@ struct VS_OUTPUT {
     float4 vertexColor : COLOR0;
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
+#if OBJECT_SMOOTH_NORMALS
+    float4 uv : TEXCOORD0;
+#else
     float2 uv : TEXCOORD0;
+#endif
     float4 lPosition : TEXCOORD1;
     float4 lightDir : TEXCOORD2;  // .w = .x of viewDir
     float4 light2 : TEXCOORD3;   // .w = .y of viewDir
@@ -635,7 +674,7 @@ float4 EyePosition : register(c16);
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
     
-    OUT.uv = IN.uv.xy;
+    OUT.uv.xy = IN.uv.xy;
     
     float4 position = IN.position.xyzw;
     
@@ -755,6 +794,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     // ignores.
     float3 shadowWorldPos = GetShadowWorldPos(OUT.sPosition);
     SHADOW_WP_STORE(OUT, shadowWorldPos);
+    #if OBJECT_SMOOTH_NORMALS
+        #ifndef SKIN
+            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+        #else
+            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+        #endif
+    #endif
 
     return OUT;
 };
@@ -788,6 +834,9 @@ struct PS_INPUT {
     float4 shadowWorldPos : TEXCOORD4;
 #ifdef PROJ_SHADOW
     float4 shadowUVs : TEXCOORD7;
+#endif
+#ifdef OBJ_SMOOTH_NORMAL_INTERP
+    float4 smoothNormal : TEXCOORD8;
 #endif
 };
 
@@ -981,7 +1030,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     // pixel shader whenever FORWARD_SHADOWS was compiled in, which is fragile enough on its own
     // to corrupt unrelated interpolator reads placed nearby.
     #if !defined(DIFFUSE) && !defined(POINT)
-        float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+        #ifdef OBJ_SMOOTH_NORMAL_INTERP
+            float3 shadowGeometricNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);
+        #elif defined(OBJ_SMOOTH_NORMAL_W)
+            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowDecodeNormal(float2(IN.lightDistSq.w, IN.lightDir.w)), IN.shadowWorldPos.xyz);
+        #else
+            float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+        #endif
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
@@ -1001,6 +1056,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 ptWorldPos = IN.shadowWorldPos.xyz;
         #if !defined(DIFFUSE) && !defined(POINT)
             float3 ptNormal = shadowGeometricNormal;
+        #elif defined(OBJ_SMOOTH_NORMAL_INTERP)
+            float3 ptNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);
         #else
             float3 ptNormal = 0.0f;
         #endif
@@ -1092,10 +1149,15 @@ PS_OUTPUT main(PS_INPUT IN) {
             lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb * (1.0f - metallic), shadowGeometricNormal, skyValid);
             [branch] if (metallic > 0.0f) {
                 float3 metalView = normalize(IN.viewDir.xyz);
+                #ifdef OBJ_SMOOTH_NORMAL_W
+                bool upKnown = skyValid > 0.0f;
+                float upReflect = upKnown ? reflect(normalize(IN.shadowWorldPos.xyz), shadowGeometricNormal).z : 0.0f;
+                #else
                 float3 upTangent = float3(IN.lightDistSq.w, IN.lightDir.w, IN.vertexColor.a * 2.0f - 1.0f);
                 float upLength = length(upTangent);
                 bool upKnown = upLength > 0.5f && skyValid > 0.0f;
                 float upReflect = upKnown ? dot(reflect(-metalView, normal.xyz), upTangent / upLength) : 0.0f;
+                #endif
                 lighting += metallic * getMetalAmbient(AmbientColor.rgb, baseColor.rgb, metalRoughness, saturate(dot(normal.xyz, metalView)),
                                                        upReflect, upKnown ? 1.0f : 0.0f,
                                                        IN.shadowWorldPos.xyz, shadowGeometricNormal);
@@ -1320,7 +1382,11 @@ struct PS_INPUT {
     float4 vertexColor : COLOR0;
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
+#if OBJECT_SMOOTH_NORMALS
+    float4 uv : TEXCOORD0;
+#else
     float2 uv : TEXCOORD0;
+#endif
     float4 lPosition : TEXCOORD1;
     float4 lightDir : TEXCOORD2_centroid;  // .w = .x of viewDir
     float4 light2 : TEXCOORD3_centroid; // .w = .y of viewDir
@@ -1340,6 +1406,12 @@ struct PS_INPUT {
     #endif
 #endif
 };
+
+#if OBJECT_SMOOTH_NORMALS
+    #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), (p))
+#else
+    #define OBJ_WORLD_NORMAL(p) GetShadowGeometricNormal(p)
+#endif
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
@@ -1442,7 +1514,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #if INTERIOR_SHADOWS
         float3 ptWorldPos = SHADOW_WP_LOAD(IN);
-        float3 ptNormal = GetShadowGeometricNormal(ptWorldPos);
+        float3 ptNormal = OBJ_WORLD_NORMAL(ptWorldPos);
         float ptValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
@@ -1470,7 +1542,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         #if INTERIOR_SHADOWS
             float3 sunShadowNormal = ptNormal;
         #else
-            float3 sunShadowNormal = GetShadowGeometricNormal(sunShadowWorldPos);
+            float3 sunShadowNormal = OBJ_WORLD_NORMAL(sunShadowWorldPos);
         #endif
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
@@ -1490,7 +1562,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if INTERIOR_SHADOWS
         float3 ambNormal = ptNormal;
     #else
-        float3 ambNormal = GetShadowGeometricNormal(SHADOW_WP_LOAD(IN));
+        float3 ambNormal = OBJ_WORLD_NORMAL(SHADOW_WP_LOAD(IN));
     #endif
 
     float3 lighting;

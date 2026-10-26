@@ -31,6 +31,8 @@ public:
 		float	ReflectAdd;
 		float	SpecularOcclusion;
 		float	SpecularOcclusionLevel;
+		float	ReflectivityExterior;
+		float	ReflectivityInterior;
 	};
 	SettingsStruct	Settings;
 

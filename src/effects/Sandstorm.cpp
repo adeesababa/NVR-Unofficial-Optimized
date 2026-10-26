@@ -112,6 +112,7 @@ void SandstormEffect::UpdateSettings() {
 	Settings.SoftEdges = TheSettingManager->GetSettingI(main, "SoftEdges") != 0;
 	Settings.FineShelter = TheSettingManager->GetSettingI(main, "FineShelter") != 0;
 	Settings.ThroughBlended = TheSettingManager->GetSettingI(main, "ThroughBlended") != 0;
+	Settings.CharactersKeepDepth = TheSettingManager->GetSettingI(main, "CharactersKeepDepth") != 0;
 	Settings.ForceStorm = TheSettingManager->GetSettingI(main, "ForceStorm") != 0;
 	Settings.FastPath = TheSettingManager->GetSettingI(main, "FastPath") != 0;
 	Settings.FixedTime = TheSettingManager->GetSettingF(main, "FixedTime");

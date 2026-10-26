@@ -454,6 +454,7 @@ void ShaderManager::UpdateConstants() {
 	else {
 		ShaderConst.sunDiskColor = ShaderConst.sunColor; // override with the color of the lighting
 	}
+	Shaders.Sky->UpdateMoonlight();
 
 	ShaderConst.windSpeed = WorldSky->windSpeed;
 
@@ -1498,10 +1499,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
 	}
 
-	Effects.SunFar->RenderFactor(Device);
+	Effects.SunFar->RenderFactor(Device, RenderTarget);
 	if (Effects.SunFar->Constants.Apply.x > 0.5f) FlickerWatch::Flags |= FlickerWatch::kSunFar;
 
 	Device->SetRenderTarget(0, RenderTarget);
+	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior) FlickerWatch::OnProbe(FlickerWatch::World, Device, RenderTarget);
 
 	struct ChainGuard { ~ChainGuard() { TheShaderManager->Chain.End(); } } chainGuard;
 	if (!Chain.Begin(RenderTarget))
@@ -1588,6 +1590,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		if (!(composite && shadowApplies) && !pairApply && !shadowIntoAmbientLight) FlickerWatch::Flags |= FlickerWatch::kShadowPass;
 		if (Effects.ShadowsExteriors->Constants.ShadowBlur.y > 0.5f) FlickerWatch::Flags |= FlickerWatch::kLodUpdated;
 		if (GameState.isCellChanged) FlickerWatch::Flags |= FlickerWatch::kCellChanged;
+		ShadowsExteriorEffect* sx = Effects.ShadowsExteriors;
+		if (sx->SunGlideValid && GetTickCount64() - sx->SunGlideStart < (ULONGLONG)(1000.0f * sx->Settings.SunSmoothing.GlideSeconds))
+			FlickerWatch::Flags |= FlickerWatch::kSunGlide;
+		FlickerWatch::Hour = ShaderConst.GameTime.y;
+		FlickerWatch::SunZ = sx->Constants.SmoothedSunDir.z;
 	}
 
 	{
@@ -1663,6 +1670,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			FlickerWatch::Flags |= FlickerWatch::kShadowPass;
 			Effects.ShadowsExteriors->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		}
+	}
+	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior) {
+		FlickerWatch::OnProbe(FlickerWatch::Lit, Device, TheTextureManager->RenderedSurface);
+		Device->SetRenderTarget(0, RenderTarget);
 	}
 #if NVR_TEST_TOOLS
 	SettingShots::CaptureStage(Device, TheTextureManager->RenderedSurface);

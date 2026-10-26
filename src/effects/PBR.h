@@ -160,8 +160,15 @@ public:
 		float FadeDistance = 0.0f;
 		float CubeReflections = 0.0f;
 		float EnvCubeReflections = 0.0f;
+		float Reflections = 0.0f;
 	};
 	MetalSettingsStruct	MetalSettings;
+
+	struct ReflectivitySettingsStruct {
+		float Exterior = 1.0f;
+		float Interior = 1.0f;
+	};
+	ReflectivitySettingsStruct	ReflectivitySettings;
 
 	struct MaterialRulesSettingsStruct {
 		bool Enabled = false;

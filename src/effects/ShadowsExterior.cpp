@@ -422,6 +422,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		Settings.ShadowMaps.CharacterMapBias = std::clamp(TheSettingManager->GetSettingF(section, "CharacterShadowMapBias"), 0.0f, 4.0f);
 		Settings.ShadowMaps.CharacterMapOthers = TheSettingManager->GetSettingI(section, "CharacterShadowMapOthers") != 0;
 		Settings.ShadowMaps.CharacterMapLog = TheSettingManager->GetSettingI(section, "CharacterShadowMapLog") != 0;
+		Settings.ShadowMaps.CharacterMapDebug = std::clamp(TheSettingManager->GetSettingI(section, "CharacterShadowMapDebug"), 0, 3);
 		if (Settings.ShadowMaps.CharacterMap && !CharacterMapCompiled) {
 			static bool hinted = false;
 			if (!hinted) { hinted = true; Logger::Log("UNOFFICIAL CharacterShadowMap was turned on after startup: restart the game once to apply it."); }
@@ -560,14 +561,18 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;
 		forward.MagnifiedSoftness = std::clamp(TheSettingManager->GetSettingF(section, "MagnifiedSoftness"), 0.0f, 8.0f);
 		forward.TexelFilter = TheSettingManager->GetSettingI(section, "TexelFilter") != 0;
+		forward.AutoNormalOffset = TheSettingManager->GetSettingI(section, "AutoNormalOffset") != 0;
 	}
 	Settings.ContactHardening.Enabled = TheSettingManager->GetSettingI("Shaders.ContactHardening.Status", "Enabled") != 0;
 	Settings.ContactHardening.SunSize = max(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "SunSize"), 0.0f);
 	Settings.ContactHardening.MaxSoftness = max(min(TheSettingManager->GetSettingF("Shaders.ContactHardening.Main", "MaxSoftness"), 32.0f), 1.0f);
 	Settings.ContactHardening.Smooth = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "Smooth") != 0;
 	Settings.ContactHardening.AtNight = TheSettingManager->GetSettingI("Shaders.ContactHardening.Main", "AtNight") != 0;
-	Constants.PointShadowNear.z = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") ?
-		1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f) : 0.0f;
+	const int forwardMode = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ForwardReachMask"), 0, 2);
+	if (TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LampReachMask") || forwardMode == 1)
+		Constants.PointShadowNear.z = 1.0f / (std::max)(Settings.Interiors.LightRadiusMult, 1.0f);
+	else
+		Constants.PointShadowNear.z = forwardMode == 2 ? -1.0f : 0.0f;
 
 	TerrainShadows.UpdateSettings();
 
@@ -1052,9 +1057,9 @@ D3DXVECTOR3 ShadowsExteriorEffect::CalculateSmoothedSunDir() {
 			const bool oneStep = stepAngle < 1.5f * max(yawStepSize, pitchStepSize);
 			SunCrossFading = oneStep && crossFade && StartSunCrossFade();
 			static int logged = 0;
-			if (logged < 20) {
+			if (logged < 20 || (TheSettingManager->GetSettingI("Shaders.CloudShadows.Main", "FlickerWatch") && logged < 2000)) {
 				logged++;
-				Logger::Log("UNOFFICIAL sun step %.1f degrees: %s", D3DXToDegree(stepAngle),
+				Logger::Log("UNOFFICIAL sun step %.1f degrees at hour %.2f (to %.3f %.3f %.3f): %s", D3DXToDegree(stepAngle), TheShaderManager->ShaderConst.GameTime.y, SunDir.x, SunDir.y, SunDir.z,
 					!oneStep ? "jumps (bigger than one step: waiting, sleeping or loading)" : SunCrossFading ? "cross-fades" : "glides");
 			}
 			SunGlideFrom = oneStep && !SunCrossFading ? SmoothedSunDir : SunDir;

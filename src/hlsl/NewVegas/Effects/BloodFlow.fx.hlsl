@@ -918,6 +918,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 	float dry = smoothstep(0.0, 1.0, age / (dryTime * lerp(0.5, 1.6, p.thick)));
 	float3 freshColour = TESR_BloodFlowFresh.rgb;
 	float3 dryColour = TESR_BloodFlowDry.rgb;
+	float3 glintTint = float3(0.02, 0.004, 0.004);
 	[branch] if (TESR_BloodFlowMatch.w > 0.5 && IN.d.w > 0.5) {
 		float t = floor(IN.d.w + 0.5);
 		float r = floor(t / 65536.0);
@@ -927,10 +928,11 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		g += (gb - g * 256.0 >= 256.0) ? 1.0 : ((gb - g * 256.0 < 0.0) ? -1.0 : 0.0);
 		freshColour = linearize(saturate(float3(r, g, gb - g * 256.0) / 255.0 * TESR_BloodFlowMatch.x)) * TESR_BloodFlowMatch.y;
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
+		glintTint = 0.004 + 0.016 * freshColour / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4);
 	}
 	float3 albedo = lerp(freshColour, dryColour, dry);
 	albedo *= lerp(1.0, 0.8 + 0.4 * valueNoise((pp.xy + pp.z) * 0.35 + seed * 31.0), dry);
-	float3 through = exp(-(1.2 + log(max(albedo.r, 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * p.thick));
+	float3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * p.thick));
 	float3 blood = (sceneLin * through + light * albedo * lerp(1.0, 0.6, saturate(p.thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
 	blood += light * albedo * (pow(saturate(dot(rd, normalize(TESR_SunDirection.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - saturate(p.thick)) * 0.8);
 	float3 colour = sceneLin;
@@ -955,7 +957,7 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
 		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * (1.0 - rough) * 0.5) * gloss;
 	}
-	float3 drop = light * (freshColour * 0.7 + float3(0.02, 0.004, 0.004) * TESR_BloodFlowFresh.w);
+	float3 drop = light * (freshColour * 0.7 + glintTint * TESR_BloodFlowFresh.w);
 	colour = lerp(colour, drop, p.air);
 	float ceiling = max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1.0);
 	colour = min(colour, ceiling);
@@ -1397,7 +1399,7 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
 	}
 	float3 albedo = lerp(freshColour, dryColour, dry) * lerp(1.0, 0.8 + 0.4 * valueNoise(q * R * 0.35 + seed * 31.0), dry);
-	float3 through = exp(-(1.2 + log(max(albedo.r, 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * thick));
+	float3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, 0.001))) * (0.25 + 2.0 * thick));
 	float3 colour = sceneLin * through + light * albedo * lerp(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through);
 	float gloss = TESR_BloodFlowFresh.w * (1.0 - dry) * lerp(0.5, 1.0, thick);
 	[branch] if (gloss > 0.001) {
