@@ -20,6 +20,8 @@ namespace {
 	};
 	const UINT AvgLumaStateBytes = 32;	// vec4 cur; uvec2 packed; float average; float pad
 	const UINT AvgLumaPackedOffset = 16;
+	const UINT AvgLumaHistogramBins = 128;	// AvgLumaHistogram.comp HistogramBins
+	const float AvgLumaHistogramLog2Low = -12.0f, AvgLumaHistogramLog2High = 4.0f;	// the bins' range: 2^-12 .. 2^4 linear luma (1/8 stop each)
 
 	float HalfToFloat(UInt16 h) {
 		UInt32 sign = (h >> 15) & 1, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
@@ -37,6 +39,8 @@ void AvgLumaEffect::ComputeRelease() {
 	DxvkCompute::Drop(computeState[0]);
 	DxvkCompute::Drop(computeState[1]);
 	DxvkCompute::Drop(computeSampler);
+	DxvkCompute::Drop(histogramPipeline);
+	DxvkCompute::Drop(histogramBins);
 	computeOk = false;
 }
 
@@ -64,6 +68,16 @@ bool AvgLumaEffect::ComputeReady() {
 		Logger::Log("UNOFFICIAL AvgLuma: compute path could not be set up; the D3D9 pass is used");
 		return false;
 	}
+	// UNOFFICIAL 2026-10-26: the histogram version, when its shader is there (an older package has none: the exact average then).
+	if (DxvkCompute::HasSpirv("AvgLumaHistogram")) {
+		histogramPipeline = DxvkCompute::CreatePipeline("AvgLumaHistogram", AvgLumaBindings, _countof(AvgLumaBindings), sizeof(ComputePush), true);
+		histogramBins = DxvkCompute::CreateBuffer(AvgLumaHistogramBins * 4, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_DST, "AvgLuma histogram");
+		if (!histogramPipeline || !histogramBins) {
+			DxvkCompute::Drop(histogramPipeline);
+			DxvkCompute::Drop(histogramBins);
+			Logger::Log("UNOFFICIAL AvgLuma: the histogram pass could not be set up; Histogram uses the exact average");
+		}
+	}
 	// Both histories start at zero, like the texture does.
 	DxvkCompute::Extension()->ClearBuffer(computeState[0], 0, 0, 0);
 	DxvkCompute::Extension()->ClearBuffer(computeState[1], 0, 0, 0);
@@ -74,9 +88,19 @@ bool AvgLumaEffect::ComputeReady() {
 }
 
 bool AvgLumaEffect::RenderCompute(IDirect3DDevice9* Device) {
-	if (!TheSettingManager->SettingsMain.Main.AvgLumaCompute) return false;
+	// UNOFFICIAL 2026-10-26: [Shaders.Exposure.Main] Histogram runs this path too (the trimmed average), with or without AvgLumaCompute.
+	const ExposureEffect* exposure = TheShaderManager->Effects.Exposure;
+	const bool histogramWanted = exposure && exposure->Settings.Histogram;
+	if (!TheSettingManager->SettingsMain.Main.AvgLumaCompute && !histogramWanted) return false;
 	if (!Enabled || !ShouldRender()) return false;
-	if (!ComputeReady()) return false;
+	if (!ComputeReady()) {
+		static bool said = false;
+		if (histogramWanted && !said) Logger::Log("UNOFFICIAL AvgLuma: Histogram needs NVR DXVK; the exposure uses the D3D9 average");
+		said = true;
+		return false;
+	}
+	const bool histogram = histogramWanted && histogramPipeline && histogramBins;
+	if (histogramWanted && !histogram && !TheSettingManager->SettingsMain.Main.AvgLumaCompute) return false;	// no histogram shader: D3D9 as before
 
 	IDirect3DTexture9* color = TheTextureManager->RenderedTexture;		// the chain's current image (what the pass samples as TESR_RenderedBuffer)
 	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
@@ -96,25 +120,28 @@ bool AvgLumaEffect::RenderCompute(IDirect3DDevice9* Device) {
 	push.gameTime = TheShaderManager->ShaderConst.GameTime;
 	push.exposureData = TheShaderManager->Effects.Exposure->Constants.Data;
 	push.cameraData = TheRenderManager->CameraData;
+	if (histogram) push.histogram = D3DXVECTOR4(exposure->Settings.HistogramLowPercent / 100.0f, exposure->Settings.HistogramHighPercent / 100.0f,
+		AvgLumaHistogramLog2Low, AvgLumaHistogramLog2High);
 
 	NVR_EXT_RESOURCE_BINDING bindings[] = {
 		{ 0, NVR_EXT_BIND_SAMPLED_IMAGE,  color,           0, 0, 0, FALSE },
 		{ 1, NVR_EXT_BIND_SAMPLED_IMAGE,  depth,           0, 0, 0, FALSE },
-		{ 0, NVR_EXT_BIND_STORAGE_BUFFER, computePartials, 0, 0, 0, FALSE },
+		{ 0, NVR_EXT_BIND_STORAGE_BUFFER, histogram ? histogramBins : computePartials, 0, 0, 0, FALSE },	// Partials, or the histogram's bins
 		{ 1, NVR_EXT_BIND_STORAGE_BUFFER, stateIn,         0, 0, 0, FALSE },
 		{ 2, NVR_EXT_BIND_STORAGE_BUFFER, stateOut,        0, 0, 0, FALSE },
 		{ 0, NVR_EXT_BIND_SAMPLER,        computeSampler,  0, 0, 0, FALSE },
 	};
 	NVR_EXT_DISPATCH_DESC dispatch = {};
-	dispatch.pPipeline = computePipeline;
+	dispatch.pPipeline = histogram ? histogramPipeline : computePipeline;
 	dispatch.BindingCount = _countof(bindings);
 	dispatch.pBindings = bindings;
 	dispatch.pPushData = &push;
 	dispatch.PushDataSize = sizeof(push);
 
-	push.phase = 0;		// one partial sum per 16x16 tile
+	push.phase = 0;		// one partial sum (or the histogram counts) per 16x16 tile
 	dispatch.GroupsX = computeGroupsX; dispatch.GroupsY = computeGroupsY; dispatch.GroupsZ = 1;
-	HRESULT result = ext->Dispatch(&dispatch);
+	HRESULT result = histogram ? ext->ClearBuffer(histogramBins, 0, 0, 0) : S_OK;	// the counts start at zero every frame (in order with the dispatches)
+	if (SUCCEEDED(result)) result = ext->Dispatch(&dispatch);
 	if (SUCCEEDED(result)) {
 		push.phase = 1;	// the total, then the pass's per-frame logic
 		dispatch.GroupsX = 1; dispatch.GroupsY = 1;
@@ -130,7 +157,11 @@ bool AvgLumaEffect::RenderCompute(IDirect3DDevice9* Device) {
 		return false;
 	}
 	computeCurrent ^= 1;
-	if (++computeFrames == 1) Logger::Log("UNOFFICIAL AvgLuma: compute path running (exact average of %ux%u pixels).", computeWidth, computeHeight);
+	if (histogram) {
+		if (++histogramFrames == 1) Logger::Log("UNOFFICIAL AvgLuma: histogram exposure running (%ux%u pixels, %u bins; the darkest %.1f %% and the brightest %.1f %% left out).",
+			computeWidth, computeHeight, AvgLumaHistogramBins, exposure->Settings.HistogramLowPercent, exposure->Settings.HistogramHighPercent);
+	}
+	else if (++computeFrames == 1) Logger::Log("UNOFFICIAL AvgLuma: compute path running (exact average of %ux%u pixels).", computeWidth, computeHeight);
 	return !checking;	// checking: the caller also runs the D3D9 pass
 }
 

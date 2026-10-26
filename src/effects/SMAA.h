@@ -54,6 +54,7 @@ public:
 	// (Render calls it first, as EffectRecord::Render does)
 	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 	ExtPass	extEdges, extWeights, extNeighborhood;
+	std::map<std::string, ExtPass> extVariants;	// UNOFFICIAL 2026-10-26: compile-time variants (EffectRecord::ExtVariant)
 
 private:
 	void EdgesDetectionPass(Input input);

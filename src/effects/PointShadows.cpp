@@ -70,8 +70,10 @@ bool PointShadowsEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	ID3D9NvrExtBuffer* constants = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
 	if (!constants) return false;
 
-	if (!pass.Tried) {
-		pass.Tried = true;
+	// UNOFFICIAL 2026-10-26: this mode's own variant (one D3D9 shader per mode; Compute\variants.txt), else the general shader.
+	char suffix[8];
+	_snprintf_s(suffix, sizeof(suffix), _TRUNCATE, "m%u", mode);
+	ID3D9NvrExtPipeline* pipeline = ExtVariant(extVariants, pass, spvName, suffix, [&](const char* name) {
 		NVR_EXT_BINDING_DESC bindings[NVR_EXT_MAX_BINDINGS] = {};
 		UINT c = 0;
 		for (UINT i = 0; i < textureCount; i++, c++) {
@@ -81,9 +83,9 @@ bool PointShadowsEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		bindings[c].Set = 2; bindings[c].Binding = 0; bindings[c].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[c].Slot = 0; bindings[c].ViewType = NVR_EXT_VIEW_2D; c++;
 		bindings[c].Type = NVR_EXT_BIND_SAMPLER; bindings[c].Slot = 0; bindings[c].PushOffset = 0; c++;
 		bindings[c].Type = NVR_EXT_BIND_SAMPLER; bindings[c].Slot = 1; bindings[c].PushOffset = 4; c++;
-		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, c, sizeof(PointShadowsPush), true, 1, blend);
-	}
-	if (!pass.Pipeline) return false;
+		return DxvkCompute::CreateGraphicsPipeline(name, bindings, c, sizeof(PointShadowsPush), true, 1, blend);
+	});
+	if (!pipeline) return false;
 
 	NVR_EXT_RESOURCE_BINDING resources[NVR_EXT_MAX_BINDINGS] = {};
 	UINT r = 0;
@@ -98,7 +100,7 @@ bool PointShadowsEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	PointShadowsPush push = {};
 	push.mode = mode;
 	if (clear) Device->Clear(0L, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(255, 0, 0, 0), 1.0f, 0L);	// (EffectRecord::Render's clear)
-	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, r, &push, sizeof(push), true);
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pipeline, resources, r, &push, sizeof(push), true);
 }
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see PointShadows.h. The bindings and draws follow the .fx's techniques one for one.

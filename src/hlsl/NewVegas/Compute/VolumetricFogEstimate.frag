@@ -22,7 +22,7 @@ void main() {
     }
     vec3 fogMul, fogAdd;
     float nightAmount;
-    FogTerms(best, fogMul, fogAdd, nightAmount, pc.legacy != 0u, pc.interior != 0u, pc.classic != 0u);
+    FogTerms(best, fogMul, fogAdd, nightAmount, FOG_LEGACY_ON, FOG_INTERIOR_ON, FOG_CLASSIC_ON);
     o_mulDepth = vec4(fogMul, saturate(bestDepth / farZ));
     o_add = vec4(fogAdd, 1.0);
 }

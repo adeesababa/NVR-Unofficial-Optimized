@@ -27,6 +27,14 @@ layout(push_constant) uniform Push {
     uint pad;
 } pc;
 
+// UNOFFICIAL 2026-10-26: the variant .spv fixes this (-DPOINT_SHADOW_MODE, Compute/variants.txt, EffectRecord::ExtVariant), as the D3D9
+// techniques are compiled one per mode; without it the push block decides (the general shader, the fallback).
+#ifdef POINT_SHADOW_MODE
+#define SHADOW_MODE uint(POINT_SHADOW_MODE)
+#else
+#define SHADOW_MODE pc.mode
+#endif
+
 #define LINEAR_CLAMP NVR_SAMPLER(pc.linearSampler)
 #define POINT_CLAMP NVR_SAMPLER(pc.pointSampler)
 
@@ -35,8 +43,8 @@ layout(location = 0) out vec4 o_color;
 
 void main() {
     // HalfMaskVS: the half-resolution pixel reads the full-resolution texel at its top-left
-    vec2 uvh = uv + (pc.mode == 2u ? 0.5 * cb.reciprocalResolution.xy : vec2(0.0));
-    bool batch = pc.mode == 1u;
+    vec2 uvh = uv + (SHADOW_MODE == 2u ? 0.5 * cb.reciprocalResolution.xy : vec2(0.0));
+    bool batch = SHADOW_MODE == 1u;
 
     float depth = readDepthAt(t_depth, LINEAR_CLAMP, uvh);
     vec3 cameraVector = toWorld(uvh) * depth;
@@ -82,7 +90,7 @@ void main() {
 
     shadow = saturate(shadow);
 
-    if (pc.mode == 2u)
+    if (SHADOW_MODE == 2u)
         o_color = vec4(shadow, depth, 0.0, 1.0);	// LampMaskHalfPS
     else
         o_color = vec4(shadow, shadow, shadow, 1.0);
