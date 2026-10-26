@@ -95,6 +95,12 @@ void main() {
             // buffer's pixel steps put the ray 'behind' it) is no hit: the walk goes on. The fixed-step trace rarely sampled those first
             // pixels; testing every pixel, the walk would stop on its own floor almost every time (and the hit be thrown away below).
             if (!skip && level == 0 && dot(ViewNormal((cell + 0.5) * cb.reciprocalResolution.xy), R) >= 0.2) skip = true;
+            // Nor is a pixel of the reflecting surface's own plane (a rough floor's spread sends rays almost along the floor, whose
+            // nearby pixels then pass the facing test and gave back the floor's own colour): its point lies on the origin's plane.
+            if (!skip && level == 0) {
+                vec3 scenePoint = ViewPosition((cell + 0.5) * cb.reciprocalResolution.xy, scene.x);
+                if (abs(dot(scenePoint - position, N)) < 2.0 + 0.004 * scene.x) skip = true;
+            }
             if (skip) {
                 u = uExit;
                 level = min(level + 1, HiZLevels);
