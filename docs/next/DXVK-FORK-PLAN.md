@@ -23,6 +23,10 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
 - What the fork buys and does not (plain answers): NVR-DXVK-WHAT-IT-BUYS.md.
 
 ## In-game sweep of every port (2026-10-26)
+CAVEAT (found later that day by the BloodFluid agent): these runs had NO world depth. On the GTX 1070, stock-based DXVK 3.0.1
+offers RESZ only to AMD adapters, so NVR fell back to NVAPI, which initializes but cannot reach DXVK's device: the depth
+buffer stayed empty, and every depth-based effect (AO, fog, shadows, reflections, ...) was compared depth-less on both sides.
+Superseded by "Re-sweep with depth" below (fork patch 0007); the sky / half-pixel findings here do not depend on depth.
 Slot C (1080p, slim), fork d3d9.dll from run 40255009422 (ext 1.3, patches 0001-0005), tree work\NVR-dxvkfork-ci =
 4c03c6dc + the SkyView fix below. List bench\foundations\lists\dxvkfork-11-sweep.txt: defaults D3D9/Vulkan x2 (ABAB), then
 six groups D3D9 / Vulkan / Vulkan again (post: Coloring, Sharpening, LowHF, Lens, Reflections, Specular, HeatHaze, FXAA;
@@ -71,6 +75,24 @@ sweep_timing.py (reports sweep-*.report there).
   Net: the small passes come out about even, the heavy ones (snow accumulation, sandstorm, DoF) are faster, SMAA / fog /
   AO / point-shadow apply slower (0.1-0.25 ms each): worth a look per pass (bindings, sampler or format choices), not a
   route problem.
+
+## Re-sweep with depth (2026-10-26 afternoon; fork 1.4 + patch 0007, CI run 40328880527, v3.0.1-7)
+Patch 0007 offers RESZ on every GPU, so NVR's normal depth path works on NVIDIA under NVR DXVK: every run logs "Depth resolve:
+RESZ (DXVK, any GPU brand)" on the GTX 1070, and the lucky22 picture now differs from the depth-less one in 80 % of pixels
+(-5.3/255: AO, shadows etc. really run). Same list (dxvkfork-11-sweep), tree NVR-dxvkfork-ci = this branch after the lamp +
+BloodFluid merges (DLL with every change of the day). Runs: lucky22 20261026-105418, og-desert + og-night (one batch, see
+below) 20261026-121941, og-lake 20261026-115923, int23 20261026-120746, og-night solo 20261026-123050 (all -slotC).
+- Crashes: none in five scenes, no "failed to draw", no fallback.
+- Same picture: every D3D9/Vulkan pair inside its scene's noise (same settings shot twice): lucky22 / int23 9-13 % of pixels,
+  og-desert 13-25 %, og-lake 38-63 % (water and reflections move with depth on), og-night 37-52 % (stars), signed change
+  within +-0.25/255 except where the noise pair itself drifts (desert rain +0.17 between two Vulkan shots) or the dust moves
+  (sandstorm). The batched og-night shots were NOT usable: the queue joined it to the desert launch and the player was still
+  falling / turning after the night placement (camera different between same-settings shots); re-run solo (BENCHQ_SOLO=1).
+- Timing, settled pairs only (the first Vulkan shot of a launch pays the one-time pipeline creation: 13-25 ms frames; the
+  sun-cascade +0.9 ms seen in a few early Vulkan shots settles to the D3D9 value): frame totals about even (e.g. bounce
+  6.22/6.25, post 7.66/7.69, lake defaults 7.37/7.38 ms). Per pass, Vulkan slower: SMAA +0.08-0.17, AmbientLight estimate
+  and apply +0.06 each, point shadow lighting +0.07-0.14, fog estimate +0.04-0.06; faster: exposure/bloom -0.03, contact
+  shadow blur -0.03 each, heat haze -0.1. Same pattern as the depth-less sweep.
 
 ## Slower passes, histogram exposure, cloud steps (2026-10-26; list dxvkfork-14-variants, fork 1.4)
 - Why SMAA / fog / AO apply are slower as Vulkan passes. Hypothesis 1: the ports merged the D3D9 techniques' compile-time
