@@ -105,8 +105,25 @@ SHADER COUNTERS lines; no "needs NVR DXVK", no "could not be set up", no DXVK `N
   the fork on GitHub with every patch applied); the shaders pass spirv-val.
 - The "render target bound" handling (a stage's texture is unbound around its copy and put back, with the viewport and scissor) is new
   code on the game's own state; a wrong viewport or target right after a stage would point at it.
-- Effects that override `Render` without calling the base one (TAA, SMAA, DepthOfField, Bodycam, ShadowsInteriors, SunShadows) and
-  passes drawn only inside an effect's own Vulkan port (its intermediate buffers) do not show as separate stages; the frame after the
-  next recorded effect still includes their result.
+- Passes drawn only inside an effect's own Vulkan port (its intermediate buffers) do not show as separate stages.
 - Up to 64 stages per frame; more are counted as refused.
 - The counters' atomic adds have contention on 12 addresses; if that proves slow, a subgroup add first would cut it.
+
+## First run (2026-10-26, coordinator's bulk run 20261026-161607-slotC, og-desert, combo e781aae8, fork CI 0001-0015)
+- Works: the 1.5-debug readback was found, the inspector set itself up, tables arrived within a few frames, nothing waited (ring:
+  0 skipped). Values make sense: sky pixel depth 1.0 (= farZ 353840) with normal (0, 0, -1); ground at y 1000 is 302 units away with
+  normal (0.01, 1.00, 0.06); the centre 9738 units. Colours follow the chain (scene in 0.43/0.34/0.23 HDR -> tonemapped 0.61/0.46/0.28
+  -> Cinema 0.59/0.44/0.25 = final).
+- Pictures: inspector on vs off and counters on vs off differ only by the scene's own frame-to-frame noise (adjacent shots: about 18-19k
+  pixels over 8 levels, mean 1.6, the same as two inspector shots against each other; shots further apart drift more).
+- Counters: `SHADER COUNTERS` once a second, ~105 frames read per second, 0 skipped; the probe at (480, 400) arrived. Cost: the trace
+  went from p50 0.25 ms to 0.58 ms with the counting build (+0.33 ms at 1080p, half-resolution trace).
+- What the Hi-Z counters showed (per frame, 219.6k traced rays): 219.2k (99.8 %) walked to the end / off the screen with nothing found,
+  340 (0.16 %) walk hits, 0 thrown away, 0 out of cells, 26 not started; about 11 cells per ray, and 10 of those skipped as "behind by more
+  than the thickness" (2.20M a frame) against 0.37 facing and 0.14 own plane. The probe pixel (ground, 2835 units): end rule 0 after 10
+  cells, 9 of them thickness skips. So nearly every ray rejects the cells it passes as "behind": the thickness test is the suspect.
+- Fixed after it (commit after 9c6fbf14): (1) the frame effects whose class overrides Render (AmbientLight, VolumetricFog, GodRays,
+  SMAA, SunShadows, ...) were missing, and with the chain on the game texture the picture was labelled "own target": frame stages now
+  come from ShaderManager's call sites, taken only when the frame was written (FrameChain write count), and own targets from
+  RenderEffectToRT; (2) the reflection capture's cube faces filled the 64 stages: cube faces are left out; (3) a ring slot left from the
+  previous switch-on was logged as the next shot's "first result" (old pixel): results from before the switch-on are dropped.

@@ -7,6 +7,7 @@
 namespace PixelInspector {
 
 bool Active = false;
+int InOwnTarget = 0;
 
 namespace {
 	const char* const Section = "Main.Develop.PixelInspector";
@@ -42,6 +43,10 @@ namespace {
 	int						LoggedX = -2, LoggedY = -2;
 	UINT					LoggedFrame = 0;
 	bool					Picking = false;
+	UINT					ActiveSince = 0;			// results of frames before the latest switch-on are dropped
+	UINT					LastWrites = 0xFFFFFFFFu;	// FrameChain::WriteCount at the last frame stage
+	EffectRecord*			LastFrameEffect = nullptr;	// (without the chain) the last frame stage's effect
+	UINT					LastFrameStage = 0;
 	UINT					Captured = 0, Skipped = 0;	// stages recorded / refused (bound as the frame target, multisampled ...)
 
 	bool Setup() {
@@ -196,23 +201,41 @@ void Capture(const char* Label, IUnknown* Resource, Kind kind) {
 	if (release) surface->Release();
 }
 
-void AfterEffect(EffectRecord* Effect, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT Technique) {
-	if (!Active || !Effect) return;
+void AfterOwnTarget(EffectRecord* Effect, IDirect3DSurface9* Target, UINT Technique) {
+	if (!Active || !Effect || !Target || !Effect->Enabled || !Effect->Effect) return;
 	auto& effects = TheShaderManager->Effects;
-	char label[64];
-	if (RenderTarget && RenderTarget == RenderedSurface) {
-		// A pass into its own target (RenderEffectToRT). Depth and normals are recorded explicitly (ShaderManager), once.
-		if ((EffectRecord*)effects.CombineDepth == Effect || (EffectRecord*)effects.Normals == Effect) return;
-		const bool shadow = effects.ShadowsExteriors && RenderTarget == effects.ShadowsExteriors->Textures.ShadowPassSurface;
-		_snprintf_s(label, sizeof(label), _TRUNCATE, "%s t%u -> %s", Effect->Name, Technique, shadow ? "shadow buffer" : "own target");
-		Capture(label, RenderTarget, Buffer);
-		return;
-	}
-	// A frame effect: the picture after it is the chain's current image, or the game target when it wrote that directly.
+	// Depth and normals are recorded explicitly (ShaderManager), once; the game target is a frame stage, not an own target.
+	if ((EffectRecord*)effects.CombineDepth == Effect || (EffectRecord*)effects.Normals == Effect) return;
 	FrameChain& chain = TheShaderManager->Chain;
-	IDirect3DSurface9* image = chain.IsActive() && chain.FinalIsWritten() ? chain.FinalSurface() : TheTextureManager->RenderedSurface;
-	_snprintf_s(label, sizeof(label), _TRUNCATE, Technique ? "after %s (t%u)" : "after %s", Effect->Name, Technique);
+	if (chain.IsActive() && Target == chain.FinalSurface()) return;
+	IDirect3DCubeTexture9* cube = nullptr;
+	if (SUCCEEDED(Target->GetContainer(__uuidof(IDirect3DCubeTexture9), (void**)&cube)) && cube) { cube->Release(); return; }
+	const bool shadow = effects.ShadowsExteriors && Target == effects.ShadowsExteriors->Textures.ShadowPassSurface;
+	char label[64];
+	_snprintf_s(label, sizeof(label), _TRUNCATE, "%s t%u -> %s", Effect->Name, Technique, shadow ? "shadow buffer" : "own target");
+	Capture(label, Target, Buffer);
+}
+
+void AfterFrame(EffectRecord* Effect) {
+	if (!Active || !Effect) return;
+	FrameChain& chain = TheShaderManager->Chain;
+	IDirect3DSurface9* image = TheTextureManager->RenderedSurface;
+	if (chain.IsActive()) {
+		// Only when the frame was written since the last stage (an effect that did not draw leaves the count alone). After a Commit the
+		// picture is the chain's current buffer; after CommitFinal or Sync (the effect drew into the game target) it is the game target.
+		if (chain.WriteCount() == LastWrites) return;
+		LastWrites = chain.WriteCount();
+		if (chain.LastWriteKind() != 1) image = chain.FinalSurface();
+	}
+	else {
+		if (!Effect->Enabled || !Effect->Effect) return;
+		if (Effect == LastFrameEffect && LastFrameStage + 1 == Current.count) return;
+	}
+	char label[64];
+	_snprintf_s(label, sizeof(label), _TRUNCATE, "after %s", Effect->Name);
 	Capture(label, image, Color);
+	LastFrameEffect = Effect;
+	LastFrameStage = Current.count - 1;
 }
 
 void EndFrame() {
@@ -226,6 +249,7 @@ void EndFrame() {
 		static float data[MaxStages][RecordVec4][4];
 		int slot = 0;
 		while (Ring.Poll(data, MaxStages * RecordBytes, slot)) {
+			if (Meta[slot].frame < ActiveSince) continue;	// recorded before this switch-on (a ring slot left from the last time)
 			Latest = Meta[slot];
 			memcpy(LatestData, data, sizeof(float) * 4 * RecordVec4 * Latest.count);
 			HaveLatest = true;
@@ -245,7 +269,9 @@ void EndFrame() {
 	const bool wasActive = Active;
 	Active = Enabled && inside && Setup();
 	NeedsDxvk = Enabled && !DebugReadback::Ext && DebugReadback::Tried;
-	if (!Active && wasActive) { LoggedX = LoggedY = -2; LoggedFrame = 0; }	// the next time it is switched on logs its first result again
+	if (!Active && wasActive) { LoggedX = LoggedY = -2; LoggedFrame = 0; HaveLatest = false; }	// the next switch-on logs its first result again
+	if (Active && !wasActive) ActiveSince = FrameNumber + 1;
+	LastFrameEffect = nullptr;
 	Current.count = 0;
 	Current.x = PixelX; Current.y = PixelY;
 	Current.width = TheRenderManager->width; Current.height = TheRenderManager->height;

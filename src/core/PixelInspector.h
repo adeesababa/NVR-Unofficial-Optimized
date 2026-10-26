@@ -26,12 +26,22 @@ namespace PixelInspector {
 	void Capture(const char* Label, IUnknown* Resource, Kind kind = Color);
 	inline void CaptureIf(const char* Label, IUnknown* Resource, Kind kind = Color) { if (Active && Resource) Capture(Label, Resource, kind); }
 
-	// EffectRecord::Render, when an effect has drawn: the frame after it (frame effects), or its own target (RenderEffectToRT passes).
-	void AfterEffect(EffectRecord* Effect, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT Technique);
-	struct EffectScope {
+	// After each frame effect's Render call (ShaderManager's call sites; many effects override Render): the picture after it, if the
+	// frame was written since the last stage (FrameChain::WriteCount; without the chain: when the effect is enabled).
+	void AfterFrame(EffectRecord* Effect);
+	// Passes into an effect's own target (ShaderManager::RenderEffectToRT, and EffectRecord::Render for passes drawn with RenderTarget ==
+	// RenderedSurface outside it): that target after the pass. Cube map faces are left out (the reflection captures: dozens a frame).
+	void AfterOwnTarget(EffectRecord* Effect, IDirect3DSurface9* Target, UINT Technique);
+	extern int InOwnTarget;	// inside RenderEffectToRT: EffectScope leaves the stage to OwnTargetScope
+	struct OwnTargetScope {
+		EffectRecord* effect; IDirect3DSurface9* target; UINT technique;
+		OwnTargetScope(EffectRecord* e, IDirect3DSurface9* t, UINT tech) : effect(e), target(t), technique(tech) { InOwnTarget++; }
+		~OwnTargetScope() { InOwnTarget--; if (Active) AfterOwnTarget(effect, target, technique); }
+	};
+	struct EffectScope {	// EffectRecord::Render: own-target passes drawn without RenderEffectToRT
 		EffectRecord* effect; IDirect3DSurface9* target; IDirect3DSurface9* rendered; UINT technique;
 		EffectScope(EffectRecord* e, IDirect3DSurface9* t, IDirect3DSurface9* r, UINT tech) : effect(e), target(t), rendered(r), technique(tech) {}
-		~EffectScope() { if (Active) AfterEffect(effect, target, rendered, technique); }
+		~EffectScope() { if (Active && !InOwnTarget && target && target == rendered) AfterOwnTarget(effect, target, technique); }
 	};
 
 	// Once a frame, after NVR's post chain (Hooks\Render.cpp): queues this frame's records, reads the finished ones (never waits),
