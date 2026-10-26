@@ -2,7 +2,7 @@
 
 Branch `deep/fork-hdr`, fork patch `tools/nvr-dxvk/patches/0007-NVR-extension-1.5-hdr-...patch` (extension "1.5-hdr"; the
 merger renumbers). Off by default; nothing changes without the fork's d3d9.dll, and nothing changes with it while
-`[Shaders.HDR.Status] Enabled = false`.
+`[Shaders.HDR.Main] Enabled = false`.
 
 ## The user's display (checked 2026-10-26 03:10)
 - Monitor AOC AG276QZD2 on the GTX 1070. `IDXGIOutput6::GetDesc1`: colour space `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709`
@@ -10,7 +10,7 @@ merger renumbers). Off by default; nothing changes without the fork's d3d9.dll, 
 - Vulkan (vulkaninfo, NVIDIA): the surface offers `A2B10G10R10 + HDR10_ST2084` and `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR`
   **even with Windows HDR off**, so "the surface supports HDR10" says nothing about the display. NVR therefore checks Windows'
   own HDR switch (DXGI colour space of the monitor showing the game) and stays SDR when it is off.
-- To see real HDR the user turns on "Use HDR" in Windows Settings > Display, then `[Shaders.HDR.Status] Enabled = true`.
+- To see real HDR the user turns on "Use HDR" in Windows Settings > Display, then `[Shaders.HDR.Main] Enabled = true`.
 
 ## How it works
 1. The game's D3D9 back buffer stays 8-bit SDR. Everything drawn after NVR (HUD, menus, Pip-Boy overlay, ImGui) keeps
@@ -32,7 +32,7 @@ merger renumbers). Off by default; nothing changes without the fork's d3d9.dll, 
 ## Settings ([Shaders.HDR.Main], all apply immediately)
 | setting | default | meaning |
 |---|---|---|
-| `[Shaders.HDR.Status] Enabled` | false | HDR output on (needs NVR DXVK 1.5-hdr and Windows HDR on) |
+| `[Shaders.HDR.Main] Enabled` | false | HDR output on (needs NVR DXVK 1.5-hdr and Windows HDR on) |
 | Mode | 1 | 1 HDR10 (PQ, 10-bit), 2 scRGB (FP16 linear) |
 | PaperWhiteNits | 200 | where SDR white, HUD and menus land (match Windows' SDR content brightness) |
 | PeakNits | 0 | highlight ceiling; 0 = the display's peak from Windows (1000 if unknown) |

@@ -2,7 +2,7 @@
 
 // UNOFFICIAL 2026-10-26 (NVR DXVK extension 1.5-hdr, fork patch 0007): true HDR output on an HDR display.
 //
-// [Shaders.HDR.Status] Enabled (default off; the other settings in [Shaders.HDR.Main]). Needs the NVR DXVK d3d9.dll with ID3D9NvrExtHdr; on native D3D9, stock DXVK or an
+// [Shaders.HDR.Main] Enabled (default off; a settings-only menu entry like Cloth / CloudShadows). Needs the NVR DXVK d3d9.dll with ID3D9NvrExtHdr; on native D3D9, stock DXVK or an
 // older fork nothing here runs and the picture is exactly the old one.
 //
 // How: the game's D3D9 back buffer stays 8-bit SDR (the HUD, menus and everything after NVR draw into it as always). The fork
@@ -107,7 +107,7 @@ namespace HdrOutput {
 		S.Scene = Scene;
 		S.GainReady = false;
 		S.Frame++;
-		const bool enabled = TheSettingManager->GetSettingI("Shaders.HDR.Status", "Enabled") != 0;
+		const bool enabled = Setting("Enabled");
 		if (!enabled) { if (S.Active) { SetOff(); Reason("off"); } return; }
 		if (!S.Queried) {
 			S.Queried = true;
