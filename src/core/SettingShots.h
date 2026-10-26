@@ -39,6 +39,11 @@
 //                                                (player.setangle x and z from the moon's position in the sky)
 //   turn <degrees per second>                    (2026-10-25, cloudflicker) the player turns on the spot at this rate for the whole run
 //                                                (player.setangle z on the main loop each tick), so the camera pans as in play
+//   renderdoc [<path template>]                  (2026-10-26, DXVK fork barriers) this shot asks RenderDoc for a capture of one of its
+//                                                frames (TriggerCapture, two frames before the picture), saved as <template>_frame<N>.rdc
+//                                                (default .\NVR-Unofficial-Optimized-Logs\RenderDoc_<run>_<slug>). Needs RenderDoc in the
+//                                                game: under DXVK its Vulkan layer, ENABLE_VULKAN_RENDERDOC_CAPTURE=1 for the launch.
+//                                                Without it: logged, nothing else.
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -58,7 +63,8 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21)
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0;
+		bool renderdoc = false; std::string renderdocPath; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21); renderdoc: 2026-10-26
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -165,6 +171,11 @@ namespace SettingShots {
 				Change c; c.coverage = true; words >> c.value;
 				if (c.value.empty()) { error = "line " + std::to_string(number) + ": incomplete"; return false; }
 				List.back().changes.push_back(c);
+			}
+			else if (command == "renderdoc") {
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a renderdoc before the first 'shot'"; return false; }
+				List.back().renderdoc = true;
+				words >> List.back().renderdocPath;
 			}
 			else if (command == "sampler") { words >> CpuSampler::Hz; CpuSampler::Hz = std::clamp(CpuSampler::Hz, 100, 4000); }
 			else if (command == "affinity") {
@@ -394,6 +405,35 @@ namespace SettingShots {
 		else lastTurn = 0;
 	}
 
+	// 'renderdoc' (2026-10-26): RenderDoc's in-application API (renderdoc_app.h, RENDERDOC_API_1_1_2: the entries up to TriggerCapture),
+	// when RenderDoc is in the process (its renderdoc.dll: under DXVK the Vulkan layer). The capture is the next whole frame.
+	struct RenderDocApi {
+		void* getVersion; void* setOptionU32; void* setOptionF32; void* getOptionU32; void* getOptionF32; void* setFocusKeys; void* setCaptureKeys;
+		void* getOverlay; void* maskOverlay; void* removeHooks; void* unloadCrashHandler;
+		void (__cdecl* SetCaptureFilePathTemplate)(const char* pathTemplate);
+		void* getPathTemplate; void* getNumCaptures; void* getCapture;
+		void (__cdecl* TriggerCapture)();
+	};
+	inline void TriggerRenderDoc(const Shot& s) {
+		static RenderDocApi* api = nullptr;
+		if (!api) {
+			typedef int (__cdecl* GetApiFn)(int version, void** api);
+			HMODULE module = GetModuleHandleA("renderdoc.dll");
+			GetApiFn getApi = module ? (GetApiFn)GetProcAddress(module, "RENDERDOC_GetAPI") : nullptr;
+			if (!getApi || !getApi(10102, (void**)&api) || !api) {
+				api = nullptr;
+				Logger::Log("SETTING SHOTS %s: shot '%s': no RenderDoc in the game (under DXVK: ENABLE_VULKAN_RENDERDOC_CAPTURE=1 for the launch), no capture", Run, s.slug.c_str());
+				return;
+			}
+		}
+		char path[MAX_PATH];
+		if (!s.renderdocPath.empty()) strcpy_s(path, s.renderdocPath.c_str());
+		else sprintf_s(path, ".\\NVR-Unofficial-Optimized-Logs\\RenderDoc_%s_%s", Run, s.slug.c_str());
+		api->SetCaptureFilePathTemplate(path);
+		api->TriggerCapture();
+		Logger::Log("SETTING SHOTS %s: shot '%s': RenderDoc capture of the next frame asked (%s_frame<N>.rdc)", Run, s.slug.c_str(), path);
+	}
+
 	// Render.cpp, right after ShaderManager::UpdateConstants and EffectSelfTest::BeginFrame.
 	inline void BeginFrame() {
 		if (AllQueued && InFlight == 0) {
@@ -431,6 +471,7 @@ namespace SettingShots {
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
 		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
 		Frame++;
+		if (List[Index].renderdoc && Frame == ShotFrames() - 2) TriggerRenderDoc(List[Index]);	// the captured frame is still this shot's
 	}
 
 	// The picture of the current shot: named after it and written on a worker thread.
