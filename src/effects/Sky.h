@@ -45,6 +45,8 @@ public:
 		// y TintGradientHeight (Shaders/Includes/Sky.hlsl SkyLook)
 		D3DXVECTOR4		SkyTintHorizon = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 		D3DXVECTOR4		SkyLook = D3DXVECTOR4(1.0f, 0.3f, 0.0f, 0.0f);
+		// UNOFFICIAL 2026-10-26: for VolumetricFog's sky colour, rgb SkyTint x SkyTintHorizon (the sky at the horizon), w saturation
+		D3DXVECTOR4		FogSkyLook = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 	};
 	// UNOFFICIAL [Shaders.Sky.Physical]
 	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; bool LightsObjects; };

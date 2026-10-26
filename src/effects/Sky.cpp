@@ -20,6 +20,7 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_MoonData", &Constants.MoonData);
 	TheShaderManager->RegisterConstant("TESR_SkyTintHorizon", &Constants.SkyTintHorizon);	// UNOFFICIAL 2026-10-26
 	TheShaderManager->RegisterConstant("TESR_SkyLook", &Constants.SkyLook);
+	TheShaderManager->RegisterConstant("TESR_FogSkyLook", &Constants.FogSkyLook);
 }
 
 // UNOFFICIAL 2026-10-14 physical sky: Effects/Includes/Atmosphere.hlsl AtmSky, line for line (see there). Kept in step by
@@ -164,6 +165,9 @@ void SkyShaders::UpdateConstants() {
 	}
 	Constants.SkyLook.x = TheShaderManager->GetTransitionValue(Settings.SaturationDay, Settings.SaturationNight, 1.0f);
 	Constants.SkyLook.y = Settings.TintGradientHeight;
+	// the fog lies over the sky near the horizon and takes the sky's colour there: VolumetricFog.fx.hlsl, one register
+	Constants.FogSkyLook = D3DXVECTOR4(Constants.SkyTint.x * Constants.SkyTintHorizon.x, Constants.SkyTint.y * Constants.SkyTintHorizon.y,
+		Constants.SkyTint.z * Constants.SkyTintHorizon.z, Constants.SkyLook.x);
 	Constants.MoonData.x = Settings.MoonBrightness;
 
 	// Order-2 spherical harmonic projection of the sky, convolved with the clamped-cosine

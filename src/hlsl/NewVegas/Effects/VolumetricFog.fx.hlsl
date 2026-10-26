@@ -27,6 +27,11 @@ float4 TESR_SkyIrradiance[9]; // order-2 SH sky irradiance, linear radiance (Sky
 // original NVR fog (upstream master ab16e86c) had it; TESR_SkyIrradiance above also carries the physical sky when that is on.
 // Only the *Classic techniques and FogReference read it, and only in their preshaders (no shader constant registers).
 float4 TESR_SkyIrradianceGame[9];
+// UNOFFICIAL 2026-10-26 [Shaders.Sky.Main] sky look (Sky.cpp FogSkyLook): rgb the sky tint times the horizon tint (what the sky
+// shows at the horizon), w the sky's saturation. The fog's sky colour takes them as the sky does there (Includes/Sky.hlsl SkyLook):
+// near the horizon the fog lies over the sky, so without this the horizon tint and the tints' effect on the haze were painted over.
+// One register: the composite fog pass is at ps_3_0's 224-register limit (a second one did not fit with the physical sky on).
+float4 TESR_FogSkyLook;
 
 // sun shadow cascade data -- registered globally by ShadowsExteriorEffect, same constants
 // SunShadows.fx.hlsl consumes. Declared here independently since each .fx effect compiles on
@@ -623,6 +628,7 @@ void LegacyFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 #if PHYSICAL_SKY_ON
 		[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
 #endif
+		skyColor.rgb = SkyLook(skyColor.rgb, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_FogSkyLook.w, 1, 0, 0));	// UNOFFICIAL 2026-10-26 as the sky at the horizon
 
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
 		sunStrength = lerp(sunStrength, max(sunStrength * 2, 10), normalizedDepth);
@@ -824,6 +830,7 @@ void ModernFogTerms(float2 uv, out float3 fogMul, out float3 fogAdd, out float n
 			[branch] if (TESR_PhysSky.x > 0.0f) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);	// UNOFFICIAL physical sky
 		}
 #endif
+		skyColor.rgb = SkyLook(skyColor.rgb, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_FogSkyLook.w, 1, 0, 0));	// UNOFFICIAL 2026-10-26 as the sky at the horizon
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
@@ -1616,6 +1623,7 @@ float4 MasterReferenceFog(VSOUT IN) : COLOR0
 		sunColorV *= isDayTime * isExterior;
 
 		skyColor.rgb = GetSkyColor(0.5, 1, sunHeight, sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, black.rgb) * TESR_SunsetColor.w;
+		skyColor.rgb = SkyLook(skyColor.rgb, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_FogSkyLook.w, 1, 0, 0));	// UNOFFICIAL 2026-10-26 as the sky at the horizon
 
 		// add sun influence/scattering, narrowed/widened by PhaseAsymmetry, gated by the shadow cascades
 		float sunStrength = TESR_FogData.z / (1 + 2 * strength);
