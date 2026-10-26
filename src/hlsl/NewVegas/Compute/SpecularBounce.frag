@@ -1,7 +1,6 @@
 // Specular, technique SpecularBounce (needs NVR DXVK): BounceLight's full-resolution combine and Specular in one pass, as
 // Effects/Specular.fx.hlsl's SpecularBouncePS line for line. effects/Specular.cpp RenderWithBounce runs it through the frame chain.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SpecularCommon.glsl"
 

@@ -6,7 +6,6 @@
 // The D3D9 technique clips pixels in Scale and DepthBlur and leaves the destination holding its input there (the frame chain
 // pre-fills it); those branches return the input directly.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

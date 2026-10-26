@@ -2,7 +2,6 @@
 // technique 0, line for line, with the Includes it uses (Shadows, Depth, Normals, Helpers). effects/PointShadows2.cpp ExtRender.
 // TESR_PointShadowBuffer is read from a copy of the buffer as it was before this pass (the pass writes the buffer itself).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

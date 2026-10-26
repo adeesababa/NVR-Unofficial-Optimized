@@ -2,7 +2,6 @@
 // t_rendered is the current image (the blurred god rays in its upper left quarter), t_source the frame before the effect.
 // Depth: CombineDepth's; normals: TESR_NormalsBuffer (POINT, CLAMP); t_shadow: TESR_PointShadowBuffer (ANISOTROPIC, WRAP).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_samplerless_texture_functions : enable
 #include "Common.glsl"

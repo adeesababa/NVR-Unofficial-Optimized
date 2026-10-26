@@ -1,7 +1,6 @@
 // Lens as a Vulkan pass (needs NVR DXVK): Effects/Lens.fx.hlsl line for line. effects/Lens.cpp ExtRender.
 // t_source is TESR_SourceBuffer (the frame copy ExtFullScreen refreshes), t_dirt the file texture Effects\dirtlens.png (WRAP).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

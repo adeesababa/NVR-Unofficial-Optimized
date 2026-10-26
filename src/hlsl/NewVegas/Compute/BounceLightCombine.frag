@@ -2,7 +2,6 @@
 // line, full resolution, through the frame chain. With the spill retired its slope, debug views and light-pixel test are off.
 // pc.pass_.x: 1 = hard (the BounceLight*HardEdges techniques: UpsampleHardEdges).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "BounceLight.glsl"
 
@@ -27,8 +26,8 @@ vec3 UpsampleHardEdges(vec2 coord, float depth, vec2 base, vec2 fraction) {
     tolerance += 1.5 * (slopeX + slopeY) / cb.bounceLayout.x;
     vec3 sum = vec3(0.0);
     float weights = 1.0e-5;
-    [[unroll]] for (int y = 0; y < 2; y++) {
-        [[unroll]] for (int x = 0; x < 2; x++) {
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
             vec4 tap = POINT_LOD(t_bounce, (base + vec2(float(x), float(y)) + 0.5) * cb.bounceLayout.zw);
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y) * (abs(tap.a - depth) <= tolerance ? 1.0 : 0.0);
             sum += tap.rgb * weight;
@@ -53,8 +52,8 @@ void main() {
         float tolerance = max(depth * 0.03, 2.0);
         vec3 sum = vec3(0.0);
         float weights = 1.0e-5;
-        [[unroll]] for (int y = 0; y < 2; y++) {
-            [[unroll]] for (int x = 0; x < 2; x++) {
+        for (int y = 0; y < 2; y++) {
+            for (int x = 0; x < 2; x++) {
                 vec4 tap = POINT_LOD(t_bounce, (base + vec2(float(x), float(y)) + 0.5) * cb.bounceLayout.zw);
                 float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);
                 weight /= 1.0 + abs(tap.a - depth) / tolerance;

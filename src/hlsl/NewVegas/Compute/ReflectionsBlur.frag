@@ -1,7 +1,6 @@
 // Reflections techniques 2 / 4 (Blur X / Blur Y, half resolution) as a Vulkan pass: Effects/Reflections.fx.hlsl BlurAxis
 // line for line. pc.pass 0: Blur X (reads TESR_ReflectionsTemp), 1: Blur Y (reads TESR_ReflectionsTrace).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 

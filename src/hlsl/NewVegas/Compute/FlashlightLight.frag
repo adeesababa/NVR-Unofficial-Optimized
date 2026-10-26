@@ -2,7 +2,6 @@
 // effects/Flashlight.cpp ExtRender. Without shadows the technique's first pass (NoShadow) fills the image with 1 and this pass
 // reads it back as isShadow; that pass is not drawn here, pc.mode 1 stands for its 1 (exact in any target format).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Flashlight.glsl"
 

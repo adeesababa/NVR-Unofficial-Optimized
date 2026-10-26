@@ -1,7 +1,6 @@
 // VolumetricClouds technique Composite (0) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricClouds.fx.hlsl CompositePS and
 // CloudShadowAt line for line, full resolution, through the frame chain. effects/VolumetricClouds.cpp ExtRender.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

@@ -1,7 +1,6 @@
 // Sandstorm technique 0 (the full-resolution original) as a Vulkan pass (needs NVR DXVK): Effects/Sandstorm.fx.hlsl SandstormPS
 // line for line, through the frame chain. effects/Sandstorm.cpp ExtRender.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -38,8 +37,8 @@ void main() {
     float dist;
     if (TESR_SandstormQuality.z > 0.5) {
         float shown = 0.0;
-        [[unroll]] for (int y = -1; y <= 1; y++)
-            [[unroll]] for (int x = -1; x <= 1; x++)
+        for (int y = -1; y <= 1; y++)
+            for (int x = -1; x <= 1; x++)
                 shown += float((2 - abs(x)) * (2 - abs(y))) * exp(-ViewDistance(uv + vec2(float(x), float(y)) * texel, visibility) * fullDensity);
         dist = min(-log(max(shown / 16.0, 1e-9)) / fullDensity, visibility * 6.0);
     }

@@ -2,7 +2,6 @@
 // POST_PROCESS_ANTI_ALIASING_STABLE (DitherOnlyStable) line for line, with Includes/DitherNoise.hlsl inlined.
 // VPOS = floor(gl_FragCoord.xy). effects/DitherBuster.cpp ExtRender. LINEAR, CLAMP, no mips.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

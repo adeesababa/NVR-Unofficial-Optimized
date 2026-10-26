@@ -3,7 +3,6 @@
 // facing-away returns as one branch around the march (the same value either way; the D3D9 compiler had flattened ScreenSpaceShadow's
 // returns into selects). Here that layout is needed too: the blue noise is read with implicit derivatives, so in uniform flow.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SunShadows.glsl"
 

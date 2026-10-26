@@ -1,7 +1,6 @@
 // DitherBuster as a Vulkan pass (needs NVR DXVK): Effects/DitherBuster.fx.hlsl technique POST_PROCESS_ANTI_ALIASING
 // (DitherOnly) line for line. effects/DitherBuster.cpp ExtRender. LINEAR, CLAMP, no mips, as the technique's samplers.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

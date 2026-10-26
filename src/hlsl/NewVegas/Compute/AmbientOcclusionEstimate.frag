@@ -3,7 +3,6 @@
 // NVR_AOBuffer0 (or Low0). uv is PackedVS's: the AO target's texel centre. The Fast variants compute the same picture (only where
 // the compiler could branch differs); here every read is level 0 of a single-level target, as there.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientOcclusion.glsl"
 
@@ -59,7 +58,7 @@ vec2 PackedSSAOValues(vec2 uv) {
     mat3 tbn = mat3(tangent, bitangent, normal);    // (columns = the HLSL's rows: mul(v, tbn) is tbn * v)
     vec2 occlusion = vec2(0.0);
 
-    [[unroll]] for (int i = 0; i < kernelSize; ++i) {
+    for (int i = 0; i < kernelSize; ++i) {
         vec3 rand = random(uv + float(i) * cb.reciprocalResolution.x);
         vec3 raw = vec3(expand(rand.xy), rand.z);
         vec3 sampleX = tbn * normalize(raw * vec3(1.0, 0.0, 1.0));
@@ -105,7 +104,7 @@ float GTAOValue(vec2 uv) {
     float falloffMul = -1.0 / (0.615 * radius);
     float falloffAdd = (1.0 - 0.615) / 0.615 + 1.0;
     float visibility = 0.0;
-    [[unroll]] for (int slice = 0; slice < 2; slice++) {
+    for (int slice = 0; slice < 2; slice++) {
         float phi = (float(slice) + noise.x) * (PI / 2.0);
         vec2 omega = vec2(cos(phi), sin(phi));
         vec3 direction = vec3(omega, 0.0);
@@ -119,7 +118,7 @@ float GTAOValue(vec2 uv) {
         float low0 = cos(n + PI / 2.0);
         float low1 = cos(n - PI / 2.0);
         float horizon0 = low0, horizon1 = low1;
-        [[unroll]] for (int j = 0; j < 4; j++) {
+        for (int j = 0; j < 4; j++) {
             float t = (float(j) + noise.y) / 4.0;
             t *= t;
             vec2 offset = stepUV * t + vec2(omega.x, -omega.y) * cb.reciprocalResolution.xy * 2.0;
@@ -158,7 +157,7 @@ float SkyVisibility(vec3 viewPosition, vec3 viewNormal, float turn) {
     float up = max(n.z, 0.0);
     float open = up * SkyOpen(p + vec3(0.0, 0.0, reach / 3.0)) * SkyOpen(p + vec3(0.0, 0.0, reach));
     float total = up;
-    [[unroll]] for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 6; i++) {
         float a = turn + float(i) * (PI / 3.0);
         float e = (i & 1) != 0 ? 0.5236 : 1.0472;	// fmod(i, 2) > 0.5
         vec3 dir = vec3(cos(a) * cos(e), sin(a) * cos(e), sin(e));

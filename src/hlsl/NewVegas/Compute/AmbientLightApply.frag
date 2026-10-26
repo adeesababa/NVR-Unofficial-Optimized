@@ -2,7 +2,6 @@
 // line for line (AmbientLight.glsl). variant bit 0: sky (technique AmbientLightSky); bit 1: a texture is on NVR_GridWave's stage (the
 // D3D9 pass reads an empty stage as 0 for DebugView 8 and 12). Into the frame. effects/AmbientLight.cpp ExtDraw.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 
@@ -51,8 +50,8 @@ vec2 SkyFactorAt(vec2 uv, float depth) {
     vec2 fraction = position - base;
     vec2 sum = vec2(0.0);
     float weights = 0.0;
-    [[unroll]] for (int y = 0; y < 2; y++) {
-        [[unroll]] for (int x = 0; x < 2; x++) {
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
             vec2 tapUV = clamp((base + vec2(float(x), float(y)) + 0.5) * cb.alLayout.zw, 0.5 * cb.alLayout.zw, 1.0 - 0.5 * cb.alLayout.zw);
             vec3 tap = pointLod(t_skyVis, tapUV).rgb;
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);
@@ -81,8 +80,8 @@ vec4 Apply(vec2 uv, bool sky) {
     float tolerance = max(depth * 0.03, 2.0);
     vec4 sum = vec4(0.0);
     float weights = 1.0e-5;
-    [[unroll]] for (int y = 0; y < 2; y++) {
-        [[unroll]] for (int x = 0; x < 2; x++) {
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
             vec2 tapUV = (base + vec2(float(x), float(y)) + 0.5) * cb.alLayout.zw;
             float tapDepth = readDepthLod(t_depth, tapUV);
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y);

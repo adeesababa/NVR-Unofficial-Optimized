@@ -2,7 +2,6 @@
 // for line. The half-resolution mask (R; G holds its depth) upsampled depth-aware to the full-resolution buffer.
 // effects/PointShadows.cpp ExtRender runs it.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "PointShadowsCommon.glsl"
 
@@ -30,8 +29,8 @@ void main() {
     float depth = readDepthAt(t_depth, LINEAR_CLAMP, uv);
     float tolerance = 1.0 + 0.01 * depth;
     float sum = 0.0, weights = 0.0;
-    [[unroll]] for (int y = 0; y < 2; ++y) {
-        [[unroll]] for (int x = 0; x < 2; ++x) {
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
             vec2 tap = textureLod(sampler2D(t_mask, POINT_WRAP), (base + vec2(float(x), float(y)) + 0.5) * lowRR, 0.0).rg;
             float weight = (x != 0 ? fraction.x : 1.0 - fraction.x) * (y != 0 ? fraction.y : 1.0 - fraction.y) + 1e-4;
             float gap = abs(tap.y - depth) / tolerance;

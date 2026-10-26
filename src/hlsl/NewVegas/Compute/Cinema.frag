@@ -2,7 +2,6 @@
 // dither 0 = technique Cinema, dither 1 = technique CinemaSkyDither (Cinema, then the sky dither).
 // t_noise is the file texture Effects\bluenoise256.dds: POINT and WRAP (the second sampler slot). Depth: CombineDepth's.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

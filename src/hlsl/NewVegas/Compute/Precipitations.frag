@@ -2,7 +2,6 @@
 // The matrices arrive as the D3D9 effect uploads them, so HLSL mul(v, M) is M * v here, and M[i][j] is the same element.
 // fmod is x - y*trunc(x/y); smoothstep with edge0 > edge1 is written out with the HLSL formula (GLSL leaves it undefined).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

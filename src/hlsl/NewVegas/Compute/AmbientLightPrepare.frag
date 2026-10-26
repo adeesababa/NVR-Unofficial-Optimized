@@ -1,7 +1,6 @@
 // AmbientLight pass Prepare as a Vulkan pass (needs NVR DXVK): Effects/AmbientLight.fx.hlsl Prepare, line for line (AmbientLight.glsl).
 // Into NVR_AmbientLightPrep (half resolution). effects/AmbientLight.cpp ExtDraw.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 

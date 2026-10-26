@@ -2,7 +2,6 @@
 // Effects/VolumetricSmoke.fx.hlsl CompositePS, CutAt and HazeAt line for line. effects/VolumetricSmoke.cpp ExtRender (through the
 // frame chain: ExtFullScreen for the whole screen, else the smoke's rectangle with ExtDrawTo).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

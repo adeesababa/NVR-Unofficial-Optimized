@@ -2,7 +2,6 @@
 // Effects/Specular.fx.hlsl's SpecularLowPS line for line. effects/Specular.cpp ExtRender (technique 2) draws it into
 // TESR_SpecularBuffer; NVR_SpecularSkyVis and NVR_SpecularSunFar are the extras BindExtras sets for that step.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SpecularCommon.glsl"
 
@@ -41,7 +40,7 @@ void main() {
     float tolerance = 0.05 * depth + 4.0;
     const vec2 ring[16] = vec2[16](vec2(1, 0), vec2(1, 1), vec2(0, 1), vec2(-1, 1), vec2(-1, 0), vec2(-1, -1), vec2(0, -1), vec2(1, -1),
                                    vec2(3, 1), vec2(1, 3), vec2(-1, 3), vec2(-3, 1), vec2(-3, -1), vec2(-1, -3), vec2(1, -3), vec2(3, -1));
-    [[unroll]] for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < 16; k++) {
         vec4 s = sampleLod(t_specularNormals, pc.pointSampler, uv + ring[k] * lowPx);
         float w = abs(s.a - depth) < tolerance ? 1.0 : 0.0;
         sum += w * s.xyz;

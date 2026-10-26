@@ -2,7 +2,6 @@
 // line; effects/DepthOfField.cpp ExtRender. t_rendered is TESR_RenderedBuffer (the blur amounts of the DoF pass), t_source is
 // TESR_SourceBuffer (the image before the effect). Both LINEAR, CLAMP.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

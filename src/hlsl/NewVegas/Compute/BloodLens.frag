@@ -1,7 +1,6 @@
 // BloodLens as a Vulkan pass (needs NVR DXVK): Effects/BloodLens.fx.hlsl line for line. effects/BloodLens.cpp ExtRender.
 // t_blood is the file texture Effects\bloodlens.dds (WRAP sampler, the second sampler slot).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

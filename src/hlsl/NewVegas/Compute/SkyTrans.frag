@@ -1,7 +1,6 @@
 // SkyView technique 1 (SkyTrans: the sun's optical depth table, 256 x 64) as a Vulkan pass (needs NVR DXVK):
 // Effects/SkyView.fx.hlsl SkyTransPS line for line. effects/SkyView.cpp ExtRender.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SkyAtmosphere.glsl"
 

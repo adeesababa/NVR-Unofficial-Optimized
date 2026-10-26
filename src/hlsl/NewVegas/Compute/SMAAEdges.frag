@@ -8,7 +8,6 @@
 // (REPLACE 1 where a pixel is written).
 // Every sampler of the .fx is LINEAR, CLAMP (SMAASamplePoint is tex2D through it under SMAA_HLSL_3); the targets have no mips.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

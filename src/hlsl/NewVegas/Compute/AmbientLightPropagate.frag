@@ -2,7 +2,6 @@
 // line for line (AmbientLight.glsl). Into the grid atlas (2 or 4 targets: the colours only when the grid carries them).
 // effects/AmbientLight.cpp ExtDraw.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 
@@ -24,7 +23,7 @@ void main() {
     vec4 sh = vec4(0.0);
     vec4 colour = vec4(0.0);
     vec4 blocker = pointLod(t_geometry, uvIn);
-    [[unroll]] for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 6; k++) {
         vec3 axis = k == 0 ? vec3(1, 0, 0) : k == 1 ? vec3(-1, 0, 0) : k == 2 ? vec3(0, 1, 0) : k == 3 ? vec3(0, -1, 0) : k == 4 ? vec3(0, 0, 1) : vec3(0, 0, -1);
         vec3 neighbour = cell - axis;
         if (any(lessThan(neighbour, vec3(0.0))) || neighbour.x >= GridX || neighbour.y >= GridY || neighbour.z >= GridZ) continue;

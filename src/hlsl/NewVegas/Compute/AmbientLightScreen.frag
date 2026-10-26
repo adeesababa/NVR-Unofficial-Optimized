@@ -2,7 +2,6 @@
 // line for line (AmbientLight.glsl). Into the screen memory atlas (2 or 3 targets: the third, the walls, only with GridWallMemory).
 // effects/AmbientLight.cpp ExtDraw.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "AmbientLight.glsl"
 

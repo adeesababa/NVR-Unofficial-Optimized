@@ -2,7 +2,6 @@
 // Effects/SunShadows.fx.hlsl Shadow with GetLightAmount / GetLightAmountValue and Includes/Shadows.hlsl, line for line
 // (SHADOW_FILTER_TAPS 1). The atlas is read with textureLod 0 everywhere, as the .fx does.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SunShadows.glsl"
 

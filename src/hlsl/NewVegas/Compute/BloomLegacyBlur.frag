@@ -1,7 +1,6 @@
 // BloomLegacy passes 2 and 3 (BlurPass, horizontal then vertical) as Vulkan passes (needs NVR DXVK): Effects/BloomLegacy.fx.hlsl
 // line for line. effects/BloomLegacy.cpp ExtRender; the offset mask is (1,0) for the first and (0,1) for the second.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

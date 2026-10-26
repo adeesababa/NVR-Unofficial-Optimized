@@ -1,7 +1,6 @@
 // SunShadows' contact-shadow blurs as a Vulkan pass: Effects/SunShadows.fx.hlsl, line for line. pc.pass 0: DepthBlurKeep with
 // OffsetMaskH, 1: DepthBlurKeep with OffsetMaskV (both: TESR_ShadowScreenSpaceData.y, 3500, SSS_MAXDEPTH), 2: FinalContactBlur.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SunShadows.glsl"
 

@@ -2,7 +2,6 @@
 // Effects/ShadowsInteriors.fx.hlsl with Includes/Blur.hlsl and Depth.hlsl, line for line. effects/ShadowsInteriors.cpp ExtRender.
 // The mask is the shadow term (NVR_InteriorShadowIn, G16R16); the offset mask is (1,0) for the first pass, (0,1) for the second.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -65,7 +64,7 @@ void main() {
 
     vec4 taps[cKernelSize];
     vec4 spread = vec4(0.0);
-    [[unroll]] for (int t = 0; t < cKernelSize; t++) {
+    for (int t = 0; t < cKernelSize; t++) {
         taps[t] = sampleMask(uv + (blurOffset(t) * pc.offsetMask) * 1.0);
         spread = max(spread, abs(taps[t] - center));
     }
@@ -78,7 +77,7 @@ void main() {
     vec4 color1 = center * weightSum;
     float depthDrop = 3500.0 * (depth1 / pc.cameraData.y);
 
-    [[unroll]] for (int i = 0; i < cKernelSize; i++) {
+    for (int i = 0; i < cKernelSize; i++) {
         float depth2 = readDepthLod(uv + (blurOffset(i) * pc.offsetMask) * 1.0);
         float diff = abs(depth1 - depth2);
 

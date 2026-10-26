@@ -3,7 +3,6 @@
 // buffer). uv is HalfVS's: the low-resolution texel centre.
 // pc.pass_: x 1 = GatherPlus, y its samples (8 or 4), z 1 = temporal, w motionPixels.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "BounceLight.glsl"
 
@@ -31,7 +30,7 @@ vec4 Gather() {
     float radius = min(Radius, MaxScreenRadius * 2.0 * origin.z / cb.projectionTransform[0][0]);
 
     vec3 indirect = vec3(0.0);
-    [[unroll]] for (int i = 0; i < SAMPLES; i++) {
+    for (int i = 0; i < SAMPLES; i++) {
         float angle = (float(i) + noise.x) * (6.2831853 / float(SAMPLES));
         float r = radius * (0.15 + 0.85 * fract(noise.y + float(i) * 0.618034));
         vec3 p = origin + (tangent * cos(angle) + bitangent * sin(angle)) * r + normal * (r * 0.25);
@@ -70,7 +69,7 @@ vec4 GatherPlus(int samples, bool temporal, float motionPixels) {
 
     vec3 indirect = vec3(0.0);
     float seenWeight = 0.0, seen = 0.0; // the seen samples' weights added up, and how many were seen
-    [[unroll]] for (int i = 0; i < samples; i++) {
+    for (int i = 0; i < samples; i++) {
         float angle = (float(i) + noise.x) * (6.2831853 / float(samples));
         float r = radius * (0.15 + 0.85 * fract(noise.y + float(i) * 0.618034));
         vec3 p = origin + (tangent * cos(angle) + bitangent * sin(angle)) * r + normal * (r * 0.25);

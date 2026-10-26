@@ -2,7 +2,6 @@
 // Effects/BounceLight.fx.hlsl line for line, into NVR_BouncePrep (or PrepQuarter). uv is HalfVS's: the low-resolution texel centre.
 // pc.pass_.x: 1 = PreparePlus.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "BounceLight.glsl"
 

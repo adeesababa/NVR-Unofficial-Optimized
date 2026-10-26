@@ -1,7 +1,6 @@
 // Underwater pass 5, the water's wobble (needs NVR DXVK): Effects/Underwater.fx.hlsl WaterDistortion line for line. effects/Underwater.cpp
 // ExtRender. t_rendered is the current image (the water pass's result), t_source the frame before the effect, t_depth CombineDepth's.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_samplerless_texture_functions : enable
 #include "Common.glsl"

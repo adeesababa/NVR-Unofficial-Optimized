@@ -3,7 +3,6 @@
 // RenderSkyVisibility. The pass uses FrameVS (not PackedVS) in a viewport the size of the sky target, so its uv is the shared
 // quad's: the extension's texel centre moved by the quad's full-resolution half-texel offset (main).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_samplerless_texture_functions : require
 #include "AmbientOcclusion.glsl"
@@ -105,10 +104,10 @@ void main() {
         {
             float total = 0.034 * saturate(n.z);
             float open = total * SkyOpenV2(o + M[2] * (reach * 0.4), softScale) * SkyOpenV2(o + M[2] * reach, softScale);
-            [[unroll]] for (int i = 0; i < 8; i++) {
+            for (int i = 0; i < 8; i++) {
                 float a = (float(i) + 0.5) * (PI / 4.0);
                 vec2 h = vec2(cos(a), sin(a));
-                [[unroll]] for (int k = 0; k < 2; k++) {
+                for (int k = 0; k < 2; k++) {
                     vec3 dir = k != 0 ? vec3(h * 0.8660254, 0.5) : vec3(h * 0.5, 0.8660254);
                     float w = (k != 0 ? 0.0884 : 0.0324) * saturate(dot(dir, n));
                     vec3 stepO = M * dir;

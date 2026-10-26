@@ -1,6 +1,5 @@
 // Reflections technique 3 (Temporal, half resolution) as a Vulkan pass: Effects/Reflections.fx.hlsl TemporalPS line for line.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Reflections.glsl"
 
@@ -11,8 +10,8 @@ void main() {
     float depth = readDepthLod(uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy));
 
     vec4 low = current, high = current;
-    [[unroll]] for (int y = -1; y <= 1; y++) {
-        [[unroll]] for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             vec4 tap = textureLod(sampler2D(t_trace, POINT_S), uv + vec2(x, y) * LowTexel, 0.0);
             low = min(low, tap); high = max(high, tap);

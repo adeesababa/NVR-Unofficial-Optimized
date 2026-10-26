@@ -1,7 +1,6 @@
 // SkyView technique 2 (SkyMS: the multiple scattering table Psi_ms, 32 x 32) as a Vulkan pass (needs NVR DXVK):
 // Effects/SkyView.fx.hlsl SkyMSPS line for line. effects/SkyView.cpp ExtRender. Reads the SkyTrans table (t_trans).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 

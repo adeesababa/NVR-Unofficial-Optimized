@@ -141,8 +141,8 @@ TAAResult ResolveCore(vec2 p) {
     vec3 moment2 = vec3(0.0);
     vec3 neighbourMin = vec3(1e5);
     vec3 neighbourMax = vec3(-1e5);
-    [[unroll]] for (int y = -1; y <= 1; y++) {
-        [[unroll]] for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
             vec3 c = RGBToYCoCg(textureLod(sampler2D(t_source, POINT_S), p + vec2(x, y) * texelSize, 0.0).rgb);
             if (x == 0 && y == 0) current = c;
             moment1 += c;

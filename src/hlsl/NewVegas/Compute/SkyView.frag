@@ -1,7 +1,6 @@
 // SkyView (technique 0, the sky-view table) as a Vulkan pass (needs NVR DXVK): Effects/SkyView.fx.hlsl SkyViewPS line for line.
 // effects/SkyView.cpp ExtRender. The push block is the same in all five SkyView passes (the sampler index is unused here).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "SkyAtmosphere.glsl"
 

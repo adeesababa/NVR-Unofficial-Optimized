@@ -1,7 +1,6 @@
 // VolumetricClouds technique ShadowMap (4) as a Vulkan pass (needs NVR DXVK): Effects/VolumetricClouds.fx.hlsl ShadowMapPS line for
 // line, into TESR_CloudShadow. effects/VolumetricClouds.cpp ExtRender.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -29,7 +28,7 @@ void main() {
         }
     }
     else {
-        [[unroll]] for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++) {
             float s = (float(i) + 0.5) * stepLength;
             vec3 p = vec3(at, Base) + light * s;
             opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false, false) * stepLength;

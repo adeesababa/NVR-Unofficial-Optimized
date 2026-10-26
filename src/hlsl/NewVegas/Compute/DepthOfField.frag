@@ -2,7 +2,6 @@
 // line. effects/DepthOfField.cpp ExtRender. The matrices are the D3DXMATRIX memory the D3D9 constants are uploaded from: view[i][j]
 // is HLSL TESR_ViewTransform[i][j]. t_rendered is TESR_RenderedBuffer, t_depth the CombineDepth texture (TESR_DepthBuffer).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -63,7 +62,7 @@ void main() {
     const vec2 corners[4] = vec2[4](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
     vec4 blurred = vec4(0.0);
     float weights = 0.0;
-    [[unroll]] for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 4; k++) {
         vec2 tapUV = uv + radius * corners[k];
         float weight = saturate(1.5 - abs(readDepthLod(tapUV) - depth) / (0.15 * depth));
         blurred += textureLod(sampler2D(t_rendered, NVR_SAMPLER(pc.samplerIndex)), tapUV, 0.0) * weight;

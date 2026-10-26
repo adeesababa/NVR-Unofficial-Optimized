@@ -1,7 +1,6 @@
 // GodRays pass SkyMask (DedicatedGodRays pass 0, DedicatedSkyMask) as a Vulkan pass (needs NVR DXVK): Effects/GodRays.fx.hlsl
 // line for line, into NVR_GodRaysBuffer0 (or Low0). uv is HalfVS's: the half-resolution texel centre.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "GodRays.glsl"
 

@@ -3,7 +3,6 @@
 // effects/Flashlight.cpp ExtRender. DepthBlur's clip() keeps what the target held: the technique runs with ClearRenderTarget, so
 // that is the clear colour (0, 0, 0, 1), written here instead.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Flashlight.glsl"
 

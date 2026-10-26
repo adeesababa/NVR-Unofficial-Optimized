@@ -1,7 +1,6 @@
 // WetWorld's first three passes as a Vulkan pass (needs NVR DXVK): WetMap, then BlurWetMap across and down, line for line
 // Effects\WetWorld.fx.hlsl (effects/WetWorld.cpp ExtRender). passIndex: 0 WetMap, 1 BlurWetMap (1, 0), 2 BlurWetMap (0, 1).
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "Common.glsl"
 
@@ -49,7 +48,7 @@ vec4 BlurWetMap(vec2 uv, vec2 offsetMask) {
     float depthTolerance = max(PuddleBlurDepthTolerance * max(centerDepth, 1.0), 0.0001);
     float weightSum = 0.375;
     vec3 coverage = texture(sampler2D(t_rendered, NVR_SAMPLER(pc.sLin)), uv).rgb * weightSum;
-    [[unroll]] for (int tap = -2; tap <= 2; tap++) {
+    for (int tap = -2; tap <= 2; tap++) {
         if (tap != 0) {
             vec2 sampleUV = saturate(uv + blurStep * float(tap));
             float sampleDepth = readDepth(sampleUV);

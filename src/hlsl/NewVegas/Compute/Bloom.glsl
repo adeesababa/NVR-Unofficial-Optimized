@@ -111,7 +111,7 @@ vec4 DownsampleFirst(texture2D buf, sampler smp, vec2 uv) {
         const float weights[5] = float[5](0.125, 0.125, 0.125, 0.125, 0.5);
         vec4 sum = vec4(0.0);
         float total = 0.0;
-        [[unroll]] for (int n = 0; n < 5; n++) {
+        for (int n = 0; n < 5; n++) {
             float w = weights[n] / (1.0 + max(dot(boxes[n].rgb, vec3(0.2126, 0.7152, 0.0722)), 0.0));
             sum += boxes[n] * w;
             total += w;

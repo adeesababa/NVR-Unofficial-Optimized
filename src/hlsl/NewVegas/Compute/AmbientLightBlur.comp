@@ -24,7 +24,6 @@
 // D3D9; the passes after it read it there, since the result cannot go back into the texture it reads).
 
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_EXT_samplerless_texture_functions : enable
 #extension GL_GOOGLE_include_directive : enable
 
@@ -92,8 +91,8 @@ vec4 blurPass(ivec2 p, bool alongY) {
     vec3 bounce = center.rgb * weights[0];
     float visibility = center.a * weights[0];
     vec2 total = vec2(weights[0]);   // x occlusion, y bounce
-    [[unroll]] for (int i = 1; i < 4; i++) {
-        [[unroll]] for (int side = -1; side <= 1; side += 2) {
+    for (int i = 1; i < 4; i++) {
+        for (int side = -1; side <= 1; side += 2) {
             vec2 tapUV = uv + axisStep * (blurStep * float(i * side));
             int unclamped = int(floor(tapUV[axis] * float(size[axis])));
             ivec2 tap = p;

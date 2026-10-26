@@ -1,6 +1,5 @@
 // TAA's debug views (Effects/TAA.fx.hlsl DebugPS) as a Vulkan pass (needs NVR DXVK): effects/TAA.cpp ExtDraw. TAA.glsl holds the rest.
 #version 450
-#extension GL_EXT_control_flow_attributes : enable
 #extension GL_GOOGLE_include_directive : enable
 #include "TAA.glsl"
 
