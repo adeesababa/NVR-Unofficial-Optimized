@@ -3,7 +3,7 @@
 
 // UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz): see HiZ.h.
 
-IDirect3DTexture9*		HiZ::texture = nullptr;
+ID3D9NvrExtBuffer*		HiZ::buffer = nullptr;
 ID3D9NvrExtPipeline*	HiZ::pipeline = nullptr;
 UINT					HiZ::width = 0;
 UINT					HiZ::height = 0;
@@ -13,23 +13,17 @@ UINT					HiZ::builtFrame = 0;
 bool					HiZ::built = false;
 bool					HiZ::failed = false;
 UINT					HiZ::frames = 0;
+int						HiZ::CheckEvery = 0;
 
 namespace {
-	// HiZBuild.comp: set 1 = the depth, the weapon's depth, the seven levels as storage images; the sampler's heap index at 12.
+	// HiZBuild.comp v2: set 1 = the depth, the weapon's depth (both read with texelFetch, no sampler), the pyramid buffer.
 	const NVR_EXT_BINDING_DESC HiZBindings[] = {
-		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_DepthBuffer
-		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_DepthBufferViewModel
-		{ 1, 2, NVR_EXT_BIND_STORAGE_IMAGE, 0, NVR_EXT_VIEW_2D, TRUE,  0 },	// level 0
-		{ 1, 3, NVR_EXT_BIND_STORAGE_IMAGE, 1, NVR_EXT_VIEW_2D, TRUE,  0 },
-		{ 1, 4, NVR_EXT_BIND_STORAGE_IMAGE, 2, NVR_EXT_VIEW_2D, TRUE,  0 },
-		{ 1, 5, NVR_EXT_BIND_STORAGE_IMAGE, 3, NVR_EXT_VIEW_2D, TRUE,  0 },
-		{ 1, 6, NVR_EXT_BIND_STORAGE_IMAGE, 4, NVR_EXT_VIEW_2D, TRUE,  0 },
-		{ 1, 7, NVR_EXT_BIND_STORAGE_IMAGE, 5, NVR_EXT_VIEW_2D, TRUE,  0 },
-		{ 1, 8, NVR_EXT_BIND_STORAGE_IMAGE, 6, NVR_EXT_VIEW_2D, TRUE,  0 },	// level 6
-		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 12 },	// POINT, CLAMP
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_DepthBuffer
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  1, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_DepthBufferViewModel
+		{ 1, 2, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, TRUE,  0 },	// the pyramid
 	};
-	struct HiZPush { float invFullX, invFullY, invertedDepth; UINT32 pointIndex; };
-	static_assert(sizeof(HiZPush) == 16, "HiZBuild.comp push block");
+	struct HiZPush { INT32 fullW, fullH; float invertedDepth; UINT32 w0, h0; };
+	static_assert(sizeof(HiZPush) == 20, "HiZBuild.comp push block");
 
 	const D3DXVECTOR4* RegisteredConstant(const char* name) {
 		auto found = TheShaderManager->ConstantsTable.find(name);
@@ -38,14 +32,20 @@ namespace {
 }
 
 void HiZ::Release() {
-	DxvkCompute::Drop(texture);
+	DxvkCompute::Drop(buffer);
 	DxvkCompute::Drop(pipeline);
 }
 
-// The texture and the pipeline, made on first use. False (and off for the session) when any of it fails.
+UINT HiZ::LevelOffset(UINT k) {
+	UINT o = 0;
+	for (UINT i = 0; i < k; i++) o += (width >> i) * (height >> i);
+	return o;
+}
+
+// The buffer and the pipeline, made on first use. False (and off for the session) when any of it fails.
 bool HiZ::Ensure() {
 	if (failed) return false;
-	if (texture && pipeline) return true;
+	if (buffer && pipeline) return true;
 	const UINT fullW = TheRenderManager->width, fullH = TheRenderManager->height;
 	groupsX = (fullW + 127) / 128;		// one workgroup per 128x128 full-resolution pixels
 	groupsY = (fullH + 127) / 128;
@@ -53,18 +53,17 @@ bool HiZ::Ensure() {
 	height = groupsY * 64;
 	std::vector<char> words;
 	const bool shaderThere = DxvkCompute::LoadSpirv("HiZBuild", words);	// checked first: a missing file must not turn the other paths off
-	HRESULT create = shaderThere ? TheRenderManager->device->CreateTexture(width, height, Levels, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F, D3DPOOL_DEFAULT, &texture, NULL) : E_FAIL;
-	if (SUCCEEDED(create) && texture && texture->GetLevelCount() == Levels)
-		pipeline = DxvkCompute::CreatePipeline("HiZBuild", HiZBindings, _countof(HiZBindings), sizeof(HiZPush), true);
-	if (!texture || !pipeline || texture->GetLevelCount() != Levels) {
-		Logger::Log("UNOFFICIAL Hi-Z: the pyramid could not be set up (%s); Reflections and AmbientLight keep their normal paths.",
-			!shaderThere ? "Compute\\HiZBuild.spv missing" : FAILED(create) || !texture ? "texture refused" : "pipeline refused");
+	const UINT bytes = LevelOffset(Levels) * 8;
+	if (shaderThere) buffer = DxvkCompute::CreateBuffer(bytes, NVR_EXT_BUFFER_STORAGE | NVR_EXT_BUFFER_TRANSFER_SRC, "Hi-Z pyramid");
+	if (buffer) pipeline = DxvkCompute::CreatePipeline("HiZBuild", HiZBindings, _countof(HiZBindings), sizeof(HiZPush), false);
+	if (!buffer || !pipeline) {
+		Logger::Log("UNOFFICIAL Hi-Z: the pyramid could not be set up (%s); Reflections keeps its normal trace.",
+			!shaderThere ? "Compute\\HiZBuild.spv missing" : !buffer ? "buffer refused" : "pipeline refused");
 		Release();
 		failed = true;
 		return false;
 	}
-	TheTextureManager->RegisterTexture("NVR_HiZ", (IDirect3DBaseTexture9**)&texture);
-	Logger::Log("UNOFFICIAL Hi-Z: pyramid ready (%ux%u, %u levels, G32R32F, %ux%u workgroups in one dispatch).", width, height, Levels, groupsX, groupsY);
+	Logger::Log("UNOFFICIAL Hi-Z: pyramid ready (storage buffer, level 0 %ux%u, %u levels, %u bytes, %ux%u workgroups in one dispatch).", width, height, Levels, bytes, groupsX, groupsY);
 	return true;
 }
 
@@ -79,8 +78,7 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 	IDirect3DTexture9* viewModel = TheTextureManager->DepthTextureViewModel;
 	const D3DXVECTOR4* depthConstants = RegisteredConstant("TESR_DepthConstants");
 	if (!depth || !depthSurface || !viewModel || !depthConstants) return;
-	// The extension must not read a texture that is the device's render target: never the case here (the caller set the frame's
-	// target after the normals), but checked, as it costs nothing; the frame is then simply not built.
+	// The extension must not read a texture that is the device's render target: never the case here, but checked (costs nothing).
 	for (DWORD i = 0; i < 4; i++) {
 		IDirect3DSurface9* target = nullptr;
 		if (SUCCEEDED(Device->GetRenderTarget(i, &target)) && target) {
@@ -90,13 +88,11 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 		}
 	}
 
-	HiZPush push = { 1.0f / (float)TheRenderManager->width, 1.0f / (float)TheRenderManager->height, depthConstants->z, 0 };
+	HiZPush push = { (INT32)TheRenderManager->width, (INT32)TheRenderManager->height, depthConstants->z, width, height };
 	NVR_EXT_RESOURCE_BINDING bindings[_countof(HiZBindings)] = {};
-	bindings[0] = { 0, NVR_EXT_BIND_SAMPLED_IMAGE, depth, 0, 0, 0, FALSE };
-	bindings[1] = { 1, NVR_EXT_BIND_SAMPLED_IMAGE, viewModel, 0, 0, 0, FALSE };
-	for (UINT k = 0; k < Levels; k++) bindings[2 + k] = { k, NVR_EXT_BIND_STORAGE_IMAGE, texture, k, 0, 0, FALSE };
-	bindings[9] = { 0, NVR_EXT_BIND_SAMPLER, DxvkCompute::PointClamp(), 0, 0, 0, FALSE };
-	if (!bindings[9].pResource) return;
+	bindings[0] = { 0, NVR_EXT_BIND_SAMPLED_IMAGE,  depth,     0, 0, 0, FALSE };
+	bindings[1] = { 1, NVR_EXT_BIND_SAMPLED_IMAGE,  viewModel, 0, 0, 0, FALSE };
+	bindings[2] = { 0, NVR_EXT_BIND_STORAGE_BUFFER, buffer,    0, 0, 0, FALSE };
 	NVR_EXT_DISPATCH_DESC dispatch = {};
 	dispatch.pPipeline = pipeline;
 	dispatch.BindingCount = _countof(bindings);
@@ -113,7 +109,7 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 		result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	}
 	if (FAILED(result)) {
-		Logger::Log("UNOFFICIAL Hi-Z: the dispatch failed (%08lX); the pyramid is off for this session, Reflections and AmbientLight keep their normal paths.", result);
+		Logger::Log("UNOFFICIAL Hi-Z: the dispatch failed (%08lX); the pyramid is off for this session, Reflections keeps its normal trace.", result);
 		Release();
 		failed = true;
 		return;
@@ -124,27 +120,27 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 	if (CheckEvery > 0 && frames % (UINT)CheckEvery == 0) Check(depth, depthConstants->z);
 }
 
+ID3D9NvrExtBuffer* HiZ::Current() {
+	return built && !failed && builtFrame == TheFrameRateManager->FrameNumber ? buffer : nullptr;
+}
+
 // UNOFFICIAL 2026-10-26 (deep/fork-hiz) test only, [Shaders.Reflections.Main] HiZCheck = N: every N built frames the depth buffer and
 // pyramid levels 0 and 3 are read back (ReadBuffer: waits for the GPU, stalls that frame) and compared with min/max worked out on the
-// CPU from the depth (the weapon left out the same way is not checked: the comparison counts a cell as "weapon" when its stored nearest
-// is 4). One log line per check: what the walk reads must equal what the depth says.
-int HiZ::CheckEvery = 0;
+// CPU from the depth (the weapon mask is not re-checked: a cell whose stored nearest is 4 counts as 'weapon'). One log line per level.
 void HiZ::Check(IDirect3DTexture9* depth, float invertedDepth) {
 	ID3D9NvrExt* ext = DxvkCompute::Extension();
 	D3DSURFACE_DESC dd = {};
 	if (!ext || FAILED(depth->GetLevelDesc(0, &dd))) return;
 	const UINT texel = dd.Format == D3DFMT_R32F ? 4 : dd.Format == D3DFMT_G32R32F ? 8 : 0;
 	if (!texel) { Logger::Log("UNOFFICIAL Hi-Z check: depth format %u not readable here", (UINT)dd.Format); return; }
-	const UINT w0 = width, h0 = height, w3 = width >> 3, h3 = height >> 3;
-	const UINT depthBytes = dd.Width * dd.Height * texel, l0Bytes = w0 * h0 * 8, l3Bytes = w3 * h3 * 8;
-	ID3D9NvrExtBuffer* buffer = DxvkCompute::CreateBuffer(depthBytes + l0Bytes + l3Bytes, NVR_EXT_BUFFER_TRANSFER_DST | NVR_EXT_BUFFER_TRANSFER_SRC, "Hi-Z check");
-	if (!buffer) return;
+	const UINT w3 = width >> 3, h3 = height >> 3;
+	const UINT depthBytes = dd.Width * dd.Height * texel, l0Bytes = width * height * 8, l3Bytes = w3 * h3 * 8;
+	ID3D9NvrExtBuffer* staging = DxvkCompute::CreateBuffer(depthBytes, NVR_EXT_BUFFER_TRANSFER_DST | NVR_EXT_BUFFER_TRANSFER_SRC, "Hi-Z check depth");
+	if (!staging) return;
 	std::vector<float> dv(depthBytes / 4), l0(l0Bytes / 4), l3(l3Bytes / 4);
-	bool ok = SUCCEEDED(ext->CopyTextureToBuffer(buffer, 0, depth, 0, 0)) && SUCCEEDED(ext->CopyTextureToBuffer(buffer, depthBytes, texture, 0, 0)) &&
-		SUCCEEDED(ext->CopyTextureToBuffer(buffer, depthBytes + l0Bytes, texture, 3, 0)) &&
-		SUCCEEDED(ext->ReadBuffer(buffer, 0, depthBytes, dv.data())) && SUCCEEDED(ext->ReadBuffer(buffer, depthBytes, l0Bytes, l0.data())) &&
-		SUCCEEDED(ext->ReadBuffer(buffer, depthBytes + l0Bytes, l3Bytes, l3.data()));
-	buffer->Release();
+	bool ok = SUCCEEDED(ext->CopyTextureToBuffer(staging, 0, depth, 0, 0)) && SUCCEEDED(ext->ReadBuffer(staging, 0, depthBytes, dv.data())) &&
+		SUCCEEDED(ext->ReadBuffer(buffer, 0, l0Bytes, l0.data())) && SUCCEEDED(ext->ReadBuffer(buffer, LevelOffset(3) * 8, l3Bytes, l3.data()));
+	staging->Release();
 	if (!ok) { Logger::Log("UNOFFICIAL Hi-Z check: readback failed"); return; }
 	const UINT stride = texel / 4;
 	auto at = [&](UINT x, UINT y) { x = (std::min)(x, dd.Width - 1); y = (std::min)(y, dd.Height - 1); return dv[(y * dd.Width + x) * stride]; };
@@ -157,22 +153,19 @@ void HiZ::Check(IDirect3DTexture9* depth, float invertedDepth) {
 				const float r = lv[(y * w + x) * 2], g = lv[(y * w + x) * 2 + 1];
 				cells++;
 				if (r >= 3.0f) { weapon++; continue; }
-				if (fabsf(r - mn) > 1e-6f + 1e-4f * mn) badMin++;
-				if (fabsf(g - mx) > 1e-6f + 1e-4f * mx) badMax++;
+				const bool wrongMin = fabsf(r - mn) > 1e-6f + 1e-4f * mn, wrongMax = fabsf(g - mx) > 1e-6f + 1e-4f * mx;
+				if (wrongMin) badMin++;
+				if (wrongMax) badMax++;
 				if (g == 0.0f) zeroMax++;
 				if (fabsf(r - mx) <= 1e-6f + 1e-4f * mx && fabsf(g - mn) <= 1e-6f + 1e-4f * mn && mn != mx) swapped++;
-				if (!example[0] && (fabsf(r - mn) > 1e-6f + 1e-4f * mn || fabsf(g - mx) > 1e-6f + 1e-4f * mx))
+				if (!example[0] && (wrongMin || wrongMax))
 					_snprintf_s(example, sizeof(example), _TRUNCATE, " first bad cell (%u,%u): stored %.6f / %.6f, depth min %.6f max %.6f", x, y, r, g, mn, mx);
 			}
 		Logger::Log("UNOFFICIAL Hi-Z check %s (frame %u): %u cells, %u 'weapon' (nearest 4), nearest wrong %u, farthest wrong %u (of them 0: %u), swapped %u.%s",
 			name, TheFrameRateManager->FrameNumber, cells, weapon, badMin, badMax, zeroMax, swapped, example);
 	};
-	compare(l0, w0, h0, 2, "level 0");
+	compare(l0, width, height, 2, "level 0");
 	compare(l3, w3, h3, 16, "level 3");
 	Logger::Log("UNOFFICIAL Hi-Z check: depth %ux%u (%s), inverted depth %.0f, centre depth %.6f", dd.Width, dd.Height, texel == 4 ? "R32F" : "G32R32F",
 		invertedDepth, at(dd.Width / 2, dd.Height / 2));
-}
-
-IDirect3DTexture9* HiZ::Current() {
-	return built && !failed && builtFrame == TheFrameRateManager->FrameNumber ? texture : nullptr;
 }

@@ -14,7 +14,9 @@
 #include "Reflections.glsl"
 #include "Counters.glsl"   // UNOFFICIAL 2026-10-26: empty unless built with -DNVR_COUNTERS=1 (ReflectionsTraceHiZCount.spv)
 
-layout(set = 1, binding = 16) uniform texture2D t_hiz;   // NVR_HiZ: r nearest, g farthest linear depth / farZ; level k = 2^(k+1) pixels
+// The pyramid (HiZBuild.comp v2): a storage buffer, vec2 (nearest, farthest linear depth / farZ) per cell, level k = 2^(k+1) pixels,
+// levels one after the other, level k (W0 >> k) x (H0 >> k), W0 x H0 = the screen's half rounded up to a multiple of 64.
+layout(set = 1, binding = 16, std430) readonly buffer HiZPyramid { vec2 hizCells[]; };
 
 const int HiZLevels = 7;           // the pyramid's levels; walk levels 0 (full resolution) .. HiZLevels
 const int HiZMaxIterations = 64;    // cells walked at most; the rest of the ray then as the fixed-step trace (below)
@@ -22,7 +24,10 @@ const int HiZMaxIterations = 64;    // cells walked at most; the rest of the ray
 // Nearest and farthest depth (game units) of cell c at walk level L (0 = TESR_DepthBuffer itself, L >= 1 = NVR_HiZ level L - 1).
 vec2 CellDepth(ivec2 c, int L) {
     if (L == 0) { float d = texelFetch(sampler2D(t_depth, POINT_S), c, 0).x * farZ; return vec2(d); }
-    vec2 v = texelFetch(sampler2D(t_hiz, POINT_S), c, L - 1).xy;
+    uvec2 size0 = ((uvec2(1.0 / cb.reciprocalResolution.xy + 0.5) + 127u) / 128u) * 64u;
+    uint k = uint(L - 1), offset = 0u;
+    for (uint i = 0u; i < k; i++) offset += (size0.x >> i) * (size0.y >> i);
+    vec2 v = hizCells[offset + uint(c.y) * (size0.x >> k) + uint(c.x)];
     // HiZSafeCells (layoutData.w 1): robust to the pyramid's two channels arriving swapped or one of them empty (see below).
     if (cb.layoutData.w > 0.5) v = vec2(min(v.x, v.y), max(v.x, v.y));
     return v * farZ;

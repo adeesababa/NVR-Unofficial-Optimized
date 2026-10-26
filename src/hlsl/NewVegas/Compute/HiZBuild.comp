@@ -2,35 +2,30 @@
 // dispatch (core/HiZ.cpp). Single-pass downsampler style: each 16x16 workgroup reads a 128x128 block of TESR_DepthBuffer and writes
 // all seven levels that block covers (64x64 .. 1x1), the inner levels through shared memory, no second dispatch, no atomics.
 //
-// NVR_HiZ (G32R32F, 7 levels): texel (i, j) of level k covers the full-resolution pixels [i, i+1) x [j, j+1) * 2^(k+1).
-//   r = the NEAREST linear depth there (min, depth / farZ as TESR_DepthBuffer stores it), g = the FARTHEST (max).
-// The weapon (first-person view model) is left out of both: its pixels count as "nothing here" (min 4, max 0), so a cell that is
-// all weapon reads min 4 > any depth and max 0. The readers treat the weapon as the effects always did (Reflections tests the
-// full-resolution depth at the finest level, AmbientLight's prep puts the weapon at 1e6, i.e. never an occluder).
-// The level-0 size is the screen's half rounded UP to a multiple of 64, so every level is an exact half of the one above and the
-// last workgroup row/column only reads the screen's edge again (CLAMP), which leaves min and max unchanged.
+// v2 (2026-10-26, after the HiZCheck readback found the first version's pyramid ALL ZERO in game): the levels go into a STORAGE
+// BUFFER (the extension's proven write path, as AvgLuma's) instead of storage-image views of a mipmapped D3D9 render target, and the
+// depth is read with texelFetch (no gather, no sampler).
+//
+// Pyramid buffer: vec2 per cell, level k after levels 0..k-1, row-major, level k is (W0 >> k) x (H0 >> k) with W0 x H0 = the screen's
+// half rounded UP to a multiple of 64 (1920x1080 -> 960x576). Cell (i, j) of level k covers the full-resolution pixels
+// [i, i+1) x [j, j+1) * 2^(k+1): x = the NEAREST linear depth (depth / farZ as TESR_DepthBuffer stores it), y = the FARTHEST.
+// The weapon (first-person view model) is left out of both: a cell that is all weapon reads nearest 4, farthest 0.
 //
 // Build: glslangValidator -V --target-env vulkan1.1 -o HiZBuild.spv HiZBuild.comp
 #version 450
-#extension GL_GOOGLE_include_directive : enable
-#include "Common.glsl"
+#extension GL_EXT_samplerless_texture_functions : enable
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 1, binding = 0) uniform texture2D t_depth;      // TESR_DepthBuffer (x: linear depth / farZ)
 layout(set = 1, binding = 1) uniform texture2D t_viewModel;  // TESR_DepthBufferViewModel (INTZ)
-layout(set = 1, binding = 2, rg32f) uniform writeonly image2D i_level0;
-layout(set = 1, binding = 3, rg32f) uniform writeonly image2D i_level1;
-layout(set = 1, binding = 4, rg32f) uniform writeonly image2D i_level2;
-layout(set = 1, binding = 5, rg32f) uniform writeonly image2D i_level3;
-layout(set = 1, binding = 6, rg32f) uniform writeonly image2D i_level4;
-layout(set = 1, binding = 7, rg32f) uniform writeonly image2D i_level5;
-layout(set = 1, binding = 8, rg32f) uniform writeonly image2D i_level6;
+layout(set = 1, binding = 2, std430) writeonly buffer Pyramid { vec2 cells[]; };
 
 layout(push_constant) uniform Push {
-    vec2 invFull;          // 0: 1 / the full-resolution size (TESR_DepthBuffer's)
+    ivec2 fullSize;        // 0: the full-resolution size (TESR_DepthBuffer's)
     float invertedDepth;   // 8: TESR_DepthConstants.z (the weapon test, as Reflections' IsWeapon)
-    uint pointIndex;       // 12: POINT, CLAMP
+    uint w0;               // 12: level 0 size
+    uint h0;               // 16
 } pc;
 
 shared vec2 s_level2[16][16];
@@ -38,24 +33,29 @@ shared vec2 s_level3[8][8];
 shared vec2 s_level4[4][4];
 shared vec2 s_level5[2][2];
 
-const float Nothing = 4.0;   // min of a pixel that is not there (weapon); its max is 0
+const float Nothing = 4.0;   // nearest of a pixel that is not there (weapon); its farthest is 0
 
 vec2 combine(vec2 a, vec2 b) { return vec2(min(a.x, b.x), max(a.y, b.y)); }
 
-// One level-0 texel: the 2x2 full-resolution pixels round the shared corner at uv.
-vec2 level0Texel(vec2 uv) {
-    vec4 d = textureGather(sampler2D(t_depth, NVR_SAMPLER(pc.pointIndex)), uv, 0);
-    vec4 w = textureGather(sampler2D(t_viewModel, NVR_SAMPLER(pc.pointIndex)), uv, 0);
-    bvec4 weapon = pc.invertedDepth == 0.0 ? lessThan(w, vec4(0.9)) : greaterThan(w, vec4(0.01));
-    vec4 lo = mix(d, vec4(Nothing), weapon);
-    vec4 hi = mix(d, vec4(0.0), weapon);
-    return vec2(min(min(lo.x, lo.y), min(lo.z, lo.w)), max(max(hi.x, hi.y), max(hi.z, hi.w)));
+uint levelOffset(uint k) {
+    uint o = 0u;
+    for (uint i = 0u; i < k; i++) o += (pc.w0 >> i) * (pc.h0 >> i);
+    return o;
+}
+void store(uint k, ivec2 c, vec2 v) { cells[levelOffset(k) + uint(c.y) * (pc.w0 >> k) + uint(c.x)] = v; }
+
+vec2 pixel(ivec2 p) {
+    p = clamp(p, ivec2(0), pc.fullSize - 1);
+    float d = texelFetch(t_depth, p, 0).x;
+    float w = texelFetch(t_viewModel, p, 0).x;
+    bool weapon = pc.invertedDepth == 0.0 ? w < 0.9 : w > 0.01;
+    return weapon ? vec2(Nothing, 0.0) : vec2(d);
 }
 
 void main() {
     uvec2 t = gl_LocalInvocationID.xy;
     uvec2 g = gl_WorkGroupID.xy;
-    ivec2 base0 = ivec2(g * 64u + t * 4u);   // this thread's 4x4 level-0 texels
+    ivec2 base0 = ivec2(g * 64u + t * 4u);   // this thread's 4x4 level-0 cells
     vec2 l1[2][2];
     for (int by = 0; by < 2; by++)
         for (int bx = 0; bx < 2; bx++) {
@@ -63,22 +63,23 @@ void main() {
             for (int y = 0; y < 2; y++)
                 for (int x = 0; x < 2; x++) {
                     ivec2 c = base0 + ivec2(bx * 2 + x, by * 2 + y);
-                    vec2 v = level0Texel((vec2(c) * 2.0 + 1.0) * pc.invFull);   // full-res pixels 2c, 2c+1: their shared corner
-                    imageStore(i_level0, c, vec4(v, 0.0, 0.0));
+                    ivec2 p = c * 2;
+                    vec2 v = combine(combine(pixel(p), pixel(p + ivec2(1, 0))), combine(pixel(p + ivec2(0, 1)), pixel(p + ivec2(1, 1))));
+                    store(0u, c, v);
                     acc = combine(acc, v);
                 }
             l1[by][bx] = acc;
-            imageStore(i_level1, ivec2(g * 32u + t * 2u) + ivec2(bx, by), vec4(acc, 0.0, 0.0));
+            store(1u, ivec2(g * 32u + t * 2u) + ivec2(bx, by), acc);
         }
     vec2 v2 = combine(combine(l1[0][0], l1[0][1]), combine(l1[1][0], l1[1][1]));
-    imageStore(i_level2, ivec2(g * 16u + t), vec4(v2, 0.0, 0.0));
+    store(2u, ivec2(g * 16u + t), v2);
     s_level2[t.y][t.x] = v2;
     memoryBarrierShared();
     barrier();
     if (t.x < 8u && t.y < 8u) {
         uvec2 s = t * 2u;
         vec2 v = combine(combine(s_level2[s.y][s.x], s_level2[s.y][s.x + 1u]), combine(s_level2[s.y + 1u][s.x], s_level2[s.y + 1u][s.x + 1u]));
-        imageStore(i_level3, ivec2(g * 8u + t), vec4(v, 0.0, 0.0));
+        store(3u, ivec2(g * 8u + t), v);
         s_level3[t.y][t.x] = v;
     }
     memoryBarrierShared();
@@ -86,7 +87,7 @@ void main() {
     if (t.x < 4u && t.y < 4u) {
         uvec2 s = t * 2u;
         vec2 v = combine(combine(s_level3[s.y][s.x], s_level3[s.y][s.x + 1u]), combine(s_level3[s.y + 1u][s.x], s_level3[s.y + 1u][s.x + 1u]));
-        imageStore(i_level4, ivec2(g * 4u + t), vec4(v, 0.0, 0.0));
+        store(4u, ivec2(g * 4u + t), v);
         s_level4[t.y][t.x] = v;
     }
     memoryBarrierShared();
@@ -94,13 +95,13 @@ void main() {
     if (t.x < 2u && t.y < 2u) {
         uvec2 s = t * 2u;
         vec2 v = combine(combine(s_level4[s.y][s.x], s_level4[s.y][s.x + 1u]), combine(s_level4[s.y + 1u][s.x], s_level4[s.y + 1u][s.x + 1u]));
-        imageStore(i_level5, ivec2(g * 2u + t), vec4(v, 0.0, 0.0));
+        store(5u, ivec2(g * 2u + t), v);
         s_level5[t.y][t.x] = v;
     }
     memoryBarrierShared();
     barrier();
     if (t.x == 0u && t.y == 0u) {
         vec2 v = combine(combine(s_level5[0][0], s_level5[0][1]), combine(s_level5[1][0], s_level5[1][1]));
-        imageStore(i_level6, ivec2(g), vec4(v, 0.0, 0.0));
+        store(6u, ivec2(g), v);
     }
 }

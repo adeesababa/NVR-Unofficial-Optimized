@@ -403,8 +403,8 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
 	};
 	const UINT ReflTextureCount = 16;
-	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + NVR_HiZ on set 1, binding 16 (slot 16).
-	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_SAMPLED_IMAGE, 16, NVR_EXT_VIEW_2D, FALSE, 0 };
+	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + the Hi-Z pyramid buffer on set 1, binding 16 (buffer slot 0).
+	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
 	// UNOFFICIAL 2026-10-26 debugging tool: the counting build (-DNVR_COUNTERS=1) adds Counters.glsl's block (set 3, binding 0) as a
 	// written storage buffer on slot 7. Counter and probe names as ReflectionsTraceHiZ.frag uses them.
 	const UINT ReflCounterSlot = 7;
@@ -430,7 +430,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	static const char* const spvNames[8] = { "ReflectionsComposite", "ReflectionsTrace", "ReflectionsBlur", "ReflectionsTemporal", "ReflectionsBlur",
 		"ReflectionsCapture", "ReflectionsFilter", "ReflectionsMaterial" };
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz) HiZ: the trace as the hierarchical march when this frame's pyramid is there (core/HiZ.h).
-	IDirect3DTexture9* hiz = techniqueIndex == 1 && HiZWanted() ? HiZ::Current() : nullptr;
+	ID3D9NvrExtBuffer* hiz = techniqueIndex == 1 && HiZWanted() ? HiZ::Current() : nullptr;
 	if (hiz && !extTraceHiZ.Tried) {
 		extTraceHiZ.Tried = true;
 		NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 1];
@@ -560,7 +560,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
 	UINT resourceCount = _countof(ReflBindings);
 	if (hiz) {
-		resources[resourceCount].Slot = 16; resources[resourceCount].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[resourceCount].pResource = hiz;
+		resources[resourceCount].Slot = 0; resources[resourceCount].Type = NVR_EXT_BIND_STORAGE_BUFFER; resources[resourceCount].pResource = hiz;
 		resourceCount++;
 		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
 	}
