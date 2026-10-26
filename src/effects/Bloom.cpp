@@ -199,7 +199,7 @@ bool BloomEffect::RenderBloomExt(IDirect3DDevice9* Device, int passes) {
 		NVR_EXT_RESOURCE_BINDING resources[3] = {};
 		for (UINT i = 0; i < textureCount; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i]; }
 		resources[textureCount].Slot = 0; resources[textureCount].Type = NVR_EXT_BIND_SAMPLER; resources[textureCount].pResource = sampler;
-		return ExtDrawTo(pass.Pipeline, &target, 1, resources, textureCount + 1, &push, sizeof(push));
+		return ExtDrawTo(pass.Pipeline, &target, 1, resources, textureCount + 1, &push, sizeof(push), nullptr, ExtUv::TexelCentre);	// D3D9: a quad per level (BloomVertexBuffer)
 	};
 	auto pushConstants = [this]() {
 		BloomExtPush push = {};

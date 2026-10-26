@@ -493,5 +493,5 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 
 	if (techniqueIndex == 0)
 		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, _countof(resources), &push, sizeof(push));
-	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, _countof(resources), &push, sizeof(push));
+	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
 }

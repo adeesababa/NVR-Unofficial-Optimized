@@ -249,7 +249,7 @@ bool CombineDepthEffect::ExtDepthNormals(IDirect3DDevice9* Device, IDirect3DSurf
 	resources[1].Slot = 1; resources[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[1].pResource = TheTextureManager->DepthTextureViewModel;
 	resources[2].Slot = 0; resources[2].Type = NVR_EXT_BIND_SAMPLER; resources[2].pResource = point;
 	IDirect3DSurface9* targets[2] = { Textures.CombinedDepthSurface, NormalsSurface };
-	if (!ExtDrawTo(extPassDepthNormals.Pipeline, targets, 2, resources, _countof(resources), &push, sizeof(push))) return false;
+	if (!ExtDrawTo(extPassDepthNormals.Pipeline, targets, 2, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;	// FrameVS into a smaller target
 	renderTime = timer.LogTime("CombineDepth::RenderWithNormals (NVR DXVK)");
 	return true;
 }

@@ -605,7 +605,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h. A pass into the effect's own targets; the frame chain is not touched.
 bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
-	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport) {
+	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv) {
 	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
@@ -624,7 +624,31 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 	draw.pBindings = Bindings;
 	draw.pPushData = Push;
 	draw.PushDataSize = PushSize;
-	HRESULT result = DxvkCompute::Extension()->Draw(&draw);
+	// UNOFFICIAL 2026-10-26: the D3D9 frame quad's half-pixel offset (EffectRecord.h ExtUv). The viewport's size: the given
+	// rectangle, else the target's.
+	float shiftX = 0.0f, shiftY = 0.0f;
+	if (Uv == ExtUv::ScreenQuad) {
+		UINT w = draw.ViewportWidth, h = draw.ViewportHeight;
+		if (!w || !h) {
+			D3DSURFACE_DESC desc;
+			if (FAILED(Targets[0]->GetDesc(&desc))) return false;
+			w = desc.Width; h = desc.Height;
+		}
+		shiftX = 0.5f - 0.5f * (float)w / (float)TheRenderManager->width;
+		shiftY = 0.5f - 0.5f * (float)h / (float)TheRenderManager->height;
+		if (fabsf(shiftX) < 1e-6f) shiftX = 0.0f;
+		if (fabsf(shiftY) < 1e-6f) shiftY = 0.0f;
+		if ((shiftX != 0.0f || shiftY != 0.0f) && DxvkCompute::Info().ExtVersionMinor < 4) {
+			static bool said = false;
+			if (!said) Logger::Log("UNOFFICIAL NVR DXVK: this d3d9.dll has extension %u.%u: passes into targets smaller than the screen read at the texel centre, not where their D3D9 pass reads (a quarter texel at half resolution; needs 1.4)", DxvkCompute::Info().ExtVersionMajor, DxvkCompute::Info().ExtVersionMinor);
+			said = true; shiftX = shiftY = 0.0f;
+		}
+	}
+	HRESULT result = (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
+	if (SUCCEEDED(result) && (shiftX != 0.0f || shiftY != 0.0f) && !ExtShiftLogged) {
+		ExtShiftLogged = true;
+		Logger::Log("UNOFFICIAL NVR DXVK: %s's passes into smaller targets read at the D3D9 frame quad's uv (first: shift %.3f, %.3f px)", Name, shiftX, shiftY);
+	}
 	if (FAILED(result)) {
 		ExtFailed = true;
 		Logger::Log("UNOFFICIAL NVR DXVK: pass %s failed to draw into its own target (%08lX; DXVK's log says why): its D3D9 technique is used from now on", Name, result);

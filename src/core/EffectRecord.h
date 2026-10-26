@@ -40,8 +40,16 @@ public:
 	// UNOFFICIAL 2026-10-25: a pass into the effect's OWN targets (1-4 surfaces of one size, e.g. its half-resolution buffers),
 	// optional viewport rectangle; the frame chain is not touched. A multi-pass port chains these and ends with ExtFullScreen
 	// (or ExtTexturePass) for the pass that writes the frame. A failure sets ExtFailed (logged), as ExtFullScreen does.
+	// UNOFFICIAL 2026-10-26 Uv: what the GLSL's built-in `uv` must equal. TexelCentre (default): the texel centre, (x + 0.5) / W --
+	// right when the D3D9 pass used a vertex shader that puts it there (HalfVS, PackedVS), a quad made for this size (Bloom's), or
+	// the GLSL adds the offset itself (AmbientLight's frameUV, SkyView's uvShift) or reads gl_FragCoord (VPOS). ScreenQuad: the
+	// D3D9 pass drew the frame quad (FrameVS over ShaderManager::CreateFrameVertex) into a target smaller than the screen, so it
+	// read at x / W + 0.5 / screen; the pass is moved by that sub-pixel amount (extension 1.4 DrawShifted; zero for a screen-size
+	// target, so ScreenQuad is always safe for a FrameVS pass). Audit 2026-10-26: docs/next/NVR-DXVK-EXTENSION.md, half-pixel rule.
+	enum class ExtUv { ScreenQuad, TexelCentre };
+	bool					ExtShiftLogged = false;
 	bool					ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
-								UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport = nullptr);
+								UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport = nullptr, ExtUv Uv = ExtUv::TexelCentre);
 	// UNOFFICIAL 2026-10-25: constants over the 240 push bytes (big kernels, matrices): Data uploaded into a uniform buffer the
 	// effect keeps (made on first use, remade when Size changes; recorded in order with the draws, no waits). Bind the returned
 	// buffer as NVR_EXT_BIND_UNIFORM_BUFFER (GLSL: layout(set = 2, binding = 0, std140) uniform ...). Null: no extension or failed.

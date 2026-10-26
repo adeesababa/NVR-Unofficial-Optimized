@@ -272,7 +272,7 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 		resources[3].pResource = source;
 		SunPush push = {};
 		push.pass = kind == SunBlurV ? 1 : kind == SunFinalBlur ? 2 : 0;	// SunShadowsBlur.frag: 0 H, 1 V, 2 FinalContactBlur
-		if (!ExtDrawTo(extPasses[pipelineOf[kind]].Pipeline, &destination, 1, resources, _countof(resources), &push, sizeof(push))) return false;
+		if (!ExtDrawTo(extPasses[pipelineOf[kind]].Pipeline, &destination, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;	// FrameVS into a smaller target
 		source = last ? shadowTexture : scratchTexture[p & 1];
 	}
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes (%u passes).", Name, description.Passes);

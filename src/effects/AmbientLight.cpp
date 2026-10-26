@@ -775,7 +775,7 @@ bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Tar
 		(1.0f / (float)TheRenderManager->width) * 0.5f, (1.0f / (float)TheRenderManager->height) * 0.5f);	// ShaderManager::CreateFrameVertex's offset
 	push.variant = Variant;
 	RECT viewport = { 0, 0, (LONG)Viewport.Width, (LONG)Viewport.Height };
-	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, sizeof(push), &viewport)) return false;
+	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, sizeof(push), &viewport, ExtUv::TexelCentre)) return false;	// frameUV() adds the offset
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
 	return true;
 }

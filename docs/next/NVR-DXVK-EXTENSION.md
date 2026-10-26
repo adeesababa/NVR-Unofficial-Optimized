@@ -74,9 +74,17 @@ a `git am` plus, at worst, a look at those four spots. DXVK's version string bec
   block at offset 0; `layout(location = 0) in vec2 uv` is the texture coordinate ((0,0) top left; at the texel centre,
   (x + 0.5) / target size). HALF-PIXEL RULE (found in game 2026-10-26): the D3D9 frame quad (ShaderManager::
   CreateFrameVertex) adds half a SCREEN pixel to its uv, so a D3D9 pass into a target smaller than the screen reads at
-  x / target + 0.5 / screen, not the texel centre. A port into such a target that uses `uv` directly must add
-  0.5 / screen - 0.5 / target (SkyView's uvShift) or snap to the texel as SkyTrans does; full-screen-size targets match
-  as they are. DXVK's context state is
+  x / target + 0.5 / screen, not the texel centre. A port into such a target that uses `uv` directly must match it:
+  `ExtDrawTo(..., ExtUv::ScreenQuad)` does (extension 1.4 `DrawShifted`: the viewport moves 0.5 - 0.5 * W / screen pixels,
+  the scissor stays, so the same pixels are written and only `uv` moves; zero for a screen-size target), or the GLSL adds
+  it itself (SkyView's uvShift, AmbientLight's frameUV) or snaps to the texel (SkyTrans). Not every D3D9 pass uses the
+  frame quad: HalfVS / PackedVS (AO, BounceLight, GodRays' dedicated passes, VolumetricFog's estimate) and Bloom's
+  per-level quads already give the texel centre, so `ExtUv::TexelCentre` (the default, no shift) is right there; shaders
+  that read gl_FragCoord (the VPOS passes) are untouched either way. Audit 2026-10-26, every ExtDrawTo: ScreenQuad for
+  Reflections, Specular (low passes), SunShadows, ShadowsInteriors (blur), SunFar, FlashlightBeam, CombineDepth (screen
+  size: no shift); TexelCentre for AmbientLight, AmbientOcclusion, Bloom, BounceLight, GodRays, SkyView, Sandstorm,
+  VolumetricClouds, VolumetricFog, VolumetricLight, VolumetricSmoke, SMAA, TAA. With a 1.3 d3d9.dll the shift is skipped
+  (logged once). DXVK's context state is
   snapshotted before and restored after (`dxvk_context.h` nvrGetState/nvrSetState, which ends the pass and marks everything
   dirty), so the device's own render targets, viewport, shaders, blend/depth state and push data are re-applied at its next
   draw. Multisampled targets are refused (the pass would need its own sample count).

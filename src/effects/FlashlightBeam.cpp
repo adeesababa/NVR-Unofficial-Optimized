@@ -140,5 +140,5 @@ bool FlashlightBeamEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9
 	resources[4].Slot = 1; resources[4].Type = NVR_EXT_BIND_SAMPLER; resources[4].pResource = cookieSampler;
 	FlashlightBeamPush push = {};
 	IDirect3DSurface9* targets[] = { RenderTarget };
-	return ExtDrawTo(extPass.Pipeline, targets, _countof(targets), resources, _countof(resources), &push, sizeof(push));
+	return ExtDrawTo(extPass.Pipeline, targets, _countof(targets), resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
 }

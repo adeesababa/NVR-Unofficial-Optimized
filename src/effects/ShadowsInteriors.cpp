@@ -81,7 +81,7 @@ bool ShadowsInteriorsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 			for (UINT i = 0; i < 2; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i]; }
 			resources[2].Slot = 0; resources[2].Type = NVR_EXT_BIND_SAMPLER; resources[2].pResource = sampler;
 			IDirect3DSurface9* target = scratch->scratchSurface[p];
-			if (!ExtDrawTo(extBlur.Pipeline, &target, 1, resources, _countof(resources), &blur, sizeof(blur))) return false;
+			if (!ExtDrawTo(extBlur.Pipeline, &target, 1, resources, _countof(resources), &blur, sizeof(blur), nullptr, ExtUv::ScreenQuad)) return false;	// FrameVS into a smaller target
 			mask = scratch->scratchTexture[p];
 		}
 	}

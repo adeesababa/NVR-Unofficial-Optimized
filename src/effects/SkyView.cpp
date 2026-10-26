@@ -101,7 +101,7 @@ bool SkyViewEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 	if (FAILED(RenderTarget->GetDesc(&desc)) || !desc.Width || !desc.Height) return false;
 	push.uvShift[0] = 0.5f / (float)TheRenderManager->width - 0.5f / (float)desc.Width;
 	push.uvShift[1] = 0.5f / (float)TheRenderManager->height - 0.5f / (float)desc.Height;
-	if (!ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push))) return false;
+	if (!ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::TexelCentre)) return false;	// uvShift adds it
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes (the physical sky's tables).", Name);
 	return true;
 }
