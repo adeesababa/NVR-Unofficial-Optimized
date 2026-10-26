@@ -74,7 +74,8 @@ def build(src_dir, template, defines, original_asm, prefix, plain=False):
 
 def cmd_dump(dump_dir, src_dir, out_dir, only=None, plain=False, templates=None):
     os.makedirs(out_dir, exist_ok=True)
-    work = os.path.join(out_dir, "_work")
+    # Intermediate files (.asm, .frag) outside the output folder: that one is copied into the game (game_swap copies all of Compute).
+    work = os.environ.get("NOLIMITS_WORK") or os.path.join(os.environ.get("TEMP", out_dir), "nvr-nolimits-work")
     os.makedirs(work, exist_ok=True)
     ok = bad = 0
     for dpath in sorted(glob.glob(os.path.join(dump_dir, "*.defines"))):
