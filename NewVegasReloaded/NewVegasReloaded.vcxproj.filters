@@ -684,6 +684,9 @@
     <ClCompile Include="..\src\effects\TAA.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\effects\TAAFSR.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\effects\SunShadows.cpp">
       <Filter>Effects</Filter>
     </ClCompile>

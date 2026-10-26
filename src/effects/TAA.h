@@ -31,6 +31,16 @@ public:
 	};
 	TAASettingsStruct	Settings;
 
+	// UNOFFICIAL 2026-10-26 (NVR DXVK, [Shaders.TAA.FSR]): AMD FidelityFX Super Resolution 2.2.1 (MIT, GPUOpen) as TAA's resolve,
+	// at native resolution ("native AA"), on TAA's own jitter and camera reprojection. Needs NVR DXVK (compute passes through the
+	// extension); without it, or if a pass fails, TAA's own resolve runs as before. See effects/TAAFSR.cpp.
+	struct FSRSettingsStruct {
+		bool	Enabled;		// FSR 2 replaces TAA's resolve (TAA itself must be on)
+		float	Sharpness;		// [0-1] FSR's RCAS sharpening of the output, 0 off
+		float	WeaponReactive;	// [0-1] FSR reactive mask on the first-person weapon (it is put back as rendered either way)
+	};
+	FSRSettingsStruct	FSRSettings;
+
 	struct TAAStruct {
 		D3DXVECTOR4	Data;				// x: history weight, y: clip gamma, z: history valid (0/1), w: debug view (0 = off)
 		D3DXVECTOR4	PrevProjection;		// x: last frame's projMatrix._11, y: its _22
@@ -86,6 +96,35 @@ private:
 	ExtUniformBuffer	extUniforms;
 
 	void	SetMipBias(float bias);
+
+	// --- FSR 2 (effects/TAAFSR.cpp) ---
+	float		frameJitterX = 0.0f;	// this frame's jitter (TAA's pixel offsets, as BeginJitter applied it)
+	float		frameJitterY = 0.0f;
+	bool		frameJittered = false;
+	bool		lastPathFSR = false;	// the history in hand is FSR's (true) or TAA's own (false)
+	bool		FSRWanted();			// FSRSettings.Enabled and the extension there and no failure so far
+	bool		FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, bool reset);
+	bool		FSREnsureResources();
+	void		FSRReleaseResources();
+	bool		FSRDispatch(int pipeline, const NVR_EXT_RESOURCE_BINDING* bindings, UINT count, const void* push, UINT pushSize, UINT groupsX, UINT groupsY);
+	struct FSRTexture { IDirect3DTexture9* Texture = nullptr; IDirect3DSurface9* Surface = nullptr; };
+	enum { FSRPrep, FSRLumaMip, FSRReconstruct, FSRDepthClip, FSRLock, FSRAccumulate, FSRAccumulateSharpen, FSRRCAS, FSRPipelineCount };
+	ID3D9NvrExtPipeline*	fsrPipelines[FSRPipelineCount] = {};
+	ExtPass			fsrComposite;
+	ExtUniformBuffer	fsrPrepUniforms;
+	ExtUniformBuffer	fsrUniforms;
+	ID3D9NvrExtBuffer*	fsrReconstructedDepth = nullptr;	// one uint per pixel (D3D9 has no 32-bit uint render target)
+	FSRTexture	fsrMotion, fsrDepth, fsrLumaMip, fsrDilatedMotion[2], fsrDilatedDepth, fsrLockLuma, fsrNewLocks, fsrPrepared,
+				fsrLumaHistory[2], fsrReactiveMasks, fsrUpscaled[2], fsrLockStatus[2], fsrOutput;
+	int			fsrWidth = 0;
+	int			fsrHeight = 0;
+	bool		fsrTried = false;		// pipelines created (or failed) once
+	bool		fsrFailed = false;		// FSR is off for the session (logged)
+	bool		fsrMissingLogged = false;
+	int			fsrParity = 0;			// which of the ping-pong resources is this frame's history (AMD's isOddFrame)
+	int			fsrFrameIndex = 0;
+	LARGE_INTEGER	fsrLastTime = {};
+	UInt32		fsrFrames = 0;
 
 	bool	WillResolveThisFrame();
 

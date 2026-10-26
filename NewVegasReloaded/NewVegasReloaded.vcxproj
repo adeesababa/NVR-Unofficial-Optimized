@@ -172,6 +172,7 @@
     <ClCompile Include="..\src\effects\SMAA.cpp" />
     <ClCompile Include="..\src\effects\FXAA.cpp" />
     <ClCompile Include="..\src\effects\TAA.cpp" />
+    <ClCompile Include="..\src\effects\TAAFSR.cpp" />
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp" />
     <ClCompile Include="..\src\effects\ShadowsInteriors.cpp" />
     <ClCompile Include="..\src\effects\Sharpening.cpp" />
