@@ -256,7 +256,7 @@ void Sm6Pass::FillConstants() {
 			switch (c.Desc.Class) {
 			case D3DXPC_VECTOR: {
 				std::vector<D3DXVECTOR4> v(n);
-				if (FAILED(effect->GetVectorArray(c.Handle, v.data(), n))) break;
+				if (FAILED(c.Desc.Elements ? effect->GetVectorArray(c.Handle, v.data(), n) : effect->GetVector(c.Handle, v.data()))) break;	// (the Array getters refuse a non-array)
 				for (UINT i = 0; i < n && i * 16 < c.Size; i++) memcpy(dst + i * 16, &v[i], min(16u, c.Size - i * 16));
 				continue;
 			}
@@ -264,7 +264,7 @@ void Sm6Pass::FillConstants() {
 			case D3DXPC_MATRIX_COLUMNS: {
 				// the logical matrix (as SetMatrix set it), row by row: the SM6 build packs matrices row_major
 				std::vector<D3DXMATRIX> m(n);
-				if (FAILED(effect->GetMatrixArray(c.Handle, m.data(), n))) break;
+				if (FAILED(c.Desc.Elements ? effect->GetMatrixArray(c.Handle, m.data(), n) : effect->GetMatrix(c.Handle, m.data()))) break;
 				const UINT rows = c.Desc.Rows, cols = c.Desc.Columns, stride = rows * 16;
 				for (UINT i = 0; i < n; i++)
 					for (UINT r = 0; r < rows && r < 4; r++)
@@ -275,12 +275,14 @@ void Sm6Pass::FillConstants() {
 				const UINT stride = n > 1 ? 16 : 4;
 				if (c.Desc.Type == D3DXPT_FLOAT) {
 					std::vector<float> f(n);
-					if (FAILED(effect->GetFloatArray(c.Handle, f.data(), n))) break;
+					if (FAILED(c.Desc.Elements ? effect->GetFloatArray(c.Handle, f.data(), n) : effect->GetFloat(c.Handle, f.data()))) break;
 					for (UINT i = 0; i < n && i * stride + 4 <= c.Size; i++) memcpy(dst + i * stride, &f[i], 4);
 				}
 				else {
 					std::vector<INT> v(n);
-					if (FAILED(c.Desc.Type == D3DXPT_BOOL ? effect->GetBoolArray(c.Handle, (BOOL*)v.data(), n) : effect->GetIntArray(c.Handle, v.data(), n))) break;
+					HRESULT got = c.Desc.Elements ? (c.Desc.Type == D3DXPT_BOOL ? effect->GetBoolArray(c.Handle, (BOOL*)v.data(), n) : effect->GetIntArray(c.Handle, v.data(), n))
+						: (c.Desc.Type == D3DXPT_BOOL ? effect->GetBool(c.Handle, (BOOL*)v.data()) : effect->GetInt(c.Handle, v.data()));
+					if (FAILED(got)) break;
 					for (UINT i = 0; i < n && i * stride + 4 <= c.Size; i++) memcpy(dst + i * stride, &v[i], 4);
 				}
 				continue;
