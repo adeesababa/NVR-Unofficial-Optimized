@@ -130,6 +130,13 @@ read its F10 timings.
 - Not done: D3D9 resource names (DXVK 3.0.1's D3D9 side ignores `WKPDID_D3DDebugObjectName`; textures show as numbers in a
   capture). A later patch could name NVR's render targets.
 
+## Builds (2026-10-26)
+
+- NVR DLL (MSBuild v142, branch commit 0af3f3a0): sha256 d043d9af...
+- Fork d3d9.dll with patches 0001-0014 (GitHub workflow run 40389293586, artifact nvr-dxvk-x32): sha256 65540B60EF8676AF...,
+  in `G:\_NVR-build-scratch\nvr-dxvk-debugcap\`. Ready-made slot folder with the markers dxvk.conf:
+  `G:\_NVR-build-scratch\nvr-dxvk-debugcap-markers\`. No validation folder: the Vulkan SDK is not installed.
+
 ## Untested
 
 Code-only (standing rule: no in-game runs by agents). Builds clean (NVR with MSBuild v142; the fork through the GitHub
