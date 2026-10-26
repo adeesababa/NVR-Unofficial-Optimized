@@ -507,7 +507,7 @@ class Translator:
               "uint smp(uint s) { return bitfieldExtract(d3d9Samplers[s >> 1], int((s & 1u) * 16u), 16); }"]
         for s, dim in sorted(self.used_tex.items()):
             ctor = {"2d": "sampler2D", "cube": "samplerCube", "3d": "sampler3D"}[dim]
-            o.append("#define SMP%d %s(T%d, s_samplers[nonuniformEXT(smp(%du))])" % (s, ctor, s, s))
+            o.append("#define SMP%d %s(T%d, s_samplers[smp(%du)])" % (s, ctor, s, s))
         if self.icb:
             o.append("const uvec4 ICB[%d] = uvec4[%d](%s);" % (len(self.icb), len(self.icb),
                      ", ".join("uvec4(%s)" % ", ".join("%du" % v for v in (r + [0] * 4)[:4]) for r in self.icb)))

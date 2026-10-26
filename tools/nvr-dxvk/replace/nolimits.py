@@ -56,7 +56,7 @@ def build(src_dir, template, defines, original_asm, prefix, plain=False):
     hlsl = os.path.join(src_dir, template + ".hlsl")
     if not os.path.exists(hlsl): return False, "no source " + hlsl
     sm4 = prefix + ".sm4.asm"
-    code, err = fxc(["/T", "ps_4_0", "/Gec", "/Lx", "/E", "main", "/I", "."] + define_args(defines + extra) + ["/Fc", sm4, hlsl], src_dir)
+    code, err = fxc(["/T", "ps_4_0", "/Gec", "/Lx", "/O3", "/E", "main", "/I", "."] + define_args(defines + extra) + ["/Fc", sm4, hlsl], src_dir)
     if code: return False, "fxc ps_4_0: " + err
     frag, txt, spv = prefix + ".frag", prefix + ".txt", prefix + ".spv"
     try:
