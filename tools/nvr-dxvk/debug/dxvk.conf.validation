@@ -14,5 +14,11 @@
 # VK_LOADER_LAYERS_DISABLE=~implicit~           overlays (RivaTuner, Overwolf, OBS, Steam) off for this run: cleaner messages
 nvr.debugEnv = "DXVK_DEBUG=validation|VK_ADD_LAYER_PATH=C:/VulkanSDK/1.4.309.0/Bin32|VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true|VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT|VK_LOADER_LAYERS_DISABLE=~implicit~"
 
+# If the log fills with "set not bound" / descriptor errors for EVERY draw (DXVK's own too), the layer is older than the
+# descriptor extension DXVK 3.0 uses: uncomment these two for DXVK's legacy descriptor path, which the layer understands
+# (docs/next/NVR-DXVK-EXTENSION.md, "Verified here": no errors on that path in the Linux test).
+# dxvk.enableDescriptorHeap = False
+# dxvk.enableDescriptorBuffer = False
+
 # Depth on NVIDIA with a fork WITHOUT the RESZ-on-every-vendor patch (0007-NVR-RESZ...): uncomment.
 # d3d9.customVendorId = 1002
