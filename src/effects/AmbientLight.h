@@ -70,6 +70,13 @@ public:
 	// texels the normal is averaged over after Prepare, 0 off) and HorizonBias (degrees above the tangent plane each horizon starts, 0 off); NVR_ALEdges.
 	int					normalSmoothing = 36;
 	float				horizonBias = 0.0f;
+	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz; core/HiZ.h) HiZ: 0 off; N > 0: Estimate's horizon taps at least 2^(N+1) prep texels
+	// away read a coarse level of the Hi-Z pyramid (Compute\AmbientLightEstimateHiZ.frag). Vulkan passes only.
+	int					hizLogQ = 0;
+	bool				hizEstimateFailed = false;	// its shader file is missing: the normal Estimate for the session
+	bool				hizEstimateChecked = false;
+	UINT				hizEstimateFrames = 0;
+	bool	HiZWanted() const { return hizLogQ > 0 && !hizEstimateFailed && ExtOn(); }
 	CachedHandle		paramEdges, techSmooth;
 	bool				prepared = false;			// RenderPrepare drew Prepare + the smoothing this frame (Render skips its Prepare)
 	bool	RenderPrepare(IDirect3DDevice9* Device);	// ShaderManager, before the AO's sky pass: Prepare, then technique AmbientLightSmooth
@@ -167,7 +174,7 @@ public:
 	// drawn where Render / RenderGrid / RenderPrepare draw the D3D9 pass, into the same targets with the same textures; the constants are
 	// the effect's own parameter values, read back right before each draw. ExtDraw false (off, no extension, a texture missing, a failure:
 	// ExtFailed, logged once) = that pass's D3D9 draw. AmbientLightBlurCompute / AmbientLightSmoothCompute keep their passes when on.
-	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate, ExtShaderCount };
+	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate, ExtEstimateHiZ, ExtShaderCount };
 	ExtPass				extPasses[ExtShaderCount][NVR_EXT_MAX_TARGETS];	// per target count
 	ExtUniformBuffer	extUniforms;
 	CachedHandle		extHandles[38];

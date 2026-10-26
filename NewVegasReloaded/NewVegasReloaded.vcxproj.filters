@@ -316,6 +316,9 @@
     <ClInclude Include="..\src\core\DxvkCompute.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\HiZ.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\NvrDxvkExt.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -622,6 +625,9 @@
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\DxvkCompute.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\HiZ.cpp">
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\RenderPass.cpp">

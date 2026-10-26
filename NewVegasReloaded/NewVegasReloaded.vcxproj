@@ -139,6 +139,7 @@
     <ClCompile Include="..\src\effects\AmbientOcclusion.cpp" />
     <ClCompile Include="..\src\effects\Animator.cpp" />
     <ClCompile Include="..\src\core\DxvkCompute.cpp" />
+    <ClCompile Include="..\src\core\HiZ.cpp" />
     <ClCompile Include="..\src\effects\AvgLuma.cpp" />
     <ClCompile Include="..\src\effects\SkyView.cpp" />
     <ClCompile Include="..\src\effects\AmbientLight.cpp" />
@@ -253,6 +254,7 @@
     <ClInclude Include="..\src\core\GameEventManager.h" />
     <ClInclude Include="..\src\core\GameMenuManager.h" />
     <ClInclude Include="..\src\core\DxvkCompute.h" />
+    <ClInclude Include="..\src\core\HiZ.h" />
     <ClInclude Include="..\src\core\NvrDxvkExt.h" />
     <ClInclude Include="..\src\core\GpuProfiler.h" />
     <ClInclude Include="..\src\core\ImGuiManager.h" />

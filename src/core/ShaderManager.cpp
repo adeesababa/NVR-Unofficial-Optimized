@@ -1,6 +1,7 @@
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools (AfterCombine)
 #include "FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "GpuProfiler.h"
+#include "HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
 #include "LampFixtures.h"
@@ -1700,6 +1701,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	EnabledGuard aoGuard{ ambientLight ? Effects.AmbientOcclusion : nullptr, Effects.AmbientOcclusion->Enabled };
 	EnabledGuard bounceGuard{ ambientLight ? Effects.BounceLight : nullptr, Effects.BounceLight->Enabled };
 	if (ambientLight) Effects.AmbientOcclusion->Enabled = Effects.BounceLight->Enabled = false;
+	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz; core/HiZ.h): the Hi-Z pyramid, one compute dispatch after the depth and normals,
+	// only for the readers that want it this frame ([Shaders.Reflections.Main] HiZ, [Shaders.AmbientLight.Main] HiZ, both Vulkan passes).
+	HiZ::Build(Device, DxvkCompute::PassesOn() && ((ambientLight && Effects.AmbientLight->HiZWanted()) ||
+		(Effects.Reflections->HiZWanted() && wouldRender(Effects.Reflections))));
 	AmbientOcclusionEffect* AO = Effects.AmbientOcclusion;
 	VolumetricFogEffect* Fog = Effects.VolumetricFog;
 	const bool shadowApplies = GameState.isExterior && wouldRender(Effects.ShadowsExteriors);
