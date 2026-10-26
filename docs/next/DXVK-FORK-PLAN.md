@@ -293,8 +293,26 @@ Found:
   Lucky 38 D3D9 0.358, Vulkan without stencil 0.498, Vulkan with stencil 0.316; desert 0.396 / 0.500 / 0.382. So SMAA is
   now a little faster than its D3D9 passes, not 0.10-0.15 ms slower. Same picture (D3D9 vs stencil route differs no more than
   D3D9 vs D3D9), no errors.
-Next (session-hours): point-shadow lighting (+0.1-0.3 ms in Lucky 38): put DXVK's SPIR-V of the D3D9 shader (RenderDoc shows
-it) beside ours and find the extra work (1-2 h; risk: nothing obvious).
+- DONE 2026-10-26 evening (user asked): point-shadow lighting. The two shaders out of the captures (G:\_NVR-build-scratch\rdc\
+  rdc_shader.py; ps-d3d9 / ps-vk .spv, .txt, and the NVIDIA driver's own statistics through RenderDoc's
+  KHR_pipeline_executable_properties view): ours was the SMALLER one (28 registers, 28.9 KB vs 35, 32.3 KB), same depth /
+  stencil / scissor state (none; the D3D9 pass's bound depth buffer is untested), same samplers. So the time had to be
+  measured, not read: new test tools [Main.Main.Performance] NvrDxvkKeepD3D9 (named effects keep their D3D9 passes while
+  the rest run Vulkan: one pass's real cost in the frame total) and NvrDxvkTestSuffix (Compute\<name>-<variant><suffix>.spv
+  picked live; PointShadows knockouts m0x no cube reads / m0y no shadowed lamps / m0z no plain lamps / m0e empty). Lists
+  dxvkfork-20-pointshadows, dxvkfork-21-psparts. RESULT: cube reads ~0, the eleven shadowed lamps ~0.12 ms, the plain lamps
+  (the 12-lamp loop, the extra lights, the spot) ~0.49 ms of the pass's 0.65. Cause: the D3D9 effect framework's
+  PRESHADERS: D3DX works out an .fx's constant-only expressions on the CPU once per draw (1 / radius, lamp weights,
+  smoothstep ranges, the spot cone's cosines) and fxc unrolls the 12-lamp loop; the port did them per pixel, with full
+  precision divisions, and Pascal has no scalar unit to share them. FIX 735c90dd: PointShadows.cpp FillPreshader appends
+  those values to the constants block, PointShadowsCommon.glsl uses them, the loop is [[unroll]]ed (FDivs 97 -> 53 with
+  the loop unrolled). RESULT (20261026-183248, steady rounds): Vulkan pass 0.42-0.44 ms vs its D3D9 pass 0.48-0.50 (was
+  0.76 vs 0.46), frame totals level with D3D9, same picture.
+- Lesson for every port: look for constant-only math in the .fx (what a preshader would take) and move it to the CPU;
+  the GTX 1070 pays for it on every pixel. And the first Vulkan shot after the settle shot is a warm-up (pipelines compile,
+  values fall frame by frame): read the later rounds, or add a warm-up shot with NvrDxvkPasses on.
+Next (session-hours): the same preshader audit for the other ports with constant-only math per pixel (AmbientLight's
+apply, fog, SunShadows; 1-2 h; risk: small gains elsewhere).
 
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
