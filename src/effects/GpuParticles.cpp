@@ -174,7 +174,7 @@ void GpuParticles::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	const float box[4] = { radius, 900.0f, 500.0f, fall };
 	const float sim[4] = { (float)BufferCount, (float)(FrameSeed++ & 0xFFFFF), snow ? 4.0f : 0.3f, snow ? 1.0f : 0.0f };
 	const float flags = (splashes ? 1.0f : 0.0f) + (ortho ? 2.0f : 0.0f) + (Reset ? 4.0f : 0.0f);
-	const float look[4] = { size, 0.03f, opacity, flags };
+	const float look[4] = { size, 0.045f, opacity, flags };
 	const float screen[4] = { (float)TheRenderManager->width, (float)TheRenderManager->height, TheRenderManager->projMatrix._11, TheRenderManager->projMatrix._22 };
 	const D3DXVECTOR4& fog = TheShaderManager->ShaderConst.fogColor;
 	auto lift = [](float v) { v = v * 1.2f + 0.06f; return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
