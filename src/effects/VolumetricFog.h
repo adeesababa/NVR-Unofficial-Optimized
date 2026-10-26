@@ -126,4 +126,29 @@ public:
 	void Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 		IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget,
 		IDirect3DSurface9* SourceBuffer) override;
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): the fog as Vulkan passes, line for line
+	// (Compute/VolumetricFog.glsl, VolumetricFogEstimate.frag, VolumetricFogApply.frag). ExtDedicated: the dedicated and composite
+	// techniques' two passes (RenderDedicated, after its own checks); ExtShadowAO: technique ApplyShadowAO (RenderShadowAO);
+	// ExtRender: the full-resolution techniques (VolumetricFog, VolumetricFogLegacy, VolumetricFogClassic). Each returns false,
+	// having drawn nothing into the frame, when it cannot run; the D3D9 technique then draws as before. PackedFog*, FogReference
+	// and HalfStoreProbe stay D3D9.
+	struct ExtFogPush {
+		UInt32		pointIndex, linearIndex, wrapIndex, mode;	// the sampler heap indices (filled in by DXVK); the Apply shader's pass
+		UInt32		legacy, classic, interior, physicalSky;
+		D3DXVECTOR4	fogLayout, compositeFlags, compositeAOTexel, gridFlags, sunFarFlags;	// the effect's NVR_ constants
+	};
+	ExtPass		extEstimate, extApply;
+	ExtUniformBuffer extUniforms;
+	IDirect3DBaseTexture9* noiseTexture = nullptr;	// NVR_FogNoise (Render loads it)
+	CachedHandle paramPhysSky;	// TESR_PhysSky: declared only when the effect was compiled with PHYSICAL_SKY_ON
+	IDirect3DBaseTexture9* ExtTextureOf(const char* name);
+	static const UINT ExtInputCount = 13;	// the Apply shader's textures (the Estimate shader declares the first 8)
+	bool	ExtSetup(IDirect3DBaseTexture9* (&inputs)[ExtInputCount], ExtFogPush& push);
+	bool	ExtApplyPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
+		IDirect3DBaseTexture9* const (&inputs)[ExtInputCount], const ExtFogPush& push, bool last);
+	bool	ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* scene,
+		bool composite, const D3DXVECTOR4& layout, bool& grid);
+	bool	ExtShadowAO(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, bool shadow, IDirect3DTexture9* aoTexture);
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 };
