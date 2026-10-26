@@ -485,11 +485,6 @@ LightAdaptSpeed = 0.2                  # Speed for the exposure to adjust when t
 MaxBrightness = 0.0                    # Brightness treshold above which the screen will be darkened.
 MinBrightness = 0.3                    # Brightness treshold below which the screen will be brightened.
 
-[_Shaders.Exposure.Histogram]
-Histogram = false                      # UNOFFICIAL (2026-10-26), needs NVR DXVK (the NVR-built DXVK d3d9.dll); does nothing on native D3D9 or stock DXVK. The screen brightness the exposure adapts to comes from a brightness histogram (a compute pass counts every pixel) that leaves out the darkest LowPercent and the brightest HighPercent of the screen, so a neon sign, the sun or a black corner no longer pulls the exposure around. Same smoothing and speeds as before. Off = the old average (AvgLumaCompute's exact one or the D3D9 pass's 112 samples).
-LowPercent = 10.0                      # UNOFFICIAL, with Histogram: share of the darkest pixels (0-49 %) the exposure ignores.
-HighPercent = 5.0                      # UNOFFICIAL, with Histogram: share of the brightest pixels (0-49 %) the exposure ignores.
-
 [_Shaders.Exposure.Status]
 Enabled = true                         # Modulates screen gamma to correct exposure based on average brightness. Avoids screens that are too bright/dark.
 

@@ -33,22 +33,11 @@ public:
 
 private:
 	struct ComputePush {	// AvgLuma.comp's push block, 112 bytes
-		UINT32		width, height, groupsX, groupsY, phase, samplerIndex;
-		float		lowFraction, highFraction;	// AvgLumaHistogram.comp's percentiles; padding for AvgLuma.comp
+		UINT32		width, height, groupsX, groupsY, phase, samplerIndex, pad0, pad1;
 		D3DXVECTOR4	motionBlurData, depthOfFieldData, gameTime, exposureData, cameraData;
 	};
 	bool	ComputeReady();		// creates the pipeline and buffers on first use; false once anything failed
 	void	ComputeRelease();
-	// UNOFFICIAL 2026-10-26 (fork-only): [Shaders.Exposure.Histogram] Histogram: AvgLumaHistogram.comp (same buffers and state, plus a
-	// 256-bin histogram buffer); made on first use, a failure leaves the exact-average / D3D9 path in place for the session.
-	bool	HistogramReady();
-
-	ID3D9NvrExtPipeline*	histPipeline = nullptr;
-	ID3D9NvrExtBuffer*		histBins = nullptr;
-	bool					histTried = false;
-	bool					histFailed = false;
-	UINT					histFrames = 0;
-	bool					lastHistogram = false;	// the path the last compute frame took (for the check tool's line)
 
 	ID3D9NvrExtPipeline*	computePipeline = nullptr;
 	ID3D9NvrExtBuffer*		computePartials = nullptr;
