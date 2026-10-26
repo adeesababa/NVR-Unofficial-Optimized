@@ -284,9 +284,17 @@ Found:
   in the desert. Most other ported passes are 0.01-0.08 ms faster than their D3D9 shaders. Lucky 38 frame total +0.22-0.28.
 - RenderDoc's replay times per draw cannot compare the two paths (the same copies took 1.9 ms in one capture and 3.4 ms in
   the other); use the in-game F10 timers.
-Next (session-hours): (1) extension 1.6: a depth-stencil attachment and stencil test for full-screen passes, the SMAA weight
-pass tests SMAA's own stencil as the D3D9 pass does (1-2 h; expected back to D3D9's time). (2) Point-shadow lighting: put
-DXVK's SPIR-V of the D3D9 shader (RenderDoc shows it) beside ours and find the extra work (1-2 h; risk: nothing obvious).
+- DONE 2026-10-26 evening (user asked): extension 1.6, fork patch 0010 (CI run 40406827315, v3.0.1-10): DrawDepthStencil, a
+  full-screen pass with a D3D9 depth-stencil surface and depth / stencil tests (NVR_EXT_DEPTH_STENCIL; the triangle's depth via
+  the viewport's depth range; clears stay D3D9 Clear calls, in order). NVR 42b25d13: EffectRecord::ExtDrawTo takes it,
+  [Main.Main.Performance] NvrDxvkStencil (default on, live), SMAA's Vulkan route now does what its D3D9 techniques do: clears
+  both targets and its own D24S8 stencil, the edge pass discards (push flags 1) and marks REPLACE 1, the weight pass tests EQUAL 1.
+  RESULT (list dxvkfork-19-stencil, ABCABC in one launch; lucky22 20261026-175608, og-desert 20261026-175817), SMAA GPU ms:
+  Lucky 38 D3D9 0.358, Vulkan without stencil 0.498, Vulkan with stencil 0.316; desert 0.396 / 0.500 / 0.382. So SMAA is
+  now a little faster than its D3D9 passes, not 0.10-0.15 ms slower. Same picture (D3D9 vs stencil route differs no more than
+  D3D9 vs D3D9), no errors.
+Next (session-hours): point-shadow lighting (+0.1-0.3 ms in Lucky 38): put DXVK's SPIR-V of the D3D9 shader (RenderDoc shows
+it) beside ours and find the extra work (1-2 h; risk: nothing obvious).
 
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
