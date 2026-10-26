@@ -16,7 +16,7 @@
 layout(set = 1, binding = 16) uniform texture2D t_hiz;   // NVR_HiZ: r nearest, g farthest linear depth / farZ; level k = 2^(k+1) pixels
 
 const int HiZLevels = 7;           // the pyramid's levels; walk levels 0 (full resolution) .. HiZLevels
-const int HiZMaxIterations = 96;   // cells visited at most (a miss after that, as a ray past its last step)
+const int HiZMaxIterations = 128;   // cells visited at most (a miss after that, as a ray past its last step)
 
 // Nearest and farthest depth (game units) of cell c at walk level L (0 = TESR_DepthBuffer itself, L >= 1 = NVR_HiZ level L - 1).
 vec2 CellDepth(ivec2 c, int L) {
@@ -90,6 +90,10 @@ void main() {
             bool skip = rayFar <= scene.x                  // the ray is in front of everything in the cell
                 || scene.x >= farZ * 0.98                  // sky only: never a hit
                 || rayNear - scene.y >= thickness;         // behind everything by more than the thickness
+            // A pixel whose surface faces along the ray (the reflecting floor itself, seen again a few pixels on where the depth
+            // buffer's pixel steps put the ray 'behind' it) is no hit: the walk goes on. The fixed-step trace rarely sampled those first
+            // pixels; testing every pixel, the walk would stop on its own floor almost every time (and the hit be thrown away below).
+            if (!skip && level == 0 && dot(ViewNormal((cell + 0.5) * cb.reciprocalResolution.xy), R) >= 0.2) skip = true;
             if (skip) {
                 u = uExit;
                 level = min(level + 1, HiZLevels);
