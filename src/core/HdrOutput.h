@@ -122,8 +122,14 @@ namespace HdrOutput {
 			return;
 		}
 
-		NVR_EXT_HDR_INFO info = {};
-		S.Hdr->GetHdrInfo(&info);
+		// The fork's view (EDID; DXVK parses it on every call, so once per session)
+		static NVR_EXT_HDR_INFO info = {};
+		static bool infoRead = false;
+		if (!infoRead) {
+			infoRead = true;
+			S.Hdr->GetHdrInfo(&info);
+			Logger::Log("UNOFFICIAL HDR output: the fork's surface offers HDR10 %s, scRGB %s; EDID peak %.0f nits", info.SupportsHdr10 ? "yes" : "no", info.SupportsScRgb ? "yes" : "no", info.DisplayMaxNits);
+		}
 		NVR_EXT_HDR_OUTPUT out = {};
 		out.Mode = TheSettingManager->GetSettingI("Shaders.HDR.Main", "Mode") == 2 ? NVR_EXT_HDR_SCRGB : NVR_EXT_HDR_HDR10;
 		out.PaperWhiteNits = std::clamp(SettingF("PaperWhiteNits"), 80.0f, 1000.0f);
