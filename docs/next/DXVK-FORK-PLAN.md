@@ -22,6 +22,49 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
   everything else.
 - What the fork buys and does not (plain answers): NVR-DXVK-WHAT-IT-BUYS.md.
 
+## In-game sweep of every port (2026-10-26)
+Slot C (1080p, slim), fork d3d9.dll from run 40255009422 (ext 1.3, patches 0001-0005), tree work\NVR-dxvkfork-ci =
+4c03c6dc + the SkyView fix below. List bench\foundations\lists\dxvkfork-11-sweep.txt: defaults D3D9/Vulkan x2 (ABAB), then
+six groups D3D9 / Vulkan / Vulkan again (post: Coloring, Sharpening, LowHF, Lens, Reflections, Specular, HeatHaze, FXAA;
+rain: ForceRain; snow: Snow + SnowAccumulation + ForceSnow; storm: Sandstorm + ForceStorm; bounce: AmbientLight off +
+BounceLight; taa: TAA + MotionBlur). Scenes lucky22, int23, og-desert, og-night, og-lake. Pictures and logs: bench\autotest
+20261025-225726 / 231052 / 232526 / 235535 / 20261026-001705 -slotC; diffs G:\_NVR-build-scratch\imgdiff.py, timing
+sweep_timing.py (reports sweep-*.report there).
+- Crashes: NONE in five scenes (115 shots), no "failed to draw", no effect fell back to D3D9. 33 effects ran as Vulkan
+  passes: AmbientLight, AmbientOcclusion, Bloom, BounceLight, Cinema, Coloring, CombineDepth, DepthOfField, DitherBuster,
+  Exposure, FXAA, GodRays, HeatHaze, Lens, Normals, PointShadows, Precipitations, Reflections, SMAA, Sandstorm,
+  ShadowsExteriors, ShadowsInteriors, Sharpening, SkyDither, SkyView, Snow, SnowAccumulation, Specular, SunShadows, TAA,
+  VolumetricFog, VolumetricLight, WetWorld. Not exercised by these scenes (need a condition the slot does not give, several
+  passed in earlier runs): ImageAdjust, LowHF, MotionBlur, LUT, BloodLens, WaterLens, BarrelHaze, Bodycam, Skin,
+  BloomLegacy, SunFar, FlashlightBeam, Flashlight, Underwater, PointShadows2, VolumetricClouds, VolumetricSmoke.
+- Same picture: every D3D9/Vulkan pair inside the noise band (the same settings shot twice: 10-14 % of pixels > 2/255
+  indoors, 10-27 % outdoors, mean signed change ~0) in lucky22, int23, og-night, og-lake -- EXCEPT og-desert: Vulkan
+  ~1/255 darker in the sky, every pair (signed -0.34, the noise pairs ~0). Isolated (dxvkfork-12-desert-sky: one suspect
+  off per pair): the gap vanished with the sky off only. CAUSE: the D3D9 frame quad (ShaderManager::CreateFrameVertex)
+  offsets uv by half a SCREEN pixel, also when an effect draws into a smaller target, so D3D9 reads SkyView's 128x64 table
+  0.47 texel off centre; the Vulkan pass read it at the texel centre (fog reads the table too, so fog on/off flips the
+  sign). FIX: SkyView/SkyViewX/SkyViewXMS take a uvShift push field (0.5/screen - 0.5/table, SkyView.cpp). After the fix
+  og-desert is inside noise in all nine pairs (signed -0.02). The one left (fog off, +0.32 on the whole frame) was the
+  exposure still settling after the switch (dxvkfork-13: brightness kept rising shot to shot; the settled pair is +0.02).
+  Not judged: Sandstorm (the dust moves: two Vulkan shots already differ by 25-49 %).
+- The same half-texel rule applies to EVERY port that draws into a target smaller than the screen and uses the built-in
+  `uv` (half-resolution fog estimate, bloom chain, AO, sandstorm half/quarter buffers, ...): a quarter texel at half
+  resolution. All measured inside noise, but not exact: follow-up audit (NVR-DXVK-EXTENSION.md "half-pixel rule").
+- Timing (F10 GPU timers, ms, D3D9 -> Vulkan, same scene and launch; frame totals are within the game's own +-1 ms swing):
+  | pass | lucky22 | og-desert | og-night | og-lake |
+  |---|---|---|---|---|
+  | Snow accumulation | - | 2.62 -> 1.26 | 2.61 -> 1.37 | 2.74 -> 1.24 |
+  | Sandstorm (main timer) | - | 1.36 -> 1.16 | 1.40 -> 1.18 | - |
+  | Luma + exposure + bloom | 0.35 -> 0.32 | 0.33 -> 0.28 | 0.26 -> 0.20 | 0.31 -> 0.27 |
+  | Depth of field | - | 0.18 -> 0.09 | 0.21 -> 0.09 | 0.15 -> 0.10 |
+  | SMAA | 0.26 -> 0.43 | 0.16 -> 0.24 | 0.22 -> 0.35 | 0.15 -> 0.21 |
+  | Volumetric fog + estimate | - | 0.44 -> 0.59 | 0.45 -> 0.57 | 0.43 -> 0.56 |
+  | AO / shadow+AO apply | - | 0.28 -> 0.53 | 0.28 -> 0.53 | - |
+  | Point shadow lighting | 0.52 -> 0.78 | - | - | - |
+  Net: the small passes come out about even, the heavy ones (snow accumulation, sandstorm, DoF) are faster, SMAA / fog /
+  AO / point-shadow apply slower (0.1-0.25 ms each): worth a look per pass (bindings, sampler or format choices), not a
+  route problem.
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).

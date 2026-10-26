@@ -71,7 +71,12 @@ a `git am` plus, at worst, a look at those four spots. DXVK's version string bec
 - `CreateGraphicsPipeline` / `Draw` (1.1): a fragment shader (SPIR-V) over a full-screen triangle, into 1-4 D3D9 render
   targets of one size, optional viewport rectangle, blend none/alpha/add/multiply. The fragment shader's inputs are the
   same binding types as compute (sampled images, samplers via the heap, uniform/storage buffers, storage images) and a push
-  block at offset 0; `layout(location = 0) in vec2 uv` is the texture coordinate ((0,0) top left). DXVK's context state is
+  block at offset 0; `layout(location = 0) in vec2 uv` is the texture coordinate ((0,0) top left; at the texel centre,
+  (x + 0.5) / target size). HALF-PIXEL RULE (found in game 2026-10-26): the D3D9 frame quad (ShaderManager::
+  CreateFrameVertex) adds half a SCREEN pixel to its uv, so a D3D9 pass into a target smaller than the screen reads at
+  x / target + 0.5 / screen, not the texel centre. A port into such a target that uses `uv` directly must add
+  0.5 / screen - 0.5 / target (SkyView's uvShift) or snap to the texel as SkyTrans does; full-screen-size targets match
+  as they are. DXVK's context state is
   snapshotted before and restored after (`dxvk_context.h` nvrGetState/nvrSetState, which ends the pass and marks everything
   dirty), so the device's own render targets, viewport, shaders, blend/depth state and push data are re-applied at its next
   draw. Multisampled targets are refused (the pass would need its own sample count).

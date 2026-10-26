@@ -51,11 +51,14 @@ void SkyViewEffect::RenderTable(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 }
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): the push block of the five SkyView passes (src\hlsl\NewVegas\Compute\SkyView.frag and the
-// others): TESR_PhysSky and TESR_PhysSkySun, then the LINEAR/CLAMP sampler's heap index (written by the extension at offset 32).
+// others): TESR_PhysSky and TESR_PhysSkySun, then the LINEAR/CLAMP sampler's heap index (written by the extension at offset 32), then the D3D9 uv shift.
 struct SkyViewPush {
 	D3DXVECTOR4	physSky;
 	D3DXVECTOR4	physSkySun;
 	UInt32		samplerIndex;
+	UInt32		pad;
+	float		uvShift[2];	// 40: 0.5 / screen - 0.5 / table: the D3D9 quad (ShaderManager::CreateFrameVertex) offsets uv by half a SCREEN
+							// pixel, so a D3D9 pass into the 128x64 table reads it 0.47 texel off centre; the Vulkan pass must too (same picture)
 };
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): the five techniques as Vulkan passes, SkyView.fx.hlsl line for line (Compute\SkyView, SkyTrans,
@@ -94,6 +97,10 @@ bool SkyViewEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 	SkyViewPush push = {};
 	push.physSky = sky->Constants.PhysSky;
 	push.physSkySun = sky->Constants.PhysSkySun;
+	D3DSURFACE_DESC desc;
+	if (FAILED(RenderTarget->GetDesc(&desc)) || !desc.Width || !desc.Height) return false;
+	push.uvShift[0] = 0.5f / (float)TheRenderManager->width - 0.5f / (float)desc.Width;
+	push.uvShift[1] = 0.5f / (float)TheRenderManager->height - 0.5f / (float)desc.Height;
 	if (!ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push))) return false;
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes (the physical sky's tables).", Name);
 	return true;
