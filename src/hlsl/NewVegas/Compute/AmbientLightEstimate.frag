@@ -2,6 +2,7 @@
 // Into NVR_AmbientLight0 (half resolution). effects/AmbientLight.cpp ExtDraw.
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_control_flow_attributes : enable
 #include "AmbientLight.glsl"
 
 layout(set = 1, binding = 0) uniform texture2D t_prep;       // NVR_ALPrep (POINT)
@@ -39,7 +40,7 @@ vec4 Estimate(vec2 uv) {
     float visibility = 0.0, weightSum = 0.0;
     vec3 bounce = vec3(0.0);
     float firstCos = 0.0, firstLow = 0.0;
-    for (int slice = 0; slice < SLICES; slice++) {
+    [[unroll]] for (int slice = 0; slice < SLICES; slice++) {   // (2026-10-26: [unroll] as the .fx; glslang keeps loops)
         float phi = (float(slice) + noise.x) * (3.14159265 / float(SLICES));
         vec2 omega = vec2(cos(phi), -sin(phi));
         vec3 direction = vec3(cos(phi), sin(phi), 0.0);
@@ -52,11 +53,11 @@ vec4 Estimate(vec2 uv) {
         float n = signNormal * acos(cosNormal);
         float lowCos0 = cos(n + 1.5707963 - cb.alEdges.y), lowCos1 = cos(n - 1.5707963 + cb.alEdges.y);
         float horizonCos0 = lowCos0, horizonCos1 = lowCos1;
-        for (int k = 0; k < STEPS; k++) {
+        [[unroll]] for (int k = 0; k < STEPS; k++) {
             float s = (float(k) + fract(noise.y + float(k) * 0.618034)) / float(STEPS);
             s *= s;
             vec2 offset = omega * screenRadius * max(s, 2.0 * cb.alLayout.z);
-            for (int side = 0; side < 2; side++) {
+            [[unroll]] for (int side = 0; side < 2; side++) {
                 vec2 sampleUV = uv + (side == 0 ? offset : -offset);
                 float onScreen = step(0.0, sampleUV.x) * step(sampleUV.x, 1.0) * step(0.0, sampleUV.y) * step(sampleUV.y, 1.0);
                 sampleUV = (floor(clamp(sampleUV, 0.0, 1.0) * invTexel) + 0.5) * cb.alLayout.zw;
