@@ -72,6 +72,47 @@ sweep_timing.py (reports sweep-*.report there).
   AO / point-shadow apply slower (0.1-0.25 ms each): worth a look per pass (bindings, sampler or format choices), not a
   route problem.
 
+## Lamps in one pass, second try: LampsDepthFirst and the lamp cap (2026-10-26)
+Asked for: "raise the per-object lamp limit" and make "all lamps in one pass" pay off. Code: src/core/OnePassDepth.h, Render.cpp
+(GrassFirst::DepthFirst), [Main.Main.Misc] LampsDepthFirst (live, default 0, DXVK only), LampsDepthFirstMinLamps, LampsDepthFirstCount.
+- Measured first, then designed. Occlusion counts (LampsDepthFirstCount, Ultra-Luxe, one pass): the many-lamp (OPT) passes shade
+  1.50 samples per screen pixel; with a depth step first 1.21, so only 19 % of their work is on pixels later covered (overdraw
+  1.24x). The lamp loop per pixel already skips unused slots and lamps out of reach (DxvkLampBranches). So the suggested per-tile
+  light lists would only replace a per-pixel distance test (a few instructions per skipped lamp) with a list read: NOT built.
+- Built instead: LampsDepthFirst. The main list's OPT passes (0xC3-0xD6) are drawn first, twice: depth only (one-instruction pixel
+  shader, colour writes off), then with the game's shaders (the depth test then passes only the visible surface). Moved with
+  GrassFirst's pass-ID rewrite; alpha-tested, blended and skinned passes get no depth step; device state put back afterwards. Side
+  effect that pays: those walls and floors, drawn first, also hide other objects (SLS 1-3 lights / vanilla families -0.1-0.2 ms).
+- Results (slot C 1080p, fork 1.4, same-launch A/B rotated, world scene GPU ms, medians; lists bench\foundations\lists\
+  dxvklamps-1..4; runs bench\autotest\20261026-041201 / 042321 / 043658 / 045054 (luxe), 042637 / 044538 (lucky22), 050059 (casino)):
+  | scene (launches) | multi-pass | LampsInOnePass | + LampsDepthFirst |
+  |---|---|---|---|
+  | Lucky 38 (2) | 3.81 / 3.62 | 3.99 / 4.28 | 3.63 / 3.51 |
+  | Casino (1) | 2.15 | 2.31 | 1.83 |
+  | Ultra-Luxe (4) | 4.42 / 4.52 / 4.60 / 4.35 | 4.30 / 4.33 / 5.50 / 4.28 | 4.09 / 4.29 / 5.47 / 4.31 |
+  Depth first is never measurably slower than one pass alone (+0.02 to -0.7 ms) and puts the one-pass path at or below the game's passes
+  (Lucky 38 -0.1/-0.2, casino -0.3, Ultra-Luxe -0.3..+0.9: the third launch was a slow-one-pass launch, below). Frame totals move
+  the same way (Lucky 38 6.70 vs 6.87 multi). Same picture: every one/one+depth pair inside the same-settings noise (Ultra-Luxe
+  10 % > 2/255 vs 8-11 %, signed ~0; diff images = moving NPCs only).
+- Native D3D9 (the user's runtime): depth first is SLOWER (Ultra-Luxe world +1.2, frame +1.6 ms; Lucky 38 +0.7 / +0.9): the extra
+  ~460-790 draws cost the native driver's main-thread time, which DXVK does on its own thread. So the setting does nothing there.
+  But LampsInOnePass ALONE is now faster than the game's passes on native in both scenes (Ultra-Luxe 3.72 vs 4.37, Lucky 38 2.99 vs
+  3.34, x3 each; runs 20261026-043142 / 044050): the 10-18 "+1.08 ms" verdict no longer holds in the slot (worth a check in the
+  user's real game at 1440p).
+- Open: on DXVK the same one-pass draws cost 2.9 ms in some stretches and 4.0 ms in others (same DLL, draw counts and lamps; it
+  even switched mid-launch in 045054); the step-4 "+1.16 ms" was a slow stretch. Not explained; suspects: DXVK's pipeline-library
+  (fast-linked) pipelines before the optimized ones are in, or D3D9 float emulation in a 3,800-instruction shader (native runs
+  the same shader faster: 2.3-2.6 ms). Cheap next test: a FORK_D3D9 folder with dxvk.conf dxvk.enableGraphicsPipelineLibrary =
+  False (needs a d3d9.dll copy for that folder: owner's OK).
+- The per-object cap was NOT raised. What the engine gives: every OPT pass is capped at 6 lights by the game (census: ADT10 and
+  ADTS10 draws never above 6; 28 lights a frame dropped on alpha/Single_Pass objects in the Ultra-Luxe); its constant layout has room
+  for 10 light colours (c3-c12), 8 pixel-shader light positions (c19-c26, slot 0 = main light) and 10 vertex light records
+  (c25-c34). NVR's 6-lamp shaders already use every SM3 interpolator for the per-vertex lamp vectors. A raise to 7 lamps needs a
+  vertex shader beyond SM3 (a fork patch 0007 for vertex-shader replacements: the fork replaces pixel shaders only), the cap bytes
+  (AddPass_Opt + the GetRenderPasses_2x compare) and a replacement pixel shader; past 7 NVR must feed lamp data itself (an NVR
+  buffer). It would serve ~47 objects a frame in the Ultra-Luxe (shiny, 6+ lamps, still multi-pass). Estimate 10-15 session-hours
+  incl. a CI build of the new patch.
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).

@@ -21,6 +21,7 @@
 #include "../../core/LampPassTest.h"
 #include "../../core/PassSums.h"
 #include "../../core/LampsInOnePass.h"
+#include "../../core/OnePassDepth.h"	// UNOFFICIAL 2026-10-26 LampsDepthFirst: the one many-lamp passes drawn depth first
 #include "../../core/ClothWind.h"
 #include "../../core/PlantWind.h"	// UNOFFICIAL 2026-10-20 plant wind ([Shaders.Plants.Wind])
 #include "../../core/EffectSelfTest.h"
@@ -629,6 +630,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: HiddenObjectCulling
 	LampScissor::BeginFrame();	// UNOFFICIAL: LampScissor
+	OnePassDepth::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-26 LampsDepthFirst
 	PassSums::BeginFrame(PassSums::ModeFromSettings());	// UNOFFICIAL ExactPassSums, and 2026-10-21 LampSums (the extra lamp passes summed in linear light)
 	ClothWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL cloth wind
 	PlantWind::BeginFrame(Tes ? Tes->sky : nullptr, TheShaderManager->GameState.isExterior);	// UNOFFICIAL 2026-10-20 plant wind (after the cloth: it uses its bookkeeping)
@@ -2244,9 +2246,114 @@ namespace GrassFirst {
 		return true;
 	}
 
+	// UNOFFICIAL 2026-10-26 LampsDepthFirst (core/OnePassDepth.h): the main list's one many-lamp (OPT) passes first, depth only, then
+	// shaded once per visible pixel; then the rest of the list as the game does it.
+	static bool RewriteOptFirst(PassIdNode* head) {
+		if (!head || (!head->next && !head->id)) return true;	// empty
+		UInt16 values[1024];
+		unsigned n = 0;
+		for (PassIdNode* p = head; p; p = p->next) {
+			if (n == 1024) return false;
+			values[n++] = p->id;
+		}
+		std::stable_partition(values, values + n, [](UInt16 id) { return OnePassDepth::IsOpt(id); });
+		unsigned i = 0;
+		for (PassIdNode* p = head; p; p = p->next) p->id = values[i++];
+		return true;
+	}
+
+	// Is an OPT ID queued, and is every queued OPT pass an object's first pass? (BSBatchRenderer: pass groups at +8, 0x68 each, found
+	// through the NiTMap at +0x0C; 5 buckets of 0x14 with the head at +4; a node holds the RenderPass at [2]; RenderPass +7 = first pass.)
+	static int OptQueued(void* accumulator) {
+		const UInt8* a = (const UInt8*)accumulator;
+		const UInt32 count = *(const UInt32*)(a + 0x18C);
+		bool any = false;
+		for (UInt32 r = 0; r < count && r < 2; r++) {
+			UInt8* renderer = *(UInt8* const*)(a + 0x174 + 4 * r);
+			if (!renderer) continue;
+			PassIdNode* list = (PassIdNode*)(renderer + 0x2C);
+			if (!list->next && !list->id) continue;
+			for (PassIdNode* p = list; p; p = p->next) {
+				if (!OnePassDepth::IsOpt(p->id)) continue;
+				UInt32 index = 0;
+				if (!(UInt8)ThisCall(0x00853130, renderer + 0x0C, (UInt32)p->id, &index)) continue;	// NiTMapBase<UInt32, UInt32>::GetAt
+				const UInt8* passGroup = *(UInt8**)(renderer + 8) + index * 0x68;
+				for (unsigned b = 0; b < 5; b++)
+					for (const UInt32* node = *(const UInt32* const*)(passGroup + b * 0x14 + 4); node; node = (const UInt32*)node[0]) {
+						const UInt8* pass = (const UInt8*)node[2];
+						if (!pass) continue;
+						if (!pass[7]) return -1;	// an add-on OPT pass: its object's first pass may come later in the list
+						any = true;
+					}
+			}
+		}
+		return any ? 1 : 0;
+	}
+
+	static void DepthFirst(void* accumulator, UInt32 arg3, SInt32 group) {
+		if (!OnePassDepth::Mode || !OnePassDepth::HookSeen || ShaderSplit::CurrentContext != ShaderSplit::World) return;
+		const UInt8* a = (const UInt8*)accumulator;
+		if (*(const UInt32*)(a + 0x19C) != 0 || a[0x164] || a[0x165]) return;	// standard render mode, not the water passes
+		if (!OnePassDepth::MakeShader(TheRenderManager->device)) return;
+		const int queued = OptQueued(accumulator);
+		if (queued < 0 && GpuTimer::Enabled) OnePassDepth::StatBailNotFirst += 1;
+		if (queued <= 0) return;
+		PassIdNode* lists[2] = {};
+		unsigned count = 0;
+		if (!Lists(accumulator, lists, count)) return;
+		const double start = GpuTimer::Enabled ? CpuTimer::NowMs() : 0.0;
+		bool ok = true;
+		for (unsigned i = 0; ok && i < count; i++) ok = RewriteOptFirst(lists[i]);
+		if (ok) {
+			const unsigned mask = RestoreMask;
+			RestoreMask = 31;	// everything the passes set is put back for the rest of the list
+			Save();
+			OnePassDepth::Records.clear();
+			// Step 1: every OPT pass recorded; the eligible ones drawn depth-only (RenderPassImmediatelyHook -> DepthFirstPass).
+			OnePassDepth::Recording = true;
+			ThisCall(kRenderBatches, accumulator, 0xC3u, 0xD6u, arg3, group);
+			OnePassDepth::Recording = false;
+			((void(__cdecl*)(char, int))0x00B98540)(0, 0);	// BSRenderState::SetAlphaToCoverageEnable(0, 0), as after a bucket
+			((void(__cdecl*)())kEndPass)();
+			// Step 2: the same passes with the game's shaders, in the recorded order.
+			NiDX9RenderState* state = TheRenderManager->renderState;
+			for (const OnePassDepth::Record& r : OnePassDepth::Records) {
+				state->SetRenderState(D3DRS_CULLMODE, r.cull, RenderStateArgs);
+				state->SetRenderState(D3DRS_ALPHATESTENABLE, r.alphaTest, RenderStateArgs);
+				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
+			}
+			((void(__cdecl*)(char, int))0x00B98540)(0, 0);
+			((void(__cdecl*)())kEndPass)();
+			Restore();
+			RestoreMask = mask;
+			if (GpuTimer::Enabled) {
+				OnePassDepth::StatLists += 1;
+				for (const OnePassDepth::Record& r : OnePassDepth::Records) if (r.depth) OnePassDepth::StatDepth += 1;
+			}
+			OnePassDepth::Records.clear();
+		}
+		for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);	// ascending again, whatever happened
+		if (GpuTimer::Enabled) OnePassDepth::StatCpuMs += CpuTimer::NowMs() - start;
+	}
+
+	// Step 1 of LampsDepthFirst: one OPT pass met by the early call: recorded, and drawn depth-only if it may be.
+	static void DepthFirstPass(void* pass, UInt32 passId, UInt32 a3, UInt32 a4, UInt32 a5) {
+		NiDX9RenderState* state = TheRenderManager->renderState;
+		OnePassDepth::Record r = { pass, passId, a3, a4, a5, state->GetRenderState(D3DRS_CULLMODE), state->GetRenderState(D3DRS_ALPHATESTENABLE), false };
+		if (OnePassDepth::Eligible(pass, r.alphaTest, state->GetRenderState(D3DRS_ALPHABLENDENABLE))) {
+			OnePassDepth::InDepth = true;
+			OnePassDepth::DepthDrawn = false;
+			RenderPassImmediately(pass, passId, a3, a4, a5);
+			OnePassDepth::InDepth = false;
+			r.depth = OnePassDepth::DepthDrawn;
+		}
+		OnePassDepth::Records.push_back(r);
+	}
+
 	// The game's RenderBatches(1, 0x25B) call: the near grass first, then the main list as the game does it.
 	static void __fastcall MainListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
 		ActiveAccumulator = nullptr;
+		if (first == 1 && last == 0x25B && group < 0) DepthFirst(accumulator, arg3, group);	// UNOFFICIAL 2026-10-26 LampsDepthFirst
 		if (first == 1 && last == 0x25B && group < 0 && Allowed(accumulator)) {
 			PassIdNode* lists[2] = {};
 			unsigned count = 0;
@@ -2324,6 +2431,7 @@ namespace GrassFirst {
 	// BSBatchRenderer::RenderPassImmediately: while the early grass call runs, each grass pass is recorded, and drawn now (near
 	// tufts) only if its vertex shader is NVR's.
 	static void __cdecl RenderPassImmediatelyHook(void* pass, UInt32 passId, UInt32 a3, UInt32 a4, UInt32 a5) {
+		if (OnePassDepth::Recording && OnePassDepth::IsOpt(passId)) { DepthFirstPass(pass, passId, a3, a4, a5); return; }	// UNOFFICIAL LampsDepthFirst
 		if (!Recording || !IsGrass(passId)) { RenderPassImmediately(pass, passId, a3, a4, a5); return; }
 		NiDX9RenderState* state = TheRenderManager->renderState;
 		Record r = { pass, passId, a3, a4, a5, state->GetRenderState(D3DRS_CULLMODE), state->GetRenderState(D3DRS_ALPHATESTENABLE), false };
@@ -2505,6 +2613,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw(*(const PointShadowForward::RenderPassView**)0x011F91E0);	// UNOFFICIAL ScopeFix outdoors
+	OnePassDepth::Reapply(TheRenderManager->device);	// UNOFFICIAL LampsDepthFirst: a bind inside a depth-only draw keeps the depth-only shader
 	if (profiling) ShaderSplit::EndBind(bindStart);
 
 }
@@ -2619,7 +2728,25 @@ static void ForwardShadowsForPass(void* Pass) {
 	ScopeSunShadows::ForDraw((const PointShadowForward::RenderPassView*)Pass);
 }
 
+// UNOFFICIAL 2026-10-26 LampsDepthFirst, step 1 (core/OnePassDepth.h): the pass drawn with depth only. Only what moves vertices is
+// set up as for the real draw (cloth and plant wind: same constants as step 2's draw); the game's own setup runs as always.
+static void DepthOnlyStandard(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	IDirect3DDevice9* device = TheRenderManager->device;
+	NiGeometry* geometry = ((const PointShadowForward::RenderPassView*)Pass)->geometry;
+	ClothWind::ForGeometry(device, geometry, false, false);
+	PlantWind::ForGeometry(device, geometry, false, false);
+	ClothWind::PassGeometry = geometry;
+	OnePassDepth::BeginDepth(device);
+	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	OnePassDepth::EndDepth(device);
+	OnePassDepth::DepthDrawn = true;
+	ClothWind::PassGeometry = nullptr;
+	ClothWind::AfterDraw(device);
+}
+
 void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	OnePassDepth::HookSeen = true;
+	if (OnePassDepth::InDepth) { DepthOnlyStandard(Pass, Arg2, Arg3, Arg4); return; }	// UNOFFICIAL LampsDepthFirst, step 1
 	TerrainProbe::Note((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL 2026-10-17 terrain study, diagnostic
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic (F10 only)
@@ -2654,7 +2781,11 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	PassFamilyView::BeforeDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic
 #endif
 	ReflMaterial::ForPass(Pass, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World && RmaosDraw::ThisDraw, TheRenderManager->device);	// UNOFFICIAL MaterialAware reflections
+	const bool countOpt = OnePassDepth::Count && GpuTimer::Enabled && ShaderSplit::CurrentContext == ShaderSplit::World &&
+		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
+	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
 	FoldHighlights::AfterDraw(TheRenderManager->device);	// UNOFFICIAL, diagnostic
@@ -2671,6 +2802,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 }
 
 void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 Arg4) {
+	if (OnePassDepth::InDepth) { if (GpuTimer::Enabled) OnePassDepth::StatSkinned += 1; return; }	// UNOFFICIAL LampsDepthFirst: no depth step (step 2 draws it)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::Note(Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic (F10 only)
 	if (ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::FirstPerson)	// UNOFFICIAL, diagnostic: PbrPopLog
@@ -2698,7 +2830,11 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	PassFamilyView::BeforeDraw(TheRenderManager->device, Pass, ShaderSplit::CurrentContext == ShaderSplit::World);	// UNOFFICIAL, diagnostic
 #endif
 	ReflMaterial::ForPass(Pass, ((const PointShadowForward::RenderPassView*)Pass)->geometry, ShaderSplit::CurrentContext == ShaderSplit::World && RmaosDraw::ThisDraw, TheRenderManager->device);	// UNOFFICIAL MaterialAware reflections
+	const bool countOpt = OnePassDepth::Count && GpuTimer::Enabled && ShaderSplit::CurrentContext == ShaderSplit::World &&
+		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
+	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
 	FoldHighlights::AfterDraw(TheRenderManager->device);	// UNOFFICIAL, diagnostic
