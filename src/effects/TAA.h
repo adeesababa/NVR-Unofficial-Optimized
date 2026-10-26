@@ -79,6 +79,12 @@ private:
 
 	bool	EnsureTextures();
 
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the resolve, the debug view and the output as Vulkan passes (src\hlsl\NewVegas\Compute\TAA*.frag);
+	// Render uses them when NvrDxvkPasses is on, and the D3D9 techniques otherwise. Writes the history buffer that is not last frame's.
+	bool	ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, int write);
+	ExtPass			extPasses[3];	// Resolve, Debug, Output
+	ExtUniformBuffer	extUniforms;
+
 	void	SetMipBias(float bias);
 
 	bool	WillResolveThisFrame();

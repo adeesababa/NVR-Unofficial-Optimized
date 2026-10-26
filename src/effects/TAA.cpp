@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "TAA.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void TAAEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TAAData", &Constants.Data);
@@ -101,6 +102,106 @@ bool TAAEffect::DrawTechnique(const char* TechniqueName) {
 	Effect->EndPass();
 	Effect->End();
 	return true;
+}
+
+// --- The Vulkan passes (NVR DXVK) -----------------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the resolve, the debug view and the output as Compute\TAAResolve, TAADebug and TAAOutput
+// (.frag; TAA.glsl holds what they share), line for line. Same targets, same order and same inputs as the D3D9 draws in Render.
+// The constants go to a uniform buffer (304 bytes); the matrices are copied as the effect's SetMatrix uploads them.
+namespace {
+	// The Constants block of TAA.glsl (std140; the matrices as the effect's SetMatrix uploads them).
+	struct TAAUniforms {
+		D3DXMATRIX	projection, view, prevView;
+		D3DXVECTOR4	reciprocalResolution, cameraData, data, prevProjection, cameraDelta, weapon, sharpen;
+	};
+	struct TAAPush { UInt32 pointIndex, linearIndex; };	// the extension writes the sampler heap indices here
+
+	// Set 1: the textures in the .fx's sampler order (binding = slot); set 2: the constants; the samplers' heap indices at 0 and 4.
+	const NVR_EXT_BINDING_DESC TAABindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_SourceBuffer
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_TAAHistoryBuffer
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE, 2, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_DepthBuffer
+		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE, 3, NVR_EXT_VIEW_2D,   FALSE, 0 },	// TESR_DepthBufferViewModel
+		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D,  FALSE, 0 },	// Constants
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D,  FALSE, 0 },	// POINT, CLAMP
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D,  FALSE, 4 },	// LINEAR, CLAMP
+	};
+	const UINT TAATextureCount = 4;
+
+	IDirect3DBaseTexture9* SlotTexture(const char* name) {
+		std::string slotName = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
+		return slot ? *slot : nullptr;
+	}
+	// The constants from the same registered memory the effect's SetCT uploads.
+	const D3DXVECTOR4* Registered(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+}
+
+bool TAAEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, int write) {
+	const D3DXVECTOR4* projection = Registered("TESR_ProjectionTransform");
+	const D3DXVECTOR4* view = Registered("TESR_ViewTransform");
+	const D3DXVECTOR4* reciprocal = Registered("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
+	if (!projection || !view || !reciprocal || !cameraData) return false;
+
+	IDirect3DBaseTexture9* source = TheTextureManager->SourceTexture;
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* viewModel = SlotTexture("TESR_DepthBufferViewModel");
+	if (!source || !depth || !viewModel) return false;
+
+	TAAUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.view, view, sizeof(D3DXMATRIX));
+	uniforms.prevView = Constants.PrevViewTransform;
+	uniforms.reciprocalResolution = *reciprocal;
+	uniforms.cameraData = *cameraData;
+	uniforms.data = Constants.Data;
+	uniforms.prevProjection = Constants.PrevProjection;
+	uniforms.cameraDelta = Constants.CameraDelta;
+	uniforms.weapon = Constants.Weapon;
+	uniforms.sharpen = Constants.Sharpen;
+	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!buffer) return false;
+
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	if (!point || !linear) return false;
+
+	// One pass: the textures as the .fx binds them (a placeholder where the pass does not read one), into one target.
+	static const char* const spvNames[3] = { "TAAResolve", "TAADebug", "TAAOutput" };
+	auto draw = [&](int index, IDirect3DBaseTexture9* const* textures, IDirect3DSurface9* const* targets) -> bool {
+		ExtPass& pass = extPasses[index];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[index], TAABindings, _countof(TAABindings), sizeof(TAAPush), true);
+		}
+		if (!pass.Pipeline) return false;
+		NVR_EXT_RESOURCE_BINDING resources[_countof(TAABindings)] = {};
+		for (UINT i = 0; i < TAATextureCount; i++) {
+			resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+		}
+		resources[4].Slot = 0; resources[4].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[4].pResource = buffer;
+		resources[5].Slot = 0; resources[5].Type = NVR_EXT_BIND_SAMPLER; resources[5].pResource = point;
+		resources[6].Slot = 1; resources[6].Type = NVR_EXT_BIND_SAMPLER; resources[6].pResource = linear;
+		TAAPush push = {};
+		return ExtDrawTo(pass.Pipeline, targets, 1, resources, _countof(resources), &push, sizeof(push));
+	};
+
+	// The same reads as the D3D9 draws: the resolve reads last frame's result (historyIndex) and writes the other buffer; the debug
+	// view reads what the resolve read; the output reads this frame's resolve (the buffer that becomes next frame's history).
+	IDirect3DBaseTexture9* history[2] = { Textures.ResolveTexture, Textures.HistoryTexture };
+	IDirect3DSurface9* surfaces[2] = { Textures.ResolveSurface, Textures.HistorySurface };
+	IDirect3DBaseTexture9* resolveInputs[TAATextureCount] = { source, history[historyIndex], depth, viewModel };
+	IDirect3DSurface9* resolveTarget = surfaces[write];
+	if (!draw(0, resolveInputs, &resolveTarget)) return false;
+
+	IDirect3DBaseTexture9* outputInputs[TAATextureCount] = { source, history[write], depth, viewModel };
+	const bool shown = Settings.DebugView > 0 ? draw(1, resolveInputs, &RenderTarget) : draw(2, outputInputs, &RenderTarget);
+	if (shown && ++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as a Vulkan pass.", Name);
+	return shown;
 }
 
 // Halton low-discrepancy sequence: the radical inverse of index in the given base. Bases 2 and 3
@@ -222,26 +323,36 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 	Constants.Data.z = historyValid ? 1.0f : 0.0f;
 
 	if (SourceBuffer) Device->StretchRect(RenderTarget, NULL, SourceBuffer, NULL, D3DTEXF_NONE);
-	SetCT();
 
 	// UNOFFICIAL 2026-10-13: the two FP16 buffers take turns. Last frame's result (historyIndex) is read as the history
-	// (TESR_TAAHistoryBuffer, stage 1) and this frame's resolve goes into the other one, which Output then shows and which
-	// is next frame's history: no full-screen copy of the resolve into a fixed history buffer.
-	IDirect3DTexture9* const buffers[2] = { Textures.ResolveTexture, Textures.HistoryTexture };
-	IDirect3DSurface9* const surfaces[2] = { Textures.ResolveSurface, Textures.HistorySurface };
+	// (TESR_TAAHistoryBuffer) and this frame's resolve goes into the other one, which Output then shows and which is next
+	// frame's history: no full-screen copy of the resolve into a fixed history buffer.
 	const int write = historyIndex ^ 1;
-	Device->SetTexture(1, buffers[historyIndex]);
-	Device->SetRenderTarget(0, surfaces[write]);
-	bool resolved = DrawTechnique("Resolve");
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the passes as Vulkan passes when NvrDxvkPasses is on (ExtDraw); the D3D9 techniques otherwise,
+	// and when a pass fails (the extension path is then off for the session).
+	bool shown = !ExtFailed && DxvkCompute::PassesOn() && ExtDraw(Device, RenderTarget, write);
+	if (shown) {
+		Device->SetRenderTarget(0, RenderTarget);
+	}
+	else {
+		SetCT();
+		IDirect3DTexture9* const buffers[2] = { Textures.ResolveTexture, Textures.HistoryTexture };
+		IDirect3DSurface9* const surfaces[2] = { Textures.ResolveSurface, Textures.HistorySurface };
+		Device->SetTexture(1, buffers[historyIndex]);
+		Device->SetRenderTarget(0, surfaces[write]);
+		bool resolved = DrawTechnique("Resolve");
 
-	// A debug view goes to the screen reading the same last frame the resolve read (stage 1 still holds it), so the view
-	// sees exactly what the resolve saw, and the debug picture never becomes next frame's input.
-	Device->SetRenderTarget(0, RenderTarget);
-	bool debugDrawn = resolved && Settings.DebugView > 0 && DrawTechnique("Debug");
+		// A debug view goes to the screen reading the same last frame the resolve read (stage 1 still holds it), so the view
+		// sees exactly what the resolve saw, and the debug picture never becomes next frame's input.
+		Device->SetRenderTarget(0, RenderTarget);
+		bool debugDrawn = resolved && Settings.DebugView > 0 && DrawTechnique("Debug");
 
-	if (resolved) Device->SetTexture(1, buffers[write]);	// Output shows this frame's resolve
+		if (resolved) Device->SetTexture(1, buffers[write]);	// Output shows this frame's resolve
 
-	if (resolved && (debugDrawn || DrawTechnique("Output"))) {
+		shown = resolved && (debugDrawn || DrawTechnique("Output"));
+	}
+
+	if (shown) {
 		if (RenderedSurface) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 		RememberCamera();
 		historyValid = true;
