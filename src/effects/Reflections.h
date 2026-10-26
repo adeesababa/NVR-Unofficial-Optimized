@@ -34,6 +34,7 @@ public:
 		float	ReflectAdd;		// UNOFFICIAL 2026-10-21: 0 the reflection replaces its share of the surface's colour (as before), 1 it is added on top
 		float	SpecularOcclusion;		// UNOFFICIAL 2026-10-21: how much blurred reflections dim where the surface itself is dark (0 off)
 		float	SpecularOcclusionLevel;	// the surface / reflection brightness ratio that keeps all of the reflection
+		bool	HiZ;			// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h): the hierarchical ray march on the Hi-Z pyramid (Vulkan trace only)
 	};
 	SettingsStruct	Settings;
 
@@ -97,9 +98,14 @@ public:
 
 	// UNOFFICIAL 2026-10-25 (NVR DXVK): every technique as src\hlsl\NewVegas\Compute\Reflections*.frag (EffectRecord::ExtRender)
 	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h): HiZ on and the Vulkan passes in use (ShaderManager builds the pyramid then).
+	bool	HiZWanted() const { return Settings.HiZ && !ExtFailed && !hizTraceFailed; }
 
 private:
 	ExtPass				extPasses[8];		// by technique (Blur X and Blur Y share [2])
+	ExtPass				extTraceHiZ;		// UNOFFICIAL 2026-10-26: Compute\ReflectionsTraceHiZ.spv (HiZ)
+	bool				hizTraceFailed = false;	// its pipeline could not be made: the normal trace for the session
+	UINT				hizTraceFrames = 0;
 	ExtUniformBuffer	extUniforms;
 	D3DXVECTOR4			extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// NVR_ReflectionsSky as RenderBuffers set it
 	IDirect3DTexture9*	extSkyTexture = nullptr;	// the sky visibility it bound on stage 14 (null: none)

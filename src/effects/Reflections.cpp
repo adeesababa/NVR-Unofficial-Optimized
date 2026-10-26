@@ -2,6 +2,7 @@
 #include "../core/GpuProfiler.h"
 #include "../core/ReflMaterial.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz)
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -35,6 +36,7 @@ void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-21 SpecularOcclusion: live, compiled into the effect only when above 0 at startup (ReflMaterial::OccCompiledIn).
 	Settings.SpecularOcclusion = ReflMaterial::OccCompiledIn() ? std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusion"), 0.0f, 1.0f) : 0.0f;
 	Settings.SpecularOcclusionLevel = std::clamp(TheSettingManager->GetSettingF(section, "SpecularOcclusionLevel"), 0.05f, 4.0f);
+	Settings.HiZ = TheSettingManager->GetSettingI(section, "HiZ") != 0;	// UNOFFICIAL 2026-10-26 (NVR DXVK, core/HiZ.h)
 }
 
 void ReflectionsEffect::RegisterConstants() {
@@ -251,13 +253,16 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 			{D3DSAMP_MAGFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MINFILTER, D3DTEXF_LINEAR}, {D3DSAMP_MIPFILTER, D3DTEXF_NONE} };
 		for (const auto& s : linear) TheRenderManager->SetSamplerState(14, (D3DSAMPLERSTATETYPE)s[0], s[1]);
 	}
+	{
+		// UNOFFICIAL 2026-10-26 (deep/fork-hiz): the trace on its own F10 line (inside "Reflections (SSR)"), for the HiZ A/B.
+		static GpuTimer traceTimer("  Reflections trace (half)");
+		GpuProfileScope gpu(traceTimer, Device);
+		pass(temporal ? Textures.TraceSurface : Textures.TempSurface, 1);
+	}
 	if (temporal) {
-		pass(Textures.TraceSurface, 1);
 		pass(Textures.TempSurface, 3);
 		Device->StretchRect(Textures.TempSurface, NULL, Textures.HistorySurface, NULL, D3DTEXF_NONE);
 	}
-	else
-		pass(Textures.TempSurface, 1);
 	pass(Textures.TraceSurface, 2);
 	pass(Textures.BufferSurface, 4);
 	ClearPassTextures();
@@ -379,6 +384,8 @@ namespace {
 		{ 0, 0,  NVR_EXT_BIND_SAMPLER,        2, NVR_EXT_VIEW_2D,   FALSE, 24 },	// LINEAR, CLAMP, MIPFILTER LINEAR
 	};
 	const UINT ReflTextureCount = 16;
+	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): ReflectionsTraceHiZ.frag = the same bindings + NVR_HiZ on set 1, binding 16 (slot 16).
+	const NVR_EXT_BINDING_DESC ReflHiZBinding = { 1, 16, NVR_EXT_BIND_SAMPLED_IMAGE, 16, NVR_EXT_VIEW_2D, FALSE, 0 };
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
 		std::string slotName = name;
@@ -396,7 +403,23 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	if (techniqueIndex > 7 || ClearRenderTarget || (techniqueIndex == 7 && !ReflMaterial::CompiledIn())) return false;
 	static const char* const spvNames[8] = { "ReflectionsComposite", "ReflectionsTrace", "ReflectionsBlur", "ReflectionsTemporal", "ReflectionsBlur",
 		"ReflectionsCapture", "ReflectionsFilter", "ReflectionsMaterial" };
-	ExtPass& pass = extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	// UNOFFICIAL 2026-10-26 (deep/fork-hiz) HiZ: the trace as the hierarchical march when this frame's pyramid is there (core/HiZ.h).
+	IDirect3DTexture9* hiz = techniqueIndex == 1 && Settings.HiZ && !hizTraceFailed ? HiZ::Current() : nullptr;
+	if (hiz && !extTraceHiZ.Tried) {
+		extTraceHiZ.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 1];
+		memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+		bindings[_countof(ReflBindings)] = ReflHiZBinding;
+		std::vector<char> words;	// checked first: a missing file must not turn the other Vulkan passes off
+		if (DxvkCompute::LoadSpirv("ReflectionsTraceHiZ", words))
+			extTraceHiZ.Pipeline = DxvkCompute::CreateGraphicsPipeline("ReflectionsTraceHiZ", bindings, _countof(bindings), sizeof(ReflPush), true);
+		if (!extTraceHiZ.Pipeline) {
+			hizTraceFailed = true;
+			Logger::Log("UNOFFICIAL Reflections: the Hi-Z trace could not be set up; the normal trace is used.");
+		}
+	}
+	if (!extTraceHiZ.Pipeline) hiz = nullptr;
+	ExtPass& pass = hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
 	if (!pass.Tried) {
 		pass.Tried = true;
 		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
@@ -479,7 +502,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		ReflUploaded = uniforms;
 	}
 
-	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings)] = {};
+	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 1] = {};
 	for (UINT i = 0; i < ReflTextureCount; i++) {
 		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
 	}
@@ -487,11 +510,17 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = linear;
 	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = point;
 	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
+	UINT resourceCount = _countof(ReflBindings);
+	if (hiz) {
+		resources[resourceCount].Slot = 16; resources[resourceCount].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[resourceCount].pResource = hiz;
+		resourceCount++;
+		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
+	}
 	ReflPush push = {};
 	push.cube = Constants.Cube;
 	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;	// Blur Y; the composite: the cube is bound
 
 	if (techniqueIndex == 0)
-		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, _countof(resources), &push, sizeof(push));
-	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, resourceCount, &push, sizeof(push));
+	return ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
 }

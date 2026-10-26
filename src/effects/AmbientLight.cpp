@@ -2,6 +2,7 @@
 #include "BounceLightMath.h"
 #include "../core/FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 AmbientLightBlurCompute
+#include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -33,6 +34,7 @@ void AmbientLightEffect::UpdateSettings() {
 	noEdgeOutline = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NoEdgeOutline") != 0;	// UNOFFICIAL 2026-10-21 (aloutline)
 	normalSmoothing = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "NormalSmoothing"), 0, 64);	// UNOFFICIAL 2026-10-21 (alrocks)
 	horizonBias = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "HorizonBias"), 0.0f, 45.0f);
+	hizLogQ = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "HiZ"), 0, 6);	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -703,6 +705,7 @@ namespace {
 		{ "AmbientLightScreen",     6,  1u << 2 },	// screen memory, its colour, its walls, depth, normals, source
 		{ "AmbientLightInject",     5,  0x1F },		// sun depth, sun colour, screen memory, its colour, wall memory
 		{ "AmbientLightPropagate",  5,  (1u << 3) | (1u << 4) },	// geometry, wave, accum, wave colour, accum colour
+		{ "AmbientLightEstimateHiZ", 3, 0 },		// UNOFFICIAL 2026-10-26 (HiZ): prep, blue noise, NVR_HiZ
 	};
 	struct ALExtPush {	// AmbientLight.glsl's push block, 32 bytes
 		D3DXVECTOR4	frame;
@@ -1021,8 +1024,25 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 					drawn = ExtDraw(ExtPrepare, targets, 1, textures, 0, reduced);
 				}
 				else if (p == 1) {
-					IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler") };
-					drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);
+					// UNOFFICIAL 2026-10-26 (deep/fork-hiz) HiZ: the far taps on the Hi-Z pyramid when this frame's is there (core/HiZ.h).
+					IDirect3DTexture9* hiz = hizLogQ > 0 && !hizEstimateFailed ? HiZ::Current() : nullptr;
+					if (hiz && !hizEstimateChecked) {
+						hizEstimateChecked = true;
+						std::vector<char> words;	// a missing file must not turn the other Vulkan passes off
+						if (!DxvkCompute::LoadSpirv("AmbientLightEstimateHiZ", words)) {
+							hizEstimateFailed = true;
+							Logger::Log("UNOFFICIAL AmbientLight: Compute\\AmbientLightEstimateHiZ.spv is missing; HiZ does nothing.");
+						}
+					}
+					if (hiz && !hizEstimateFailed) {
+						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), hiz };
+						drawn = ExtDraw(ExtEstimateHiZ, targets, 1, textures, (UINT)hizLogQ, reduced);
+						if (drawn && ++hizEstimateFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: Estimate reads its far taps from the Hi-Z pyramid (HiZ %d).", hizLogQ);
+					}
+					else {
+						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler") };
+						drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);
+					}
 				}
 				else if (p == 2 || p == 3) {
 					IDirect3DBaseTexture9* textures[] = { depth, bufferTexture[p == 2 ? 0 : 1] };
