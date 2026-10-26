@@ -4,6 +4,26 @@
 // with Smith visibility and Schlick's Fresnel, the split-sum sky reflection, the sun's shadow from the cascades, worked
 // out at a quarter of the resolution from wide-averaged normals and added to the image at full resolution.
 // [Shaders.Specular.Exterior] and [Shaders.Specular.Rain], blended by how much it rains.
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the constants block of Compute\SpecularCommon.glsl, as the D3D9 path's values are copied
+// (matrices as stored: cb.m[i][j] is the HLSL's m[i][j]). Only matrices and vec4s, so std140 is this layout.
+struct SpecularUniforms {
+	float viewTransform[16], projectionTransform[16];
+	float shadowNear[16], shadowMiddle[16], shadowFar[16], shadowLod[16];
+	float reciprocalResolution[4], specularData[4], specularEffects[4], sunDirection[4], sunColor[4], skyColor[4], horizonColor[4];
+	float waterSettings[4], shadowFade[4], bounceData[4], bounceLayout[4], specularExtra[4];
+	float depthConstants[4], cameraData[4], cameraPosition[4];
+	float smoothedSunDir[4], shadowFormatData[4], shadowBlur[4];
+	float shadowNearCenter[4], shadowMiddleCenter[4], shadowFarCenter[4], shadowLodCenter[4];
+};
+
+// Push data of the Specular passes: the heap indices of the point (offset 0) and the linear (offset 4) sampler.
+struct SpecularPush {
+	UInt32 pointSampler;
+	UInt32 linearSampler;
+	UInt32 pad[2];
+};
+
 class SpecularEffect : public EffectRecord
 {
 public:
@@ -56,4 +76,22 @@ public:
 	bool	CanTakeBounce();
 	bool	RenderWithBounce(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		IDirect3DTexture9* bounce, const D3DXVECTOR4& data, const D3DXVECTOR4& layout);
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the passes as Vulkan passes (Compute\Specular*.spv, from src\hlsl\NewVegas\Compute): techniques
+	// 1 (SpecularPrep) and 2 (SpecularLow) draw into the effect's own quarter-resolution targets, technique 0 adds to the frame through
+	// the chain; SpecularBounce is ExtRenderBounce (RenderWithBounce). False: nothing drawn, the D3D9 technique runs.
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+	bool	ExtRenderBounce(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+		IDirect3DBaseTexture9* bounce, const D3DXVECTOR4& data, const D3DXVECTOR4& layout);
+
+private:
+	ExtPass					extPrep, extLight, extAdd, extBounce;
+	ExtUniformBuffer		extUniforms;
+	// What BindExtras set for the light step (null where it bound none) and the NVR_SpecularExtra values.
+	IDirect3DBaseTexture9*	extraSkyVisibility = nullptr;
+	IDirect3DBaseTexture9*	extraSunFar = nullptr;
+	D3DXVECTOR4				extraValues = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	const void*				ConstantValue(const char* name);
+	IDirect3DBaseTexture9*	TextureOf(const char* name);
+	bool					FillUniforms(SpecularUniforms& uniforms);
 };
