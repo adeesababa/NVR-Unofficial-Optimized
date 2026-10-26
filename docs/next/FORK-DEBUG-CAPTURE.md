@@ -19,8 +19,12 @@ Three tools:
 |---|---|---|
 | Vulkan runtime (vulkan-1.dll 1.4.309, 32- and 64-bit) | yes (comes with the NVIDIA driver) | everything (already fine) |
 | `vulkaninfo.exe` | yes (C:\Windows\System32) | checking layers |
-| RenderDoc | **no** (no folder, no Vulkan layer registered) | tools 1 and 2 |
-| Vulkan SDK (Khronos validation layer) | **no** (no C:\VulkanSDK, no `VK_LAYER_KHRONOS_validation` in `vulkaninfo`) | tool 3 |
+| RenderDoc | **yes, installed 2026-10-26:** 1.46, C:\Program Files\RenderDoc, Vulkan layer registered for 64- and 32-bit | tools 1 and 2 |
+| Vulkan SDK (Khronos validation layer) | **yes, installed 2026-10-26:** 1.3.296.0 with the 32-bit components, C:\VulkanSDK\1.3.296.0\Bin32 | tool 3 |
+
+Why 1.3.296.0 and not the newest SDK: LunarG removed the 32-bit layers from the Windows SDK in 1.4.304.0 (January 2025),
+and Fallout: New Vegas can only load 32-bit layers. 1.3.296.0 is the last SDK with them. It is older than DXVK 3.0; if
+validation complains about descriptor features, use the commented older-descriptor line in the validation template.
 
 Vulkan layers that ARE installed and hook every Vulkan game: RivaTuner (RTSS), Overwolf (two), OBS, Steam overlay and
 Steam's shader cache, plus NVIDIA's own. The overlays sometimes break captures; the templates show how to switch them off
@@ -81,9 +85,8 @@ Validation checks the fork's Vulkan calls for mistakes (wrong image layouts, mis
 bad descriptors). It makes the game much slower (2-10x): use it on one broken spot, never for timing.
 
 1. Install the Vulkan SDK with the 32-bit components (see above).
-2. Copy `tools/nvr-dxvk/debug/dxvk.conf.validation` next to the fork's `d3d9.dll` as **`dxvk.conf`**. Edit the
-   `VK_ADD_LAYER_PATH=C:/VulkanSDK/1.4.309.0/Bin32` part to the version you installed (the folder must contain
-   `VkLayer_khronos_validation.json`).
+2. Copy `tools/nvr-dxvk/debug/dxvk.conf.validation` next to the fork's `d3d9.dll` as **`dxvk.conf`**. It already points
+   at the installed `C:/VulkanSDK/1.3.296.0/Bin32` (the folder must contain `VkLayer_khronos_validation.json`).
 3. Start the game as usual (no RenderDoc needed). Go to the broken spot, wait a few seconds, quit.
 4. Open `FalloutNV_d3d9.log` next to the game. Near the top: `NVR debugEnv: ...` lines and `Enabled instance layers:
    VK_LAYER_KHRONOS_validation`. Below: one `err:` / `warn:` line per problem. Synchronization problems mention
