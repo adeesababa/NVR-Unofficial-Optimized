@@ -29,4 +29,13 @@ public:
 
 	void	Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
 		UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the ping-pong path's passes as Vulkan passes (Compute\SunShadows*.frag), every technique,
+	// through the same targets in the same order. Called by Render only (the in-place fallback stays D3D9). False: the D3D9 path runs.
+	bool	ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex, const D3DXTECHNIQUE_DESC& description,
+		IDirect3DTexture9* shadowTexture, IDirect3DSurface9* shadowSurface);
+	ExtPass	extPasses[5];	// march, blur, apply, sharp, sharp finish
+	ExtUniformBuffer extUniforms;
+	unsigned extForwardGeneration = 0;	// the load FORWARD_SHADOWS was read for (EffectRecord passes it to the compiler at load)
+	bool	extForwardCompiled = false;
 };

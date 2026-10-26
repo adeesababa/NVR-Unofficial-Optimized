@@ -1,4 +1,14 @@
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+
+// Per-pass GPU timers nested in the caller's "Sun contact shadows": march, horizontal blur,
+// vertical blur (+ intensity), and the deferred shadow apply of the four-pass technique.
+// (Shared by the D3D9 passes and the Vulkan ones.)
+static GpuTimer* ContactPassTimers() {
+	static GpuTimer passTimers[4] = { GpuTimer("  Contact march"), GpuTimer("  Contact blur H"),
+		GpuTimer("  Contact blur V"), GpuTimer("  Contact shadow apply") };
+	return passTimers;
+}
 
 void SunShadowsEffect::SetCT() {
 	EffectRecord::SetCT();
@@ -54,16 +64,23 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 		return;
 	}
 
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the same passes as Vulkan passes when [Main.Main.Performance] NvrDxvkPasses is on.
+	if (!ExtFailed && !ClearRenderTarget && DxvkCompute::PassesOn()) {
+		auto extTimer = TimeLogger();
+		if (ExtPingPong(Device, techniqueIndex, description, shadowTexture, shadowSurface)) {
+			Device->SetRenderTarget(0, RenderTarget);
+			renderTime = extTimer.LogTime("SunShadows::Extension");
+			return;
+		}
+	}
+
 	auto timer = TimeLogger();
 	HRESULT result = Effect->SetTechnique(technique);
 	if (SUCCEEDED(result)) SetCT();
 	UINT passes = 0;
 	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
-		// Per-pass GPU timers nested in the caller's "Sun contact shadows": march, horizontal blur,
-		// vertical blur (+ intensity), and the deferred shadow apply of the four-pass technique.
-		static GpuTimer passTimers[4] = { GpuTimer("  Contact march"), GpuTimer("  Contact blur H"),
-			GpuTimer("  Contact blur V"), GpuTimer("  Contact shadow apply") };
+		GpuTimer* passTimers = ContactPassTimers();
 		IDirect3DTexture9* source = shadowTexture;
 		for (UINT p = 0; p < passes && SUCCEEDED(result); ++p) {
 			GpuProfileScope gpuPass(passTimers[p < 4 ? p : 3], Device);
@@ -96,4 +113,168 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 		reported = true;
 	}
 	renderTime = timer.LogTime("SunShadows::PingPong");
+}
+
+// --- The Vulkan passes (NVR DXVK) -----------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-25 (NVR DXVK): every technique of SunShadows.fx as Compute\SunShadows<Pass>.frag (SunShadows.glsl holds what
+// they share), line for line, through the same ping-pong as Render: buffer -> scratch A -> scratch B -> ... -> buffer, each pass
+// into its own target with ExtDrawTo (the frame chain is not involved). The constants (eight matrices: 736 bytes) go to a uniform
+// buffer, as the effect's SetCT uploads them: the matrices with ID3DXEffect::SetMatrix, so the memory as stored makes GLSL's M[i][j]
+// HLSL's (see SunShadows.glsl). Sampler states as the .fx declares them: LINEAR/CLAMP for the depth, the atlas, the normals and the
+// shadow buffer (one mip each; the atlas only ever read at explicit LOD 0, where SetCT's optional anisotropy does nothing), LINEAR/WRAP
+// with linear mips for the blue noise (MipSampler, extension 1.3; an older fork keeps the D3D9 passes).
+namespace {
+	enum SunPass { SunMarch, SunBlurH, SunBlurV, SunApply, SunFinalBlur, SunSharp, SunSharpFinish };
+
+	// The Constants block of SunShadows.glsl (std140).
+	struct SunUniforms {
+		D3DXMATRIX	cascade[4], projection, invProjection, view, invView;
+		D3DXVECTOR4	reciprocalResolution, smoothedSunDir, viewSpaceLightDir, formatData, screenSpaceData, shadowFade, shadowBlur,
+					forwardData, center[4], cameraData, flags;
+	};
+	struct SunPush { UInt32 linearIndex, noiseIndex, pass, pad; };
+
+	// Set 1: the textures in the .fx's sampler order (binding = slot); set 2: the constants; the samplers' heap indices at 0 and 4.
+	const NVR_EXT_BINDING_DESC SunBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_DepthBuffer
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE,  1, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_ShadowAtlas
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE,  2, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_NormalsBuffer
+		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE,  3, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_PointShadowBuffer (the pass's source)
+		{ 1, 4, NVR_EXT_BIND_SAMPLED_IMAGE,  4, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_NoiseSampler
+		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// Constants
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },	// LINEAR, CLAMP
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D, FALSE, 4 },	// LINEAR, WRAP, MIPFILTER LINEAR
+	};
+
+	// The constant registered under a name: the memory the D3D9 path uploads (SetCT reads it at each draw). Null if absent.
+	const D3DXVECTOR4* SunConstant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+	// The texture registered under a sampler name (InitTexture / RegisterTexture). Null if absent.
+	IDirect3DBaseTexture9* SunTexture(const char* name) {
+		auto found = TheTextureManager->TextureNames.find(name);
+		return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
+	}
+}
+
+bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex, const D3DXTECHNIQUE_DESC& description,
+	IDirect3DTexture9* shadowTexture, IDirect3DSurface9* shadowSurface) {
+	// The techniques of this SunShadows.fx, recognised by name and pass count (another file's keep the D3D9 passes).
+	static const char* const names[5] = { nullptr, "ForwardContactShadows", "ForwardContactSharp", "ContactFast", "ForwardContactShadowsFast" };
+	static const SunPass layouts[5][4] = {
+		{ SunMarch, SunBlurH, SunBlurV, SunApply },		// technique 0
+		{ SunMarch, SunBlurH, SunFinalBlur },			// ForwardContactShadows
+		{ SunSharp, SunSharpFinish },					// ForwardContactSharp
+		{ SunMarch, SunBlurH, SunBlurV, SunApply },		// ContactFast (ScreenSpaceShadowFast: the same march, SunShadowsMarch.frag)
+		{ SunMarch, SunBlurH, SunFinalBlur },			// ForwardContactShadowsFast
+	};
+	static const UINT passCounts[5] = { 4, 3, 2, 4, 3 };
+	if (techniqueIndex > 4 || description.Passes != passCounts[techniqueIndex]) return false;
+	const char* name = description.Name;
+	if (names[techniqueIndex] ? (!name || strcmp(name, names[techniqueIndex])) : (name && *name)) return false;
+
+	// FORWARD_SHADOWS as the loaded effect was compiled with (EffectRecord::LoadEffect reads the setting at load).
+	if (extForwardGeneration != LoadGeneration) {
+		extForwardGeneration = LoadGeneration;
+		extForwardCompiled = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") != 0;
+	}
+
+	static const char* const spvNames[5] = { "SunShadowsMarch", "SunShadowsBlur", "SunShadowsApply", "SunShadowsSharp", "SunShadowsSharpFinish" };
+	static const UINT pipelineOf[7] = { 0, 1, 1, 2, 1, 3, 4 };	// SunPass -> extPasses / spvNames
+	for (UINT p = 0; p < description.Passes; p++) {
+		const UINT index = pipelineOf[layouts[techniqueIndex][p]];
+		ExtPass& pass = extPasses[index];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[index], SunBindings, _countof(SunBindings), sizeof(SunPush), true);
+		}
+		if (!pass.Pipeline) return false;
+	}
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* noiseSampler = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
+	if (!linear || !noiseSampler) return false;
+
+	static const char* const cascadeNames[4] = { "TESR_ShadowCameraToLightTransformNear", "TESR_ShadowCameraToLightTransformMiddle",
+		"TESR_ShadowCameraToLightTransformFar", "TESR_ShadowCameraToLightTransformLod" };
+	static const char* const centerNames[4] = { "TESR_ShadowNearCenter", "TESR_ShadowMiddleCenter", "TESR_ShadowFarCenter", "TESR_ShadowLodCenter" };
+	const D3DXVECTOR4* cascade[4];
+	const D3DXVECTOR4* center[4];
+	for (int i = 0; i < 4; i++) {
+		cascade[i] = SunConstant(cascadeNames[i]);
+		center[i] = SunConstant(centerNames[i]);
+		if (!cascade[i] || !center[i]) return false;
+	}
+	const D3DXVECTOR4* projection = SunConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* invProjection = SunConstant("TESR_InvProjectionTransform");
+	const D3DXVECTOR4* view = SunConstant("TESR_ViewTransform");
+	const D3DXVECTOR4* invView = SunConstant("TESR_InvViewTransform");
+	const D3DXVECTOR4* reciprocal = SunConstant("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* smoothedSunDir = SunConstant("TESR_SmoothedSunDir");
+	const D3DXVECTOR4* viewSpaceLightDir = SunConstant("TESR_ViewSpaceLightDir");
+	const D3DXVECTOR4* formatData = SunConstant("TESR_ShadowFormatData");
+	const D3DXVECTOR4* screenSpaceData = SunConstant("TESR_ShadowScreenSpaceData");
+	const D3DXVECTOR4* shadowFade = SunConstant("TESR_ShadowFade");
+	const D3DXVECTOR4* shadowBlur = SunConstant("TESR_ShadowBlur");
+	const D3DXVECTOR4* forwardData = SunConstant("TESR_ShadowForwardData");
+	const D3DXVECTOR4* cameraData = SunConstant("TESR_CameraData");
+	if (!projection || !invProjection || !view || !invView || !reciprocal || !smoothedSunDir || !viewSpaceLightDir || !formatData ||
+		!screenSpaceData || !shadowFade || !shadowBlur || !forwardData || !cameraData)
+		return false;
+
+	// The textures as SetCT binds them (the shadow buffer's slot takes each pass's source below).
+	IDirect3DBaseTexture9* textures[5] = { SunTexture("TESR_DepthBuffer"), SunTexture("TESR_ShadowAtlas"), SunTexture("TESR_NormalsBuffer"),
+		shadowTexture, ExtFileTexture("TESR_NoiseSampler") };
+	for (IDirect3DBaseTexture9* texture : textures) if (!texture) return false;
+
+	SunUniforms uniforms = {};
+	for (int i = 0; i < 4; i++) {
+		memcpy(&uniforms.cascade[i], cascade[i], sizeof(D3DXMATRIX));	// as stored, as SetMatrix takes them
+		uniforms.center[i] = *center[i];
+	}
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invProjection, invProjection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.view, view, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invView, invView, sizeof(D3DXMATRIX));
+	uniforms.reciprocalResolution = *reciprocal;
+	uniforms.smoothedSunDir = *smoothedSunDir;
+	uniforms.viewSpaceLightDir = *viewSpaceLightDir;
+	uniforms.formatData = *formatData;
+	uniforms.screenSpaceData = *screenSpaceData;
+	uniforms.shadowFade = *shadowFade;
+	uniforms.shadowBlur = *shadowBlur;
+	uniforms.forwardData = *forwardData;
+	uniforms.cameraData = *cameraData;
+	uniforms.flags = D3DXVECTOR4(extForwardCompiled ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!buffer) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[_countof(SunBindings)] = {};
+	for (UINT i = 0; i < 5; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[5].Slot = 0; resources[5].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[5].pResource = buffer;
+	resources[6].Slot = 0; resources[6].Type = NVR_EXT_BIND_SAMPLER; resources[6].pResource = linear;
+	resources[7].Slot = 1; resources[7].Type = NVR_EXT_BIND_SAMPLER; resources[7].pResource = noiseSampler;
+
+	// The passes as Render draws them. The device's own target is moved to each pass's destination first, so a pass never reads the
+	// device's current render target (pass 0 reads the shadow buffer, the caller's target). A failure before the last pass leaves the
+	// shadow buffer untouched (only the last pass writes it), so the D3D9 passes can still do this frame from the start.
+	GpuTimer* passTimers = ContactPassTimers();
+	Device->SetTexture(3, nullptr); // TESR_PointShadowBuffer slot
+	IDirect3DTexture9* source = shadowTexture;
+	for (UINT p = 0; p < description.Passes; p++) {
+		GpuProfileScope gpuPass(passTimers[p < 4 ? p : 3], Device);
+		const bool last = p == description.Passes - 1;
+		const SunPass kind = layouts[techniqueIndex][p];
+		IDirect3DSurface9* destination = last ? shadowSurface : scratchSurface[p & 1];
+		if (FAILED(Device->SetRenderTarget(0, destination))) return false;
+		resources[3].pResource = source;
+		SunPush push = {};
+		push.pass = kind == SunBlurV ? 1 : kind == SunFinalBlur ? 2 : 0;	// SunShadowsBlur.frag: 0 H, 1 V, 2 FinalContactBlur
+		if (!ExtDrawTo(extPasses[pipelineOf[kind]].Pipeline, &destination, 1, resources, _countof(resources), &push, sizeof(push))) return false;
+		source = last ? shadowTexture : scratchTexture[p & 1];
+	}
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes (%u passes).", Name, description.Passes);
+	return true;
 }
