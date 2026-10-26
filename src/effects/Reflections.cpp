@@ -164,6 +164,8 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data4.z = Settings.ReflectAdd;
 	Constants.Data4.w = Settings.SpecularOcclusion;
 	Constants.Layout.z = Settings.SpecularOcclusionLevel;
+	// UNOFFICIAL 2026-10-26 (deep/fork-hiz): HiZInteriorsTest indoors: the Hi-Z walk's coarse "behind" skip off (ReflectionsTraceHiZ.frag).
+	Constants.Layout.w = Settings.HiZInteriorsTest && !exterior ? 1.0f : 0.0f;
 	// UNOFFICIAL 2026-10-20 MaterialAware: x is set again by CaptureMaterial (1 only when the buffer was filled this frame).
 	Constants.Material = D3DXVECTOR4(Settings.MaterialAware == 1 && materialFilled ? 1.0f : 0.0f, Settings.MaterialMaxRoughness, Settings.MaterialReflect, 0.0f);
 }

@@ -21,7 +21,10 @@ const int HiZMaxIterations = 64;    // cells walked at most; the rest of the ray
 // Nearest and farthest depth (game units) of cell c at walk level L (0 = TESR_DepthBuffer itself, L >= 1 = NVR_HiZ level L - 1).
 vec2 CellDepth(ivec2 c, int L) {
     if (L == 0) { float d = texelFetch(sampler2D(t_depth, POINT_S), c, 0).x * farZ; return vec2(d); }
-    return texelFetch(sampler2D(t_hiz, POINT_S), c, L - 1).xy * farZ;
+    vec2 v = texelFetch(sampler2D(t_hiz, POINT_S), c, L - 1).xy;
+    // HiZInteriorsTest (layoutData.w 1): robust to the pyramid's two channels arriving swapped or one of them empty (see below).
+    if (cb.layoutData.w > 0.5) v = vec2(min(v.x, v.y), max(v.x, v.y));
+    return v * farZ;
 }
 
 void main() {
@@ -92,10 +95,14 @@ void main() {
             float sExit = sqrt(max(tExit - 2.0, 0.0) / RayLength);
             float thickness = (max(stepZ * sExit, 20.0) * 1.5 + tExit * 0.03) * ThicknessScale;
             vec2 scene = CellDepth(ivec2(cell), level);   // nearest, farthest
+            // HiZInteriorsTest (layoutData.w 1): the "behind everything" skip only on the finest level (the depth itself), never on
+            // the pyramid's farthest-depth channel. The diag run (lucky22, DebugView 9/10) showed no walk hit at all indoors and ~4-5
+            // such skips on every ray: the coarse farthest depth reads too small (suspect: the pyramid's second channel).
+            bool behindSkip = rayNear - scene.y >= thickness && (level == 0 || cb.layoutData.w < 0.5);
             bool skip = rayFar <= scene.x                  // the ray is in front of everything in the cell
                 || scene.x >= farZ * 0.98                  // sky only: never a hit
-                || rayNear - scene.y >= thickness;         // behind everything by more than the thickness
-            if (rayFar > scene.x && scene.x < farZ * 0.98 && rayNear - scene.y >= thickness) nThick += 1.0;
+                || behindSkip;                             // behind everything by more than the thickness
+            if (rayFar > scene.x && scene.x < farZ * 0.98 && behindSkip) nThick += 1.0;
             // A pixel whose surface faces along the ray (the reflecting floor itself, seen again a few pixels on where the depth
             // buffer's pixel steps put the ray 'behind' it) is no hit: the walk goes on. The fixed-step trace rarely sampled those first
             // pixels; testing every pixel, the walk would stop on its own floor almost every time (and the hit be thrown away below).
