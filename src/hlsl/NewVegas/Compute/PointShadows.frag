@@ -4,6 +4,7 @@
 // effects/PointShadows.cpp ExtRender runs it.
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_control_flow_attributes : enable
 #include "PointShadowsCommon.glsl"
 
 layout(set = 1, binding = 0) uniform textureCube t_cube0;     // TESR_ShadowCubeMapBuffer0 (LINEAR, CLAMP)
@@ -59,45 +60,44 @@ void main() {
 #ifdef PS_TEST_NO_SHADOWED
     float shadow = 0.0;
 #else
-    float shadow = shadowedLight(t_cube0, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[0], normal, luma(cb.lightColor[0].rgb) * cb.lightColor[0].w);
-    shadow += shadowedLight(t_cube1, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[1], normal, luma(cb.lightColor[1].rgb) * cb.lightColor[1].w);
-    shadow += shadowedLight(t_cube2, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[2], normal, luma(cb.lightColor[2].rgb) * cb.lightColor[2].w);
-    shadow += shadowedLight(t_cube3, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[3], normal, luma(cb.lightColor[3].rgb) * cb.lightColor[3].w);
-    shadow += shadowedLight(t_cube4, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[4], normal, luma(cb.lightColor[4].rgb) * cb.lightColor[4].w);
-    shadow += shadowedLight(t_cube5, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[5], normal, luma(cb.lightColor[5].rgb) * cb.lightColor[5].w);
-    shadow += shadowedLight(t_cube6, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[6], normal, luma(cb.lightColor[6].rgb) * cb.lightColor[6].w);
-    shadow += shadowedLight(t_cube7, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[7], normal, luma(cb.lightColor[7].rgb) * cb.lightColor[7].w);
-    shadow += shadowedLight(t_cube8, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[8], normal, luma(cb.lightColor[8].rgb) * cb.lightColor[8].w);
-    shadow += shadowedLight(t_cube9, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[9], normal, luma(cb.lightColor[9].rgb) * cb.lightColor[9].w);
-    shadow += shadowedLight(t_cube10, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[10], normal, luma(cb.lightColor[10].rgb) * cb.lightColor[10].w);
+    float shadow = shadowedLight(t_cube0, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[0], cb.shadowLightPre[0], normal);
+    shadow += shadowedLight(t_cube1, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[1], cb.shadowLightPre[1], normal);
+    shadow += shadowedLight(t_cube2, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[2], cb.shadowLightPre[2], normal);
+    shadow += shadowedLight(t_cube3, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[3], cb.shadowLightPre[3], normal);
+    shadow += shadowedLight(t_cube4, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[4], cb.shadowLightPre[4], normal);
+    shadow += shadowedLight(t_cube5, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[5], cb.shadowLightPre[5], normal);
+    shadow += shadowedLight(t_cube6, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[6], cb.shadowLightPre[6], normal);
+    shadow += shadowedLight(t_cube7, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[7], cb.shadowLightPre[7], normal);
+    shadow += shadowedLight(t_cube8, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[8], cb.shadowLightPre[8], normal);
+    shadow += shadowedLight(t_cube9, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[9], cb.shadowLightPre[9], normal);
+    shadow += shadowedLight(t_cube10, LINEAR_CLAMP, worldPos, cb.shadowLightPosition[10], cb.shadowLightPre[10], normal);
 #endif
 #ifdef PS_TEST_NO_LAMPS
     batch = true;   // the lamps without shadows left out (the loops and both ifs test it)
 #endif
 
     if (!batch && cb.shadowLightPosition[11].w != 0.0) {
-        vec4 light11 = pointLightDistance(worldPos, cb.shadowLightPosition[11]);
+        vec4 light11 = pointLightDistance(worldPos, cb.shadowLightPosition[11].xyz, cb.shadowLightPre[11].x);
         shadow += saturate(lampAmount(light11.xyz, light11.w, normal)) * edgeWindow(light11.w);
     }
 
     if (!batch && cb.spotLightPosition.w != 0.0)
-        shadow += spotLightAmount(worldPos, cb.spotLightPosition, cb.spotLightDirection, normal) * luma(cb.spotLightColor.rgb) * cb.spotLightColor.w;
+        shadow += spotLightAmount(worldPos, cb.spotLightPosition, cb.spotLightDirection, normal) * cb.nearPre.w;
 
-    for (int i = 0; i < 12 && !batch; i++) {
-        if (cb.lightPosition[i].w != 0.0) {
-            vec4 light = pointLightDistance(worldPos, cb.lightPosition[i]);
+    // (fxc unrolls this loop: constant indices into the constants, a uniform branch per lamp)
+    [[unroll]] for (int i = 0; i < 12; i++) {
+        if (!batch && cb.lightPosition[i].w != 0.0) {
+            vec4 light = pointLightDistance(worldPos, cb.lightPosition[i].xyz, cb.lightPre[i].x);
             if (light.w < 1.0 || cb.pointShadowNear.w < 0.5)
-                shadow += saturate(lampAmount(light.xyz, light.w, normal) * luma(cb.lightColor[i + 12].rgb) * cb.lightColor[i + 12].w) * edgeWindow(light.w);
+                shadow += saturate(lampAmount(light.xyz, light.w, normal) * cb.lightPre[i].y) * edgeWindow(light.w);
         }
     }
 
     for (int e = 0; e < 16 && !batch; e++) {
         if (cb.extraLights[e].w == 0.0 || shadow >= 1.0) break;
-        float radius = floor(cb.extraLights[e].w * 0.125);
-        float weight = cb.extraLights[e].w - radius * 8.0;
-        vec4 light = pointLightDistance(worldPos, vec4(cb.extraLights[e].xyz, radius));
+        vec4 light = pointLightDistance(worldPos, cb.extraLights[e].xyz, cb.extraPre[e].x);   // radius and weight unpacked once a draw
         if (light.w < 1.0 || cb.pointShadowNear.w < 0.5)
-            shadow += saturate(lampAmount(light.xyz, light.w, normal) * weight) * edgeWindow(light.w);
+            shadow += saturate(lampAmount(light.xyz, light.w, normal) * cb.extraPre[e].y) * edgeWindow(light.w);
     }
 
     shadow = saturate(shadow);
