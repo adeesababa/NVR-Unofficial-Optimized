@@ -24,7 +24,8 @@ Works with the autofocus DoF (technique 0: `Enabled = true` in a view); the dist
 1-2 px: no room for a shape).
 - `src/hlsl/NewVegas/Compute/DepthOfFieldBokehScatter.comp`, half resolution:
   phase 0 (detect) one thread per half-res pixel: a pixel becomes a sprite when it is brighter than BokehThreshold AND stands out
-  of its 5x5 neighbourhood (shared-memory tile with apron; the middle of a bright sky or wall scatters nothing), and its blur
+  of its surroundings (16 taps on two rings, 6 and 12 half-res px at 1080p: a lamp smaller than that scatters over its whole
+  face; the middle of a bright sky or wall scatters nothing; the first version used a 5x5 tile and drew rings), and its blur
   radius (the DoF pass's own near/far amounts x BokehSize, so the same focus and autofocus) is over one pixel. Its linear colour
   is boosted by an inverse Reinhard curve (the frame is already tonemapped: a clipped light carries up to ~20x) and appended with
   an atomic counter.
@@ -32,12 +33,46 @@ Works with the autofocus DoF (technique 0: `Enabled = true` in a view); the dist
   coverage (anti-aliased edge) over its area, added into a fixed-point RGB buffer with `atomicAdd` (16.16). Far-field sprites
   are hidden by nearer in-focus pixels (an in-focus object stands in front of the out-of-focus light); near-field sprites cover
   everything.
-- `src/hlsl/NewVegas/Compute/DepthOfFieldCombineBokeh.frag`: DepthOfFieldCombine.frag line for line, then the sprite buffer
+- `src/hlsl/NewVegas/Compute/DepthOfFieldBokehResolve.frag`: the fixed-point buffer into a half-res RGBA16F texture (one texel
+  per pixel), so the Combine takes one bilinear tap instead of four raw buffer reads per full-res pixel.
+- `src/hlsl/NewVegas/Compute/DepthOfFieldCombineBokeh.frag`: DepthOfFieldCombine.frag line for line, then the resolved sprites
   (bilinear from half resolution) added in linear light as 1 - (1 - c) * exp(-b) (a plain add while dark, never past white).
 - `src/effects/DepthOfField.{h,cpp}`: technique 0's Vulkan path (ExtRender) runs detect + splat right after the DoF (focus)
   pass, and the bokeh Combine instead of Combine. With Bokeh on, technique 0 takes that path even with `NvrDxvkPasses` off
   (`DepthOfFieldEffect::Render`). Any failure turns the bokeh off for the session (logged) and the DoF goes on as before.
   F10: "  DoF bokeh scatter (compute)" inside "Depth of field".
 
-## Results
-(see below)
+## Results (2026-10-26, slot runs, fork d3d9.dll = nvr-dxvk-0006 + dxvk.conf `d3d9.customVendorId = 1002`)
+Fork folder: `G:\_NVR-build-scratch\nvr-dxvk-bokeh` (d3d9.dll identical to nvr-dxvk-0006, sha256 9405693f...; the dxvk.conf is
+the depth fix). Every run's log shows `Depth resolve: RESZ (DXVK, any GPU brand)`, so the DoF had real depth.
+
+What works
+- Runs in game without crash or fallback, with and without `NvrDxvkPasses`: log `bokeh ready (... half resolution, up to 4096
+  sprites)` / `bokeh running`, no `failed` line.
+- Real bokeh shapes: og-night (slot C 1080p, run 20261026-105925-slotC, list fork1026-bokeh-1) the out-of-focus street lamps
+  by the Strip become hexagons; lucky22 (slot A 960x540, runs 20261026-095727-slotA and 20261026-105718-slotA) a small white
+  globe becomes a clean hexagon, the red globes get discs reaching past their edge. Stars (sky) and the in-focus foreground are
+  untouched. Defaults are subtle (lucky22 mean +0.03..0.06/255 over the frame); the "big" settings (BokehSize 28, Intensity 2,
+  Threshold 0.6) are clearly visible (+0.3/255 frame mean, up to 190/255 on the lights).
+- Off = the old picture: Bokeh off on this branch vs the previous fork tree (NVR-dxvkfork-ci, run 20261026-112325-slotA), lucky22:
+  defaults, AvgLumaCompute and the Vulkan DoF each 8.2-8.6 % of pixels > 2/255, signed -0.009..+0.009, i.e. below the
+  same-build noise of two identical shots (9.9-11.2 %). With Bokeh off no code path changes (Render falls through,
+  ExtRender's bokeh branch is skipped).
+- Timing (F10, lucky22 slot A 960x540, solo launch, 300-frame shots): Depth of field D3D9 0.49 ms, Vulkan 0.36 ms, Vulkan +
+  bokeh 0.47 ms, of which "DoF bokeh scatter (compute)" 0.028 ms (detect + splat). og-night 1080p: scatter 0.06-0.10 ms; the DoF
+  totals in that launch were too noisy (the D3D9 pair alone swung 1.72-1.96 ms) to give the Combine's share. The ~0.08 ms
+  between scatter and total at 960x540 was the Combine's four raw buffer reads per pixel; commit 44cb2475 resolves the buffer into
+  a half-res texture first (one tap). That version is BUILT BUT NOT RUN in game (in-game testing was stopped by the coordinator).
+
+Still missing / next
+- Untested in game: the resolve-texture version (44cb2475) and the two-ring highlight test (7ab665fa was in the 105718/105925
+  runs; 44cb2475 after them). Bulk list for the combined build: `bench\foundations\lists\fork1026-bokeh-bulk.txt` (off/on pairs
+  with and without NvrDxvkPasses, disc, big; F10 ABAB).
+- Bokeh only with the autofocus DoF (technique 0). The default gameplay DoF (distant blur only) blurs 1-2 px: nothing to shape.
+- The gather passes' own fake "bokeh" (max-dilation above DiameterRange) still runs underneath; a later step could turn it off
+  when Bokeh is on.
+- No indirect dispatch: the splat launches BokehMaxSprites groups and the empty ones return at once (part of the 0.03-0.1 ms).
+  A DispatchIndirect in the extension would trim that; not worth a fork patch yet (so no patch 0011).
+- Not checked: device reset / resolution change with Bokeh on. The buffers and the half-res texture are remade when the size
+  changes; the texture is a D3DPOOL_DEFAULT render target made with CreateTexture, exactly like every NVR effect texture made by
+  TextureManager::InitTexture, so it behaves as those do on a Reset.
