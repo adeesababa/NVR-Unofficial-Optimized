@@ -67,3 +67,27 @@ Here: `VolumetricFog.fx.hlsl` declares `TESR_FogSkyLook` (rgb SkyTint x SkyTintH
 under `#if NVR_SM6` and applies `SkyLook()` to the fog's sky colour in LegacyFogTerms and ModernFogTerms (both dedicated passes
 call them: the estimate, and the composite where the four estimates disagree). The ps_3_0 build gets an empty statement there:
 the native fog is the reverted one.
+
+## Results (2026-10-26, slot runs, GTX 1070 1080p, fork 0001-0006 + 0013, dxvk.conf customVendorId = 1002: RESZ depth confirmed)
+- Compile proof: the same `VolumetricFog.fx.hlsl` with `NVR_SM6=1` fails fxc's ps_3_0 at the CompositeFog pass (X4507, 224
+  constants exceeded, line 1271); without it fxc compiles (the native fog). glslang builds the SM6 version: the composite needs 72
+  float4 (1792 bytes, no literals counted), 13 textures, 4 sampler states.
+- Generality (`tools/nvr-sm6/survey.py`, every pass of every effect, nothing shipped): 323 of 346 passes compile to SPIR-V; 214
+  of those are "plain" (FrameVS, no render states) and could go through the generic EffectRecord hook just by listing them in
+  passes.txt. The 23 that fail: SMAA (several TEXCOORD inputs from its own vertex shader), BloodFlow (its own geometry), a few
+  HLSL loop variables used after the loop.
+- Off = old picture: native D3D9 og-desert (run 20261026-111729-slotC), NvrSm6Shaders on vs off: 13-16 % px >2, mean 1.6-1.9,
+  the same as two identical off shots (17 %, mean 2.3); no SM6 line in the log; fog 0.38 ms either way.
+- On, same picture where nothing new is asked for: fork og-desert (20261026-114027-slotC): SM6 vs D3D9 16.6 % px >2 mean 1.70 vs
+  settle-vs-D3D9 16.3 % mean 1.69 (noise); fork lucky22 (20261026-111155-slotA, lamp mask + indoor fog): 10-11 % mean 1.2-1.3
+  vs 10.7 % mean 1.25 between two D3D9 shots. No crash, no fallback, both pipelines created (DXVK log: 12 / 14 bindings).
+- Cost (F10, the SM6 build is the plain glslang output, no spirv-opt -O): fog estimate 0.108 -> 0.172 ms, composite 0.265 ->
+  0.284 ms (fog total 0.377 -> 0.462, +0.085 ms) at og-desert; lucky22 lamp mask 0.211 -> 0.241 ms. Slower than fxc's code, as
+  the hand ports were (0.408 vs 0.393 with variants): the point is the limits, not speed. Next: run spirv-opt -O on the output
+  (the hand ports' compile-compute.sh does) and re-time.
+- NOT tested in game (testing stopped by the coordinator): the horizon tint visible through the fog on the fork (the tint/sat
+  shots of fork1026-sm6-desert/night ran only before the entry-point fix, when the SM6 draws were skipped), og-night, the
+  generic hook on any effect beyond PointShadows, patch 0013's raised caps beyond 18 bindings. Shot list for the combined bulk
+  run: bench\foundations\lists\fork1026-sm6-bulk.txt (og-desert, og-night, lucky22).
+- Bugs found and fixed on the way: D3DX's Get*Array refuse non-array parameters (NVR_ constants came out 0); DXVK creates every
+  stage with entry point "main" (glslang named it nvr_main: the draws were skipped silently, timers ~0.002 ms).
