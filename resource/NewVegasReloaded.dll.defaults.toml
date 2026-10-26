@@ -433,6 +433,15 @@ ClipView = 0                           # UNOFFICIAL, for finding faults: marks t
 [_Shaders.Debug.Status]
 Enabled = false                        # Displays debug information: depth, normal and shadow buffers, colors of the weather/fog and lights positions.
 
+[_Shaders.DepthOfField.Bokeh]
+Bokeh = false                          # UNOFFICIAL (2026-10-26), needs NVR DXVK (the NVR-built DXVK d3d9.dll); does nothing on native D3D9 or stock DXVK. With the autofocus depth of field on (Enabled in a view), bright out-of-focus lights become real bokeh: each highlight is scattered by a compute pass as a disc or polygon of light with a hard edge, as a camera lens draws it, instead of the soft smudge the blur gives. Near and far fields follow the same focus and autofocus; a far light is hidden by an in-focus object in front of it. Off = exactly the old depth of field.
+BokehShape = 6                         # UNOFFICIAL, with Bokeh: the aperture's shape: 0 = disc, 5 to 8 = a polygon with that many sides (6 = hexagon).
+BokehThreshold = 0.75                  # UNOFFICIAL, with Bokeh: brightness (0-1, of the displayed colour) above which a highlight that stands out of its surroundings becomes a bokeh sprite.
+BokehIntensity = 1.0                   # UNOFFICIAL, with Bokeh: brightness of the bokeh sprites.
+BokehSize = 12.0                       # UNOFFICIAL, with Bokeh: radius in pixels (at 1080p, scaled with the screen height) of a fully out-of-focus light's bokeh.
+BokehRotation = 0.0                    # UNOFFICIAL, with Bokeh: rotation of the polygon shape, in degrees.
+BokehMaxSprites = 4096                 # UNOFFICIAL, with Bokeh: most highlights scattered per frame (256-16384); the cost grows with the number of lights in view and their size.
+
 [_Shaders.DepthOfField.FirstPersonView]
 BaseBlurRadius = 1.0                   # Strength of the blurriness caused by depth of Field.
 BlurFallOff = 1.5                      # Hyperfocal distance (x1000). Before this distance, near and far field are blurred. After, only the near field is.
