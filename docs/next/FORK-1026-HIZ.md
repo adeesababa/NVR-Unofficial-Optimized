@@ -97,3 +97,7 @@ still builds it early.
 2. If near-floor rays still cost much: a cheaper floor skip (a per-cell "all facing up" flag or the depth slope in the pyramid's
    spare channels) instead of the fixed-step fallback.
 3. No DXVK patch (0010 unused). NVR_HiZ is a D3DPOOL_DEFAULT texture made on first use, like the effects' own buffers.
+
+## Round 2 + interim (2026-10-26 afternoon)
+Round 2 (combo 45516f6e, fix 3 merged, lucky22 20261026-144905-slotA): still FAIL indoors (reflection-only 19.4 / 18.7 % vs 9.7 % noise; the near floor gets no screen hits under HiZ where the old trace finds the rail and counter); trace 0.108 -> 0.082 ms at 960x540, pyramid 0.025. Outdoors passed in round 1.
+Interim (coordinator's call): `[Shaders.Reflections.Main] HiZ` now applies OUTDOORS ONLY (ReflectionsEffect::HiZWanted: exterior, or the test-only `HiZInteriorsTest`); indoors the old trace runs and no pyramid is built. Diagnostic: DebugView 9 (how each ray's walk ended) and 10 (what it skipped), Hi-Z trace only; shot list bench\foundations\lists\fork1026-hiz-diag.txt (copy in tools\nvr-dxvk\test\), lucky22. Not run in game yet.

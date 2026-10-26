@@ -56,6 +56,9 @@ void main() {
     if (R.z < 0.0) tEnd = min(tEnd, (nearZ - position.z) / R.z * 0.999);   // stay in front of the near plane (p.z > nearZ)
     float hitT = -1.0;
     vec2 hit = vec2(0.0);
+    // DebugView 9 / 10 (diagnostic): how the walk ended, and what it skipped on the way.
+    int endRule = 5;   // 5 not started (behind the near plane at once, or the start off the screen)
+    float nFacing = 0.0, nPlane = 0.0, nThick = 0.0;
     if (tEnd > tStart) {
         vec3 P0 = position + R * tStart, P1 = position + R * tEnd;
         float k0 = 1.0 / P0.z, k1 = 1.0 / P1.z;   // 1/z is linear in screen space
@@ -74,6 +77,7 @@ void main() {
         float u = 0.0;
         int level = 0;
         int i = 0;
+        if (inside) endRule = 0;   // 0: walked to the end of the ray / off the screen, nothing found
         for (; i < HiZMaxIterations && inside && u < uMax; i++) {
             float size = exp2(float(level));
             vec2 S = S0 + d * u;
@@ -91,15 +95,16 @@ void main() {
             bool skip = rayFar <= scene.x                  // the ray is in front of everything in the cell
                 || scene.x >= farZ * 0.98                  // sky only: never a hit
                 || rayNear - scene.y >= thickness;         // behind everything by more than the thickness
+            if (rayFar > scene.x && scene.x < farZ * 0.98 && rayNear - scene.y >= thickness) nThick += 1.0;
             // A pixel whose surface faces along the ray (the reflecting floor itself, seen again a few pixels on where the depth
             // buffer's pixel steps put the ray 'behind' it) is no hit: the walk goes on. The fixed-step trace rarely sampled those first
             // pixels; testing every pixel, the walk would stop on its own floor almost every time (and the hit be thrown away below).
-            if (!skip && level == 0 && dot(ViewNormal((cell + 0.5) * cb.reciprocalResolution.xy), R) >= 0.2) skip = true;
+            if (!skip && level == 0 && dot(ViewNormal((cell + 0.5) * cb.reciprocalResolution.xy), R) >= 0.2) { skip = true; nFacing += 1.0; }
             // Nor is a pixel of the reflecting surface's own plane (a rough floor's spread sends rays almost along the floor, whose
             // nearby pixels then pass the facing test and gave back the floor's own colour): its point lies on the origin's plane.
             if (!skip && level == 0) {
                 vec3 scenePoint = ViewPosition((cell + 0.5) * cb.reciprocalResolution.xy, scene.x);
-                if (abs(dot(scenePoint - position, N)) < 2.0 + 0.004 * scene.x) skip = true;
+                if (abs(dot(scenePoint - position, N)) < 2.0 + 0.004 * scene.x) { skip = true; nPlane += 1.0; }
             }
             if (skip) {
                 u = uExit;
@@ -112,6 +117,7 @@ void main() {
                 float zHit = 1.0 / mix(k0, k1, uHit);
                 hitT = dot(mix(Q0, Q1, uHit) * zHit - position, R);
                 hit = clamp(S0 + d * uHit, cell + 0.01, cell + 0.99) * cb.reciprocalResolution.xy;
+                endRule = 1;
                 break;
             }
         }
@@ -119,6 +125,7 @@ void main() {
         // goes pixel by pixel): the rest of the ray is searched as the fixed-step trace does it, from where the walk stopped, with its own
         // samples, hit rule and bisection (ReflectionsTrace.frag), so the walk never finds less than the old trace.
         if (hitT < 0.0 && inside && i >= HiZMaxIterations && u < uMax) {
+            endRule = 4;   // out of cells, the fixed-step rest found nothing (3 below when it found something)
             float uNow = u;
             float zNow = 1.0 / mix(k0, k1, uNow);
             float tNow = dot(mix(Q0, Q1, uNow) * zNow - position, R);
@@ -148,6 +155,7 @@ void main() {
                 }
                 hitT = hi;
                 hit = ToScreen(position + R * hi);
+                endRule = 3;
             }
         }
     }
@@ -162,6 +170,19 @@ void main() {
             vec2 edge = min(hit, 1.0 - hit);
             confidence = saturate(min(edge.x, edge.y) * 12.0) * (1.0 - smoothstep(0.75, 1.0, hitT / RayLength));
         }
+        else if (endRule == 1 || endRule == 3) endRule = 2;   // found, then thrown away (the weapon, or the back of something)
+    }
+    // DebugView 9: green a walk hit, cyan a hit of the fixed-step rest after the cell limit, yellow a hit thrown away, red walked to the
+    // end / off the screen with nothing, magenta out of cells and the rest found nothing, blue not started.
+    // DebugView 10: red the pixels skipped as facing along the ray, green those on the surface's own plane, blue the cells skipped as
+    // behind by more than the thickness (each count / 8). [Shaders.Reflections.Main] HiZ only; the fixed-step trace shows view 6 there.
+    if (DebugView > 8.5) {
+        vec3 c;
+        if (DebugView > 9.5) c = saturate(vec3(nFacing, nPlane, nThick) / 8.0);
+        else c = endRule == 1 ? vec3(0, 1, 0) : endRule == 3 ? vec3(0, 1, 1) : endRule == 2 ? vec3(1, 1, 0) :
+            endRule == 0 ? vec3(1, 0, 0) : endRule == 4 ? vec3(1, 0, 1) : vec3(0, 0, 1);
+        o_color = vec4(Tame(c * 0.6), 1.0);
+        return;
     }
     // What the ray did not find on screen: the surroundings cube and (GridFallback) the light grid along it, then (outdoors)
     // the sky if it points up into it. Each fills only the share still missing (premultiplied sums).
