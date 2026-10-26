@@ -38,7 +38,7 @@ layout(push_constant) uniform Push { uint samplerIndex; uint pad0, pad1, pad2; }
 
 // Every texture is read through the point sampler at the pixel centre (as NVR's working passes read them; texelFetch on
 // these D3D9 textures gave 1.0 everywhere in game, 2026-10-26).
-vec4 Texel(texture2D t, ivec2 px) { return textureLod(sampler2D(t, s_samplers[nonuniformEXT(pc.samplerIndex & 0xFFFFu)]), (vec2(px) + 0.5) * F.screen.zw, 0.0); }
+vec4 Texel(texture2D t, ivec2 px) { return textureLod(sampler2D(t, s_samplers[pc.samplerIndex & 0xFFFFu]), (vec2(px) + 0.5) * F.screen.zw, 0.0); }
 
 float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float valueNoise(vec2 p) {
