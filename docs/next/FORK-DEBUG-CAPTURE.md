@@ -79,6 +79,42 @@ game was started from RenderDoc; otherwise the log says once that renderdoc.dll 
     set Main.Develop.Main GpuDebugLabels true
     capture 2
 
+### Capturing in a test slot (run_slot / bench queue / auto-test)
+
+Slot games are started by the auto-test launcher (`nvse_loader.exe` in `H:\_NVR-slots\slot<X>\`), not by RenderDoc, and
+RenderDoc's "Inject into Process" is too late for a Vulkan game (it must be in before the Vulkan instance exists). Three
+ways, best first:
+
+**A. RenderDoc as a Vulkan layer, from dxvk.conf (no RenderDoc window, works through the bench queue).**
+RenderDoc 1.46 registered its Vulkan layer for 32-bit games (`HKLM\SOFTWARE\WOW6432Node\Khronos\Vulkan\ImplicitLayers` ->
+`C:\Program Files\RenderDoc\x86\renderdoc.json`). That layer switches on when `ENABLE_VULKAN_RENDERDOC_CAPTURE=1`, and then
+the Vulkan loader itself loads RenderDoc into the game.
+1. Make a folder, e.g. `G:\_NVR-build-scratch\nvr-dxvk-debugcap-renderdoc\`, with the fork's `d3d9.dll` (patch 0014 or later)
+   and `tools/nvr-dxvk/debug/dxvk.conf.renderdoc-slot` renamed to `dxvk.conf`.
+2. Shot list: in the shot to capture, `set Main.Develop.Main GpuDebugLabels true` and `capture 2` (example above). Keep
+   it short; no timing shots in this run.
+3. Run it as usual with `FORK_D3D9=<that folder>`.
+4. NVR's log: `RENDERDOC: in-app API 1.x.x found`, `capture of the next 2 frames asked for (shot N '<slug>' ...)` and
+   `RENDERDOC: capture written (...): C:\Users\foot\AppData\Local\Temp\RenderDoc\FalloutNV_<date>_frame<N>.rdc`. Copy that
+   .rdc out of %TEMP% (it is not collected by run_slot) and open it in `C:\Program Files\RenderDoc\qrenderdoc.exe`.
+5. If the log says `renderdoc.dll is not loaded` instead: check `FalloutNV_d3d9.log` in the slot for
+   `NVR debugEnv: ENABLE_VULKAN_RENDERDOC_CAPTURE=1`; if it is there, the 32-bit layer registration is missing (open RenderDoc
+   once, Tools > Settings > "Vulkan capture": let it fix the registration).
+
+**B. RenderDoc's global process hook (the RenderDoc window catches a slot game started by run_slot).**
+1. Start `qrenderdoc.exe` (as administrator). Tools > Settings > General: tick "Allow global process hooking".
+2. File > Launch Application: Executable Path `H:\_NVR-slots\slotA\FalloutNV.exe` (the slot the run will use),
+   Working Directory `H:\_NVR-slots\slotA`. Under "Global Process Hook", click **Enable Global Hook**.
+3. Start the slot run as usual (FORK_D3D9 folder with `dxvk.conf.markers` as `dxvk.conf`; `capture 2` in the list, or press
+   F12 while watching). The game appears in RenderDoc's window; captures show up there and in NVR's log.
+4. Click **Disable Global Hook** afterwards (it hooks every new process with that path until then).
+
+**C. Launch the slot game from RenderDoc by hand (no auto-test).**
+File > Launch Application: Executable Path `H:\_NVR-slots\slotA\nvse_loader.exe`, Working Directory `H:\_NVR-slots\slotA`,
+tick **Capture Child Processes**, Launch. The slot must already be set up with the branch's NVR DLL and the fork's
+d3d9.dll + `dxvk.conf.markers` (e.g. right after a run, before the slot is reset), and the slot's `NVRAutoTest.shots.txt`
+request file must NOT be there, or the game runs the shot list and quits. Load a save, go to the spot, press F12.
+
 ## Tool 3: Vulkan validation (+ synchronization validation)
 
 Validation checks the fork's Vulkan calls for mistakes (wrong image layouts, missing barriers between a write and a read,
@@ -91,8 +127,13 @@ bad descriptors). It makes the game much slower (2-10x): use it on one broken sp
 4. Open `FalloutNV_d3d9.log` next to the game. Near the top: `NVR debugEnv: ...` lines and `Enabled instance layers:
    VK_LAYER_KHRONOS_validation`. Below: one `err:` / `warn:` line per problem. Synchronization problems mention
    "SYNC-HAZARD-..." (for example `SYNC-HAZARD-READ-AFTER-WRITE`); those are the ones that cause flicker and random garbage.
-5. If every single draw reports "set not bound" or descriptor errors (DXVK's own draws too), the layer is too old for
-   DXVK 3.0's descriptor path: uncomment the two `dxvk.enableDescriptor...` lines in the template and run again.
+5. The template is set for SDK 1.3.296 + DXVK 3.0 (checked 2026-10-26): it puts DXVK on its legacy descriptor path
+   (`dxvk.enableDescriptorHeap = False`, `dxvk.enableDescriptorBuffer = False`) because a layer from October 2024 does not
+   know the newer descriptor extension DXVK 3.0 prefers (an older layer flagged every draw on it, DXVK's own too). That
+   only changes how DXVK binds descriptors inside, not what is drawn. Sync validation is switched on both ways the 1.3.296
+   layer understands (`VK_KHRONOS_VALIDATION_VALIDATE_SYNC` and `VK_LAYER_ENABLES`). The SDK installer also registered the
+   32-bit layer, so `VK_ADD_LAYER_PATH` is only a spare. Expect a few "unknown extension" warnings at start for extensions
+   newer than the layer; the real findings are `VUID-...` and `SYNC-HAZARD-...` lines.
 
 If the log says `Validation layers not found, set VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, the path in step 2 is
 wrong or the 32-bit components were not installed.
@@ -138,11 +179,25 @@ read its F10 timings.
 - NVR DLL (MSBuild v142, branch commit 0af3f3a0): sha256 d043d9af...
 - Fork d3d9.dll with patches 0001-0014 (GitHub workflow run 40389293586, artifact nvr-dxvk-x32): sha256 65540B60EF8676AF...,
   in `G:\_NVR-build-scratch\nvr-dxvk-debugcap\`. Ready-made slot folder with the markers dxvk.conf:
-  `G:\_NVR-build-scratch\nvr-dxvk-debugcap-markers\`. No validation folder: the Vulkan SDK is not installed.
+  `G:\_NVR-build-scratch\nvr-dxvk-debugcap-markers\`. With the combo fork (0001-0015, sha256 EBF2B816A607F0BC...):
+  `G:\_NVR-build-scratch\nvr-dxvk-combo2-renderdoc\` (dxvk.conf = the renderdoc-slot template, way A above).
+- `renderdoc_app.h` from the installed RenderDoc 1.46 checked against GpuDebug.h's local table: same order, `__cdecl`,
+  version 1.1.2 = 10102.
+
+## Bulk test result (2026-10-26): PASS
+
+Run `bench\autotest\20261026-161020-slotA` (lucky22, combo e781aae8, NVR DLL 053dbcc5, fork 0001-0015 with
+`dxvk.conf.markers`; pictures `H:\_NVR-autotest-shots\20261026-161020-slotA`). Launcher verdict PASS, no crash, 8/8 pictures.
+- Pictures: labels on vs off differs exactly as much as two "off" shots differ from each other (the scene is never
+  perfectly still): off-1/on-1 mean 0.86, 0.63% of pixels > 4; off-2/on-2 0.85, 0.56%; off-1/off-2 (noise) 0.84, 0.54%;
+  on-1/on-2 0.83, 0.44%; offvk/onvk 0.86, 0.67%. Same picture within noise.
+- Game frame total (F10, p50 of each shot's 120-frame blocks): off 5.65 / 5.40, on 5.46 / 5.65, on+capture 5.50,
+  offvk 5.51, onvk 5.52 ms. On minus off +0.03 ms against +/-0.15 ms noise: no visible cost, even with markers on.
+- Log: `GPU DEBUG LABELS: on ... (D3DPERF_GetStatus = 1)` once; `RENDERDOC: capture asked for, but renderdoc.dll is not
+  loaded` exactly once (the 'capture' shot); `FalloutNV_d3d9.log`: `NVR debugEnv: DXVK_DEBUG=markers` and
+  `Debug Utils are enabled`, no `err:` lines.
 
 ## Untested
 
-Code-only (standing rule: no in-game runs by agents). Builds clean (NVR with MSBuild v142; the fork through the GitHub
-workflow). Not yet seen in game: the labels in a real RenderDoc capture, the capture key, the `capture` shot command with
-RenderDoc loaded, the validation template on Windows. The bulk list `bench\foundations\lists\fork1026-debugcap-bulk.txt`
-checks that the switches change no picture, cost nothing visible, and that `capture` without RenderDoc only logs.
+Not yet seen in game: the labels inside a real RenderDoc capture, the capture key, the `capture` shot command with
+RenderDoc loaded (way A above is the next run: it needs no RenderDoc window), the validation template on Windows.
