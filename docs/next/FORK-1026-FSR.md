@@ -45,5 +45,42 @@ game and the audit of every screen-space read in NVR's world shaders. On the GTX
 at 1440p (AMD's figures for that class), so upscaling only pays where the world render plus NVR's pre-tonemap effects
 cost clearly more than that.
 
-## Results
-(filled in below after the slot runs)
+## Results (2026-10-26 morning, slot runs through the bench queue)
+Fork folder `G:\_NVR-build-scratch\nvr-dxvk-fsr` = the unchanged extension-1.4 d3d9.dll (nvr-dxvk-0006, sha256 9405693f...)
++ `dxvk.conf` with `d3d9.customVendorId = 1002` (the depth fix: the log says `Depth resolve: RESZ (DXVK, any GPU brand)`).
+Lists `bench\foundations\lists\fork1026-fsr-{1,2-pan,3-lucky22}.txt`.
+
+| run | scene | what | outcome |
+|---|---|---|---|
+| 20261026-094549-slotC | og-desert 1080p, still | defaults x2, TAA vs TAA+FSR x3, sharpness, debug views, no jitter | PASS, no crash, no fallback |
+| 20261026-095306-slotC | og-desert 1080p, turning 20 deg/s | off / TAA / FSR x2, motion view | PASS |
+| 20261026-101335-slotA | lucky22 960x540, still | defaults x2, TAA vs FSR x2, sharpness | PASS |
+
+- It runs: all 8 compute pipelines and the composite pass are created, `TAA runs FSR 2 ... as its resolve` logged, no
+  `NVR ext:` errors, no failure line, the game ran every shot.
+- Off = the old picture: with `[Shaders.TAA.FSR] Enabled = false` the code path is TAA's own, unchanged (FSR's code is only
+  reached through that switch). Defaults pairs: desert 16.4 % / 1.69 (two identical shots), Lucky 38 11.2 % / 1.30.
+- On = a stable, anti-aliased picture. Still camera, zoomed crops: edges as smooth as TAA's, texture detail visibly crisper
+  than TAA's (TAA blurs the desert ground; FSR keeps it). FSR vs FSR repeat shots are at TAA-vs-TAA noise (desert 26.8 % /
+  2.22 vs 22.7 % / 2.02; Lucky 38 11.2 % / 1.26 vs 10.1 % / 1.17): no shimmer or drift between shots. The jitter sign is right
+  (no doubled or shaken edges). Turning camera: no trails or ghosting at the rock/wall edges in the pan shots. Motion debug
+  view: black on the still camera (right); in the turning run it was also black, because the test command turns the player in
+  16 ms GetTickCount steps, so most frames do not move: that view is unproven while moving (the pan pictures themselves show
+  no smear, which zero motion vectors would cause).
+- Cost (F10, GPU ms, desert 1920x1080): TAA's own resolve 0.52; FSR path 2.55 =
+  prep 0.18 + luma mip 0.05 + reconstruct 0.37 + depth clip 0.54 + lock 0.11 + accumulate 1.1 + composite 0.18 (+ RCAS
+  0.06 at 960x540 when Sharpness > 0). Lucky 38 at 960x540: TAA 0.15, FSR 0.75. So native-AA FSR costs about +2 ms at 1080p
+  on the GTX 1070 (expect about +3.5-4.5 ms at 2560x1440): a quality option, not a speed one. Memory: about 190 MB at 1080p
+  (17 textures + one buffer), made only when FSR first runs.
+
+## Still missing / next steps
+1. Moving objects: camera motion only. Skinned characters and moving objects get camera motion; FSR's depth clip and luma
+   locks catch most of it (no trails seen on the test scenes, which have few moving things). Real per-object motion needs
+   the previous frame's bone/world transforms in the game's vertex shaders (phase-2 style replacement of the skinning VS).
+2. A reactive mask for particles, fire, water and other transparencies (only the weapon is marked now).
+3. Cost: bandwidth-bound passes at native resolution. Cheaper: merge FSRPrep into Reconstruct (read depth/viewmodel there),
+   pack the reactive mask into the motion texture, use AMD's 8-bit formats where D3D9 has them (A8R8G8B8 needs a BGRA
+   storage view: an extension change), let Accumulate write the frame directly through a fork entry point that can bind the
+   device's current render target as storage (removes the composite pass, ~0.18 ms).
+4. Step 2 (real upscaling): see above; 8-15 session-hours, mostly NVR/engine work, not DXVK.
+5. A pan test with a smooth per-frame turn (the `turn` command steps with GetTickCount64), to check the motion view moving.
