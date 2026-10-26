@@ -187,6 +187,7 @@
     <ClCompile Include="..\src\effects\Reflections.cpp" />
     <ClCompile Include="..\src\effects\VolumetricClouds.cpp" />
     <ClCompile Include="..\src\effects\BloodFlow.cpp" />
+    <ClCompile Include="..\src\effects\BloodFluid.cpp" />
     <ClCompile Include="..\src\effects\BounceLight.cpp" />
     <ClCompile Include="..\src\effects\Skin.cpp" />
     <ClCompile Include="..\src\effects\SkinScattering.cpp" />
@@ -322,6 +323,7 @@
     <ClInclude Include="..\src\effects\VolumetricClouds.h" />
     <ClInclude Include="..\src\effects\BloodFlow.h" />
     <ClInclude Include="..\src\effects\BloodFlowBoxes.h" />
+    <ClInclude Include="..\src\effects\BloodFluid.h" />
     <ClInclude Include="..\src\effects\BounceLight.h" />
     <ClInclude Include="..\src\effects\BounceLightMath.h" />
     <ClInclude Include="..\src\effects\Skin.h" />

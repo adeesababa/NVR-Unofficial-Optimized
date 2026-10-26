@@ -1691,6 +1691,27 @@ MaxSplats = 48                         # [0-96] Most splats drawn at once (the n
 MaxPools = 12                          # [0-32] Most pools drawn at once (the nearest).
 DebugView = 0                          # 2 (UNOFFICIAL 2026-10-16): the cuts -- where a splat's or pool's shape has blood, yellow if it shows, orange if a soft edge thins it, magenta if the test that keeps it on its own surface takes it away, red (GroundFit off) above the top of the old splat box. 1: what each splat and pool covers in green (white rings every 10 units round it), streams red, puddles and pools yellow, a drop at an edge blue, where drops land cyan, falling drops white.
 
+[_Shaders.BloodFlow.Fluid]
+Enabled = false                        # UNOFFICIAL (2026-10-26, BloodFlow v2): fresh blood becomes a real fluid, simulated on the GPU: thrown blood runs down walls, gathers under ledges and drips off them, a body's pool spreads and settles, then it all stops and dries into stains (BloodFlow's colours and drying). NEEDS NVR DXVK (the NVR-built d3d9.dll); without it nothing changes. BloodFlow must be on. Applies immediately
+Splats = true                          # Fresh blood splats (on screen as they appear) throw fluid blood at their wall or floor.
+Pools = true                           # A body that has just died bleeds a fluid pool (BloodFlow's own pool is not drawn for that body). Bodies that were already dead keep BloodFlow's pool.
+ReplaceStreams = true                  # While the fluid runs, BloodFlow's painted streams and splat drips are off (the fluid's runs replace them). The game's decals and BloodFlow's splat shapes stay.
+Amount = 1.0                           # [0.2-3] How much blood: particles per splat and per pool, x.
+MaxParticles = 16384                   # [2048-65536] Most blood particles at once (64 bytes each, plus 48 for drawing); the oldest go first. Changing it clears the blood.
+SettleTime = 12.0                      # [3-60] Seconds blood keeps moving before it has settled (it slows from 40 % of this).
+BleedTime = 8.0                        # [1-30] Seconds a body bleeds its pool.
+Viscosity = 8.0                        # [0-30] How much the blood moves as one (higher: thicker, slower, fewer separate runs).
+Cling = 300.0                          # [0-1000] How hard blood sticks to walls and undersides (higher: it hangs longer before it drips).
+Friction = 40.0                        # [0-200] How fast a film on a wall or floor slows (lower: longer runs).
+Lifetime = 900.0                       # [60-3600] Seconds before the fluid's stains fade out (over 10 s).
+StainSize = 3.2                        # [1.5-5] Game units of stain each particle paints round it (bigger: smoother, wider films).
+Threshold = 0.3                        # [0.1-2] How thick the blood must be to show (higher: thinner, more broken runs).
+Bump = 0.6                             # [0-2] How rounded the blood's edges look (the highlights along them).
+DebugView = 0                          # 1: stains red (paler = thinner), their faint edge orange, drops in the air white. 2: every particle as a dot: white in the air, red on a surface, yellow on the fallback ground, blue held (hidden from the camera), brown settled. 3 (test): the depth the fluid reads (one flat colour = NVR has no depth under this DXVK; see the log's WARNING line).
+TestThrow = 0.0                        # Test only: every this many seconds a throw of blood from the camera at whatever is in the middle of the view. 0: off.
+TestPour = false                       # Test only: a pool bleeds on the ground a little ahead of the player (once each time this is turned on).
+StatsEvery = 0                         # Test only: every this many frames, log what the particles are doing (waits for the GPU: stutters). 0: off.
+
 [_Shaders.BloodFlow.Status]
 Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.
 

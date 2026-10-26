@@ -1,0 +1,117 @@
+// BloodFluid (BloodFlow v2, needs NVR DXVK): what BloodFluidSim.comp and BloodFluidDraw.frag share.
+// src/effects/BloodFluid.{h,cpp} fills these blocks; keep the layouts identical (std140 / std430, vec4 only).
+//
+// Our own code. The method follows the screen-space fluid idea used by gwater2 (meetric, GPL-3.0; ideas only, no code
+// copied) and NVIDIA's "Screen Space Fluid Rendering" (van der Laan, Green, Sainz 2009), plus the 2026-10-22 D3D9 spike
+// (work\bench\deep-roadmap\evidence\fluidsim): particles on the GPU, a grid for pressure, cohesion and viscosity,
+// collision against the depth buffer, with a ground height to fall back on where the camera cannot see.
+
+// One particle (64 bytes). Positions are relative to an anchor near the camera (BloodFluid.cpp moves it, and every
+// particle with it, when the camera goes far), so they keep their precision anywhere in a worldspace.
+//  pos.xyz  position (game units)          pos.w  age in seconds (real time) when >= 0; -100 < w < 0: not born yet
+//                                                  (counts up to 0, then it starts where it was spawned); <= -1e29: empty
+//  vel.xyz  velocity (units/s)             vel.w  flags (below, as a whole number)
+//  info.x   fallback ground height         info.y seed 0-1, info.z colour (0xRRGGBB of the game splat's decal colour as a
+//           (z, anchor space)              whole number, 0 none), info.w kind (0 thrown, 1 pool, 2 test throw)
+//  nrm.xyz  the surface it last lay on     nrm.w  amount (1 = one particle's worth)
+struct Particle {
+    vec4 pos;
+    vec4 vel;
+    vec4 info;
+    vec4 nrm;
+};
+
+const uint FlagContact = 1u;    // on a surface this step
+const uint FlagTouched = 2u;    // has been on a surface at least once (thrown blood in the air has not)
+const uint FlagGround  = 4u;    // lying on the fallback ground (pools under a body, drops that fell where nothing is seen)
+const uint FlagFrozen  = 8u;    // on a surface the camera cannot see now: held where it is until it can be seen again
+const uint FlagSettled = 16u;   // dried and still: no more motion, drawn as a stain
+
+const float DeadAge = -1e30;
+
+// Flags, kinds and colours are kept as whole numbers in float fields (exact below 2^24; raw bit casts of small integers
+// would be denormals, which a GPU may flush to zero).
+uint Flags(float w) { return uint(w + 0.5); }
+
+// What the draw pass gets per particle on screen (48 bytes, written by the tiles pass).
+//  a.xyz eye-relative position, a.w radius (> 0: a stain lying on the surface nrm; < 0: a drop in the air, a sphere)
+//  b.xyz the surface's normal (stains), b.w age for the look (BloodFlow seconds: real time x TunedClockRate)
+//  c.x colour, c.y amount (fading out at the end of its life), c.z kind, c.w flags (whole numbers, as in Particle)
+struct DrawRec {
+    vec4 a;
+    vec4 b;
+    vec4 c;
+};
+
+layout(set = 2, binding = 0, std140) uniform Frame {
+    vec4  eyeRel;        // xyz: the camera in the particles' space (eye - anchor); w: farZ
+    vec4  right;         // xyz: camera right (world); w: projection _11
+    vec4  up;            // xyz: camera up; w: projection _22
+    vec4  fwd;           // xyz: camera forward; w: nearZ
+    vec4  screen;        // width, height, 1/width, 1/height
+    vec4  sim;           // x: step (s), y: gravity (units/s^2), z: particle radius, w: steps this frame
+    vec4  fluid;         // x: pressure, y: cohesion, z: viscosity, w: rest density (grid weight per cell)
+    vec4  wall;          // x: film friction, y: cling (adhesion), z: cling range, w: collide window behind the surface
+    vec4  settle;        // x: settle start (s), y: settle length (s), z: drag, w: splash
+    vec4  gridf;         // x: cell size, y: 1 / cell size, z: top speed, w: lifetime (s)
+    uvec4 counts;        // x: capacity, y: slots in use, z: tiles across, w: tiles down
+    uvec4 counts2;       // x: particles per tile, y: grid table mask, z: debug view, w: emitters this frame
+    vec4  look;          // x: stain radius, y: drop radius, z: threshold, w: bump
+    vec4  look2;         // x: look clock rate (TunedClockRate), y: splat dry time, z: pool dry time, w: gloss
+    vec4  viewRot0;      // rows of the view matrix's rotation: normals buffer (view space) -> world (Normals.hlsl GetWorldNormal)
+    vec4  viewRot1;
+    vec4  viewRot2;
+    vec4  fresh;         // rgb: fresh blood colour (linear)
+    vec4  dryColor;      // rgb: dried blood colour (linear)
+    vec4  match;         // x: splatter grey (sRGB), y: brightness, z: 1 the colours are matched, w: 1 outdoors
+    vec4  depthConsts;   // TESR_DepthConstants (z: inverted view-model depth)
+    vec4  sunDir;
+    vec4  sunColor;
+    vec4  sunAmbient;
+    vec4  horizon;
+    vec4  lightPos[12];        // TESR_LightPosition
+    vec4  shadowLightPos[12];  // TESR_ShadowLightPosition
+    vec4  lightColor[24];      // TESR_LightColor
+} F;
+
+// Integer hashes (the same everywhere: the simulation must not depend on the order threads run in).
+uint hashU(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+float hash01(uint x) { return float(hashU(x) & 0xFFFFFFu) / 16777216.0; }
+
+// Eye-relative position -> pixel (x, y) and view depth (z); z <= 0 behind the camera.
+vec3 ProjectRel(vec3 rel) {
+    float z = dot(rel, F.fwd.xyz);
+    if (z <= 0.5) return vec3(-1.0, -1.0, z);
+    float nx = dot(rel, F.right.xyz) * F.right.w / z;
+    float ny = dot(rel, F.up.xyz) * F.up.w / z;
+    return vec3((nx * 0.5 + 0.5) * F.screen.x, (0.5 - ny * 0.5) * F.screen.y, z);
+}
+
+// The eye ray through pixel centre px (eye-relative, scaled so that its view depth is 1: Depth.hlsl toWorld).
+vec3 RayAt(vec2 px) {
+    vec2 uv = px * F.screen.zw;
+    return F.fwd.xyz + F.right.xyz * ((2.0 * uv.x - 1.0) / F.right.w) - F.up.xyz * ((2.0 * uv.y - 1.0) / F.up.w);
+}
+
+// Helpers.hlsl's (as Common.glsl, which is not included: it declares the sampler heap, and these passes use none).
+vec3 linearize(vec3 c) {
+    vec3 lo = c / 12.92;
+    vec3 hi = pow(abs((c + 0.055) / 1.055), vec3(2.4));
+    return mix(hi, lo, lessThanEqual(c, vec3(0.04045)));
+}
+vec3 delinearize(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = (pow(abs(c), vec3(1.0 / 2.4)) * 1.055) - 0.055;
+    return mix(hi, lo, lessThanEqual(c, vec3(0.0031308)));
+}
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+vec3 saturate(vec3 x) { return clamp(x, vec3(0.0), vec3(1.0)); }
+
+// BloodFlow.fx.hlsl's view-model test (first-person arms and weapon): true where the view model is drawn.
+bool IsViewModel(float vm) {
+    return (F.depthConsts.z == 0.0 && vm < 0.9) || (F.depthConsts.z > 0.0 && vm > 0.01);
+}

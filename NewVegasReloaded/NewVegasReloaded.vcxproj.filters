@@ -175,6 +175,9 @@
     <ClInclude Include="..\src\effects\BloodFlowBoxes.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\BloodFluid.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\Skin.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -508,6 +511,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\BloodFlow.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\BloodFluid.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Skin.cpp">
