@@ -1,6 +1,5 @@
 #include "Sky.h"
 
-static float CloudsVolumetricSetting = 0.0f;	// UNOFFICIAL: [Shaders.Sky.Clouds] Volumetric as set (UpdateSettings)
 
 // UNOFFICIAL 2026-10-25: a setting that may be missing from an older defaults file (GetSettingF would read 0: a black sky)
 static float SettingOr(const char* section, const char* key, float fallback) {
@@ -11,9 +10,6 @@ static float SettingOr(const char* section, const char* key, float fallback) {
 void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_CloudData", &Constants.CloudData);
-	TheShaderManager->RegisterConstant("TESR_CloudVolumeData", &Constants.CloudVolumeData);
-	TheShaderManager->RegisterConstant("TESR_CloudVolumeData2", &Constants.CloudVolumeData2);
-	TheShaderManager->RegisterConstant("TESR_CloudVolumeLight", &Constants.CloudVolumeLight);
 	TheShaderManager->RegisterConstant("TESR_SunsetColor", &Constants.SunsetColor);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradiance", &Constants.Irradiance[0]);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradianceGame", &Constants.IrradianceGame[0]);	// UNOFFICIAL 2026-10-18 ClassicLook
@@ -139,17 +135,11 @@ static D3DXVECTOR3 EvalSky(const D3DXVECTOR3& dir, const D3DXVECTOR4& sunPos, co
 }
 
 void SkyShaders::UpdateConstants() {
-	// UNOFFICIAL 2026-10-15: [Shaders.Sky.Clouds] Volumetric marches every pixel of the game's own cloud layers (SKYTEX.pso.hlsl);
-	// it runs only while the Volumetric Clouds effect is on. Measured: with that effect off the game's layers come back and the
-	// march cost ~3 ms outdoors (SKY 0.7 -> 2.9 ms in the world scene, 0.3 -> 1.1 ms in the water reflection, GTX 1070 1440p), so
-	// switching Volumetric Clouds off made the game slower, not faster (work\bench\perf-reference\2026-10-15-p77-vs-p80).
 	// Also: the effect sets its 'hide the game's cloud layers' flags in its own UpdateConstants, which does not run while it is
 	// off, so switching it off in the menu left the flags at 1 and the sky with no clouds at all until a restart. Cleared here.
 	if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) {
 		if (!clouds->Enabled) clouds->HideGameClouds = clouds->HideGameCloudsInReflection = 0.0f;
-		Constants.CloudVolumeData.x = clouds->Enabled ? CloudsVolumetricSetting : 0.0f;
 	}
-	else Constants.CloudVolumeData.x = 0.0f;
 
 	if (TheShaderManager->Shaders.Tonemapping->Enabled)
 		Constants.SunsetColor.w = TheShaderManager->GetTransitionValue(Settings.SkyMultiplierDay, Settings.SkyMultiplierNight, 1.0);
@@ -430,21 +420,6 @@ void SkyShaders::UpdateSettings() {
 	PhysicalSettings.LightsObjects = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "LightsObjects") != 0;	// UNOFFICIAL 2026-10-25, live
 	lastProjectionValid = false;
 
-	// UNOFFICIAL (from Physically-Based-Reloaded, Fable): volumetric clouds (SKYTEX.pso.hlsl). DetailScale and UVScale
-	// are entered per 1000 game units (the menu cannot show values as small as 1 / 40000); the shader wants them per unit.
-	CloudsVolumetricSetting = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Volumetric");	// applied in UpdateConstants
-	Constants.CloudVolumeData.x = CloudsVolumetricSetting;
-	Constants.CloudVolumeData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Steps"), 1.0f, 16.0f);
-	Constants.CloudVolumeData.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "CloudHeight"), 0.0f);
-	Constants.CloudVolumeData.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "CloudThickness"), 0.0f);
-	Constants.CloudVolumeData2.x = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Density"), 0.0f);
-	Constants.CloudVolumeData2.y = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Absorption"), 0.0f);
-	Constants.CloudVolumeData2.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "DetailScale"), 0.0f) * 0.001f;
-	Constants.CloudVolumeData2.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "UVScale"), 0.0f) * 0.001f;
-	Constants.CloudVolumeLight.x = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Scattering"), 0.0f, 0.9f);
-	Constants.CloudVolumeLight.y = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "SilverLining"), 0.0f);
-	Constants.CloudVolumeLight.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "AmbientStrength"), 0.0f);
-	Constants.CloudVolumeLight.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "DetailSpeed"), 0.0f);
 
 	// only add sunset color boost in exteriors
 	if (TheShaderManager->GameState.isExterior) {
