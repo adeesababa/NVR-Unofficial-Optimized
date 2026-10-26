@@ -31,3 +31,12 @@ jobs:
         with:
           name: nvr-dxvk-x32
           path: ${{ runner.temp }}/nvr-dxvk/out/x32/
+
+      # The same code with its debug info (not stripped): for symbolising crash addresses (addr2line), never for players.
+      - name: Build with symbols
+        run: NVR_DXVK_DEBUG=1 bash tools/nvr-dxvk/build.sh "$RUNNER_TEMP/nvr-dxvk-dbg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nvr-dxvk-x32-symbols
+          path: ${{ runner.temp }}/nvr-dxvk-dbg/out/x32/

@@ -40,7 +40,9 @@ git describe --tags
 
 echo "== building the 32-bit d3d9.dll (d3d9 only; dxgi/d3d8/d3d10/d3d11 are not needed by the game)"
 rm -rf "$BUILD"
-meson setup --cross-file build-win32.txt --buildtype release --strip -Db_ndebug=if-release \
+# NVR_DXVK_DEBUG=1: the same -O2 code with its debug info kept (crash addresses -> source lines with addr2line), not stripped.
+if [ "${NVR_DXVK_DEBUG:-0}" = 1 ]; then BUILDOPTS="--buildtype debugoptimized -Db_ndebug=true"; else BUILDOPTS="--buildtype release --strip -Db_ndebug=if-release"; fi
+meson setup --cross-file build-win32.txt $BUILDOPTS \
   -Denable_dxgi=false -Denable_d3d8=false -Denable_d3d10=false -Denable_d3d11=false "$BUILD"
 ninja -C "$BUILD" src/d3d9/d3d9.dll
 
