@@ -2,8 +2,9 @@
 #include <unordered_map>
 
 // UNOFFICIAL 2026-10-15: CREDIT Conor (mrfury97): his screen-space skin scattering, from his NVR testbed
-// (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, branch testbed, src/effects/SkinScattering.h). Used only with
-// [Shaders.Skin.NewSkin] Enabled at startup: only then are the SkinShader hooks that bind its targets installed (Hooks.cpp).
+// (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, branch testbed, src/effects/SkinScattering.h). An add-on to this build's
+// skin shader (SkinTemplate.hlsl, Skin.h): [Shaders.Skin.Scattering] / [Shaders.Skin.Interiors] ScreenSpace; the SkinShader
+// hooks (Hooks/Shaders.cpp) bind its targets for every skin draw. Idle while Vanilla Plus Skin's shaders are in use.
 //
 // Screen-space subsurface scattering for skin: Jimenez & Gutierrez's separable SSS, with the
 // kernel generator ported from Community Shaders (GPL-3.0-or-later; the separable SSS itself is

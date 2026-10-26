@@ -110,6 +110,18 @@ float3 Fresnel(float3 f0, float3 f90, float cosine) {
     return f0 + (f90 - f0) * pow(1 - cosine, 5.f);
 }
 
+// The split-sum environment response (scale and bias on F0) for a roughness and N.V: Karis, "Physically Based Shading on
+// Mobile" (2014). Metal's reflections (Object.hlsl getMetalAmbient) and the skin's sky reflection (Skin.hlsl). UNOFFICIAL
+// 2026-10-25: moved here from Object.hlsl unchanged, so the skin shader can share it.
+float3 EnvBRDFApprox(float3 f0, float roughness, float NdotV) {
+    const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+    const float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28f * NdotV)) * r.x + r.y;
+    float2 ab = float2(-1.04f, 1.04f) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
+
 // Diffuse
 // Lambert
 float3 LambertianDiffuse(float3 albedo, float3 fresnel) {

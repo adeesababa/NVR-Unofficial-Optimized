@@ -60,7 +60,7 @@ void SkinScatteringEffect::UpdateSettings() {
 }
 
 void SkinScatteringEffect::UpdateConstants() {
-	if (!SkinShaders::NewSkinEnabled()) return;
+	if (!TheShaderManager->Shaders.Skin->Active()) return;
 	// Indoors or out: the kernel is rebuilt when the profile in use changes.
 	const bool isInterior = !TheShaderManager->GameState.isExterior;
 	if (isInterior != ProfileIsInterior) {
@@ -446,7 +446,7 @@ void SkinScatteringEffect::Unbind() {
 }
 
 bool SkinScatteringEffect::ShouldRender() {
-	if (!SkinShaders::NewSkinEnabled()) return false;	// port: nothing to do with this build's own skin shaders
+	if (!TheShaderManager->Shaders.Skin->Active()) return false;	// Vanilla Plus Skin's shaders write none of its targets
 	if (!ScreenSpace || !SkinDrawn || !Texture || !TextureSurface || !AlbedoTextureSurface) return false;
 	// The skin shaders' debug views: shown as drawn, not blurred. The target stays bound during
 	// skin draws, so the views still show which skin the blur would take.

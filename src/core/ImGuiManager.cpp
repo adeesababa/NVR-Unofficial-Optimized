@@ -2049,7 +2049,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Shaders.VolumetricClouds.Main",        "Resolution",         RestartRule::Changed },	// textures made at start
 	{ "Shaders.VolumetricClouds.Main",        "HalfResolution",     RestartRule::Changed },
 	{ "Shaders.VolumetricClouds.Main",        "ShadowResolution",   RestartRule::Changed },
-	{ "Shaders.Skin.NewSkin",                 "Enabled",            RestartRule::Changed },	// picks the SKIN shader files at start
+	{ "Shaders.Skin.Main",                    "OverrideVanillaPlusSkin", RestartRule::Changed },	// picks the SKIN shader files at start (with Vanilla Plus Skin installed)
 };
 
 static std::unordered_map<std::string, float> s_startupValues;	// "Section.Key" -> its value when the game started

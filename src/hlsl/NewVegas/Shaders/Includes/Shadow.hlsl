@@ -759,6 +759,26 @@ float SampleShadowCascade(float3 position, float4x4 lightTransform, float2 quadr
 }
 #endif
 
+#if FORWARD_SHADOWS
+// UNOFFICIAL 2026-10-25 (the skin shader): the sun's shadow at a point by one plain lookup of the Near cascade, or the Middle
+// one past it: no cross-fade, contact hardening, kept-atlas fade or character map. A yes/no in free air, for a caller that
+// wants to know whether a place a little way off is in the sun (SkinTemplate.hlsl: whether a shadow at the skin's terminator
+// is the skin's own). Only meaningful where GetSunShadow has already passed its own gates (the sun up, the maps live), and
+// after it ran (the PCF mode's receiver-plane slack is the one it set). Legal inside dynamic branches: tex2Dlod only.
+float SunShadowCoarse(float3 worldPos) {
+#if SHADOW_FIXED_MODE == 0
+    const float bias = 0.00001f;
+#elif SHADOW_FIXED_MODE == 3
+    const float bias = 0.0002f;
+#else
+    const float bias = 0.01f;
+#endif
+    const bool near = length(worldPos - TESR_ShadowNearCenter.xyz) < TESR_ShadowNearCenter.w;
+    const float4x4 lightTransform = near ? TESR_ShadowCameraToLightTransformNear : TESR_ShadowCameraToLightTransformMiddle;
+    return saturate(SampleShadowAtlas(mul(float4(worldPos, 1.0f), lightTransform), near ? float2(0.0f, 0.0f) : float2(0.5f, 0.0f), bias, near ? 0.1f : 0.2f));
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Camera-relative world position from clip space. Call in the VS and interpolate: it is exact
 // under perspective-correct interpolation and costs one interpolator.

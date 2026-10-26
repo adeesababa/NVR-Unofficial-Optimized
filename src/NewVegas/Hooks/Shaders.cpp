@@ -12,11 +12,10 @@ void __fastcall SkyShader__UpdateConstants(SkyShader* apThis, void*, const NiPro
     TheRenderManager->device->SetPixelShaderConstantF(20, (const float*)&TheShaderManager->ShaderConst.skyObjectID, 1);
 }
 
-// UNOFFICIAL 2026-10-15: Conor's skin shader ([Shaders.Skin.NewSkin] Enabled; installed by Hooks.cpp only when it is on at
-// startup). CREDIT: Conor (mrfury97), from his NVR testbed (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, branch testbed,
-// src/NewVegas/Hooks/Shaders.cpp). Ported: his merged lamp passes and lamp shadows are not in this build (its own forward lamp
-// shadows and HudDrops are set per bind in SetShadersHook, Render.cpp); SkinScreenSpaceScatter is c194 (his c147 is this
-// build's sun cross-fade); the FaceGen flag and stage list are read by offset (this build's headers lack his helpers).
+// UNOFFICIAL: the skin shader's hooks (effects/Skin.h, SkinTemplate.hlsl; 2026-10-25). After the hooks in Conor's (mrfury97) NVR
+// testbed (github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork, branch testbed, src/NewVegas/Hooks/Shaders.cpp), which bound his
+// screen-space blur's targets this way; this build's lamp shadows and HudDrops are set per bind in SetShadersHook (Render.cpp).
+// Every hook here does nothing while Vanilla Plus Skin's shaders are in use (SkinShaders::Active).
 //
 // SkinShader's per-geometry virtuals (vtable 0x10BB980), bracketing every skin draw on both of
 // the batch renderer's paths (BSBatchRenderer::RenderPassImmediately_Standard and _Skinned):
@@ -72,15 +71,13 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
     NiD3DPixelShaderEx* PixelShader = Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr;
     const UInt16 PassType = *(UInt16*)0x011F91E4;  // BSShaderManager::eCurrentPass
 
-    const bool NVRSkin = TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
+    const bool NVRSkin = TheShaderManager->Shaders.Skin->Active() && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
     const bool SkinPixelShader = PixelShader && PixelShader->Name && !memcmp(PixelShader->Name, "SKIN", 4);
     // The pass type alone is not trusted to be current: a skin pixel shader is never muted.
-    // Port: only with MuteGameHighlights on. Kept, they give lamp-lit faces the brightness of the old skin shaders (with MSAA,
-    // which turns the blur off, faces in the light-only passes came out about a fifth darker without them).
-    // 2026-10-19: while the screen-space blur runs they are kept too, drawn into the blur's skin target as well as the scene
-    // (BindForGameHighlights), so the blur leaves them sharp instead of blurring them as light. They used to be muted then:
-    // with MSAA off, faces came out 22% darker with the blur than without it (evidence\skin-resync-LOG.md run B2). Muted as
-    // before only where that copy cannot be made.
+    // Muted with [Shaders.Skin.Main] MuteGameHighlights (the default: the skin shader draws its own highlights). Kept otherwise:
+    // while the screen-space blur runs they are then drawn into the blur's skin target as well as the scene
+    // (BindForGameHighlights), so the blur leaves them sharp instead of blurring them as light; muted where that copy cannot
+    // be made (with MSAA off, faces came out 22% darker with the blur than without it while they were muted: evidence\skin-resync-LOG.md run B2).
     SkinScatteringEffect* Blur = TheShaderManager->Effects.SkinScattering;
     const bool BlurRuns = Blur && Blur->Enabled && Blur->Supported && Blur->ScreenSpace;
     const bool GameHighlightPass = NVRSkin && !SkinPixelShader && PassType >= 0x154 && PassType <= 0x177;
@@ -131,9 +128,8 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
             Nvr ? "NVR" : "game", (int)Blend, (int)Src, (int)Dst, (UInt32)Write, sSkinHighlightMuted ? 1 : 0, Scattering->HighlightsBound ? 1 : 0, Scattering->Bound ? 1 : 0, FaceGenBound ? 1 : 0);
     }
 
-    // SkinScreenSpaceScatter (Includes/SkinLighting.hlsl, c194), every skin draw: x 1 while the target is
-    // bound, so the shader leaves diffusion to the screen-space blur; y 1 while the FaceGen maps
-    // are bound to a light-only pass.
+    // NVR_SkinDraw (Includes/Skin.hlsl, c194), every skin draw: x 1 while the blur's targets are bound, so the shader leaves
+    // the diffusion to the screen-space blur; y 1 while the FaceGen maps are bound to a light-only pass.
     const float ScreenSpace[4] = { (Scattering && Scattering->Bound) ? 1.0f : 0.0f, FaceGenBound ? 1.0f : 0.0f, 0.0f, 0.0f };
     TheRenderManager->device->SetPixelShaderConstantF(194, ScreenSpace, 1);
     return Result;
@@ -184,6 +180,6 @@ void InstallFaceGenInteriorPatch() {
 // Every frame, before the scene's pass lists are built (RenderHook).
 void UpdateFaceGenInteriorFlag() {
     const UInt8 Interior = *(UInt8*)0x011F9427;   // BSShaderManager::bInterior
-    const bool NVRSkin = TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
+    const bool NVRSkin = TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Active() && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
     FaceGenInteriorFlag = NVRSkin ? 0 : Interior;
 }
