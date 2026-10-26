@@ -9,7 +9,11 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                newer DXVK with `git am`. 0009 (1.5-particles, branch deep/fork-particles): `ID3D9NvrExtGeometry`, a
                separate interface queried from ID3D9NvrExt (own vertex shader reading buffers, instanced draws; used by
                GPU particles, docs/next/FORK-1026-PARTICLES.md); only the three d3d9_nvr_ext* files change. 0013 (deep/fork-sm6, "1.5-sm6"): 64 slots per type / 96 bindings per pipeline for the
-               SM6 builds of NVR's own passes (`tools/nvr-sm6`, docs/next/FORK-1026-SM6.md).
+               SM6 builds of NVR's own passes (`tools/nvr-sm6`, docs/next/FORK-1026-SM6.md). 0014 (deep/fork-debug-capture,
+               "1.5-debug"): dxvk.conf `nvr.debugEnv = "NAME=value|..."` sets environment variables (DXVK_DEBUG, Vulkan
+               loader/layer settings) before DXVK and the loader read them; only `src/dxvk/dxvk_instance.cpp` changes.
+- `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups) and
+               `dxvk.conf.validation` (Khronos validation + synchronization validation). docs/next/FORK-DEBUG-CAPTURE.md.
 - `build.sh`   clone + patch + build the 32-bit d3d9.dll (Linux or WSL, MinGW-w64). The GitHub workflow
                `.github/workflows/nvr-dxvk.yml` runs the same and uploads the DLL as an artifact.
 - `test/`      `nvr_ext_test.cpp`: an end-to-end test of the extension on dxvk-native (Linux, any Vulkan device, also

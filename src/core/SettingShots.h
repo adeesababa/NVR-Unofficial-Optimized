@@ -39,6 +39,10 @@
 //                                                (player.setangle x and z from the moon's position in the sky)
 //   turn <degrees per second>                    (2026-10-25, cloudflicker) the player turns on the spot at this rate for the whole run
 //                                                (player.setangle z on the main loop each tick), so the camera pans as in play
+//   capture [frames]                             (2026-10-26, debug capture) asks RenderDoc for a capture of this shot's picture frame
+//                                                (default 2 frames: the picture frame and its neighbour, as DXVK presents a frame
+//                                                late); only when renderdoc.dll is already loaded (the game started from RenderDoc
+//                                                on the DXVK d3d9.dll), else one log line. GpuDebug.h, docs/next/FORK-DEBUG-CAPTURE.md
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -58,7 +62,7 @@ namespace SettingShots {
 	enum : UInt32 { kLinkStarted = 0x4E560011, kLinkStopped = 0x4E560012, kLinkPictures = 0x4E560014 };	// EffectSelfTest's link numbers
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
-	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21)
+	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; int capture = 0; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21); capture: RenderDoc frames (2026-10-26)
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -165,6 +169,12 @@ namespace SettingShots {
 				Change c; c.coverage = true; words >> c.value;
 				if (c.value.empty()) { error = "line " + std::to_string(number) + ": incomplete"; return false; }
 				List.back().changes.push_back(c);
+			}
+			else if (command == "capture") {	// 2026-10-26: RenderDoc capture of this shot's picture frame (GpuDebug.h)
+				if (List.empty()) { error = "line " + std::to_string(number) + ": a capture before the first 'shot'"; return false; }
+				int frames = 2;
+				words >> frames;
+				List.back().capture = std::clamp(frames, 1, 10);
 			}
 			else if (command == "sampler") { words >> CpuSampler::Hz; CpuSampler::Hz = std::clamp(CpuSampler::Hz, 100, 4000); }
 			else if (command == "affinity") {
@@ -431,6 +441,12 @@ namespace SettingShots {
 		if (!Player || Player->parentCell != Cell) { Stop("the player changed place"); return; }
 		if (TheRenderManager->device->TestCooperativeLevel() != D3D_OK) { Reader.Release(); ReleaseWorld(); Stop("the device was lost"); return; }
 		Frame++;
+		// 2026-10-26 'capture': asked one frame ahead, so RenderDoc's next frame (from the next present) is the picture frame.
+		if (List[Index].capture && Frame == ShotFrames() - 1) {
+			char why[96];
+			sprintf_s(why, "shot %u '%s' of run %s", (unsigned)Index, List[Index].slug.c_str(), Run);
+			GpuDebug::RequestCapture(List[Index].capture, why);
+		}
 	}
 
 	// The picture of the current shot: named after it and written on a worker thread.

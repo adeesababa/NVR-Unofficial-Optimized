@@ -1,6 +1,7 @@
 #include <regex>
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 #include "Sm6Pass.h"	// UNOFFICIAL 2026-10-26 (deep/fork-sm6)
+#include "GpuDebug.h"	// UNOFFICIAL 2026-10-26: GpuDebugLabels (each effect is a named group in a capture)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
@@ -481,10 +482,12 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	}
 
 	auto timer = TimeLogger();
+	GpuDebug::LabelScope label(Name);	// UNOFFICIAL 2026-10-26 GpuDebugLabels (off: nothing)
 
 	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
 	// (UNOFFICIAL 2026-10-26: not for a technique whose passes all have an SM6 build while NvrSm6Shaders is on: those draw below.)
-	if (!ExtFailed && DxvkCompute::PassesOn() && !Sm6Covers(techniqueIndex) && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+	if (!ExtFailed && DxvkCompute::PassesOn() && !Sm6Covers(techniqueIndex) && [&] { GpuDebug::LabelScope ext(Name, " (DXVK extension)");
+			return ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer); }()) {
 		Device->SetRenderTarget(0, RenderTarget);
 		std::string name = "EffectRecord::ExtRender " + std::string(Name);
 		renderTime = timer.LogTime(name.c_str());

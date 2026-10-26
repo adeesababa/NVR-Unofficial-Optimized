@@ -1,0 +1,18 @@
+# NVR DXVK debug template: Vulkan validation layers + synchronization validation.
+# Copy this file next to the fork's d3d9.dll and rename it to dxvk.conf (a test slot: put both in the FORK_D3D9 folder).
+# Needs: a fork d3d9.dll built with patch 0014 (nvr.debugEnv), and the LunarG Vulkan SDK installed WITH its 32-bit
+# components (Fallout: New Vegas is a 32-bit game: it can only load the 32-bit layer in the SDK's Bin32 folder).
+# EDIT the SDK path below to the version you installed (the folder must contain VkLayer_khronos_validation.json).
+# Messages go into DXVK's log next to the game (FalloutNV_d3d9.log), lines starting "err:" / "warn:".
+# Validation makes the game MUCH slower (often 2-10x): only for hunting a broken frame, never for timing.
+# Guide: docs/next/FORK-DEBUG-CAPTURE.md
+
+# DXVK_DEBUG=validation              DXVK enables VK_LAYER_KHRONOS_validation and sends its messages to the log
+# VK_ADD_LAYER_PATH                  where the Vulkan loader finds the 32-bit layer (forward slashes are fine)
+# VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true      synchronization validation (missing barriers, read/write hazards)
+# VK_LAYER_ENABLES=...SYNCHRONIZATION...        the same switch for older validation layers
+# VK_LOADER_LAYERS_DISABLE=~implicit~           overlays (RivaTuner, Overwolf, OBS, Steam) off for this run: cleaner messages
+nvr.debugEnv = "DXVK_DEBUG=validation|VK_ADD_LAYER_PATH=C:/VulkanSDK/1.4.309.0/Bin32|VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true|VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT|VK_LOADER_LAYERS_DISABLE=~implicit~"
+
+# Depth on NVIDIA with a fork WITHOUT the RESZ-on-every-vendor patch (0007-NVR-RESZ...): uncomment.
+# d3d9.customVendorId = 1002
