@@ -23,8 +23,8 @@ NVR (`src/effects/GpuParticles.{h,cpp}`, shaders `src/hlsl/NewVegas/Compute/GpuP
   step + 30 units; snapped onto that surface along the camera ray; nothing nearer than 60 units, so the first-person gun
   never collects drops). A landed rain drop is a splash for 0.4 s, a landed flake settles for 4 s; then the particle
   starts again at the top of the box (never under cover).
-- Drawing (geometry pass, 6 vertices per particle, instanced): falling rain = a streak along its last 0.03 s of motion,
-  at least ~0.6 px wide (thinner drops fade instead of flickering); splash = a small crown standing on the surface,
+- Drawing (geometry pass, 6 vertices per particle, instanced): falling rain = a streak along its last 0.045 s of motion,
+  at least ~0.6 px wide (thinner drops fade instead of flickering); splash = a camera-facing ring with droplet rays (since run 3),
   growing and fading; snow = a round flake. Fragment shader: soft fade where it meets the scene's depth (and hidden
   behind anything nearer), near-lens and box-edge fades, colour = the frame behind it mixed toward the sky's light (fog
   colour brightened). Alpha-blended over a copy of the frame after the weather effects (after Precipitations and Snow,
@@ -35,10 +35,10 @@ NVR (`src/effects/GpuParticles.{h,cpp}`, shaders `src/hlsl/NewVegas/Compute/GpuP
 | key | default | meaning |
 |---|---|---|
 | Enabled | false | the feature; needs rain or snow outdoors (ForceRain / ForceSnow count) and the fork's d3d9.dll |
-| Count | 16384 | particles (64-262144) |
+| Count | 32768 | particles (64-262144) |
 | Size | 1.0 | drop width / splash / flake size in game units |
 | Speed | 1.0 | fall speed multiplier |
-| Opacity | 0.6 | strength |
+| Opacity | 0.8 | strength |
 | Radius | 1200 | half width of the box round the camera (units) |
 | Splashes | true | landed rain splashes / snow settles; off = straight back to the top |
 
