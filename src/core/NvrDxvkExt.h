@@ -46,7 +46,7 @@
 #include <unknwn.h>
 
 #define NVR_EXT_VERSION_MAJOR 1
-#define NVR_EXT_VERSION_MINOR 2
+#define NVR_EXT_VERSION_MINOR 3
 
 #define NVR_EXT_MAX_SLOTS       32
 #define NVR_EXT_MAX_BINDINGS    32
@@ -77,6 +77,8 @@ enum NVR_EXT_BUFFER_FLAGS {
 enum NVR_EXT_FILTER {
   NVR_EXT_FILTER_NEAREST = 0,
   NVR_EXT_FILTER_LINEAR  = 1,
+  NVR_EXT_FILTER_LINEAR_MIPMAPS = 2,  // (1.3) linear min/mag and between mip levels, all mips (file textures with mips)
+  NVR_EXT_FILTER_ANISOTROPIC    = 3,  // (1.3) as LINEAR_MIPMAPS with 16x anisotropic filtering (D3D9's ANISOTROPIC)
 };
 
 enum NVR_EXT_ADDRESS {

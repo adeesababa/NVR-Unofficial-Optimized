@@ -123,6 +123,22 @@ file textures (Lens, BloodLens, WaterLens, LUT) need the loaded texture from the
 sampler (`ExtFileTexture`, the WRAP sampler slot; see BloodLens.cpp). The point of the ports is the route: once an effect runs on this path, its next version is free
 of the SM3 limits.
 
+Added 2026-10-25 (after the first parallel port round):
+- `ExtDrawTo(pipeline, targets[], count, bindings, ..., viewport)`: a pass into the effect's OWN targets (its half-resolution
+  buffers, ping-pong textures, MRT up to 4); the frame chain is untouched. Multi-pass effects: ExtDrawTo for the intermediate
+  passes, then ExtFullScreen (last = true) or ExtTexturePass for the pass that writes the frame. Earlier frame-writing passes
+  take `last = false`, and a later pass must be given `TheTextureManager->RenderedSurface` (the chain's current surface after a
+  Commit), not the RenderedSurface Render passed in (MotionBlur's bug, fixed aa5c8398).
+- `ExtUniforms(ExtUniformBuffer&, data, size)`: constants over the 240 push bytes go into a uniform buffer the effect keeps
+  (bind as NVR_EXT_BIND_UNIFORM_BUFFER; see SkinScattering.cpp for a pass that uses one).
+- `DxvkCompute::MipSampler(anisotropic, address)` (extension 1.3, fork patch 0005): trilinear or 16x anisotropic samplers for
+  file textures D3D9 samples with mips; null on an older fork (keep the D3D9 pass then).
+- Push data larger than 48 bytes is safe since fork patch 0004 (such pipelines never use DXVK's fast-linked layout).
+- Matrices: match how the D3D9 path uploads them. An ID3DXEffect parameter set through the effect framework (SetMatrix)
+  keeps the logical matrix; a raw SetPixelShaderConstantF/ConstantsTable upload is the memory as stored. Copy the same bytes
+  into the push block and mirror the HLSL `mul` order accordingly; say which convention you used.
+- Sampler states must match the .fx sampler declarations exactly (MinFilter/MagFilter/MipFilter, AddressU/V/W).
+
 AmbientLight's blurs (2026-10-25): `[Main.Main.Performance] AmbientLightBlurCompute = false` runs passes BlurX + BlurY as
 one compute dispatch (`Compute/AmbientLightBlur.comp`, `AmbientLightEffect::RenderBlurCompute`): 16x16 tiles with the apron
 in shared memory, the intermediate rounded to half floats as the D3D9 target stores it, the result in NVR_AmbientLight1

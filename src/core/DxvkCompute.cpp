@@ -287,6 +287,15 @@ ID3D9NvrExtSampler* DxvkCompute::LinearWrap() {
 	return SamplerWrap;
 }
 
+// UNOFFICIAL 2026-10-25 (extension 1.3): see DxvkCompute.h. One sampler per kind, made on first use.
+ID3D9NvrExtSampler* DxvkCompute::MipSampler(bool Anisotropic, NVR_EXT_ADDRESS Address) {
+	static ID3D9NvrExtSampler* samplers[2][4] = {};
+	if (!Available() || ExtInfo.ExtVersionMinor < 3 || (UINT)Address > 3) return nullptr;
+	ID3D9NvrExtSampler*& s = samplers[Anisotropic ? 1 : 0][Address];
+	if (!s) s = CreateSampler(Anisotropic ? NVR_EXT_FILTER_ANISOTROPIC : NVR_EXT_FILTER_LINEAR_MIPMAPS, Address);
+	return s;
+}
+
 // UNOFFICIAL 2026-10-25 (Cinema): NEAREST min and mag, WRAP (mips are not filtered either way).
 ID3D9NvrExtSampler* DxvkCompute::PointWrap() {
 	if (!SamplerPointWrap) SamplerPointWrap = CreateSampler(NVR_EXT_FILTER_NEAREST, NVR_EXT_ADDRESS_WRAP);

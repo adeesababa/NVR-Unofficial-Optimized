@@ -34,6 +34,9 @@ public:
 	static ID3D9NvrExtSampler*	PointClamp();
 	static ID3D9NvrExtSampler*	LinearWrap();	// the file textures' (dirt, blood, water noise) WRAP state
 	static ID3D9NvrExtSampler*	PointWrap();	// UNOFFICIAL 2026-10-25 (Cinema): POINT/WRAP, the blue noise file texture (MIN/MAG NONE)
+	// UNOFFICIAL 2026-10-25 (extension 1.3): trilinear over all mips, or the same with 16x anisotropy (D3D9 ANISOTROPIC), for
+	// file textures sampled with mips (Underwater's caustics, ...). Null on an older NVR DXVK: keep the D3D9 pass then.
+	static ID3D9NvrExtSampler*	MipSampler(bool Anisotropic, NVR_EXT_ADDRESS Address);
 	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
 	static bool					PassesOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);

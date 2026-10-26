@@ -603,6 +603,51 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	return true;
 }
 
+// UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h. A pass into the effect's own targets; the frame chain is not touched.
+bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
+	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport) {
+	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
+	NVR_EXT_DRAW_DESC draw = {};
+	draw.pPipeline = Pipeline;
+	draw.TargetCount = TargetCount;
+	for (UINT i = 0; i < TargetCount; i++) {
+		if (!Targets[i]) return false;
+		draw.Targets[i].pResource = Targets[i];
+	}
+	if (Viewport) {
+		draw.ViewportX = Viewport->left;
+		draw.ViewportY = Viewport->top;
+		draw.ViewportWidth = Viewport->right - Viewport->left;
+		draw.ViewportHeight = Viewport->bottom - Viewport->top;
+	}
+	draw.BindingCount = BindingCount;
+	draw.pBindings = Bindings;
+	draw.pPushData = Push;
+	draw.PushDataSize = PushSize;
+	HRESULT result = DxvkCompute::Extension()->Draw(&draw);
+	if (FAILED(result)) {
+		ExtFailed = true;
+		Logger::Log("UNOFFICIAL NVR DXVK: pass %s failed to draw into its own target (%08lX; DXVK's log says why): its D3D9 technique is used from now on", Name, result);
+		return false;
+	}
+	return true;
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h.
+ID3D9NvrExtBuffer* EffectRecord::ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size) {
+	if (!DxvkCompute::Available() || !Data || !Size) return nullptr;
+	if (Uniforms.Buffer && Uniforms.Size != Size) DxvkCompute::Drop(Uniforms.Buffer);
+	if (!Uniforms.Buffer) {
+		if (Uniforms.Tried) return nullptr;
+		Uniforms.Tried = true;
+		Uniforms.Buffer = DxvkCompute::CreateBuffer((Size + 15) & ~15u, NVR_EXT_BUFFER_UNIFORM | NVR_EXT_BUFFER_TRANSFER_DST, Name);
+		Uniforms.Size = Size;
+		if (!Uniforms.Buffer) return nullptr;
+	}
+	if (FAILED(DxvkCompute::Extension()->UpdateBuffer(Uniforms.Buffer, 0, Size, Data))) return nullptr;
+	return Uniforms.Buffer;
+}
+
 // UNOFFICIAL 2026-10-23 (NVR DXVK): see EffectRecord.h.
 bool EffectRecord::ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 	ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount, const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler, UINT WrapSamplerPushOffset, bool PointWrapSampler, bool Last) {

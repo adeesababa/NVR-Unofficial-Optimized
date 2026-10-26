@@ -37,6 +37,16 @@ public:
 	bool					ExtTexturePass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 								ExtPass& Pass, const char* SpvName, IDirect3DBaseTexture9* const* Textures, UINT TextureCount,
 								const void* Push, UINT PushSize, UINT SamplerPushOffset, bool PointSampler = false, UINT WrapSamplerPushOffset = 0, bool PointWrapSampler = false, bool Last = true);
+	// UNOFFICIAL 2026-10-25: a pass into the effect's OWN targets (1-4 surfaces of one size, e.g. its half-resolution buffers),
+	// optional viewport rectangle; the frame chain is not touched. A multi-pass port chains these and ends with ExtFullScreen
+	// (or ExtTexturePass) for the pass that writes the frame. A failure sets ExtFailed (logged), as ExtFullScreen does.
+	bool					ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
+								UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport = nullptr);
+	// UNOFFICIAL 2026-10-25: constants over the 240 push bytes (big kernels, matrices): Data uploaded into a uniform buffer the
+	// effect keeps (made on first use, remade when Size changes; recorded in order with the draws, no waits). Bind the returned
+	// buffer as NVR_EXT_BIND_UNIFORM_BUFFER (GLSL: layout(set = 2, binding = 0, std140) uniform ...). Null: no extension or failed.
+	struct ExtUniformBuffer { ID3D9NvrExtBuffer* Buffer = nullptr; UINT Size = 0; bool Tried = false; };
+	ID3D9NvrExtBuffer*		ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size);
 	// The loaded file texture behind one of the effect's samplers (e.g. "TESR_BloodLensSampler"), null if none.
 	IDirect3DBaseTexture9*	ExtFileTexture(const char* SamplerName);
 	// ClearSampler is inherited from ShaderProgram -- game shaders need the same thing.
