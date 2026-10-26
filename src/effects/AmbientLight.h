@@ -162,6 +162,18 @@ public:
 	bool				blurComputeOk = false;
 	UINT				blurComputeFrames = 0;
 
+	// UNOFFICIAL 2026-10-25 (NVR DXVK, core\DxvkCompute.h) [Main.Main.Performance] NvrDxvkPasses: every pass of techniques AmbientLight /
+	// AmbientLightSky, AmbientLightGrid and AmbientLightSmooth as a Vulkan pass (src\hlsl\NewVegas\Compute\AmbientLight*.frag, AmbientLight.glsl),
+	// drawn where Render / RenderGrid / RenderPrepare draw the D3D9 pass, into the same targets with the same textures; the constants are
+	// the effect's own parameter values, read back right before each draw. ExtDraw false (off, no extension, a texture missing, a failure:
+	// ExtFailed, logged once) = that pass's D3D9 draw. AmbientLightBlurCompute / AmbientLightSmoothCompute keep their passes when on.
+	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate, ExtShaderCount };
+	ExtPass				extPasses[ExtShaderCount][NVR_EXT_MAX_TARGETS];	// per target count
+	ExtUniformBuffer	extUniforms;
+	CachedHandle		extHandles[38];
+	bool	ExtOn() const;
+	bool	ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport);
+
 	void	EnsureBuffers();
 	void	UpdateConstants() {};
 	void	RegisterConstants();
