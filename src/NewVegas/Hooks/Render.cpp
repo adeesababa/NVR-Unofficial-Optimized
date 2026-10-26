@@ -40,7 +40,9 @@ namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
 // the game's own pre-scene work (water reflection/refraction/depth maps and anything else).
 static GpuTimer PreSceneTimer("Pre-scene (to world scene)");
 static bool PreSceneTimerActive = false;
+static bool PreSceneLabelOpen = false;	// UNOFFICIAL 2026-10-26 GpuDebugLabels: the pre-scene group (GpuDebug.h)
 static void EndPreSceneTimer() {
+	if (PreSceneLabelOpen) { PreSceneLabelOpen = false; GpuDebug::End(); }
 	if (!PreSceneTimerActive) return;
 	PreSceneTimer.End();
 	PreSceneTimerActive = false;
@@ -601,7 +603,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	ShaderWarmUp2::FrameTick(-1);	// UNOFFICIAL ShaderWarmUp2: frame times + new setups
 #endif
 	IOWorker2::Tick();	// UNOFFICIAL IOWorker2 (off by default): what the second loading thread did, once a minute
-	
+	// UNOFFICIAL 2026-10-26 (GpuDebug.h): [Main.Develop.Main] RenderDocCaptureKey asks an already-loaded RenderDoc for a capture
+	// of the next frame(s); Tick logs the file it wrote. 0 (the default) = no key, nothing runs.
+	if (GpuDebug::CaptureKey > 0 && !InterfaceManager->IsActive(Menu::MenuType::kMenuType_Console) && Global->OnKeyDown((UInt16)GpuDebug::CaptureKey))
+		GpuDebug::RequestCapture(GpuDebug::CaptureFrames, "hotkey");
+	GpuDebug::Tick();
+
 	SettingsMainStruct* SettingsMain = &TheSettingManager->SettingsMain;
 
 	TheFrameRateManager->UpdatePerformance();
@@ -623,6 +630,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	// with the individual buckets shows how much GPU time is not attributed to any of them.
 	static GpuTimer frameTimer("Game frame total");
 	GpuProfileScope gpu(frameTimer, TheRenderManager->device);
+	PreSceneLabelOpen = GpuDebug::Labels && GpuDebug::Begin(PreSceneTimer.GetName());
 	PreSceneTimerActive = PreSceneTimer.Begin(TheRenderManager->device);
 	WorldRenderedThisFrame = false;
 	FrameWorldCalls = FrameFirstPersonCalls = FrameImageSpaceCalls = 0;

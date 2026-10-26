@@ -4,6 +4,9 @@
 #include <cfloat>
 #include <vector>
 #include "FrameTimeStats.h"
+#ifndef NVR_GPU_PROFILER_TEST
+#include "GpuDebug.h"	// UNOFFICIAL 2026-10-26: GpuDebugLabels (each GpuProfileScope is also a named group in a capture)
+#endif
 
 inline bool GpuProfileQueriesReady(HRESULT start, HRESULT end, HRESULT frequency) {
 	return start == S_OK && end == S_OK && frequency == S_OK;
@@ -79,6 +82,7 @@ public:
 	bool DisjointTrusted() const { return !DisjointBroken; }
 #endif
 	inline static bool Enabled = false;
+	const char* GetName() const { return Name; }
 
 private:
 	struct Slot {
@@ -265,10 +269,17 @@ private:
 
 class GpuProfileScope {
 public:
-	GpuProfileScope(GpuTimer& timer, IDirect3DDevice9* device) : Timer(timer), Active(timer.Begin(device)) {}
+#ifndef NVR_GPU_PROFILER_TEST
+	// UNOFFICIAL 2026-10-26 GpuDebugLabels: the timer's name is also a debug group around the scope (GpuDebug.h), timer on or off.
+	GpuProfileScope(GpuTimer& timer, IDirect3DDevice9* device) : Label(GpuDebug::Labels && GpuDebug::Begin(timer.GetName())), Timer(timer), Active(timer.Begin(device)) {}
+	~GpuProfileScope() { if (Active) Timer.End(); if (Label) GpuDebug::End(); }
+#else
+	GpuProfileScope(GpuTimer& timer, IDirect3DDevice9* device) : Label(false), Timer(timer), Active(timer.Begin(device)) {}
 	~GpuProfileScope() { if (Active) Timer.End(); }
+#endif
 
 private:
+	bool Label;
 	GpuTimer& Timer;
 	bool Active;
 };

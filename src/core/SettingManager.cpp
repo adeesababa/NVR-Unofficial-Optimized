@@ -1,5 +1,6 @@
 #define TOML11_PRESERVE_COMMENTS_BY_DEFAULT
 #include <unordered_map>
+#include "GpuDebug.h"	// UNOFFICIAL 2026-10-26: GpuDebugLabels / RenderDoc capture key ([Main.Develop.Main])
 
 // GetCurrentDirectoryA is reliable at startup but GetSaveFileNameA (and other
 // common-dialog calls) can silently change it.  Capture the game root once and
@@ -1009,6 +1010,12 @@ void SettingManager::LoadSettings() {
 
 	SettingsMain.Develop.DebugMode = GetSettingI("Main.Develop.Main", "DebugMode");
 	SettingsMain.Develop.TraceShaders = GetSettingI("Main.Develop.Main", "TraceShaders");
+	// UNOFFICIAL 2026-10-26 (GpuDebug.h, docs/next/FORK-DEBUG-CAPTURE.md): capture/debug tools, all off by default.
+	GpuDebug::Labels = GetSettingI("Main.Develop.Main", "GpuDebugLabels") != 0;
+	GpuDebug::CaptureKey = GetSettingI("Main.Develop.Main", "RenderDocCaptureKey");
+	GpuDebug::CaptureFrames = GetSettingI("Main.Develop.Main", "RenderDocCaptureFrames");
+	if (GpuDebug::CaptureFrames < 1) GpuDebug::CaptureFrames = 1;
+	if (GpuDebug::CaptureFrames > 10) GpuDebug::CaptureFrames = 10;
 
 	SettingsMain.Transitions.TransitionCurvePower = GetSettingF("Main.Transitions.Main", "TransitionCurvePower");
 

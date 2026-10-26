@@ -2024,6 +2024,8 @@ void ShadowManager::RenderShadowMaps() {
 			float cascadeInner[4] = {};
 			unsigned flatCascades = 0;
 			auto drawCascade = [&](int i) {
+				static const char* const cascadeNames[] = { "Sun cascade 0 (near)", "Sun cascade 1 (middle)", "Sun cascade 2 (far)", "Sun cascade 3 (lod)" };
+				GpuDebug::LabelScope label(i >= 0 && i < 4 ? cascadeNames[i] : "Sun cascade");	// UNOFFICIAL 2026-10-26 GpuDebugLabels
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
 				const bool flat = (flatCascades >> i) & 1;
 				Shadows->Constants.ShadowViewProj = cascadeViewProj[i];
