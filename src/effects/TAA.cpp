@@ -57,6 +57,11 @@ void TAAEffect::UpdateSettings() {
 	// 0 is off for both, which is also what a missing key reads as.
 	Settings.Sharpness = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.Main", "Sharpness"), 0.0f, 1.0f);
 	Settings.MipBias = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.Main", "MipBias"), -1.5f, 0.0f);
+
+	// UNOFFICIAL 2026-10-26 (NVR DXVK): FSR 2 as the resolve. All three read as 0 (off) when missing.
+	FSRSettings.Enabled = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Enabled") != 0;
+	FSRSettings.Sharpness = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "Sharpness"), 0.0f, 1.0f);
+	FSRSettings.WeaponReactive = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "WeaponReactive"), 0.0f, 1.0f);
 }
 
 // Texture mip LOD bias on every sampler while the jittered world draws. Averaging jittered frames
@@ -245,6 +250,7 @@ bool TAAEffect::WillResolveThisFrame() {
 // and TAA's own reprojection -- sees the unjittered camera, exactly as without jitter.
 void TAAEffect::BeginJitter() {
 	EndJitter(); // never stack two shifts, whatever happened last frame
+	frameJittered = false;
 
 	if (!WillResolveThisFrame()) return;
 	NiCamera* camera = WorldSceneGraph ? WorldSceneGraph->camera : nullptr;
@@ -266,6 +272,9 @@ void TAAEffect::BeginJitter() {
 
 	jitterCamera = camera;
 	jitterActive = true;
+	frameJitterX = jitterX;	// UNOFFICIAL 2026-10-26: FSR 2 needs this frame's offset (TAAFSR.cpp)
+	frameJitterY = jitterY;
+	frameJittered = true;
 	TheRenderManager->SetupSceneCamera();
 
 	if (Settings.MipBias < 0.0f) {
@@ -311,6 +320,11 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 	TheShaderManager->Chain.Sync();
 	RenderedSurface = TheTextureManager->RenderedSurface;
 
+	// UNOFFICIAL 2026-10-26 (NVR DXVK): FSR 2 as the resolve when [Shaders.TAA.FSR] Enabled and the extension is there. Each path
+	// keeps its own history, so switching between them starts from scratch.
+	const bool useFSR = FSRWanted();
+	if (useFSR != lastPathFSR) historyValid = false;
+
 	// A new cell means a loading screen or a teleport: last frame's history shows another place.
 	if (TheShaderManager->GameState.isCellChanged) historyValid = false;
 
@@ -330,7 +344,15 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 	const int write = historyIndex ^ 1;
 	// UNOFFICIAL 2026-10-25 (NVR DXVK): the passes as Vulkan passes when NvrDxvkPasses is on (ExtDraw); the D3D9 techniques otherwise,
 	// and when a pass fails (the extension path is then off for the session).
-	bool shown = !ExtFailed && DxvkCompute::PassesOn() && ExtDraw(Device, RenderTarget, write);
+	bool fsrShown = useFSR && FSRDraw(Device, RenderTarget, !historyValid);
+	if (useFSR && !fsrShown) {
+		// FSR failed this frame (logged; it stays off): TAA's own resolve, from scratch.
+		historyValid = false;
+		RememberCamera();
+		Constants.CameraDelta = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+		Constants.Data.z = 0.0f;
+	}
+	bool shown = fsrShown || (!ExtFailed && DxvkCompute::PassesOn() && ExtDraw(Device, RenderTarget, write));
 	if (shown) {
 		Device->SetRenderTarget(0, RenderTarget);
 	}
@@ -356,12 +378,14 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 		if (RenderedSurface) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_NONE);
 		RememberCamera();
 		historyValid = true;
-		historyIndex = write;
+		if (!fsrShown) historyIndex = write;	// FSR keeps its own ping-pong resources
 		jitterIndex = (jitterIndex + 1) % JitterSequenceLength;
 	}
 	else {
 		historyValid = false;
 	}
+	lastPathFSR = fsrShown;
+	frameJittered = false;
 
 	renderTime = timer.LogTime("EffectRecord::Render TAA");
 }
