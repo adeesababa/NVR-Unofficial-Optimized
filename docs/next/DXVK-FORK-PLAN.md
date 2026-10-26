@@ -231,6 +231,35 @@ compared two depth-less pictures for the depth-based passes. Fix proposed, not p
 vendor; it applies on top of 0006). Until then: `d3d9.customVendorId = 1002` in dxvk.conf (or DXVK_CONFIG) for NVIDIA.
 BloodFluid logs a WARNING when RESZ is missing.
 
+## Where DXVK's time goes (2026-10-26 evening, user asked before any speed patch; fork 1.5, CI run 40393960575, v3.0.1-8)
+Asked: can DXVK itself be made faster for us, outside the shaders? First measure. Fork patch 0008 (extension 1.5):
+SetProfiling / GetProfile. Every 8th frame times the game thread's outermost D3D9 calls (the device lock each entry point
+takes; the time stamp counter, the timer's own cost taken off), every frame the frame-latency wait in Present, plus DXVK's own
+stat counters (CS thread idle / sync, GPU idle / sync, draws, render passes, barriers, submits). NVR: with F10 profiling on,
+a `DXVK PROFILE` line every 120 frames (DxvkCompute::ProfileTick, from RenderHook). Off: one relaxed load per D3D9 call.
+List dxvkfork-17-profile (ABAB NvrDxvkPasses off/on, then clouds), G:\_NVR-build-scratch\prof_analyze.py, medians per shot
+(4 lines each), ms per frame:
+
+| scene | path | frame | game outside D3D9 | DXVK work on game thread | Present wait | DXVK thread busy | GPU busy | barriers |
+|---|---|---|---|---|---|---|---|---|
+| og-desert (20261026-162634) | D3D9 passes | 6.45 / 6.33 | 2.26 / 2.15 | 0.34 / 0.33 | 3.84 / 3.85 | 0.86 | = frame | 140 |
+| og-desert | Vulkan passes | 6.41 / 6.47 | 2.05 / 2.15 | 0.26 / 0.29 | 4.10 / 4.07 | 0.84-0.91 | = frame | 155 |
+| lucky22 (20261026-162839) | D3D9 passes | 8.66 / 8.62 | 6.58 / 6.59 | 0.91 / 0.96 | 1.08 / 1.02 | 2.6-2.9 | = frame | 176 |
+| lucky22 | Vulkan passes | 8.81 / 9.11 | 6.39 / 6.84 | 0.86 / 1.03 | 1.52 / 1.27 | 2.8-3.1 | = frame | 190 |
+
+Waits for DXVK's thread and GPU syncs: 0.00 everywhere. Draws 905 (desert) / 3331 (Lucky 38), ~60 render passes, 5-7 submits.
+What it says:
+- The GPU is the limit in both scenes: it is never idle (busy = the whole frame) and the game thread spends 1-4 ms per frame
+  waiting in Present for it. DXVK's CPU side is small and runs in parallel: 0.3-1.0 ms of translation on the game thread,
+  0.9-3 ms on its own thread (a third of the frame at most). Making DXVK's CPU side faster cannot raise the frame rate here.
+- The Vulkan passes cost GPU, not CPU: same frame in the desert, +0.15-0.5 ms in Lucky 38, with ~14 more barriers and ~1
+  more submit per frame. That matches the per-pass timings above (SMAA, AO, fog, point-shadow lighting slower as Vulkan).
+- So a speed patch should go after the extension's barriers / layout transitions on the GPU (patch 0002 binds written D3D9
+  targets as attachments and transitions them per pass), not DXVK's CPU paths. A GPU capture of one slot frame (passes
+  off / on) would name the costly transitions. The extra submit is probably DXVK's own flush heuristics (not checked; no NVR
+  readback runs per frame: AvgLuma's ReadBuffer is the self-test only).
+- Caveat: slot copies (slim game copies); at the user's full resolution the GPU share is likely larger still.
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).
