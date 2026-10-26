@@ -1,5 +1,6 @@
 #include "AmbientOcclusion.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 // UNOFFICIAL 2026-10-16 GTAO ([Shaders.AmbientOcclusion.GTAO]; AmbientOcclusion.fx.hlsl GTAOValue): x 1 on (the DedicatedGTAO
 // technique instead of DedicatedAO), w largest search radius in pixels. Kept out of AmbientOcclusion.h.
@@ -146,6 +147,176 @@ void AmbientOcclusionEffect::UpdateSettings() {
 }
 
 /*
+* UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): the Dedicated techniques' passes (Estimate, BlurX, BlurY,
+* Combine; the Fast and GTAO variants by the same shaders: the Fast ones compute the same picture) and SkyVisibilityV2 as Vulkan
+* passes (Compute\AmbientOcclusion*.frag, the .fx.hlsl line for line): the estimate, the blurs and the sky pass into the effect's own
+* targets (ExtDrawTo), the combine through the frame chain (ExtFullScreen). The constants go into one uniform buffer per call
+* (AmbientOcclusion.glsl's block); the blur axis and the estimate's kind into the push block. The legacy technique (older effect
+* files, or after a failure) stays D3D9.
+*/
+namespace {
+	struct AOPush {
+		D3DXVECTOR2 axis;				// 0: DedicatedBlur's axis
+		UInt32 gtaoEstimate;			// 8: 1 = GTAOEstimate
+		UInt32 linearSampler;			// 12: LINEAR, CLAMP (filled in by DXVK)
+		UInt32 pointSampler;			// 16: POINT, CLAMP
+		UInt32 pointWrapSampler;		// 20: POINT, WRAP
+	};
+	struct AOUniforms {
+		D3DXMATRIX projection, invProjection, invView, shadowOrtho;	// as stored (see AmbientOcclusion.glsl)
+		D3DXVECTOR4 aoData, data, gtao, sky, sky2, sky3, sky4, sky5, smoothedSunDir, shadowFade, reciprocalResolution, fogData, fogColor,
+			depthConstants, cameraData, layout, skyLayout;
+	};
+
+	// The constants from the same registered memory the D3D9 path uploads (SetCT); null when not registered.
+	const D3DXVECTOR4* RegisteredConstant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	IDirect3DBaseTexture9* SlotTexture(const char* name) {
+		std::string slotName = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
+		return slot ? *slot : nullptr;
+	}
+
+	// Textures in set 1 (binding i, slot i), the constants in set 2 binding 0, the three samplers' heap indices at push offsets 12-20.
+	void MakePipeline(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount) {
+		if (pass.Tried) return;
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[9] = {};
+		UINT count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) {
+			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
+		}
+		bindings[count].Set = 2; bindings[count].Binding = 0; bindings[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[count].Slot = 0; count++;
+		for (UINT s = 0; s < 3; s++, count++) { bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = s; bindings[count].PushOffset = 12 + 4 * s; }
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(AOPush), true);
+	}
+
+	// The resources of one draw, in MakePipeline's order. False: a texture or sampler is missing.
+	bool Resources(NVR_EXT_RESOURCE_BINDING* resources, UINT& count, IDirect3DBaseTexture9* const* textures, UINT textureCount, ID3D9NvrExtBuffer* uniforms) {
+		ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::LinearClamp(), DxvkCompute::PointClamp(), DxvkCompute::PointWrap() };
+		if (!uniforms || !samplers[0] || !samplers[1] || !samplers[2]) return false;
+		count = 0;
+		for (UINT i = 0; i < textureCount; i++, count++) {
+			if (!textures[i]) return false;
+			resources[count].Slot = i; resources[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[count].pResource = textures[i];
+		}
+		resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = uniforms; count++;
+		for (UINT s = 0; s < 3; s++, count++) { resources[count].Slot = s; resources[count].Type = NVR_EXT_BIND_SAMPLER; resources[count].pResource = samplers[s]; }
+		return true;
+	}
+
+	// Sub-pass timings (nested inside "Ambient occlusion") to direct further AO work; either path.
+	GpuTimer& AOPassTimer(UINT p) {
+		static GpuTimer passTimers[4] = { GpuTimer("  AO estimate (half)"), GpuTimer("  AO blur X (half)"),
+			GpuTimer("  AO blur Y (half)"), GpuTimer("  AO combine (full)") };
+		return passTimers[p < 4 ? p : 3];
+	}
+}
+
+// This call's constants (the sky pass and the AO passes each keep a buffer: both are drawn in one frame). Layout: NVR_AOLayout;
+// SkyLayout: xy 1 / the sky target's size, z NVR_SkySmooth.x.
+bool AmbientOcclusionEffect::ExtConstants(ExtUniformBuffer& Uniforms, const D3DXVECTOR4& Layout, const D3DXVECTOR4& SkyLayout) {
+	const D3DXVECTOR4* projection = RegisteredConstant("TESR_ProjectionTransform");
+	const D3DXVECTOR4* invProjection = RegisteredConstant("TESR_InvProjectionTransform");
+	const D3DXVECTOR4* invView = RegisteredConstant("TESR_InvViewTransform");
+	const D3DXVECTOR4* reciprocalResolution = RegisteredConstant("TESR_ReciprocalResolution");
+	const D3DXVECTOR4* fogData = RegisteredConstant("TESR_FogData");
+	const D3DXVECTOR4* fogColor = RegisteredConstant("TESR_FogColor");
+	const D3DXVECTOR4* depthConstants = RegisteredConstant("TESR_DepthConstants");
+	const D3DXVECTOR4* cameraData = RegisteredConstant("TESR_CameraData");
+	if (!projection || !invProjection || !invView || !reciprocalResolution || !fogData || !fogColor || !depthConstants || !cameraData) return false;
+	// ShadowsExteriors' (absent without it: 0, as the effect's unset parameters)
+	const D3DXVECTOR4* shadowOrtho = RegisteredConstant("TESR_ShadowCameraToLightTransformOrtho");
+	const D3DXVECTOR4* smoothedSunDir = RegisteredConstant("TESR_SmoothedSunDir");
+	const D3DXVECTOR4* shadowFade = RegisteredConstant("TESR_ShadowFade");
+	AOUniforms uniforms = {};
+	memcpy(&uniforms.projection, projection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invProjection, invProjection, sizeof(D3DXMATRIX));
+	memcpy(&uniforms.invView, invView, sizeof(D3DXMATRIX));
+	if (shadowOrtho) memcpy(&uniforms.shadowOrtho, shadowOrtho, sizeof(D3DXMATRIX));
+	uniforms.aoData = Constants.AOData;
+	uniforms.data = Constants.Data;
+	uniforms.gtao = GTAOData;
+	uniforms.sky = SkyData;
+	uniforms.sky2 = SkyData2;
+	uniforms.sky3 = SkyData3;
+	uniforms.sky4 = SkyData4;
+	uniforms.sky5 = SkyData5;
+	if (smoothedSunDir) uniforms.smoothedSunDir = *smoothedSunDir;
+	if (shadowFade) uniforms.shadowFade = *shadowFade;
+	uniforms.reciprocalResolution = *reciprocalResolution;
+	uniforms.fogData = *fogData;
+	uniforms.fogColor = *fogColor;
+	uniforms.depthConstants = *depthConstants;
+	uniforms.cameraData = *cameraData;
+	uniforms.layout = Layout;
+	uniforms.skyLayout = SkyLayout;
+	return ExtUniforms(Uniforms, &uniforms, sizeof(uniforms)) != nullptr;
+}
+
+// The Dedicated technique's passes as Render's D3D9 loop draws them: 0 Estimate -> AO 0, 1 BlurX AO 0 -> AO 1, 2 BlurY AO 1 -> AO 0,
+// 3 Combine AO 0 -> the frame chain (never the direct final write: the D3D9 combine commits). combineOnly: the combine alone;
+// deferCombine: without it. False: nothing of the frame was committed (the D3D9 passes draw it; ExtFailed is set when a pass failed).
+bool AmbientOcclusionEffect::ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface,
+	IDirect3DTexture9* const* Textures, IDirect3DSurface9* const* Surfaces, const D3DXVECTOR4& Layout, bool GTAOEstimate, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SkyVis) {
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	IDirect3DBaseTexture9* noise = ExtFileTexture("TESR_BlueNoiseSampler");
+	IDirect3DBaseTexture9* scene = TheTextureManager->RenderedTexture;
+	if (!depth || !normals || !noise || !scene || (SkyData.x > 0.0f && !OrthoMap)) return false;
+	MakePipeline(extEstimate, "AmbientOcclusionEstimate", 4);
+	MakePipeline(extBlur, "AmbientOcclusionBlur", 3);
+	MakePipeline(extCombine, "AmbientOcclusionCombine", 4);
+	if (!extEstimate.Pipeline || !extBlur.Pipeline || !extCombine.Pipeline || !ExtConstants(extUniforms, Layout, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f))) return false;
+	const UINT firstPass = combineOnly ? 3 : 0;
+	const UINT endPass = deferCombine ? 3 : 4;
+	for (UINT p = firstPass; p < endPass; ++p) {
+		AOPush push = {};
+		push.axis = p == 1 ? D3DXVECTOR2(1.0f, 0.0f) : D3DXVECTOR2(0.0f, 1.0f);	// (io.xy, io.yx)
+		push.gtaoEstimate = GTAOEstimate ? 1 : 0;
+		NVR_EXT_RESOURCE_BINDING resources[8] = {};
+		UINT count = 0;
+		GpuProfileScope gpu(AOPassTimer(p), Device);
+		if (p == 3) {
+			// Stand-ins for what the pass does not read this frame (SkyData4.w 0: no sky factor).
+			IDirect3DBaseTexture9* inputs[4] = { Textures[0], depth, scene, SkyVis ? (IDirect3DBaseTexture9*)SkyVis : depth };
+			if (!Resources(resources, count, inputs, 4, extUniforms.Buffer)) return false;
+			return ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extCombine.Pipeline, resources, count, &push, sizeof(push), false);
+		}
+		bool drawn;
+		if (p == 0) {
+			IDirect3DBaseTexture9* inputs[4] = { depth, normals, noise, OrthoMap ? (IDirect3DBaseTexture9*)OrthoMap : depth };	// (no Skylighting v1: never read)
+			drawn = Resources(resources, count, inputs, 4, extUniforms.Buffer) && ExtDrawTo(extEstimate.Pipeline, &Surfaces[0], 1, resources, count, &push, sizeof(push));
+		}
+		else {
+			IDirect3DBaseTexture9* inputs[3] = { Textures[p == 1 ? 0 : 1], depth, normals };
+			drawn = Resources(resources, count, inputs, 3, extUniforms.Buffer) && ExtDrawTo(extBlur.Pipeline, &Surfaces[p == 1 ? 1 : 0], 1, resources, count, &push, sizeof(push));
+		}
+		if (!drawn) return false;
+	}
+	return true;
+}
+
+// SkyVisibilityV2 into Target (the sky target the D3D9 pass draws). The D3D9 pass's stage 8 and 9 textures: null = not read this frame.
+bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D3DSURFACE_DESC& Desc, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals) {
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	if (!depth || !normals || !OrthoMap || !Desc.Width || !Desc.Height) return false;
+	MakePipeline(extSky, "AmbientOcclusionSky", 5);
+	const D3DXVECTOR4 skyLayout(1.0f / Desc.Width, 1.0f / Desc.Height, SmoothedNormals ? 1.0f : 0.0f, 0.0f);
+	if (!extSky.Pipeline || !ExtConstants(extSkyUniforms, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f), skyLayout)) return false;
+	IDirect3DBaseTexture9* inputs[5] = { depth, normals, OrthoMap, SunMask ? (IDirect3DBaseTexture9*)SunMask : depth,
+		SmoothedNormals ? (IDirect3DBaseTexture9*)SmoothedNormals : depth };
+	NVR_EXT_RESOURCE_BINDING resources[9] = {};
+	UINT count = 0;
+	AOPush push = {};
+	return Resources(resources, count, inputs, 5, extSkyUniforms.Buffer) && ExtDrawTo(extSky.Pipeline, &Target, 1, resources, count, &push, sizeof(push));
+}
+
+/*
 * UNOFFICIAL 2026-10-17 Skylighting v2: the sky pass (technique SkyVisibilityV2) into the target the size of this frame's AO target,
 * with the ortho map on stage 6 and the sun shadow mask on stage 8. Called from Render before the AO passes; sets skyReady.
 * UNOFFICIAL 2026-10-20 (skyamb): also called by ShaderManager just before AmbientLight while that hosts the sky test.
@@ -194,6 +365,10 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device, IDire
 	D3DXHANDLE smoothHandle = ParameterHandle(paramSkySmooth, "NVR_SkySmooth");
 	if (!smoothHandle) smoothedNormals = nullptr;
 	if (smoothHandle) { D3DXVECTOR4 smooth(smoothedNormals ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f); Effect->SetVector(smoothHandle, &smooth); }
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the Vulkan pass first (AmbientOcclusionSky.frag); the D3D9 pass when it is off or failed.
+	HRESULT result = E_FAIL;
+	if (!ExtFailed && DxvkCompute::PassesOn() && ExtSkyVisibility(target, desc, orthoMap, sunMask, smoothedNormals)) result = S_OK;
+	else {
 	// UNOFFICIAL 2026-10-20 (skyamb): SetCT does nothing while this effect is off, and it is off whenever AmbientLight hosts the sky
 	// test (ShaderManager switches it off for the frame; the user may have it off too): the pass then ran with no depth, normals or
 	// constants (measured: no darkening, the debug views did not change). On for the call.
@@ -205,7 +380,7 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device, IDire
 	IDirect3DSurface9* depthSurface = nullptr;	// no depth-stencil while this draws (restored below)
 	Device->GetDepthStencilSurface(&depthSurface);
 	Device->SetDepthStencilSurface(nullptr);
-	HRESULT result = Device->SetRenderTarget(0, target);
+	result = Device->SetRenderTarget(0, target);
 	if (SUCCEEDED(result)) result = Device->SetViewport(&quarter);
 	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
 	if (SUCCEEDED(result)) {
@@ -229,6 +404,7 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device, IDire
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
+	}
 	skyReady = SUCCEEDED(result);
 	static D3DFORMAT reported = D3DFMT_UNKNOWN;	// (again when Reflections switches the format)
 	if (skyReady && reported != desc.Format) {
@@ -261,10 +437,11 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		D3DXHANDLE fast = TechniqueHandle(techFast, "DedicatedAOFast");
 		if (fast) technique = fast;
 	}
+	bool gtaoTechnique = false;	// (NVR DXVK: which estimate the Vulkan pass computes)
 	if (GTAOData.x > 0.5f) {	// UNOFFICIAL 2026-10-16: the same passes with the GTAO estimate, when the effect file has them
 		D3DXHANDLE gtao = FastPaths ? TechniqueHandle(techGTAOFast, "DedicatedGTAOFast") : NULL;	// UNOFFICIAL 2026-10-17 FastPaths
 		if (!gtao) gtao = TechniqueHandle(techGTAO, "DedicatedGTAO");
-		if (gtao) technique = gtao;
+		if (gtao) { technique = gtao; gtaoTechnique = true; }
 	}
 	D3DXHANDLE layoutHandle = ParameterHandle(paramLayout, "NVR_AOLayout");
 	D3DXTECHNIQUE_DESC description = {};
@@ -303,6 +480,26 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	// equals the render target when AO starts and nothing here writes it before the final copy,
 	// so bind it there instead of copying the full frame into SourceBuffer.
 	IDirect3DTexture9* scene = TheTextureManager->RenderedTexture;
+	// UNOFFICIAL Skylighting v2, DedicatedCombine (not deferred): the sky factor on stage 7.
+	IDirect3DTexture9* skyVis = !deferCombine ? SkyTexture() : nullptr;
+	SkyData4.w = skyVis ? 1.0f : 0.0f;
+	// UNOFFICIAL 2026-10-17 Skylighting: the ortho map on stage 6 (NVR_OrthoMap in the effect) for the estimate pass.
+	IDirect3DTexture9* orthoMap = SkyData.x > 0.0f && TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr;
+	static bool reported[2] = {};
+	auto reportActive = [&]() {
+		if (reported[lastLowRes]) return;
+		Logger::Log("UNOFFICIAL dedicated AO active: %ux%u G16R16F ping-pong%s.", reduced.Width, reduced.Height,
+			lastLowRes ? " (AOLowRes)" : "");
+		reported[lastLowRes] = true;
+	};
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the four passes as Vulkan passes first (ExtDedicated); false: nothing of the frame was
+	// committed and the D3D9 passes below draw it.
+	if (!ExtFailed && DxvkCompute::PassesOn() && ExtDedicated(Device, RenderTarget, RenderedSurface, textures, surfaces, layout, gtaoTechnique, orthoMap, skyVis)) {
+		if (deferCombine) deferredReady = true;	// nothing was written to the frame; the fog pass applies ResultTexture()
+		reportActive();
+		renderTime = timer.LogTime(deferCombine ? "AmbientOcclusion::Deferred" : "AmbientOcclusion::PackedAO");
+		return;
+	}
 	HRESULT result = scene ? Device->GetDepthStencilSurface(&depthSurface) : E_FAIL;
 	// UNOFFICIAL ReShadeDepthCompat: leave the game's depth-stencil bound (a single smaller target is legal with it).
 	if (SUCCEEDED(result) && !ReShadeIntegration::KeepDepthBound()) result = Device->SetDepthStencilSurface(nullptr);
@@ -310,14 +507,9 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		if (depthSurface) depthSurface->Release();
 		return;
 	}
-	// UNOFFICIAL Skylighting v2, DedicatedCombine (not deferred): the sky factor on stage 7.
-	IDirect3DTexture9* skyVis = !deferCombine ? SkyTexture() : nullptr;
-	SkyData4.w = skyVis ? 1.0f : 0.0f;
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
-	// UNOFFICIAL 2026-10-17 Skylighting: the ortho map on stage 6 (NVR_OrthoMap in the effect) for the estimate pass.
-	IDirect3DTexture9* orthoMap = SkyData.x > 0.0f && TheShaderManager->Effects.ShadowsExteriors ? TheShaderManager->Effects.ShadowsExteriors->ShadowMapOrthoTexture : nullptr;
 	Device->SetTexture(6, orthoMap);
 	TheRenderManager->renderState->NoteDeviceTexture(6, orthoMap);
 	UINT passes = 0;
@@ -344,11 +536,8 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 			// UNOFFICIAL: keep the game's texture cache truthful (NiDX9RenderState::NoteDeviceTexture)
 			TheRenderManager->renderState->NoteDeviceTexture(5, stage5);
 			TheRenderManager->renderState->NoteDeviceTexture(2, scene);
-			// Sub-pass timings (nested inside "Ambient occlusion") to direct further AO work.
-			static GpuTimer passTimers[4] = { GpuTimer("  AO estimate (half)"), GpuTimer("  AO blur X (half)"),
-				GpuTimer("  AO blur Y (half)"), GpuTimer("  AO combine (full)") };
 			{
-				GpuProfileScope gpu(passTimers[p < 4 ? p : 3], Device);
+				GpuProfileScope gpu(AOPassTimer(p), Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			}
 			HRESULT endResult = Effect->EndPass();
@@ -364,13 +553,6 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 	Device->SetViewport(&original);
 	Device->SetDepthStencilSurface(depthSurface);
 	if (depthSurface) depthSurface->Release();
-	static bool reported[2] = {};
-	auto reportActive = [&]() {
-		if (reported[lastLowRes]) return;
-		Logger::Log("UNOFFICIAL dedicated AO active: %ux%u G16R16F ping-pong%s.", reduced.Width, reduced.Height,
-			lastLowRes ? " (AOLowRes)" : "");
-		reported[lastLowRes] = true;
-	};
 	if (SUCCEEDED(result) && deferCombine) {
 		// Nothing was written to the frame; the fog pass applies ResultTexture().
 		deferredReady = true;
