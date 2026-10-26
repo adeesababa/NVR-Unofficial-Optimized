@@ -104,8 +104,15 @@ public:
 	// UNOFFICIAL 2026-10-21, test tool (SettingShots 'cloudcoverage'): puts the eased coverage away from the weather's, as right after a
 	// load or a weather change, so a test can see what a later step does to the easing (it eases back from there).
 	void	TestSetCoverage(float value) { coverage = std::clamp(value, 0.0f, 1.0f); }
+	// UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): techniques 0 (composite), 1 and 6 (march), 2 (temporal)
+	// and 4 (shadow map) as Vulkan passes (Compute/VolumetricClouds*.frag), line for line. The reflection (3, drawn by hand into the
+	// game's reflection with its depth test) and the layer probe (5, a game texture bound by hand) stay D3D9.
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 
 private:
+	ExtPass		extPasses[4];				// composite, march, temporal, shadow map
+	ExtUniformBuffer	extUniforms;
+	CachedHandle	physicalSkyCache;		// TESR_SkyViewLUT: there only when the effect was compiled with PHYSICAL_SKY_ON
 	float		coverage = -1.0f, rain = 0.0f, typeBias = 0.0f;	// eased toward the weather's
 	unsigned int	lastUpdateFrame = 0;	// UNOFFICIAL 2026-10-21: the rendered frame (FrameRateManager::FrameNumber) of the last UpdateConstants
 	bool		updatedBefore = false;

@@ -1,6 +1,7 @@
 #include "VolumetricClouds.h"
 #include "../core/FrameClock.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void VolumetricCloudsEffect::UpdateSettings() {
 	const SettingsStruct before = Settings;
@@ -636,4 +637,127 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 	}
 	target->Release();
 	if (depth) depth->Release();
+}
+
+// ---- UNOFFICIAL 2026-10-25 (NVR DXVK): see VolumetricClouds.h ----
+// The constants are read from the same registered memory the D3D9 path uploads (ConstantsTable; SetCT sets the matrices with
+// SetMatrix, the logical matrix), in the order of the GLSL's uniform block (Compute/VolumetricClouds.glsl): the three matrices,
+// then the float4s. TESR_PhysSky / TESR_PhysSkySun are only read when the effect was compiled with PHYSICAL_SKY_ON.
+namespace {
+	const char* const CloudsMatrixNames[] = { "TESR_CloudsPrevViewProj", "TESR_ViewTransform", "TESR_ProjectionTransform" };
+	const char* const CloudsVectorNames[] = { "TESR_ReciprocalResolution", "TESR_SunDirection", "TESR_SunColor", "TESR_SunAmount",
+		"TESR_SkyColor", "TESR_HorizonColor", "TESR_CloudsShape", "TESR_CloudsNoise", "TESR_CloudsLight", "TESR_CloudsWind",
+		"TESR_CloudsMarch", "TESR_CloudsLayout", "TESR_CloudsBlocks", "TESR_CloudsLook", "TESR_CloudsDetail", "TESR_CloudsExtra",
+		"TESR_CloudsMotion", "TESR_WaterSettings", "TESR_CameraData", "TESR_CameraPosition", "TESR_PhysSky", "TESR_PhysSkySun" };
+	const UINT CloudsOptionalVectors = 2;	// the last two
+	struct CloudsUniforms {
+		D3DXMATRIX	Matrices[_countof(CloudsMatrixNames)];
+		D3DXVECTOR4	Vectors[_countof(CloudsVectorNames)];
+	};
+	// Push block: the samplers' heap indices (POINT/CLAMP, LINEAR/CLAMP, POINT/WRAP, trilinear/WRAP; filled in by DXVK), then the
+	// two compile-time switches of the D3D9 shaders.
+	struct CloudsPush { UInt32 pointIndex, linearIndex, pointWrapIndex, mipIndex, fixedExit, physicalSky, pad[2]; };
+
+	const D3DXVECTOR4* CloudsRegistered(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+
+	// A named TESR_ texture as the D3D9 pass binds it (its TextureManager slot); null if none.
+	IDirect3DBaseTexture9* CloudsNamedTexture(const char* name) {
+		std::string text = name;
+		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(text);
+		return slot ? *slot : nullptr;
+	}
+}
+
+bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	// Per technique (0 Composite, 1 March, 2 Temporal, 4 ShadowMap, 6 MarchFixedExit): its shader, and its textures in binding order
+	// (set 1, binding i, slot i), as the .fx declares them: the noise textures 3D, through LINEAR/WRAP with LINEAR mips.
+	int pass;
+	switch (techniqueIndex) {
+	case 0: pass = 0; break;
+	case 1: case 6: pass = 1; break;
+	case 2: pass = 2; break;
+	case 4: pass = 3; break;
+	default: return false;	// 3 Reflection (drawn by hand), 5 LayerProbe (a game texture on stage 12): D3D9
+	}
+	if (ClearRenderTarget || (pass != 0 && RenderTarget != RenderedSurface)) return false;
+	static const char* const SpvNames[4] = { "VolumetricCloudsComposite", "VolumetricCloudsMarch", "VolumetricCloudsTemporal", "VolumetricCloudsShadowMap" };
+
+	const bool physicalSky = ParameterHandle(physicalSkyCache, "TESR_SkyViewLUT") != NULL;
+	IDirect3DBaseTexture9* weather = ExtFileTexture("TESR_CloudWeather");
+	IDirect3DBaseTexture9* blueNoise = ExtFileTexture("TESR_BlueNoiseSampler");
+	IDirect3DBaseTexture9* textures[6] = {};
+	bool volume[6] = {};
+	UINT count = 0;
+	switch (pass) {
+	case 0: {
+		IDirect3DBaseTexture9* depth = CloudsNamedTexture("TESR_DepthBuffer");
+		textures[0] = TheTextureManager->RenderedTexture; textures[1] = depth; textures[2] = CloudsNamedTexture("TESR_NormalsBuffer");
+		textures[3] = Textures.ShadowTexture ? Textures.ShadowTexture : depth;	// no map: shadow strength 0, never read
+		textures[4] = Textures.HistoryRead; count = 5; break;
+	}
+	case 1: case 3:
+		textures[0] = weather; textures[1] = ExtFileTexture("TESR_CloudShape"); textures[2] = ExtFileTexture("TESR_CloudDetail");
+		textures[3] = ExtFileTexture("TESR_NoiseVolume"); volume[1] = volume[2] = volume[3] = true; count = 4;
+		if (pass == 1) {
+			textures[4] = blueNoise;
+			textures[5] = physicalSky ? CloudsNamedTexture("TESR_SkyViewLUT") : blueNoise;	// without PHYSICAL_SKY_ON never read
+			count = 6;
+		}
+		break;
+	case 2: textures[0] = Textures.CurrentTexture; textures[1] = Textures.HistoryRead; count = 2; break;
+	}
+	for (UINT i = 0; i < count; i++) if (!textures[i]) return false;
+
+	ExtPass& ext = extPasses[pass];
+	if (!ext.Tried) {
+		ext.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[11] = {};
+		for (UINT i = 0; i < count; i++) {
+			bindings[i].Set = 1; bindings[i].Binding = i; bindings[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[i].Slot = i;
+			bindings[i].ViewType = volume[i] ? NVR_EXT_VIEW_3D : NVR_EXT_VIEW_2D;
+		}
+		bindings[count] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+		for (UINT s = 0; s < 4; s++) {
+			bindings[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; bindings[count + 1 + s].Slot = s; bindings[count + 1 + s].PushOffset = s * 4;
+		}
+		ext.Pipeline = DxvkCompute::CreateGraphicsPipeline(SpvNames[pass], bindings, count + 5, sizeof(CloudsPush), true);
+	}
+	ID3D9NvrExtSampler* samplers[4] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap(),
+		DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP) };	// the last: null on an NVR DXVK older than 1.3 (D3D9 then)
+	if (!ext.Pipeline || !samplers[0] || !samplers[1] || !samplers[2] || !samplers[3]) return false;
+
+	CloudsUniforms uniforms = {};
+	for (UINT i = 0; i < _countof(CloudsMatrixNames); i++) {
+		const D3DXVECTOR4* value = CloudsRegistered(CloudsMatrixNames[i]);
+		if (!value) return false;
+		memcpy(&uniforms.Matrices[i], value, sizeof(D3DXMATRIX));
+	}
+	for (UINT i = 0; i < _countof(CloudsVectorNames); i++) {
+		const D3DXVECTOR4* value = CloudsRegistered(CloudsVectorNames[i]);
+		if (value) uniforms.Vectors[i] = *value;
+		else if (i < _countof(CloudsVectorNames) - CloudsOptionalVectors) return false;
+	}
+	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
+	if (!buffer) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[11] = {};
+	for (UINT i = 0; i < count; i++) {
+		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
+	}
+	resources[count].Slot = 0; resources[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[count].pResource = buffer;
+	for (UINT s = 0; s < 4; s++) {
+		resources[count + 1 + s].Slot = s; resources[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; resources[count + 1 + s].pResource = samplers[s];
+	}
+	CloudsPush push = {};
+	push.fixedExit = techniqueIndex == 6 ? 1 : 0;
+	push.physicalSky = physicalSky ? 1 : 0;
+
+	if (pass == 0)
+		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, ext.Pipeline, resources, count + 5, &push, sizeof(push), true);
+	if (!ExtDrawTo(ext.Pipeline, &RenderTarget, 1, resources, count + 5, &push, sizeof(push))) return false;
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
+	return true;
 }
