@@ -91,3 +91,21 @@ the native fog is the reverted one.
   run: bench\foundations\lists\fork1026-sm6-bulk.txt (og-desert, og-night, lucky22).
 - Bugs found and fixed on the way: D3DX's Get*Array refuse non-array parameters (NVR_ constants came out 0); DXVK creates every
   stage with entry point "main" (glslang named it nvr_main: the draws were skipped silently, timers ~0.002 ms).
+
+## Combined bulk run (deep/fork-combo-1026 5f96ca01, fork d3d9 nvr-dxvk-combo, 2026-10-26 13:14-14:12), fork1026-sm6-bulk
+- Horizon tint through the fog (PASS at og-desert): tint pair, mean RGB of the horizon-sky band (35-47 % of the height):
+  ps_3_0 tint-off 146.2/121.4/101.8 (B/R 0.696, the same as with no tint at all: 0.697, the fog paints the sky's tint over);
+  SM6 tint-on 147.4/121.2/99.5 (B/R 0.675); far land band B/R 0.520 -> 0.498. Pixels >2: tint-off vs tint-on 34.5 % (top half
+  57 %) against 16-20 % noise. og-night: no measurable change (horizon band B/R 0.846 -> 0.843, pixel diff below the scene's
+  46 % noise): at night the fog's sky share is small, so the tint has little to act on there.
+- Off vs on (no tint) within noise everywhere: og-desert 15.7-16.0 % mean 1.63-1.67 vs off-off 20.2 % mean 1.92; og-night 39.7-
+  51.4 % vs off-off 46.1 % (stars/lights: a noisy scene, means 3.7-5.8 vs 4.7); lucky22 9.9-11.2 % mean 1.16-1.32 vs 10.7 % 1.24.
+- Log: every run "VolumetricFog.DedicatedFog.0/1 runs from its SM6 build" (+ PointShadows.MergedPointShadows.0 at lucky22 and
+  og-night), no "keeps its D3D9 shader", no constant without a value. The dedicated (not the composite) technique ran in all three
+  scenes of the combined build.
+- Fog timing (F10, og-desert / og-night): estimate 0.106 -> 0.159 / 0.106 -> 0.157 ms, reconstruct 0.250 -> 0.258 / 0.248 ->
+  0.257 ms: fog +0.06 ms. lucky22's timers are not usable (batched with other features' shots; frame totals 5.8-10.7 ms).
+- FOUND AND FIXED (code only, not re-run): og-night "Point shadow lighting" 0.021 -> 0.259 ms with SM6 on: the lamp mask is drawn
+  with a scissor rectangle (LampMaskScissor) and the extension's passes have none, so the SM6 lamp mask drew the whole screen
+  (same picture: the pass writes 0 outside its lamps). The generic hook now keeps the D3D9 draw while the device's scissor test is
+  on (Sm6Pass::Scissored). A scissor in the extension's Draw would be the proper fix (a fork change, not done).

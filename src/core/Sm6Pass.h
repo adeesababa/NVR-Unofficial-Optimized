@@ -41,6 +41,10 @@ public:
 	// The pass's own vertex shader is FrameVS (the frame quad) and it sets no render states (blending etc.): the generic hook in
 	// EffectRecord::Render may draw it.
 	bool Plain() const { return VertexShader == "FrameVS" && StateCount == 0; }
+	// The device has a scissor rectangle on (PointShadows' LampMaskScissor): the extension's passes have no scissor and would draw
+	// the whole target (same picture, as the pass writes 0 outside its lamps, but 0.02 -> 0.26 ms at og-night 2026-10-26), so the
+	// generic hook keeps the D3D9 draw then.
+	static bool Scissored(IDirect3DDevice9* Device) { DWORD on = FALSE; return Device && SUCCEEDED(Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &on)) && on; }
 	UInt32 Frames = 0;
 
 private:
