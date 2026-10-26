@@ -360,6 +360,9 @@ namespace {
 		D3DXVECTOR4	sunFarVolume;
 		D3DXVECTOR4	sunDirection;
 		D3DXVECTOR4	sunFarWater;
+		D3DXVECTOR4	fogData;		// UNOFFICIAL 2026-10-25 (the fog's share, the land's light vector)
+		D3DXVECTOR4	fogColor;
+		D3DXVECTOR4	sunFarLand;
 		D3DXVECTOR4	cameraData;
 		D3DXVECTOR4	cameraPosition;
 		D3DXVECTOR4	smoothedSunDir;
@@ -376,7 +379,7 @@ namespace {
 		D3DXMATRIX	projectionTransform;
 		D3DXMATRIX	viewTransform;
 	};
-	// The 15 sampled images (set 1, binding = slot), the constants (set 2, binding 0) and the three samplers (the sampler heap, set 0,
+	// The 16 sampled images (set 1, binding = slot), the constants (set 2, binding 0) and the three samplers (the sampler heap, set 0,
 	// binding 0): DXVK writes each sampler's heap index at its push offset.
 	const NVR_EXT_BINDING_DESC SunFarBindings[] = {
 		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE,  0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_depth: TESR_DepthBuffer
@@ -394,6 +397,7 @@ namespace {
 		{ 1, 12, NVR_EXT_BIND_SAMPLED_IMAGE, 12, NVR_EXT_VIEW_2D, FALSE, 0 },
 		{ 1, 13, NVR_EXT_BIND_SAMPLED_IMAGE, 13, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_volume: NVR_VolumeCloudShadow
 		{ 1, 14, NVR_EXT_BIND_SAMPLED_IMAGE, 14, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_water: NVR_WaterDepth
+		{ 1, 15, NVR_EXT_BIND_SAMPLED_IMAGE, 15, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_scene: NVR_Scene (UNOFFICIAL 2026-10-25)
 		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// Constants
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },	// samplerPoint: push offset 0
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D, FALSE, 4 },	// samplerLinear: push offset 4
@@ -449,7 +453,9 @@ bool SunFarEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Render
 	IDirect3DBaseTexture9* volume = volumetric && Constants.Volume.x > 0.0f ? volumetric->Textures.ShadowTexture : nullptr;
 	IDirect3DBaseTexture9* water = Constants.Water.z > 0.0f ? WaterDepthMap() : nullptr;
 	// The stand-ins (the depth buffer) are never sampled where their input is absent: see the comment above the bindings.
-	IDirect3DBaseTexture9* inputs[15] = { depth, normals, atlas, terrain ? terrain : depth, ground ? ground : depth };
+	IDirect3DBaseTexture9* inputs[16] = { depth, normals, atlas, terrain ? terrain : depth, ground ? ground : depth };
+	// UNOFFICIAL 2026-10-25: the world as drawn, which RenderFactor puts on stage 15 for the D3D9 pass (Constants.Water.w 0 then).
+	inputs[15] = PassTextures[15] ? PassTextures[15] : depth;
 	for (int i = 0; i < 4; i++) {
 		inputs[5 + i] = layerTextures[i] ? layerTextures[i] : depth;
 		inputs[9 + i] = blendTextures[i] ? blendTextures[i] : depth;
@@ -469,7 +475,7 @@ bool SunFarEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Render
 	copy(&uniforms.pbrExtraData, sizeof(uniforms.pbrExtraData), "TESR_PBRExtraData");
 	copy(&uniforms.terrainData, sizeof(uniforms.terrainData), "TESR_TerrainData");
 	copy(&uniforms.terrainSkyData, sizeof(uniforms.terrainSkyData), "TESR_TerrainSkyData");
-	copy(&uniforms.skyIrradiance, sizeof(uniforms.skyIrradiance), "TESR_SkyIrradiance");
+	copy(&uniforms.skyIrradiance, sizeof(uniforms.skyIrradiance), "TESR_SkyIrradianceObjects");
 	copy(&uniforms.terrainShadowData, sizeof(uniforms.terrainShadowData), "TESR_TerrainShadowData");
 	copy(&uniforms.terrainShadowRange, sizeof(uniforms.terrainShadowRange), "TESR_TerrainShadowRange");
 	copy(&uniforms.terrainShadowParams, sizeof(uniforms.terrainShadowParams), "TESR_TerrainShadowParams");
@@ -481,6 +487,9 @@ bool SunFarEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Render
 	copy(&uniforms.sunFarVolume, sizeof(uniforms.sunFarVolume), "TESR_SunFarVolume");
 	copy(&uniforms.sunDirection, sizeof(uniforms.sunDirection), "TESR_SunDirection");
 	copy(&uniforms.sunFarWater, sizeof(uniforms.sunFarWater), "TESR_SunFarWater");
+	copy(&uniforms.fogData, sizeof(uniforms.fogData), "TESR_FogData");
+	copy(&uniforms.fogColor, sizeof(uniforms.fogColor), "TESR_FogColor");
+	copy(&uniforms.sunFarLand, sizeof(uniforms.sunFarLand), "TESR_SunFarLand");
 	copy(&uniforms.cameraData, sizeof(uniforms.cameraData), "TESR_CameraData");
 	copy(&uniforms.cameraPosition, sizeof(uniforms.cameraPosition), "TESR_CameraPosition");
 	copy(&uniforms.smoothedSunDir, sizeof(uniforms.smoothedSunDir), "TESR_SmoothedSunDir");
@@ -501,11 +510,11 @@ bool SunFarEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Render
 	if (!constants) return false;
 
 	NVR_EXT_RESOURCE_BINDING resources[_countof(SunFarBindings)] = {};
-	for (UINT i = 0; i < 15; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i]; }
-	resources[15].Slot = 0; resources[15].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[15].pResource = constants;
-	resources[16].Slot = 0; resources[16].Type = NVR_EXT_BIND_SAMPLER; resources[16].pResource = point;
-	resources[17].Slot = 1; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = linear;
-	resources[18].Slot = 2; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = mip;
+	for (UINT i = 0; i < 16; i++) { resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = inputs[i]; }
+	resources[16].Slot = 0; resources[16].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[16].pResource = constants;
+	resources[17].Slot = 0; resources[17].Type = NVR_EXT_BIND_SAMPLER; resources[17].pResource = point;
+	resources[18].Slot = 1; resources[18].Type = NVR_EXT_BIND_SAMPLER; resources[18].pResource = linear;
+	resources[19].Slot = 2; resources[19].Type = NVR_EXT_BIND_SAMPLER; resources[19].pResource = mip;
 	SunFarPush push = {};	// the sampler heap indices: DXVK fills them in
 	IDirect3DSurface9* target = Surface;
 	if (!ExtDrawTo(extPass.Pipeline, &target, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;	// FrameVS into a smaller target

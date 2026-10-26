@@ -20,8 +20,10 @@ float Phase(float cosT, float g) {
     return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
 }
 
-vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit) {
+vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit, bool towers) {
     float steps = max(Steps * stepScale, 4.0);
+    // (2026-10-25 Towering, as the .fx) the storm techniques march with all 64 steps the D3D9 loop allows.
+    if (towers) steps = max(64.0 * stepScale, 4.0);
     vec3 camera = cb.cameraPosition.xyz * MetresPerUnit;
     float baseAbove = max(Base - camera.z, 50.0);
     float tStart = ShellDistance(dir.z, baseAbove);
@@ -54,7 +56,7 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit) {
         ambientTop = mix(ambientTop, physTop * AmbientStrength * (1.0 - 0.4 * RainDark), share);
         ambientBottom = mix(ambientBottom, mix(physLow, physTop, 0.5) * AmbientStrength * 0.5 * (1.0 - 0.6 * RainDark), share);
     }
-    float lightStep = Thickness / 12.0;
+    float lightStep = (towers ? BaseThickness : Thickness) / 12.0;   // (Towering: the ordinary clouds keep their light march)
     float lightRise = max(light.z, 0.1);
 
     vec3 wind = vec3(cb.wind.xy, 0.0);
@@ -71,17 +73,32 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit) {
         float h = (altitude - Base) / Thickness;
         vec3 p = vec3(camera.xy + dir.xy * t, altitude) + wind;
         float lod = saturate(t / 40000.0) * 2.0 * (1.0 - 0.5 * saturate(Sharpness));
-        float density = CloudDensity(p, h, lod, false);
+        float density = CloudDensity(p, h, lod, false, towers);
         if (density > 0.0) {
             float opticalDepth = 0.0;
             float reach = 0.0;
-            for (int j = 0; j < 6; j++) {
-                float stepLength = lightStep * exp2(float(j)) * 0.5;
-                reach += stepLength;
-                vec3 q = p + light * reach;
-                float hq = h + reach * lightRise / Thickness;
-                opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2) * stepLength;
+            if (towers) {
+                // (the .fx's real loop for the towers: the same six samples)
+                float stepLength = lightStep * 0.5;
+                for (float j = 0.0; j < 6.0; j += 1.0) {
+                    reach += stepLength;
+                    vec3 q = p + light * reach;
+                    float hq = h + reach * lightRise / Thickness;
+                    opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2.5, true) * stepLength;
+                    stepLength *= 2.0;
+                }
             }
+            else {
+                for (int j = 0; j < 6; j++) {
+                    float stepLength = lightStep * exp2(float(j)) * 0.5;
+                    reach += stepLength;
+                    vec3 q = p + light * reach;
+                    float hq = h + reach * lightRise / Thickness;
+                    opticalDepth += CloudDensity(q, hq, lod + 1.0, j > 2, false) * stepLength;
+                }
+            }
+            // (Towering) light scatters on through a storm: from half way up the ordinary layer the sun's way in counts for less.
+            if (towers) opticalDepth *= 1.0 - 0.8 * Towering * saturate((h * InvTowerShare - 0.5) / 1.5);
             vec3 sunLight = vec3(0.0);
             float a = 1.0, b = 1.0, c = 1.0;
             for (int k = 0; k < 3; k++) {
@@ -90,8 +107,10 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit) {
                 a *= 0.25; b *= 0.5; c *= 0.5;
             }
             float powder = 1.0 - exp(-2.0 * Extinction * density * 40.0);
-            vec3 ambient = mix(ambientBottom, ambientTop, saturate(h));
-            float lowLight = mix(1.0, mix(0.75, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+            float hb = towers ? h * InvTowerShare : h;   // Towering: the height in the ordinary layer (above 1 up a tower)
+            vec3 ambient = mix(ambientBottom, ambientTop, saturate(hb));
+            if (towers) ambient = mix(ambient, vec3(luma(ambient) * 1.15), 0.7 * Towering * saturate((hb - 0.5) / 1.5));
+            float lowLight = mix(1.0, mix(0.75, 1.0, smoothstep(0.0, 0.2, hb)), Cumulus);
             vec3 radiance = (sun * sunLight * mix(0.5, 1.0, powder) + ambient) * lowLight;
             float sigma = Extinction * density;
             float stepTransmittance = exp(-sigma * dt);
@@ -101,7 +120,14 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit) {
             transmittance *= stepTransmittance;
         }
     }
+    // (2026-10-25 WeatherTint, as the .fx) the weather's own cloud colour at this hour, brightness unchanged.
+    scattered *= mix(vec3(1.0), cb.tint.rgb, cb.tint.w);
     float dist = depthWeight > 0.0 ? depthSum / depthWeight : tStart;
+    // (Towering) the high tops of towers far off show through less of the low haze.
+    if (towers) {
+        float hitAltitude = camera.z + dist * dir.z + dist * dist / (2.0 * EarthRadius);
+        dist *= 1.0 - 0.75 * Towering * saturate(3.0 * (hitAltitude - Base - 0.5 * BaseThickness) / max(Thickness - BaseThickness, 1.0));
+    }
     float haze = exp(-(dist * dist) / (HazeDistance * HazeDistance)) * saturate((MaxDistance - dist) / (0.4 * MaxDistance));
     scattered *= haze;
     transmittance = mix(1.0, transmittance, haze);
@@ -113,5 +139,5 @@ void main() {
     vec2 pixel = vpos * 2.0 + cb.blocks.zw;
     vec2 coord = (pixel + 0.5) * LowTexel;
     float jitter = fract(textureLod(sampler2D(t_blueNoise, NVR_SAMPLER(pc.pointWrapIndex)), pixel / 256.0, 0.0).r + cb.march.z * 0.61803398875);
-    o_color = MarchRay(normalize(toWorld(coord)), jitter, 1.0, pc.fixedExit != 0u);
+    o_color = MarchRay(normalize(toWorld(coord)), jitter, 1.0, pc.fixedExit != 0u, pc.towers != 0u);
 }

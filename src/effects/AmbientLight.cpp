@@ -457,8 +457,9 @@ void AmbientLightEffect::SmoothComputeRelease() {
 
 bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height) {
 	if (!TheSettingManager->SettingsMain.Main.AmbientLightSmoothCompute || smoothComputeFailed || !DxvkCompute::Available()) return false;
-	if (normalSmoothing > SmoothComputeMaxReach) {
-		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d is above the compute version's %d: the D3D9 passes are used.", normalSmoothing, SmoothComputeMaxReach);
+	// (2026-10-26) NormalSmoothingWorld widens the reach per pixel (up to 192 texels), which the compute version's fixed reach cannot follow.
+	if (normalSmoothing > SmoothComputeMaxReach || normalSmoothingWorld > 0.0f) {
+		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d (or NormalSmoothingWorld %.1f) is beyond the compute version (reach %d): the D3D9 passes are used.", normalSmoothing, normalSmoothingWorld, SmoothComputeMaxReach);
 		smoothComputeReachLogged = true;
 		return false;
 	}

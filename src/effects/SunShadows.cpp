@@ -131,6 +131,8 @@ namespace {
 		D3DXMATRIX	cascade[4], projection, invProjection, view, invView;
 		D3DXVECTOR4	reciprocalResolution, smoothedSunDir, viewSpaceLightDir, formatData, screenSpaceData, shadowFade, shadowBlur,
 					forwardData, center[4], cameraData, flags;
+		D3DXMATRIX	charToLight;		// UNOFFICIAL 2026-10-26 CharacterShadowMap: TESR_CharShadowCameraToLight, TESR_CharShadowCenter, TESR_CharShadowData
+		D3DXVECTOR4	charCenter, charData;
 	};
 	struct SunPush { UInt32 linearIndex, noiseIndex, pass, pad; };
 
@@ -141,6 +143,7 @@ namespace {
 		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE,  2, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_NormalsBuffer
 		{ 1, 3, NVR_EXT_BIND_SAMPLED_IMAGE,  3, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_PointShadowBuffer (the pass's source)
 		{ 1, 4, NVR_EXT_BIND_SAMPLED_IMAGE,  4, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_NoiseSampler
+		{ 1, 5, NVR_EXT_BIND_SAMPLED_IMAGE,  5, NVR_EXT_VIEW_2D, FALSE, 0 },	// TESR_CharShadowMap (UNOFFICIAL 2026-10-26; a stand-in without the map)
 		{ 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// Constants
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        0, NVR_EXT_VIEW_2D, FALSE, 0 },	// LINEAR, CLAMP
 		{ 0, 0, NVR_EXT_BIND_SAMPLER,        1, NVR_EXT_VIEW_2D, FALSE, 4 },	// LINEAR, WRAP, MIPFILTER LINEAR
@@ -178,18 +181,19 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 	if (extForwardGeneration != LoadGeneration) {
 		extForwardGeneration = LoadGeneration;
 		extForwardCompiled = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "ForwardShadows") != 0;
+		extCharCompiled = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CharacterShadowMap") != 0;	// (EffectRecord::LoadEffect, the same read)
 	}
 
 	static const char* const spvNames[5] = { "SunShadowsMarch", "SunShadowsBlur", "SunShadowsApply", "SunShadowsSharp", "SunShadowsSharpFinish" };
 	static const UINT pipelineOf[7] = { 0, 1, 1, 2, 1, 3, 4 };	// SunPass -> extPasses / spvNames
+	// UNOFFICIAL 2026-10-26: the Apply pass with CHARACTER_SHADOW_MAP compiled in is its own variant (Compute\variants.txt), as the .fx.
+	ID3D9NvrExtPipeline* pipelines[5] = {};
 	for (UINT p = 0; p < description.Passes; p++) {
 		const UINT index = pipelineOf[layouts[techniqueIndex][p]];
-		ExtPass& pass = extPasses[index];
-		if (!pass.Tried) {
-			pass.Tried = true;
-			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[index], SunBindings, _countof(SunBindings), sizeof(SunPush), true);
-		}
-		if (!pass.Pipeline) return false;
+		pipelines[index] = ExtVariant(extVariants, extPasses[index], spvNames[index], index == 2 && extCharCompiled ? "c1" : "", [](const char* name) {
+			return DxvkCompute::CreateGraphicsPipeline(name, SunBindings, _countof(SunBindings), sizeof(SunPush), true);
+		});
+		if (!pipelines[index]) return false;
 	}
 	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
 	ID3D9NvrExtSampler* noiseSampler = DxvkCompute::MipSampler(false, NVR_EXT_ADDRESS_WRAP);
@@ -223,8 +227,9 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 		return false;
 
 	// The textures as SetCT binds them (the shadow buffer's slot takes each pass's source below).
-	IDirect3DBaseTexture9* textures[5] = { SunTexture("TESR_DepthBuffer"), SunTexture("TESR_ShadowAtlas"), SunTexture("TESR_NormalsBuffer"),
-		shadowTexture, ExtFileTexture("TESR_NoiseSampler") };
+	IDirect3DBaseTexture9* textures[6] = { SunTexture("TESR_DepthBuffer"), SunTexture("TESR_ShadowAtlas"), SunTexture("TESR_NormalsBuffer"),
+		shadowTexture, ExtFileTexture("TESR_NoiseSampler"), SunTexture("TESR_CharShadowMap") };
+	if (!textures[5]) textures[5] = textures[0];	// no map (CharacterShadowMap off): never read (the generic Apply shader)
 	for (IDirect3DBaseTexture9* texture : textures) if (!texture) return false;
 
 	SunUniforms uniforms = {};
@@ -246,16 +251,19 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 	uniforms.forwardData = *forwardData;
 	uniforms.cameraData = *cameraData;
 	uniforms.flags = D3DXVECTOR4(extForwardCompiled ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	if (const D3DXVECTOR4* charToLight = SunConstant("TESR_CharShadowCameraToLight")) memcpy(&uniforms.charToLight, charToLight, sizeof(D3DXMATRIX));
+	if (const D3DXVECTOR4* charCenter = SunConstant("TESR_CharShadowCenter")) uniforms.charCenter = *charCenter;
+	if (const D3DXVECTOR4* charData = SunConstant("TESR_CharShadowData")) uniforms.charData = *charData;
 	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
 	if (!buffer) return false;
 
 	NVR_EXT_RESOURCE_BINDING resources[_countof(SunBindings)] = {};
-	for (UINT i = 0; i < 5; i++) {
+	for (UINT i = 0; i < 6; i++) {
 		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
 	}
-	resources[5].Slot = 0; resources[5].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[5].pResource = buffer;
-	resources[6].Slot = 0; resources[6].Type = NVR_EXT_BIND_SAMPLER; resources[6].pResource = linear;
-	resources[7].Slot = 1; resources[7].Type = NVR_EXT_BIND_SAMPLER; resources[7].pResource = noiseSampler;
+	resources[6].Slot = 0; resources[6].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[6].pResource = buffer;
+	resources[7].Slot = 0; resources[7].Type = NVR_EXT_BIND_SAMPLER; resources[7].pResource = linear;
+	resources[8].Slot = 1; resources[8].Type = NVR_EXT_BIND_SAMPLER; resources[8].pResource = noiseSampler;
 
 	// The passes as Render draws them. The device's own target is moved to each pass's destination first, so a pass never reads the
 	// device's current render target (pass 0 reads the shadow buffer, the caller's target). A failure before the last pass leaves the
@@ -272,7 +280,7 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 		resources[3].pResource = source;
 		SunPush push = {};
 		push.pass = kind == SunBlurV ? 1 : kind == SunFinalBlur ? 2 : 0;	// SunShadowsBlur.frag: 0 H, 1 V, 2 FinalContactBlur
-		if (!ExtDrawTo(extPasses[pipelineOf[kind]].Pipeline, &destination, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;	// FrameVS into a smaller target
+		if (!ExtDrawTo(pipelines[pipelineOf[kind]], &destination, 1, resources, _countof(resources), &push, sizeof(push), nullptr, ExtUv::ScreenQuad)) return false;	// FrameVS into a smaller target
 		source = last ? shadowTexture : scratchTexture[p & 1];
 	}
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes (%u passes).", Name, description.Passes);

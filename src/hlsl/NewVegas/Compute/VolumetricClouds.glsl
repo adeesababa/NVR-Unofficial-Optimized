@@ -28,7 +28,9 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 waterSettings;            // TESR_WaterSettings
     vec4 cameraData;               // TESR_CameraData
     vec4 cameraPosition;           // TESR_CameraPosition
-    vec4 physSky;                  // TESR_PhysSky (zero unless the effect was compiled with PHYSICAL_SKY_ON)
+    vec4 tint;                     // TESR_CloudsTint (2026-10-25 WeatherTint: xyz the weather's cloud colour, w share)
+    vec4 tower;                    // TESR_CloudsTower (2026-10-25 Towering: x ordinary share of the layer, y towering, z anvil)
+    vec4 physSky;                 // TESR_PhysSky (zero unless the effect was compiled with PHYSICAL_SKY_ON)
     vec4 physSkySun;               // TESR_PhysSkySun
 } cb;
 
@@ -39,7 +41,8 @@ layout(push_constant) uniform Push {
     uint mipIndex;                 // 12: LINEAR, WRAP, LINEAR mips (the noise textures)
     uint fixedExit;                // 16: 1 = technique MarchFixedExit (MarchPS(true))
     uint physicalSky;              // 20: 1 = the effect was compiled with PHYSICAL_SKY_ON
-    uint pad0, pad1;
+    uint towers;                   // 24: 1 = the *Towers techniques (MarchPS / ShadowMapPS(towers), 2026-10-25)
+    uint pad1;
 } pc;
 
 layout(location = 0) in vec2 uv;
@@ -66,6 +69,16 @@ layout(location = 0) out vec4 o_color;
 #define LowTexel (cb.cloudLayout.xy)
 #define Sharpness max(cb.motion.w, 0.0)
 #define Cumulus (saturate(cb.detail.w) * (1.0 - smoothstep(0.6, 0.9, saturate(cb.shape.z))))
+// Towering (2026-10-25, the .fx's statics)
+#define TowerShare (cb.tower.x > 0.0 ? clamp(cb.tower.x, 0.05, 1.0) : 1.0)
+#define InvTowerShare (1.0 / TowerShare)
+#define TowerGrow (InvTowerShare - 1.0)
+#define Towering saturate(cb.tower.y)
+#define Anvil saturate(cb.tower.z)
+#define HeapGrow min(TowerGrow, 1.5)
+#define StormSpacing (1.5 * WeatherTile)
+#define StormRadius (0.55 * Thickness)
+#define BaseThickness (Thickness * TowerShare)
 
 const float EarthRadius = 6371000.0;
 const float MetresPerUnit = 1.0 / 70.0;
@@ -107,32 +120,63 @@ vec3 ShadowLight() {
 #define MIP_LOD2(t, coord, lod) textureLod(sampler2D(t, NVR_SAMPLER(pc.mipIndex)), (coord), (lod))
 #define MIP_LOD3(t, coord, lod) textureLod(sampler3D(t, NVR_SAMPLER(pc.mipIndex)), (coord), (lod))
 
-float HeightProfile(float h, float type) {
+// hb: the height in the ordinary layer (the same as h but up a tower, Towering), for the base. (2026-10-25)
+float HeightProfile(float h, float hb, float type) {
     float top = mix(0.3, 1.0, type);
     float bottom = mix(0.08, 0.12, type);
-    return smoothstep(0.0, bottom, h) * (1.0 - smoothstep(top * 0.6, top, h));
+    return smoothstep(0.0, bottom, hb) * (1.0 - smoothstep(top * 0.6, top, h));
 }
 
-// VolumetricClouds.fx.hlsl CloudDensity
-float CloudDensity(vec3 p, float h, float lod, bool cheap) {
+// VolumetricClouds.fx.hlsl CloudDensity. towers (the *Towers techniques, push.towers): the storms and the taller heaps; without
+// it the code before Towering, value for value.
+float CloudDensity(vec3 p, float h, float lod, bool cheap, bool towers) {
     if (h <= 0.0 || h >= 1.0) return 0.0;
     vec4 weather = MIP_LOD2(t_weather, p.xy / WeatherTile, 0.0);
     float local = saturate(Remap(weather.r, 1.0 - Coverage, 1.0, 0.0, 1.0));
-    if (local <= 0.0) return 0.0;
     float type = saturate(weather.g + cb.wind.w);
+    float tower = 0.0, hb = h, storm = 0.0;
+    if (towers) {
+        tower = saturate(local * type * 4.0 - 0.6) * Towering;
+        hb = h * InvTowerShare;
+        if (hb * Towering > 0.0) {
+            vec2 cell = floor(p.xy / StormSpacing);
+            vec4 r = MIP_LOD3(t_noise, vec3((cell + 0.5) / 64.0, 0.5 / 64.0), 0.0);   // four smooth noises per cell
+            float exists = saturate((0.75 * Towering - r.a) * 8.0);
+            vec2 centre = (cell + 0.3 + 0.4 * r.gb) * StormSpacing;
+            float radius = StormRadius * (0.75 + 0.5 * r.r);
+            float flare = smoothstep(0.72, 0.97, h);
+            flare *= flare * Anvil;
+            vec2 shear = (r.bg - 0.5) * (2.0 * radius * flare);
+            float width = radius * mix(1.0 - 0.1 * h, 2.2, flare);
+            float d = length(p.xy - centre - shear) / width;
+            if (d < 1.6) {
+                vec4 n = MIP_LOD3(t_noise, p / (2.0 * width), 0.0);
+                d += (0.5 - n.b) * 0.6 + (0.5 - n.g) * 0.4;
+            }
+            storm = saturate((1.0 - d) * 3.0) * exists * smoothstep(0.0, 0.03, hb);
+        }
+    }
+    if (local <= 0.0 && storm <= 0.0) return 0.0;
+    if (towers) {
+        h = hb / (1.0 + tower * HeapGrow);   // up this heap's own column
+        if (h >= 1.0 && storm <= 0.0) return 0.0;
+        type += tower * (1.0 - type);
+    }
     vec3 s = p / ShapeTile;
     s += (MIP_LOD3(t_noise, s * 0.5, lod).rga - 0.5) * (0.15 * cb.look.z * mix(1.0, 0.4, Cumulus));
     float shape = MIP_LOD3(t_shape, s, lod + cb.look.y).r;
-    float base = saturate(Remap(shape * HeightProfile(h, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+    float base = saturate(Remap(shape * HeightProfile(h, hb, type), 1.0 - local, 1.0, 0.0, 1.0)) * local;
+    float stormCloud = towers ? saturate((storm - 0.5 * (1.0 - shape)) * 2.0) : 0.0;
     {
         float top = mix(0.45, 1.0, type);
         float rise = saturate(h / top);
-        float threshold = mix(1.0 - local, 1.0, 0.9 * rise);
+        float threshold = mix(1.0 - local, 1.0, 0.9 * rise * (1.0 - 0.5 * tower));
         float core = saturate(Remap(shape, threshold, 1.0, 0.0, 1.0));
-        core *= smoothstep(0.0, 0.03, h) * (1.0 - smoothstep(0.85, 1.0, rise));
+        core *= smoothstep(0.0, 0.03, hb) * (1.0 - smoothstep(0.85, 1.0, rise));
         core = saturate(Remap(core, 0.1, 1.0, 0.0, 1.0)) * local;
         base = mix(base, core, Cumulus);
     }
+    if (towers) base = max(base, stormCloud);
     if (base <= 0.0) return 0.0;
     if (!cheap) {
         vec3 q = (p + vec3(0.0, 0.0, cb.wind.z)) / DetailTile;
@@ -144,10 +188,10 @@ float CloudDensity(vec3 p, float h, float lod, bool cheap) {
             float fine = MIP_LOD3(t_detail, f, lod).r;
             detail = mix(detail, detail * 0.65 + fine * 0.35, cb.detail.x);
         }
-        float wisps = mix(detail, 1.0 - detail, saturate(h * 6.0));
+        float wisps = mix(detail, 1.0 - detail, saturate(hb * 6.0));
         float erosion = Erosion;
         wisps = mix(wisps, 1.0 - detail, Cumulus);
-        erosion *= mix(1.0, mix(0.35, 1.0, smoothstep(0.0, 0.2, h)), Cumulus);
+        erosion *= mix(1.0, mix(0.35, 1.0, smoothstep(0.0, 0.2, hb)), Cumulus);
         base = saturate(Remap(base, wisps * erosion, 1.0, 0.0, 1.0));
     }
     base = saturate(base * max(cb.look.x, 1.0) * (1.0 + 0.5 * Cumulus));

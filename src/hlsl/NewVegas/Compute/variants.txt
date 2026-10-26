@@ -52,3 +52,4 @@ AmbientOcclusionEstimate g1 -DAO_GTAO=1
 PointShadows m0 -DPOINT_SHADOW_MODE=0
 PointShadows m1 -DPOINT_SHADOW_MODE=1
 PointShadows m2 -DPOINT_SHADOW_MODE=2
+SunShadowsApply c1 -DCHARACTER_SHADOW_MAP=1

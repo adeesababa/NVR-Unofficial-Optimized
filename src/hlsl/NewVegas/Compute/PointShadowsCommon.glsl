@@ -87,6 +87,8 @@ float getPointLightAtten(vec3 lightDir, float dn, vec3 n) {
 
 // PointShadows.fx: LampAmount
 float lampAmount(vec3 lightDir, float dn, vec3 n) {
+    // (2026-10-25 ForwardReachMask 2, as the .fx) pointShadowNear.z < 0: the old attenuation without its angle term (the normal along the lamp).
+    if (cb.pointShadowNear.z < 0.0) return getPointLightAtten(lightDir, dn, normalize(lightDir));
     return cb.pointShadowNear.z > 0.0 ? lampReach(dn) : getPointLightAtten(lightDir, dn, n);
 }
 

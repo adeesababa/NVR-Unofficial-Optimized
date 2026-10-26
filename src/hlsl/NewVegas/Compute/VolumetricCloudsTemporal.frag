@@ -38,7 +38,7 @@ void main() {
     vec3 previousDir = dir;
     if (Sharpness > 0.0) {
         vec3 camera = cb.cameraPosition.xyz * MetresPerUnit;
-        float reach = ShellDistance(dir.z, max(Base + 0.4 * Thickness - camera.z, 50.0));
+        float reach = ShellDistance(dir.z, max(Base + 0.4 * BaseThickness - camera.z, 50.0));
         previousDir = dir * reach + vec3(cb.motion.xy, 0.0);
     }
     vec4 clip = cb.prevViewProj * vec4(previousDir, 0.0);     // HLSL mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj)

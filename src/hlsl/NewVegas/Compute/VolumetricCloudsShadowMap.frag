@@ -20,10 +20,19 @@ void main() {
     float stepLength = len / 8.0;
     vec3 wind = vec3(cb.wind.xy, 0.0);
     float opticalDepth = 0.0;
-    for (int i = 0; i < 8; i++) {
-        float s = (float(i) + 0.5) * stepLength;
-        vec3 p = vec3(at, Base) + light * s;
-        opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false) * stepLength;
+    if (pc.towers != 0u) {
+        // (2026-10-25 Towering, ShadowMapPS(true): the .fx's real loop, the same samples)
+        for (float i = 0.5; i < 8.0; i += 1.0) {
+            vec3 p = vec3(at, Base) + light * (i * stepLength);
+            opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false, true) * stepLength;
+        }
+    }
+    else {
+        for (int i = 0; i < 8; i++) {
+            float s = (float(i) + 0.5) * stepLength;
+            vec3 p = vec3(at, Base) + light * s;
+            opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, false, false) * stepLength;
+        }
     }
     o_color = vec4(exp(-Extinction * opticalDepth), 0.0, 0.0, 1.0);
 }
