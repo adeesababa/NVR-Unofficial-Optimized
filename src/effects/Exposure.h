@@ -16,6 +16,11 @@ public:
 		ValuesStruct Main;
 		ValuesStruct Night;
 		ValuesStruct Interiors;
+		// UNOFFICIAL 2026-10-26 [Shaders.Exposure.Main] Histogram (needs NVR DXVK): the screen average leaves out the darkest LowPercent
+		// and the brightest HighPercent of the pixels (AvgLuma.cpp RenderCompute, Compute\AvgLumaHistogram.comp). Live.
+		bool	Histogram;
+		float	HistogramLowPercent;
+		float	HistogramHighPercent;
 	};
 	ExposureSettingsStruct	Settings;
 
