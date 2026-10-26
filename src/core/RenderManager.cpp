@@ -329,8 +329,10 @@ void RenderManager::Initialize() {
 	DXVK = false;
 
 	// The depth resolve path follows what the D3D9 layer offers, not the GPU brand: AMD and Intel drivers
-	// offer RESZ, and so does DXVK on every GPU, NVIDIA included; NVAPI works only with NVIDIA's own D3D9
-	// driver. (This used to log "AMD/Intel detected" for NVIDIA cards under DXVK, which confused users.)
+	// offer RESZ; NVAPI works only with NVIDIA's own D3D9 driver. (This used to log "AMD/Intel detected" for
+	// NVIDIA cards under DXVK, which confused users.) UNOFFICIAL 2026-10-26: stock DXVK offers RESZ only when
+	// the adapter reports AMD (d3d9.customVendorId = 1002 on NVIDIA); NVR DXVK offers it on every GPU (fork
+	// patch 0007). Without RESZ under DXVK, NVAPI initializes but cannot reach DXVK's device: no depth.
 	if (RESZ) {
 		DXVK = getDXVKPresent();
 		Logger::Log("Depth resolve: RESZ (%s).", DXVK ? "DXVK, any GPU brand" : "AMD/Intel driver");
