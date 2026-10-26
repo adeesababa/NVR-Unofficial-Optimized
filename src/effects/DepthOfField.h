@@ -37,6 +37,9 @@ public:
 	void	UpdateSettings();
 	bool	ShouldRender();
 	// UNOFFICIAL 2026-10-25 (NVR DXVK): technique DistantBlurOnly as src\hlsl\NewVegas\Compute\DepthOfField.frag (EffectRecord::ExtRender)
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): technique AutofocusBokeh (0) as four pipelines and six passes through the frame chain (DepthOfFieldFocus,
+	// Mosaic, Bokeh, Combine .frag): see ExtRender
 	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 	ExtPass	extPass;
+	ExtPass	extFocus, extMosaic, extBokeh, extCombine;
 };
