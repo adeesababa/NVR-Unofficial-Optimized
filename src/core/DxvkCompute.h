@@ -47,6 +47,10 @@ public:
 	// [Main.Main.Performance] NvrDxvkStencil (UNOFFICIAL 2026-10-26): Vulkan passes test a stencil where their D3D9 technique does
 	// (extension 1.6 DrawDepthStencil; SMAA's weight pass only on the edge pixels); off, or an older NVR DXVK: without (A/B).
 	static bool					StencilOn();
+	// [Main.Main.Performance] NvrDxvkKeepD3D9 (UNOFFICIAL 2026-10-26, test tool): whether this effect (its EffectRecord name, e.g.
+	// PointShadows; names separated by commas or spaces) keeps its D3D9 passes while the others run as Vulkan passes, so one pass's
+	// real cost shows in the frame total. Only effects drawn through EffectRecord::Render (not SMAA's own Render).
+	static bool					KeptOnD3D9(const char* Name);
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 
 	// UNOFFICIAL 2026-10-26 (extension 1.5, diagnostic): while On (F10 profiling), a "DXVK PROFILE" line every 120 frames: where a frame

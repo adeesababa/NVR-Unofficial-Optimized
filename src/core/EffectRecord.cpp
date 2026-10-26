@@ -472,7 +472,8 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	auto timer = TimeLogger();
 
 	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
-	if (!ExtFailed && DxvkCompute::PassesOn() && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+	if (!ExtFailed && DxvkCompute::PassesOn() && !DxvkCompute::KeptOnD3D9(Name) &&
+		ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
 		Device->SetRenderTarget(0, RenderTarget);
 		std::string name = "EffectRecord::ExtRender " + std::string(Name);
 		renderTime = timer.LogTime(name.c_str());
