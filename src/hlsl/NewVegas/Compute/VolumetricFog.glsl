@@ -109,6 +109,26 @@ layout(push_constant) uniform Push {
 
 layout(location = 0) in vec2 uv;
 
+// UNOFFICIAL 2026-10-26: the D3D9 techniques' switches (their uniform bool parameters and PHYSICAL_SKY_ON) are fixed when the
+// .fx compiles, so each pass there is its own trimmed shader. A variant .spv does the same: compiled with -DFOG_VARIANT and
+// FOG_MODE / FOG_LEGACY / FOG_CLASSIC / FOG_INTERIOR / FOG_PHYSICAL (tools/nvr-dxvk/compile-compute.sh; the C++ picks it,
+// effects/VolumetricFog.cpp ExtVariant). Without FOG_VARIANT the push block decides at run time: the generic shader, kept as
+// the fallback. Same code either way, so the same picture; a variant only drops the paths its pass never takes (one shader
+// with all five passes and every look made the light ShadowAO pass carry the whole fog's registers: 2x slower, 2026-10-25).
+#ifdef FOG_VARIANT
+#define FOG_MODE_IS(m) (uint(FOG_MODE) == (m))
+#define FOG_LEGACY_ON (FOG_LEGACY != 0)
+#define FOG_CLASSIC_ON (FOG_CLASSIC != 0)
+#define FOG_INTERIOR_ON (FOG_INTERIOR != 0)
+#define FOG_PHYSICAL_ON (FOG_PHYSICAL != 0)
+#else
+#define FOG_MODE_IS(m) (pc.mode == (m))
+#define FOG_LEGACY_ON (pc.legacy != 0u)
+#define FOG_CLASSIC_ON (pc.classic != 0u)
+#define FOG_INTERIOR_ON (pc.interior != 0u)
+#define FOG_PHYSICAL_ON (pc.physicalSky != 0u)
+#endif
+
 #define POINT_LOD(t, coord) textureLod(sampler2D(t, NVR_SAMPLER(pc.pointIndex)), (coord), 0.0)
 #define LINEAR_LOD(t, coord) textureLod(sampler2D(t, NVR_SAMPLER(pc.linearIndex)), (coord), 0.0)
 
@@ -665,7 +685,7 @@ void LegacyFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         sunColor *= isDayTime * LegacyIsExterior;
 
         skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColor.rgb, cb.skyLowColor.rgb, cb.horizonColor.rgb, vec3(0.0)) * cb.sunsetColor.w;
-        if (pc.physicalSky != 0u) {
+        if (FOG_PHYSICAL_ON) {
             if (cb.physSky.x > 0.0) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
         }
 
@@ -797,7 +817,7 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         sunColorV *= isDayTime * isExterior;
 
         skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColor.rgb, cb.skyLowColor.rgb, cb.horizonColor.rgb, vec3(0.0)) * cb.sunsetColor.w;
-        if (pc.physicalSky != 0u && !classic) {
+        if (FOG_PHYSICAL_ON && !classic) {
             if (cb.physSky.x > 0.0) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
         }
 

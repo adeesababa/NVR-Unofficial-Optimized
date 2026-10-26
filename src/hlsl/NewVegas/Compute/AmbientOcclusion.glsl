@@ -39,6 +39,14 @@ layout(push_constant) uniform Push {
     uint pointWrapSampler;         // 20: POINT, WRAP (TESR_BlueNoiseSampler: MIN/MAG/MIP NONE)
 } pc;
 
+// UNOFFICIAL 2026-10-26: the variant .spv fixes this (-DAO_GTAO, Compute/variants.txt, EffectRecord::ExtVariant), as the D3D9
+// techniques are compiled one per mode; without it the push block decides (the general shader, the fallback).
+#ifdef AO_GTAO
+#define AO_GTAO_ESTIMATE (AO_GTAO != 0)
+#else
+#define AO_GTAO_ESTIMATE (pc.gtaoEstimate != 0u)
+#endif
+
 #define LINEAR_LOD(t, coord) textureLod(sampler2D(t, NVR_SAMPLER(pc.linearSampler)), (coord), 0.0)
 #define POINT_LOD(t, coord) textureLod(sampler2D(t, NVR_SAMPLER(pc.pointSampler)), (coord), 0.0)
 #define POINT_WRAP_LOD(t, coord) textureLod(sampler2D(t, NVR_SAMPLER(pc.pointWrapSampler)), (coord), 0.0)

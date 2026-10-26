@@ -24,5 +24,6 @@ private:
 				ExtPass& pass, const char* spvName, NVR_EXT_BLEND blend, IDirect3DBaseTexture9* const* textures, UINT cubeCount, UINT textureCount,
 				ID3D9NvrExtSampler* first, ID3D9NvrExtSampler* second, UINT mode, bool clear);
 	ExtPass				extMerged, extBatch, extContact, extUpsample;
+	std::map<std::string, ExtPass> extVariants;	// UNOFFICIAL 2026-10-26: compile-time variants (EffectRecord::ExtVariant)
 	ExtUniformBuffer	extUniforms;
 };

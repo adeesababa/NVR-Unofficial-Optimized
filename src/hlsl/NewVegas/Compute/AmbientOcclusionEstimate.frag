@@ -171,7 +171,7 @@ float SkyVisibility(vec3 viewPosition, vec3 viewNormal, float turn) {
 void main() {
     // PackedEstimate / GTAOEstimate
     float ao;
-    if (pc.gtaoEstimate != 0u) ao = GTAOValue(uv);
+    if (AO_GTAO_ESTIMATE) ao = GTAOValue(uv);
     else {
         vec2 values = PackedSSAOValues(uv);
         ao = values.x * values.y;
