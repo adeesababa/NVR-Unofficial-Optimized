@@ -52,6 +52,8 @@ public:
 	void	RenderFactor(IDirect3DDevice9* Device);
 	// For the composites that bind it themselves (VolumetricFog, AmbientLight): the factor's texture when it holds this frame's.
 	IDirect3DTexture9*	FactorTexture() const { return Constants.Apply.x > 0.5f ? Texture : nullptr; }
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the pass as src\hlsl\NewVegas\Compute\SunFar.frag (EffectRecord::ExtRender); see SunFar.cpp.
+	bool	ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) override;
 
 private:
 	IDirect3DBaseTexture9*	layerTextures[4] = {};
@@ -59,4 +61,6 @@ private:
 	double	drift[4][2] = {};       // uv drift per layer, accumulated
 	double	lastDays = -1.0;        // game days at the last update (the drift follows the game's clock)
 	bool	cloudsReady = false;    // the sky's layers were found this frame
+	ExtPass				extPass;
+	ExtUniformBuffer	extUniforms;
 };
