@@ -22,3 +22,11 @@ float3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float 
 
     return color;
 }
+
+// UNOFFICIAL 2026-10-26 [Shaders.Sky.Main] sky look: Shaders/Includes/Sky.hlsl SkyLook, line for line (the effects compile
+// against this folder). Change one and change the other, and Sky.cpp SkyLook.
+float3 SkyLook(float3 color, float up, float3 tint, float3 horizonTint, float4 look) {
+    if (look.x != 1.0f) color = max(lerp(luma(color).xxx, color, look.x), 0.0f);
+    float overhead = smoothstep(0.0f, look.y, saturate(up));
+    return color * tint * lerp(horizonTint, 1.0f, overhead);
+}

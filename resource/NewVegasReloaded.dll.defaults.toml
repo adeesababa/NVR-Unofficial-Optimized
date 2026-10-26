@@ -1774,6 +1774,16 @@ TintDayB = 1.0
 TintNightR = 1.0                    # UNOFFICIAL (2026-10-25), live: colour of the sky at night (a colour wheel in the menu), e.g. a little blue for moonlit nights. White = no change.
 TintNightG = 1.0
 TintNightB = 1.0
+TintKeepsBrightness = true          # UNOFFICIAL (2026-10-26), live: the sky colour wheels (TintDay, TintNight and the horizon ones) change only the sky's colour, not how bright it is: a paler or deeper colour on the wheel no longer makes the whole sky brighter or darker. false = the colour multiplies the sky as it is (a pale colour brightens it, a dark one darkens it).
+TintHorizonDayR = 1.0               # UNOFFICIAL (2026-10-26), live: an extra colour for the sky near the horizon by day (a colour wheel in the menu), fading out going up to TintGradientHeight, on top of TintDay; e.g. a pale grey-blue for a hazy desert horizon under a deeper blue overhead. White = no change.
+TintHorizonDayG = 1.0
+TintHorizonDayB = 1.0
+TintHorizonNightR = 1.0             # UNOFFICIAL (2026-10-26), live: the same at night. White = no change.
+TintHorizonNightG = 1.0
+TintHorizonNightB = 1.0
+TintGradientHeight = 0.3            # UNOFFICIAL (2026-10-26), live [0.01-1.0]: how high up the horizon colour reaches before it has faded out (0.3 = about 17 degrees above the horizon, 1 = all the way overhead).
+SaturationDay = 1.0                 # UNOFFICIAL (2026-10-26), live [0.0-2.0]: how colourful the sky is by day, without changing its brightness. 1 = no change, lower = paler and greyer (e.g. 0.6 tones down a strong weather blue), higher = more colourful. Also the sky the clouds blend into and the sky light on objects.
+SaturationNight = 1.0               # UNOFFICIAL (2026-10-26), live [0.0-2.0]: the same at night.
 MoonBrightness = 1.0                # UNOFFICIAL (2026-10-25), live [0.0-4.0]: how bright the moon is at night: the moon disc in the sky and the moonlight on the world (the game's night light, and NVR's effects that use it). 1 = no change, 0.5 half as bright, 2 twice. Outdoors only; the sun is untouched.
 
 
@@ -1792,18 +1802,6 @@ UseNormals = false                  # EXPERIMENTAL-Uses the R & G channels of th
 SphericalNormals = false            # EXPERIMENTAL-Uses this setting if the normals of the clouds point to the center of the panoramic texture
 Transparency = 1.0                  # Clouds base transparency
 Brightness = 1.0                    # Clouds base brightness
-Volumetric = 0                      # [0-1] UNOFFICIAL (from Physically-Based-Reloaded). 1 draws the clouds as a thick slab lit by the sun: bright silver edges when the sun is behind them, darker undersides, and sunset colour. Above about 9 degrees the slab replaces the flat shading, UseNormals included. The game's cloud textures still decide where the clouds are. 0 draws the flat clouds as before. Runs only while the Volumetric Clouds effect is on (2026-10-15: with that effect off it marched the game's own cloud layers at ~3 ms outdoors on a GTX 1070); with Volumetric Clouds' HideGameClouds on (its default) the layers are hidden and this does nothing.
-Steps = 8                           # [2-16] Samples through the cloud layer for each pixel. 16 gives smoother edges at about twice the cost.
-CloudHeight = 6000.0                # [500-20000] Height of the base of the cloud layer above the camera, in game units (one cell is 4096 units across). The game's cloud texture is laid on this base. The height only changes the scale of the erosion noise (higher gives finer wisps). The depth of the layer comes from CloudThickness and UVScale.
-CloudThickness = 2500.0             # [100-10000] Depth of the cloud layer in game units. Thicker clouds are more opaque when you look through them.
-Density = 1.0                       # [0.0-3.0] How much of the texture's coverage becomes cloud. It acts before the erosion, so it grows or shrinks the outlines of the clouds.
-Absorption = 1.0                    # [0.0-4.0] How strongly the clouds absorb light, both for the view through them and for the sun reaching their insides. Higher is more opaque and darker underneath.
-DetailScale = 2.0                   # [0.2-10.0] Size of the procedural noise that erodes the edges, in cells per 1000 game units. Higher gives finer wisps.
-UVScale = 0.025                     # [0.001-0.2] How far the cloud texture is carried through the layer, in texture units per 1000 game units of horizontal travel. 0.025 is one repeat per 40000 units, the default. The sky mesh's UVs are in the NIF, so tune this: raise it if the depth looks too flat, lower it if clouds smear at low elevations.
-Scattering = 0.4                    # [0.0-0.9] Forward scattering (Henyey-Greenstein g). Higher gives a stronger glow where the clouds are backlit by the sun.
-SilverLining = 1.0                  # [0.0-3.0] Brightness of the thin edges of the clouds when the sun is behind them. 0 turns the silver lining off.
-AmbientStrength = 1.0               # [0.0-3.0] Brightness of the sky light on the clouds. At night the clouds are lit by this alone.
-DetailSpeed = 0.02                  # [0.0-0.2] How fast the erosion noise drifts, in cells per second.
 
 [_Shaders.Sky.Status]
 Enabled = true                      # Replaces the sky and cloud shaders to add more subtle sky shading.

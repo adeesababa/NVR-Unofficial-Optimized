@@ -1,6 +1,5 @@
 #include "Sky.h"
 
-static float CloudsVolumetricSetting = 0.0f;	// UNOFFICIAL: [Shaders.Sky.Clouds] Volumetric as set (UpdateSettings)
 
 // UNOFFICIAL 2026-10-25: a setting that may be missing from an older defaults file (GetSettingF would read 0: a black sky)
 static float SettingOr(const char* section, const char* key, float fallback) {
@@ -11,9 +10,6 @@ static float SettingOr(const char* section, const char* key, float fallback) {
 void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyData", &Constants.SkyData);
 	TheShaderManager->RegisterConstant("TESR_CloudData", &Constants.CloudData);
-	TheShaderManager->RegisterConstant("TESR_CloudVolumeData", &Constants.CloudVolumeData);
-	TheShaderManager->RegisterConstant("TESR_CloudVolumeData2", &Constants.CloudVolumeData2);
-	TheShaderManager->RegisterConstant("TESR_CloudVolumeLight", &Constants.CloudVolumeLight);
 	TheShaderManager->RegisterConstant("TESR_SunsetColor", &Constants.SunsetColor);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradiance", &Constants.Irradiance[0]);
 	TheShaderManager->RegisterConstant("TESR_SkyIrradianceGame", &Constants.IrradianceGame[0]);	// UNOFFICIAL 2026-10-18 ClassicLook
@@ -22,6 +18,9 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PhysSkySun", &Constants.PhysSkySun);
 	TheShaderManager->RegisterConstant("TESR_SkyTint", &Constants.SkyTint);	// UNOFFICIAL 2026-10-25
 	TheShaderManager->RegisterConstant("TESR_MoonData", &Constants.MoonData);
+	TheShaderManager->RegisterConstant("TESR_SkyTintHorizon", &Constants.SkyTintHorizon);	// UNOFFICIAL 2026-10-26
+	TheShaderManager->RegisterConstant("TESR_SkyLook", &Constants.SkyLook);
+	TheShaderManager->RegisterConstant("TESR_FogSkyLook", &Constants.FogSkyLook);
 }
 
 // UNOFFICIAL 2026-10-14 physical sky: Effects/Includes/Atmosphere.hlsl AtmSky, line for line (see there). Kept in step by
@@ -106,6 +105,20 @@ static D3DXVECTOR3 Linearize(const D3DXVECTOR4& c) {
 }
 
 
+// UNOFFICIAL 2026-10-26 Shaders/Includes/Sky.hlsl SkyLook, line for line (saturation, then the main tint times the horizon tint
+// fading out by look.y): change one and change the other.
+static D3DXVECTOR3 SkyLook(D3DXVECTOR3 c, float up, const D3DXVECTOR4& tint, const D3DXVECTOR4& horizonTint, const D3DXVECTOR4& look) {
+	if (look.x != 1.0f) {
+		const float luminance = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+		c = D3DXVECTOR3((std::max)(luminance + (c.x - luminance) * look.x, 0.0f), (std::max)(luminance + (c.y - luminance) * look.x, 0.0f),
+			(std::max)(luminance + (c.z - luminance) * look.x, 0.0f));
+	}
+	float overhead = look.y > 0.0f ? std::clamp(std::clamp(up, 0.0f, 1.0f) / look.y, 0.0f, 1.0f) : (up >= 0.0f ? 1.0f : 0.0f);
+	overhead = overhead * overhead * (3.0f - 2.0f * overhead);	// smoothstep(0, look.y, saturate(up))
+	for (int k = 0; k < 3; k++) c[k] *= tint[k] * (horizonTint[k] + (1.0f - horizonTint[k]) * overhead);
+	return c;
+}
+
 static D3DXVECTOR3 EvalSky(const D3DXVECTOR3& dir, const D3DXVECTOR4& sunPos, const D3DXVECTOR4& skyData,
 	const D3DXVECTOR3& skyC, const D3DXVECTOR3& skyLowC, const D3DXVECTOR3& horizonC,
 	const D3DXVECTOR3& sunColor, float sunHeight, float isDayTime) {
@@ -123,17 +136,11 @@ static D3DXVECTOR3 EvalSky(const D3DXVECTOR3& dir, const D3DXVECTOR4& sunPos, co
 }
 
 void SkyShaders::UpdateConstants() {
-	// UNOFFICIAL 2026-10-15: [Shaders.Sky.Clouds] Volumetric marches every pixel of the game's own cloud layers (SKYTEX.pso.hlsl);
-	// it runs only while the Volumetric Clouds effect is on. Measured: with that effect off the game's layers come back and the
-	// march cost ~3 ms outdoors (SKY 0.7 -> 2.9 ms in the world scene, 0.3 -> 1.1 ms in the water reflection, GTX 1070 1440p), so
-	// switching Volumetric Clouds off made the game slower, not faster (work\bench\perf-reference\2026-10-15-p77-vs-p80).
 	// Also: the effect sets its 'hide the game's cloud layers' flags in its own UpdateConstants, which does not run while it is
 	// off, so switching it off in the menu left the flags at 1 and the sky with no clouds at all until a restart. Cleared here.
 	if (VolumetricCloudsEffect* clouds = TheShaderManager->Effects.VolumetricClouds) {
 		if (!clouds->Enabled) clouds->HideGameClouds = clouds->HideGameCloudsInReflection = 0.0f;
-		Constants.CloudVolumeData.x = clouds->Enabled ? CloudsVolumetricSetting : 0.0f;
 	}
-	else Constants.CloudVolumeData.x = 0.0f;
 
 	if (TheShaderManager->Shaders.Tonemapping->Enabled)
 		Constants.SunsetColor.w = TheShaderManager->GetTransitionValue(Settings.SkyMultiplierDay, Settings.SkyMultiplierNight, 1.0);
@@ -143,8 +150,24 @@ void SkyShaders::UpdateConstants() {
 	// UNOFFICIAL 2026-10-25 TintDay / TintNight: the sky's colour multiplied by the tint for this hour (the same day/night curve
 	// as SkyMultiplier), on screen (SKY.pso, and the sky the flat clouds blend with in SKYTEX.pso) and in the sky light on objects
 	// below. MoonBrightness: the moon disc (SKYTEX.pso); its light is UpdateMoonlight's.
-	for (int c = 0; c < 3; c++)
+	// UNOFFICIAL 2026-10-26: TintHorizonDay / TintHorizonNight on top of it near the horizon, fading out by TintGradientHeight, and
+	// SaturationDay / SaturationNight (Shaders/Includes/Sky.hlsl SkyLook). TintKeepsBrightness divides each tint by its own
+	// brightness, so a paler or deeper colour on the wheel changes the sky's colour, not how bright it is.
+	for (int c = 0; c < 3; c++) {
 		Constants.SkyTint[c] = TheShaderManager->GetTransitionValue(Settings.TintDay[c], Settings.TintNight[c], 1.0f);
+		Constants.SkyTintHorizon[c] = TheShaderManager->GetTransitionValue(Settings.TintHorizonDay[c], Settings.TintHorizonNight[c], 1.0f);
+	}
+	if (Settings.TintKeepsBrightness) {
+		for (D3DXVECTOR4* tint : { &Constants.SkyTint, &Constants.SkyTintHorizon }) {
+			const float luminance = 0.2126f * tint->x + 0.7152f * tint->y + 0.0722f * tint->z;
+			if (luminance > 1e-4f) { tint->x /= luminance; tint->y /= luminance; tint->z /= luminance; }
+		}
+	}
+	Constants.SkyLook.x = TheShaderManager->GetTransitionValue(Settings.SaturationDay, Settings.SaturationNight, 1.0f);
+	Constants.SkyLook.y = Settings.TintGradientHeight;
+	// the fog lies over the sky near the horizon and takes the sky's colour there: VolumetricFog.fx.hlsl, one register
+	Constants.FogSkyLook = D3DXVECTOR4(Constants.SkyTint.x * Constants.SkyTintHorizon.x, Constants.SkyTint.y * Constants.SkyTintHorizon.y,
+		Constants.SkyTint.z * Constants.SkyTintHorizon.z, Constants.SkyLook.x);
 	Constants.MoonData.x = Settings.MoonBrightness;
 
 	// Order-2 spherical harmonic projection of the sky, convolved with the clamped-cosine
@@ -178,7 +201,8 @@ void SkyShaders::UpdateConstants() {
 			D3DXVECTOR4(PhysicalSettings.Enabled ? 1.0f : 0.0f, PhysicalSettings.Brightness, PhysicalSettings.WeatherTint, PhysicalSettings.Haze),
 			TheShaderManager->ShaderConst.SunAmount.x,
 			pbrForKey ? max(pbrForKey->SkylightSaturation, 0.0f) : 1.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f,
-			D3DXVECTOR4(physExact ? 1.0f : 0.0f, physMs ? 1.0f : 0.0f, PhysicalSettings.GroundAlbedo, 0.0f), Constants.SkyTint };
+			D3DXVECTOR4(physExact ? 1.0f : 0.0f, physMs ? 1.0f : 0.0f, PhysicalSettings.GroundAlbedo, 0.0f), Constants.SkyTint,
+			Constants.SkyTintHorizon, Constants.SkyLook };
 		inputs.sunsetColor.w = 0.0f;	// only rgb is read below
 		const bool sunStill = lastProjectionValid &&
 			inputs.sunPos.x * lastProjection.sunPos.x + inputs.sunPos.y * lastProjection.sunPos.y + inputs.sunPos.z * lastProjection.sunPos.z >= 0.9999985f;
@@ -292,7 +316,7 @@ void SkyShaders::UpdateConstants() {
 				sunColor, sunHeight, isDayTime);
 			if (physical) {
 				// UNOFFICIAL 2026-10-18 ClassicLook: the game's own sky projected as well (IrradianceGame), as the original NVR had it.
-				const D3DXVECTOR3 G = L * dOmega;
+				const D3DXVECTOR3 G = SkyLook(L, d.z, Constants.SkyTint, Constants.SkyTintHorizon, Constants.SkyLook) * dOmega;
 				shGame[0] += G * 0.282095f;
 				shGame[1] += G * (0.488603f * d.y);
 				shGame[2] += G * (0.488603f * d.z);
@@ -304,7 +328,7 @@ void SkyShaders::UpdateConstants() {
 				shGame[8] += G * (0.546274f * (d.x * d.x - d.y * d.y));
 				L = PhysAtmosphere::Blend(L, physSamples[(i / 2) * (STEPS_P / 2) + j / 2] * Constants.PhysSky.y, Constants.PhysSky);	// UNOFFICIAL physical sky
 			}
-			L *= dOmega;
+			L = SkyLook(L, d.z, Constants.SkyTint, Constants.SkyTintHorizon, Constants.SkyLook) * dOmega;	// UNOFFICIAL 2026-10-25/26, as SKY.pso
 
 			sh[0] += L * 0.282095f;
 			sh[1] += L * (0.488603f * d.y);
@@ -331,12 +355,12 @@ void SkyShaders::UpdateConstants() {
 	// cost. 1 leaves the coefficients untouched.
 	PBRShaders* pbr = TheShaderManager->Shaders.PBR;
 	const float saturation = pbr ? max(pbr->SkylightSaturation, 0.0f) : 1.0f;
-	const D3DXVECTOR3 tint(Constants.SkyTint.x, Constants.SkyTint.y, Constants.SkyTint.z);	// UNOFFICIAL 2026-10-25 TintDay / TintNight
+	// (the sky tint, horizon tint and saturation are already in the samples: SkyLook above)
 	for (int i = 0; i < 9; i++) {
-		D3DXVECTOR3 c = PhysAtmosphere::Mul(sh[i] * (band[i] * basis[i]), tint);
+		D3DXVECTOR3 c = sh[i] * (band[i] * basis[i]);
 		// UNOFFICIAL 2026-10-18 ClassicLook: the original NVR's coefficients (the game's sky, unsaturated); without the physical sky
 		// blending in, the same projection as below.
-		const D3DXVECTOR3 g = physical ? PhysAtmosphere::Mul(shGame[i] * (band[i] * basis[i]), tint) : c;
+		const D3DXVECTOR3 g = physical ? shGame[i] * (band[i] * basis[i]) : c;
 		Constants.IrradianceGame[i] = D3DXVECTOR4(g.x, g.y, g.z, 0.0f);
 		if (saturation != 1.0f) {
 			const float luminance = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
@@ -379,6 +403,15 @@ void SkyShaders::UpdateSettings() {
 	Settings.TintNight = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintNightR", 1.0f), 0.0f),
 		(std::max)(SettingOr("Shaders.Sky.Main", "TintNightG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintNightB", 1.0f), 0.0f), 1.0f);
 	Settings.MoonBrightness = std::clamp(SettingOr("Shaders.Sky.Main", "MoonBrightness", 1.0f), 0.0f, 4.0f);
+	// UNOFFICIAL 2026-10-26 horizon tint, gradient height, saturation, brightness-keeping tints (applied in UpdateConstants)
+	Settings.TintHorizonDay = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintHorizonDayR", 1.0f), 0.0f),
+		(std::max)(SettingOr("Shaders.Sky.Main", "TintHorizonDayG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintHorizonDayB", 1.0f), 0.0f), 1.0f);
+	Settings.TintHorizonNight = D3DXVECTOR4((std::max)(SettingOr("Shaders.Sky.Main", "TintHorizonNightR", 1.0f), 0.0f),
+		(std::max)(SettingOr("Shaders.Sky.Main", "TintHorizonNightG", 1.0f), 0.0f), (std::max)(SettingOr("Shaders.Sky.Main", "TintHorizonNightB", 1.0f), 0.0f), 1.0f);
+	Settings.TintGradientHeight = std::clamp(SettingOr("Shaders.Sky.Main", "TintGradientHeight", 0.3f), 0.01f, 1.0f);
+	Settings.SaturationDay = std::clamp(SettingOr("Shaders.Sky.Main", "SaturationDay", 1.0f), 0.0f, 2.0f);
+	Settings.SaturationNight = std::clamp(SettingOr("Shaders.Sky.Main", "SaturationNight", 1.0f), 0.0f, 2.0f);
+	Settings.TintKeepsBrightness = SettingOr("Shaders.Sky.Main", "TintKeepsBrightness", 1.0f) != 0.0f;
 
 	// UNOFFICIAL physical sky (Effects/Includes/Atmosphere.hlsl). Enabled is read at startup too (ShaderRecord compiles it in).
 	PhysicalSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") != 0;
@@ -391,21 +424,6 @@ void SkyShaders::UpdateSettings() {
 	PhysicalSettings.LightsObjects = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "LightsObjects") != 0;	// UNOFFICIAL 2026-10-25, live
 	lastProjectionValid = false;
 
-	// UNOFFICIAL (from Physically-Based-Reloaded, Fable): volumetric clouds (SKYTEX.pso.hlsl). DetailScale and UVScale
-	// are entered per 1000 game units (the menu cannot show values as small as 1 / 40000); the shader wants them per unit.
-	CloudsVolumetricSetting = TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Volumetric");	// applied in UpdateConstants
-	Constants.CloudVolumeData.x = CloudsVolumetricSetting;
-	Constants.CloudVolumeData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Steps"), 1.0f, 16.0f);
-	Constants.CloudVolumeData.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "CloudHeight"), 0.0f);
-	Constants.CloudVolumeData.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "CloudThickness"), 0.0f);
-	Constants.CloudVolumeData2.x = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Density"), 0.0f);
-	Constants.CloudVolumeData2.y = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Absorption"), 0.0f);
-	Constants.CloudVolumeData2.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "DetailScale"), 0.0f) * 0.001f;
-	Constants.CloudVolumeData2.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "UVScale"), 0.0f) * 0.001f;
-	Constants.CloudVolumeLight.x = std::clamp(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "Scattering"), 0.0f, 0.9f);
-	Constants.CloudVolumeLight.y = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "SilverLining"), 0.0f);
-	Constants.CloudVolumeLight.z = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "AmbientStrength"), 0.0f);
-	Constants.CloudVolumeLight.w = max(TheSettingManager->GetSettingF("Shaders.Sky.Clouds", "DetailSpeed"), 0.0f);
 
 	// only add sunset color boost in exteriors
 	if (TheShaderManager->GameState.isExterior) {
