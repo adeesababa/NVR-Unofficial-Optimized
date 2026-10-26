@@ -76,3 +76,15 @@ Still missing / next
 - Not checked: device reset / resolution change with Bokeh on. The buffers and the half-res texture are remade when the size
   changes; the texture is a D3DPOOL_DEFAULT render target made with CreateTexture, exactly like every NVR effect texture made by
   TextureManager::InitTexture, so it behaves as those do on a Reset.
+
+## Bulk run of the combined build (deep/fork-combo-1026 5f96ca01, list fork1026-bokeh-bulk; first in-game run of 44cb2475)
+Runs: lucky22 20261026-131417-slotB (960x540), og-night 20261026-141629-slotC (1080p); fork d3d9 with RESZ for every vendor.
+- Log: `Depth resolve: RESZ`, `bokeh ready` / `bokeh running`, no failure line. PASS.
+- Shapes: og-night `on-big` shows clean hexagons on the out-of-focus lamps (left of the monorail, by the Strip); stars stay points. PASS.
+- Off/on pairs: lucky22 off-vs-on 9.2-10.4 % of pixels > 2/255 (noise pairs 9.7-10.1 %), signed +0.01..+0.05, max 195-198 on the
+  lights; og-night inside its larger noise band (23-33 %), big +0.38. Only the lights change. PASS.
+- F10 (Depth of field, ms): lucky22 Vulkan 0.337 -> + bokeh 0.382 (+0.045; scatter 0.039); with NvrDxvkPasses off the bokeh path
+  is 0.383 vs the D3D9 DoF 0.459. og-night 1080p Vulkan 1.25 -> + bokeh 1.36 (+0.11; scatter 0.094), passes off 1.37 vs D3D9 1.70.
+  The half-res resolve worked: the Combine's share went from ~0.08 ms to ~0.01 ms. PASS (small cost).
+- Not from the bokeh: in lucky22 the Vulkan side (NvrDxvkPasses on) is -0.69/255 darker than D3D9 with Bokeh OFF too (off-1 vs
+  offvk-1 -0.697, 18.5 %), so it comes from another effect's Vulkan path in the combined build.
