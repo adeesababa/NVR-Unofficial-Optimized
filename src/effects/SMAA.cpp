@@ -1,6 +1,8 @@
 #include <algorithm>
 
 #include "SMAA.h"
+#include "Tonemapping.h"				// UNOFFICIAL 2026-10-25 (NVR DXVK): TESR_ToneMappingClip for the stable edge pass
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 
 void SMAAEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SMAAResolution", &Constants.Resolution);
@@ -80,6 +82,13 @@ void SMAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	}
 
 	auto timer = TimeLogger();
+
+	// UNOFFICIAL 2026-10-25 (NVR DXVK): the ported passes when the extension is there and on (as EffectRecord::Render).
+	if (!ExtFailed && DxvkCompute::PassesOn() && ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer)) {
+		Device->SetRenderTarget(0, RenderTarget);
+		renderTime = timer.LogTime("EffectRecord::ExtRender SMAA");
+		return;
+	}
 
 	// UNOFFICIAL: the edge pass marks edge pixels in the stencil and the costly weight pass (32-step searches) runs only
 	// there. Until 2026-10-11 the stencil was whatever depth buffer the game had left bound (perhaps multisampled, another
@@ -195,4 +204,110 @@ void SMAAEffect::NeighborhoodBlendingPass(IDirect3DSurface9* RenderTarget) {
 	Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 	Effect->EndPass();
 	Effect->End();
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK): the three passes through the extension. Edges and weights go into SMAA's own targets
+// (ExtDrawTo), the neighborhood blend writes the frame through the chain (ExtFullScreen). No stencil there: the edge pass writes
+// its mark (the pixel was not discarded) into the edges' alpha and the weight pass writes 0 where it is missing, as the D3D9
+// stencil test leaves the cleared target. Every pixel of both targets is written, so neither needs the D3D9 clear.
+namespace {
+	struct SMAAPush {
+		D3DXVECTOR4 Resolution, Data, DepthData, Pred, ToneMappingClip;	// TESR_SMAA*, TESR_ToneMappingClip
+		UInt32 samplerIndex, pointSamplerIndex, mode, pad;				// LINEAR/CLAMP at 80, POINT/CLAMP at 84
+	};
+	const NVR_EXT_BINDING_DESC SMAAEdgesBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_rendered: TESR_RenderedBuffer
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_depth: TESR_DepthBuffer
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 80 },
+	};
+	const NVR_EXT_BINDING_DESC SMAAWeightsBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_edges: TESR_SMAA_Edges
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_area: TESR_SMAA_AreaTex
+		{ 1, 2, NVR_EXT_BIND_SAMPLED_IMAGE, 2, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_search: TESR_SMAA_SearchTex
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 80 },
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       1, NVR_EXT_VIEW_2D, FALSE, 84 },
+	};
+	const NVR_EXT_BINDING_DESC SMAANeighborhoodBindings[] = {
+		{ 1, 0, NVR_EXT_BIND_SAMPLED_IMAGE, 0, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_rendered: TESR_RenderedBuffer
+		{ 1, 1, NVR_EXT_BIND_SAMPLED_IMAGE, 1, NVR_EXT_VIEW_2D, FALSE, 0 },	// t_blend: TESR_SMAA_Blend
+		{ 0, 0, NVR_EXT_BIND_SAMPLER,       0, NVR_EXT_VIEW_2D, FALSE, 80 },
+	};
+}
+
+bool SMAAEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
+	IDirect3DTexture9* depth = TheShaderManager->Effects.CombineDepth ? TheShaderManager->Effects.CombineDepth->Textures.CombinedDepthTexture : nullptr;
+	IDirect3DBaseTexture9* area = ExtFileTexture("TESR_SMAA_AreaTex");
+	IDirect3DBaseTexture9* search = ExtFileTexture("TESR_SMAA_SearchTex");
+	if (!depth || !area || !search || !Textures.SMAA_Edges_Texture || !Textures.SMAA_Blend_Texture || !TheTextureManager->RenderedTexture) return false;
+
+	// The edge technique EdgesDetectionPass picks.
+	UInt32 mode;
+	switch (Settings.Main.EdgeDetection) {
+	case INPUT_LUMA: mode = 0; break;
+	case INPUT_COLOR: mode = 1; break;
+	case INPUT_DEPTH: mode = 2; break;
+	case INPUT_LUMADEPTH:
+		mode = (Settings.Main.Predication || Settings.Main.DeDither) && TechniqueHandle(techLumaDepthStable, "LumaDepthEdgeDetectionStable") ? 4 : 3;
+		break;
+	default: return false;
+	}
+
+	// Whether the D3D9 weight pass has a stencil to test: SMAA's own surface (Render makes it unless that failed), else the bound one
+	// (ReShadeDepthCompat, or no own surface) if it has stencil bits. Without one every pixel runs there, so here too.
+	bool masked = !Textures.StencilFailed && !ReShadeIntegration::KeepDepthBound();
+	if (!masked) {
+		IDirect3DSurface9* bound = nullptr;
+		D3DSURFACE_DESC desc;
+		if (SUCCEEDED(Device->GetDepthStencilSurface(&bound)) && bound && SUCCEEDED(bound->GetDesc(&desc)))
+			masked = desc.Format == D3DFMT_D24S8 || desc.Format == D3DFMT_D24FS8 || desc.Format == D3DFMT_D24X4S4 || desc.Format == D3DFMT_D15S1;
+		if (bound) bound->Release();
+	}
+
+	auto make = [](ExtPass& pass, const char* spvName, const NVR_EXT_BINDING_DESC* bindings, UINT count) {
+		if (!pass.Tried) {
+			pass.Tried = true;
+			pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(SMAAPush), true);
+		}
+		return pass.Pipeline != nullptr;
+	};
+	if (!make(extEdges, "SMAAEdges", SMAAEdgesBindings, _countof(SMAAEdgesBindings)) ||
+		!make(extWeights, "SMAAWeights", SMAAWeightsBindings, _countof(SMAAWeightsBindings)) ||
+		!make(extNeighborhood, "SMAANeighborhood", SMAANeighborhoodBindings, _countof(SMAANeighborhoodBindings))) return false;
+	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
+	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+	if (!linear || !point) return false;
+
+	SMAAPush push = {};
+	push.Resolution = Constants.Resolution;
+	push.Data = Constants.Data;
+	push.DepthData = Constants.DepthData;
+	push.Pred = Constants.Pred;
+	if (TheShaderManager->Shaders.Tonemapping) push.ToneMappingClip = TheShaderManager->Shaders.Tonemapping->Constants.Clip;
+	push.mode = mode;
+
+	// Edge detection into TESR_SMAA_Edges. Nothing of the frame is touched before the last pass, so a failure here still leaves
+	// this frame to the D3D9 technique.
+	NVR_EXT_RESOURCE_BINDING edges[3] = {};
+	edges[0].Slot = 0; edges[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[0].pResource = TheTextureManager->RenderedTexture;
+	edges[1].Slot = 1; edges[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; edges[1].pResource = depth;
+	edges[2].Slot = 0; edges[2].Type = NVR_EXT_BIND_SAMPLER; edges[2].pResource = linear;
+	if (!ExtDrawTo(extEdges.Pipeline, &Textures.SMAA_Edges_Surface, 1, edges, _countof(edges), &push, sizeof(push))) return false;
+
+	// Blending weights into TESR_SMAA_Blend, only where the edge pass marked (mode 1).
+	push.mode = masked ? 1 : 0;
+	NVR_EXT_RESOURCE_BINDING weights[5] = {};
+	weights[0].Slot = 0; weights[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[0].pResource = Textures.SMAA_Edges_Texture;
+	weights[1].Slot = 1; weights[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[1].pResource = area;
+	weights[2].Slot = 2; weights[2].Type = NVR_EXT_BIND_SAMPLED_IMAGE; weights[2].pResource = search;
+	weights[3].Slot = 0; weights[3].Type = NVR_EXT_BIND_SAMPLER; weights[3].pResource = linear;
+	weights[4].Slot = 1; weights[4].Type = NVR_EXT_BIND_SAMPLER; weights[4].pResource = point;
+	if (!ExtDrawTo(extWeights.Pipeline, &Textures.SMAA_Blend_Surface, 1, weights, _countof(weights), &push, sizeof(push))) return false;
+
+	// Neighborhood blending: the frame. SMAA's D3D9 path never refreshes TESR_SourceBuffer (it declares no such sampler): no SourceBuffer.
+	push.mode = 0;
+	NVR_EXT_RESOURCE_BINDING blend[3] = {};
+	blend[0].Slot = 0; blend[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; blend[0].pResource = TheTextureManager->RenderedTexture;
+	blend[1].Slot = 1; blend[1].Type = NVR_EXT_BIND_SAMPLED_IMAGE; blend[1].pResource = Textures.SMAA_Blend_Texture;
+	blend[2].Slot = 0; blend[2].Type = NVR_EXT_BIND_SAMPLER; blend[2].pResource = linear;
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, nullptr, extNeighborhood.Pipeline, blend, _countof(blend), &push, sizeof(push), true);
 }
