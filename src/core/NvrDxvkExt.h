@@ -393,7 +393,86 @@ ID3D9NvrExt : public IUnknown {
           FLOAT                           ShiftY) = 0;
 };
 
+/*
+ * HDR output (extension 1.5-hdr; its own interface, so the main vtable is untouched).
+ *
+ * Query ID3D9NvrExtHdr from the IDirect3DDevice9 (E_NOINTERFACE on native D3D9, stock DXVK
+ * and older forks). With a mode set, DXVK creates the Vulkan swap chain in HDR10 (ST.2084,
+ * 10-bit) or scRGB (FP16 linear) and sends HDR metadata; the game's D3D9 back buffer stays
+ * as it is (8-bit, SDR). At present the SDR back buffer is decoded (sRGB curve or 2.2), put
+ * at PaperWhiteNits and, wherever it still equals the picture NVR marked with MarkHdrScene
+ * (so the HUD and menus drawn after NVR are left at paper white), multiplied by NVR's
+ * per-pixel highlight gain (>= 1, clamped to PeakNits / PaperWhiteNits).
+ * Frames without a MarkHdrScene call (menus, loading screens) are shown at paper white.
+ */
+enum NVR_EXT_HDR_MODE {
+  NVR_EXT_HDR_OFF   = 0,
+  NVR_EXT_HDR_HDR10 = 1,  // A2B10G10R10 + VK_COLOR_SPACE_HDR10_ST2084_EXT
+  NVR_EXT_HDR_SCRGB = 2,  // R16G16B16A16_SFLOAT + VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT
+};
+
+enum NVR_EXT_HDR_FLAGS {
+  NVR_EXT_HDR_FLAG_SHOW_HUD_MASK = 0x1,  // debug: tint the pixels taken as HUD/menu (shown without gain)
+  NVR_EXT_HDR_FLAG_GAMMA22       = 0x2,  // decode the SDR picture with a pure 2.2 power instead of the sRGB curve
+};
+
+struct NVR_EXT_HDR_INFO {
+  BOOL  SupportsHdr10;          // the window's surface offers HDR10 (some drivers list it with Windows HDR off too)
+  BOOL  SupportsScRgb;
+  FLOAT DisplayMinNits;         // from the monitor's EDID (0 when unknown)
+  FLOAT DisplayMaxNits;
+  FLOAT DisplayMaxFullFrameNits;
+  UINT  ActiveMode;             // NVR_EXT_HDR_MODE in force
+};
+
+struct NVR_EXT_HDR_OUTPUT {
+  UINT  Mode;                   // NVR_EXT_HDR_MODE
+  FLOAT PaperWhiteNits;         // where SDR white (back buffer 1.0) lands, e.g. 200
+  FLOAT PeakNits;               // gain ceiling (PeakNits / PaperWhiteNits) and HDR metadata max luminance / MaxCLL
+  FLOAT MaxFrameAverageNits;    // HDR metadata MaxFALL (0 = PaperWhiteNits)
+  FLOAT HudThreshold;           // per channel, 0..1: a back buffer pixel further than this from the marked picture is HUD
+  UINT  Flags;                  // NVR_EXT_HDR_FLAGS
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d310")
+ID3D9NvrExtHdr : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE GetHdrInfo(
+          NVR_EXT_HDR_INFO*               pInfo) = 0;
+
+  /**
+   * Sets the output mode and its parameters (call again to change them; Mode OFF goes back
+   * to DXVK's SDR swap chain). D3DERR_NOTAVAILABLE when the surface does not offer the colour
+   * space: the output stays SDR. The swap chain is re-created at the next present.
+   */
+  virtual HRESULT STDMETHODCALLTYPE SetHdrOutput(
+    const NVR_EXT_HDR_OUTPUT*             pOutput) = 0;
+
+  /**
+   * Marks this frame's finished picture before the HUD: pScene (a surface or texture of the
+   * back buffer's size and format; usually the back buffer itself) is copied now, pGain (a
+   * R16F/R32F/A16B16G16R16F texture or surface of the same size, red channel) is copied now.
+   * Valid until the next present.
+   */
+  virtual HRESULT STDMETHODCALLTYPE MarkHdrScene(
+          IUnknown*                       pScene,
+          IUnknown*                       pGain) = 0;
+
+  /** TEST ONLY: the next present also writes its HDR output, as scRGB, into a readback buffer. */
+  virtual HRESULT STDMETHODCALLTYPE RequestHdrCapture() = 0;
+
+  /**
+   * TEST ONLY: waits for the GPU and copies the last capture (RGBA16F scRGB, 1.0 = 80 nits,
+   * rows top to bottom, Width * 8 bytes each). pData null = sizes only. S_FALSE: no capture yet.
+   */
+  virtual HRESULT STDMETHODCALLTYPE ReadHdrCapture(
+          UINT*                           pWidth,
+          UINT*                           pHeight,
+          void*                           pData,
+          UINT                            Size) = 0;
+};
+
 #ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtHdr,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x10);
 __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
 __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x01);
 __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
