@@ -117,6 +117,18 @@ static const D3DXVECTOR4* WetRegisteredConstant(const char* name) {
 	return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
 }
 
+// 2026-10-25: a matrix transposed into the block, so the GLSL mat4 (std140: memory rows are its columns) IS the logical matrix the
+// D3D9 effect gets through ID3DXEffect::SetMatrix, as the shaders are written (v * M for mul(v, M), M[c] = column c). The
+// port copied the memory as stored, which gave every matrix transposed.
+static bool WetCopyMatrix(D3DXVECTOR4* dst, const char* name) {
+	const D3DXVECTOR4* src = WetRegisteredConstant(name);
+	if (!src) return false;
+	D3DXMATRIX m;
+	D3DXMatrixTranspose(&m, (const D3DXMATRIX*)src);
+	memcpy(dst, &m, sizeof(m));
+	return true;
+}
+
 static bool WetCopyConstant(D3DXVECTOR4* dst, const char* name, UINT count) {
 	const D3DXVECTOR4* src = WetRegisteredConstant(name);
 	if (!src) return false;
@@ -190,11 +202,11 @@ bool WetWorldEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 
 	// The constants as the D3D9 constant table holds them this frame.
 	WetWorldUniforms uniforms = {};
-	bool copied = WetCopyConstant(uniforms.shadowToLight, "TESR_ShadowCameraToLightTransformOrtho", 4)
-		&& WetCopyConstant(uniforms.projection, "TESR_ProjectionTransform", 4)
-		&& WetCopyConstant(uniforms.invProjection, "TESR_InvProjectionTransform", 4)
-		&& WetCopyConstant(uniforms.view, "TESR_ViewTransform", 4)
-		&& WetCopyConstant(uniforms.invView, "TESR_InvViewTransform", 4)
+	bool copied = WetCopyMatrix(uniforms.shadowToLight, "TESR_ShadowCameraToLightTransformOrtho")
+		&& WetCopyMatrix(uniforms.projection, "TESR_ProjectionTransform")
+		&& WetCopyMatrix(uniforms.invProjection, "TESR_InvProjectionTransform")
+		&& WetCopyMatrix(uniforms.view, "TESR_ViewTransform")
+		&& WetCopyMatrix(uniforms.invView, "TESR_InvViewTransform")
 		&& WetCopyConstant(&uniforms.cameraData, "TESR_CameraData", 1)
 		&& WetCopyConstant(&uniforms.depthConstants, "TESR_DepthConstants", 1)
 		&& WetCopyConstant(&uniforms.cameraPosition, "TESR_CameraPosition", 1)
