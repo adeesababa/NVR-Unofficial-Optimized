@@ -94,6 +94,22 @@ below) 20261026-121941, og-lake 20261026-115923, int23 20261026-120746, og-night
   and apply +0.06 each, point shadow lighting +0.07-0.14, fog estimate +0.04-0.06; faster: exposure/bloom -0.03, contact
   shadow blur -0.03 each, heat haze -0.1. Same pattern as the depth-less sweep.
 
+## Merged with the installed line (2026-10-26 afternoon, user asked)
+Merged into this branch: claude/sky-gradient (the sky look settings, with all of deep/combo-1025b: 68 commits the fork branch
+lacked), claude/ceiling-flicker (the ceiling lamp-shadow fix, 12fe5a34) and deep/skin-rewrite (the one skin shader, f5c3603f).
+Five ported effects changed in that line; their Vulkan passes follow (86133465): AmbientLight (NormalSmoothingWorld; the compute
+smoothing stands aside while it is on), PointShadows (ForwardReachMask 2), SunFar (DebugView 4, the land / directional light
+vector, the fog's share via NVR_Scene), SunShadows (CharacterShadowMap's deferred lookup: the Apply pass's c1 variant, picked as
+the D3D9 compile), VolumetricClouds (WeatherTint; Towering techniques 7, 8, 10 via push.towers, 9 Reflection stays D3D9).
+Slot tests need a seeded restore point now: the towering clouds effect compiles for ~126 s uncached and the merged game shaders
+change ~300 caches, past the test plugin's 180 s first frame (two runs failed so). snap-dxvkfork-merge-20261026 = the user's
+install (snap-user-native-20261026-onepass) + 662 cache files from seed_cache.py (skin-rewrite session's tool; run it from a
+SHORT folder, G:\_NVR-build-scratch\sc: from the long scratchpad path every shader failed to preprocess, MAX_PATH).
+RESULT (list dxvkfork-16-merge, fork 0007, with depth): og-desert 20261026-155* and lucky22, no crash, every D3D9/Vulkan pair
+inside noise (defaults, clouds, Towering); the clouds pair's +0.08/255 is uniform over sky and ground (the exposure settling
+after the clouds switch on). Towering visibly works on the Vulkan path (93 % of pixels differ from plain clouds). Not exercised
+here: the SunShadows c1 variant (this scene's contact shadows use ForwardContactShadows, which has no Apply pass).
+
 ## Slower passes, histogram exposure, cloud steps (2026-10-26; list dxvkfork-14-variants, fork 1.4)
 - Why SMAA / fog / AO apply are slower as Vulkan passes. Hypothesis 1: the ports merged the D3D9 techniques' compile-time
   variants into one shader with run-time switches (VolumetricFog: 5 passes x 3 looks x physical sky in one shader; SMAA's 5
