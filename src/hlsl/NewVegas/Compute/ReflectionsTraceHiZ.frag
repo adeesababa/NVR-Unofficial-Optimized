@@ -16,7 +16,7 @@
 layout(set = 1, binding = 16) uniform texture2D t_hiz;   // NVR_HiZ: r nearest, g farthest linear depth / farZ; level k = 2^(k+1) pixels
 
 const int HiZLevels = 7;           // the pyramid's levels; walk levels 0 (full resolution) .. HiZLevels
-const int HiZMaxIterations = 128;   // cells visited at most (a miss after that, as a ray past its last step)
+const int HiZMaxIterations = 64;    // cells walked at most; the rest of the ray then as the fixed-step trace (below)
 
 // Nearest and farthest depth (game units) of cell c at walk level L (0 = TESR_DepthBuffer itself, L >= 1 = NVR_HiZ level L - 1).
 vec2 CellDepth(ivec2 c, int L) {
@@ -73,7 +73,8 @@ void main() {
         float stepZ = abs(R.z) * 2.0 * RayLength / Steps;
         float u = 0.0;
         int level = 0;
-        for (int i = 0; i < HiZMaxIterations && inside && u < uMax; i++) {
+        int i = 0;
+        for (; i < HiZMaxIterations && inside && u < uMax; i++) {
             float size = exp2(float(level));
             vec2 S = S0 + d * u;
             vec2 cell = floor(S / size);
@@ -106,6 +107,41 @@ void main() {
                 hitT = dot(mix(Q0, Q1, uHit) * zHit - position, R);
                 hit = clamp(S0 + d * uHit, cell + 0.01, cell + 0.99) * cb.reciprocalResolution.xy;
                 break;
+            }
+        }
+        // Out of cells before the end of the ray (a ray grazing a floor: every coarse cell holds floor nearer than the ray, so the walk
+        // goes pixel by pixel): the rest of the ray is searched as the fixed-step trace does it, from where the walk stopped, with its own
+        // samples, hit rule and bisection (ReflectionsTrace.frag), so the walk never finds less than the old trace.
+        if (hitT < 0.0 && inside && i >= HiZMaxIterations && u < uMax) {
+            float uNow = u;
+            float zNow = 1.0 / mix(k0, k1, uNow);
+            float tNow = dot(mix(Q0, Q1, uNow) * zNow - position, R);
+            float jitter = GradientNoise(vpos + vec2(11.0, 71.0));
+            float lastT = tNow;
+            float lastZ = position.z + R.z * tNow;
+            float foundT = -1.0;
+            for (float k = 1.0; k <= Steps; k += 1.0) {
+                float s = (k - 1.0 + jitter) / Steps;
+                float t = RayLength * s * s + 2.0;
+                if (t <= tNow) continue;
+                vec3 p = position + R * t;
+                vec2 at = ToScreen(p);
+                if (p.z <= nearZ || any(lessThanEqual(at, vec2(0.0))) || any(greaterThanEqual(at, vec2(1.0)))) break;
+                float sceneZ = readDepthLod(at);
+                float behind = p.z - sceneZ;
+                float thickness = (max(abs(p.z - lastZ), 20.0) * 1.5 + t * 0.03) * ThicknessScale;
+                if (behind > 0.0 && behind < thickness && sceneZ < farZ * 0.98) { foundT = t; break; }
+                lastT = t; lastZ = p.z;
+            }
+            if (foundT > 0.0) {
+                float lo = lastT, hi = foundT;
+                for (int r = 0; r < RefineSteps; r++) {
+                    float m = 0.5 * (lo + hi);
+                    vec3 q = position + R * m;
+                    if (q.z > readDepthLod(ToScreen(q))) hi = m; else lo = m;
+                }
+                hitT = hi;
+                hit = ToScreen(position + R * hi);
             }
         }
     }
