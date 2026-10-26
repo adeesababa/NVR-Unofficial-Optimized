@@ -29,6 +29,7 @@
 #include "../../core/PassFamilyView.h"	// UNOFFICIAL 2026-10-21, diagnostic: which pass family draws each lit object
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
+#include "../../core/HdrOutput.h"	// UNOFFICIAL 2026-10-26 HDR output (needs NVR DXVK 1.5-hdr)
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 #include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
 
@@ -3124,12 +3125,18 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	if (!DestinationTarget && TheRenderManager->currentRTGroup) {
 		OutputSurface = TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface;
 		if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
+		// UNOFFICIAL 2026-10-26 HDR output (core\HdrOutput.h; off by default, needs NVR DXVK): settings, then the highlight gain from
+		// the scene before tonemapping and the tonemapper's SDR result (OutputSurface still holds it here).
+		HdrOutput::BeginFrame(Device, SourceTarget ? SourceTarget->GetD3DTexture(0) : nullptr);
+		HdrOutput::RenderGain(Device, OutputSurface);
 		TheShaderManager->RenderEffects(OutputSurface);
 #if NVR_TEST_TOOLS
 		EffectSelfTest::Capture(EffectSelfTest::Final, OutputSurface);	// UNOFFICIAL, diagnostic
 		SettingShots::Capture(OutputSurface);	// UNOFFICIAL, test only
 #endif
 		ReShadeIntegration::RenderEffects(OutputSurface);	// UNOFFICIAL: with ReShade loaded, its effects here (before the HUD) on NVR's depth
+		HdrOutput::MarkScene(OutputSurface);	// UNOFFICIAL 2026-10-26: the finished picture before the HUD (HUD pixels stay at paper white)
+		HdrOutput::Capture();					// UNOFFICIAL 2026-10-26 test tool ([Shaders.HDR.Main] CaptureFrame)
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 		ReflectionProbe::EndFrame();
 	}
