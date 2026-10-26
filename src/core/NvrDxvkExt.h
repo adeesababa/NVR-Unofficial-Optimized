@@ -393,7 +393,44 @@ ID3D9NvrExt : public IUnknown {
           FLOAT                           ShiftY) = 0;
 };
 
+/*
+ * 1.5-particles: passes with their own geometry (GPU particles, any instanced quads).
+ *
+ * A separate interface, queried from ID3D9NvrExt (QueryInterface with its GUID), so a d3d9.dll
+ * without it simply returns E_NOINTERFACE and ID3D9NvrExt's own method table is untouched.
+ *
+ * The pipeline is a full-screen pipeline whose vertex shader is required and may read
+ * resources of its own: storage buffers (read only) and uniform buffers, by slot like
+ * every other binding (no samplers, no push block in the vertex stage). A slot may be
+ * listed for both stages. The draw is DrawShifted's with a vertex and an instance count:
+ * VertexCount vertices x InstanceCount instances as a triangle list, no vertex input
+ * (gl_VertexIndex / gl_InstanceIndex), no depth buffer (a shader that needs the scene's
+ * depth samples it), no culling. Same state save/restore as Draw.
+ */
+struct NVR_EXT_GEOMETRY_PIPELINE_DESC {
+  NVR_EXT_GRAPHICS_PIPELINE_DESC Graphics;           // pVertexSpirv must be given
+  UINT                        VertexBindingCount;
+  const NVR_EXT_BINDING_DESC* pVertexBindings;       // STORAGE_BUFFER (Writes = FALSE) or UNIFORM_BUFFER
+};
+
+struct NVR_EXT_GEOMETRY_DRAW_DESC {
+  NVR_EXT_DRAW_DESC           Draw;                  // bindings: the fragment's and the vertex stage's together
+  UINT                        VertexCount;           // per instance
+  UINT                        InstanceCount;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d309")
+ID3D9NvrExtGeometry : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE CreateGeometryPipeline(
+    const NVR_EXT_GEOMETRY_PIPELINE_DESC* pDesc,
+          ID3D9NvrExtPipeline**           ppPipeline) = 0;
+
+  virtual HRESULT STDMETHODCALLTYPE DrawGeometry(
+    const NVR_EXT_GEOMETRY_DRAW_DESC*     pDesc) = 0;
+};
+
 #ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x09);
 __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
 __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x01);
 __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
