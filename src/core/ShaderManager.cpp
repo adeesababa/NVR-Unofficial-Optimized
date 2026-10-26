@@ -1669,10 +1669,10 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Effects.Reflections->CaptureMaterial(Device);
 	Device->SetRenderTarget(0, RenderTarget);
 
-	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): screen-space skin scattering first, on the scene exactly as
+	// UNOFFICIAL the screen-space skin blur ([Shaders.Skin.Scattering] ScreenSpace, SkinScattering.h): first, on the scene exactly as
 	// drawn: it recognises skin by comparing each pixel with the colour the skin shader wrote, which any effect before it would
-	// change. Shadows, AO and fog then apply to the scattered skin like everything else. Nothing runs with the setting off.
-	if (Effects.SkinScattering && SkinShaders::NewSkinEnabled()) {	// Render checks the rest (ShouldRender resolves the targets: once)
+	// change. Shadows, AO and fog then apply to the scattered skin like everything else. Nothing runs with it off.
+	if (Effects.SkinScattering && Shaders.Skin && Shaders.Skin->Active()) {	// Render checks the rest (ShouldRender resolves the targets: once)
 		static GpuTimer skinScatterTimer("Skin scattering");
 		GpuProfileScope gpu(skinScatterTimer, Device);
 		Effects.SkinScattering->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);	// pass 2 reads the unblurred scene

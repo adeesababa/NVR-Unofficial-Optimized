@@ -55,7 +55,7 @@
 #include "Tonemapping.h"
 #include "Sky.h"
 #include "Skin.h"
-#include "SkinScattering.h"	// UNOFFICIAL Conor's skin shader (Skin.h NewSkinEnabled)
+#include "SkinScattering.h"	// UNOFFICIAL the screen-space skin blur (Skin.h)
 #include "POM.h"
 #include "PBR.h"
 #include "Terrain.h"
