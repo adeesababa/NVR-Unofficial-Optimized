@@ -74,6 +74,7 @@ private:
 	// UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): the Dedicated techniques' four passes and the sky pass
 	// (SkyVisibilityV2) as Vulkan passes (src\hlsl\NewVegas\Compute\AmbientOcclusion*.frag); false: nothing of the frame was committed.
 	ExtPass				extEstimate, extBlur, extCombine, extSky;
+	std::map<std::string, ExtPass> extVariants;	// UNOFFICIAL 2026-10-26: compile-time variants (EffectRecord::ExtVariant)
 	ExtUniformBuffer	extUniforms, extSkyUniforms;
 	bool	ExtConstants(ExtUniformBuffer& Uniforms, const D3DXVECTOR4& Layout, const D3DXVECTOR4& SkyLayout);
 	bool	ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* const* Textures,

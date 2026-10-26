@@ -267,10 +267,15 @@ bool AmbientOcclusionEffect::ExtDedicated(IDirect3DDevice9* Device, IDirect3DSur
 	IDirect3DBaseTexture9* noise = ExtFileTexture("TESR_BlueNoiseSampler");
 	IDirect3DBaseTexture9* scene = TheTextureManager->RenderedTexture;
 	if (!depth || !normals || !noise || !scene || (SkyData.x > 0.0f && !OrthoMap)) return false;
-	MakePipeline(extEstimate, "AmbientOcclusionEstimate", 4);
+	// UNOFFICIAL 2026-10-26: PackedEstimate's or GTAOEstimate's own variant (Compute\variants.txt), else the general shader.
+	ID3D9NvrExtPipeline* estimate = ExtVariant(extVariants, extEstimate, "AmbientOcclusionEstimate", GTAOEstimate ? "g1" : "g0", [](const char* name) {
+		EffectRecord::ExtPass made;
+		MakePipeline(made, name, 4);
+		return made.Pipeline;
+	});
 	MakePipeline(extBlur, "AmbientOcclusionBlur", 3);
 	MakePipeline(extCombine, "AmbientOcclusionCombine", 4);
-	if (!extEstimate.Pipeline || !extBlur.Pipeline || !extCombine.Pipeline || !ExtConstants(extUniforms, Layout, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f))) return false;
+	if (!estimate || !extBlur.Pipeline || !extCombine.Pipeline || !ExtConstants(extUniforms, Layout, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f))) return false;
 	const UINT firstPass = combineOnly ? 3 : 0;
 	const UINT endPass = deferCombine ? 3 : 4;
 	for (UINT p = firstPass; p < endPass; ++p) {
@@ -289,7 +294,7 @@ bool AmbientOcclusionEffect::ExtDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		bool drawn;
 		if (p == 0) {
 			IDirect3DBaseTexture9* inputs[4] = { depth, normals, noise, OrthoMap ? (IDirect3DBaseTexture9*)OrthoMap : depth };	// (no Skylighting v1: never read)
-			drawn = Resources(resources, count, inputs, 4, extUniforms.Buffer) && ExtDrawTo(extEstimate.Pipeline, &Surfaces[0], 1, resources, count, &push, sizeof(push));
+			drawn = Resources(resources, count, inputs, 4, extUniforms.Buffer) && ExtDrawTo(estimate, &Surfaces[0], 1, resources, count, &push, sizeof(push));
 		}
 		else {
 			IDirect3DBaseTexture9* inputs[3] = { Textures[p == 1 ? 0 : 1], depth, normals };

@@ -913,18 +913,20 @@ bool VolumetricFogEffect::ExtSetup(IDirect3DBaseTexture9* (&inputs)[ExtInputCoun
 // One full-resolution pass (VolumetricFogApply.frag, push.mode) through the frame chain (ExtFullScreen).
 bool VolumetricFogEffect::ExtApplyPass(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 	IDirect3DBaseTexture9* const (&inputs)[ExtInputCount], const ExtFogPush& push, bool last) {
-	if (!extApply.Tried) {
-		extApply.Tried = true;
+	// UNOFFICIAL 2026-10-26: the variant of this pass (the D3D9 pass's compile-time switches; Compute\variants.txt), else the general shader.
+	char suffix[32];
+	_snprintf_s(suffix, sizeof(suffix), _TRUNCATE, "m%ul%uc%up%u", push.mode, push.legacy, push.classic, push.physicalSky);
+	ID3D9NvrExtPipeline* pipeline = ExtVariant(extVariants, extApply, "VolumetricFogApply", suffix, [](const char* name) {
 		NVR_EXT_BINDING_DESC bindings[ExtInputCount + 4];
 		const UINT count = FogExtBindings(bindings, ExtInputCount);
-		extApply.Pipeline = DxvkCompute::CreateGraphicsPipeline("VolumetricFogApply", bindings, count, sizeof(ExtFogPush), true);
-	}
-	if (!extApply.Pipeline || !extUniforms.Buffer) return false;
+		return DxvkCompute::CreateGraphicsPipeline(name, bindings, count, sizeof(ExtFogPush), true);
+	});
+	if (!pipeline || !extUniforms.Buffer) return false;
 	for (UINT i = 0; i < ExtInputCount; i++) if (!inputs[i]) return false;
 	NVR_EXT_RESOURCE_BINDING resources[ExtInputCount + 4];
 	const UINT count = FogExtResources(resources, inputs, ExtInputCount, extUniforms.Buffer);
 	if (!count) return false;
-	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, extApply.Pipeline, resources, count, &push, sizeof(push), last);
+	return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pipeline, resources, count, &push, sizeof(push), last);
 }
 
 /*
@@ -961,20 +963,21 @@ bool VolumetricFogEffect::ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurfac
 	push.gridFlags = grid ? D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f) : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
 	if (grid) inputs[7] = gridTexture;
 
-	if (!extEstimate.Tried) {
-		extEstimate.Tried = true;
+	char suffix[32];
+	_snprintf_s(suffix, sizeof(suffix), _TRUNCATE, "l%uc%ui%up%u", push.legacy, push.classic, push.interior, push.physicalSky);
+	ID3D9NvrExtPipeline* estimate = ExtVariant(extVariants, extEstimate, "VolumetricFogEstimate", suffix, [](const char* name) {
 		NVR_EXT_BINDING_DESC bindings[8 + 4];
 		const UINT count = FogExtBindings(bindings, 8);
-		extEstimate.Pipeline = DxvkCompute::CreateGraphicsPipeline("VolumetricFogEstimate", bindings, count, sizeof(ExtFogPush), true, 2);
-	}
-	if (!extEstimate.Pipeline) return false;
+		return DxvkCompute::CreateGraphicsPipeline(name, bindings, count, sizeof(ExtFogPush), true, 2);
+	});
+	if (!estimate) return false;
 	NVR_EXT_RESOURCE_BINDING resources[8 + 4];
 	const UINT count = FogExtResources(resources, inputs, 8, extUniforms.Buffer);
 	if (!count) return false;
 	GpuTimer* passTimers = FogPassTimers();
 	{
 		GpuProfileScope gpuPass(passTimers[0], Device);
-		if (!ExtDrawTo(extEstimate.Pipeline, fogSurface, 2, resources, count, &push, sizeof(push))) return false;
+		if (!ExtDrawTo(estimate, fogSurface, 2, resources, count, &push, sizeof(push))) return false;
 	}
 	inputs[8] = fogTexture[0];
 	inputs[9] = fogTexture[1];

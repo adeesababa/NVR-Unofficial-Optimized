@@ -24,6 +24,8 @@ public:
 
 	// Reads Data\Shaders\NewVegasReloaded\Compute\<Name>.spv; empty on failure (logged once per name).
 	static bool					LoadSpirv(const char* Name, std::vector<char>& Words);
+	// UNOFFICIAL 2026-10-26: whether Compute\<Name>.spv exists (a variant an older package may lack: no log, no failure).
+	static bool					HasSpirv(const char* Name);
 
 	// Helpers; null on failure (logged). The sampler heap is set 0, binding 0 in every NVR .comp and .frag.
 	static ID3D9NvrExtPipeline*	CreatePipeline(const char* Name, const NVR_EXT_BINDING_DESC* Bindings, UINT Count, UINT PushSize, bool UsesSamplers);
@@ -39,6 +41,9 @@ public:
 	static ID3D9NvrExtSampler*	MipSampler(bool Anisotropic, NVR_EXT_ADDRESS Address);
 	// [Main.Main.Performance] NvrDxvkPasses: the ported full-screen effects run as Vulkan passes (false, or no extension: their D3D9 passes).
 	static bool					PassesOn();
+	// [Main.Main.Performance] NvrDxvkVariants (UNOFFICIAL 2026-10-26): Vulkan passes use their compile-time variants
+	// (Compute\variants.txt, the D3D9 techniques' fixed switches) where the .spv exists; off: the run-time switched shaders (A/B).
+	static bool					VariantsOn();
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 
 	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device

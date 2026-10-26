@@ -178,6 +178,16 @@ ID3D9NvrExtSampler* DxvkCompute::PointClamp() {
 	return SamplerPoint;
 }
 
+bool DxvkCompute::HasSpirv(const char* Name) {
+	char path[MAX_PATH];
+	_snprintf_s(path, sizeof(path), _TRUNCATE, "Data\\Shaders\\NewVegasReloaded\\Compute\\%s.spv", Name);
+	return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool DxvkCompute::VariantsOn() {
+	return TheSettingManager->SettingsMain.Main.NvrDxvkVariants;
+}
+
 bool DxvkCompute::PassesOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
 }
