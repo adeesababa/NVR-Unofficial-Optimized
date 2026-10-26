@@ -23,6 +23,14 @@ layout(push_constant) uniform Push {
     uint mode;                  // 88: 0 luma, 1 color, 2 depth, 3 luma or depth, 4 the same with the aastab options
 } pc;
 
+// UNOFFICIAL 2026-10-26: the variant .spv fixes this (-DSMAA_EDGE_MODE, Compute/variants.txt, EffectRecord::ExtVariant), as the D3D9
+// techniques are compiled one per mode; without it the push block decides (the general shader, the fallback).
+#ifdef SMAA_EDGE_MODE
+#define EDGE_MODE uint(SMAA_EDGE_MODE)
+#else
+#define EDGE_MODE pc.mode
+#endif
+
 layout(location = 0) in vec2 uv_in;
 layout(location = 0) out vec4 o_color;
 
@@ -202,9 +210,9 @@ void main() {
     offset[1] = pc.resolution.xyxy * vec4( 1.0, 0.0, 0.0,  1.0) + texcoord.xyxy;
     offset[2] = pc.resolution.xyxy * vec4(-2.0, 0.0, 0.0, -2.0) + texcoord.xyxy;
 
-    if (pc.mode == 0u) LumaEdgeDetection(texcoord, offset);
-    else if (pc.mode == 1u) ColorEdgeDetection(texcoord, offset);
-    else if (pc.mode == 2u) DepthEdgeDetection(texcoord, offset);
-    else if (pc.mode == 3u) LumaDepthEdgeDetection(texcoord, offset);
+    if (EDGE_MODE == 0u) LumaEdgeDetection(texcoord, offset);
+    else if (EDGE_MODE == 1u) ColorEdgeDetection(texcoord, offset);
+    else if (EDGE_MODE == 2u) DepthEdgeDetection(texcoord, offset);
+    else if (EDGE_MODE == 3u) LumaDepthEdgeDetection(texcoord, offset);
     else LumaDepthEdgeDetectionStable(floor(gl_FragCoord.xy), texcoord, offset);
 }

@@ -72,6 +72,37 @@ sweep_timing.py (reports sweep-*.report there).
   AO / point-shadow apply slower (0.1-0.25 ms each): worth a look per pass (bindings, sampler or format choices), not a
   route problem.
 
+## Slower passes, histogram exposure, cloud steps (2026-10-26; list dxvkfork-14-variants, fork 1.4)
+- Why SMAA / fog / AO apply are slower as Vulkan passes. Hypothesis 1: the ports merged the D3D9 techniques' compile-time
+  variants into one shader with run-time switches (VolumetricFog: 5 passes x 3 looks x physical sky in one shader; SMAA's 5
+  edge techniques; AO's packed/GTAO estimate; PointShadows' 3 modes), so every pass carries the biggest path's registers.
+  Built: compile-time variants (Compute\variants.txt, tools/nvr-dxvk/compile-compute.sh: <frag>-<suffix>.spv with the
+  switches as -D defines, spirv-opt -O; EffectRecord::ExtVariant picks the variant, else the general shader;
+  [Main.Main.Performance] NvrDxvkVariants, default on, live). 48 variants, 1.9 MB; the fog ShadowAO variant is 13 KB
+  against 136 KB. RESULT og-desert (20261026-030125-slotC, same launch, 2 shots each): same picture as the general
+  shaders and D3D9 (inside noise), but the gain is small: fog 0.408 -> 0.393 ms (D3D9 0.338), fog estimate 0.159 -> 0.155
+  (D3D9 0.099), SMAA 0.237 -> 0.233 (D3D9 0.160). lucky22 (20261026-040838-slotC): same picture, point shadow lighting
+  0.657 -> 0.663 (D3D9 0.513), SMAA 0.428 -> 0.424 (D3D9 0.273); the interior fog is as fast as D3D9 there (0.26 vs 0.28).
+  So register pressure is NOT the main cause. Kept on (free, exact). Histogram indoors: +0.85/255 settled, ~0.075 ms.
+  Next suspect (not checked): the fork binds the D3D9 render targets a pass writes in COLOR_ATTACHMENT_OPTIMAL
+  (patch 0002) and every sampled texture through a fresh view key, where DXVK's own D3D9 path keeps its layouts: a layout
+  transition (and on some GPUs a decompression) per pass and target. Needs a GPU capture (RenderDoc / Nsight) of one
+  slot frame with NvrDxvkPasses off and on, not more shot timings.
+- Histogram exposure (the first fork-only feature, user pick 2026-10-26): [Shaders.Exposure.Main] Histogram (off),
+  HistogramLowPercent 10, HistogramHighPercent 5. Compute\AvgLumaHistogram.comp: each 16x16 tile counts its pixels into
+  128 log2-luma bins in shared memory (atomics), the tiles add them into one frame histogram (storage-buffer atomics,
+  cleared every frame in order), one group averages the linear luma of the pixels between the two percentiles, then
+  AvgLuma's own 8-frame smoothing / adaptation / focus code, into the same TESR_AvgLumaBuffer (MinBrightness and
+  MaxBrightness keep their units). Needs NVR DXVK, not AvgLumaCompute; without it the D3D9 average as before (logged).
+  RESULT og-desert: runs (log "histogram exposure running"), the settled picture +0.93/255 brighter on average (the bright
+  sky no longer pulls the exposure down), cost: Average luma 0.020 -> 0.107 ms (the D3D9 pass 0.029).
+- Cloud steps above 64: [Shaders.VolumetricClouds.Main] Steps now 8-256. The D3D9 march stops at 64 (fxc unrolls the
+  loop: instruction limit) and still gets at most 64; the Vulkan march (NvrDxvkPasses) gets the full count and loops
+  max(64, steps) times, so 64 and below are the D3D9 loop unchanged. RESULT og-desert: 128 steps run, march (quarter
+  res) 0.30 -> 0.64 ms, all clouds 0.56 -> 0.92 ms, picture +0.06/255 (finer, slightly brighter cloud detail). The clouds'
+  D3D9/Vulkan pair at 48 steps differed by -0.2/255 over the WHOLE frame (ground too): the exposure still settling after
+  the clouds were switched on, not the cloud pass (an ABA re-check would confirm it).
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).

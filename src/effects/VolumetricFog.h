@@ -138,7 +138,8 @@ public:
 		UInt32		legacy, classic, interior, physicalSky;
 		D3DXVECTOR4	fogLayout, compositeFlags, compositeAOTexel, gridFlags, sunFarFlags;	// the effect's NVR_ constants
 	};
-	ExtPass		extEstimate, extApply;
+	ExtPass		extEstimate, extApply;	// the general shaders (run-time switches)
+	std::map<std::string, ExtPass> extVariants;	// UNOFFICIAL 2026-10-26: their compile-time variants (EffectRecord::ExtVariant)
 	ExtUniformBuffer extUniforms;
 	IDirect3DBaseTexture9* noiseTexture = nullptr;	// NVR_FogNoise (Render loads it)
 	CachedHandle paramPhysSky;	// TESR_PhysSky: declared only when the effect was compiled with PHYSICAL_SKY_ON
