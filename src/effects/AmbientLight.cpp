@@ -308,19 +308,26 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 			// (lightgrid2) last update's walls are usable only if that update kept them; otherwise they start from nothing.
 			const bool wallsKeep = walls && wallsHandle;
 			setWalls(wallsKeep, false, wallsKeep && gridWallsValid);
-			result = Device->SetRenderTarget(0, gridScreenSurface[write]);
-			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, gridScreenColorSurface[write]);
-			if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, wallsKeep ? gridScreenWallsSurface[write] : nullptr);
-			if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
-			if (SUCCEEDED(result)) result = Effect->BeginPass(0);
-			if (SUCCEEDED(result)) {
-				Device->SetTexture(1, TheTextureManager->RenderedTexture);	// TESR_SourceBuffer: the image now
-				Device->SetTexture(6, gridScreen[read]);					// NVR_GridScreenOld
-				Device->SetTexture(7, gridScreenColor[read]);				// NVR_GridScreenColorOld
-				if (wallsKeep && gridWallsValid) Device->SetTexture(8, gridScreenWalls[read]);	// NVR_GridWallsOld
-				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-				HRESULT endResult = Effect->EndPass();
-				if (SUCCEEDED(result)) result = endResult;
+			// UNOFFICIAL 2026-10-25 (NVR DXVK) NvrDxvkPasses: AmbientLightScreen.frag, the same targets and stages (6, 7, 8, 0, 2, 1).
+			IDirect3DSurface9* extTargets[] = { gridScreenSurface[write], gridScreenColorSurface[write], wallsKeep ? gridScreenWallsSurface[write] : nullptr };
+			IDirect3DBaseTexture9* extTextures[] = { gridScreen[read], gridScreenColor[read], wallsKeep && gridWallsValid ? gridScreenWalls[read] : nullptr,
+				ExtFileTexture("TESR_DepthBuffer"), ExtFileTexture("TESR_NormalsBuffer"), TheTextureManager->RenderedTexture };
+			if (ExtOn() && ExtDraw(ExtScreen, extTargets, wallsKeep ? 3 : 2, extTextures, 0, atlas)) result = S_OK;
+			else {
+				result = Device->SetRenderTarget(0, gridScreenSurface[write]);
+				if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, gridScreenColorSurface[write]);
+				if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, wallsKeep ? gridScreenWallsSurface[write] : nullptr);
+				if (SUCCEEDED(result)) result = Device->SetViewport(&atlas);
+				if (SUCCEEDED(result)) result = Effect->BeginPass(0);
+				if (SUCCEEDED(result)) {
+					Device->SetTexture(1, TheTextureManager->RenderedTexture);	// TESR_SourceBuffer: the image now
+					Device->SetTexture(6, gridScreen[read]);					// NVR_GridScreenOld
+					Device->SetTexture(7, gridScreenColor[read]);				// NVR_GridScreenColorOld
+					if (wallsKeep && gridWallsValid) Device->SetTexture(8, gridScreenWalls[read]);	// NVR_GridWallsOld
+					result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+					HRESULT endResult = Effect->EndPass();
+					if (SUCCEEDED(result)) result = endResult;
+				}
 			}
 			if (SUCCEEDED(result)) {
 				gridScreenIndex = write;
@@ -344,13 +351,28 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 		}
 		for (int step = 0; step <= gridSteps && SUCCEEDED(result); step++) {
 			const int writeWave = step == 0 ? 0 : wave ^ 1, writeAccum = step == 0 ? 0 : accum ^ 1;
+			D3DXVECTOR4 stepData(step == 1 ? 1.0f : 0.0f, gridBlocking, sun ? 1.0f : 0.0f, screen && gridScreenValid ? 1.0f : 0.0f);
+			Effect->SetVector(stepHandle, &stepData);
+			if (step <= 1) setWalls(false, step == 0 && wallsRead, false);
+			// UNOFFICIAL 2026-10-25 (NVR DXVK) NvrDxvkPasses: AmbientLightInject.frag / AmbientLightPropagate.frag, the same targets and the
+			// stages bound below (inject: 10, 12, 6, 7, 13; spread: 5, 8, 9, 13, 14).
+			{
+				IDirect3DSurface9* extTargets[] = { gridWaveSurface[writeWave], step == 0 ? gridGeometrySurface : gridAccumSurface[writeAccum],
+					colour ? gridWaveColorSurface[writeWave] : nullptr, colour ? gridAccumColorSurface[writeAccum] : nullptr };
+				const bool screenIn = screen && gridScreenValid;
+				IDirect3DBaseTexture9* injectTextures[] = { sun ? gridSunTexture : nullptr, sun && gridSunHasColor ? gridSunColorTexture : nullptr,
+					screenIn ? gridScreen[gridScreenIndex] : nullptr, screenIn ? gridScreenColor[gridScreenIndex] : nullptr, wallsRead ? gridScreenWalls[gridScreenIndex] : nullptr };
+				IDirect3DBaseTexture9* spreadTextures[] = { gridGeometry, gridWave[wave], gridAccum[accum], colour ? gridWaveColor[wave] : nullptr, colour ? gridAccumColor[accum] : nullptr };
+				if (ExtOn() && ExtDraw(step == 0 ? ExtInject : ExtPropagate, extTargets, colour ? 4 : 2, step == 0 ? injectTextures : spreadTextures, 0, atlas)) {
+					wave = writeWave;
+					accum = writeAccum;
+					continue;
+				}
+			}
 			clearStages();
 			result = Device->SetRenderTarget(0, gridWaveSurface[writeWave]);
 			// The second target: on injection the cells' surfaces (blocking), then the running total.
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(1, step == 0 ? gridGeometrySurface : gridAccumSurface[writeAccum]);
-			D3DXVECTOR4 stepData(step == 1 ? 1.0f : 0.0f, gridBlocking, sun ? 1.0f : 0.0f, screen && gridScreenValid ? 1.0f : 0.0f);
-			Effect->SetVector(stepHandle, &stepData);
-			if (step <= 1) setWalls(false, step == 0 && wallsRead, false);
 			// The colour, carried along with the light: targets 2 and 3.
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(2, colour ? gridWaveColorSurface[writeWave] : nullptr);
 			if (SUCCEEDED(result)) result = Device->SetRenderTarget(3, colour ? gridAccumColorSurface[writeAccum] : nullptr);
@@ -535,22 +557,30 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	Device->SetTexture(6, nullptr);
 	Device->SetTexture(15, TheTextureManager->DepthTextureViewModel);	// NVR_ALViewModel (Prepare)
 	UINT passes = 0;
-	HRESULT result = Device->SetRenderTarget(0, prepSurface);
-	if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
-	if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
-	if (SUCCEEDED(result)) {
-		result = Effect->BeginPass(0);	// Prepare -> prep
+	HRESULT result = S_OK;
+	// UNOFFICIAL 2026-10-25 (NVR DXVK) NvrDxvkPasses: Prepare and the smoothing as Vulkan passes (AmbientLightPrepare.frag, AmbientLightSmoothPass.frag).
+	IDirect3DBaseTexture9* prepareTextures[] = { ExtFileTexture("TESR_DepthBuffer"), ExtFileTexture("TESR_NormalsBuffer"), TheTextureManager->DepthTextureViewModel };
+	if (!(ExtOn() && ExtDraw(ExtPrepare, &prepSurface, 1, prepareTextures, 0, reduced))) {
+		result = Device->SetRenderTarget(0, prepSurface);
+		if (SUCCEEDED(result)) result = Device->SetViewport(&reduced);
+		if (SUCCEEDED(result)) result = Effect->Begin(&passes, 0);
 		if (SUCCEEDED(result)) {
-			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
-			Effect->EndPass();
+			result = Effect->BeginPass(0);	// Prepare -> prep
+			if (SUCCEEDED(result)) {
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+				Effect->EndPass();
+			}
+			Effect->End();
 		}
-		Effect->End();
 	}
 	if (SUCCEEDED(result) && !SmoothCompute(Device, target, half.Width, half.Height)) {	// UNOFFICIAL 2026-10-25: the compute version, when on
 		Effect->SetTechnique(smooth);
 		result = Effect->Begin(&passes, 0);
 		if (SUCCEEDED(result)) {
 			for (UINT p = 0; p < 2 && SUCCEEDED(result); ++p) {
+				IDirect3DSurface9* extTarget = p == 0 ? bufferSurface[1] : prepSurface;
+				IDirect3DBaseTexture9* extSource = p == 0 ? prepTexture : bufferTexture[1];
+				if (ExtOn() && ExtDraw(ExtSmooth, &extTarget, 1, &extSource, p, reduced)) continue;	// (NVR DXVK)
 				// X: prep (stage 5) -> buffer 1 (normal, depth); Y: buffer 1 (stage 6) -> prep (packed again)
 				Device->SetTexture(5, p == 0 ? prepTexture : nullptr);
 				Device->SetTexture(6, p == 1 ? bufferTexture[1] : nullptr);
@@ -652,6 +682,101 @@ bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width
 		return false;
 	}
 	if (++blurComputeFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: blur compute path running (%ux%u, one dispatch for BlurX + BlurY).", width, height);
+	return true;
+}
+
+// UNOFFICIAL 2026-10-25 (NVR DXVK) NvrDxvkPasses: see AmbientLight.h and src\hlsl\NewVegas\Compute\AmbientLight.glsl.
+namespace {
+	// Each pass's fragment shader and its textures (set 1, binding = slot = index); Optional: the ones the shader reads only behind a
+	// constant that is off whenever the D3D9 pass leaves that stage unbound (a stand-in texture is bound there then).
+	struct ALExtShader { const char* Spv; UINT Textures; UINT Optional; };
+	const ALExtShader ALExtShaders[AmbientLightEffect::ExtShaderCount] = {
+		{ "AmbientLightPrepare",    3,  0 },		// depth, normals, view model
+		{ "AmbientLightSmoothPass", 1,  0 },		// prep (X) / buffer 1 (Y)
+		{ "AmbientLightEstimate",   2,  0 },		// prep, blue noise
+		{ "AmbientLightBlurPass",   2,  0 },		// depth, buffer
+		{ "AmbientLightAccumulate", 3,  0 },		// buffer, prep, last occlusion history
+		{ "AmbientLightStats",      7,  1u << 6 },	// source, depth, view model, occlusion history, normals, grid, grid colour
+		{ "AmbientLightReduce",     2,  0 },		// stats, last balance
+		// source, SunFar, depth, normals, point shadows, sky, view model, occlusion history, grid wave stage, grid, grid colour, balance, buffer
+		{ "AmbientLightApply",      13, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11) },
+		{ "AmbientLightScreen",     6,  1u << 2 },	// screen memory, its colour, its walls, depth, normals, source
+		{ "AmbientLightInject",     5,  0x1F },		// sun depth, sun colour, screen memory, its colour, wall memory
+		{ "AmbientLightPropagate",  5,  (1u << 3) | (1u << 4) },	// geometry, wave, accum, wave colour, accum colour
+	};
+	struct ALExtPush {	// AmbientLight.glsl's push block, 32 bytes
+		D3DXVECTOR4	frame;
+		UINT32		pointClamp, linearClamp, pointWrap, variant;
+	};
+	static_assert(sizeof(ALExtPush) == 32, "AmbientLight.glsl push block");
+	// AmbientLight.glsl's constants block (std140: matrices then float4s, as stored).
+	const char* const ALExtMatrices[] = { "TESR_ProjectionTransform", "TESR_InvProjectionTransform", "TESR_ViewTransform", "NVR_ALReproject",
+		"NVR_GridSunToGrid", "NVR_GridToSun" };
+	const char* const ALExtVectors[] = { "TESR_AmbientLightData", "TESR_AmbientLightData2", "TESR_ReciprocalResolution", "NVR_ALLayout",
+		"NVR_ALFlags", "NVR_ALInterior", "NVR_ALScene", "NVR_ALTemporal", "NVR_ALEdges", "TESR_WaterSettings", "TESR_ShadowData",
+		"TESR_ShadowFade", "TESR_SkyColor", "TESR_SunAmbient", "TESR_SunDirection", "TESR_AmbientOcclusionSky5", "TESR_AmbientOcclusionData",
+		"TESR_DepthConstants", "TESR_CameraData", "TESR_CameraPosition", "NVR_SunFarFlags", "NVR_GridOrigin", "NVR_GridOrigin1", "NVR_GridData",
+		"NVR_GridLight", "NVR_GridStep", "NVR_GridShift", "NVR_GridScreen", "NVR_GridWalls", "NVR_GridLampInfo" };
+	const char* const ALExtArrays[] = { "NVR_GridLamps", "NVR_GridLampColors" };
+	struct ALExtConstants {
+		D3DXMATRIX	matrices[_countof(ALExtMatrices)];
+		D3DXVECTOR4	vectors[_countof(ALExtVectors)];
+		D3DXVECTOR4	arrays[_countof(ALExtArrays)][AmbientLightEffect::GridLampsMax];
+	};
+	static_assert(_countof(ALExtMatrices) + _countof(ALExtVectors) + _countof(ALExtArrays) == 38, "AmbientLightEffect::extHandles");
+}
+
+bool AmbientLightEffect::ExtOn() const {
+	return !ExtFailed && DxvkCompute::PassesOn();
+}
+
+// One pass as a Vulkan pass into Targets (1-4 of one size, as the D3D9 pass's render targets 0..n-1) over Viewport (at 0, 0: the D3D9
+// pass's), Textures in the shader's binding order (what the D3D9 pass has on those stages). False: not drawn (the D3D9 pass runs).
+bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport) {
+	if (!ExtOn() || Shader >= ExtShaderCount || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS || Viewport.X || Viewport.Y || !Viewport.Width || !Viewport.Height) return false;
+	const ALExtShader& info = ALExtShaders[Shader];
+	ExtPass& pass = extPasses[Shader][TargetCount - 1];
+	if (!pass.Tried) {
+		pass.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[16 + 4] = {};
+		for (UINT i = 0; i < info.Textures; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
+		bindings[info.Textures] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
+		for (UINT s = 0; s < 3; s++) bindings[info.Textures + 1 + s] = { 0, 0, NVR_EXT_BIND_SAMPLER, s, NVR_EXT_VIEW_2D, FALSE, 16 + 4 * s };
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 4, sizeof(ALExtPush), true, TargetCount);
+	}
+	ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap() };
+	if (!pass.Pipeline || !samplers[0] || !samplers[1] || !samplers[2]) return false;
+
+	NVR_EXT_RESOURCE_BINDING resources[16 + 4] = {};
+	IDirect3DBaseTexture9* standIn = ExtFileTexture("TESR_DepthBuffer");	// never a target of these passes
+	for (UINT i = 0; i < info.Textures; i++) {
+		IDirect3DBaseTexture9* texture = Textures[i];
+		if (!texture && (info.Optional & (1u << i))) texture = standIn;
+		if (!texture) return false;
+		resources[i] = { i, NVR_EXT_BIND_SAMPLED_IMAGE, texture, 0, 0, 0, FALSE };
+	}
+	// The constants as the D3D9 pass would read them now (what SetCT and the Effect->Set* calls before this pass left in the effect).
+	ALExtConstants constants = {};
+	UINT h = 0;
+	for (UINT m = 0; m < _countof(ALExtMatrices); m++, h++)
+		if (D3DXHANDLE handle = ParameterHandle(extHandles[h], ALExtMatrices[m])) Effect->GetMatrix(handle, &constants.matrices[m]);
+	for (UINT v = 0; v < _countof(ALExtVectors); v++, h++)
+		if (D3DXHANDLE handle = ParameterHandle(extHandles[h], ALExtVectors[v])) Effect->GetVector(handle, &constants.vectors[v]);
+	for (UINT a = 0; a < _countof(ALExtArrays); a++, h++)
+		if (D3DXHANDLE handle = ParameterHandle(extHandles[h], ALExtArrays[a])) Effect->GetVectorArray(handle, constants.arrays[a], GridLampsMax);
+	ID3D9NvrExtBuffer* uniforms = ExtUniforms(extUniforms, &constants, sizeof(constants));
+	if (!uniforms) return false;
+	UINT count = info.Textures;
+	resources[count++] = { 0, NVR_EXT_BIND_UNIFORM_BUFFER, uniforms, 0, 0, 0, FALSE };
+	for (UINT s = 0; s < 3; s++) resources[count++] = { s, NVR_EXT_BIND_SAMPLER, samplers[s], 0, 0, 0, FALSE };
+
+	ALExtPush push = {};
+	push.frame = D3DXVECTOR4(1.0f / Viewport.Width, 1.0f / Viewport.Height,
+		(1.0f / (float)TheRenderManager->width) * 0.5f, (1.0f / (float)TheRenderManager->height) * 0.5f);	// ShaderManager::CreateFrameVertex's offset
+	push.variant = Variant;
+	RECT viewport = { 0, 0, (LONG)Viewport.Width, (LONG)Viewport.Height };
+	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, sizeof(push), &viewport)) return false;
+	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
 	return true;
 }
 
@@ -880,6 +1005,51 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			const bool apply = p == 7;
 			IDirect3DSurface9* destination = apply ? finalTarget : p == 0 ? prepSurface : p == 4 ? historySurface[writeIndex] :
 				p == 5 ? statsSurface : p == 6 ? balanceSurface[balanceWrite] : bufferSurface[p == 2 ? 1 : 0];
+			// UNOFFICIAL 2026-10-25 (NVR DXVK) NvrDxvkPasses: pass p as a Vulkan pass, into the same target(s), with what the D3D9 pass has on
+			// the stages its shader reads (bound below); not drawn: the D3D9 pass.
+			if (ExtOn()) {
+				IDirect3DBaseTexture9* depth = ExtFileTexture("TESR_DepthBuffer");
+				IDirect3DBaseTexture9* normals = ExtFileTexture("TESR_NormalsBuffer");
+				IDirect3DBaseTexture9* viewModel = TheTextureManager->DepthTextureViewModel;
+				IDirect3DBaseTexture9* grid = gridValid ? gridAccum[gridAccumIndex] : nullptr;
+				IDirect3DBaseTexture9* gridColour = gridValid && gridColorValid ? gridAccumColor[gridAccumIndex] : nullptr;
+				IDirect3DSurface9* targets[2] = { destination, occlusionHistorySurface[writeIndex] };
+				bool drawn = false;
+				GpuProfileScope gpu(passTimers[p], Device);
+				if (p == 0) {
+					IDirect3DBaseTexture9* textures[] = { depth, normals, viewModel };
+					drawn = ExtDraw(ExtPrepare, targets, 1, textures, 0, reduced);
+				}
+				else if (p == 1) {
+					IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler") };
+					drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);
+				}
+				else if (p == 2 || p == 3) {
+					IDirect3DBaseTexture9* textures[] = { depth, bufferTexture[p == 2 ? 0 : 1] };
+					drawn = ExtDraw(ExtBlur, targets, 1, textures, p == 3 ? 1 : 0, reduced);
+				}
+				else if (p == 4) {
+					IDirect3DBaseTexture9* textures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex] };
+					drawn = ExtDraw(ExtAccumulate, targets, 2, textures, 0, reduced);
+				}
+				else if (p == 5) {
+					IDirect3DBaseTexture9* textures[] = { scene, depth, viewModel, occlusionHistory[writeIndex], normals, grid, gridColour };
+					drawn = ExtDraw(ExtStats, targets, 1, textures, 0, statsViewport);
+				}
+				else if (p == 6) {
+					IDirect3DBaseTexture9* textures[] = { statsTexture, balanceTexture[balanceRead] };
+					drawn = ExtDraw(ExtReduce, targets, 1, textures, 0, balanceViewport);
+				}
+				else {
+					// Stage 8 (DebugView 8, 12) as below; stage 7 is only read indoors (NVR_ALBalance).
+					IDirect3DBaseTexture9* waveStage = Constants.Data2.w > 11.5f && gridValid ? gridGeometry : gridScreenValid ? gridScreen[gridScreenIndex] : nullptr;
+					IDirect3DBaseTexture9* balance = interiorMode ? balanceTexture[balanceRuns ? balanceWrite : balanceRead] : nullptr;
+					IDirect3DBaseTexture9* textures[] = { scene, sunFar, depth, normals, ExtFileTexture("TESR_PointShadowBuffer"), skyTexture, viewModel,
+						occlusionHistory[writeIndex], waveStage, grid, gridColour, balance, bufferTexture[blurred] };
+					drawn = ExtDraw(ExtApply, targets, 1, textures, (skyTexture ? 1u : 0u) | (waveStage ? 2u : 0u), original);
+				}
+				if (drawn) continue;
+			}
 			Device->SetTexture(5, nullptr);
 			Device->SetTexture(6, nullptr);
 			Device->SetTexture(7, nullptr);
