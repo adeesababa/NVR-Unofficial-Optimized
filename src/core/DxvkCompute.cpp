@@ -129,6 +129,14 @@ ID3D9NvrExtBuffer* DxvkCompute::CreateBufferNoFail(UINT Size, UINT Flags, const 
 	return buffer;
 }
 
+// UNOFFICIAL 2026-10-26 (alflicker): see DxvkCompute.h. A sampled image's pResource is an IDirect3DBaseTexture9* or IDirect3DSurface9*
+// (single inheritance from IDirect3DResource9: the same pointer); DXVK's PreLoad returns at once for anything not in the managed pool.
+void DxvkCompute::PreLoad(const NVR_EXT_RESOURCE_BINDING* Bindings, UINT Count) {
+	for (UINT i = 0; Bindings && i < Count; i++)
+		if (Bindings[i].Type == NVR_EXT_BIND_SAMPLED_IMAGE && Bindings[i].pResource)
+			static_cast<IDirect3DResource9*>(static_cast<void*>(Bindings[i].pResource))->PreLoad();
+}
+
 ID3D9NvrExtSampler* DxvkCompute::CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address) {
 	if (!Available()) return nullptr;
 	NVR_EXT_SAMPLER_DESC desc = { Filter, Address };

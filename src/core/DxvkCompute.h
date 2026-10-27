@@ -48,6 +48,12 @@ public:
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 	// UNOFFICIAL 2026-10-26 (debugging tools): as CreateBuffer, but a failure is only logged (the other compute paths stay on).
 	static ID3D9NvrExtBuffer*	CreateBufferNoFail(UINT Size, UINT Flags, const char* Name);
+	// UNOFFICIAL 2026-10-26 (alflicker): DXVK copies a D3DPOOL_MANAGED texture (the file textures: blue noise, SMAA's tables, noise
+	// volumes, ...) to the GPU only when a D3D9 draw binds it, and the extension reads the GPU image as it is: a file texture only
+	// Vulkan passes read stayed empty (AmbientLight's blue noise read 0 everywhere, so its rotating pattern moved the whole screen at
+	// once: the every-4th-frame flicker; a few D3D9 frames cured it for the session). PreLoad (IDirect3DResource9) uploads what is
+	// pending; nothing for the render targets. Every Draw/Dispatch call passes its bindings through this first.
+	static void					PreLoad(const NVR_EXT_RESOURCE_BINDING* Bindings, UINT Count);
 
 	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device
 	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>@<hash>.spv (FNV-1a of the bytecode,

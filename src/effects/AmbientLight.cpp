@@ -508,6 +508,7 @@ bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurfac
 	dispatch.GroupsY = (Height + push.tileRows - 1) / push.tileRows;
 	dispatch.GroupsZ = 1;
 
+	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	HRESULT result = Device->SetRenderTarget(0, Target);	// the prep (Prepare's target) must not be the render target while the dispatch reads it
 	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->CopyBufferToTexture(prepTexture, 0, 0, smoothResult, 0);
@@ -676,6 +677,7 @@ bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width
 	dispatch.GroupsX = (width + 15) / 16;
 	dispatch.GroupsY = (height + 15) / 16;
 	dispatch.GroupsZ = 1;
+	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	HRESULT result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	if (FAILED(result)) {
 		Logger::Log("UNOFFICIAL AmbientLight: blur compute dispatch failed (%08lX); the D3D9 blur passes are used from now on", result);
