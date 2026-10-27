@@ -74,6 +74,7 @@ enum NVR_EXT_BUFFER_FLAGS {
   NVR_EXT_BUFFER_UNIFORM      = 0x2,
   NVR_EXT_BUFFER_TRANSFER_SRC = 0x4,  // CopyBufferToTexture source, CopyBuffer source, ReadBuffer source
   NVR_EXT_BUFFER_TRANSFER_DST = 0x8,  // UpdateBuffer, ClearBuffer, CopyTextureToBuffer, CopyBuffer destination
+  NVR_EXT_BUFFER_INDIRECT     = 0x10, // (1.7-grass) indirect draw arguments for DrawGeometryScene (a compute shader may write them as a storage buffer)
 };
 
 enum NVR_EXT_FILTER {
@@ -516,6 +517,51 @@ ID3D9NvrExtGeometry : public IUnknown {
 
 #ifndef _MSC_VER
 __CRT_UUID_DECL(ID3D9NvrExtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x09);
+#endif
+
+/*
+ * 1.7-grass: geometry passes drawn INTO the scene (GPU grass: blades a compute shader placed and culled).
+ *
+ * A separate interface, queried from ID3D9NvrExt (QueryInterface with its GUID), so a d3d9.dll without it
+ * returns E_NOINTERFACE and every other method table is untouched. The pipeline is a geometry pipeline
+ * (ID3D9NvrExtGeometry::CreateGeometryPipeline). Over DrawGeometry this adds:
+ *  - a depth-stencil attachment with real depth: the tests of NVR_EXT_DEPTH_STENCIL (its Depth member is
+ *    ignored; the vertex shader's depth over the viewport range 0-1), e.g. the game's own depth buffer
+ *    with its compare function and depth writes, so the geometry hides and is hidden like the game's own;
+ *  - multisampled targets (Multisample): the pass rasterizes at the targets' sample count (the
+ *    depth-stencil surface must have the same one), as the game's own draws into them;
+ *  - face culling (CullMode; the front face is counter-clockwise in framebuffer coordinates);
+ *  - indirect counts: pIndirectArgs holds a VkDrawIndirectCommand { vertexCount, instanceCount,
+ *    firstVertex, firstInstance } (16 bytes at IndirectOffset; a buffer made with NVR_EXT_BUFFER_INDIRECT,
+ *    usually also NVR_EXT_BUFFER_STORAGE so a compute shader counts the instances into it). DXVK orders
+ *    the compute writes before the draw reads them. VertexCount / InstanceCount are then ignored.
+ * The depth bias and depth bounds of the D3D9 state are not applied (zero bias, bounds 0-1). Everything
+ * the device had set up is put back afterwards, as for Draw. The targets may be the device's current
+ * render target and depth-stencil surface (the pass writes them; it must not also sample them).
+ */
+enum NVR_EXT_CULL {
+  NVR_EXT_CULL_NONE  = 0,
+  NVR_EXT_CULL_BACK  = 1,
+  NVR_EXT_CULL_FRONT = 2,
+};
+
+struct NVR_EXT_GEOMETRY_SCENE_DESC {
+  NVR_EXT_GEOMETRY_DRAW_DESC   Geometry;        // the pass (targets, viewport, bindings, push data); the counts unless pIndirectArgs
+  const NVR_EXT_DEPTH_STENCIL* pDepthStencil;   // optional
+  NVR_EXT_CULL                 CullMode;
+  BOOL                         Multisample;     // allow multisampled targets (and depth-stencil surface): rasterize at their sample count
+  ID3D9NvrExtBuffer*           pIndirectArgs;   // optional: the draw's counts, read on the GPU
+  UINT                         IndirectOffset;  // bytes, 4-aligned
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d324")
+ID3D9NvrExtGeometryScene : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE DrawGeometryScene(
+    const NVR_EXT_GEOMETRY_SCENE_DESC*    pDesc) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtGeometryScene, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x24);
 #endif
 
 /*
