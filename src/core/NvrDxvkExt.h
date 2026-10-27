@@ -696,7 +696,108 @@ ID3D9NvrExtReadback : public IUnknown {
 __CRT_UUID_DECL(ID3D9NvrExtReadback, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x15);
 #endif
 
+/*
+ * Tessellation displacement ("1.7-displace", fork patch 0021). A separate interface, so ID3D9NvrExt and
+ * its version stay as they are: query it from the device (or from ID3D9NvrExt) with
+ * QueryInterface(__uuidof(ID3D9NvrExtTess)); a d3d9.dll without it answers E_NOINTERFACE.
+ *
+ * NVR registers, before the D3D9 shaders are created (as for 1.2's replacements):
+ *  - a vertex shader with a tessellation control shader (TCS, 3 control points) under a family number;
+ *  - pixel shaders of the same family, each with its tessellation evaluation shader (TES), one per
+ *    output winding.
+ * A draw whose vertex and pixel shaders were registered under the same family, drawn as a triangle list
+ * (indexed or not) while SetTessState enables it, runs VS -> TCS -> TES -> PS from a patch list of 3
+ * control points. A triangle strip from DrawPrimitive / DrawIndexedPrimitive is drawn as three patch lists
+ * over its index windows from its first, second and third index (together every strip triangle once):
+ * the TCS's p[7] (ControlParams[7], DXVK's own) is then the window 0 / 1 / 2, and -1 for a triangle list;
+ * patch gl_PrimitiveID of window k is strip triangle k + 3 * gl_PrimitiveID, and the TCS must swap the first
+ * two control points of the odd ones (their winding is reversed in a strip). Every other draw is untouched
+ * (fans, strips from the UP draws: counted in the stats, drawn as they are).
+ * The vertex shader is still DXVK's conversion of the D3D9 bytecode: the TCS reads its outputs, the TES
+ * writes what the pixel shader reads, at the D3D9 semantic locations (0 NORMAL0, 1..8 TEXCOORD0..7,
+ * 9/10 COLOR0/1, 11 FOG; vec4 each). At the first such draw of a pair DXVK checks that the TCS reads only
+ * what the vertex shader writes and that the TES writes everything the pixel shader reads from the vertex
+ * shader; a pair that fails is logged once and always drawn untessellated.
+ *
+ * GLSL contract (glslangValidator -V --target-env vulkan1.1):
+ *   Both push_constant blocks start at offset 32 (layout(offset = 32) on the first member): offsets 0-31 are D3D9's
+ *   shared block (fog, alpha ref), which every graphics stage of the pipeline sees; a block declared from 0 reads that.
+ *   TCS: layout(vertices = 3) out;
+ *        layout(push_constant) uniform Push { layout(offset = 32) float p[8]; };  // ControlParams[0..6]; p[7] the strip window
+ *   TES: layout(triangles, ..., cw) in for Winding 0 (keeps the input triangles' winding: Vulkan's tessellation
+ *        domain origin is upper left), ccw for Winding 1. May declare:
+ *        layout(set = 0, binding = 0) uniform sampler s_samplers[];                  // DXVK's sampler heap
+ *        layout(set = 1, binding = i) uniform texture2D t_i;                          // pixel shader sampler s_i, every bit of TextureMask
+ *        layout(set = 2, binding = 0, std140) uniform VsConsts { vec4 c[256]; };      // the vertex shader's float constants (compacted)
+ *        layout(set = 2, binding = 1, std140) uniform ClipPlanes { vec4 plane[6]; };  // D3D9 user clip planes (clip space; 0 = off)
+ *        layout(push_constant) uniform Push {
+ *          layout(offset = 32)
+ *          uint  samplerIndex[4]; // heap index of pixel shader sampler i (i < 8): bits 16 * (i & 1) of [i / 2]
+ *          uint  vsIndex;         // byte k: the compacted index of VsFloatRegisters[k] in VsConsts.c (0xFF: not used by the VS)
+ *          uint  psBits;          // bit 4 * j + k: component k of pixel shader register PsFloatRegisters[j] is > 0 (read per draw)
+ *          float evalParams[4];   // NVR_EXT_TESS_STATE.EvalParams
+ *        };
+ *        The TES writes gl_Position (and should write gl_ClipDistance[i] = dot(gl_Position, plane[i])).
+ */
+struct NVR_EXT_TESS_VS_DESC {
+  const void*                 pBytecode;            // the D3D9 vertex shader
+  UINT                        BytecodeSize;
+  UINT                        Family;               // nonzero
+  const void*                 pControlSpirv;        // the TCS
+  UINT                        ControlSpirvSize;
+  UINT                        VsFloatRegisters[4];  // vertex shader constant registers the TES reads (0xFFFFFFFF: none)
+  const char*                 pDebugName;
+};
+
+struct NVR_EXT_TESS_PS_DESC {
+  const void*                 pBytecode;            // the D3D9 pixel shader
+  UINT                        BytecodeSize;
+  UINT                        Family;
+  const void*                 pEvalSpirv[2];        // the TES for Winding 0 and 1 ([1] may be null: [0] for both)
+  UINT                        EvalSpirvSize[2];
+  UINT                        TextureMask;          // pixel shader samplers s0..s7 the TES reads; each must be one the pixel shader uses
+  UINT                        PsFloatRegisters[2];  // pixel shader registers whose components' signs go to psBits (0xFFFFFFFF: none)
+  const char*                 pDebugName;
+};
+
+struct NVR_EXT_TESS_STATE {
+  BOOL                        Enable;
+  UINT                        Winding;              // 0 or 1: which TES of each pixel shader
+  UINT                        Wireframe;            // 1: tessellated draws are drawn as lines (debug view)
+  FLOAT                       ControlParams[8];     // the TCS's push data ([7] is replaced by DXVK: the strip window, -1 for lists)
+  FLOAT                       EvalParams[4];        // the TES's push data (after its 24 bytes of indices)
+};
+
+struct NVR_EXT_TESS_STATS {
+  UINT64                      TessellatedDraws;     // draws that ran with tessellation (a strip counts once)
+  UINT64                      OtherTopologyDraws;   // family draws left as they are: fans, strips of the UP draws, other types
+  UINT64                      Bindings;             // times the tessellation shaders were (re)bound
+  UINT                        VertexShaders;        // registered shaders that were created
+  UINT                        PixelShaders;
+  UINT                        RefusedPairs;         // shaders the interface check turned away (logged)
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d321")
+ID3D9NvrExtTess : public IUnknown {
+  /** Registers a vertex shader and its TCS. D3DERR_INVALIDCALL when the bytecode or SPIR-V is unusable (logged). */
+  virtual HRESULT STDMETHODCALLTYPE RegisterTessVertexShader(
+    const NVR_EXT_TESS_VS_DESC*           pDesc) = 0;
+
+  /** Registers a pixel shader and its TES. */
+  virtual HRESULT STDMETHODCALLTYPE RegisterTessPixelShader(
+    const NVR_EXT_TESS_PS_DESC*           pDesc) = 0;
+
+  /** Switches tessellation on or off and sets its parameters; applies from the next draw. Call it once a frame. */
+  virtual HRESULT STDMETHODCALLTYPE SetTessState(
+    const NVR_EXT_TESS_STATE*             pState) = 0;
+
+  /** Cumulative counters (read twice and subtract). */
+  virtual HRESULT STDMETHODCALLTYPE GetTessStats(
+          NVR_EXT_TESS_STATS*             pStats) = 0;
+};
+
 #ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtTess,     0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x21);
 __CRT_UUID_DECL(ID3D9NvrExtHdr,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x10);
 __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
 __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x01);

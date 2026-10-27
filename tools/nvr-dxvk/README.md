@@ -24,6 +24,9 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                  0015       "1.5-debug": dxvk.conf `nvr.debugEnv = "NAME=value|..."` sets environment variables (DXVK_DEBUG,
                             Vulkan loader/layer settings) before DXVK and the loader read them
                  0016       "1.5-debug": ID3D9NvrExtReadback (readback that never waits), storage buffers in the pass stages
+                 0021       (deep/fork2-displace) "1.7-displace": ID3D9NvrExtTess, tessellation displacement of the land
+                            (new files `src/d3d9/d3d9_nvr_tess.{h,cpp}`; docs/next/FORK2-DISPLACE.md). Its shaders:
+                            `compile-tess.sh` (src/hlsl/NewVegas/Compute/Tess -> .spv, Windows Git Bash with the Vulkan SDK).
                  0024       (deep/fork2-grass, wave-2 number; the merger renumbers) "1.7-grass": ID3D9NvrExtGeometryScene,
                             geometry passes drawn INTO the scene: the game's depth buffer with real depth, multisampled and
                             attachment-only targets, culling, indirect counts (NVR_EXT_BUFFER_INDIRECT); GPU grass,

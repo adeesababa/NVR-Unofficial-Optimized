@@ -1,5 +1,6 @@
 #include "Terrain.h"
 #include "../core/GpuProfiler.h"
+#include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace): DisplaceTick
 
 // Set by SettingManager::Configuration::UpdateOldDefaults (settings version 65) when a saved config already had ParallaxLite
 // on, from builds that forced its distance cap every frame; UpdateSettings then writes the suggested distance once.
@@ -209,6 +210,10 @@ void TerrainShaders::UpdateSettings() {
 void TerrainShaders::UpdateConstants() {
 	// get max value between rain animator and puddle animator
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);
+
+	// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace, core\DxvkCompute.h): the land's tessellation displacement settings, once a frame.
+	// Nothing registered (NvrDxvkDisplacement off at load, or no NVR DXVK): returns at once.
+	DxvkCompute::DisplaceTick();
 
 	if (!TheShaderManager->GameState.isExterior) return;
 
