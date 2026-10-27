@@ -474,7 +474,7 @@ void DxvkCompute::DisplaceTick() {
 	if ((frame++ % 8) == 0) {
 		const char* s = "Shaders.Terrain.Displacement";
 		state.Enable = DisplaceSwitch() ? TRUE : FALSE;
-		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 3);
+		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 6);
 		state.Winding = TheSettingManager->GetSettingI(s, "Winding") == 1 ? 1 : 0;
 		state.Wireframe = debugView == 1 ? 1 : 0;
 		const float fadeStart = (std::max)(TheSettingManager->GetSettingF(s, "FadeStart"), 0.0f);

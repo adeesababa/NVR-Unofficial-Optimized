@@ -59,13 +59,17 @@ layout(set = 1, binding = 6) uniform texture2D t_base6;
 layout(set = 2, binding = 0, std140) uniform VsConsts { vec4 c[256]; } vsc;          // the vertex shader's float constants (compacted)
 layout(set = 2, binding = 1, std140) uniform ClipPlanes { vec4 plane[6]; } clipPlanes;  // D3D9 user clip planes, clip space (0: off)
 
+// The block starts at offset 32: 0-31 are D3D9's shared push data (fog, alpha ref) that every stage sees (bulk round 2: from offset
+// 0 the sampler indices were D3D9's fog data, so the heights came from random samplers).
 layout(push_constant) uniform Push {
+  layout(offset = 32)
   uint  samplerIndex[4];  // heap index of the pixel shader's sampler i: bits 16 * (i & 1) of [i / 2]
   uint  vsIndex;          // byte k: where ModelViewProj row k (c0-c3) sits in VsConsts (0xFF: missing)
   uint  psBits;           // bit i: layer i has a height map (the land pixel shader's LandHeight c34 / c35 > 0, read per draw)
   float strength;         // Strength: game units between the lowest and the highest point of a height map
   float center;           // Center: the height (0-1) that stays where the flat land is
-  float debugView;        // DebugView: 2 the height as grey, 3 the split count (blue 1 -> red 16) and the weight (green)
+  float debugView;        // DebugView: 2 the height as grey, 3 the split count (blue 1 -> red 16) and the weight (green),
+                          // 4 the uv (TEXCOORD0) as red / green, 5 the layer weights (COLOR0 xyz), 6 the normal (TEXCOORD5)
   float lodBias;          // LodBias: added to the height lookup's detail level
 } pc;
 
@@ -153,16 +157,26 @@ void main() {
   o_v4 = v4;
   o_v5 = v5;
   o_v6 = v6;
-  o_v7 = clip;                              // projectionPosition: the pixel shader's shadows and fog follow the bumps
+  // projectionPosition stays the flat land's: the pixel shader's forward sun shadows and fog read it, and the sun's shadow maps
+  // hold the flat land (not displaced yet), so a displaced point there would shadow itself (bulk round 2: land sunk below the
+  // flat land went dark). The rasterized position, the depth and the object position (lighting, parallax) follow the bumps.
+  o_v7 = v7;
   o_v8 = v8;
   o_v9 = v9;
   o_v10 = v10;
 
-  // Debug views (they replace the vertex colour, which the land multiplies into its colour)
+  // Debug views (they replace the vertex colour, which the land multiplies into its colour). 4-6 prove that the pixel shader's
+  // inputs arrive through the tessellation, interpolated: smooth gradients that follow the land, no black, no blocks.
   if (pc.debugView > 1.5 && pc.debugView < 2.5) {
     o_v2 = vec4(vec3(h), 1.0);
-  } else if (pc.debugView > 2.5) {
+  } else if (pc.debugView > 2.5 && pc.debugView < 3.5) {
     float t = clamp((gl_TessLevelInner[0] - 1.0) / 15.0, 0.0, 1.0);
     o_v2 = vec4(t, weight, 1.0 - t, 1.0);
+  } else if (pc.debugView > 3.5 && pc.debugView < 4.5) {
+    o_v2 = vec4(fract(v1.xy), 0.0, 1.0);
+  } else if (pc.debugView > 4.5 && pc.debugView < 5.5) {
+    o_v2 = vec4(clamp(v9.xyz, 0.0, 1.0), 1.0);
+  } else if (pc.debugView > 5.5) {
+    o_v2 = vec4(n * 0.5 + 0.5, 1.0);
   }
 }

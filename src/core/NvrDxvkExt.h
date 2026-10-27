@@ -500,8 +500,10 @@ ID3D9NvrExt : public IUnknown {
  * shader; a pair that fails is logged once and always drawn untessellated.
  *
  * GLSL contract (glslangValidator -V --target-env vulkan1.1):
+ *   Both push_constant blocks start at offset 32 (layout(offset = 32) on the first member): offsets 0-31 are D3D9's
+ *   shared block (fog, alpha ref), which every graphics stage of the pipeline sees; a block declared from 0 reads that.
  *   TCS: layout(vertices = 3) out;
- *        layout(push_constant) uniform Push { float p[8]; };           // NVR_EXT_TESS_STATE.ControlParams[0..6]; p[7] the strip window
+ *        layout(push_constant) uniform Push { layout(offset = 32) float p[8]; };  // ControlParams[0..6]; p[7] the strip window
  *   TES: layout(triangles, ..., cw) in for Winding 0 (keeps the input triangles' winding: Vulkan's tessellation
  *        domain origin is upper left), ccw for Winding 1. May declare:
  *        layout(set = 0, binding = 0) uniform sampler s_samplers[];                  // DXVK's sampler heap
@@ -509,6 +511,7 @@ ID3D9NvrExt : public IUnknown {
  *        layout(set = 2, binding = 0, std140) uniform VsConsts { vec4 c[256]; };      // the vertex shader's float constants (compacted)
  *        layout(set = 2, binding = 1, std140) uniform ClipPlanes { vec4 plane[6]; };  // D3D9 user clip planes (clip space; 0 = off)
  *        layout(push_constant) uniform Push {
+ *          layout(offset = 32)
  *          uint  samplerIndex[4]; // heap index of pixel shader sampler i (i < 8): bits 16 * (i & 1) of [i / 2]
  *          uint  vsIndex;         // byte k: the compacted index of VsFloatRegisters[k] in VsConsts.c (0xFF: not used by the VS)
  *          uint  psBits;          // bit 4 * j + k: component k of pixel shader register PsFloatRegisters[j] is > 0 (read per draw)

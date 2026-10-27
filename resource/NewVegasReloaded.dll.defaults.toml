@@ -1971,7 +1971,7 @@ DisableVertexColors = false         # (2026-10-19) The near land without its ver
 
 [_Shaders.Terrain.Displacement]
 Strength = 16.0                     # UNOFFICIAL (2026-10-27), with [Main.Main.Performance] NvrDxvkDisplacement on (needs NVR DXVK): [0-64] how far the land moves between the lowest and the highest point of its height maps, in game units (70 = 1 m). 0 = the land's own triangles exactly. Live.
-Center = 0.5                        # [0-1] the height that stays where the flat land is: 0.5 = half the bumps rise, half sink (people's feet and placed rocks stay at the right height on average); 0 = everything rises (no point sinks below the flat land's sun shadow). Live.
+Center = 0.0                        # [0-1] the height that stays where the flat land is: 0 = everything rises (default: nothing sinks below the flat land, whose sun shadow maps are not displaced yet: sunk land darkens, bulk test round 2); 0.5 = half the bumps rise, half sink (feet and placed rocks stay at the right height on average, but the dips may darken under the sun until the shadow maps are displaced too). Live.
 EdgeLength = 8.0                    # [2-64] how far apart the new points are next to the camera, game units (the land's own triangles are 128 apart). Smaller = finer bumps, more work for the graphics card. Live.
 EdgeGrowth = 0.01                   # [0-0.1] how much that spacing grows per game unit of distance (0.01: 18 units apart at 1000 units away). Live.
 MaxFactor = 16                      # [1-64] the most new points along one edge of a land triangle (a 16 x 16 split at most). Live.
@@ -1980,7 +1980,7 @@ FadeEnd = 2048.0                    # ... and where they are gone and the land i
 BorderGrid = 2048.0                 # each land quadrant (2048 units) is its own draw with its own textures, so the bumps fade to nothing on quadrant borders (else a crack could open there). 0 = off (test only). Live.
 LodBias = 0.0                       # [-2-4] detail level of the height lookups: 0 matches the spacing of the new points; higher = smoother bumps, lower = sharper but they may flicker as you move. Live.
 FixedFactor = 0                     # TEST: > 0 splits every land triangle edge this many times at any distance (1 with Strength 0 = the game's land exactly). 0 = by distance (EdgeLength). Live.
-DebugView = 0                       # 0 off. 1 wireframe of the displaced land (proof that it is split: the lines get dense near the camera). 2 the height the land is moved by, as grey (black low, white high). 3 the split count (blue = not split, red = MaxFactor) with the fade in green. Live.
+DebugView = 0                       # 0 off. 1 wireframe of the displaced land (proof that it is split: the lines get dense near the camera). 2 the height the land is moved by, as grey (black low, white high). 3 the split count (blue = not split, red = MaxFactor) with the fade in green. 4-6 prove the land's pixel shader gets its inputs through the tessellation (smooth gradients, no black or blocks): 4 the texture coordinates (red / green, repeating), 5 the texture layer weights, 6 the normal. Live.
 Winding = 0                         # TEST: 0 = the game's triangle facing (expected). 1 = the other one: only if the displaced land disappears (seen from below) with 0. Live.
 
 [_Shaders.Terrain.Status]

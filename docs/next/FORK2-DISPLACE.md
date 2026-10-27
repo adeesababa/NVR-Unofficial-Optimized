@@ -22,6 +22,22 @@ winding is reversed in a strip) and drops degenerate ones (strip joins: two equa
 draws and fans stay untessellated, and the first such draw is named in DXVK's log with its primitive type. While a pair's
 interface check is still pending, every draw rebinds (so a refused pair always gets its own topology back).
 
+## Bulk test round 2 (2026-10-27 11:23, v2) and the fix: push data overlapped D3D9's shared block
+Run 20261027-112347-slotC (Goodsprings): 7 land draws a frame tessellated, nothing refused, but with it on the near land went flat
+dark grey (on / strong / ccw / debug shots 31-42 % of pixels differ from off; noise 5.9 %), while s0 (Strength 0, FixedFactor 1)
+matched off. dbg-factor showed no splitting at all (all blue) and dbg-wire only the plain 128-unit grid.
+Cause: the TCS and TES declared their push-constant blocks from offset 0. In DXVK 3.0 offsets 0-31 are the SHARED push block of a
+graphics pipeline (D3D9's fog colour / alpha ref / fog parameters, declared for every graphics stage by DXVK's D3D9 shaders), and
+DXVK's push-offset remap (DxvkShaderBindingMap::mapPushData) gives the shared block offsets 0-15 first. So the TCS read MaxFactor,
+EdgeLength, EdgeGrowth and FadeStart from D3D9's fog data (MaxFactor ~0: never split) and the TES read its sampler heap indices from
+it (random samplers, garbage heights: the land sank by up to 8 units into the flat land's sun shadow: dark). s0 never samples and
+never splits, so it stayed right. DXVK's own D3D9 shaders put their stage blocks at MaxSharedPushDataSize (32): that is the rule.
+Fix (patch 0021 v3 + shaders): both blocks start at shader offset 32 (`layout(offset = 32)`, DxvkPushDataBlock at
+MaxSharedPushDataSize, sampler block offsets 32 + 2i; the host still pushes at the stage's offset 0). Also: the pixel shader's
+projectionPosition (its forward sun shadows and fog) stays the flat land's, since the shadow maps are not displaced; Center now
+defaults to 0 (bumps only rise, nothing sinks below the flat land's shadow). New debug views 4-6 (uv, layer weights, normal as the
+vertex colour) prove the pixel shader's inputs arrive interpolated. Test list: fork2-displace3-bulk.txt.
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land
@@ -38,8 +54,8 @@ Rocks and walls (objects) are the next family (see the plan).
   with DXVK as they load); off works at once. Native D3D9, stock DXVK, or a fork without patch 0021: nothing is registered, nothing
   changes (log line says why).
 - `[Shaders.Terrain.Displacement]` (all live): `Strength = 16.0` (game units between lowest and highest point; 0 = the game's own
-  triangles exactly), `Center = 0.5` (the height that stays at the flat land; 0 = everything rises, nothing sinks below the flat
-  land's sun shadow), `EdgeLength = 8.0` (spacing of the new points next to the camera; the land grid is 128), `EdgeGrowth = 0.01`
+  triangles exactly), `Center = 0.0` (since v3: the height that stays at the flat land; 0 = everything rises, nothing sinks below the
+  flat land's sun shadow; 0.5 keeps feet right on average), `EdgeLength = 8.0` (spacing of the new points next to the camera; the land grid is 128), `EdgeGrowth = 0.01`
   (spacing added per unit of distance), `MaxFactor = 16`, `FadeStart = 1024`, `FadeEnd = 2048`, `BorderGrid = 2048` (bumps fade to 0
   on land quadrant borders: each quadrant is its own draw with its own textures, so a crack could open there), `LodBias = 0`,
   `FixedFactor = 0` (test), `DebugView = 0` (1 wireframe, 2 height as grey, 3 split count), `Winding = 0` (test).

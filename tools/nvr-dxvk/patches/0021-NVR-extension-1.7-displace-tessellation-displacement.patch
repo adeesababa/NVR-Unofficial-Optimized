@@ -1,4 +1,4 @@
-From dfb32bffc2291d6661e8391651e903b4778a00ee Mon Sep 17 00:00:00 2001
+From 0995c175287bda62d6c214cc25547d0e1e9cd5d3 Mon Sep 17 00:00:00 2001
 From: adeesababa <263047020+adeesababa@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 22:52:47 -0400
 Subject: [PATCH] NVR extension 1.7-displace: tessellation displacement for
@@ -19,7 +19,8 @@ clip planes; per-draw push data gives it the compacted constant indices and the
 signs of two pixel shader registers. The interfaces (TCS inputs vs VS outputs,
 TES outputs vs the PS inputs the VS writes) are checked on the CS thread at a
 pair's first draw; a mismatch is logged and the pair draws untessellated.
-Wireframe debug view. Pixel shader texture binds also mark the TES stage once
+Wireframe debug view. The TCS and TES push blocks start at shader offset 32 (MaxSharedPushDataSize),
+after D3D9's shared block, as DXVK's own D3D9 shaders do. Pixel shader texture binds also mark the TES stage once
 anything is registered (pipeline-library layouts keep the TES descriptors in the
 pre-raster set).
 
@@ -27,12 +28,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  src/d3d9/d3d9_device.cpp    |  48 ++-
  src/d3d9/d3d9_device.h      |   3 +
- src/d3d9/d3d9_nvr_ext_api.h |  98 +++++
- src/d3d9/d3d9_nvr_tess.cpp  | 698 ++++++++++++++++++++++++++++++++++++
+ src/d3d9/d3d9_nvr_ext_api.h | 101 ++++++
+ src/d3d9/d3d9_nvr_tess.cpp  | 703 ++++++++++++++++++++++++++++++++++++
  src/d3d9/d3d9_nvr_tess.h    | 190 ++++++++++
  src/d3d9/d3d9_shader.h      |  12 +
  src/d3d9/meson.build        |   1 +
- 7 files changed, 1047 insertions(+), 3 deletions(-)
+ 7 files changed, 1055 insertions(+), 3 deletions(-)
  create mode 100644 src/d3d9/d3d9_nvr_tess.cpp
  create mode 100644 src/d3d9/d3d9_nvr_tess.h
 
@@ -194,10 +195,10 @@ index dfe4c75..92b7737 100644
      D3D9On12                        m_d3d9On12;
      DxvkD3D8Bridge                  m_d3d8Bridge;
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 8748f7f..41e68ad 100644
+index 8748f7f..2bb3fa7 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -475,7 +475,105 @@ ID3D9NvrExt : public IUnknown {
+@@ -475,7 +475,108 @@ ID3D9NvrExt : public IUnknown {
            FLOAT                           ShiftY) = 0;
  };
  
@@ -225,8 +226,10 @@ index 8748f7f..41e68ad 100644
 + * shader; a pair that fails is logged once and always drawn untessellated.
 + *
 + * GLSL contract (glslangValidator -V --target-env vulkan1.1):
++ *   Both push_constant blocks start at offset 32 (layout(offset = 32) on the first member): offsets 0-31 are D3D9's
++ *   shared block (fog, alpha ref), which every graphics stage of the pipeline sees; a block declared from 0 reads that.
 + *   TCS: layout(vertices = 3) out;
-+ *        layout(push_constant) uniform Push { float p[8]; };           // NVR_EXT_TESS_STATE.ControlParams[0..6]; p[7] the strip window
++ *        layout(push_constant) uniform Push { layout(offset = 32) float p[8]; };  // ControlParams[0..6]; p[7] the strip window
 + *   TES: layout(triangles, ..., cw) in for Winding 0 (keeps the input triangles' winding: Vulkan's tessellation
 + *        domain origin is upper left), ccw for Winding 1. May declare:
 + *        layout(set = 0, binding = 0) uniform sampler s_samplers[];                  // DXVK's sampler heap
@@ -234,6 +237,7 @@ index 8748f7f..41e68ad 100644
 + *        layout(set = 2, binding = 0, std140) uniform VsConsts { vec4 c[256]; };      // the vertex shader's float constants (compacted)
 + *        layout(set = 2, binding = 1, std140) uniform ClipPlanes { vec4 plane[6]; };  // D3D9 user clip planes (clip space; 0 = off)
 + *        layout(push_constant) uniform Push {
++ *          layout(offset = 32)
 + *          uint  samplerIndex[4]; // heap index of pixel shader sampler i (i < 8): bits 16 * (i & 1) of [i / 2]
 + *          uint  vsIndex;         // byte k: the compacted index of VsFloatRegisters[k] in VsConsts.c (0xFF: not used by the VS)
 + *          uint  psBits;          // bit 4 * j + k: component k of pixel shader register PsFloatRegisters[j] is > 0 (read per draw)
@@ -305,10 +309,10 @@ index 8748f7f..41e68ad 100644
  __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
 diff --git a/src/d3d9/d3d9_nvr_tess.cpp b/src/d3d9/d3d9_nvr_tess.cpp
 new file mode 100644
-index 0000000..0c5789f
+index 0000000..140fd2a
 --- /dev/null
 +++ b/src/d3d9/d3d9_nvr_tess.cpp
-@@ -0,0 +1,698 @@
+@@ -0,0 +1,703 @@
 +#include "d3d9_nvr_tess.h"
 +#include "d3d9_device.h"
 +#include "d3d9_shader.h"
@@ -522,8 +526,12 @@ index 0000000..0c5789f
 +      return entry->second;
 +
 +    DxvkSpirvShaderCreateInfo info;
-+    // ControlParams: 8 floats from offset 0 of the stage's own push block
-+    info.localPushData = DxvkPushDataBlock(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 0u, 32u, 4u, 0u);
++    // ControlParams: 8 floats, the stage's own push block. It starts at shader offset 32 (MaxSharedPushDataSize), as in
++    // DXVK's own D3D9 shaders: offsets 0-31 are the shared block (D3D9's fog / alpha-ref data, every graphics stage), and a
++    // stage block declared from offset 0 is remapped onto that shared data (round 2 of the bulk test: the TCS read its
++    // first four parameters from D3D9's fog data and never split anything; the TES read its sampler indices from it).
++    // The host side still pushes from the stage's offset 0 (shader offset 32 + x <-> pushData(stage, x)).
++    info.localPushData = DxvkPushDataBlock(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, MaxSharedPushDataSize, 32u, 4u, 0u);
 +    info.patchVertexCount = 3u;
 +    info.debugName = Name;
 +
@@ -574,7 +582,7 @@ index 0000000..0c5789f
 +      smp.resourceIndex = index;
 +      smp.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 +      smp.descriptorCount = 1u;
-+      smp.blockOffset = sizeof(uint16_t) * i;
++      smp.blockOffset = MaxSharedPushDataSize + sizeof(uint16_t) * i;   // shader offset (see CreateControlShader)
 +      smp.flags.set(DxvkDescriptorFlag::PushData);
 +      bindings.push_back(smp);
 +    }
@@ -599,8 +607,9 @@ index 0000000..0c5789f
 +    DxvkSpirvShaderCreateInfo info;
 +    info.bindingCount = bindings.size();
 +    info.bindings = bindings.data();
-+    // 4 dwords of sampler heap indices (resource data), then vsIndex, psBits and EvalParams[4]
-+    info.localPushData = DxvkPushDataBlock(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0u, 40u, 4u, 0xFu);
++    // From shader offset 32 (MaxSharedPushDataSize, see CreateControlShader): 4 dwords of sampler heap indices (resource
++    // data), then vsIndex, psBits and EvalParams[4] (pushed at the stage's offset 16)
++    info.localPushData = DxvkPushDataBlock(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, MaxSharedPushDataSize, 40u, 4u, 0xFu);
 +    info.samplerHeap = DxvkShaderBinding(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0u, 0u);
 +    info.debugName = Name;
 +

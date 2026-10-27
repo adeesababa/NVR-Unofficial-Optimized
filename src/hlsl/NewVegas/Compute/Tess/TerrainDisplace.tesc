@@ -28,7 +28,10 @@ PASS(1) PASS(2) PASS(3) PASS(4) PASS(5) PASS(6) PASS(7) PASS(8) PASS(9) PASS(10)
 // between generated points in uv units (the height lookup's detail level before the texture's size).
 layout(location = 30) out vec2 o_nvr[];
 
+// The block starts at offset 32: 0-31 are D3D9's shared push data (fog, alpha ref) that every stage sees (bulk round 2: from offset
+// 0 the first four values were D3D9's fog data, so nothing was split).
 layout(push_constant) uniform Push {
+  layout(offset = 32)
   float maxFactor;    // [1-64] most splits of one triangle edge (MaxFactor)
   float edgeUnits;    // the spacing aimed for next to the camera, game units (EdgeLength)
   float edgeGrowth;   // spacing added per game unit of distance (EdgeGrowth)
