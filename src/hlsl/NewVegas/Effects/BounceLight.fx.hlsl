@@ -171,6 +171,7 @@ float3 NormalLod(float2 uv)
 // View-space position from a screen position and CombineDepth's linear depth (view z / far z).
 float3 PositionFromLinear(float2 uv, float linear01)
 {
+	uv = rectToScreen(uv);	// UNOFFICIAL 2026-10-27 RenderScale v2: callers pass texture coordinates, the ray needs the screen position
 	float z = projectedDepthFromLinear(linear01);
 	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, z, 1.0f), TESR_InvProjectionTransform);
 	return viewSpace.xyz / viewSpace.w;
@@ -287,6 +288,7 @@ float4 Blur(VSOUT IN, uniform float2 axis, uniform bool hard) : COLOR0
 	for (int i = 0; i < cKernelSize; i++) {
 		// BlurOffsets are in full-resolution pixels; this buffer is half or quarter resolution.
 		float2 uv = IN.UVCoord + BlurOffsets[i] * axis * BlurRadius * (NVR_BounceLayout.zw / TESR_ReciprocalResolution.xy);
+		uv = clampToRectIfOn(uv, NVR_BounceLayout.zw);	// UNOFFICIAL 2026-10-27 RenderScale v2: no stale texels past the drawn part
 		float4 tap = tex2Dlod(NVR_BounceBuffer, float4(uv, 0.0f, 0.0f));
 		float steps = abs(dot(BlurOffsets[i] / TESR_ReciprocalResolution.xy, axis)); // taps out, 1-6
 		float weight = BlurWeights[i] * (abs(tap.a - center.a) <= tolerance + slope * steps);
@@ -425,7 +427,7 @@ float SpillMemoryTolerance(float3 position, float3 normal)
 // each one only if its depth matches. Returns how much of it matched (0: nothing usable, off screen or another surface).
 float HistoryAt(float3 last, float tolerance, out float3 history)
 {
-	float2 position = last.xy / NVR_BounceLayout.zw - 0.5f;
+	float2 position = screenToRect(last.xy) / NVR_BounceLayout.zw - 0.5f;	// UNOFFICIAL 2026-10-27 RenderScale v2: last.xy is a screen position (the edge test below stays on it)
 	float2 base = floor(position);
 	float2 f = position - base;
 	float4 t00 = tex2Dlod(NVR_BounceHistory, float4((base + 0.5f) * NVR_BounceLayout.zw, 0.0f, 0.0f));
@@ -762,8 +764,9 @@ float4 GatherPlus(VSOUT IN, uniform int samples, uniform bool temporal, uniform 
 		float r = radius * (0.15f + 0.85f * frac(noise.y + i * 0.618034f));
 		float3 p = origin + (tangent * cos(angle) + bitangent * sin(angle)) * r + normal * (r * 0.25f);
 		float2 sampleUV = projectPosition(p).xy;
-		float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, 1.0f) * step(0.0f, sampleUV.y) * step(sampleUV.y, 1.0f);
-		sampleUV = (floor(saturate(sampleUV) / NVR_BounceLayout.zw) + 0.5f) * NVR_BounceLayout.zw;
+		// UNOFFICIAL 2026-10-27 RenderScale v2: on screen = inside the drawn part (1 off: as before)
+		float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, TESR_RenderScale.x) * step(0.0f, sampleUV.y) * step(sampleUV.y, TESR_RenderScale.y);
+		sampleUV = (floor(clamp(sampleUV, 0.0f, TESR_RenderScale.xy) / NVR_BounceLayout.zw) + 0.5f) * NVR_BounceLayout.zw;
 
 		float4 texel = tex2Dlod(NVR_BouncePrep, float4(sampleUV, 0.0f, 0.0f));
 		float3 s = PositionFromLinear(sampleUV, texel.x);
@@ -800,7 +803,7 @@ float4 GatherPlus(VSOUT IN, uniform int samples, uniform bool temporal, uniform 
 		float3 last;
 		float3 where = LastFrame(origin);
 		float found = HistoryAt(where, DepthTolerance(origin, normal), last);
-		float moved = length((where.xy - uv) / NVR_BounceLayout.zw);
+		float moved = length((screenToRect(where.xy) - uv) / NVR_BounceLayout.zw);	// (RenderScale v2)
 		result = lerp(result, last, NVR_BounceTemporal.x / (1.0f + moved / motionPixels) * saturate(found * 2.0f));
 	}
 	return float4(result, origin.z);

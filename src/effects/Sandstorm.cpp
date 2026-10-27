@@ -10,6 +10,7 @@
 #include "../core/GpuProfiler.h"
 #include "../core/MaxQuality.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 static const double TwoPi = 6.283185307179586;
 
@@ -41,6 +42,9 @@ void SandstormEffect::RegisterTextures() {
 
 bool SandstormEffect::UseFastPath() {
 	if (!Settings.FastPath || Constants.Water.x > 0.0f) return false;	// underwater: the reference path (the grid starts at the eye)
+	// UNOFFICIAL 2026-10-27 RenderScale v2: a rect frame draws the reference path (the dust grid's 8 x 8 slice atlas is screen-shaped,
+	// so the rect viewport would cut it).
+	if (RenderRect::Active()) return false;
 	if (!TexturesTried) {
 		TexturesTried = true;
 		// The grid: one column per 16 x 16 pixels (8 x 8 with Max Quality), its 64 slices in 8 x 8 tiles; the streaks at half size,

@@ -2,6 +2,7 @@
 #include "../core/FrameClock.h"
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 void VolumetricCloudsEffect::UpdateSettings() {
 	const SettingsStruct before = Settings;
@@ -84,6 +85,7 @@ void VolumetricCloudsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CloudsMotion", &Constants.Motion);
 	TheShaderManager->RegisterConstant("TESR_CloudsTint", &Constants.Tint);
 	TheShaderManager->RegisterConstant("TESR_CloudsTower", &Constants.Tower);
+	TheShaderManager->RegisterConstant("TESR_CloudsHistoryScale", &Constants.HistoryScale);	// UNOFFICIAL 2026-10-27 RenderScale v2
 }
 
 void VolumetricCloudsEffect::RegisterTextures() {
@@ -577,11 +579,22 @@ static bool PrefilterOn(VolumetricCloudsEffect* clouds) {
 
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
+	// UNOFFICIAL 2026-10-27 RenderScale v2: Resolution 3-5 targets are larger than the screen, so the rect viewport leaves them whole
+	// and their uv would not be rect uv: no clouds in a rect frame rather than wrong ones.
+	if (RenderRect::Active() && !RenderRect::ScreenShaped(lowWidth, lowHeight)) {
+		static bool told = false;
+		if (!told) { told = true; Logger::Log("UNOFFICIAL VolumetricClouds: Resolution 3-5 (larger than the screen) is not drawn while NVR's effects run at the RenderScale resolution"); }
+		lastRenderTime = -1.0;	// the history starts over when they are drawn again
+		return;
+	}
 	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
 	// or a pause in the clouds (indoors, a menu), it starts over from this frame's march.
 	const D3DXMATRIX viewProj = TheRenderManager->ViewProjMatrix;
 	const double now = TheFrameRateManager->Time;
-	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCellChanged;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: and when the drawn part of the history changes (another scale, rect <-> native)
+	const bool rectChanged = RenderRect::ScaleChanged() || RenderRect::Active() != lastRect;
+	lastRect = RenderRect::Active();
+	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCellChanged && !rectChanged;
 	static const float order[4][2] = { {0, 0}, {1, 1}, {1, 0}, {0, 1} };
 	Constants.PrevViewProj = continuous ? lastViewProj : viewProj;
 	Constants.Layout.z = continuous ? Settings.History : 0.0f;
@@ -604,6 +617,8 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	RenderShadowMap(Device);	// UNOFFICIAL: cloud shadow map (already drawn this frame when SunFar asked first)
 	read = 1 - read;
 	Textures.HistoryRead = Textures.HistoryTexture[read];
+	Constants.HistoryScale.x = RenderRect::ScaleX;	// (1 outside rect frames) for the next water reflection's history lookup
+	Constants.HistoryScale.y = RenderRect::ScaleY;
 	Device->SetRenderTarget(0, RenderTarget);
 	{
 		// UNOFFICIAL 2026-10-21: when SunFar took the shadows to the land this frame, the composite only draws the sky (strength 0

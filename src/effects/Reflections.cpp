@@ -2,6 +2,7 @@
 #include "../core/GpuProfiler.h"
 #include "../core/ReflMaterial.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz)
 #include "../core/ShaderCounters.h"	// UNOFFICIAL 2026-10-26 debugging tools (the Hi-Z trace's counters)
 #include "../core/PixelInspector.h"
@@ -225,6 +226,11 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const UINT now = TheFrameRateManager->FrameNumber;
 	const bool drewLastFrame = lastRenderedFrame + 1 == now;
 	bool usable = temporal && haveHistory && drewLastFrame;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the history holds last frame's drawn part; another scale, or a switch between rect and
+	// full frames, puts it somewhere else in the texture.
+	static bool lastRect = false;
+	if (RenderRect::ScaleChanged() || RenderRect::Active() != lastRect) usable = false;
+	lastRect = RenderRect::Active();
 	const double move[3] = { (double)invView._41 - lastInvView._41, (double)invView._42 - lastInvView._42,
 		(double)invView._43 - lastInvView._43 };
 	if (usable) usable = move[0] * move[0] + move[1] * move[1] + move[2] * move[2] < 500.0 * 500.0;

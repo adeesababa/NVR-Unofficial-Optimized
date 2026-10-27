@@ -16,7 +16,10 @@ static const float increaseRate = TESR_ExposureData.w; // max value for adaptati
 static const float2 center = float2(0.5, 0.5); // this shader is to be applied on a 1x1 texture so we sample at the center
 
 #include "Includes/Helpers.hlsl"
-#include "Includes/Depth.hlsl"
+#include "Includes/Depth.hlsl"	// (includes Includes/RenderRect.hlsl)
+
+// UNOFFICIAL 2026-10-27 RenderScale v2: the image and depth are drawn only in their top-left TESR_RenderScale part in a rect frame
+static const bool AvgLumaRectOn = TESR_RenderScale.x < 0.9999 || TESR_RenderScale.y < 0.9999;
 
 struct VSOUT
 {
@@ -73,11 +76,12 @@ float getFocalDistance() {
 	// gets the autofocus depth based on a local average, scaled with player movement speed (to avoid flicker during fast movement)
 	float2 speed = saturate(abs(float2(TESR_MotionBlurData.x, TESR_MotionBlurData.y))) + 0.1;
 
-	float centerDepth = readDepth(center);
+	// UNOFFICIAL 2026-10-27 RenderScale v2: screen positions -> the drawn part (x * 1 when off; the taps stay within 0.33 of the centre)
+	float centerDepth = readDepth(screenToRect(center));
 	float depth = centerDepth;
 	float2 samplingRange = speed;
 	for (int i=0; i<12; i++){
-		depth += readDepth(center + 0.3 * taps[i] * samplingRange);
+		depth += readDepth(screenToRect(center + 0.3 * taps[i] * samplingRange));
 	}
 	depth /= 12;
 
@@ -97,12 +101,14 @@ float4 AvgLuma(VSOUT IN) : COLOR0
 	float total = 0;
 	for (float i = 0.05; i < 1; i+= 0.1){
 		for (float j = 0.05; j < 1; j+= 0.1){
-			color += linearize(tex2D(TESR_RenderedBuffer, float2(i, j)));
+			color += linearize(tex2D(TESR_RenderedBuffer, screenToRect(float2(i, j))));	// UNOFFICIAL 2026-10-27 RenderScale v2
 			total++;
 		}
 	}
 	for (i= 0 ; i < 12; i++){
-		color += linearize(tex2D(TESR_RenderedBuffer, center + taps[i]));
+		// UNOFFICIAL 2026-10-27 RenderScale v2: these reach past the screen edge; in a rect frame kept on the drawn part's edge (as CLAMP does)
+		float2 p = center + taps[i];
+		color += linearize(tex2D(TESR_RenderedBuffer, AvgLumaRectOn ? screenToRect(saturate(p)) : p));
 		total++;
 	}
 	color /= total;

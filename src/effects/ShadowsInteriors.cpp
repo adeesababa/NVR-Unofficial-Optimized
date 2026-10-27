@@ -1,6 +1,7 @@
 #include "ShadowsInteriors.h"
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 void ShadowsInteriorsEffect::UpdateConstants() {}
 void ShadowsInteriorsEffect::UpdateSettings() {}
@@ -146,6 +147,7 @@ void ShadowsInteriorsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 			if (FAILED(result)) break;
 			RebindSlotTextures(); // TESR_RenderedBuffer is the current scene image
 			Device->SetTexture(4, source); // NVR_InteriorShadowIn
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part only in rect frames
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;

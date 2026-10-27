@@ -41,6 +41,7 @@
 #include <algorithm>
 #ifndef SUNDEPTHFIT_MATH_ONLY
 #include "GpuProfiler.h"	// GpuTimer::Enabled: the F10 profile's statistics line
+#include "RenderRect.h"		// UNOFFICIAL 2026-10-27 RenderScale v2: Measure reads only the drawn part of the depth
 #endif
 
 namespace SunDepthFit {
@@ -346,7 +347,8 @@ namespace SunDepthFit {
 			set->NearCount++;
 			set->Level[set->FarCount + set->NearCount] = level;
 		}
-		set->Blocks = GridW * GridH;
+		// UNOFFICIAL 2026-10-27 RenderScale v2: in rect frames only the grid's drawn part holds blocks (ApplyViewport below).
+		set->Blocks = RenderRect::Width(GridW) * RenderRect::Height(GridH);
 
 		ID3DXEffect* fx = FitRecord->Effect;
 		auto* renderState = TheRenderManager->renderState;
@@ -363,6 +365,7 @@ namespace SunDepthFit {
 		FitRecord->SetCT();
 		if (SUCCEEDED(fx->Begin(&passes, 0))) {
 			if (passes > 0 && SUCCEEDED(fx->BeginPass(0))) {
+				RenderRect::ApplyViewport(device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the grid is screen-shaped: only its drawn part
 				ok = SUCCEEDED(device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
 				fx->EndPass();
 			}
@@ -380,6 +383,7 @@ namespace SunDepthFit {
 					device->SetTexture(2, BlockTexture);
 					renderState->NoteDeviceTexture(2, BlockTexture);
 					ok = true;
+					RenderRect::ApplyViewport(device);	// UNOFFICIAL 2026-10-27 RenderScale v2: count only the grid's drawn part
 					const int used = 1 + set->FarCount + set->NearCount;
 					for (int q = 0; q < used && ok; q++) {
 						const float mode = q == 0 ? 1.0f : q <= set->FarCount ? 0.0f : 2.0f;
@@ -398,6 +402,7 @@ namespace SunDepthFit {
 		}
 		device->SetRenderTarget(0, targetWas);
 		device->SetDepthStencilSurface(depthWas);
+		RenderRect::ApplyViewport(device);	// UNOFFICIAL 2026-10-27 RenderScale v2: viewport and quad consistent with the restored target
 		if (targetWas) targetWas->Release();
 		if (depthWas) depthWas->Release();
 		if (!ok) {

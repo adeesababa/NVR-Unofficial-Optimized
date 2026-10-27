@@ -1,6 +1,7 @@
 #include <regex>
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-23 (NVR DXVK)
 #include "Sm6Pass.h"	// UNOFFICIAL 2026-10-26 (deep/fork-sm6)
+#include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "GpuDebug.h"	// UNOFFICIAL 2026-10-26: GpuDebugLabels (each effect is a named group in a capture)
 #include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
@@ -527,6 +528,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 				BindPassTextures();	// UNOFFICIAL 2026-10-19
 				// UNOFFICIAL 2026-10-26 (NvrSm6Shaders): the pass's SM6 build, fed what this draw would read; else (or failed) the D3D9 draw
 				Sm6Pass* sm6 = Sm6For(techniqueIndex, p);
+				RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2 (rect frames: top-left part; else FrameVertex)
 				if (!sm6 || !sm6->Plain() || Sm6Pass::Scissored(Device) || !sm6->Draw(Device, &destination, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 				if (direct) chain.CommitFinal();
@@ -557,6 +559,7 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 			BindPassTextures();	// UNOFFICIAL 2026-10-19
 			BeforeDraw(Device);	// UNOFFICIAL 2026-10-22
 			Sm6Pass* sm6 = Sm6For(techniqueIndex, p);	// UNOFFICIAL 2026-10-26 (NvrSm6Shaders), as above
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2
 			if (!sm6 || !sm6->Plain() || Sm6Pass::Scissored(Device) || !sm6->Draw(Device, &RenderTarget, 1, ExtUv::ScreenQuad)) Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 			if (RenderedSurface && RenderedSurface != RenderTarget) Device->StretchRect(RenderTarget, NULL, RenderedSurface, NULL, D3DTEXF_LINEAR); // copy the result from the pass into the texture

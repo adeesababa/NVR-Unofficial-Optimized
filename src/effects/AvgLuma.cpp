@@ -1,5 +1,6 @@
 #include "AvgLuma.h"
 #include "../core/DxvkCompute.h"
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include <cmath>
 
 void AvgLumaEffect::RegisterTextures() {
@@ -92,6 +93,9 @@ bool AvgLumaEffect::RenderCompute(IDirect3DDevice9* Device) {
 	const ExposureEffect* exposure = TheShaderManager->Effects.Exposure;
 	const bool histogramWanted = exposure && exposure->Settings.Histogram;
 	if (!TheSettingManager->SettingsMain.Main.AvgLumaCompute && !histogramWanted) return false;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the compute shaders read the whole screen; a rect frame takes the D3D9 pass (it reads
+	// only the drawn part). Histogram therefore gives the plain average while RenderScale is below 1.
+	if (RenderRect::Active()) return false;
 	if (!Enabled || !ShouldRender()) return false;
 	if (!ComputeReady()) {
 		static bool said = false;

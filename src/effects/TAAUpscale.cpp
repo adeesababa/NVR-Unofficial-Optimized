@@ -34,6 +34,7 @@
 #include "../core/DxvkCompute.h"
 #include "../core/GpuProfiler.h"
 #include "../core/Upscaler.h"
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 D3DXVECTOR4 TAAEffect::RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 
@@ -59,7 +60,7 @@ namespace {
 #define UAV(b)      { 1, b, NVR_EXT_BIND_STORAGE_IMAGE, b, NVR_EXT_VIEW_2D, TRUE, 0 }
 #define CB(s, b)    { s, b, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 }
 #define POINTS      { 0, 0, NVR_EXT_BIND_SAMPLER, 0, NVR_EXT_VIEW_2D, FALSE, 0 }
-	const NVR_EXT_BINDING_DESC UpPrepBindings[] = { IMG(0), UAV(2), UAV(3), CB(2, 0), POINTS };
+	const NVR_EXT_BINDING_DESC UpPrepBindings[] = { IMG(0), IMG(1), UAV(2), UAV(3), CB(2, 0), POINTS };	// IMG(1): v2's viewmodel depth
 #undef IMG
 #undef UAV
 #undef CB
@@ -161,17 +162,18 @@ namespace {
 bool TAAEffect::IsWorldViewport(const D3DVIEWPORT9& port) {
 	if (port.Width == TheRenderManager->width && port.Height == TheRenderManager->height) return true;
 	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
-	return taa && taa->Up.Active && port.Width == taa->Up.RenderWidth && port.Height == taa->Up.RenderHeight;
+	return taa && (taa->Up.Active || taa->Up.Deferred) && port.Width == taa->Up.RenderWidth && port.Height == taa->Up.RenderHeight;
 }
 
 bool TAAEffect::UpscaledThisFrame() {
 	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
-	return taa && taa->Up.Upscaled;
+	return taa && (taa->Up.Upscaled || taa->Up.Deferred);	// UNOFFICIAL 2026-10-27 v2: also while the frame waits for its upscale
 }
 
-void TAAEffect::NoteWorldDraw() {
+void TAAEffect::NoteWorldDraw(bool firstPerson) {
 	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
-	if (!taa || !taa->Up.Active) return;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: first-person passes while the frame waits for its upscale (the weapon into the same rect).
+	if (!taa || !(firstPerson ? taa->Up.Deferred : taa->Up.Active)) return;
 	D3DVIEWPORT9 port = {};
 	if (FAILED(TheRenderManager->device->GetViewport(&port))) return;
 	UpscaleStruct& up = taa->Up;
@@ -211,6 +213,16 @@ void TAAEffect::UpscaleSkip(int reason) {
 }
 
 bool TAAEffect::UpscaleBegin(bool firstWorld) {
+	// UNOFFICIAL 2026-10-27 RenderScale v2: a second world scene while the frame waits for its upscale is drawn as always (constant
+	// 1 for it; UpscaleBeginEffects sets the scale again). A frame whose upscale never ran (no image space after it) is dropped here.
+	if (Up.Deferred) {
+		if (!firstWorld) { Up.SkippedFrames++; RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f); return false; }
+		Up.Deferred = false;
+		RenderRect::End();
+		Up.HistoryValid = false;
+		UpscaleReleaseTargets();
+		Logger::Log("UNOFFICIAL RenderScale v2: a frame drawn small was never upscaled (no image space after it); dropped.");
+	}
 	Up.Active = false;
 	UpscaleReleaseTargets();
 	RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -271,7 +283,9 @@ bool TAAEffect::UpscaleBegin(bool firstWorld) {
 	Up.Camera = camera;
 	Up.PortSet = true;
 	Up.Active = true;
-	RenderScaleConstant = D3DXVECTOR4((float)renderWidth / (float)width, (float)renderHeight / (float)height, 1.0f, 1.0f);
+	// UNOFFICIAL 2026-10-27 RenderScale v2: zw = 1 / scale (Includes/RenderRect.hlsl; the water shaders read only xy).
+	const float sx = (float)renderWidth / (float)width, sy = (float)renderHeight / (float)height;
+	RenderScaleConstant = D3DXVECTOR4(sx, sy, 1.0f / sx, 1.0f / sy);
 	return true;
 }
 
@@ -329,7 +343,7 @@ bool TAAEffect::UpscaleEnsureResources() {
 // D3D9: FSR's output (or, fsrOutput null, the low-resolution picture stretched: the fallback) into the world's colour target and the
 // low-resolution depth, nearest-upsampled, into its depth buffer. Everything it changes is put back except the viewport, which is left
 // at the whole screen (what the game's own next SetCameraData sets anyway).
-bool TAAEffect::UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fsrOutput) {
+bool TAAEffect::UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fsrOutput, IDirect3DTexture9* depthSource, bool colour, bool jittered) {
 	if (!Up.CompositePS || !Up.CompositeStates || !Up.Target || !Up.DepthStencil || FAILED(Up.CompositeStates->Capture())) return false;
 	IDirect3DSurface9* oldTargets[4] = {};
 	for (DWORD i = 0; i < 4; i++) if (FAILED(Device->GetRenderTarget(i, &oldTargets[i]))) oldTargets[i] = nullptr;
@@ -346,11 +360,13 @@ bool TAAEffect::UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fs
 	Device->SetViewport(&full);
 
 	IDirect3DBaseTexture9* textures[CompositeSamplers] = { fsrOutput ? (IDirect3DBaseTexture9*)fsrOutput : (IDirect3DBaseTexture9*)Up.Input.Texture,
-		Up.Input.Texture, TheTextureManager->DepthTexture, Up.Motion.Texture, Up.Input.Texture };
+		Up.Input.Texture, depthSource ? depthSource : TheTextureManager->DepthTexture, Up.Motion.Texture, Up.Input.Texture };
+	const bool shift = jittered && Up.Jittered;
 	const float constants[12] = { (float)Up.RenderWidth / (float)Up.Width, (float)Up.RenderHeight / (float)Up.Height, (float)FSRSettings.DebugView,
 		fsrOutput ? 1.0f : 0.0f, (float)Up.Width, (float)Up.Height, 0.0f, 0.0f,
-		Up.Jittered ? -Up.JitterX : 0.0f, Up.Jittered ? Up.JitterY : 0.0f, TheRenderManager->CameraData.x, TheRenderManager->CameraData.y };
+		shift ? -Up.JitterX : 0.0f, shift ? Up.JitterY : 0.0f, TheRenderManager->CameraData.x, TheRenderManager->CameraData.y };
 	SetCompositeStates(Device, Up.CompositePS, textures, constants);
+	if (!colour) Device->SetRenderState(D3DRS_COLORWRITEENABLE, 0);	// UNOFFICIAL 2026-10-27 v2: depth only (the state block puts it back)
 	const float w = (float)Up.Width - 0.5f, h = (float)Up.Height - 0.5f;
 	const CompositeVertex quad[4] = { { -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f }, { w, -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
 		{ -0.5f, h, 0.0f, 1.0f, 0.0f, 1.0f }, { w, h, 0.0f, 1.0f, 1.0f, 1.0f } };
@@ -368,7 +384,7 @@ bool TAAEffect::UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fs
 	return SUCCEEDED(drawn);
 }
 
-bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device) {
+bool TAAEffect::UpscaleCheckDrawn(IDirect3DDevice9* Device) {
 	auto fail = [this](const char* why) {
 		Logger::Log("[ERROR] UNOFFICIAL NVR DXVK: RenderScale: %s; the world is drawn at native resolution for the rest of this session.", why);
 		Up.Failed = true;
@@ -394,6 +410,15 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device) {
 			"(logged once; whole-screen ones found the viewport reset mid-scene and were put back into the render one). The scene ended with %u,%u %ux%u.",
 			drawsSmall, Up.RenderWidth, Up.RenderHeight, drawsFull, drawsOther, (unsigned)drawn.X, (unsigned)drawn.Y, (unsigned)drawn.Width, (unsigned)drawn.Height);
 	}
+	return true;
+}
+
+bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth) {
+	auto fail = [this](const char* why) {
+		Logger::Log("[ERROR] UNOFFICIAL NVR DXVK: RenderScale: %s; the world is drawn at native resolution for the rest of this session.", why);
+		Up.Failed = true;
+		return false;
+	};
 
 	if (!UpscaleEnsureResources()) {
 		fail("its textures or passes could not be made");
@@ -401,7 +426,8 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device) {
 	}
 
 	// 1. This frame's world depth, and the camera of this frame without jitter (EndJitter put the frustum back).
-	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
+	// (v2: already resolved by RenderWorldSceneGraphHook; the depth-stencil holds the weapon's depth by now.)
+	if (resolveDepth) TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 	TheRenderManager->UpdateSceneCameraData();
 	TheRenderManager->SetupSceneCamera();
 	const UINT renderWidth = Up.RenderWidth, renderHeight = Up.RenderHeight;
@@ -440,14 +466,16 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device) {
 	prep.prevProjection = Up.PrevProjection;
 	const D3DXVECTOR4 delta = TheRenderManager->CameraPosition - Up.PrevCameraPosition;
 	prep.cameraDelta = D3DXVECTOR4(delta.x, delta.y, delta.z, 0.0f);
-	prep.size = D3DXVECTOR4((float)renderWidth, (float)renderHeight, reset ? 1.0f : 0.0f, 0.0f);
+	// w: v2 (the weapon is drawn by now) = its reactive value and FSRPrep.comp's weapon rule; v1 = -1, no weapon test.
+	prep.size = D3DXVECTOR4((float)renderWidth, (float)renderHeight, reset ? 1.0f : 0.0f, resolveDepth ? -1.0f : FSRSettings.WeaponReactive);
 	ID3D9NvrExtBuffer* prepBuffer = ExtUniforms(Up.PrepUniforms, &prep, sizeof(prep));
 	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
 	if (!prepBuffer || !point) { fail("its constant buffer or sampler could not be made"); return false; }
 	{
-		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, TheTextureManager->DepthTexture), Image(2, Up.Motion.Texture, true), Image(3, Up.Depth.Texture, true), {}, {} };
-		b[3].Slot = 0; b[3].Type = NVR_EXT_BIND_UNIFORM_BUFFER; b[3].pResource = prepBuffer;
-		b[4].Slot = 0; b[4].Type = NVR_EXT_BIND_SAMPLER; b[4].pResource = point;
+		NVR_EXT_RESOURCE_BINDING b[] = { Image(0, TheTextureManager->DepthTexture), Image(1, TheTextureManager->DepthTextureViewModel),
+			Image(2, Up.Motion.Texture, true), Image(3, Up.Depth.Texture, true), {}, {} };
+		b[4].Slot = 0; b[4].Type = NVR_EXT_BIND_UNIFORM_BUFFER; b[4].pResource = prepBuffer;
+		b[5].Slot = 0; b[5].Type = NVR_EXT_BIND_SAMPLER; b[5].pResource = point;
 		NVR_EXT_DISPATCH_DESC dispatch = {};
 		UInt32 push = 0;
 		dispatch.pPipeline = Up.Prep;
@@ -514,7 +542,16 @@ void TAAEffect::UpscaleWorld() {
 	{
 		static GpuTimer timer("FSR upscale (RenderScale)");
 		GpuProfileScope gpu(timer, device);
-		ok = UpscaleRun(device);
+		ok = UpscaleCheckDrawn(device);
+		// UNOFFICIAL 2026-10-27 RenderScale v2 (LowResEffects): no upscale here; the weapon and NVR's pre-tonemap effects run in the
+		// same top-left rect and UpscaleAfterEffects upscales after them (the targets stay held until then). Needs the pre-tonemap
+		// chain (RenderPreTonemapping); else, or without its resources, v1 below.
+		if (ok && FSRSettings.LowResEffects && TheSettingManager->SettingsMain.Main.RenderPreTonemapping && UpscaleEnsureResources()) {
+			Up.Active = false;
+			Up.Deferred = true;
+			return;
+		}
+		if (ok) ok = UpscaleRun(device);
 		// A frame that failed after the world was drawn small: the low-resolution picture stretched (bilinear) and the depth upsampled,
 		// so the frame is whole; the next frames are at native resolution (Failed).
 		if (!ok && !Up.Whole && Up.CompositePS && Up.CompositeStates && Up.Input.Surface) {
@@ -525,6 +562,68 @@ void TAAEffect::UpscaleWorld() {
 			}
 		}
 	}
+	UpscaleFinish(ok, false);
+}
+
+void TAAEffect::UpscaleBeginEffects() {
+	if (!Up.Deferred) return;
+	const float sx = (float)Up.RenderWidth / (float)Up.Width, sy = (float)Up.RenderHeight / (float)Up.Height;
+	RenderScaleConstant = D3DXVECTOR4(sx, sy, 1.0f / sx, 1.0f / sy);
+	RenderRect::Begin(sx, sy);
+}
+
+// UNOFFICIAL 2026-10-27 RenderScale v2: the frame's upscale after NVR's pre-tonemap effects (or, if they did not run, after the weapon).
+void TAAEffect::UpscaleAfterEffects(IDirect3DSurface9* GameSurface) {
+	if (!Up.Deferred) return;
+	Up.Deferred = false;
+	RenderRect::End();
+	IDirect3DDevice9* device = TheRenderManager->device;
+	bool ok = false;
+	{
+		static GpuTimer timer("FSR upscale (RenderScale v2)");
+		GpuProfileScope gpu(timer, device);
+		// The picture to upscale is where the chain left it: GameSurface (normally the world's own target).
+		if (GameSurface && GameSurface != Up.Target) {
+			D3DSURFACE_DESC desc = {};
+			if (SUCCEEDED(GameSurface->GetDesc(&desc)) && desc.Width == Up.Width && desc.Height == Up.Height && desc.MultiSampleType == D3DMULTISAMPLE_NONE) {
+				if (Up.Target) Up.Target->Release();
+				Up.Target = GameSurface;
+				Up.Target->AddRef();
+				Up.TargetFormat = desc.Format;
+				Up.Hdr = desc.Format == D3DFMT_A16B16G16R16F || desc.Format == D3DFMT_A32B32G32R32F;
+			}
+		}
+		ok = UpscaleRun(device, false);
+		if (!ok && Up.CompositePS && Up.CompositeStates && Up.Input.Surface) {
+			const RECT region = { 0, 0, (LONG)Up.RenderWidth, (LONG)Up.RenderHeight };
+			if (SUCCEEDED(device->StretchRect(Up.Target, &region, Up.Input.Surface, &region, D3DTEXF_NONE))) UpscaleComposite(device, nullptr);
+		}
+		// Every depth NVR's later effects read, full size again: the world's (the composite wrote it into the depth-stencil) and the
+		// weapon's (upsampled at its own, unjittered pixels), each resolved; then TESR_DepthBuffer and TESR_NormalsBuffer redrawn.
+		if (Up.DepthStencil && Up.CompositePS && Up.CompositeStates) {
+			IDirect3DSurface9* oldDepth = nullptr;
+			if (FAILED(device->GetDepthStencilSurface(&oldDepth))) oldDepth = nullptr;
+			device->SetDepthStencilSurface(Up.DepthStencil);
+			TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
+			if (UpscaleComposite(device, nullptr, TheTextureManager->DepthTextureViewModel, false, false)) {
+				device->SetDepthStencilSurface(Up.DepthStencil);
+				TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
+			}
+			device->SetDepthStencilSurface(oldDepth);
+			if (oldDepth) oldDepth->Release();
+		}
+	}
+	RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+	TheShaderManager->RenderDepthAndNormals(GameSurface ? GameSurface : Up.Target);
+	if (ok && !Up.V2Logged) {
+		Up.V2Logged = true;
+		Logger::Log("UNOFFICIAL RenderScale v2: NVR's effects ran at %ux%u, upscaled after them (to %ux%u by %s).", Up.RenderWidth, Up.RenderHeight,
+			Up.Width, Up.Height, Upscaler::Choose(FSRSettings.Upscaler)->Name());
+	}
+	UpscaleFinish(ok, true);
+}
+
+void TAAEffect::UpscaleFinish(bool ok, bool v2) {
 	Up.Active = false;
 	RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 	UpscaleReleaseTargets();
@@ -536,6 +635,7 @@ void TAAEffect::UpscaleWorld() {
 		Up.LoggedScale = FSRSettings.RenderScale;
 		Up.LoggedWidth = Up.RenderWidth;
 		Up.LoggedHeight = Up.RenderHeight;
+		if (v2) Logger::Log("UNOFFICIAL RenderScale v2: the first-person weapon and NVR's effects before tonemapping are drawn at that size too.");
 		Logger::Log("UNOFFICIAL NVR DXVK: RenderScale %.2f: the world scene is drawn at %ux%u (%.0f%% of the pixels) and upscaled by %s to %ux%u (%s input, jitter %d steps; "
 			"%u world passes drawn at that size this frame, %u at the whole screen).",
 			FSRSettings.RenderScale, Up.RenderWidth, Up.RenderHeight, 100.0 * Up.RenderWidth * Up.RenderHeight / ((double)Up.Width * Up.Height),

@@ -2,6 +2,7 @@
 #include "../core/GpuProfiler.h"
 #include "../core/TestTools.h"	// NVR_TEST_TOOLS (FogReferenceTest)
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 // UNOFFICIAL 2026-10-17 Skylighting v2: the quarter-resolution sky visibility on stage 12 (NVR_SkyVis), point sampled (the shader
 // does its own depth-aware upsample). Not a TESR_ sampler: those bind by their order in the file.
@@ -437,6 +438,7 @@ bool VolumetricFogEffect::RenderShadowAO(IDirect3DDevice9* Device, IDirect3DSurf
 			Device->SetTexture(8, aoTexture);
 			BindSky(Device, sky);
 			if (sunFar) BindSunFar(Device, sunFar);
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}
@@ -487,12 +489,15 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(fogSurface[0]->GetDesc(&fog)) ||
 		FAILED(fogSurface[1]->GetDesc(&fogAdd)) ||
 		original.X || original.Y ||
-		original.Width != target.Width || original.Height != target.Height ||
+		((original.Width != target.Width || original.Height != target.Height) && !RenderRect::Active()) ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
 		fog.Width != MaxQuality::Reduced(target.Width, 2) || fog.Height != MaxQuality::Reduced(target.Height, 2) ||
 		fogAdd.Width != fog.Width || fogAdd.Height != fog.Height || fogAdd.Format != fog.Format ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE)
 		return false;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: an earlier pass may have left the rect viewport; the passes below start from the whole
+	// target and ApplyViewport cuts each to its drawn part.
+	if (RenderRect::Active()) { original.Width = target.Width; original.Height = target.Height; }
 
 	// UNOFFICIAL 2026-10-26 (deep/fork-sm6, NvrSm6Shaders): both passes from their SM6 build when it is there; the D3D9 code below then
 	// sets everything up as always and only the two draws go to Sm6Pass (null: the D3D9 draws, or the hand-ported passes below).
@@ -598,7 +603,12 @@ bool VolumetricFogEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSur
 			// SM6 draw falls back to the D3D9 draw right here.
 			Sm6Pass* sm6Pass = sm6[0] ? sm6[p] : nullptr;
 			if (sm6Pass && sm6Pass->Draw(Device, combine ? &finalTarget : fogSurface, combine ? 1 : 2, combine ? ExtUv::ScreenQuad : ExtUv::TexelCentre)) result = D3D_OK;
-			else result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			else {
+				// UNOFFICIAL 2026-10-27 RenderScale v2: the half-size MRT is screen-shaped, so both passes draw their rect part (SM6 is
+				// off in rect frames).
+				RenderRect::ApplyViewport(Device);
+				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+			}
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
 		}
@@ -757,7 +767,8 @@ void VolumetricFogEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 		FAILED(RenderedSurface->GetDesc(&scratch)) || original.X || original.Y ||
 		original.Width != target.Width || original.Height != target.Height ||
 		target.Width != scratch.Width || target.Height != scratch.Height ||
-		(target.Width & 1) || (target.Height & 1)) {
+		(target.Width & 1) || (target.Height & 1) ||
+		RenderRect::Active()) {	// UNOFFICIAL 2026-10-27 RenderScale v2: the packed layout assumes the whole screen; the plain pass instead
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, PlainTechniqueIndex(techniqueIndex), ClearRenderTarget, SourceBuffer);
 		return;
 	}

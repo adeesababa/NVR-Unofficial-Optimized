@@ -378,6 +378,7 @@ bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float 
 	along = 0.0;
 	tol = 1.0;
 	if (s.z < nearZ * 2.0 || s.x < 0.002 || s.y < 0.002 || s.x > 0.998 || s.y > 0.998) return false;
+	s.xy = screenToRect(s.xy);	// UNOFFICIAL 2026-10-27 RenderScale v2: the screen position tested, the texture coordinate read
 	float4 uv = float4(s.xy, 0.0, 0.0);
 	float viewmodel = tex2Dlod(TESR_DepthBufferViewModel, uv).x;
 	if ((TESR_DepthConstants.z == 0 && viewmodel < 0.9) || (TESR_DepthConstants.z > 0 && viewmodel > 0.01)) return false;
@@ -398,6 +399,7 @@ bool SeeSurface(float3 Q, float stepSize, out float3 X, out float3 N, out float 
 float Relief(float3 Q, float3 pos, float3 N, float limit) {
 	float3 s = ProjectRel(Q);
 	if (s.z < nearZ * 2.0 || s.x < 0.002 || s.y < 0.002 || s.x > 0.998 || s.y > 0.998) return 0.0;
+	s.xy = screenToRect(s.xy);	// UNOFFICIAL 2026-10-27 RenderScale v2
 	float depth = readDepthLod(s.xy);
 	if (depth >= farZ * 0.98) return -limit;
 	return clamp(dot(toWorld(s.xy) * depth - pos, N), -limit, limit);

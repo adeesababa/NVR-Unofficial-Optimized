@@ -54,7 +54,8 @@ float4 ReducePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float farthest = 0.0, nearest = 2.0, sky = 0.0;
 	[loop] for (int y = 0; y < 8; y++) {
 		[unroll] for (int x = 0; x < 8; x++) {
-			float d = tex2Dlod(TESR_DepthBuffer, float4((first + float2(x, y)) * TESR_ReciprocalResolution.xy, 0.0, 0.0)).x;
+			// UNOFFICIAL 2026-10-27 RenderScale v2: the last blocks of a rect frame would reach past the drawn part
+			float d = tex2Dlod(TESR_DepthBuffer, float4(clampToRectIfOn((first + float2(x, y)) * TESR_ReciprocalResolution.xy, TESR_ReciprocalResolution.xy), 0.0, 0.0)).x;
 			bool surface = d > 0.0 && d < SkyDepth;
 			sky = d >= SkyDepth ? 1.0 : sky;
 			farthest = surface ? max(farthest, d) : farthest;

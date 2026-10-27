@@ -54,15 +54,72 @@ VSOUT FrameVS(VSIN IN)
 }
 
 #include "Includes/Sampling.hlsl"
+#include "Includes/RenderRect.hlsl"
+
+// UNOFFICIAL 2026-10-27 RenderScale v2: in a rect frame each level holds the picture only in its top-left part (the rest is an
+// older frame), so the taps stay inside it; native frames run the original code untouched.
+static const bool BloomRectOn = TESR_RenderScale.x < 0.9999 || TESR_RenderScale.y < 0.9999;
+float4 RectTap(uniform sampler2D buffer, float2 uv, float2 texel) { return tex2Dlod(buffer, float4(clampToRect(uv, texel), 0, 0)); }	// lod: read inside a branch (the levels have one mip)
+
+float4 DownsampleBox13Rect(uniform sampler2D buffer, float2 uv, float2 texelSize, float2 sourceTexel) {
+    const float x = texelSize.x;
+    const float y = texelSize.y;
+    float4 a = RectTap(buffer, float2(uv.x - 2 * x, uv.y + 2 * y), sourceTexel);
+    float4 b = RectTap(buffer, float2(uv.x, uv.y + 2 * y), sourceTexel);
+    float4 c = RectTap(buffer, float2(uv.x + 2 * x, uv.y + 2 * y), sourceTexel);
+    float4 d = RectTap(buffer, float2(uv.x - 2 * x, uv.y), sourceTexel);
+    float4 e = RectTap(buffer, float2(uv.x, uv.y), sourceTexel);
+    float4 f = RectTap(buffer, float2(uv.x + 2 * x, uv.y), sourceTexel);
+    float4 g = RectTap(buffer, float2(uv.x - 2 * x, uv.y - 2 * y), sourceTexel);
+    float4 h = RectTap(buffer, float2(uv.x, uv.y - 2 * y), sourceTexel);
+    float4 i = RectTap(buffer, float2(uv.x + 2 * x, uv.y - 2 * y), sourceTexel);
+    float4 j = RectTap(buffer, float2(uv.x - x, uv.y + y), sourceTexel);
+    float4 k = RectTap(buffer, float2(uv.x + x, uv.y + y), sourceTexel);
+    float4 l = RectTap(buffer, float2(uv.x - x, uv.y - y), sourceTexel);
+    float4 m = RectTap(buffer, float2(uv.x + x, uv.y - y), sourceTexel);
+    float4 boxes[5];
+    boxes[0] = (a + b + d + e) * 0.25;
+    boxes[1] = (b + c + e + f) * 0.25;
+    boxes[2] = (d + e + g + h) * 0.25;
+    boxes[3] = (e + f + h + i) * 0.25;
+    boxes[4] = (j + k + l + m) * 0.25;
+    return (boxes[0] + boxes[1] + boxes[2] + boxes[3]) * 0.125 + boxes[4] * 0.5;
+}
+
+float4 UpsampleTent9Rect(uniform sampler2D buffer, float2 uv, float2 filterRadius, float2 sourceTexel) {
+    float x = filterRadius.x;
+    float y = filterRadius.y;
+    float4 a = RectTap(buffer, float2(uv.x - x, uv.y + y), sourceTexel);
+    float4 b = RectTap(buffer, float2(uv.x, uv.y + y), sourceTexel);
+    float4 c = RectTap(buffer, float2(uv.x + x, uv.y + y), sourceTexel);
+    float4 d = RectTap(buffer, float2(uv.x - x, uv.y), sourceTexel);
+    float4 e = RectTap(buffer, float2(uv.x, uv.y), sourceTexel);
+    float4 f = RectTap(buffer, float2(uv.x + x, uv.y), sourceTexel);
+    float4 g = RectTap(buffer, float2(uv.x - x, uv.y - y), sourceTexel);
+    float4 h = RectTap(buffer, float2(uv.x, uv.y - y), sourceTexel);
+    float4 i = RectTap(buffer, float2(uv.x + x, uv.y - y), sourceTexel);
+    return (e * 4.0 + (b + d + f + h) * 2.0 + (a + c + g + i)) * (1.0 / 16.0);
+}
+
+// the upsamples' blur: clamped in a rect frame (the smaller level's texel is twice this level's)
+float4 UpsampleBlur(uniform sampler2D buffer, float2 uv, float2 filterRadius) {
+    [branch] if (BloomRectOn) return UpsampleTent9Rect(buffer, uv, filterRadius, 2.0 * TESR_BloomResolution.zw);
+    return UpsampleTent9(buffer, uv, filterRadius);
+}
+
+// the first downsample's reads of the image (twice level 0's size): a plain pass-through in native frames
+float2 FirstTap(float2 uv) { return BloomRectOn ? clampToRect(uv, 0.5 * TESR_BloomResolution.zw) : uv; }
 
 // Downsample with the 13 tap box.
 float4 Downsample(VSOUT IN, uniform sampler2D buffer) : COLOR0 {
     float2 uv = IN.UVCoord;
-    
+
     float2 texelSize = { TESR_BloomResolution.z, TESR_BloomResolution.w };
 
+    [branch] if (BloomRectOn) return DownsampleBox13Rect(buffer, uv, texelSize, 0.5 * texelSize); // UNOFFICIAL RenderScale v2: the source level is twice the size
+
     float4 downsample = DownsampleBox13(buffer, uv, texelSize);
-    
+
     return downsample;
 }
 
@@ -97,22 +154,22 @@ float4 DownsampleFirst(VSOUT IN, uniform sampler2D buffer) : COLOR0 {
     const float x = TESR_BloomResolution.z;
     const float y = TESR_BloomResolution.w;
 
-    float4 a = tex2D(buffer, float2(uv.x - 2 * x, uv.y + 2 * y));
-    float4 b = tex2D(buffer, float2(uv.x, uv.y + 2 * y));
-    float4 c = tex2D(buffer, float2(uv.x + 2 * x, uv.y + 2 * y));
+    float4 a = tex2D(buffer, FirstTap(float2(uv.x - 2 * x, uv.y + 2 * y)));
+    float4 b = tex2D(buffer, FirstTap(float2(uv.x, uv.y + 2 * y)));
+    float4 c = tex2D(buffer, FirstTap(float2(uv.x + 2 * x, uv.y + 2 * y)));
 
-    float4 d = tex2D(buffer, float2(uv.x - 2 * x, uv.y));
-    float4 e = tex2D(buffer, float2(uv.x, uv.y));
-    float4 f = tex2D(buffer, float2(uv.x + 2 * x, uv.y));
+    float4 d = tex2D(buffer, FirstTap(float2(uv.x - 2 * x, uv.y)));
+    float4 e = tex2D(buffer, FirstTap(float2(uv.x, uv.y)));
+    float4 f = tex2D(buffer, FirstTap(float2(uv.x + 2 * x, uv.y)));
 
-    float4 g = tex2D(buffer, float2(uv.x - 2 * x, uv.y - 2 * y));
-    float4 h = tex2D(buffer, float2(uv.x, uv.y - 2 * y));
-    float4 i = tex2D(buffer, float2(uv.x + 2 * x, uv.y - 2 * y));
+    float4 g = tex2D(buffer, FirstTap(float2(uv.x - 2 * x, uv.y - 2 * y)));
+    float4 h = tex2D(buffer, FirstTap(float2(uv.x, uv.y - 2 * y)));
+    float4 i = tex2D(buffer, FirstTap(float2(uv.x + 2 * x, uv.y - 2 * y)));
 
-    float4 j = tex2D(buffer, float2(uv.x - x, uv.y + y));
-    float4 k = tex2D(buffer, float2(uv.x + x, uv.y + y));
-    float4 l = tex2D(buffer, float2(uv.x - x, uv.y - y));
-    float4 m = tex2D(buffer, float2(uv.x + x, uv.y - y));
+    float4 j = tex2D(buffer, FirstTap(float2(uv.x - x, uv.y + y)));
+    float4 k = tex2D(buffer, FirstTap(float2(uv.x + x, uv.y + y)));
+    float4 l = tex2D(buffer, FirstTap(float2(uv.x - x, uv.y - y)));
+    float4 m = tex2D(buffer, FirstTap(float2(uv.x + x, uv.y - y)));
 
     [branch] if (TESR_BloomGlow.z > 0.0f || TESR_BloomGlowExtra.y > 0.0f) {
         float t = max(TESR_BloomGlow.w, 0.002f); // GlowBoost's threshold (a floor: a pitch-black cell)
@@ -149,7 +206,7 @@ float4 Upsample(VSOUT IN, uniform sampler2D buffer, uniform sampler2D addBuffer)
     
     const float2 filterRadius = { TESR_BloomData.x, TESR_BloomData.y };
     
-    float4 upsample = UpsampleTent9(buffer, uv, filterRadius);
+    float4 upsample = UpsampleBlur(buffer, uv, filterRadius);
     float4 nextMip = tex2D(addBuffer, uv);
     
     [branch] if (TESR_BloomData.z > 0.0) {
@@ -165,7 +222,7 @@ float4 UpsampleLast(VSOUT IN, uniform sampler2D buffer, uniform sampler2D addBuf
     
     const float2 filterRadius = { TESR_BloomData.x, TESR_BloomData.y };
     
-    float4 upsample = UpsampleTent9(buffer, uv, filterRadius);
+    float4 upsample = UpsampleBlur(buffer, uv, filterRadius);
     float4 nextMip = tex2D(addBuffer, uv);
     
     float3 result;

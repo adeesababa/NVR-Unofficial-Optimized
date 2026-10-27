@@ -1105,7 +1105,7 @@ float3 FogApply(float3 gammaColor, float2 uv, bool legacy, bool interior = false
 	float2 fraction = frac(position);
 	float2 baseUV = (floor(position) + 0.5) * texel;
 	float2 minUV = texel * 0.5;
-	float2 maxUV = 1 - minUV;
+	float2 maxUV = TESR_RenderScale.xy - minUV;	// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part's edge (1 at native)
 
 	float2 uv00 = clamp(baseUV, minUV, maxUV);
 	float2 uv10 = clamp(baseUV + float2(texel.x, 0), minUV, maxUV);
@@ -1214,7 +1214,7 @@ float3 CompositeAO(float3 linearColor, float2 uv)
 	const bool sky = NVR_CompositeFlags.z > 0.5;	// UNOFFICIAL Skylighting v2
 	[unroll] for (int y = 0; y < 2; ++y) {
 		[unroll] for (int x = 0; x < 2; ++x) {
-			float2 sampleUV = clamp((base + float2(x, y) + 0.5) * texel, 0.5 * texel, 1 - 0.5 * texel);
+			float2 sampleUV = clampToRect((base + float2(x, y) + 0.5) * texel, texel);	// UNOFFICIAL 2026-10-27 RenderScale v2 (as before at native)
 			float2 aoSample = tex2Dlod(NVR_AOBuffer, float4(sampleUV, 0, 0)).rg;
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1 + abs(aoSample.y - depth) / max(blurDrop, 0.001);

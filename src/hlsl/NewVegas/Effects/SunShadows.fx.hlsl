@@ -326,9 +326,10 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 		
 		// if (screen_pos.x > 0 && screen_pos.x < 1.0 && screen_pos.y > 0 && screen_pos.y <1){
 		float2 depth = {pos1.z, pos2.z};
+		// UNOFFICIAL 2026-10-27 RenderScale v2: a march leaving the drawn part would read stale texels
 		float2 depthCompare = {
-			readDepth(projectPosition(pos1).xy),
-			readDepth(projectPosition(pos2).xy),
+			readDepth(clampToRectIfOn(projectPosition(pos1).xy, TESR_ReciprocalResolution.xy)),
+			readDepth(clampToRectIfOn(projectPosition(pos2).xy, TESR_ReciprocalResolution.xy)),
 		};
 
 		float2 depthDelta = depth - depthCompare;
@@ -382,9 +383,9 @@ float4 ScreenSpaceShadowFast(VSOUT IN) : COLOR0
 			float3 pos1 = pos + step1 * step;
 			float3 pos2 = pos1 + step2 * step;
 			float2 depth = {pos1.z, pos2.z};
-			float2 depthCompare = {
-				readDepthLod(projectPosition(pos1).xy),
-				readDepthLod(projectPosition(pos2).xy),
+			float2 depthCompare = {	// (RenderScale v2: clamped to the drawn part, as above)
+				readDepthLod(clampToRectIfOn(projectPosition(pos1).xy, TESR_ReciprocalResolution.xy)),
+				readDepthLod(clampToRectIfOn(projectPosition(pos2).xy, TESR_ReciprocalResolution.xy)),
 			};
 			float2 depthDelta = depth - depthCompare;
 			occlusion += (depthDelta.x > bias && depthDelta.x < SSS_THICKNESS)/step1;
@@ -480,7 +481,7 @@ float4 SharpContactShadow(VSOUT IN) : COLOR0
 	[unroll] for (int i = 1; i <= SHARP_STEPS; i++) {
 		float t = i / (float)SHARP_STEPS;
 		float rayZ = 1.0f / lerp(invZ0, invZ1, t);
-		float delta = rayZ - readDepthLod(lerp(uv, endUV, t));
+		float delta = rayZ - readDepthLod(clampToRectIfOn(lerp(uv, endUV, t), TESR_ReciprocalResolution.xy));	// UNOFFICIAL 2026-10-27 RenderScale v2: stay in the drawn part
 		float w = 1.0f / (1.0f + t * 4.0f);                    // nearer steps count more, as the old 1 / step
 		occlusion += (delta > bias && delta < SSS_THICKNESS) * w;
 		total += w;

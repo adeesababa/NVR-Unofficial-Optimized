@@ -1,5 +1,6 @@
 #include "Specular.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 void SpecularEffect::UpdateConstants() {
 	// Dry and rain settings, blended by how much it rains.
@@ -111,6 +112,7 @@ bool SpecularEffect::RenderWithBounce(IDirect3DDevice9* Device, IDirect3DSurface
 		if (SUCCEEDED(result)) {
 			RebindSlotTextures();
 			Device->SetTexture(8, bounce); // NVR_BounceBuffer
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part in rect frames
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}

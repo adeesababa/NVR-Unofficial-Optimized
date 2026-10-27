@@ -1,5 +1,6 @@
 #include "CombineDepth.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 // The constant's registered memory: the same one SetCT uploads from (a matrix is the D3DXMATRIX as stored).
 static const D3DXVECTOR4* Registered(const char* name) {
@@ -156,6 +157,7 @@ bool CombineDepthEffect::RenderWithNormals(IDirect3DDevice9* Device, IDirect3DSu
 			result = Effect->BeginPass(0);
 			if (SUCCEEDED(result)) {
 				if (check) LogMergedState(Device, *caps, depthDesc, normalsDesc, depthStencil);
+				RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 			}

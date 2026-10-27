@@ -9,12 +9,16 @@
 //             d = far / (far - near) * (1 - near / z); 1 at the far plane. g = reactive mask: 0 (the weapon is not drawn yet; it is
 //             drawn after the upscale at full resolution).
 // The world depth is the game's INTZ depth buffer (TESR_DepthBufferWorld), read as CombineDepth.frag reads it (toVS).
+// UNOFFICIAL 2026-10-27 RenderScale v2 (LowResEffects): the upscale runs after the weapon (drawn into the same rect, not jittered):
+// size.w >= 0 = the weapon's reactive value, its pixels (t_viewmodel > 0) then get FSRPrep.comp's treatment (motion 0, depth 0,
+// reactive w). size.w < 0 (v1: no weapon yet) = no weapon test, as before.
 #extension GL_GOOGLE_include_directive : require
 #include "Common.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 1, binding = 0) uniform texture2D t_worldDepth;  // TESR_DepthBufferWorld (INTZ, this frame's world)
+layout(set = 1, binding = 1) uniform texture2D t_viewmodel;   // TESR_DepthBufferViewModel (> 0 on the weapon; v2 only)
 layout(set = 1, binding = 2, rg16f) writeonly uniform image2D o_motion;
 layout(set = 1, binding = 3, rg32f) writeonly uniform image2D o_depth;
 
@@ -25,7 +29,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraData;            // TESR_CameraData: x near, y far
     vec4 prevProjection;        // x, y: last upscaled frame's projMatrix._11, _22
     vec4 cameraDelta;           // xyz: camera position this frame minus last upscaled frame's
-    vec4 size;                  // xy render size, z: 1 = no history (motion 0)
+    vec4 size;                  // xy render size, z: 1 = no history (motion 0), w: weapon reactive value (< 0: no weapon test)
 } cb;
 
 layout(push_constant) uniform Push {
@@ -55,6 +59,7 @@ void main() {
 
     float viewZ0 = toVS(texelFetch(sampler2D(t_worldDepth, POINT_S), pixel, 0).x);
     float linear01 = viewZ0 / farZ;
+    bool weapon = cb.size.w >= 0.0 && texelFetch(sampler2D(t_viewmodel, POINT_S), pixel, 0).x > 0.0;
 
     // TAA.glsl Reproject, line for line (as FSRPrep.comp).
     vec3 cameraVector = toWorld(uv) * (linear01 * farZ);
@@ -68,11 +73,11 @@ void main() {
     vec2 prevUV = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 
     vec2 motion = prevUV - uv;
-    if (cb.size.z > 0.5 || viewZ <= 0.0) motion = vec2(0.0);   // no history / behind last frame's camera: no usable motion
+    if (weapon || cb.size.z > 0.5 || viewZ <= 0.0) motion = vec2(0.0);   // the weapon (fixed to the camera) / no history / behind last frame's camera
 
     float z = max(linear01 * farZ, nearZ);
     float device = clamp(farZ / (farZ - nearZ) * (1.0 - nearZ / z), 0.0, 1.0);
 
     imageStore(o_motion, pixel, vec4(motion, 0.0, 0.0));
-    imageStore(o_depth, pixel, vec4(device, 0.0, 0.0, 0.0));
+    imageStore(o_depth, pixel, vec4(weapon ? 0.0 : device, weapon ? cb.size.w : 0.0, 0.0, 0.0));
 }

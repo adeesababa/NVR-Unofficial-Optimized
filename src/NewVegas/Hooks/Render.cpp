@@ -2821,6 +2821,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();	// UNOFFICIAL 2026-10-27 RenderScale: a check of the viewport
+	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);	// v2: the weapon into the world's rect
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
@@ -2871,6 +2872,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();	// UNOFFICIAL 2026-10-27 RenderScale: a check of the viewport
+	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);	// v2: the weapon into the world's rect
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
@@ -3199,6 +3201,17 @@ float __fastcall GetWaterHeightLODHook(TESWorldSpace* This, UInt32 edx) {
 bool bSkippedRender_RenderedMenu = false;
 bool bDoneRender_LockPickMenu = false;
 
+// UNOFFICIAL 2026-10-27 RenderScale v2: a frame drawn small (world + weapon) is upscaled before the game's image space, also on the
+// paths below that skip NVR's effects. Surface: the scene target when the caller has it, else the game's source target's.
+static void FlushRenderScale(BSRenderedTexture* SourceTarget, IDirect3DSurface9* Surface = nullptr) {
+	TAAEffect* taa = TheShaderManager->Effects.TAA;
+	if (!taa || !taa->UpscalePending()) return;
+	IDirect3DSurface9* own = nullptr;
+	if (!Surface && SourceTarget && SourceTarget->GetD3DTexture(0)) SourceTarget->GetD3DTexture(0)->GetSurfaceLevel(0, &own);
+	taa->UpscaleAfterEffects(Surface ? Surface : own);
+	if (own) own->Release();
+}
+
 void(__cdecl* ProcessImageSpaceShaders)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*) = (void(__cdecl*)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*))Hooks::ProcessImageSpaceShaders;
 void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTexture* SourceTarget, BSRenderedTexture* DestinationTarget) {
 	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL the skin blur
@@ -3215,6 +3228,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	if (bLive3DMenu) {
 		if (bDoneRender_LockPickMenu) {
 			bDoneRender_LockPickMenu = false;
+			FlushRenderScale(SourceTarget);	// UNOFFICIAL 2026-10-27 RenderScale v2
 			ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
 			return;
 		}
@@ -3229,6 +3243,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	if (bLiveRenderedMenu) {
 		if (!bSkippedRender_RenderedMenu) {
 			bSkippedRender_RenderedMenu = true;
+			FlushRenderScale(SourceTarget);	// UNOFFICIAL 2026-10-27 RenderScale v2
 			ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
 			return;
 		}
@@ -3255,6 +3270,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		BloomEffect* bloom = TheShaderManager->Effects.Bloom;
 		const float bloomFlag = bloom ? bloom->Constants.ExtraData.x : 0.0f;
 		if (bloom && TheSettingManager->SettingsMain.Main.MenuSceneGuard) bloom->Constants.ExtraData.x = 0.0f;
+		FlushRenderScale(SourceTarget);	// UNOFFICIAL 2026-10-27 RenderScale v2
 		ProcessImageSpaceShaders(Renderer, SourceTarget, DestinationTarget);
 		if (bloom) bloom->Constants.ExtraData.x = bloomFlag;
 #if NVR_TEST_TOOLS
@@ -3301,9 +3317,13 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		RenderState->SetRenderState(D3DRS_NORMALIZENORMALS, D3DZB_FALSE, RenderStateArgs);
 		RenderState->SetRenderState(D3DRS_POINTSIZE, 810365505, RenderStateArgs); // fix flickering linked to alpha somehow
 
+		// UNOFFICIAL 2026-10-27 RenderScale v2 (TAAUpscale.cpp): in a frame drawn small, NVR's effects run in its rect.
+		if (TheShaderManager->Effects.TAA) TheShaderManager->Effects.TAA->UpscaleBeginEffects();
 		TheShaderManager->RenderEffectsPreTonemapping(GameSurface);
-	
+
 	}
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the upscale after them (also when the chain did not run); a no-op unless the frame waits for it.
+	FlushRenderScale(SourceTarget, GameSurface);
 
 	{
 		static GpuTimer imageSpaceTimer("Game image space");

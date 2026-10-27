@@ -6,6 +6,7 @@
 #include "EffectRecord.h"
 #include "ShaderCollection.h"
 #include "../Effects/Effects.h"
+#include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 struct ShaderConstants {
 	
@@ -128,7 +129,8 @@ public:
 	ShaderCollection*		GetShaderCollectionByName(const char* Name);
 	void					ClearShaderSamplers(const char* TextureName, size_t Length);
 	void					RegisterConstant(const char* Name, D3DXVECTOR4* FloatValue);
-	void					CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex);
+	void					RenderDepthAndNormals(IDirect3DSurface9* RenderTarget);	// UNOFFICIAL 2026-10-27: TESR_DepthBuffer + TESR_NormalsBuffer (chain start; RenderScale v2 again after its upscale)
+	void					CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex, float ScaleX = 1.0f, float ScaleY = 1.0f);
 	void					InitializeConstants();
 	void					UpdateConstants();
 	void					GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPointLight* LightsList[], NiSpotLight* SpotLightList[]);
@@ -240,6 +242,8 @@ public:
 	CustomConstants			CustomConst;
 	std::map<std::string, D3DXVECTOR4*>	ConstantsTable;
 	IDirect3DVertexBuffer9*	FrameVertex;
+	IDirect3DVertexBuffer9*	FrameVertexRect = nullptr;	// UNOFFICIAL 2026-10-27 RenderScale v2: uv 0..Scale (RenderRect::ApplyViewport)
+	float					FrameVertexRectScale[2] = { 0.0f, 0.0f };
 	FrameChain				Chain;
 	NiD3DVertexShader*		WaterVertexShaders[51];
 	NiD3DPixelShader*		WaterPixelShaders[51];

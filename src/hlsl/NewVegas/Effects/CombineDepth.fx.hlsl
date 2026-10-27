@@ -3,6 +3,8 @@ float4 TESR_CameraData;
 
 float4x4 TESR_InvProjectionTransform;
 
+#include "Includes/RenderRect.hlsl"	// UNOFFICIAL 2026-10-27 RenderScale v2: uv is rect uv (0..TESR_RenderScale.xy)
+
 sampler2D TESR_DepthBufferWorld : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
@@ -74,6 +76,7 @@ float4 TESR_ReciprocalResolution;
 
 float2 CombinedDepthAt(float2 uv)
 {
+	uv = clampToRect(uv, TESR_ReciprocalResolution.xy);	// UNOFFICIAL 2026-10-27 RenderScale v2: not past the drawn part (CLAMP sampling: same off)
 	float worldDepth = tex2D(TESR_DepthBufferWorld, uv).x;
 	float viewModelDepth = tex2D(TESR_DepthBufferViewModel, uv).x;
 	float combinedViewZ = ToVS(worldDepth, nearZ, farZ);
@@ -84,7 +87,8 @@ float2 CombinedDepthAt(float2 uv)
 
 float3 ReconstructPositionFromDepth(float2 uv, float depth)
 {
-	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
+	float2 s01 = rectToScreen(uv);	// UNOFFICIAL 2026-10-27 RenderScale v2
+	float4 viewSpace = mul(float4(s01.x * 2 - 1, (1 - s01.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
 	return viewSpace.xyz / viewSpace.w;
 }
 

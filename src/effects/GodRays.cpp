@@ -2,6 +2,7 @@
 #include "../core/GpuProfiler.h"
 #include "../core/TestTools.h"	// NVR_TEST_TOOLS (off in release builds)
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 /*
 * UNOFFICIAL 2026-10-25 (NVR DXVK, [Main.Main.Performance] NvrDxvkPasses): DedicatedGodRays' six passes and GodRaysMaxReduce as
@@ -510,11 +511,14 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 		FAILED(Device->GetViewport(&original)) || FAILED(RenderTarget->GetDesc(&target)) ||
 		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(surfaces[0]->GetDesc(&rays)) ||
 		original.X || original.Y ||
-		original.Width != target.Width || original.Height != target.Height ||
+		((original.Width != target.Width || original.Height != target.Height) && !RenderRect::Active()) ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
 		rays.Width != (target.Width + divisor - 1) / divisor || rays.Height != (target.Height + divisor - 1) / divisor ||
 		target.MultiSampleType != D3DMULTISAMPLE_NONE)
 		return false;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: an earlier pass may have left the rect viewport; the passes start from the whole target
+	// and ApplyViewport cuts each to its drawn part.
+	if (RenderRect::Active()) { original.Width = target.Width; original.Height = target.Height; }
 
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
@@ -581,6 +585,10 @@ bool GodRaysEffect::RenderDedicated(IDirect3DDevice9* Device, IDirect3DSurface9*
 			if (FAILED(result)) break;
 			if (p > 0) Device->SetTexture(5, textures[combine ? 0 : (p - 1) & 1]);
 			if (p >= 2) Device->SetTexture(6, maskReduced ? maxTexture[set][maxSteps[set] - 1] : nullptr);
+			// UNOFFICIAL 2026-10-27 RenderScale v2: the half-size targets are screen-shaped, so every pass (combine too) draws into the
+			// rect part and the rect uv of the half targets matches the full ones. (The max reduction reads its whole source: stale texels
+			// past the rect can only stop a skip, never cause one.)
+			RenderRect::ApplyViewport(Device);
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
@@ -677,6 +685,9 @@ void GodRaysEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTa
 			return;
 		}
 	}
+
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the packed and legacy paths assume whole-screen uv; in a rect frame no rays rather than wrong ones.
+	if (RenderRect::Active()) return;
 
 	D3DXHANDLE technique = Effect->GetTechnique(techniqueIndex);
 	D3DXTECHNIQUE_DESC description = {};

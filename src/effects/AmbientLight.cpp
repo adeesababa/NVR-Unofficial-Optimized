@@ -3,6 +3,7 @@
 #include "../core/FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 AmbientLightBlurCompute
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 void AmbientLightEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_AmbientLightData", &Constants.Data);
@@ -269,6 +270,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 		Effect->SetVector(h, &origin1);
 	}
 	Device->GetViewport(&original);
+	RenderRect::WholeViewport(Device, original);	// UNOFFICIAL 2026-10-27 RenderScale v2: not an earlier pass's drawn part
 	Effect->SetTechnique(technique);
 	SetCT();	// the TESR_ textures (depth, normals) for the screen memory
 	Effect->SetVector(originHandle, &origin);
@@ -334,6 +336,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 					Device->SetTexture(6, gridScreen[read]);					// NVR_GridScreenOld
 					Device->SetTexture(7, gridScreenColor[read]);				// NVR_GridScreenColorOld
 					if (wallsKeep && gridWallsValid) Device->SetTexture(8, gridScreenWalls[read]);	// NVR_GridWallsOld
+					RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the atlas stays whole (only the whole-target quad back)
 					result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 					HRESULT endResult = Effect->EndPass();
 					if (SUCCEEDED(result)) result = endResult;
@@ -399,6 +402,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 				Device->SetTexture(5, gridGeometry);	// NVR_GridGeometry (NVR_ALPrep's stage)
 				if (colour) { Device->SetTexture(13, gridWaveColor[wave]); Device->SetTexture(14, gridAccumColor[accum]); }
 			}
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the atlas stays whole
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;
@@ -466,6 +470,7 @@ void AmbientLightEffect::SmoothComputeRelease() {
 
 bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height) {
 	if (!TheSettingManager->SettingsMain.Main.AmbientLightSmoothCompute || smoothComputeFailed || !DxvkCompute::Available()) return false;
+	if (RenderRect::Active()) return false;	// UNOFFICIAL 2026-10-27 RenderScale v2: the dispatch covers the whole texture; the D3D9 passes keep to the rect
 	// (2026-10-26) NormalSmoothingWorld widens the reach per pixel (up to 192 texels), which the compute version's fixed reach cannot follow.
 	if (normalSmoothing > SmoothComputeMaxReach || normalSmoothingWorld > 0.0f) {
 		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d (or NormalSmoothingWorld %.1f) is beyond the compute version (reach %d): the D3D9 passes are used.", normalSmoothing, normalSmoothingWorld, SmoothComputeMaxReach);
@@ -549,6 +554,7 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 	if (!technique || !smooth || !layoutHandle || !edgesHandle || !prepTexture || !prepSurface || !bufferTexture[1] || !bufferSurface[1] ||
 		FAILED(Effect->GetTechniqueDesc(smooth, &description)) || description.Passes != 2 || FAILED(Device->GetViewport(&original)) ||
 		FAILED(bufferSurface[1]->GetDesc(&half))) return false;
+	RenderRect::WholeViewport(Device, original);	// UNOFFICIAL 2026-10-27 RenderScale v2: the layout is for the whole target
 	D3DVIEWPORT9 reduced = original;
 	reduced.Width = half.Width;
 	reduced.Height = half.Height;
@@ -579,6 +585,7 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 		if (SUCCEEDED(result)) {
 			result = Effect->BeginPass(0);	// Prepare -> prep
 			if (SUCCEEDED(result)) {
+				RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 			}
@@ -599,6 +606,7 @@ bool AmbientLightEffect::RenderPrepare(IDirect3DDevice9* Device) {
 				result = Device->SetRenderTarget(0, p == 0 ? bufferSurface[1] : prepSurface);
 				if (SUCCEEDED(result)) result = Effect->BeginPass(p);
 				if (FAILED(result)) break;
+				RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 				Effect->EndPass();
 			}
@@ -642,6 +650,7 @@ namespace {
 
 bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width, UINT height) {
 	if (!TheSettingManager->SettingsMain.Main.AmbientLightBlurCompute || !DxvkCompute::Available()) return false;
+	if (RenderRect::Active()) return false;	// UNOFFICIAL 2026-10-27 RenderScale v2: the D3D9 blur passes keep to the rect
 	if (!blurComputeOk) {
 		if (blurComputeTried) return false;
 		blurComputeTried = true;
@@ -926,6 +935,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		renderTime = 0;
 		return;
 	}
+	RenderRect::WholeViewport(Device, original);	// UNOFFICIAL 2026-10-27 RenderScale v2: the layout is for the whole target
 	// UNOFFICIAL 2026-10-20 (skyamb) Skylighting (AmbientOcclusion.h): outdoors with it on, the same passes with the sky test's factor in
 	// Apply (technique AmbientLightSky, stage 10), from the AO's sky target at this effect's half resolution: the AO's sky pass wrote it
 	// just before (ShaderManager).
@@ -1038,7 +1048,11 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	// UNOFFICIAL Temporal: last frame's bounce is usable if it was made a moment ago in the same cell (a load or a door means
 	// another place); the depth test in the shader catches the rest.
 	const double now = TheFrameRateManager->Time;
-	const bool continuous = historyValid && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCellChanged;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: a history drawn at another scale (or full vs rect) holds other texels: start again.
+	static bool lastRect = false;
+	const bool rectSame = RenderRect::Active() == lastRect && !RenderRect::ScaleChanged();
+	lastRect = RenderRect::Active();
+	const bool continuous = historyValid && rectSame && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCellChanged;
 	FlickerWatch::Flags |= FlickerWatch::kALRendered | (continuous ? FlickerWatch::kALHistory : 0u);	// UNOFFICIAL 2026-10-23 test only
 	D3DXHANDLE temporalHandle = ParameterHandle(paramTemporal, "NVR_ALTemporal");
 	D3DXHANDLE reprojectHandle = ParameterHandle(paramReproject, "NVR_ALReproject");
@@ -1205,6 +1219,13 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 				TheRenderManager->renderState->NoteDeviceTexture(10, skyTexture);
 			}
 			Device->SetTexture(1, scene);	// TESR_SourceBuffer slot: the current image
+			// UNOFFICIAL 2026-10-27 RenderScale v2: the half buffers and the frame keep to their rect. The stats target (32 x 18 may
+			// look screen-shaped) stays whole: StatsSample reads the rect's part of the picture itself (screenToRect).
+			RenderRect::ApplyViewport(Device);
+			if (p == 5 && RenderRect::Active()) {
+				Device->SetViewport(&statsViewport);
+				Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, sizeof(FrameVS));
+			}
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);

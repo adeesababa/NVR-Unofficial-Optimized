@@ -2,6 +2,7 @@
 #include "BounceLightMath.h"
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 void BounceLightEffect::UpdateConstants() {
 }
@@ -525,6 +526,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 		lastValid = historyValid = false;
 		return;
 	}
+	RenderRect::WholeViewport(Device, original);	// UNOFFICIAL 2026-10-27 RenderScale v2: the layout is for the whole target
 	auto timer = TimeLogger();
 	FrameChain& chain = TheShaderManager->Chain;
 	const bool chained = chain.Owns(RenderTarget, RenderedSurface);
@@ -544,7 +546,11 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	// UNOFFICIAL: what last frame left can be used if its low-resolution passes ran at this resolution a moment ago, in
 	// the same cell (a load or a door means another place); the depth test in the shader catches the rest.
 	const double now = TheFrameRateManager->Time;
-	const bool continuous = lastValid && lastQuarter == quarter && now - lastTime >= 0.0 && now - lastTime < 0.5 &&
+	// UNOFFICIAL 2026-10-27 RenderScale v2: last frame's buffers drawn at another scale (or full vs rect) hold other texels.
+	static bool lastRect = false;
+	const bool rectSame = RenderRect::Active() == lastRect && !RenderRect::ScaleChanged();
+	if (!onlyCombine) lastRect = RenderRect::Active();
+	const bool continuous = lastValid && rectSame && lastQuarter == quarter && now - lastTime >= 0.0 && now - lastTime < 0.5 &&
 		!TheShaderManager->GameState.isCellChanged;
 	const float frameSeconds = continuous ? (float)(now - lastTime) : 0.0f;
 	// UNOFFICIAL NeonSpillHoldAfterTurn: how long the view has stood still. Turning or moving restarts it (a hair of float noise in
@@ -699,6 +705,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 			// the combine's debug view 1; nothing otherwise.
 			Device->SetTexture(8, p == 1 && spill ? spillResult : combine && debugView == 1 ? spillTexture[0] : nullptr);
 			Device->SetTexture(2, scene); // TESR_SourceBuffer slot: the current image
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the low buffers and the frame keep to their rect
 			{
 				GpuProfileScope gpu(passTimers[p], Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);

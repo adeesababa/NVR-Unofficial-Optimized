@@ -125,12 +125,14 @@ float GradientNoise(float2 pixel) {
 }
 
 // View-space position of a screen point at a linear depth (NVR's projection has no off-centre terms).
+// (UNOFFICIAL 2026-10-27 RenderScale v2: uv is a texture coordinate; ToScreen returns one too. Edge tests compare rectToScreen of it.)
 float3 ViewPosition(float2 uv, float depth) {
+	uv = rectToScreen(uv);
 	return float3((uv.x * 2.0 - 1.0) / TESR_ProjectionTransform[0][0], (1.0 - uv.y * 2.0) / TESR_ProjectionTransform[1][1], 1.0) * depth;
 }
 
 float2 ToScreen(float3 view) {
-	return float2(view.x * TESR_ProjectionTransform[0][0] / view.z * 0.5 + 0.5, 0.5 - view.y * TESR_ProjectionTransform[1][1] / view.z * 0.5);
+	return screenToRect(float2(view.x * TESR_ProjectionTransform[0][0] / view.z * 0.5 + 0.5, 0.5 - view.y * TESR_ProjectionTransform[1][1] / view.z * 0.5));
 }
 
 bool IsWeapon(float2 uv) {
@@ -345,7 +347,7 @@ float4 CapturePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float3 view = WorldToViewDir(dir);
 	[branch] if (view.z > 0.05) {
 		float2 uv = ToScreen(view);
-		[branch] if (all(uv > 0.005) && all(uv < 0.995)) {
+		[branch] if (all(rectToScreen(uv) > 0.005) && all(rectToScreen(uv) < 0.995)) {
 			// A cube texel covers a patch of many screen pixels (about 1.4 degrees): average a 4 x 4 grid of reads across
 			// it, so a thin neon tube counts by how much of the patch it fills instead of flickering in and out.
 			float2 du = ToScreen(WorldToViewDir(FaceDirection(CubeFace, st + float2(2.0 / CubeSize, 0.0)))) - uv;
@@ -355,7 +357,7 @@ float4 CapturePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 			[unroll] for (int y = 0; y < 4; y++) {
 				[unroll] for (int x = 0; x < 4; x++) {
 					float2 at = uv + du * ((x - 1.5) / 4.0) + dv * ((y - 1.5) / 4.0);
-					bool usable = all(at > 0.0) && all(at < 1.0) && !IsWeapon(at) && readDepthLod(at) > 40.0;
+					bool usable = all(at > 0.0) && all(at < TESR_RenderScale.xy) && !IsWeapon(at) && readDepthLod(at) > 40.0;
 					float3 c = linearize(tex2Dlod(TESR_RenderedBuffer, float4(at, 0, 0)).rgb);
 					float brightest = max(c.r, max(c.g, c.b));
 					sum += usable ? c * min(1.0, 32.0 / max(brightest, 1.0e-4)) : 0.0;
@@ -363,7 +365,7 @@ float4 CapturePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 				}
 			}
 			[branch] if (found > 0.0) {
-				float2 edge = min(uv, 1.0 - uv);
+				float2 edge = min(rectToScreen(uv), 1.0 - rectToScreen(uv));
 				float blend = CaptureBlend * saturate(min(edge.x, edge.y) * 20.0) * found / 16.0;
 				result = lerp(result, float4(sum / found, 1.0), blend);
 			}
@@ -429,7 +431,7 @@ float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 		float t = RayLength * s * s + 2.0;
 		float3 p = position + R * t;
 		float2 at = ToScreen(p);
-		[branch] if (p.z <= nearZ || any(at <= 0.0) || any(at >= 1.0)) searching = false;   // off the screen
+		[branch] if (p.z <= nearZ || any(at <= 0.0) || any(at >= TESR_RenderScale.xy)) searching = false;   // off the screen (the drawn part)
 		else {
 			float sceneZ = readDepthLod(at);
 			float behind = p.z - sceneZ;
@@ -456,7 +458,7 @@ float4 TracePS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 		// Not the weapon (it is not where the depth says, for the world), not the back of something.
 		[branch] if (!IsWeapon(hit) && dot(hitNormal, R) < 0.2) {
 			colour = linearize(tex2Dlod(TESR_RenderedBuffer, float4(hit, 0, 0)).rgb);
-			float2 edge = min(hit, 1.0 - hit);
+			float2 edge = min(rectToScreen(hit), 1.0 - rectToScreen(hit));
 			confidence = saturate(min(edge.x, edge.y) * 12.0) * (1.0 - smoothstep(0.75, 1.0, hi / RayLength));
 		}
 	}
@@ -523,8 +525,8 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float3 world = toWorld(uv) * depth;
 	float4 clip = mul(float4(world, 1.0), TESR_ReflectionsReproject);
 	float w = max(clip.w, 0.001);
-	float2 last = float2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5);
-	float inside = all(last > 0.0) && all(last < 1.0) && current.a + high.a > 0.0;
+	float2 last = screenToRect(float2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5));	// UNOFFICIAL 2026-10-27 RenderScale v2: the history is in the rect too
+	float inside = all(last > 0.0) && all(last < TESR_RenderScale.xy) && current.a + high.a > 0.0;
 	float4 history = tex2Dlod(TESR_ReflectionsHistory, float4(last, 0, 0));
 	history = clamp(history, low, high);
 	return lerp(current, history, HistoryWeight * inside);
@@ -549,7 +551,7 @@ float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 	float weights = 1.0;
 	[unroll] for (int i = 1; i <= 8; i++) {
 		float gauss = i <= radius ? exp(falloff * i * i) : 0.0;
-		float2 ua = uv + axis * i * LowTexel, ub = uv - axis * i * LowTexel;
+		float2 ua = clampToRectIfOn(uv + axis * i * LowTexel, LowTexel), ub = clampToRectIfOn(uv - axis * i * LowTexel, LowTexel);	// UNOFFICIAL 2026-10-27 RenderScale v2
 		float da = readDepthLod(ua - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy)), db = readDepthLod(ub - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));
 		float wa = gauss / (1.0 + abs(da - depth) / tolerance);
 		float wb = gauss / (1.0 + abs(db - depth) / tolerance);
@@ -603,7 +605,7 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	float weights = 1.0e-5;
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
-			float2 at = (base + float2(x, y) + 0.5) * LowTexel;
+			float2 at = clampToRectIfOn((base + float2(x, y) + 0.5) * LowTexel, LowTexel);	// UNOFFICIAL 2026-10-27 RenderScale v2
 			float tapDepth = readDepthLod(at - 0.5 * (LowTexel - TESR_ReciprocalResolution.xy));
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0 + abs(tapDepth - depth) / tolerance;

@@ -184,10 +184,11 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float3 position = toWorld(uv) * (current.b * farZ);
 	float4 clip = mul(float4(position, 1.0), TESR_VolumetricLightReproject);
 	float w = max(clip.w, 0.001);
-	float2 last = float2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5);
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the projection gives a screen position; the history holds it at its rect uv.
+	float2 last = screenToRect(float2(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5));
 	float2 history;
 	float found = HistoryAt(last, clip.w / farZ, history);
-	found *= all(last > 0.0) && all(last < 1.0);
+	found *= all(last > 0.0) && all(last < TESR_RenderScale.xy);
 
 	float2 margin = 0.1 * (high - low) + 1.0e-4;
 	history = clamp(history, low - margin, high + margin);
@@ -210,8 +211,9 @@ float4 BlurAxis(sampler2D source, float2 vpos, float2 axis) {
 	[loop] for (int i = 1; i <= 8; i++) {
 		if (i > BlurRadius) break;
 		float gauss = exp(falloff * i * i);
-		float4 a = tex2Dlod(source, float4((vpos + 0.5 + axis * i) * LowTexel, 0, 0));
-		float4 b = tex2Dlod(source, float4((vpos + 0.5 - axis * i) * LowTexel, 0, 0));
+		// UNOFFICIAL 2026-10-27 RenderScale v2: taps kept inside the drawn part (no-op at native)
+		float4 a = tex2Dlod(source, float4(clampToRectIfOn((vpos + 0.5 + axis * i) * LowTexel, LowTexel), 0, 0));
+		float4 b = tex2Dlod(source, float4(clampToRectIfOn((vpos + 0.5 - axis * i) * LowTexel, LowTexel), 0, 0));
 		float wa = gauss / (1.0 + abs(a.b - centre.b) / tolerance);
 		float wb = gauss / (1.0 + abs(b.b - centre.b) / tolerance);
 		sum += a.rg * wa + b.rg * wb;

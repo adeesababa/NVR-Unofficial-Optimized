@@ -3,6 +3,7 @@
 
 #include "Bloom.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 void BloomEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloomData", &Constants.Data);
@@ -234,6 +235,22 @@ bool BloomEffect::RenderBloomExt(IDirect3DDevice9* Device, int passes) {
 /*
 * Renders the final bloom buffer by iteratively downsampling and upsampling with intermediary blur.
 */
+// UNOFFICIAL 2026-10-27 RenderScale v2: in a rect frame each level draws into its top-left Width x Height part, with a quad of its own
+// (uv 0..Scale plus this level's half texel, as BloomVertexBuffer has); call after SetRenderTarget. Otherwise the level's usual quad.
+IDirect3DVertexBuffer9* BloomEffect::LevelQuad(int i) {
+	if (!RenderRect::Active()) return Textures.BloomVertexBuffer[i];
+	const UINT w = (UINT)Settings.Resolution[i].x, h = (UINT)Settings.Resolution[i].y;
+	const D3DXVECTOR3 key(RenderRect::ScaleX, RenderRect::ScaleY, (float)w);
+	if (!RectVertexBuffer[i] || RectVertexKey[i] != key) {
+		if (RectVertexBuffer[i]) { RectVertexBuffer[i]->Release(); RectVertexBuffer[i] = nullptr; }
+		TheShaderManager->CreateFrameVertex(w, h, &RectVertexBuffer[i], RenderRect::ScaleX, RenderRect::ScaleY);
+		RectVertexKey[i] = key;
+	}
+	const D3DVIEWPORT9 port = { 0, 0, (std::max)(1u, RenderRect::Width(w)), (std::max)(1u, RenderRect::Height(h)), 0.0f, 1.0f };
+	TheRenderManager->device->SetViewport(&port);
+	return RectVertexBuffer[i] ? RectVertexBuffer[i] : Textures.BloomVertexBuffer[i];
+}
+
 void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 	if (!Enabled) {
 		renderTime = 0.0f;
@@ -260,8 +277,8 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 
 	//progressively blur & downsample
 	for (int i = 0; i < passes; i++) {
-		Device->SetStreamSource(0, Textures.BloomVertexBuffer[i], 0, sizeof(FrameVS)); // Set correct vertex buffer for given resolution.
 		Device->SetRenderTarget(0, Textures.BloomSurface[i]);  // Render to correct bloom buffer.
+		Device->SetStreamSource(0, LevelQuad(i), 0, sizeof(FrameVS)); // Set correct vertex buffer for given resolution (UNOFFICIAL RenderScale v2: after the target, LevelQuad sets the viewport).
 
 		Constants.Resolution = Settings.Resolution[i];
 		RenderPass(Device, passNumber, true);
@@ -272,8 +289,8 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 
 	//progressively blur & upsample and combine
 	for (int i = passes - 2; i >= 0; i--) {
-		Device->SetStreamSource(0, Textures.BloomVertexBuffer[i], 0, sizeof(FrameVS)); // Set correct vertex buffer for given resolution.
 		Device->SetRenderTarget(0, Textures.BloomSurface[i]);  // Render to correct bloom buffer.
+		Device->SetStreamSource(0, LevelQuad(i), 0, sizeof(FrameVS)); // Set correct vertex buffer for given resolution (UNOFFICIAL RenderScale v2: after the target, LevelQuad sets the viewport).
 
 		if (Constants.Data.z > 0.0f) {
 			Constants.Data.x = Settings.Resolution[i+1].z; // Pixel size x axis of the upsampled texture.

@@ -184,9 +184,10 @@ float4 Flashlight(VSOUT IN) : COLOR0
 float4 BoxBlurMin (VSOUT IN, uniform sampler2D buffer, uniform float scaleFactor) :COLOR0
 {
 	float2 io = float2(-1, 1) * 0.5;
-	clip((IN.UVCoord <= scaleFactor) - 1);
+	float2 part = scaleFactor * TESR_RenderScale.xy;	// UNOFFICIAL 2026-10-27 RenderScale v2: of the drawn part (as Includes/Blur.hlsl)
+	clip((IN.UVCoord <= part) - 1);
 
-	float2 maxuv = scaleFactor - 1.5 * TESR_ReciprocalResolution.xy;
+	float2 maxuv = part - 1.5 * TESR_ReciprocalResolution.xy;
 	float4 color = tex2D(buffer, IN.UVCoord);
 	color = min(color, tex2D(buffer, min(IN.UVCoord + io.xx * TESR_ReciprocalResolution.xy, maxuv)));
 	color = min(color, tex2D(buffer, min(IN.UVCoord + io.xy * TESR_ReciprocalResolution.xy, maxuv)));
@@ -202,9 +203,10 @@ float4 BoxBlurMin (VSOUT IN, uniform sampler2D buffer, uniform float scaleFactor
 float4 BoxBlurAvg (VSOUT IN, uniform sampler2D buffer, uniform float scaleFactor) :COLOR0
 {
 	float2 io = float2(-1, 1) * 0.5;
-	clip((IN.UVCoord <= scaleFactor) - 1);
+	float2 part = scaleFactor * TESR_RenderScale.xy;	// UNOFFICIAL 2026-10-27 RenderScale v2: of the drawn part (as Includes/Blur.hlsl)
+	clip((IN.UVCoord <= part) - 1);
 
-	float2 maxuv = scaleFactor - 1.5 * TESR_ReciprocalResolution.xy;
+	float2 maxuv = part - 1.5 * TESR_ReciprocalResolution.xy;
 	float4 color = tex2D(buffer, IN.UVCoord);
 	color += tex2D(buffer, min(IN.UVCoord + io.xx * TESR_ReciprocalResolution.xy, maxuv));
 	color += tex2D(buffer, min(IN.UVCoord + io.xy * TESR_ReciprocalResolution.xy, maxuv));

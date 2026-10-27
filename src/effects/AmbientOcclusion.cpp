@@ -1,6 +1,7 @@
 #include "AmbientOcclusion.h"
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 // UNOFFICIAL 2026-10-16 GTAO ([Shaders.AmbientOcclusion.GTAO]; AmbientOcclusion.fx.hlsl GTAOValue): x 1 on (the DedicatedGTAO
 // technique instead of DedicatedAO), w largest search radius in pixels. Kept out of AmbientOcclusion.h.
@@ -396,6 +397,7 @@ void AmbientOcclusionEffect::RenderSkyVisibility(IDirect3DDevice9* Device, IDire
 			if (smoothedNormals) { Device->SetTexture(9, smoothedNormals); TheRenderManager->renderState->NoteDeviceTexture(9, smoothedNormals); }
 			TheRenderManager->renderState->NoteDeviceTexture(6, orthoMap);
 			TheRenderManager->renderState->NoteDeviceTexture(8, sunMask);
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			Effect->EndPass();
 		}
@@ -460,7 +462,9 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		FAILED(Device->GetViewport(&original)) || FAILED(RenderTarget->GetDesc(&target)) ||
 		FAILED(RenderedSurface->GetDesc(&scratch)) || FAILED(surfaces[0]->GetDesc(&aoTarget)) ||
 		original.X || original.Y ||
-		original.Width != target.Width || original.Height != target.Height ||
+		// UNOFFICIAL 2026-10-27 RenderScale v2: in a rect frame an earlier pass may have left the target's drawn part as the viewport
+		!((original.Width == target.Width && original.Height == target.Height) || (RenderRect::Active() &&
+			original.Width == RenderRect::Width(target.Width) && original.Height == RenderRect::Height(target.Height))) ||
 		scratch.Width != target.Width || scratch.Height != target.Height ||
 		aoTarget.Width != (target.Width + divisor - 1) / divisor || aoTarget.Height != (target.Height + divisor - 1) / divisor ||
 		aoTarget.Format != D3DFMT_G16R16F ||
@@ -470,6 +474,9 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 		EffectRecord::Render(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer);
 		return;
 	}
+	// (RenderScale v2: the layout below and the final restore are for the whole target; ApplyViewport sets the drawn part per draw.)
+	original.Width = target.Width;
+	original.Height = target.Height;
 	auto timer = TimeLogger();
 	// Under the frame chain the combine writes the chain's spare texture, which then becomes the
 	// current image; otherwise it writes the render target and is copied back as before.
@@ -541,6 +548,7 @@ void AmbientOcclusionEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9*
 			// UNOFFICIAL: keep the game's texture cache truthful (NiDX9RenderState::NoteDeviceTexture)
 			TheRenderManager->renderState->NoteDeviceTexture(5, stage5);
 			TheRenderManager->renderState->NoteDeviceTexture(2, scene);
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the AO targets and the frame keep to their rect
 			{
 				GpuProfileScope gpu(AOPassTimer(p), Device);
 				result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);

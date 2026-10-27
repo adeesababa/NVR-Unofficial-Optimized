@@ -69,6 +69,7 @@ public:
 		D3DXVECTOR4	Motion;			// UNOFFICIAL xy: the cloud pattern's move this frame (m), w: sharpness 0..1
 		D3DXVECTOR4	Tint;			// UNOFFICIAL 2026-10-25 xyz: the weather's cloud colour now (linear, its brightness taken out), w: WeatherTint
 		D3DXVECTOR4	Tower;			// UNOFFICIAL 2026-10-25 x: the ordinary layer's share of the taller one (1 off), y: towering 0..1, z: anvil 0..1
+		D3DXVECTOR4	HistoryScale = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);	// UNOFFICIAL 2026-10-27 RenderScale v2: xy the part of the history its frame drew
 	};
 	ConstantsStruct	Constants = {};
 
@@ -132,6 +133,7 @@ private:
 	UINT		frame = 0, read = 0;
 	UINT		shadowMapFrame = UINT_MAX;	// UNOFFICIAL 2026-10-21: the frame the shadow map was last drawn for
 	double		lastRenderTime = -1.0;	// TheFrameRateManager->Time of the last frame drawn
+	bool		lastRect = false;		// UNOFFICIAL 2026-10-27 RenderScale v2: the last frame drawn was a rect frame
 	UINT		lowWidth = 0, lowHeight = 0, blockWidth = 0, blockHeight = 0;
 	double		lastCloudTime = -1.0;	// UNOFFICIAL GameTime: the clouds' own smooth clock, in seconds at the normal time scale, held to the game's
 	IDirect3DSurface9*	reflectTarget = nullptr;	// UNOFFICIAL: this reflection pass's target and depth buffer (held until drawn)

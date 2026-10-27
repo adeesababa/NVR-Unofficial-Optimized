@@ -1,4 +1,5 @@
 #include "CoverMap.h"
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 // UNOFFICIAL 2026-10-27 Persistent wetness and snow cover: see CoverMap.h (design) and Effects\CoverMap.fx.hlsl (the update pass).
 
@@ -349,6 +350,7 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 				UINT passes = 0;
 				if (SUCCEEDED(Effect->Begin(&passes, NULL)) ) {
 					if (passes > 0 && SUCCEEDED(Effect->BeginPass(0))) {
+						RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the map is not screen-shaped, stays whole
 						Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 						Effect->EndPass();
 						drawn = true;

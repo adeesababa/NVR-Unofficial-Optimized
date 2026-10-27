@@ -42,6 +42,12 @@ public:
 	};
 	BloomTexturesStruct		Textures;
 
+	// UNOFFICIAL 2026-10-27 RenderScale v2: per level, the quad with uv 0..Scale and that level's own half-texel offset (the shared
+	// FrameVertexRect has the screen's); made on the first rect frame and again when the scale or the level's size changes.
+	IDirect3DVertexBuffer9*	RectVertexBuffer[MaxPasses] = {};
+	D3DXVECTOR3				RectVertexKey[MaxPasses] = {};	// ScaleX, ScaleY, level width it was made for
+	IDirect3DVertexBuffer9*	LevelQuad(int i);				// BloomVertexBuffer[i] outside rect frames; sets the rect viewport inside them
+
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	RegisterTextures();

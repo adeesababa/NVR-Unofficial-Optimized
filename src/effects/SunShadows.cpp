@@ -1,5 +1,6 @@
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 // Per-pass GPU timers nested in the caller's "Sun contact shadows": march, horizontal blur,
 // vertical blur (+ intensity), and the deferred shadow apply of the four-pass technique.
@@ -93,6 +94,7 @@ void SunShadowsEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rende
 			result = Effect->BeginPass(p);
 			if (FAILED(result)) break;
 			Device->SetTexture(3, source);
+			RenderRect::ApplyViewport(Device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part only in rect frames
 			result = Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 			HRESULT endResult = Effect->EndPass();
 			if (SUCCEEDED(result)) result = endResult;

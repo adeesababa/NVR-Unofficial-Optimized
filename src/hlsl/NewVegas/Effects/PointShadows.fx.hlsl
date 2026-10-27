@@ -227,7 +227,7 @@ float ContactOpen(float3 r0, float3 worldPos, float3 n, float3 lampWorld, float2
 		float t = (i + jitter) / 6.0f;
 		float3 s = ContactProject(start + dir * (len * t));
 		[branch] if (s.z < 1.0f || any(s.xy < 0.0f) || any(s.xy > 1.0f)) break;
-		float delta = s.z - readDepthLod(s.xy);
+		float delta = s.z - readDepthLod(screenToRect(s.xy));	// UNOFFICIAL 2026-10-27 RenderScale v2: ContactProject gives screen position
 		occ = max(occ, (delta > TESR_LampContactBias.x + s.z * TESR_LampContactBias.y && delta < TESR_LampContact.z) ? 1.0f - t : 0.0f);
 	}
 	return 1.0f - occ;

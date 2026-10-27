@@ -1,0 +1,47 @@
+#pragma once
+
+// UNOFFICIAL 2026-10-27 RenderScale v2 (docs/next/RENDERSCALE-V2.md; user: "shouldn't everything in the image be rendered lower then
+// upscaled?"). With [Shaders.TAA.FSR] / [Shaders.TAA.DLSS] RenderScale below 1, the world scene, the first-person weapon and NVR's
+// effects before tonemapping all draw at the lower internal resolution, into the TOP-LEFT part of their full-size targets, and FSR 2 /
+// DLSS upscale the frame at the end of ShaderManager::RenderEffectsPreTonemapping, before the game's image space. Nothing is
+// reallocated: a screen-shaped texture keeps its size and the effects use its top-left ScaleX x ScaleY part. Shaders see the same
+// numbers as TESR_RenderScale (xy = Scale, zw = 1 / Scale; Includes/RenderRect.hlsl). Off: On false, Scale 1, every helper a no-op.
+//
+// The state is set by TAAEffect (effects/TAAUpscale.cpp): Begin after a world scene drawn small, End right after the upscale.
+
+#include <cmath>
+
+struct IDirect3DDevice9;
+struct _D3DVIEWPORT9;	// D3DVIEWPORT9
+
+namespace RenderRect {
+	inline bool		On = false;					// this frame's NVR pre-tonemap effects draw at the internal resolution
+	inline float	ScaleX = 1.0f;				// render width / screen width (exactly, TAAEffect::Up.RenderWidth / Up.Width)
+	inline float	ScaleY = 1.0f;
+	inline float	LastScaleX = 1.0f;			// the previous rect frame's, for effects whose history must start again when it changes
+	inline float	LastScaleY = 1.0f;
+
+	inline bool Active() { return On; }
+	// The part of a w-pixel-wide / h-pixel-high screen-shaped texture the effects draw into this frame (the whole of it when off).
+	inline unsigned Width(unsigned w) { return On ? (unsigned)floorf((float)w * ScaleX + 0.5f) : w; }
+	inline unsigned Height(unsigned h) { return On ? (unsigned)floorf((float)h * ScaleY + 0.5f) : h; }
+	// True while a rect frame uses another scale than the one before (temporal effects reset their history then).
+	inline bool ScaleChanged() { return On && (ScaleX != LastScaleX || ScaleY != LastScaleY); }
+
+	// TAAEffect only: Begin after a world scene drawn small (LowResEffects), End right after the upscale.
+	inline void Begin(float sx, float sy) { On = true; ScaleX = sx; ScaleY = sy; }
+	inline void End() { if (On) { LastScaleX = ScaleX; LastScaleY = ScaleY; } On = false; ScaleX = ScaleY = 1.0f; }
+
+	// Defined in ShaderManager.cpp (they need the render manager and the shared quads; no new .cpp in the project).
+	// ScreenShaped: w x h is not larger than the screen and has its aspect (within 1 %): shadow maps, sky / LUT textures, 1x1 and
+	// small square reduction targets are not. ApplyViewport: call right before a full-screen quad's DrawPrimitive (after
+	// SetRenderTarget): in a rect frame with a screen-shaped render target 0, the viewport becomes its top-left Width x Height part
+	// and the quad with texture coordinates 0..Scale is bound (ShaderManager::FrameVertexRect); otherwise FrameVertex replaces the
+	// rect quad if that is bound and the viewport is left as SetRenderTarget set it. Off: does nothing.
+	bool ScreenShaped(unsigned w, unsigned h);
+	void ApplyViewport(IDirect3DDevice9* Device);
+	// WholeViewport: an effect that saves the viewport it starts with (to work out a layout from its size, or to put it back) calls
+	// this on what GetViewport gave: in a rect frame, the drawn part an earlier ApplyViewport left on render target 0 becomes the
+	// whole target again (ApplyViewport sets the drawn part per draw). Off, or any other viewport: unchanged.
+	void WholeViewport(IDirect3DDevice9* Device, _D3DVIEWPORT9& Viewport);
+}

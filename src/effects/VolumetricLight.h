@@ -1,5 +1,6 @@
 #pragma once
 #include "../core/TemporalHistoryStats.h"
+#include "../core/RenderRect.h"
 
 // UNOFFICIAL: volumetric sun light (Effects\VolumetricLight.fx.hlsl) -- shafts of sunlight through the air, shaded by the
 // sun's cascaded shadow maps. A half-resolution march (noise-dithered start points), an optional history blend and a
@@ -64,7 +65,9 @@ public:
 	void	UpdateSettings();
 	bool	ShouldRender();
 	void	RenderBuffers(IDirect3DDevice9* Device);	// march, history, blur: everything before the composite
-	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface ? 8 : 0; }
+	// UNOFFICIAL 2026-10-27 RenderScale v2: not the grid in a rect frame (its 8 x 8 slice atlas is screen-shaped, so the rect viewport
+	// would cut it); the march runs instead.
+	UINT	CompositeTechnique() const { return Settings.Froxels && Textures.GridSurface && !RenderRect::Active() ? 8 : 0; }
 	// UNOFFICIAL 2026-10-25 (NVR DXVK): every technique as src\hlsl\NewVegas\Compute\VolumetricLight<Technique>.frag
 	// (EffectRecord::ExtRender): the half-resolution and grid passes into the effect's own buffers (ExtDrawTo), the two
 	// composites through the frame chain. The constants go to one uniform buffer (four shadow matrices do not fit push data).
@@ -80,6 +83,7 @@ private:
 	UINT		lastRenderedFrame = 0;	// TheFrameRateManager->FrameNumber of the last frame this effect drew (UNOFFICIAL 2026-10-18: it counted
 										// UpdateConstants calls, two a frame, so last frame's history was never accepted)
 	bool		haveHistory = false;
+	bool		lastRect = false;		// UNOFFICIAL 2026-10-27 RenderScale v2: the last drawn frame was a rect frame
 	TemporalHistoryStats	stats;		// the march path's history use, for the log
 	void		ReportHistory(const char* when);
 };

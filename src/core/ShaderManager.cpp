@@ -174,23 +174,72 @@ void ShaderManager::Initialize() {
 	timer.LogTime("ShaderManager::Initialize");
 }
 
-void ShaderManager::CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex) {
-	
+void ShaderManager::CreateFrameVertex(UInt32 Width, UInt32 Height, IDirect3DVertexBuffer9** FrameVertex, float ScaleX, float ScaleY) {
+
 	void* VertexData = NULL;
 	float OffsetX = (1.0f / (float)Width) * 0.5f;
 	float OffsetY = (1.0f / (float)Height) * 0.5f;
-	
+
+	// UNOFFICIAL 2026-10-27 RenderScale v2: ScaleX/Y below 1 = the rect quad (uv 0..Scale, same half-texel offset).
 	FrameVS FrameVertices[] = {
 		{ -1.0f,  1.0f, 1.0f, 0.0f + OffsetX, 0.0f + OffsetY },
-		{ -1.0f, -1.0f, 1.0f, 0.0f + OffsetX, 1.0f + OffsetY },
-		{  1.0f,  1.0f, 1.0f, 1.0f + OffsetX, 0.0f + OffsetY },
-		{  1.0f, -1.0f, 1.0f, 1.0f + OffsetX, 1.0f + OffsetY }
+		{ -1.0f, -1.0f, 1.0f, 0.0f + OffsetX, ScaleY + OffsetY },
+		{  1.0f,  1.0f, 1.0f, ScaleX + OffsetX, 0.0f + OffsetY },
+		{  1.0f, -1.0f, 1.0f, ScaleX + OffsetX, ScaleY + OffsetY }
 	};
 	TheRenderManager->device->CreateVertexBuffer(4 * sizeof(FrameVS), D3DUSAGE_WRITEONLY, FrameFVF, D3DPOOL_DEFAULT, FrameVertex, NULL);
 	(*FrameVertex)->Lock(0, 0, &VertexData, NULL);
 	memcpy(VertexData, FrameVertices, sizeof(FrameVertices));
 	(*FrameVertex)->Unlock();
 
+}
+
+// UNOFFICIAL 2026-10-27 RenderScale v2 (core/RenderRect.h, docs/next/RENDERSCALE-V2.md).
+bool RenderRect::ScreenShaped(unsigned w, unsigned h) {
+	const unsigned sw = TheRenderManager->width, sh = TheRenderManager->height;
+	if (!w || !h || !sw || !sh || w > sw || h > sh) return false;
+	const float aspect = (float)w / (float)h, screen = (float)sw / (float)sh;
+	return fabsf(aspect - screen) <= 0.01f * screen;
+}
+
+void RenderRect::ApplyViewport(IDirect3DDevice9* Device) {
+	ShaderManager* sm = TheShaderManager;
+	if (!On) return;	// off: nothing at all (the frame exactly as before)
+	IDirect3DSurface9* target = nullptr;
+	D3DSURFACE_DESC desc = {};
+	const bool got = SUCCEEDED(Device->GetRenderTarget(0, &target)) && target && SUCCEEDED(target->GetDesc(&desc));
+	if (target) target->Release();
+	if (!got || !ScreenShaped(desc.Width, desc.Height)) {
+		// a whole-target pass: only undo our own quad (a caller's own vertex buffer stays bound)
+		IDirect3DVertexBuffer9* bound = nullptr;
+		UINT offset = 0, stride = 0;
+		if (SUCCEEDED(Device->GetStreamSource(0, &bound, &offset, &stride)) && bound) {
+			if (bound == sm->FrameVertexRect) Device->SetStreamSource(0, sm->FrameVertex, 0, sizeof(FrameVS));
+			bound->Release();
+		}
+		return;
+	}
+	if (!sm->FrameVertexRect || sm->FrameVertexRectScale[0] != ScaleX || sm->FrameVertexRectScale[1] != ScaleY) {
+		if (sm->FrameVertexRect) { sm->FrameVertexRect->Release(); sm->FrameVertexRect = nullptr; }
+		sm->CreateFrameVertex(TheRenderManager->width, TheRenderManager->height, &sm->FrameVertexRect, ScaleX, ScaleY);
+		sm->FrameVertexRectScale[0] = ScaleX;
+		sm->FrameVertexRectScale[1] = ScaleY;
+	}
+	const D3DVIEWPORT9 port = { 0, 0, Width(desc.Width), Height(desc.Height), 0.0f, 1.0f };
+	Device->SetViewport(&port);
+	Device->SetStreamSource(0, sm->FrameVertexRect ? sm->FrameVertexRect : sm->FrameVertex, 0, sizeof(FrameVS));
+}
+
+void RenderRect::WholeViewport(IDirect3DDevice9* Device, D3DVIEWPORT9& Viewport) {
+	if (!On || Viewport.X || Viewport.Y) return;
+	IDirect3DSurface9* target = nullptr;
+	D3DSURFACE_DESC desc = {};
+	const bool got = SUCCEEDED(Device->GetRenderTarget(0, &target)) && target && SUCCEEDED(target->GetDesc(&desc));
+	if (target) target->Release();
+	if (got && ScreenShaped(desc.Width, desc.Height) && Viewport.Width == Width(desc.Width) && Viewport.Height == Height(desc.Height)) {
+		Viewport.Width = desc.Width;
+		Viewport.Height = desc.Height;
+	}
 }
 
 
@@ -1473,6 +1522,35 @@ void ShaderManager::RenderEffectToRT(IDirect3DSurface9* RenderTarget, EffectReco
 };
 
 
+// UNOFFICIAL 2026-10-27 RenderScale v2: the chain's first step on its own, so TAAEffect::UpscaleAfterEffects can redraw both at full
+// size after its upscale. In a rect frame (RenderRect::On) both draw into the rect (EffectRecord / ApplyViewport).
+void ShaderManager::RenderDepthAndNormals(IDirect3DSurface9* RenderTarget) {
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	static GpuTimer depthTimer("Depth combine");
+	static GpuTimer normalsTimer("Normal reconstruction");
+	Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));
+	Device->SetFVF(FrameFVF);
+	// When the normals pass would run anyway, try producing depth and normals in one draw.
+	bool mergedNormals = false;
+	{
+		GpuProfileScope gpu(depthTimer, Device);
+		NormalsEffect* Normals = Effects.Normals;
+		if (Normals->Enabled && Normals->Effect && Normals->ShouldRender())
+			mergedNormals = Effects.CombineDepth->RenderWithNormals(Device, Normals->Textures.NormalsSurface);
+		if (!mergedNormals)
+			RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
+	}
+	{
+		GpuProfileScope gpu(normalsTimer, Device);
+		if (!mergedNormals)
+			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
+		// UNOFFICIAL 2026-10-23 (sharednormals; [Main.Main.Quality] SmoothNormals): the buffer smoothed in place, once, for every reader.
+		Effects.Normals->RenderSmooth(Device);
+		Device->SetRenderTarget(0, RenderTarget);
+	}
+	if (RenderRect::Active()) Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));	// the rect quad (ApplyViewport) does not outlive this
+}
+
 void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget) {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
 	if (!Player->parentCell) return;
@@ -1485,8 +1563,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	IDirect3DSurface9* SourceSurface = TheTextureManager->SourceSurface;
 	IDirect3DSurface9* RenderedSurface = TheTextureManager->RenderedSurface;
-	static GpuTimer depthTimer("Depth combine");
-	static GpuTimer normalsTimer("Normal reconstruction");
 	static GpuTimer pointShadowTimer("Point shadow lighting");
 	static GpuTimer sunContactTimer("Sun contact shadows");
 	static GpuTimer shadowApplyTimer("Shadow apply");
@@ -1512,24 +1588,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	PixelInspector::CaptureIf("Scene in (HDR, before NVR)", RenderTarget);
 
 	// render post process normals for use by shaders
-	// When the normals pass would run anyway, try producing depth and normals in one draw.
-	bool mergedNormals = false;
-	{
-		GpuProfileScope gpu(depthTimer, Device);
-		NormalsEffect* Normals = Effects.Normals;
-		if (Normals->Enabled && Normals->Effect && Normals->ShouldRender())
-			mergedNormals = Effects.CombineDepth->RenderWithNormals(Device, Normals->Textures.NormalsSurface);
-		if (!mergedNormals)
-			RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
-	}
-	{
-		GpuProfileScope gpu(normalsTimer, Device);
-		if (!mergedNormals)
-			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
-		// UNOFFICIAL 2026-10-23 (sharednormals; [Main.Main.Quality] SmoothNormals): the buffer smoothed in place, once, for every reader.
-		Effects.Normals->RenderSmooth(Device);
-		Device->SetRenderTarget(0, RenderTarget);
-	}
+	RenderDepthAndNormals(RenderTarget);
 	// UNOFFICIAL 2026-10-26 pixel inspector: the linear depth and the view normal every effect reads.
 	PixelInspector::CaptureIf("Depth (TESR_DepthBuffer, linear / farZ)", Effects.CombineDepth->Textures.CombinedDepthTexture, PixelInspector::Depth);
 	PixelInspector::CaptureIf("View normal (TESR_NormalsBuffer)", Effects.Normals->Textures.NormalsTexture, PixelInspector::Normal);
@@ -1590,6 +1649,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				!PointShadowForward::ExteriorBatched(GameState.isExterior) &&
 				Effects.PointShadows->Enabled && Effects.PointShadows->Effect && Effects.PointShadows->ShouldRender())
 				maskMode = LampMaskRect(maskRect, lampCount);
+			// UNOFFICIAL 2026-10-27 RenderScale v2: the rectangle is in full-screen pixels; a rect frame draws the mask into its top-left part.
+			if (maskMode == 2 && RenderRect::Active()) {
+				maskRect.left = (LONG)floorf((float)maskRect.left * RenderRect::ScaleX);
+				maskRect.top = (LONG)floorf((float)maskRect.top * RenderRect::ScaleY);
+				maskRect.right = (std::min)((LONG)ceilf((float)maskRect.right * RenderRect::ScaleX), (LONG)RenderRect::Width(TheRenderManager->width));
+				maskRect.bottom = (std::min)((LONG)ceilf((float)maskRect.bottom * RenderRect::ScaleY), (LONG)RenderRect::Height(TheRenderManager->height));
+			}
 			static int loggedMaskMode = -1;
 			if (maskMode != loggedMaskMode) {
 				// fixes-a #51: the first 20 switches only (it was a line per switch, ~380 an hour while turning); more with the F10 profile

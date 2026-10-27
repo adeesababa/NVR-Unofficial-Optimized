@@ -34,13 +34,14 @@ VSOUT FrameVS(VSIN IN)
 // because the depth buffer may be a single channel (see projectedDepthFromLinear).
 float2 DepthPair(float2 uv)
 {
-	float linear01 = tex2D(TESR_DepthBuffer, uv).x;
+	float linear01 = tex2D(TESR_DepthBuffer, clampToRect(uv, TESR_ReciprocalResolution.xy)).x;	// UNOFFICIAL 2026-10-27 RenderScale v2: not past the drawn part
 	return float2(linear01, projectedDepthFromLinear(linear01));
 }
 
 float3 ReconstructPositionFromDepth(float2 uv, float depth)
 {
-	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
+	float2 s01 = rectToScreen(uv);	// UNOFFICIAL 2026-10-27 RenderScale v2
+	float4 viewSpace = mul(float4(s01.x * 2 - 1, (1 - s01.y) * 2 - 1, depth, 1), TESR_InvProjectionTransform);
 	return viewSpace.xyz / viewSpace.w;
 }
 
@@ -118,6 +119,7 @@ technique
 // and as far as its normal is within about 40-60 degrees of the pixel's (a wall meeting the floor stays a crease). Full resolution:
 // the tolerance per pixel is half the half-resolution one's per texel.
 float3 PositionFromViewZ(float2 uv, float z) {
+	uv = rectToScreen(uv);	// UNOFFICIAL 2026-10-27 RenderScale v2
 	return float3((uv.x * 2.0f - 1.0f) / TESR_ProjectionTransform[0][0], (1.0f - uv.y * 2.0f) / TESR_ProjectionTransform[1][1], 1.0f) * z;
 }
 
@@ -135,8 +137,9 @@ float4 SmoothNormals(VSOUT IN, uniform bool alongY) : COLOR0 {
 			if (k == 0) continue;
 			float dist = abs((float)k) * spacing;
 			float2 tapUV = uv + axis * (k * spacing) * TESR_ReciprocalResolution.xy;
-			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, 1.0f) * step(0.0f, tapUV.y) * step(tapUV.y, 1.0f);
-			tapUV = saturate(tapUV);
+			// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part's edges (0..TESR_RenderScale.xy)
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, TESR_RenderScale.x) * step(0.0f, tapUV.y) * step(tapUV.y, TESR_RenderScale.y);
+			tapUV = clamp(tapUV, 0.0f, TESR_RenderScale.xy);
 			float3 tapNormal = normalize(expand((alongY ? tex2Dlod(TESR_NormalsSmoothTemp, float4(tapUV, 0.0f, 0.0f)) : tex2Dlod(TESR_NormalsBuffer, float4(tapUV, 0.0f, 0.0f))).xyz));
 			float tapZ = readDepthLod(tapUV);
 			float tolerance = max(viewZ * 0.0005f * dist, 0.5f);	// a 30-degree bend at this distance stays within it; a rock's thickness does not

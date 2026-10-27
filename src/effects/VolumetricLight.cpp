@@ -143,6 +143,9 @@ void VolumetricLightEffect::RenderBuffers(IDirect3DDevice9* Device) {
 	const UINT now = TheFrameRateManager->FrameNumber;
 	const bool drewLastFrame = lastRenderedFrame + 1 == now;
 	bool usable = temporal && haveHistory && drewLastFrame;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: a history drawn at another scale (or native vs rect) holds other texels
+	if (RenderRect::ScaleChanged() || RenderRect::Active() != lastRect) usable = false;
+	lastRect = RenderRect::Active();
 	if (usable) {
 		const double dx = (double)invView._41 - lastInvView._41, dy = (double)invView._42 - lastInvView._42,
 			dz = (double)invView._43 - lastInvView._43;

@@ -44,6 +44,7 @@ public:
 		float	RenderScale;	// [0.5-1]
 		int		Upscaler;		// 0 FSR 2, 1 DLSS (not built yet: FSR 2 runs, logged once; core/Upscaler.h)
 		int		DebugView;		// RenderScale: 0 off, 1 the low-resolution world as drawn (its corner), 2 it stretched without FSR, 3 FSR's motion input
+		bool	LowResEffects;	// UNOFFICIAL 2026-10-27 RenderScale v2: the weapon and NVR's pre-tonemap effects run small too, upscaled after them
 	};
 	FSRSettingsStruct	FSRSettings;
 
@@ -52,7 +53,7 @@ public:
 	// internal resolution its viewport is the top-left RenderWidth x RenderHeight of the screen, which these accept like the full one.
 	static bool			IsWorldViewport(const D3DVIEWPORT9& port);
 	static bool			UpscaledThisFrame();		// this frame's world was drawn at the lower resolution and upscaled (TAA's resolve skips)
-	static void			NoteWorldDraw();			// RenderPassStandard/SkinnedHook, world passes: counts which viewport they drew with (a check)
+	static void			NoteWorldDraw(bool firstPerson = false);	// RenderPassStandard/SkinnedHook, world (and v2: first-person) passes: counts which viewport they drew with (a check)
 	static D3DXVECTOR4	RenderScaleConstant;		// TESR_RenderScale: xy = render size / screen size while the low-resolution world draws, else 1
 
 	struct TAAStruct {
@@ -93,6 +94,14 @@ public:
 	// (colour, and the depth buffer nearest-upsampled), so everything after (the game's refraction, the first-person weapon, the
 	// image space and every NVR effect) sees a full-resolution picture. A no-op otherwise.
 	void	UpscaleWorld();
+	// UNOFFICIAL 2026-10-27 RenderScale v2 ([Shaders.TAA.FSR] LowResEffects, docs/next/RENDERSCALE-V2.md): UpscaleWorld only checks
+	// the world was drawn small and leaves it (UpscalePending); the first-person weapon is drawn into the same rect; the image-space
+	// hook calls UpscaleBeginEffects (RenderRect::Begin) before ShaderManager::RenderEffectsPreTonemapping and UpscaleAfterEffects
+	// after it (FSR 2 / DLSS on GameSurface's rect -> the whole of it, depths upsampled and re-resolved, CombineDepth + Normals again
+	// at full size, RenderRect::End). UpscaleAfterEffects is also the fallback for frames whose chain did not run (no-op if nothing pends).
+	bool	UpscalePending() const { return Up.Deferred; }
+	void	UpscaleBeginEffects();
+	void	UpscaleAfterEffects(IDirect3DSurface9* GameSurface);
 
 private:
 	bool		historyValid = false;
@@ -181,6 +190,8 @@ private:
 		float		LoggedScale = 0.0f;
 		UINT		LoggedWidth = 0, LoggedHeight = 0;
 		int			LastSkip = -1;
+		bool		Deferred = false;		// v2: the world (and weapon) drawn small, the upscale waits for the end of the pre-tonemap chain
+		bool		V2Logged = false;
 	};
 	UpscaleStruct	Up;
 	bool	UpscaleBegin(bool firstWorld);		// decides RenderScale for this world scene; sets the camera port; true = active
@@ -188,8 +199,12 @@ private:
 	void	UpscaleRestorePort();				// the world camera's port back (EndJitter)
 	void	UpscaleReleaseTargets();
 	bool	UpscaleEnsureResources();
-	bool	UpscaleRun(IDirect3DDevice9* Device);	// the upscale itself (UpscaleWorld)
-	bool	UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fsrOutput);	// D3D9: colour + depth into the world's targets
+	bool	UpscaleCheckDrawn(IDirect3DDevice9* Device);	// the world really was drawn small (else Failed for the session)
+	bool	UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth = true);	// the upscale itself (UpscaleWorld; v2: UpscaleAfterEffects, depth already resolved)
+	// D3D9: colour + depth into the world's targets. v2: depthSource (default the world's depth) and colour = false (depth only) for
+	// the viewmodel depth; jittered = false reads it at its own pixels (the weapon is not jittered).
+	bool	UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fsrOutput, IDirect3DTexture9* depthSource = nullptr, bool colour = true, bool jittered = true);
+	void	UpscaleFinish(bool ok, bool v2);	// after the upscale (or its failure): state off, counted, logged
 
 	bool	WillResolveThisFrame();
 

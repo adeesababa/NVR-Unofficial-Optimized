@@ -2,6 +2,7 @@
 #include <sstream>
 #include "Sm6Pass.h"
 #include "DxvkCompute.h"
+#include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 // UNOFFICIAL 2026-10-26 (deep/fork-sm6): see Sm6Pass.h. Files: tools\nvr-sm6\build.py writes them, hlsl2spv.py documents the layout.
 
@@ -9,7 +10,8 @@ static const char* const Sm6Root = "Data\\Shaders\\NewVegasReloaded\\";
 static const char* const Sm6Folder = "Data\\Shaders\\NewVegasReloaded\\Compute\\Sm6\\";
 
 bool Sm6Pass::On() {
-	return TheSettingManager->SettingsMain.Main.NvrSm6Shaders && DxvkCompute::Available() && DxvkCompute::Info().ExtVersionMinor >= 1;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: not in rect frames (the SM6 builds draw the whole target).
+	return TheSettingManager->SettingsMain.Main.NvrSm6Shaders && !RenderRect::Active() && DxvkCompute::Available() && DxvkCompute::Info().ExtVersionMinor >= 1;
 }
 
 static UInt32 Sm6Fnv32(const std::string& s) {

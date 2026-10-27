@@ -92,7 +92,8 @@ float4 InteriorShadowBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 Off
 	float4 spread = 0;
 	[unroll]
 	for (int t = 0; t < cKernelSize; t++) {
-		taps[t] = tex2Dlod(buffer, float4(IN.UVCoord + (BlurOffsets[t] * OffsetMask) * blurRadius, 0, 0));
+		// UNOFFICIAL 2026-10-27 RenderScale v2: taps kept in the drawn part (wide radius at the right / bottom edge)
+		taps[t] = tex2Dlod(buffer, float4(clampToRectIfOn(IN.UVCoord + (BlurOffsets[t] * OffsetMask) * blurRadius, TESR_ReciprocalResolution.xy), 0, 0));
 		spread = max(spread, abs(taps[t] - center));
 	}
 	[branch] if (max(spread.r, spread.g) < 0.0001f) return float4(center.rgb, 1);
@@ -104,7 +105,7 @@ float4 InteriorShadowBlur(VSOUT IN, uniform sampler2D buffer, uniform float2 Off
 	[unroll]
 	for (int i = 0; i < cKernelSize; i++)
 	{
-		float depth2 = readDepthLod(IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius);
+		float depth2 = readDepthLod(clampToRectIfOn(IN.UVCoord + (BlurOffsets[i] * OffsetMask) * blurRadius, TESR_ReciprocalResolution.xy));
 		float diff = abs(float(depth1 - depth2));
 
 		int useForBlur = (diff <= depthDrop);

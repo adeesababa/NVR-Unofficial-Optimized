@@ -54,6 +54,7 @@ float4 TESR_CloudsTint;         // UNOFFICIAL 2026-10-25 xyz: the weather's clou
 float4 TESR_WaterSettings;     // x: height of the water in view (game units)
 float4 TESR_CloudsTower;       // UNOFFICIAL 2026-10-25 Towering: x: the ordinary clouds' share of the (taller) layer (1 = off),
                                // y: towering 0..1, z: (2026-10-25) anvil 0..1
+float4 TESR_CloudsHistoryScale; // UNOFFICIAL 2026-10-27 RenderScale v2: xy: the part of the history its frame drew (1 = all; the reflection's lookup)
 
 // Declared in register order: the effect binds TESR_ samplers by declaration order (a mismatch silently swaps them).
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -423,6 +424,8 @@ float4 CatmullRom(float2 uv) {
 	float2 w12 = w1 + w2;
 	float2 offset12 = w2 / w12;
 	float2 t0 = (centre - 1.0) * LowTexel, t3 = (centre + 2.0) * LowTexel, t12 = (centre + offset12) * LowTexel;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the outer taps kept inside the drawn part (no-op at native)
+	t0 = clampToRectIfOn(t0, LowTexel); t3 = clampToRectIfOn(t3, LowTexel);
 	float4 result = 0.0;
 	result += tex2Dlod(TESR_CloudHistory, float4(t0.x, t0.y, 0, 0)) * w0.x * w0.y;
 	result += tex2Dlod(TESR_CloudHistory, float4(t12.x, t0.y, 0, 0)) * w12.x * w0.y;
@@ -476,8 +479,10 @@ float4 TemporalPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
 	float4 clip = mul(float4(previousDir, 0.0), TESR_CloudsPrevViewProj);
 	float weight = TESR_CloudsLayout.z;
 	[branch] if (clip.w <= 0.0 || weight <= 0.0) return current;
-	float2 previous = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
-	if (any(previous < 0.0) || any(previous > 1.0)) return current;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the projection gives a screen position, the history holds it at its rect uv (the CPU
+	// starts the history over when the scale changes, so last frame's part is this frame's)
+	float2 previous = screenToRect(clip.xy / clip.w * float2(0.5, -0.5) + 0.5);
+	if (outsideRect(previous)) return current;
 	float4 history = clamp(Sharpness > 0.0 ? SharpHistory(previous) : tex2Dlod(TESR_CloudHistory, float4(previous, 0, 0)), lo, hi);
 	return fresh ? lerp(current, history, weight) : history;
 }
@@ -645,7 +650,7 @@ float4 ReflectionPS(VSOUT IN, float2 vpos : VPOS, uniform bool towers) : COLOR0 
 	float2 at = clip.xy / max(clip.w, 1e-4) * float2(0.5, -0.5) + 0.5;
 	float2 edge = min(at, 1.0 - at);
 	float seen = clip.w > 0.0 ? saturate(min(edge.x, edge.y) * 20.0) : 0.0;
-	[branch] if (seen > 0.0) clouds = tex2Dlod(TESR_CloudHistory, float4(saturate(at), 0, 0));
+	[branch] if (seen > 0.0) clouds = tex2Dlod(TESR_CloudHistory, float4(saturate(at) * TESR_CloudsHistoryScale.xy, 0, 0));	// (RenderScale v2: the history's drawn part)
 	[branch] if (seen < 1.0) {
 		float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(vpos / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
 		clouds = lerp(MarchRay(dir, jitter, 0.5, false, towers), clouds, seen);

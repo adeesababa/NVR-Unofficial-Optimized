@@ -6,6 +6,7 @@
 
 #include "BloodFlow.h"
 #include "BloodFluid.h"
+#include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 #include "../core/FrameClock.h"
 
 // Game addresses (FalloutNV.exe 1.4.0.525), checked against the game's code:
@@ -1038,6 +1039,8 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	const D3DXVECTOR3 eye(cameraPosition.x, cameraPosition.y, cameraPosition.z);
 	const D3DXMATRIX& inv = TheRenderManager->InvViewMatrix;
 	const float w = (float)TheRenderManager->width, h = (float)TheRenderManager->height;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the drawn part of the screen (all of it outside rect frames); the boxes' screen bounds are 0..1 of it.
+	const float rw = (float)RenderRect::Width((unsigned)w), rh = (float)RenderRect::Height((unsigned)h);
 
 	IDirect3DSurface9* previousTarget = nullptr;
 	IDirect3DSurface9* previousDepth = nullptr;
@@ -1127,7 +1130,7 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 		MaskConstants = D3DXVECTOR4(1.0f, BloodFlowBoxes::SplatMask::E(Settings.SplatReach), BloodFlowBoxes::SplatMask::D(Settings.SplatReach, Settings.SplatDrips),
 			(float)BloodFlowBoxes::SplatMask::CellsPerRow);
 		MaskSizeConstants = D3DXVECTOR4(1.0f / BloodFlowBoxes::SplatMask::AtlasWidth, 1.0f / BloodFlowBoxes::SplatMask::AtlasHeight, (float)BloodFlowBoxes::SplatMask::CellSize, 0.0f);
-		const int bakeTriangles = Mask.Update(Items, Count, Settings.SplatReach, Settings.SplatDrips, eye, h, TheRenderManager->projMatrix._22, MaskBakeVertices);
+		const int bakeTriangles = Mask.Update(Items, Count, Settings.SplatReach, Settings.SplatDrips, eye, rh, TheRenderManager->projMatrix._22, MaskBakeVertices);
 		static int loggedMask = 0;
 		if (loggedMask < 5 && Mask.baked > 0) { loggedMask++; Logger::Log("BloodFlow: splat mask: %d cells worked out, %d splats drawn from their cell", Mask.baked, Mask.masked); }
 		if (bakeTriangles) {
@@ -1193,13 +1196,14 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	const bool chained = chain.Owns(target, rendered);
 	IDirect3DSurface9* image = chained ? TheTextureManager->RenderedSurface : target;
 	RECT area;
-	area.left = (LONG)max(0.0f, floorf(std::clamp(minU, 0.0f, 1.0f) * w) - 2.0f);
-	area.top = (LONG)max(0.0f, floorf(std::clamp(minV, 0.0f, 1.0f) * h) - 2.0f);
-	area.right = (LONG)min(w, ceilf(std::clamp(maxU, 0.0f, 1.0f) * w) + 2.0f);
-	area.bottom = (LONG)min(h, ceilf(std::clamp(maxV, 0.0f, 1.0f) * h) + 2.0f);
+	area.left = (LONG)max(0.0f, floorf(std::clamp(minU, 0.0f, 1.0f) * rw) - 2.0f);
+	area.top = (LONG)max(0.0f, floorf(std::clamp(minV, 0.0f, 1.0f) * rh) - 2.0f);
+	area.right = (LONG)min(rw, ceilf(std::clamp(maxU, 0.0f, 1.0f) * rw) + 2.0f);
+	area.bottom = (LONG)min(rh, ceilf(std::clamp(maxV, 0.0f, 1.0f) * rh) + 2.0f);
 	if (triangles && area.right > area.left && area.bottom > area.top) {
 		if (source) device->StretchRect(image, &area, source, &area, D3DTEXF_NONE);
 		device->SetRenderTarget(0, image);
+		RenderRect::ApplyViewport(device);	// UNOFFICIAL 2026-10-27 RenderScale v2: the boxes project into the drawn part
 		Effect->SetTechnique(boxes);
 		SetCT();
 		if (SUCCEEDED(Effect->Begin(&passes, 0))) {
@@ -1255,7 +1259,8 @@ void BloodFlowEffect::Render(IDirect3DDevice9* device, IDirect3DSurface9* target
 	// UNOFFICIAL 2026-10-26 BloodFluid (BloodFluid.h): the simulated blood, over BloodFlow's paint (NVR DXVK only).
 	static GpuTimer fluidTimer("  Blood fluid");
 	bool fluidDrew = false;
-	if (TheBloodFluid().On()) {
+	// UNOFFICIAL 2026-10-27 RenderScale v2: not in rect frames (its tiles and draw cover the whole screen); the simulation waits.
+	if (TheBloodFluid().On() && !RenderRect::Active()) {
 		GpuProfileScope gpu(fluidTimer, device);
 		fluidDrew = TheBloodFluid().Render(device, image, source, this);
 	}

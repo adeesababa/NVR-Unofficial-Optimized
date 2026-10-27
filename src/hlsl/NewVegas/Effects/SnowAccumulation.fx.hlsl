@@ -144,7 +144,7 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 {
 	// compute at quarter scale
     float2 uv = IN.UVCoord * 4;
-	if (uv.x > 1 || uv.y > 1) return white;
+	if (uv.x > TESR_RenderScale.x || uv.y > TESR_RenderScale.y) return white;	// UNOFFICIAL 2026-10-27 RenderScale v2: a quarter of the drawn part
 	
     float depth;
     float4 world = reconstructWorldPosition(uv, depth);

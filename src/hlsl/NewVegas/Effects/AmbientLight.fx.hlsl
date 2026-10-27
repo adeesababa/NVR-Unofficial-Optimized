@@ -133,6 +133,7 @@ float3 SunShadowApply(float3 color, float2 uv) {
 
 // View-space position (x right, y up, z forward, world units) from a screen position and the linear depth (view z / far z).
 float3 PositionFromLinear(float2 uv, float linear01) {
+	uv = rectToScreen(uv);	// UNOFFICIAL 2026-10-27 RenderScale v2: callers pass texture coordinates, the ray needs the screen position
 	float z = projectedDepthFromLinear(linear01);
 	float4 viewSpace = mul(float4(uv.x * 2 - 1, (1 - uv.y) * 2 - 1, z, 1.0f), TESR_InvProjectionTransform);
 	return viewSpace.xyz / viewSpace.w;
@@ -140,6 +141,7 @@ float3 PositionFromLinear(float2 uv, float linear01) {
 
 // View-space position from a screen position and its view depth: two multiply-adds (the projection is symmetric).
 float3 PositionFromViewZ(float2 uv, float z) {
+	uv = rectToScreen(uv);	// UNOFFICIAL 2026-10-27 RenderScale v2 (as PositionFromLinear)
 	return float3((uv.x * 2.0f - 1.0f) / TESR_ProjectionTransform[0][0], (1.0f - uv.y * 2.0f) / TESR_ProjectionTransform[1][1], 1.0f) * z;
 }
 
@@ -206,8 +208,9 @@ float4 SmoothNormal(VSOUT IN, uniform bool alongY) : COLOR0 {
 			if (k == 0) continue;
 			float dist = abs((float)k) * spacing;
 			float2 tapUV = uv + axis * (k * spacing) * NVR_ALLayout.zw;
-			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, 1.0f) * step(0.0f, tapUV.y) * step(tapUV.y, 1.0f);
-			tapUV = saturate(tapUV);
+			// UNOFFICIAL 2026-10-27 RenderScale v2: "on screen" = inside the drawn part (TESR_RenderScale.xy; 1 off: as saturate)
+			float onScreen = step(0.0f, tapUV.x) * step(tapUV.x, TESR_RenderScale.x) * step(0.0f, tapUV.y) * step(tapUV.y, TESR_RenderScale.y);
+			tapUV = clamp(tapUV, 0.0f, TESR_RenderScale.xy);
 			float tapZ; float3 tapNormal;
 			if (alongY) { float4 t = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f)); tapNormal = t.xyz; tapZ = t.w; }
 			else { float4 t = tex2Dlod(NVR_ALPrep, float4(tapUV, 0.0f, 0.0f)); tapZ = t.x; tapNormal = OctDecode(Unpack2(t.y)); }
@@ -273,11 +276,13 @@ float4 Estimate(VSOUT IN) : COLOR0 {
 		[unroll] for (int k = 0; k < STEPS; k++) {
 			float s = (k + frac(noise.y + k * 0.618034f)) / STEPS;
 			s *= s;                                              // more reads close to the pixel
-			float2 offset = omega * screenRadius * max(s, 2.0f * NVR_ALLayout.z);
+			// UNOFFICIAL 2026-10-27 RenderScale v2: screenRadius is a share of the screen; in texture coordinates x TESR_RenderScale.xy,
+			// and the march stops at the drawn part's edge (1 off: exactly as before).
+			float2 offset = omega * screenRadius * max(s, 2.0f * NVR_ALLayout.z) * TESR_RenderScale.xy;
 			[unroll] for (int side = 0; side < 2; side++) {
 				float2 sampleUV = uv + (side == 0 ? offset : -offset);
-				float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, 1.0f) * step(0.0f, sampleUV.y) * step(sampleUV.y, 1.0f);
-				sampleUV = (floor(saturate(sampleUV) / NVR_ALLayout.zw) + 0.5f) * NVR_ALLayout.zw;   // the centre of the texel read
+				float onScreen = step(0.0f, sampleUV.x) * step(sampleUV.x, TESR_RenderScale.x) * step(0.0f, sampleUV.y) * step(sampleUV.y, TESR_RenderScale.y);
+				sampleUV = (floor(clamp(sampleUV, 0.0f, TESR_RenderScale.xy) / NVR_ALLayout.zw) + 0.5f) * NVR_ALLayout.zw;   // the centre of the texel read
 				float4 texel = tex2Dlod(NVR_ALPrep, float4(sampleUV, 0.0f, 0.0f));
 				float3 delta = PositionFromViewZ(sampleUV, texel.x) - origin;
 				float dist = length(delta) + 1e-4f;
@@ -326,6 +331,7 @@ float4 Blur(VSOUT IN, uniform float2 axis) : COLOR0 {
 	[unroll] for (int i = 1; i < 4; i++) {
 		[unroll] for (int side = -1; side <= 1; side += 2) {
 			float2 tapUV = IN.UVCoord + axis * NVR_ALLayout.zw * (i * side * BlurStep);
+			tapUV = clampToRectIfOn(tapUV, NVR_ALLayout.zw);	// UNOFFICIAL 2026-10-27 RenderScale v2: no stale texels past the drawn part
 			float dz = abs(readDepthLod(tapUV) - depth);
 			float2 w = weights[i] * saturate(1.0f - dz / float2(tolerance, looseTolerance));
 			float4 tap = tex2Dlod(NVR_ALBuffer, float4(tapUV, 0.0f, 0.0f));
@@ -353,7 +359,9 @@ AccumulateOut Accumulate(VSOUT IN) {
 	float w = max(clip.w, 0.001f);
 	float3 last = float3(clip.x / w * 0.5f + 0.5f, 0.5f - clip.y / w * 0.5f, clip.w);
 	// Last frame's at that point: the four half-resolution pixels round it, bilinearly, each only if its depth matches.
-	float2 position = last.xy / NVR_ALLayout.zw - 0.5f;
+	// UNOFFICIAL 2026-10-27 RenderScale v2: last.xy is a screen position; the history holds it at screenToRect (the edge test below stays on last.xy).
+	float2 lastUV = screenToRect(last.xy);
+	float2 position = lastUV / NVR_ALLayout.zw - 0.5f;
 	float2 base = floor(position);
 	float2 f = position - base;
 	// (2026-10-14: the occlusion's own history holds the view depth too; the bounce's history is gone with the screen bounce.)
@@ -377,7 +385,7 @@ AccumulateOut Accumulate(VSOUT IN) {
 	float margin = (high - low) * 0.25f;
 	occlusionHistory = clamp(occlusionHistory, low - margin, high + margin);
 	float inside = all(last.xy > 0.0f) && all(last.xy < 1.0f) && last.z > NearFade;
-	float moved = length((last.xy - uv) / NVR_ALLayout.zw);
+	float moved = length((lastUV - uv) / NVR_ALLayout.zw);
 	float keep = NVR_ALTemporal.x / (1.0f + moved / NVR_ALTemporal.y) * saturate(found * 2.0f) * inside;
 	OUT.occlusion = float4(lerp(current.a, occlusionHistory, keep), viewZ, 0.0f, 1.0f);
 	return OUT;
@@ -507,8 +515,10 @@ ScreenOut ScreenInject(VSOUT IN) {
 	float3 view = mul(float4(centre, 0.0f), TESR_ViewTransform).xyz;
 	[branch] if (view.z < 0.5f * size) return OUT;	// behind the camera, or round it (a cell's centre half a cell ahead still counts)
 	float3 screen = projectPosition(view);
-	[branch] if (any(screen.xy < 0.0f) || any(screen.xy > 1.0f)) return OUT;
-	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z);
+	// UNOFFICIAL 2026-10-27 RenderScale v2: projectPosition gives texture coordinates; the edge is the drawn part's, the extent
+	// (a share of the screen) x TESR_RenderScale.xy.
+	[branch] if (outsideRect(screen.xy)) return OUT;
+	float2 extent = (0.6f * size) * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / (2.0f * view.z) * TESR_RenderScale.xy;
 	float3 low = centre - 0.5f * size;
 	float4 sh = 0.0f, colour = 0.0f;
 	float3 axes = 0.0f;	// (lightgrid2) the hits' |normal| per axis
@@ -516,7 +526,7 @@ ScreenOut ScreenInject(VSOUT IN) {
 	[loop] for (int j = 0; j < 4; j++) {
 		[loop] for (int i = 0; i < 4; i++) {
 			float2 uv = screen.xy + ((float2(i, j) + 0.5f) / 4.0f * 2.0f - 1.0f) * extent;
-			if (any(uv < 0.0f) || any(uv > 1.0f)) continue;
+			if (outsideRect(uv)) continue;	// (RenderScale v2)
 			float depth = readDepthLod(uv);
 			float3 p = toWorld(uv) * depth;
 			float3 inCell = p - low;
@@ -777,7 +787,8 @@ float4 StatsSample(VSOUT IN) : COLOR0 {
 	float2 cell = floor(IN.UVCoord * StatsSize);
 	float3 sum = 0.0f;
 	[unroll] for (int j = 0; j < 2; j++) {
-		[unroll] for (int i = 0; i < 2; i++) sum += StatsAt((cell * 2.0f + float2(i, j) + 0.5f) / (StatsSize * 2.0f));
+		// UNOFFICIAL 2026-10-27 RenderScale v2: the stats target stays whole (AmbientLight.cpp); its grid spans the drawn part.
+		[unroll] for (int i = 0; i < 2; i++) sum += StatsAt(screenToRect((cell * 2.0f + float2(i, j) + 0.5f) / (StatsSize * 2.0f)));
 	}
 	return float4(sum, 1.0f);
 }
@@ -808,7 +819,7 @@ float2 SkyFactorAt(float2 uv, float depth) {
 	float weights = 0.0f;
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
-			float2 tapUV = clamp((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, 0.5f * NVR_ALLayout.zw, 1.0f - 0.5f * NVR_ALLayout.zw);
+			float2 tapUV = clamp((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, 0.5f * NVR_ALLayout.zw, TESR_RenderScale.xy - 0.5f * NVR_ALLayout.zw);	// (RenderScale v2: the drawn part)
 			float3 tap = tex2Dlod(NVR_ALSkyVis, float4(tapUV, 0.0f, 0.0f)).rgb;
 			float weight = (x ? fraction.x : 1.0f - fraction.x) * (y ? fraction.y : 1.0f - fraction.y);
 			weight /= 1.0f + abs(tap.y - depth) / max(TESR_AmbientOcclusionData.z, 0.001f);
@@ -842,7 +853,7 @@ float4 Apply(VSOUT IN, uniform bool sky) : COLOR0 {
 	float weights = 1.0e-5f;
 	[unroll] for (int y = 0; y < 2; y++) {
 		[unroll] for (int x = 0; x < 2; x++) {
-			float2 tapUV = (base + float2(x, y) + 0.5f) * NVR_ALLayout.zw;
+			float2 tapUV = clampToRectIfOn((base + float2(x, y) + 0.5f) * NVR_ALLayout.zw, NVR_ALLayout.zw);	// (RenderScale v2: no stale texels)
 			float tapDepth = readDepthLod(tapUV);
 			float weight = (x ? fraction.x : 1 - fraction.x) * (y ? fraction.y : 1 - fraction.y);
 			weight /= 1.0f + abs(tapDepth - depth) / tolerance;

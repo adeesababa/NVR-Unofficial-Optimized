@@ -1,4 +1,5 @@
 #include "DxvkCompute.h"
+#include "RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
 
 ID3D9NvrExt*	DxvkCompute::Ext = nullptr;
 NVR_EXT_INFO	DxvkCompute::ExtInfo = {};
@@ -225,7 +226,9 @@ bool DxvkCompute::KeptOnD3D9(const char* Name) {
 }
 
 bool DxvkCompute::PassesOn() {
-	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the Vulkan passes are off in rect frames (they draw the whole target; Available stays
+	// true, FSR runs through the extension).
+	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && !RenderRect::Active() && Available();
 }
 
 void DxvkCompute::ProfileTick(bool On) {

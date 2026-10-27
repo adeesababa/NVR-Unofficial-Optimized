@@ -74,6 +74,8 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.33f, 1.0f) : 1.0f;
 	FSRSettings.Upscaler = dlss ? 1 : 0;
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
+	// UNOFFICIAL 2026-10-27 RenderScale v2 (TAAUpscale.cpp): also for DLSS (the same path).
+	FSRSettings.LowResEffects = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "LowResEffects") != 0;
 	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; DLSS Enabled above is real DLSS,
 	// with FSR 2 whenever it cannot run). Both read as 0 (off) when missing.
 	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperTest") != 0,
