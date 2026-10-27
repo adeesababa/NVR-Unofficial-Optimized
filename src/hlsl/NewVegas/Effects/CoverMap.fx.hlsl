@@ -2,7 +2,8 @@
 // The cover map: a top-down map round the camera (PersistentMapSize units across, PersistentMapResolution texels) in two textures
 // drawn together (two render targets of one format):
 //   main (TESR_CoverMapBuffer, what WetWorld and SnowAccumulation read): r = how wet the ground is, g = how full its puddles are,
-//     b = how deep the snow lies, a = how hard the snow there has been trodden (footprints: compacted, not removed);
+//     b = how deep the snow lies, a = footprint trails as a distance field (1 on the path, 0 at TESR_CoverMapTrail.z units: the
+//     readers draw the trodden, compacted snow from it per pixel, Includes/CoverMap.hlsl CoverMapTrodden);
 //   aux (TESR_CoverMapAux, only this file): r = the height of the top surface (0 = never seen), g = sun (1) or shade (0) at the last
 //     update, b = where the height came from (1 the ortho map, 0.5 the camera's depth).
 // It is world-fixed and wraps round: a spot's texel is its world position modulo the map's size, so it never has to be moved; when
@@ -25,7 +26,7 @@ float4 TESR_CoverMapSun;		// xyz: direction to the sun (world), w: daylight (0 n
 float4 TESR_CoverMapShade;		// x: wet shade factor, y: snow shade factor, z: camera height above the map's reference height, w: 1 = the ortho map is this frame's
 float4 TESR_CoverMapStart;		// xyz: wetness, puddle water and snow a spot starts with when it enters the window (open ground at the last update)
 float4 TESR_CoverMapFootA;		// xyz: the player's feet at the last update (relative to the camera now), w: footprint trail radius (units)
-float4 TESR_CoverMapFootB;		// xyz: the player's feet now (relative to the camera)
+float4 TESR_CoverMapFootB;		// xyz: the player's feet now (relative to the camera), w: the trail's distance field range (units; = TESR_CoverMapTrail.z)
 float4 TESR_CoverMapDebug;		// x: debug view (1: the map top-down in a corner, 2: the map painted over the world), y: corner map size (share of the screen height)
 float4x4 TESR_CoverMapOrthoInverse;			// the ortho map's light space back to camera-relative world space
 float4x4 TESR_ShadowCameraToLightTransformOrtho;
@@ -256,10 +257,12 @@ UpdateOut UpdatePS(VSOUT IN, float2 vpos : VPOS)
 	float puddle = saturate(state.g + TESR_CoverMapRates.z - TESR_CoverMapRates.w * sunWet);
 	float snow = saturate(state.b + TESR_CoverMapSnowRates.x * drift - TESR_CoverMapSnowRates.y * sunSnow);
 
-	// Footprints: the player's path since the last update treads the snow (a trail of FootA.w units radius), only where the feet
-	// were on this spot's top surface (not on a roof above it, not in the air). Trodden snow stays snow (compacted: a little less
-	// deep, kept in 'trodden', which SnowAccumulation draws greyer and flatter, the ground showing only in the middle of the trail);
-	// fresh snow fills the trail again, and no snow means no trail.
+	// Footprints: the player's path since the last update (the segment from the feet then to the feet now: a stroke with a round
+	// brush, whatever the step) treads the snow, only where the feet were on this spot's top surface (not on a roof above it, not in
+	// the air). Kept as a distance field (Includes/CoverMap.hlsl CoverMapTrodden): 1 on the path, falling linearly to 0 at FootB.w
+	// units, the union of strokes their max. SnowAccumulation draws the trail from it per pixel (soft, round, smooth at any angle):
+	// trodden snow stays snow, greyer and flatter, the ground showing only in the middle. Fresh snow fills the trail again (it
+	// narrows), and no snow means no trail.
 	float trodden = state.a;
 	[branch]
 	if (TESR_CoverMapSnowRates.w > 0.0f)
@@ -269,12 +272,9 @@ UpdateOut UpdatePS(VSOUT IN, float2 vpos : VPOS)
 		float t = saturate(dot(rel - a, ab) / max(dot(ab, ab), 0.0001f));
 		float2 q = a + ab * t;
 		float feetZ = lerp(TESR_CoverMapFootA.z, TESR_CoverMapFootB.z, t);
-		float radius = TESR_CoverMapFootA.w;
-		float pressed = 1.0f - smoothstep(0.35f * radius, radius, length(rel - q));
-		pressed *= known > 0.5f ? 1.0f - smoothstep(40.0f, 80.0f, abs(height - feetZ)) : 1.0f;
-		pressed *= TESR_CoverMapSnowRates.w;
-		trodden = max(trodden, pressed);
-		snow *= 1.0f - 0.15f * pressed;
+		float stroke = saturate(1.0f - length(rel - q) / TESR_CoverMapFootB.w);
+		stroke *= known > 0.5f ? 1.0f - smoothstep(40.0f, 80.0f, abs(height - feetZ)) : 1.0f;
+		trodden = max(trodden, stroke);
 	}
 	trodden = saturate(trodden - 3.0f * TESR_CoverMapSnowRates.x) * saturate(snow * 20.0f);
 
@@ -310,6 +310,7 @@ float4 DebugPS(VSOUT IN) : COLOR0
 		float2 rel = float2(local.x - 0.5f, 0.5f - local.y) * span;	// north up, the camera in the middle
 		float2 uv = rel * TESR_CoverMapData.x + TESR_CoverMapData.yz;
 		float4 c = tex2Dlod(TESR_CoverMapBuffer, float4(uv, 0.0f, 0.0f));
+		c.a = CoverMapTrodden(c.a);
 		float4 aux = tex2Dlod(TESR_CoverMapAux, float4(uv, 0.0f, 0.0f));
 		float known = HeightKnown(aux.r);
 		float3 shown = DebugColour(c, float3(0.22f, 0.22f, 0.22f));
@@ -335,6 +336,7 @@ float4 DebugPS(VSOUT IN) : COLOR0
 			float3 rel = toWorld(IN.UVCoord) * depth;
 			float inside;
 			float4 c = CoverMapReadAll(rel.xy, inside);
+			c.a = CoverMapTrodden(c.a);
 			float3 shown = DebugColour(c, color.rgb);
 			shown = lerp(shown, shown * float3(1.0f, 0.55f, 0.55f), 1.0f - inside);
 			color.rgb = lerp(color.rgb, shown, 0.75f);

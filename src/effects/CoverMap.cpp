@@ -67,6 +67,7 @@ void CoverMapEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CoverMapData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_CoverMapWindow", &Constants.Window);
 	TheShaderManager->RegisterConstant("TESR_CoverMapGlobal", &Constants.Global);
+	TheShaderManager->RegisterConstant("TESR_CoverMapTrail", &Constants.Trail);
 	TheShaderManager->RegisterConstant("TESR_CoverMapOrthoInverse", (D3DXVECTOR4*)&Constants.OrthoInverse);
 }
 
@@ -259,6 +260,13 @@ void CoverMapEffect::SetReaderConstants() {
 	Constants.Window = D3DXVECTOR4((float)(originX * texelSize - camera.x), (float)(originY * texelSize - camera.y), (float)size, (float)(size * WindowFade));
 	Constants.Global.w = mapValid && currentTexture ? 1.0f : 0.0f;
 	Constants.Debug = D3DXVECTOR4((float)Settings.debug, InsetShare, 0.0f, 0.0f);
+	Constants.Trail = D3DXVECTOR4(Settings.footSize, Settings.footprints, TrailRange(texelSize), 0.0f);
+}
+
+// The footprint trail's distance field reaches this far from the path: the brush radius plus two texels, so that every texel a
+// bilinear read inside the brush touches still holds an unclamped (linear) distance.
+float CoverMapEffect::TrailRange(double texelSize) const {
+	return Settings.footSize + 2.0f * (float)texelSize + 4.0f;
 }
 
 void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
@@ -317,7 +325,7 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 			Constants.Start = D3DXVECTOR4(startGlobal.x, startGlobal.y, startGlobal.z, 0.0f);
 			const double ax = teleported ? fx : feetX, ay = teleported ? fy : feetY, az = teleported ? fz : feetZ;
 			Constants.FootA = D3DXVECTOR4((float)(ax - camera.x), (float)(ay - camera.y), (float)(az - camera.z), Settings.footSize);
-			Constants.FootB = D3DXVECTOR4((float)(fx - camera.x), (float)(fy - camera.y), (float)(fz - camera.z), 0.0f);
+			Constants.FootB = D3DXVECTOR4((float)(fx - camera.x), (float)(fy - camera.y), (float)(fz - camera.z), TrailRange(texelSize));
 
 			// One pass into the other pair of maps (it reads the current pair), then they swap.
 			bool drawn = false;

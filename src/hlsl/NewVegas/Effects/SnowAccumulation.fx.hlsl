@@ -210,7 +210,7 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	{
 		float coverInside;
 		cover = CoverMapReadAll(camera_vector.xy, coverInside);
-		trodden = saturate(cover.w);
+		trodden = saturate(CoverMapTrodden(cover.w));
 	}
 	float3 localNorm = expand(tex2D(TESR_SnowNormSampler, uv).xyz);
 	if (persist) localNorm.xy *= 1.0f - 0.75f * trodden;

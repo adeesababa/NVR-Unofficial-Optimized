@@ -2,7 +2,7 @@
 
 Branch `deep/fork2-wetsnow` (from `mine/nvr-dxvk-compute` 34a8df4d). No DXVK fork patch: plain D3D9, so it works on native
 D3D9 (how the user plays) and through DXVK alike.
-Build (round 2): `G:\_NVR-build-scratch\fork2-wetsnow-out\NewVegasReloaded.dll`, sha256 8077F89EAEA07FF1..., VS2019 Release
+Build (round 3): `G:\_NVR-build-scratch\fork2-wetsnow-out\NewVegasReloaded.dll`, sha256 82B7FC0744C4ED20..., VS2019 Release
 Win32, no warnings in the new or changed files. Effects checked with the game's D3DX compiler (all FORWARD_SHADOWS /
 REVERSED_DEPTH combinations compile); the old WetWorld / SnowAccumulation techniques still compile byte for byte identical to
 before the feature. The wrap-round bookkeeping (which texel holds which spot after a move, the readers' addressing) was checked
@@ -48,7 +48,7 @@ old techniques (byte for byte the old programs).
   registered like the others but with no settings section, so always on when its file loads; reached through `TheCoverMap`, not
   added to Effects.h, so no class layout any other file sees changed).
 - Two pairs of A16B16G16R16 maps (A16B16G16R16F if refused), ping-pong, both written in one pass (two render targets):
-  main (the readers'): r wetness, g puddle water, b snow, a trodden snow; aux: r the top surface's height (1-unit steps round a
+  main (the readers'): r wetness, g puddle water, b snow, a footprint trails as a distance field (round 3); aux: r the top surface's height (1-unit steps round a
   reference height; 0 = never seen), g sun/shade at the last update, b where the height came from (ortho map / camera).
 - The map is world-fixed and wraps round (a spot's texel = its world texel index modulo the size), so it is never copied when the
   player moves: each update works out per texel whether it still holds the same spot as last time (window origin then and now);
@@ -98,6 +98,20 @@ old techniques (byte for byte the old programs).
   61.0 for shots 01-06; the mountains drop with it), and old vs new in the same rain (02 vs 03) shows the same step. WetWorld's
   default Amount = 0 ('darkness of puddles') does not darken wet ground; its wet look is sheen and sky reflection. The list now
   takes the old-behaviour picture right after dry-new-80min at the same game time (timescale back to 30 for it).
+
+## Round 2 bulk test (2026-10-27 10:05, aa835c20, DLL 8077F89E) and round 3
+- Better: the trail is grey trodden snow and narrow; the debug map hatches spots without a height and shows the trail.
+- Left: the trail was drawn as a zigzag of offset blocks ('lightning bolt'). Cause: not the stamping (one straight segment per
+  update, a capsule, as the debug map's straight line shows) but sampling: the brush value was stored per 8-unit texel and read
+  bilinearly, so along a trail at an angle to the texels its width and centre stepped from texel row to texel row, and the
+  snow pass's sharp 'ground shows through' cut turned those steps into hard-edged blocks. Offline (scratchpad trailtest.py,
+  trail 21 degrees off the grid): the old core (the cut) swung between 0 and 5.5 units wide and its centre jumped up to 3 units.
+- Round 3: the map keeps the trails as a distance field (1 on the path, falling linearly to 0 at radius + 2 texels + 4 units;
+  strokes join by max), and the snow pass draws the round brush from it per pixel (CoverMapTrodden). Bilinear filtering
+  reproduces a linear distance exactly, so the edge is smooth at any angle: offline the core is 7.3-8.6 units wide, its centre
+  within 0.65 units; the trail's edge (half strength) 13.1-13.4 units wide (13.5 exact). Each update strokes the whole segment
+  from the feet's last position to the current one, so walking draws a continuous path at any speed. The 15 % snow-depth cut
+  under the feet is gone (it showed the texel steps in the snow pattern). Snow pass 736 -> 744 slots, update 646 -> 639.
 
 ## Expected cost
 - Off: zero (no allocation, no pass, the old techniques).

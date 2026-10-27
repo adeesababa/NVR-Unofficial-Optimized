@@ -56,7 +56,7 @@ public:
 
 	struct ConstantsStruct {
 		D3DXVECTOR4	Update, Origin, Shift, Rates, SnowRates, Sun, Shade, Start, FootA, FootB, Debug;	// the update pass (CoverMap.fx.hlsl)
-		D3DXVECTOR4	Data, Window, Global;	// the readers (Includes/CoverMap.hlsl)
+		D3DXVECTOR4	Data, Window, Global, Trail;	// the readers (Includes/CoverMap.hlsl)
 		D3DXMATRIX	OrthoInverse;
 	};
 	ConstantsStruct	Constants;
@@ -65,6 +65,7 @@ private:
 	bool	EnsureMap(IDirect3DDevice9* Device);
 	void	ReleaseMap();
 	double	MinStep() const;
+	float	TrailRange(double texelSize) const;
 	void	SetReaderConstants();
 
 	IDirect3DTexture9*	mapTexture[2] = {};			// main: wetness, puddle water, snow, trodden snow (the readers' map)
