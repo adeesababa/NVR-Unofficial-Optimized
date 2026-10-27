@@ -2052,6 +2052,16 @@ MaxDistance = 4096.0                # [256.0-16384.0] Blending stops beyond this
 ShadowDrop = 1.0                    # [0.0-4.0] UNOFFICIAL: with Forward Shadows, the part of an object the faded land reveals sat in the land's own sun shadow (a dark strip along the seam). The land is drawn into the sun shadow maps BlendDistance times this lower, so only what is buried deeper than the blend band stays shadowed by it. 0 = off (the old shadows). Works at once.
 Debug = false                       # Old switch, kept for old settings files: true = DebugView 1.
 
+[_Shaders.Terrain.Erosion]
+Enabled = false             # Erosion gullies carved into the shading of distant (LOD) slopes (from Physically-Based-Reloaded by Balebandro). Only the lighting changes, not the outline. Off: unchanged.
+Depth = 1.0                 # [0.0-4.0] How deep the gullies look.
+Spacing = 1024.0            # [128.0-16384.0] The widest gullies' spacing, in game units; finer layers follow at half, quarter, ...
+GullyDarkening = 0.35       # [0.0-1.0] How much darker the gully floors are than the crests.
+NearDistance = 8000.0       # [0-200000] Closer than this, slopes get only NearStrength of the gullies and only the widest.
+FarDistance = 40000.0       # [0-400000] From here on, full depth and detail.
+NearStrength = 0.15         # [0.0-1.0] How much of the gullies near mountains keep.
+FarDetail = 1.0             # [0.0-1.0] Two more, finer gully layers on far mountains.
+
 [_Shaders.Terrain.LOD]
 LODNoiseScale = 0.7                 # Amount of noise applied to LOD.
 LODNoiseTile = 2.7                  # LOD noise texture tiling modifier.
