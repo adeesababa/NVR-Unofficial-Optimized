@@ -24,9 +24,10 @@ layout(vertices = 3) out;
 PASS(1) PASS(2) PASS(3) PASS(4) PASS(5) PASS(6) PASS(7) PASS(8) PASS(9) PASS(10)
 #undef PASS
 
-// Per control point, for TerrainDisplace.tese: x the displacement weight (distance fade x quadrant border), y log2 of the spacing
-// between generated points in uv units (the height lookup's detail level before the texture's size).
-layout(location = 30) out vec2 o_nvr[];
+// Per control point, for TerrainDisplace.tese: x the relief weight (distance fade x quadrant border), y log2 of the spacing between
+// generated points in uv units (the height lookup's detail level before the texture's size), z the distance fade alone (for the
+// constant part of the displacement, Center: the same on both sides of a quadrant border, so it needs no border rule).
+layout(location = 30) out vec3 o_nvr[];
 
 // The block starts at offset 32: 0-31 are D3D9's shared push data (fog, alpha ref) that every stage sees (bulk round 2: from offset
 // 0 the first four values were D3D9's fog data, so nothing was split).
@@ -77,7 +78,8 @@ void main() {
   // textures: its height there would differ, the edge would crack).
   vec3 p = i_v3[si].xyz;
   float d = distance(p, eye);
-  float weight = fadeAt(d);
+  float fade = fadeAt(d);
+  float weight = fade;
   if (pc.borderGrid > 0.0) {
     vec2 m = abs(fract(p.xy / pc.borderGrid + 0.5) - 0.5) * pc.borderGrid;
     if (min(m.x, m.y) < 0.5)
@@ -90,7 +92,7 @@ void main() {
   float l01 = distance(p0, p1), l12 = distance(p1, p2), l20 = distance(p2, p0);
   float uvPerUnit = max(max(distance(u0, u1) / max(l01, 1e-3), distance(u1, u2) / max(l12, 1e-3)), distance(u2, u0) / max(l20, 1e-3));
   float spacing = max(spacingAt(d), max(max(l01, l12), l20) / max(pc.maxFactor, 1.0));
-  o_nvr[gl_InvocationID] = vec2(weight, log2(max(spacing * uvPerUnit, 1e-8)));
+  o_nvr[gl_InvocationID] = vec3(weight, log2(max(spacing * uvPerUnit, 1e-8)), fade);
 
   if (i == 0u) {
     // Vulkan triangle domain: outer level 0 is the edge opposite point 0, 1 opposite point 1, 2 opposite point 2.

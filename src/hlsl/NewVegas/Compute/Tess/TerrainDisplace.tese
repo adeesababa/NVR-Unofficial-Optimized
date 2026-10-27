@@ -26,7 +26,7 @@ layout(triangles, fractional_odd_spacing, cw) in;
 PASS(1) PASS(2) PASS(3) PASS(4) PASS(5) PASS(6) PASS(7) PASS(8) PASS(9) PASS(10)
 #undef PASS
 
-layout(location = 30) in vec2 i_nvr[];   // TerrainDisplace.tesc: x displacement weight, y log2 uv spacing
+layout(location = 30) in vec3 i_nvr[];   // TerrainDisplace.tesc: x relief weight, y log2 uv spacing, z distance fade
 
 out gl_PerVertex {
   vec4 gl_Position;
@@ -121,7 +121,7 @@ void main() {
 #define INTERP(n) vec4 v##n = b.x * i_v##n[0] + b.y * i_v##n[1] + b.z * i_v##n[2];
   INTERP(1) INTERP(2) INTERP(3) INTERP(4) INTERP(5) INTERP(6) INTERP(7) INTERP(8) INTERP(9) INTERP(10)
 #undef INTERP
-  vec2 nvr = b.x * i_nvr[0] + b.y * i_nvr[1] + b.z * i_nvr[2];
+  vec3 nvr = b.x * i_nvr[0] + b.y * i_nvr[1] + b.z * i_nvr[2];
 
   float weight = nvr.x;
   float nl = length(v6.xyz);
@@ -130,12 +130,13 @@ void main() {
   bool haveMvp = (pc.vsIndex & 0xFFu) != 0xFFu && ((pc.vsIndex >> 8u) & 0xFFu) != 0xFFu
               && ((pc.vsIndex >> 16u) & 0xFFu) != 0xFFu && (pc.vsIndex >> 24u) != 0xFFu;
 
+  // Displacement = Strength x (relief + offset): the relief (height - 0.5) fades with distance and to 0 on quadrant borders (each
+  // quadrant is its own draw with its own textures); the offset (0.5 - Center, how far the average height rises) only fades with
+  // distance, so a border keeps the same average level as the land on both sides of it (no groove along it).
   float h = 0.5;
-  float disp = 0.0;
-  if (haveMvp && weight > 0.0 && pc.strength != 0.0) {
+  if (haveMvp && weight > 0.0 && pc.strength != 0.0)
     h = landHeight(v1.xy, v9, v10, nvr.y);
-    disp = weight * pc.strength * (h - pc.center);
-  }
+  float disp = haveMvp ? pc.strength * (weight * (h - 0.5) + nvr.z * (0.5 - pc.center)) : 0.0;
 
   // The vertex shader's clip position (interpolated), moved by the displacement through ModelViewProj (row k = c[k] . (v, 1))
   vec4 clipN = vec4(0.0);

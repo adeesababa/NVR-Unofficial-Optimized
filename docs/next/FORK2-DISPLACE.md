@@ -36,7 +36,9 @@ Fix (patch 0021 v3 + shaders): both blocks start at shader offset 32 (`layout(of
 MaxSharedPushDataSize, sampler block offsets 32 + 2i; the host still pushes at the stage's offset 0). Also: the pixel shader's
 projectionPosition (its forward sun shadows and fog) stays the flat land's, since the shadow maps are not displaced; Center now
 defaults to 0 (bumps only rise, nothing sinks below the flat land's shadow). New debug views 4-6 (uv, layer weights, normal as the
-vertex colour) prove the pixel shader's inputs arrive interpolated. Test list: fork2-displace3-bulk.txt.
+vertex colour) prove the pixel shader's inputs arrive interpolated. Displacement is now Strength x (relief x weight + offset x fade):
+the relief (height - 0.5) goes to 0 on quadrant borders, the offset (0.5 - Center) only fades with distance, so with Center 0 a
+border keeps the average raised level of the land on both sides (no groove along it). Test list: fork2-displace3-bulk.txt.
 
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
