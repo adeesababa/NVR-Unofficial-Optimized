@@ -60,18 +60,22 @@ void TAAEffect::UpdateSettings() {
 	Settings.MipBias = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.Main", "MipBias"), -1.5f, 0.0f);
 
 	// UNOFFICIAL 2026-10-26 (NVR DXVK): FSR 2 as the resolve. All three read as 0 (off) when missing.
-	FSRSettings.Enabled = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Enabled") != 0;
+	// UNOFFICIAL 2026-10-27 (user: "give dlss its own tab like fsr does ... toggling one disables the other"): [Shaders.TAA.DLSS]
+	// Enabled runs the same upscaler stage with DLSS; FSR and DLSS are either/or (the menu switches the other off; a file with both
+	// on gets DLSS).
+	const bool dlss = TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "Enabled") != 0;
+	FSRSettings.Enabled = dlss || TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Enabled") != 0;
 	FSRSettings.Sharpness = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "Sharpness"), 0.0f, 1.0f);
 	FSRSettings.WeaponReactive = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "WeaponReactive"), 0.0f, 1.0f);
 	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp). A missing key reads as 0, which means off (1) here, not "nothing".
-	const float scale = TheSettingManager->GetSettingF("Shaders.TAA.FSR", "RenderScale");
+	const float scale = TheSettingManager->GetSettingF(dlss ? "Shaders.TAA.DLSS" : "Shaders.TAA.FSR", "RenderScale");
 	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.5f, 1.0f) : 1.0f;
-	FSRSettings.Upscaler = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Upscaler"), 0, 1);
+	FSRSettings.Upscaler = dlss ? 1 : 0;
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
-	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; Upscaler 1 above is now real DLSS,
+	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; DLSS Enabled above is real DLSS,
 	// with FSR 2 whenever it cannot run). Both read as 0 (off) when missing.
-	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DlssHelperTest") != 0,
-		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DlssJitterFlip"), 0, 3));
+	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "HelperTest") != 0,
+		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.DLSS", "JitterFlip"), 0, 3));
 }
 
 // Texture mip LOD bias on every sampler while the jittered world draws. Averaging jittered frames

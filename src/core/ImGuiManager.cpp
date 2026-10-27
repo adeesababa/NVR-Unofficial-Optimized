@@ -2651,6 +2651,11 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 		bool val = (strcmp(node.Value, "1") == 0 || _stricmp(node.Value, "true") == 0);
 		if (ImGui::Checkbox(node.Key, &val)) {
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
+			// UNOFFICIAL 2026-10-27: FSR and DLSS are either/or (user: "toggling one disables the other")
+			if (val && !strcmp(node.Key, "Enabled")) {
+				if (!strcmp(node.Section, "Shaders.TAA.FSR")) TheSettingManager->SetSetting("Shaders.TAA.DLSS", "Enabled", false);
+				else if (!strcmp(node.Section, "Shaders.TAA.DLSS")) TheSettingManager->SetSetting("Shaders.TAA.FSR", "Enabled", false);
+			}
 			TheSettingManager->LoadSettings();
 		}
 		mainHovered = ImGui::IsItemHovered();
@@ -3485,6 +3490,13 @@ static bool IsMovedShaderEntry(const std::string& name) {
 }
 
 // Recursive sidebar tree — path is the full dotted section path, name is the display label.
+// UNOFFICIAL 2026-10-27: the menu name of a Shaders entry where its internal name (its settings sections, kept for the users'
+// settings files) says less than it does (user: "change the taa menu to say taa / fsr / dlss"). The ## part keeps ImGui's ID the name.
+static std::string MenuEntryLabel(const std::string& name) {
+	if (name == "TAA") return "TAA / FSR / DLSS##TAA";
+	return name;
+}
+
 static void RenderSectionNode(const std::string& path, const std::string& name, bool parentIsShaders) {
 	if (ShouldHideSection(name)) return;
 	if (!DevOptionsShown() && IsDevOnlySetting(path, std::string())) return;	// UNOFFICIAL 2026-10-25: a "Section.*" DevOnly entry
@@ -3527,12 +3539,12 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		const SettingManager::MenuSwitch kind = TheSettingManager->GetMenuShaderSwitch(name.c_str());
 		if (kind == SettingManager::MenuSwitch::None) {
 			// UNOFFICIAL 2026-10-19: no on/off setting (e.g. Foliage): a name, not a checkbox that springs back
-			ImGui::TextUnformatted(name.c_str());
+			ImGui::TextUnformatted(MenuEntryLabel(name).c_str());
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s has no on/off switch of its own: the settings inside control it.", name.c_str());
 		}
 		else {
 			ImGui::BeginDisabled(forced);
-			if (ImGui::Checkbox(name.c_str(), &enabled)) {
+			if (ImGui::Checkbox(MenuEntryLabel(name).c_str(), &enabled)) {
 				TheShaderManager->SwitchShaderStatus(name.c_str());
 				TheSettingManager->LoadSettings();
 			}

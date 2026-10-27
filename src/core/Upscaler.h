@@ -55,10 +55,10 @@ namespace Upscaler {
 	// It runs FSR 2 itself while the helper starts, and from the first problem on (logged once with the reason).
 	IUpscaler*	Dlss();
 
-	// [Shaders.TAA.FSR] DlssHelperTest (the helper's pass-through test: the same exchange, no DLSS) and DlssJitterFlip (bit 0
+	// [Shaders.TAA.DLSS] HelperTest (the helper's pass-through test: the same exchange, no DLSS) and JitterFlip (bit 0
 	// flips the jitter's x, bit 1 its y, for checks with NVIDIA's development DLL). Set by TAAEffect::UpdateSettings.
 	void		DlssOptions(bool PassThroughTest, int JitterFlip);
 
-	// [Shaders.TAA.FSR] Upscaler: 0 FSR 2, 1 DLSS (Dlss(), which falls back to FSR 2 whenever DLSS cannot run).
+	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run).
 	IUpscaler*	Choose(int setting);
 }

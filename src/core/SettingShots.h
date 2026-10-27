@@ -52,6 +52,9 @@
 //                                                game: under DXVK its Vulkan layer, ENABLE_VULKAN_RENDERDOC_CAPTURE=1 for the launch.
 //                                                Without it: logged, nothing else. ('capture' above is the other way in, through
 //                                                GpuDebug: it needs renderdoc.dll loaded the same way.)
+//   keep                                         (2026-10-27, FSR switch flicker) this shot's set/effect lines are NOT undone after its
+//                                                picture: they stay for the later shots (a mid-run switch, e.g. FSR switched on once and
+//                                                pictures every few frames after it with 'noreload'); undone when the run ends
 // Shots start from the user's settings each time: a shot without changes is the user's own picture.
 #include <algorithm>
 #include <atomic>
@@ -72,7 +75,7 @@ namespace SettingShots {
 
 	struct Change { bool effect = false, console = false, coverage = false; std::string section, key, value; };
 	struct Shot { std::string slug; std::vector<Change> changes; std::string menu; bool menuTests = false; int frames = 0; DWORD_PTR affinity = 0; int capture = 0;
-		bool renderdoc = false; std::string renderdocPath; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21); capture: RenderDoc frames (2026-10-26); renderdoc: 2026-10-26
+		bool renderdoc = false; std::string renderdocPath; bool keep = false; };	// menu: 2026-10-19; frames: 'wait' (2026-10-21); affinity: cpulimits (2026-10-21); capture: RenderDoc frames (2026-10-26); renderdoc: 2026-10-26
 	struct Undo { bool effect = false; std::string section, key; UInt32 type = 0; bool b = false; int i = 0; float f = 0.0f; std::string s; };
 	struct Job { std::vector<unsigned> bgra; unsigned width = 0, height = 0; char path[MAX_PATH] = ""; };
 
@@ -82,6 +85,7 @@ namespace SettingShots {
 	inline size_t Index = 0;
 	inline int Frame = 0;
 	inline std::vector<Undo> Undos;
+	inline std::vector<Undo> Kept;				// 'keep' (2026-10-27): changes left on for the later shots, undone at the run's end
 	inline SelfTestCore::ShotReader Reader;
 	inline std::atomic<int> InFlight{ 0 };
 	inline char Run[32] = "";
@@ -118,6 +122,7 @@ namespace SettingShots {
 	inline D3DSURFACE_DESC WorldDesc = {};
 
 	inline bool Parse(std::string& error) {
+		Kept.clear();
 		List.clear(); Frames = 120; FinalPicture = false; WorldCapture = false; WorldTaken = (size_t)-1; StageCapture = false; StageTaken = (size_t)-1; NoReload = false; TurnRate = 0.0f;
 		if (FinalState.load() == 3) { delete FinalJob; FinalJob = nullptr; }
 		FinalState.store(0);
@@ -138,6 +143,7 @@ namespace SettingShots {
 			else if (command == "world") WorldCapture = true;
 			else if (command == "stage") StageCapture = true;
 			else if (command == "noreload") NoReload = true;
+			else if (command == "keep") { if (List.empty()) { error = "line " + std::to_string(number) + ": 'keep' before any 'shot'"; return false; } List.back().keep = true; }
 			else if (command == "turn") { words >> TurnRate; TurnRate = std::clamp(TurnRate, -360.0f, 360.0f); }
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			// 2026-10-19: 'menu <section>' = this shot's picture is NVR's menu open at that page ("@NewInPatch" = the new tab),
@@ -297,6 +303,7 @@ namespace SettingShots {
 			Logger::Log("SETTING SHOTS %s: shot '%s': %s %s = %s (was %s)", Run, s.slug.c_str(), c.section.c_str(), c.key.c_str(), c.value.c_str(), node.Value);
 		}
 		const bool changes = std::any_of(s.changes.begin(), s.changes.end(), [](const Change& c) { return !c.console && !c.coverage; });
+		if (s.keep) { Kept.insert(Kept.end(), Undos.begin(), Undos.end()); Undos.clear(); }
 		if (changes || !NoReload) TheSettingManager->LoadSettings();
 		else Logger::Log("SETTING SHOTS %s: shot '%s': no changes, no settings reload (noreload)", Run, s.slug.c_str());
 		if (!s.menu.empty() && s.menu != "game") ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
@@ -319,8 +326,15 @@ namespace SettingShots {
 		if (any) TheSettingManager->LoadSettings();
 	}
 
+	// 'keep' changes go back with the last shot's (oldest first in Undos: Revert undoes newest first).
+	inline void RestoreKept() {
+		Undos.insert(Undos.begin(), Kept.begin(), Kept.end());
+		Kept.clear();
+	}
+
 	inline void Stop(const char* why) {
 		Logger::Log("SETTING SHOTS %s: stopped, %s", Run, why);
+		RestoreKept();
 		Revert();
 		Running = false;
 		Notify(kLinkStopped, why);
@@ -518,6 +532,7 @@ namespace SettingShots {
 	}
 
 	inline void NextShot() {
+		if (Index + 1 >= List.size()) RestoreKept();
 		Revert();
 		Index++;
 		Frame = 0;

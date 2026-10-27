@@ -1,6 +1,6 @@
 # NvrDlssHelper (tools/nvr-dlss-helper)
 
-The 64-bit helper program behind New Vegas Reloaded's DLSS upscaler (`[Shaders.TAA.FSR] Upscaler = 1`). Fallout New Vegas,
+The 64-bit helper program behind New Vegas Reloaded's DLSS upscaler (`[Shaders.TAA.DLSS] Enabled = true`; before 2026-10-27 `[Shaders.TAA.FSR] Upscaler = 1`). Fallout New Vegas,
 NVR and the NVR DXVK `d3d9.dll` are 32-bit; NVIDIA ships DLSS (NGX, `nvngx_dlss.dll`) for 64-bit Windows only, so DLSS runs
 in this separate program, on the same GPU, with its own Vulkan device. NVR starts it, shares four GPU images and two GPU
 timeline semaphores with it through the NVR DXVK fork (patch 1.7-dlss, `ID3D9NvrExtShare`) and a small shared-memory block

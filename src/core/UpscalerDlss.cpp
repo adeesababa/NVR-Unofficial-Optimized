@@ -1,4 +1,4 @@
-// UNOFFICIAL 2026-10-27 (NVR DXVK, [Shaders.TAA.FSR] Upscaler = 1): NVIDIA DLSS behind the Upscaler interface, through a 64-bit
+// UNOFFICIAL 2026-10-27 (NVR DXVK, [Shaders.TAA.DLSS] Enabled): NVIDIA DLSS behind the Upscaler interface, through a 64-bit
 // helper process (docs\next\FORK2-DLSS.md; the helper is tools\nvr-dlss-helper, MIT, built on its own).
 //
 // No NVIDIA code is in this file or anywhere in NewVegasReloaded.dll: NVIDIA's DLSS (NGX) is 64-bit only and FNV is 32-bit, so
@@ -15,7 +15,7 @@
 // GPU, an old driver: "NGX: DLSS not available on this GPU"), a start that takes over 15 s, or a helper that dies or stops
 // answering (a watchdog thread releases the GPU wait from the CPU, then FSR 2 runs). While the helper starts, FSR 2 runs.
 //
-// [Shaders.TAA.FSR] DlssHelperTest = 1 (with Upscaler = 1): the helper's pass-through test, for any NVIDIA GPU (a GTX 1070 too):
+// [Shaders.TAA.DLSS] HelperTest = 1 (with Enabled): the helper's pass-through test, for any NVIDIA GPU (a GTX 1070 too):
 // the same images, semaphores and order, but the helper only stretches the colour input over the output and draws a marker
 // (a magenta box that moves along 8 places with the frame number, a green box that stays), so the whole cross-process path
 // (sharing, synchronisation, latency, order) can be proven without DLSS. Not anti-aliased: a test, not a mode to play with.
@@ -75,7 +75,7 @@ namespace {
 		void	SetOptions(bool test, int jitterFlip) {
 			if (test != passThrough && state != Idle && state != Off) {
 				// Another mode: the helper is started again (FSR 2 in between).
-				Stop(test ? "DlssHelperTest turned on" : "DlssHelperTest turned off");
+				Stop(test ? "HelperTest turned on" : "HelperTest turned off");
 				state = Idle;
 			}
 			passThrough = test;
@@ -127,7 +127,7 @@ namespace {
 
 	// Off for the session: logged once with the reason. FSR 2 runs from now on.
 	bool DlssUpscaler::TurnOff(const char* why) {
-		Logger::Log("UNOFFICIAL NVR DXVK: [Shaders.TAA.FSR] Upscaler 1 (%s): %s; FSR 2 is used instead for this session.",
+		Logger::Log("UNOFFICIAL NVR DXVK: [Shaders.TAA.DLSS] Enabled (%s): %s; FSR 2 is used instead for this session.",
 			passThrough ? "DLSS helper pass-through test" : "DLSS", why);
 		Stop(nullptr);
 		state = Off;

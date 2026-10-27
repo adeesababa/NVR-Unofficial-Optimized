@@ -1,5 +1,10 @@
 # DLSS through a 64-bit helper (fork round 2, 2026-10-27, branch deep/fork2-dlss)
 
+**Settings moved 2026-10-27 (user: "give dlss its own tab like fsr does ... toggling one disables the other"):** DLSS is now its own
+menu tab, `[Shaders.TAA.DLSS]` Enabled / RenderScale / HelperTest / JitterFlip (were `[Shaders.TAA.FSR]` Upscaler 1, RenderScale,
+DlssHelperTest, DlssJitterFlip). FSR and DLSS are either/or: switching one on in the menu switches the other off; a settings file
+with both on gets DLSS. The menu entry reads "TAA / FSR / DLSS". The text below keeps the old names.
+
 First step of docs/next/FORK2-DLSS-PLAN.md, built. Everything is OFF by default (`[Shaders.TAA.FSR] Upscaler = 0`): off is the
 exact old behaviour, nothing starts, nothing is made.
 
