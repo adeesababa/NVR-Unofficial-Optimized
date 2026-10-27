@@ -8,7 +8,8 @@
 #include "includes/PBRScale.hlsl"
 
 sampler2D DiffuseMap : register(s0);
-// UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] ShadowFix: w 1 = the sun shadow lookup takes the world up normal (see main).
+// UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] w: +1 ShadowFix (the sun shadow lookup takes the world up normal, see main),
+// +2 SkyLightScale (the sky light takes the tuft's light scale, as the game's ambient does).
 float4 TESR_GrassScale;
 #ifdef GRASS_POINT_LIGHT
 // UNOFFICIAL 2026-10-27 PointLights (GRASS23x001TMS/003TMS.pso include this file): the game's 1POINT grass PS adds one lamp,
@@ -47,7 +48,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     // points away from the sun and the normal offset pushes the lookup into the tuft's own shadow (mirrored), and the per-triangle
     // derivatives of thin, swaying blades flip from blade to blade (stripes). Grass has no surface of its own to bias from: take the
     // ground's up normal, the same for the whole tuft, as the ground it stands on. Off: as before.
-    float3 lookupNormal = TESR_GrassScale.w > 0.5f ? float3(0.0f, 0.0f, 1.0f) : shadowNormal;
+    float3 lookupNormal = fmod(TESR_GrassScale.w, 2.0f) > 0.5f ? float3(0.0f, 0.0f, 1.0f) : shadowNormal;
     // ddx/ddy must stay at top level, outside dynamic flow control.
     sunAmount *= SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
          ? GetSunShadow(IN.shadowWorldPos.xyz, lookupNormal)
@@ -56,7 +57,11 @@ PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
 
     // Same split getSunLighting/getAmbientLighting apply on the object path.
     // UNOFFICIAL linear lighting (2026-10-14): only the colours are decoded; the amounts multiply after (see the VS).
-    float3 lighting = PBRLight(IN.sun.xyz) * sunAmount + PBRAmbient(IN.ambient.xyz) * IN.amount.x + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
+    // UNOFFICIAL 2026-10-27 SkyLightScale (tester: grass in shadow a little too bright): the game darkens each tuft's ambient by its
+    // own light scale (0.25-1, IN.amount.x, packed per tuft), but the sky light NVR adds took the full amount. In shadow the sky is
+    // most of what is left, so shaded tufts came out brighter than the game's own balance. Off: the full sky light, as before.
+    float skyScale = TESR_GrassScale.w > 1.5f ? IN.amount.x : 1.0f;
+    float3 lighting = PBRLight(IN.sun.xyz) * sunAmount + PBRAmbient(IN.ambient.xyz) * IN.amount.x + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? skyScale : 0.0f);
 
 #ifdef GRASS_POINT_LIGHT
     // The game's own 1POINT VS (a fallback) hands the coordinates over in TEXCOORD1, with w 0.5, not the shadow sentinel.
