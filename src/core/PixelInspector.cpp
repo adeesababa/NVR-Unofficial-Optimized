@@ -181,6 +181,7 @@ void Capture(const char* Label, IUnknown* Resource, Kind kind) {
 		dispatch.pPushData = &push;
 		dispatch.PushDataSize = sizeof(push);
 		dispatch.GroupsX = dispatch.GroupsY = dispatch.GroupsZ = 1;
+		DxvkCompute::PreLoad(resources, 2);	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU
 		if (SUCCEEDED(DxvkCompute::Extension()->Dispatch(&dispatch))) {
 			Stage& s = Current.stages[index];
 			strncpy_s(s.label, Label, _TRUNCATE);

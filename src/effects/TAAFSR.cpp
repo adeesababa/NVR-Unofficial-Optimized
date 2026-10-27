@@ -227,6 +227,7 @@ bool TAAEffect::FSRDispatch(int index, const NVR_EXT_RESOURCE_BINDING* bindings,
 	static GpuTimer timers[FSRPipelineCount] = { GpuTimer("  FSR prep (NVR)"), GpuTimer("  FSR luma mip (NVR)"), GpuTimer("  FSR reconstruct"),
 		GpuTimer("  FSR depth clip"), GpuTimer("  FSR lock"), GpuTimer("  FSR accumulate"), GpuTimer("  FSR accumulate (sharpen)"), GpuTimer("  FSR RCAS") };
 	GpuProfileScope gpu(timers[index], TheRenderManager->device);
+	DxvkCompute::PreLoad(bindings, count);	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU
 	if (FAILED(DxvkCompute::Extension()->Dispatch(&dispatch))) {
 		Logger::Log("[ERROR] UNOFFICIAL NVR DXVK: TAA FSR pass %s failed to dispatch; FSR is off for this session (TAA's own resolve runs)", Pipelines[index].name);
 		fsrFailed = true;

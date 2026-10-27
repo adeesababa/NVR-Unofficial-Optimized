@@ -200,6 +200,7 @@ namespace HdrOutput {
 		draw.pBindings = resources;
 		draw.pPushData = &push;
 		draw.PushDataSize = sizeof(push);
+		DxvkCompute::PreLoad(resources, 3);	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU (DxvkCompute.h)
 		const HRESULT hr = DxvkCompute::Extension()->Draw(&draw);
 		if (FAILED(hr)) { Reason("the gain pass failed (DXVK's log says why): SDR picture at paper white"); DxvkCompute::Drop(S.GainPipeline); return; }
 		S.GainReady = true;

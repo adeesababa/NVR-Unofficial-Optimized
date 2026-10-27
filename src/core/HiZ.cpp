@@ -106,6 +106,7 @@ void HiZ::Build(IDirect3DDevice9* Device, bool Wanted) {
 	{
 		static GpuTimer timer("  Hi-Z pyramid");
 		GpuProfileScope gpu(timer, Device);
+		DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU
 		result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	}
 	if (FAILED(result)) {

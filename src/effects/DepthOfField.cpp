@@ -198,6 +198,7 @@ bool DepthOfFieldEffect::BokehScatter(IDirect3DDevice9* Device, IDirect3DBaseTex
 	dispatch.pPushData = &push;
 	dispatch.PushDataSize = sizeof(push);
 
+	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU
 	HRESULT result = ext->ClearBuffer(bokehSprites, 0, BokehSpriteHeader, 0);
 	if (SUCCEEDED(result)) result = ext->ClearBuffer(bokehAccum, 0, 0, 0);
 	push.phase = 0;		// detect: one thread per half-resolution pixel

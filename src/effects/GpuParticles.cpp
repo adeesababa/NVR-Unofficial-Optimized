@@ -203,6 +203,7 @@ void GpuParticles::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	dispatch.pBindings = simRes;
 	dispatch.GroupsX = BufferCount / 64;
 	dispatch.GroupsY = dispatch.GroupsZ = 1;
+	DxvkCompute::PreLoad(simRes, _countof(simRes));	// UNOFFICIAL 2026-10-27 (merge with the alflicker fix): managed textures on the GPU
 	if (FAILED(ext->Dispatch(&dispatch))) { TurnOff("the simulation dispatch failed (DXVK's log says why)"); return; }
 
 	// 2. draw over a copy of the frame (the shader reads the frame behind each drop), then that copy is the frame
@@ -226,6 +227,7 @@ void GpuParticles::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	draw.Draw.PushDataSize = sizeof(push);
 	draw.VertexCount = 6;
 	draw.InstanceCount = BufferCount;
+	DxvkCompute::PreLoad(drawRes, _countof(drawRes));
 	if (FAILED(Geometry->DrawGeometry(&draw))) { TurnOff("the drawing pass failed (DXVK's log says why)"); return; }
 	chain.Commit();
 	if (++Frames == 1) Logger::Log("UNOFFICIAL GPU particles: running (%s, %u particles%s)", snow ? "snow" : "rain", BufferCount, ortho ? ", ortho map" : ", no ortho map");
