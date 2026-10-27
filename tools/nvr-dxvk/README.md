@@ -24,10 +24,14 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                  0015       "1.5-debug": dxvk.conf `nvr.debugEnv = "NAME=value|..."` sets environment variables (DXVK_DEBUG,
                             Vulkan loader/layer settings) before DXVK and the loader read them
                  0016       "1.5-debug": ID3D9NvrExtReadback (readback that never waits), storage buffers in the pass stages
+                 0017       (deep/fork-async) "1.5-warm": dxvk.conf `nvr.pipelineLog = True` logs every pipeline compiled or
+                            linked at first use on the recording thread (a wait the frame cannot hide), with time and shader
+                            names; measurement only, off by default; only `src/dxvk/dxvk_{options,graphics,compute}.*` + new
+                            `dxvk_nvr_pipelog.h` change. docs/next/FORK-1027-ASYNC-WARMUP.md.
                  0021       (deep/fork2-displace) "1.7-displace": ID3D9NvrExtTess, tessellation displacement of the land
                             (new files `src/d3d9/d3d9_nvr_tess.{h,cpp}`; docs/next/FORK2-DISPLACE.md). Its shaders:
                             `compile-tess.sh` (src/hlsl/NewVegas/Compute/Tess -> .spv, Windows Git Bash with the Vulkan SDK).
-                 0024       (deep/fork2-grass, wave-2 number; the merger renumbers) "1.7-grass": ID3D9NvrExtGeometryScene,
+                 0024       (deep/fork2-grass) "1.7-grass": ID3D9NvrExtGeometryScene,
                             geometry passes drawn INTO the scene: the game's depth buffer with real depth, multisampled and
                             attachment-only targets, culling, indirect counts (NVR_EXT_BUFFER_INDIRECT); GPU grass,
                             docs/next/FORK2-GRASS.md. Only the three d3d9_nvr_ext* files change.
@@ -38,7 +42,7 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                             the same handle value on a second export), callers get duplicates.
                GetInfo reports 1.6. The "1.5-<feature>" parts are separate interfaces found with QueryInterface (or, for sm6,
                by MaxSlots), not by the minor version: NVR checks each one itself and keeps its D3D9 path without it.
-- `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
+- `debug/`     dxvk.conf templates for debugging (`dxvk.conf.pipelinelog`: the 0017 measurement): `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
                `dxvk.conf.renderdoc-slot` (RenderDoc loaded as a Vulkan layer in a slot game, for the 'capture' shot) and
                `dxvk.conf.validation` (Khronos validation + synchronization validation). docs/next/FORK-DEBUG-CAPTURE.md.
 - `build.sh`   clone + patch + build the 32-bit d3d9.dll (Linux or WSL, MinGW-w64). The GitHub workflow

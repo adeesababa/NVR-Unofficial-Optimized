@@ -1,0 +1,41 @@
+# fork1027-async bulk (2026-10-27, deep/fork-async): fork patch 0017 nvr.pipelineLog = how much of a DXVK arrival hitch is
+# pipeline compiles. MEASUREMENT ONLY: nothing changes the picture, so there are no picture pairs. dxvk.conf options are read
+# at launch, so the A/B is BETWEEN LAUNCHES (not shots). Copy: bench\foundations\lists\fork1027-async-bulk.txt.
+#
+# Fork d3d9.dll: the combined fork series + 0017 (CI artifact nvr-dxvk-x32 of deep/fork-async, or the coordinator's combined
+# build if 0017 is merged). dxvk.conf in the FORK_D3D9 folder = tools/nvr-dxvk/debug/dxvk.conf.pipelinelog (as dxvk.conf).
+# NVR toml for every launch: [Main.Main.Performance] NvrDxvkPasses = true (Vulkan passes from frame 1, so their pipelines are
+# created during the walk) and ArrivalSampler = 1 (test builds only; the 2026-10-20 arrivalhitch tool).
+#
+# LAUNCHES (one ticket each, BENCHQ_SOLO=1):
+#   W1 noon  list warmup2-walk.txt  COLD DXVK cache: before the launch MOVE (never delete) the slot exe's DXVK shader cache
+#            (%LOCALAPPDATA%\dxvk\<16 hex>.dxvk.lut + .dxvk.bin, named by a hash of "<game folder>\FalloutNV.exe"; newest
+#            pair after a slot launch) aside; restore it after. The NVIDIA driver's own disk cache stays warm (not touched).
+#   W2 noon  list warmup2-walk.txt  WARM (same as W1, cache from W1 kept).
+#   W3 noon  list warmup2-walk.txt  WARM + uncomment "dxvk.trackPipelineLifetime = False" in the slot dxvk.conf.
+#   I1 lucky22  THIS list           WARM (interior: the interior-only passes compile in the first frames).
+#   I2 lucky22  THIS list           WARM + dxvk.trackPipelineLifetime = False.
+#
+# READ (per launch): FalloutNV_d3d9.log (DXVK log in the slot game folder; copy it into the run folder):
+#   grep "NVR pipeline:"  -> per-kind totals on the LAST line of each kind ("session graphics full: N waits, X ms").
+#   Split by time: each line has no timestamp, so pair it with the ArrivalSamples_<time>.txt frames over 50 ms (go-<place> shots)
+#   by order; or simply compare the session totals to the walk's total hitch time (warmup2 method: frames > 50 ms, picture frames
+#   left out). Verdict rule written before the runs: if WARM sync-compile totals (W2) are under ~150 ms per walk, a pipeline
+#   warm-up for DXVK is NOT worth building (say so and stop); if over, the "graphics full" / NVR ext names say what to warm.
+#   W3/I2 vs W2/I1: "graphics linked" total should drop to ~0; check for any crash / "out of memory" in the DXVK log.
+#   F10: the profile shots below must match the combined build's earlier lucky22 numbers within the usual noise (0017 is off-path).
+frames 300
+profile
+shot settle
+wait 600
+shot first-a
+set Shaders.Cinema.Main FilmGrainAmount 0
+shot first-b
+set Shaders.Cinema.Main FilmGrainAmount 0
+console player.setangle z 180
+shot turned-a
+set Shaders.Cinema.Main FilmGrainAmount 0
+console player.setangle z 180
+shot turned-b
+set Shaders.Cinema.Main FilmGrainAmount 0
+console player.setangle z 180
