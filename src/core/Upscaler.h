@@ -1,8 +1,8 @@
 #pragma once
 
 // UNOFFICIAL 2026-10-27 (NVR DXVK): the temporal upscaler behind TAA's FSR path ([Shaders.TAA.FSR]), as an interface so a
-// second upscaler (NVIDIA DLSS, docs\next\FORK2-DLSS-PLAN.md: not built, it needs NVIDIA's SDK) can take FSR 2's place in the
-// same two calls without touching what feeds it:
+// second upscaler (NVIDIA DLSS through a 64-bit helper process: core\UpscalerDlss.cpp, docs\next\FORK2-DLSS.md) takes FSR 2's
+// place in the same two calls without touching what feeds it:
 //   - TAA's native AA (effects\TAAFSR.cpp): the post-tonemap frame at the screen's own resolution (render size = display size);
 //   - RenderScale (effects\TAAUpscale.cpp): the world scene drawn at a lower internal resolution, upscaled before NVR's effects.
 // Both build the same inputs (jittered colour, a depth, camera motion vectors, the jitter) and read Output() afterwards.
@@ -51,9 +51,14 @@ namespace Upscaler {
 	// between them is a Reset), so its textures (about 190 MB at 1080p, made on first use) exist once.
 	IUpscaler*	Fsr2();
 
-	// NVIDIA DLSS: not built (docs\next\FORK2-DLSS-PLAN.md). Null until it is; callers then use Fsr2().
+	// NVIDIA DLSS through NvrDlssHelper.exe (64-bit; core\UpscalerDlss.cpp, tools\nvr-dlss-helper). No NVIDIA code in NVR's DLL.
+	// It runs FSR 2 itself while the helper starts, and from the first problem on (logged once with the reason).
 	IUpscaler*	Dlss();
 
-	// [Shaders.TAA.FSR] Upscaler: 0 FSR 2, 1 DLSS (falls back to FSR 2 while DLSS is not built or not available; logged once).
+	// [Shaders.TAA.FSR] DlssHelperTest (the helper's pass-through test: the same exchange, no DLSS) and DlssJitterFlip (bit 0
+	// flips the jitter's x, bit 1 its y, for checks with NVIDIA's development DLL). Set by TAAEffect::UpdateSettings.
+	void		DlssOptions(bool PassThroughTest, int JitterFlip);
+
+	// [Shaders.TAA.FSR] Upscaler: 0 FSR 2, 1 DLSS (Dlss(), which falls back to FSR 2 whenever DLSS cannot run).
 	IUpscaler*	Choose(int setting);
 }

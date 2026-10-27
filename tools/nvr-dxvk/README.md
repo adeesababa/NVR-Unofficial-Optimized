@@ -12,6 +12,9 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                SM6 builds of NVR's own passes (`tools/nvr-sm6`, docs/next/FORK-1026-SM6.md). 0014 (deep/fork-debug-capture,
                "1.5-debug"): dxvk.conf `nvr.debugEnv = "NAME=value|..."` sets environment variables (DXVK_DEBUG, Vulkan
                loader/layer settings) before DXVK and the loader read them; only `src/dxvk/dxvk_instance.cpp` changes.
+               0026 (deep/fork2-dlss, "1.7-dlss"): `ID3D9NvrExtShare`, images and timeline semaphores exported to another
+               process (NVR's 64-bit DLSS helper, `tools/nvr-dlss-helper`, docs/next/FORK2-DLSS.md): plain Vulkan external
+               memory/semaphores, no NVIDIA code; the d3d9_nvr_ext* files plus one accessor in `src/dxvk/dxvk_memory.h`.
 - `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
                `dxvk.conf.renderdoc-slot` (RenderDoc loaded as a Vulkan layer in a slot game, for the 'capture' shot) and
                `dxvk.conf.validation` (Khronos validation + synchronization validation). docs/next/FORK-DEBUG-CAPTURE.md.
