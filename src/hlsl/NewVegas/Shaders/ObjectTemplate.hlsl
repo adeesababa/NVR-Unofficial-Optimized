@@ -1613,6 +1613,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     // .w its reach; c39 + 2k its colour (already linear with linear lighting on). Free in every ObjectTemplate pixel shader.
     #define MANY_LAMPS_MAX 13
     float4 NVR_ManyLamps[1 + 2 * MANY_LAMPS_MAX] : register(c37);
+    // 2026-10-27: lamps 14-19 in c76-c87 and 20-24 in c98-c107 (per lamp: position + reach, colour), free in every NVR pixel shader too.
+    #define MANY_LAMPS_B 6
+    #define MANY_LAMPS_C 5
+    float4 NVR_ManyLampsB[2 * MANY_LAMPS_B] : register(c76);
+    float4 NVR_ManyLampsC[2 * MANY_LAMPS_C] : register(c98);
 #endif
 
 struct PS_INPUT {
@@ -1658,6 +1663,11 @@ struct PS_OUTPUT {
 
 sampler2D BaseMap : register(s0);
 sampler2D NormalMap : register(s1);
+// UNOFFICIAL 2026-10-27 ManyLampsGlow (core/LampsInOnePass.h): glow-mapped objects in the one pass (BSSM_ADT10_G, ADT4_G, ADTS10_G and
+// their _SG; the game binds the glow map on stage 4 and the emittance colour in c2 for these passes but never picked them before).
+#if defined(SI) && !defined(OPT)
+    sampler2D GlowMap : register(s4);
+#endif
 
 #ifdef LINEAR_LIGHTING
     float4 AmbientColorIn : register(c1);
@@ -1861,6 +1871,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambNormal,
                                        SHADOW_WP_VALID(IN) ? 1.0f : 0.0f);
     }
+
+    // UNOFFICIAL ManyLampsGlow: self emittance, as the LIGHTS < 4 variant adds it.
+    #if defined(SI) && !defined(OPT)
+        lighting += baseColor.rgb * LinColor(tex2D(GlowMap, IN.uv.xy).rgb * EmittanceColor.rgb);
+    #endif
 
     // TODO: Vanilla attenuates the full specular term by IN.lPosition.w for some reason. Is this a problem?
     float3 finalColor = LinEncode(lighting);	// UNOFFICIAL linear lighting

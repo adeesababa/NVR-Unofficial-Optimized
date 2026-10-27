@@ -36,18 +36,26 @@
 // The game's kLightingOffset is 0 in the world pass and set only while the first person is drawn (TESMain::DrawWorld_MTRender1stPerson ->
 // ShadowSceneNode::SetLightingOffset 0x008750E0); for first-person draws it is learned from the game's own value for lamp 1 after each
 // such draw (AfterDraw) and used for the next.
-// Lamps 7-13 get no forward cube-map shadow (only six cube slots); the screen-space lamp shadows cover them as before.
+// Lamps 7-24 get no forward cube-map shadow (only six cube slots); the screen-space lamp shadows cover them as before.
+// 2026-10-27 (PassFamilyView, Vault 21: the floor and wall pieces lit by 13+ lamps, 15-16 there, were still drawn in several passes
+// and looked different from their one-pass neighbours): 24 lamps, the block in three ranges of pixel registers no NVR pixel shader
+// uses: c37-c63 (the count and lamps 1-13), c76-c87 (lamps 14-19, between LinearPreDecode's c64-c75 and terrain's c88-c97) and
+// c98-c107 (lamps 20-24, below the sun shadows' c108). The game's zeros (c39-c86) reach the second range too: AfterPixelWrite
+// restores any range a write overlaps.
 namespace ManyLamps {
 
-	enum { MaxLamps = 13, FirstRegister = 37, Registers = 1 + 2 * MaxLamps };	// c37-c63
-	enum : UInt8 { CompareImm = MaxLamps - 1 };		// lamps <= 12 + f in one pass (f = 1 when the directional light is dark: 13)
+	enum { MaxLamps = 24, FirstRegister = 37, Registers = 1 + 2 * MaxLamps };	// rows of the block (see Ranges)
+	enum : UInt8 { CompareImm = MaxLamps - 1 };		// lamps <= 23 + f in one pass (f = 1 when the directional light is dark: 24)
+	struct Range { UINT reg, row, rows; };
+	constexpr Range Ranges[3] = { { 37, 0, 27 }, { 76, 27, 12 }, { 98, 39, 10 } };	// ObjectTemplate.hlsl NVR_ManyLamps / B / C
+	static_assert(27 + 12 + 10 == Registers, "ManyLamps ranges");
 
 	inline int Wanted = -1;			// the setting at startup (-1 not read yet)
 	inline int State = -1;			// -1 not decided yet, 0 off, 1 on
 	inline bool LinearCompiled = false;	// [Shaders.PBR.Linear] Enabled at startup: the shaders decode PSLightColor (LINEAR_LIGHTING_ON)
 	inline float Block[Registers][4] = {};
-	inline UINT BlockRegisters = 0;		// registers of the block on the device now (1 + 2 x count)
-	inline const void* LastPass = nullptr;	// the pass whose lamps are in c37-c63 now
+	inline UINT BlockRegisters = 0;		// rows of the block on the device now (1 + 2 x count)
+	inline const void* LastPass = nullptr;	// the pass whose lamps are in the block now
 	inline UInt32 LastFrame = 0;
 	inline UInt32 FrameId = 1;
 	inline bool Bound = false;			// one of our shaders is bound (OnBind)
@@ -76,7 +84,7 @@ namespace ManyLamps {
 			State = ShadersWant() ? 1 : 0;
 			LinearCompiled = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") != 0;
 			if (WantedAtStartup())
-				Logger::Log(State ? "UNOFFICIAL ManyLampsOnePass: on (shiny objects with up to %d lamps in one pass; lamps in c37-c63)"
+				Logger::Log(State ? "UNOFFICIAL ManyLampsOnePass: on (shiny objects with up to %d lamps in one pass; lamps in c37-c63, c76-c87, c98-c107)"
 					: "UNOFFICIAL ManyLampsOnePass: off (needs DXVK; the shaders keep 6 lamp slots)", (int)MaxLamps);
 		}
 		return State == 1;
@@ -114,7 +122,17 @@ namespace ManyLamps {
 		return true;
 	}
 
-	// The object's lamps for this pass into c37-c63.
+	// The block's rows in use onto the device (NVR's own upload: AfterPixelWrite ignores it).
+	inline void Upload() {
+		OwnUpload = true;
+		for (const Range& r : Ranges) {
+			if (BlockRegisters <= r.row) break;
+			TheRenderManager->device->SetPixelShaderConstantF(r.reg, &Block[r.row][0], min(r.rows, BlockRegisters - r.row));
+		}
+		OwnUpload = false;
+	}
+
+	// The object's lamps for this pass into the block.
 	inline void SetForPass(const PointShadowForward::RenderPassView* pass) {
 		int count = 0;
 		const bool linear = LinearCompiled && LinearPreDecode::Gamma > 1.0f;	// as LinColor: decoded only above gamma 1
@@ -126,7 +144,10 @@ namespace ManyLamps {
 			LightingOffset = FirstPerson ? FirstPersonOffset : D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 			for (int i = 1; i < pass->numLights && count < MaxLamps; i++) {
 				const ShadowSceneLight* light = pass->lights[i];
-				if (light && Put(count, light, linear, gamma)) count++;
+				// Lamp k must stay light k + 1 of the pass (the shader gives it that light's cube-map shadow slot): one that is not a usable
+				// point light keeps its place with reach 0, which the shader skips.
+				if (!light || !Put(count, light, linear, gamma)) memset(Block[1 + 2 * count], 0, 2 * sizeof(Block[0]));
+				count++;
 			}
 			// A many-lamp pass the game capped (AddPass_Opt keeps 6 + f entries of maxLights): its other lamps from the object's list.
 			if (pass->maxLights > pass->numLights && IsOptPass(pass->passEnum)) {
@@ -149,9 +170,7 @@ namespace ManyLamps {
 		Block[0][0] = (float)count;
 		Block[0][1] = Block[0][2] = Block[0][3] = 0.0f;
 		BlockRegisters = 1 + 2 * count;
-		OwnUpload = true;
-		TheRenderManager->device->SetPixelShaderConstantF(FirstRegister, &Block[0][0], BlockRegisters);
-		OwnUpload = false;
+		Upload();
 		LastPass = pass;
 		LastFrame = FrameId;
 		if (GpuTimer::Enabled) { StatDraws++; StatByCount[count]++; }
@@ -183,10 +202,13 @@ namespace ManyLamps {
 	// zeros in c39-c86, see above) gets the block put back at once.
 	inline void AfterPixelWrite(UINT start, UINT count) {
 		if (OwnUpload || !Bound || !BlockRegisters || LastFrame != FrameId) return;
-		if (start + count <= FirstRegister || start >= FirstRegister + BlockRegisters) return;
-		OwnUpload = true;
-		TheRenderManager->device->SetPixelShaderConstantF(FirstRegister, &Block[0][0], BlockRegisters);
-		OwnUpload = false;
+		bool overlaps = false;
+		for (const Range& r : Ranges) {
+			if (BlockRegisters <= r.row) break;
+			const UINT used = min(r.rows, BlockRegisters - r.row);
+			if (start < r.reg + used && start + count > r.reg) { overlaps = true; break; }
+		}
+		if (overlaps) Upload();
 	}
 
 	// After a draw with one of our shaders (Render.cpp): for first-person draws, the game's own lamp 1 (c19, object space with its

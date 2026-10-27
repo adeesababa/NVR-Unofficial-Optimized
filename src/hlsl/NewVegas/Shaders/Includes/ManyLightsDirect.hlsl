@@ -22,14 +22,15 @@
     const float mlCount = NVR_ManyLamps[0].x;
     #define ML_TS(d) float3(dot(IN.light2.xyz, (d)), dot(IN.light3.xyz, (d)), dot(IN.light4.xyz, (d)))
     // (A lamp without reach, or a pixel whose frame is all zero, adds nothing: no division by 0, no normalising a zero vector.)
-    #define ML_LAMP(j, COLOR) [branch] if ((j) < mlCount) { \
-            const float4 mlP = NVR_ManyLamps[1 + 2 * (j)]; \
+    #define ML_LAMP_AT(COND, POSITION, COLOR) [branch] if (COND) { \
+            const float4 mlP = POSITION; \
             const float3 mlD = mlP.xyz - mlWorldPos; \
             const float3 mlL = ML_TS(mlD); \
             att = vanillaAtt(mlD, max(mlP.w, 1.0e-3f)); \
             [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
                 lighting += getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH); \
         }
+    #define ML_LAMP(j, COLOR) ML_LAMP_AT((j) < mlCount, NVR_ManyLamps[1 + 2 * (j)], COLOR)
     #ifdef OPT
         ML_LAMP(0, SHADOWED(NVR_ManyLamps[2].rgb, 0, att))
         ML_LAMP(1, SHADOWED(NVR_ManyLamps[4].rgb, 1, att))
@@ -49,7 +50,19 @@
         [branch] if (mlIndex >= mlCount) break;
         ML_LAMP(mlIndex, NVR_ManyLamps[2 + 2 * mlIndex].rgb)
     }
+    // 2026-10-27: lamps 14-24 from the two other ranges (ObjectTemplate.hlsl NVR_ManyLampsB / C).
+    [branch] if (mlCount > MANY_LAMPS_MAX) {
+        [loop] for (int mlB = 0; mlB < MANY_LAMPS_B; mlB++) {
+            [branch] if (MANY_LAMPS_MAX + mlB >= mlCount) break;
+            ML_LAMP_AT(true, NVR_ManyLampsB[2 * mlB], NVR_ManyLampsB[2 * mlB + 1].rgb)
+        }
+        [loop] for (int mlC = 0; mlC < MANY_LAMPS_C; mlC++) {
+            [branch] if (MANY_LAMPS_MAX + MANY_LAMPS_B + mlC >= mlCount) break;
+            ML_LAMP_AT(true, NVR_ManyLampsC[2 * mlC], NVR_ManyLampsC[2 * mlC + 1].rgb)
+        }
+    }
     #undef ML_LAMP
+    #undef ML_LAMP_AT
     #undef ML_TS
 }
 #else

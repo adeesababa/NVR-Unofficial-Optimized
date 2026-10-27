@@ -2991,6 +2991,7 @@ namespace LampCountStats {
 static void ForwardShadowsForPass(void* Pass) {
 	LampCountStats::Count((const PointShadowForward::RenderPassView*)Pass);
 	ManyLamps::ForPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the object's lamps in c37-c63
+	LampsInOnePass::GlowForPass((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsGlow: the glow map on s4
 	PointShadowForward::OnRenderPass((const PointShadowForward::RenderPassView*)Pass, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
 	ScopeSunShadows::ForDraw((const PointShadowForward::RenderPassView*)Pass);
@@ -3024,7 +3025,12 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic: PassFamilyView
 	if (CasterView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL 2026-10-28, diagnostic: CasterView
 #endif
-	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
+	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) {	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
+#if NVR_TEST_TOOLS
+		LampsInOnePass::Census::NoteSkipped(Pass);	// diagnostic (F10 only)
+#endif
+		return;
+	}
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
 	PlantWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-20 plant wind (cleaned by ClothWind::AfterDraw)
@@ -3065,6 +3071,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ManyLamps::AfterDraw((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsOnePass: the first person's lighting offset
+	LampsInOnePass::GlowAfterDraw(Pass);	// UNOFFICIAL ManyLampsGlow (statistics)
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
 	FoldHighlights::AfterDraw(TheRenderManager->device);	// UNOFFICIAL, diagnostic
@@ -3091,7 +3098,12 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic: PassFamilyView
 	if (CasterView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL 2026-10-28, diagnostic: CasterView
 #endif
-	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
+	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) {	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
+#if NVR_TEST_TOOLS
+		LampsInOnePass::Census::NoteSkipped(Pass);	// diagnostic (F10 only)
+#endif
+		return;
+	}
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
@@ -3122,6 +3134,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ManyLamps::AfterDraw((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL ManyLampsOnePass: the first person's lighting offset
+	LampsInOnePass::GlowAfterDraw(Pass);	// UNOFFICIAL ManyLampsGlow (statistics)
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
 	FoldHighlights::AfterDraw(TheRenderManager->device);	// UNOFFICIAL, diagnostic
