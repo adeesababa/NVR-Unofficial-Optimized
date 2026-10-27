@@ -11,6 +11,12 @@ sampler2D DiffuseMap : register(s0);
 // UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] w: +1 ShadowFix (the sun shadow lookup takes the world up normal, see main),
 // +2 SkyLightScale (the sky light takes the tuft's light scale, as the game's ambient does).
 float4 TESR_GrassScale;
+#ifdef GRASS_ALPHA_TEST
+// UNOFFICIAL 2026-10-27 (user: no sun shadow on grass with the game's MSAA off, needed for FSR's RenderScale): GRASS23x000/001/003.pso,
+// the game's grass PS without transparency multisampling, include this file too. The game's own differs from its TMS twin only in
+// the alpha: a hard cut against AlphaTestRef (c3) for the alpha test instead of the coverage ramp (alpha x 1.75).
+float4 AlphaTestRef : register(c3);
+#endif
 #ifdef GRASS_POINT_LIGHT
 // UNOFFICIAL 2026-10-27 PointLights (GRASS23x001TMS/003TMS.pso include this file): the game's 1POINT grass PS adds one lamp,
 // 0.4 * PointLightColor * (1 - AttMap(xy) - AttMap(z)) on top of sun + ambient. Same registers as the game's.
@@ -80,7 +86,11 @@ PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     // thins out across the whole fade range. The cut-out alpha itself is unchanged.
     float dither = frac(52.9829189f * frac(dot(vPos, float2(0.06711056f, 0.00583715f))));
     clip(IN.sun.w - dither);
+#ifdef GRASS_ALPHA_TEST
+    OUT.color.a = albedo.a > AlphaTestRef.x ? 1.0f : 0.0f;	// the game's cut (its fade is the dither above, as in the TMS build)
+#else
     OUT.color.a = saturate(albedo.a * 1.75f);
+#endif
 
     return OUT;
 };

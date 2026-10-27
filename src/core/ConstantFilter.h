@@ -184,7 +184,25 @@ namespace ConstantFilter {
 		if (LinearPreDecode::Active) PreDecodeRefresh(device);
 	}
 
+	// UNOFFICIAL 2026-10-27 (P83 crash on native Windows D3D9, switching weapons indoors: an access violation in d3d9.dll, stack
+	// EffectRecord::Render -> the effect's state block Apply -> HookApply -> PreDecodeResync -> SendPixel; DXVK tolerates it): after
+	// a state block (Apply, EndStateBlock) or a Reset the copies are only marked stale; the shader and constants are read back and
+	// the copies remade at the next constant or shader call on the frame thread (DeferredResync), outside the runtime's own call.
+	// Every draw is preceded by one of those calls, so no lit draw sees stale copies.
+	inline bool ResyncPending = false;
+	inline void DeferResync() {
+		if (LinearPreDecode::Shaders.empty()) return;
+		LinearPreDecode::CopiesValid = false;
+		ResyncPending = true;
+	}
+	inline void DeferredResync(IDirect3DDevice9* self) {
+		if (!ResyncPending || !PreDecodeThread()) return;
+		ResyncPending = false;
+		PreDecodeResync(self);
+	}
+
 	inline HRESULT STDMETHODCALLTYPE HookPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
+		DeferredResync(self);
 		const HRESULT result = SendPixel(self, start, data, count);
 		// UNOFFICIAL LinearPreDecode: while a LIN_PREDECODED shader is bound, the game's new values of c1 and c3-c12 get their
 		// decoded copies at once. A write into c64-c75 by anything else makes the copies stale (remade at the next bind).
@@ -229,6 +247,7 @@ namespace ConstantFilter {
 		const HRESULT result = OrigSetPixelShader(self, shader);
 		if (SUCCEEDED(result) && PixelShaderObserver) PixelShaderObserver(shader);
 		if (SUCCEEDED(result) && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
+			ResyncPending = false;	// (2026-10-27) this bind decides Active and refreshes the copies itself
 			LinearPreDecode::Active = LinearPreDecode::Is(shader);
 			if (LinearPreDecode::Active) PreDecodeRefresh(self);
 		}
@@ -241,7 +260,7 @@ namespace ConstantFilter {
 		const HRESULT result = OrigReset(self, parameters);
 		if (StateLostObserver) StateLostObserver();
 		Wipe();
-		PreDecodeResync(self);	// UNOFFICIAL LinearPreDecode
+		DeferResync();	// UNOFFICIAL LinearPreDecode (2026-10-27: at the next constant or shader call, see DeferResync)
 		return result;
 	}
 
@@ -257,7 +276,7 @@ namespace ConstantFilter {
 		else InterlockedIncrement(&ForeignTick);
 		const HRESULT result = OrigEndStateBlock(self, block);
 		if (StateLostObserver) StateLostObserver();
-		if (GetCurrentThreadId() == Thread) PreDecodeResync(self);	// UNOFFICIAL LinearPreDecode
+		if (GetCurrentThreadId() == Thread) DeferResync();	// UNOFFICIAL LinearPreDecode (2026-10-27: deferred, see DeferResync)
 		return result;
 	}
 
@@ -266,10 +285,9 @@ namespace ConstantFilter {
 		else InterlockedIncrement(&ForeignTick);
 		const HRESULT result = OrigApply(self);
 		if (StateLostObserver) StateLostObserver();
-		if (GetCurrentThreadId() == Thread) {	// UNOFFICIAL LinearPreDecode: it may also have set the pixel shader
-			IDirect3DDevice9* device = nullptr;
-			if (SUCCEEDED(self->GetDevice(&device)) && device) { PreDecodeResync(device); device->Release(); }
-		}
+		// UNOFFICIAL LinearPreDecode: it may also have set the pixel shader. 2026-10-27: no device calls in here any more (the native
+		// D3D9 crash): the copies are remade at the next constant or shader call (DeferResync).
+		if (GetCurrentThreadId() == Thread) DeferResync();
 		return result;
 	}
 
