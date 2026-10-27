@@ -319,7 +319,8 @@
 // UNOFFICIAL 2026-10-24 SmoothObjectNormals (Includes/Shadow.hlsl, OBJECT_SMOOTH_NORMALS): the vertex normal in camera-relative world space
 // for the shadow lookups and the sky ambient, in place of the per-triangle derivative normal. The LIGHTS < 4 family carries it in its own
 // interpolator (TEXCOORD8; vs_3_0 has 12 outputs and ps_3_0 10 inputs: with PROJ_SHADOW every one is taken, so those variants keep the flat
-// normal); the LIGHTS >= 4 family has no interpolator spare and carries it octahedrally in uv.zw (OBJ_WORLD_NORMAL below).
+// normal); the LIGHTS >= 4 family has no interpolator spare and carries it in uv.zw + vertexColor.a (OBJ_WORLD_NORMAL below; 2026-10-26 a
+// plain vector, Includes/Shadow.hlsl ShadowPlainNormal).
 // 2026-10-24 (second round; owner: still faceted, skin and clothes, indoors, gone only with PBR off): characters are often drawn with the
 // projected-shadow (PROJ_SHADOW) variants, which had no interpolator spare and kept the per-triangle normal for the sky term, the sun lookup
 // and the metal reflection (grey cloth counts as metal, [Shaders.PBR.Metal] World). Now the full passes (not ONLY_LIGHT) carry the normal
@@ -714,14 +715,16 @@ VS_OUTPUT main(VS_INPUT IN) {
         OUT.vertexColor.a = upTangent.z * 0.5f + 0.5f;
     #endif
     #ifdef OBJ_SMOOTH_NORMAL_W
-        {	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal, camera-relative world, octahedral, in METAL_UP's two channels
+        {	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal, camera-relative world, in METAL_UP's three channels
+            // (2026-10-26: a plain vector, no longer octahedral: ShadowPlainNormal)
             #ifndef SKIN
-                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+                const float3 smoothN = GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz;
             #else
-                const float2 smoothOct = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz);
+                const float3 smoothN = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], OUT.shadowWorldPos.xyz).xyz;
             #endif
-            OUT.lightDistSq.w = smoothOct.x;
-            OUT.lightDir.w = smoothOct.y;
+            OUT.lightDistSq.w = smoothN.x;
+            OUT.lightDir.w = smoothN.y;
+            OUT.vertexColor.a = smoothN.z * 0.5f + 0.5f;
         }
     #endif
 
@@ -764,7 +767,7 @@ struct VS_OUTPUT {
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
 #if OBJECT_SMOOTH_NORMALS
-    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: .zw the vertex normal, camera-relative world, octahedral (no interpolator spare here)
+    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: .zw the vertex normal, camera-relative world (no interpolator spare here; z in vertexColor.a since 2026-10-26, ShadowPlainNormal)
 #else
     float2 uv : TEXCOORD0;
 #endif
@@ -930,12 +933,15 @@ VS_OUTPUT main(VS_INPUT IN) {
     float3 shadowWorldPos = GetShadowWorldPos(OUT.sPosition);
     SHADOW_WP_STORE(OUT, shadowWorldPos);
     #if OBJECT_SMOOTH_NORMALS
-        // UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal (tbn[2], in position's space) in camera-relative world, octahedral in uv.zw
+        // UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal (tbn[2], in position's space) in camera-relative world, in uv.zw and
+        // vertexColor.a (2026-10-26: a plain vector, no longer octahedral: ShadowPlainNormal)
         #ifndef SKIN
-            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+            const float3 smoothN = GetShadowSmoothNormal(ModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz;
         #else
-            OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz);
+            const float3 smoothN = GetShadowSmoothNormal(SkinModelViewProj, position.xyz, tbn[2], shadowWorldPos).xyz;
         #endif
+        OUT.uv.zw = smoothN.xy;
+        OUT.vertexColor.a = smoothN.z * 0.5f + 0.5f;
     #endif
 
     return OUT;
@@ -1195,7 +1201,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         #ifdef OBJ_SMOOTH_NORMAL_INTERP
             float3 shadowGeometricNormal = ShadowFacingNormal(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: the vertex normal
         #elif defined(OBJ_SMOOTH_NORMAL_W)
-            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowDecodeNormal(float2(IN.lightDistSq.w, IN.lightDir.w)), IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24
+            float3 shadowGeometricNormal = ShadowFacingNormal(ShadowPlainNormal(float2(IN.lightDistSq.w, IN.lightDir.w), IN.vertexColor.a), IN.shadowWorldPos.xyz);	// UNOFFICIAL 2026-10-24
         #else
             float3 shadowGeometricNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
         #endif
@@ -1576,7 +1582,7 @@ struct PS_INPUT {
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
 #if OBJECT_SMOOTH_NORMALS
-    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: .zw the vertex normal, camera-relative world, octahedral (no interpolator spare here)
+    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-24 SmoothObjectNormals: .zw the vertex normal, camera-relative world (no interpolator spare here; z in vertexColor.a since 2026-10-26, ShadowPlainNormal)
 #else
     float2 uv : TEXCOORD0;
 #endif
@@ -1603,7 +1609,7 @@ struct PS_INPUT {
 // UNOFFICIAL 2026-10-24 SmoothObjectNormals: the world normal at a point of this draw, p its camera-relative world position: the vertex
 // normal the vertex shader sent in uv.zw, facing the camera; off, the per-triangle derivative normal as before (top level only then).
 #if OBJECT_SMOOTH_NORMALS
-    #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), (p))
+    #define OBJ_WORLD_NORMAL(p) ShadowFacingNormal(ShadowPlainNormal(IN.uv.zw, IN.vertexColor.a), (p))
 #else
     #define OBJ_WORLD_NORMAL(p) GetShadowGeometricNormal(p)
 #endif

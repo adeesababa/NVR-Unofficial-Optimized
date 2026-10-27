@@ -4,7 +4,9 @@
 
 layout(set = 0, binding = 0) uniform sampler s_samplers[];
 
-#define NVR_SAMPLER(index) s_samplers[nonuniformEXT((index) & 0xFFFFu)]
+// (2026-10-26) The index is a push value, the same for every pixel of a draw: no nonuniformEXT, as DXVK's own D3D9 shaders
+// index the heap (NonUniform made NVIDIA guard every texture read for an index that never differs).
+#define NVR_SAMPLER(index) s_samplers[(index) & 0xFFFFu]
 
 vec3 linearize(vec3 c) {
     vec3 lo = c / 12.92;

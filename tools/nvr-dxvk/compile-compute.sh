@@ -13,7 +13,8 @@ for f in *.frag *.comp; do
   [ -e "$f" ] || continue
   b="${f%.*}"
   [ ${#NAMES[@]} -eq 0 ] || want "$b" || continue
-  glslangValidator -V --target-env vulkan1.1 -o "$b.spv" "$f" >/dev/null
+  # (glslang prints its errors on stdout: shown, and the run stops, when a shader does not compile)
+  if ! log=$(glslangValidator -V --target-env vulkan1.1 -o "$b.spv" "$f" 2>&1); then echo "$log" >&2; echo "FAILED: $f" >&2; exit 1; fi
   spirv-val --target-env vulkan1.1 "$b.spv"
   n=$((n+1))
 done
@@ -23,7 +24,7 @@ while read -r frag suffix defs; do
   [ ${#NAMES[@]} -eq 0 ] || want "$frag" || continue
   out="$frag-$suffix.spv"
   # shellcheck disable=SC2086
-  glslangValidator -V --target-env vulkan1.1 $defs -o "$out.tmp" "$frag.frag" >/dev/null
+  if ! log=$(glslangValidator -V --target-env vulkan1.1 $defs -o "$out.tmp" "$frag.frag" 2>&1); then echo "$log" >&2; echo "FAILED: $frag $suffix" >&2; exit 1; fi
   spirv-opt -O --target-env=vulkan1.1 "$out.tmp" -o "$out"
   rm -f "$out.tmp"
   spirv-val --target-env vulkan1.1 "$out"

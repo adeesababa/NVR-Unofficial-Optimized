@@ -37,6 +37,24 @@ float ShadowPCF2x2(vec2 coord, float depth, float texel) {
     return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
 }
 
+#ifndef CHARACTER_SHADOW_MAP
+#define CHARACTER_SHADOW_MAP 0
+#endif
+#if CHARACTER_SHADOW_MAP
+// The same 2 x 2 PCF on the player's own map (TESR_CharShadowMap; POINT in the .fx: the taps sit on texel centres, where LINEAR
+// returns the texel itself).
+float ShadowPCF2x2Char(vec2 coord, float depth, float texel) {
+    vec2 p = coord / texel - 0.5;
+    vec2 base = floor(p);
+    vec2 f = p - base;
+    vec2 uv0 = (base + 0.5) * texel;
+    vec4 d = vec4(textureLod(sampler2D(t_charShadow, LINEAR_S), uv0, 0.0).x, textureLod(sampler2D(t_charShadow, LINEAR_S), uv0 + vec2(texel, 0.0), 0.0).x,
+                  textureLod(sampler2D(t_charShadow, LINEAR_S), uv0 + vec2(0.0, texel), 0.0).x, textureLod(sampler2D(t_charShadow, LINEAR_S), uv0 + texel, 0.0).x);
+    vec4 lit = vec4(lessThanEqual(vec4(depth), d));
+    return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
+}
+#endif
+
 float GetLightAmountValueVSM(vec2 moments, float depth, float bias, float bleedReduction) {
     return ChebyshevUpperBound(moments, depth, bias, bleedReduction);
 }
@@ -114,7 +132,7 @@ float GetLightAmountValue(mat4 lightTransform, vec4 coord, float offsetX, float 
     return shadow;
 }
 
-float GetLightAmount(vec4 positionWS, vec3 normal) {
+float GetLightAmountCascades(vec4 positionWS, vec3 normal) {
     float NdotL = dot(normal, cb.smoothedSunDir.xyz);
     float offsetScale = saturate(1.0 - NdotL);
 
@@ -181,6 +199,31 @@ float GetLightAmount(vec4 positionWS, vec3 normal) {
 #undef TAP_MIDDLE
 #undef TAP_FAR
 #undef TAP_LOD
+
+// (2026-10-23 CharacterShadowMap, ported 2026-10-26) the cascades' light amount, and with CHARACTER_SHADOW_MAP the darker of it and
+// the player's own map's inside that map's box, fading to the cascades alone over the box's outer band (SunShadows.fx GetLightAmount).
+float GetLightAmount(vec4 positionWS, vec3 normal) {
+    float shadow = GetLightAmountCascades(positionWS, normal);
+#if CHARACTER_SHADOW_MAP
+    float texel = max(cb.charShadowData.x, 1.0 / 16384.0);
+    float halfExtent = max(cb.charShadowCenter.w, 1.0);
+    float NdotL = dot(normal, cb.smoothedSunDir.xyz);
+    float offsetScale = saturate(1.0 - NdotL);
+    vec3 position = positionWS.xyz + normal * (offsetScale * 1.5 * 2.0 * halfExtent * texel);
+    vec4 lightSpace = cb.charShadowCameraToLight * vec4(position, 1.0);   // mul(float4(position, 1), TESR_CharShadowCameraToLight)
+    float edge = max(abs(lightSpace.x), abs(lightSpace.y));
+    float band = max(cb.charShadowData.y, 0.01);
+    float weight = (1.0 - hlslSmoothstep(1.0 - band, 1.0, edge)) * cb.charShadowData.w;
+    if (weight > 0.0) {
+        vec2 cuv = vec2(lightSpace.x * 0.5 + 0.5, lightSpace.y * -0.5 + 0.5);
+        float slope = min(sqrt(saturate(1.0 - NdotL * NdotL)) / max(NdotL, 0.05), 5.0);
+        float depth = min(lightSpace.z, 0.9999) - cb.charShadowData.z - texel * slope;
+        float lit = ShadowPCF2x2Char(clamp(cuv, texel, 1.0 - texel), depth, texel);
+        shadow = mix(shadow, min(shadow, lit), weight);
+    }
+#endif
+    return shadow;
+}
 
 // Shadow: a shadow value from the darkness setting (full shadow) to 1 (full light)
 void main() {

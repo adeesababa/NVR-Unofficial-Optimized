@@ -459,8 +459,9 @@ void AmbientLightEffect::SmoothComputeRelease() {
 
 bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Width, UINT Height) {
 	if (!TheSettingManager->SettingsMain.Main.AmbientLightSmoothCompute || smoothComputeFailed || !DxvkCompute::Available()) return false;
-	if (normalSmoothing > SmoothComputeMaxReach) {
-		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d is above the compute version's %d: the D3D9 passes are used.", normalSmoothing, SmoothComputeMaxReach);
+	// (2026-10-26) NormalSmoothingWorld widens the reach per pixel (up to 192 texels), which the compute version's fixed reach cannot follow.
+	if (normalSmoothing > SmoothComputeMaxReach || normalSmoothingWorld > 0.0f) {
+		if (!smoothComputeReachLogged) Logger::Log("UNOFFICIAL AmbientLight: NormalSmoothing %d (or NormalSmoothingWorld %.1f) is beyond the compute version (reach %d): the D3D9 passes are used.", normalSmoothing, normalSmoothingWorld, SmoothComputeMaxReach);
 		smoothComputeReachLogged = true;
 		return false;
 	}
@@ -508,6 +509,7 @@ bool AmbientLightEffect::SmoothCompute(IDirect3DDevice9* Device, IDirect3DSurfac
 	dispatch.GroupsY = (Height + push.tileRows - 1) / push.tileRows;
 	dispatch.GroupsZ = 1;
 
+	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	HRESULT result = Device->SetRenderTarget(0, Target);	// the prep (Prepare's target) must not be the render target while the dispatch reads it
 	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	if (SUCCEEDED(result)) result = DxvkCompute::Extension()->CopyBufferToTexture(prepTexture, 0, 0, smoothResult, 0);
@@ -676,6 +678,7 @@ bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width
 	dispatch.GroupsX = (width + 15) / 16;
 	dispatch.GroupsY = (height + 15) / 16;
 	dispatch.GroupsZ = 1;
+	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	HRESULT result = DxvkCompute::Extension()->Dispatch(&dispatch);
 	if (FAILED(result)) {
 		Logger::Log("UNOFFICIAL AmbientLight: blur compute dispatch failed (%08lX); the D3D9 blur passes are used from now on", result);
@@ -739,6 +742,7 @@ bool AmbientLightEffect::ExtOn() const {
 bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport) {
 	if (!ExtOn() || Shader >= ExtShaderCount || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS || Viewport.X || Viewport.Y || !Viewport.Width || !Viewport.Height) return false;
 	const ALExtShader& info = ALExtShaders[Shader];
+	if (DxvkCompute::KeptOnD3D9(info.Spv)) return false;	// UNOFFICIAL 2026-10-26 test: NvrDxvkKeepD3D9 can name one pass (e.g. AmbientLightAccumulate)
 	ExtPass& pass = extPasses[Shader][TargetCount - 1];
 	if (!pass.Tried) {
 		pass.Tried = true;

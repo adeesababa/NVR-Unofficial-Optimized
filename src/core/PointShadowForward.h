@@ -177,7 +177,7 @@ namespace PointShadowForward {
 	// included by).
 	inline bool Eligible(const char* name, const ShaderTemplate& t) {
 		if (!name || !strstr(name, ".pso")) return false;
-		// UNOFFICIAL Conor's skin shader (SkinTemplate.hlsl): every pixel shader with lamps (SKIN2000/2001 have only the sun).
+		// UNOFFICIAL the skin shader (SkinTemplate.hlsl): every pixel shader with lamps (SKIN2000/2001 have only the sun).
 		if (t.Name && !strcmp(t.Name, "SkinTemplate")) return strcmp(name, "SKIN2000.pso") && strcmp(name, "SKIN2001.pso");
 		if (t.Name) return !strcmp(t.Name, "ObjectTemplate") || !strcmp(t.Name, "SkinVPSTemplate");
 		return !strcmp(name, "SKIN2002.pso") || !strcmp(name, "SKIN2006.pso") || !strcmp(name, "SM3002.pso") ||

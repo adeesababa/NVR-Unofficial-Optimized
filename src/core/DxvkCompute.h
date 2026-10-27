@@ -45,9 +45,28 @@ public:
 	// [Main.Main.Performance] NvrDxvkVariants (UNOFFICIAL 2026-10-26): Vulkan passes use their compile-time variants
 	// (Compute\variants.txt, the D3D9 techniques' fixed switches) where the .spv exists; off: the run-time switched shaders (A/B).
 	static bool					VariantsOn();
+	// [Main.Main.Performance] NvrDxvkStencil (UNOFFICIAL 2026-10-26): Vulkan passes test a stencil where their D3D9 technique does
+	// (extension 1.6 DrawDepthStencil; SMAA's weight pass only on the edge pixels); off, or an older NVR DXVK: without (A/B).
+	static bool					StencilOn();
+	// [Main.Main.Performance] NvrDxvkKeepD3D9 (UNOFFICIAL 2026-10-26, test tool): whether this effect (its EffectRecord name, e.g.
+	// PointShadows; names separated by commas or spaces) keeps its D3D9 passes while the others run as Vulkan passes, so one pass's
+	// real cost shows in the frame total. EffectRecord::Render, ExtFullScreen and ExtDrawTo check it (so effects with their own
+	// Render, AmbientLight, SMAA, AO, ..., fall back to D3D9 for the frame too).
+	static bool					KeptOnD3D9(const char* Name);
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
 	// UNOFFICIAL 2026-10-26 (debugging tools): as CreateBuffer, but a failure is only logged (the other compute paths stay on).
 	static ID3D9NvrExtBuffer*	CreateBufferNoFail(UINT Size, UINT Flags, const char* Name);
+	// UNOFFICIAL 2026-10-26 (alflicker): DXVK copies a D3DPOOL_MANAGED texture (the file textures: blue noise, SMAA's tables, noise
+	// volumes, ...) to the GPU only when a D3D9 draw binds it, and the extension reads the GPU image as it is: a file texture only
+	// Vulkan passes read stayed empty (AmbientLight's blue noise read 0 everywhere, so its rotating pattern moved the whole screen at
+	// once: the every-4th-frame flicker; a few D3D9 frames cured it for the session). PreLoad (IDirect3DResource9) uploads what is
+	// pending; nothing for the render targets. Every Draw/Dispatch call passes its bindings through this first.
+	static void					PreLoad(const NVR_EXT_RESOURCE_BINDING* Bindings, UINT Count);
+
+	// UNOFFICIAL 2026-10-26 (extension 1.5, diagnostic): while On (F10 profiling), a "DXVK PROFILE" line every 120 frames: where a frame
+	// goes between the game thread (the game and NVR outside D3D9 calls; inside them DXVK's own work and its waits), DXVK's command
+	// thread and the GPU. RenderHook calls it once a frame; an older NVR DXVK, native D3D9 or stock DXVK: nothing.
+	static void					ProfileTick(bool On);
 
 	// Phase 2 (extension 1.2): [Main.Main.Performance] NvrDxvkReplacements. Called by ShaderRecord::LoadShader before the device
 	// sees a pixel shader's bytecode: if Data\Shaders\NewVegasReloaded\Compute\Replace\<Name>@<hash>.spv (FNV-1a of the bytecode,

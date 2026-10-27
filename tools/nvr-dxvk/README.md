@@ -3,8 +3,9 @@
 DXVK v3.0.1 (zlib licence, github.com/doitsujin/dxvk) plus the NVR extension, as a patch series on the v3.0.1 tag.
 Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets stay as they are.
 
-- `patches/`   the fork: three patches on top of v3.0.1 (1.0 compute, 1.1 full-screen passes, 1.2 pixel shader
-               replacements; new files `src/d3d9/d3d9_nvr_ext*.{h,cpp}`, plus small edits to `d3d9_device.{h,cpp}`,
+- `patches/`   the fork: a patch series on top of v3.0.1 (0001-0010: extension 1.0-1.6, compute, full-screen passes, pixel
+               shader replacements, samplers, RESZ on every vendor, profiling, depth-stencil passes; 0011: managed textures
+               uploaded before a pass samples them; new files `src/d3d9/d3d9_nvr_ext*.{h,cpp}`, plus small edits to `d3d9_device.{h,cpp}`,
                `d3d9_shader.h`, `d3d9_shader_analysis.h`, `src/d3d9/meson.build` and `dxvk_context.h`). Re-apply onto a
                newer DXVK with `git am`. 0009 (1.5-particles, branch deep/fork-particles): `ID3D9NvrExtGeometry`, a
                separate interface queried from ID3D9NvrExt (own vertex shader reading buffers, instanced draws; used by

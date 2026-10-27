@@ -27,6 +27,12 @@ are drawn so they do the same job with much less work, and fixes a few visual bu
   **Also fixed in P77:** water reflections losing far buildings, lamp shadows ending at a circle, huge shadows when
   you stand at a lamp, interior floors flickering light and dark, grass popping in, and a seam where the far water
   begins (see below). (P77 replaces P76, which was withdrawn.)
+- **A new skin shader** (2026-10-25, on by default, Shaders > Skin): faces and bodies are lit with light spreading
+  under the skin (soft, warm shadow lines; small features like noses, ears and fingers soften), light glowing through
+  ears and fingers against the light, real skin highlights with a fine fuzz sheen, the sky's light and reflection, and
+  the sun's and lamps' shadows with soft, reddened edges. Built on this build's own lighting, shadow and sky code
+  (it replaces the ported skin shader of P80-P83 and the hand-translated vanilla skin shaders). Every part has its
+  own slider, indoors and out; `Shaders > Skin > Status > Enabled` off gives the game's own skin shaders back.
 - **A built-in performance meter** (F10) that shows what each effect costs on your PC. While it is
   running, a small dim red dot and "PROF" show in the top-right corner of the screen. The log also gets
   frame-time percentiles and "1% low" figures, which are the best way to compare two setups.
@@ -261,8 +267,8 @@ Technical details of every change: [docs/UNOFFICIAL-TECHNICAL.md](docs/UNOFFICIA
 > skylighting follow the [Community Shaders](https://github.com/community-shaders/skyrim-community-shaders) team and contributors'
 > Terrain Shadows, Cloud Shadows, Grass Collision, Terrain Variation, LOD Blending and Skylighting (GPL-3.0); the terrain shadows'
 > sweep and the terrain variation shader are ported from [Conor (mrfury97)](https://github.com/mrfury97/Conor-sClaudeHell-NVR-SAL-Fork)'s
-> NVR fork (GPL-3.0-or-later). Also adapted from Community Shaders: the skin shader's shading details (after Advanced Skin)
-> and its screen-space blur kernel and width, the Terrain Blending method this build's terrain blending descends from, the
+> NVR fork (GPL-3.0-or-later). Also adapted from Community Shaders: the skin's optional screen-space blur (its kernel and
+> width, through Conor's port; the skin shader itself is this build's own), the Terrain Blending method this build's terrain blending descends from, the
 > Complex Parallax Materials method in the parallax code, the True PBR material-map layout read for `_rmaos` maps, and Grass
 > Optimizations' size fade (through Balebandro's Physically-Based-Reloaded fork) in the new grass.
 > What came from where: [docs/COMMUNITY-SHADERS-PORTS.md](docs/COMMUNITY-SHADERS-PORTS.md).

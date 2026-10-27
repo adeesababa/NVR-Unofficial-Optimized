@@ -38,4 +38,6 @@ public:
 	ExtUniformBuffer extUniforms;
 	unsigned extForwardGeneration = 0;	// the load FORWARD_SHADOWS was read for (EffectRecord passes it to the compiler at load)
 	bool	extForwardCompiled = false;
+	bool	extCharCompiled = false;	// UNOFFICIAL 2026-10-26: CHARACTER_SHADOW_MAP as the loaded effect was compiled with (the Apply pass's c1 variant)
+	std::map<std::string, ExtPass> extVariants;
 };

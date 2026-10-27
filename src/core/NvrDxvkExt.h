@@ -46,7 +46,7 @@
 #include <unknwn.h>
 
 #define NVR_EXT_VERSION_MAJOR 1
-#define NVR_EXT_VERSION_MINOR 4
+#define NVR_EXT_VERSION_MINOR 6
 
 #define NVR_EXT_MAX_SLOTS       32
 #define NVR_EXT_MAX_BINDINGS    32
@@ -96,6 +96,30 @@ enum NVR_EXT_BLEND {
 };
 
 #define NVR_EXT_MAX_TARGETS 4
+
+/** Depth and stencil compare functions (since 1.6; the values are Vulkan's, D3DCMPFUNC minus 1). */
+enum NVR_EXT_COMPARE {
+  NVR_EXT_COMPARE_NEVER         = 0,
+  NVR_EXT_COMPARE_LESS          = 1,
+  NVR_EXT_COMPARE_EQUAL         = 2,
+  NVR_EXT_COMPARE_LESS_EQUAL    = 3,
+  NVR_EXT_COMPARE_GREATER       = 4,
+  NVR_EXT_COMPARE_NOT_EQUAL     = 5,
+  NVR_EXT_COMPARE_GREATER_EQUAL = 6,
+  NVR_EXT_COMPARE_ALWAYS        = 7,
+};
+
+/** Stencil operations (since 1.6; the values are Vulkan's, D3DSTENCILOP minus 1). */
+enum NVR_EXT_STENCIL_OP {
+  NVR_EXT_STENCIL_KEEP       = 0,
+  NVR_EXT_STENCIL_ZERO       = 1,
+  NVR_EXT_STENCIL_REPLACE    = 2,
+  NVR_EXT_STENCIL_INCR_CLAMP = 3,
+  NVR_EXT_STENCIL_DECR_CLAMP = 4,
+  NVR_EXT_STENCIL_INVERT     = 5,
+  NVR_EXT_STENCIL_INCR_WRAP  = 6,
+  NVR_EXT_STENCIL_DECR_WRAP  = 7,
+};
 
 /** One descriptor the SPIR-V declares. */
 struct NVR_EXT_BINDING_DESC {
@@ -184,6 +208,27 @@ struct NVR_EXT_TARGET {
   BOOL      Srgb;       // write through the sRGB view of a sRGB-capable format
 };
 
+/**
+ * A depth-stencil attachment for a full-screen pass, with its tests (since 1.6, DrawDepthStencil): e.g. a pass that runs
+ * only where an earlier pass left a stencil mark, as a D3D9 technique with StencilEnable does. Clear it with D3D9's Clear
+ * (it stays in order with the passes). Both faces use the same stencil state; the triangle's depth is Depth.
+ */
+struct NVR_EXT_DEPTH_STENCIL {
+  IUnknown*           pResource;          // a D3D9 depth-stencil surface (or depth texture) of the targets' size, single-sample
+  FLOAT               Depth;              // the full-screen triangle's depth, 0-1
+  BOOL                DepthTest;
+  BOOL                DepthWrite;
+  NVR_EXT_COMPARE     DepthCompare;
+  BOOL                StencilTest;
+  NVR_EXT_COMPARE     StencilCompare;
+  NVR_EXT_STENCIL_OP  StencilPassOp;      // the stencil and depth tests passed
+  NVR_EXT_STENCIL_OP  StencilFailOp;
+  NVR_EXT_STENCIL_OP  StencilDepthFailOp;
+  UINT                StencilReference;
+  UINT                StencilReadMask;
+  UINT                StencilWriteMask;
+};
+
 struct NVR_EXT_DRAW_DESC {
   struct ID3D9NvrExtPipeline*     pPipeline;
   UINT                            TargetCount;      // = the pipeline's ColorTargetCount; all the same size
@@ -235,6 +280,29 @@ struct NVR_EXT_SHADER_REPLACEMENT_DESC {
   UINT                        ExtraCount;           // NVR's own resources: set 4, binding j; Slot in the extension's slot space
   const NVR_EXT_BINDING_DESC* pExtra;               // (sampled image, uniform buffer, read-only storage buffer, sampler; PushOffset ignored)
   const char*                 pDebugName;
+};
+
+/** Profiling counters since SetProfiling(TRUE) (since 1.5). Ticks: the CPU's time stamp counter (Tsc, the same clock). */
+struct NVR_EXT_PROFILE {
+  UINT64  TimeUs;             // steady clock now (microseconds)
+  UINT64  Tsc;                // time stamp counter now (with TimeUs: its rate)
+  UINT64  Frames;             // presents
+  UINT64  TimedFrames;        // frames whose D3D9 calls were timed (every 8th)
+  UINT64  ApiTicks;           // the game thread's outermost D3D9 calls on timed frames (ticks; waits included)
+  UINT64  ApiCalls;           // those calls
+  UINT64  OverheadTicks100;   // the timer's own cost per timed call, x 100 (subtract ApiCalls x this / 100)
+  UINT64  PresentWaitTicks;   // the frame-latency wait in Present, every frame (ticks)
+  UINT64  TimedWaitTicks;     // that wait on the timed frames (it is inside ApiTicks)
+  UINT64  CsSyncUs;           // the game thread waiting for DXVK's command thread (microseconds)
+  UINT64  CsIdleUs;           // DXVK's command thread idle
+  UINT64  GpuSyncUs;          // the game thread waiting for the GPU
+  UINT64  GpuIdleUs;          // the GPU idle
+  UINT64  Draws;
+  UINT64  RenderPasses;
+  UINT64  Barriers;
+  UINT64  Submits;
+  UINT64  CsChunks;
+  UINT64  GraphicsPipelines;
 };
 
 struct NVR_EXT_INFO {
@@ -389,6 +457,21 @@ ID3D9NvrExt : public IUnknown {
    */
   virtual HRESULT STDMETHODCALLTYPE DrawShifted(
     const NVR_EXT_DRAW_DESC*              pDesc,
+          FLOAT                           ShiftX,
+          FLOAT                           ShiftY) = 0;
+
+  /** Profiling on / off (since 1.5): on, every 8th frame times the game thread's D3D9 calls. */
+  virtual HRESULT STDMETHODCALLTYPE SetProfiling(
+          BOOL                            Enable) = 0;
+
+  /** The profiling counters (since 1.5); cumulative, read twice and subtract. */
+  virtual HRESULT STDMETHODCALLTYPE GetProfile(
+          NVR_EXT_PROFILE*                pProfile) = 0;
+
+  /** Draw (or DrawShifted, a shift of 0 for none) with a depth-stencil attachment and its tests (since 1.6). */
+  virtual HRESULT STDMETHODCALLTYPE DrawDepthStencil(
+    const NVR_EXT_DRAW_DESC*              pDesc,
+    const NVR_EXT_DEPTH_STENCIL*          pDepthStencil,
           FLOAT                           ShiftX,
           FLOAT                           ShiftY) = 0;
 };

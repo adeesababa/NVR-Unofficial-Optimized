@@ -77,7 +77,7 @@ float luma(vec3 c) {
 // ---- Depth.hlsl ------------------------------------------------------------------
 float readDepth(vec2 uv) {
     float farZ = pc.cameraData.y;
-    return texture(sampler2D(t_depth, s_samplers[nonuniformEXT(pc.samplerIndex & 0xFFFFu)]), uv).x * farZ;
+    return texture(sampler2D(t_depth, s_samplers[pc.samplerIndex & 0xFFFFu]), uv).x * farZ;
 }
 
 // ---- AvgLuma.fx.hlsl -------------------------------------------------------------

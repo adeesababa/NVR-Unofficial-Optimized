@@ -1,136 +1,274 @@
-// Skin lighting helpers.
-// Must not reference TESR_DebugVar: it carries whatever the Debug effect is set to.
-#ifndef SKIN_FACEGEN_BLEND
-    #define SKIN_FACEGEN_BLEND 1.0f      // 0 = raw base texture, 1 = full FaceGen complexion
+// Skin lighting for SkinTemplate.hlsl (UNOFFICIAL 2026-10-25, the skin shader rewritten on this build's own stack).
+//
+// Built from the includes every other lit surface in this build uses: the BRDF terms of PBR.hlsl (Fresnel, GGX through
+// BRDF(), the geometric specular anti-aliasing, the split-sum environment response), the light and ambient strengths of
+// PBRScale.hlsl, the sky of SkyAmbient.hlsl, linear lighting (LinearLight.hlsl) and the lamps' falloff (LampFalloff.hlsl).
+// The sun's and the lamps' shadows come from Shadow.hlsl and PointShadowForward.hlsl in the template. What skin adds, and
+// where it comes from:
+//   - Diffusion under the skin: Penner's pre-integrated skin (GPU Pro 2, 2011) over d'Eon's measured diffusion profile
+//     (GPU Gems 3 ch. 14), evaluated as the irradiance of a spherical Gaussian whose sharpness follows the surface's
+//     curvature (Hill's closed form for an SG's cosine irradiance, from MJP's "SG Series" part 3). The sharpness constants
+//     below were fitted for this build to the pre-integrated table, per colour, over radii 1-50 mm (bench scratch
+//     fit_skin.py: largest error 0.07 red, 0.016 green, 0.008 blue; red's miss is the light that goes right round a 1 mm
+//     sphere, which the transmission term carries instead). Fine relief is softened per colour with a blurred normal
+//     (Penner's second technique). The curvature is measured from screen-space derivatives.
+//   - Light through thin parts (ears, nostrils, fingers) against the light: Barre-Brisebois & Bouchard's approximation
+//     (GDC 2011), coloured by Jimenez's transmittance of d'Eon's profile (Separable SSS, 2012), the thickness read off the
+//     curvature. White at the thinnest rims, orange, then deep red.
+//   - Highlights: two GGX lobes at skin's F0 of 0.028 (Jimenez 2015; Unreal's skin model: 0.75 x and 1.3 x the roughness,
+//     mixed 0.85 / 0.15) through PBR.hlsl's BRDF, so they take the same masking term and specular anti-aliasing as the
+//     objects next to the skin; and a sheen lobe for the fuzz on skin (Estevez & Kulla's "Charlie" distribution, Neubelt's
+//     visibility). The light the highlight reflects does not also enter the skin (diffuse x (1 - F)).
+//   - Shadow edges: the penumbra reddened per colour (light carried under the skin across the shadow line), and the skin's
+//     own far side lets the scattered light through the shadow map's self-shadow (SkinTemplate: a second, coarse tap
+//     toward the sun says whether a shadow is the surface's own).
+//   - Sky: the sky light from SkyAmbient.hlsl's harmonics, softened per colour like the direct light, and a dual-lobe sky
+//     reflection with the same response as the highlights.
+//
+// Colour space: everything here works in the build's lighting space (the game's gamma, or linear with [Shaders.PBR.Linear]):
+// lights come in through PBRLight / PBRAmbient, the albedo through LinColor, physical colours (the transmittance) through
+// SkinLinearColor. Direct lighting works in whatever space the caller's vectors share (SkinTemplate: tangent space); the sky
+// terms take WORLD-space vectors. Derivatives are taken in SkinSetup only, which must be called at the pixel shader's top level.
+#ifndef SKIN_INCLUDED
+#define SKIN_INCLUDED
+
+#if defined(__INTELLISENSE__)
+    #include "PBR.hlsl"
+    #include "PBRScale.hlsl"
+#else
+    #include "includes/PBR.hlsl"
+    #include "includes/PBRScale.hlsl"
 #endif
-#ifndef SKIN_SPECULAR_STRENGTH
-    #define SKIN_SPECULAR_STRENGTH 0.0f   // 0 = vanilla (vanilla skin has no specular term)
+
+// --- constants (effects/Skin.cpp). c192-c195 are free in every skin pixel shader: Shadow.hlsl pins c100-c133, the sky
+// c134-c145, the sun cross-fade c146-c166, contact hardening c167, the lamp shadows c174-c190, linear lighting c191.
+float4 TESR_SkinMaterial : register(c192); // x SpecularStrength, y Roughness, z Scattering (how far light spreads, x the measured profile), w Translucency
+float4 TESR_SkinLook     : register(c193); // x SkyReflection (0 indoors), y wetness (rain x RainWetness), z ShadowScatter, w Sheen
+// Per draw, set by the SkinShader hook (Hooks/Shaders.cpp) after the shader binds (so NVR_, not TESR_: ShaderRecord re-uploads
+// every TESR_ constant when the shader changes): x 1 while the screen-space blur's targets are bound for this draw (the blur
+// then does the diffusion: doing both doubled it), y 1 while the FaceGen maps are bound to a light-only pass.
+float4 NVR_SkinDraw      : register(c194);
+float4 TESR_SkinDebug    : register(c195); // x [Shaders.Skin.Debug] DebugView 1-7 (0 off, or one of the blur's views), y 1 while the Interiors settings are in use
+
+#define SKIN_F0 0.028f
+#define SKIN_LOBE0 0.75f            // the sharp lobe's roughness, x Roughness
+#define SKIN_LOBE1 1.3f             // the broad lobe's
+#define SKIN_LOBE_MIX 0.15f         // the broad lobe's share
+#define SKIN_SHEEN_ALPHA 0.1225f    // the fuzz lobe: roughness 0.35 squared
+#define SKIN_SHEEN_F0 0.045f
+#define SKIN_MM_PER_UNIT 14.2857f   // one game unit is 1/70 m
+#define SKIN_SCATTER_BASE 2.0f      // Scattering 1 = twice the measured profile's width: the true width barely shows on a head at game distances
+#define SKIN_TRANSMIT_DISTORTION 0.3f
+#define SKIN_TRANSMIT_POWER 4.0f
+#define SKIN_SOFT_NORMAL_BIAS 2.0f  // mip levels the normal map is read blurred by for the per-colour softening
+
+// Per pixel, from SkinSetup.
+static float skinRoughness = 0.5f;
+static float skinSpecScale = 0.0f;     // the highlights' strength: the specular mask x SpecularStrength (x wetness)
+static float skinCurvature = 0.0f;     // 1/mm, after Scattering: 0 flat (or the blur's), 1 a 1 mm radius
+static float skinThinness = 0.0f;      // the same curvature without Scattering: 0 flat .. 1 a 1 mm radius, for the transmission
+static float skinSkyWeight = 0.0f;     // the share of the sky the reflection takes (SkinSkyReflection), which the ambient leaves out
+
+// A LINEAR colour (a physical constant) in the build's lighting space: encoded as the sky's colours are (sqrt), then decoded
+// with the lights (LinColor returns it as is without linear lighting).
+float3 SkinLinearColor(float3 c) { return LinColor(sqrt(max(c, 0.0f))); }
+
+// Call once per pixel at the TOP LEVEL of the pixel shader (derivatives).
+//   normalTS:     the bumped normal, tangent space (for the specular anti-aliasing)
+//   worldNormal:  the interpolated vertex normal in world space (for the curvature)
+//   worldPos:     the camera-relative world position
+//   mask:         the normal map's alpha, the specular mask (0.5 reads as full skin)
+//   blurTakes:    1 while the screen-space blur takes this draw (NVR_SkinDraw.x): the curvature diffusion then steps aside
+void SkinSetup(float3 normalTS, float3 worldNormal, float3 worldPos, float mask, float blurTakes) {
+    const float wet = saturate(TESR_SkinLook.y);
+    const float roughness = lerp(TESR_SkinMaterial.y, TESR_SkinMaterial.y * 0.55f, wet);   // a water film is smoother than skin
+    skinRoughness = clamp(SpecularAA(normalTS, roughness), 0.08f, 1.0f);
+    skinSpecScale = mask * 2.0f * TESR_SkinMaterial.x * (1.0f + wet);
+
+    // How fast the surface turns per millimetre: the curvature in 1/mm (Penner), capped at a 1 mm radius, where the fit ends.
+    const float dN = length(fwidth(worldNormal));
+    const float dP = length(fwidth(worldPos)) * SKIN_MM_PER_UNIT;
+    const float curvature = dN / max(dP, 1e-4f);
+    skinThinness = saturate(curvature * SKIN_SCATTER_BASE);
+    skinCurvature = blurTakes > 0.0f ? 0.0f : saturate(curvature * SKIN_SCATTER_BASE * TESR_SkinMaterial.z);
+}
+
+// The cosine irradiance of a normalised spherical Gaussian of sharpness lambda about the light, per colour (Hill's fit, MJP
+// "SG Series" part 3): N.L blurred by the lobe. saturate(N.L) as lambda grows; the light wraps past the terminator and the
+// peak drops as it shrinks.
+float3 SkinSGIrradiance(float3 NdotL, float3 lambda) {
+    const float c0 = 0.36f;
+    const float c1 = 1.0f / (4.0f * c0);
+    const float3 eml = exp(-lambda);
+    const float3 em2l = eml * eml;
+    const float3 rl = 1.0f / lambda;
+    const float3 scale = 1.0f + 2.0f * em2l - rl;
+    const float3 bias = (eml - em2l) * rl - em2l;
+    const float3 x = sqrt(max(1.0f - scale, 1e-8f));
+    const float3 x0 = c0 * NdotL;
+    const float3 x1 = c1 * x;
+    const float3 n = x0 + x1;
+    const float3 y = abs(x0) <= x1 ? n * n / x : saturate(NdotL);
+    return saturate(scale * y + bias);
+}
+
+// The diffused N.L of one light, per colour: red along the blurred normal, green and blue along normals blended toward it
+// (Penner), each blurred by the lobe its colour's scattering gives at this curvature. Fitted sharpness: lambda = a c^-b with
+// a, b = 2.34, 1.354 (red), 27.1, 2.017 (green), 63.4, 2.222 (blue). Flat skin, or skin the screen-space blur takes
+// (skinCurvature 0): plain saturate(N.L), which the lobes become within 0.002 at the terminator.
+float3 SkinDiffusion(float3 N, float3 Nsoft, float3 L) {
+    const float3 normalGreen = normalize(lerp(N, Nsoft, 0.6f));
+    const float3 normalBlue = normalize(lerp(N, Nsoft, 0.3f));
+    const float3 NdotL = float3(dot(Nsoft, L), dot(normalGreen, L), dot(normalBlue, L));
+    [branch] if (skinCurvature > 0.002f) {
+        const float c = skinCurvature;
+        const float3 lambda = float3(2.34f * pow(c, -1.354f), 27.1f * pow(c, -2.017f), 63.4f * pow(c, -2.222f));
+        return SkinSGIrradiance(NdotL, lambda);
+    }
+    return saturate(NdotL);
+}
+
+// A shadow's visibility (0 dark .. 1 lit) with light carried under the skin across the shadow line: the penumbra is widened
+// into the shadow per colour, red furthest, by ShadowScatter. 0 and 1 stay 0 and 1; off (0) returns the shadow as it is.
+float3 SkinShadow(float shadow) {
+    const float3 reach = TESR_SkinLook.z * float3(0.6f, 0.25f, 0.12f);
+    return pow(abs(shadow).xxx, 1.0f / (1.0f + reach));
+}
+
+// Jimenez's transmittance through d mm of skin (Separable SSS, after d'Eon's six Gaussians per colour): white at 0, orange,
+// then red as the depth grows. LINEAR.
+float3 SkinTransmittance(float d) {
+    const float dd = -d * d;
+    return float3(0.233f, 0.455f, 0.649f) * exp(dd / 0.0064f)
+         + float3(0.1f, 0.336f, 0.344f) * exp(dd / 0.0484f)
+         + float3(0.118f, 0.198f, 0.0f) * exp(dd / 0.187f)
+         + float3(0.113f, 0.007f, 0.007f) * exp(dd / 0.567f)
+         + float3(0.358f, 0.004f, 0.0f) * exp(dd / 1.99f)
+         + float3(0.078f, 0.0f, 0.0f) * exp(dd / 7.41f);
+}
+
+// Both highlight lobes of one light (the light already decoded: PBRLight), times N.L and the light, in the build's
+// convention (PBR.hlsl: a white Lambertian facing the light returns the light itself).
+float3 SkinSpecular(float3 N, float3 V, float3 L, float3 light) {
+    const float r0 = clamp(skinRoughness * SKIN_LOBE0, 0.04f, 1.0f);
+    const float r1 = clamp(skinRoughness * SKIN_LOBE1, 0.04f, 1.0f);
+    const float3 H = normalize(V + L);
+    const float NdotL = max(shades(N, L), 0.00001f);
+    const float NdotV = max(shades(N, V), 0.00001f);
+    const float NdotH = shades(N, H);
+    const float LdotH = shades(L, H);
+    const float3 fresnel = Fresnel(SKIN_F0.xxx, (1.0f).xxx, LdotH);
+    const float3 lobes = lerp(BRDF(r0, fresnel, NdotV, NdotL, NdotH), BRDF(r1, fresnel, NdotV, NdotL, NdotH), SKIN_LOBE_MIX);
+    return lobes * (NdotL * PI * skinSpecScale) * light;
+}
+
+// The fuzz on skin: a sheen lobe (Charlie distribution, Neubelt's visibility, Schlick's Fresnel at the fuzz's F0), strongest
+// where both the light and the view skim the skin: the rims of cheeks, ears and noses. Times N.L and the light as above.
+float3 SkinSheen(float3 N, float3 V, float3 L, float3 light) {
+    const float3 H = normalize(V + L);
+    const float NdotL = clamp(dot(N, L), 1e-5f, 1.0f);
+    const float NdotV = saturate(abs(dot(N, V)) + 1e-5f);
+    const float NdotH = saturate(dot(N, H));
+    const float VdotH = saturate(dot(V, H));
+    const float invAlpha = 1.0f / SKIN_SHEEN_ALPHA;
+    const float D = (2.0f + invAlpha) * pow(max(1.0f - NdotH * NdotH, 1e-6f), invAlpha * 0.5f) / (2.0f * PI);
+    const float visibility = 1.0f / (4.0f * max(NdotL + NdotV - NdotL * NdotV, 1e-5f));
+    const float fresnel = Fresnel(SKIN_SHEEN_F0.xxx, (1.0f).xxx, VdotH).x;
+    return (D * visibility * fresnel * NdotL * PI * TESR_SkinLook.w) * light;
+}
+
+// One light. Returns the diffuse light (diffusion and transmission, times the albedo) and, in specular, the highlights
+// (both lobes and the sheen), kept apart for the screen-space blur. Every vector in one space (SkinTemplate: tangent).
+//   albedo:        decoded (LinColor)
+//   N, Nsoft:      the bumped normal and its blurred version
+//   geometricNdotL: the vertex normal's cosine to the light (the surface's own far side, for the self-shadow and transmission)
+//   light:         the light's colour, decoded (PBRLight), with any gamma-space factor (the lamp falloff, the projected actor
+//                  shadow) multiplied in beforehand
+//   shadow:        the light's shadow here, 0..1 (NVR's sun or lamp shadow)
+//   selfLit:       the sun's visibility a hand's breadth further toward it (1 for lamps): says whether a shadow at the
+//                  terminator is the surface's own (lit out there) or cast by something else (dark there too)
+float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float geometricNdotL, float3 V, float3 L, float3 light, float shadow, float selfLit, out float3 specular) {
+    L = normalize(L);
+
+    // Diffusion, split into the plain N.L and what the scattering carries past the terminator.
+    const float3 scattered = SkinDiffusion(N, Nsoft, L);
+    const float3 direct = min(scattered, saturate(dot(N, L)));
+    const float3 wrapped = scattered - direct;
+
+    // The shadow map marks the surface's own far side as shadowed, which would cut the wrap off at the geometric
+    // terminator. On that far side only (geometric N.L 0.05 .. -0.1) the WRAPPED part escapes the shadow, when the look
+    // further toward the light (selfLit) found it lit: a shadow that is the surface's own. Skin facing the light inside
+    // another surface's shadow (a neck under the jaw) stays shadowed, and so does the terminator of skin that lies whole
+    // in something else's shadow (hands under a roof): selfLit is 0 there. Off with ShadowScatter 0.
+    float selfShadowed = saturate((0.05f - geometricNdotL) / 0.15f);
+    selfShadowed = selfShadowed * selfShadowed * (3.0f - 2.0f * selfShadowed) * saturate(TESR_SkinLook.z) * saturate(selfLit);
+    const float3 shadowColor = SkinShadow(shadow);
+    float3 diffuse = albedo * (direct * shadowColor + wrapped * lerp(shadowColor, 1.0f, selfShadowed));
+    // The light the highlight reflects does not also enter the skin (as PBR.hlsl's diffuse: 1 - F at L.H).
+    diffuse *= 1.0f - Fresnel(SKIN_F0.xxx, (1.0f).xxx, saturate(dot(L, normalize(V + L)))).x;
+
+    // Light through thin features (high curvature) where it reaches their far side (geometric N.L below 0.3), seen looking
+    // into it (Barre-Brisebois: the light bent by the surface toward the eye). The colour is the transmittance of the
+    // feature's thickness: 0.25 mm at the thinnest rim, up to 1 mm where it fades out (thinness 0.25).
+    const float thin = smoothstep(0.3f, 0.9f, skinThinness);
+    const float farSide = saturate(0.3f - geometricNdotL);
+    const float3 transmitDir = normalize(L + Nsoft * SKIN_TRANSMIT_DISTORTION);
+    const float back = pow(saturate(dot(V, -transmitDir)), SKIN_TRANSMIT_POWER);
+    const float3 tint = SkinLinearColor(SkinTransmittance(0.25f / max(skinThinness, 0.25f)) * 1.5f);
+    const float3 transmitted = albedo * tint * (back * thin * farSide * TESR_SkinMaterial.w * shadow);
+
+    specular = SkinSpecular(N, V, L, light);
+    [branch] if (TESR_SkinLook.w > 0.0f)
+        specular += SkinSheen(N, V, L, light);
+    specular *= shadow;
+    return (diffuse + transmitted) * light;
+}
+
+// --- sky -------------------------------------------------------------------------------------------------------------
+
+// The sky along a world direction, GAMMA-ENCODED as SkyAmbient.hlsl gives it, blurred by the roughness: the sharp sky
+// (SkyAmbientSharp, the harmonics read as radiance) for a smooth lobe, the cosine-convolved sky for a rough one. Below the
+// horizon the harmonics hold no sky: the convolved value stands in, as SkyAmbientSharpened does for metal.
+float3 SkinSkyRadiance(float3 r, float roughness) {
+#if SKYLIGHTING_MODE == 1
+    // No harmonics in this mode: one read of the sky, kept above the horizon, dimmed to the ground below it.
+    const float3 sky = sqrt(max(GetSkyRadiance(normalize(float3(r.xy, max(r.z, 0.02f)))), 0.0f));
+    return sky * lerp(1.0f, 0.4f, saturate(-r.z));
+#else
+    const float3 plain = SkyAmbientRadiance(r, TESR_PBRExtraData.z);
+    float3 sharp = SkyAmbientSharp(r);
+    sharp = lerp(sharp, max(sharp, plain), saturate(-r.z));
+    return lerp(sharp, plain, saturate(roughness));
 #endif
-
-float HalfLambert(float3 Vector1, float3 Vector2) {
-	
-	float product = dot(Vector1, Vector2);
-	product *= 0.5;
-	product += 0.5;
-	return product;
-	
 }
 
-float BlinnPhongSpecular(float3 Normal, float3 LightDir) {
-	
-	float3 halfAngle = Normal + LightDir;
-	return pow(saturate(dot(Normal, halfAngle)), TESR_SkinData.y);
-	
+// The sky reflected off both lobes (the split-sum response at skin's F0, PBR.hlsl EnvBRDFApprox), faded where the
+// reflection points into the surface (horizon occlusion). Sets skinSkyWeight: call it BEFORE SkinAmbient. WORLD-space
+// vectors; geometricNormal is the vertex normal, N the bumped one.
+float3 SkinSkyReflection(float3 V, float3 geometricNormal, float3 N) {
+    const float3 r = reflect(-V, N);
+    const float NdotV = saturate(dot(N, V));
+    float horizon = saturate(1.0f + 1.2f * dot(r, geometricNormal));
+    horizon *= horizon;
+
+    const float r0 = clamp(skinRoughness * SKIN_LOBE0, 0.04f, 1.0f);
+    const float r1 = clamp(skinRoughness * SKIN_LOBE1, 0.04f, 1.0f);
+    const float response = lerp(EnvBRDFApprox(SKIN_F0.xxx, r0, NdotV), EnvBRDFApprox(SKIN_F0.xxx, r1, NdotV), SKIN_LOBE_MIX).x;
+    const float weight = response * horizon * skinSpecScale * TESR_SkinLook.x;
+    skinSkyWeight = saturate(weight);
+
+    const float3 radiance = lerp(SkinSkyRadiance(r, r0), SkinSkyRadiance(r, r1), SKIN_LOBE_MIX);
+    return LinColor(radiance) * (LinScale(TESR_PBRExtraData.y) * weight);
 }
 
-float3 Skin(float3 SkinColor, float3 LightColor, float3 CameraDir, float3 LightDir, float3 Normal) {
-
-	float4 dotLN = HalfLambert(LightDir, Normal) * TESR_SkinData.x;
-	float3 indirectLightComponent  = TESR_SkinData.z * max(0, dot(-Normal, LightDir));
-	
-	indirectLightComponent += TESR_SkinData.z * HalfLambert(-CameraDir, LightDir);
-	indirectLightComponent *= TESR_SkinData.x;
-	indirectLightComponent *= pow(SkinColor, 2);
-
-	float3 rim = (float3)(1.0f - max(0.0f, dot(Normal, CameraDir)));
-	rim = pow(rim, 3);
-	rim *= max(0.0f, dot(Normal, LightDir)) * LightColor;
-	rim *= TESR_SkinData.w;
-
-	float4 finalCol = dotLN * 0.5 + float4(indirectLightComponent, 1.0f);
-
-	finalCol.rgb += finalCol.a * TESR_SkinData.x * rim;
-	finalCol.rgb += finalCol.a * TESR_SkinData.x * BlinnPhongSpecular(Normal, LightDir) * TESR_SkinColor.rgb * 0.05f;
-	finalCol.rgb *= LightColor;
-	
-	return finalCol.rgb;
-	
-};
-
-
-float3 GetLighting(float3 lightDirection, float3 eyeDirection, float3 normal, float3 lightColor){
-    float fresnel = sqr(1 - shades(normal, eyeDirection)) * shades(lightDirection, -eyeDirection) * 0.5; // vanilla fresnel that shows when light is behind
-
-    // float fresnelCoeff = pows(1 - shades(normal, eyeDir), 5);
-    float diffuse = shades(normal, lightDirection);
-    // float3 fresnel = fresnelCoeff * lightColor * 0.5 * pow(diffuse, TESR_DebugVar.w);
-    float3 lighting = diffuse * lightColor + fresnel * lightColor;
-    return max(lighting, 0);
+// The weather ambient plus the sky light (PBRScale.hlsl SkyAmbient), the sky read along the bumped and the blurred normal
+// and blended per colour as the direct light is; less the share the reflection took. WORLD-space normals.
+float3 SkinAmbient(float3 ambient, float3 albedo, float3 N, float3 Nsoft) {
+    const float3 flat = PBRAmbient(ambient);
+    const float3 sharp = SkyAmbient(N, 1.0f);
+    const float3 soft = SkyAmbient(Nsoft, 1.0f);
+    const float3 sky = float3(soft.r, lerp(sharp.g, soft.g, 0.6f), lerp(sharp.b, soft.b, 0.3f));
+    return (flat + sky) * albedo * (1.0f - skinSkyWeight);
 }
 
-// UNOFFICIAL: per-pixel sun diffusion, used when PerPixelDiffusion ([Shaders.Skin.Main], TESR_SkinDiffusion.x) is above 0.
-// Same tangent-space inputs as GetLighting. Returns the sun term with a wrapped terminator, red bending furthest into the
-// shadow side, and thin-part transmission (ears, nostrils) where the sun is behind the surface and the eye looks through it
-// toward the sun, scaled by Translucency. The caller blends it with GetLighting by PerPixelDiffusion, then applies the sun
-// shadow as usual, so the transmission is shadowed like the rest of the sun.
-float3 GetSunDiffusion(float3 lightDirection, float3 eyeDirection, float3 normal, float3 lightColor, float diffusion, float translucency){
-    float NdotL = dot(normal, lightDirection);
-
-    // Wrapped diffuse per channel, (N.L + w) / (1 + w): the lit side keeps its brightness.
-    float3 wrapAmount = float3(0.45f, 0.25f, 0.15f) * diffusion;
-    float3 diffuse = saturate((NdotL + wrapAmount) / (1 + wrapAmount));
-
-    float fresnel = sqr(1 - shades(normal, eyeDirection)) * shades(lightDirection, -eyeDirection) * 0.5; // as GetLighting
-
-    // Thin parts: only where the sun is behind the surface (N.L below 0.2), strongest when the eye looks straight at it.
-    float3 transmission = translucency * pow(shades(eyeDirection, -lightDirection), 4) * saturate(-NdotL + 0.2f) * float3(1.0f, 0.35f, 0.2f);
-
-    return max((diffuse + fresnel + transmission) * lightColor, 0);
-}
-
-float GetSpecular(float3 lightDirection, float3 eyeDirection, float3 normal, float3 lightColor){
-    return  pow(shades(normal, normalize(lightDirection + eyeDirection)), TESR_SkinData.y) * luma(lightColor) * SKIN_SPECULAR_STRENGTH;
-}
-
-float GetSSS(float3 lightDirection, float3 normal){
-    return (1 - shades(normal, lightDirection)) * 0.5;//TESR_DebugVar.x;
-}
-
-float3 getNormal(float2 uv){
-    return (expand(tex2D(NormalMap, uv).xyz));
-}
-
-// float2 getScreenpos(VS_INPUT IN){
-//     return IN.position.xy * TESR_ReciprocalResolution.xy;
-// };
-
-
-float3 ApplyVertexColor(float3 baseColor, float3 vertexColor, float4 toggles){
-   return toggles.x <= 0.0 ? baseColor : (baseColor.rgb * vertexColor); // apply vertex color
-}
-
-float3 ApplyFog(float3 baseColor, float4 fogColor, float4 toggles){
-    return toggles.y <= 0.0 ? baseColor : ((fogColor.a * (fogColor.rgb - baseColor)) + baseColor);
-}
-
-float4 getBaseColor(float2 uv, sampler2D FaceGenMap0Buffer, sampler2D FaceGenMap1Buffer, sampler2D BaseColorBuffer){
-
-    float3 faceGenMap0 = tex2D(FaceGenMap0Buffer, uv).rgb;
-    float3 faceGenMap1 = tex2D(FaceGenMap1Buffer, uv).rgb;
-    float4 baseTexture = tex2D(BaseColorBuffer, uv);
-    float4 baseColor = float4(2 * ((expand(faceGenMap0) + baseTexture.rgb) * (2 * faceGenMap1)), baseTexture.a);
-
-	baseColor = lerp(baseTexture, baseColor, SKIN_FACEGEN_BLEND);
-    return baseColor;
-}
-
-
-float3 getPointLight(float3 LightDirection, float3 eyeDirection, float3 LightColor, float3 glowTexture, float3 normal, float Attenuation1, float Attenuation2){
-    float4 SSScolor;
-    SSScolor.rgb = lerp(LightColor, glowTexture, 0.5);
-
-    float fresnel = sqr(1 - shades(normal, eyeDirection));
-    //SSScolor.a = (AmbientColor.a >= 1 ? 0 : (baseColor.a - Toggles.w)); // alpha flag?
-
-    float diffuse = dot(normal, LightDirection);
-    float diffuse2 = saturate((diffuse + 0.3) * 0.769230783); // ?
-    diffuse = saturate(diffuse);
-
-    float3 pointLightContribution = saturate(((3 - diffuse2 * 2) * sqr(diffuse2)) - ((3 - (diffuse * 2)) * sqr(diffuse))) * glowTexture;
-    pointLightContribution += diffuse * LightColor;
-    pointLightContribution += fresnel * shades(eyeDirection, -LightDirection) * SSScolor.rgb;
-    // clip(normal);
-
-    // UNOFFICIAL 2026-10-21 (Includes/LampFalloff.hlsl): att as before, the objects' decode (MatchEverywhere) or the shape.
-    return LampAttOther(saturate((1 - Attenuation1) - Attenuation2)) * pointLightContribution;
-}
+#endif

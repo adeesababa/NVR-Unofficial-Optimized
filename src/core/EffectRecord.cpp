@@ -490,8 +490,9 @@ void EffectRecord::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTar
 	GpuDebug::LabelScope label(Name);	// UNOFFICIAL 2026-10-26 GpuDebugLabels (off: nothing)
 
 	// UNOFFICIAL 2026-10-23 (NVR DXVK): the ported effects draw through the extension when it is there and on.
-	// (UNOFFICIAL 2026-10-26: not for a technique whose passes all have an SM6 build while NvrSm6Shaders is on: those draw below.)
-	if (!ExtFailed && DxvkCompute::PassesOn() && !Sm6Covers(techniqueIndex) && [&] { GpuDebug::LabelScope ext(Name, " (DXVK extension)");
+	// (UNOFFICIAL 2026-10-26: not for a technique whose passes all have an SM6 build while NvrSm6Shaders is on: those draw below;
+	// nor for an effect NvrDxvkKeepD3D9 names.)
+	if (!ExtFailed && DxvkCompute::PassesOn() && !DxvkCompute::KeptOnD3D9(Name) && !Sm6Covers(techniqueIndex) && [&] { GpuDebug::LabelScope ext(Name, " (DXVK extension)");
 			return ExtRender(Device, RenderTarget, RenderedSurface, techniqueIndex, ClearRenderTarget, SourceBuffer); }()) {
 		Device->SetRenderTarget(0, RenderTarget);
 		std::string name = "EffectRecord::ExtRender " + std::string(Name);
@@ -593,6 +594,7 @@ D3DXHANDLE EffectRecord::ParameterHandle(CachedHandle& cache, const char* name) 
 bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceBuffer,
 	ID3D9NvrExtPipeline* Pipeline, const NVR_EXT_RESOURCE_BINDING* Bindings, UINT BindingCount, const void* Push, UINT PushSize, bool last) {
 	if (!Pipeline || !DxvkCompute::Available()) return false;
+	if (DxvkCompute::KeptOnD3D9(Name)) return false;	// (NvrDxvkKeepD3D9 for effects with their own Render: this frame on D3D9)
 	ID3D9NvrExt* ext = DxvkCompute::Extension();
 
 	NVR_EXT_DRAW_DESC draw = {};
@@ -602,6 +604,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	draw.pBindings = Bindings;
 	draw.pPushData = Push;
 	draw.PushDataSize = PushSize;
+	DxvkCompute::PreLoad(Bindings, BindingCount);	// UNOFFICIAL 2026-10-26 (alflicker): the managed file textures on the GPU
 
 	FrameChain& chain = TheShaderManager->Chain;
 	HRESULT result;
@@ -632,8 +635,10 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): see EffectRecord.h. A pass into the effect's own targets; the frame chain is not touched.
 bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* const* Targets, UINT TargetCount, const NVR_EXT_RESOURCE_BINDING* Bindings,
-	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv) {
+	UINT BindingCount, const void* Push, UINT PushSize, const RECT* Viewport, ExtUv Uv, const NVR_EXT_DEPTH_STENCIL* DepthStencil) {
 	if (!Pipeline || !DxvkCompute::Available() || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS) return false;
+	if (DepthStencil && DxvkCompute::Info().ExtVersionMinor < 6) return false;
+	if (DxvkCompute::KeptOnD3D9(Name)) return false;	// (NvrDxvkKeepD3D9, as ExtFullScreen; idea from the conor-fork-flicker session)
 	NVR_EXT_DRAW_DESC draw = {};
 	draw.pPipeline = Pipeline;
 	draw.TargetCount = TargetCount;
@@ -671,7 +676,9 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 			said = true; shiftX = shiftY = 0.0f;
 		}
 	}
-	HRESULT result = (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
+	DxvkCompute::PreLoad(Bindings, BindingCount);	// UNOFFICIAL 2026-10-26 (alflicker): the managed file textures on the GPU
+	HRESULT result = DepthStencil ? DxvkCompute::Extension()->DrawDepthStencil(&draw, DepthStencil, shiftX, shiftY)
+		: (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
 	if (SUCCEEDED(result) && (shiftX != 0.0f || shiftY != 0.0f) && !ExtShiftLogged) {
 		ExtShiftLogged = true;
 		Logger::Log("UNOFFICIAL NVR DXVK: %s's passes into smaller targets read at the D3D9 frame quad's uv (first: shift %.3f, %.3f px)", Name, shiftX, shiftY);
@@ -687,6 +694,18 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 // UNOFFICIAL 2026-10-26 (NVR DXVK): see EffectRecord.h.
 ID3D9NvrExtPipeline* EffectRecord::ExtVariant(std::map<std::string, ExtPass>& Variants, ExtPass& Generic, const char* SpvName, const char* Suffix,
 	const std::function<ID3D9NvrExtPipeline*(const char*)>& Make) {
+	// UNOFFICIAL 2026-10-26 test tool ([Main.Main.Performance] NvrDxvkTestSuffix): <SpvName>-<Suffix><test>.spv first, where it exists.
+	const char* test = TheSettingManager->SettingsMain.Main.NvrDxvkTestSuffix;
+	if (Suffix && *Suffix && *test) {
+		const std::string name = std::string(SpvName) + "-" + Suffix + test;
+		ExtPass& pass = Variants[name];
+		if (!pass.Tried) {
+			pass.Tried = true;
+			if (DxvkCompute::HasSpirv(name.c_str())) pass.Pipeline = Make(name.c_str());
+			if (pass.Pipeline) Logger::Log("UNOFFICIAL NVR DXVK: test variant %s in use (NvrDxvkTestSuffix)", name.c_str());
+		}
+		if (pass.Pipeline) return pass.Pipeline;
+	}
 	if (Suffix && *Suffix && DxvkCompute::VariantsOn()) {
 		const std::string name = std::string(SpvName) + "-" + Suffix;
 		ExtPass& pass = Variants[name];

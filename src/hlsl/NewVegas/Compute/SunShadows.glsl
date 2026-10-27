@@ -13,6 +13,7 @@ layout(set = 1, binding = 1) uniform texture2D t_atlas;     // TESR_ShadowAtlas 
 layout(set = 1, binding = 2) uniform texture2D t_normals;   // TESR_NormalsBuffer (s2)
 layout(set = 1, binding = 3) uniform texture2D t_shadow;    // TESR_PointShadowBuffer (s3): the pass's source (buffer or scratch)
 layout(set = 1, binding = 4) uniform texture2D t_noise;     // TESR_NoiseSampler (s4): Effects\bluenoise256.dds
+layout(set = 1, binding = 5) uniform texture2D t_charShadow; // TESR_CharShadowMap (s5, 2026-10-26): read only by the CHARACTER_SHADOW_MAP variant
 
 layout(set = 2, binding = 0, std140) uniform Constants {
     mat4 cascadeNear;           // TESR_ShadowCameraToLightTransformNear
@@ -37,6 +38,9 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 lodCenter;             // TESR_ShadowLodCenter
     vec4 cameraData;            // TESR_CameraData (x nearZ, y farZ)
     vec4 flags;                 // x: FORWARD_SHADOWS as the effect was compiled (1 or 0)
+    mat4 charShadowCameraToLight; // TESR_CharShadowCameraToLight (2026-10-26, CharacterShadowMap)
+    vec4 charShadowCenter;      // TESR_CharShadowCenter
+    vec4 charShadowData;        // TESR_CharShadowData
 } cb;
 
 layout(push_constant) uniform Push {

@@ -129,6 +129,14 @@ ID3D9NvrExtBuffer* DxvkCompute::CreateBufferNoFail(UINT Size, UINT Flags, const 
 	return buffer;
 }
 
+// UNOFFICIAL 2026-10-26 (alflicker): see DxvkCompute.h. A sampled image's pResource is an IDirect3DBaseTexture9* or IDirect3DSurface9*
+// (single inheritance from IDirect3DResource9: the same pointer); DXVK's PreLoad returns at once for anything not in the managed pool.
+void DxvkCompute::PreLoad(const NVR_EXT_RESOURCE_BINDING* Bindings, UINT Count) {
+	for (UINT i = 0; Bindings && i < Count; i++)
+		if (Bindings[i].Type == NVR_EXT_BIND_SAMPLED_IMAGE && Bindings[i].pResource)
+			static_cast<IDirect3DResource9*>(static_cast<void*>(Bindings[i].pResource))->PreLoad();
+}
+
 ID3D9NvrExtSampler* DxvkCompute::CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address) {
 	if (!Available()) return nullptr;
 	NVR_EXT_SAMPLER_DESC desc = { Filter, Address };
@@ -200,8 +208,65 @@ bool DxvkCompute::VariantsOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkVariants;
 }
 
+bool DxvkCompute::StencilOn() {
+	return TheSettingManager->SettingsMain.Main.NvrDxvkStencil && Available() && ExtInfo.ExtVersionMinor >= 6;
+}
+
+bool DxvkCompute::KeptOnD3D9(const char* Name) {
+	const char* list = TheSettingManager->SettingsMain.Main.NvrDxvkKeepD3D9;
+	if (!list[0] || !Name || !Name[0]) return false;
+	const size_t length = strlen(Name);
+	for (const char* p = list; (p = strstr(p, Name)) != nullptr; p += length) {
+		const bool startOk = p == list || p[-1] == ',' || p[-1] == ' ';
+		const bool endOk = p[length] == '\0' || p[length] == ',' || p[length] == ' ';
+		if (startOk && endOk) return true;
+	}
+	return false;
+}
+
 bool DxvkCompute::PassesOn() {
 	return TheSettingManager->SettingsMain.Main.NvrDxvkPasses && Available();
+}
+
+void DxvkCompute::ProfileTick(bool On) {
+	static bool profiling = false;
+	static unsigned frames = 0;
+	static NVR_EXT_PROFILE last = {};
+	if (!Ext || ExtInfo.ExtVersionMinor < 5) return;
+	if (On != profiling) {
+		profiling = On;
+		Ext->SetProfiling(On ? TRUE : FALSE);
+		if (On) { Ext->GetProfile(&last); frames = 0; }
+		Logger::Log("DXVK PROFILE %s (every 8th frame's D3D9 calls timed; a line every 120 frames)", On ? "on" : "off");
+		return;
+	}
+	if (!On || ++frames < 120) return;
+	frames = 0;
+
+	NVR_EXT_PROFILE now = {};
+	if (FAILED(Ext->GetProfile(&now))) return;
+	const double f = (double)(now.Frames - last.Frames), timed = (double)(now.TimedFrames - last.TimedFrames);
+	const double us = (double)(now.TimeUs - last.TimeUs);
+	if (f < 1.0 || us <= 0.0) { last = now; return; }
+	const double ticksPerMs = (double)(now.Tsc - last.Tsc) / us * 1000.0;
+	const double calls = (double)(now.ApiCalls - last.ApiCalls);
+	const double frameMs = us / 1000.0 / f;
+	// The game thread inside D3D9 calls (timed frames, the timer's own cost taken off), and the waits inside that.
+	const double apiMs = timed > 0.0 ? ((double)(now.ApiTicks - last.ApiTicks) - calls * (double)now.OverheadTicks100 / 100.0) / ticksPerMs / timed : 0.0;
+	const double presentWaitMs = timed > 0.0 ? (double)(now.TimedWaitTicks - last.TimedWaitTicks) / ticksPerMs / timed : 0.0;
+	const double csSyncMs = (double)(now.CsSyncUs - last.CsSyncUs) / 1000.0 / f;
+	const double gpuSyncMs = (double)(now.GpuSyncUs - last.GpuSyncUs) / 1000.0 / f;
+	const double dxvkWorkMs = apiMs - presentWaitMs - csSyncMs - gpuSyncMs;
+	const double csBusyMs = frameMs - (double)(now.CsIdleUs - last.CsIdleUs) / 1000.0 / f;
+	const double gpuBusyMs = frameMs - (double)(now.GpuIdleUs - last.GpuIdleUs) / 1000.0 / f;
+	Logger::Log("DXVK PROFILE frame %.2f ms (%.0f frames, passes %s) | game thread: outside D3D9 %.2f, inside D3D9 %.2f = DXVK work %.2f + "
+		"present wait %.2f + wait for DXVK thread %.2f + wait for GPU %.2f (%.0f calls) | DXVK thread busy %.2f | GPU busy %.2f | per frame: "
+		"draws %.0f, render passes %.0f, barriers %.0f, submits %.1f, chunks %.0f | new pipelines %llu",
+		frameMs, f, PassesOn() ? "Vulkan" : "D3D9", frameMs - apiMs, apiMs, dxvkWorkMs, presentWaitMs, csSyncMs, gpuSyncMs, timed > 0.0 ? calls / timed : 0.0,
+		csBusyMs, gpuBusyMs, (double)(now.Draws - last.Draws) / f, (double)(now.RenderPasses - last.RenderPasses) / f,
+		(double)(now.Barriers - last.Barriers) / f, (double)(now.Submits - last.Submits) / f, (double)(now.CsChunks - last.CsChunks) / f,
+		(unsigned long long)(now.GraphicsPipelines - last.GraphicsPipelines));
+	last = now;
 }
 
 bool DxvkCompute::ReplacementsOn() {

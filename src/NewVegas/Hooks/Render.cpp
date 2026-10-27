@@ -34,6 +34,7 @@
 #include "../../core/HdrOutput.h"	// UNOFFICIAL 2026-10-26 HDR output (needs NVR DXVK 1.5-hdr)
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 #include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
+#include "../../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-26: DXVK PROFILE lines (F10 profiling on NVR DXVK 1.5)
 
 namespace RmaosDraw { static void Upload(); }	// UNOFFICIAL _rmaos maps (below)
 
@@ -598,6 +599,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	}
 	FrameSplit::PresentMs = 0.0;
 	CpuSplit::MarkNow(CpuSplit::kRenderBegin);
+	DxvkCompute::ProfileTick(GpuTimer::Enabled);	// UNOFFICIAL 2026-10-26: game thread vs DXVK thread vs GPU (NVR DXVK 1.5)
 #if NVR_TEST_TOOLS
 	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);	// UNOFFICIAL ShaderWarmUp2: frame times + new setups (shot index: picture frames)
 #else
@@ -659,12 +661,12 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	PbrPop::PopLog::NewFrame();	// UNOFFICIAL, diagnostic: PbrPopLog
 	PassFamilyView::BeginFrame();	// UNOFFICIAL 2026-10-21, diagnostic: PassFamilyView
 #endif
-	// UNOFFICIAL Conor's skin shader ([Shaders.Skin.NewSkin]): the scattering target is cleared on the frame's first skin draw;
-	// interior faces take SkinShader's own passes while it is on (Shaders.cpp UpdateFaceGenInteriorFlag).
-	if (SkinShaders::NewSkinEnabled()) {
-		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->BeginFrame();
-		UpdateFaceGenInteriorFlag();
-	}
+	// UNOFFICIAL the skin shader (Skin.h): the blur's targets are cleared on the frame's first skin draw; interior faces take
+	// SkinShader's own passes while it is in use (Shaders.cpp UpdateFaceGenInteriorFlag: the game's own flag while Vanilla Plus
+	// Skin's shaders are in use, so that patch is refreshed every frame whichever is in use).
+	if (TheShaderManager->Effects.SkinScattering && TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Active())
+		TheShaderManager->Effects.SkinScattering->BeginFrame();
+	UpdateFaceGenInteriorFlag();
 	ShaderSplit::BeginFrame(TheRenderManager->device);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 	ShaderSplit::EndFrame();
@@ -3028,7 +3030,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		BarrelHaze::Reset();
 		BarrelHeat::BeginFrame();
 		BarrelHeat::BeginWorldProbe();
-		// UNOFFICIAL Conor's skin shader: its scattering target is bound only for skin drawn inside the world scene.
+		// UNOFFICIAL the skin blur: its targets are bound only for skin drawn inside the world scene.
 		if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->InWorldScene = true;
 		SandstormGlass::BeginWorld();	// UNOFFICIAL sandport: ThroughBlended (RenderBlendedHook)
 		// UNOFFICIAL 2026-10-20 MaterialAware reflections (core/ReflMaterial.h): blended passes keep off the scene's alpha.
@@ -3037,7 +3039,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		ReflMaterial::EndWorld(TheRenderManager->renderState, TheRenderManager->device);
 		SandstormGlass::EndWorld();
 		PassSums::EndWorld(TheRenderManager->device);	// UNOFFICIAL ExactPassSums: a run still open at the world's end is folded in here
-		// UNOFFICIAL Conor's skin shader: the SkinShader hooks unbind the target after every skin draw; this only guarantees
+		// UNOFFICIAL the skin blur: the SkinShader hooks unbind the targets after every skin draw; this only guarantees
 		// nothing after the world scene ever draws into it.
 		if (TheShaderManager->Effects.SkinScattering) {
 			TheShaderManager->Effects.SkinScattering->InWorldScene = false;
@@ -3093,7 +3095,7 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	PbrPop::ActorPasses::FirstPersonNow = 1;	// UNOFFICIAL ActorsInOnePass: the first-person model's passes are built in here
 	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
 	PbrPop::ActorPasses::FirstPersonNow = 0;
-	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL Conor's skin shader
+	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL the skin blur
 	if (pbr) pbr->EndFirstPerson(TheRenderManager->device);
 	BarrelHeat::EndContext();
 	ShaderSplit::EndContext();
@@ -3167,7 +3169,7 @@ bool bDoneRender_LockPickMenu = false;
 
 void(__cdecl* ProcessImageSpaceShaders)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*) = (void(__cdecl*)(NiDX9Renderer*, BSRenderedTexture*, BSRenderedTexture*))Hooks::ProcessImageSpaceShaders;
 void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTexture* SourceTarget, BSRenderedTexture* DestinationTarget) {
-	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL Conor's skin shader
+	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();	// UNOFFICIAL the skin blur
 	bool bLiveRenderedMenu = false; // FORenderedMenu, FOPipBoyManager
 	bool bLive3DMenu = false; // Normal menus, but 3D, lockpick etc
 	if (TESMain::IsMenuBackgroundReady() && TheGameMenuManager->IsLiveMenu && InterfaceManager->currentMode != 1) {

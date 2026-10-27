@@ -16,6 +16,15 @@ struct PointShadowsUniforms {
 	D3DXVECTOR4 lampContact, lampContactFade, lampContactBias, lampContactNoise;
 	D3DXVECTOR4 reciprocalResolution, cameraPosition, cameraData;
 	D3DXMATRIX viewTransform, projectionTransform;
+	// UNOFFICIAL 2026-10-26: what the D3D9 effect framework's preshaders work out once per draw (D3DX evaluates the .fx's
+	// constant-only expressions on the CPU, and fxc unrolls the 12-lamp loop): per lamp 1 / radius and its weight, per shadowed
+	// lamp 1 / its near fade, the smoothstep ranges, the spot cone. The GLSL worked them out per pixel with full-precision
+	// divisions: the Vulkan pass cost 0.3-0.5 ms more than its D3D9 one in Lucky 38 (GTX 1070), nearly all in the plain lamps.
+	D3DXVECTOR4 shadowLightPre[ShadowCubeMapsScreen];	// x 1 / radius, y weight (luma(colour) * w), z 1 / near fade (0: none)
+	D3DXVECTOR4 lightPre[TrackedLightsMax];				// x 1 / radius, y weight
+	D3DXVECTOR4 extraPre[ExtraLightsMax];				// x 1 / radius (floor(w / 8)), y weight (w - radius * 8)
+	D3DXVECTOR4 nearPre;								// x 1 / PointShadowNear.y (edge window), y 1 / (1 - PointShadowNear.z) (lamp reach), z 1 / spot radius, w spot weight
+	D3DXVECTOR4 spotPre;								// x cos(the cone's angle), y 1 / (cos(half of it) - x)
 };
 
 // The push block: the two sampler heap indices (bindings write them at 0 and 4) and the pass's mode.
@@ -40,6 +49,28 @@ bool CopyConstant(void* to, const char* name, UINT vectors) {
 IDirect3DBaseTexture9* TextureNamed(const char* name) {
 	auto found = TheTextureManager->TextureNames.find(name);
 	return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
+}
+
+float LumaOf(const D3DXVECTOR4& c) { return c.x * 0.2126f + c.y * 0.7152f + c.z * 0.0722f; }
+
+// The preshader values (PointShadowsUniforms above), from the constants FillUniforms copied. A radius of 0 gives 1 / 0 = inf, as the
+// shader's division by it did (the lamp then counts as out of reach).
+void FillPreshader(PointShadowsUniforms& u) {
+	for (UINT i = 0; i < ShadowCubeMapsScreen; i++) {
+		const float radius = u.shadowLightPosition[i].w;
+		const float nearFade = u.pointShadowNear.x / radius;
+		u.shadowLightPre[i] = D3DXVECTOR4(1.0f / radius, LumaOf(u.lightColor[i]) * u.lightColor[i].w, nearFade > 0.0f ? 1.0f / nearFade : 0.0f, 0.0f);
+	}
+	for (UINT i = 0; i < TrackedLightsMax; i++)
+		u.lightPre[i] = D3DXVECTOR4(1.0f / u.lightPosition[i].w, LumaOf(u.lightColor[i + 12]) * u.lightColor[i + 12].w, 0.0f, 0.0f);
+	for (UINT e = 0; e < ExtraLightsMax; e++) {
+		const float radius = floorf(u.extraLights[e].w * 0.125f);
+		u.extraPre[e] = D3DXVECTOR4(1.0f / radius, u.extraLights[e].w - radius * 8.0f, 0.0f, 0.0f);
+	}
+	u.nearPre = D3DXVECTOR4(u.pointShadowNear.y > 0.0f ? 1.0f / u.pointShadowNear.y : 0.0f, 1.0f / (1.0f - u.pointShadowNear.z),
+		1.0f / u.spotLightPosition.w, LumaOf(u.spotLightColor) * u.spotLightColor.w);
+	const float cosMax = cosf(D3DXToRadian(u.spotLightDirection.w)), cosMin = cosf(D3DXToRadian(u.spotLightDirection.w * 0.5f));
+	u.spotPre = D3DXVECTOR4(cosMax, 1.0f / (cosMin - cosMax), 0.0f, 0.0f);
 }
 
 bool FillUniforms(PointShadowsUniforms& u) {
@@ -67,6 +98,7 @@ bool PointShadowsEffect::ExtDraw(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	if (!first || !second) return false;
 	PointShadowsUniforms uniforms;
 	if (!FillUniforms(uniforms)) return false;
+	FillPreshader(uniforms);
 	ID3D9NvrExtBuffer* constants = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
 	if (!constants) return false;
 

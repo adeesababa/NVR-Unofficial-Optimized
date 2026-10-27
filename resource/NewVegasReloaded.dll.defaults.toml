@@ -127,6 +127,9 @@ AvgLumaCompute = false      # UNOFFICIAL (2026-10-23), needs NVR DXVK (the NVR-b
 AvgLumaComputeCheck = 0     # UNOFFICIAL TEST TOOL (2026-10-23), with AvgLumaCompute and NVR DXVK: N > 0 = every N frames run both the compute and the D3D9 average-luma pass and log them side by side ('AvgLuma check'); the D3D9 pass keeps the texture while this is on. Those frames wait for the graphics card: leave 0 while playing.
 NvrDxvkPasses = false       # UNOFFICIAL (2026-10-23), needs NVR DXVK (does nothing on native D3D9 or stock DXVK): the effects ported so far (Exposure, ImageAdjust, Sharpening, FXAA, LowHF, SkyDither, BloodLens, WaterLens, LUT, Lens, MotionBlur; since 2026-10-25 also Coloring, DitherBuster, BarrelHaze, HeatHaze, Cinema, DepthOfField's distant blur and autofocus, Bodycam, SkinScattering, BloomLegacy, Snow, Precipitations, ShadowsInteriors, SkyView, ShadowsExteriors, SunFar, FlashlightBeam, VolumetricLight, WetWorld, GodRays, SMAA, Specular, Underwater, Reflections, Bloom, TAA, Sandstorm, SnowAccumulation, BounceLight, PointShadows, PointShadows2, CombineDepth, Normals, VolumetricClouds, Flashlight, SunShadows, VolumetricSmoke, AmbientOcclusion, VolumetricFog, AmbientLight) run as Vulkan passes through the NVR extension instead of their D3D9 shaders, same picture by construction (the GLSL in src\hlsl\NewVegas\Compute is the .fx.hlsl line for line). The point is the route (no 16-sampler / 224-constant / instruction limits for what comes next), not speed. An effect whose pass fails falls back to its D3D9 shader for the session (logged). Applies immediately.
 NvrDxvkVariants = true      # UNOFFICIAL (2026-10-26), needs NVR DXVK with NvrDxvkPasses on: a Vulkan pass uses its compile-time variant (Shaders\NewVegasReloaded\Compute\<name>-<variant>.spv, the D3D9 technique's fixed switches: unused paths compiled out, as the D3D9 shaders are) where one exists, else the general shader. Same picture either way; off only to compare speed. Applies immediately.
+NvrDxvkStencil = true       # UNOFFICIAL (2026-10-26), needs NVR DXVK 1.6 with NvrDxvkPasses on: a Vulkan pass tests a stencil where its D3D9 technique does (SMAA's costly weight pass runs only on the edge pixels its edge pass marked, as on D3D9). Same picture either way; off only to compare speed. Applies immediately.
+NvrDxvkKeepD3D9 = ""        # UNOFFICIAL (2026-10-26), test tool for NvrDxvkPasses: effect names (as in the log, e.g. "PointShadows"; several separated by commas) that keep their D3D9 passes while the other ported effects run as Vulkan passes, so the frame time shows what one pass costs. Empty for normal play. Applies immediately.
+NvrDxvkTestSuffix = ""      # UNOFFICIAL (2026-10-26), test tool for NvrDxvkPasses: a Vulkan pass with compile-time variants uses Shaders/NewVegasReloaded/Compute/<name>-<variant><this>.spv where that file exists (shader experiments in one launch). Empty for normal play. Applies immediately.
 AmbientLightSmoothCompute = false # MEASURED SLOWER 2026-10-25 (GTX 1070, 1080p: blur 0.20 vs 0.09 ms, smoothing 0.32 vs 0.11 ms incl. prepare), same picture: keep off. UNOFFICIAL (2026-10-25), needs NVR DXVK (does nothing on native D3D9 or stock DXVK): AmbientLight's normal smoothing ([Shaders.AmbientLight.Main] NormalSmoothing) runs as one Vulkan compute dispatch (src\hlsl\NewVegas\Compute\AmbientLightSmooth.comp) instead of its two half-resolution D3D9 passes: the same taps, weights and 16-bit rounding between the two directions, so the same picture; the point is the measurement (F10 'Ambient light prepare + smooth (half)' covers either path). If it fails it is logged once and the D3D9 passes run for the session. Applies immediately.
 AmbientLightBlurCompute = false # MEASURED SLOWER 2026-10-25 (GTX 1070, 1080p: blur 0.20 vs 0.09 ms, smoothing 0.32 vs 0.11 ms incl. prepare), same picture: keep off. UNOFFICIAL (2026-10-25), needs NVR DXVK (does nothing on native D3D9 or stock DXVK): Ambient Light's two blur passes (across, then down) run as one Vulkan compute pass that keeps a tile of the picture in the graphics card's fast on-chip memory, instead of two passes through a half-resolution buffer. Same taps, weights and depth tests, the in-between result rounded to 16-bit as the buffer does: same picture. F10 times it as 'Ambient light blur X (half)' ('blur Y' then shows nothing). If it fails, the log says so and the D3D9 passes take over for the session. Applies immediately.
 NvrDxvkReplacements = false # UNOFFICIAL (2026-10-24), needs NVR DXVK 1.2 (does nothing on native D3D9, stock DXVK or an older NVR DXVK): when a pixel shader is loaded and Data\Shaders\NewVegasReloaded\Compute\Replace\<shader name>.spv exists (for example Replace\SLS2001.pso.spv), that SPIR-V fragment shader runs in its place, with the game's textures, samplers and float constants still arriving (the .txt next to it lists which; docs\next\NVR-DXVK-EXTENSION.md). This is the route around ps_3_0's limits for the lit-object shaders (phase 2); no replacement ships yet, so with no Replace folder it does nothing. A missing or refused replacement leaves that shader as it is (logged). Read at load.
@@ -1799,53 +1802,25 @@ StatsEvery = 0                         # Test only: every this many frames, log 
 Enabled = false                        # Blood flow: blood splats run down walls and slopes, gather on ledges and floors, drip off edges, and dry; blood pools spread under bodies and run downhill. Costs nothing when no blood is near.
 
 [_Shaders.Skin.Main]
-PerPixelDiffusion = 0.0    # UNOFFICIAL: 0-1. Softer, reddish light wrapping into the shadow side of faces and bodies, like light under the skin. 0 = as before.
-Translucency = 0.5         # UNOFFICIAL: 0-2. With PerPixelDiffusion on: thin parts (ears, nostrils) glow red when the sun is behind them.
-Attenuation = 0.84
-CoeffBlue = 0.12
-CoeffGreen = 0.22
-CoeffRed = 0.36
-MaterialThickness = 0.12
-RimScalar = 0.5
-SpecularPower = 0.78
-
-[_Shaders.Skin.NewSkin]
-Enabled = false                     # WORK IN PROGRESS (WIP), UNOFFICIAL: Conor's skin shader (from his NVR testbed, by mrfury97). Still being finished: expect rough edges. Light spreads under the skin (softer, warmer faces), red light shows through ears, nostrils and fingers against the light, two-layer skin highlights, sky light and sky sheen, wet skin in the rain, and screen-space subsurface scattering ([Shaders.Skin.Scattering]). Replaces this build's skin shaders and the settings in [Shaders.Skin.Main]; overrides Vanilla Plus Skin. Restart the game after switching it.
-SpecularStrength = 1.0              # Skin highlight strength (two lobes: oily sheen plus pore haze). 1 reads a 50% specular mask as real skin.
-Roughness = 0.45                    # Skin roughness. Lower is oilier.
-VanillaMatchedHighlights = 0.0      # 1 makes skin highlights as strong as vanilla's own face highlights (same physically based shape); 0 is physical. Mostly matters at high Roughness.
-ShadowScatter = 1.0                 # Light bleeding red into shadow edges, and the red glow kept past the shadow line on side-lit skin. 0 disables both.
-Translucency = 0.5                  # Red light glowing through ears, nostrils and fingers against the light. 0 disables.
-FillLight = 1.0                     # UNOFFICIAL: extra soft light on skin as the game's own skin shaders give it (light wrapping past the shadow line, and a rim where light comes from behind). 0 is Conor's physically based look (darker, especially indoors under lamps); 1 matches the old skin's brightness. 0-2.
-SkyReflectionScale = 1.0            # Sky reflections on skin (sheen at glancing angles). 0 disables. Exteriors only.
-RainWetness = 0.5                   # How wet and glossy skin gets in the rain. 0 disables.
-MuteGameHighlights = false          # UNOFFICIAL: true switches the game's own face highlight passes off (Conor's choice: his skin draws its own). False keeps them: lamp-lit faces then come out about as bright as with the old skin shaders. They are switched off anyway while the screen-space blur runs (it would blur them).
-Fuzz = 0.0                          # UNOFFICIAL (2026-10-19), live, indoors and out: peach fuzz, a soft velvety sheen along the edges of faces, ears and noses where both the light and your view skim the skin, after Community Shaders' Advanced Skin (its fuzz lobe: Charlie sheen, roughness 0.35, F0 0.045). 0 off; Community Shaders' default is 1. 0-2.
-EnergyBalance = false               # UNOFFICIAL (2026-10-19), live, indoors and out: after Community Shaders' Advanced Skin, the two highlight lobes get back the light rough skin loses between its micro-bumps (under 1% at skin's shine), and light that the highlight reflects no longer also enters the skin (diffuse x (1 - Fresnel)): rims lit from behind get a little darker. Off = Conor's model as before.
-CreaseDamping = false               # UNOFFICIAL (2026-10-19), live, indoors and out: after Community Shaders' Advanced Skin, highlights and sky sheen fade where the skin's surface turns quickly from one pixel to the next (eyelid and lip creases, nostrils, fine relief, faces far away), so they stop sparkling there. Off = as before.
-TransmitProfile = false             # UNOFFICIAL (2026-10-19), live, indoors and out: the light glowing through ears, nostrils and fingers (Translucency) takes Jimenez's measured skin profile (as in Community Shaders) instead of one flat red: orange at the thinnest rims, deep red further in. Off = the flat tint as before.
-
-[_Shaders.Skin.Scattering]
-ScreenSpace = true                  # With NewSkin on: screen-space subsurface scattering, light spreads under the skin across the screen (separable SSS, the ENB look). Off falls back to per-pixel diffusion. Needs the game's MSAA off: with MSAA on, D3D9 drivers (NVIDIA at least) draw nothing while its extra targets are bound, so it switches itself off and per-pixel diffusion is used.
-Width = 28.6                        # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0, its default, as in Conor's latest version (was 8 on a narrower kernel).
-DepthFollow = 1.0                   # How sharply the blur stops at depth edges (nose against cheek, chin against neck).
-AlbedoDetail = 1.0                  # How much skin texture detail (freckles, pores, brows, stubble) stays sharp: 1 diffuses only the light, 0 blurs the texture with it (the waxy look).
-StrengthRed = 0.48                  # How much of each colour scatters. Red scatters most, which gives skin its warmth.
-StrengthGreen = 0.41
-StrengthBlue = 0.28
-FalloffRed = 1.0                    # How wide each colour spreads within the blur, 0-1 (above 1 is clamped: it breaks the blur into dots). Use Width to spread further.
-FalloffGreen = 0.37
-FalloffBlue = 0.3
-PerPixelWidth = 1.0                 # Per-pixel diffusion from curvature, used only where the screen-space blur cannot reach (first-person arms, reflections, fading actors) or when ScreenSpace is off. 0 is plain shading.
+SpecularStrength = 1.0              # (2026-10-25) Skin highlight strength: two layers, a tight oily sheen and a broad pore haze, at real skin's reflectance (not the plastic-like shine of the object shaders). 1 reads a half-grey specular mask as full skin; 0 none; 2 double.
+Roughness = 0.45                    # (2026-10-25) Skin roughness, 0.1-1: lower is oilier (tighter, brighter highlights), higher is matte.
+Scattering = 1.0                    # (2026-10-25) How far light spreads under the skin, worked out per pixel from the surface's curvature: light wraps past the shadow line (red furthest) and small features soften (nose, ears, lips, fingers). 1 = twice real skin's measured spread (the true width barely shows on a head at game distances); 0 = plain shading; up to 4. Where the screen-space blur runs ([Shaders.Skin.Scattering]) the blur takes over.
+Translucency = 0.5                  # (2026-10-25) Light glowing through thin parts (ears, nostrils, fingers) against the light: white at the thinnest rims, orange, then deep red. 0 off, 2 strong.
+ShadowScatter = 1.0                 # (2026-10-25) Light carried under the skin across shadow edges: the soft edge of sun and lamp shadows reddens (red reaches furthest into the shadow), and the scattered light passes the skin's own shadow line. 0 off, 2 strong.
+Sheen = 1.0                         # (2026-10-25) The fine fuzz on skin: a soft velvety glow along the rims of cheeks, ears and noses where both the light and your view skim the skin. 0 off, 2 strong.
+SkyReflection = 1.0                 # (2026-10-25) The sky reflected off skin at glancing angles, through the same two highlight layers. Outdoors only. 0 off, 2 strong.
+RainWetness = 0.5                   # (2026-10-25) How wet and glossy skin gets in the rain. 0 dry, 1 fully wet.
+MuteGameHighlights = true           # (2026-10-25) The skin shader draws its own highlights, so the game's extra face highlight passes (drawn with the object shaders' plastic-like shine) are switched off. false keeps them as well: shinier faces, as the older skin shaders had them.
+OverrideVanillaPlusSkin = true      # (2026-10-25) With the Vanilla Plus Skin mod installed: true = this build's skin shader is used anyway; false = VPS's own lighting, with NVR's sun shadows added. Needs a restart.
 
 [_Shaders.Skin.Interiors]
-SpecularStrength = 1.0              # With NewSkin on, indoors: skin highlight strength.
-Roughness = 0.45                    # Indoors: skin roughness. Lower is oilier.
-VanillaMatchedHighlights = 0.0      # Indoors: 1 makes highlights as strong as vanilla's; 0 is physical.
-ShadowScatter = 1.0                 # Indoors: light bleeding red into shadow edges.
-Translucency = 0.5                  # Indoors: red glow through ears, nostrils and fingers against a lamp.
-FillLight = 1.0                     # Indoors: extra soft light as the game's own skin shaders give it. 0 is Conor's physical look, 1 matches the old skin.
-ScreenSpace = true                  # Indoors: screen-space subsurface scattering.
+SpecularStrength = 1.0              # (2026-10-25) Indoors: skin highlight strength.
+Roughness = 0.45                    # (2026-10-25) Indoors: skin roughness. Lower is oilier.
+Scattering = 1.0                    # (2026-10-25) Indoors: how far light spreads under the skin (per pixel, from the curvature).
+Translucency = 0.5                  # (2026-10-25) Indoors: light through thin parts against a lamp.
+ShadowScatter = 1.0                 # (2026-10-25) Indoors: light carried across the edges of lamp shadows.
+Sheen = 1.0                         # (2026-10-25) Indoors: the fine fuzz on skin.
+ScreenSpace = true                  # Indoors: screen-space subsurface scattering on top of the skin shader (see [Shaders.Skin.Scattering]).
 Width = 28.6                        # Indoors: how far light spreads under the skin on screen. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0 (was 8 on a narrower kernel).
 DepthFollow = 1.0                   # Indoors: how sharply the blur stops at depth edges.
 AlbedoDetail = 1.0                  # Indoors: how much skin texture detail stays sharp (1 sharpest).
@@ -1855,14 +1830,25 @@ StrengthBlue = 0.28
 FalloffRed = 1.0                    # Indoors: how wide each colour spreads within the blur, 0-1.
 FalloffGreen = 0.37
 FalloffBlue = 0.3
-PerPixelWidth = 1.0                 # Indoors: per-pixel diffusion where the screen-space blur cannot reach.
+
+[_Shaders.Skin.Scattering]
+ScreenSpace = true                  # Screen-space subsurface scattering on top of the skin shader (outdoors): light spreads under the skin across the screen (separable SSS, the ENB look), the skin texture stays sharp. Needs the game's MSAA off: with MSAA on, D3D9 drivers (NVIDIA at least) draw nothing while its extra targets are bound, so it switches itself off and the skin shader's own per-pixel scattering ([Shaders.Skin.Main] Scattering) does the work.
+Width = 28.6                        # How far light spreads under the skin on screen, x the measured skin profile. Higher is softer and waxier. (2026-10-19) 28.6 is Community Shaders' Blur Radius 1.0, its default (was 8 on a narrower kernel).
+DepthFollow = 1.0                   # How sharply the blur stops at depth edges (nose against cheek, chin against neck).
+AlbedoDetail = 1.0                  # How much skin texture detail (freckles, pores, brows, stubble) stays sharp: 1 diffuses only the light, 0 blurs the texture with it (the waxy look).
+StrengthRed = 0.48                  # How much of each colour scatters. Red scatters most, which gives skin its warmth.
+StrengthGreen = 0.41
+StrengthBlue = 0.28
+FalloffRed = 1.0                    # How wide each colour spreads within the blur, 0-1 (above 1 is clamped: it breaks the blur into dots). Use Width to spread further.
+FalloffGreen = 0.37
+FalloffBlue = 0.3
 
 [_Shaders.Skin.Debug]
-DebugView = 0                       # With NewSkin on: skin diagnostics, indoors and out. 0 off. 1 which pass drew the skin: green one full pass, cyan one full pass with several lamps, yellow a light-only pass the game multiplies by the texture afterwards, red added for every extra lamp pass on top. 2 which settings are in use: blue Interiors, orange outdoors; bright where the screen-space blur takes the skin, dark where per-pixel diffusion stands in. 3 direct light (sun and lamps) on white skin. 4 ambient and sky light on white skin. 5 highlights alone. 6 material: red roughness, green highlight strength, blue the VanillaMatchedHighlights boost. 7 curvature: red per-pixel diffusion (PerPixelWidth), green thin features for Translucency. 8 the screen-space blur's skin test: green blurred, red rejected by distance, blue rejected by colour. 9 scene brightness against the skin's own pass: green equal, red brighter (extra lamp passes), blue darker. 10 what the blur changed: dark nothing, bright a lot.
+DebugView = 0                       # Skin diagnostics, indoors and out. 0 off. 1 which pass drew the skin: green one full pass, cyan one full pass with several lamps, yellow a light-only pass the game multiplies by the texture afterwards, red added for every extra lamp pass on top. 2 which settings are in use: blue Interiors, orange outdoors; bright where the screen-space blur takes the skin, dark where the per-pixel scattering stands in. 3 direct light (sun and lamps) on white skin. 4 ambient and sky light on white skin. 5 highlights alone (lobes, sheen, sky reflection). 6 material: red roughness, green highlight strength, blue wetness. 7 curvature: red the per-pixel scattering, green thin features (Translucency). 8 the screen-space blur's skin test: green blurred, red rejected by distance, blue rejected by colour. 9 scene brightness against the skin's own pass: green equal, red brighter (extra lamp passes), blue darker. 10 what the blur changed: dark nothing, bright a lot.
 LogDraws = 0                        # Diagnostic: logs the first this-many skin draws of the world scene (pass, shader, blend). 0 off. Read at startup.
-BindFaceGenMaps = true              # Diagnostic: Conor's FaceGen map binding in the light-only face passes (used to divide the face colour out of highlights). Switch off to compare.
+BindFaceGenMaps = true              # Diagnostic: the FaceGen map binding in the light-only face passes (used to divide the face colour out of the highlights). Switch off to compare.
 [_Shaders.Skin.Status]
-Enabled = true                      # Replaces the skin shaders: forward sun shadow and light terminator band. Real scattering is PerPixelDiffusion in [Shaders.Skin.Main].
+Enabled = true                      # (2026-10-25) The skin shader: light spreading under the skin, light through ears and fingers, real skin highlights and sheen, the sky's light and the sun's and lamps' shadows on faces and bodies, rain wetness. Off = the game's own skin shaders (no NVR shadows or lighting on skin).
 
 
 [_Shaders.Sky.Main]

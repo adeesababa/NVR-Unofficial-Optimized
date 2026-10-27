@@ -490,7 +490,9 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	const float towerFade = 1.0f - std::clamp((coverage - 0.6f) / 0.3f, 0.0f, 1.0f);
 	const float towering = Settings.Towering * towerFade * towerFade * (3.0f - 2.0f * towerFade);	// smoothstep, as the shader's Cumulus
 	const float towerScale = 1.0f + (Settings.TowerHeight - 1.0f) * towering;
-	const int marchSteps = (std::min)(64, (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f))));
+	// UNOFFICIAL 2026-10-26 (NVR DXVK): ExtMarchSteps is the same count without the D3D9 shader's 64 cap, for the Vulkan march (ExtRender).
+	ExtMarchSteps = (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f)));
+	const int marchSteps = (std::min)(64, ExtMarchSteps);
 	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, 0.0f);
 	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness * towerScale, coverage, Settings.Density);
 	Constants.Noise = D3DXVECTOR4(Settings.ShapeSize, Settings.DetailSize, Settings.Erosion, Settings.WeatherSize);
@@ -794,7 +796,8 @@ namespace {
 	const char* const CloudsVectorNames[] = { "TESR_ReciprocalResolution", "TESR_SunDirection", "TESR_SunColor", "TESR_SunAmount",
 		"TESR_SkyColor", "TESR_HorizonColor", "TESR_CloudsShape", "TESR_CloudsNoise", "TESR_CloudsLight", "TESR_CloudsWind",
 		"TESR_CloudsMarch", "TESR_CloudsLayout", "TESR_CloudsBlocks", "TESR_CloudsLook", "TESR_CloudsDetail", "TESR_CloudsExtra",
-		"TESR_CloudsMotion", "TESR_WaterSettings", "TESR_CameraData", "TESR_CameraPosition", "TESR_PhysSky", "TESR_PhysSkySun" };
+		"TESR_CloudsMotion", "TESR_WaterSettings", "TESR_CameraData", "TESR_CameraPosition", "TESR_CloudsTint", "TESR_CloudsTower",
+		"TESR_PhysSky", "TESR_PhysSkySun" };	// (TESR_CloudsTint, TESR_CloudsTower: UNOFFICIAL 2026-10-26, WeatherTint and Towering)
 	const UINT CloudsOptionalVectors = 2;	// the last two
 	struct CloudsUniforms {
 		D3DXMATRIX	Matrices[_countof(CloudsMatrixNames)];
@@ -802,7 +805,7 @@ namespace {
 	};
 	// Push block: the samplers' heap indices (POINT/CLAMP, LINEAR/CLAMP, POINT/WRAP, trilinear/WRAP; filled in by DXVK), then the
 	// two compile-time switches of the D3D9 shaders.
-	struct CloudsPush { UInt32 pointIndex, linearIndex, pointWrapIndex, mipIndex, fixedExit, physicalSky, pad[2]; };
+	struct CloudsPush { UInt32 pointIndex, linearIndex, pointWrapIndex, mipIndex, fixedExit, physicalSky, towers, pad; };	// towers: 2026-10-26 (the *Towers techniques)
 
 	const D3DXVECTOR4* CloudsRegistered(const char* name) {
 		auto found = TheShaderManager->ConstantsTable.find(name);
@@ -818,15 +821,16 @@ namespace {
 }
 
 bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
-	// Per technique (0 Composite, 1 March, 2 Temporal, 4 ShadowMap, 6 MarchFixedExit): its shader, and its textures in binding order
+	// Per technique (0 Composite, 1 March, 2 Temporal, 4 ShadowMap, 6 MarchFixedExit; 2026-10-26: 7 MarchTowers, 8 MarchTowersFixedExit,
+	// 10 ShadowMapTowers, the same shaders with push.towers): its shader, and its textures in binding order
 	// (set 1, binding i, slot i), as the .fx declares them: the noise textures 3D, through LINEAR/WRAP with LINEAR mips.
 	int pass;
 	switch (techniqueIndex) {
 	case 0: pass = 0; break;
-	case 1: case 6: pass = 1; break;
+	case 1: case 6: case 7: case 8: pass = 1; break;
 	case 2: pass = 2; break;
-	case 4: pass = 3; break;
-	default: return false;	// 3 Reflection (drawn by hand), 5 LayerProbe (a game texture on stage 12): D3D9
+	case 4: case 10: pass = 3; break;
+	default: return false;	// 3 / 9 Reflection (drawn by hand), 5 LayerProbe (a game texture on stage 12): D3D9
 	}
 	if (ClearRenderTarget || (pass != 0 && RenderTarget != RenderedSurface)) return false;
 	static const char* const SpvNames[4] = { "VolumetricCloudsComposite", "VolumetricCloudsMarch", "VolumetricCloudsTemporal", "VolumetricCloudsShadowMap" };
@@ -886,7 +890,7 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 		if (value) uniforms.Vectors[i] = *value;
 		else if (i < _countof(CloudsVectorNames) - CloudsOptionalVectors) return false;
 		// UNOFFICIAL 2026-10-26: the Vulkan march has no instruction limit: the full Steps (above 64 too; D3D9 gets at most 64).
-		if (!strcmp(CloudsVectorNames[i], "TESR_CloudsMarch")) uniforms.Vectors[i].x = (float)Settings.Steps;
+		if (!strcmp(CloudsVectorNames[i], "TESR_CloudsMarch")) uniforms.Vectors[i].x = (float)ExtMarchSteps;
 	}
 	ID3D9NvrExtBuffer* buffer = ExtUniforms(extUniforms, &uniforms, sizeof(uniforms));
 	if (!buffer) return false;
@@ -900,7 +904,8 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 		resources[count + 1 + s].Slot = s; resources[count + 1 + s].Type = NVR_EXT_BIND_SAMPLER; resources[count + 1 + s].pResource = samplers[s];
 	}
 	CloudsPush push = {};
-	push.fixedExit = techniqueIndex == 6 ? 1 : 0;
+	push.fixedExit = techniqueIndex == 6 || techniqueIndex == 8 ? 1 : 0;
+	push.towers = techniqueIndex >= 7 ? 1 : 0;
 	push.physicalSky = physicalSky ? 1 : 0;
 
 	if (pass == 0)

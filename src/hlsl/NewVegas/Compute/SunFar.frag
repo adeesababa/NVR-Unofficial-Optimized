@@ -31,6 +31,7 @@ layout(set = 1, binding = 11) uniform texture2D t_blend2;
 layout(set = 1, binding = 12) uniform texture2D t_blend3;
 layout(set = 1, binding = 13) uniform texture2D t_volume;        // NVR_VolumeCloudShadow
 layout(set = 1, binding = 14) uniform texture2D t_water;         // NVR_WaterDepth
+layout(set = 1, binding = 15) uniform texture2D t_scene;         // NVR_Scene (2026-10-25: the world as drawn; POINT)
 
 // The constants the HLSL reads (std140: vec4s and mat4s only, in the order of SunFarUniforms in SunFar.cpp).
 layout(set = 2, binding = 0, std140) uniform Constants {
@@ -42,7 +43,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 pbrExtraData;              // TESR_PBRExtraData
     vec4 terrainData;               // TESR_TerrainData
     vec4 terrainSkyData;            // TESR_TerrainSkyData
-    vec4 skyIrradiance[9];          // TESR_SkyIrradiance
+    vec4 skyIrradiance[9];          // TESR_SkyIrradianceObjects (2026-10-25 name)
     vec4 terrainShadowData;         // TESR_TerrainShadowData
     vec4 terrainShadowRange;        // TESR_TerrainShadowRange
     vec4 terrainShadowParams;       // TESR_TerrainShadowParams
@@ -53,7 +54,10 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 sunFarCloudBlend;          // TESR_SunFarCloudBlend
     vec4 sunFarVolume;              // TESR_SunFarVolume
     vec4 sunDirection;              // TESR_SunDirection
-    vec4 sunFarWater;               // TESR_SunFarWater
+    vec4 sunFarWater;               // TESR_SunFarWater (w: 1 OldSunModel / no scene texture)
+    vec4 fogData;                   // TESR_FogData (2026-10-25)
+    vec4 fogColor;                  // TESR_FogColor
+    vec4 sunFarLand;                // TESR_SunFarLand
     vec4 cameraData;                // TESR_CameraData
     vec4 cameraPosition;            // TESR_CameraPosition
     vec4 smoothedSunDir;            // TESR_SmoothedSunDir
@@ -318,12 +322,14 @@ vec4 SunFarPS(vec2 uvc) {
     float terrain = TerrainShadow(world);
     float cloud = CloudShadow(rel) * VolumeCloudShadow(world);
     float blocked = terrain * cloud;
+    // DebugView 4 (test, 2026-10-25 as the .fx): as a fully clouded sky over the whole screen at Strength 1.
+    blocked = cb.sunFarData.y > 3.5 ? 0.0 : blocked;
     // [TerrainShadows] Darkness: in the land's shadow, a share of the ambient and sky light goes too.
     float shade = (1.0 - terrain) * cb.terrainShadowParams.z;
 
     // Debug views: 1 the land's shadow in green and the clouds' in blue, through the composite (the picture tinted);
     // 2 also the height map's area in a faint blue; 3 also the water's depth (white at the shore to red deep).
-    if (cb.sunFarData.y > 0.5) {
+    if (cb.sunFarData.y > 0.5 && cb.sunFarData.y < 3.5) {
         vec3 tint = mix(vec3(1.0), vec3(0.25, 1.0, 0.25), (1.0 - terrain) * 0.8) * mix(vec3(1.0), vec3(0.35, 0.5, 1.0), (1.0 - cloud) * 0.8);
         if (cb.sunFarData.y > 1.5) tint *= mix(vec3(1.0), vec3(0.85, 0.9, 1.0), TerrainShadowCoverage(world));
         float water = cb.sunFarWater.z * step(2.5, cb.sunFarData.y) * (OnWater(world, GetWorldNormalLod(uvc), depth) ? 1.0 : 0.0);
@@ -347,7 +353,11 @@ vec4 SunFarPS(vec2 uvc) {
     // Terrain lights with its own scales: surfaces facing up take the terrain scales, walls and objects the PBR ones.
     float terrainWeight = (cb.terrainData.z + cb.terrainData.w > 0.0) ? smoothstep(0.5, 0.8, normal.z) : 0.0;
     vec3 scales = mix(vec3(cb.pbrData.z, cb.pbrData.w, cb.pbrExtraData.y), vec3(cb.terrainData.z, cb.terrainData.w, cb.terrainSkyData.x), terrainWeight);
-    float NdotL = saturate(dot(normal, cb.smoothedSunDir.xyz));
+    // (2026-10-25, as the .fx) the light vector the surface was lit with: the land's own (TESR_SunFarLand, w 1 when read) for the
+    // surfaces taken for land, the directional light for the rest; TESR_SunFarWater.w 1 (OldSunModel / no scene texture): as before.
+    vec3 lightDir = cb.sunFarWater.w > 0.5 ? cb.smoothedSunDir.xyz : normalize(cb.sunDirection.xyz);
+    vec3 landDir = cb.sunFarLand.w > 0.5 && cb.sunFarWater.w < 0.5 ? cb.sunFarLand.xyz : lightDir;
+    float NdotL = mix(saturate(dot(normal, lightDir)), saturate(dot(normal, landDir)), terrainWeight);
     vec3 sunLight = LightColor(cb.shadowSunLight.rgb) * (NdotL * LightScale(scales.x));
     vec3 ambientLight = LightColor(cb.shadowAmbientLight.rgb) * LightScale(scales.y) + LightColor(SkyIrradiance(normal)) * LightScale(scales.z);
     vec3 litNow = ambientLight + sunLight * cascade;
@@ -355,6 +365,11 @@ vec4 SunFarPS(vec2 uvc) {
     factor = keep < 1.0 ? mix(vec3(1.0), factor, keep) : factor;
     // Into the stored space: with linear lighting the shaders encoded their result with 1 / gamma (w; 1 with it off).
     factor = pow(max(factor, vec3(1e-6)), vec3(cb.sunFarData.w));
+    // (2026-10-25, as the .fx) the share of the pixel the shaders filled with the game's fog keeps its brightness (NVR_Scene: the
+    // world as drawn). sunFarWater.w 1 (OldSunModel / no scene texture): as before.
+    float fogAmount = pow(1.0 - saturate((cb.fogData.y - length(rel)) / max(cb.fogData.y - cb.fogData.x, 1.0)), max(cb.fogData.w, 0.0001));
+    vec3 fogShare = saturate(fogAmount * cb.fogColor.rgb / max(LOD(t_scene, pc.samplerPoint, uvc, 0.0).rgb, vec3(0.0001)));
+    factor = cb.sunFarWater.w > 0.5 ? factor : factor + (1.0 - factor) * fogShare;
     // a: what reaches the sun (1 lit).
     return vec4(factor, blocked);
 }

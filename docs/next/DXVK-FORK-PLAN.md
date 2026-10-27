@@ -23,6 +23,10 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
 - What the fork buys and does not (plain answers): NVR-DXVK-WHAT-IT-BUYS.md.
 
 ## In-game sweep of every port (2026-10-26)
+CAVEAT (found later that day by the BloodFluid agent): these runs had NO world depth. On the GTX 1070, stock-based DXVK 3.0.1
+offers RESZ only to AMD adapters, so NVR fell back to NVAPI, which initializes but cannot reach DXVK's device: the depth
+buffer stayed empty, and every depth-based effect (AO, fog, shadows, reflections, ...) was compared depth-less on both sides.
+Superseded by "Re-sweep with depth" below (fork patch 0007); the sky / half-pixel findings here do not depend on depth.
 Slot C (1080p, slim), fork d3d9.dll from run 40255009422 (ext 1.3, patches 0001-0005), tree work\NVR-dxvkfork-ci =
 4c03c6dc + the SkyView fix below. List bench\foundations\lists\dxvkfork-11-sweep.txt: defaults D3D9/Vulkan x2 (ABAB), then
 six groups D3D9 / Vulkan / Vulkan again (post: Coloring, Sharpening, LowHF, Lens, Reflections, Specular, HeatHaze, FXAA;
@@ -71,6 +75,40 @@ sweep_timing.py (reports sweep-*.report there).
   Net: the small passes come out about even, the heavy ones (snow accumulation, sandstorm, DoF) are faster, SMAA / fog /
   AO / point-shadow apply slower (0.1-0.25 ms each): worth a look per pass (bindings, sampler or format choices), not a
   route problem.
+
+## Re-sweep with depth (2026-10-26 afternoon; fork 1.4 + patch 0007, CI run 40328880527, v3.0.1-7)
+Patch 0007 offers RESZ on every GPU, so NVR's normal depth path works on NVIDIA under NVR DXVK: every run logs "Depth resolve:
+RESZ (DXVK, any GPU brand)" on the GTX 1070, and the lucky22 picture now differs from the depth-less one in 80 % of pixels
+(-5.3/255: AO, shadows etc. really run). Same list (dxvkfork-11-sweep), tree NVR-dxvkfork-ci = this branch after the lamp +
+BloodFluid merges (DLL with every change of the day). Runs: lucky22 20261026-105418, og-desert + og-night (one batch, see
+below) 20261026-121941, og-lake 20261026-115923, int23 20261026-120746, og-night solo 20261026-123050 (all -slotC).
+- Crashes: none in five scenes, no "failed to draw", no fallback.
+- Same picture: every D3D9/Vulkan pair inside its scene's noise (same settings shot twice): lucky22 / int23 9-13 % of pixels,
+  og-desert 13-25 %, og-lake 38-63 % (water and reflections move with depth on), og-night 37-52 % (stars), signed change
+  within +-0.25/255 except where the noise pair itself drifts (desert rain +0.17 between two Vulkan shots) or the dust moves
+  (sandstorm). The batched og-night shots were NOT usable: the queue joined it to the desert launch and the player was still
+  falling / turning after the night placement (camera different between same-settings shots); re-run solo (BENCHQ_SOLO=1).
+- Timing, settled pairs only (the first Vulkan shot of a launch pays the one-time pipeline creation: 13-25 ms frames; the
+  sun-cascade +0.9 ms seen in a few early Vulkan shots settles to the D3D9 value): frame totals about even (e.g. bounce
+  6.22/6.25, post 7.66/7.69, lake defaults 7.37/7.38 ms). Per pass, Vulkan slower: SMAA +0.08-0.17, AmbientLight estimate
+  and apply +0.06 each, point shadow lighting +0.07-0.14, fog estimate +0.04-0.06; faster: exposure/bloom -0.03, contact
+  shadow blur -0.03 each, heat haze -0.1. Same pattern as the depth-less sweep.
+
+## Merged with the installed line (2026-10-26 afternoon, user asked)
+Merged into this branch: claude/sky-gradient (the sky look settings, with all of deep/combo-1025b: 68 commits the fork branch
+lacked), claude/ceiling-flicker (the ceiling lamp-shadow fix, 12fe5a34) and deep/skin-rewrite (the one skin shader, f5c3603f).
+Five ported effects changed in that line; their Vulkan passes follow (86133465): AmbientLight (NormalSmoothingWorld; the compute
+smoothing stands aside while it is on), PointShadows (ForwardReachMask 2), SunFar (DebugView 4, the land / directional light
+vector, the fog's share via NVR_Scene), SunShadows (CharacterShadowMap's deferred lookup: the Apply pass's c1 variant, picked as
+the D3D9 compile), VolumetricClouds (WeatherTint; Towering techniques 7, 8, 10 via push.towers, 9 Reflection stays D3D9).
+Slot tests need a seeded restore point now: the towering clouds effect compiles for ~126 s uncached and the merged game shaders
+change ~300 caches, past the test plugin's 180 s first frame (two runs failed so). snap-dxvkfork-merge-20261026 = the user's
+install (snap-user-native-20261026-onepass) + 662 cache files from seed_cache.py (skin-rewrite session's tool; run it from a
+SHORT folder, G:\_NVR-build-scratch\sc: from the long scratchpad path every shader failed to preprocess, MAX_PATH).
+RESULT (list dxvkfork-16-merge, fork 0007, with depth): og-desert 20261026-155* and lucky22, no crash, every D3D9/Vulkan pair
+inside noise (defaults, clouds, Towering); the clouds pair's +0.08/255 is uniform over sky and ground (the exposure settling
+after the clouds switch on). Towering visibly works on the Vulkan path (93 % of pixels differ from plain clouds). Not exercised
+here: the SunShadows c1 variant (this scene's contact shadows use ForwardContactShadows, which has no Apply pass).
 
 ## Slower passes, histogram exposure, cloud steps (2026-10-26; list dxvkfork-14-variants, fork 1.4)
 - Why SMAA / fog / AO apply are slower as Vulkan passes. Hypothesis 1: the ports merged the D3D9 techniques' compile-time
@@ -192,6 +230,149 @@ compared two depth-less pictures for the depth-based passes. Fix proposed, not p
 `tools/nvr-dxvk/patches/0007-NVR-RESZ-depth-resolve-on-every-GPU-vendor.patch` (two lines: offer and honour RESZ on every
 vendor; it applies on top of 0006). Until then: `d3d9.customVendorId = 1002` in dxvk.conf (or DXVK_CONFIG) for NVIDIA.
 BloodFluid logs a WARNING when RESZ is missing.
+
+## Where DXVK's time goes (2026-10-26 evening, user asked before any speed patch; fork 1.5, CI run 40393960575, v3.0.1-8)
+Asked: can DXVK itself be made faster for us, outside the shaders? First measure. Fork patch 0008 (extension 1.5):
+SetProfiling / GetProfile. Every 8th frame times the game thread's outermost D3D9 calls (the device lock each entry point
+takes; the time stamp counter, the timer's own cost taken off), every frame the frame-latency wait in Present, plus DXVK's own
+stat counters (CS thread idle / sync, GPU idle / sync, draws, render passes, barriers, submits). NVR: with F10 profiling on,
+a `DXVK PROFILE` line every 120 frames (DxvkCompute::ProfileTick, from RenderHook). Off: one relaxed load per D3D9 call.
+List dxvkfork-17-profile (ABAB NvrDxvkPasses off/on, then clouds), G:\_NVR-build-scratch\prof_analyze.py, medians per shot
+(4 lines each), ms per frame:
+
+| scene | path | frame | game outside D3D9 | DXVK work on game thread | Present wait | DXVK thread busy | GPU busy | barriers |
+|---|---|---|---|---|---|---|---|---|
+| og-desert (20261026-162634) | D3D9 passes | 6.45 / 6.33 | 2.26 / 2.15 | 0.34 / 0.33 | 3.84 / 3.85 | 0.86 | = frame | 140 |
+| og-desert | Vulkan passes | 6.41 / 6.47 | 2.05 / 2.15 | 0.26 / 0.29 | 4.10 / 4.07 | 0.84-0.91 | = frame | 155 |
+| lucky22 (20261026-162839) | D3D9 passes | 8.66 / 8.62 | 6.58 / 6.59 | 0.91 / 0.96 | 1.08 / 1.02 | 2.6-2.9 | = frame | 176 |
+| lucky22 | Vulkan passes | 8.81 / 9.11 | 6.39 / 6.84 | 0.86 / 1.03 | 1.52 / 1.27 | 2.8-3.1 | = frame | 190 |
+
+Waits for DXVK's thread and GPU syncs: 0.00 everywhere. Draws 905 (desert) / 3331 (Lucky 38), ~60 render passes, 5-7 submits.
+What it says:
+- The GPU is the limit in both scenes: it is never idle (busy = the whole frame) and the game thread spends 1-4 ms per frame
+  waiting in Present for it. DXVK's CPU side is small and runs in parallel: 0.3-1.0 ms of translation on the game thread,
+  0.9-3 ms on its own thread (a third of the frame at most). Making DXVK's CPU side faster cannot raise the frame rate here.
+- The Vulkan passes cost GPU, not CPU: same frame in the desert, +0.15-0.5 ms in Lucky 38, with ~14 more barriers and ~1
+  more submit per frame. That matches the per-pass timings above (SMAA, AO, fog, point-shadow lighting slower as Vulkan).
+- So a speed patch should go after the extension's barriers / layout transitions on the GPU (patch 0002 binds written D3D9
+  targets as attachments and transitions them per pass), not DXVK's CPU paths. A GPU capture of one slot frame (passes
+  off / on) would name the costly transitions. The extra submit is probably DXVK's own flush heuristics (not checked; no NVR
+  readback runs per frame: AvgLuma's ReadBuffer is the self-test only).
+- Caveat: slot copies (slim game copies); at the user's full resolution the GPU share is likely larger still.
+
+## GPU capture: barriers and the two slow passes (2026-10-26 evening, user asked; fork patch 0009, CI run 40401407253, v3.0.1-9)
+How (repeatable): RenderDoc 1.46 is installed with its 32-bit Vulkan layer registered. One slot launch with
+`ENABLE_VULKAN_RENDERDOC_CAPTURE=1 DXVK_DEBUG=markers` in the environment (run_autotest.py passes it on to the game) loads it;
+the new shot command `renderdoc <path template>` (SettingShots.h, test only, 0186421f) asks RenderDoc's in-app API for one frame
+two frames before the shot's picture. List dxvkfork-18-capture (lucky22, one D3D9-pass frame, one Vulkan-pass frame); captures
+G:\_NVR-build-scratch\rdc\lucky22-d3d9_frame1850.rdc / lucky22-vk_frame2150.rdc (~840 MB each). Analysis without the UI:
+`qrenderdoc.exe --python G:\_NVR-build-scratch\rdc\rdc_analyze.py` with RDC_IN / RDC_OUT set (every action, its replay GPU time,
+the barriers before it with layouts, totals) -> report-d3d9.txt / report-vk.txt there.
+Found:
+- The barrier structure is nearly the same: D3D9 passes 178 barrier commands / 217 image barriers a frame, Vulkan passes
+  191 / 226. The one real difference: DXVK ends its own passes suspended and moves the last target back to its read layout at
+  the start of the next pass, with a global memory barrier only where a hazard needs one; the extension's nvrSetState ended
+  every injected pass fully (endCurrentPass(false)): a global memory barrier and a layout change right after each pass.
+  Patch 0009 ends them suspended (one line in dxvk_context.h). RESULT (list dxvkfork-17-profile, ABAB, og-desert
+  20261026-171321, lucky22 20261026-171530): barriers a frame 155 -> 151 (desert, D3D9 140) and 190 -> 186 (Lucky 38, D3D9
+  176); frame time unchanged within noise; same picture (D3D9 vs Vulkan differs no more than D3D9 vs D3D9). Kept: correct
+  and the same handling as DXVK's own passes, but barriers are NOT where the Vulkan passes lose time.
+- Where they do lose it (F10 per-effect GPU timers, both forks, two runs each): SMAA +0.10-0.15 ms in both scenes (the
+  D3D9 weight pass, 32-step searches, runs only on edge pixels through SMAA's stencil; the port has no stencil and runs
+  every pixel, returning 0 off the edges), point-shadow lighting +0.28-0.32 ms in Lucky 38 (neither path uses depth or
+  stencil tests there and both sample the cubes LINEAR at LOD 0: something in the shader itself), fog estimate +0.04 ms
+  in the desert. Most other ported passes are 0.01-0.08 ms faster than their D3D9 shaders. Lucky 38 frame total +0.22-0.28.
+- RenderDoc's replay times per draw cannot compare the two paths (the same copies took 1.9 ms in one capture and 3.4 ms in
+  the other); use the in-game F10 timers.
+- DONE 2026-10-26 evening (user asked): extension 1.6, fork patch 0010 (CI run 40406827315, v3.0.1-10): DrawDepthStencil, a
+  full-screen pass with a D3D9 depth-stencil surface and depth / stencil tests (NVR_EXT_DEPTH_STENCIL; the triangle's depth via
+  the viewport's depth range; clears stay D3D9 Clear calls, in order). NVR 42b25d13: EffectRecord::ExtDrawTo takes it,
+  [Main.Main.Performance] NvrDxvkStencil (default on, live), SMAA's Vulkan route now does what its D3D9 techniques do: clears
+  both targets and its own D24S8 stencil, the edge pass discards (push flags 1) and marks REPLACE 1, the weight pass tests EQUAL 1.
+  RESULT (list dxvkfork-19-stencil, ABCABC in one launch; lucky22 20261026-175608, og-desert 20261026-175817), SMAA GPU ms:
+  Lucky 38 D3D9 0.358, Vulkan without stencil 0.498, Vulkan with stencil 0.316; desert 0.396 / 0.500 / 0.382. So SMAA is
+  now a little faster than its D3D9 passes, not 0.10-0.15 ms slower. Same picture (D3D9 vs stencil route differs no more than
+  D3D9 vs D3D9), no errors.
+- DONE 2026-10-26 evening (user asked): point-shadow lighting. The two shaders out of the captures (G:\_NVR-build-scratch\rdc\
+  rdc_shader.py; ps-d3d9 / ps-vk .spv, .txt, and the NVIDIA driver's own statistics through RenderDoc's
+  KHR_pipeline_executable_properties view): ours was the SMALLER one (28 registers, 28.9 KB vs 35, 32.3 KB), same depth /
+  stencil / scissor state (none; the D3D9 pass's bound depth buffer is untested), same samplers. So the time had to be
+  measured, not read: new test tools [Main.Main.Performance] NvrDxvkKeepD3D9 (named effects keep their D3D9 passes while
+  the rest run Vulkan: one pass's real cost in the frame total) and NvrDxvkTestSuffix (Compute\<name>-<variant><suffix>.spv
+  picked live; PointShadows knockouts m0x no cube reads / m0y no shadowed lamps / m0z no plain lamps / m0e empty). Lists
+  dxvkfork-20-pointshadows, dxvkfork-21-psparts. RESULT: cube reads ~0, the eleven shadowed lamps ~0.12 ms, the plain lamps
+  (the 12-lamp loop, the extra lights, the spot) ~0.49 ms of the pass's 0.65. Cause: the D3D9 effect framework's
+  PRESHADERS: D3DX works out an .fx's constant-only expressions on the CPU once per draw (1 / radius, lamp weights,
+  smoothstep ranges, the spot cone's cosines) and fxc unrolls the 12-lamp loop; the port did them per pixel, with full
+  precision divisions, and Pascal has no scalar unit to share them. FIX 735c90dd: PointShadows.cpp FillPreshader appends
+  those values to the constants block, PointShadowsCommon.glsl uses them, the loop is [[unroll]]ed (FDivs 97 -> 53 with
+  the loop unrolled). RESULT (20261026-183248, steady rounds): Vulkan pass 0.42-0.44 ms vs its D3D9 pass 0.48-0.50 (was
+  0.76 vs 0.46), frame totals level with D3D9, same picture.
+- Lesson for every port: look for constant-only math in the .fx (what a preshader would take) and move it to the CPU;
+  the GTX 1070 pays for it on every pixel. And the first Vulkan shot after the settle shot is a warm-up (pipelines compile,
+  values fall frame by frame): read the later rounds, or add a warm-up shot with NvrDxvkPasses on.
+Next (session-hours): the same preshader audit for the other ports with constant-only math per pixel (AmbientLight's
+apply, fog, SunShadows; 1-2 h; risk: small gains elsewhere).
+
+## Preshader audit of the other ports + the AmbientLight flicker (2026-10-26 night, user asked; lists dxvkfork-23..25)
+NOTE: slot C runs from 17:56 to 19:11 had MSAA 4x in the slot INIs (the Conor session's test, not reset in time); the
+in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame totals do not.
+- nonuniformEXT on the sampler-heap index is gone (Common.glsl NVR_SAMPLER and the direct uses in AvgLuma, BloodFluid):
+  the index is uniform for a draw, DXVK's own D3D9 shaders use none. No measurable change, smaller code.
+- Full [[unroll]] of every loop in every port (103 loops, 325adfc8): neutral in both scenes, bigger shaders, reverted
+  (8f20e3c9). Still unrolled (committed before): PointShadows' 12-lamp loop (735c90dd), AmbientLight's estimate
+  (slice/step/side) and blur loops (824f3134).
+- AmbientLight estimate / blur: the loop's constant divisors as reciprocals once (invFalloff, invTexel, invTolerance).
+  Small: the estimate stays ~+0.03 ms over its D3D9 pass.
+- VolumetricFog (9d0a6b05): the fog, sky, horizon, sun, sunset, ambient, aerial-tint and sun colours are linearized once
+  per draw on the CPU (FogExtConstants.Linear, as the D3D9 preshader does), not per pixel; noise scale reciprocal hoisted.
+  Knockout variants (NvrDxvkTestSuffix n / s / k / f: no noise, no shadow, no sky colour, all three; the shipped shaders
+  byte-identical) showed no single big cost left. RESULT (dxvkfork-25-fogparts, og-desert): fog estimate 0.150 -> 0.126 ms
+  (D3D9 0.107), fog composite 0.233 vs D3D9 0.261: the whole effect 0.360 vs 0.372, now a little faster than D3D9. Same picture.
+- AmbientLight flicker (Conor's P83 report "AO type shaders still flicker / bounce lighting flickers", session
+  local_8d635e0a): every 4th frame darker, Vulkan only, no MSAA needed, not the light grid. Bisect with NvrDxvkKeepD3D9 per
+  pass (AmbientLight.cpp ExtDraw checks the pass's .spv name): only keeping Estimate on D3D9 cures it (floor-mean range
+  11.4 -> 0.03). A ring of uniform buffers (26cbc681) changed nothing and was reverted (8afad63f): DXVK renames a refilled
+  buffer that a draw already used. DebugView 6 (raw estimate): D3D9's mean steady with fine grain (high-pass std 9.4),
+  Vulkan's mean jumping with a third of the grain (2.8). A test variant that wrote the estimate's blue noise out gave an
+  all-black picture: the Vulkan pass read 0 from the noise texture everywhere. CAUSE: DXVK copies a D3DPOOL_MANAGED
+  texture to the GPU only when a D3D9 draw binds it (UploadManagedTextures at draw time); the extension reads the GPU image
+  as it is. A file texture only Vulkan passes read stays empty. With noise 0 everywhere, the per-frame rotation moved every
+  pixel's slice angle and step offsets together, so the whole occlusion brightened and darkened at once. A few D3D9 frames
+  uploaded the texture, which cured it for the session (the "stuck state" the Conor session saw). FIX c4ee6341:
+  DxvkCompute::PreLoad calls IDirect3DResource9::PreLoad on every sampled image before each Draw/Dispatch (DXVK returns at
+  once for render targets). NVR side only: works with every NVR DXVK build. RESULT (lucky22 conorflicker-burst3, Vulkan from
+  the first frame): range 11.39 -> 0.03 (conor-keep-none), 0.04 with Conor's full settings (conor-fx-vk); D3D9 estimate 0.03.
+- LESSON: any Vulkan pass that reads a file texture had this exposure (SMAA's area / search tables, fog noise, water,
+  blood masks). In-run A/B lists that START on D3D9 hide it, because the D3D9 frames upload everything. Test new ports with
+  NvrDxvkPasses on from the first frame too.
+- How wide it was (list dxvkfork-26-vkfirst: NVR defaults + NvrDxvkPasses true from the first frame, shots vk-first, d3d9-1,
+  vk-2, d3d9-2; the old behaviour = a test build with PreLoad doing nothing): Lucky 38 vk-first vs d3d9-1 27.9 % of pixels
+  > 2/255 (mean 2.09) before, 10.1 % (1.19) after; desert 42.2 % (mean 5.17) before, 13.2 % (1.50) after; the D3D9-vs-D3D9
+  floor is 10.7 % / 14.1 %. Before the fix the desert's sunlit ground and the clouds differed (the clouds' noise volume and
+  their ground shadows), Lucky 38's walls and ceiling (AmbientLight). After it: the noise floor in both scenes (20261026-
+  210414 / 210544 old, 210734 / 210905 fixed).
+- "Vulkan floor 1.1/255 darker" (Conor session, two separate launches): NOT the port. List dxvkfork-27-aldark (Conor's
+  settings, each shot keeps one AL pass or all of AL on D3D9, plus pure D3D9 shots, two rounds, one launch): every shot within
+  +-0.03/255 of D3D9, MSAA off (20261026-211221) and 4x (211525, "the frame msaa 4" in the log). The earlier launch it was
+  compared with predates the fix.
+- Whole sweep Vulkan-first (list dxvkfork-28-sweep-vkfirst = dxvkfork-11-sweep with NvrDxvkPasses on from the first frame and
+  every group's Vulkan shot before its D3D9 one; lucky22 20261026-211939, og-desert 212212, og-lake 212454): every group's
+  first Vulkan shot (defaults, post, rain, snow, storm, bounce, taa) is as close to D3D9 as the later Vulkan shot (the noise
+  pair). Only the desert sandstorm differs by 5-7/255, from shot to shot on both paths and with the sign flipping between
+  launches (the dust's own motion; 11:46 the Vulkan shot was the denser one).
+- Timing with the fix (list dxvkfork-24-stable, ABAB x4 with NPCs frozen, rounds after the first; lucky22 20261026-213132,
+  og-desert 213341): Lucky 38 frame total D3D9 8.589 / Vulkan 8.429 ms (-0.16): point shadows -0.044, SMAA -0.014, bloom
+  -0.018, AmbientLight estimate +0.023 (whole AL +0.020). Desert 6.479 / 6.465 (-0.01): sun contact shadows -0.056, their
+  blurs -0.025 each, exposure/bloom -0.03, fog composite -0.022, fog estimate +0.022. The Vulkan passes are at or under their
+  D3D9 cost everywhere now; what is left (+0.02 each, AL and fog estimates) is within a pass's noise.
+- DONE: the same upload in the fork itself, patch 0011 (959e9d72, CI run 40433728246, v3.0.1-11, G:\_NVR-build-scratch\
+  nvr-dxvk-0011): D3D9NvrExt::ResolveBindings uploads a pending managed texture and runs a pending AUTOGENMIPMAP mip
+  generation before a pass samples it, as a D3D9 draw would, so no future caller can miss it. Extension version unchanged
+  (1.6, no API change); NVR keeps its own PreLoad for older builds. RESULT with NVR's PreLoad switched off (test DLL),
+  dxvkfork-26-vkfirst: vk-first vs d3d9-1 10.2 % (Lucky 38) / 13.2 % (desert), the noise floor (20261026-214938 / 215113).
+  Use nvr-dxvk-0011 for fork tests from now on.
+Next (session-hours): nothing open on the port line's speed or picture; the AL and fog estimates' +0.02 ms are noise.
 
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf

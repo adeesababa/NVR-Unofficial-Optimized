@@ -138,6 +138,7 @@ bool AvgLumaEffect::RenderCompute(IDirect3DDevice9* Device) {
 	dispatch.pPushData = &push;
 	dispatch.PushDataSize = sizeof(push);
 
+	DxvkCompute::PreLoad(bindings, _countof(bindings));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	push.phase = 0;		// one partial sum (or the histogram counts) per 16x16 tile
 	dispatch.GroupsX = computeGroupsX; dispatch.GroupsY = computeGroupsY; dispatch.GroupsZ = 1;
 	HRESULT result = histogram ? ext->ClearBuffer(histogramBins, 0, 0, 0) : S_OK;	// the counts start at zero every frame (in order with the dispatches)

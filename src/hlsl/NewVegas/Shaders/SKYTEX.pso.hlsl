@@ -24,6 +24,11 @@ float4 TESR_SkyTint : register(c24);           // UNOFFICIAL 2026-10-25 rgb: the
 float4 TESR_MoonData : register(c25);          // UNOFFICIAL 2026-10-25 x: MoonBrightness (the moon disc)
 float4 TESR_SkyTintHorizon : register(c26);    // UNOFFICIAL 2026-10-26 rgb: the sky's horizon tint for this hour (SKY.pso)
 float4 TESR_SkyLook : register(c27);           // UNOFFICIAL 2026-10-26 x: the sky's Saturation, y: TintGradientHeight (SKY.pso)
+// UNOFFICIAL 2026-10-26: for the true view direction (Includes/Sky.hlsl SkyViewDirection)
+float4 TESR_ReciprocalResolution : register(c28);
+row_major float4x4 TESR_InvProjectionTransform : register(c29);
+row_major float4x4 TESR_InvViewTransform : register(c33);
+#define SKY_VIEW_DIRECTION
 
 
 // Registers:
@@ -204,7 +209,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         // UNOFFICIAL: the volumetric clouds draw the clouds; the layer adds nothing (blended by its alpha)
         if (TESR_CloudsHide.x > 0.5) { OUT.color_0 = float4(0.0, 0.0, 0.0, 0.0); return OUT; }
         float3 skyColor = GetSkyColor(verticality, Sun.athmosphere, Sun.sunHeight, Sun.sunInfluence, TESR_SkyData.z, TESR_SkyColor.rgb, TESR_SkyLowColor.rgb, TESR_HorizonColor.rgb, Sun.sunColor);
-        skyColor = SkyLook(skyColor, eyeDir.z, TESR_SkyTint.rgb, TESR_SkyTintHorizon.rgb, TESR_SkyLook);   // UNOFFICIAL 2026-10-26 as SKY.pso
+        skyColor = SkyLook(skyColor, SkyViewDirection(IN.position).z, TESR_SkyTint.rgb, TESR_SkyTintHorizon.rgb, TESR_SkyLook);   // UNOFFICIAL 2026-10-26 as SKY.pso
         OUT.color_0 = ShadeClouds(finalColor, color, skyColor, Sun, eyeDir);
         return OUT;
     }

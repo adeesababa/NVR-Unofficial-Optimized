@@ -86,6 +86,9 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraPosition;           // TESR_CameraPosition
     vec4 skyIrradiance[9];         // TESR_SkyIrradiance
     vec4 skyIrradianceGame[9];     // TESR_SkyIrradianceGame
+    // UNOFFICIAL 2026-10-26 (VolumetricFog.cpp FogExtLinearNames): these colours linearized once a draw on the CPU, as the D3D9
+    // effect's preshader does (linearized here on every pixel they cost most of the fog estimate's extra 0.04 ms, desert)
+    vec4 fogColorLin, skyColorLin, skyLowColorLin, horizonColorLin, sunDiskColorLin, sunsetColorLin, sunAmbientLin, fogAerialTintLin, sunColorLin;
 } cb;
 
 // Push block: the samplers' heap indices (filled in by DXVK), the variant, and the effect's own NVR_ constants (set by the C++
@@ -263,19 +266,16 @@ vec3 GetWorldNormalLod(vec2 coord) {
 }
 
 // ---- Includes/Sky.hlsl ----
+// (2026-10-26) sunColor and sunsetColor arrive linear (cb.*Lin, linearized on the CPU once a draw)
 vec3 GetSunColor(float sunHeight, float athmosphere, float dayTime, vec3 sunColor, vec3 sunsetColor) {
-    sunColor = linearize(sunColor);
-    sunsetColor = linearize(sunsetColor);
     vec3 color = (1.0 + sunHeight) * sunColor;
     float sunSet = saturate(pows(1.0 - sunHeight, 8.0)) * dayTime;
     color += sunsetColor.rgb * sunSet * athmosphere;
     return color;
 }
 
+// (2026-10-26) skyColor, skyLowColor and horizonColor arrive linear (cb.*Lin, linearized on the CPU once a draw)
 vec3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float sunInfluence, float sunStrength, vec3 skyColor, vec3 skyLowColor, vec3 horizonColor, vec3 sunColor) {
-    skyColor = linearize(skyColor);
-    skyLowColor = linearize(skyLowColor);
-    horizonColor = linearize(horizonColor);
     float isDayTime = hlslSmoothstep(0.0, 0.5, cb.sunAmount.x);
     vec3 color = mix(skyLowColor.rgb, skyColor.rgb, verticality);
     color = mix(color, horizonColor.rgb, saturate(athmosphere * (0.5 + sunInfluence * 0.5)));
@@ -383,7 +383,7 @@ vec3 FogGridLight(vec3 gammaColor, vec2 coord) {
     float fade = cb.vlData2.z;
     vec3 lin = linearize(max(gammaColor, vec3(0.0)));
     float shadedAir = saturate(air.y - air.x);
-    lin = lin * (1.0 - cb.vlData.y * fade * shadedAir) + linearize(cb.sunColor.rgb) * (cb.vlData.x * fade * phase * air.x);
+    lin = lin * (1.0 - cb.vlData.y * fade * shadedAir) + cb.sunColorLin.rgb * (cb.vlData.x * fade * phase * air.x);
     return delinearize(max(lin, vec3(0.0)));
 }
 
@@ -648,7 +648,7 @@ float getLegacyHeightFog(float dist, float falloff, vec3 worldPos, float heightO
 }
 
 void LegacyFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nightAmountOut, bool interior) {
-    vec4 pureFogColor = linearize(cb.fogColor);
+    vec4 pureFogColor = cb.fogColorLin;
 
     float depth = readDepthLod(coord);
     float isDayTime = hlslSmoothstep(0.4, 0.8, cb.sunAmount.x);
@@ -681,10 +681,10 @@ void LegacyFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         float sunHeight = shade(cb.sunPosition.xyz, up);
         float sunDir = dot(eyeDirection, cb.sunPosition.xyz);
         float sunInfluence = pows(compress(sunDir), SUNINFLUENCE);
-        vec4 sunColor = vec4(GetSunColor(sunHeight, 1.0, cb.sunAmount.x, cb.sunDiskColor.rgb, cb.sunsetColor.rgb), 1.0);
+        vec4 sunColor = vec4(GetSunColor(sunHeight, 1.0, cb.sunAmount.x, cb.sunDiskColorLin.rgb, cb.sunsetColorLin.rgb), 1.0);
         sunColor *= isDayTime * LegacyIsExterior;
 
-        skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColor.rgb, cb.skyLowColor.rgb, cb.horizonColor.rgb, vec3(0.0)) * cb.sunsetColor.w;
+        skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColorLin.rgb, cb.skyLowColorLin.rgb, cb.horizonColorLin.rgb, vec3(0.0)) * cb.sunsetColor.w;
         if (FOG_PHYSICAL_ON) {
             if (cb.physSky.x > 0.0) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
         }
@@ -730,7 +730,7 @@ void LegacyFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
 }
 
 void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nightAmountOut, bool interior, bool classic) {
-    vec4 pureFogColor = linearize(cb.fogColor);
+    vec4 pureFogColor = cb.fogColorLin;
 
     float depth = readDepthLod(coord);
     float isDayTime = hlslSmoothstep(0.4, 0.8, cb.sunAmount.x);
@@ -765,6 +765,9 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
     vec4 fogVolume = vec4(0.0);
     // (ClassicLook: master's noise instead; the HLSL compiles the rest out of the *Classic techniques, here it is skipped.)
     if (classic) noiseVal = fbm3((worldPos + windOffset) / (1500.0 * NoiseScale));
+#ifdef FOG_TEST_NO_NOISE
+    else if (true) noiseVal = 0.5;   // TEST variant (variants.txt, NvrDxvkTestSuffix): no noise reads
+#endif
     else {
         if (pc.gridFlags.x > 0.5 && cb.vlGridData.x > 0.5) {
             fogVolume = FogGridSum(coord, depth);
@@ -772,10 +775,11 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         }
         else {
             float noiseReach = min(length(eyeVector), 12000.0);
+            float invNoiseScale = 1.0 / (1500.0 * NoiseScale);   // UNOFFICIAL 2026-10-26: once, not three divisions a step (fxc: rcp + mul)
             for (int noiseStep = 0; noiseStep < 4; noiseStep++) {
-                float noiseT = mix(min(300.0, noiseReach), noiseReach, (float(noiseStep) + 0.5) / 4.0);
-                vec3 noisePos = (cb.cameraPosition.xyz + eyeDirection * noiseT + windOffset) / (1500.0 * NoiseScale);
-                noiseVal += textureLod(sampler3D(t_noise, NVR_SAMPLER(pc.wrapIndex)), noisePos / 4.0, 0.0).g;
+                float noiseT = mix(min(300.0, noiseReach), noiseReach, (float(noiseStep) + 0.5) * 0.25);
+                vec3 noisePos = (cb.cameraPosition.xyz + eyeDirection * noiseT + windOffset) * invNoiseScale;
+                noiseVal += textureLod(sampler3D(t_noise, NVR_SAMPLER(pc.wrapIndex)), noisePos * 0.25, 0.0).g;
             }
             noiseVal *= 0.25;
         }
@@ -790,7 +794,11 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
     float strength = max(0.0, nvrDensity + WeatherImpact * vanillaStrength);
 
     float shadowVisibility = 1.0;
+#ifdef FOG_TEST_NO_SHADOW
+    if (false) {   // TEST variant: no shadow visibility
+#else
     if (isExterior > 0.5 && ShadowStrength > 0.0 && cb.shadowFade.y > 0.5) {
+#endif
         if (!classic && fogVolume.g > 1.0e-6) {
             shadowVisibility = mix(1.0, saturate(fogVolume.a / fogVolume.g), ShadowStrength);
         }
@@ -813,13 +821,15 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         float sunHeight = shade(cb.sunPosition.xyz, up);
         float sunDir = dot(eyeDirection, cb.sunPosition.xyz);
         float sunInfluence = pows(compress(sunDir), SUNINFLUENCE);
-        vec4 sunColorV = vec4(GetSunColor(sunHeight, 1.0, cb.sunAmount.x, cb.sunDiskColor.rgb, cb.sunsetColor.rgb), 1.0);
+        vec4 sunColorV = vec4(GetSunColor(sunHeight, 1.0, cb.sunAmount.x, cb.sunDiskColorLin.rgb, cb.sunsetColorLin.rgb), 1.0);
         sunColorV *= isDayTime * isExterior;
 
-        skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColor.rgb, cb.skyLowColor.rgb, cb.horizonColor.rgb, vec3(0.0)) * cb.sunsetColor.w;
+#ifndef FOG_TEST_NO_SKY   // (TEST variant: no sky colour, GetSkyColor and PhysicalFogSky)
+        skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColorLin.rgb, cb.skyLowColorLin.rgb, cb.horizonColorLin.rgb, vec3(0.0)) * cb.sunsetColor.w;
         if (FOG_PHYSICAL_ON && !classic) {
             if (cb.physSky.x > 0.0) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
         }
+#endif
 
         float sunStrength = cb.fogData.z / (1.0 + 2.0 * strength);
         sunStrength = mix(sunStrength, max(sunStrength * 2.0, 10.0), normalizedDepth);
@@ -834,10 +844,10 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
 
     vec3 ambientColor = SkyAmbientAvailable > 0.5
         ? (classic ? SkyIrradianceGameLinear(vec3(0.0, 0.0, 1.0)) : SkyIrradianceLinear(vec3(0.0, 0.0, 1.0)))
-        : linearize(cb.skyColor).rgb;
+        : cb.skyColorLin.rgb;
     ambientColor *= cb.pbrData.w;
 
-    vec3 nightAmbient = linearize(cb.sunAmbient).rgb * MoonVisibility * NightAmbientStrength * nightFactor;
+    vec3 nightAmbient = cb.sunAmbientLin.rgb * MoonVisibility * NightAmbientStrength * nightFactor;
     ambientColor = max(ambientColor, nightAmbient);
 
     vec4 ambientSkyColor = vec4(mix(ambientColor, skyColor.rgb, saturate(WeatherImpact)), 1.0);
@@ -866,7 +876,7 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
 
     float aerialDayFade = hlslSmoothstep(0.1, AerialDayFadeStart, cb.sunAmount.x);
     float aerialFactor = hlslSmoothstep(AerialRangeStart, 1.0, normalizedDepth) * (1.0 - isSkyDome) * isExterior;
-    vec3 aerialTint = mix(ambientColor, linearize(cb.fogAerialTint).rgb, AerialTintBlend);
+    vec3 aerialTint = mix(ambientColor, cb.fogAerialTintLin.rgb, AerialTintBlend);
 
     vec3 aerialTintClamped = saturate(aerialTint);
     vec3 aerialScale = mix(vec3(1.0), aerialTintClamped, aerialFactor * AerialStrength * skyMaskFactor * aerialDayFade);

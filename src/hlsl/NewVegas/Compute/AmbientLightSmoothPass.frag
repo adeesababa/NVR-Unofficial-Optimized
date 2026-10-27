@@ -18,7 +18,10 @@ void main() {
     if (viewZ < DrawDistance && cb.alEdges.x > 0.5) {
         vec3 origin = PositionFromViewZ(uv, viewZ);
         vec2 axis = alongY ? vec2(0.0, 1.0) : vec2(1.0, 0.0);
-        float spacing = cb.alEdges.x / 3.0;
+        // (2026-10-24 charfacets NormalSmoothingWorld, as the .fx) the reach is at least alEdges.z world units, at most 192 texels.
+        float texelWorld = 2.0 * viewZ * cb.alLayout.z / max(cb.projectionTransform[0][0], 1.0e-3);
+        float reach = clamp(cb.alEdges.z / max(texelWorld, 1.0e-4), cb.alEdges.x, 192.0);
+        float spacing = reach / 3.0;
         vec3 sum = normal;
         for (int k = -3; k <= 3; k++) {
             if (k == 0) continue;

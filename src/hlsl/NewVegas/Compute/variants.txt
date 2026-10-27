@@ -52,3 +52,15 @@ AmbientOcclusionEstimate g1 -DAO_GTAO=1
 PointShadows m0 -DPOINT_SHADOW_MODE=0
 PointShadows m1 -DPOINT_SHADOW_MODE=1
 PointShadows m2 -DPOINT_SHADOW_MODE=2
+# TEST 2026-10-26 (NvrDxvkTestSuffix x / y / z / e): the merged pass without its cube map reads / its eleven shadowed lamps /
+# its other lamps / anything but the depth and normal reads, to see what the pass's time is made of (not for play).
+PointShadows m0x -DPOINT_SHADOW_MODE=0 -DPS_TEST_NO_CUBES
+PointShadows m0y -DPOINT_SHADOW_MODE=0 -DPS_TEST_NO_SHADOWED
+PointShadows m0z -DPOINT_SHADOW_MODE=0 -DPS_TEST_NO_LAMPS
+PointShadows m0e -DPOINT_SHADOW_MODE=0 -DPS_TEST_EMPTY
+SunShadowsApply c1 -DCHARACTER_SHADOW_MAP=1
+# TEST 2026-10-26 (NvrDxvkTestSuffix n / s / k / f): the desert's fog estimate without its noise reads / shadow visibility / sky colour / all three
+VolumetricFogEstimate l0c0i0p1n -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_NOISE
+VolumetricFogEstimate l0c0i0p1s -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_SHADOW
+VolumetricFogEstimate l0c0i0p1k -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_SKY
+VolumetricFogEstimate l0c0i0p1f -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_NOISE -DFOG_TEST_NO_SHADOW -DFOG_TEST_NO_SKY

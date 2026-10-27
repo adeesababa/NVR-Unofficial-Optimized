@@ -63,8 +63,8 @@ uint CellIndex(ivec3 c) {
 // ---------------------------------------------------------------- depth buffer
 // (Read through a sampler at the texel centre, as every working NVR pass reads it; 2026-10-26 in game: texelFetch on this
 // texture gave 1.0 everywhere.)
-float RawDepthAt(ivec2 px) { return textureLod(sampler2D(t_depth, s_samplers[nonuniformEXT(pc.samplerIndex & 0xFFFFu)]), (vec2(px) + 0.5) * F.screen.zw, 0.0).x; }
-float ViewModelAt(ivec2 px) { return textureLod(sampler2D(t_viewModel, s_samplers[nonuniformEXT(pc.samplerIndex & 0xFFFFu)]), (vec2(px) + 0.5) * F.screen.zw, 0.0).x; }
+float RawDepthAt(ivec2 px) { return textureLod(sampler2D(t_depth, s_samplers[pc.samplerIndex & 0xFFFFu]), (vec2(px) + 0.5) * F.screen.zw, 0.0).x; }
+float ViewModelAt(ivec2 px) { return textureLod(sampler2D(t_viewModel, s_samplers[pc.samplerIndex & 0xFFFFu]), (vec2(px) + 0.5) * F.screen.zw, 0.0).x; }
 float SceneDepthAt(ivec2 px) { return RawDepthAt(px) * F.eyeRel.w; }
 
 // The surface point (eye-relative) at pixel px of depth z, and its normal from the neighbours on the side with the
