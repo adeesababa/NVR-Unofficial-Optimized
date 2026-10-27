@@ -33,6 +33,7 @@
 #include "../../core/LinearSceneCensus.h"	// UNOFFICIAL 2026-10-28, diagnostic: what draws into the world and how (linear-scene plan)
 #include "../../core/LinearScene.h"	// UNOFFICIAL 2026-10-28 LinearScene: the world's main list kept in linear light
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
+#include "../../core/FoldFog.h"	// UNOFFICIAL 2026-10-27 FoldFog: env-mapped objects fog in their lit pass, no fog pass
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 #include "../../core/GrassShadows.h"	// UNOFFICIAL 2026-10-27 grass sun shadows: the early grass drawn again into the near sun shadow map (GrassFirst)
 #include "../../effects/GpuGrass.h"	// UNOFFICIAL 2026-10-27 GPU grass (NVR DXVK 1.7-grass): strands placed and culled on the GPU from the early grass draws
@@ -666,6 +667,8 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	CharacterObjectReach::BeginFrame();	// UNOFFICIAL 2026-10-23 CharacterObjectReach
 	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
 	LinearScene::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-28 LinearScene
+=======
+	FoldFog::BeginFrame();	// UNOFFICIAL 2026-10-27 FoldFog
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
@@ -3025,6 +3028,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic: PassFamilyView
 	if (CasterView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL 2026-10-28, diagnostic: CasterView
 #endif
+	if (FoldFog::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL FoldFog: the object's lit pass fogged
 	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) {	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
 #if NVR_TEST_TOOLS
 		LampsInOnePass::Census::NoteSkipped(Pass);	// diagnostic (F10 only)
@@ -3098,6 +3102,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (PassFamilyView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL, diagnostic: PassFamilyView
 	if (CasterView::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL 2026-10-28, diagnostic: CasterView
 #endif
+	if (FoldFog::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) return;	// UNOFFICIAL FoldFog: the object's lit pass fogged
 	if (FoldHighlights::Skip(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) {	// UNOFFICIAL FoldHighlights: drawn with the object's lamps
 #if NVR_TEST_TOOLS
 		LampsInOnePass::Census::NoteSkipped(Pass);	// diagnostic (F10 only)
