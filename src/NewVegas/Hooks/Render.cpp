@@ -2666,7 +2666,7 @@ namespace ScopeSunShadows {
 			}
 			else if (context != ShaderSplit::Reflections && LensFrame && PointShadowForward::Frame - LensFrame <= 2) {
 				const D3DVIEWPORT9& port = TheRenderManager->m_kD3DPort;
-				if (port.Width != TheRenderManager->width || port.Height != TheRenderManager->height) {
+				if (!TAAEffect::IsWorldViewport(port)) {	// UNOFFICIAL 2026-10-27: RenderScale's world viewport is the world's too
 					suppress = true;
 					if (!Announced) {
 						Announced = true;
@@ -2802,6 +2802,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	const bool countOpt = OnePassDepth::Count && GpuTimer::Enabled && ShaderSplit::CurrentContext == ShaderSplit::World &&
 		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
+	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();	// UNOFFICIAL 2026-10-27 RenderScale: a check of the viewport
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
@@ -2851,6 +2852,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	const bool countOpt = OnePassDepth::Count && GpuTimer::Enabled && ShaderSplit::CurrentContext == ShaderSplit::World &&
 		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
+	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();	// UNOFFICIAL 2026-10-27 RenderScale: a check of the viewport
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
@@ -3021,7 +3023,9 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	// UNOFFICIAL TAA (off by default): the sub-pixel jitter covers the world scene and nothing else -- see
 	// TAAEffect::BeginJitter. A no-op unless TAA resolves this frame.
 	TAAEffect* TAA = TheShaderManager->Effects.TAA;
-	if (TAA) TAA->BeginJitter();
+	// UNOFFICIAL 2026-10-27 RenderScale ([Shaders.TAA.FSR], TAAUpscale.cpp): also sets the world camera's viewport to the lower internal
+	// resolution when that is on (the frame's first world scene only). A no-op otherwise.
+	if (TAA) TAA->BeginJitter(FrameWorldCalls == 1);
 	// UNOFFICIAL terrain blending (off by default): the world's depth is copied as the first land shader of this scene binds.
 	TerrainShaders::BeginWorldScene();
 	{
@@ -3068,6 +3072,10 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	// After the material pass, not before: it redraws world geometry over the scene, and must land on exactly the same
 	// jittered pixels the world did.
 	if (TAA) TAA->EndJitter();
+	// UNOFFICIAL 2026-10-27 RenderScale: a world drawn at the lower internal resolution is upscaled by FSR 2 into its own targets
+	// (colour + depth buffer) here, before the game's refraction pass, the first-person weapon and the depth resolve below, so
+	// everything after sees a full-resolution frame. A no-op unless RenderScale drew this world scene small.
+	if (TAA) TAA->UpscaleWorld();
 
 	const bool bPipBoyOpen = InterfaceManager->IsPipBoyOpen();
 	const bool bPipBoyLive = (TheGameMenuManager->IsLiveMenu && TheGameMenuManager->IsLiveMenu(Menu::kMenuType_BigFour, false, false) == GameMenuManager::MenuPauseState::MENU_LIVE);

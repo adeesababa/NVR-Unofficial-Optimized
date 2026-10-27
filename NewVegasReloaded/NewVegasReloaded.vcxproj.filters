@@ -334,6 +334,9 @@
     <ClInclude Include="..\src\core\HiZ.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\core\Upscaler.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\NvrDxvkExt.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -722,6 +725,12 @@
     </ClCompile>
     <ClCompile Include="..\src\effects\TAAFSR.cpp">
       <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\TAAUpscale.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\core\Upscaler.cpp">
+      <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\SunShadows.cpp">
       <Filter>Effects</Filter>

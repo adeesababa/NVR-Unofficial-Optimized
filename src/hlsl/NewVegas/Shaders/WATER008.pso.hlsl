@@ -27,6 +27,7 @@ float4 TESR_DebugVar : register(c22);
 float4 TESR_ShadowLightPosition[12] : register(c23);
 float4 TESR_LightPosition[12] : register(c35);
 float4 TESR_LightColor[24] : register(c47);
+float4 TESR_RenderScale : register(c71); // UNOFFICIAL 2026-10-27 RenderScale: xy = the internal resolution / the screen's while the world is drawn smaller (the refraction copy is made mid-scene, so its picture fills only that part), else 1
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
@@ -74,7 +75,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     refractionPos.y = refractionPos.w - reflectionPos.y;
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * interiorDepthModifier;
 
-    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float4 color = linearize(tex2Dproj(RefractionMap, float4(refractionPos.xy * TESR_RenderScale.xy, refractionPos.zw)));
     color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, color);
    	color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color);
     color = getFresnel(surfaceNormal, eyeDirection, linFogColor, TESR_WaveParams.w, color);

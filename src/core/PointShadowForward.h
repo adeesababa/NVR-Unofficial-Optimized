@@ -157,7 +157,7 @@ namespace PointShadowForward {
 	inline bool OtherCamera(const RenderPassView* pass, bool firstPerson) {
 		if (!ScopeFix) return false;
 		const D3DVIEWPORT9& port = TheRenderManager->m_kD3DPort;
-		if (port.Width != TheRenderManager->width || port.Height != TheRenderManager->height) {
+		if (!TAAEffect::IsWorldViewport(port)) {	// UNOFFICIAL 2026-10-27: RenderScale's world viewport (the render size) is the world's too
 			if (OtherCameraLogs < 3) {
 				OtherCameraLogs++;
 				Logger::Log("UNOFFICIAL forward shadows: a %ux%u render from another camera (a B42 Optics scope picture?) gets no lamp shadows.",

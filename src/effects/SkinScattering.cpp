@@ -452,6 +452,9 @@ bool SkinScatteringEffect::ShouldRender() {
 	// The skin shaders' debug views: shown as drawn, not blurred. The target stays bound during
 	// skin draws, so the views still show which skin the blur would take.
 	if (SkinShaderDebug) return false;
+	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp): the skin targets were drawn with the world at the lower internal resolution
+	// (their top-left corner) while the scene is now upscaled: their test would compare the wrong pixels. Not blurred this frame.
+	if (TAAEffect::UpscaledThisFrame()) return false;
 	if (MSAASurface) TheRenderManager->device->StretchRect(MSAASurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);
 	if (AlbedoMSAASurface) TheRenderManager->device->StretchRect(AlbedoMSAASurface, NULL, AlbedoTextureSurface, NULL, D3DTEXF_NONE);
 	return true;
