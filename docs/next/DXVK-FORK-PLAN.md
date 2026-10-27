@@ -374,6 +374,21 @@ in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame total
   Use nvr-dxvk-0011 for fork tests from now on.
 Next (session-hours): nothing open on the port line's speed or picture; the AL and fog estimates' +0.02 ms are noise.
 
+## Feature round 2 (2026-10-26/27 night, user's list, agents)
+Full table: work\bench\deep-roadmap\FORK2-RESULTS.md (2026-10-03 work root); brief FORK2-1027-AGENTS.md; pending slot tests
+FORK2-PENDING-TESTS.sh (blocked by memory: ~28 idle Claude Code sessions + a browser leave too little free commit for an outdoor
+slot game, the bench watchdog closes it). Every feature off by default, each on its own branch on `mine`:
+- deep/fork-combo-1027 b814b9ae: combo-1026 (HDR, FSR, particles, Hi-Z, bokeh, SM6, debug tools) + this line, ONE patch series
+  0001-0016 (this line's 0001-0011 first), fork CI 40441095208. Lucky 38 with Conor's settings: AmbientLight flicker fixed (range 0.03).
+- Tested: deep/fork2-ssgi d84447f3 ([Shaders.AmbientLight.Main] ComputeGI): correct, local warm bounce light, +0.33 ms, subtle.
+  Draw skipping (deep/fork2-drawskip, census tool): NOT worth building, only ~86 objects end hidden in Lucky 38, ~0 ms to save.
+  Pop-in study: not a shader limit; FormsFar/FormsLod MinRadius 1 = small far shadows for no measurable cost (native D3D9).
+  Persistent wetness/snow (deep/fork2-wetsnow, native D3D9): round 1 works (0.03-0.05 ms, dries over time), round 2 fixes untested.
+- Built, not tested yet: SDSM (deep/fork2-sdsm, native D3D9 too), FSR RenderScale upscaling (deep/fork2-upscale), tessellation
+  displacement of the land (deep/fork2-displace + fork patch 0021), GPU grass (deep/fork2-grass + fork patch 0024).
+- DLSS: not possible inside the 32-bit game (NVIDIA ships it 64-bit only); plan = a 64-bit helper process (FORK2-DLSS-PLAN.md on the
+  upscale branch), needs the user's OK to download the SDK and an RTX tester. Ray tracing: the GTX 1070 has no ray queries.
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).
