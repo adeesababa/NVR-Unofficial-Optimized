@@ -18,6 +18,8 @@ void GrassShaders::UpdateSettings() {
 	Constants.Scale.x = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleX");
 	Constants.Scale.y = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleY");
 	Constants.Scale.z = TheSettingManager->GetSettingF("Shaders.Grass.Main", "ScaleZ");
+	Constants.Scale.w = (TheSettingManager->GetSettingI("Shaders.Grass.Main", "ShadowFix") ? 1.0f : 0.0f)	// UNOFFICIAL 2026-10-27 (GRASS23x000TMS.pso)
+		+ (TheSettingManager->GetSettingI("Shaders.Grass.Main", "SkyLightScale") ? 2.0f : 0.0f);
 	GameShaderFix = TheSettingManager->GetSettingI("Shaders.Grass.Main", "GameShaderFix");
 	DrawFirst = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirst");
 	DrawFirstRestore = TheSettingManager->GetSettingI("Shaders.Grass.Main", "DrawFirstRestore");

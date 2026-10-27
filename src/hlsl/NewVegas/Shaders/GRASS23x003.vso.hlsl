@@ -13,6 +13,12 @@ float3 DiffuseDir   : register(c0);
 float3 DiffuseColor : register(c1);
 float3 ScaleMask    : register(c2);
 float4 WindData     : register(c4);
+#ifdef GRASS_POINT_LIGHT
+// UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] PointLights: the game's 1POINT grass (GRASS23x004-007.vso, grass by a lamp or fire)
+// includes this file: the same shader plus the lamp's attenuation coordinates, as the game's 1POINT VS writes them (there in
+// TEXCOORD1, which is shadowWorldPos here: so in TEXCOORD2, and GRASS23x001TMS/003TMS.pso read it there).
+float4 LightPosition : register(c3);   // xyz world position, w radius
+#endif
 float4 AlphaParam   : register(c5);
 float4 AmbientColor : register(c6);
 float4 AddlParams   : register(c7);
@@ -50,6 +56,9 @@ struct VS_OUTPUT {
     float4 shadowWorldPos : TEXCOORD1;   // vanilla leaves TEXCOORD1 unused on this pair
     float4 ambient        : TEXCOORD4;
     float4 sun            : TEXCOORD5;   // .w = distance fade
+#ifdef GRASS_POINT_LIGHT
+    float4 att            : TEXCOORD2;   // the lamp's AttMap coordinates (xy, z with w = 0.5)
+#endif
     float2 amount         : TEXCOORD6;   // UNOFFICIAL: x ambient amount, y sun amount (plain numbers, see below)
     float4 fog            : COLOR0;      // .w = fog amount
 };
@@ -90,7 +99,9 @@ VS_OUTPUT main(VS_INPUT IN) {
     // 0 (never written) = every tuft, the game's order. A dropped tuft is folded into one point outside the view (no pixels).
     [branch] if (GrassPairing.w > 0.5f && ((instDist > AlphaParam.z) == (GrassPairing.w < 1.5f))) {
         VS_OUTPUT gone = (VS_OUTPUT)0;
+#ifndef GRASS_POINT_LIGHT   // 1POINT variants: left at 0 (every corner on one point: no pixels either), no literal register
         gone.position = float4(2.0f, 2.0f, 0.5f, 1.0f);
+#endif
         return gone;
     }
 
@@ -99,8 +110,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     float lightScale = f.w * 0.75f + 0.25f;
 
     bool useAlt = (abs(orient.y) >= abs(orient.x)) && (abs(orient.z) >= abs(orient.x));
+#ifdef GRASS_POINT_LIGHT
+    // The same two vectors without the literal (-1, 0, 1) vector the lines below compile to (1POINT variants: one register short).
+    float3 perp = useAlt ? cross(float3(1.0f, 0.0f, 0.0f), orient) : cross(orient, float3(0.0f, 1.0f, 0.0f));
+#else
     float3 perp = useAlt ? float3(0.0f, -orient.z, orient.y)
                          : float3(-orient.z, 0.0f, orient.x);
+#endif
 
     float3 tangent  = normalize(perp);
     float3 binormal = cross(tangent, orient);
@@ -121,11 +137,13 @@ VS_OUTPUT main(VS_INPUT IN) {
     // flutters. c19.y (GrassPairing.y, written by GrassShaders::SetForDraw from SandstormEffect): the extra sway S, 0 with no
     // storm (the branch is not taken: the game's sway exactly). c19.z: the gust clock u (0..8 pi), gusts at u / 4, flutter at u.
     // No literal is added: this shader's free registers are full of them, and one more spills past c255 (shader refused).
+#ifndef GRASS_POINT_LIGHT   // 1POINT variants (PointLights): no sandstorm gusts, their literals would push the shader past c255
     [branch] if (GrassPairing.y > 0.0f) {
         float gust = 0.75f + 0.25f * sin(GrassPairing.z * 0.25f - dot(inst.xy, WindData.xy) * 0.0078125f);
         float flutter = sin(GrassPairing.z + (inst.x - inst.y) * 0.0078125f);
         swing = swing * (1.0f + GrassPairing.y) + 1.5f * GrassPairing.y * (0.75f * gust + 0.25f * flutter);
     }
+#endif
     float sway = swing * WindData.z * (IN.color.w * IN.color.w);
     pos.xy += sway * WindData.xy;
 
@@ -200,6 +218,11 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.uv = IN.uv;
 
     OUT.shadowWorldPos = float4(shadowWorldPos, SHADOW_VS_SENTINEL);
+#ifdef GRASS_POINT_LIGHT
+    OUT.att = float4((LightPosition.xyz - worldPos.xyz) / LightPosition.w * 0.5f + 0.5f, 0.5f);
+    // The game's own grass PS (no transparency multisampling, c19.x 0) reads them in TEXCOORD1, as from its own VS.
+    if (GrassPairing.x < 0.5f) OUT.shadowWorldPos = OUT.att;
+#endif
 
     return OUT;
 };

@@ -378,6 +378,13 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 		return ShaderProg;
 	}
 
+	// UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] PointLights (off by default): NVR's 1POINT grass shaders (GRASS23x004-007.vso,
+	// GRASS23x001TMS/003TMS.pso: grass by a lamp or fire) only when on; off, the game's own as before (startup setting).
+	if (!memcmp(Name, "GRASS23x00", 10) && (!strcmp(Name + 10, "4.vso") || !strcmp(Name + 10, "5.vso") || !strcmp(Name + 10, "6.vso") ||
+		!strcmp(Name + 10, "7.vso") || !strcmp(Name + 10, "1TMS.pso") || !strcmp(Name + 10, "3TMS.pso")) &&
+		!TheSettingManager->GetSettingI("Shaders.Grass.Main", "PointLights"))
+		return ShaderProg;
+
 	strcpy(ShaderPreprocessedPath, CacheDirectory);
 	strcat(ShaderPreprocessedPath, Name);
 	strcat(ShaderPreprocessedPath, ".hlsl");

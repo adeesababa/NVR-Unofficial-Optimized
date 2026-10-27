@@ -8,6 +8,15 @@
 #include "includes/PBRScale.hlsl"
 
 sampler2D DiffuseMap : register(s0);
+// UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] w: +1 ShadowFix (the sun shadow lookup takes the world up normal, see main),
+// +2 SkyLightScale (the sky light takes the tuft's light scale, as the game's ambient does).
+float4 TESR_GrassScale;
+#ifdef GRASS_POINT_LIGHT
+// UNOFFICIAL 2026-10-27 PointLights (GRASS23x001TMS/003TMS.pso include this file): the game's 1POINT grass PS adds one lamp,
+// 0.4 * PointLightColor * (1 - AttMap(xy) - AttMap(z)) on top of sun + ambient. Same registers as the game's.
+float4 PointLightColor : register(c2);
+sampler2D AttMap : register(s1);
+#endif
 
 struct PS_INPUT {
     float2 uv             : TEXCOORD0;
@@ -15,6 +24,9 @@ struct PS_INPUT {
     float3 ambient        : TEXCOORD4_centroid;
     float4 sun            : TEXCOORD5_centroid;   // .w = distance fade
     float4 fog            : COLOR0;               // .w = fog amount
+#ifdef GRASS_POINT_LIGHT
+    float4 att            : TEXCOORD2;   // NVR's 1POINT VS; the game's writes it in TEXCOORD1 (see main)
+#endif
     float2 amount         : TEXCOORD6_centroid;   // UNOFFICIAL: x ambient amount, y sun amount (plain numbers: not decoded)
 };
 
@@ -31,16 +43,32 @@ PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
 #if FORWARD_SHADOWS
+    // UNOFFICIAL 2026-10-27 ShadowFix (tester: zebra stripes on each tuft, shaded as if the sun came from the other side): the
+    // derivative normal is turned to face the CAMERA, and a grass card is two-sided, so seen with the sun behind it the normal
+    // points away from the sun and the normal offset pushes the lookup into the tuft's own shadow (mirrored), and the per-triangle
+    // derivatives of thin, swaying blades flip from blade to blade (stripes). Grass has no surface of its own to bias from: take the
+    // ground's up normal, the same for the whole tuft, as the ground it stands on. Off: as before.
+    float3 lookupNormal = fmod(TESR_GrassScale.w, 2.0f) > 0.5f ? float3(0.0f, 0.0f, 1.0f) : shadowNormal;
     // ddx/ddy must stay at top level, outside dynamic flow control.
     sunAmount *= SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
-         ? GetSunShadow(IN.shadowWorldPos.xyz, shadowNormal)
+         ? GetSunShadow(IN.shadowWorldPos.xyz, lookupNormal)
          : 1.0f;
 #endif
 
     // Same split getSunLighting/getAmbientLighting apply on the object path.
     // UNOFFICIAL linear lighting (2026-10-14): only the colours are decoded; the amounts multiply after (see the VS).
-    float3 lighting = PBRLight(IN.sun.xyz) * sunAmount + PBRAmbient(IN.ambient.xyz) * IN.amount.x + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
+    // UNOFFICIAL 2026-10-27 SkyLightScale (tester: grass in shadow a little too bright): the game darkens each tuft's ambient by its
+    // own light scale (0.25-1, IN.amount.x, packed per tuft), but the sky light NVR adds took the full amount. In shadow the sky is
+    // most of what is left, so shaded tufts came out brighter than the game's own balance. Off: the full sky light, as before.
+    float skyScale = TESR_GrassScale.w > 1.5f ? IN.amount.x : 1.0f;
+    float3 lighting = PBRLight(IN.sun.xyz) * sunAmount + PBRAmbient(IN.ambient.xyz) * IN.amount.x + SkyAmbient(shadowNormal, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? skyScale : 0.0f);
 
+#ifdef GRASS_POINT_LIGHT
+    // The game's own 1POINT VS (a fallback) hands the coordinates over in TEXCOORD1, with w 0.5, not the shadow sentinel.
+    float4 att = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? IN.att : IN.shadowWorldPos;
+    float lampAtt = saturate(1.0f - tex2D(AttMap, att.xy).x - tex2D(AttMap, att.zw).x);
+    lighting += PBRLight(0.4f * PointLightColor.rgb) * lampAtt;
+#endif
     float4 albedo = tex2D(DiffuseMap, IN.uv.xy);
     float3 litColor = LinEncode(lighting * LinColor(albedo.rgb));	// UNOFFICIAL linear lighting: decoded albedo, encoded result (PBRScale.hlsl decodes the light)
 
