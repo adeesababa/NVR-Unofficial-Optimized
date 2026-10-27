@@ -12,7 +12,11 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                SM6 builds of NVR's own passes (`tools/nvr-sm6`, docs/next/FORK-1026-SM6.md). 0014 (deep/fork-debug-capture,
                "1.5-debug"): dxvk.conf `nvr.debugEnv = "NAME=value|..."` sets environment variables (DXVK_DEBUG, Vulkan
                loader/layer settings) before DXVK and the loader read them; only `src/dxvk/dxvk_instance.cpp` changes.
-- `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
+               0017 (deep/fork-async, "1.5-warm"): dxvk.conf `nvr.pipelineLog = True` logs every pipeline compiled or
+               linked at first use on the recording thread (a wait the frame cannot hide), with time and shader names;
+               measurement only, off by default; only `src/dxvk/dxvk_{options,graphics,compute}.*` + new
+               `dxvk_nvr_pipelog.h` change. docs/next/FORK-1027-ASYNC-WARMUP.md.
+- `debug/`     dxvk.conf templates for debugging (`dxvk.conf.pipelinelog`: the 0017 measurement): `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
                `dxvk.conf.renderdoc-slot` (RenderDoc loaded as a Vulkan layer in a slot game, for the 'capture' shot) and
                `dxvk.conf.validation` (Khronos validation + synchronization validation). docs/next/FORK-DEBUG-CAPTURE.md.
 - `build.sh`   clone + patch + build the 32-bit d3d9.dll (Linux or WSL, MinGW-w64). The GitHub workflow
