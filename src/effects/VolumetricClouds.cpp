@@ -38,6 +38,8 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.ShadowRange = std::clamp(TheSettingManager->GetSettingF(section, "ShadowRange"), 4000.0f, 100000.0f);
 	Settings.WaterReflections = std::clamp(TheSettingManager->GetSettingF(section, "WaterReflections"), 0.0f, 2.0f);
 	Settings.ShadowDebug = TheSettingManager->GetSettingI(section, "ShadowDebug") != 0;
+	Settings.ShadowPrefilter = TheSettingManager->GetSettingI(section, "ShadowPrefilter") != 0;	// UNOFFICIAL 2026-10-27
+	Settings.ShadowSoftness = std::clamp(TheSettingManager->GetSettingF(section, "ShadowSoftness"), 0.5f, 4.0f);
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
@@ -488,7 +490,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	const float towering = Settings.Towering * towerFade * towerFade * (3.0f - 2.0f * towerFade);	// smoothstep, as the shader's Cumulus
 	const float towerScale = 1.0f + (Settings.TowerHeight - 1.0f) * towering;
 	const int marchSteps = (std::min)(64, (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f))));
-	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, 0.0f);
+	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, Settings.ShadowPrefilter ? Settings.ShadowSoftness : 0.0f);
 	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness * towerScale, coverage, Settings.Density);
 	Constants.Noise = D3DXVECTOR4(Settings.ShapeSize, Settings.DetailSize, Settings.Erosion, Settings.WeatherSize);
 	Constants.Light = D3DXVECTOR4(Settings.SunStrength, Settings.AmbientStrength, Settings.Forward, rain);
@@ -555,6 +557,14 @@ static bool TowersOn(VolumetricCloudsEffect* clouds) {
 	static EffectRecord::CachedHandle last;
 	return clouds->Constants.Tower.y > 0.0f && clouds->Effect && clouds->TechniqueHandle(last, "ShadowMapTowers") != NULL &&
 		clouds->Effect->GetTechnique(10) == clouds->TechniqueHandle(last, "ShadowMapTowers");
+}
+
+// UNOFFICIAL 2026-10-27 ShadowPrefilter: the shadow map pass takes technique 11 (ShadowMapPrefilter: the smooth shape only, four
+// taps per texel, no speckles on faces and ground) while it is on and the effect file has it. Off, technique 3 or 9 as before.
+static bool PrefilterOn(VolumetricCloudsEffect* clouds) {
+	static EffectRecord::CachedHandle last;
+	return clouds->Constants.Tower.w > 0.0f && clouds->Effect && clouds->TechniqueHandle(last, "ShadowMapPrefilter") != NULL &&
+		clouds->Effect->GetTechnique(11) == clouds->TechniqueHandle(last, "ShadowMapPrefilter");
 }
 
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
@@ -731,7 +741,7 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			Device->SetViewport(&viewport);
 			Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, 5 * sizeof(float));
 			Device->SetFVF(FrameFVF);
-			Effect->SetTechnique(Effect->GetTechnique(TowersOn(this) ? 9 : 3));
+			Effect->SetTechnique(Effect->GetTechnique(PrefilterOn(this) ? 11 : TowersOn(this) ? 9 : 3));
 			SetCT();
 			UINT passes = 0;
 			if (SUCCEEDED(Effect->Begin(&passes, 0))) {

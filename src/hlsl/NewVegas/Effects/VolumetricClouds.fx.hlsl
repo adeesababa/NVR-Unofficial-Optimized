@@ -527,6 +527,29 @@ float4 ShadowMapPS(VSOUT IN, float2 vpos : VPOS, uniform bool towers) : COLOR0 {
 	return float4(exp(-Extinction * opticalDepth), 0.0, 0.0, 1.0);
 }
 
+// ---- 11: ShadowMapPrefilter ----
+// UNOFFICIAL 2026-10-27 ShadowPrefilter (TESR_CloudsTower.w: ShadowSoftness in texels, 0 off): one point sample per ~120 m
+// texel of the full shape (with its fine edge detail) aliases into speckles on faces and ground. Instead: the smooth shape
+// only (cheap, no detail), averaged over four taps spread round the texel (a rotated grid), so the map is low-pass.
+// Technique 11, only with ShadowPrefilter on (a branch in ShadowMapPS ran out of ps_3_0's bool registers); off = technique 3 as before.
+float4 ShadowMapPrefilterPS(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+	float2 at = ShadowCentre() + ((vpos + 0.5) / ShadowMapSize - 0.5) * ShadowRange;
+	float3 light = ShadowLight();
+	float stepLength = Thickness / light.z / 8.0;
+	float3 wind = float3(TESR_CloudsWind.xy, 0.0);
+	float opticalDepth = 0.0;
+	float spread = TESR_CloudsTower.w * ShadowRange / ShadowMapSize;
+	[loop] for (int t = 0; t < 4; t++) {
+		float2 o = t == 0 ? float2(-0.125, -0.375) : t == 1 ? float2(0.375, -0.125) : t == 2 ? float2(-0.375, 0.125) : float2(0.125, 0.375);
+		float2 tap = at + o * spread;
+		[loop] for (float i = 0.5; i < 8.0; i += 1.0) {
+			float3 p = float3(tap, Base) + light * (i * stepLength);
+			opticalDepth += CloudDensity(p + wind, (p.z - Base) / Thickness, 1.0, true) * stepLength;   // the smooth shape (no storms: the map stays soft)
+		}
+	}
+	return float4(exp(-Extinction * opticalDepth * 0.25), 0.0, 0.0, 1.0);
+}
+
 // How much sunlight the clouds let through to a world point (metres): the shadow map where the light from there meets
 // the cloud base, 1 outside the map (faded in over its last tenth).
 float CloudShadowAt(float3 world) {
@@ -727,6 +750,14 @@ technique ShadowMapTowers {
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ShadowMapPS(true);
+		Texture[10] = <NoTexture>;   // writes the shadow map
+	}
+}
+
+technique ShadowMapPrefilter {
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 ShadowMapPrefilterPS();
 		Texture[10] = <NoTexture>;   // writes the shadow map
 	}
 }
