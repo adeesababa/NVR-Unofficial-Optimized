@@ -737,6 +737,7 @@ bool AmbientLightEffect::ExtOn() const {
 bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport) {
 	if (!ExtOn() || Shader >= ExtShaderCount || !TargetCount || TargetCount > NVR_EXT_MAX_TARGETS || Viewport.X || Viewport.Y || !Viewport.Width || !Viewport.Height) return false;
 	const ALExtShader& info = ALExtShaders[Shader];
+	if (DxvkCompute::KeptOnD3D9(info.Spv)) return false;	// UNOFFICIAL 2026-10-26 test: NvrDxvkKeepD3D9 can name one pass (e.g. AmbientLightAccumulate)
 	ExtPass& pass = extPasses[Shader][TargetCount - 1];
 	if (!pass.Tried) {
 		pass.Tried = true;

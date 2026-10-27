@@ -811,7 +811,15 @@ namespace {
 		D3DXVECTOR4	Vectors[_countof(FogExtVectorNames)];
 		D3DXVECTOR4	SkyIrradiance[9];		// TESR_SkyIrradiance
 		D3DXVECTOR4	SkyIrradianceGame[9];	// TESR_SkyIrradianceGame
+		// UNOFFICIAL 2026-10-26: these colours linearized once a draw (what the D3D9 effect's preshader takes off the pixels; the GLSL
+		// linearized them on every pixel: most of the Vulkan fog estimate's extra 0.04 ms, desert). Order: FogExtLinearNames.
+		D3DXVECTOR4	Linear[9];
 	};
+	const char* const FogExtLinearNames[] = { "TESR_FogColor", "TESR_SkyColor", "TESR_SkyLowColor", "TESR_HorizonColor", "TESR_SunDiskColor",
+		"TESR_SunsetColor", "TESR_SunAmbient", "TESR_VolumetricFogAerialTint", "TESR_SunColor" };
+
+	// Common.glsl linearize (rgb; alpha as it is).
+	float FogLinear(float c) { return c <= 0.04045f ? c / 12.92f : powf(fabsf((c + 0.055f) / 1.055f), 2.4f); }
 
 	bool FogExtCopy(void* to, size_t bytes, const char* name) {
 		auto found = TheShaderManager->ConstantsTable.find(name);
@@ -895,6 +903,11 @@ bool VolumetricFogEffect::ExtSetup(IDirect3DBaseTexture9* (&inputs)[ExtInputCoun
 	for (UINT i = 0; i < _countof(FogExtVectorNames); i++) registered = FogExtCopy(&constants.Vectors[i], sizeof(D3DXVECTOR4), FogExtVectorNames[i]) && registered;
 	registered = FogExtCopy(constants.SkyIrradiance, sizeof(constants.SkyIrradiance), "TESR_SkyIrradiance") && registered;
 	registered = FogExtCopy(constants.SkyIrradianceGame, sizeof(constants.SkyIrradianceGame), "TESR_SkyIrradianceGame") && registered;
+	for (UINT i = 0; i < _countof(FogExtLinearNames); i++) {
+		D3DXVECTOR4& c = constants.Linear[i];
+		registered = FogExtCopy(&c, sizeof(D3DXVECTOR4), FogExtLinearNames[i]) && registered;
+		c = D3DXVECTOR4(FogLinear(c.x), FogLinear(c.y), FogLinear(c.z), c.w);
+	}
 	if (!registered) return false;
 	const D3DXVECTOR4& physSky = constants.Vectors[36];	// TESR_PhysSky
 	if (physical && !skyView && physSky.x > 0.0f && TheShaderManager->GameState.isExterior) return false;
