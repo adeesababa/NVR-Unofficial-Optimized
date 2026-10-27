@@ -72,9 +72,16 @@ namespace {
 	}
 
 	// The D3D9 composite (ps_3_0 with pre-transformed vertices, as PassSums' fold-in): FSR's output into the world's colour target and
-	// the low-resolution depth, nearest-upsampled, into its depth buffer. c0 xy: the render size as a fraction of the textures' size
+	// the low-resolution depth, upsampled, into its depth buffer. c0 xy: the render size as a fraction of the textures' size
 	// (where the low-resolution picture ends in uv), z: [Shaders.TAA.FSR] DebugView, w: 1 = FSR's output in s0, 0 = the fallback
-	// (the low-resolution picture stretched bilinearly, for a frame FSR could not do). c1 xy: the screen size.
+	// (the low-resolution picture stretched bilinearly, for a frame FSR could not do). c1 xy: the screen size. c2 xy: this frame's
+	// jitter as FSR takes it (render pixels; the low-resolution sample at pixel p shows the unjittered point p - jitter), zw: near, far.
+	// UNOFFICIAL 2026-10-27 (user: "fsr seems a bit bugged with ambient light enabled - leaves lines on terrain and darkens it a bit"):
+	// the depth was the nearest low-resolution sample, jittered: on slopes a staircase of render-pixel steps that moved every frame, and
+	// AmbientLight (and the normals made from depth) shaded every step as a small crease. Now the depth is read at the unjittered point
+	// (as FSR's picture is) and blended between the four nearest samples where they lie on one surface (within 2 % in distance, or on one
+	// plane within 10 %: device depth is linear across a plane on screen); at an object's edge the nearest sample, as before. The alpha
+	// (a material mark some NVR shaders read) is the nearest unjittered sample.
 	const char* const CompositeSource =
 		"sampler2D FsrS : register(s0);\n"		// FSR's output (or the low-resolution picture, fallback)
 		"sampler2D LowS : register(s1);\n"		// the low-resolution picture, POINT
@@ -83,12 +90,27 @@ namespace {
 		"sampler2D LowLinearS : register(s4);\n"	// the low-resolution picture, LINEAR
 		"float4 Scale : register(c0);\n"
 		"float4 Screen : register(c1);\n"
+		"float4 Jitter : register(c2);\n"
 		"struct PSOut { float4 color : COLOR0; float depth : DEPTH; };\n"
+		"float ViewZ(float d) { return Jitter.z * Jitter.w / (Jitter.w - d * (Jitter.w - Jitter.z)); }\n"
 		"PSOut main(float2 uv : TEXCOORD0) {\n"
 		"  PSOut o;\n"
-		"  float2 lowUv = uv * Scale.xy;\n"		// the nearest low-resolution pixel (point sampling at the mapped position)
-		"  float4 low = tex2D(LowS, lowUv);\n"
-		"  o.depth = tex2D(DepthS, lowUv).x;\n"
+		"  float2 lowUv = uv * Scale.xy;\n"		// the low-resolution picture at the mapped position (the stretched fallback, debug views)
+		"  float2 inv = 1.0 / Screen.xy;\n"
+		"  float2 last = Scale.xy * Screen.xy - 1.0;\n"	// the last low-resolution pixel
+		"  float2 t = uv * Scale.xy * Screen.xy + Jitter.xy - 0.5;\n"	// in low-resolution pixel centres, where this pixel's point was sampled
+		"  float2 i0 = floor(t);\n"
+		"  float2 f = t - i0;\n"
+		"  float2 a = clamp(i0, 0.0, last), b = clamp(i0 + 1.0, 0.0, last);\n"
+		"  float d00 = tex2D(DepthS, (a + 0.5) * inv).x, d10 = tex2D(DepthS, (float2(b.x, a.y) + 0.5) * inv).x;\n"
+		"  float d01 = tex2D(DepthS, (float2(a.x, b.y) + 0.5) * inv).x, d11 = tex2D(DepthS, (b + 0.5) * inv).x;\n"
+		"  float z00 = ViewZ(d00), z10 = ViewZ(d10), z01 = ViewZ(d01), z11 = ViewZ(d11);\n"
+		"  float zMin = min(min(z00, z10), min(z01, z11)), spread = (max(max(z00, z10), max(z01, z11)) - zMin) / max(zMin, 1e-3);\n"
+		"  float bend = abs(d00 - d10 - d01 + d11), slope = max(max(abs(d10 - d00), abs(d01 - d00)), 1e-7);\n"
+		"  bool oneSurface = spread < 0.02 || (spread < 0.1 && bend <= 0.25 * slope);\n"
+		"  float2 n = float2(f.x < 0.5 ? a.x : b.x, f.y < 0.5 ? a.y : b.y);\n"	// the nearest sample
+		"  float4 low = tex2D(LowS, (n + 0.5) * inv);\n"
+		"  o.depth = oneSurface ? lerp(lerp(d00, d10, f.x), lerp(d01, d11, f.x), f.y) : tex2D(DepthS, (n + 0.5) * inv).x;\n"
 		"  float3 rgb = Scale.w > 0.5 ? tex2D(FsrS, uv).rgb : tex2D(LowLinearS, lowUv).rgb;\n"
 		"  if (Scale.z > 0.5 && Scale.z < 1.5) rgb = (uv.x < Scale.x && uv.y < Scale.y) ? tex2D(LowS, uv).rgb : float3(0.0, 0.0, 0.0);\n"
 		"  else if (Scale.z > 1.5 && Scale.z < 2.5) rgb = low.rgb;\n"
@@ -129,8 +151,8 @@ namespace {
 			device->SetSamplerState(s, D3DSAMP_MIPMAPLODBIAS, 0);
 			device->SetSamplerState(s, D3DSAMP_MAXMIPLEVEL, 0);
 		}
-		const float zero[8] = {};
-		device->SetPixelShaderConstantF(0, constants ? constants : zero, 2);
+		const float zero[12] = {};
+		device->SetPixelShaderConstantF(0, constants ? constants : zero, 3);
 	}
 
 	struct CompositeVertex { float x, y, z, rhw, u, v; };
@@ -325,8 +347,9 @@ bool TAAEffect::UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fs
 
 	IDirect3DBaseTexture9* textures[CompositeSamplers] = { fsrOutput ? (IDirect3DBaseTexture9*)fsrOutput : (IDirect3DBaseTexture9*)Up.Input.Texture,
 		Up.Input.Texture, TheTextureManager->DepthTexture, Up.Motion.Texture, Up.Input.Texture };
-	const float constants[8] = { (float)Up.RenderWidth / (float)Up.Width, (float)Up.RenderHeight / (float)Up.Height, (float)FSRSettings.DebugView,
-		fsrOutput ? 1.0f : 0.0f, (float)Up.Width, (float)Up.Height, 0.0f, 0.0f };
+	const float constants[12] = { (float)Up.RenderWidth / (float)Up.Width, (float)Up.RenderHeight / (float)Up.Height, (float)FSRSettings.DebugView,
+		fsrOutput ? 1.0f : 0.0f, (float)Up.Width, (float)Up.Height, 0.0f, 0.0f,
+		Up.Jittered ? -Up.JitterX : 0.0f, Up.Jittered ? Up.JitterY : 0.0f, TheRenderManager->CameraData.x, TheRenderManager->CameraData.y };
 	SetCompositeStates(Device, Up.CompositePS, textures, constants);
 	const float w = (float)Up.Width - 0.5f, h = (float)Up.Height - 0.5f;
 	const CompositeVertex quad[4] = { { -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f }, { w, -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
