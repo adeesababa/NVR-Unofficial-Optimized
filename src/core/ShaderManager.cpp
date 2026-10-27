@@ -141,6 +141,9 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_ViewSpaceLightDir", &TheShaderManager->ShaderConst.ViewSpaceLightDir);
 	TheShaderManager->RegisterConstant("TESR_ScreenSpaceLightDir", &TheShaderManager->ShaderConst.ScreenSpaceLightDir);
 	TheShaderManager->RegisterConstant("TESR_ReciprocalResolution", &TheShaderManager->ShaderConst.ReciprocalResolution);
+	// UNOFFICIAL 2026-10-27 RenderScale (effects\TAAUpscale.cpp): xy = the internal resolution / the screen's while the world is drawn
+	// smaller, else 1 (always registered: an unregistered TESR_ constant would read 0). The water shaders' refraction lookup uses it.
+	TheShaderManager->RegisterConstant("TESR_RenderScale", &TAAEffect::RenderScaleConstant);
 	TheShaderManager->RegisterConstant("TESR_CameraForward", &TheRenderManager->CameraForward);
 	TheShaderManager->RegisterConstant("TESR_DepthConstants", &TheRenderManager->DepthConstants);
 	TheShaderManager->RegisterConstant("TESR_CameraData", &TheRenderManager->CameraData);

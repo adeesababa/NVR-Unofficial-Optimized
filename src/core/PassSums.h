@@ -27,6 +27,8 @@ namespace PassSums {
 	inline Kind Active = None;						// the run being redirected now
 	inline int Runs[3] = { 0, 0, 0 };				// runs started this frame per kind (at most 2 each: a third keeps the game's passes)
 	inline IDirect3DSurface9* Scene = nullptr;		// the render target the run replaced (the game's scene buffer)
+	inline D3DVIEWPORT9 SceneViewport = {};			// UNOFFICIAL 2026-10-27 (RenderScale): the scene's viewport as the run began
+	inline bool SceneViewportSaved = false;
 	inline IDirect3DTexture9* AccTex = nullptr;   inline IDirect3DSurface9* Acc = nullptr;
 	inline IDirect3DSurface9* AccMS = nullptr;		// the multisampled buffer drawn into when the world target is multisampled
 	inline IDirect3DTexture9* CopyTex = nullptr;  inline IDirect3DSurface9* Copy = nullptr;
@@ -158,7 +160,11 @@ namespace PassSums {
 		static GpuTimer timer("  Pass sums (clear)");
 		GpuProfileScope gpu(timer, device);
 		Scene = target;	// keeps the reference until End
+		// UNOFFICIAL 2026-10-27 (RenderScale, effects\TAAUpscale.cpp): SetRenderTarget puts the viewport to the whole target; the run's
+		// passes keep the scene's (the top-left render size while the world is drawn smaller; the whole target otherwise, as before).
+		SceneViewportSaved = SUCCEEDED(device->GetViewport(&SceneViewport));
 		device->SetRenderTarget(0, AccMS ? AccMS : Acc);
+		if (SceneViewportSaved) device->SetViewport(&SceneViewport);
 		DWORD scissor = FALSE;
 		device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissor);
 		if (scissor) device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
@@ -255,6 +261,7 @@ namespace PassSums {
 		static GpuTimer timer("  Pass sums (fold in)");
 		GpuProfileScope gpu(timer, device);
 		device->SetRenderTarget(0, Scene);
+		if (SceneViewportSaved) device->SetViewport(&SceneViewport);	// UNOFFICIAL 2026-10-27 (RenderScale): the scene's viewport, as in Begin
 		IDirect3DStateBlock9* saved = nullptr;
 		if (SUCCEEDED(device->BeginStateBlock())) {	// records only the states the fold-in sets (cheaper than capturing all)
 			RecordFoldStates(device);

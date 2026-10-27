@@ -62,6 +62,11 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.Enabled = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Enabled") != 0;
 	FSRSettings.Sharpness = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "Sharpness"), 0.0f, 1.0f);
 	FSRSettings.WeaponReactive = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "WeaponReactive"), 0.0f, 1.0f);
+	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp). A missing key reads as 0, which means off (1) here, not "nothing".
+	const float scale = TheSettingManager->GetSettingF("Shaders.TAA.FSR", "RenderScale");
+	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.5f, 1.0f) : 1.0f;
+	FSRSettings.Upscaler = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Upscaler"), 0, 1);
+	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
 }
 
 // Texture mip LOD bias on every sampler while the jittered world draws. Averaging jittered frames
@@ -248,9 +253,43 @@ bool TAAEffect::WillResolveThisFrame() {
 // that ordering is ever violated). The first-person weapon has its own camera and stays unjittered,
 // which matches TAA giving it zero motion. Everything after End -- image space, every NVR effect,
 // and TAA's own reprojection -- sees the unjittered camera, exactly as without jitter.
-void TAAEffect::BeginJitter() {
+void TAAEffect::BeginJitter(bool firstWorld) {
 	EndJitter(); // never stack two shifts, whatever happened last frame
 	frameJittered = false;
+
+	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp): the world scene at the lower internal resolution. The jitter is then FSR
+	// 2's own (Halton, ffxFsr2GetJitterPhaseCount steps, in render pixels) and the mip bias adds log2 of the scale (AMD's advice:
+	// textures at the screen's sharpness, not the render size's). Off: the code below, exactly as before.
+	if (UpscaleBegin(firstWorld)) {
+		NiCamera* camera = Up.Camera;
+		Up.Jittered = false;
+		if (Settings.Jitter && camera) {
+			const int phases = (std::max)(1, (int)Up.JitterPhases);
+			const int index = (Up.JitterIndex % phases) + 1;
+			const float jitterX = Halton(index, 2) - 0.5f;
+			const float jitterY = Halton(index, 3) - 0.5f;
+			// The frustum spans the render viewport: one render pixel is (Right - Left) / RenderWidth.
+			frustumShiftX = jitterX * (camera->Frustum.Right - camera->Frustum.Left) / (float)Up.RenderWidth;
+			frustumShiftY = jitterY * (camera->Frustum.Top - camera->Frustum.Bottom) / (float)Up.RenderHeight;
+			camera->Frustum.Left += frustumShiftX;
+			camera->Frustum.Right += frustumShiftX;
+			camera->Frustum.Top += frustumShiftY;
+			camera->Frustum.Bottom += frustumShiftY;
+			jitterCamera = camera;
+			jitterActive = true;
+			Up.JitterX = jitterX;
+			Up.JitterY = jitterY;
+			Up.Jittered = true;
+			TheRenderManager->SetupSceneCamera();
+		}
+		const float scale = (float)Up.RenderWidth / (float)(std::max)(Up.Width, 1u);
+		const float bias = (std::max)(-3.0f, log2f(scale) + (Settings.Jitter ? Settings.MipBias : 0.0f));
+		if (bias < 0.0f) {
+			SetMipBias(bias);
+			mipBiasActive = true;
+		}
+		return;
+	}
 
 	if (!WillResolveThisFrame()) return;
 	NiCamera* camera = WorldSceneGraph ? WorldSceneGraph->camera : nullptr;
@@ -288,6 +327,7 @@ void TAAEffect::EndJitter() {
 		SetMipBias(0.0f);
 		mipBiasActive = false;
 	}
+	UpscaleRestorePort();	// UNOFFICIAL 2026-10-27 RenderScale: the world camera's viewport port back to the whole screen
 	if (!jitterActive) return;
 
 	if (jitterCamera) {
@@ -309,6 +349,18 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 		// Whatever is in the history now will be stale, or somewhere else entirely, by the time
 		// this runs again.
 		historyValid = false;
+		renderTime = 0.0f;
+		return;
+	}
+
+	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp): this frame's world was drawn at the lower internal resolution and
+	// already upscaled (and anti-aliased) by FSR 2 before NVR's effects; there is nothing left to resolve here. TAA's own history
+	// (and FSR's at native resolution) starts again whenever a frame is not upscaled.
+	if (Up.Upscaled) {
+		Up.Upscaled = false;
+		historyValid = false;
+		lastPathFSR = false;
+		frameJittered = false;
 		renderTime = 0.0f;
 		return;
 	}

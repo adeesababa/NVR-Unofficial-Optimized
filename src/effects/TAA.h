@@ -38,8 +38,22 @@ public:
 		bool	Enabled;		// FSR 2 replaces TAA's resolve (TAA itself must be on)
 		float	Sharpness;		// [0-1] FSR's RCAS sharpening of the output, 0 off
 		float	WeaponReactive;	// [0-1] FSR reactive mask on the first-person weapon (it is put back as rendered either way)
+		// UNOFFICIAL 2026-10-27 RenderScale (effects/TAAUpscale.cpp): below 1, the world scene is drawn at this fraction of the
+		// screen's width and height and FSR 2 upscales it to the screen before NVR's effects, instead of resolving at native
+		// resolution after tonemapping. 1 (default) = off: native, exactly as before.
+		float	RenderScale;	// [0.5-1]
+		int		Upscaler;		// 0 FSR 2, 1 DLSS (not built yet: FSR 2 runs, logged once; core/Upscaler.h)
+		int		DebugView;		// RenderScale: 0 off, 1 the low-resolution world as drawn (its corner), 2 it stretched without FSR, 3 FSR's motion input
 	};
 	FSRSettingsStruct	FSRSettings;
+
+	// UNOFFICIAL 2026-10-27 RenderScale: [Shaders.TAA.FSR] RenderScale below 1 (effects/TAAUpscale.cpp). Read by code that checks
+	// the viewport of world draws (lamp scissor, forward lamp shadows, the scope fix): while the world scene is drawn at the lower
+	// internal resolution its viewport is the top-left RenderWidth x RenderHeight of the screen, which these accept like the full one.
+	static bool			IsWorldViewport(const D3DVIEWPORT9& port);
+	static bool			UpscaledThisFrame();		// this frame's world was drawn at the lower resolution and upscaled (TAA's resolve skips)
+	static void			NoteWorldDraw();			// RenderPassStandard/SkinnedHook, world passes: counts which viewport they drew with (a check)
+	static D3DXVECTOR4	RenderScaleConstant;		// TESR_RenderScale: xy = render size / screen size while the low-resolution world draws, else 1
 
 	struct TAAStruct {
 		D3DXVECTOR4	Data;				// x: history weight, y: clip gamma, z: history valid (0/1), w: debug view (0 = off)
@@ -69,9 +83,16 @@ public:
 	// Bracket the world scene render (RenderWorldSceneGraphHook) with these. Begin shifts the
 	// world camera's frustum by this frame's sub-pixel offset; End puts it back. Both are no-ops
 	// unless TAA will actually resolve this frame, and End is safe to call when Begin did nothing.
-	void	BeginJitter();
+	// UNOFFICIAL 2026-10-27: firstWorld = the frame's first world scene (RenderScale only scales that one).
+	void	BeginJitter(bool firstWorld = true);
 	void	EndJitter();
 	bool	IsJitterActive() const { return jitterActive; }
+
+	// UNOFFICIAL 2026-10-27 RenderScale (effects/TAAUpscale.cpp): right after the world scene (RenderWorldSceneGraphHook, after
+	// EndJitter): when this world scene was drawn at the lower internal resolution, FSR 2 upscales it into the world's own target
+	// (colour, and the depth buffer nearest-upsampled), so everything after (the game's refraction, the first-person weapon, the
+	// image space and every NVR effect) sees a full-resolution picture. A no-op otherwise.
+	void	UpscaleWorld();
 
 private:
 	bool		historyValid = false;
@@ -97,7 +118,7 @@ private:
 
 	void	SetMipBias(float bias);
 
-	// --- FSR 2 (effects/TAAFSR.cpp) ---
+	// --- FSR 2 at native resolution (effects/TAAFSR.cpp; AMD's passes are core/Upscaler.cpp's since 2026-10-27) ---
 	float		frameJitterX = 0.0f;	// this frame's jitter (TAA's pixel offsets, as BeginJitter applied it)
 	float		frameJitterY = 0.0f;
 	bool		frameJittered = false;
@@ -106,25 +127,69 @@ private:
 	bool		FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, bool reset);
 	bool		FSREnsureResources();
 	void		FSRReleaseResources();
-	bool		FSRDispatch(int pipeline, const NVR_EXT_RESOURCE_BINDING* bindings, UINT count, const void* push, UINT pushSize, UINT groupsX, UINT groupsY);
+	bool		FSRDispatchPrep(const NVR_EXT_RESOURCE_BINDING* bindings, UINT count, const void* push, UINT pushSize, UINT groupsX, UINT groupsY);
 	struct FSRTexture { IDirect3DTexture9* Texture = nullptr; IDirect3DSurface9* Surface = nullptr; };
-	enum { FSRPrep, FSRLumaMip, FSRReconstruct, FSRDepthClip, FSRLock, FSRAccumulate, FSRAccumulateSharpen, FSRRCAS, FSRPipelineCount };
-	ID3D9NvrExtPipeline*	fsrPipelines[FSRPipelineCount] = {};
+	ID3D9NvrExtPipeline*	fsrPrep = nullptr;
 	ExtPass			fsrComposite;
 	ExtUniformBuffer	fsrPrepUniforms;
-	ExtUniformBuffer	fsrUniforms;
-	ID3D9NvrExtBuffer*	fsrReconstructedDepth = nullptr;	// one uint per pixel (D3D9 has no 32-bit uint render target)
-	FSRTexture	fsrMotion, fsrDepth, fsrLumaMip, fsrDilatedMotion[2], fsrDilatedDepth, fsrLockLuma, fsrNewLocks, fsrPrepared,
-				fsrLumaHistory[2], fsrReactiveMasks, fsrUpscaled[2], fsrLockStatus[2], fsrOutput;
+	FSRTexture	fsrMotion, fsrDepth;
 	int			fsrWidth = 0;
 	int			fsrHeight = 0;
 	bool		fsrTried = false;		// pipelines created (or failed) once
 	bool		fsrFailed = false;		// FSR is off for the session (logged)
 	bool		fsrMissingLogged = false;
-	int			fsrParity = 0;			// which of the ping-pong resources is this frame's history (AMD's isOddFrame)
-	int			fsrFrameIndex = 0;
 	LARGE_INTEGER	fsrLastTime = {};
 	UInt32		fsrFrames = 0;
+
+	// --- RenderScale: the world at a lower internal resolution, upscaled by FSR 2 (effects/TAAUpscale.cpp) ---
+	struct UpscaleStruct {
+		bool		Active = false;			// this frame's world scene is being drawn at the lower resolution (BeginJitter .. UpscaleWorld)
+		bool		Upscaled = false;		// UpscaleWorld put the upscaled picture into the frame (TAA's resolve then skips this frame)
+		bool		PortSet = false;		// the world camera's viewport port is the render size (EndJitter puts it back)
+		NiCamera*	Camera = nullptr;
+		NiViewport	SavedPort = {};
+		UINT		Width = 0, Height = 0;				// the screen (= the world's targets)
+		UINT		RenderWidth = 0, RenderHeight = 0;	// this frame's internal resolution
+		IDirect3DSurface9*	Target = nullptr;		// the world's colour target and depth buffer (held from BeginJitter to UpscaleWorld)
+		IDirect3DSurface9*	DepthStencil = nullptr;
+		D3DFORMAT	TargetFormat = D3DFMT_UNKNOWN;
+		bool		Hdr = false;			// the world's target is a float (HDR) target: the FSR passes that care run their HDR build
+		int			JitterIndex = 0;
+		float		JitterPhases = 8.0f;
+		float		JitterX = 0.0f, JitterY = 0.0f;	// this frame's offset in render pixels (as BeginJitter applied it)
+		bool		Jittered = false;
+		bool		HistoryValid = false;	// last world scene was upscaled too, with the same render size
+		UINT		LastRenderWidth = 0, LastRenderHeight = 0;
+		D3DXMATRIX	PrevView;				// the camera of the last upscaled frame (motion vectors)
+		D3DXVECTOR4	PrevProjection = D3DXVECTOR4(0, 0, 0, 0);
+		D3DXVECTOR4	PrevCameraPosition = D3DXVECTOR4(0, 0, 0, 0);
+		LARGE_INTEGER	LastTime = {};
+		// NVR's inputs (the screen's size; the render size used in their top-left)
+		FSRTexture	Input, Motion, Depth;
+		D3DFORMAT	InputFormat = D3DFMT_UNKNOWN;
+		ID3D9NvrExtPipeline*	Prep = nullptr;
+		bool		PrepTried = false;
+		ExtUniformBuffer	PrepUniforms;
+		IDirect3DPixelShader9*	CompositePS = nullptr;	// D3D9: FSR's output + the depth buffer back into the world's targets
+		IDirect3DStateBlock9*	CompositeStates = nullptr;
+		bool		CompositeTried = false;
+		bool		Failed = false;			// RenderScale is off for the session (logged)
+		bool		Whole = false;			// UpscaleRun found the world drawn at full resolution anyway (nothing to put back)
+		UInt32		DrawsSmall = 0, DrawsFull = 0, DrawsOther = 0;	// this world scene's passes by viewport (NoteWorldDraw)
+		bool		MixedLogged = false;
+		UInt32		Frames = 0, SkippedFrames = 0, LoggedSkips = 0;
+		float		LoggedScale = 0.0f;
+		UINT		LoggedWidth = 0, LoggedHeight = 0;
+		int			LastSkip = -1;
+	};
+	UpscaleStruct	Up;
+	bool	UpscaleBegin(bool firstWorld);		// decides RenderScale for this world scene; sets the camera port; true = active
+	void	UpscaleSkip(int reason);			// not this frame (counted, the first of each reason logged)
+	void	UpscaleRestorePort();				// the world camera's port back (EndJitter)
+	void	UpscaleReleaseTargets();
+	bool	UpscaleEnsureResources();
+	bool	UpscaleRun(IDirect3DDevice9* Device);	// the upscale itself (UpscaleWorld)
+	bool	UpscaleComposite(IDirect3DDevice9* Device, IDirect3DTexture9* fsrOutput);	// D3D9: colour + depth into the world's targets
 
 	bool	WillResolveThisFrame();
 

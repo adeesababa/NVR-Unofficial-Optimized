@@ -177,6 +177,8 @@
     <ClCompile Include="..\src\effects\FXAA.cpp" />
     <ClCompile Include="..\src\effects\TAA.cpp" />
     <ClCompile Include="..\src\effects\TAAFSR.cpp" />
+    <ClCompile Include="..\src\effects\TAAUpscale.cpp" />
+    <ClCompile Include="..\src\core\Upscaler.cpp" />
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp" />
     <ClCompile Include="..\src\effects\ShadowsInteriors.cpp" />
     <ClCompile Include="..\src\effects\Sharpening.cpp" />
@@ -261,6 +263,7 @@
     <ClInclude Include="..\src\core\Sm6Pass.h" />
     <ClInclude Include="..\src\core\DxvkCompute.h" />
     <ClInclude Include="..\src\core\HiZ.h" />
+    <ClInclude Include="..\src\core\Upscaler.h" />
     <ClInclude Include="..\src\core\PixelInspector.h" />
     <ClInclude Include="..\src\core\ShaderCounters.h" />
     <ClInclude Include="..\src\core\NvrDxvkExt.h" />
