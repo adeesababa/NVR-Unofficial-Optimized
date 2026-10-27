@@ -196,15 +196,19 @@ void main() {
     float dry = cover > 0.0 ? smoothstep(0.0, 1.0, age / (dryTime * mix(0.5, 1.6, thick))) : 0.0;
     vec3 freshColour = F.fresh.rgb;
     vec3 dryColour = F.dryColor.rgb;
+    vec3 glintTint = vec3(0.02, 0.004, 0.004);
     if (F.match.z > 0.5 && tintW > 0.5 * T && tintW > 1e-4) {
         freshColour = linearize(saturate(tintSum / tintW / 255.0 * F.match.x)) * F.match.y;
         dryColour = freshColour * vec3(0.72, 0.8, 0.8) + freshColour.r * vec3(0.0, 0.1, 0.05);
+        glintTint = 0.004 + 0.016 * freshColour / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4);   // (BloodPS 2026-10-25: the bead's tint in the blood's own hue)
     }
     vec3 albedo = mix(freshColour, dryColour, dry);
     vec3 at = rel + F.eyeRel.xyz;   // fixed to the surface (anchor space)
     albedo *= mix(1.0, 0.8 + 0.4 * valueNoise((at.xy + at.z) * 0.35), dry);
     float rim = saturate(1.0 - (T - th) / 0.6) * cover;
-    vec3 through = exp(-(1.2 + log(max(albedo.r, 0.001) / max(albedo, vec3(0.001)))) * (0.25 + 2.0 * thick));
+    // (BloodPS 2026-10-25: light passes the blood in its own colour, measured from its strongest channel, not from red: matched
+    // green or yellow blood no longer glows or goes red; red blood unchanged.)
+    vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (0.25 + 2.0 * thick));
     vec3 blood = (sceneLin * through + light * albedo * mix(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
     blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
     vec3 colour = mix(sceneLin, blood, cover);
@@ -223,7 +227,7 @@ void main() {
     }
     // A drop in the air: a dark red bead with a glint, in front of whatever is behind it.
     if (coverA > 0.0) {
-        vec3 drop = light * (freshColour * 0.7 + vec3(0.02, 0.004, 0.004) * F.look2.w);
+        vec3 drop = light * (freshColour * 0.7 + glintTint * F.look2.w);
         float a2 = 0.12 * 0.12 * 0.12 * 0.12;
         drop += min(Highlights(dropN, V, rd * nearT, a2, lit), 1.0) * 0.4 * min(light, 1.2) * F.look2.w;
         colour = mix(colour, drop, coverA);
