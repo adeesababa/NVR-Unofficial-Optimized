@@ -22,6 +22,65 @@ Branch `nvr-dxvk-compute` (NVR-Unofficial-Optimized, `mine/`); the fork itself i
   everything else.
 - What the fork buys and does not (plain answers): NVR-DXVK-WHAT-IT-BUYS.md.
 
+## fork2-combo (2026-10-27): the fork round 2 features in one build, one patch series
+Branch `deep/fork2-combo` = `deep/fork-combo-1027` b814b9ae (the tested tester build: the port line + combo-1026, the AmbientLight
+flicker fix) with seven feature branches merged in (real merges). Every feature is OFF by default; off = the combo-1027 build.
+| merged | tip | what | fork patch |
+|---|---|---|---|
+| deep/fork2-grass | 8283163c | GPU grass ([Shaders.Grass.GPUGrass]) | 0024 |
+| deep/fork2-ssgi | d84447f3 | AmbientLight ComputeGI (screen-space bounce light) | - |
+| deep/fork2-displace | 0b64cfe9 | tessellation displacement of the land (v3) | 0021 |
+| deep/fork2-sdsm | 3116470f | FitToDepth: sun cascades fitted to the depth on screen (native D3D9 too) | - |
+| deep/fork2-wetsnow | 771a5e06 | persistent wetness and snow cover (round 3; native D3D9 too) | - |
+| deep/fork2-upscale | 899f7396 | FSR 2 RenderScale (real upscaling) | - |
+| deep/fork2-dlss | 9a41d31a | DLSS through the 64-bit helper (round 2) | 0026 |
+Not merged: deep/fork2-drawskip (measured: saves ~0 ms).
+
+NVR-side conflicts (both features kept each time): AmbientLight.h/.cpp (combo's retired AmbientLightEstimateHiZ pass + ComputeGI's
+six passes; Estimate keeps the HiZ branch, GI estimate in its else), defaults toml (NvrSm6Shaders + NvrDxvkDisplacement),
+ShaderRecord.cpp (RegisterReplacement with template + macros, then RegisterDisplace), NvrDxvkExt.h (all interfaces), ShaderManager.cpp
+(pixel inspector captures + FitToDepth measure; SnowAccumulation / WetWorld with the cover map's technique + PixelInspector::AfterFrame),
+TAAFSR.cpp (upscale's FSRDispatchPrep + PreLoad), DxvkCompute.h / EffectRecord.cpp (dlss's cherry-pick of the flicker fix vs the
+combo's: the combo side, which also has ProfileTick and DrawDepthStencil). Added in the merge: DxvkCompute::PreLoad before the FSR 2
+passes that moved to core/Upscaler.cpp and before the RenderScale prep (the alflicker rule for direct extension calls);
+FSRUpPrep.spv rebuilt with the combo's Common.glsl (no nonuniformEXT; spirv-dis: only the NonUniform decorations go). Buffer slots:
+every pass that binds a uniform and a storage buffer uses different slots (GPU grass SlotFrame..SlotArgs, FSR 2 uniform 0 / storage 1).
+
+Fork: `tools/nvr-dxvk/patches/` 0001-0016 (combo-1027, unchanged) + 0021 (displace) + 0024 (grass) + 0026 (dlss); the new patches
+keep their own numbers (final, nothing renumbered). Rebased in `G:\_NVR-build-scratch\dxvk-fork2-combo` (dxvk301-win worktree):
+0021 (made on 0001-0011) against 0012-0016: `d3d9_device.{h,cpp}` and `meson.build` keep the HDR object and add the tessellation
+one, the API header has the combo's interfaces then ID3D9NvrExtTess; 0024 unchanged (index lines only); 0026 (made on the combo-1026
+numbering, without 0008-0010) against 0024: the extension class implements ID3D9NvrExtGeometryScene and ID3D9NvrExtShare,
+QueryInterface answers both, the header keeps the profiling member. Dry run (`G:\_NVR-build-scratch\dxvk-fork2-combo-dry`): all 19
+files apply in file-name order with plain `git am` (no 3-way) on v3.0.1 and give the rebased tree exactly; no patch twice (the
+dlss line's 0011 is byte-identical to the combo's; its old 0007-hdr / 0009 / 0013-0015 names never came in). GetInfo still says 1.6;
+the 1.7-* parts are separate interfaces (ID3D9NvrExtTess, ID3D9NvrExtGeometryScene, ID3D9NvrExtShare). `src/core/NvrDxvkExt.h` =
+the fork's `d3d9_nvr_ext_api.h` (bar NVR's one comment line).
+
+Builds:
+- NVR DLL: `work\NVR-fork2-combo\build\optimized\NewVegasReloaded.dll` (+ .pdb), sha256 9D2FFA4CD4062A34..., Release Win32, no errors.
+- Fork d3d9.dll: CI run 40544477989 (attempt 2; attempt 1 hung in apt), `G:\_NVR-build-scratch\nvr-dxvk-fork2-combo\nvr-dxvk-x32\d3d9.dll`,
+  sha256 030FA654B11D7E4C... (DXVK reports v3.0.1-19-g...: 19 patches). No dxvk.conf needed.
+- DLSS helper (64-bit, VS2019 x64, SDK `G:\_NVR-build-scratch\dlss-sdk`, source = deep/fork2-dlss's unchanged):
+  `G:\_NVR-build-scratch\fork2-combo-helper\bin\`: NvrDlssHelper.exe (BA7EEED5CA78A4D9...), nvngx_dlss.dll (NVIDIA's release DLL,
+  D00B5B0AB29C3CA1...), LICENSE.txt (NVIDIA's, from the SDK), NvrDlssHelper.pdb (not shipped). Install by hand into
+  `<game>\Data\NVSE\Plugins\NvrDlss\` (never straight into Plugins: xNVSE loads every DLL there).
+
+What each feature needs (everything else: live settings, off by default):
+| feature | needs |
+|---|---|
+| GPU grass | fork with 0024, [Shaders.Grass.GPUGrass] Enabled, NVR's grass shaders (b30GrassVS=1), Grass DrawFirst (default), Terrain Blending off |
+| ComputeGI | fork + NvrDxvkPasses, [Shaders.AmbientLight.Main] ComputeGI (+ the Compute\AmbientLight*-gi*.spv / GI*.spv files) |
+| Displacement | fork with 0021, STARTUP switch [Main.Main.Performance] NvrDxvkDisplacement = true (restart to turn on), [Shaders.Terrain.Displacement], Compute\Tess\*.spv |
+| FitToDepth | nothing (native D3D9 too): [Shaders.ShadowsExteriors.Main] FitToDepth, Effects\SunDepthFit.fx.hlsl |
+| Wet / snow | nothing (native D3D9 too): [Shaders.WetWorld.Main] / [Shaders.SnowAccumulation.Main] Persistent, Effects\CoverMap.fx.hlsl + Includes\CoverMap.hlsl + the changed WetWorld / SnowAccumulation .fx.hlsl |
+| RenderScale | fork (RESZ), TAA + [Shaders.TAA.FSR] Enabled + RenderScale < 1, the game's MSAA off |
+| DLSS | fork with 0026, an NVIDIA GPU (RTX for real DLSS; the pass-through test DlssHelperTest 1 on any), RenderScale's needs + Upscaler 1, the helper folder above; anything missing = FSR 2 with the reason logged once |
+
+Test: one bulk list `bench\foundations\lists\fork2-combo-bulk.txt` (61 shots: AmbientLight flicker burst, all-off pairs, each feature
+with its proof view, all off again, rain/snow last), run in og-desert, og-goodsprings and lucky22 with
+RUN_TOML `G:\_NVR-build-scratch\alkeep\fork2-combo-vk.toml` (defaults + NvrDxvkPasses true + NvrDxvkDisplacement true). Not run yet.
+
 ## In-game sweep of every port (2026-10-26)
 CAVEAT (found later that day by the BloodFluid agent): these runs had NO world depth. On the GTX 1070, stock-based DXVK 3.0.1
 offers RESZ only to AMD adapters, so NVR fell back to NVAPI, which initializes but cannot reach DXVK's device: the depth
