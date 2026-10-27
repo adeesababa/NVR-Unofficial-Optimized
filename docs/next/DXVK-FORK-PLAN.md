@@ -346,6 +346,16 @@ in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame total
 - LESSON: any Vulkan pass that reads a file texture had this exposure (SMAA's area / search tables, fog noise, water,
   blood masks). In-run A/B lists that START on D3D9 hide it, because the D3D9 frames upload everything. Test new ports with
   NvrDxvkPasses on from the first frame too.
+- How wide it was (list dxvkfork-26-vkfirst: NVR defaults + NvrDxvkPasses true from the first frame, shots vk-first, d3d9-1,
+  vk-2, d3d9-2; the old behaviour = a test build with PreLoad doing nothing): Lucky 38 vk-first vs d3d9-1 27.9 % of pixels
+  > 2/255 (mean 2.09) before, 10.1 % (1.19) after; desert 42.2 % (mean 5.17) before, 13.2 % (1.50) after; the D3D9-vs-D3D9
+  floor is 10.7 % / 14.1 %. Before the fix the desert's sunlit ground and the clouds differed (the clouds' noise volume and
+  their ground shadows), Lucky 38's walls and ceiling (AmbientLight). After it: the noise floor in both scenes (20261026-
+  210414 / 210544 old, 210734 / 210905 fixed).
+- "Vulkan floor 1.1/255 darker" (Conor session, two separate launches): NOT the port. List dxvkfork-27-aldark (Conor's
+  settings, each shot keeps one AL pass or all of AL on D3D9, plus pure D3D9 shots, two rounds, one launch): every shot within
+  +-0.03/255 of D3D9, MSAA off (20261026-211221) and 4x (211525, "the frame msaa 4" in the log). The earlier launch it was
+  compared with predates the fix.
 Next (session-hours): the same upload in the fork itself (patch 0011: D3D9NvrExt's resource resolve uploads a managed
 texture and runs a pending mip generation, so a future caller cannot miss it; 0.5 h + a CI run); AmbientLight estimate's
 last +0.03 ms and the fog estimate's +0.02 ms (small).
