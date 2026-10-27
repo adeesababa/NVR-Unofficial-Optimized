@@ -1,4 +1,4 @@
-From 3ae7ecba48baa7e4d5326dd125e093b52d63aa71 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: nvr <nvr@localhost>
 Date: Mon, 26 Oct 2026 09:24:43 -0400
 Subject: [PATCH] NVR extension 1.5-sm6: 64 resource slots per type, 96
@@ -10,7 +10,7 @@ Subject: [PATCH] NVR extension 1.5-sm6: 64 resource slots per type, 96
  2 files changed, 5 insertions(+), 3 deletions(-)
 
 diff --git a/src/d3d9/d3d9_nvr_ext.h b/src/d3d9/d3d9_nvr_ext.h
-index 73c9ac6..b9f8bfb 100644
+index a0aa83c..71c094c 100644
 --- a/src/d3d9/d3d9_nvr_ext.h
 +++ b/src/d3d9/d3d9_nvr_ext.h
 @@ -31,7 +31,7 @@ namespace dxvk {
@@ -23,12 +23,12 @@ index 73c9ac6..b9f8bfb 100644
    constexpr uint32_t NvrExtSamplerSlotBase    = 64u;  // DxvkContext m_samplers
  
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index f251a16..9a42019 100644
+index 8190c41..aa1bbba 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
 @@ -47,8 +47,10 @@
  #define NVR_EXT_VERSION_MAJOR 1
- #define NVR_EXT_VERSION_MINOR 4
+ #define NVR_EXT_VERSION_MINOR 6
  
 -#define NVR_EXT_MAX_SLOTS       32
 -#define NVR_EXT_MAX_BINDINGS    32
@@ -40,5 +40,5 @@ index f251a16..9a42019 100644
  
  enum NVR_EXT_BIND_TYPE {
 -- 
-2.43.0
+2.40.0.windows.1
 

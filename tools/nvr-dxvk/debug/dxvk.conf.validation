@@ -1,6 +1,6 @@
 # NVR DXVK debug template: Vulkan validation layers + synchronization validation.
 # Copy this file next to the fork's d3d9.dll and rename it to dxvk.conf (a test slot: put both in the FORK_D3D9 folder).
-# Needs: a fork d3d9.dll built with patch 0014 (nvr.debugEnv), and the LunarG Vulkan SDK installed WITH its 32-bit
+# Needs: a fork d3d9.dll built with patch 0015 (0014 before the 10-27 renumbering) (nvr.debugEnv), and the LunarG Vulkan SDK installed WITH its 32-bit
 # components (Fallout: New Vegas is a 32-bit game: it can only load the 32-bit layer in the SDK's Bin32 folder).
 # The path below is the installed SDK 1.3.296.0 (the last Windows SDK with 32-bit layers; its installer also registered
 # them, so VK_ADD_LAYER_PATH is a belt-and-braces extra). Edit it only for another SDK.

@@ -48,8 +48,10 @@
 #define NVR_EXT_VERSION_MAJOR 1
 #define NVR_EXT_VERSION_MINOR 6
 
-#define NVR_EXT_MAX_SLOTS       32
-#define NVR_EXT_MAX_BINDINGS    32
+// 1.5-sm6 (NVR SM6 builds of its own passes, 2026-10-26): 64 resource slots per type and 96 bindings per pipeline (were 32 / 32),
+// so a pass compiled without ps_3_0 limits is not held to 16-ish textures by the extension. NVR reads MaxSlots from GetInfo.
+#define NVR_EXT_MAX_SLOTS       64
+#define NVR_EXT_MAX_BINDINGS    96
 #define NVR_EXT_MAX_PUSH_BYTES  240
 
 enum NVR_EXT_BIND_TYPE {

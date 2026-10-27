@@ -1,6 +1,6 @@
 # NVR DXVK debug template: RenderDoc in a game started WITHOUT RenderDoc's window (test slots, the auto-test).
 # Copy this file next to the fork's d3d9.dll and rename it to dxvk.conf (a test slot: put both in the FORK_D3D9 folder).
-# Needs: a fork d3d9.dll with patch 0014, RenderDoc installed with its Vulkan layer registered for 32-bit
+# Needs: a fork d3d9.dll with patch 0015 (0014 before the 10-27 renumbering), RenderDoc installed with its Vulkan layer registered for 32-bit
 # (HKLM\SOFTWARE\WOW6432Node\Khronos\Vulkan\ImplicitLayers -> C:\Program Files\RenderDoc\x86\renderdoc.json), and NVR's
 # [Main.Develop.Main] GpuDebugLabels = true (or 'set Main.Develop.Main GpuDebugLabels true' in the shot).
 # Guide: docs/next/FORK-DEBUG-CAPTURE.md, "Capturing in a test slot".

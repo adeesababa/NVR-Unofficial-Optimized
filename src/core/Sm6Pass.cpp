@@ -206,7 +206,7 @@ bool Sm6Pass::Prepare(EffectRecord* Effect, const char* Technique, UINT Pass) {
 		b.Type = NVR_EXT_BIND_SAMPLER; b.Slot = s; b.PushOffset = s * 4;
 		bindings.push_back(b);
 	}
-	// 32 bindings per pipeline up to extension 1.4; the 1.5-sm6 build (fork patch 0013) says 64 slots and takes 96
+	// 32 bindings per pipeline up to extension 1.4; the 1.5-sm6 build (fork patch 0013, 0014 since the 10-27 renumbering) says 64 slots and takes 96
 	const UINT maxBindings = DxvkCompute::Info().MaxSlots >= 64 ? 96u : 32u;
 	if (bindings.size() > maxBindings) return Fail("more bindings than this NVR DXVK takes");
 	if (PushSize > DxvkCompute::Info().MaxPushBytes || PushSize < Samplers.size() * 4) return Fail("bad push size");

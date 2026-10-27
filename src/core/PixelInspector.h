@@ -1,6 +1,6 @@
 #pragma once
 
-// UNOFFICIAL 2026-10-26 (debugging tool, needs NVR DXVK 1.5-debug = fork patch 0015; docs\next\FORK-DEBUG-PIXEL.md).
+// UNOFFICIAL 2026-10-26 (debugging tool, needs NVR DXVK 1.5-debug = fork patch 0016 (0015 before the 10-27 renumbering); docs\next\FORK-DEBUG-PIXEL.md).
 //
 // The pixel inspector: [Main.Develop.PixelInspector] Enabled, X, Y, LogEvery. For one screen pixel it records the value that pixel
 // has at every stage NVR can see during a frame: the scene before NVR (HDR), the linear depth, the view normal, the picture after

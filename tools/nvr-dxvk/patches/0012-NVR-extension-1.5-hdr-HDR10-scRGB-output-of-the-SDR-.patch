@@ -1,4 +1,4 @@
-From 7b55066343af859b3d298d14c1d1b1b9305577a7 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: nvr <nvr@localhost>
 Date: Mon, 26 Oct 2026 09:13:52 -0400
 Subject: [PATCH] NVR extension 1.5-hdr: HDR10 / scRGB output of the SDR back
@@ -23,7 +23,7 @@ Subject: [PATCH] NVR extension 1.5-hdr: HDR10 / scRGB output of the SDR back
  create mode 100755 src/d3d9/d3d9_nvr_hdr.h
 
 diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
-index 1b669e6..7fc40f8 100644
+index b6ae281..a77bd66 100644
 --- a/src/d3d9/d3d9_device.cpp
 +++ b/src/d3d9/d3d9_device.cpp
 @@ -61,6 +61,7 @@ namespace dxvk {
@@ -75,10 +75,10 @@ index dfe4c75..b33224e 100644
      D3D9On12                        m_d3d9On12;
      DxvkD3D8Bridge                  m_d3d8Bridge;
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index f251a16..61c4726 100644
+index 8748f7f..0aab58c 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -392,7 +392,86 @@ ID3D9NvrExt : public IUnknown {
+@@ -475,7 +475,86 @@ ID3D9NvrExt : public IUnknown {
            FLOAT                           ShiftY) = 0;
  };
  
@@ -583,7 +583,7 @@ index 0000000..a03dfe6
 +
 +}
 diff --git a/src/d3d9/d3d9_swapchain.cpp b/src/d3d9/d3d9_swapchain.cpp
-index 30f905c..a51176a 100644
+index fe34af8..353c69b 100644
 --- a/src/d3d9/d3d9_swapchain.cpp
 +++ b/src/d3d9/d3d9_swapchain.cpp
 @@ -877,10 +877,89 @@ namespace dxvk {
@@ -1135,5 +1135,5 @@ index ac07d05..0df8390 100644
  
    o_color = composite_image(o_color);
 -- 
-2.43.0
+2.40.0.windows.1
 

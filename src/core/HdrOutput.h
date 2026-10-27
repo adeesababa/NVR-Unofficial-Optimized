@@ -1,6 +1,6 @@
 #pragma once
 
-// UNOFFICIAL 2026-10-26 (NVR DXVK extension 1.5-hdr, fork patch 0007): true HDR output on an HDR display.
+// UNOFFICIAL 2026-10-26 (NVR DXVK extension 1.5-hdr, fork patch 0012; 0007 before the 10-27 renumbering): true HDR output on an HDR display.
 //
 // [Shaders.HDR.Main] Enabled (default off; a settings-only menu entry like Cloth / CloudShadows). Needs the NVR DXVK d3d9.dll with ID3D9NvrExtHdr; on native D3D9, stock DXVK or an
 // older fork nothing here runs and the picture is exactly the old one.

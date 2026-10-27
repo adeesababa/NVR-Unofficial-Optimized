@@ -1,6 +1,6 @@
 #pragma once
 
-// UNOFFICIAL 2026-10-26 (debugging tools, needs NVR DXVK 1.5-debug = fork patch 0015; docs\next\FORK-DEBUG-PIXEL.md).
+// UNOFFICIAL 2026-10-26 (debugging tools, needs NVR DXVK 1.5-debug = fork patch 0016 (0015 before the 10-27 renumbering); docs\next\FORK-DEBUG-PIXEL.md).
 //
 // DebugReadbackRing: GPU results read back WITHOUT waiting. A ring of a few host-visible buffers (ID3D9NvrExtReadback): each frame
 // a copy of a small GPU buffer is recorded into the next free one, and the oldest one is read only once the GPU has finished it
@@ -35,7 +35,7 @@ namespace DebugReadback {
 		}
 		if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtReadback), (void**)&Ext)) || !Ext) {
 			Ext = nullptr;
-			Logger::Log("UNOFFICIAL debugging tools: need NVR DXVK 1.5-debug (fork patch 0015, non-waiting readback); this d3d9.dll has extension %u.%u without it: nothing is done.",
+			Logger::Log("UNOFFICIAL debugging tools: need NVR DXVK 1.5-debug (fork patch 0016, non-waiting readback); this d3d9.dll has extension %u.%u without it: nothing is done.",
 				DxvkCompute::Info().ExtVersionMajor, DxvkCompute::Info().ExtVersionMinor);
 			return nullptr;
 		}

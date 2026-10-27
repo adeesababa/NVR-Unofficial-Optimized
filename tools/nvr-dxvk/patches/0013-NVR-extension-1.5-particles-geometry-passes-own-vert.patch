@@ -1,7 +1,7 @@
-From 6da6caa543df9851d9dc9b2e334f618d37e1dac9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: nvr <nvr@localhost>
 Date: Mon, 26 Oct 2026 12:43:03 -0400
-Subject: [PATCH] NVR extension 1.5-particles: geometry passes (own vertex 
+Subject: [PATCH] NVR extension 1.5-particles: geometry passes (own vertex
  shader reading buffers, instanced draws)
 
 A new interface ID3D9NvrExtGeometry, queried from ID3D9NvrExt (own GUID, so
@@ -13,12 +13,12 @@ triangle list, no vertex input). First user: NVR's GPU particles (rain and
 snow drops simulated in a compute shader, collided with the scene depth).
 ---
  src/d3d9/d3d9_nvr_ext.cpp   | 108 +++++++++++++++++++++++++++++++++---
- src/d3d9/d3d9_nvr_ext.h     |  27 ++++++++-
+ src/d3d9/d3d9_nvr_ext.h     |  29 +++++++++-
  src/d3d9/d3d9_nvr_ext_api.h |  40 +++++++++++++
- 3 files changed, 164 insertions(+), 11 deletions(-)
+ 3 files changed, 165 insertions(+), 12 deletions(-)
 
 diff --git a/src/d3d9/d3d9_nvr_ext.cpp b/src/d3d9/d3d9_nvr_ext.cpp
-index 6cf234b..41608e5 100644
+index 14a537a..141bc8b 100644
 --- a/src/d3d9/d3d9_nvr_ext.cpp
 +++ b/src/d3d9/d3d9_nvr_ext.cpp
 @@ -151,6 +151,12 @@ namespace dxvk {
@@ -136,11 +136,11 @@ index 6cf234b..41608e5 100644
        return D3D_OK;
      } catch (const DxvkError& e) {
        Logger::err(str::format("NVR ext: ", name, ": ", e.message()));
-@@ -885,7 +958,18 @@ namespace dxvk {
+@@ -968,7 +1041,18 @@ namespace dxvk {
    }
  
  
--  HRESULT D3D9NvrExt::DrawImpl(const NVR_EXT_DRAW_DESC* pDesc, float ShiftX, float ShiftY) {
+-  HRESULT D3D9NvrExt::DrawImpl(const NVR_EXT_DRAW_DESC* pDesc, float ShiftX, float ShiftY, const NVR_EXT_DEPTH_STENCIL* pDepthStencil) {
 +  HRESULT STDMETHODCALLTYPE D3D9NvrExt::DrawGeometry(const NVR_EXT_GEOMETRY_DRAW_DESC* pDesc) {
 +    if (unlikely(pDesc == nullptr))
 +      return D3DERR_INVALIDCALL;
@@ -148,16 +148,16 @@ index 6cf234b..41608e5 100644
 +    if (unlikely(!pDesc->VertexCount || !pDesc->InstanceCount))
 +      return D3D_OK;
 +
-+    return DrawImpl(&pDesc->Draw, 0.0f, 0.0f, pDesc->VertexCount, pDesc->InstanceCount);
++    return DrawImpl(&pDesc->Draw, 0.0f, 0.0f, nullptr, pDesc->VertexCount, pDesc->InstanceCount);
 +  }
 +
 +
-+  HRESULT D3D9NvrExt::DrawImpl(const NVR_EXT_DRAW_DESC* pDesc, float ShiftX, float ShiftY, uint32_t VertexCount, uint32_t InstanceCount) {
++  HRESULT D3D9NvrExt::DrawImpl(const NVR_EXT_DRAW_DESC* pDesc, float ShiftX, float ShiftY, const NVR_EXT_DEPTH_STENCIL* pDepthStencil, uint32_t VertexCount, uint32_t InstanceCount) {
      D3D9DeviceLock lock = m_device->LockDevice();
  
      if (unlikely(pDesc == nullptr || pDesc->pPipeline == nullptr))
-@@ -1002,7 +1086,12 @@ namespace dxvk {
-       cShiftY      = ShiftY,
+@@ -1159,7 +1243,12 @@ namespace dxvk {
+       cStencilRef  = stencilRef,
        cBound       = std::move(bound),
        cPush        = push,
 -      cPushSize    = pipeline->GetPushSize()
@@ -170,7 +170,7 @@ index 6cf234b..41608e5 100644
      ] (DxvkContext* ctx) {
        constexpr VkShaderStageFlags Stage = VK_SHADER_STAGE_FRAGMENT_BIT;
  
-@@ -1061,17 +1150,18 @@ namespace dxvk {
+@@ -1220,17 +1309,18 @@ namespace dxvk {
          ctx->setBlendMode(i, mode);
        }
  
@@ -194,7 +194,7 @@ index 6cf234b..41608e5 100644
      });
  
 diff --git a/src/d3d9/d3d9_nvr_ext.h b/src/d3d9/d3d9_nvr_ext.h
-index 73c9ac6..80221c6 100644
+index 5c3c57e..a0aa83c 100644
 --- a/src/d3d9/d3d9_nvr_ext.h
 +++ b/src/d3d9/d3d9_nvr_ext.h
 @@ -71,6 +71,11 @@ namespace dxvk {
@@ -226,7 +226,7 @@ index 73c9ac6..80221c6 100644
  
    public:
  
-@@ -229,8 +235,23 @@ namespace dxvk {
+@@ -241,8 +247,23 @@ namespace dxvk {
              FLOAT                           ShiftX,
              FLOAT                           ShiftY);
  
@@ -250,22 +250,28 @@ index 73c9ac6..80221c6 100644
      struct TextureRef {
        D3D9CommonTexture* texture = nullptr;
        uint32_t           mipLevel = 0u;
-@@ -247,7 +268,9 @@ namespace dxvk {
+@@ -257,12 +278,14 @@ namespace dxvk {
+ 
+     uint64_t m_profileOverhead100 = 0u;   // NVR profiling: the timer's own cost per call x 100 (SetProfiling)
+ 
+-    /** Draw, DrawShifted and DrawDepthStencil (pDepthStencil null: none). */
++    /** Draw, DrawShifted, DrawDepthStencil (pDepthStencil null: none) and DrawGeometry (VertexCount x InstanceCount). */
      HRESULT DrawImpl(
        const NVR_EXT_DRAW_DESC*              pDesc,
              float                           ShiftX,
--            float                           ShiftY);
-+            float                           ShiftY,
+             float                           ShiftY,
+-      const NVR_EXT_DEPTH_STENCIL*          pDepthStencil);
++      const NVR_EXT_DEPTH_STENCIL*          pDepthStencil,
 +            uint32_t                        VertexCount = 3u,
 +            uint32_t                        InstanceCount = 1u);
  
      /** Validates a binding list and resolves it for the CS thread (shared by Dispatch and Draw). */
      HRESULT ResolveBindings(
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 61c4726..1f61239 100644
+index 0aab58c..8190c41 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -392,6 +392,46 @@ ID3D9NvrExt : public IUnknown {
+@@ -475,6 +475,46 @@ ID3D9NvrExt : public IUnknown {
            FLOAT                           ShiftY) = 0;
  };
  

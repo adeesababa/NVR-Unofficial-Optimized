@@ -1,6 +1,6 @@
 # NVR DXVK debug template: RenderDoc captures with NVR's named groups.
 # Copy this file next to the fork's d3d9.dll and rename it to dxvk.conf (a test slot: put both in the FORK_D3D9 folder).
-# Needs a fork d3d9.dll built with patch 0014 (nvr.debugEnv); with an older fork set DXVK_DEBUG=markers in RenderDoc's
+# Needs a fork d3d9.dll built with patch 0015 (0014 before the 10-27 renumbering) (nvr.debugEnv); with an older fork set DXVK_DEBUG=markers in RenderDoc's
 # "Environment Variables" box instead. Also turn on NVR's [Main.Develop.Main] GpuDebugLabels = true.
 # Guide: docs/next/FORK-DEBUG-CAPTURE.md
 

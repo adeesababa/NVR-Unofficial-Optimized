@@ -11,150 +11,17 @@ not finished that copy. For NVR's debugging tools (pixel inspector, shader
 counters): a ring of buffers read a few frames late never stalls.
 Storage buffers now list the vertex and fragment stages too, so a pass's
 fragment shader may atomicAdd into one with DXVK's barriers covering it.
-
 ---
- src/d3d9/d3d9_nvr_ext_api.h | 53 ++++++++++++++++++++++++++++++++++++++++
- src/d3d9/d3d9_nvr_ext.h     | 32 +++++++++++++++++++++++++++++---
- src/d3d9/d3d9_nvr_ext.cpp   | 136 ++++++++++++++++++++++++++++++++++++++++-
+ src/d3d9/d3d9_nvr_ext.cpp   | 136 +++++++++++++++++++++++++++++++++++-
+ src/d3d9/d3d9_nvr_ext.h     |  32 ++++++++-
+ src/d3d9/d3d9_nvr_ext_api.h |  53 ++++++++++++++
  3 files changed, 217 insertions(+), 4 deletions(-)
 
-diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 43dc9c6..062db24 100644
---- a/src/d3d9/d3d9_nvr_ext_api.h
-+++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -512,6 +512,59 @@
-           UINT                            Size) = 0;
- };
- 
-+/*
-+ * 1.5-debug: readback that never waits (debugging tools: pixel inspector, shader counters).
-+ *
-+ * A separate interface, queried from ID3D9NvrExt (QueryInterface with its GUID), so a d3d9.dll
-+ * without it simply returns E_NOINTERFACE and ID3D9NvrExt's own method table is untouched.
-+ *
-+ * A readback buffer lives in host-visible memory (TRANSFER_DST only). CopyToReadback records a
-+ * copy into it, in order with everything recorded before, and remembers where in the command
-+ * stream that copy sits. TryReadback then copies the bytes out if and only if that copy has run
-+ * on the GPU; otherwise it returns S_FALSE at once (no flush, no wait). Use a ring of a few
-+ * buffers and read each one a few frames after its copy: the normal case never stalls.
-+ * ReadBuffer (above) stays the waiting, test-only path.
-+ *
-+ * Also since 1.5-debug: buffers made with NVR_EXT_BUFFER_STORAGE are usable (read and write) by
-+ * the vertex and fragment stages of the full-screen and geometry passes too, with DXVK's barriers
-+ * covering those stages (a fragment shader can atomicAdd into a counter buffer).
-+ */
-+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d315")
-+ID3D9NvrExtReadback : public IUnknown {
-+  /** A host-visible buffer for CopyToReadback / TryReadback only (not bindable to a pass). */
-+  virtual HRESULT STDMETHODCALLTYPE CreateReadbackBuffer(
-+          UINT                            Size,
-+    const char*                           pDebugName,
-+          ID3D9NvrExtBuffer**             ppBuffer) = 0;
-+
-+  /**
-+   * Records a copy of Size bytes (4-aligned) from pSrc (a buffer made with NVR_EXT_BUFFER_TRANSFER_SRC)
-+   * at SrcOffset into the readback buffer pDst at DstOffset. Any earlier copy into pDst that has not
-+   * been read is superseded (TryReadback then waits for this one).
-+   */
-+  virtual HRESULT STDMETHODCALLTYPE CopyToReadback(
-+          ID3D9NvrExtBuffer*              pDst,
-+          UINT                            DstOffset,
-+          ID3D9NvrExtBuffer*              pSrc,
-+          UINT                            SrcOffset,
-+          UINT                            Size) = 0;
-+
-+  /**
-+   * S_OK: the last CopyToReadback into pBuffer has finished on the GPU; Size bytes at Offset are in pData.
-+   * S_FALSE: not finished yet (nothing copied; never waits). D3DERR_INVALIDCALL: not a readback buffer,
-+   * no copy recorded into it, or a bad range.
-+   */
-+  virtual HRESULT STDMETHODCALLTYPE TryReadback(
-+          ID3D9NvrExtBuffer*              pBuffer,
-+          UINT                            Offset,
-+          UINT                            Size,
-+          void*                           pData) = 0;
-+};
-+
-+#ifndef _MSC_VER
-+__CRT_UUID_DECL(ID3D9NvrExtReadback, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x15);
-+#endif
-+
- #ifndef _MSC_VER
- __CRT_UUID_DECL(ID3D9NvrExtHdr,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x10);
- __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
-diff --git a/src/d3d9/d3d9_nvr_ext.h b/src/d3d9/d3d9_nvr_ext.h
-index 6be3f39..ebe934e 100644
---- a/src/d3d9/d3d9_nvr_ext.h
-+++ b/src/d3d9/d3d9_nvr_ext.h
-@@ -95,8 +95,8 @@
- 
-   public:
- 
--    D3D9NvrExtBuffer(Rc<DxvkBuffer>&& buffer, uint32_t size)
--    : m_buffer(std::move(buffer)), m_size(size) { }
-+    D3D9NvrExtBuffer(Rc<DxvkBuffer>&& buffer, uint32_t size, bool readback = false)
-+    : m_buffer(std::move(buffer)), m_size(size), m_readback(readback) { }
- 
-     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
- 
-@@ -104,10 +104,17 @@
- 
-     const Rc<DxvkBuffer>& GetBuffer() const { return m_buffer; }
- 
-+    // 1.5-debug: a host-visible readback buffer, and the CS sequence number of the last copy into it (0 = none)
-+    bool IsReadback() const { return m_readback; }
-+    uint64_t GetReadbackSeq() const { return m_readbackSeq; }
-+    void SetReadbackSeq(uint64_t seq) { m_readbackSeq = seq; }
-+
-   private:
- 
-     Rc<DxvkBuffer> m_buffer;
-     uint32_t       m_size;
-+    bool           m_readback = false;
-+    uint64_t       m_readbackSeq = 0u;
- 
-   };
- 
-@@ -133,7 +140,7 @@
-    *
-    * Like D3D9VkInteropDevice: its reference count is the device's.
-    */
--  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry {
-+  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry, public ID3D9NvrExtReadback {
- 
-   public:
- 
-@@ -243,6 +250,25 @@
-     HRESULT STDMETHODCALLTYPE DrawGeometry(
-       const NVR_EXT_GEOMETRY_DRAW_DESC*     pDesc);
- 
-+    // 1.5-debug: ID3D9NvrExtReadback
-+    HRESULT STDMETHODCALLTYPE CreateReadbackBuffer(
-+            UINT                            Size,
-+      const char*                           pDebugName,
-+            ID3D9NvrExtBuffer**             ppBuffer);
-+
-+    HRESULT STDMETHODCALLTYPE CopyToReadback(
-+            ID3D9NvrExtBuffer*              pDst,
-+            UINT                            DstOffset,
-+            ID3D9NvrExtBuffer*              pSrc,
-+            UINT                            SrcOffset,
-+            UINT                            Size);
-+
-+    HRESULT STDMETHODCALLTYPE TryReadback(
-+            ID3D9NvrExtBuffer*              pBuffer,
-+            UINT                            Offset,
-+            UINT                            Size,
-+            void*                           pData);
-+
-   private:
- 
-     /** CreateGraphicsPipeline and CreateGeometryPipeline. */
 diff --git a/src/d3d9/d3d9_nvr_ext.cpp b/src/d3d9/d3d9_nvr_ext.cpp
-index 41608e5..c0d04e0 100644
+index 141bc8b..a7fd4cf 100644
 --- a/src/d3d9/d3d9_nvr_ext.cpp
 +++ b/src/d3d9/d3d9_nvr_ext.cpp
-@@ -157,6 +157,12 @@
+@@ -157,6 +157,12 @@ namespace dxvk {
        return S_OK;
      }
  
@@ -167,7 +34,7 @@ index 41608e5..c0d04e0 100644
      return m_device->QueryInterface(riid, ppvObject);
    }
  
-@@ -542,7 +548,8 @@
+@@ -542,7 +548,8 @@ namespace dxvk {
  
      if (pDesc->Flags & NVR_EXT_BUFFER_STORAGE) {
        info.usage  |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -177,7 +44,7 @@ index 41608e5..c0d04e0 100644
        info.access |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
      }
  
-@@ -759,6 +766,11 @@
+@@ -777,6 +784,11 @@ namespace dxvk {
              return D3DERR_INVALIDCALL;
            }
  
@@ -189,17 +56,7 @@ index 41608e5..c0d04e0 100644
            UINT size = b.Size;
            if (unlikely(!ValidateBufferRange(buffer.ptr(), b.Offset, size, 4u))) {
              Logger::err(str::format("NVR ext: slot ", b.Slot, ": buffer range out of bounds"));
-@@ -1481,6 +1493,9 @@
-     if (unlikely(Size == 0u || pDst == pSrc))
-       return D3DERR_INVALIDCALL;
- 
-+    if (unlikely(pSrc != nullptr && static_cast<D3D9NvrExtBuffer*>(pSrc)->IsReadback()))
-+      return D3DERR_INVALIDCALL;  // 1.5-debug: a readback buffer is a copy destination only
-+
-     UINT dstSize = Size;
-     UINT srcSize = Size;
- 
-@@ -1611,6 +1626,9 @@
+@@ -1613,6 +1625,9 @@ namespace dxvk {
      if (unlikely(!ValidateBufferRange(pBuffer, Offset, Size, 4u)))
        return D3DERR_INVALIDCALL;
  
@@ -209,7 +66,17 @@ index 41608e5..c0d04e0 100644
      if (!Size)
        return D3D_OK;
  
-@@ -1652,4 +1670,120 @@
+@@ -1640,6 +1655,9 @@ namespace dxvk {
+     if (unlikely(Size == 0u || pDst == pSrc))
+       return D3DERR_INVALIDCALL;
+ 
++    if (unlikely(pSrc != nullptr && static_cast<D3D9NvrExtBuffer*>(pSrc)->IsReadback()))
++      return D3DERR_INVALIDCALL;  // 1.5-debug: a readback buffer is a copy destination only
++
+     UINT dstSize = Size;
+     UINT srcSize = Size;
+ 
+@@ -1811,4 +1829,120 @@ namespace dxvk {
      return D3D_OK;
    }
  
@@ -330,6 +197,138 @@ index 41608e5..c0d04e0 100644
 +  }
 +
  }
+diff --git a/src/d3d9/d3d9_nvr_ext.h b/src/d3d9/d3d9_nvr_ext.h
+index 71c094c..3bd1ec8 100644
+--- a/src/d3d9/d3d9_nvr_ext.h
++++ b/src/d3d9/d3d9_nvr_ext.h
+@@ -95,8 +95,8 @@ namespace dxvk {
+ 
+   public:
+ 
+-    D3D9NvrExtBuffer(Rc<DxvkBuffer>&& buffer, uint32_t size)
+-    : m_buffer(std::move(buffer)), m_size(size) { }
++    D3D9NvrExtBuffer(Rc<DxvkBuffer>&& buffer, uint32_t size, bool readback = false)
++    : m_buffer(std::move(buffer)), m_size(size), m_readback(readback) { }
+ 
+     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
+ 
+@@ -104,10 +104,17 @@ namespace dxvk {
+ 
+     const Rc<DxvkBuffer>& GetBuffer() const { return m_buffer; }
+ 
++    // 1.5-debug: a host-visible readback buffer, and the CS sequence number of the last copy into it (0 = none)
++    bool IsReadback() const { return m_readback; }
++    uint64_t GetReadbackSeq() const { return m_readbackSeq; }
++    void SetReadbackSeq(uint64_t seq) { m_readbackSeq = seq; }
++
+   private:
+ 
+     Rc<DxvkBuffer> m_buffer;
+     uint32_t       m_size;
++    bool           m_readback = false;
++    uint64_t       m_readbackSeq = 0u;
+ 
+   };
+ 
+@@ -133,7 +140,7 @@ namespace dxvk {
+    *
+    * Like D3D9VkInteropDevice: its reference count is the device's.
+    */
+-  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry {
++  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry, public ID3D9NvrExtReadback {
+ 
+   public:
+ 
+@@ -255,6 +262,25 @@ namespace dxvk {
+     HRESULT STDMETHODCALLTYPE DrawGeometry(
+       const NVR_EXT_GEOMETRY_DRAW_DESC*     pDesc);
+ 
++    // 1.5-debug: ID3D9NvrExtReadback
++    HRESULT STDMETHODCALLTYPE CreateReadbackBuffer(
++            UINT                            Size,
++      const char*                           pDebugName,
++            ID3D9NvrExtBuffer**             ppBuffer);
++
++    HRESULT STDMETHODCALLTYPE CopyToReadback(
++            ID3D9NvrExtBuffer*              pDst,
++            UINT                            DstOffset,
++            ID3D9NvrExtBuffer*              pSrc,
++            UINT                            SrcOffset,
++            UINT                            Size);
++
++    HRESULT STDMETHODCALLTYPE TryReadback(
++            ID3D9NvrExtBuffer*              pBuffer,
++            UINT                            Offset,
++            UINT                            Size,
++            void*                           pData);
++
+   private:
+ 
+     /** CreateGraphicsPipeline and CreateGeometryPipeline. */
+diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
+index aa1bbba..f0b0b1a 100644
+--- a/src/d3d9/d3d9_nvr_ext_api.h
++++ b/src/d3d9/d3d9_nvr_ext_api.h
+@@ -595,6 +595,59 @@ ID3D9NvrExtHdr : public IUnknown {
+           UINT                            Size) = 0;
+ };
+ 
++/*
++ * 1.5-debug: readback that never waits (debugging tools: pixel inspector, shader counters).
++ *
++ * A separate interface, queried from ID3D9NvrExt (QueryInterface with its GUID), so a d3d9.dll
++ * without it simply returns E_NOINTERFACE and ID3D9NvrExt's own method table is untouched.
++ *
++ * A readback buffer lives in host-visible memory (TRANSFER_DST only). CopyToReadback records a
++ * copy into it, in order with everything recorded before, and remembers where in the command
++ * stream that copy sits. TryReadback then copies the bytes out if and only if that copy has run
++ * on the GPU; otherwise it returns S_FALSE at once (no flush, no wait). Use a ring of a few
++ * buffers and read each one a few frames after its copy: the normal case never stalls.
++ * ReadBuffer (above) stays the waiting, test-only path.
++ *
++ * Also since 1.5-debug: buffers made with NVR_EXT_BUFFER_STORAGE are usable (read and write) by
++ * the vertex and fragment stages of the full-screen and geometry passes too, with DXVK's barriers
++ * covering those stages (a fragment shader can atomicAdd into a counter buffer).
++ */
++MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d315")
++ID3D9NvrExtReadback : public IUnknown {
++  /** A host-visible buffer for CopyToReadback / TryReadback only (not bindable to a pass). */
++  virtual HRESULT STDMETHODCALLTYPE CreateReadbackBuffer(
++          UINT                            Size,
++    const char*                           pDebugName,
++          ID3D9NvrExtBuffer**             ppBuffer) = 0;
++
++  /**
++   * Records a copy of Size bytes (4-aligned) from pSrc (a buffer made with NVR_EXT_BUFFER_TRANSFER_SRC)
++   * at SrcOffset into the readback buffer pDst at DstOffset. Any earlier copy into pDst that has not
++   * been read is superseded (TryReadback then waits for this one).
++   */
++  virtual HRESULT STDMETHODCALLTYPE CopyToReadback(
++          ID3D9NvrExtBuffer*              pDst,
++          UINT                            DstOffset,
++          ID3D9NvrExtBuffer*              pSrc,
++          UINT                            SrcOffset,
++          UINT                            Size) = 0;
++
++  /**
++   * S_OK: the last CopyToReadback into pBuffer has finished on the GPU; Size bytes at Offset are in pData.
++   * S_FALSE: not finished yet (nothing copied; never waits). D3DERR_INVALIDCALL: not a readback buffer,
++   * no copy recorded into it, or a bad range.
++   */
++  virtual HRESULT STDMETHODCALLTYPE TryReadback(
++          ID3D9NvrExtBuffer*              pBuffer,
++          UINT                            Offset,
++          UINT                            Size,
++          void*                           pData) = 0;
++};
++
++#ifndef _MSC_VER
++__CRT_UUID_DECL(ID3D9NvrExtReadback, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x15);
++#endif
++
+ #ifndef _MSC_VER
+ __CRT_UUID_DECL(ID3D9NvrExtHdr,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x10);
+ __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
 -- 
-2.43.0
+2.40.0.windows.1
 
