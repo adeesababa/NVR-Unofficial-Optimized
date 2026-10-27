@@ -34,7 +34,8 @@ nvr-dxvk-compute brings 32 more commits that need its other fork patches 0008-00
 patch 0011 (managed-texture upload) in this branch's fork build.
 
 ## Proven so far (no game run; the coordinator's bulk test does that)
-- The fork patch builds in CI (run 40520838088, d3d9.dll sha256 DE9A058BF672C02C...).
+- The fork patch builds in CI (round 2 with 0011 and the NT-handle fix: run 40533105192, d3d9.dll sha256 8ECF6D60845A96C4...;
+  round 1: run 40520838088, DE9A058BF672C02C..., has the semaphore bug).
 - `NvrDlssHelper.exe --selftest` on this PC (GTX 1070, driver with Vulkan 1.4): a test process exports four images and two
   timeline semaphores exactly like the fork does, starts a second copy as the helper, runs 300 frames and checks the pixels:
   PASSED (picture right, marker at frame % 8, the previous marker gone = no stale or torn frames). Helper GPU work 0.04 ms per
@@ -44,9 +45,11 @@ patch 0011 (managed-texture upload) in this branch's fork build.
   series or newer)", state FAILED: exactly what makes NVR fall back to FSR 2.
 - `NvrDlssHelper.exe --probe`: "DLSS not available" on the 1070, as expected (NGX answers FeatureNotSupported).
 - NVR's DLL builds clean (no new warnings); the DLSS path is only reachable with Upscaler 1.
-- Builds: NVR `G:\_NVR-build-scratch\fork2-dlss-out\NewVegasReloaded.dll` (sha256 E997E587C8B44DFD...), helper
-  `G:\_NVR-build-scratch\fork2-dlss-helper\bin\NvrDlssHelper.exe` (DE13E86911033295...) with NVIDIA's release `nvngx_dlss.dll`
-  copied next to it, fork `G:\_NVR-build-scratch\nvr-dxvk-fork2-dlss\nvr-dxvk-x32\d3d9.dll` (DE9A058BF672C02C...).
+- Builds (round 2, code of a7036e35): NVR `G:\_NVR-build-scratch\fork2-dlss-out\NewVegasReloaded.dll` (sha256 4F844E978BCDEB45...),
+  helper `G:\_NVR-build-scratch\fork2-dlss-helper\bin\NvrDlssHelper.exe` (B34E5FB4B3A70317...) with NVIDIA's release
+  `nvngx_dlss.dll` copied next to it, fork `G:\_NVR-build-scratch\nvr-dxvk-fork2-dlss-r2\nvr-dxvk-x32\d3d9.dll` (8ECF6D60845A96C4...).
+  `--probe` also shows the cause of round 1: "semaphore NT handle exported twice (first closed): handles 073C / 073C (the SAME
+  value), second DEAD (Win32 error 6)", the same for memory.
 
 ## Pieces
 | where | what |
@@ -98,7 +101,8 @@ back (~0.2-0.4 ms at 1080p) and one extra DXVK submission. DLSS itself on an RTX
 output depending on the card (instead of FSR 2's ~2.5 ms on the 1070 at native resolution). Off: nothing.
 
 ## Install for a test (by hand, nothing installed by the agent)
-- d3d9.dll: `G:\_NVR-build-scratch\nvr-dxvk-fork2-dlss\nvr-dxvk-x32\d3d9.dll` (fork 0001-0015 + 0026; or any later combo fork with 0026).
+- d3d9.dll: `G:\_NVR-build-scratch\nvr-dxvk-fork2-dlss-r2\nvr-dxvk-x32\d3d9.dll` (fork 0001-0015 + 0011 + 0026 round 2; or any
+  later combo fork with both; the round-1 folder nvr-dxvk-fork2-dlss has the semaphore bug and no 0011).
 - NVR DLL: `G:\_NVR-build-scratch\fork2-dlss-out\NewVegasReloaded.dll` -> `<game>\Data\NVSE\Plugins\`.
 - Helper: `G:\_NVR-build-scratch\fork2-dlss-helper\bin\NvrDlssHelper.exe` -> `<game>\Data\NVSE\Plugins\NvrDlss\` (make the folder).
   For DLSS on an RTX card also `nvngx_dlss.dll` from the same bin folder (NVIDIA's release DLL) and NVIDIA's `LICENSE.txt`.
