@@ -22,7 +22,8 @@ layout(set = 1, binding = 12) uniform texture2D t_buffer;            // NVR_ALBu
 // UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) ComputeGI (variants.txt: AmbientLightApply-gi): this frame's accumulated bounce light
 // (AmbientLightGIAccumulate.frag's first target), upsampled with the occlusion's own depth-weighted taps (joint bilateral) and added as
 // light x the surface colour x TESR_AmbientLightData.z (ComputeGIStrength; the retired screen bounce's slot, 0 otherwise). DebugView 13:
-// that light alone. Without the define (the shipped AmbientLightApply.spv) none of this is compiled.
+// the light alone (x strength, before the surface colour; the first version showed it x SurfaceColour, whose hue boost hid what the
+// light itself looked like). Without the define (the shipped AmbientLightApply.spv) none of this is compiled.
 layout(set = 1, binding = 13) uniform texture2D t_gi;                // NVR_AmbientLightHistory (this frame's)
 #endif
 
@@ -119,7 +120,7 @@ vec4 Apply(vec2 uv, bool sky) {
     float busy = saturate((bendX + bendY) / depth * 20.0 - 0.1);
 #ifdef NVR_GI_APPLY
     vec3 screenBounce = ambient.rgb * (cb.data.z * SurfaceColour(lin));
-    if (DebugView > 12.5) return delinearize(vec4(screenBounce, 1.0));
+    if (DebugView > 12.5) return delinearize(vec4(ambient.rgb * cb.data.z, 1.0));   // the light arriving (before the surface colour)
 #endif
     if (DebugView > 11.5) {
         vec3 c = floor((toWorld(uv) * depth - cb.gridOrigin.xyz) / cb.gridOrigin.w);

@@ -55,12 +55,9 @@ layout(push_constant) uniform Push {
     uint pointWrap;      // 24: POINT, WRAP (the blue noise)
     uint variant;        // 28: bit 0 the technique's uniform argument (SmoothNormal alongY, Blur axis y, Apply sky); bit 1 see the pass
 #ifdef NVR_GI
-    // UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) ComputeGI's passes only (AmbientLightGI.frag, AmbientLightGIAccumulate.frag, AmbientLightApply
-    // with -DNVR_GI; effects/AmbientLight.cpp ALExtPushGI, 96 bytes). The other passes are compiled without it (their 32-byte block).
-    vec4 gi;             // 32: x thickness (world units), y mip offset (log2 of a tap's distance in texels; < 0: mip 0 only), z strength, w 1 = ThinOcclusion
-    uvec4 giSize;        // 48: xy the GI input's mip-0 size (the prep's), zw unused
-    uvec4 giBase;        // 64: element offset of mips 0-3 in the GI input buffer
-    uvec4 giTiles;       // 80: 8 x 8 tiles across, mips 0-3
+    // UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) ComputeGI's GI pass only (AmbientLightEstimate.frag with -DNVR_GI; effects/AmbientLight.cpp
+    // ALExtPushGI, 48 bytes). Every other pass is compiled without it (its 32-byte block).
+    vec4 gi;             // 32: x thickness (world units), y unused, z strength, w 1 = ComputeGIThinOcclusion
 #endif
 } pc;
 

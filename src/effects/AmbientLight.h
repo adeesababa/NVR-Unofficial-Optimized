@@ -172,7 +172,7 @@ public:
 	// the effect's own parameter values, read back right before each draw. ExtDraw false (off, no extension, a texture missing, a failure:
 	// ExtFailed, logged once) = that pass's D3D9 draw. AmbientLightBlurCompute / AmbientLightSmoothCompute keep their passes when on.
 	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate,
-		ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply, ExtShaderCount };	// ExtGI*: ComputeGI (below)
+		ExtGILight, ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply, ExtShaderCount };	// ExtGI*: ComputeGI (below)
 	ExtPass				extPasses[ExtShaderCount][NVR_EXT_MAX_TARGETS];	// per target count
 	ExtUniformBuffer	extUniforms;
 	CachedHandle		extHandles[38];
@@ -180,31 +180,30 @@ public:
 	bool	ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Targets, UINT TargetCount, IDirect3DBaseTexture9* const* Textures, UINT Variant, const D3DVIEWPORT9& Viewport);
 
 	// UNOFFICIAL 2026-10-27 (NVR DXVK, deep/fork2-ssgi) [Shaders.AmbientLight.Main] ComputeGI: needs NVR DXVK with NvrDxvkPasses on (does
-	// nothing on native D3D9 or stock DXVK; off = exactly the old passes). Estimate becomes Compute\AmbientLightGI.frag: Estimate's GTAO
-	// (the same occlusion) plus a visibility bitmask per slice whose newly covered sectors add the taps' light (one bounce from what is on
-	// screen; ComputeGIThinOcclusion: the occlusion from the bitmask too). Before it,
-	// one compute dispatch (Compute\AmbientLightGIPrefilter.comp) packs the prep's depth and the frame's light into giBuffer (8 bytes a
-	// texel, 4 levels, 8 x 8 tiles); after the blurs AmbientLightGIAccumulate.frag keeps the light from frame to frame in the bounce history
-	// (historyTexture, unused since the screen bounce was removed) and AmbientLightApply-gi adds it (x the surface colour x ComputeGIStrength).
-	// DebugView 13: that light alone. Any failure: logged once, ComputeGI off for the session, the old passes.
+	// nothing on native D3D9 or stock DXVK; off = exactly the old passes). Before Estimate, Compute\AmbientLightGILight.frag writes the
+	// frame's light per prep texel into giLightTexture (A8R8G8B8, sqrt); Estimate is then its own shader compiled with NVR_GI
+	// (AmbientLightEstimate-gi0/1/2.spv): the same GTAO, the same taps, plus a visibility bitmask per slice whose newly covered sectors add
+	// the taps' light (one bounce from what is on screen; ComputeGIThinOcclusion: the occlusion from the bitmask too). After the blurs
+	// AmbientLightGIAccumulate.frag keeps the light from frame to frame in the bounce history (historyTexture, unused since the screen bounce
+	// was removed) and AmbientLightApply-gi adds it (x the surface colour x ComputeGIStrength). DebugView 13: that light alone. Any failure:
+	// logged once, ComputeGI off for the session, the old passes.
+	// (v1, 510684a0: a compute prefilter into a storage buffer with 4 levels. In game it changed the occlusion even at strength 0 and its
+	// 8-byte taps cost no less than Estimate's: replaced by this.)
 	bool				computeGI = false;		// ComputeGI
 	float				giStrength = 1.0f;		// ComputeGIStrength
 	float				giThickness = 100.0f;	// ComputeGIThickness (world units)
-	int					giQuality = 1;			// ComputeGIQuality: 0 = 2 slices x 4 steps (Estimate's 16 taps), 1 = 3 x 6, 2 = 4 x 8
-	bool				giMips = true;			// ComputeGIMips: far taps read the coarser levels
+	int					giQuality = 0;			// ComputeGIQuality: 0 = 2 slices x 4 steps (Estimate's 16 taps), 1 = 3 x 6, 2 = 4 x 8
 	bool				giThinOcclusion = false;	// ComputeGIThinOcclusion: the occlusion from the bitmask (thickness) instead of Estimate's GTAO
-	ID3D9NvrExtPipeline*	giPrefilterPipeline = nullptr;
-	ID3D9NvrExtBuffer*		giBuffer = nullptr;
-	UINT				giWidth = 0, giHeight = 0;	// the GI input's level 0 (the prep's size)
-	UINT				giBase[4] = {}, giTiles[4] = {};
+	int					giTest = 0;				// ComputeGITest (test only): 1 = the GI pass alone (plain accumulate and apply), 2 = + its accumulate
+	IDirect3DTexture9*	giLightTexture = nullptr;	// the frame's light per prep texel (made the first time ComputeGI runs)
+	IDirect3DSurface9*	giLightSurface = nullptr;
+	bool				giLightTried = false;
 	bool				giFailed = false;
 	int					giFiles = -1;			// the .spv files: -1 not looked for yet, 0 missing, 1 there
 	int					giReported = -1;		// the last state logged (why it does not run, or running)
 	UINT				giFrames = 0;
 	bool				giDrawn = false;		// this frame's estimate was the GI pass (the accumulate and apply follow it)
 	bool	GIActive();
-	bool	RenderGIPrefilter(IDirect3DDevice9* Device, IDirect3DTexture9* Scene, UINT Width, UINT Height, IDirect3DSurface9* Park);
-	void	GIRelease();
 
 	void	EnsureBuffers();
 	void	UpdateConstants() {};

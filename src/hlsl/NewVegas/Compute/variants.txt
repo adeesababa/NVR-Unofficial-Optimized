@@ -64,10 +64,10 @@ VolumetricFogEstimate l0c0i0p1n -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_
 VolumetricFogEstimate l0c0i0p1s -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_SHADOW
 VolumetricFogEstimate l0c0i0p1k -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_SKY
 VolumetricFogEstimate l0c0i0p1f -DFOG_VARIANT -DFOG_MODE=0 -DFOG_LEGACY=0 -DFOG_CLASSIC=0 -DFOG_INTERIOR=0 -DFOG_PHYSICAL=1 -DFOG_TEST_NO_NOISE -DFOG_TEST_NO_SHADOW -DFOG_TEST_NO_SKY
-# UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) [Shaders.AmbientLight.Main] ComputeGI: the GI pass at ComputeGIQuality 0 / 1 / 2 (slices x steps:
-# 2 x 4 = Estimate's 16 taps, 3 x 6 = 36, 4 x 8 = 64; loaded by name, not through NvrDxvkVariants), and AmbientLight's apply with the
-# bounce light added (effects/AmbientLight.cpp ExtGIApply).
-AmbientLightGI q0 -DGI_SLICES=2 -DGI_STEPS=4
-AmbientLightGI q1 -DGI_SLICES=3 -DGI_STEPS=6
-AmbientLightGI q2 -DGI_SLICES=4 -DGI_STEPS=8
+# UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) [Shaders.AmbientLight.Main] ComputeGI: Estimate with the bounce light (the GI pass) at
+# ComputeGIQuality 0 / 1 / 2 (slices x steps: 2 x 4 = Estimate's own 16 taps, 3 x 6 = 36, 4 x 8 = 64; loaded by name, not through
+# NvrDxvkVariants), and AmbientLight's apply with the bounce light added (effects/AmbientLight.cpp ExtGIEstimate*, ExtGIApply).
+AmbientLightEstimate gi0 -DNVR_GI -DGI_SLICES=2 -DGI_STEPS=4
+AmbientLightEstimate gi1 -DNVR_GI -DGI_SLICES=3 -DGI_STEPS=6
+AmbientLightEstimate gi2 -DNVR_GI -DGI_SLICES=4 -DGI_STEPS=8
 AmbientLightApply gi -DNVR_GI_APPLY
