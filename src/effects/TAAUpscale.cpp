@@ -219,6 +219,7 @@ bool TAAEffect::UpscaleBegin(bool firstWorld) {
 		if (!firstWorld) { Up.SkippedFrames++; RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f); return false; }
 		Up.Deferred = false;
 		RenderRect::End();
+		RenderRect::RescaleRegistered(TheRenderManager->device);
 		Up.HistoryValid = false;
 		UpscaleReleaseTargets();
 		Logger::Log("UNOFFICIAL RenderScale v2: a frame drawn small was never upscaled (no image space after it); dropped.");
@@ -578,6 +579,7 @@ void TAAEffect::UpscaleAfterEffects(IDirect3DSurface9* GameSurface) {
 	Up.Deferred = false;
 	RenderRect::End();
 	IDirect3DDevice9* device = TheRenderManager->device;
+	RenderRect::RescaleRegistered(device);	// Bloom's top level, read by the game's tonemap and the rain at full size
 	bool ok = false;
 	{
 		static GpuTimer timer("FSR upscale (RenderScale v2)");

@@ -10,6 +10,8 @@
 #include "../effects/GpuParticles.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK 1.5-particles)
 #include "SunDepthFit.h"	// UNOFFICIAL 2026-10-27 FitToDepth
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow
+#include <unordered_map>	// UNOFFICIAL 2026-10-27 RenderScale v2 (RenderRect::RescaleRegistered)
+#include <vector>
 
 #define RESZ_CODE 0x7FA05000
 
@@ -240,6 +242,44 @@ void RenderRect::WholeViewport(IDirect3DDevice9* Device, D3DVIEWPORT9& Viewport)
 		Viewport.Width = desc.Width;
 		Viewport.Height = desc.Height;
 	}
+}
+
+namespace {
+	std::vector<IDirect3DSurface9*> RescaleList;	// this rect frame's buffers read after the upscale (RenderRect::RescaleAfterUpscale)
+	struct RescaleTemp { IDirect3DTexture9* Texture = nullptr; IDirect3DSurface9* Surface = nullptr; D3DSURFACE_DESC Desc = {}; };
+	std::unordered_map<IDirect3DSurface9*, RescaleTemp> RescaleTemps;	// one spare of the same size and format per buffer
+}
+
+void RenderRect::RescaleAfterUpscale(IDirect3DSurface9* Surface) {
+	if (!On || !Surface || std::find(RescaleList.begin(), RescaleList.end(), Surface) != RescaleList.end()) return;
+	RescaleList.push_back(Surface);
+}
+
+void RenderRect::RescaleRegistered(IDirect3DDevice9* Device) {
+	for (IDirect3DSurface9* buffer : RescaleList) {
+		D3DSURFACE_DESC desc = {};
+		if (FAILED(buffer->GetDesc(&desc))) continue;
+		RescaleTemp& spare = RescaleTemps[buffer];
+		if (!spare.Surface || spare.Desc.Width != desc.Width || spare.Desc.Height != desc.Height || spare.Desc.Format != desc.Format) {
+			if (spare.Surface) spare.Surface->Release();
+			if (spare.Texture) spare.Texture->Release();
+			spare = RescaleTemp();
+			if (FAILED(Device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &spare.Texture, nullptr)) ||
+				FAILED(spare.Texture->GetSurfaceLevel(0, &spare.Surface))) {
+				if (spare.Texture) spare.Texture->Release();
+				spare = RescaleTemp();
+				static bool logged = false;
+				if (!logged) Logger::Log("[ERROR] UNOFFICIAL RenderScale v2: no spare to rescale a %ux%u buffer after the upscale (read at the wrong size).", desc.Width, desc.Height);
+				logged = true;
+				continue;
+			}
+			spare.Desc = desc;
+		}
+		const RECT drawn = { 0, 0, (LONG)(std::max)(1.0f, floorf((float)desc.Width * LastScaleX + 0.5f)), (LONG)(std::max)(1.0f, floorf((float)desc.Height * LastScaleY + 0.5f)) };
+		if (SUCCEEDED(Device->StretchRect(buffer, &drawn, spare.Surface, nullptr, D3DTEXF_LINEAR)))
+			Device->StretchRect(spare.Surface, nullptr, buffer, nullptr, D3DTEXF_NONE);
+	}
+	RescaleList.clear();
 }
 
 

@@ -12,6 +12,7 @@
 #include <cmath>
 
 struct IDirect3DDevice9;
+struct IDirect3DSurface9;
 struct _D3DVIEWPORT9;	// D3DVIEWPORT9
 
 namespace RenderRect {
@@ -44,4 +45,10 @@ namespace RenderRect {
 	// this on what GetViewport gave: in a rect frame, the drawn part an earlier ApplyViewport left on render target 0 becomes the
 	// whole target again (ApplyViewport sets the drawn part per draw). Off, or any other viewport: unchanged.
 	void WholeViewport(IDirect3DDevice9* Device, _D3DVIEWPORT9& Viewport);
+	// RescaleAfterUpscale (user: a ghosted copy of the picture over the whole screen with NVR's tonemapping on): a buffer drawn in a
+	// rect frame that something reads AFTER the upscale, at full size (Bloom's top level: the game's tonemap shader, the rain), is
+	// registered here while On; RescaleRegistered (TAAEffect, right after End: uses LastScale) stretches its drawn part over the
+	// whole of it, so those readers see the layout they always did.
+	void RescaleAfterUpscale(IDirect3DSurface9* Surface);
+	void RescaleRegistered(IDirect3DDevice9* Device);
 }

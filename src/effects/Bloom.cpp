@@ -303,6 +303,9 @@ void BloomEffect::RenderBloomBuffer(IDirect3DSurface9* RenderTarget) {
 
 	Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, sizeof(FrameVS)); // Reset vertex buffer for other effects.
 	Device->SetRenderTarget(0, RenderTarget);  // Reset render target for other effects.
+	// UNOFFICIAL 2026-10-27 RenderScale v2: the top level is also read after the upscale, at full size (the game's tonemap shader,
+	// the rain): stretched over the whole buffer then (user: "a ghosted image" over the screen with tonemapping on).
+	RenderRect::RescaleAfterUpscale(Textures.BloomSurface[0]);
 
 	renderTime = timer.LogTime("EffectRecord::Render Bloom");
 }
