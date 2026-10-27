@@ -4,6 +4,11 @@ Branch `deep/fork2-displace` (from `mine/nvr-dxvk-compute` 34a8df4d). Fork patch
 extension "1.7-displace" as a SEPARATE interface (`ID3D9NvrExtTess`, GUID ...d321), so `ID3D9NvrExt` and its version number are
 untouched and the merger can renumber freely. Everything is off by default; nothing has run in the game yet.
 
+Builds (2026-10-27): NVR DLL `G:\_NVR-build-scratch\fork2-displace-out\NewVegasReloaded.dll` (sha256 77192A7884A6BB49..., MSVC 2019,
+no new warnings); fork d3d9.dll = CI run 40441667857 (0001-0011 + 0021, green, no warnings in the new files),
+`G:\_NVR-build-scratch\nvr-dxvk-fork2-displace\nvr-dxvk-x32\d3d9.dll` (sha256 6771A8222AC06142...). Use that folder as FORK_D3D9
+for the bulk test (nvr-dxvk-0011 has no tessellation interface).
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land
