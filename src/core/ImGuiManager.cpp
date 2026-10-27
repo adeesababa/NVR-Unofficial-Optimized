@@ -2590,6 +2590,9 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 // units, render as a slider over a fixed range instead. Keyed by "Section.Key" like kEnumSettings.
 struct FloatRange { float Min; float Max; const char* Format; };
 static const std::unordered_map<std::string, FloatRange> kFloatSliders = {
+	// UNOFFICIAL 2026-10-27: a slider over the range the code uses (a typed 0.1 was quietly read as 0.5 before)
+	{ "Shaders.TAA.FSR.RenderScale", { 0.33f, 1.0f, "%.2f" } },
+	{ "Shaders.TAA.DLSS.RenderScale", { 0.33f, 1.0f, "%.2f" } },
 	{ "Shaders.PBR.Metal.FadeDistance", { 0.0f, 4000.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.NearFade", { 0.0f, 128.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.PlayerLampMargin", { 0.0f, 64.0f, "%.0f" } },

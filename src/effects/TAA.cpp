@@ -69,7 +69,9 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.WeaponReactive = std::clamp(TheSettingManager->GetSettingF("Shaders.TAA.FSR", "WeaponReactive"), 0.0f, 1.0f);
 	// UNOFFICIAL 2026-10-27 RenderScale (TAAUpscale.cpp). A missing key reads as 0, which means off (1) here, not "nothing".
 	const float scale = TheSettingManager->GetSettingF(dlss ? "Shaders.TAA.DLSS" : "Shaders.TAA.FSR", "RenderScale");
-	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.5f, 1.0f) : 1.0f;
+	// UNOFFICIAL 2026-10-27 (user: "0.1 should look pretty compressed, yet it does not"): down to 0.33, FSR 2's and DLSS's lowest
+	// ("Ultra Performance", 3x per axis); below that neither is made to work. Was 0.5.
+	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.33f, 1.0f) : 1.0f;
 	FSRSettings.Upscaler = dlss ? 1 : 0;
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
 	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; DLSS Enabled above is real DLSS,
