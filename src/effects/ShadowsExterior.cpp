@@ -614,6 +614,10 @@ void ShadowsExteriorEffect::UpdateSettings() {
 		forward.LampModelShadows = TheSettingManager->GetSettingI(section, "LampModelShadows") != 0;
 		forward.LampModelDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelDistance"), 0.0f, 512.0f);
 		LampFixtures::OwnLightDistance = std::clamp(TheSettingManager->GetSettingF(section, "LampModelOwnDistance"), -1.0f, 128.0f);
+		{	// UNOFFICIAL NoShadowLampModels (2026-10-27): the whole text (GetSettingS cuts a string at 79 characters, as ClothWind reads its lists)
+			SettingManager::Configuration::ConfigNode node;
+			LampFixtures::SetNoShadowWords(TheSettingManager->Config.FillNode(&node, section, "NoShadowLampModels") ? std::string(node.LongValue) : std::string());
+		}
 		forward.InvisibleShadowFromLamp = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleShadowFromLamp"), 0.0f, 1024.0f);
 		forward.InvisibleLightSize = std::clamp(TheSettingManager->GetSettingF(section, "InvisibleLightSize"), 0.0f, 128.0f);
 		forward.EvenTaps = TheSettingManager->GetSettingI(section, "EvenTaps") != 0;	// compiled in at startup (ShaderRecord::BuildDefines)

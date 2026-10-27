@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <unordered_map>
 #include <cstring>
@@ -205,6 +206,55 @@ namespace LampFixtures {
 	}
 
 	inline int ModelIndexOf(const NiGeometry* geo) { auto it = ModelOf.find(geo); return it == ModelOf.end() ? -1 : it->second; }
+
+	// UNOFFICIAL NoShadowLampModels (2026-10-27, [Shaders.ShadowsInteriors.Forward]): lamp models whose file name holds one of these
+	// words (comma separated, any case; default "lantern") cast NO shadow for any light within LampModelDistance of them, their OWN
+	// light included. The user (Prospector Saloon): a small lantern's frame and glass threw a cage of shadows round the room that
+	// moved with the flickering flame; the other lamps keep theirs (a shade shaping its own light looks right, LampModelShadows).
+	inline std::vector<std::string> NoShadowWords;
+	inline std::string NoShadowFrom = "\x01";					// the text NoShadowWords was split from (an impossible start: split once)
+	inline void SetNoShadowWords(const std::string& text) {
+		if (text == NoShadowFrom) return;
+		NoShadowFrom = text;
+		NoShadowWords.clear();
+		std::string word;
+		for (size_t i = 0; i <= text.size(); i++) {
+			const char c = i < text.size() ? text[i] : ',';
+			if (c == ',' || c == ';') {
+				while (!word.empty() && isspace((unsigned char)word.back())) word.pop_back();
+				if (!word.empty()) NoShadowWords.push_back(word);
+				word.clear();
+			}
+			else if (c != '"' && !(word.empty() && isspace((unsigned char)c))) word += (char)tolower((unsigned char)c);
+		}
+	}
+	// Is this caster part of a lamp model named by NoShadowWords within distance of the light (its bound's edge)? cache: per cube
+	// draw, model index -> 0 unknown, 1 leave out, 2 keep.
+	inline bool NoShadowLampModel(const NiGeometry* geo, const NiPoint3* at, float distance, std::unordered_map<int, int>& cache) {
+		if (NoShadowWords.empty()) return false;
+		auto it = ModelOf.find(geo);
+		if (it == ModelOf.end()) return false;
+		int& answer = cache[it->second];
+		if (!answer) {
+			const Model& m = Models[it->second];
+			const char* name = m.name ? m.name : "";
+			for (const char* c = name; *c; c++) if (*c == '\\' || *c == '/') name = c + 1;	// the file name, not its folders
+			char low[128]; size_t n = 0;
+			for (; name[n] && n < sizeof(low) - 1; n++) low[n] = (char)tolower((unsigned char)name[n]);
+			low[n] = 0;
+			bool named = false;
+			for (const std::string& w : NoShadowWords) if (strstr(low, w.c_str())) { named = true; break; }
+			const float dx = m.x - at->x, dy = m.y - at->y, dz = m.z - at->z;
+			const float edge = sqrtf(dx * dx + dy * dy + dz * dz) - m.radius;
+			answer = named && edge <= distance ? 1 : 2;
+			if (LogModels && named && LogModelLines < 400) {
+				LogModelLines++;
+				Logger::Log("LAMPMODEL light at %.0f %.0f %.0f: lamp model '%s' (radius %.0f) edge %.0f units: %s (NoShadowLampModels)",
+					at->x, at->y, at->z, m.name ? m.name : "", m.radius, edge, answer == 1 ? "casts NO shadow for it" : "too far, keeps its shadow");
+			}
+		}
+		return answer == 1;
+	}
 
 	// LampModelShadows false: does this caster belong to a lamp model within distance of the light (its bound's edge) that is not the
 	// light's own lamp? cache: per cube draw, model index -> 0 unknown, 1 leave out, 2 keep.
