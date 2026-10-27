@@ -4,6 +4,55 @@
 // costs nothing where there is none. Uses main()'s locals: IN, viewDir, normal, baseColor, att, lighting, sunShadow
 // (without OPT) and the forward point shadows (SHADOWED).
 
+#ifdef MANY_LAMPS
+// UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h, ObjectTemplate.hlsl MANY_LAMPS): every lamp of the object from c37-c63,
+// its direction taken into tangent space per pixel through the frame's rows (light2/3/4 .xyz) and its falloff from the distance, all in
+// the object's own space as the game makes its lamp constants (2026-10-27 first version: camera-relative world space; reached nothing).
+// The sun (without OPT) as before.
+// Lamp k of c37-c63 is light k + 1 of the game's pass, so the first six keep their forward cube-map shadow slot (SHADOWED: slot k
+// with OPT, where light 0 is not in the shader, k + 1 without); lamps the game did not keep in the pass (k past its count) and
+// lamps 7-13 have none (their slots' lookups stay 1: see the INTERIOR_SHADOWS block in ObjectTemplate.hlsl).
+#ifndef OPT
+    lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * sunShadow, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
+#else
+    lighting = 0.0f;
+#endif
+{
+    const float3 mlWorldPos = IN.lPosition.xyz;	// the object's space, as the lamps in c38 + 2k
+    const float mlCount = NVR_ManyLamps[0].x;
+    #define ML_TS(d) float3(dot(IN.light2.xyz, (d)), dot(IN.light3.xyz, (d)), dot(IN.light4.xyz, (d)))
+    // (A lamp without reach, or a pixel whose frame is all zero, adds nothing: no division by 0, no normalising a zero vector.)
+    #define ML_LAMP(j, COLOR) [branch] if ((j) < mlCount) { \
+            const float4 mlP = NVR_ManyLamps[1 + 2 * (j)]; \
+            const float3 mlD = mlP.xyz - mlWorldPos; \
+            const float3 mlL = ML_TS(mlD); \
+            att = vanillaAtt(mlD, max(mlP.w, 1.0e-3f)); \
+            [branch] if (att > 0.0f && mlP.w > 0.0f && dot(mlL, mlL) > 1.0e-8f) \
+                lighting += getPointLightLightingAtt(mlL, att, COLOR, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH); \
+        }
+    #ifdef OPT
+        ML_LAMP(0, SHADOWED(NVR_ManyLamps[2].rgb, 0, att))
+        ML_LAMP(1, SHADOWED(NVR_ManyLamps[4].rgb, 1, att))
+        ML_LAMP(2, SHADOWED(NVR_ManyLamps[6].rgb, 2, att))
+        ML_LAMP(3, SHADOWED(NVR_ManyLamps[8].rgb, 3, att))
+        ML_LAMP(4, SHADOWED(NVR_ManyLamps[10].rgb, 4, att))
+        ML_LAMP(5, SHADOWED(NVR_ManyLamps[12].rgb, 5, att))
+    #else
+        ML_LAMP(0, SHADOWED(NVR_ManyLamps[2].rgb, 1, att))
+        ML_LAMP(1, SHADOWED(NVR_ManyLamps[4].rgb, 2, att))
+        ML_LAMP(2, SHADOWED(NVR_ManyLamps[6].rgb, 3, att))
+        ML_LAMP(3, SHADOWED(NVR_ManyLamps[8].rgb, 4, att))
+        ML_LAMP(4, SHADOWED(NVR_ManyLamps[10].rgb, 5, att))
+        ML_LAMP(5, NVR_ManyLamps[12].rgb)
+    #endif
+    [loop] for (int mlIndex = 6; mlIndex < MANY_LAMPS_MAX; mlIndex++) {
+        [branch] if (mlIndex >= mlCount) break;
+        ML_LAMP(mlIndex, NVR_ManyLamps[2 + 2 * mlIndex].rgb)
+    }
+    #undef ML_LAMP
+    #undef ML_TS
+}
+#else
 #ifndef OPT
     lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * sunShadow, viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
 #else
@@ -43,3 +92,4 @@ LAMP_IFK(2, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl):
     LAMP_IFK(5, att)   // UNOFFICIAL 2026-10-17 LampReachSkip (ObjectTemplate.hlsl): a lamp out of reach adds exactly 0
         lighting += (5 >= lightsUsed ? 0.0 : 1.0) * getPointLightLightingAtt(IN.light6.xyz, att, SHADOWED(PSLightColor[5].rgb, 5, att), viewDir.xyz, normal.xyz, baseColor.rgb, LIGHT_FINISH);
 #endif
+#endif // MANY_LAMPS

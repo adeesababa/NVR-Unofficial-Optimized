@@ -738,7 +738,16 @@ VS_OUTPUT main(VS_INPUT IN) {
 #ifndef SPECULAR_LAMPS6
     #define SPECULAR_LAMPS6 0
 #endif
-#if LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
+// UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h; MANY_LAMPS_ON from ShaderRecord::BuildDefines, DXVK only): the shiny
+// 4-lamp-and-up shaders take up to 13 lamps. Six lamp directions filled every interpolator, so instead light2/3/4 carry the rows of
+// the tangent frame, in the vertex's own space like the game's lamp directions (light2/light3 .w still the view's y and z), and the
+// pixel shader lights each lamp of c37-c63 (object space, as the game's PSLightPosition) from lPosition. The interpolators are those of MAX_LIGHTS 4 (shadowWorldPos in TEXCOORD6).
+#if defined(MANY_LAMPS_ON) && MANY_LAMPS_ON && LIGHTS == 4 && defined(SPECULAR) && SPECULAR_LAMPS6
+    #define MANY_LAMPS 1
+#endif
+#ifdef MANY_LAMPS
+    #define MAX_LIGHTS 4
+#elif LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
     #define MAX_LIGHTS 6
 #elif LIGHTS > 3 && !defined(SPECULAR)
     #define MAX_LIGHTS 4
@@ -761,6 +770,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     #define SHADOW_WP_LOAD(I)     (I).shadowWorldPos.xyz
     #define SHADOW_WP_VALID(I)    SHADOW_VS_PRESENT((I).shadowWorldPos.w)
 #endif
+
 
 struct VS_OUTPUT {
     float4 vertexColor : COLOR0;
@@ -893,18 +903,25 @@ VS_OUTPUT main(VS_INPUT IN) {
         OUT.lightDir.w = viewDir.x;
     #endif
     
+    #ifdef MANY_LAMPS
+        // UNOFFICIAL ManyLampsOnePass: the tangent frame's rows (written at the end); the view as before.
+        OUT.light2 = float4(0.0f, 0.0f, 0.0f, viewDir.y);
+        OUT.light3 = float4(0.0f, 0.0f, 0.0f, viewDir.z);
+        OUT.light4 = 0.0f;
+    #else
     lightUsed = 1 < lightsThreshold ? 1.0 : 0.0;
     OUT.light2.xyz = lightUsed * mul(tbn, LightData[lightOffset + 1].xyz - position.xyz);
     OUT.light2.w = viewDir.y;
-    
+
     lightUsed = 2 < lightsThreshold ? 1.0 : 0.0;
     OUT.light3.xyz = lightUsed * mul(tbn, LightData[lightOffset + 2].xyz - position.xyz);
     OUT.light3.w = viewDir.z;
-    
+
     #if MAX_LIGHTS > 3
         lightUsed = 3 < lightsThreshold ? 1.0 : 0.0;
         OUT.light4.xyz = lightUsed * mul(tbn, LightData[lightOffset + 3].xyz - position.xyz);
         OUT.light4.w = lightUsed * LightData[lightOffset + 3].w;
+    #endif
     #endif
     
     #if MAX_LIGHTS > 4
@@ -942,6 +959,12 @@ VS_OUTPUT main(VS_INPUT IN) {
         #endif
         OUT.uv.zw = smoothN.xy;
         OUT.vertexColor.a = smoothN.z * 0.5f + 0.5f;
+    #endif
+    #ifdef MANY_LAMPS
+        // UNOFFICIAL ManyLampsOnePass: the frame's rows; the pixel shader takes mul(tbn, lamp - position) per pixel, as this shader did per vertex.
+        OUT.light2.xyz = tbn[0];
+        OUT.light3.xyz = tbn[1];
+        OUT.light4.xyz = tbn[2];
     #endif
 
     return OUT;
@@ -1554,7 +1577,14 @@ PS_OUTPUT main(PS_INPUT IN) {
 #ifndef SPECULAR_LAMPS6
     #define SPECULAR_LAMPS6 0
 #endif
-#if LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
+// UNOFFICIAL 2026-10-27 ManyLampsOnePass: as in the vertex shader above (same layout as MAX_LIGHTS 4; light2/3/4 .xyz the tangent
+// frame's rows in the vertex's own space).
+#if defined(MANY_LAMPS_ON) && MANY_LAMPS_ON && LIGHTS == 4 && defined(SPECULAR) && SPECULAR_LAMPS6
+    #define MANY_LAMPS 1
+#endif
+#ifdef MANY_LAMPS
+    #define MAX_LIGHTS 4
+#elif LIGHTS > 4 || (LIGHTS > 3 && defined(SPECULAR) && SPECULAR_LAMPS6)
     #define MAX_LIGHTS 6
 #elif LIGHTS > 3 && !defined(SPECULAR)
     #define MAX_LIGHTS 4
@@ -1576,6 +1606,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     #define SHADOW_WP_STORE(O, v) O.shadowWorldPos = float4((v), SHADOW_VS_SENTINEL)
     #define SHADOW_WP_LOAD(I)     (I).shadowWorldPos.xyz
     #define SHADOW_WP_VALID(I)    SHADOW_VS_PRESENT((I).shadowWorldPos.w)
+#endif
+
+#ifdef MANY_LAMPS
+    // UNOFFICIAL ManyLampsOnePass (core/ManyLamps.h): c37.x the lamp count, then per lamp k: c38 + 2k position in the object's space,
+    // .w its reach; c39 + 2k its colour (already linear with linear lighting on). Free in every ObjectTemplate pixel shader.
+    #define MANY_LAMPS_MAX 13
+    float4 NVR_ManyLamps[1 + 2 * MANY_LAMPS_MAX] : register(c37);
 #endif
 
 struct PS_INPUT {
@@ -1735,7 +1772,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // ones the lighting further down computes, so the compiler shares them.
         #define PT_ATT(i) vanillaAtt(PSLightPosition[i].xyz - IN.lPosition.xyz, PSLightPosition[i].w)
         float ptShadow0 = 1.0f, ptShadow1 = 1.0f, ptShadow2 = 1.0f, ptShadow3 = 1.0f, ptShadow4 = 1.0f, ptShadow5 = 1.0f;
-        #ifdef LAMP_SLOT_SKIP
+        #if defined(LAMP_SLOT_SKIP) || defined(MANY_LAMPS)	// (ManyLampsOnePass: only the game's own lamps of the draw have cube slots)
         // UNOFFICIAL 2026-10-25 NO_SLOT_LIMIT (DXVK only, see LAMP_IFK): a slot's cube lookup only where its lamp is used and reaches.
         [branch] if (NVR_PointShadowParams.x > 0.0f) {
             float a;

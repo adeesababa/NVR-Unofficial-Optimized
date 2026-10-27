@@ -3,6 +3,7 @@
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2)
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
+#include "ManyLamps.h"	// UNOFFICIAL 2026-10-27 ManyLampsOnePass
 #include "ShaderPrecompile.h"
 #include <unordered_set>
 #include "GpuProfiler.h"
@@ -210,6 +211,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// object shaders skip unused lamp slots, out-of-reach lamps and their shadow lookups. Native D3D9 would refuse those shaders: 0 there.
 	AppendDefine("NO_SLOT_LIMIT", (TheSettingManager->GetSettingI("Shaders.PBR.Main", "DxvkLampBranches") &&
 		TheRenderManager && !strncmp(TheRenderManager->D3D9RuntimeDescription(), "DXVK", 4)) ? "1" : "0");
+	// UNOFFICIAL 2026-10-27 ManyLampsOnePass (core/ManyLamps.h, ObjectTemplate.hlsl MANY_LAMPS): the 4-lamp-and-up shiny object shaders take
+	// up to 13 lamps from c37-c63, lit per pixel through the surface's tangent frame. DXVK only (shader length), read at startup.
+	AppendDefine("MANY_LAMPS_ON", ManyLamps::ShadersWant() ? "1" : "0");
 	// UNOFFICIAL 2026-10-17 UnlitShadowSkip (ObjectTemplate.hlsl SunShadowWanted): no forward sun-shadow lookups on object pixels whose
 	// bumped normal faces away from the sun (the sun adds exactly nothing there). Compile time, like LAMP_REACH_SKIP.
 	AppendDefine("UNLIT_SHADOW_SKIP", TheSettingManager->GetSettingI("Shaders.PBR.Main", "UnlitShadowSkip") ? "1" : "0");

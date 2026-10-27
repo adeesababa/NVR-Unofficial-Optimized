@@ -38,6 +38,7 @@ namespace ConstantFilter {
 	inline bool Installed = false;
 	inline bool Enabled = false;		// the setting, read each frame
 	inline bool Broken = false;			// the detours failed: off for good
+	inline bool Hooked = false;			// the detours are in (ManyLampsOnePass needs the pixel hook, PixelWriteAfter)
 	inline bool Recording = false;		// between BeginStateBlock and EndStateBlock
 	inline DWORD Thread = 0;			// the thread that draws the frames (BeginFrame's)
 	inline volatile LONG ForeignTick = 0;	// counts calls from another thread
@@ -201,9 +202,14 @@ namespace ConstantFilter {
 		PreDecodeResync(self);
 	}
 
+	// UNOFFICIAL 2026-10-27 ManyLampsOnePass (ManyLamps.h AfterPixelWrite): called after every pixel-constant upload made through this body,
+	// so a block NVR keeps in some registers can be put back when something else wrote over it. Null unless set (Render.cpp).
+	inline void (*PixelWriteAfter)(UINT start, UINT count) = nullptr;
+
 	inline HRESULT STDMETHODCALLTYPE HookPixel(IDirect3DDevice9* self, UINT start, const float* data, UINT count) {
 		DeferredResync(self);
 		const HRESULT result = SendPixel(self, start, data, count);
+		if (PixelWriteAfter) PixelWriteAfter(start, count);
 		// UNOFFICIAL LinearPreDecode: while a LIN_PREDECODED shader is bound, the game's new values of c1 and c3-c12 get their
 		// decoded copies at once. A write into c64-c75 by anything else makes the copies stale (remade at the next bind).
 		if (data && count && !LinearPreDecode::Shaders.empty() && PreDecodeThread()) {
@@ -328,6 +334,7 @@ namespace ConstantFilter {
 			if (!LinearPreDecode::Shaders.empty()) Logger::Log("ERROR: LinearPreDecode needs the constant hooks: lit objects' light colours will be wrong; set [Shaders.PBR.Linear] PreDecode = false.");
 			return;
 		}
+		Hooked = true;
 		Wipe();
 		Logger::Log("UNOFFICIAL SkipRedundantConstants: shader-constant uploads the device already holds are skipped (setting %s).",
 			TheSettingManager->GetSettingI("Main.Main.Performance", "SkipRedundantConstants") ? "on" : "off");

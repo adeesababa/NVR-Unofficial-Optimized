@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include "TestTools.h"
+#include "ManyLamps.h"	// UNOFFICIAL 2026-10-27 ManyLampsOnePass: the compare goes to 12 + f lamps
 
 // UNOFFICIAL 2026-10-18 LampsInOnePass ([Main.Main.Misc] LampsInOnePass, live, default off).
 //
@@ -40,15 +41,21 @@ namespace LampsInOnePass {
 	constexpr UInt32 kRebuildBit = 0x10000000;
 
 	inline bool Applied = false;
+	inline UInt8 AppliedImm = 0x02;	// the compare's immediate now (2 = the game's, 5 = LampsInOnePass, 12 = ManyLampsOnePass)
 	inline bool RefusedLogged = false;
 	inline unsigned Switches = 0;
 
 	// Once a frame, before the game's scene walk registers its objects.
 	inline void BeginFrame() {
 		const bool want = TheSettingManager->GetSettingI("Main.Main.Misc", "LampsInOnePass") != 0;
-		if (want == Applied) return;
 		const UInt8* code = (const UInt8*)kCompareSite;
-		if (code[0] != 0x83 || code[1] != 0xC0 || (code[2] != 0x02 && code[2] != 0x05)) {
+		// UNOFFICIAL 2026-10-27 ManyLampsOnePass (ManyLamps.h): up to 12 + f lamps (NVR gives the shaders the lamps past the game's cap).
+		// Its limit is live (the setting read here each frame) while its shaders stay as loaded: off, the limit goes back to 5 + f, so
+		// the two can be compared in one launch at the same spot (F10).
+		const UInt8 onImm = ManyLamps::Active() && TheSettingManager->GetSettingI("Main.Main.Misc", "ManyLampsOnePass") ?
+			(UInt8)ManyLamps::CompareImm : (UInt8)0x05;
+		if ((want ? onImm : (UInt8)0x02) == AppliedImm) return;
+		if (code[0] != 0x83 || code[1] != 0xC0 || (code[2] != 0x02 && code[2] != 0x05 && code[2] != (UInt8)ManyLamps::CompareImm)) {
 			if (!RefusedLogged) Logger::Log("UNOFFICIAL LampsInOnePass: the game's code at %08X is not as expected (another plugin?); not changed", kCompareSite);
 			RefusedLogged = true;
 			return;
@@ -58,12 +65,13 @@ namespace LampsInOnePass {
 			RefusedLogged = true;
 			return;
 		}
-		SafeWrite8(kCompareSite + 2, want ? 0x05 : 0x02);
+		SafeWrite8(kCompareSite + 2, want ? onImm : 0x02);
 		*(UInt32*)kEnabledPasses ^= kRebuildBit;	// new pass-list key: every object rebuilds its passes this frame
 		Applied = want;
+		AppliedImm = want ? onImm : (UInt8)0x02;
 		Switches++;
 		Logger::Log("UNOFFICIAL LampsInOnePass: %s (shiny objects with up to %s lamps in one pass; every object's passes rebuilt)",
-			want ? "on" : "off", want ? "5-6" : "2-3");
+			want ? "on" : "off", want ? (onImm == 0x05 ? "5-6" : "12-13") : "2-3");
 	}
 
 #if NVR_TEST_TOOLS
@@ -94,7 +102,7 @@ namespace LampsInOnePass {
 			const int n = atoi(ps + 3);
 			if (n == 2029 || n == 2030) return 6;
 			if (n >= 2031 && n <= 2033) return 4;
-			if (n >= 2034 && n <= 2036) return *(const UInt8*)kOptCapByte == 0x05 ? 6 : 3;
+			if (n >= 2034 && n <= 2036) return ManyLamps::Active() ? (unsigned)ManyLamps::MaxLamps : *(const UInt8*)kOptCapByte == 0x05 ? 6 : 3;
 			return 0;
 		}
 
@@ -114,6 +122,7 @@ namespace LampsInOnePass {
 		constexpr unsigned kWindow = 112;
 		inline unsigned Frames = 0;
 		inline bool WindowState = false;
+		inline UInt8 WindowImm = 0x02;	// the limit the open window was measured with (2026-10-27: ManyLampsOnePass switches live too)
 		inline unsigned long long WorldDraws = 0, LampPasses = 0, HighlightPasses = 0, TexturePasses = 0, FogPasses = 0;
 		inline unsigned long long OptDraws[0x14] = {}, OptLights[0x14][16] = {};
 		inline unsigned long long Dropped = 0, DroppedDraws = 0, DroppedSkipCompare = 0, OverSlots = 0, OverSlotDraws = 0;
@@ -148,8 +157,8 @@ namespace LampsInOnePass {
 			if (!Frames) return;
 			const double f = Frames;
 			char line[1024]; int n = 0;
-			n += sprintf_s(line + n, sizeof(line) - n, "LAMPS IN ONE PASS census (%s), %u frames, per frame: world draws %.0f | OPT passes",
-				WindowState ? "on" : "off", Frames, WorldDraws / f);
+			n += sprintf_s(line + n, sizeof(line) - n, "LAMPS IN ONE PASS census (%s, one pass up to %u lamps + f), %u frames, per frame: world draws %.0f | OPT passes",
+				WindowState ? "on" : "off", (unsigned)WindowImm, Frames, WorldDraws / f);
 			for (int i = 0; i < 0x14; i++) if (OptDraws[i]) n += sprintf_s(line + n, sizeof(line) - n, " %02X:%.1f", 0xC3 + i, OptDraws[i] / f);
 			n += sprintf_s(line + n, sizeof(line) - n, " | extra lamp passes %.1f, highlight passes %.1f, texture passes %.1f, fog passes %.1f",
 				LampPasses / f, HighlightPasses / f, TexturePasses / f, FogPasses / f);
@@ -178,8 +187,9 @@ namespace LampsInOnePass {
 		inline void NewFrame() {
 			FrameId++;
 			if (!GpuTimer::Enabled) { if (Frames) Reset(); return; }
-			if (Frames && WindowState != Applied) Report();	// the switch changed: close the old state's window
+			if (Frames && (WindowState != Applied || WindowImm != AppliedImm)) Report();	// the switch changed: close the old state's window
 			WindowState = Applied;
+			WindowImm = AppliedImm;
 			if (++Frames >= kWindow) Report();
 		}
 
