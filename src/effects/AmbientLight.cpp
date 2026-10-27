@@ -17,7 +17,7 @@ void AmbientLightEffect::UpdateSettings() {
 	Constants.Data2.x = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "DarkestOcclusion"), 0.0f, 1.0f);
 	Constants.Data2.y = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BrightnessFade"), 0.0f, 4.0f);
 	Constants.Data2.z = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "BlurRadius"), 0.5f, 4.0f);
-	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 12);
+	Constants.Data2.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "DebugView"), 0, 13);	// 13: ComputeGI's light (2026-10-27)
 	temporal = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "Temporal") != 0;
 	gridBounce = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridBounce"), 0.0f, 10.0f);
 	gridCell = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "GridCellSize"), 50.0f, 800.0f);
@@ -36,6 +36,13 @@ void AmbientLightEffect::UpdateSettings() {
 	normalSmoothingWorld = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "NormalSmoothingWorld"), 0.0f, 64.0f);	// UNOFFICIAL 2026-10-24 (charfacets)
 	horizonBias = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "HorizonBias"), 0.0f, 45.0f);
 	hizLogQ = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "HiZ"), 0, 6);	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
+	// UNOFFICIAL 2026-10-27 (NVR DXVK, deep/fork2-ssgi) ComputeGI (AmbientLight.h).
+	computeGI = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGI") != 0;
+	giStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "ComputeGIStrength"), 0.0f, 4.0f);
+	giThickness = std::clamp(TheSettingManager->GetSettingF("Shaders.AmbientLight.Main", "ComputeGIThickness"), 5.0f, 500.0f);
+	giQuality = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIQuality"), 0, 2);
+	giThinOcclusion = TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGIThinOcclusion") != 0;
+	giTest = std::clamp(TheSettingManager->GetSettingI("Shaders.AmbientLight.Main", "ComputeGITest"), 0, 2);
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).
@@ -695,7 +702,8 @@ bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width
 namespace {
 	// Each pass's fragment shader and its textures (set 1, binding = slot = index); Optional: the ones the shader reads only behind a
 	// constant that is off whenever the D3D9 pass leaves that stage unbound (a stand-in texture is bound there then).
-	struct ALExtShader { const char* Spv; UINT Textures; UINT Optional; };
+	// Gi (UNOFFICIAL 2026-10-27, ComputeGI): 1 = the 48-byte push block (ALExtPushGI).
+	struct ALExtShader { const char* Spv; UINT Textures; UINT Optional; UINT Gi; };
 	const ALExtShader ALExtShaders[AmbientLightEffect::ExtShaderCount] = {
 		{ "AmbientLightPrepare",    3,  0 },		// depth, normals, view model
 		{ "AmbientLightSmoothPass", 1,  0 },		// prep (X) / buffer 1 (Y)
@@ -710,12 +718,26 @@ namespace {
 		{ "AmbientLightInject",     5,  0x1F },		// sun depth, sun colour, screen memory, its colour, wall memory
 		{ "AmbientLightPropagate",  5,  (1u << 3) | (1u << 4) },	// geometry, wave, accum, wave colour, accum colour
 		{ "AmbientLightEstimateHiZ", 3, 0 },		// UNOFFICIAL 2026-10-26 (HiZ): prep, blue noise, NVR_HiZ
+		// UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) ComputeGI: the light pass (the frame), the GI pass per ComputeGIQuality (Estimate's prep and
+		// blue noise + the light), its accumulate (buffer, prep, last occlusion history, last bounce history) and Apply with the bounce light
+		// (Apply's 13 + this frame's bounce history).
+		{ "AmbientLightGILight",      1,  0, 0 },
+		{ "AmbientLightEstimate-gi0", 3,  0, 1 },
+		{ "AmbientLightEstimate-gi1", 3,  0, 1 },
+		{ "AmbientLightEstimate-gi2", 3,  0, 1 },
+		{ "AmbientLightGIAccumulate", 4,  0, 0 },
+		{ "AmbientLightApply-gi",     14, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11), 0 },
 	};
 	struct ALExtPush {	// AmbientLight.glsl's push block, 32 bytes
 		D3DXVECTOR4	frame;
 		UINT32		pointClamp, linearClamp, pointWrap, variant;
 	};
 	static_assert(sizeof(ALExtPush) == 32, "AmbientLight.glsl push block");
+	struct ALExtPushGI {	// the same with NVR_GI defined (AmbientLight.glsl), 48 bytes: ComputeGI's GI pass
+		ALExtPush	base;
+		D3DXVECTOR4	gi;		// x thickness, y unused, z strength, w 1 = ThinOcclusion
+	};
+	static_assert(sizeof(ALExtPushGI) == 48, "AmbientLight.glsl push block (NVR_GI)");
 	// AmbientLight.glsl's constants block (std140: matrices then float4s, as stored).
 	const char* const ALExtMatrices[] = { "TESR_ProjectionTransform", "TESR_InvProjectionTransform", "TESR_ViewTransform", "NVR_ALReproject",
 		"NVR_GridSunToGrid", "NVR_GridToSun" };
@@ -750,7 +772,7 @@ bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Tar
 		for (UINT i = 0; i < info.Textures; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
 		bindings[info.Textures] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
 		for (UINT s = 0; s < 3; s++) bindings[info.Textures + 1 + s] = { 0, 0, NVR_EXT_BIND_SAMPLER, s, NVR_EXT_VIEW_2D, FALSE, 16 + 4 * s };
-		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 4, sizeof(ALExtPush), true, TargetCount);
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 4, info.Gi ? sizeof(ALExtPushGI) : sizeof(ALExtPush), true, TargetCount);
 	}
 	ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap() };
 	if (!pass.Pipeline || !samplers[0] || !samplers[1] || !samplers[2]) return false;
@@ -778,14 +800,58 @@ bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Tar
 	resources[count++] = { 0, NVR_EXT_BIND_UNIFORM_BUFFER, uniforms, 0, 0, 0, FALSE };
 	for (UINT s = 0; s < 3; s++) resources[count++] = { s, NVR_EXT_BIND_SAMPLER, samplers[s], 0, 0, 0, FALSE };
 
-	ALExtPush push = {};
-	push.frame = D3DXVECTOR4(1.0f / Viewport.Width, 1.0f / Viewport.Height,
+	ALExtPushGI push = {};
+	push.base.frame = D3DXVECTOR4(1.0f / Viewport.Width, 1.0f / Viewport.Height,
 		(1.0f / (float)TheRenderManager->width) * 0.5f, (1.0f / (float)TheRenderManager->height) * 0.5f);	// ShaderManager::CreateFrameVertex's offset
-	push.variant = Variant;
+	push.base.variant = Variant;
+	if (info.Gi) push.gi = D3DXVECTOR4(giThickness, 0.0f, giStrength, giThinOcclusion ? 1.0f : 0.0f);	// UNOFFICIAL 2026-10-27 ComputeGI (NVR_GI)
 	RECT viewport = { 0, 0, (LONG)Viewport.Width, (LONG)Viewport.Height };
-	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, sizeof(push), &viewport, ExtUv::TexelCentre)) return false;	// frameUV() adds the offset
+	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, info.Gi ? sizeof(ALExtPushGI) : sizeof(ALExtPush), &viewport, ExtUv::TexelCentre)) return false;	// frameUV() adds the offset
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
 	return true;
+}
+
+// UNOFFICIAL 2026-10-27 (NVR DXVK, deep/fork2-ssgi) ComputeGI: see AmbientLight.h and src\hlsl\NewVegas\Compute\AmbientLightEstimate.frag.
+namespace {
+	const char* const GIShaderFiles[] = { "AmbientLightGILight", "AmbientLightEstimate-gi0", "AmbientLightEstimate-gi1", "AmbientLightEstimate-gi2",
+		"AmbientLightGIAccumulate", "AmbientLightApply-gi" };
+}
+
+// Whether ComputeGI runs this frame; the reason it does not is logged once per change. Makes the light texture the first time.
+bool AmbientLightEffect::GIActive() {
+	int state = 0;
+	if (!computeGI) state = 0;
+	else if (giFailed) state = 1;
+	else if (!DxvkCompute::Available()) state = 2;
+	else if (!ExtOn()) state = 3;
+	else {
+		if (giFiles < 0) {
+			giFiles = 1;
+			for (const char* file : GIShaderFiles) if (!DxvkCompute::HasSpirv(file)) {
+				Logger::Log("UNOFFICIAL AmbientLight: ComputeGI needs Shaders\\NewVegasReloaded\\Compute\\%s.spv (not installed).", file);
+				giFiles = 0;
+			}
+		}
+		if (giFiles && !giLightTried) {
+			giLightTried = true;
+			const int width = MaxQuality::Reduced(TheRenderManager->width, 2);	// the prep's size (EnsureBuffers)
+			const int height = MaxQuality::Reduced(TheRenderManager->height, 2);
+			TheTextureManager->InitTexture("NVR_AmbientLightGILight", &giLightTexture, &giLightSurface, width, height, D3DFMT_A8R8G8B8);
+			if (!giLightTexture || !giLightSurface) {
+				Logger::Log("UNOFFICIAL AmbientLight: ComputeGI's light texture could not be made; off for this session.");
+				giFailed = true;
+			}
+		}
+		state = giFailed ? 1 : giFiles ? 5 : 4;
+	}
+	if (state != giReported) {
+		giReported = state;
+		static const char* const says[] = { nullptr, "off for this session (it failed: see above); the usual passes run",
+			"needs NVR DXVK (the fork's d3d9.dll): nothing changes", "needs [Main.Main.Performance] NvrDxvkPasses on (AmbientLight's passes as Vulkan passes): nothing changes",
+			"shader files missing (see above): nothing changes", "on (Estimate with a visibility bitmask: one bounce of screen light)" };
+		if (says[state]) Logger::Log("UNOFFICIAL AmbientLight: ComputeGI %s.", says[state]);
+	}
+	return state == 5;
 }
 
 void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
@@ -908,6 +974,12 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 		gridSunFresh = false;
 		gridSunActive = false;	// WantsGridSunMap sets it again next frame while the sun map is in use
 	}
+	// UNOFFICIAL 2026-10-27 (NVR DXVK, deep/fork2-ssgi) ComputeGI: decided once a frame; the GI apply reads its strength as
+	// TESR_AmbientLightData.z (the retired screen bounce's slot, 0 otherwise: the D3D9 .fx and the other passes do not read it).
+	const bool giOn = GIActive();
+	bool giLightReady = false;
+	giDrawn = false;
+	Constants.Data.z = giOn ? giStrength : 0.0f;
 	Effect->SetTechnique(technique);
 	SetCT();
 	Effect->SetVector(layoutHandle, &layout);
@@ -999,6 +1071,17 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 			if ((p == 5 || p == 6) && !balanceRuns) continue;
 			if (p == 0 && prepared) continue;	// UNOFFICIAL 2026-10-21 (alrocks): RenderPrepare drew Prepare (and the smoothing) already
 			if (p == 3 && blurred) continue;	// the compute dispatch did blur Y too
+			// UNOFFICIAL 2026-10-27 ComputeGI: the frame's light per prep texel first (its own F10 line), then (below) the GI pass in Estimate's place.
+			if (p == 1 && giOn && ExtOn()) {
+				static GpuTimer lightTimer("  Ambient light GI light (half)");
+				GpuProfileScope gpu(lightTimer, Device);
+				IDirect3DSurface9* lightTarget = giLightSurface;
+				IDirect3DBaseTexture9* lightTextures[] = { scene };
+				giLightReady = ExtDraw(ExtGILight, &lightTarget, 1, lightTextures, 0, reduced);
+				if (giLightReady && ++giFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: ComputeGI running (%ux%u, quality %d: %d slices x %d taps, thickness %.0f, strength %.2f%s).",
+					half.Width, half.Height, giQuality, giQuality == 0 ? 2 : giQuality == 1 ? 3 : 4, giQuality == 0 ? 8 : giQuality == 1 ? 12 : 16, giThickness, giStrength,
+					giThinOcclusion ? ", thin occlusion" : "");
+			}
 			// UNOFFICIAL 2026-10-25 (NVR DXVK) AmbientLightBlurCompute: blur X + Y as one dispatch, 0 -> 1, timed as blur X. Buffer 0 is the
 			// current target after Estimate: the dispatch must not read it as such, so the target is moved to Accumulate's first.
 			if (p == 2 && TheSettingManager->SettingsMain.Main.AmbientLightBlurCompute && DxvkCompute::Available()) {
@@ -1046,8 +1129,9 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 						if (drawn && ++hizEstimateFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: Estimate reads its far taps from the Hi-Z pyramid (HiZ %d).", hizLogQ);
 					}
 					else {
-						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler") };
-						drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);
+						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), giLightTexture };	// (the 3rd: ComputeGI's)
+						if (giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);	// (ComputeGI)
+						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);	// the first 2
 					}
 				}
 				else if (p == 2 || p == 3) {
@@ -1055,8 +1139,13 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 					drawn = ExtDraw(ExtBlur, targets, 1, textures, p == 3 ? 1 : 0, reduced);
 				}
 				else if (p == 4) {
+					if (giDrawn && giTest != 1) {	// (ComputeGI) the bounce light kept from frame to frame too, in the bounce history
+						IDirect3DBaseTexture9* giTextures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex], historyTexture[readIndex] };
+						drawn = ExtDraw(ExtGIAccumulate, targets, 2, giTextures, 0, reduced);
+					}
+					if (!drawn) giDrawn = false;	// (ComputeGI) no accumulated light: the plain apply
 					IDirect3DBaseTexture9* textures[] = { bufferTexture[blurred], prepTexture, occlusionHistory[readIndex] };
-					drawn = ExtDraw(ExtAccumulate, targets, 2, textures, 0, reduced);
+					if (!drawn) drawn = ExtDraw(ExtAccumulate, targets, 2, textures, 0, reduced);
 				}
 				else if (p == 5) {
 					IDirect3DBaseTexture9* textures[] = { scene, depth, viewModel, occlusionHistory[writeIndex], normals, grid, gridColour };
@@ -1071,8 +1160,11 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 					IDirect3DBaseTexture9* waveStage = Constants.Data2.w > 11.5f && gridValid ? gridGeometry : gridScreenValid ? gridScreen[gridScreenIndex] : nullptr;
 					IDirect3DBaseTexture9* balance = interiorMode ? balanceTexture[balanceRuns ? balanceWrite : balanceRead] : nullptr;
 					IDirect3DBaseTexture9* textures[] = { scene, sunFar, depth, normals, ExtFileTexture("TESR_PointShadowBuffer"), skyTexture, viewModel,
-						occlusionHistory[writeIndex], waveStage, grid, gridColour, balance, bufferTexture[blurred] };
-					drawn = ExtDraw(ExtApply, targets, 1, textures, (skyTexture ? 1u : 0u) | (waveStage ? 2u : 0u), original);
+						occlusionHistory[writeIndex], waveStage, grid, gridColour, balance, bufferTexture[blurred], historyTexture[writeIndex] };
+					const UINT variant = (skyTexture ? 1u : 0u) | (waveStage ? 2u : 0u);
+					if (giDrawn && giTest == 0) drawn = ExtDraw(ExtGIApply, targets, 1, textures, variant, original);	// (ComputeGI) + this frame's bounce light (14th)
+					if (!drawn) drawn = ExtDraw(ExtApply, targets, 1, textures, variant, original);	// the first 13
+					if (giDrawn && giTest == 0 && drawn && giFrames == 1) Logger::Log("UNOFFICIAL AmbientLight: ComputeGI's bounce light applied (GI pass, accumulate, apply as Vulkan passes).");
 				}
 				if (drawn) continue;
 			}

@@ -54,6 +54,11 @@ layout(push_constant) uniform Push {
     uint linearClamp;    // 20: LINEAR, CLAMP
     uint pointWrap;      // 24: POINT, WRAP (the blue noise)
     uint variant;        // 28: bit 0 the technique's uniform argument (SmoothNormal alongY, Blur axis y, Apply sky); bit 1 see the pass
+#ifdef NVR_GI
+    // UNOFFICIAL 2026-10-27 (deep/fork2-ssgi) ComputeGI's GI pass only (AmbientLightEstimate.frag with -DNVR_GI; effects/AmbientLight.cpp
+    // ALExtPushGI, 48 bytes). Every other pass is compiled without it (its 32-byte block).
+    vec4 gi;             // 32: x thickness (world units), y unused, z strength, w 1 = ComputeGIThinOcclusion
+#endif
 } pc;
 
 #define POINT_S  NVR_SAMPLER(pc.pointClamp)
