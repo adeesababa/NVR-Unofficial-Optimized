@@ -2,6 +2,12 @@
 
 Branch `deep/fork2-wetsnow` (from `mine/nvr-dxvk-compute` 34a8df4d). No DXVK fork patch: plain D3D9, so it works on native
 D3D9 (how the user plays) and through DXVK alike. Not tested in the game yet (the coordinator's bulk test does that).
+Build (code of 794dd24b; later commits are this file only): `G:\_NVR-build-scratch\fork2-wetsnow-out\NewVegasReloaded.dll`,
+sha256 7CF6CA24FE6E2BE6..., VS2019 Release Win32, no warnings in the new or changed files. Effects checked with the game's D3DX
+compiler (all FORWARD_SHADOWS / REVERSED_DEPTH combinations compile). The wrap-round bookkeeping (which texel holds which spot
+after a move, the readers' addressing) was checked against brute force offline (4000 random moves, 0 errors).
+To install by hand: the DLL into `nvse\Plugins\`, and `Effects\CoverMap.fx.hlsl`, `Effects\Includes\CoverMap.hlsl`,
+`Effects\WetWorld.fx.hlsl`, `Effects\SnowAccumulation.fx.hlsl` into `Shaders\NewVegasReloaded\Effects\` (+ the defaults toml).
 
 ## What it does (plain English)
 Today rain wetness, puddles and snow cover are ONE amount for the whole world that rises and falls over game time. With the new
