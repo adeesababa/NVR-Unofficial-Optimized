@@ -53,6 +53,12 @@ public:
 	// Render, AmbientLight, SMAA, AO, ..., fall back to D3D9 for the frame too).
 	static bool					KeptOnD3D9(const char* Name);
 	static ID3D9NvrExtBuffer*	CreateBuffer(UINT Size, UINT Flags, const char* Name);
+	// UNOFFICIAL 2026-10-26 (alflicker): DXVK copies a D3DPOOL_MANAGED texture (the file textures: blue noise, SMAA's tables, noise
+	// volumes, ...) to the GPU only when a D3D9 draw binds it, and the extension reads the GPU image as it is: a file texture only
+	// Vulkan passes read stayed empty (AmbientLight's blue noise read 0 everywhere, so its rotating pattern moved the whole screen at
+	// once: the every-4th-frame flicker; a few D3D9 frames cured it for the session). PreLoad (IDirect3DResource9) uploads what is
+	// pending; nothing for the render targets. Every Draw/Dispatch call passes its bindings through this first.
+	static void					PreLoad(const NVR_EXT_RESOURCE_BINDING* Bindings, UINT Count);
 
 	// UNOFFICIAL 2026-10-26 (extension 1.5, diagnostic): while On (F10 profiling), a "DXVK PROFILE" line every 120 frames: where a frame
 	// goes between the game thread (the game and NVR outside D3D9 calls; inside them DXVK's own work and its waits), DXVK's command

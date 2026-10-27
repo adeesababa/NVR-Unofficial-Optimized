@@ -431,6 +431,7 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	d.pPushData = &push;
 	d.PushDataSize = sizeof(push);
 	d.GroupsY = 1; d.GroupsZ = 1;
+	DxvkCompute::PreLoad(simResources, _countof(simResources));	// UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 	auto dispatch = [&](UInt32 mode, UInt32 threads) {
 		if (FAILED(hr) || threads == 0) return;
 		push.mode = mode;
@@ -489,6 +490,7 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 			draw.pBindings = drawResources;
 			draw.pPushData = drawPush;
 			draw.PushDataSize = sizeof(drawPush);
+			DxvkCompute::PreLoad(drawResources, _countof(drawResources)); // UNOFFICIAL 2026-10-26 (alflicker): managed textures on the GPU (DxvkCompute.h)
 			hr = ext->Draw(&draw);
 			drew = SUCCEEDED(hr);
 		}

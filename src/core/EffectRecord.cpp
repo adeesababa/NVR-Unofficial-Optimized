@@ -581,6 +581,7 @@ bool EffectRecord::ExtFullScreen(IDirect3DDevice9* Device, IDirect3DSurface9* Re
 	draw.pBindings = Bindings;
 	draw.pPushData = Push;
 	draw.PushDataSize = PushSize;
+	DxvkCompute::PreLoad(Bindings, BindingCount);	// UNOFFICIAL 2026-10-26 (alflicker): the managed file textures on the GPU
 
 	FrameChain& chain = TheShaderManager->Chain;
 	HRESULT result;
@@ -652,6 +653,7 @@ bool EffectRecord::ExtDrawTo(ID3D9NvrExtPipeline* Pipeline, IDirect3DSurface9* c
 			said = true; shiftX = shiftY = 0.0f;
 		}
 	}
+	DxvkCompute::PreLoad(Bindings, BindingCount);	// UNOFFICIAL 2026-10-26 (alflicker): the managed file textures on the GPU
 	HRESULT result = DepthStencil ? DxvkCompute::Extension()->DrawDepthStencil(&draw, DepthStencil, shiftX, shiftY)
 		: (shiftX != 0.0f || shiftY != 0.0f) ? DxvkCompute::Extension()->DrawShifted(&draw, shiftX, shiftY) : DxvkCompute::Extension()->Draw(&draw);
 	if (SUCCEEDED(result) && (shiftX != 0.0f || shiftY != 0.0f) && !ExtShiftLogged) {
