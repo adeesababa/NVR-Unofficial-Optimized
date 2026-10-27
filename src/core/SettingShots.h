@@ -128,6 +128,7 @@ namespace SettingShots {
 			else if (command == "shot") { Shot s; words >> s.slug; if (s.slug.empty()) s.slug = "shot"; List.push_back(s); }
 			// 2026-10-19: 'menu <section>' = this shot's picture is NVR's menu open at that page ("@NewInPatch" = the new tab),
 			// taken after the menu is drawn (CaptureMenu); 'menutests' also ticks Display > "Show test settings" for it.
+			// 2026-10-27: 'menu game' = the back buffer with the GAME's menus on it (race menu, Pip-Boy...), NVR's menu stays shut.
 			else if (command == "menu" || command == "menutests") {
 				if (List.empty()) { error = "line " + std::to_string(number) + ": a menu before the first 'shot'"; return false; }
 				if (command == "menu") words >> List.back().menu;
@@ -261,12 +262,12 @@ namespace SettingShots {
 		const bool changes = std::any_of(s.changes.begin(), s.changes.end(), [](const Change& c) { return !c.console && !c.coverage; });
 		if (changes || !NoReload) TheSettingManager->LoadSettings();
 		else Logger::Log("SETTING SHOTS %s: shot '%s': no changes, no settings reload (noreload)", Run, s.slug.c_str());
-		if (!s.menu.empty()) ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
+		if (!s.menu.empty() && s.menu != "game") ImGuiManager::TestShowMenu(s.menu.c_str(), s.menuTests);
 	}
 
 	// Every change of the shot undone, newest first.
 	inline void Revert() {
-		if (Index < List.size() && !List[Index].menu.empty()) ImGuiManager::TestShowMenu(nullptr, false);	// 2026-10-19: menu shots
+		if (Index < List.size() && !List[Index].menu.empty() && List[Index].menu != "game") ImGuiManager::TestShowMenu(nullptr, false);	// 2026-10-19: menu shots
 		for (auto u = Undos.rbegin(); u != Undos.rend(); ++u) {
 			if (u->effect) { TheShaderManager->SwitchShaderStatus(u->section.c_str()); continue; }
 			switch (u->type) {
