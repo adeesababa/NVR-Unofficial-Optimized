@@ -176,8 +176,9 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 
 
 // UNOFFICIAL 2026-10-27 persist (technique 1, [Shaders.SnowAccumulation.Main] Persistent): the snow's amount comes from the cover map
-// per spot (built up where the snow reached, melted by the sun, drifts, footprints) instead of the one amount for the whole world;
-// a spot with no snow left gets none (the noise pattern alone would leave flecks). With persist = false every line is as before.
+// per spot (built up where the snow reached, melted by the sun, drifts) instead of the one amount for the whole world, and trodden
+// snow (footprints) is drawn compacted; a spot with no snow left gets none (the noise pattern alone would leave flecks). With
+// persist = false every line is as before.
 float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
@@ -200,11 +201,24 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	float3 sunColor = linearize(TESR_SunColor).rgb;
 
 	float2 uv = worldPos.xy / 200.0f;
+	// UNOFFICIAL 2026-10-27 persist: this spot's snow (z) and trodden snow (w) from the cover map. Trodden (footprint) snow stays snow,
+	// compacted: flatter (less of the snow's own bumps, no sparkle, less rim light), greyer and darker; only in the middle of a
+	// hard-trodden trail does the ground show through.
+	float4 cover = float4(0, 0, 0, 0);
+	float trodden = 0.0f;
+	if (persist)
+	{
+		float coverInside;
+		cover = CoverMapReadAll(camera_vector.xy, coverInside);
+		trodden = saturate(cover.w);
+	}
 	float3 localNorm = expand(tex2D(TESR_SnowNormSampler, uv).xyz);
+	if (persist) localNorm.xy *= 1.0f - 0.75f * trodden;
 	float3 surfaceNormal = normalize(float3(localNorm.xy + norm.xy, localNorm.z * norm.z));
 	float4 normal =  float4(surfaceNormal, 1);
 
 	float3 snow_tex = TESR_SnowAccumulationColor.rgb;
+	if (persist) snow_tex = lerp(snow_tex, luma(snow_tex) * float3(0.56f, 0.58f, 0.62f), 0.8f * trodden);
 
 	float fresnelCoeff = saturate(pow(1 - shade(eyeDirection, surfaceNormal), 5));
 	float3 snowSpec = pows(shades(normalize(TESR_SunDirection.xyz + eyeDirection), surfaceNormal), 20) * fresnelCoeff;
@@ -218,6 +232,11 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	float3 spec = snowSpec * sunColor * specularPower * shadow.r;
 	float3 fresnel = fresnelCoeff * sunColor * fresnelPower;
 	float3 sparkles = pows(shades(eyeDirection, normalize(expand(tex2D(TESR_BlueNoiseSampler, worldPos.xy / 200).rgb))), 1000) * 0.2 * shadow.r;
+	if (persist)
+	{
+		fresnel *= 1.0f - 0.6f * trodden;
+		sparkles *= 1.0f - trodden;
+	}
 
 	// float4 snowColor = float4(ambient + diffuse + spec + fresnel, 1);
 	float4 snowColor = float4(ambient + diffuse + spec + fresnel + sparkles, 1);
@@ -231,10 +250,10 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	}
 
 	// create a noisy pattern of accumulation over time
-	float snowAmount = persist ? CoverMapRead(camera_vector.xy).z : TESR_SnowAccumulationParams.w;
+	float snowAmount = persist ? cover.z : TESR_SnowAccumulationParams.w;
 	float coverage = saturate(pows(noise(worldPos.xyz / (noiseSize * 0.5)) * noise(worldPos.xyz / (noiseSize * 3)) * noise(worldPos.xyz / noiseSize), 2 - 2 * snowAmount));
 	coverage = saturate(smoothstep(0.2, 0.4, coverage));
-	if (persist) coverage *= smoothstep(0.0, 0.05, snowAmount);
+	if (persist) coverage *= smoothstep(0.0, 0.05, snowAmount) * (1.0f - smoothstep(0.5f, 0.9f, trodden * (0.7f + 0.6f * noise(worldPos.xyz / 18.0f))));
 	float vertical = smoothstep(0.5, 0.8, shade(float3(0, 0, 1), norm));
 
 	color = lerp(color, snowColor, coverage * min(vertical, ortho));

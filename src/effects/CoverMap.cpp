@@ -70,9 +70,11 @@ void CoverMapEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CoverMapOrthoInverse", (D3DXVECTOR4*)&Constants.OrthoInverse);
 }
 
-// The slot TESR_CoverMapBuffer follows (EffectRecord::SetCT reads it at every bind): the map written last, null while there is none.
+// The slots TESR_CoverMapBuffer and TESR_CoverMapAux follow (EffectRecord::SetCT reads them at every bind): the maps written last,
+// null while there are none.
 void CoverMapEffect::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_CoverMapBuffer", (IDirect3DBaseTexture9**)&currentTexture);
+	TheTextureManager->RegisterTexture("TESR_CoverMapAux", (IDirect3DBaseTexture9**)&currentAux);
 }
 
 bool CoverMapEffect::WetActive() const {
@@ -197,26 +199,35 @@ void CoverMapEffect::UpdateConstants() {
 }
 
 bool CoverMapEffect::EnsureMap(IDirect3DDevice9* Device) {
-	if (mapTexture[0] && mapTexture[1]) return true;
+	if (mapTexture[0] && mapTexture[1] && auxTexture[0] && auxTexture[1]) return true;
 	if (mapFailed) return false;
 	ReleaseMap();
 	const UINT n = (UINT)Settings.resolution;
+	// The update writes both maps in one pass (two render targets of one format: every D3D9 card with ps_3_0 has at least four).
+	D3DCAPS9 caps = {};
+	if (FAILED(Device->GetDeviceCaps(&caps)) || caps.NumSimultaneousRTs < 2) {
+		mapFailed = true;
+		Logger::Log("[ERROR] UNOFFICIAL Persistent wetness/snow: the card draws into %lu target(s) at once, the cover map needs 2; WetWorld and SnowAccumulation keep their single amount", caps.NumSimultaneousRTs);
+		return false;
+	}
 	const D3DFORMAT formats[2] = { D3DFMT_A16B16G16R16, D3DFMT_A16B16G16R16F };
+	auto make = [&](IDirect3DTexture9*& texture, IDirect3DSurface9*& surface, D3DFORMAT format) {
+		return SUCCEEDED(Device->CreateTexture(n, n, 1, D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &texture, NULL)) && texture &&
+			SUCCEEDED(texture->GetSurfaceLevel(0, &surface)) && surface;
+	};
 	for (int f = 0; f < 2; f++) {
 		bool ok = true;
-		for (int i = 0; i < 2 && ok; i++) {
-			ok = SUCCEEDED(Device->CreateTexture(n, n, 1, D3DUSAGE_RENDERTARGET, formats[f], D3DPOOL_DEFAULT, &mapTexture[i], NULL)) && mapTexture[i] &&
-				SUCCEEDED(mapTexture[i]->GetSurfaceLevel(0, &mapSurface[i])) && mapSurface[i];
-		}
+		for (int i = 0; i < 2 && ok; i++) ok = make(mapTexture[i], mapSurface[i], formats[f]) && make(auxTexture[i], auxSurface[i], formats[f]);
 		if (ok) {
-			for (int i = 0; i < 2; i++) Device->ColorFill(mapSurface[i], NULL, D3DCOLOR_ARGB(0, 0, 0, 0));
+			for (int i = 0; i < 2; i++) { Device->ColorFill(mapSurface[i], NULL, D3DCOLOR_ARGB(0, 0, 0, 0)); Device->ColorFill(auxSurface[i], NULL, D3DCOLOR_ARGB(0, 0, 0, 0)); }
 			mapUnorm = f == 0;
 			mapResolution = (int)n;
 			current = 0;
 			currentTexture = mapTexture[0];
+			currentAux = auxTexture[0];
 			mapValid = false;
 			Logger::Log("UNOFFICIAL Persistent wetness/snow: cover map %ux%u texels (%s), %.0f units across (%.1f units a texel), %.1f MB",
-				n, n, mapUnorm ? "A16B16G16R16" : "A16B16G16R16F fallback", Settings.size, Settings.size / n, 2.0 * 8.0 * n * n / (1024.0 * 1024.0));
+				n, n, mapUnorm ? "A16B16G16R16" : "A16B16G16R16F fallback", Settings.size, Settings.size / n, 4.0 * 8.0 * n * n / (1024.0 * 1024.0));
 			return true;
 		}
 		ReleaseMap();
@@ -230,8 +241,11 @@ void CoverMapEffect::ReleaseMap() {
 	for (int i = 0; i < 2; i++) {
 		if (mapSurface[i]) { mapSurface[i]->Release(); mapSurface[i] = nullptr; }
 		if (mapTexture[i]) { mapTexture[i]->Release(); mapTexture[i] = nullptr; }
+		if (auxSurface[i]) { auxSurface[i]->Release(); auxSurface[i] = nullptr; }
+		if (auxTexture[i]) { auxTexture[i]->Release(); auxTexture[i] = nullptr; }
 	}
 	currentTexture = nullptr;
+	currentAux = nullptr;
 	mapResolution = 0;
 	mapValid = false;
 }
@@ -305,17 +319,22 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 			Constants.FootA = D3DXVECTOR4((float)(ax - camera.x), (float)(ay - camera.y), (float)(az - camera.z), Settings.footSize);
 			Constants.FootB = D3DXVECTOR4((float)(fx - camera.x), (float)(fy - camera.y), (float)(fz - camera.z), 0.0f);
 
-			// One pass into the other map (it reads the current one), then they swap.
+			// One pass into the other pair of maps (it reads the current pair), then they swap.
 			bool drawn = false;
 			IDirect3DSurface9* depthWas = nullptr;
-			DWORD scissorWas = FALSE;
+			IDirect3DSurface9* target1Was = nullptr;
+			DWORD scissorWas = FALSE, writeWas1 = 0xF;
 			Device->GetDepthStencilSurface(&depthWas);
+			if (FAILED(Device->GetRenderTarget(1, &target1Was))) target1Was = nullptr;	// (none bound: D3DERR_NOTFOUND)
 			Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &scissorWas);
+			Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &writeWas1);
 			Device->SetDepthStencilSurface(nullptr);	// (the screen's depth surface may be smaller than the map)
 			Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+			Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
 			Device->SetStreamSource(0, sm->FrameVertex, 0, sizeof(FrameVS));	// the frame quad, as the effects draw it
 			Device->SetFVF(FrameFVF);
 			Device->SetRenderTarget(0, mapSurface[1 - current]);
+			Device->SetRenderTarget(1, auxSurface[1 - current]);
 			D3DXHANDLE technique = TechniqueHandle(updateHandle, "UpdateTechnique");
 			if (technique && SUCCEEDED(Effect->SetTechnique(technique))) {
 				SetCT();
@@ -330,13 +349,17 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 				}
 			}
 			Device->SetRenderTarget(0, RenderTarget);
+			Device->SetRenderTarget(1, target1Was);	// (after target 0: setting target 0 resets the viewport only)
 			Device->SetDepthStencilSurface(depthWas);
 			Device->SetRenderState(D3DRS_SCISSORTESTENABLE, scissorWas);
+			Device->SetRenderState(D3DRS_COLORWRITEENABLE1, writeWas1);
 			if (depthWas) depthWas->Release();
+			if (target1Was) target1Was->Release();
 
 			if (drawn) {
 				current = 1 - current;
 				currentTexture = mapTexture[current];
+				currentAux = auxTexture[current];
 				mapValid = true;
 				originX = ox;
 				originY = oy;

@@ -5,15 +5,18 @@
 // constants, nothing of this runs or is allocated).
 //
 // The cover map (Effects\CoverMap.fx.hlsl): a top-down map round the camera that keeps, per spot, how wet the top surface is, how
-// full its puddles are and how deep its snow lies, plus that surface's height as the ortho map (the top-down depth map the rain and
-// snow effects already draw) saw it. It is world-fixed and wraps round, so it never has to be moved: when the camera moves, only the
+// full its puddles are, how deep its snow lies and how hard that snow has been trodden (one texture, the readers'), plus that
+// surface's height and whether it lay in shade (a second texture drawn in the same pass). Heights come from the ortho map (the
+// top-down depth map the rain and snow effects already draw) where it holds something, else from the camera's depth (the ortho map
+// holds no land at all). It is world-fixed and wraps round, so it never has to be moved: when the camera moves, only the
 // texels whose spot left the window start again, from the open-ground values kept here on the CPU (which follow the same rules for
 // an open, sunlit spot). Rain and snow build up on every spot's top surface; spots dry and melt over game time, faster in the sun,
 // slower in shade (a short march towards the sun over the map's own heights) and at night; snow gathers in hollows and against
-// walls; the player's feet press a trail into the snow. WetWorld (techniques 5/6) and SnowAccumulation (technique 1) read the map
+// walls; the player's feet tread a trail into the snow. WetWorld (techniques 5/6) and SnowAccumulation (technique 1) read the map
 // instead of their single amount; outside the window they use the open-ground values. Their own top-surface tests (the ortho map)
 // still decide which pixels are the top surface, so ground under a roof stays dry.
-// Plain D3D9 render-target ping-pong (two A16B16G16R16 maps), so it works on native D3D9 and through DXVK alike. The map belongs to
+// Plain D3D9 render-target ping-pong (two pairs of A16B16G16R16 maps, two render targets at once), so it works on native D3D9 and
+// through DXVK alike. The map belongs to
 // one exterior worldspace: another worldspace, a loaded save (game time going back) or more than 72 game hours at once start it again.
 //
 // Not in Effects.h on purpose (the class layouts every file sees stay as they were): the effect is reached through TheCoverMap,
@@ -64,9 +67,12 @@ private:
 	double	MinStep() const;
 	void	SetReaderConstants();
 
-	IDirect3DTexture9*	mapTexture[2] = {};
+	IDirect3DTexture9*	mapTexture[2] = {};			// main: wetness, puddle water, snow, trodden snow (the readers' map)
 	IDirect3DSurface9*	mapSurface[2] = {};
-	IDirect3DTexture9*	currentTexture = nullptr;	// the slot TESR_CoverMapBuffer follows: the map written last
+	IDirect3DTexture9*	auxTexture[2] = {};			// aux: top-surface height, sun/shade, height source (written beside main: 2 targets)
+	IDirect3DSurface9*	auxSurface[2] = {};
+	IDirect3DTexture9*	currentTexture = nullptr;	// the slot TESR_CoverMapBuffer follows: the main map written last
+	IDirect3DTexture9*	currentAux = nullptr;		// the slot TESR_CoverMapAux follows
 	int					current = 0;
 	int					mapResolution = 0;
 	bool				mapUnorm = true;			// A16B16G16R16 (else the A16B16G16R16F fallback: coarser steps)
