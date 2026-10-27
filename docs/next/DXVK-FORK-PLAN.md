@@ -356,6 +356,11 @@ in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame total
   settings, each shot keeps one AL pass or all of AL on D3D9, plus pure D3D9 shots, two rounds, one launch): every shot within
   +-0.03/255 of D3D9, MSAA off (20261026-211221) and 4x (211525, "the frame msaa 4" in the log). The earlier launch it was
   compared with predates the fix.
+- Whole sweep Vulkan-first (list dxvkfork-28-sweep-vkfirst = dxvkfork-11-sweep with NvrDxvkPasses on from the first frame and
+  every group's Vulkan shot before its D3D9 one; lucky22 20261026-211939, og-desert 212212, og-lake 212454): every group's
+  first Vulkan shot (defaults, post, rain, snow, storm, bounce, taa) is as close to D3D9 as the later Vulkan shot (the noise
+  pair). Only the desert sandstorm differs by 5-7/255, from shot to shot on both paths and with the sign flipping between
+  launches (the dust's own motion; 11:46 the Vulkan shot was the denser one).
 Next (session-hours): the same upload in the fork itself (patch 0011: D3D9NvrExt's resource resolve uploads a managed
 texture and runs a pending mip generation, so a future caller cannot miss it; 0.5 h + a CI run); AmbientLight estimate's
 last +0.03 ms and the fog estimate's +0.02 ms (small).
