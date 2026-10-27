@@ -2588,11 +2588,41 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 
 // UNOFFICIAL: float settings too large for the drag step every other float uses (0.001 a pixel), such as distances in game
 // units, render as a slider over a fixed range instead. Keyed by "Section.Key" like kEnumSettings.
+// UNOFFICIAL 2026-10-27 (user: "oh it's called displacement instead of tessellation" / "ok do that"): a setting's menu name where
+// users look for another word; the key in the settings files stays. The ## part keeps ImGui's ID the key.
+static const char* MenuKeyLabel(const char* section, const char* key) {
+	if (!strcmp(section, "Main.Main.Performance") && !strcmp(key, "NvrDxvkDisplacement")) return "NvrDxvkDisplacement (tessellation)##NvrDxvkDisplacement";
+	return key;
+}
+
+// UNOFFICIAL 2026-10-27 (user: "the render scale on dlss and fsr should mimic modern games and just have a few options to select"):
+// [Shaders.TAA.FSR] / [Shaders.TAA.DLSS] RenderScale as the usual quality modes (AMD's and NVIDIA's ratios: 1.5x, 1.7x, 2x, 3x per
+// axis). The file keeps the number: any other value shows as Custom and stays until a mode is picked.
+static bool IsRenderScaleSetting(const char* section, const char* key) {
+	return !strcmp(key, "RenderScale") && (!strcmp(section, "Shaders.TAA.FSR") || !strcmp(section, "Shaders.TAA.DLSS"));
+}
+static bool RenderScaleCombo(const char* section, const char* key, float& val) {
+	static const float scales[] = { 1.0f, 0.667f, 0.588f, 0.5f, 0.333f };
+	const bool dlss = !strcmp(section, "Shaders.TAA.DLSS");
+	const char* const names[] = { dlss ? "Native (DLAA)" : "Native (anti-aliasing only)", "Quality (67%)", "Balanced (59%)",
+		"Performance (50%)", "Ultra Performance (33%)" };
+	int current = -1;
+	for (int i = 0; i < 5; i++) if (fabsf(val - scales[i]) < 0.005f) current = i;
+	char custom[48];
+	sprintf_s(custom, "Custom (%.0f%%)", val * 100.0f);
+	bool picked = false;
+	if (ImGui::BeginCombo(key, current >= 0 ? names[current] : custom)) {
+		for (int i = 0; i < 5; i++) {
+			if (ImGui::Selectable(names[i], i == current)) { val = scales[i]; picked = true; }
+			if (i == current) ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	return picked;
+}
+
 struct FloatRange { float Min; float Max; const char* Format; };
 static const std::unordered_map<std::string, FloatRange> kFloatSliders = {
-	// UNOFFICIAL 2026-10-27: a slider over the range the code uses (a typed 0.1 was quietly read as 0.5 before)
-	{ "Shaders.TAA.FSR.RenderScale", { 0.33f, 1.0f, "%.2f" } },
-	{ "Shaders.TAA.DLSS.RenderScale", { 0.33f, 1.0f, "%.2f" } },
 	{ "Shaders.PBR.Metal.FadeDistance", { 0.0f, 4000.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.NearFade", { 0.0f, 128.0f, "%.0f" } },
 	{ "Shaders.ShadowsInteriors.Main.PlayerLampMargin", { 0.0f, 64.0f, "%.0f" } },
@@ -2652,7 +2682,7 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	switch (node.Type) {
 	case NodeType::Boolean: {
 		bool val = (strcmp(node.Value, "1") == 0 || _stricmp(node.Value, "true") == 0);
-		if (ImGui::Checkbox(node.Key, &val)) {
+		if (ImGui::Checkbox(MenuKeyLabel(node.Section, node.Key), &val)) {
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			// UNOFFICIAL 2026-10-27: FSR and DLSS are either/or (user: "toggling one disables the other")
 			if (val && !strcmp(node.Key, "Enabled")) {
@@ -2674,7 +2704,9 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 	case NodeType::Float: {
 		float val = (float)atof(node.Value);
 		auto sliderIt = kFloatSliders.find(std::string(node.Section) + "." + node.Key);
-		bool edited = sliderIt != kFloatSliders.end()
+		const bool modes = IsRenderScaleSetting(node.Section, node.Key);	// UNOFFICIAL 2026-10-27: the quality modes (RenderScaleCombo)
+		bool edited = modes ? RenderScaleCombo(node.Section, node.Key, val)
+			: sliderIt != kFloatSliders.end()
 			? ImGui::SliderFloat(node.Key, &val, sliderIt->second.Min, sliderIt->second.Max, sliderIt->second.Format)
 			: ImGui::DragFloat(node.Key, &val, 0.001f, 0.0f, 0.0f, "%.4f");
 		if (edited) {
@@ -2682,12 +2714,12 @@ static void RenderSetting(SettingManager::Configuration::ConfigNode& node, bool 
 			TheSettingManager->LoadSettings();
 		}
 		bool hovered = ImGui::IsItemHovered();
-		if (hovered && (s_plusPressed || s_minusPressed)) {
+		if (hovered && !modes && (s_plusPressed || s_minusPressed)) {
 			val += s_plusPressed ? s_shaderStepSize : -s_shaderStepSize;
 			TheSettingManager->SetSetting(node.Section, node.Key, val);
 			TheSettingManager->LoadSettings();
 		}
-		if (isShader && DevOptionsShown()) {	// UNOFFICIAL 2026-10-25: the same as dragging or the +/- keys over the box
+		if (isShader && DevOptionsShown() && !modes) {	// UNOFFICIAL 2026-10-25: the same as dragging or the +/- keys over the box
 			ImGui::SameLine();
 			if (ImGui::SmallButton("-")) {
 				val -= s_shaderStepSize;
@@ -3499,6 +3531,11 @@ static std::string MenuEntryLabel(const std::string& name) {
 	if (name == "TAA") return "TAA / FSR / DLSS##TAA";
 	return name;
 }
+// The same for a page in the sidebar (by its full path; the section keeps its name in the settings files).
+static std::string MenuSectionLabel(const std::string& path, const std::string& name) {
+	if (path == "Shaders.Terrain.Displacement") return "Tessellation (displacement)##" + name;	// UNOFFICIAL 2026-10-27 (user)
+	return name;
+}
 
 static void RenderSectionNode(const std::string& path, const std::string& name, bool parentIsShaders) {
 	if (ShouldHideSection(name)) return;
@@ -3517,7 +3554,7 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 		// Mute non-selected leaves so they read as lower-weight nav targets
 		// rather than siblings of the category/shader-toggle rows above them.
 		if (!selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.68f, 0.75f, 1.0f));
-		if (ImGui::Selectable(name.c_str(), selected))
+		if (ImGui::Selectable(MenuSectionLabel(path, name).c_str(), selected))
 			SelectedSection = path;
 		if (!selected) ImGui::PopStyleColor();
 		ImGui::PopID();

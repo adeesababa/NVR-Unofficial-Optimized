@@ -276,11 +276,16 @@ bool TAAEffect::UpscaleBegin(bool firstWorld) {
 	Up.TargetFormat = targetDesc.Format;
 	Up.Hdr = targetDesc.Format == D3DFMT_A16B16G16R16F || targetDesc.Format == D3DFMT_A32B32G32R32F;
 	// Do_SetCameraData: X = W * l, Y = H * (1 - t), width = W * (r - l), height = H * (t - b), each rounded.
+	// UNOFFICIAL 2026-10-27 (user: "a strange blue line that grows and shrinks depending on render scale ... appears and disappears on
+	// some render scale levels"; their log: "0 world passes drawn at that size" at those scales): W x (render / W) in float came out a
+	// hair under the render size at some scales and the game's conversion dropped a whole pixel, so the world was drawn one column or
+	// row short of the render rectangle; its last column / row kept stale pixels (sky blue) that FSR stretched into a line at the
+	// screen's edge. A quarter pixel more lands on the render size whether the game rounds or cuts off.
 	Up.SavedPort = port;
 	camera->ViewPort.l = 0.0f;
-	camera->ViewPort.r = (float)renderWidth / (float)width;
+	camera->ViewPort.r = ((float)renderWidth + 0.25f) / (float)width;
 	camera->ViewPort.t = 1.0f;
-	camera->ViewPort.b = 1.0f - (float)renderHeight / (float)height;
+	camera->ViewPort.b = 1.0f - ((float)renderHeight + 0.25f) / (float)height;
 	Up.Camera = camera;
 	Up.PortSet = true;
 	Up.Active = true;

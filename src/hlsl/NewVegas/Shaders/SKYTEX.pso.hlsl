@@ -28,6 +28,7 @@ float4 TESR_SkyLook : register(c27);           // UNOFFICIAL 2026-10-26 x: the s
 float4 TESR_ReciprocalResolution : register(c28);
 row_major float4x4 TESR_InvProjectionTransform : register(c29);
 row_major float4x4 TESR_InvViewTransform : register(c33);
+float4 TESR_RenderScale : register(c37);     // UNOFFICIAL 2026-10-27 RenderScale v2: xy = the world's drawn part of the screen (1 off), zw = 1 / xy
 #define SKY_VIEW_DIRECTION
 
 

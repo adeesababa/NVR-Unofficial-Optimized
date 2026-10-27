@@ -28,8 +28,12 @@ float3 GetSkyColor(float verticality, float athmosphere, float sunHeight, float 
 // never showed). Rebuilt from the pixel and the camera: the shader declares TESR_ReciprocalResolution, TESR_InvProjectionTransform
 // and TESR_InvViewTransform (row_major). Only the main view's camera: in the water reflection the fade is approximate.
 #ifdef SKY_VIEW_DIRECTION
+// UNOFFICIAL 2026-10-27 RenderScale v2 (user: a line in the sky that grows and shrinks with RenderScale): with RenderScale below 1 the
+// world (the sky with it) is drawn into the top-left TESR_RenderScale.xy of the screen, so the pixel's share of the screen is its
+// share of that part (x zw); off, zw = 1.
 float3 SkyViewDirection(float2 vpos) {
-    float2 ndc = float2((vpos.x + 0.5f) * TESR_ReciprocalResolution.x * 2.0f - 1.0f, 1.0f - (vpos.y + 0.5f) * TESR_ReciprocalResolution.y * 2.0f);
+    float2 s01 = (vpos + 0.5f) * TESR_ReciprocalResolution.xy * TESR_RenderScale.zw;
+    float2 ndc = float2(s01.x * 2.0f - 1.0f, 1.0f - s01.y * 2.0f);
     float4 view = mul(float4(ndc, 0.5f, 1.0f), TESR_InvProjectionTransform);
     return normalize(mul(float4(view.xyz / view.w, 0.0f), TESR_InvViewTransform).xyz);
 }

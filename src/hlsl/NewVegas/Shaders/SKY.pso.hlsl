@@ -22,6 +22,7 @@ float4 TESR_SkyLook: register(c21);     // UNOFFICIAL 2026-10-26 x: Saturation f
 float4 TESR_ReciprocalResolution: register(c22);
 row_major float4x4 TESR_InvProjectionTransform: register(c23);
 row_major float4x4 TESR_InvViewTransform: register(c27);
+float4 TESR_RenderScale: register(c31);      // UNOFFICIAL 2026-10-27 RenderScale v2: xy = the world's drawn part of the screen (1 off), zw = 1 / xy
 #define SKY_VIEW_DIRECTION
 // UNOFFICIAL 2026-10-14 physical sky ([Shaders.Sky.Physical], Includes/Atmosphere.hlsl, Sky.cpp). Compiled in only when on at
 // startup (PHYSICAL_SKY_ON, ShaderRecord::LoadShader); otherwise this shader is exactly what it was.
