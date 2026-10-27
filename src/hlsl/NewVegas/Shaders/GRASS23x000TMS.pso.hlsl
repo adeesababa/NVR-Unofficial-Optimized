@@ -8,6 +8,8 @@
 #include "includes/PBRScale.hlsl"
 
 sampler2D DiffuseMap : register(s0);
+// UNOFFICIAL 2026-10-27 [Shaders.Grass.Main] ShadowFix: w 1 = the sun shadow lookup takes the world up normal (see main).
+float4 TESR_GrassScale;
 
 struct PS_INPUT {
     float2 uv             : TEXCOORD0;
@@ -31,9 +33,15 @@ PS_OUTPUT main(PS_INPUT IN, float2 vPos : VPOS) {
     // are compiled in, and ForwardShadows is a live setting that can switch them off.
     float3 shadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
 #if FORWARD_SHADOWS
+    // UNOFFICIAL 2026-10-27 ShadowFix (tester: zebra stripes on each tuft, shaded as if the sun came from the other side): the
+    // derivative normal is turned to face the CAMERA, and a grass card is two-sided, so seen with the sun behind it the normal
+    // points away from the sun and the normal offset pushes the lookup into the tuft's own shadow (mirrored), and the per-triangle
+    // derivatives of thin, swaying blades flip from blade to blade (stripes). Grass has no surface of its own to bias from: take the
+    // ground's up normal, the same for the whole tuft, as the ground it stands on. Off: as before.
+    float3 lookupNormal = TESR_GrassScale.w > 0.5f ? float3(0.0f, 0.0f, 1.0f) : shadowNormal;
     // ddx/ddy must stay at top level, outside dynamic flow control.
     sunAmount *= SHADOW_VS_PRESENT(IN.shadowWorldPos.w)
-         ? GetSunShadow(IN.shadowWorldPos.xyz, shadowNormal)
+         ? GetSunShadow(IN.shadowWorldPos.xyz, lookupNormal)
          : 1.0f;
 #endif
 
