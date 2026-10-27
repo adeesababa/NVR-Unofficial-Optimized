@@ -444,7 +444,7 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth) {
 	QueryPerformanceFrequency(&frequency);
 	const float deltaTime = Up.LastTime.QuadPart ? (float)(now.QuadPart - Up.LastTime.QuadPart) / (float)frequency.QuadPart : 0.0f;
 	Up.LastTime = now;
-	const bool reset = !Up.HistoryValid || TheShaderManager->GameState.isCellChanged || renderWidth != Up.LastRenderWidth ||
+	const bool reset = !Up.HistoryValid || TheShaderManager->GameState.isCameraCut || renderWidth != Up.LastRenderWidth ||
 		renderHeight != Up.LastRenderHeight || deltaTime > 0.5f;
 	if (reset) {
 		Up.PrevView = TheRenderManager->viewMatrix;

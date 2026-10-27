@@ -186,7 +186,7 @@ bool BounceLightEffect::RenderSpillPyramid(IDirect3DDevice9* Device, IDirect3DTe
 	if (steadyOn) {
 		const double now = TheFrameRateManager->Time;
 		const double gap = now - spillSteadyTime;
-		const bool usable = spillSteadyValid && gap > 0.0 && gap < 0.5 && !TheShaderManager->GameState.isCellChanged;
+		const bool usable = spillSteadyValid && gap > 0.0 && gap < 0.5 && !TheShaderManager->GameState.isCameraCut;
 		D3DXMATRIX reproject;
 		D3DXMatrixIdentity(&reproject);
 		if (usable) BounceLightReprojection(TheRenderManager->viewMatrix, TheRenderManager->InvViewMatrix, spillSteadyView, spillSteadyInvView, spillSteadyProj, &reproject);
@@ -551,7 +551,7 @@ void BounceLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Rend
 	const bool rectSame = RenderRect::Active() == lastRect && !RenderRect::ScaleChanged();
 	if (!onlyCombine) lastRect = RenderRect::Active();
 	const bool continuous = lastValid && rectSame && lastQuarter == quarter && now - lastTime >= 0.0 && now - lastTime < 0.5 &&
-		!TheShaderManager->GameState.isCellChanged;
+		!TheShaderManager->GameState.isCameraCut;
 	const float frameSeconds = continuous ? (float)(now - lastTime) : 0.0f;
 	// UNOFFICIAL NeonSpillHoldAfterTurn: how long the view has stood still. Turning or moving restarts it (a hair of float noise in
 	// the matrices does not count as moving); a break in continuity (the gate above: quarter switch, 0.5 s gap, cell change, or a

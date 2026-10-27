@@ -391,7 +391,7 @@ void TAAEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget
 	if (useFSR != lastPathFSR) historyValid = false;
 
 	// A new cell means a loading screen or a teleport: last frame's history shows another place.
-	if (TheShaderManager->GameState.isCellChanged) historyValid = false;
+	if (TheShaderManager->GameState.isCameraCut) historyValid = false;
 
 	// With no usable history, make last frame's camera this frame's. The reprojection becomes the
 	// identity, and the shader ignores the history anyway because Data.z is 0.

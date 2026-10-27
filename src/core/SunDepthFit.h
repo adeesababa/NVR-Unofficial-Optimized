@@ -436,7 +436,7 @@ namespace SunDepthFit {
 		Info = D3DXVECTOR4((float)DebugView, d[3], d[3], minZ);
 
 		const bool exterior = TheShaderManager->GameState.isExterior;
-		if (!Enabled || !exterior || TheShaderManager->GameState.isCellChanged) Reset();
+		if (!Enabled || !exterior || TheShaderManager->GameState.isCameraCut) Reset();
 		else if (BlockTexture) Collect();	// answers that came in since the last measuring pass
 		bool fitted = false;
 		float chosenGain = 1.0f, chosenWorst = 1.0f, chosenLambda = lambda;

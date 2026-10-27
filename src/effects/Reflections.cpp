@@ -129,7 +129,7 @@ void ReflectionsEffect::GridStep() {
 	const UINT now = TheFrameRateManager->FrameNumber;
 	// Indoors only (user 2026-10-19: outdoors it measured ~nothing, rays there go to the sky and the cube).
 	bool use = Settings.GridFallback && !TheShaderManager->GameState.isExterior && ambient && ambient->Enabled && ambient->Effect && ambient->gridBounce > 0.0f &&
-		ambient->gridValid && now - ambient->gridRenderedFrame <= 8 && !TheShaderManager->GameState.isCellChanged;
+		ambient->gridValid && now - ambient->gridRenderedFrame <= 8 && !TheShaderManager->GameState.isCameraCut;
 	IDirect3DTexture9* light = use ? ambient->gridAccum[ambient->gridAccumIndex] : nullptr;
 	IDirect3DTexture9* colour = use && ambient->gridColorValid ? ambient->gridAccumColor[ambient->gridAccumIndex] : nullptr;
 	use = use && light;

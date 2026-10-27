@@ -405,7 +405,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 			targetType = std::lerp(beforeBias, nowBias, t);
 		}
 	}
-	bool snap = coverage < 0.0f || TheShaderManager->GameState.isCellChanged;
+	bool snap = coverage < 0.0f || TheShaderManager->GameState.isCameraCut;
 	if (snapWait >= 0.0f) {
 		// wait (up to a second) for the new weather's cloud textures to load, so it snaps once, to its own look
 		snapWait -= dt;
@@ -594,7 +594,7 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	// UNOFFICIAL 2026-10-27 RenderScale v2: and when the drawn part of the history changes (another scale, rect <-> native)
 	const bool rectChanged = RenderRect::ScaleChanged() || RenderRect::Active() != lastRect;
 	lastRect = RenderRect::Active();
-	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCellChanged && !rectChanged;
+	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCameraCut && !rectChanged;
 	static const float order[4][2] = { {0, 0}, {1, 1}, {1, 0}, {0, 1} };
 	Constants.PrevViewProj = continuous ? lastViewProj : viewProj;
 	Constants.Layout.z = continuous ? Settings.History : 0.0f;

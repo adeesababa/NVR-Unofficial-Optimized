@@ -433,13 +433,30 @@ void ShaderManager::UpdateConstants() {
 	// worked out once per frame (FrameNumber) and held for the whole frame; the one-time work below still runs once.
 	static unsigned int cellFrame = ~0u;
 	static bool cellChangedThisFrame = false;
+	// UNOFFICIAL 2026-10-27 (user, FSR's RenderScale: "the effects jitter a bit occasionally when walking around ... vol clouds drop to a
+	// really low res pixelated version for a few frames"; their log: every jump at "cellchg"): walking over an exterior cell border
+	// changes the cell too, and every frame-to-frame history (TAA, FSR, AmbientLight, BounceLight, the clouds...) took it for a
+	// teleport and started again. isCameraCut is a cell change that really is a jump: into or out of an interior, between interiors,
+	// or the camera moved more than 512 units in one frame (fast travel, coc). The histories reset on that; isCellChanged stays for
+	// what is about the cell itself (presets, the interior balance).
+	static bool cameraCutThisFrame = false;
+	static D3DXVECTOR4 cutCamera(0.0f, 0.0f, 0.0f, 0.0f);
+	static bool cutInterior = false, cutKnown = false;
 	const bool firstCallOfFrame = TheFrameRateManager->FrameNumber != cellFrame;
 	if (firstCallOfFrame) {
 		cellFrame = TheFrameRateManager->FrameNumber;
 		cellChangedThisFrame = currentCell != PreviousCell;
 		PreviousCell = currentCell;
+		const bool interior = currentCell->IsInterior();
+		const D3DXVECTOR4 camera = TheRenderManager->CameraPosition;
+		const float dx = camera.x - cutCamera.x, dy = camera.y - cutCamera.y, dz = camera.z - cutCamera.z;
+		cameraCutThisFrame = cellChangedThisFrame && (!cutKnown || interior || cutInterior || dx * dx + dy * dy + dz * dz > 512.0f * 512.0f);
+		cutCamera = camera;
+		cutInterior = interior;
+		cutKnown = true;
 	}
 	GameState.isCellChanged = cellChangedThisFrame;
+	GameState.isCameraCut = cameraCutThisFrame;
 	if (firstCallOfFrame && GameState.isCellChanged) {
 		TheSettingManager->SettingsChanged = true; // force update constants during cell transition
 		// Preset resolve+apply as early in this function as possible -- before

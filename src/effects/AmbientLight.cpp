@@ -257,7 +257,7 @@ void AmbientLightEffect::RenderGrid(IDirect3DDevice9* Device, bool sun, bool scr
 	const D3DXVECTOR4& sunColor = TheShaderManager->ShaderConst.sunColor;
 	D3DXVECTOR4 light(powf((std::max)(sunColor.x, 0.0f), 2.2f), powf((std::max)(sunColor.y, 0.0f), 2.2f), powf((std::max)(sunColor.z, 0.0f), 2.2f), 1.0f);
 	// The screen memory moves with the grid: a cell now at c was at c + shift.
-	const bool keep = gridScreenValid && !TheShaderManager->GameState.isCellChanged;
+	const bool keep = gridScreenValid && !TheShaderManager->GameState.isCameraCut;
 	D3DXVECTOR4 shift(keep ? (float)((gridPendingOrigin[0] - gridScreenOrigin[0]) / gridCell) : 0.0f,
 		keep ? (float)((gridPendingOrigin[1] - gridScreenOrigin[1]) / gridCell) : 0.0f,
 		keep ? (float)((gridPendingOrigin[2] - gridScreenOrigin[2]) / gridCell) : 0.0f, keep ? 1.0f : 0.0f);
@@ -1052,7 +1052,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 	static bool lastRect = false;
 	const bool rectSame = RenderRect::Active() == lastRect && !RenderRect::ScaleChanged();
 	lastRect = RenderRect::Active();
-	const bool continuous = historyValid && rectSame && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCellChanged;
+	const bool continuous = historyValid && rectSame && now - lastTime >= 0.0 && now - lastTime < 0.5 && !TheShaderManager->GameState.isCameraCut;
 	FlickerWatch::Flags |= FlickerWatch::kALRendered | (continuous ? FlickerWatch::kALHistory : 0u);	// UNOFFICIAL 2026-10-23 test only
 	D3DXHANDLE temporalHandle = ParameterHandle(paramTemporal, "NVR_ALTemporal");
 	D3DXHANDLE reprojectHandle = ParameterHandle(paramReproject, "NVR_ALReproject");
