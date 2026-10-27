@@ -904,6 +904,9 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		for (auto& e : SceneLights) {
 			NiPointLight* L = e.second->sourceLight;
 			if (!L || L->EffectType != NiDynamicEffect::EffectTypes::POINT_LIGHT || L->Spec.r * Settings->LightRadiusMult <= 10) continue;
+			// A lamp switched off for the main view (+0x110 = 0xFF: the game's view test, or FNV-Occlusion-Culling's bLampCulling
+			// when its whole reach is covered) is never a group's shadow: the next-brightest lit lamp near it takes the group.
+			if (e.second->bIsEnabled == 0xFF) continue;
 			cands.push_back({ e.second, L, (L->Diff.r + L->Diff.g + L->Diff.b) * L->Dimmer });
 		}
 		std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.brightness > b.brightness; });
