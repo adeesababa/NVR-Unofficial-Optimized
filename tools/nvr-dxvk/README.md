@@ -24,6 +24,10 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                  0015       "1.5-debug": dxvk.conf `nvr.debugEnv = "NAME=value|..."` sets environment variables (DXVK_DEBUG,
                             Vulkan loader/layer settings) before DXVK and the loader read them
                  0016       "1.5-debug": ID3D9NvrExtReadback (readback that never waits), storage buffers in the pass stages
+                 0024       (deep/fork2-grass, wave-2 number; the merger renumbers) "1.7-grass": ID3D9NvrExtGeometryScene,
+                            geometry passes drawn INTO the scene: the game's depth buffer with real depth, multisampled and
+                            attachment-only targets, culling, indirect counts (NVR_EXT_BUFFER_INDIRECT); GPU grass,
+                            docs/next/FORK2-GRASS.md. Only the three d3d9_nvr_ext* files change.
                GetInfo reports 1.6. The "1.5-<feature>" parts are separate interfaces found with QueryInterface (or, for sm6,
                by MaxSlots), not by the minor version: NVR checks each one itself and keeps its D3D9 path without it.
 - `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),

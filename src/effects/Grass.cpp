@@ -3,6 +3,7 @@
 #include "GrassCollision.h"	// UNOFFICIAL 2026-10-19 [Shaders.Grass.Collision]
 #include "../core/GrassWind.h"	// UNOFFICIAL 2026-10-20 [Shaders.Grass.Wind]: gusts rolling across the field along the weather's wind
 #include "../core/PlantWind.h"	// UNOFFICIAL 2026-10-20 [Shaders.Plants.Wind]: the plants in the same wind
+#include "GpuGrass.h"	// UNOFFICIAL 2026-10-27 [Shaders.Grass.GPUGrass] (NVR DXVK 1.7-grass)
 
 void GrassShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_GrassScale", &Constants.Scale);
@@ -24,6 +25,7 @@ void GrassShaders::UpdateSettings() {
 	NewGrass::ReadSettings();	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h): live
 	GrassCollision::ReadSettings();	// UNOFFICIAL 2026-10-19
 	GrassWind::ReadSettings();	// UNOFFICIAL 2026-10-20 (live)
+	GpuGrass::ReadSettings();	// UNOFFICIAL 2026-10-27 GPU grass (live)
 }
 
 void GrassShaders::UpdateConstants() {

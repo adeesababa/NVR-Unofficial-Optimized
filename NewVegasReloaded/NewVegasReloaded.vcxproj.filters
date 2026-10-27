@@ -130,6 +130,9 @@
     <ClInclude Include="..\src\effects\GpuParticles.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\GpuGrass.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\ShadowsInteriors.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -478,6 +481,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\GpuParticles.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\GpuGrass.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp">

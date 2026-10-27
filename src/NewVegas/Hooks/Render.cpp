@@ -31,6 +31,7 @@
 #include "../../core/PassFamilyView.h"	// UNOFFICIAL 2026-10-21, diagnostic: which pass family draws each lit object
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
+#include "../../effects/GpuGrass.h"	// UNOFFICIAL 2026-10-27 GPU grass (NVR DXVK 1.7-grass): strands placed and culled on the GPU from the early grass draws
 #include "../../core/HdrOutput.h"	// UNOFFICIAL 2026-10-26 HDR output (needs NVR DXVK 1.5-hdr)
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
 #include "../../core/CharacterObjectReach.h"	// UNOFFICIAL 2026-10-23 CharacterObjectReach: head/face/headgear object draws flagged (c204)
@@ -2382,9 +2383,12 @@ namespace GrassFirst {
 				Save();
 				GrassShaders::DrawPart = 1;
 				Recording = true;
-				NewGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h)
+				// UNOFFICIAL 2026-10-27 GPU grass (effects/GpuGrass.h): when it takes this call, NewGrass stays out of it (both hook the same draw call)
+				const bool gpuGrass = GpuGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);
+				if (!gpuGrass) NewGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h)
 				ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
-				NewGrass::EndEarly(TheRenderManager->device, StatEarly);
+				if (!gpuGrass) NewGrass::EndEarly(TheRenderManager->device, StatEarly);
+				GpuGrass::EndEarly(TheRenderManager->device);	// the strands: one cull pass + two indirect draws, before the land
 				Recording = false;
 				GrassShaders::DrawPart = 0;
 				((void(__cdecl*)())kEndPass)();
@@ -2458,8 +2462,10 @@ namespace GrassFirst {
 			}
 			// UNOFFICIAL 2026-10-18 NewGrass: this pass's card draw may be replaced by blades (its first DrawIndexedPrimitive, core/NewGrass.h).
 			NewGrass::Arm(pass, kind == kAllNear ? 0 : 1, NearestDistance(pass));
+			GpuGrass::Arm(pass, kind == kAllNear ? 0 : 1, NearestDistance(pass));	// UNOFFICIAL 2026-10-27 GPU grass (does nothing unless it took this call)
 			RenderPassImmediately(pass, passId, a3, a4, a5);
 			NewGrass::Disarm();
+			GpuGrass::Disarm();
 			if (kind == kAllNear) {
 				GrassShaders::DrawPart = 1;
 				const float nearOnly[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 1.0f };
