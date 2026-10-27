@@ -103,8 +103,8 @@ hitches (Primm 210-535 ms seen under DXVK too). How much of it is still pipeline
 - Files: new `src/dxvk/dxvk_nvr_pipelog.h`; `dxvk_options.{h,cpp}`, `dxvk_graphics.cpp`, `dxvk_compute.cpp` (a few lines each,
   inside `if (nvrLog)`). No extension API change; no other patch touches these files (numbered 0017 to stay clear of the
   bindless agent's 0016; in deep/fork-combo-1027's renumbered series it simply goes last).
-- Built by CI (run 40530960342, PASS): `G:_NVR-build-scratch
-vr-dxvk-asyncd9.dll` (sha256 8acc67e9..., = the fork-combo-1026
+- Built by CI (run 40530960342, PASS): `G:\_NVR-build-scratch
+vr-dxvk-async\d3d9.dll` (sha256 8acc67e9..., = the fork-combo-1026
   series 0001-0015 + 0017) with `dxvk.conf` = the pipelinelog template next to it. For deep/fork-combo-1027 the patch goes last.
 
 ### What decides the next step (bulk list `docs/next/async-bulk.txt`)
