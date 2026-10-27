@@ -103,7 +103,9 @@ hitches (Primm 210-535 ms seen under DXVK too). How much of it is still pipeline
 - Files: new `src/dxvk/dxvk_nvr_pipelog.h`; `dxvk_options.{h,cpp}`, `dxvk_graphics.cpp`, `dxvk_compute.cpp` (a few lines each,
   inside `if (nvrLog)`). No extension API change; no other patch touches these files (numbered 0017 to stay clear of the
   bindless agent's 0016; in deep/fork-combo-1027's renumbered series it simply goes last).
-- Not compiled locally (no MinGW/submodules on Windows, WSL unreliable): CI `.github/workflows/nvr-dxvk.yml` builds it on push.
+- Built by CI (run 40530960342, PASS): `G:_NVR-build-scratch
+vr-dxvk-asyncd9.dll` (sha256 8acc67e9..., = the fork-combo-1026
+  series 0001-0015 + 0017) with `dxvk.conf` = the pipelinelog template next to it. For deep/fork-combo-1027 the patch goes last.
 
 ### What decides the next step (bulk list `docs/next/async-bulk.txt`)
 Launches W1 cold / W2 warm / W3 warm + `dxvk.trackPipelineLifetime = False` on the warmup2 walk, I1/I2 on lucky22. Rule written
