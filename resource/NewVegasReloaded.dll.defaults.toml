@@ -81,6 +81,7 @@ HealthEnabled = false
 
 [_Main.Main.Misc]
 ForceMSAA = false           # Override game setting to force MSAA.
+AllowGameMSAA = false       # UNOFFICIAL (2026-10-27), needs a restart: false = the game's own anti-aliasing (MSAA, set in its launcher) is switched off while NVR runs; your INI keeps its value. With MSAA on, NVR's effects get one depth per pixel that does not match the blended colour: speckled cloud shadows on grass, broken shadows round the player, patches on characters. NVR's TAA / FSR / DLSS smooth the edges instead (and 4x MSAA's cost is saved). true = keep the game's MSAA (and those artifacts).
 RenderEffects = true        # Toggle rendering of all effects.
 RenderPreTonemapping = true # Toggle rendering of some effects in HDR before the game image space effects (can cause glitches).
 ReplaceIntro = false        # Controls rendering of the main menu custom video.
