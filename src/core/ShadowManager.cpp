@@ -5,6 +5,7 @@
 #include "TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools: ortho map caster dump
 #include "SunShadowStats.h"	// UNOFFICIAL 2026-10-21 test tools: where the sun cascades' CPU time goes
+#include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow: CoverMapOrthoFrame
 
 // UNOFFICIAL SkinnedShadowFaceTest ([Main.Main.Performance], default on, 2026-10-07). An animated (skinned) mesh's own
 // world bound is stale, so skinned casters used to be drawn into all six faces of every lamp cube map near them; with a
@@ -2354,6 +2355,9 @@ void ShadowManager::RenderShadowMaps() {
 				ShadowMap->CameraTranslation = newCameraTranslation;
 				++skyFramesSinceDraw;
 			}
+			// UNOFFICIAL 2026-10-27 Persistent wetness and snow (CoverMap.h): the map the rain and snow effects read is this frame's (drawn
+			// with solid casters, or moved with the camera), so the cover map may take the top surfaces' heights from it.
+			if (!skyOnly) CoverMapOrthoFrame = TheFrameRateManager->FrameNumber;
 
 			OrthoData->x = Shadows->Settings.OrthoMap.Distance * 2;
 			OrthoData->y = ShadowMap->ShadowMapInverseResolution;

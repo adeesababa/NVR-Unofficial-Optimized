@@ -1,5 +1,6 @@
 #include "WetWorld.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness
 
 void WetWorldEffect::UpdateConstants() {
 	// Rain fall & puddles
@@ -18,6 +19,8 @@ void WetWorldEffect::UpdateConstants() {
 	Constants.Data.z = Constants.PuddlesAnimator.GetValue();
 
 	if (Constants.Data.x || Constants.Data.z) TheShaderManager->orthoRequired = true; // mark ortho map calculation as necessary
+	// UNOFFICIAL 2026-10-27 Persistent (CoverMap.h): also while the cover map may still hold wet spots after the rain
+	else if (TheCoverMap && TheCoverMap->WetActive()) TheShaderManager->orthoRequired = true;
 }
 
 void WetWorldEffect::UpdateSettings() {
@@ -71,8 +74,9 @@ void WetWorldEffect::RenderCoverTest(IDirect3DDevice9* Device) {
 	Device->SetRenderState(D3DRS_ZWRITEENABLE, zWrite);
 }
 
-bool WetWorldEffect::ShouldRender() { 
-	return (Constants.Data.x || Constants.Data.z) && TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater;
+bool WetWorldEffect::ShouldRender() {
+	// UNOFFICIAL 2026-10-27 Persistent (CoverMap.h): also while the cover map may still hold wet spots (false with Persistent off)
+	return (Constants.Data.x || Constants.Data.z || (TheCoverMap && TheCoverMap->WetActive())) && TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater;
 };
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): the constants block of WetWorldCommon.glsl (std140, 1376 bytes). Each member is the registers

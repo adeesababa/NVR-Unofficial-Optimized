@@ -1,5 +1,6 @@
 #include "SnowAccumulation.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent snow
 
 void SnowAccumulationEffect::UpdateConstants() {
 
@@ -17,6 +18,8 @@ void SnowAccumulationEffect::UpdateConstants() {
 
 	Constants.Data.w = Constants.SnowAccumulationAnimator.GetValue();
 	if (Constants.Data.w) TheShaderManager->orthoRequired = true; // mark ortho map calculation as necessary
+	// UNOFFICIAL 2026-10-27 Persistent (CoverMap.h): also while the cover map may still hold snow
+	else if (TheCoverMap && TheCoverMap->SnowActive()) TheShaderManager->orthoRequired = true;
 
 }
 
@@ -37,8 +40,9 @@ void SnowAccumulationEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SnowAccumulationColor", &Constants.Color);
 }
 
-bool SnowAccumulationEffect::ShouldRender() { 
-	return Constants.Data.w > 0.0f && TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater;
+bool SnowAccumulationEffect::ShouldRender() {
+	// UNOFFICIAL 2026-10-27 Persistent (CoverMap.h): also while the cover map may still hold snow (false with Persistent off)
+	return (Constants.Data.w > 0.0f || (TheCoverMap && TheCoverMap->SnowActive())) && TheShaderManager->GameState.isExterior && !TheShaderManager->GameState.isUnderwater;
 }
 
 // UNOFFICIAL 2026-10-25 (NVR DXVK): the uniform block SnowAccumulation.frag reads (std140; the matrices as stored, 64 bytes each).
