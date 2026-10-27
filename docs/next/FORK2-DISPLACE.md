@@ -4,6 +4,11 @@ Branch `deep/fork2-displace` (from `mine/nvr-dxvk-compute` 34a8df4d). Fork patch
 extension "1.7-displace" as a SEPARATE interface (`ID3D9NvrExtTess`, GUID ...d321), so `ID3D9NvrExt` and its version number are
 untouched and the merger can renumber freely. Everything is off by default; nothing has run in the game yet.
 
+Builds v3 (2026-10-27, after bulk round 2, push data): NVR DLL `G:\_NVR-build-scratch\fork2-displace-out\NewVegasReloaded.dll`
+(sha256 498BBA3A6AA56E0F...; the shaders in src/hlsl/NewVegas/Compute/Tess must be deployed with it); fork d3d9.dll = CI run
+40533723125 (0001-0011 + 0021 v3, green), `G:\_NVR-build-scratch\nvr-dxvk-fork2-displace-v3\nvr-dxvk-x32\d3d9.dll` (sha256
+014842C828B69ED7...). Use that folder as FORK_D3D9 with list fork2-displace3-bulk.txt.
+
 Builds v2 (2026-10-27, after bulk round 1, strips): NVR DLL `G:\_NVR-build-scratch\fork2-displace-out\NewVegasReloaded.dll`
 (sha256 01DBB22C0632B22C..., MSVC 2019, no new warnings); fork d3d9.dll = CI run 40524970205 (0001-0011 + 0021 v2, green, no warnings in
 the new files), `G:\_NVR-build-scratch\nvr-dxvk-fork2-displace-v2\nvr-dxvk-x32\d3d9.dll` (sha256 30EBFA8D3ACD49DD...). Use that folder as
