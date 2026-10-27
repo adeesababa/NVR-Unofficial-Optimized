@@ -109,7 +109,7 @@ void main() {
     // Gather: stains (thickness field on the surface) and drops (spheres in the air).
     float T = 0.0, ageSum = 0.0, poolSum = 0.0, tintW = 0.0;
     vec3 tintSum = vec3(0.0), grad = vec3(0.0);
-    float A = 0.0, nearT = 1e9, dropAge = 0.0;
+    float A = 0.0, nearT = 1e9, dropAge = 0.0, dropTint = 0.0;
     vec3 dropN = -rd;
     vec4 dot_ = vec4(0.0);
     uint base = tile * F.counts2.x;
@@ -156,7 +156,7 @@ void main() {
             float tf = t - h;
             if (tf <= 0.0 || tf > sceneDist) continue;
             A += 2.0 * h * amount;
-            if (tf < nearT) { nearT = tf; dropN = normalize(rd * tf - c); dropAge = r.b.w; }
+            if (tf < nearT) { nearT = tf; dropN = normalize(rd * tf - c); dropAge = r.b.w; dropTint = r.c.x; }
         }
     }
     if (debug == 2u) {
@@ -199,6 +199,7 @@ void main() {
     vec3 glintTint = vec3(0.02, 0.004, 0.004);
     if (F.match.z > 0.5 && tintW > 0.5 * T && tintW > 1e-4) {
         freshColour = linearize(saturate(tintSum / tintW / 255.0 * F.match.x)) * F.match.y;
+        freshColour *= max(1.0, F.look3.w / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4));   // (BloodPS 2026-10-27: MatchFloor)
         dryColour = freshColour * vec3(0.72, 0.8, 0.8) + freshColour.r * vec3(0.0, 0.1, 0.05);
         glintTint = 0.004 + 0.016 * freshColour / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4);   // (BloodPS 2026-10-25: the bead's tint in the blood's own hue)
     }
@@ -214,22 +215,43 @@ void main() {
     vec3 colour = mix(sceneLin, blood, cover);
 
     // Wet blood shines (BloodPS): small highlights, at most about the light here; the edge's slope bends the normal.
+    // (BloodPS 2026-10-27, look3 = TESR_BloodFlowLook: the sheen weaker, capped, part in the blood's own hue.)
+    vec3 hue = saturate((glintTint - 0.004) / 0.016);
     float gloss = F.look2.w * (1.0 - dry) * cover * mix(0.5, 1.0, thick);
     vec3 V = -rd;
     if (gloss > 0.001) {
-        vec3 Nb = normalize(Ns - grad * F.look.w);
+        // (2026-10-27, rework.z: a pool's top is flat; the field's slope bends the normal mostly where the blood is thin, at its
+        // edges (a rounded rim), at most half way. Bent everywhere by every particle's own bump, a pool caught the sky and the
+        // sun all over in specks: the "almost reflective" look.)
+        vec3 bend = grad * F.look.w;
+        if (F.rework.z > 0.5) {
+            bend /= max(T / max(th, 0.05), 1.0);
+            float bl = length(bend);
+            if (bl > 0.5) bend *= 0.5 / bl;
+        }
+        vec3 Nb = normalize(Ns - bend);
         float rough = mix(0.12, 0.45, dry);
         float a2 = rough * rough * rough * rough;
         float glints = Highlights(Nb, V, rel, a2, lit);
         float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
         vec3 surroundings = F.match.w > 0.5 ? linearize(saturate(F.horizon.rgb)) : vec3(light * 0.1);
-        colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * (1.0 - rough) * 0.5) * gloss;
+        vec3 sheenTint = mix(vec3(1.0), hue, F.look3.z);
+        colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, F.look3.y) * surroundings * sheenTint * (1.0 - rough) * 0.5 * F.look3.x) * gloss;
     }
     // A drop in the air: a dark red bead with a glint, in front of whatever is behind it.
     if (coverA > 0.0) {
-        vec3 drop = light * (freshColour * 0.7 + glintTint * F.look2.w);
+        vec3 dropColour = freshColour, dropTintRgb = glintTint;
+        if (F.rework.x > 0.5 && F.match.z > 0.5 && dropTint > 0.5 && !(tintW > 0.5 * T && tintW > 1e-4)) {
+            // (2026-10-27: a drop takes its own splat's colour, as the stains do; it fell back to FreshColor, a far brighter red.)
+            dropColour = linearize(saturate(UnpackColour(dropTint) / 255.0 * F.match.x)) * F.match.y;
+            dropColour *= max(1.0, F.look3.w / max(max(dropColour.r, max(dropColour.g, dropColour.b)), 1e-4));
+            dropTintRgb = 0.004 + 0.016 * dropColour / max(max(dropColour.r, max(dropColour.g, dropColour.b)), 1e-4);
+        }
+        vec3 drop = light * (dropColour * 0.7 + dropTintRgb * F.look2.w);
         float a2 = 0.12 * 0.12 * 0.12 * 0.12;
-        drop += min(Highlights(dropN, V, rd * nearT, a2, lit), 1.0) * 0.4 * min(light, 1.2) * F.look2.w;
+        // (2026-10-27, rework.w: the drops' white glints made each one a shiny orb; weaker, and part in the blood's hue.)
+        vec3 dropGlint = mix(vec3(1.0), saturate((dropTintRgb - 0.004) / 0.016), F.look3.z) * F.rework.w;
+        drop += min(Highlights(dropN, V, rd * nearT, a2, lit), 1.0) * 0.4 * min(light, 1.2) * F.look2.w * dropGlint;
         colour = mix(colour, drop, coverA);
     }
     float ceiling = max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1.0);

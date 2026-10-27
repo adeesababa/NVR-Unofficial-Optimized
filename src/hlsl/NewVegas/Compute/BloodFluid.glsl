@@ -72,6 +72,11 @@ layout(set = 2, binding = 0, std140) uniform Frame {
     vec4  lightPos[12];        // TESR_LightPosition
     vec4  shadowLightPos[12];  // TESR_ShadowLightPosition
     vec4  lightColor[24];      // TESR_LightColor
+    // UNOFFICIAL 2026-10-27 (user: grey, almost reflective blood; "orbs" out of NPCs when hit):
+    vec4  look3;         // TESR_BloodFlowLook (BloodFlow.fx.hlsl): x sheen x, y Fresnel cap, z sheen tint, w matched colour floor (linear)
+    vec4  rework;        // x: 1 splat blood born on its surface, pools lying on the ground (0: thrown at it / born in the air, before);
+                         // y: share of the drops in the air drawn; z: 1 the field's slope bends the normal mostly at its edges;
+                         // w: the drops' glints x (OldThrow: 0, 1, 0, 1)
 } F;
 
 // Integer hashes (the same everywhere: the simulation must not depend on the order threads run in).

@@ -401,6 +401,14 @@ static bool BloodFlowGroundUnseen = false;
 // (ReplaceStreams) both are 0 in Settings (UpdateConstants), and back as set when it does not.
 static float BloodFlowBaseDripLength = 40.0f;
 static float BloodFlowBaseSplatDrips = 1.0f;
+// UNOFFICIAL 2026-10-27 (user, playtest of the fork build: pooled and flowing blood "looks kinda grey, almost reflective"):
+// TESR_BloodFlowLook, the wet look of every blood pass (BloodPS, the splat shapes, the wet beads, BloodFluidDraw.frag): x the
+// sheen (the sky or room mirrored at low angles) x what it was, y the most of it Fresnel may mirror, z how much of the blood's
+// own hue the sheen and the glints of drops take (0 white), w the darkest a matched colour may be (linear, its strongest
+// channel). The matched colour (the user's splatter texture's grey 0.12 x the decal colour 0.667 0 0.016: about 0.007 linear
+// red) was so dark that the uncoloured sky mirrored on top (up to a third of it at the low angles a pool is seen at) was several
+// times brighter than the blood's own red. OldLook (test only): (1, 1, 0, 0) = the look before, exactly.
+static D3DXVECTOR4 BloodFlowLook(1.0f, 1.0f, 0.0f, 0.0f);
 
 void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowFresh", &Constants.Fresh);
@@ -410,6 +418,7 @@ void BloodFlowEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_BloodFlowSplat", &Constants.Splat);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowShape", &BloodFlowShape);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowGround", &BloodFlowGround);
+	TheShaderManager->RegisterConstant("TESR_BloodFlowLook", &BloodFlowLook);	// UNOFFICIAL 2026-10-27 (also read by BloodFluid.cpp)
 	TheShaderManager->RegisterConstant("TESR_BloodFlowDry", &Constants.Dry);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowInfo", &Constants.Info);
 	TheShaderManager->RegisterConstant("TESR_BloodFlowPool", &Constants.Pool);
@@ -502,6 +511,11 @@ void BloodFlowEffect::UpdateSettings() {
 	}
 	BloodFlowBaseDripLength = Settings.DripLength;
 	BloodFlowBaseSplatDrips = Settings.SplatDrips;
+	// UNOFFICIAL 2026-10-27: the wet look (TESR_BloodFlowLook, above). The Fresnel cap is fixed: past a quarter, a pool seen from a
+	// few metres away mirrored more sky than it showed blood.
+	if (TheSettingManager->GetSettingI(section, "OldLook") != 0) BloodFlowLook = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);
+	else BloodFlowLook = D3DXVECTOR4(std::clamp(TheSettingManager->GetSettingF(section, "Sheen"), 0.0f, 2.0f), 0.25f,
+		std::clamp(TheSettingManager->GetSettingF(section, "SheenTint"), 0.0f, 1.0f), SrgbToLinear(std::clamp(TheSettingManager->GetSettingF(section, "MatchFloor"), 0.0f, 0.6f)));
 	TheBloodFluid().ReadSettings();	// UNOFFICIAL 2026-10-26 BloodFluid: [Shaders.BloodFlow.Fluid]
 	Settings.SplatterAtlas = GetFileAttributesA("Data\\Textures\\decals\\fxbloodsplatterdecals01.dds") != INVALID_FILE_ATTRIBUTES;
 	// UNOFFICIAL fixes-b #53: this runs at every settings refresh (every cell change): log only the first time and when the answer changes
@@ -902,7 +916,10 @@ void BloodFlowEffect::AddTestSplats() {
 		Item& item = Items[Count++];
 		item = Item();
 		item.Center = TestAnchor + D3DXVECTOR3(((i % columns) - 1.5f) * 70.0f, (float)(i / columns) * 70.0f - 70.0f, 0.0f);
-		item.Normal = D3DXVECTOR3(0.05f, -0.05f, 1.0f);
+		// (2026-10-27: as a game splat on a floor reads: the decal's +0x40 is (0 0 1), out of the floor, and Item.Normal is minus that.
+		// These had the opposite sign, so the fluid's throw, wrong for every game splat, looked right with them. BloodFlow's own
+		// passes only mirror the shapes with the sign.)
+		item.Normal = D3DXVECTOR3(-0.05f, 0.05f, -1.0f);
 		item.Radius = 20.0f + 40.0f * hash;
 		item.Age = (float)(Clock - TestStart);
 		item.Seed = hash;
