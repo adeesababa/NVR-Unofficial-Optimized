@@ -894,6 +894,39 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		SpotLightList[0] = nullptr;
 	}
 
+	// UNOFFICIAL 2026-10-26 ShadowClusterEnabled ([Shaders.ShadowsInteriors.Forward]): indoors, lamps closer together than
+	// ShadowClusterDistance share one shadow. The brightest lamp of each group keeps its shadow; the others light exactly as
+	// before but without a shadow of their own, so a room of many bulbs no longer runs out of shadow slots. Off: as before.
+	std::vector<const void*> clusterMembers;
+	if (Settings->Forward.ShadowClusterEnabled && !TheShaderManager->GameState.isExterior && Settings->Forward.ShadowClusterDistance > 0.0f) {
+		struct Cand { const void* key; NiPointLight* light; float brightness; };
+		std::vector<Cand> cands;
+		for (auto& e : SceneLights) {
+			NiPointLight* L = e.second->sourceLight;
+			if (!L || L->EffectType != NiDynamicEffect::EffectTypes::POINT_LIGHT || L->Spec.r * Settings->LightRadiusMult <= 10) continue;
+			cands.push_back({ e.second, L, (L->Diff.r + L->Diff.g + L->Diff.b) * L->Dimmer });
+		}
+		std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.brightness > b.brightness; });
+		const float d2max = Settings->Forward.ShadowClusterDistance * Settings->Forward.ShadowClusterDistance;
+		std::vector<bool> taken(cands.size(), false);
+		for (size_t r = 0; r < cands.size(); r++) {
+			if (taken[r]) continue;	// r is a representative: it takes every untaken lamp near it
+			const NiPoint3& rp = cands[r].light->m_worldTransform.pos;
+			for (size_t m = r + 1; m < cands.size(); m++) {
+				if (taken[m]) continue;
+				const NiPoint3& mp = cands[m].light->m_worldTransform.pos;
+				const float dx = mp.x - rp.x, dy = mp.y - rp.y, dz = mp.z - rp.z;
+				if (dx * dx + dy * dy + dz * dz < d2max) { taken[m] = true; clusterMembers.push_back(cands[m].key); }
+			}
+		}
+		static int logCountdown = 0;
+		if (Settings->Forward.LogLamps && --logCountdown <= 0) {
+			logCountdown = 300;
+			Logger::Log("ShadowCluster: %u candidate lamps, %u share a brighter neighbour's shadow (%u groups), distance %.0f",
+				(unsigned)cands.size(), (unsigned)clusterMembers.size(), (unsigned)(cands.size() - clusterMembers.size()), Settings->Forward.ShadowClusterDistance);
+		}
+	}
+
 	auto v = SceneLights.begin();
 	for (int i = 0; i < TrackedLightsMax + ShadowCubeMapsMax; i++) {
 		// set null values if we reached the end of lights in the scene and current index is lower than max amount
@@ -965,6 +998,9 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			float radius = Light->Spec.r * Settings->LightRadiusMult;
 			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
 			LightPos.w = radius;
+
+			if (CastShadow && !clusterMembers.empty() && std::find(clusterMembers.begin(), clusterMembers.end(), (const void*)v->second) != clusterMembers.end())
+				CastShadow = false;	// UNOFFICIAL ShadowClusterEnabled: its group's brightest lamp casts the shadow
 
 			if (CastShadow && ShadowIndex < ShadowLightsMax && radius > 10) {
 				// add found light to the ranked list of lights that cast shadows (slots are assigned below)
