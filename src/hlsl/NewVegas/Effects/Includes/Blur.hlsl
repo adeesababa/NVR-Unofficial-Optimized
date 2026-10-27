@@ -38,7 +38,7 @@ static const float2 BlurOffsets[cKernelSize] =
 // The helpers below clip() pixels. An effect that does not use them can define BLUR_FULL_WRITE_ONLY before the include
 // to leave them out: EffectRecord scans the preprocessed source for clip/discard and, when it finds any, makes the frame
 // chain copy the whole frame into every pass's destination first.
-#include "RenderRect.hlsl"	// UNOFFICIAL 2026-10-27 RenderScale v2: the scaled part is scaleFactor of the drawn part (TESR_RenderScale.xy)
+#include "Includes/RenderRect.hlsl"	// UNOFFICIAL 2026-10-27 RenderScale v2: the scaled part is scaleFactor of the drawn part (TESR_RenderScale.xy). The game compiles effects with Effects\ as the include root: "Includes/" is needed (fxc alone also finds the file next to this one)
 #ifndef BLUR_FULL_WRITE_ONLY
 // downsample/upsample a part of the screen given by the scaleFactor
 float4 Scale(VSOUT IN, uniform sampler2D buffer, uniform float scaleFactor) : COLOR0
