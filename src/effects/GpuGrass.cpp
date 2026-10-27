@@ -76,7 +76,11 @@ namespace {
 	std::vector<DrawRec>		Draws;
 	bool		HaveGlobals = false;
 	float		Globals[16][4];			// c0-c15 of the first caught draw (sun direction, wind, fade, ModelViewProj, fog)
-	DWORD		ZFunc = D3DCMP_GREATEREQUAL;	// the depth compare the game's grass draws use (reversed depth)
+	// The depth compare the game's grass draws use, from the DEVICE (2026-10-27 bulk run 2: nothing visible was drawn; the compare came
+	// from the game's own render-state cache, and the reversed depth buffer is set on the device past that cache, so a cached LESSEQUAL
+	// against a depth buffer cleared to 0 rejected every strand: tests/gpugrass_draw_check.cpp draws 0 pixels with LESS_OR_EQUAL and
+	// 227k with GREATER_OR_EQUAL). The cache's value is kept for the log.
+	DWORD		ZFuncDevice = D3DCMP_GREATEREQUAL, ZFuncCache = 0;
 
 	unsigned	StatCaught = 0, StatLetThrough = 0, StatFar = 0, StatNotCard = 0, StatNormals = 0, StatMoved = 0, StatFull = 0, StatSwallowed = 0;
 	UInt32		Frames = 0;
@@ -240,7 +244,12 @@ namespace {
 		if (Draws.size() >= kMaxDraws || Tufts.size() + tufts > kMaxTufts) { StatFull++; return false; }
 		float c[16][4];
 		if (FAILED(device->GetVertexShaderConstantF(0, &c[0][0], 16))) return false;
-		if (!HaveGlobals) { memcpy(Globals, c, sizeof(Globals)); ZFunc = TheRenderManager->renderState->GetRenderState(D3DRS_ZFUNC); HaveGlobals = true; }
+		if (!HaveGlobals) {
+			memcpy(Globals, c, sizeof(Globals));
+			ZFuncCache = TheRenderManager->renderState->GetRenderState(D3DRS_ZFUNC);
+			if (FAILED(device->GetRenderState(D3DRS_ZFUNC, &ZFuncDevice))) ZFuncDevice = 0;
+			HaveGlobals = true;
+		}
 		else if (memcmp(Globals[9], c[9], 4 * 4 * sizeof(float))) { StatMoved++; return false; }	// another transform than the first draw's
 
 		DrawRec r = {};
@@ -402,12 +411,37 @@ namespace {
 		}
 
 		if (ok) {
-			const DWORD zfunc = ZFunc;
+			// The compare: the device's (what the game's own grass draws test with), checked against the projection the strands use: a
+			// reversed depth buffer (z/w falls with distance) needs GREATER(EQUAL), a normal one LESS(EQUAL). If the two disagree, the
+			// projection wins (it is what the strands' depth is made of).
+			double fwd[3] = { f.rows[3][0], f.rows[3][1], f.rows[3][2] };
+			const double fl = sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+			auto depthAt = [&](double d) {
+				double p[3] = { fwd[0] / fl * d, fwd[1] / fl * d, fwd[2] / fl * d };
+				const double z = f.rows[2][0] * p[0] + f.rows[2][1] * p[1] + f.rows[2][2] * p[2] + f.rows[2][3];
+				const double w = f.rows[3][0] * p[0] + f.rows[3][1] * p[1] + f.rows[3][2] * p[2] + f.rows[3][3];
+				return w > 0.0 ? z / w : 0.0;
+			};
+			const bool reversed = fl > 0.0 && depthAt(100.0) > depthAt(10000.0);
+			const bool deviceGreater = ZFuncDevice == D3DCMP_GREATER || ZFuncDevice == D3DCMP_GREATEREQUAL;
+			const bool deviceLess = ZFuncDevice == D3DCMP_LESS || ZFuncDevice == D3DCMP_LESSEQUAL;
+			const bool agree = reversed ? deviceGreater : deviceLess;
+			const NVR_EXT_COMPARE compare = agree ? (NVR_EXT_COMPARE)(ZFuncDevice - 1) : (reversed ? NVR_EXT_COMPARE_GREATER_EQUAL : NVR_EXT_COMPARE_LESS_EQUAL);
+			if (Frames <= 3) {
+				D3DSURFACE_DESC dsDesc = {};
+				ds->GetDesc(&dsDesc);
+				Logger::Log("UNOFFICIAL GPU grass: frame %u: drawn into target %ux%u format %u samples %u, depth %ux%u format %u samples %u, viewport %u %u %ux%u z %.2f-%.2f; "
+					"depth compare: device ZFUNC %u, the game's cache %u, the projection is %s -> %s%s",
+					Frames, rtDesc.Width, rtDesc.Height, (unsigned)rtDesc.Format, (unsigned)rtDesc.MultiSampleType, dsDesc.Width, dsDesc.Height, (unsigned)dsDesc.Format,
+					(unsigned)dsDesc.MultiSampleType, vp.X, vp.Y, vp.Width, vp.Height, vp.MinZ, vp.MaxZ, ZFuncDevice, ZFuncCache, reversed ? "reversed (near = 1)" : "normal (near = 0)",
+					compare == NVR_EXT_COMPARE_GREATER_EQUAL ? "GREATER_EQUAL" : compare == NVR_EXT_COMPARE_GREATER ? "GREATER" : compare == NVR_EXT_COMPARE_LESS_EQUAL ? "LESS_EQUAL" : compare == NVR_EXT_COMPARE_LESS ? "LESS" : "other",
+					agree ? "" : " (the device's compare disagreed with the projection: the projection's used)");
+			}
 			NVR_EXT_DEPTH_STENCIL depth = {};
 			depth.pResource = ds;
 			depth.DepthTest = TRUE;
 			depth.DepthWrite = TRUE;
-			depth.DepthCompare = (zfunc >= D3DCMP_NEVER && zfunc <= D3DCMP_ALWAYS) ? (NVR_EXT_COMPARE)(zfunc - 1) : NVR_EXT_COMPARE_GREATER_EQUAL;	// the game's (reversed depth: GREATEREQUAL)
+			depth.DepthCompare = compare;
 			const NVR_EXT_RESOURCE_BINDING drawRes[] = {
 				{ SlotFrame,  NVR_EXT_BIND_UNIFORM_BUFFER, FrameBuf, 0, 0, 0, FALSE },
 				{ SlotDraws,  NVR_EXT_BIND_STORAGE_BUFFER, DrawBuf, 0, 0, 0, FALSE },

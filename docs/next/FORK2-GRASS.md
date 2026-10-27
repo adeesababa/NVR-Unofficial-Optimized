@@ -121,6 +121,23 @@ both handled by the patch).
   Suggestion for the fork (not done: it would touch every pass): BuildPipelineBindings could refuse a uniform buffer and a read-only
   storage buffer on the same slot.
 
+## Bulk run 2 (2026-10-27, og-goodsprings, 3740f1de / DLL c9922cc8): counts right, NOTHING VISIBLE; cause found offline and fixed
+- Seen: the GPU counts were right ("3648 tufts uploaded, 853 clumps drawn, 1054 outside the view, 1741 past the fade start; strands near
+  616, far 7560"), "GPU grass (cull + draw)" 0.07-0.11 ms, but no strand on screen (cards skipped = bare ground); the DebugView 1 shot
+  differed from the plain one in 19 pixels (2 red, 0 blue).
+- Offline: `tests/gpugrass_draw_check.cpp` runs the whole GPU path (the cull pass, then both indirect strand draws with the real
+  vertex and fragment shaders) on the GTX 1070 with plain Vulkan into a 1920x1080 target with a reversed-depth buffer cleared to 0:
+  with the game's GREATER_OR_EQUAL the strands cover 226,922 pixels (169,729 near / red, 57,193 far / blue; Density 3: 456,555), with
+  LESS_OR_EQUAL 0 pixels. So the shaders, the counts and the indirect draws are right; the depth compare decides everything.
+- Cause (the one integration value that was not read from what the GPU uses): the compare came from the game's own render-state cache
+  (NiDX9RenderState::GetRenderState(D3DRS_ZFUNC)). The reversed depth buffer is a renderer setting (NiDX9Renderer::m_fZClear = 0, NVR's
+  RenderManager::IsReversedDepth) whose GREATEREQUAL reaches the device past that cache (NVR's own probes always read the device and
+  see 7), so the cache's LESSEQUAL rejected every strand against the cleared depth; the few that passed were drawn over nearer things.
+- Fix: the compare is the DEVICE's D3DRS_ZFUNC, checked against the projection the strands are drawn with (z/w falling with distance
+  = reversed = GREATER(EQUAL), else LESS(EQUAL)); if the two disagree the projection's is used. The first three frames log the target
+  (size, format, samples), the depth buffer, the viewport, the device's and the cache's ZFUNC, the projection's direction and the
+  compare chosen, so a next failure shows its cause in the log.
+
 ## Missing / next (session-hours)
 1. In-game look + cost tuning from the bulk run (Coverage, Blades, colour pick; maybe the card's top-decile colour as round 6
    suggested): 1-2 h.
