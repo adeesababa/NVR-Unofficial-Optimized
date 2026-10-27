@@ -537,7 +537,8 @@ __CRT_UUID_DECL(ID3D9NvrExtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf
  *    the compute writes before the draw reads them. VertexCount / InstanceCount are then ignored.
  * The depth bias and depth bounds of the D3D9 state are not applied (zero bias, bounds 0-1). Everything
  * the device had set up is put back afterwards, as for Draw. The targets may be the device's current
- * render target and depth-stencil surface (the pass writes them; it must not also sample them).
+ * render target and depth-stencil surface (the pass writes them; it must not also sample them), also
+ * attachment-only surfaces (CreateRenderTarget / CreateDepthStencilSurface, e.g. a multisampled scene).
  */
 enum NVR_EXT_CULL {
   NVR_EXT_CULL_NONE  = 0,
@@ -547,7 +548,7 @@ enum NVR_EXT_CULL {
 
 struct NVR_EXT_GEOMETRY_SCENE_DESC {
   NVR_EXT_GEOMETRY_DRAW_DESC   Geometry;        // the pass (targets, viewport, bindings, push data); the counts unless pIndirectArgs
-  const NVR_EXT_DEPTH_STENCIL* pDepthStencil;   // optional
+  const NVR_EXT_DEPTH_STENCIL* pDepthStencil;   // optional; at least the targets' size, their sample count
   NVR_EXT_CULL                 CullMode;
   BOOL                         Multisample;     // allow multisampled targets (and depth-stencil surface): rasterize at their sample count
   ID3D9NvrExtBuffer*           pIndirectArgs;   // optional: the draw's counts, read on the GPU

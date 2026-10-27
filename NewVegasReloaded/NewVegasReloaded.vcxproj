@@ -173,6 +173,7 @@
     <ClCompile Include="..\src\effects\PointShadows.cpp" />
     <ClCompile Include="..\src\effects\Rain.cpp" />
     <ClCompile Include="..\src\effects\GpuParticles.cpp" />
+    <ClCompile Include="..\src\effects\GpuGrass.cpp" />
     <ClCompile Include="..\src\effects\SMAA.cpp" />
     <ClCompile Include="..\src\effects\FXAA.cpp" />
     <ClCompile Include="..\src\effects\TAA.cpp" />
@@ -313,6 +314,7 @@
     <ClInclude Include="..\src\effects\POM.h" />
     <ClInclude Include="..\src\effects\Rain.h" />
     <ClInclude Include="..\src\effects\GpuParticles.h" />
+    <ClInclude Include="..\src\effects\GpuGrass.h" />
     <ClInclude Include="..\src\effects\SMAA.h" />
     <ClInclude Include="..\src\effects\FXAA.h" />
     <ClInclude Include="..\src\effects\TAA.h" />

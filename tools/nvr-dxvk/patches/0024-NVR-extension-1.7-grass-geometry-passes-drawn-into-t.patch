@@ -1,4 +1,4 @@
-From 1523b2276e7872ff6ea737bdcf1a392792b76c48 Mon Sep 17 00:00:00 2001
+From 016885f6623de58f789541664dbd7c1456d9335f Mon Sep 17 00:00:00 2001
 From: adeesababa <263047020+adeesababa@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 23:14:25 -0400
 Subject: [PATCH] NVR extension 1.7-grass: geometry passes drawn into the scene
@@ -6,13 +6,13 @@ Subject: [PATCH] NVR extension 1.7-grass: geometry passes drawn into the scene
 
 A new interface ID3D9NvrExtGeometryScene (own GUID ...d324, queried from ID3D9NvrExt) with DrawGeometryScene: a geometry pipeline's draw with a depth-stencil attachment and real depth (the vertex shader's, viewport range 0-1, the tests of NVR_EXT_DEPTH_STENCIL), multisampled targets at their own sample count, face culling, and the counts read from an indirect buffer a compute shader wrote (new buffer flag NVR_EXT_BUFFER_INDIRECT). Zero depth bias and bounds 0-1 for the pass; the device state is put back as for Draw. First user: NVR's GPU grass (blades placed and culled in a compute shader, drawn into the game's scene with its depth buffer).
 ---
- src/d3d9/d3d9_nvr_ext.cpp   | 105 ++++++++++++++++++++++++++++++++----
- src/d3d9/d3d9_nvr_ext.h     |   9 +++-
- src/d3d9/d3d9_nvr_ext_api.h |  46 ++++++++++++++++
- 3 files changed, 147 insertions(+), 13 deletions(-)
+ src/d3d9/d3d9_nvr_ext.cpp   | 119 ++++++++++++++++++++++++++++++++----
+ src/d3d9/d3d9_nvr_ext.h     |   9 ++-
+ src/d3d9/d3d9_nvr_ext_api.h |  47 ++++++++++++++
+ 3 files changed, 160 insertions(+), 15 deletions(-)
 
 diff --git a/src/d3d9/d3d9_nvr_ext.cpp b/src/d3d9/d3d9_nvr_ext.cpp
-index a7fd4cf..2b5e551 100644
+index a7fd4cf..6974c5d 100644
 --- a/src/d3d9/d3d9_nvr_ext.cpp
 +++ b/src/d3d9/d3d9_nvr_ext.cpp
 @@ -163,6 +163,12 @@ namespace dxvk {
@@ -78,7 +78,20 @@ index a7fd4cf..2b5e551 100644
  
      for (uint32_t i = 0; i < pDesc->TargetCount; i++) {
        const auto& t = pDesc->Targets[i];
-@@ -1114,11 +1147,18 @@ namespace dxvk {
+@@ -1107,18 +1140,30 @@ namespace dxvk {
+       }
+ 
+       Rc<DxvkImage> image = ref.texture->GetImage();
+-      const Rc<DxvkImageView>& sampleView = ref.texture->GetSampleView(t.Srgb != FALSE);
++      Rc<DxvkImageView> sampleView = ref.texture->GetSampleView(t.Srgb != FALSE);
++
++      // 1.7-grass: a scene pass may draw into an attachment-only render target (a D3D9 CreateRenderTarget surface, such as a
++      // multisampled scene target): it has no sample view, so the view's format and aspects come from a render-target view
++      if (sampleView == nullptr && pScene != nullptr && image != nullptr && (image->info().usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
++        sampleView = ref.texture->CreateView(ref.layer, ref.mipLevel, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, t.Srgb != FALSE);
+ 
+       if (unlikely(image == nullptr || sampleView == nullptr || !(image->info().usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))) {
+         Logger::err(str::format("NVR ext: Draw: target ", i, ": not a render target (D3DUSAGE_RENDERTARGET)"));
          return D3DERR_INVALIDCALL;
        }
  
@@ -98,7 +111,7 @@ index a7fd4cf..2b5e551 100644
        VkExtent3D mipExtent = image->mipLevelExtent(ref.mipLevel);
  
        if (i == 0) {
-@@ -1169,7 +1209,7 @@ namespace dxvk {
+@@ -1169,7 +1214,7 @@ namespace dxvk {
        const auto& d = *pDepthStencil;
  
        if (unlikely(uint32_t(d.DepthCompare) > 7u || uint32_t(d.StencilCompare) > 7u || uint32_t(d.StencilPassOp) > 7u
@@ -107,16 +120,23 @@ index a7fd4cf..2b5e551 100644
          Logger::err("NVR ext: DrawDepthStencil: a compare function, stencil operation or depth out of range");
          return D3DERR_INVALIDCALL;
        }
-@@ -1189,7 +1229,7 @@ namespace dxvk {
+@@ -1189,8 +1234,13 @@ namespace dxvk {
  
        VkExtent3D dsExtent = image->mipLevelExtent(ref.mipLevel);
  
 -      if (unlikely(image->info().sampleCount != VK_SAMPLE_COUNT_1_BIT
-+      if (unlikely(image->info().sampleCount != sampleCount
-                 || dsExtent.width != extent.width || dsExtent.height != extent.height)) {
+-                || dsExtent.width != extent.width || dsExtent.height != extent.height)) {
++      // 1.7-grass: a scene pass takes a depth-stencil surface at least as large as the targets (D3D9 allows a bigger one; DXVK's
++      // framebuffer then renders the smaller size), the other passes one of exactly their size
++      const bool dsSizeOk = pScene
++        ? dsExtent.width >= extent.width && dsExtent.height >= extent.height
++        : dsExtent.width == extent.width && dsExtent.height == extent.height;
++
++      if (unlikely(image->info().sampleCount != sampleCount || !dsSizeOk)) {
          Logger::err("NVR ext: DrawDepthStencil: the depth-stencil surface is multisampled or has another size than the targets");
          return D3DERR_INVALIDCALL;
-@@ -1224,10 +1264,36 @@ namespace dxvk {
+       }
+@@ -1224,10 +1274,36 @@ namespace dxvk {
        dsState.setStencilOpFront(op);
        dsState.setStencilOpBack(op);
  
@@ -154,7 +174,7 @@ index a7fd4cf..2b5e551 100644
      small_vector<D3D9NvrExtBound, 8> bound;
  
      HRESULT hr = ResolveBindings(pipeline, pDesc->BindingCount, pDesc->pBindings, bound);
-@@ -1258,6 +1324,11 @@ namespace dxvk {
+@@ -1258,6 +1334,11 @@ namespace dxvk {
        cPushSize    = pipeline->GetPushSize(),
        cVertexCount = VertexCount,
        cInstances   = InstanceCount,
@@ -166,7 +186,7 @@ index a7fd4cf..2b5e551 100644
        cResStages   = pipeline->HasVertexResources()
          ? VkShaderStageFlags(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
          : VkShaderStageFlags(VK_SHADER_STAGE_FRAGMENT_BIT)
-@@ -1292,12 +1363,18 @@ namespace dxvk {
+@@ -1292,12 +1373,18 @@ namespace dxvk {
  
        DxvkRasterizerState rs = { };
        rs.setPolygonMode(VK_POLYGON_MODE_FILL);
@@ -187,7 +207,7 @@ index a7fd4cf..2b5e551 100644
        DxvkMultisampleState ms = { };
        ms.setSampleMask(0xFFFFu);
        ms.setAlphaToCoverage(false);
-@@ -1327,10 +1404,16 @@ namespace dxvk {
+@@ -1327,10 +1414,16 @@ namespace dxvk {
        if (cPushSize)
          ctx->pushData(Stage, 0u, cPushSize, cPush.data());
  
@@ -243,7 +263,7 @@ index 3bd1ec8..0df885b 100644
      /** Validates a binding list and resolves it for the CS thread (shared by Dispatch and Draw). */
      HRESULT ResolveBindings(
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index f0b0b1a..3a59c57 100644
+index f0b0b1a..a5ed863 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
 @@ -73,6 +73,7 @@ enum NVR_EXT_BUFFER_FLAGS {
@@ -254,7 +274,7 @@ index f0b0b1a..3a59c57 100644
  };
  
  enum NVR_EXT_FILTER {
-@@ -517,6 +518,51 @@ ID3D9NvrExtGeometry : public IUnknown {
+@@ -517,6 +518,52 @@ ID3D9NvrExtGeometry : public IUnknown {
  __CRT_UUID_DECL(ID3D9NvrExtGeometry, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x09);
  #endif
  
@@ -276,7 +296,8 @@ index f0b0b1a..3a59c57 100644
 + *    the compute writes before the draw reads them. VertexCount / InstanceCount are then ignored.
 + * The depth bias and depth bounds of the D3D9 state are not applied (zero bias, bounds 0-1). Everything
 + * the device had set up is put back afterwards, as for Draw. The targets may be the device's current
-+ * render target and depth-stencil surface (the pass writes them; it must not also sample them).
++ * render target and depth-stencil surface (the pass writes them; it must not also sample them), also
++ * attachment-only surfaces (CreateRenderTarget / CreateDepthStencilSurface, e.g. a multisampled scene).
 + */
 +enum NVR_EXT_CULL {
 +  NVR_EXT_CULL_NONE  = 0,
@@ -286,7 +307,7 @@ index f0b0b1a..3a59c57 100644
 +
 +struct NVR_EXT_GEOMETRY_SCENE_DESC {
 +  NVR_EXT_GEOMETRY_DRAW_DESC   Geometry;        // the pass (targets, viewport, bindings, push data); the counts unless pIndirectArgs
-+  const NVR_EXT_DEPTH_STENCIL* pDepthStencil;   // optional
++  const NVR_EXT_DEPTH_STENCIL* pDepthStencil;   // optional; at least the targets' size, their sample count
 +  NVR_EXT_CULL                 CullMode;
 +  BOOL                         Multisample;     // allow multisampled targets (and depth-stencil surface): rasterize at their sample count
 +  ID3D9NvrExtBuffer*           pIndirectArgs;   // optional: the draw's counts, read on the GPU
