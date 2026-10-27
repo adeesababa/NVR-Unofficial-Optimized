@@ -361,6 +361,11 @@ in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame total
   first Vulkan shot (defaults, post, rain, snow, storm, bounce, taa) is as close to D3D9 as the later Vulkan shot (the noise
   pair). Only the desert sandstorm differs by 5-7/255, from shot to shot on both paths and with the sign flipping between
   launches (the dust's own motion; 11:46 the Vulkan shot was the denser one).
+- Timing with the fix (list dxvkfork-24-stable, ABAB x4 with NPCs frozen, rounds after the first; lucky22 20261026-213132,
+  og-desert 213341): Lucky 38 frame total D3D9 8.589 / Vulkan 8.429 ms (-0.16): point shadows -0.044, SMAA -0.014, bloom
+  -0.018, AmbientLight estimate +0.023 (whole AL +0.020). Desert 6.479 / 6.465 (-0.01): sun contact shadows -0.056, their
+  blurs -0.025 each, exposure/bloom -0.03, fog composite -0.022, fog estimate +0.022. The Vulkan passes are at or under their
+  D3D9 cost everywhere now; what is left (+0.02 each, AL and fog estimates) is within a pass's noise.
 Next (session-hours): the same upload in the fork itself (patch 0011: D3D9NvrExt's resource resolve uploads a managed
 texture and runs a pending mip generation, so a future caller cannot miss it; 0.5 h + a CI run); AmbientLight estimate's
 last +0.03 ms and the fog estimate's +0.02 ms (small).
