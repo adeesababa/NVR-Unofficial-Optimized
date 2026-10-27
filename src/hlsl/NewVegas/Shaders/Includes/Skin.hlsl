@@ -19,9 +19,10 @@
 //     mixed 0.85 / 0.15) through PBR.hlsl's BRDF, so they take the same masking term and specular anti-aliasing as the
 //     objects next to the skin; and a sheen lobe for the fuzz on skin (Estevez & Kulla's "Charlie" distribution, Neubelt's
 //     visibility). The light the highlight reflects does not also enter the skin (diffuse x (1 - F)).
-//   - Shadow edges: the penumbra reddened per colour (light carried under the skin across the shadow line), and the skin's
-//     own far side lets the scattered light through the shadow map's self-shadow (SkinTemplate: a second, coarse tap
-//     toward the sun says whether a shadow is the surface's own).
+//   - Shadow edges: the penumbra reddened per colour (light carried under the skin across the shadow line; bounded, and
+//     only on penumbrae a few pixels wide, since 2026-10-27), and the skin's own far side lets the scattered light through
+//     the shadow map's self-shadow near its terminator (SkinTemplate: a second, coarse tap toward the sun says whether a
+//     shadow is the surface's own).
 //   - Sky: the sky light from SkyAmbient.hlsl's harmonics, softened per colour like the direct light, and a dual-lobe sky
 //     reflection with the same response as the highlights.
 //
@@ -48,7 +49,13 @@ float4 TESR_SkinLook     : register(c193); // x SkyReflection (0 indoors), y wet
 // every TESR_ constant when the shader changes): x 1 while the screen-space blur's targets are bound for this draw (the blur
 // then does the diffusion: doing both doubled it), y 1 while the FaceGen maps are bound to a light-only pass.
 float4 NVR_SkinDraw      : register(c194);
-float4 TESR_SkinDebug    : register(c195); // x [Shaders.Skin.Debug] DebugView 1-7 (0 off, or one of the blur's views), y 1 while the Interiors settings are in use
+// x [Shaders.Skin.Debug] DebugView 1-7 (0 off, or one of the blur's views), y 1 while the Interiors settings are in use,
+// z 1 = LegacyFaceShadows (the 2026-10-25 shadow-edge and curvature arithmetic, for an A/B; see SkinShadow). Declared by the
+// template ahead of Shadow.hlsl when it needs it there (SKIN_DEBUG_DECLARED).
+#ifndef SKIN_DEBUG_DECLARED
+float4 TESR_SkinDebug    : register(c195);
+#endif
+#define SKIN_LEGACY (TESR_SkinDebug.z > 0.5f)
 
 #define SKIN_F0 0.028f
 #define SKIN_LOBE0 0.75f            // the sharp lobe's roughness, x Roughness
@@ -86,9 +93,20 @@ void SkinSetup(float3 normalTS, float3 worldNormal, float3 worldPos, float mask,
     skinSpecScale = mask * 2.0f * TESR_SkinMaterial.x * (1.0f + wet);
 
     // How fast the surface turns per millimetre: the curvature in 1/mm (Penner), capped at a 1 mm radius, where the fit ends.
-    const float dN = length(fwidth(worldNormal));
-    const float dP = length(fwidth(worldPos)) * SKIN_MM_PER_UNIT;
-    const float curvature = dN / max(dP, 1e-4f);
+    // 2026-10-27 (user, low side sun: red blotches in the shaded half of faces): CONVEX curvature only, signed: along each
+    // screen axis, the change of the normal measured along the change of the position (1/R on a sphere of radius R, exactly as
+    // before; negative in a crease). The unsigned measure (the length of the normal's change over the position's) read the
+    // eye sockets, the corners of the mouth and nostrils and the folds of the neck as tiny convex spheres and wrapped red
+    // light deep into them, and it took every centroid shift of the vertex normal along the triangle edges (MSAA) for
+    // curvature; the projection on the position's change drops both. Penner's model is a convex sphere: a crease gets plain
+    // shading. LegacyFaceShadows: the unsigned measure.
+    const float3 dNx = ddx(worldNormal);
+    const float3 dNy = ddy(worldNormal);
+    const float3 dPx = ddx(worldPos);
+    const float3 dPy = ddy(worldPos);
+    float curvature = max(0.5f * (dot(dNx, dPx) / max(dot(dPx, dPx), 1e-8f) + dot(dNy, dPy) / max(dot(dPy, dPy), 1e-8f)), 0.0f) / SKIN_MM_PER_UNIT;
+    [flatten] if (SKIN_LEGACY)
+        curvature = length(abs(dNx) + abs(dNy)) / max(length(abs(dPx) + abs(dPy)) * SKIN_MM_PER_UNIT, 1e-4f);
     skinThinness = saturate(curvature * SKIN_SCATTER_BASE);
     skinCurvature = blurTakes > 0.0f ? 0.0f : saturate(curvature * SKIN_SCATTER_BASE * TESR_SkinMaterial.z);
 }
@@ -115,11 +133,13 @@ float3 SkinSGIrradiance(float3 NdotL, float3 lambda) {
 // The diffused N.L of one light, per colour: red along the blurred normal, green and blue along normals blended toward it
 // (Penner), each blurred by the lobe its colour's scattering gives at this curvature. Fitted sharpness: lambda = a c^-b with
 // a, b = 2.34, 1.354 (red), 27.1, 2.017 (green), 63.4, 2.222 (blue). Flat skin, or skin the screen-space blur takes
-// (skinCurvature 0): plain saturate(N.L), which the lobes become within 0.002 at the terminator.
-float3 SkinDiffusion(float3 N, float3 Nsoft, float3 L) {
+// (skinCurvature 0): plain saturate(N.L), which the lobes become within 0.002 at the terminator. plain: each colour's
+// saturate(N.L) along its own normal, without the lobes (what the curvature adds is the part above it).
+float3 SkinDiffusion(float3 N, float3 Nsoft, float3 L, out float3 plain) {
     const float3 normalGreen = normalize(lerp(N, Nsoft, 0.6f));
     const float3 normalBlue = normalize(lerp(N, Nsoft, 0.3f));
     const float3 NdotL = float3(dot(Nsoft, L), dot(normalGreen, L), dot(normalBlue, L));
+    plain = saturate(NdotL);
     [branch] if (skinCurvature > 0.002f) {
         const float c = skinCurvature;
         const float3 lambda = float3(2.34f * pow(c, -1.354f), 27.1f * pow(c, -2.017f), 63.4f * pow(c, -2.222f));
@@ -130,9 +150,21 @@ float3 SkinDiffusion(float3 N, float3 Nsoft, float3 L) {
 
 // A shadow's visibility (0 dark .. 1 lit) with light carried under the skin across the shadow line: the penumbra is widened
 // into the shadow per colour, red furthest, by ShadowScatter. 0 and 1 stay 0 and 1; off (0) returns the shadow as it is.
-float3 SkinShadow(float shadow) {
+// edge: how much the shadow changes from this pixel to the next (fwidth of it, 0 for a light without a shadow map).
+// 2026-10-27 (user, low side sun: "red spots" in the shade of faces, and a thin saturated red line along hard shadow edges):
+// the colours used to be pow(shadow, 1 / (1 + reach)), whose red-to-blue ratio grows without bound toward the dark end
+// (x2.2 at 5 % lit, x3.4 at 1 %): every faint speck of light inside a shadow (the soft-edge disc's grain, a thin caster's
+// partial texels) came out saturated red, and so did the last pixel of a hard edge. Now shadow + reach x shadow x (1 - shadow):
+// the same colours in the middle of a penumbra (within 0.01 at half lit), the shift vanishing at both ends, the red-to-blue
+// ratio never above (1 + 0.6) / (1 + 0.12) at ShadowScatter 1. And only where the penumbra spans a few pixels: an edge that goes
+// from lit to dark within about a pixel (aliased, sub-pixel, or speckle) keeps its plain grey, as the light carried a millimetre
+// across it could not show at that size anyway. LegacyFaceShadows: the old curve, everywhere.
+float3 SkinShadow(float shadow, float edge) {
     const float3 reach = TESR_SkinLook.z * float3(0.6f, 0.25f, 0.12f);
-    return pow(abs(shadow).xxx, 1.0f / (1.0f + reach));
+    const float s = saturate(shadow);
+    const float3 legacy = pow(s.xxx, 1.0f / (1.0f + reach));
+    const float3 bounded = saturate(s + reach * (s * (1.0f - s) * saturate(1.6f - 2.0f * edge)));
+    return SKIN_LEGACY ? legacy : bounded;
 }
 
 // Jimenez's transmittance through d mm of skin (Separable SSS, after d'Eon's six Gaussians per colour): white at 0, orange,
@@ -185,24 +217,34 @@ float3 SkinSheen(float3 N, float3 V, float3 L, float3 light) {
 //   light:         the light's colour, decoded (PBRLight), with any gamma-space factor (the lamp falloff, the projected actor
 //                  shadow) multiplied in beforehand
 //   shadow:        the light's shadow here, 0..1 (NVR's sun or lamp shadow)
+//   shadowEdge:    fwidth(shadow), taken at the pixel shader's top level (0 for a light whose shadow is applied outside)
 //   selfLit:       the sun's visibility a hand's breadth further toward it (1 for lamps): says whether a shadow at the
 //                  terminator is the surface's own (lit out there) or cast by something else (dark there too)
-float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float geometricNdotL, float3 V, float3 L, float3 light, float shadow, float selfLit, out float3 specular) {
+float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float geometricNdotL, float3 V, float3 L, float3 light, float shadow, float shadowEdge, float selfLit, out float3 specular) {
     L = normalize(L);
 
     // Diffusion, split into the plain N.L and what the scattering carries past the terminator.
-    const float3 scattered = SkinDiffusion(N, Nsoft, L);
-    const float3 direct = min(scattered, saturate(dot(N, L)));
+    // 2026-10-27: "plain" is each colour's own N.L (red along the blurred normal), so the wrap is what the curvature adds
+    // alone. It was measured against the sharp bumped normal, which made the blurred red normal's lead over every pore and
+    // dirt bump of the normal map count as wrap, and on the far side (below) that escaped the shadow: red mottling in the
+    // shaded half of a face. In the light (no escape) the sum is the same either way. LegacyFaceShadows: the old split.
+    float3 plain;
+    const float3 scattered = SkinDiffusion(N, Nsoft, L, plain);
+    const float3 direct = min(scattered, SKIN_LEGACY ? saturate(dot(N, L)).xxx : plain);
     const float3 wrapped = scattered - direct;
 
     // The shadow map marks the surface's own far side as shadowed, which would cut the wrap off at the geometric
-    // terminator. On that far side only (geometric N.L 0.05 .. -0.1) the WRAPPED part escapes the shadow, when the look
+    // terminator. On that far side only (geometric N.L under 0.05) the WRAPPED part escapes the shadow, when the look
     // further toward the light (selfLit) found it lit: a shadow that is the surface's own. Skin facing the light inside
     // another surface's shadow (a neck under the jaw) stays shadowed, and so does the terminator of skin that lies whole
     // in something else's shadow (hands under a roof): selfLit is 0 there. Off with ShadowScatter 0.
+    // 2026-10-27: and only near the terminator, as far as light carried under the skin can reach: full to geometric N.L
+    // -0.15, gone by -0.45 (1-3 cm round a head). It used to escape over the whole far side, so any wrap there (a misread
+    // curvature, see SkinSetup) showed as red patches deep in the shade. LegacyFaceShadows: the whole far side.
     float selfShadowed = saturate((0.05f - geometricNdotL) / 0.15f);
     selfShadowed = selfShadowed * selfShadowed * (3.0f - 2.0f * selfShadowed) * saturate(TESR_SkinLook.z) * saturate(selfLit);
-    const float3 shadowColor = SkinShadow(shadow);
+    selfShadowed *= SKIN_LEGACY ? 1.0f : saturate((geometricNdotL + 0.45f) * 3.333f);
+    const float3 shadowColor = SkinShadow(shadow, shadowEdge);
     float3 diffuse = albedo * (direct * shadowColor + wrapped * lerp(shadowColor, 1.0f, selfShadowed));
     // The light the highlight reflects does not also enter the skin (as PBR.hlsl's diffuse: 1 - F at L.H).
     diffuse *= 1.0f - Fresnel(SKIN_F0.xxx, (1.0f).xxx, saturate(dot(L, normalize(V + L)))).x;

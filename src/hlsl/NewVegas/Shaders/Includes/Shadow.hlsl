@@ -333,21 +333,21 @@ static float ShadowSlopeBias = 0.0f;
 
 // UNOFFICIAL 2026-10-22 CharacterShadowReach ([Shaders.ShadowsExteriors.Main], TESR_ShadowBlur.w, world units, live; P82 tester,
 // after the cascade handover: the hair's shadow on the brow, and the nose's on the cheek, gone on a face that is still big on
-// screen in third person). All of the PCF slack above is in shadow-map texels: 1.5 of them for the 3 x 3 (2 with SmoothFilter),
-// 0.73 * MaxSoftness + 1 for the contact-hardening blocker search, radius + 1 for its disc, each times the slope's tan (up to 5),
-// plus the normal offset of 1.5-2.5 texels. On the Middle cascade (past about 3 m at the shipped CascadeLambda 0.9, past 1 m at
-// the tester's 0.997) a texel is 1.1 world units, so the search's slack reaches 2-5 cm at a lowish sun and a hair 1-2 cm off the
-// brow is taken for the brow's own surface: no caster found, no shadow (measured 2026-10-21, run 20261021-231115: at 1.5 m and
-// lambda 0.997 none at all, with the cap the hair's shadow again; on Near the lookup already found it, and with the sky's and the
-// ambient light off the forward shadow is as full as the deferred path's). With the setting above 0, every slack of a Near lookup
-// is capped at that many world units (its depth slack and its normal offset each), and the coarser cascades keep the same cap in
-// their map's depth units (so it grows with their texels, times 3-4 per cascade, and a face far away never gets less slack than a
-// flat face needs; the handover band already holds a Middle lookup's slack to Near's). 0.1 is too tight (the face shadows itself).
-// 0 = off (the texel slack alone, as before). Compiled into the skin shaders only (SHADOW_SKIN_SOFTNESS):
-// skin is smooth and curved, so its own surface never slopes away from the sun over a whole texel run the way the flat plates
-// of the power armour do (the 2026-10-14 stripes above), and the deferred path's fixed 0.0002 bias already shows that faces take
-// a far smaller slack; SHADOW_SLACK_CAP_ALL (ShaderRecord::LoadShader, [Shaders.ShadowsExteriors.Main] CasterReachEverywhere,
-// needs a restart, a TEST switch) compiles it into every forward shader for an A/B. Everywhere else: none of it is compiled.
+// screen in third person). All of the PCF slack above is in shadow-map texels (1.5 for the 3 x 3, 2 with SmoothFilter, 0.73 *
+// MaxSoftness + 1 for the contact-hardening blocker search, radius + 1 for its disc, each times the slope's tan up to 5, plus a
+// normal offset of 1.5-2.5 texels); on the Middle cascade a texel is 1.1 world units, so a hair 1-2 cm off the brow was taken for
+// the brow's own surface (run 20261021-231115). With the setting above 0, a Near lookup's normal offset is capped at that many
+// world units, and its depth slacks at that distance from the skin measured along the sun's ray: reach / N.L, N.L floored at 0.2
+// (2026-10-27, user, low side sun on NPC faces: the reach itself along the ray, 0.5 x N.L from the skin at a grazing sun, let the
+// search and the disc find the face's own surface toward the sun and shadow it in grains wherever N.L was under about 0.7; the
+// skin template switches it back for an A/B: SHADOW_REACH_ALONG_RAY). The coarser cascades keep the same cap in their map's depth
+// units (it grows with their texels; the handover band holds a Middle lookup's slack to Near's). 0.1 is too tight (the face
+// shadows itself); 0 = off. Compiled into the skin shaders only (SHADOW_SKIN_SOFTNESS): the flat plates of the power armour need
+// the full slack at a low sun (the 2026-10-14 stripes above); SHADOW_SLACK_CAP_ALL ([Shaders.ShadowsExteriors.Main]
+// CasterReachEverywhere, restart, a TEST switch) compiles it into every forward shader for an A/B. Elsewhere none of it is compiled.
+// Below: ShadowSlackCap is the cap in light-space depth (the cascades are 2 radii deep: ShadowsExterior.cpp's far plane), set by
+// GetSunShadow (callers that never set it, none today, get no cap); SmoothFilter's cubic reaches half a texel further than the
+// 3 x 3 it is called in place of (whose 1.5 is already off depth): SHADOW_SLACK_CUBIC_EXTRA.
 #ifndef SHADOW_SLACK_CAP_ALL
     #define SHADOW_SLACK_CAP_ALL 0
 #endif
@@ -368,12 +368,12 @@ static float ShadowSlopeBias = 0.0f;
 #endif
 #if SHADOW_SKIN_SOFTNESS || SHADOW_SLACK_CAP_ALL || SHADOW_SLACK_CAP_ACTOR
     #define SHADOW_SLACK_CAP 1
-    // The cap in light-space depth (the cascades are 2 radii deep: ShadowsExterior.cpp's far plane). Set by GetSunShadow; the
-    // callers that never set it (none today) get no cap.
+    #ifndef SHADOW_REACH_ALONG_RAY
+        #define SHADOW_REACH_ALONG_RAY 1   // the reach measured from the skin (2026-10-27, above); the skin template's A/B switch
+    #endif
     static float ShadowSlackCap = 1.0e9f;
     #define SHADOW_SLACK(n) min((n) * ShadowSlopeBias, ShadowSlackCap)
     #define SHADOW_SLACK_WIDE(n) SHADOW_SLACK(n)
-    // SmoothFilter's cubic reaches half a texel further than the 3 x 3 it is called in place of (whose 1.5 is already off depth).
     #define SHADOW_SLACK_CUBIC_EXTRA (SHADOW_SLACK(2.0f) - SHADOW_SLACK(1.5f))
 #else
     // The two spellings keep the other shaders' bytecode exactly what it was (fxc orders the product as written).
@@ -947,11 +947,11 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     ShadowSlopeBias = 2.0f * TESR_ShadowBlur.x * min(sqrt(saturate(1.0f - NdotL * NdotL)) / max(NdotL, 0.05f), 5.0f);
 #if SHADOW_SLACK_CAP
     // CharacterShadowReach (see ShadowSlackCap): the normal offset capped at the reach, in world units on Near and growing with
-    // the map's texel on the coarser cascades; the depth slacks capped at the reach in Near's depth units (the same on every
-    // cascade, which is that same growth). Off (0): no cap, the texel slack alone.
+    // the map's texel on the coarser cascades; the depth slacks capped at the reach along the sun's ray (reach / N.L) in Near's
+    // depth units (the same on every cascade, which is that same growth). Off (0): no cap, the texel slack alone.
     [flatten] if (SHADOW_CHARACTER_REACH > 0.0f) {
         offsetDistance = min(offsetDistance, SHADOW_CHARACTER_REACH * radii / max(radii.x, 0.001f));
-        ShadowSlackCap = SHADOW_CHARACTER_REACH / (2.0f * max(radii.x, 0.001f));
+        ShadowSlackCap = SHADOW_CHARACTER_REACH / (2.0f * max(radii.x, 0.001f) * ((SHADOW_REACH_ALONG_RAY) ? max(NdotL, 0.2f) : 1.0f));
     }
 #endif
 #endif

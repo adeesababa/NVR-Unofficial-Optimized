@@ -26,7 +26,7 @@ public:
 	struct SkinStruct {
 		D3DXVECTOR4		Material;   // TESR_SkinMaterial (c192): x SpecularStrength, y Roughness, z Scattering, w Translucency
 		D3DXVECTOR4		Look;       // TESR_SkinLook (c193): x SkyReflection (0 indoors), y wetness (rain x RainWetness), z ShadowScatter, w Sheen
-		D3DXVECTOR4		Debug;      // TESR_SkinDebug (c195): x [Shaders.Skin.Debug] DebugView 1-7, y 1 while the Interiors settings are in use
+		D3DXVECTOR4		Debug;      // TESR_SkinDebug (c195): x [Shaders.Skin.Debug] DebugView 1-7, y 1 while the Interiors settings are in use, z LegacyFaceShadows
 	};
 	SkinStruct Constants = {};
 
@@ -49,6 +49,7 @@ public:
 	int DebugView = 0;
 	bool MuteGameHighlights = true;	// [Shaders.Skin.Main] MuteGameHighlights (Hooks/Shaders.cpp): the engine's own face highlight passes off
 	bool BindFaceGenMaps = true;	// diagnostic: [Shaders.Skin.Debug] BindFaceGenMaps (Hooks/Shaders.cpp BindFaceGenMaps)
+	bool LegacyFaceShadows = false;	// diagnostic, live: [Shaders.Skin.Debug] LegacyFaceShadows (the 2026-10-25 shadow edges on skin, for an A/B)
 	static const int DebugViewCount = 10;
 	static const int FirstScatteringDebugView = 8;
 

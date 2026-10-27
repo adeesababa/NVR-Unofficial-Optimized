@@ -79,6 +79,11 @@
 #define SUN_CROSSFADE 0
 #ifdef PS
     #define SHADOW_CHARACTER_MAP_IN 1   // CharacterShadowMap (Includes/Shadow.hlsl CharacterMapShadow; compiled in only when on at startup)
+    // TESR_SkinDebug (Includes/Skin.hlsl) declared here so Shadow.hlsl can read its LegacyFaceShadows switch (z): with it, the
+    // CharacterShadowReach cap is the old one along the sun's ray (SHADOW_REACH_ALONG_RAY, Includes/Shadow.hlsl).
+    float4 TESR_SkinDebug : register(c195);
+    #define SKIN_DEBUG_DECLARED
+    #define SHADOW_REACH_ALONG_RAY (TESR_SkinDebug.z < 0.5f)
     // SmithCorrelated ([Shaders.PBR.Main], restart): the same masking term as the object shaders (Includes/PBR.hlsl BRDF).
     #if defined(SMITH_CORRELATED_ON) && SMITH_CORRELATED_ON
         #define PBR_SMITH_CORRELATED 1
@@ -334,7 +339,7 @@ float3 SkinLamp(int i, float3 d, float3 shadow, float3 albedo, float3 N, float3 
         // interleaving all four lamps, which overflows ps_3_0's 32 temporaries.
         [branch] if ((FIRST_POINT + i) < EmittanceColor.a && att > 0.0f)
     #endif
-        diffuse = SkinLight(albedo, N, Nsoft, normalize(d).z, V, d, light, 1.0f, 1.0f, specular);
+        diffuse = SkinLight(albedo, N, Nsoft, normalize(d).z, V, d, light, 1.0f, 0.0f, 1.0f, specular);
     specular *= shadow;
     return diffuse * shadow;
 }
@@ -468,6 +473,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if !defined(DIFFUSE)
         const float3 sunTS = float3(IN.uv.zw, IN.tangent.w);
         float sunShadow = 1.0f;
+        float sunShadowEdge = 0.0f;
         float selfLit = 1.0f;
         #if FORWARD_SHADOWS
             #if OBJECT_SMOOTH_NORMALS
@@ -477,6 +483,9 @@ PS_OUTPUT main(PS_INPUT IN) {
             #endif
             const float3 shadowNormal = ShadowLookupNormal(flatNormal, float4(IN.normal.xyz, SHADOW_VS_SENTINEL));   // SmoothCharacterShadows, and the skin's edge softness
             sunShadow = GetSunShadow(worldPos, shadowNormal);
+            // How sharp the shadow's edge is here, on screen (Includes/Skin.hlsl SkinShadow: the red of light carried across a
+            // shadow line shows only on penumbrae a few pixels wide). Top level: a derivative.
+            sunShadowEdge = fwidth(sunShadow);
             // The surface's own far side (geometric N.L under 0.05), in shadow, with ShadowScatter on: is it the skin's
             // own shadow? One coarse look SKIN_SELF_SHADOW_REACH toward the sun (SkinLight uses it only there).
             [branch] if (sunShadow < 1.0f && sunTS.z < 0.05f && TESR_SkinLook.z > 0.0f)
@@ -496,7 +505,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #if !defined(DIFFUSE)
         const float3 sunLight = PBRLight(PSLightColor[0].rgb) * projShadow;
-        diffuseLight += SkinLight(albedo, N, Nsoft, sunTS.z, V, sunTS, sunLight, sunShadow, selfLit, specular);
+        diffuseLight += SkinLight(albedo, N, Nsoft, sunTS.z, V, sunTS, sunLight, sunShadow, sunShadowEdge, selfLit, specular);
         specularLight += specular;
         // The sun focused through each rain drop into a bright spot on its far side (Includes/HudRain.hlsl).
         diffuseLight += sunLight * (sunShadow * HudRainLens(sunTS).y) * albedo;

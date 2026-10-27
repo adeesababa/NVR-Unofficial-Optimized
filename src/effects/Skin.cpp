@@ -24,7 +24,8 @@ void SkinShaders::UpdateConstants() {
 	Constants.Look = D3DXVECTOR4(isExterior ? SkyReflection : 0.0f, wetness, Material.ShadowScatter, Material.Sheen);
 
 	// The shader's own views only; the blur's views leave the skin drawn normally.
-	Constants.Debug = D3DXVECTOR4(DebugView < FirstScatteringDebugView ? (float)DebugView : 0.0f, isExterior ? 0.0f : 1.0f, 0.0f, 0.0f);
+	// z: [Shaders.Skin.Debug] LegacyFaceShadows (the 2026-10-25 shadow-edge arithmetic, live, for an A/B: SkinTemplate.hlsl / Skin.hlsl).
+	Constants.Debug = D3DXVECTOR4(DebugView < FirstScatteringDebugView ? (float)DebugView : 0.0f, isExterior ? 0.0f : 1.0f, LegacyFaceShadows ? 1.0f : 0.0f, 0.0f);
 }
 
 static void ReadSkinMaterial(SkinShaders::MaterialStruct* Material, const char* Section) {
@@ -44,4 +45,5 @@ void SkinShaders::UpdateSettings() {
 	MuteGameHighlights = TheSettingManager->GetSettingI("Shaders.Skin.Main", "MuteGameHighlights") != 0;
 	DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.Skin.Debug", "DebugView"), 0, DebugViewCount);
 	BindFaceGenMaps = TheSettingManager->GetSettingI("Shaders.Skin.Debug", "BindFaceGenMaps") != 0;
+	LegacyFaceShadows = TheSettingManager->GetSettingI("Shaders.Skin.Debug", "LegacyFaceShadows") != 0;
 }
