@@ -49,11 +49,15 @@ uint Sectors(float t0, float t1) {
 }
 
 // sin(theta - n) for a direction with cos(theta) = c (to the view vector) on the given side, clamped to the hemisphere round the normal.
+// theta stays on its side's half of the slice (0..pi on side +1, -pi..0 on side -1), so a direction outside the hemisphere (below the
+// surface) can only lie beyond that side's edge: +1 on side +1, -1 on side -1. (2026-10-27 fix: the first version took the sign of
+// sin(theta - n), which flips past theta - n = -pi: a floor tap near the pixel on the camera's side, pushed back by the thickness to
+// below the floor, then covered the whole hemisphere with the floor's own light: the even lift over the carpet in the first v2 run.)
 float SliceSin(float c, float side, float cosN, float sinN) {
     float s = side * sqrt(max(1.0 - c * c, 0.0));
     float sinD = s * cosN - c * sinN;
     float cosD = c * cosN + s * sinN;
-    return cosD < 0.0 ? (sinD >= 0.0 ? 1.0 : -1.0) : sinD;
+    return cosD < 0.0 ? side : sinD;
 }
 #endif
 
@@ -153,8 +157,12 @@ vec4 Estimate(vec2 uv) {
 #ifdef NVR_GI
     if (pc.gi.w > 0.5) visibility = openSum;   // ComputeGIThinOcclusion: the open sectors (both / weightSum below)
     bounce = light / max(weightSum, 1e-4);
-#endif
+    // DebugView 6 only: Estimate's raw values go out for every view from 6 up (its rgb was always 0 and no later view reads it), but
+    // the GI's rgb is the light DebugView 13 shows (the first v2 run showed these raw values there: the pink "normal" picture).
+    if (DebugView > 5.5 && DebugView < 6.5) return vec4(visibility / max(weightSum, 1e-4), firstCos * 0.5 + 0.5, firstLow, 1.0);
+#else
     if (DebugView > 5.5) return vec4(visibility / max(weightSum, 1e-4), firstCos * 0.5 + 0.5, firstLow, 1.0);
+#endif
     visibility = pow(saturate(visibility / max(weightSum, 1e-4)), 1.5 * OcclusionStrength);
     visibility = mix(1.0, visibility, fade);
 #ifdef NVR_GI

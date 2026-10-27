@@ -53,7 +53,25 @@ v2 drops the buffer and the levels: the GI pass reads the prep exactly as Estima
 by a plain pass, DebugView 13 shows the light alone, Quality defaults to 0. Why q1 cost +0.6 ms: 36 taps instead of 16 (x2.25) on a
 pass whose cost is its taps; the bitmask itself adds ~16 % at equal taps.
 
-## Expected cost of v2 (1080p, GTX 1070; not measured yet)
+## v2 run (2026-10-26 23:57, lucky22, coordinator) and the v2.1 shader fix
+- PASS: gi-s0 vs al-a 10.6 % of pixels > 2/255 (noise pair 11.4 %), gi-s0-t1 11.8 %, -t2 10.2 %: at strength 0 ComputeGI is
+  AmbientLight's picture. gi-a vs al-a 38 %, +1.55 signed.
+- Cost (whole AmbientLight, ms): al 1.30-1.46; GI q0 1.68-1.72 (estimate 0.33 -> 0.52, light pass 0.08-0.09); q1 3.22; q2 4.89.
+- WRONG 1, DebugView 13 showed a pink "normal" picture: Estimate sends its raw diagnostic values (visibility, first tap's cosine, its
+  weight) out in rgb for every DebugView from 6 up (harmless before: no later view read Estimate's rgb), and the GI's rgb IS the light
+  view 13 shows. Fix: in the NVR_GI build only DebugView 6 takes that exit.
+- WRONG 2, the even lift over the carpet: SliceSin clamped a direction outside the hemisphere by the sign of sin(theta - n), which
+  flips past theta - n = -pi. A floor tap close to the pixel on the camera's side, pushed back by the thickness, lands below the floor
+  there, and its "back" came out at the far edge: that one tap covered all 32 sectors with the floor's own light (and blocked the walls'
+  light behind). Fix: outside the hemisphere a direction can only lie beyond its own side's edge (theta stays on its side's half of the
+  slice), so the clamp is the side's sign. A 2D model of one slice (scratch slice_model.py: floor at camera elevations 15/35/60 deg,
+  with and without a wall 120 units away) gives: old 32 of 32 sectors from the floor itself and none from the wall; fixed 0 from a flat
+  floor and 6 from the wall (the wall's exact cosine share is 5.9 of 32). So the light is now local by construction.
+- Both fixes are in the shaders only (AmbientLightEstimate-gi0/1/2.spv); the DLL is unchanged (87f8edfc). The q0 estimate should get
+  cheaper too (the floor's taps no longer all read their light and normal). q1/q2 cost far more than their tap count (the 36- and
+  64-tap shaders are 145-250 KB of unrolled code): keep q0.
+
+## Expected cost of v2 (1080p, GTX 1070; before the run)
 Light pass ~0.05-0.08 ms (one read of the frame), GI estimate at q0 ~ Estimate + 15-25 % (0.43-0.47 vs 0.37), accumulate and apply
 +0.02-0.04 together: about +0.15-0.2 ms over AmbientLight. AmbientLight's grid bounce costs ~0.02-0.05 ms + its sun map: ComputeGI
 does not replace it at equal cost; it is a different light (near, contact, colour bleeding from what is on screen). Against
