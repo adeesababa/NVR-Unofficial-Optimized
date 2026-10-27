@@ -18,6 +18,21 @@ full size and draws a marker (a magenta box that moves one place per frame, a gr
 cross-process path on the 1070. DLSS itself is compiled in and checked at start: on the 1070 the helper logs
 "NGX: DLSS not available on this GPU (the GPU has no DLSS support (RTX 20 series or newer needed) ...)" and NVR uses FSR 2.
 
+## Bulk test 1 (2026-10-27, run 20261027-112147-slotC, Lucky 38): the helper never ran -> fixed
+NVR logged "a semaphore's handle could not be passed to the helper" and ran FSR 2 in every helper shot. Cause (reproduced with
+`NvrDlssHelper.exe --probe`, which now checks it): Vulkan allows ONE export of an NT handle per semaphore / memory object, and
+NVIDIA's driver hands the SAME handle value back on a second export. DXVK's DxvkFence (and DxvkResourceAllocation) export once at
+creation, try D3DKMT with it and close it; so every later export returned that closed handle, and NVR's DuplicateHandle into the
+helper failed with Win32 error 6 (invalid handle). (The images "worked" only by luck: a closed handle value can be reused by an
+unrelated new handle, which would then have been sent to the helper.) Fix in fork patch 0026: DXVK keeps that one exported handle
+(`DxvkFence::ntHandle()`, `DxvkResourceAllocation::sharedNtHandle()`, closed with the object) and every CreateHandle returns a
+duplicate of it. The log now names the step and the code: CreateShared* / CreateHandle failures carry the VkResult or Win32 error
+(`NVR_EXT_HRESULT_FROM_VK`, `HRESULT_FROM_WIN32`), DuplicateHandle into the helper its Win32 error, a helper that exited at once
+its exit code; on success "DLSS helper: 4 images and 2 semaphores given to the helper (process N)".
+Also in this round: the AmbientLight flicker fix (NVR c4ee6341, DxvkCompute::PreLoad, cherry-picked: the full merge of
+nvr-dxvk-compute brings 32 more commits that need its other fork patches 0008-0010, which the combo-1027 merge handles) and fork
+patch 0011 (managed-texture upload) in this branch's fork build.
+
 ## Proven so far (no game run; the coordinator's bulk test does that)
 - The fork patch builds in CI (run 40520838088, d3d9.dll sha256 DE9A058BF672C02C...).
 - `NvrDlssHelper.exe --selftest` on this PC (GTX 1070, driver with Vulkan 1.4): a test process exports four images and two

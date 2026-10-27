@@ -1,4 +1,4 @@
-From f09333469032baf3d0529b25979b9066696b5a19 Mon Sep 17 00:00:00 2001
+From 9c012b4a55b75129d74198647c17c42f31b56cf6 Mon Sep 17 00:00:00 2001
 From: nvr <nvr@localhost>
 Date: Tue, 27 Oct 2026 10:24:11 -0400
 Subject: [PATCH] NVR extension 1.7-dlss: images and timeline semaphores shared
@@ -15,15 +15,28 @@ flush) and WaitShared (GPU wait in the command list being recorded) are recorded
 DXVK's command stream; no CPU waits. SignalFromHost / GetCompletedValue for a
 watchdog that releases the GPU when the other process dies. No NVIDIA code: plain
 Vulkan external memory / semaphores, which DXVK already enables when present.
+
+NT handles are exported once: Vulkan allows one vkGet*Win32HandleKHR per object
+and NT handle type, and NVIDIA returns the SAME handle value on a second export.
+DXVK's DxvkFence / DxvkResourceAllocation exported once at creation and closed it,
+so every later export was a dead handle (Win32 error 6: the helper never got its
+semaphores). They now keep that handle (DxvkFence::ntHandle, exportResult;
+DxvkResourceAllocation::sharedNtHandle) and sharedHandle() / CreateHandle return
+duplicates. Failures say which step: NVR_EXT_HRESULT_FROM_VK(VkResult) or
+HRESULT_FROM_WIN32(error).
 ---
- src/d3d9/d3d9_nvr_ext.cpp   | 503 ++++++++++++++++++++++++++++++++++++
+ src/d3d9/d3d9_nvr_ext.cpp   | 515 ++++++++++++++++++++++++++++++++++++
  src/d3d9/d3d9_nvr_ext.h     |  97 ++++++-
- src/d3d9/d3d9_nvr_ext_api.h | 152 +++++++++++
- src/dxvk/dxvk_memory.h      |  11 +
- 4 files changed, 762 insertions(+), 1 deletion(-)
+ src/d3d9/d3d9_nvr_ext_api.h | 163 ++++++++++++
+ src/dxvk/dxvk_fence.cpp     |  22 +-
+ src/dxvk/dxvk_fence.h       |  22 ++
+ src/dxvk/dxvk_image.cpp     |  12 +
+ src/dxvk/dxvk_memory.cpp    |   9 +-
+ src/dxvk/dxvk_memory.h      |  25 ++
+ 8 files changed, 862 insertions(+), 3 deletions(-)
 
 diff --git a/src/d3d9/d3d9_nvr_ext.cpp b/src/d3d9/d3d9_nvr_ext.cpp
-index c0d04e0..8d6f6c1 100644
+index 6a601d4..eef705c 100644
 --- a/src/d3d9/d3d9_nvr_ext.cpp
 +++ b/src/d3d9/d3d9_nvr_ext.cpp
 @@ -163,6 +163,12 @@ namespace dxvk {
@@ -39,7 +52,7 @@ index c0d04e0..8d6f6c1 100644
      return m_device->QueryInterface(riid, ppvObject);
    }
  
-@@ -1786,4 +1792,501 @@ namespace dxvk {
+@@ -1804,4 +1810,513 @@ namespace dxvk {
      return D3D_OK;
    }
  
@@ -51,6 +64,21 @@ index c0d04e0..8d6f6c1 100644
 +  // external memory / semaphores with Win32 NT handles; DXVK already enables both extensions when the
 +  // driver has them. A shared image is a DXVK image of its own: shared (kept in its default layout,
 +  // GENERAL, after every submission), dedicated exportable allocation, never relocated.
++
++  // A caller-owned duplicate of a kept NT handle; a failure says which Win32 error.
++  static HRESULT DuplicateNvrSharedHandle(HANDLE kept, HANDLE* pHandle, const char* what) {
++    HANDLE copy = nullptr;
++
++    if (!DuplicateHandle(GetCurrentProcess(), kept, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
++      DWORD error = GetLastError();
++      Logger::err(str::format("NVR ext: ", what, ": DuplicateHandle failed: Win32 error ", error));
++      return HRESULT_FROM_WIN32(error);
++    }
++
++    *pHandle = copy;
++    return D3D_OK;
++  }
++
 +
 +  static VkFormat DecodeNvrSharedFormat(NVR_EXT_SHARED_FORMAT format) {
 +    switch (format) {
@@ -93,13 +121,14 @@ index c0d04e0..8d6f6c1 100644
 +
 +    *pHandle = nullptr;
 +
-+    HANDLE handle = m_image->sharedHandle();
++    HANDLE kept = m_image->storage()->sharedNtHandle();
 +
-+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr)
++    if (kept == INVALID_HANDLE_VALUE || kept == nullptr) {
++      Logger::err("NVR ext: SharedImage::CreateHandle: the image's memory has no exported NT handle");
 +      return D3DERR_NOTAVAILABLE;
++    }
 +
-+    *pHandle = handle;
-+    return D3D_OK;
++    return DuplicateNvrSharedHandle(kept, pHandle, "SharedImage::CreateHandle");
 +  }
 +
 +
@@ -125,13 +154,15 @@ index c0d04e0..8d6f6c1 100644
 +
 +    *pHandle = nullptr;
 +
-+    HANDLE handle = m_fence->sharedHandle();
++    HANDLE kept = m_fence->ntHandle();
 +
-+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr)
-+      return D3DERR_NOTAVAILABLE;
++    if (kept == INVALID_HANDLE_VALUE || kept == nullptr) {
++      VkResult vr = m_fence->exportResult();
++      Logger::err(str::format("NVR ext: SharedFence::CreateHandle: the semaphore has no exported NT handle (export: ", vr, ")"));
++      return vr != VK_SUCCESS ? NVR_EXT_HRESULT_FROM_VK(vr) : D3DERR_NOTAVAILABLE;
++    }
 +
-+    *pHandle = handle;
-+    return D3D_OK;
++    return DuplicateNvrSharedHandle(kept, pHandle, "SharedFence::CreateHandle");
 +  }
 +
 +
@@ -267,17 +298,14 @@ index c0d04e0..8d6f6c1 100644
 +      return D3DERR_OUTOFVIDEOMEMORY;
 +    }
 +
-+    // An image that could not be shared after all has no handle.
-+    HANDLE probe = image->sharedHandle();
++    // An image that could not be shared after all has no handle (checked without a second export).
++    Rc<DxvkResourceAllocation> storage = image->storage();
 +
-+    if (probe == INVALID_HANDLE_VALUE || probe == nullptr) {
-+      Logger::err("NVR ext: CreateSharedImage: the image was made but has no shared handle");
++    if (storage->sharedNtHandle() == INVALID_HANDLE_VALUE || storage->sharedNtHandle() == nullptr) {
++      Logger::err("NVR ext: CreateSharedImage: the image was made but its memory has no exported NT handle (the DXVK log above says why)");
 +      return D3DERR_NOTAVAILABLE;
 +    }
 +
-+    CloseHandle(probe);
-+
-+    Rc<DxvkResourceAllocation> storage = image->storage();
 +    DxvkResourceMemoryInfo memory = storage->getMemoryInfo();
 +
 +    if (memory.offset != 0u) {
@@ -346,15 +374,12 @@ index c0d04e0..8d6f6c1 100644
 +      return D3DERR_NOTAVAILABLE;
 +    }
 +
-+    // DxvkFence makes a plain semaphore when export is not supported: no handle then.
-+    HANDLE probe = fence->sharedHandle();
-+
-+    if (probe == INVALID_HANDLE_VALUE || probe == nullptr) {
-+      Logger::err("NVR ext: CreateSharedFence: the timeline semaphore cannot be exported");
-+      return D3DERR_NOTAVAILABLE;
++    // DxvkFence makes a plain semaphore when export is not supported: no handle then (checked without a second export).
++    if (fence->ntHandle() == INVALID_HANDLE_VALUE || fence->ntHandle() == nullptr) {
++      VkResult vr = fence->exportResult();
++      Logger::err(str::format("NVR ext: CreateSharedFence: the timeline semaphore was not exported (export: ", vr, ")"));
++      return vr != VK_SUCCESS ? NVR_EXT_HRESULT_FROM_VK(vr) : D3DERR_NOTAVAILABLE;
 +    }
-+
-+    CloseHandle(probe);
 +
 +    *ppFence = ref(new D3D9NvrExtSharedFence(std::move(fence), device->vkd()));
 +    return D3D_OK;
@@ -676,10 +701,10 @@ index ebe934e..de7d64e 100644
      HRESULT DrawImpl(
        const NVR_EXT_DRAW_DESC*              pDesc,
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 062db24..ebec907 100644
+index 062db24..7c26482 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -572,3 +572,155 @@ __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf
+@@ -572,3 +572,166 @@ __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf
  __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
  __CRT_UUID_DECL(ID3D9NvrExtSampler,  0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x03);
  #endif
@@ -756,19 +781,30 @@ index 062db24..ebec907 100644
 +  BOOL    Dedicated;        // TRUE: import with VkMemoryDedicatedAllocateInfo for the importer's image
 +};
 +
++/*
++ * CreateHandle / CreateShared* failures say which step failed: NVR_EXT_HRESULT_FROM_VK(VkResult) for a Vulkan call
++ * (the export), HRESULT_FROM_WIN32(error) for a Win32 call (the handle duplication), D3DERR_NOTAVAILABLE when the
++ * object is not shared at all. The DXVK log has a line for each.
++ */
++#define NVR_EXT_FACILITY_VK 0x7E1
++#define NVR_EXT_HRESULT_FROM_VK(vr) ((HRESULT)(0x80000000u | (0x7E1u << 16) | ((UINT)(-(INT)(vr)) & 0xFFFFu)))
++
 +MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d327")
 +ID3D9NvrExtSharedImage : public IUnknown {
 +  virtual void STDMETHODCALLTYPE GetInfo(
 +          NVR_EXT_SHARED_IMAGE_INFO*      pInfo) = 0;
 +
-+  /** A new NT handle to the image's memory, owned by the caller (DuplicateHandle it into the other process, then CloseHandle). */
++  /**
++   * A new NT handle to the image's memory, owned by the caller (DuplicateHandle it into the other process, then CloseHandle).
++   * Every call returns a duplicate of the one handle exported when the image was made (Vulkan allows one NT export).
++   */
 +  virtual HRESULT STDMETHODCALLTYPE CreateHandle(
 +          HANDLE*                         pHandle) = 0;
 +};
 +
 +MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d328")
 +ID3D9NvrExtSharedFence : public IUnknown {
-+  /** A new NT handle to the timeline semaphore (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT), owned by the caller. */
++  /** A new NT handle to the timeline semaphore (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT), owned by the caller (a duplicate, as above). */
 +  virtual HRESULT STDMETHODCALLTYPE CreateHandle(
 +          HANDLE*                         pHandle) = 0;
 +
@@ -835,11 +871,175 @@ index 062db24..ebec907 100644
 +__CRT_UUID_DECL(ID3D9NvrExtSharedImage, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x27);
 +__CRT_UUID_DECL(ID3D9NvrExtSharedFence, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x28);
 +#endif
+diff --git a/src/dxvk/dxvk_fence.cpp b/src/dxvk/dxvk_fence.cpp
+index 8485c40..5e423c4 100644
+--- a/src/dxvk/dxvk_fence.cpp
++++ b/src/dxvk/dxvk_fence.cpp
+@@ -76,6 +76,10 @@ namespace dxvk {
+       desc.hSyncObject = m_kmtLocal;
+       D3DKMTDestroySynchronizationObject(&desc);
+     }
++#ifdef _WIN32
++    if (m_ntHandle != INVALID_HANDLE_VALUE)
++      CloseHandle(m_ntHandle);
++#endif
+     m_vkd->vkDestroySemaphore(m_vkd->device(), m_semaphore, nullptr);
+   }
+ 
+@@ -177,6 +181,20 @@ namespace dxvk {
+     if (m_info.sharedType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_FLAG_BITS_MAX_ENUM)
+       return INVALID_HANDLE_VALUE;
+ 
++#ifdef _WIN32
++    // NVR 1.7-dlss: a duplicate of the one NT handle exported at creation (a second export is invalid)
++    if (m_ntHandle != INVALID_HANDLE_VALUE) {
++      HANDLE copy = INVALID_HANDLE_VALUE;
++
++      if (!DuplicateHandle(GetCurrentProcess(), m_ntHandle, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
++        Logger::err(str::format("DxvkFence::sharedHandle: DuplicateHandle failed: Win32 error ", GetLastError()));
++        return INVALID_HANDLE_VALUE;
++      }
++
++      return copy;
++    }
++#endif
++
+     VkSemaphoreGetWin32HandleInfoKHR win32HandleInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR };
+     win32HandleInfo.semaphore = m_semaphore;
+     win32HandleInfo.handleType = m_info.sharedType;
+@@ -200,6 +218,7 @@ namespace dxvk {
+     HANDLE sharedHandle = INVALID_HANDLE_VALUE;
+     VkResult vr = m_vkd->vkGetSemaphoreWin32HandleKHR(m_vkd->device(), &win32HandleInfo, &sharedHandle);
+     if (vr != VK_SUCCESS) {
++      m_exportResult = vr;
+       Logger::err(str::format("Failed to get semaphore handle: ", vr));
+     } else if (m_info.sharedType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT) {
+       D3DKMT_OPENSYNCHRONIZATIONOBJECT desc = { };
+@@ -220,7 +239,8 @@ namespace dxvk {
+       } else {
+         m_kmtLocal = desc.hSyncObject;
+       }
+-      CloseHandle(sharedHandle);
++      // NVR 1.7-dlss: kept, not closed (sharedHandle() duplicates it; see ntHandle())
++      m_ntHandle = sharedHandle;
+     }
+ #else
+     Logger::warn("DxvkFence::initKmtHandles: Not implemented on this platform");
+diff --git a/src/dxvk/dxvk_fence.h b/src/dxvk/dxvk_fence.h
+index f348a53..c252569 100644
+--- a/src/dxvk/dxvk_fence.h
++++ b/src/dxvk/dxvk_fence.h
+@@ -85,6 +85,26 @@ namespace dxvk {
+       return m_kmtGlobal;
+     }
+ 
++    /**
++     * \brief The NT handle exported once at creation
++     *
++     * NVR 1.7-dlss: an NT handle may be exported only once per object (Vulkan: vkGet*Win32HandleKHR
++     * at most once per handle type for NT handles). NVIDIA hands the SAME handle value back on a second
++     * export; closing the first one therefore killed every later export (the DLSS helper got a dead
++     * semaphore handle, Win32 error 6). The first export is kept and duplicated instead.
++     * \returns INVALID_HANDLE_VALUE if not shared with an NT handle (or the export failed)
++     */
++    HANDLE ntHandle() const {
++      return m_ntHandle;
++    }
++
++    /**
++     * \brief Result of that one export (VK_SUCCESS if it worked or was not needed)
++     */
++    VkResult exportResult() const {
++      return m_exportResult;
++    }
++
+     /**
+      * \brief Retrieves current semaphore value
+      * \returns Current semaphore value
+@@ -139,6 +159,8 @@ namespace dxvk {
+     VkSemaphore                     m_semaphore;
+     D3DKMT_HANDLE                   m_kmtLocal = 0;
+     D3DKMT_HANDLE                   m_kmtGlobal = 0;
++    HANDLE                          m_ntHandle = INVALID_HANDLE_VALUE;  // NVR 1.7-dlss
++    VkResult                        m_exportResult = VK_SUCCESS;
+ 
+     std::priority_queue<QueueItem>  m_queue;
+     bool                            m_running    = false;
+diff --git a/src/dxvk/dxvk_image.cpp b/src/dxvk/dxvk_image.cpp
+index 3b5b739..1994e1f 100644
+--- a/src/dxvk/dxvk_image.cpp
++++ b/src/dxvk/dxvk_image.cpp
+@@ -205,6 +205,18 @@ namespace dxvk {
+       return INVALID_HANDLE_VALUE;
+ 
+ #ifdef _WIN32
++    // NVR 1.7-dlss: a duplicate of the one NT handle the allocation exported (a second export is invalid)
++    HANDLE kept = m_storage->sharedNtHandle();
++
++    if (kept != INVALID_HANDLE_VALUE) {
++      if (!DuplicateHandle(GetCurrentProcess(), kept, GetCurrentProcess(), &handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
++        Logger::warn(str::format("DxvkImage::sharedHandle: DuplicateHandle failed: Win32 error ", GetLastError()));
++        return INVALID_HANDLE_VALUE;
++      }
++
++      return handle;
++    }
++
+     DxvkResourceMemoryInfo memoryInfo = m_storage->getMemoryInfo();
+ 
+     VkMemoryGetWin32HandleInfoKHR handleInfo = { VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR };
+diff --git a/src/dxvk/dxvk_memory.cpp b/src/dxvk/dxvk_memory.cpp
+index 65c3669..86411ab 100644
+--- a/src/dxvk/dxvk_memory.cpp
++++ b/src/dxvk/dxvk_memory.cpp
+@@ -282,6 +282,12 @@ namespace dxvk {
+       D3DKMTDestroyAllocation(&destroy);
+     }
+ 
++#ifdef _WIN32
++    // NVR 1.7-dlss: the one NT handle exported at creation
++    if (unlikely(m_ntHandle != INVALID_HANDLE_VALUE))
++      CloseHandle(m_ntHandle);
++#endif
++
+     if (m_buffer) {
+       if (unlikely(m_bufferViews))
+         delete m_bufferViews;
+@@ -388,7 +394,8 @@ namespace dxvk {
+           D3DKMTDestroySynchronizationObject(&destroy_sync);
+         }
+       }
+-      CloseHandle(sharedHandle);
++      // NVR 1.7-dlss: kept, not closed (DxvkImage::sharedHandle() duplicates it; see sharedNtHandle())
++      m_ntHandle = sharedHandle;
+     }
+ #else
+     Logger::warn("DxvkResourceAllocation::initKmtHandles: Not implemented on this platform");
 diff --git a/src/dxvk/dxvk_memory.h b/src/dxvk/dxvk_memory.h
-index a8e4486..915db16 100644
+index a8e4486..ecfd738 100644
 --- a/src/dxvk/dxvk_memory.h
 +++ b/src/dxvk/dxvk_memory.h
-@@ -630,6 +630,17 @@ namespace dxvk {
+@@ -573,6 +573,19 @@ namespace dxvk {
+       return m_kmtGlobal;
+     }
+ 
++    /**
++     * \brief The NT handle of an exported allocation, exported once at creation
++     *
++     * NVR 1.7-dlss: an NT handle may be exported only once per object (Vulkan: vkGet*Win32HandleKHR
++     * at most once per handle type for NT handles). NVIDIA hands the SAME handle value back on a second
++     * export; closing the first one therefore killed every later export (the DLSS helper got a dead
++     * semaphore handle, Win32 error 6). The first export is kept and duplicated instead.
++     * \returns INVALID_HANDLE_VALUE if not exported with an NT handle
++     */
++    HANDLE sharedNtHandle() const {
++      return m_ntHandle;
++    }
++
+     /**
+      * \brief Queries memory info
+      * \returns Memory info
+@@ -630,6 +643,17 @@ namespace dxvk {
        return m_type ? m_type->properties.propertyFlags : 0u;
      }
  
@@ -857,6 +1057,14 @@ index a8e4486..915db16 100644
      /**
       * \brief Creates buffer view
       *
+@@ -669,6 +693,7 @@ namespace dxvk {
+     DxvkResourceImageViewMap*   m_imageViews = nullptr;
+     D3DKMT_HANDLE               m_kmtLocal = 0;
+     D3DKMT_HANDLE               m_kmtGlobal = 0;
++    HANDLE                      m_ntHandle = INVALID_HANDLE_VALUE;  // NVR 1.7-dlss
+ 
+     DxvkSparsePageTable*        m_sparsePageTable = nullptr;
+ 
 -- 
 2.40.0.windows.1
 

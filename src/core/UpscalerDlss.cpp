@@ -38,6 +38,17 @@ namespace {
 		return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
 	}
 
+	// The fork's share interface codes (NvrDxvkExt.h): a Vulkan result, a Win32 error, or not shared.
+	std::string HrText(HRESULT hr) {
+		char text[96];
+		if (HRESULT_FACILITY(hr) == NVR_EXT_FACILITY_VK) sprintf_s(text, "VkResult %d", -(int)(hr & 0xFFFF));
+		else if (HRESULT_FACILITY(hr) == FACILITY_WIN32) sprintf_s(text, "Win32 error %lu", (unsigned long)HRESULT_CODE(hr));
+		else if (hr == D3DERR_NOTAVAILABLE) sprintf_s(text, "D3DERR_NOTAVAILABLE: not shared / not supported");
+		else if (SUCCEEDED(hr)) sprintf_s(text, "it returned no handle");
+		else sprintf_s(text, "HRESULT 0x%08lX", (unsigned long)hr);
+		return text;
+	}
+
 	std::wstring GameDir() {
 		wchar_t path[MAX_PATH] = {};
 		GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -189,10 +200,22 @@ namespace {
 			{ In.InputWidth, In.InputHeight, NVR_EXT_SHARED_RG16F, "NVR DLSS motion" },
 			{ In.DisplayWidth, In.DisplayHeight, NVR_EXT_SHARED_RGBA16F, "NVR DLSS output" },
 		};
-		for (UInt32 i = 0; i < NVR_DLSS_IMAGE_COUNT; i++)
-			if (FAILED(share->CreateSharedImage(&descs[i], &images[i]))) return TurnOff("a shared image could not be made (the DXVK log says why)");
-		if (FAILED(share->CreateSharedFence(0, &inputsReady)) || FAILED(share->CreateSharedFence(0, &outputReady)))
-			return TurnOff("a shared timeline semaphore could not be made (the DXVK log says why)");
+		char why[320];
+		for (UInt32 i = 0; i < NVR_DLSS_IMAGE_COUNT; i++) {
+			const HRESULT hr = share->CreateSharedImage(&descs[i], &images[i]);
+			if (FAILED(hr)) {
+				sprintf_s(why, "the shared image '%s' could not be made (fork CreateSharedImage: %s; the DXVK log says more)", descs[i].pDebugName, HrText(hr).c_str());
+				return TurnOff(why);
+			}
+		}
+		ID3D9NvrExtSharedFence** fences[2] = { &inputsReady, &outputReady };
+		for (UInt32 i = 0; i < 2; i++) {
+			const HRESULT hr = share->CreateSharedFence(0, fences[i]);
+			if (FAILED(hr)) {
+				sprintf_s(why, "the shared semaphore '%s' could not be made (fork CreateSharedFence: %s; the DXVK log says more)", i ? "output ready" : "inputs ready", HrText(hr).c_str());
+				return TurnOff(why);
+			}
+		}
 		TheTextureManager->InitTexture("TESR_DlssOutput", &output.Texture, &output.Surface, In.DisplayWidth, In.DisplayHeight, D3DFMT_A16B16G16R16F);
 		if (!output.Surface) return TurnOff("its output texture could not be made");
 		inputWidth = In.InputWidth; inputHeight = In.InputHeight; displayWidth = In.DisplayWidth; displayHeight = In.DisplayHeight;
@@ -225,19 +248,32 @@ namespace {
 		STARTUPINFOW si = { sizeof(si) };
 		PROCESS_INFORMATION pi = {};
 		if (!CreateProcessW(exe.c_str(), &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS, nullptr, helperDir.c_str(), &si, &pi)) {
-			char why[160];
-			sprintf_s(why, "NvrDlssHelper.exe could not be started (error %lu)", GetLastError());
+			sprintf_s(why, "NvrDlssHelper.exe could not be started (CreateProcess: Win32 error %lu)", GetLastError());
 			return TurnOff(why);
 		}
 		CloseHandle(pi.hThread);
 		process = pi.hProcess;
 
-		// The NT handles, duplicated into the helper (it closes them after importing).
-		auto give = [&](HANDLE local, uint64_t& remote) {
+		// The NT handles (each a duplicate the fork makes of the one it exported), duplicated into the helper, which closes them
+		// after importing. Every failure says which step and its code.
+		auto give = [&](const char* what, HRESULT created, HANDLE local, uint64_t& remote) {
+			if (FAILED(created) || !local) {
+				sprintf_s(why, "the %s's handle could not be made (fork CreateHandle: %s; the DXVK log says more)", what, HrText(created).c_str());
+				return false;
+			}
+			DWORD exitCode = 0;
+			if (GetExitCodeProcess(process, &exitCode) && exitCode != STILL_ACTIVE) {
+				CloseHandle(local);
+				sprintf_s(why, "NvrDlssHelper.exe exited right after it started (exit code %lu; NvrDlssHelper.log next to it says why)", exitCode);
+				return false;
+			}
 			HANDLE target = nullptr;
-			const BOOL ok = DuplicateHandle(GetCurrentProcess(), local, process, &target, 0, FALSE, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE);
+			if (!DuplicateHandle(GetCurrentProcess(), local, process, &target, 0, FALSE, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE)) {
+				sprintf_s(why, "the %s's handle could not be given to the helper (DuplicateHandle into the helper process: Win32 error %lu)", what, GetLastError());
+				return false;	// DUPLICATE_CLOSE_SOURCE closes the local handle even on failure
+			}
 			remote = (uint64_t)(uintptr_t)target;
-			return ok != FALSE;
+			return true;
 		};
 		for (UInt32 i = 0; i < NVR_DLSS_IMAGE_COUNT; i++) {
 			NVR_EXT_SHARED_IMAGE_INFO image = {};
@@ -255,12 +291,18 @@ namespace {
 			d.handleType = image.HandleType;
 			d.dedicated = image.Dedicated ? 1u : 0u;
 			HANDLE handle = nullptr;
-			if (FAILED(images[i]->CreateHandle(&handle)) || !give(handle, d.handle)) return TurnOff("a shared image's handle could not be passed to the helper");
+			const HRESULT hr = images[i]->CreateHandle(&handle);
+			char what[64];
+			sprintf_s(what, "shared image '%s'", descs[i].pDebugName);
+			if (!give(what, hr, handle, d.handle)) return TurnOff(why);
 		}
 		HANDLE handle = nullptr;
-		if (FAILED(inputsReady->CreateHandle(&handle)) || !give(handle, shared->semInputsReady)) return TurnOff("a semaphore's handle could not be passed to the helper");
+		HRESULT hr = inputsReady->CreateHandle(&handle);
+		if (!give("'inputs ready' semaphore", hr, handle, shared->semInputsReady)) return TurnOff(why);
 		handle = nullptr;
-		if (FAILED(outputReady->CreateHandle(&handle)) || !give(handle, shared->semOutputReady)) return TurnOff("a semaphore's handle could not be passed to the helper");
+		hr = outputReady->CreateHandle(&handle);
+		if (!give("'output ready' semaphore", hr, handle, shared->semOutputReady)) return TurnOff(why);
+		Logger::Log("UNOFFICIAL NVR DXVK: DLSS helper: 4 images and 2 semaphores given to the helper (process %lu).", GetProcessId(process));
 		MemoryBarrier();
 		shared->setupDone = 1;
 		SetEvent(frameEvent);

@@ -968,32 +968,6 @@ namespace {
 	}
 
 	// ---------------------------------------------------------------------------------------------------------------------
-	// --probe: what this PC offers.
-
-	int RunProbe() {
-		g_console = true;
-		OpenLog(L"NvrDlssHelper-probe.log");
-		Log("NvrDlssHelper probe (%s)",
-#ifndef NVR_DLSS_NO_SDK
-			"with NVIDIA DLSS (NGX)"
-#else
-			"built without NVIDIA's SDK"
-#endif
-		);
-		Helper h;
-		if (!CreateVulkanDevice(h.vk, nullptr, false, nullptr, true)) { Log("probe: no usable NVIDIA Vulkan device"); return 1; }
-		Log("probe: %s, Vulkan %u.%u, external memory + semaphores (Win32): yes, timeline semaphores: yes", h.vk.properties.deviceName,
-			VK_VERSION_MAJOR(h.vk.properties.apiVersion), VK_VERSION_MINOR(h.vk.properties.apiVersion));
-#ifndef NVR_DLSS_NO_SDK
-		const bool dlss = InitNgx(h);
-		Log("probe: DLSS %s", dlss ? "AVAILABLE" : "not available (see the line above)");
-		if (h.ngxInit) NVSDK_NGX_VULKAN_Shutdown1(h.vk.device);
-#endif
-		DestroyVulkanDevice(h.vk);
-		return 0;
-	}
-
-	// ---------------------------------------------------------------------------------------------------------------------
 	// --selftest: this process does what NVR + the fork do (export, signal N, wait N, read back), a child copy is the helper in
 	// pass-through mode. Checks every 50th frame's pixels: the stretched input pattern and the marker box at frame % 8.
 
@@ -1070,6 +1044,77 @@ namespace {
 		}
 		out = (uint64_t)(uintptr_t)remote;
 		return true;
+	}
+
+	// ---------------------------------------------------------------------------------------------------------------------
+	// --probe: what this PC offers.
+
+	int RunProbe() {
+		g_console = true;
+		OpenLog(L"NvrDlssHelper-probe.log");
+		Log("NvrDlssHelper probe (%s)",
+#ifndef NVR_DLSS_NO_SDK
+			"with NVIDIA DLSS (NGX)"
+#else
+			"built without NVIDIA's SDK"
+#endif
+		);
+		Helper h;
+		if (!CreateVulkanDevice(h.vk, nullptr, false, nullptr, true)) { Log("probe: no usable NVIDIA Vulkan device"); return 1; }
+		Log("probe: %s, Vulkan %u.%u, external memory + semaphores (Win32): yes, timeline semaphores: yes", h.vk.properties.deviceName,
+			VK_VERSION_MAJOR(h.vk.properties.apiVersion), VK_VERSION_MINOR(h.vk.properties.apiVersion));
+		{
+			// Vulkan allows one NT-handle export per semaphore; what this driver does with a second one (the 2026-10-27 bug: DXVK
+			// exported once and closed it, NVR's export got a dead handle).
+			VkExportSemaphoreCreateInfo exportInfo = { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO };
+			exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+			VkSemaphoreTypeCreateInfo type = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, &exportInfo };
+			type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+			VkSemaphoreCreateInfo info = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &type };
+			VkSemaphore sem = VK_NULL_HANDLE;
+			if (vkCreateSemaphore(h.vk.device, &info, nullptr, &sem) == VK_SUCCESS) {
+				VkSemaphoreGetWin32HandleInfoKHR get = { VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR };
+				get.semaphore = sem;
+				get.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+				HANDLE first = nullptr, second = nullptr, copy = nullptr;
+				const VkResult r1 = h.vk.getSemaphoreWin32Handle(h.vk.device, &get, &first);
+				CloseHandle(first);
+				const VkResult r2 = h.vk.getSemaphoreWin32Handle(h.vk.device, &get, &second);
+				const BOOL dup = DuplicateHandle(GetCurrentProcess(), second, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS);
+				const DWORD error = dup ? 0 : GetLastError();
+				Log("probe: semaphore NT handle exported twice (first closed): %d / %d, handles %p / %p (%s), second %s (Win32 error %lu)",
+					(int)r1, (int)r2, first, second, first == second ? "the SAME value" : "different", dup ? "usable" : "DEAD", error);
+				if (dup) CloseHandle(copy);
+				if (second != first) CloseHandle(second);
+				vkDestroySemaphore(h.vk.device, sem, nullptr);
+			}
+			// The same for an image's dedicated memory.
+			Exported image;
+			if (ExportImage(h.vk, VK_FORMAT_R16G16B16A16_SFLOAT, 64, 64, image)) {
+				VkMemoryGetWin32HandleInfoKHR get = { VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR };
+				get.memory = image.memory;
+				get.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+				HANDLE first = nullptr, second = nullptr, copy = nullptr;
+				const VkResult r1 = h.vk.getMemoryWin32Handle(h.vk.device, &get, &first);
+				CloseHandle(first);
+				const VkResult r2 = h.vk.getMemoryWin32Handle(h.vk.device, &get, &second);
+				const BOOL dup = DuplicateHandle(GetCurrentProcess(), second, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS);
+				const DWORD error = dup ? 0 : GetLastError();
+				Log("probe: memory NT handle exported twice (first closed): %d / %d, handles %p / %p (%s), second %s (Win32 error %lu)",
+					(int)r1, (int)r2, first, second, first == second ? "the SAME value" : "different", dup ? "usable" : "DEAD", error);
+				if (dup) CloseHandle(copy);
+				if (second != first) CloseHandle(second);
+				vkDestroyImage(h.vk.device, image.image, nullptr);
+				vkFreeMemory(h.vk.device, image.memory, nullptr);
+			}
+		}
+#ifndef NVR_DLSS_NO_SDK
+		const bool dlss = InitNgx(h);
+		Log("probe: DLSS %s", dlss ? "AVAILABLE" : "not available (see the line above)");
+		if (h.ngxInit) NVSDK_NGX_VULKAN_Shutdown1(h.vk.device);
+#endif
+		DestroyVulkanDevice(h.vk);
+		return 0;
 	}
 
 	// dlssMode: the child runs in DLSS mode instead. On a GPU without DLSS it must give up cleanly (FAILED + the NGX reason, the

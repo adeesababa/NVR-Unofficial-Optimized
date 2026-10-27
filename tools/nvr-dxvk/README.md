@@ -14,7 +14,11 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                loader/layer settings) before DXVK and the loader read them; only `src/dxvk/dxvk_instance.cpp` changes.
                0026 (deep/fork2-dlss, "1.7-dlss"): `ID3D9NvrExtShare`, images and timeline semaphores exported to another
                process (NVR's 64-bit DLSS helper, `tools/nvr-dlss-helper`, docs/next/FORK2-DLSS.md): plain Vulkan external
-               memory/semaphores, no NVIDIA code; the d3d9_nvr_ext* files plus one accessor in `src/dxvk/dxvk_memory.h`.
+               memory/semaphores, no NVIDIA code; the d3d9_nvr_ext* files, plus `src/dxvk/dxvk_memory.*`, `dxvk_fence.*` and
+               `dxvk_image.cpp`: an NT handle is exported ONCE per object and kept (NVIDIA returns the same handle value on a
+               second export, so DXVK's close-after-first-export left every later export dead), callers get duplicates.
+               0011 (from mine/nvr-dxvk-compute, the AmbientLight flicker fix): managed textures (and pending mips) are
+               uploaded before an extension pass samples them; on this branch it sits between 0009 and 0013 (applies there).
 - `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
                `dxvk.conf.renderdoc-slot` (RenderDoc loaded as a Vulkan layer in a slot game, for the 'capture' shot) and
                `dxvk.conf.validation` (Khronos validation + synchronization validation). docs/next/FORK-DEBUG-CAPTURE.md.

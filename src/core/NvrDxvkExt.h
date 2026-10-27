@@ -644,19 +644,30 @@ struct NVR_EXT_SHARED_IMAGE_INFO {
   BOOL    Dedicated;        // TRUE: import with VkMemoryDedicatedAllocateInfo for the importer's image
 };
 
+/*
+ * CreateHandle / CreateShared* failures say which step failed: NVR_EXT_HRESULT_FROM_VK(VkResult) for a Vulkan call
+ * (the export), HRESULT_FROM_WIN32(error) for a Win32 call (the handle duplication), D3DERR_NOTAVAILABLE when the
+ * object is not shared at all. The DXVK log has a line for each.
+ */
+#define NVR_EXT_FACILITY_VK 0x7E1
+#define NVR_EXT_HRESULT_FROM_VK(vr) ((HRESULT)(0x80000000u | (0x7E1u << 16) | ((UINT)(-(INT)(vr)) & 0xFFFFu)))
+
 MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d327")
 ID3D9NvrExtSharedImage : public IUnknown {
   virtual void STDMETHODCALLTYPE GetInfo(
           NVR_EXT_SHARED_IMAGE_INFO*      pInfo) = 0;
 
-  /** A new NT handle to the image's memory, owned by the caller (DuplicateHandle it into the other process, then CloseHandle). */
+  /**
+   * A new NT handle to the image's memory, owned by the caller (DuplicateHandle it into the other process, then CloseHandle).
+   * Every call returns a duplicate of the one handle exported when the image was made (Vulkan allows one NT export).
+   */
   virtual HRESULT STDMETHODCALLTYPE CreateHandle(
           HANDLE*                         pHandle) = 0;
 };
 
 MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d328")
 ID3D9NvrExtSharedFence : public IUnknown {
-  /** A new NT handle to the timeline semaphore (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT), owned by the caller. */
+  /** A new NT handle to the timeline semaphore (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT), owned by the caller (a duplicate, as above). */
   virtual HRESULT STDMETHODCALLTYPE CreateHandle(
           HANDLE*                         pHandle) = 0;
 
