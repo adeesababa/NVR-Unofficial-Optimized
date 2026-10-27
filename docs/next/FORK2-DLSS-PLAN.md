@@ -1,4 +1,9 @@
-# DLSS for NVR (plan, 2026-10-27, branch deep/fork2-upscale) -- NOT BUILT, nothing downloaded
+# DLSS for NVR (plan, 2026-10-27, branch deep/fork2-upscale)
+
+> **Update 2026-10-27 (deep/fork2-dlss):** the first step is built: fork patch 0026 (`ID3D9NvrExtShare`), `core/UpscalerDlss.cpp`
+> and the helper `tools/nvr-dlss-helper` (named NvrDlssHelper.exe, not NvrDlssHost.exe). The user approved the SDK download
+> (tag v310.9.16, kept outside the repository). What was built and how: **docs/next/FORK2-DLSS.md**. The text below is the plan
+> as written before.
 
 For players with an NVIDIA RTX card (GeForce RTX 20 series or newer: DLSS needs tensor cores). The user's GTX 1070 cannot run
 it, so this is for other users, and it cannot be tested on this PC. Nothing from NVIDIA was downloaded: the DLSS SDK needs the

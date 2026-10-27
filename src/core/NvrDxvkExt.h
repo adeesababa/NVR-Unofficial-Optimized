@@ -804,3 +804,166 @@ __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf
 __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
 __CRT_UUID_DECL(ID3D9NvrExtSampler,  0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x03);
 #endif
+
+/*
+ * 1.7-dlss: GPU images and timeline semaphores shared with another process (ID3D9NvrExtShare).
+ *
+ * For a 64-bit helper process (NVR's DLSS helper, tools/nvr-dlss-helper in the NVR repository)
+ * that works on the same GPU with its own Vulkan device: NVIDIA's DLSS runtime is 64-bit only,
+ * the game and this d3d9.dll are 32-bit. Nothing NVIDIA-specific is in DXVK: this is plain
+ * Vulkan external memory / external semaphores (VK_KHR_external_memory_win32 and
+ * VK_KHR_external_semaphore_win32, which DXVK enables whenever the driver has them) and works
+ * with any Vulkan helper.
+ *
+ * A separate interface, queried from ID3D9NvrExt (QueryInterface with its GUID), so a d3d9.dll
+ * without it returns E_NOINTERFACE and ID3D9NvrExt's own method table is untouched.
+ *
+ * Shared images are DXVK images of their own (not D3D9 textures) with a dedicated, exportable
+ * allocation, kept in VK_IMAGE_LAYOUT_GENERAL between uses. CopyToShared / CopyFromShared move
+ * pixels between them and D3D9 textures in DXVK's command stream. Shared fences are exportable
+ * timeline semaphores: SignalShared submits everything recorded so far with a signal (it flushes),
+ * WaitShared makes the GPU wait in the command list being recorded (work recorded since the last
+ * flush and everything after it, up to the next flush). No CPU waits anywhere. The importer must
+ * create its VkImage exactly as GetInfo describes it and import the memory with the same size and
+ * memory type (dedicated, handle type OPAQUE_WIN32).
+ *
+ * Usage per frame: CopyToShared (inputs) -> SignalShared(ready, N) -> [the other process waits
+ * for N, works, signals done = N] -> WaitShared(done, N) -> CopyFromShared (output).
+ */
+enum NVR_EXT_SHARED_FORMAT {
+  NVR_EXT_SHARED_RGBA16F = 0,  // VK_FORMAT_R16G16B16A16_SFLOAT
+  NVR_EXT_SHARED_RG16F   = 1,  // VK_FORMAT_R16G16_SFLOAT
+  NVR_EXT_SHARED_R32F    = 2,  // VK_FORMAT_R32_SFLOAT
+  NVR_EXT_SHARED_RG32F   = 3,  // VK_FORMAT_R32G32_SFLOAT
+  NVR_EXT_SHARED_RGBA8   = 4,  // VK_FORMAT_R8G8B8A8_UNORM
+  NVR_EXT_SHARED_R16F    = 5,  // VK_FORMAT_R16_SFLOAT
+};
+
+struct NVR_EXT_SHARE_INFO {
+  BOOL  Supported;          // external memory + external semaphores (Win32 handles) and timeline semaphores are there
+  UINT  VendorId;           // the Vulkan device's (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel)
+  UINT  DeviceId;
+  UINT  DriverVersion;      // VkPhysicalDeviceProperties::driverVersion (vendor encoding)
+  UINT  ApiVersion;         // the Vulkan version of DXVK's device
+  BYTE  DeviceUUID[16];     // VkPhysicalDeviceIDProperties: the importer picks the same GPU by these
+  BYTE  DriverUUID[16];
+  BYTE  DeviceLUID[8];
+  BOOL  DeviceLUIDValid;
+  char  DeviceName[256];
+};
+
+struct NVR_EXT_SHARED_IMAGE_DESC {
+  UINT                  Width;
+  UINT                  Height;
+  NVR_EXT_SHARED_FORMAT Format;
+  const char*           pDebugName;
+};
+
+/** Everything an importer needs to create the identical VkImage and import its memory. */
+struct NVR_EXT_SHARED_IMAGE_INFO {
+  UINT    VkFormat;         // VkFormat
+  UINT    Width;
+  UINT    Height;
+  UINT    MipLevels;        // 1
+  UINT    ArrayLayers;      // 1
+  UINT    Samples;          // VK_SAMPLE_COUNT_1_BIT
+  UINT    Usage;            // VkImageUsageFlags
+  UINT    Flags;            // VkImageCreateFlags (0)
+  UINT    Tiling;           // VkImageTiling (OPTIMAL)
+  UINT    Layout;           // VkImageLayout it is in between uses (GENERAL)
+  UINT    HandleType;       // VkExternalMemoryHandleTypeFlagBits (OPAQUE_WIN32)
+  UINT    MemoryTypeIndex;  // of DXVK's device (the same GPU and driver: the same index in the importer)
+  UINT64  AllocationSize;   // bytes of the dedicated allocation
+  BOOL    Dedicated;        // TRUE: import with VkMemoryDedicatedAllocateInfo for the importer's image
+};
+
+/*
+ * CreateHandle / CreateShared* failures say which step failed: NVR_EXT_HRESULT_FROM_VK(VkResult) for a Vulkan call
+ * (the export), HRESULT_FROM_WIN32(error) for a Win32 call (the handle duplication), D3DERR_NOTAVAILABLE when the
+ * object is not shared at all. The DXVK log has a line for each.
+ */
+#define NVR_EXT_FACILITY_VK 0x7E1
+#define NVR_EXT_HRESULT_FROM_VK(vr) ((HRESULT)(0x80000000u | (0x7E1u << 16) | ((UINT)(-(INT)(vr)) & 0xFFFFu)))
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d327")
+ID3D9NvrExtSharedImage : public IUnknown {
+  virtual void STDMETHODCALLTYPE GetInfo(
+          NVR_EXT_SHARED_IMAGE_INFO*      pInfo) = 0;
+
+  /**
+   * A new NT handle to the image's memory, owned by the caller (DuplicateHandle it into the other process, then CloseHandle).
+   * Every call returns a duplicate of the one handle exported when the image was made (Vulkan allows one NT export).
+   */
+  virtual HRESULT STDMETHODCALLTYPE CreateHandle(
+          HANDLE*                         pHandle) = 0;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d328")
+ID3D9NvrExtSharedFence : public IUnknown {
+  /** A new NT handle to the timeline semaphore (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT), owned by the caller (a duplicate, as above). */
+  virtual HRESULT STDMETHODCALLTYPE CreateHandle(
+          HANDLE*                         pHandle) = 0;
+
+  /** The semaphore's current value (vkGetSemaphoreCounterValue). Any thread, never waits. */
+  virtual HRESULT STDMETHODCALLTYPE GetCompletedValue(
+          UINT64*                         pValue) = 0;
+
+  /**
+   * Signals the semaphore from the CPU now (vkSignalSemaphore), Value above the current one. Any thread.
+   * For recovery only: when the other process died or hung, this releases GPU work waiting on it.
+   */
+  virtual HRESULT STDMETHODCALLTYPE SignalFromHost(
+          UINT64                          Value) = 0;
+};
+
+MIDL_INTERFACE("6e2b0f3a-9c14-4d57-8a41-b2f0c7a9d326")
+ID3D9NvrExtShare : public IUnknown {
+  virtual void STDMETHODCALLTYPE GetShareInfo(
+          NVR_EXT_SHARE_INFO*             pInfo) = 0;
+
+  /** D3DERR_NOTAVAILABLE when the device cannot export images of that format and size. */
+  virtual HRESULT STDMETHODCALLTYPE CreateSharedImage(
+    const NVR_EXT_SHARED_IMAGE_DESC*      pDesc,
+          ID3D9NvrExtSharedImage**        ppImage) = 0;
+
+  /** An exportable timeline semaphore. D3DERR_NOTAVAILABLE without external semaphores. */
+  virtual HRESULT STDMETHODCALLTYPE CreateSharedFence(
+          UINT64                          InitialValue,
+          ID3D9NvrExtSharedFence**        ppFence) = 0;
+
+  /**
+   * Records a copy of pSrcRect (null = the whole subresource) of a D3D9 texture or surface (mip 0, layer 0
+   * of a texture) to (DstX, DstY) of the shared image. Same VkFormat: an image copy; otherwise a 1:1 blit
+   * (format conversion, nearest).
+   */
+  virtual HRESULT STDMETHODCALLTYPE CopyToShared(
+          ID3D9NvrExtSharedImage*         pDst,
+          UINT                            DstX,
+          UINT                            DstY,
+          IUnknown*                       pSrc,
+    const RECT*                           pSrcRect) = 0;
+
+  /** The reverse: pSrcRect (null = whole) of the shared image to (DstX, DstY) of a D3D9 texture or surface. */
+  virtual HRESULT STDMETHODCALLTYPE CopyFromShared(
+          IUnknown*                       pDst,
+          UINT                            DstX,
+          UINT                            DstY,
+          ID3D9NvrExtSharedImage*         pSrc,
+    const RECT*                           pSrcRect) = 0;
+
+  /** Records a signal of Value and submits everything recorded so far with it (a flush). */
+  virtual HRESULT STDMETHODCALLTYPE SignalShared(
+          ID3D9NvrExtSharedFence*         pFence,
+          UINT64                          Value) = 0;
+
+  /** Records a GPU wait for Value in the command list being recorded (see above). Never waits on the CPU. */
+  virtual HRESULT STDMETHODCALLTYPE WaitShared(
+          ID3D9NvrExtSharedFence*         pFence,
+          UINT64                          Value) = 0;
+};
+
+#ifndef _MSC_VER
+__CRT_UUID_DECL(ID3D9NvrExtShare,       0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x26);
+__CRT_UUID_DECL(ID3D9NvrExtSharedImage, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x27);
+__CRT_UUID_DECL(ID3D9NvrExtSharedFence, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x28);
+#endif

@@ -6,6 +6,7 @@
 
 #include "TAA.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/Upscaler.h"		// UNOFFICIAL 2026-10-27 (DLSS helper options)
 
 void TAAEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TAAData", &Constants.Data);
@@ -67,6 +68,10 @@ void TAAEffect::UpdateSettings() {
 	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.5f, 1.0f) : 1.0f;
 	FSRSettings.Upscaler = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Upscaler"), 0, 1);
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
+	// UNOFFICIAL 2026-10-27 DLSS through the 64-bit helper (core/UpscalerDlss.cpp keeps them; Upscaler 1 above is now real DLSS,
+	// with FSR 2 whenever it cannot run). Both read as 0 (off) when missing.
+	Upscaler::DlssOptions(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DlssHelperTest") != 0,
+		std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DlssJitterFlip"), 0, 3));
 }
 
 // Texture mip LOD bias on every sampler while the jittered world draws. Averaging jittered frames

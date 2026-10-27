@@ -398,19 +398,5 @@ namespace {
 namespace Upscaler {
 	IUpscaler* Fsr2() { return &TheFsr2; }
 
-	// Not built: NVIDIA's DLSS needs its SDK (nvsdk_ngx + nvngx_dlss.dll) and NGX hosted on DXVK's Vulkan device, which only the
-	// fork can do (docs\next\FORK2-DLSS-PLAN.md). Until then there is no DLSS upscaler and Choose falls back to FSR 2.
-	IUpscaler* Dlss() { return nullptr; }
-
-	IUpscaler* Choose(int setting) {
-		if (setting == 1) {
-			if (IUpscaler* dlss = Dlss()) if (!dlss->Failed()) return dlss;
-			static bool logged = false;
-			if (!logged) {
-				logged = true;
-				Logger::Log("UNOFFICIAL: [Shaders.TAA.FSR] Upscaler 1 (DLSS) is not built into this NVR (it needs NVIDIA's SDK, see docs\\next\\FORK2-DLSS-PLAN.md); FSR 2 is used.");
-			}
-		}
-		return Fsr2();
-	}
+	// Dlss(), DlssOptions() and Choose() are in core\UpscalerDlss.cpp (UNOFFICIAL 2026-10-27: DLSS through a 64-bit helper).
 }

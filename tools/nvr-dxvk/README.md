@@ -31,6 +31,11 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                             geometry passes drawn INTO the scene: the game's depth buffer with real depth, multisampled and
                             attachment-only targets, culling, indirect counts (NVR_EXT_BUFFER_INDIRECT); GPU grass,
                             docs/next/FORK2-GRASS.md. Only the three d3d9_nvr_ext* files change.
+                 0026       (deep/fork2-dlss) "1.7-dlss": ID3D9NvrExtShare, images and timeline semaphores exported to another
+                            process (NVR's 64-bit DLSS helper, `tools/nvr-dlss-helper`, docs/next/FORK2-DLSS.md): plain Vulkan
+                            external memory/semaphores, no NVIDIA code; the d3d9_nvr_ext* files, plus `src/dxvk/dxvk_memory.*`,
+                            `dxvk_fence.*` and `dxvk_image.cpp`: an NT handle is exported ONCE per object and kept (NVIDIA returns
+                            the same handle value on a second export), callers get duplicates.
                GetInfo reports 1.6. The "1.5-<feature>" parts are separate interfaces found with QueryInterface (or, for sm6,
                by MaxSlots), not by the minor version: NVR checks each one itself and keeps its D3D9 path without it.
 - `debug/`     dxvk.conf templates for debugging: `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),
