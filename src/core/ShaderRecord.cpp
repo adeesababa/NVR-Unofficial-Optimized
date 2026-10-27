@@ -474,6 +474,9 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				HRESULT createResult = E_FAIL;
 				if (ShaderProfile[0] == 'v') {
 					ShaderProg = new ShaderRecordVertex(Name);
+					// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace, core\DxvkCompute.h): with NvrDxvkDisplacement on at load, the land's
+					// vertex shader is registered with its tessellation control shader. Off, or no NVR DXVK: nothing happens.
+					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, true, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreateVertexShader((const DWORD*)Function, &((ShaderRecordVertex*)ShaderProg)->ShaderHandle);
 				}
 				else {
@@ -481,6 +484,8 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2, core\DxvkCompute.h): a Compute\Replace\<Name>.spv is registered before the
 					// device sees the bytecode, so DXVK binds it in this shader's place. No file, no extension: nothing happens.
 					DxvkCompute::RegisterReplacement(Name, Function, D3DXGetShaderSize((const DWORD*)Function));
+					// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace): the land's pixel shaders with their tessellation evaluation shaders.
+					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, false, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreatePixelShader((const DWORD*)Function, &((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 				}
 				

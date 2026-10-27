@@ -77,6 +77,18 @@ public:
 	static bool					RegisterReplacement(const char* Name, const void* Bytecode, UINT Size);
 	static ID3D9NvrExtSampler*	CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address);
 
+	// UNOFFICIAL 2026-10-27 tessellation displacement (fork patch 0021, extension "1.7-displace": the separate ID3D9NvrExtTess
+	// interface; docs/next/FORK2-DISPLACE.md): [Main.Main.Performance] NvrDxvkDisplacement + [Shaders.Terrain.Displacement].
+	// ShaderRecord::LoadShader calls RegisterDisplace for every shader it creates, before the device sees the bytecode: with the switch
+	// on at load and the interface present, the land's vertex shader (TerrainTemplate VS, SLS2100.vso) is registered with
+	// Compute\Tess\TerrainDisplace.tcs.spv and every land pixel shader (TerrainTemplate PS, SLS2092-2146) with
+	// TerrainDisplace-t<layers>.tes.spv (+ -ccw), all under one family. DXVK then draws the land's triangle lists as patches through
+	// them; everything else is untouched. DisplaceTick (once a frame, TerrainShaders::UpdateConstants) sends the live settings and
+	// logs 'NVR TESS' counters every 600 frames. Off at load, no NVR DXVK, or an older one: nothing is registered, nothing changes.
+	static bool					DisplaceOn();
+	static void					RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size);
+	static void					DisplaceTick();
+
 	// Marks every compute path off for the session (logged once with the reason).
 	static void					Fail(const char* Reason);
 

@@ -377,3 +377,134 @@ ID3D9NvrExtSampler* DxvkCompute::PointWrap() {
 	return SamplerPointWrap;
 }
 
+// ------------------------------------------------------------------------------------------------------------------------------
+// UNOFFICIAL 2026-10-27 tessellation displacement (fork patch 0021, extension 1.7-displace; see DxvkCompute.h and
+// docs/next/FORK2-DISPLACE.md). The land family: TerrainTemplate.hlsl's vertex shader (SLS2100.vso: ModelViewProj in c0-c3, its
+// outputs at TEXCOORD0-7 / COLOR0-1) and its pixel shaders (BaseMap[TEX_COUNT] in s0..; LandHeight[2] in c34-c35 says which layers
+// carry a height map in the diffuse alpha, as the land's parallax reads it).
+
+static ID3D9NvrExtTess*	DisplaceInterface = nullptr;
+static bool				DisplaceQueried = false;
+static UINT				DisplaceRegistered[2] = {};	// vertex, pixel shaders registered this session
+
+// [Main.Main.Performance] NvrDxvkDisplacement (read here, not kept in SettingsMain: at shader load, then every 8 frames)
+static bool DisplaceSwitch() {
+	return TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement") != 0;
+}
+
+static ID3D9NvrExtTess* DisplaceTess() {
+	if (!DisplaceQueried) {
+		DisplaceQueried = true;
+		ID3D9NvrExt* ext = DxvkCompute::Extension();
+		if (ext && SUCCEEDED(ext->QueryInterface(__uuidof(ID3D9NvrExtTess), (void**)&DisplaceInterface)) && DisplaceInterface)
+			Logger::Log("UNOFFICIAL NVR DXVK: NvrDxvkDisplacement: this d3d9.dll has the tessellation interface (1.7-displace); the land's shaders are registered as they load");
+		else {
+			DisplaceInterface = nullptr;
+			Logger::Log("UNOFFICIAL NVR DXVK: NvrDxvkDisplacement is on but this d3d9.dll has no tessellation interface (needs NVR DXVK 1.7-displace): the land stays as it is");
+		}
+	}
+	return DisplaceInterface;	// kept for the session (a device reference, like the extension itself)
+}
+
+bool DxvkCompute::DisplaceOn() {
+	return DisplaceSwitch() && Ext != nullptr && DisplaceInterface != nullptr
+		&& DisplaceRegistered[0] && DisplaceRegistered[1];
+}
+
+void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size) {
+	if (!Name || !TemplateName || strcmp(TemplateName, "TerrainTemplate") || !Bytecode || !Size) return;
+	if (!DisplaceSwitch() || !Ext) return;	// off at load (or native D3D9 / stock DXVK): nothing at all
+	ID3D9NvrExtTess* tess = DisplaceTess();
+	if (!tess) return;
+
+	const UINT family = 1;	// the land
+	if (Vertex) {
+		std::vector<char> tcs;
+		if (!LoadSpirv("Tess\\TerrainDisplace.tcs", tcs)) return;
+		NVR_EXT_TESS_VS_DESC desc = {};
+		desc.pBytecode = Bytecode;
+		desc.BytecodeSize = Size;
+		desc.Family = family;
+		desc.pControlSpirv = tcs.data();
+		desc.ControlSpirvSize = (UINT)tcs.size();
+		for (UINT k = 0; k < 4; k++) desc.VsFloatRegisters[k] = k;	// ModelViewProj's rows, c0-c3
+		desc.pDebugName = Name;
+		const HRESULT result = tess->RegisterTessVertexShader(&desc);
+		if (SUCCEEDED(result)) DisplaceRegistered[0]++;
+		Logger::Log("UNOFFICIAL NVR DXVK: displacement: land vertex shader %s %s (%08lX)", Name, SUCCEEDED(result) ? "registered" : "refused (DXVK's log says why)", result);
+		return;
+	}
+
+	int layers = 0;
+	for (const D3DXMACRO* m = Defines; m && m->Name; m++)
+		if (!strcmp(m->Name, "TEX_COUNT") && m->Definition) layers = atoi(m->Definition);
+	if (layers < 1 || layers > 7) return;	// not one of the land's lit pixel shaders
+
+	char cw[64], ccw[64];
+	_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d.tes", layers);
+	_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-ccw.tes", layers);
+	std::vector<char> tes, tesCcw;
+	if (!LoadSpirv(cw, tes)) return;
+	const bool haveCcw = LoadSpirv(ccw, tesCcw);
+
+	NVR_EXT_TESS_PS_DESC desc = {};
+	desc.pBytecode = Bytecode;
+	desc.BytecodeSize = Size;
+	desc.Family = family;
+	desc.pEvalSpirv[0] = tes.data();
+	desc.EvalSpirvSize[0] = (UINT)tes.size();
+	desc.pEvalSpirv[1] = haveCcw ? tesCcw.data() : nullptr;
+	desc.EvalSpirvSize[1] = haveCcw ? (UINT)tesCcw.size() : 0;
+	desc.TextureMask = (1u << layers) - 1u;	// BaseMap[0..layers-1] (s0..)
+	desc.PsFloatRegisters[0] = 34;			// LandHeight[0] (layers 0-3)
+	desc.PsFloatRegisters[1] = 35;			// LandHeight[1] (layers 4-6)
+	desc.pDebugName = Name;
+	const HRESULT result = tess->RegisterTessPixelShader(&desc);
+	if (SUCCEEDED(result)) DisplaceRegistered[1]++;
+	else Logger::Log("UNOFFICIAL NVR DXVK: displacement: land pixel shader %s refused (%08lX; DXVK's log says why): its land stays flat", Name, result);
+}
+
+void DxvkCompute::DisplaceTick() {
+	if (!DisplaceInterface || !DisplaceRegistered[0] || !DisplaceRegistered[1]) return;
+
+	// The settings, re-read every 8 frames (menu and test-list changes apply within that)
+	static NVR_EXT_TESS_STATE state = {};
+	static unsigned frame = 0;
+	static NVR_EXT_TESS_STATS last = {};
+	if ((frame++ % 8) == 0) {
+		const char* s = "Shaders.Terrain.Displacement";
+		state.Enable = DisplaceSwitch() ? TRUE : FALSE;
+		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 3);
+		state.Winding = TheSettingManager->GetSettingI(s, "Winding") == 1 ? 1 : 0;
+		state.Wireframe = debugView == 1 ? 1 : 0;
+		const float fadeStart = (std::max)(TheSettingManager->GetSettingF(s, "FadeStart"), 0.0f);
+		// TerrainDisplace.tesc push data
+		state.ControlParams[0] = (float)std::clamp(TheSettingManager->GetSettingI(s, "MaxFactor"), 1, 64);
+		state.ControlParams[1] = std::clamp(TheSettingManager->GetSettingF(s, "EdgeLength"), 2.0f, 64.0f);
+		state.ControlParams[2] = std::clamp(TheSettingManager->GetSettingF(s, "EdgeGrowth"), 0.0f, 0.1f);
+		state.ControlParams[3] = fadeStart;
+		state.ControlParams[4] = (std::max)(TheSettingManager->GetSettingF(s, "FadeEnd"), fadeStart + 1.0f);
+		state.ControlParams[5] = (std::max)(TheSettingManager->GetSettingF(s, "BorderGrid"), 0.0f);
+		state.ControlParams[6] = (float)std::clamp(TheSettingManager->GetSettingI(s, "FixedFactor"), 0, 64);
+		state.ControlParams[7] = 0.0f;
+		// TerrainDisplace.tese push data
+		state.EvalParams[0] = std::clamp(TheSettingManager->GetSettingF(s, "Strength"), 0.0f, 64.0f);
+		state.EvalParams[1] = std::clamp(TheSettingManager->GetSettingF(s, "Center"), 0.0f, 1.0f);
+		state.EvalParams[2] = (float)debugView;
+		state.EvalParams[3] = std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f);
+	}
+	DisplaceInterface->SetTessState(&state);
+
+	// Proof in the log that it runs: every 600 frames, per frame, how many land draws ran tessellated
+	if ((frame % 600) == 1) {
+		NVR_EXT_TESS_STATS now = {};
+		if (SUCCEEDED(DisplaceInterface->GetTessStats(&now))) {
+			const double f = 600.0;
+			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated, %.1f not (strips/fans), %.1f rebinds | shaders %u VS, %u PS, %u refused by the interface check",
+				state.Enable ? "on" : "off", (double)(now.TessellatedDraws - last.TessellatedDraws) / f, (double)(now.OtherTopologyDraws - last.OtherTopologyDraws) / f,
+				(double)(now.Bindings - last.Bindings) / f, now.VertexShaders, now.PixelShaders, now.RefusedPairs);
+			last = now;
+		}
+	}
+}
+
