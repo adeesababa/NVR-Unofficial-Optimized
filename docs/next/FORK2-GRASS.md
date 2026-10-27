@@ -74,7 +74,7 @@ NVR (`src/effects/GpuGrass.{h,cpp}`, shaders `src/hlsl/NewVegas/Compute/GpuGrass
 ## Settings: [Shaders.Grass.GPUGrass] (all live)
 | key | default | meaning |
 |---|---|---|
-| Enabled | false | the feature (needs the 0024 fork d3d9.dll, NVR's grass shaders, Grass DrawFirst on) |
+| Enabled | false | the feature (needs the 0024 fork d3d9.dll, NVR's grass shaders, Grass DrawFirst on, Terrain Blending off: GrassFirst stands aside with it) |
 | KeepCards | false | true = the cards stay, strands added round them (hybrid) |
 | BladeDistance | 7000 | pieces whose nearest tuft is farther stay cards |
 | Density | 1.0 | clumps per game tuft (1-6) |
