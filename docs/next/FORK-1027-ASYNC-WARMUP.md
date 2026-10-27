@@ -125,7 +125,8 @@ Session totals of pipeline compiles the frame waited for ("NVR pipeline:" lines 
 |---|---|---|---|---|
 | W1 noon walk | cold (DXVK cache moved aside) | 354 waits, 226 ms | 13 waits, 4.6 ms | ~231 ms |
 | W2 noon walk | warm (W1's cache) | 358 waits, 393 ms | 13 waits, 11.3 ms | ~404 ms |
-| W3 noon walk | warm + trackPipelineLifetime = False | NOT RUN: the user started the real game | | |
+| W3 noon walk | warm + trackPipelineLifetime = False | 219 waits, 32 ms | 13 waits, 5.9 ms | **~38 ms** |
+| W2b noon walk | warm (repeat of W2) | 356 waits, 373 ms | 14 waits, 23.6 ms | ~397 ms |
 | I1 lucky22 | warm | 131 waits, 67.5 ms | 0 | ~71 ms |
 | I2 lucky22 | warm + trackPipelineLifetime = False | 109 waits, 14.4 ms | 3 waits, 3.0 ms | ~18 ms |
 
@@ -133,6 +134,7 @@ Session totals of pipeline compiles the frame waited for ("NVR pipeline:" lines 
   lifetime tracking re-creating libraries at first use (each wait ~1-5 ms, one 25 ms). Full compiles (what a state-list
   replay would fix) are only ~11 ms, and NVR's own passes are a handful of ms. So: no warm-up code. The fix is the stock
   option `dxvk.trackPipelineLifetime = False` (I2: linked waits 67 -> 14 ms indoors, no errors in the log).
-- Open: W3 (the walk with the option) to confirm the walk drops too, and a long session with it to watch for 32-bit
-  out-of-memory. Cold vs warm being worse warm is odd (W1 compiled libraries at load and some were still alive); not chased.
+- W3 (13:34) confirms it on the walk: ~400 ms -> ~38 ms (W2b repeat ~397 ms, so W2 was not noise). No errors in the DXVK
+  log, walk passed. RECOMMENDATION: ship `dxvk.trackPipelineLifetime = False` in the fork's dxvk.conf. Still open: a long
+  session (1 h+) with it to watch for 32-bit out-of-memory; the walks are ~7 min. Cold vs warm being worse warm is odd (W1 compiled libraries at load and some were still alive); not chased.
 - Slot setup: NVRAutoTest8 (scene noon) added to multirun slim.json and slim-C.json saves.
