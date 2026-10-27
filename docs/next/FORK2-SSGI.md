@@ -3,6 +3,8 @@
 Branch `deep/fork2-ssgi` (on `mine/nvr-dxvk-compute` 34a8df4d). No fork patch: it uses the extension as it is (1.6, any NVR DXVK
 build since 0010; tested fork for the bulk run: `G:\_NVR-build-scratch\nvr-dxvk-0011`). Shot list:
 `work\bench\foundations\lists\fork2-ssgi-bulk.txt` (2026-10-03 work root), scenes lucky22 and og-desert. NOT run in game yet.
+Built clean (VS2019, Release Win32, no new warnings): `G:\_NVR-build-scratch\fork2-ssgi-out\NewVegasReloaded.dll`, sha256 77fc77e03ad21e62...
+(code commit 510684a0).
 
 ## What it does (plain)
 One bounce of light from what is on screen, worked out by AmbientLight's own occlusion search: a lamp-lit floor brightens and tints
