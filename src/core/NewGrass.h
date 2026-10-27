@@ -702,7 +702,13 @@ namespace NewGrass {
 
 	inline void ReadSettings() {
 		const char* s = "Shaders.Grass.NewGrass";
-		S.Enabled = TheSettingManager->GetSettingI(s, "Enabled") != 0;
+		// UNOFFICIAL 2026-10-27 RETIRED (user: "remove the newgrass tab from the menu or remove it entirely because gpugrass seems to
+		// supersede it"): always off, its settings are gone from the defaults file (so from the menu), and an old "Enabled = true" in a
+		// user's own file is ignored. The rest of this file stays: GPU grass (effects/GpuGrass.cpp) reads the cards' models and colour
+		// ramps with it (GetModel, GetRamp, LastVariant), which read none of these settings. The keys below are no longer read (the
+		// defaults file has none: reading them would log "not found" at every settings reload).
+		S.Enabled = false;
+		if (!S.Enabled) return;
 		S.KeepCards = TheSettingManager->GetSettingI(s, "KeepCards") != 0;
 		S.TipReach = TheSettingManager->GetSettingF(s, "TipReach");
 		S.Kink = TheSettingManager->GetSettingF(s, "Kink");

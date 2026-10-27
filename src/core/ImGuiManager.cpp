@@ -2269,7 +2269,7 @@ static bool IsOnOffInteger(const SettingManager::Configuration::ConfigNode& node
 		{ "Main.Main.Performance", "ArrivalSampler" }, { "Main.Main.Performance", "IOWorker2" },
 		{ "Main.Main.Performance", "FogReferenceTest" }, { "Main.Main.Performance", "LampMaskScissorCheck" },
 		{ "Main.Main.Performance", "CubeFaceViewCullCheck" },
-		{ "Shaders.Grass.NewGrass", "Log" }, { "Shaders.Grass.Wind", "Log" }, { "Shaders.Plants.Wind", "Log" },
+		{ "Shaders.Grass.Wind", "Log" }, { "Shaders.Plants.Wind", "Log" },
 		{ "Shaders.DitherBuster.Main", "DebugView" }, { "Shaders.PBR.Metal", "DebugView" },
 		{ "Shaders.ShadowsExteriors.SunSmoothing", "SmoothSun" }, { "Shaders.ShadowsExteriors.SunSmoothing", "QuantizeSun" },
 		{ "Shaders.CloudShadows.Main", "HazardLog" }, { "Shaders.CloudShadows.Main", "FlickerWatch" },
