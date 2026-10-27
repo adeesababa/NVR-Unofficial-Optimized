@@ -99,6 +99,28 @@ they were thin, many and in the card's outline; the defaults follow round 6's st
 width far), and whether the game's scene target at the early grass call is the one the extension can write (multisampled or not:
 both handled by the patch).
 
+## Bulk run 1 (2026-10-27, og-goodsprings, 52ce2b6b / DLL 9a8ddb34 / fork CI 40445689167): FAILED, cause found and fixed
+- Seen: "ready", "18 early grass draws caught (4104 tufts), their cards skipped; left to the game: 0" (the catching works), the draws
+  were accepted (no extension error: the scene target and depth buffer pass the patch's checks), but the GPU counts every time "0 clumps
+  drawn, 0 outside the view, 1 tufts past the fade start; strands near 0, far 0": nothing drawn, the cards skipped = bare ground.
+- Cause: a BINDING CLASH. The extension binds a uniform buffer and a read-only storage buffer of the same slot number to the same
+  DXVK resource (NvrExtBufferSlotBase + slot, d3d9_nvr_ext.cpp NvrBindResources: both go through bindUniformBuffer). The cull pass
+  had its frame block on uniform slot 0 and the tufts on storage slot 0, the tufts bound last: the shader read the tuft buffer as its
+  frame block. Its tuft count (frame byte 64) became the 5th tuft's w (size step ~1) and its density the 8th tuft's height (thousands),
+  so every thread worked on tuft 0 as one of thousands of "extra clumps"; tuft 0 sat in a mixed draw past the (garbage) fade start, so
+  all of them stopped there and only the c = 0 one is counted: exactly "0 / 0 / 1". (Hi-Z met the same clash on 10-26.)
+- Proof without the game: `tests/gpugrass_cull_check.cpp` runs the real GpuGrassCull.spv on the GTX 1070 with plain Vulkan, fed as
+  GpuGrass.cpp feeds it (game-style reversed-depth camera, 18 draws x 228 tufts packed as the game packs them). With the clash
+  reproduced (`clash`): "0 clumps drawn, 0 outside the view, 1 past the fade start" = the bulk log. With separate bindings: every tuft
+  accounted for (4104 of 4104: 1348 clumps drawn, 2519 outside the view, 237 past the fade start = the CPU's own count 237), 4729 near
+  + 13303 far strands, near widths 0.55-3.75 units, heights 1-53 units, no NaN; Density 3: 4049 clumps, 14026 + 40055 strands.
+- Fix (GpuGrass.cpp): one slot number per buffer (frame 0, tufts 1, tuft draws 2, draws 3, strands 4, counts 5), in the cull pass and
+  the strand draws. Safety net added: the counts are read back every 60 frames (never waits); every tuft's own clump must end as drawn,
+  outside the view or past the fade start, so if those add up to fewer than the tufts uploaded twice in a row, GPU grass turns itself
+  off and the cards come back (logged "THE CULL PASS DID NOT SEE EVERY TUFT"). The fork is unchanged (same CI 40445689167 d3d9.dll).
+  Suggestion for the fork (not done: it would touch every pass): BuildPipelineBindings could refuse a uniform buffer and a read-only
+  storage buffer on the same slot.
+
 ## Missing / next (session-hours)
 1. In-game look + cost tuning from the bulk run (Coverage, Blades, colour pick; maybe the card's top-decile colour as round 6
    suggested): 1-2 h.

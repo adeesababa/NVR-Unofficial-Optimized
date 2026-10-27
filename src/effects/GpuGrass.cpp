@@ -46,6 +46,8 @@ namespace {
 	const unsigned kMaxDraws = 1024;		// grass draws a frame (the draw index has 12 bits; d30 noon has ~210 early draws)
 	const unsigned kMaxTufts = 524288;		// tufts a frame (d30 noon ~48k)
 	const unsigned kStatsBytes = 64;		// the indirect arguments (2 x 16) and the cull pass's counters
+	// Buffer slots: ONE number per buffer, never shared between a uniform and a storage buffer (they meet in the same DXVK slot).
+	enum : UINT { SlotFrame = 0, SlotTufts = 1, SlotTuftDraw = 2, SlotDraws = 3, SlotBlades = 4, SlotArgs = 5 };
 
 	ID3D9NvrExtGeometry*		Geometry = nullptr;
 	ID3D9NvrExtGeometryScene*	Scene = nullptr;
@@ -80,6 +82,8 @@ namespace {
 	UInt32		Frames = 0;
 	bool		ReadbackPending = false;
 	UInt32		ReadbackFrame = 0;
+	UInt32		ReadbackTufts = 0;		// tufts uploaded in the frame whose counts are being read back
+	UInt32		ReadbackCount = 0, BadCounts = 0;
 
 	void TurnOff(const char* why) {
 		Off = true;
@@ -122,14 +126,18 @@ namespace {
 			}
 			if (FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtReadback), (void**)&Readback))) Readback = nullptr;	// only for the counts in the log
 
-			// the cull pass: frame block, tufts, their draw, the draws, the strands (written), the counts (written)
+			// the cull pass: frame block, tufts, their draw, the draws, the strands (written), the counts (written).
+			// 2026-10-27 bulk run FIX: every buffer has its OWN slot number. The extension binds a uniform buffer and a read-only
+			// storage buffer of the same slot to the same DXVK resource (NvrExtBufferSlotBase + slot): with the frame block and the
+			// tufts both on slot 0 the shader read the tufts as its frame block (tuft count = the 5th tuft's size step, ~1), placed
+			// nothing, and the cards were skipped all the same: bare ground. (Hi-Z hit the same clash on 10-26.)
 			const NVR_EXT_BINDING_DESC cullBindings[] = {
-				{ 0, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
-				{ 0, 1, NVR_EXT_BIND_STORAGE_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
-				{ 0, 2, NVR_EXT_BIND_STORAGE_BUFFER, 1, NVR_EXT_VIEW_2D, FALSE, 0 },
-				{ 0, 3, NVR_EXT_BIND_STORAGE_BUFFER, 2, NVR_EXT_VIEW_2D, FALSE, 0 },
-				{ 0, 4, NVR_EXT_BIND_STORAGE_BUFFER, 3, NVR_EXT_VIEW_2D, TRUE,  0 },
-				{ 0, 5, NVR_EXT_BIND_STORAGE_BUFFER, 4, NVR_EXT_VIEW_2D, TRUE,  0 },
+				{ 0, 0, NVR_EXT_BIND_UNIFORM_BUFFER, SlotFrame,    NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 1, NVR_EXT_BIND_STORAGE_BUFFER, SlotTufts,    NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 2, NVR_EXT_BIND_STORAGE_BUFFER, SlotTuftDraw, NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 3, NVR_EXT_BIND_STORAGE_BUFFER, SlotDraws,    NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 4, NVR_EXT_BIND_STORAGE_BUFFER, SlotBlades,   NVR_EXT_VIEW_2D, TRUE,  0 },
+				{ 0, 5, NVR_EXT_BIND_STORAGE_BUFFER, SlotArgs,     NVR_EXT_VIEW_2D, TRUE,  0 },
 			};
 			std::vector<char> words;
 			if (!DxvkCompute::LoadSpirv("GpuGrassCull", words)) { TurnOff("Compute\\GpuGrassCull.spv missing"); return false; }
@@ -148,9 +156,9 @@ namespace {
 				return false;
 			}
 			const NVR_EXT_BINDING_DESC vsBindings[] = {
-				{ 0, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 },
-				{ 0, 3, NVR_EXT_BIND_STORAGE_BUFFER, 2, NVR_EXT_VIEW_2D, FALSE, 0 },
-				{ 0, 4, NVR_EXT_BIND_STORAGE_BUFFER, 3, NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 0, NVR_EXT_BIND_UNIFORM_BUFFER, SlotFrame,  NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 3, NVR_EXT_BIND_STORAGE_BUFFER, SlotDraws,  NVR_EXT_VIEW_2D, FALSE, 0 },
+				{ 0, 4, NVR_EXT_BIND_STORAGE_BUFFER, SlotBlades, NVR_EXT_VIEW_2D, FALSE, 0 },
 			};
 			for (int isFar = 0; isFar < 2; isFar++) {
 				const std::vector<char>& vs = isFar ? farVs : nearVs;
@@ -297,13 +305,22 @@ namespace {
 		return true;
 	}
 
+	// The GPU's counts of a frame a few frames ago (the readback never waits). Every tuft's own clump ends in exactly one of: drawn,
+	// outside the view, past the fade start; if those add up to fewer than the tufts uploaded, the cull pass did not see its input
+	// (2026-10-27: a binding clash made it see 1 of 4104): twice in a row, the feature turns itself off so the cards come back.
 	void LogCounts() {
 		if (!ReadbackBuf || !ReadbackPending) return;
 		UInt32 counts[kStatsBytes / 4];
 		if (Readback->TryReadback(ReadbackBuf, 0, kStatsBytes, counts) != S_OK) return;
 		ReadbackPending = false;
-		Logger::Log("UNOFFICIAL GPU grass: frame %u counts (GPU): %u clumps drawn, %u outside the view, %u tufts past the fade start (cards); strands near %u, far %u, %u did not fit (MaxBlades)",
-			ReadbackFrame, counts[8], counts[9], counts[12], counts[1], counts[5], counts[11]);
+		ReadbackCount++;
+		const UInt32 seen = counts[8] + counts[9] + counts[12];
+		const bool bad = ReadbackTufts > 0 && seen < ReadbackTufts;
+		if (ReadbackCount <= 3 || ReadbackCount % 60 == 0 || (S.Log && ReadbackCount % 5 == 0) || bad)
+			Logger::Log("UNOFFICIAL GPU grass: frame %u counts (GPU): %u tufts uploaded, %u clumps drawn, %u outside the view, %u tufts past the fade start (cards); strands near %u, far %u, %u did not fit (MaxBlades)%s",
+				ReadbackFrame, ReadbackTufts, counts[8], counts[9], counts[12], counts[1], counts[5], counts[11], bad ? " -- THE CULL PASS DID NOT SEE EVERY TUFT" : "");
+		BadCounts = bad ? BadCounts + 1 : 0;
+		if (BadCounts >= 2) TurnOff("the cull pass saw fewer tufts than were uploaded (twice); the cards are kept");
 	}
 
 	// The cull pass and the two indirect draws, into the device's render target and depth buffer as they are now.
@@ -368,12 +385,12 @@ namespace {
 			const UINT clumps = (UINT)ceilf((std::min)((std::max)(S.Density, 1.0f), 6.0f));
 			const UINT groups = (std::min)((tufts * clumps + 63) / 64, 65535u);
 			const NVR_EXT_RESOURCE_BINDING cullRes[] = {
-				{ 0, NVR_EXT_BIND_UNIFORM_BUFFER, FrameBuf, 0, 0, 0, FALSE },
-				{ 0, NVR_EXT_BIND_STORAGE_BUFFER, TuftBuf, 0, 0, 0, FALSE },
-				{ 1, NVR_EXT_BIND_STORAGE_BUFFER, TuftDrawBuf, 0, 0, 0, FALSE },
-				{ 2, NVR_EXT_BIND_STORAGE_BUFFER, DrawBuf, 0, 0, 0, FALSE },
-				{ 3, NVR_EXT_BIND_STORAGE_BUFFER, BladeBuf, 0, 0, 0, FALSE },
-				{ 4, NVR_EXT_BIND_STORAGE_BUFFER, ArgsBuf, 0, 0, 0, FALSE },
+				{ SlotFrame,    NVR_EXT_BIND_UNIFORM_BUFFER, FrameBuf, 0, 0, 0, FALSE },
+				{ SlotTufts,    NVR_EXT_BIND_STORAGE_BUFFER, TuftBuf, 0, 0, 0, FALSE },
+				{ SlotTuftDraw, NVR_EXT_BIND_STORAGE_BUFFER, TuftDrawBuf, 0, 0, 0, FALSE },
+				{ SlotDraws,    NVR_EXT_BIND_STORAGE_BUFFER, DrawBuf, 0, 0, 0, FALSE },
+				{ SlotBlades,   NVR_EXT_BIND_STORAGE_BUFFER, BladeBuf, 0, 0, 0, FALSE },
+				{ SlotArgs,     NVR_EXT_BIND_STORAGE_BUFFER, ArgsBuf, 0, 0, 0, FALSE },
 			};
 			NVR_EXT_DISPATCH_DESC dispatch = {};
 			dispatch.pPipeline = CullPipeline;
@@ -392,9 +409,9 @@ namespace {
 			depth.DepthWrite = TRUE;
 			depth.DepthCompare = (zfunc >= D3DCMP_NEVER && zfunc <= D3DCMP_ALWAYS) ? (NVR_EXT_COMPARE)(zfunc - 1) : NVR_EXT_COMPARE_GREATER_EQUAL;	// the game's (reversed depth: GREATEREQUAL)
 			const NVR_EXT_RESOURCE_BINDING drawRes[] = {
-				{ 0, NVR_EXT_BIND_UNIFORM_BUFFER, FrameBuf, 0, 0, 0, FALSE },
-				{ 2, NVR_EXT_BIND_STORAGE_BUFFER, DrawBuf, 0, 0, 0, FALSE },
-				{ 3, NVR_EXT_BIND_STORAGE_BUFFER, BladeBuf, 0, 0, 0, FALSE },
+				{ SlotFrame,  NVR_EXT_BIND_UNIFORM_BUFFER, FrameBuf, 0, 0, 0, FALSE },
+				{ SlotDraws,  NVR_EXT_BIND_STORAGE_BUFFER, DrawBuf, 0, 0, 0, FALSE },
+				{ SlotBlades, NVR_EXT_BIND_STORAGE_BUFFER, BladeBuf, 0, 0, 0, FALSE },
 			};
 			const bool vpInside = vp.Width && vp.Height && vp.X + vp.Width <= rtDesc.Width && vp.Y + vp.Height <= rtDesc.Height;
 			for (int isFar = 0; isFar < 2 && ok; isFar++) {
@@ -418,8 +435,8 @@ namespace {
 		}
 
 		// the counts, now and then (the readback never waits: it is read a few frames later)
-		if (ok && ReadbackBuf && !ReadbackPending && (Frames <= 3 || Frames % 3600 == 0 || (S.Log && Frames % 300 == 0))) {
-			if (SUCCEEDED(Readback->CopyToReadback(ReadbackBuf, 0, ArgsBuf, 0, kStatsBytes))) { ReadbackPending = true; ReadbackFrame = TheFrameRateManager->FrameNumber; }
+		if (ok && ReadbackBuf && !ReadbackPending && (Frames <= 3 || Frames % 60 == 0)) {
+			if (SUCCEEDED(Readback->CopyToReadback(ReadbackBuf, 0, ArgsBuf, 0, kStatsBytes))) { ReadbackPending = true; ReadbackFrame = TheFrameRateManager->FrameNumber; ReadbackTufts = tufts; }
 		}
 		if (rt) rt->Release();
 		if (ds) ds->Release();
