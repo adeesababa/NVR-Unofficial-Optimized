@@ -59,6 +59,11 @@ float4 TESR_BloodFlowShape;		// UNOFFICIAL 2026-10-13: xyz where NVR's camera-ce
 // fade out softly and follow the surface's slope (0: the hard cuts as before); y the fade's least width in pixels (as Terrain
 // blending's MinPixels); w 1 (test only) pools act as if the probe never found the ground round them.
 float4 TESR_BloodFlowGround;
+// UNOFFICIAL 2026-10-27 (user: pooled and flowing blood "looks kinda grey, almost reflective"): the wet look (BloodFlow.cpp
+// BloodFlowLook): x the sheen (sky or room mirrored at low angles) x what it was; y the most of it Fresnel may mirror; z how much
+// of the blood's own hue the sheen takes (0: white); w the darkest a matched colour may be (linear, its strongest channel).
+// OldLook: (1, 1, 0, 0), the look before exactly. Same in BloodFluidDraw.frag (look3).
+float4 TESR_BloodFlowLook;
 float4x4 TESR_ViewProjectionTransform;
 
 // (Declared in register order: the samplers bind by the order they are declared in.)
@@ -1192,6 +1197,9 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		float g = floor(gb / 256.0);
 		g += (gb - g * 256.0 >= 256.0) ? 1.0 : ((gb - g * 256.0 < 0.0) ? -1.0 : 0.0);
 		freshColour = linearize(saturate(float3(r, g, gb - g * 256.0) / 255.0 * TESR_BloodFlowMatch.x)) * TESR_BloodFlowMatch.y;
+		// (UNOFFICIAL 2026-10-27, MatchFloor: no darker than TESR_BloodFlowLook.w in its strongest channel, the hue kept. The
+		// user's splatter grey x decal colour came to about 0.007 linear red: black, so the sheen on top read grey.)
+		freshColour *= max(1.0, TESR_BloodFlowLook.w / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4));
 		// (Dried: a bit darker and a touch browner. The settings' dried/fresh ratio was made for FreshColor's bright red and
 		// took the game's own dark red down to a third, near black: user, 2026-10-13, old pools far darker than the decals.)
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
@@ -1238,8 +1246,11 @@ float4 BloodPS(PSIN IN) : COLOR0 {
 		}
 		float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
 		float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
+		// (UNOFFICIAL 2026-10-27, TESR_BloodFlowLook: the sheen weaker, capped, and part in the blood's own hue, from glintTint:
+		// (glintTint - 0.004) / 0.016 is the colour over its strongest channel, (1, 0, 0) for FreshColor. OldLook: as before.)
+		float3 sheenTint = lerp(1.0, saturate((glintTint - 0.004) / 0.016), TESR_BloodFlowLook.z);
 		// (Capped: no more than about the light here, so a low sun cannot turn a wide patch into a glowing band.)
-		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * (1.0 - rough) * 0.5) * gloss;
+		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, TESR_BloodFlowLook.y) * surroundings * sheenTint * (1.0 - rough) * 0.5 * TESR_BloodFlowLook.x) * gloss;
 	}
 	// A falling drop: a dark red bead with a faint glint, in front of whatever is behind it (lit about as that is).
 	float3 drop = light * (freshColour * 0.7 + glintTint * TESR_BloodFlowFresh.w);
@@ -1420,7 +1431,10 @@ float4 BeadsPS(PSIN IN) : COLOR0 {
 	float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
 	float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
 	float strength = TESR_BloodFlowBeads.x * IN.c.y;
-	float3 shine = (min(glints, 1.0) * 0.45 * min(light, 1.2) + fresnel * surroundings * 0.4) * h * strength;
+	// (UNOFFICIAL 2026-10-27 TESR_BloodFlowLook, as BloodPS: each bead's grey rim of mirrored sky made the splats look like heaps of
+	// glass beads; the sheen is weaker, capped, and part in the hue of the splat under it.)
+	float3 sheenTint = lerp(1.0, sceneLin / max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1e-4), TESR_BloodFlowLook.z);
+	float3 shine = (min(glints, 1.0) * 0.45 * min(light, 1.2) + min(fresnel, TESR_BloodFlowLook.y) * surroundings * sheenTint * 0.4 * TESR_BloodFlowLook.x) * h * strength;
 	// colour + image x alpha, in the image's own (display) encoding: the highlight as the step it makes over this pixel.
 	float darken = 1.0 - 0.3 * h * saturate(strength);
 	float3 under = sceneLin * darken;
@@ -1789,6 +1803,7 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 		float cg = floor(gb / 256.0);
 		cg += (gb - cg * 256.0 >= 256.0) ? 1.0 : ((gb - cg * 256.0 < 0.0) ? -1.0 : 0.0);
 		freshColour = linearize(saturate(float3(cr, cg, gb - cg * 256.0) / 255.0 * TESR_BloodFlowMatch.x)) * TESR_BloodFlowMatch.y;
+		freshColour *= max(1.0, TESR_BloodFlowLook.w / max(max(freshColour.r, max(freshColour.g, freshColour.b)), 1e-4));	// (2026-10-27 MatchFloor, as BloodPS)
 		dryColour = freshColour * float3(0.72, 0.8, 0.8) + freshColour.r * float3(0.0, 0.1, 0.05);
 	}
 	float3 albedo = lerp(freshColour, dryColour, dry) * lerp(1.0, 0.8 + 0.4 * valueNoise(q * R * 0.35 + seed * 31.0), dry);
@@ -1811,7 +1826,9 @@ float4 SplatShade(PSIN IN, float2 uv, float slot, float3 rel, float3 pp, float R
 		}
 		float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
 		float3 surroundings = TESR_BloodFlowInfo.x > 0.5 ? linearize(saturate(TESR_HorizonColor.rgb)) : light * 0.1;
-		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + fresnel * surroundings * 0.4) * gloss;
+		// (2026-10-27 TESR_BloodFlowLook, as BloodPS: the sheen weaker, capped, part in the blood's hue.)
+		float3 sheenTint = lerp(1.0, albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-4), TESR_BloodFlowLook.z);
+		colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, TESR_BloodFlowLook.y) * surroundings * sheenTint * 0.4 * TESR_BloodFlowLook.x) * gloss;
 	}
 	float ceiling = max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)), 1.0);
 	colour = min(colour, ceiling);

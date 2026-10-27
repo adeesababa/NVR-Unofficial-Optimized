@@ -38,6 +38,10 @@ public:
 		float	StainSize = 3.2f;		// game units: the stain one particle paints round it
 		float	Threshold = 0.3f;		// how thick the field must be to show
 		float	Bump = 0.6f;			// how much the field's slope bends the normal (rounded edges)
+		// UNOFFICIAL 2026-10-27 (user: "the giant amount of 'orbs' that come out of npcs when they get hit"): see BloodFluid.cpp Offer.
+		float	Drops = 0.3f;			// share of the blood in the air drawn as drops (the rest still falls and lands as stain)
+		float	DropSize = 0.55f;		// a drop's radius, x the particle's (1.2 units)
+		bool	OldThrow = false;		// TEST: the throws, pools and drops as before 2026-10-27 (to compare)
 		int		DebugView = 0;			// 1 stains red / drops white, 2 the particles as dots by state
 		float	TestThrow = 0.0f;		// TEST: a throw from the camera at the view centre every this many seconds (0 off)
 		bool	TestPour = false;		// TEST: a pool bleeding on the ground ahead (once, when turned on)

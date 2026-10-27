@@ -18,6 +18,7 @@ namespace {
 		float	look[4], look2[4], viewRot0[4], viewRot1[4], viewRot2[4], fresh[4], dryColor[4], match[4], depthConsts[4];
 		float	sunDir[4], sunColor[4], sunAmbient[4], horizon[4];
 		float	lightPos[12][4], shadowLightPos[12][4], lightColor[24][4];
+		float	look3[4], rework[4];	// UNOFFICIAL 2026-10-27: TESR_BloodFlowLook; the 2026-10-27 throws and drops (BloodFluid.glsl)
 	};
 	struct SimPush { UInt32 mode, total, pad0, pad1; float shift[4]; };
 
@@ -80,6 +81,9 @@ void BloodFluid::ReadSettings() {
 	Settings.StainSize = std::clamp(TheSettingManager->GetSettingF(s, "StainSize"), 1.0f, 8.0f);
 	Settings.Threshold = std::clamp(TheSettingManager->GetSettingF(s, "Threshold"), 0.05f, 3.0f);
 	Settings.Bump = std::clamp(TheSettingManager->GetSettingF(s, "Bump"), 0.0f, 4.0f);
+	Settings.Drops = std::clamp(TheSettingManager->GetSettingF(s, "Drops"), 0.0f, 1.0f);
+	Settings.DropSize = std::clamp(TheSettingManager->GetSettingF(s, "DropSize"), 0.2f, 1.5f);
+	Settings.OldThrow = TheSettingManager->GetSettingI(s, "OldThrow") != 0;
 	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 3);
 	Settings.TestThrow = std::clamp(TheSettingManager->GetSettingF(s, "TestThrow"), 0.0f, 60.0f);
 	const bool pour = TheSettingManager->GetSettingI(s, "TestPour") != 0;
@@ -161,13 +165,29 @@ bool BloodFluid::Offer(UInt64 Key, const BloodFlowBoxes::Item& Item) {
 	}
 	SplatsDone[Key] = now;
 	const float R = std::clamp(Item.Radius, 4.0f, 30.0f);
-	D3DXVECTOR3 dir = -Item.Normal;	// (BloodFlow's normal is against the way the game threw it)
-	const float l = BloodFlowBoxes::Length(dir);
-	dir = l > 1e-3f ? dir / l : D3DXVECTOR3(0.0f, 0.0f, -1.0f);
 	// Where blood that falls out of sight lands: the floor the player stands on, unless the splat is lower.
 	const float ground = Player ? (std::min)((float)Player->pos.z, Item.Center.z) - 1.0f : Item.Center.z - 200.0f;
 	const int count = (int)std::clamp(Settings.Amount * 140.0f * (R / 15.0f), 24.0f, 480.0f);
-	Queue(Item.Center, ground, dir, 420.0f, 0.35f * R, 0.35f, 4.0f + 0.15f * R, 0.08f, count, Hash(Key), (UInt32)Item.Tint, 0);
+	if (Settings.OldThrow) {
+		// TEST (OldThrow): as before 2026-10-27.
+		D3DXVECTOR3 dir = -Item.Normal;
+		const float l = BloodFlowBoxes::Length(dir);
+		dir = l > 1e-3f ? dir / l : D3DXVECTOR3(0.0f, 0.0f, -1.0f);
+		Queue(Item.Center, ground, dir, 420.0f, 0.35f * R, 0.35f, 4.0f + 0.15f * R, 0.08f, count, Hash(Key), (UInt32)Item.Tint, 0);
+		return false;
+	}
+	// UNOFFICIAL 2026-10-27 (user, playtest on the fork: "the giant amount of 'orbs' that come out of npcs when they get hit"). The
+	// throw went the wrong way: the game's decal keeps the way back out of the surface (+0x40; every floor splat in the logs reads
+	// (0 0 1)), BloodFlow's Item.Normal is minus that, and this took minus Item.Normal as the throw: each fresh splat shot its 24-480
+	// particles out of the floor at 420 units/s, a fountain one to three metres high round the NPC that rained down as drops. Now
+	// the splat's blood is born ON the surface, as a film over the game's decal spreading out a little (on a wall it then runs
+	// down): BloodFluidSim.comp Emit, kind 0. Into the surface: Item.Normal (-0x40) for the game's splats; anything near level
+	// (BloodFlow's made-up TestSplats keep their normal up) is taken as a floor. On screen the sim checks it against the surface.
+	D3DXVECTOR3 into = Item.Normal;
+	const float l = BloodFlowBoxes::Length(into);
+	into = l > 1e-3f ? into / l : D3DXVECTOR3(0.0f, 0.0f, -1.0f);
+	if (fabsf(into.z) > 0.7f) into.z = -fabsf(into.z);
+	Queue(Item.Center, ground, into, 45.0f, 0.4f * R, 0.0f, 0.0f, 0.08f, count, Hash(Key), (UInt32)Item.Tint, 0);
 	return false;
 }
 
@@ -370,12 +390,22 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	f.screen[0] = (float)Width; f.screen[1] = (float)Height; f.screen[2] = 1.0f / Width; f.screen[3] = 1.0f / Height;
 	f.sim[0] = Step; f.sim[1] = Gravity; f.sim[2] = Radius; f.sim[3] = (float)steps;
 	f.fluid[0] = 600.0f; f.fluid[1] = 120.0f; f.fluid[2] = Settings.Viscosity; f.fluid[3] = powf(Cell / (2.0f * Radius), 3.0f);
-	f.wall[0] = Settings.Friction; f.wall[1] = Settings.Cling; f.wall[2] = 1.5f; f.wall[3] = 25.0f;
+	// (2026-10-27: blood in flight counts as on a surface up to 10 units behind what the camera sees there, 25 before. The window
+	// is for drops fast enough to pass a surface within a step (a drop off a 2 m ledge moves under 4 units a step); 25 also caught
+	// blood behind a body's legs or under it and put it on the body's front, where it ran off as drops.)
+	const bool old = Settings.OldThrow;
+	f.wall[0] = Settings.Friction; f.wall[1] = Settings.Cling; f.wall[2] = 1.5f; f.wall[3] = old ? 25.0f : 10.0f;
 	f.settle[0] = 0.4f * Settings.SettleTime; f.settle[1] = 0.6f * Settings.SettleTime; f.settle[2] = 0.5f; f.settle[3] = 0.4f;	// (splash: the spike's 1.0 flung a throw over a whole table top in game, 2026-10-26)
 	f.gridf[0] = Cell; f.gridf[1] = 1.0f / Cell; f.gridf[2] = 1500.0f; f.gridf[3] = Settings.Lifetime;
 	f.counts[0] = Capacity; f.counts[1] = Used; f.counts[2] = TilesX; f.counts[3] = TilesY;
 	f.counts2[0] = TileCap; f.counts2[1] = GridCells - 1; f.counts2[2] = (UInt32)Settings.DebugView; f.counts2[3] = (UInt32)PendingCount;
-	f.look[0] = Settings.StainSize; f.look[1] = Radius * 1.3f; f.look[2] = Settings.Threshold; f.look[3] = Settings.Bump;
+	f.look[0] = Settings.StainSize; f.look[1] = Radius * (old ? 1.3f : Settings.DropSize); f.look[2] = Settings.Threshold; f.look[3] = Settings.Bump;
+	// UNOFFICIAL 2026-10-27: BloodFlow's wet look (TESR_BloodFlowLook) and the reworked throws and drops (BloodFluid.glsl rework):
+	// x 1 splat blood born on its surface and pools born lying on the ground; y the share of drops in the air drawn; z 1 the
+	// field's slope bends the normal mostly at the edges (a pool's top is flat, not every particle's bump); w the drops' glints.
+	Copy4(f.look3, Constant("TESR_BloodFlowLook"));
+	if (!Constant("TESR_BloodFlowLook")) { f.look3[0] = 1.0f; f.look3[1] = 1.0f; }
+	f.rework[0] = old ? 0.0f : 1.0f; f.rework[1] = old ? 1.0f : Settings.Drops; f.rework[2] = old ? 0.0f : 1.0f; f.rework[3] = old ? 1.0f : 0.35f;
 	// BloodFlow's look: its colours and times (its clock runs at TunedClockRate x real time).
 	const BloodFlowEffect::BloodFlowStruct& c = Owner->Constants;
 	f.look2[0] = (float)TunedClockRate; f.look2[1] = c.Dry.w; f.look2[2] = c.Info.z; f.look2[3] = c.Fresh.w;

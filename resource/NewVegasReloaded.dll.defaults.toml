@@ -1809,6 +1809,10 @@ DryColorB = 0.065
 MatchGameColor = true                  # Fresh blood takes each game splat's own colour (the colour its decal is drawn with, times MatchShade), so streams and pools match your blood textures. false: FreshColor below. Dried blood keeps the same darkening and browning as DryColor over FreshColor.
 MatchShade = 0.12                      # [0.02-0.5] The blood splatter texture's own grey (sRGB) that the game multiplies by the decal colour. 0.12 suits a dark splatter texture (measured on a popular 2048 blood replacer); raise it for a lighter one.
 MatchBrightness = 1.0                  # [0.3-3.0] Brightens (above 1) or darkens the matched colour, if the streams still look lighter or darker than the game's splats in the same light.
+MatchFloor = 0.2                       # [0-0.6] UNOFFICIAL (2026-10-27): the darkest a matched blood colour may be (sRGB, its strongest channel); a darker one is lifted to it, its hue kept. A dark splatter texture times the decal colour can come out near black (0.08 with a popular 2048 replacer), and then the wet sheen on top reads grey instead of red. 0: off.
+Sheen = 0.45                           # [0-2] UNOFFICIAL (2026-10-27): how strongly wet blood mirrors the sky or the room at low angles, x what it was (1 = as before 2026-10-27, which made pools look grey and almost reflective). Also capped: never more than a quarter of the sky.
+SheenTint = 0.6                        # [0-1] UNOFFICIAL (2026-10-27): how much of the blood's own colour the sheen (and the glints of drops in the air) takes: 0 white as before, 1 all red.
+OldLook = false                        # Test only: the wet look as before 2026-10-27 (no MatchFloor, the old Sheen, white, not capped), to compare.
 StreamWidth = 1.0                      # [0.2-3.0] Width of the streams running from a splat (and of their drops and the puddles they end in). Below 1 thinner, above 1 thicker.
 Beads = 1.0                            # [0-3] Wet beads: glossy domed drops of blood over the game's own splats (where its splatter texture has blood), catching the sun and lamps, drying away drop by drop. 0: off.
 BeadSize = 60.0                        # [1-200] Game units one tile of the drops texture covers: smaller = smaller, more numerous beads.
@@ -1844,6 +1848,9 @@ Lifetime = 900.0                       # [60-3600] Seconds before the fluid's st
 StainSize = 3.2                        # [1.5-5] Game units of stain each particle paints round it (bigger: smoother, wider films).
 Threshold = 0.3                        # [0.1-2] How thick the blood must be to show (higher: thinner, more broken runs).
 Bump = 0.6                             # [0-2] How rounded the blood's edges look (the highlights along them).
+Drops = 0.3                            # [0-1] UNOFFICIAL (2026-10-27): share of the blood in the air drawn as drops (dripping off a ledge, a splash); the rest still falls and lands as stain. 1: every particle, as before.
+DropSize = 0.55                        # [0.2-1.5] UNOFFICIAL (2026-10-27): a drop's size, x a particle's (1.3 before).
+OldThrow = false                       # Test only: the throws and drops as before 2026-10-27, to compare: each fresh splat shot its blood out of the floor in a fountain (the 'orbs' round a hit NPC), a dying body's pool was born above the ground and ran off the body's front, every particle in the air was a big glinting drop.
 DebugView = 0                          # 1: stains red (paler = thinner), their faint edge orange, drops in the air white. 2: every particle as a dot: white in the air, red on a surface, yellow on the fallback ground, blue held (hidden from the camera), brown settled. 3 (test): the depth the fluid reads (one flat colour = NVR has no depth under this DXVK; see the log's WARNING line).
 TestThrow = 0.0                        # Test only: every this many seconds a throw of blood from the camera at whatever is in the middle of the view. 0: off.
 TestPour = false                       # Test only: a pool bleeds on the ground a little ahead of the player (once each time this is turned on).

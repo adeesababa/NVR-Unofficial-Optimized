@@ -278,6 +278,27 @@ In game (slot C, 1080p, GTX 1070, fork 1.4 + the vendor override below; lists be
 - Look: splashes read as spatters of droplets (they spread wide), pools as one dark film, wall runs as streaks; drying
   darkens them. Not yet seen: a real game splat (a shot) and a killed NPC's pool in good framing (killall in the saloon put
   the pools behind tables and bodies; the log shows them emitted and simulated).
+2026-10-27 rework (user's playtest of claude/play-fork: "a giant amount of 'orbs' come out of npcs when they get hit"; the
+ground flow looks nice; the colour "kinda grey, almost reflective"). Branch claude/blood-rework. Causes and changes:
+- The orbs: a fresh splat's throw went the wrong way. The game's decal keeps the way back OUT of the surface (+0x40: every floor
+  splat in the logs reads (0 0 1)); Offer took -Item.Normal (= +0x40) as the throw, so each fresh splat shot its 24-480 particles
+  out of the floor at 420 u/s, a 1-3 m fountain round the NPC, drawn as 1.56-unit glinting spheres on the way down. Also a dying
+  body's pool was born in the air under the body, where the 25-unit collision window took the body's front for the surface: the
+  blood was put on the body and ran off it as more drops. Now (Sim Emit, F.rework.x): splat blood is born ON its surface (into it
+  = Item.Normal, near-level taken as a floor, checked on screen against the depth normal; put exactly on the surface the camera
+  sees there when it faces the same way), spreading out at 45 u/s as a film over the decal (runs down walls); BloodFlow's
+  TestSplats now carry the game's sign (their opposite sign is why the tests never showed the fountain); a pool's blood is born
+  lying on the fallback ground and its first step may only find a floor
+  (normal z > 0.6), never a body's side; the in-flight window is 10 units. Drops in the air: only Drops (0.3) of them drawn, by
+  seed; DropSize 0.55 x the particle (1.3 before); their glints x0.35, part in the blood's hue; their colour the splat's own.
+- The grey: the matched colour (splatter grey 0.12 x decal colour 0.667 0 0.016 = 0.007 linear red) is near black, and the sheen
+  (Fresnel x the horizon colour, uncoloured) reached 0.1-0.5 at the 8-22 degrees a pool is seen at: it outshone the blood (sRGB
+  about (0.25 0.18 0.21) at 14 degrees). Same in BloodPS, the splat shapes, the beads and BloodFluidDraw (a faithful port; the
+  fluid's normals were also bent by every particle's bump, so its sheen and glints came in specks all over). New
+  TESR_BloodFlowLook / look3 in all four: Sheen 0.45 x, Fresnel capped at 0.25, SheenTint 0.6 of the blood's hue, MatchFloor 0.2
+  sRGB (the matched colour lifted to at least that, hue kept); fluid only: the field's slope bends the normal by its thickness
+  (edges), at most 0.5. Same pool at 14 degrees now about (0.25 0.05 0.07). Test toggles: [Shaders.BloodFlow.Main] OldLook,
+  [Shaders.BloodFlow.Fluid] OldThrow (both exactly the old code paths). Shot list bench\foundations\lists\bloodfix-bulk.txt.
 FINDING (affects every depth effect tested on the fork): DXVK 3.0.1 offers AMD's RESZ depth resolve only when the adapter
 reports AMD. On the GTX 1070 NVR fell back to NVAPI, which initializes but cannot copy depth on a DXVK device, so NVR's
 world depth (TESR_DepthBuffer) was EMPTY in every fork slot run (the Depth Resolve plugin, which normally covers this, is
