@@ -86,8 +86,34 @@ Shots: settle, off-a, c1-a, c3-a, c1-b, c3-b, c2, c4, off-b, view (DebugView). S
 - only c2 saves >= 10 %: build the exact same-frame skip (below), 5-8 session-hours.
 - neither (expected): STOP. Write the numbers here; GPU-side draw skipping is not worth it for FNV on this GPU. The cheaper,
   exact answers to "hidden work" stay LampsDepthFirst (pixel work, DXVK) and HiddenObjectCulling (CPU, any runtime).
-Proof that the census works: the view shot shows red rectangles in Lucky 38 (behind the bar, walls, pillars); c2/c3/c4 log
-"passes left out" > 0 with "camera still" ~100 %; pictures of c2/c3/c4 equal c1 within the c1-a/c1-b noise.
+Proof that the census works: the view shot shows red rectangles in Lucky 38 (behind the bar, walls, pillars) and a GREEN status
+square top left (magenta = the bound test failed its self-check, grey = nothing tested); c2/c3/c4 log "passes left out" > 0 with
+"camera still" ~100 %; pictures of c2/c3/c4 equal c1 within the c1-a/c1-b noise; the log's "DRAW SKIP CENSUS camera" line shows
+most objects "tested", few "off screen".
+
+## Bulk run 1 (2026-10-27 00:00, 0ca56ff8 / DLL 2071c818, lucky22, NATIVE D3D9; autotest 20261026-235521-slotC)
+Census (per counting frame): 3,027 world draw calls (2.66 M triangles), all of them object passes; 1,422 objects, 2,934 passes,
+7.6 M samples (3.67 per screen pixel); 677 passes drew nothing (383 k triangles); hidden when drawn: 246 objects, 556 passes
+(299 k triangles), 310 of them later passes (166 k triangles).
+F10 p50, world scene / frame (ms): off 4.27 / 4.30; c1 4.15 / 4.23 (frame 7.93 / 8.09); c2 4.19; c4 3.85 (frame 7.67); c3 3.22 /
+3.18 (frame 6.87 / 6.74). Pictures vs c1-a (> 2/255; > 40): c1-b 9.9 % / 531 (noise), c2 10.8 % / 429 (clean), c4 9.3 % / 1,091
+(clean), c3 16.4 % / 75,110 and 15.6 % / 75,006 (BROKEN: the back wall and bar area vanished).
+- c3 was invalid: the bound test said "0 tested, 477 off screen, 945 not testable": it took RenderManager's ViewMatrix /
+  InvProjMatrix, which at the world scene's end did not describe the world camera, so every on-screen object was "off screen"
+  (= hidden) or "not testable". Its 1 ms "saving" was visible objects left out. The view shot had no rectangles for the same reason.
+- Fixed (next commit): the camera is read from the world NiCamera at the world scene's end, as LampScissor does during the same
+  scene (proven exact); the sphere is widened 5 % + 2 units and the rectangle 2 px; self-checks: (1) an object "off screen" or
+  "behind the camera" whose passes drew pixels is kept visible and counted ("placed off screen" in the log); more than 2 % of the
+  objects that drew pixels switches the hidden-in-depth skips off for the session (log line, magenta square); (2) an object whose
+  later (z EQUAL) pass still drew pixels is never "hidden in the finished depth" (it is on top somewhere). A "DRAW SKIP CENSUS
+  camera" line (once per switch-on) prints the camera, the kinds of this frame and one tested object's numbers.
+- What c2 / c4 already say (valid, pictures clean): leaving out the later passes of objects hidden when drawn (308 passes) saves
+  nothing measurable (4.19 vs 4.15 / 4.23). Leaving out every pass that drew nothing (791 passes, 383 k triangles) gives world
+  -0.35 ms (about 8 %), frame -0.26 ms. CAUTION: this run was native D3D9, where leaving a draw out also saves the driver's
+  main-thread submission and the "World scene (game)" GPU timer includes the GPU waiting for those commands. A GPU-side skip
+  (conditional rendering) keeps every draw's CPU cost and its state setup, so it gets less than this. The GPU-only answer needs
+  the same list under NVR DXVK (GPU-bound there), which is what the og-desert run gives; a lucky22 run on the fork is the one that
+  decides.
 
 ## Design for step 1 on the fork (not built; patch 0025, extension "1.7-drawskip")
 DXVK side (all additive; a new interface `ID3D9NvrExtPredicate` queried from `ID3D9NvrExt`, E_NOINTERFACE on older builds):
@@ -123,4 +149,4 @@ extra render-pass break per frame.
 - Install (test slot only): `NewVegasReloaded.dll` -> `<game>\Data\nvse\Plugins\`. No shader files, no fork d3d9.dll needed
   (the census runs on any runtime; the coordinator's fork setup is fine).
 - Build (2026-10-27, MSBuild Release Win32, clean): `G:\_NVR-build-scratch\fork2-drawskip-out\NewVegasReloaded.dll`, sha256
-  2071c8184bf31beb...
+  24b606d6ebed1b98... (camera fix; the first bulk run used 2071c8184bf31beb).
