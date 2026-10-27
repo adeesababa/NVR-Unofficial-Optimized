@@ -1,4 +1,4 @@
-From 000772296a3d294dd23d7b2caece15adfe7544b4 Mon Sep 17 00:00:00 2001
+From dfb32bffc2291d6661e8391651e903b4778a00ee Mon Sep 17 00:00:00 2001
 From: adeesababa <263047020+adeesababa@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 22:52:47 -0400
 Subject: [PATCH] NVR extension 1.7-displace: tessellation displacement for
@@ -8,32 +8,36 @@ A separate interface, ID3D9NvrExtTess (d3d9_nvr_ext_api.h; ID3D9NvrExt and its
 version are unchanged). NVR registers a vertex shader with a tessellation control
 shader and pixel shaders of the same family with tessellation evaluation shaders,
 before the D3D9 shaders are created. A draw whose bound vertex and pixel shaders
-belong to one family and which is a triangle list then runs VS -> TCS -> TES -> PS
-from a patch list of 3 control points (D3D9DeviceEx::ApplyPrimitiveType hook);
-every other draw takes the normal path. The TES may read the pixel shader's
-textures and samplers, the vertex shader's float constants and the clip planes;
-per-draw push data gives it the compacted constant indices and the signs of two
-pixel shader registers. The interfaces (TCS inputs vs VS outputs, TES outputs vs
-the PS inputs the VS writes) are checked on the CS thread at a pair's first draw;
-a mismatch is logged and the pair draws untessellated. Wireframe debug view.
-Pixel shader texture binds also mark the TES stage once anything is registered
-(pipeline-library layouts keep the TES descriptors in the pre-raster set).
+belong to one family then runs VS -> TCS -> TES -> PS from a patch list of 3
+control points (D3D9DeviceEx::ApplyPrimitiveType hook): a triangle list as is, a
+triangle strip from DrawPrimitive / DrawIndexedPrimitive as three patch lists over
+its index windows from its first, second and third index (every strip triangle
+once; the TCS gets the window in its push data and swaps the odd triangles' first
+two control points). Every other draw takes the normal path. The TES may read the
+pixel shader's textures and samplers, the vertex shader's float constants and the
+clip planes; per-draw push data gives it the compacted constant indices and the
+signs of two pixel shader registers. The interfaces (TCS inputs vs VS outputs,
+TES outputs vs the PS inputs the VS writes) are checked on the CS thread at a
+pair's first draw; a mismatch is logged and the pair draws untessellated.
+Wireframe debug view. Pixel shader texture binds also mark the TES stage once
+anything is registered (pipeline-library layouts keep the TES descriptors in the
+pre-raster set).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/d3d9/d3d9_device.cpp    |  30 +-
+ src/d3d9/d3d9_device.cpp    |  48 ++-
  src/d3d9/d3d9_device.h      |   3 +
- src/d3d9/d3d9_nvr_ext_api.h |  93 ++++++
- src/d3d9/d3d9_nvr_tess.cpp  | 616 ++++++++++++++++++++++++++++++++++++
- src/d3d9/d3d9_nvr_tess.h    | 164 ++++++++++
+ src/d3d9/d3d9_nvr_ext_api.h |  98 +++++
+ src/d3d9/d3d9_nvr_tess.cpp  | 698 ++++++++++++++++++++++++++++++++++++
+ src/d3d9/d3d9_nvr_tess.h    | 190 ++++++++++
  src/d3d9/d3d9_shader.h      |  12 +
  src/d3d9/meson.build        |   1 +
- 7 files changed, 916 insertions(+), 3 deletions(-)
+ 7 files changed, 1047 insertions(+), 3 deletions(-)
  create mode 100644 src/d3d9/d3d9_nvr_tess.cpp
  create mode 100644 src/d3d9/d3d9_nvr_tess.h
 
 diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
-index b6ae281..779eea3 100644
+index b6ae281..0f56964 100644
 --- a/src/d3d9/d3d9_device.cpp
 +++ b/src/d3d9/d3d9_device.cpp
 @@ -61,6 +61,7 @@ namespace dxvk {
@@ -56,7 +60,43 @@ index b6ae281..779eea3 100644
      if (riid == __uuidof(IDirect3DDevice9On12)) {
        if (m_d3d9On12Args.Enable9On12) {
          *ppvObject = ref(&m_d3d9On12);
-@@ -7090,6 +7096,9 @@ namespace dxvk {
+@@ -3029,8 +3035,17 @@ namespace dxvk {
+     UploadPerDrawData(StartVertex, vertexCount, firstIndex, 0,
+       baseVertexIndex, &dynamicSysmemVBOs, nullptr);
+ 
++    // NVR extension 1.7-displace: this draw may take a triangle strip through the tessellation path
++    if (unlikely(m_nvrTess.IsUsed()))
++      m_nvrTess.BeginDraw();
++
+     PrepareDraw(PrimitiveType, !dynamicSysmemVBOs, false);
+ 
++    if (unlikely(m_nvrTess.StripPending())) {
++      m_nvrTess.EmitStripDraw(false, StartVertex, vertexCount, 0, 1u);
++      return D3D_OK;
++    }
++
+     // Tests on Windows show that D3D9 does not do non-indexed instanced draws.
+     VkDrawIndirectCommand draw = {};
+     draw.vertexCount = GetVertexCount(PrimitiveType, PrimitiveCount);
+@@ -3080,8 +3095,17 @@ namespace dxvk {
+     UploadPerDrawData(MinVertexIndex, NumVertices, StartIndex, indexCount,
+       BaseVertexIndex, &dynamicSysmemVBOs, &dynamicSysmemIBO);
+ 
++    // NVR extension 1.7-displace: this draw may take a triangle strip through the tessellation path
++    if (unlikely(m_nvrTess.IsUsed()))
++      m_nvrTess.BeginDraw();
++
+     PrepareDraw(PrimitiveType, !dynamicSysmemVBOs, !dynamicSysmemIBO);
+ 
++    if (unlikely(m_nvrTess.StripPending())) {
++      m_nvrTess.EmitStripDraw(true, StartIndex, indexCount, BaseVertexIndex, GetInstanceCount());
++      return D3D_OK;
++    }
++
+     VkDrawIndexedIndirectCommand draw = {};
+     draw.indexCount = indexCount;
+     draw.instanceCount = GetInstanceCount();
+@@ -7090,6 +7114,9 @@ namespace dxvk {
      state.setDepthClip(true);
      state.setFrontFace(VK_FRONT_FACE_CLOCKWISE);
      state.setPolygonMode(DecodeFillMode(D3DFILLMODE(rs[D3DRS_FILLMODE])));
@@ -66,7 +106,7 @@ index b6ae281..779eea3 100644
      state.setFlatShading(m_state.renderStates[D3DRS_SHADEMODE] == D3DSHADE_FLAT);
      state.setSampleCount(m_state.renderStates[D3DRS_MULTISAMPLEANTIALIAS]
        ? VkSampleCountFlags(0u)
-@@ -7274,18 +7283,24 @@ namespace dxvk {
+@@ -7274,18 +7301,24 @@ namespace dxvk {
  
      EmitCs([
        cSlot       = StateSampler,
@@ -93,7 +133,7 @@ index b6ae281..779eea3 100644
          ctx->bindResourceImageView(stage, slot, nullptr);
        }
      });
-@@ -8020,7 +8035,9 @@ namespace dxvk {
+@@ -8020,7 +8053,9 @@ namespace dxvk {
  
      // NVR extension: a registered SPIR-V replacement for this bytecode takes the place of the converted shader
      if (Rc<DxvkShader> replacement = m_nvrExt.BuildReplacementShader(ShaderType, pShaderBytecode, bytecodeLength, analysis)) {
@@ -104,7 +144,7 @@ index b6ae281..779eea3 100644
        *pBytecodeLength = bytecodeLength;
        return D3D_OK;
      }
-@@ -8037,6 +8054,9 @@ namespace dxvk {
+@@ -8037,6 +8072,9 @@ namespace dxvk {
      if (FAILED(hr))
        return hr;
  
@@ -114,7 +154,7 @@ index b6ae281..779eea3 100644
      *pShaderModule   = std::move(commonShader);
      *pBytecodeLength = bytecodeLength;
      return D3D_OK;
-@@ -8502,6 +8522,10 @@ namespace dxvk {
+@@ -8502,6 +8540,10 @@ namespace dxvk {
      if (unlikely(PrimType == D3DPT_FORCE_DWORD))
        PrimType = D3DPT_POINTLIST;
  
@@ -154,10 +194,10 @@ index dfe4c75..92b7737 100644
      D3D9On12                        m_d3d9On12;
      DxvkD3D8Bridge                  m_d3d8Bridge;
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 8748f7f..0bfb7a1 100644
+index 8748f7f..41e68ad 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -475,7 +475,100 @@ ID3D9NvrExt : public IUnknown {
+@@ -475,7 +475,105 @@ ID3D9NvrExt : public IUnknown {
            FLOAT                           ShiftY) = 0;
  };
  
@@ -172,7 +212,12 @@ index 8748f7f..0bfb7a1 100644
 + *    output winding.
 + * A draw whose vertex and pixel shaders were registered under the same family, drawn as a triangle list
 + * (indexed or not) while SetTessState enables it, runs VS -> TCS -> TES -> PS from a patch list of 3
-+ * control points. Every other draw is untouched (strips and fans: counted in the stats, drawn as they are).
++ * control points. A triangle strip from DrawPrimitive / DrawIndexedPrimitive is drawn as three patch lists
++ * over its index windows from its first, second and third index (together every strip triangle once):
++ * the TCS's p[7] (ControlParams[7], DXVK's own) is then the window 0 / 1 / 2, and -1 for a triangle list;
++ * patch gl_PrimitiveID of window k is strip triangle k + 3 * gl_PrimitiveID, and the TCS must swap the first
++ * two control points of the odd ones (their winding is reversed in a strip). Every other draw is untouched
++ * (fans, strips from the UP draws: counted in the stats, drawn as they are).
 + * The vertex shader is still DXVK's conversion of the D3D9 bytecode: the TCS reads its outputs, the TES
 + * writes what the pixel shader reads, at the D3D9 semantic locations (0 NORMAL0, 1..8 TEXCOORD0..7,
 + * 9/10 COLOR0/1, 11 FOG; vec4 each). At the first such draw of a pair DXVK checks that the TCS reads only
@@ -181,7 +226,7 @@ index 8748f7f..0bfb7a1 100644
 + *
 + * GLSL contract (glslangValidator -V --target-env vulkan1.1):
 + *   TCS: layout(vertices = 3) out;
-+ *        layout(push_constant) uniform Push { float p[8]; };           // NVR_EXT_TESS_STATE.ControlParams
++ *        layout(push_constant) uniform Push { float p[8]; };           // NVR_EXT_TESS_STATE.ControlParams[0..6]; p[7] the strip window
 + *   TES: layout(triangles, ..., cw) in for Winding 0 (keeps the input triangles' winding: Vulkan's tessellation
 + *        domain origin is upper left), ccw for Winding 1. May declare:
 + *        layout(set = 0, binding = 0) uniform sampler s_samplers[];                  // DXVK's sampler heap
@@ -221,13 +266,13 @@ index 8748f7f..0bfb7a1 100644
 +  BOOL                        Enable;
 +  UINT                        Winding;              // 0 or 1: which TES of each pixel shader
 +  UINT                        Wireframe;            // 1: tessellated draws are drawn as lines (debug view)
-+  FLOAT                       ControlParams[8];     // the TCS's push data
++  FLOAT                       ControlParams[8];     // the TCS's push data ([7] is replaced by DXVK: the strip window, -1 for lists)
 +  FLOAT                       EvalParams[4];        // the TES's push data (after its 24 bytes of indices)
 +};
 +
 +struct NVR_EXT_TESS_STATS {
-+  UINT64                      TessellatedDraws;     // draws that ran with tessellation
-+  UINT64                      OtherTopologyDraws;   // family draws left as they are: not a triangle list
++  UINT64                      TessellatedDraws;     // draws that ran with tessellation (a strip counts once)
++  UINT64                      OtherTopologyDraws;   // family draws left as they are: fans, strips of the UP draws, other types
 +  UINT64                      Bindings;             // times the tessellation shaders were (re)bound
 +  UINT                        VertexShaders;        // registered shaders that were created
 +  UINT                        PixelShaders;
@@ -260,10 +305,10 @@ index 8748f7f..0bfb7a1 100644
  __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
 diff --git a/src/d3d9/d3d9_nvr_tess.cpp b/src/d3d9/d3d9_nvr_tess.cpp
 new file mode 100644
-index 0000000..a5facae
+index 0000000..0c5789f
 --- /dev/null
 +++ b/src/d3d9/d3d9_nvr_tess.cpp
-@@ -0,0 +1,616 @@
+@@ -0,0 +1,698 @@
 +#include "d3d9_nvr_tess.h"
 +#include "d3d9_device.h"
 +#include "d3d9_shader.h"
@@ -278,6 +323,7 @@ index 0000000..a5facae
 +#include "../dxvk/dxvk_shader_spirv.h"
 +
 +#include <cstring>
++#include <utility>
 +
 +namespace dxvk {
 +
@@ -767,6 +813,10 @@ index 0000000..a5facae
 +    const D3D9CommonShader* vsShader = nullptr;
 +    const D3D9CommonShader* psShader = nullptr;
 +
++    // Only DrawPrimitive / DrawIndexedPrimitive (BeginDraw) can issue a strip as three patch lists
++    const bool stripsOk = std::exchange(m_stripsOk, false);
++    m_stripPending = false;
++
 +    if (m_state.Enable && m_device->UseProgrammableVS() && m_device->UseProgrammablePS() && !m_device->CanSWVP()) {
 +      vsShader = GetCommonShader(m_device->m_state.vertexShader);
 +      psShader = GetCommonShader(m_device->m_state.pixelShader);
@@ -777,8 +827,15 @@ index 0000000..a5facae
 +      if (vs == nullptr || ps == nullptr || vs->family != ps->family || vs->io.load() < 0 || ps->io.load() < 0) {
 +        vs = nullptr;
 +        ps = nullptr;
-+      } else if (PrimType != D3DPT_TRIANGLELIST) {
++      } else if (PrimType != D3DPT_TRIANGLELIST && !(PrimType == D3DPT_TRIANGLESTRIP && stripsOk)) {
 +        m_stats.OtherTopologyDraws++;
++
++        if (!m_loggedOther) {
++          m_loggedOther = true;
++          Logger::warn(str::format("NVR tess: '", vs->name, "' / '", ps->name, "' drawn with D3D9 primitive type ", uint32_t(PrimType),
++            " (or a strip through DrawPrimitiveUP): left untessellated (only triangle lists and DrawPrimitive / DrawIndexedPrimitive strips are tessellated)"));
++        }
++
 +        vs = nullptr;
 +        ps = nullptr;
 +      }
@@ -811,6 +868,9 @@ index 0000000..a5facae
 +
 +    m_stats.TessellatedDraws++;
 +
++    // A strip is issued by EmitStripDraw (the device's draw call asks StripPending after its PrepareDraw)
++    m_stripPending = PrimType == D3DPT_TRIANGLESTRIP;
++
 +    uint32_t psBits = ComputePsBits(ps);
 +
 +    if (vs == m_boundVs && ps == m_boundPs && m_boundState == m_stateId && psBits == m_boundPsBits)
@@ -824,6 +884,9 @@ index 0000000..a5facae
 +    std::array<float, 8> tcsData;
 +    for (uint32_t i = 0; i < 8u; i++)
 +      tcsData[i] = m_state.ControlParams[i];
++
++    // ControlParams[7] is DXVK's: -1 = a triangle list; 0, 1, 2 = which index window of a strip (EmitStripDraw)
++    tcsData[7] = -1.0f;
 +
 +    std::array<uint32_t, 6> tesData;
 +    tesData[0] = vs->vsIndex;
@@ -865,7 +928,9 @@ index 0000000..a5facae
 +
 +    m_boundVs = vs;
 +    m_boundPs = ps;
-+    m_boundState = m_stateId;
++    // While the interface check is still to be answered on the CS thread, every draw binds again (each such bind sets
++    // the topology for its own draw, so a refused pair never draws with another draw's topology)
++    m_boundState = check ? 0u : m_stateId;
 +    m_boundPsBits = psBits;
 +    m_device->m_iaState.primitiveType = PrimType;
 +
@@ -879,13 +944,75 @@ index 0000000..a5facae
 +    return true;
 +  }
 +
++
++  void D3D9NvrTess::EmitStripDraw(bool Indexed, uint32_t First, uint32_t Count, int32_t BaseVertex, uint32_t InstanceCount) {
++    m_stripPending = false;
++
++    if (!m_loggedStrip && m_boundVs && m_boundPs) {
++      m_loggedStrip = true;
++      Logger::info(str::format("NVR tess: '", m_boundVs->name, "' / '", m_boundPs->name, "' come as triangle strips: each strip is",
++        " tessellated as three patch lists (its index windows from the first, second and third index)"));
++    }
++
++    m_device->EmitCs([
++      cIndexed   = Indexed,
++      cFirst     = First,
++      cCount     = Count,
++      cBase      = BaseVertex,
++      cInstances = InstanceCount,
++      cVsAttach  = m_boundVs,
++      cPsAttach  = m_boundPs,
++      &cIaState  = m_device->m_iaState
++    ] (DxvkContext* ctx) {
++      uint32_t instances = cInstances;
++
++      // As DrawIndexedPrimitive: no instancing when no instanced binding is used
++      if (unlikely(cIaState.streamsInstanced && !(cIaState.streamsInstanced & cIaState.streamsUsed)))
++        instances = 1u;
++
++      if (cVsAttach == nullptr || cPsAttach == nullptr || cVsAttach->io.load() <= 0 || cPsAttach->io.load() <= 0) {
++        // Refused by the interface check (this draw's bind put the strip topology back): the strip as it is
++        if (cIndexed) {
++          VkDrawIndexedIndirectCommand draw = { cCount, instances, cFirst, cBase, 0u };
++          ctx->drawIndexed(1u, &draw);
++        } else {
++          VkDrawIndirectCommand draw = { cCount, 1u, cFirst, 0u };
++          ctx->draw(1u, &draw);
++        }
++        return;
++      }
++
++      // Strip triangle i = (i, i + 1, i + 2). Window k (k = 0, 1, 2) as a patch list from index k: its patch p is
++      // strip triangle k + 3p, so the three windows hold every triangle of the strip exactly once.
++      for (uint32_t k = 0; k < 3u; k++) {
++        if (cCount < 3u + k)
++          break;
++
++        uint32_t patches = (cCount - 3u - k) / 3u + 1u;
++        float window = float(k);
++        ctx->pushData(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 28u, sizeof(window), &window);
++
++        if (cIndexed) {
++          VkDrawIndexedIndirectCommand draw = { 3u * patches, instances, cFirst + k, cBase, 0u };
++          ctx->drawIndexed(1u, &draw);
++        } else {
++          VkDrawIndirectCommand draw = { 3u * patches, 1u, cFirst + k, 0u };
++          ctx->draw(1u, &draw);
++        }
++      }
++
++      float list = -1.0f;
++      ctx->pushData(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 28u, sizeof(list), &list);
++    });
++  }
++
 +}
 diff --git a/src/d3d9/d3d9_nvr_tess.h b/src/d3d9/d3d9_nvr_tess.h
 new file mode 100644
-index 0000000..f60a456
+index 0000000..97b5a5b
 --- /dev/null
 +++ b/src/d3d9/d3d9_nvr_tess.h
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,190 @@
 +#pragma once
 +
 +/*
@@ -991,12 +1118,38 @@ index 0000000..f60a456
 +     */
 +    bool ApplyDraw(D3DPRIMITIVETYPE PrimType);
 +
++    /**
++     * \brief Triangle strips (the land comes as strips)
++     *
++     * DrawPrimitive / DrawIndexedPrimitive call BeginDraw before their PrepareDraw: only those draws may take
++     * a triangle strip through the tessellation path (the UP draws and the other PrepareDraw callers may not).
++     * A strip of n indices is then drawn as three patch lists of consecutive index windows, starting at the
++     * strip's first, second and third index: together they are every triangle (i, i + 1, i + 2) of the strip,
++     * each once; the TCS learns from its push data which window a draw is (ControlParams[7]) and restores the
++     * winding of the strip's odd triangles by swapping their first two control points. No index buffer is
++     * read or written. StripPending then says the draw must be issued by EmitStripDraw instead.
++     */
++    void BeginDraw() {
++      m_stripsOk = true;
++    }
++
++    bool StripPending() const {
++      return m_stripPending;
++    }
++
++    void EmitStripDraw(bool Indexed, uint32_t First, uint32_t Count, int32_t BaseVertex, uint32_t InstanceCount);
++
 +    /** Whether tessellated draws are bound right now in the wireframe debug view (BindRasterizerState). */
 +    bool WireframeActive() const {
 +      return m_boundVs != nullptr && m_state.Wireframe != 0u;
 +    }
 +
 +  private:
++
++    bool                                          m_stripsOk     = false;
++    bool                                          m_stripPending = false;
++    bool                                          m_loggedStrip  = false;
++    bool                                          m_loggedOther  = false;
 +
 +    struct PendingVs {
 +      std::vector<uint32_t>   tcs;

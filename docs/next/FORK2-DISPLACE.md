@@ -9,6 +9,19 @@ no new warnings); fork d3d9.dll = CI run 40441667857 (0001-0011 + 0021, green, n
 `G:\_NVR-build-scratch\nvr-dxvk-fork2-displace\nvr-dxvk-x32\d3d9.dll` (sha256 6771A8222AC06142...). Use that folder as FORK_D3D9
 for the bulk test (nvr-dxvk-0011 has no tessellation interface).
 
+## Bulk test round 1 (2026-10-27 10:14, d15eb79d) and the fix: the land comes as triangle STRIPS
+Runs 20261027-101406-slotC (og-goodsprings) / 101624-slotC (og-desert): interface found, SLS2100.vso + 28 pixel shaders registered
+and attached ("shaders 1 VS, 28 PS"; the "(00000000)" in the register line is the HRESULT S_OK, not a hash), but "per frame 0.0
+land draws tessellated, 7.0 not (strips/fans)": every land draw matched the family and was skipped by the topology test, because
+the game draws its land quadrants as triangle strips (TERRAIN PROBE lines confirm SLS2100.vso with SLS2124/2132/2140/2142.pso).
+Fix (patch 0021 v2, no index buffer read or written): a strip of n indices from DrawPrimitive / DrawIndexedPrimitive is drawn as
+three patch lists over its index windows from index 0, 1 and 2 (3 x floor((n - 3 - k) / 3 + 1) indices each): window k's patch p
+is strip triangle k + 3p, so the three windows hold every strip triangle exactly once (checked offline for n = 3..399). The TCS
+gets the window in its push data (ControlParams[7], DXVK's own), swaps the first two control points of odd strip triangles (their
+winding is reversed in a strip) and drops degenerate ones (strip joins: two equal corners; tessellation level 0). Strips of the UP
+draws and fans stay untessellated, and the first such draw is named in DXVK's log with its primitive type. While a pair's
+interface check is still pending, every draw rebinds (so a refused pair always gets its own topology back).
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land
@@ -39,9 +52,10 @@ the API header):
   D3D9 shader object (`D3D9CommonShader`), computing where the listed vertex shader constants (ModelViewProj c0-c3) sit in DXVK's
   compacted constant buffer.
 - `D3D9DeviceEx::ApplyPrimitiveType` (the end of every PrepareDraw) asks `D3D9NvrTess::ApplyDraw`: when the bound VS and PS share a
-  family, the draw is a triangle list and SetTessState enabled it, it binds the TCS + TES and a patch-list topology (3 control
-  points) and pushes the parameters; otherwise it unbinds them (only when they were bound) and the normal path runs. Strips and fans
-  are counted and left alone. One branch per draw while nothing is registered.
+  family, the draw is a triangle list (or a DrawPrimitive / DrawIndexedPrimitive strip) and SetTessState enabled it, it binds the TCS + TES and a patch-list topology (3 control
+  points) and pushes the parameters; otherwise it unbinds them (only when they were bound) and the normal path runs. Strips
+  get three patch lists (see "Bulk test round 1"); fans and UP-draw strips are counted and left alone. One branch per draw while
+  nothing is registered.
 - The VS stays DXVK's own conversion of the game's bytecode. The TCS reads its outputs at the D3D9 semantic locations (vec4 each),
   the TES writes what the PS reads. At a pair's first draw the CS thread checks both interfaces against DXVK's shader metadata; a
   mismatch is logged and that pair always draws untessellated (the safety net).
@@ -80,7 +94,7 @@ in the list's header.
 - Parallax still runs on top (the depth is a little doubled close up).
 - First sight of each land variant compiles a tessellation pipeline (a hitch, once per session; DXVK's state cache does not keep
   SPIR-V shaders).
-- If the game draws the land as triangle strips, nothing is tessellated (the log's 'not (strips/fans)' counter says so).
+- Strips cost three draws instead of one (the land: about 7 strip draws a frame in Goodsprings, so ~21).
 - Winding: cw is expected to keep the game's facing (Vulkan's upper-left tessellation domain); `ccw` is there to switch if wrong.
 
 ## Plan for the rest (session-hours, after the first in-game look)
@@ -94,5 +108,5 @@ in the list's header.
    outputs (a compile-time define, only with the switch on) plus its own TCS/TES; walls with straight edges need the same border rule
    as the land quadrants at mesh seams (3-5 h).
 6. Speed: screen-space edge factors, patch culling off screen / back-facing (tess level 0), measure (2 h).
-7. Strips, if the log shows them (index conversion on the CPU for the registered family) (2-3 h).
-Total about 12-19 session-hours; the main risk is the shadow pass (step 2: NVR has to supply textures the shadow draws do not bind).
+7. (Done in v2: strips, without any index conversion.)
+Total about 10-16 session-hours left; the main risk is the shadow pass (step 2: NVR has to supply textures the shadow draws do not bind).

@@ -13,6 +13,11 @@
 //
 // Crack-free by construction: an edge's level depends only on its two end points and the eye (the same in both triangles that share
 // it), and the per-point weight (location 30) depends only on that point.
+//
+// 2026-10-27 (bulk test: the land comes as triangle STRIPS): DXVK draws a strip as three patch lists over its index windows from the
+// first, second and third index (stripWindow 0, 1, 2; -1 = a real triangle list). Patch p of window k is strip triangle k + 3p; an odd
+// strip triangle has the reverse winding, so its first two control points are swapped here (the TES and the culling then see the
+// order D3D9 draws it in). Degenerate triangles (strip joins: two equal corners) are dropped (tessellation level 0).
 layout(vertices = 3) out;
 
 #define PASS(n) layout(location = n) in vec4 i_v##n[]; layout(location = n) out vec4 o_v##n[];
@@ -31,7 +36,7 @@ layout(push_constant) uniform Push {
   float fadeEnd;      // ... to nothing here, game units from the camera; the splitting ends there too (FadeEnd)
   float borderGrid;   // land quadrant size, 2048: no displacement on quadrant borders (each quadrant is its own draw); 0 off
   float fixedFactor;  // > 0: every edge split this many times (FixedFactor, a test)
-  float unused;
+  float stripWindow;  // DXVK's: -1 a triangle list, 0 / 1 / 2 the index window of a strip (see above)
 } pc;
 
 float fadeAt(float d) {
@@ -53,16 +58,21 @@ float edgeLevel(vec3 a, vec3 b, vec3 eye) {
 void main() {
   uint i = gl_InvocationID;
 
-#define COPY(n) o_v##n[gl_InvocationID] = i_v##n[gl_InvocationID];
+  // Which input point is this patch's control point j (strips: the odd triangles' first two swapped)
+  bool odd = pc.stripWindow >= 0.0 && ((uint(pc.stripWindow) + uint(gl_PrimitiveID)) & 1u) != 0u;
+  uint s0 = odd ? 1u : 0u, s1 = odd ? 0u : 1u, s2 = 2u;
+  uint si = i == 0u ? s0 : (i == 1u ? s1 : s2);
+
+#define COPY(n) o_v##n[gl_InvocationID] = i_v##n[si];
   COPY(1) COPY(2) COPY(3) COPY(4) COPY(5) COPY(6) COPY(7) COPY(8) COPY(9) COPY(10)
 #undef COPY
 
-  vec3 p0 = i_v3[0].xyz, p1 = i_v3[1].xyz, p2 = i_v3[2].xyz;
+  vec3 p0 = i_v3[s0].xyz, p1 = i_v3[s1].xyz, p2 = i_v3[s2].xyz;
   vec3 eye = i_v8[0].xyz;   // EyePosition: one value for the whole draw
 
   // This point's weight: the distance fade, and none on a land quadrant's border (its neighbour is another draw with other
   // textures: its height there would differ, the edge would crack).
-  vec3 p = i_v3[i].xyz;
+  vec3 p = i_v3[si].xyz;
   float d = distance(p, eye);
   float weight = fadeAt(d);
   if (pc.borderGrid > 0.0) {
@@ -73,7 +83,7 @@ void main() {
 
   // Spacing of the generated points in uv units: the aimed-for spacing, or the edge length over MaxFactor where that is coarser
   // (land uv scale is the same for every triangle, so shared points get the same value from either triangle).
-  vec2 u0 = i_v1[0].xy, u1 = i_v1[1].xy, u2 = i_v1[2].xy;
+  vec2 u0 = i_v1[s0].xy, u1 = i_v1[s1].xy, u2 = i_v1[s2].xy;
   float l01 = distance(p0, p1), l12 = distance(p1, p2), l20 = distance(p2, p0);
   float uvPerUnit = max(max(distance(u0, u1) / max(l01, 1e-3), distance(u1, u2) / max(l12, 1e-3)), distance(u2, u0) / max(l20, 1e-3));
   float spacing = max(spacingAt(d), max(max(l01, l12), l20) / max(pc.maxFactor, 1.0));
@@ -84,9 +94,17 @@ void main() {
     float e0 = edgeLevel(p1, p2, eye);
     float e1 = edgeLevel(p2, p0, eye);
     float e2 = edgeLevel(p0, p1, eye);
+    float inner = max(max(e0, e1), e2);
+
+    // A degenerate triangle (a strip's join: two corners the same) draws nothing in D3D9: dropped here, as displaced its
+    // generated points would no longer lie on one line.
+    if (p0 == p1 || p1 == p2 || p2 == p0) {
+      e0 = 0.0; e1 = 0.0; e2 = 0.0; inner = 0.0;
+    }
+
     gl_TessLevelOuter[0] = e0;
     gl_TessLevelOuter[1] = e1;
     gl_TessLevelOuter[2] = e2;
-    gl_TessLevelInner[0] = max(max(e0, e1), e2);
+    gl_TessLevelInner[0] = inner;
   }
 }

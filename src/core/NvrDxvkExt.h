@@ -487,7 +487,12 @@ ID3D9NvrExt : public IUnknown {
  *    output winding.
  * A draw whose vertex and pixel shaders were registered under the same family, drawn as a triangle list
  * (indexed or not) while SetTessState enables it, runs VS -> TCS -> TES -> PS from a patch list of 3
- * control points. Every other draw is untouched (strips and fans: counted in the stats, drawn as they are).
+ * control points. A triangle strip from DrawPrimitive / DrawIndexedPrimitive is drawn as three patch lists
+ * over its index windows from its first, second and third index (together every strip triangle once):
+ * the TCS's p[7] (ControlParams[7], DXVK's own) is then the window 0 / 1 / 2, and -1 for a triangle list;
+ * patch gl_PrimitiveID of window k is strip triangle k + 3 * gl_PrimitiveID, and the TCS must swap the first
+ * two control points of the odd ones (their winding is reversed in a strip). Every other draw is untouched
+ * (fans, strips from the UP draws: counted in the stats, drawn as they are).
  * The vertex shader is still DXVK's conversion of the D3D9 bytecode: the TCS reads its outputs, the TES
  * writes what the pixel shader reads, at the D3D9 semantic locations (0 NORMAL0, 1..8 TEXCOORD0..7,
  * 9/10 COLOR0/1, 11 FOG; vec4 each). At the first such draw of a pair DXVK checks that the TCS reads only
@@ -496,7 +501,7 @@ ID3D9NvrExt : public IUnknown {
  *
  * GLSL contract (glslangValidator -V --target-env vulkan1.1):
  *   TCS: layout(vertices = 3) out;
- *        layout(push_constant) uniform Push { float p[8]; };           // NVR_EXT_TESS_STATE.ControlParams
+ *        layout(push_constant) uniform Push { float p[8]; };           // NVR_EXT_TESS_STATE.ControlParams[0..6]; p[7] the strip window
  *   TES: layout(triangles, ..., cw) in for Winding 0 (keeps the input triangles' winding: Vulkan's tessellation
  *        domain origin is upper left), ccw for Winding 1. May declare:
  *        layout(set = 0, binding = 0) uniform sampler s_samplers[];                  // DXVK's sampler heap
@@ -536,13 +541,13 @@ struct NVR_EXT_TESS_STATE {
   BOOL                        Enable;
   UINT                        Winding;              // 0 or 1: which TES of each pixel shader
   UINT                        Wireframe;            // 1: tessellated draws are drawn as lines (debug view)
-  FLOAT                       ControlParams[8];     // the TCS's push data
+  FLOAT                       ControlParams[8];     // the TCS's push data ([7] is replaced by DXVK: the strip window, -1 for lists)
   FLOAT                       EvalParams[4];        // the TES's push data (after its 24 bytes of indices)
 };
 
 struct NVR_EXT_TESS_STATS {
-  UINT64                      TessellatedDraws;     // draws that ran with tessellation
-  UINT64                      OtherTopologyDraws;   // family draws left as they are: not a triangle list
+  UINT64                      TessellatedDraws;     // draws that ran with tessellation (a strip counts once)
+  UINT64                      OtherTopologyDraws;   // family draws left as they are: fans, strips of the UP draws, other types
   UINT64                      Bindings;             // times the tessellation shaders were (re)bound
   UINT                        VertexShaders;        // registered shaders that were created
   UINT                        PixelShaders;

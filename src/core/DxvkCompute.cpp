@@ -500,7 +500,7 @@ void DxvkCompute::DisplaceTick() {
 		NVR_EXT_TESS_STATS now = {};
 		if (SUCCEEDED(DisplaceInterface->GetTessStats(&now))) {
 			const double f = 600.0;
-			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated, %.1f not (strips/fans), %.1f rebinds | shaders %u VS, %u PS, %u refused by the interface check",
+			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | shaders %u VS, %u PS, %u refused by the interface check",
 				state.Enable ? "on" : "off", (double)(now.TessellatedDraws - last.TessellatedDraws) / f, (double)(now.OtherTopologyDraws - last.OtherTopologyDraws) / f,
 				(double)(now.Bindings - last.Bindings) / f, now.VertexShaders, now.PixelShaders, now.RefusedPairs);
 			last = now;
