@@ -839,6 +839,17 @@ float3 ShadowDecodeNormal(float2 e) {
     return normalize(n);
 }
 
+// UNOFFICIAL 2026-10-26 (user: garbage lamp shadows round lamps on ceilings, shifting as the camera moved or turned, gone with
+// AutoNormalOffset off): the object shaders send the smooth normal as a plain vector, x y in two spare channels and z in the vertex
+// colour's alpha (COLOR0 is clamped, so encoded), instead of octahedrally. The octahedral map folds at straight down: a ceiling's
+// vertex normals, a hair either side of (0, 0, -1) after GetShadowSmoothNormal's projection round trip (which side changed with the
+// camera's position and angle), landed in different corners of the square, and the interpolation between corners decoded as
+// normals pointing sideways across the triangle. The lamp lookups' normal offset (AutoNormalOffset) pushed along them. A plain vector
+// interpolates without a seam. The skin shader keeps the octahedral pair (its light-only passes have no vertex colour).
+float3 ShadowPlainNormal(float2 xy, float zColor) {
+    return float3(xy, zColor * 2.0f - 1.0f);
+}
+
 // The smooth normal as a unit vector facing the camera (worldPos is camera-relative, so the camera is at the origin), the side
 // GetShadowGeometricNormal gives: two-sided geometry seen from behind (hair cards, cloth) pushes its lookups out on the visible side.
 // A zero or unwritten normal gives (0, 0, 1).
