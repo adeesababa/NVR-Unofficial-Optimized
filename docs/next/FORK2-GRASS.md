@@ -46,7 +46,8 @@ Fork (`tools/nvr-dxvk/patches/0024-NVR-extension-1.7-grass-...patch`, on the 102
     DXVK orders the compute writes before the indirect read).
   The shared DrawImpl gets one more optional parameter (the scene description); Draw / DrawShifted / DrawDepthStencil / DrawGeometry
   behave exactly as before. CI: run 40443132806 built the first version (green); the final patch (plus attachment-only targets and
-  a depth-stencil surface larger than the target, both allowed by D3D9) is built by the run of the branch's last push (report).
+  a depth-stencil surface larger than the target, both allowed by D3D9): run 40445689167, green (artifact nvr-dxvk-x32, not
+  downloaded here).
   The series 0001-0016 + 0024 re-applied in order onto v3.0.1 gives the same d3d9 tree as the development worktree (checked).
 NVR (`src/effects/GpuGrass.{h,cpp}`, shaders `src/hlsl/NewVegas/Compute/GpuGrass.glsl`, `GpuGrassCull.comp`, `GpuGrass.vert`
 (-> GpuGrassNearVS.spv / GpuGrassFarVS.spv with -DGG_FAR=0/1), `GpuGrass.frag` (-> GpuGrass.spv)):
