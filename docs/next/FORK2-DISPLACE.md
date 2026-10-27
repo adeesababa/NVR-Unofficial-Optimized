@@ -4,10 +4,10 @@ Branch `deep/fork2-displace` (from `mine/nvr-dxvk-compute` 34a8df4d). Fork patch
 extension "1.7-displace" as a SEPARATE interface (`ID3D9NvrExtTess`, GUID ...d321), so `ID3D9NvrExt` and its version number are
 untouched and the merger can renumber freely. Everything is off by default; nothing has run in the game yet.
 
-Builds (2026-10-27): NVR DLL `G:\_NVR-build-scratch\fork2-displace-out\NewVegasReloaded.dll` (sha256 77192A7884A6BB49..., MSVC 2019,
-no new warnings); fork d3d9.dll = CI run 40441667857 (0001-0011 + 0021, green, no warnings in the new files),
-`G:\_NVR-build-scratch\nvr-dxvk-fork2-displace\nvr-dxvk-x32\d3d9.dll` (sha256 6771A8222AC06142...). Use that folder as FORK_D3D9
-for the bulk test (nvr-dxvk-0011 has no tessellation interface).
+Builds v2 (2026-10-27, after bulk round 1, strips): NVR DLL `G:\_NVR-build-scratch\fork2-displace-out\NewVegasReloaded.dll`
+(sha256 01DBB22C0632B22C..., MSVC 2019, no new warnings); fork d3d9.dll = CI run 40524970205 (0001-0011 + 0021 v2, green, no warnings in
+the new files), `G:\_NVR-build-scratch\nvr-dxvk-fork2-displace-v2\nvr-dxvk-x32\d3d9.dll` (sha256 30EBFA8D3ACD49DD...). Use that folder as
+FORK_D3D9 for the bulk test (round 1's nvr-dxvk-fork2-displace, CI 40441667857, skips strips; nvr-dxvk-0011 has no tessellation).
 
 ## Bulk test round 1 (2026-10-27 10:14, d15eb79d) and the fix: the land comes as triangle STRIPS
 Runs 20261027-101406-slotC (og-goodsprings) / 101624-slotC (og-desert): interface found, SLS2100.vso + 28 pixel shaders registered
