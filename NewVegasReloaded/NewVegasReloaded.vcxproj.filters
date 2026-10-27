@@ -220,6 +220,9 @@
     <ClInclude Include="..\src\effects\WetWorld.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\CoverMap.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\base\Logger.h">
       <Filter>Base</Filter>
     </ClInclude>
@@ -550,6 +553,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\WetWorld.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\CoverMap.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\base\Logger.cpp">

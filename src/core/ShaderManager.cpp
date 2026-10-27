@@ -5,6 +5,7 @@
 #include "PointShadowForward.h"
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
+#include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow
 
 #define RESZ_CODE 0x7FA05000
 
@@ -85,6 +86,9 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<SunFarEffect>(&TheShaderManager->Effects.SunFar);	// UNOFFICIAL 2026-10-19
 	TheShaderManager->RegisterEffect<SpecularEffect>(&TheShaderManager->Effects.Specular);
 	TheShaderManager->RegisterEffect<SnowEffect>(&TheShaderManager->Effects.Snow);
+	// UNOFFICIAL 2026-10-27 Persistent wetness and snow (CoverMap.h): the cover map WetWorld and SnowAccumulation read when their
+	// Persistent setting is on. No settings section of its own: always on when its file loads, does nothing while both are off.
+	TheShaderManager->RegisterEffect<CoverMapEffect>(&TheCoverMap);
 	TheShaderManager->RegisterEffect<SnowAccumulationEffect>(&TheShaderManager->Effects.SnowAccumulation);
 	TheShaderManager->RegisterEffect<UnderwaterEffect>(&TheShaderManager->Effects.Underwater);
 	TheShaderManager->RegisterEffect<VolumetricFogEffect>(&TheShaderManager->Effects.VolumetricFog);
@@ -1796,9 +1800,17 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		}
 	}
 
+	// UNOFFICIAL 2026-10-27 Persistent wetness and snow (CoverMap.h): the cover map's update (its own targets), before its readers
+	// SnowAccumulation and WetWorld; then they draw with its technique while it holds data. Both settings off: nothing here runs.
+	if (TheCoverMap && (TheCoverMap->Settings.wet || TheCoverMap->Settings.snow)) {
+		static GpuTimer coverMapTimer("Cover map update");
+		GpuProfileScope gpu(coverMapTimer, Device);
+		TheCoverMap->RenderUpdate(Device, RenderTarget);
+	}
 	{
 		GpuProfileScope gpu(snowAccumulationTimer, Device);
-		Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
+		Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
+			TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0, false, SourceSurface);
 	}
 	{
 		GpuProfileScope gpu(aoTimer, Device);
@@ -1897,7 +1909,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 			Effects.WetWorld->RenderCoverTest(Device);
 			Device->SetRenderTarget(0, RenderTarget);
 		}
-		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, Effects.WetWorld->MainTechnique(), false, SourceSurface);
+		Effects.WetWorld->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
+			TheCoverMap ? TheCoverMap->WetTechnique(Effects.WetWorld, Effects.WetWorld->MainTechnique()) : Effects.WetWorld->MainTechnique(), false, SourceSurface);
 		// Beam march first, into its own half res buffer, so the Flashlight Combine pass can
 		// read it. Control.x already folds the effect toggle, the per view toggle and the
 		// strength together, so this one test gates the whole thing.
@@ -2249,7 +2262,8 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		EffectRecord* const order[] = {
 			Effects.Rain, Effects.Snow, Effects.BloomLegacy, Effects.HeatHaze, Effects.VolumetricSmoke, Effects.BarrelHaze, Effects.Coloring, Effects.LUT, Effects.DepthOfField,
 			Effects.MotionBlur, Effects.BloodLens, Effects.WaterLens, Effects.LowHF, Effects.DitherBuster,
-			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug };
+			Effects.SMAA, Effects.FXAA, Effects.Sharpening, Effects.Cinema, Effects.ImageAdjust, Effects.Bodycam, Effects.SkyDither, Effects.Debug,
+			TheCoverMap };	// UNOFFICIAL 2026-10-27: the cover map's debug view (PersistentDebugView), last
 		EffectRecord* last = nullptr;
 		for (EffectRecord* effect : order)
 			if (effect && effect->Enabled && effect->Effect && effect->ShouldRender() &&
@@ -2351,6 +2365,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 		Effects.Debug->RenderClipView(Device, RenderTarget); // UNOFFICIAL: [Shaders.Debug.Main] ClipView
 	}
+	if (TheCoverMap) TheCoverMap->RenderDebug(Device, RenderTarget, SourceSurface);	// UNOFFICIAL 2026-10-27 (PersistentDebugView; does nothing when 0)
 	if (Effects.SunFar->Settings.FlickerWatch && GameState.isExterior)	// UNOFFICIAL 2026-10-23 test only (core\FlickerWatch.h)
 		FlickerWatch::OnFrame(Device, RenderTarget, Effects.SunFar->Settings.FlickerThreshold);
 	else FlickerWatch::Flags = 0;

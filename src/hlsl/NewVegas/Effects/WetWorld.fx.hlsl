@@ -47,6 +47,10 @@ sampler2D TESR_SplashNormalSampler : register(s9) < string ResourceName = "Preci
 sampler2D TESR_PuddleCloudSampler : register(s10) < string ResourceName = "water\water_d.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_PuddleNormalSampler : register(s11) < string ResourceName = "water\water_nrm.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_WaterStreakSampler : register(s12) < string ResourceName = "Precipitations\water-streaks_n.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// UNOFFICIAL 2026-10-27 Persistent ([Shaders.WetWorld.Main] Persistent, CoverMap.h): wetness and puddle water kept per spot. Declared
+// last (samplers bind in declaration order); only techniques 5 and 6 read it.
+sampler2D TESR_CoverMapBuffer : register(s13) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#include "Includes/CoverMap.hlsl"
 
 // General settings
 static const float PI = 3.14159265;
@@ -695,7 +699,11 @@ void AddLampHighlightFast(float4 lightPos, float3 c, float3 worldPos, float3 V, 
 // Every texture read of the original (all tex2D with implicit derivatives: ripples, puddle normals, cloud, refraction,
 // first-person mask, shadow buffer, puddle exclusion) still runs, the same way, on every pixel before the first new branch;
 // the branches only skip arithmetic (and the SSR trace, which was already a branch).
-float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
+// UNOFFICIAL 2026-10-27 persist ([Shaders.WetWorld.Main] Persistent; techniques 5 and 6, FastPaths with and without the fixed trace):
+// how wet the flat ground is and how full the puddles are come from the cover map (Includes/CoverMap.hlsl: per spot, built up where
+// the rain reached, dried by the sun) instead of the one value for the whole world (the rain fade and TESR_WetWorldData.z). The
+// ripples, splashes and wall streaks still follow the rain that falls now. With persist = false every line is as before.
+float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace, uniform bool persist) : COLOR0
 {
     // Surface reconstruction and weather
     float4 baseColor = tex2D(TESR_SourceBuffer, IN.UVCoord);
@@ -795,8 +803,10 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
     puddles *= (1.0f - puddleVMExclude) * (1.0f - vmMask);
     puddles *= smoothstep(DepressionSlopeCutoff, DepressionSlopeFadeStart, dotUp);
 
+    // UNOFFICIAL 2026-10-27 persist: this spot's wetness (x) and puddle water (y) from the cover map
+    float4 cover = persist ? CoverMapRead(camera_vector.xy) : float4(0, 0, 0, 0);
     float puddleFade = smoothstep(PuddleAccumulationStart, PuddleAccumulationFull,
-        saturate(TESR_WetWorldData.z));
+        saturate(persist ? cover.y : TESR_WetWorldData.z));
     float puddlemask = puddles * puddleFade;
 
     float slopeMask = smoothstep(0.90f, 0.97f, dotUp);
@@ -821,7 +831,7 @@ float4 Wet(VSOUT IN, uniform bool fast, uniform bool fixTrace) : COLOR0
     rippleMask = lerp(rainFade * flatCoverage, rippleMask, vmMask);
 
     float wetSlope = lerp(slopeMask, 1.0f, vmMask);
-    float wetRippleMask = lerp(rainFade * flatWetCoverage, rippleMask * wetSlope, vmMask);
+    float wetRippleMask = lerp((persist ? cover.x : rainFade) * flatWetCoverage, rippleMask * wetSlope, vmMask);
     float wetMask = saturate(max(puddlemask, wetRippleMask * 0.85f));
     float specMask = saturate(max(puddlemask,
         wetRippleMask + rim * 0.15f * wetSlope));
@@ -1414,7 +1424,7 @@ technique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(false, false);
+        PixelShader  = compile ps_3_0 Wet(false, false, false);
     }
 }
 
@@ -1448,7 +1458,7 @@ technique FastPathsTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(true, false);
+        PixelShader  = compile ps_3_0 Wet(true, false, false);
     }
 }
 
@@ -1474,7 +1484,7 @@ technique FixedTraceTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(false, true);
+        PixelShader  = compile ps_3_0 Wet(false, true, false);
     }
 }
 
@@ -1498,6 +1508,57 @@ technique FixedTraceFastPathsTechnique
     pass
     {
         VertexShader = compile vs_3_0 FrameVS();
-        PixelShader  = compile ps_3_0 Wet(true, true);
+        PixelShader  = compile ps_3_0 Wet(true, true, false);
+    }
+}
+
+// UNOFFICIAL 2026-10-27 Persistent ([Shaders.WetWorld.Main] Persistent, CoverMap.h): techniques 5 (FastPaths) and 6 (FastPaths with the
+// fixed reflection trace) read the wetness and the puddle water per spot from the cover map. (Persistent always takes the FastPaths
+// pass: the same picture as the original, and one compile less.)
+technique PersistentTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, false, true);
+    }
+}
+
+technique PersistentFixedTraceTechnique
+{
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 WetMap();
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(1.0f, 0.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 BlurWetMap(float2(0.0f, 1.0f), PuddleBlurRadius);
+    }
+    pass
+    {
+        VertexShader = compile vs_3_0 FrameVS();
+        PixelShader  = compile ps_3_0 Wet(true, true, true);
     }
 }

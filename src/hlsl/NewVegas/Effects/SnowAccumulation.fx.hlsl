@@ -26,6 +26,10 @@ sampler2D TESR_NormalsBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; 
 sampler2D TESR_PointShadowBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_SnowNormSampler : register(s6) < string ResourceName = "Precipitations\snow_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_BlueNoiseSampler : register(s7) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// UNOFFICIAL 2026-10-27 Persistent ([Shaders.SnowAccumulation.Main] Persistent, CoverMap.h): snow depth kept per spot. Declared last
+// (samplers bind in declaration order); only technique 1 reads it.
+sampler2D TESR_CoverMapBuffer : register(s8) = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#include "Includes/CoverMap.hlsl"
 
 static const int KernelSize = 24;
 static const float diffusePower = 0.56f * TESR_SnowAccumulationParams.z;
@@ -171,7 +175,10 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 }
 
 
-float4 Snow( VSOUT IN ) : COLOR0
+// UNOFFICIAL 2026-10-27 persist (technique 1, [Shaders.SnowAccumulation.Main] Persistent): the snow's amount comes from the cover map
+// per spot (built up where the snow reached, melted by the sun, drifts, footprints) instead of the one amount for the whole world;
+// a spot with no snow left gets none (the noise pattern alone would leave flecks). With persist = false every line is as before.
+float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
 	float3 world = toWorld(IN.UVCoord);
@@ -224,8 +231,10 @@ float4 Snow( VSOUT IN ) : COLOR0
 	}
 
 	// create a noisy pattern of accumulation over time
-	float coverage = saturate(pows(noise(worldPos.xyz / (noiseSize * 0.5)) * noise(worldPos.xyz / (noiseSize * 3)) * noise(worldPos.xyz / noiseSize), 2 - 2 * TESR_SnowAccumulationParams.w));
+	float snowAmount = persist ? CoverMapRead(camera_vector.xy).z : TESR_SnowAccumulationParams.w;
+	float coverage = saturate(pows(noise(worldPos.xyz / (noiseSize * 0.5)) * noise(worldPos.xyz / (noiseSize * 3)) * noise(worldPos.xyz / noiseSize), 2 - 2 * snowAmount));
 	coverage = saturate(smoothstep(0.2, 0.4, coverage));
+	if (persist) coverage *= smoothstep(0.0, 0.05, snowAmount);
 	float vertical = smoothstep(0.5, 0.8, shade(float3(0, 0, 1), norm));
 
 	color = lerp(color, snowColor, coverage * min(vertical, ortho));
@@ -261,6 +270,36 @@ technique
 	pass
 	{
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 Snow();
+		PixelShader = compile ps_3_0 Snow(false);
+	}
+}
+
+// UNOFFICIAL 2026-10-27 Persistent (CoverMap.h): technique 1, the same passes with the snow amount per spot from the cover map.
+technique PersistentTechnique
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 SnowCoverage();
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 Scale(TESR_RenderedBuffer, 4);
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DepthBlur(TESR_RenderedBuffer, OffsetMaskH, TESR_SnowAccumulationParams.y, 3500, TESR_OrthoData.x);
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 DepthBlur(TESR_RenderedBuffer, OffsetMaskV, TESR_SnowAccumulationParams.y, 3500, TESR_OrthoData.x);
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 Snow(true);
 	}
 }
