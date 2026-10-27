@@ -15,7 +15,9 @@ only when a D3D9 draw binds it, and the NVR extension reads the GPU image as it 
 Estimate) stayed all zeros, so every pixel used the same slice angle and the per-frame rotation brightened/darkened the whole
 occlusion at once; a few D3D9 frames uploaded it (the 'cure'). Fix: DxvkCompute::PreLoad on every sampled image before each
 extension Draw/Dispatch (NVR side only). Confirmed here with MSAA 4x + Conor's toml (run cf-msaa4-vk-preload): floor range 0.03
-(was ~12) over 48 pictures. Left over: the fixed Vulkan floor is ~1.1/255 darker than AmbientLight on D3D9 (29.2 vs 30.3).
+(was ~12) over 48 pictures. (The 29.2 vs 30.3 floor gap was two launches compared; in one launch the fixed Vulkan AmbientLight
+matches D3D9 within 0.03/255, MSAA off and 4x: fork list dxvkfork-27-aldark. The other Vulkan passes' file textures were empty too
+before the fix: cloud noise and its ground shadows, 28-42 % of pixels off in dxvkfork-26-vkfirst.)
 Any Vulkan pass reading a file texture had the same exposure; A/B lists that start on D3D9 hid it.
 
 CORRECTION (20:05, after more runs): MSAA is NOT needed (the same toggle with iMultiSample=0, run 20261026-200204-slotC), and it is
