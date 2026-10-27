@@ -116,3 +116,23 @@ now: **W2 sync-compile total under ~150 ms per walk = no warm-up for DXVK, stop.
 - mostly "graphics linked" -> `dxvk.trackPipelineLifetime = False` (stock option, zero code) if W3/I2 run without memory trouble.
 Risk for any warm-up: 32-bit address space (keeping more pipelines alive in a 4 GB process already full of textures); a wrong
 state key only wastes a background compile, it cannot change the picture.
+
+## Results (2026-10-27 bulk, slot C, fork d3d9 8acc67e9, NVR-fork-combo DLL, NvrDxvkPasses + ArrivalSampler on)
+
+Session totals of pipeline compiles the frame waited for ("NVR pipeline:" lines in FalloutNV_d3d9.log):
+
+| launch | cache | graphics linked (library re-create) | graphics full | total |
+|---|---|---|---|---|
+| W1 noon walk | cold (DXVK cache moved aside) | 354 waits, 226 ms | 13 waits, 4.6 ms | ~231 ms |
+| W2 noon walk | warm (W1's cache) | 358 waits, 393 ms | 13 waits, 11.3 ms | ~404 ms |
+| W3 noon walk | warm + trackPipelineLifetime = False | NOT RUN: the user started the real game | | |
+| I1 lucky22 | warm | 131 waits, 67.5 ms | 0 | ~71 ms |
+| I2 lucky22 | warm + trackPipelineLifetime = False | 109 waits, 14.4 ms | 3 waits, 3.0 ms | ~18 ms |
+
+- Rule applied: the WARM walk (W2) is ~400 ms, over the 150 ms line, and almost all of it is "graphics linked" = the 32-bit
+  lifetime tracking re-creating libraries at first use (each wait ~1-5 ms, one 25 ms). Full compiles (what a state-list
+  replay would fix) are only ~11 ms, and NVR's own passes are a handful of ms. So: no warm-up code. The fix is the stock
+  option `dxvk.trackPipelineLifetime = False` (I2: linked waits 67 -> 14 ms indoors, no errors in the log).
+- Open: W3 (the walk with the option) to confirm the walk drops too, and a long session with it to watch for 32-bit
+  out-of-memory. Cold vs warm being worse warm is odd (W1 compiled libraries at load and some were still alive); not chased.
+- Slot setup: NVRAutoTest8 (scene noon) added to multirun slim.json and slim-C.json saves.
