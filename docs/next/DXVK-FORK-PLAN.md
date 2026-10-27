@@ -314,6 +314,42 @@ Found:
 Next (session-hours): the same preshader audit for the other ports with constant-only math per pixel (AmbientLight's
 apply, fog, SunShadows; 1-2 h; risk: small gains elsewhere).
 
+## Preshader audit of the other ports + the AmbientLight flicker (2026-10-26 night, user asked; lists dxvkfork-23..25)
+NOTE: slot C runs from 17:56 to 19:11 had MSAA 4x in the slot INIs (the Conor session's test, not reset in time); the
+in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame totals do not.
+- nonuniformEXT on the sampler-heap index is gone (Common.glsl NVR_SAMPLER and the direct uses in AvgLuma, BloodFluid):
+  the index is uniform for a draw, DXVK's own D3D9 shaders use none. No measurable change, smaller code.
+- Full [[unroll]] of every loop in every port (103 loops, 325adfc8): neutral in both scenes, bigger shaders, reverted
+  (8f20e3c9). Still unrolled (committed before): PointShadows' 12-lamp loop (735c90dd), AmbientLight's estimate
+  (slice/step/side) and blur loops (824f3134).
+- AmbientLight estimate / blur: the loop's constant divisors as reciprocals once (invFalloff, invTexel, invTolerance).
+  Small: the estimate stays ~+0.03 ms over its D3D9 pass.
+- VolumetricFog (9d0a6b05): the fog, sky, horizon, sun, sunset, ambient, aerial-tint and sun colours are linearized once
+  per draw on the CPU (FogExtConstants.Linear, as the D3D9 preshader does), not per pixel; noise scale reciprocal hoisted.
+  Knockout variants (NvrDxvkTestSuffix n / s / k / f: no noise, no shadow, no sky colour, all three; the shipped shaders
+  byte-identical) showed no single big cost left. RESULT (dxvkfork-25-fogparts, og-desert): fog estimate 0.150 -> 0.126 ms
+  (D3D9 0.107), fog composite 0.233 vs D3D9 0.261: the whole effect 0.360 vs 0.372, now a little faster than D3D9. Same picture.
+- AmbientLight flicker (Conor's P83 report "AO type shaders still flicker / bounce lighting flickers", session
+  local_8d635e0a): every 4th frame darker, Vulkan only, no MSAA needed, not the light grid. Bisect with NvrDxvkKeepD3D9 per
+  pass (AmbientLight.cpp ExtDraw checks the pass's .spv name): only keeping Estimate on D3D9 cures it (floor-mean range
+  11.4 -> 0.03). A ring of uniform buffers (26cbc681) changed nothing and was reverted (8afad63f): DXVK renames a refilled
+  buffer that a draw already used. DebugView 6 (raw estimate): D3D9's mean steady with fine grain (high-pass std 9.4),
+  Vulkan's mean jumping with a third of the grain (2.8). A test variant that wrote the estimate's blue noise out gave an
+  all-black picture: the Vulkan pass read 0 from the noise texture everywhere. CAUSE: DXVK copies a D3DPOOL_MANAGED
+  texture to the GPU only when a D3D9 draw binds it (UploadManagedTextures at draw time); the extension reads the GPU image
+  as it is. A file texture only Vulkan passes read stays empty. With noise 0 everywhere, the per-frame rotation moved every
+  pixel's slice angle and step offsets together, so the whole occlusion brightened and darkened at once. A few D3D9 frames
+  uploaded the texture, which cured it for the session (the "stuck state" the Conor session saw). FIX c4ee6341:
+  DxvkCompute::PreLoad calls IDirect3DResource9::PreLoad on every sampled image before each Draw/Dispatch (DXVK returns at
+  once for render targets). NVR side only: works with every NVR DXVK build. RESULT (lucky22 conorflicker-burst3, Vulkan from
+  the first frame): range 11.39 -> 0.03 (conor-keep-none), 0.04 with Conor's full settings (conor-fx-vk); D3D9 estimate 0.03.
+- LESSON: any Vulkan pass that reads a file texture had this exposure (SMAA's area / search tables, fog noise, water,
+  blood masks). In-run A/B lists that START on D3D9 hide it, because the D3D9 frames upload everything. Test new ports with
+  NvrDxvkPasses on from the first frame too.
+Next (session-hours): the same upload in the fork itself (patch 0011: D3D9NvrExt's resource resolve uploads a managed
+texture and runs a pending mip generation, so a future caller cannot miss it; 0.5 h + a CI run); AmbientLight estimate's
+last +0.03 ms and the fog estimate's +0.02 ms (small).
+
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
    for the run only and loses them on reset (the restore point must never hold a d3d9.dll; make_slot.py refuses one).
