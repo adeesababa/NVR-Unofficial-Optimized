@@ -41,6 +41,8 @@ void VolumetricCloudsEffect::UpdateSettings() {
 	Settings.ShadowRange = std::clamp(TheSettingManager->GetSettingF(section, "ShadowRange"), 4000.0f, 100000.0f);
 	Settings.WaterReflections = std::clamp(TheSettingManager->GetSettingF(section, "WaterReflections"), 0.0f, 2.0f);
 	Settings.ShadowDebug = TheSettingManager->GetSettingI(section, "ShadowDebug") != 0;
+	Settings.ShadowPrefilter = TheSettingManager->GetSettingI(section, "ShadowPrefilter") != 0;	// UNOFFICIAL 2026-10-27
+	Settings.ShadowSoftness = std::clamp(TheSettingManager->GetSettingF(section, "ShadowSoftness"), 0.5f, 4.0f);
 	Settings.ReflectionDebug = std::clamp(TheSettingManager->GetSettingI(section, "ReflectionDebug"), 0, 2);
 	Settings.FineDetail = std::clamp(TheSettingManager->GetSettingF(section, "FineDetail"), 0.0f, 1.0f);
 	Settings.FineDetailSize = std::clamp(TheSettingManager->GetSettingF(section, "FineDetailSize"), 10.0f, 5000.0f);
@@ -493,7 +495,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	// UNOFFICIAL 2026-10-26 (NVR DXVK): ExtMarchSteps is the same count without the D3D9 shader's 64 cap, for the Vulkan march (ExtRender).
 	ExtMarchSteps = (int)lroundf(Settings.Steps * (1.0f + 0.25f * (towerScale - 1.0f)));
 	const int marchSteps = (std::min)(64, ExtMarchSteps);
-	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, 0.0f);
+	Constants.Tower = D3DXVECTOR4(1.0f / towerScale, towering, Settings.TowerAnvil, Settings.ShadowPrefilter ? Settings.ShadowSoftness : 0.0f);	// w: ShadowPrefilter (2026-10-27)
 	Constants.Shape = D3DXVECTOR4(Settings.Base, Settings.Thickness * towerScale, coverage, Settings.Density);
 	Constants.Noise = D3DXVECTOR4(Settings.ShapeSize, Settings.DetailSize, Settings.Erosion, Settings.WeatherSize);
 	Constants.Light = D3DXVECTOR4(Settings.SunStrength, Settings.AmbientStrength, Settings.Forward, rain);
@@ -562,6 +564,17 @@ static bool TowersOn(VolumetricCloudsEffect* clouds) {
 		clouds->Effect->GetTechnique(10) == clouds->TechniqueHandle(last, "ShadowMapTowers");
 }
 
+// UNOFFICIAL 2026-10-27 ShadowPrefilter: the shadow map pass takes technique 11 (ShadowMapPrefilter: the smooth shape only, four
+// taps per texel, no speckles on faces and ground) while it is on and the effect file has it. Off, technique 4 or 10 as before.
+// (fork2 play merge 2026-10-27: c843f888 had put it on the water reflection's technique 3 / 9, which drew the shadow map's values
+// into the reflection and left the shadow map as it was; it is RenderShadowMap's. NVR DXVK: ExtRender runs it as the shadow map
+// pass with push.prefilter.)
+static bool PrefilterOn(VolumetricCloudsEffect* clouds) {
+	static EffectRecord::CachedHandle last;
+	return clouds->Constants.Tower.w > 0.0f && clouds->Effect && clouds->TechniqueHandle(last, "ShadowMapPrefilter") != NULL &&
+		clouds->Effect->GetTechnique(11) == clouds->TechniqueHandle(last, "ShadowMapPrefilter");
+}
+
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
 	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
@@ -614,7 +627,7 @@ void VolumetricCloudsEffect::RenderShadowMap(IDirect3DDevice9* Device) {
 	if (shadowMapFrame == frame || Constants.Extra.x <= 0.0f || !Textures.ShadowSurface || !Enabled || !Effect || !ShouldRender()) return;
 	static GpuTimer shadowTimer("  Clouds shadow map");
 	GpuProfileScope gpu(shadowTimer, Device);
-	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, TowersOn(this) ? 10 : 4);
+	TheShaderManager->RenderEffectToRT(Textures.ShadowSurface, this, false, PrefilterOn(this) ? 11 : TowersOn(this) ? 10 : 4);	// 11: ShadowPrefilter (2026-10-27)
 	shadowMapFrame = frame;
 }
 
@@ -736,7 +749,7 @@ void VolumetricCloudsEffect::DrawIntoReflection(IDirect3DDevice9* Device) {
 			Device->SetViewport(&viewport);
 			Device->SetStreamSource(0, TheShaderManager->FrameVertex, 0, 5 * sizeof(float));
 			Device->SetFVF(FrameFVF);
-			Effect->SetTechnique(Effect->GetTechnique(TowersOn(this) ? 9 : 3));
+			Effect->SetTechnique(Effect->GetTechnique(TowersOn(this) ? 9 : 3));	// (the reflection: ShadowPrefilter is the shadow map's, RenderShadowMap)
 			SetCT();
 			UINT passes = 0;
 			if (SUCCEEDED(Effect->Begin(&passes, 0))) {
@@ -805,7 +818,7 @@ namespace {
 	};
 	// Push block: the samplers' heap indices (POINT/CLAMP, LINEAR/CLAMP, POINT/WRAP, trilinear/WRAP; filled in by DXVK), then the
 	// two compile-time switches of the D3D9 shaders.
-	struct CloudsPush { UInt32 pointIndex, linearIndex, pointWrapIndex, mipIndex, fixedExit, physicalSky, towers, pad; };	// towers: 2026-10-26 (the *Towers techniques)
+	struct CloudsPush { UInt32 pointIndex, linearIndex, pointWrapIndex, mipIndex, fixedExit, physicalSky, towers, prefilter; };	// towers: 2026-10-26 (the *Towers techniques); prefilter: 2026-10-27 (technique 11)
 
 	const D3DXVECTOR4* CloudsRegistered(const char* name) {
 		auto found = TheShaderManager->ConstantsTable.find(name);
@@ -822,14 +835,14 @@ namespace {
 
 bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
 	// Per technique (0 Composite, 1 March, 2 Temporal, 4 ShadowMap, 6 MarchFixedExit; 2026-10-26: 7 MarchTowers, 8 MarchTowersFixedExit,
-	// 10 ShadowMapTowers, the same shaders with push.towers): its shader, and its textures in binding order
+	// 10 ShadowMapTowers, the same shaders with push.towers; 2026-10-27: 11 ShadowMapPrefilter, push.prefilter): its shader, and its textures in binding order
 	// (set 1, binding i, slot i), as the .fx declares them: the noise textures 3D, through LINEAR/WRAP with LINEAR mips.
 	int pass;
 	switch (techniqueIndex) {
 	case 0: pass = 0; break;
 	case 1: case 6: case 7: case 8: pass = 1; break;
 	case 2: pass = 2; break;
-	case 4: case 10: pass = 3; break;
+	case 4: case 10: case 11: pass = 3; break;	// (11: ShadowMapPrefilter, 2026-10-27: the same shader with push.prefilter)
 	default: return false;	// 3 / 9 Reflection (drawn by hand), 5 LayerProbe (a game texture on stage 12): D3D9
 	}
 	if (ClearRenderTarget || (pass != 0 && RenderTarget != RenderedSurface)) return false;
@@ -905,7 +918,8 @@ bool VolumetricCloudsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurfac
 	}
 	CloudsPush push = {};
 	push.fixedExit = techniqueIndex == 6 || techniqueIndex == 8 ? 1 : 0;
-	push.towers = techniqueIndex >= 7 ? 1 : 0;
+	push.towers = techniqueIndex >= 7 && techniqueIndex <= 10 ? 1 : 0;
+	push.prefilter = techniqueIndex == 11 ? 1 : 0;
 	push.physicalSky = physicalSky ? 1 : 0;
 
 	if (pass == 0)

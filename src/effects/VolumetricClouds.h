@@ -33,6 +33,8 @@ public:
 		float	Shadows;					// UNOFFICIAL: how much the clouds shade the ground (0 off)
 		float	ShadowRange;				// UNOFFICIAL: metres across the cloud shadow map
 		float	WaterReflections;			// UNOFFICIAL: the clouds drawn into the game's water reflection (0 off)
+		bool	ShadowPrefilter;			// UNOFFICIAL 2026-10-27: the shadow map from the smooth shape only, several taps per texel (no speckles)
+		float	ShadowSoftness;				// UNOFFICIAL 2026-10-27: how far those taps spread, in shadow map texels
 		bool	ShadowDebug;				// UNOFFICIAL: show the cloud shadow alone (white lit, black shaded)
 		int		ReflectionDebug;			// UNOFFICIAL: in the water reflection, red where it looks up (sky), blue where down
 		float	FineDetail;					// UNOFFICIAL: a second, finer layer of edge detail (0 off)

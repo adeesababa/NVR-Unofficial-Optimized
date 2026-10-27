@@ -42,7 +42,7 @@ layout(push_constant) uniform Push {
     uint fixedExit;                // 16: 1 = technique MarchFixedExit (MarchPS(true))
     uint physicalSky;              // 20: 1 = the effect was compiled with PHYSICAL_SKY_ON
     uint towers;                   // 24: 1 = the *Towers techniques (MarchPS / ShadowMapPS(towers), 2026-10-25)
-    uint pad1;
+    uint prefilter;                // 28: 1 = technique ShadowMapPrefilter (ShadowPrefilter, 2026-10-27; the shadow map pass only)
 } pc;
 
 layout(location = 0) in vec2 uv;
