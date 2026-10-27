@@ -10,6 +10,11 @@ blending has the white line near where two terrain surfaces meet again".
   AmbientLight's occlusion and bounce in his game.
 
 ## Result: the flicker is AmbientLight's Vulkan path (fork only), indoors
+CORRECTION (20:05, after more runs): MSAA is NOT needed (the same toggle with iMultiSample=0, run 20261026-200204-slotC), and it is
+NOT the light grid (Conor has GridBounce = 0.0, so RenderGrid never runs): the every-4th-frame cadence comes from something else.
+A ring of uniform buffers per effect (mine/nvr-dxvk-compute 26cbc681) did not change it. Reproduce in a normal slot: lucky22,
+list conorflicker-burst3, RUN_TOML evidence\conorflicker\conor-fx-vk-g0.toml (the fork session's own Lucky 38 tests ran defaults).
+
 Method: still-camera bursts (48 pictures 2 or 3 frames apart, no settings reload between them), Conor's toml with AO / AmbientLight /
 BounceLight / DoF on, slot C at 1920x1080 with MSAA 4x, combo DLL (8794c1df), fork d3d9 nvr-dxvk-combo2. Tools: flickermap.py,
 brightness.py, groups.py, stages.py in the evidence folder; runs listed in its RUNS.txt.
@@ -24,9 +29,9 @@ brightness.py, groups.py, stages.py in the evidence folder; runs listed in its R
   toggle; keeping **AmbientLight** on D3D9 stops it, and a few D3D9 frames cure it for the rest of the launch (a stuck state that
   forms after the load).
 - Stage captures (`world` + `stage`): the world scene is identical every frame; the picture right after the AmbientLight step drops to
-  ~0.65x on every 4th frame (the light grid's update cadence, GridMoveOrDue). Floor 40-55 % darker, walls and objects less. The other
+  ~0.65x on every 4th frame. Floor 40-55 % darker, walls and objects less. The other
   Vulkan frames are ~7 % brighter than D3D9's AmbientLight.
-- AmbientLight DebugView 1 (occlusion only) toggles the same way: the occlusion is wrong on grid-update frames. InteriorBalance off
+- AmbientLight DebugView 1 (occlusion only) toggles the same way: the occlusion is wrong on those frames. InteriorBalance off
   still toggles (not the indoor balance).
 - AmbientLight off: AO, BounceLight and DoF all run as Vulkan passes and are steady (floor 19.4 in all 48 frames, no pixel flicker).
 - The fix is on the DXVK-fork line (mine/nvr-dxvk-compute; AmbientLight's GLSL / ExtDraw belong to that session).
