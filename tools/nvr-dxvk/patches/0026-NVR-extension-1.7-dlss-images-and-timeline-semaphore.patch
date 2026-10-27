@@ -1,4 +1,4 @@
-From 9c012b4a55b75129d74198647c17c42f31b56cf6 Mon Sep 17 00:00:00 2001
+From f4caa856f71d2e337234d40976d2f5e638a08a87 Mon Sep 17 00:00:00 2001
 From: nvr <nvr@localhost>
 Date: Tue, 27 Oct 2026 10:24:11 -0400
 Subject: [PATCH] NVR extension 1.7-dlss: images and timeline semaphores shared
@@ -36,10 +36,10 @@ HRESULT_FROM_WIN32(error).
  8 files changed, 862 insertions(+), 3 deletions(-)
 
 diff --git a/src/d3d9/d3d9_nvr_ext.cpp b/src/d3d9/d3d9_nvr_ext.cpp
-index 6a601d4..eef705c 100644
+index 6974c5d..558f0ae 100644
 --- a/src/d3d9/d3d9_nvr_ext.cpp
 +++ b/src/d3d9/d3d9_nvr_ext.cpp
-@@ -163,6 +163,12 @@ namespace dxvk {
+@@ -169,6 +169,12 @@ namespace dxvk {
        return S_OK;
      }
  
@@ -52,7 +52,7 @@ index 6a601d4..eef705c 100644
      return m_device->QueryInterface(riid, ppvObject);
    }
  
-@@ -1804,4 +1810,513 @@ namespace dxvk {
+@@ -2038,4 +2044,513 @@ namespace dxvk {
      return D3D_OK;
    }
  
@@ -567,7 +567,7 @@ index 6a601d4..eef705c 100644
 +
  }
 diff --git a/src/d3d9/d3d9_nvr_ext.h b/src/d3d9/d3d9_nvr_ext.h
-index ebe934e..de7d64e 100644
+index 0df885b..3383b4a 100644
 --- a/src/d3d9/d3d9_nvr_ext.h
 +++ b/src/d3d9/d3d9_nvr_ext.h
 @@ -12,6 +12,7 @@
@@ -635,12 +635,12 @@ index ebe934e..de7d64e 100644
     *
     * Like D3D9VkInteropDevice: its reference count is the device's.
     */
--  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry, public ID3D9NvrExtReadback {
-+  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry, public ID3D9NvrExtReadback, public ID3D9NvrExtShare {
+-  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry, public ID3D9NvrExtReadback, public ID3D9NvrExtGeometryScene {
++  class D3D9NvrExt final : public ID3D9NvrExt, public ID3D9NvrExtGeometry, public ID3D9NvrExtReadback, public ID3D9NvrExtGeometryScene, public ID3D9NvrExtShare {
  
    public:
  
-@@ -269,6 +318,40 @@ namespace dxvk {
+@@ -285,6 +334,40 @@ namespace dxvk {
              UINT                            Size,
              void*                           pData);
  
@@ -681,9 +681,9 @@ index ebe934e..de7d64e 100644
    private:
  
      /** CreateGraphicsPipeline and CreateGeometryPipeline. */
-@@ -290,6 +373,18 @@ namespace dxvk {
+@@ -308,6 +391,18 @@ namespace dxvk {
  
-     bool ValidateBufferRange(ID3D9NvrExtBuffer* pBuffer, UINT Offset, UINT& Size, UINT Align) const;
+     uint64_t m_profileOverhead100 = 0u;   // NVR profiling: the timer's own cost per call x 100 (SetProfiling)
  
 +    /** 1.7-dlss: CopyToShared / CopyFromShared: an image copy, or a 1:1 blit between different formats. */
 +    HRESULT RecordSharedCopy(
@@ -697,14 +697,14 @@ index ebe934e..de7d64e 100644
 +            uint32_t                        SrcLayer,
 +      const RECT*                           pSrcRect);
 +
-     /** Draw and DrawShifted. */
+     /** Draw, DrawShifted, DrawDepthStencil (pDepthStencil null: none) and DrawGeometry (VertexCount x InstanceCount). */
      HRESULT DrawImpl(
        const NVR_EXT_DRAW_DESC*              pDesc,
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 062db24..7c26482 100644
+index f6f14eb..40f1844 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -572,3 +572,166 @@ __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf
+@@ -803,3 +803,166 @@ __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf
  __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
  __CRT_UUID_DECL(ID3D9NvrExtSampler,  0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x03);
  #endif

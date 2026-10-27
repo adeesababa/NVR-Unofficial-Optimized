@@ -1,4 +1,4 @@
-From 0995c175287bda62d6c214cc25547d0e1e9cd5d3 Mon Sep 17 00:00:00 2001
+From f9d97f00b19bf613394fdb170370534fe5607c86 Mon Sep 17 00:00:00 2001
 From: adeesababa <263047020+adeesababa@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 22:52:47 -0400
 Subject: [PATCH] NVR extension 1.7-displace: tessellation displacement for
@@ -38,18 +38,18 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 src/d3d9/d3d9_nvr_tess.h
 
 diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
-index b6ae281..0f56964 100644
+index a77bd66..00e5843 100644
 --- a/src/d3d9/d3d9_device.cpp
 +++ b/src/d3d9/d3d9_device.cpp
-@@ -61,6 +61,7 @@ namespace dxvk {
-     , m_flushTracker       ( GetMaxFlushType() )
+@@ -62,6 +62,7 @@ namespace dxvk {
      , m_d3d9Interop        ( this )
      , m_nvrExt             ( this )
+     , m_nvrExtHdr          ( this )
 +    , m_nvrTess            ( this )
      , m_d3d9On12Args       ( pAdapter->Get9On12Args() )
      , m_d3d9On12           ( this )
      , m_d3d8Bridge         ( this ) {
-@@ -205,6 +206,11 @@ namespace dxvk {
+@@ -211,6 +212,11 @@ namespace dxvk {
        return S_OK;
      }
  
@@ -61,7 +61,7 @@ index b6ae281..0f56964 100644
      if (riid == __uuidof(IDirect3DDevice9On12)) {
        if (m_d3d9On12Args.Enable9On12) {
          *ppvObject = ref(&m_d3d9On12);
-@@ -3029,8 +3035,17 @@ namespace dxvk {
+@@ -3035,8 +3041,17 @@ namespace dxvk {
      UploadPerDrawData(StartVertex, vertexCount, firstIndex, 0,
        baseVertexIndex, &dynamicSysmemVBOs, nullptr);
  
@@ -79,7 +79,7 @@ index b6ae281..0f56964 100644
      // Tests on Windows show that D3D9 does not do non-indexed instanced draws.
      VkDrawIndirectCommand draw = {};
      draw.vertexCount = GetVertexCount(PrimitiveType, PrimitiveCount);
-@@ -3080,8 +3095,17 @@ namespace dxvk {
+@@ -3086,8 +3101,17 @@ namespace dxvk {
      UploadPerDrawData(MinVertexIndex, NumVertices, StartIndex, indexCount,
        BaseVertexIndex, &dynamicSysmemVBOs, &dynamicSysmemIBO);
  
@@ -97,7 +97,7 @@ index b6ae281..0f56964 100644
      VkDrawIndexedIndirectCommand draw = {};
      draw.indexCount = indexCount;
      draw.instanceCount = GetInstanceCount();
-@@ -7090,6 +7114,9 @@ namespace dxvk {
+@@ -7096,6 +7120,9 @@ namespace dxvk {
      state.setDepthClip(true);
      state.setFrontFace(VK_FRONT_FACE_CLOCKWISE);
      state.setPolygonMode(DecodeFillMode(D3DFILLMODE(rs[D3DRS_FILLMODE])));
@@ -107,7 +107,7 @@ index b6ae281..0f56964 100644
      state.setFlatShading(m_state.renderStates[D3DRS_SHADEMODE] == D3DSHADE_FLAT);
      state.setSampleCount(m_state.renderStates[D3DRS_MULTISAMPLEANTIALIAS]
        ? VkSampleCountFlags(0u)
-@@ -7274,18 +7301,24 @@ namespace dxvk {
+@@ -7280,18 +7307,24 @@ namespace dxvk {
  
      EmitCs([
        cSlot       = StateSampler,
@@ -134,7 +134,7 @@ index b6ae281..0f56964 100644
          ctx->bindResourceImageView(stage, slot, nullptr);
        }
      });
-@@ -8020,7 +8053,9 @@ namespace dxvk {
+@@ -8026,7 +8059,9 @@ namespace dxvk {
  
      // NVR extension: a registered SPIR-V replacement for this bytecode takes the place of the converted shader
      if (Rc<DxvkShader> replacement = m_nvrExt.BuildReplacementShader(ShaderType, pShaderBytecode, bytecodeLength, analysis)) {
@@ -145,7 +145,7 @@ index b6ae281..0f56964 100644
        *pBytecodeLength = bytecodeLength;
        return D3D_OK;
      }
-@@ -8037,6 +8072,9 @@ namespace dxvk {
+@@ -8043,6 +8078,9 @@ namespace dxvk {
      if (FAILED(hr))
        return hr;
  
@@ -155,7 +155,7 @@ index b6ae281..0f56964 100644
      *pShaderModule   = std::move(commonShader);
      *pBytecodeLength = bytecodeLength;
      return D3D_OK;
-@@ -8502,6 +8540,10 @@ namespace dxvk {
+@@ -8508,6 +8546,10 @@ namespace dxvk {
      if (unlikely(PrimType == D3DPT_FORCE_DWORD))
        PrimType = D3DPT_POINTLIST;
  
@@ -167,40 +167,40 @@ index b6ae281..0f56964 100644
        m_iaState.primitiveType = PrimType;
  
 diff --git a/src/d3d9/d3d9_device.h b/src/d3d9/d3d9_device.h
-index dfe4c75..92b7737 100644
+index b33224e..ebdf55e 100644
 --- a/src/d3d9/d3d9_device.h
 +++ b/src/d3d9/d3d9_device.h
-@@ -22,6 +22,7 @@
- 
+@@ -23,6 +23,7 @@
  #include "d3d9_interop.h"
  #include "d3d9_nvr_ext.h"
+ #include "d3d9_nvr_hdr.h"
 +#include "d3d9_nvr_tess.h"
  #include "d3d9_on_12.h"
  
  #include <cstdint>
-@@ -230,6 +231,7 @@ namespace dxvk {
-     friend class DxvkD3D8Bridge;
+@@ -232,6 +233,7 @@ namespace dxvk {
      friend D3D9VkInteropDevice;
      friend D3D9NvrExt;
+     friend D3D9NvrExtHdr;
 +    friend D3D9NvrTess;
  
      using CbvIndex = D3D9ShaderResourceMapping::CbvIndex;
    public:
-@@ -1698,6 +1700,7 @@ namespace dxvk {
- 
+@@ -1701,6 +1703,7 @@ namespace dxvk {
      D3D9VkInteropDevice             m_d3d9Interop;
      D3D9NvrExt                      m_nvrExt;
+     D3D9NvrExtHdr                   m_nvrExtHdr;
 +    D3D9NvrTess                     m_nvrTess;          // NVR extension 1.7-displace (fork patch 0021)
      D3D9ON12_ARGS                   m_d3d9On12Args = { };
      D3D9On12                        m_d3d9On12;
      DxvkD3D8Bridge                  m_d3d8Bridge;
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index 8748f7f..2bb3fa7 100644
+index f0b0b1a..470ef21 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
-@@ -475,7 +475,108 @@ ID3D9NvrExt : public IUnknown {
-           FLOAT                           ShiftY) = 0;
- };
+@@ -648,7 +648,108 @@ ID3D9NvrExtReadback : public IUnknown {
+ __CRT_UUID_DECL(ID3D9NvrExtReadback, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x15);
+ #endif
  
 +/*
 + * Tessellation displacement ("1.7-displace", fork patch 0021). A separate interface, so ID3D9NvrExt and
@@ -304,9 +304,9 @@ index 8748f7f..2bb3fa7 100644
 +
  #ifndef _MSC_VER
 +__CRT_UUID_DECL(ID3D9NvrExtTess,     0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x21);
+ __CRT_UUID_DECL(ID3D9NvrExtHdr,      0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x10);
  __CRT_UUID_DECL(ID3D9NvrExt,         0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x00);
  __CRT_UUID_DECL(ID3D9NvrExtPipeline, 0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x01);
- __CRT_UUID_DECL(ID3D9NvrExtBuffer,   0x6e2b0f3a,0x9c14,0x4d57,0x8a,0x41,0xb2,0xf0,0xc7,0xa9,0xd3,0x02);
 diff --git a/src/d3d9/d3d9_nvr_tess.cpp b/src/d3d9/d3d9_nvr_tess.cpp
 new file mode 100644
 index 0000000..140fd2a
@@ -1248,13 +1248,13 @@ index 4050e8e..40283f9 100644
  
    /**
 diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
-index 7ca397c..61b55be 100644
+index b49f95a..3cde06e 100644
 --- a/src/d3d9/meson.build
 +++ b/src/d3d9/meson.build
-@@ -50,6 +50,7 @@ d3d9_src = [
-   'd3d9_window.cpp',
+@@ -51,6 +51,7 @@ d3d9_src = [
    'd3d9_interop.cpp',
    'd3d9_nvr_ext.cpp',
+   'd3d9_nvr_hdr.cpp',
 +  'd3d9_nvr_tess.cpp',
    'd3d9_on_12.cpp',
    'd3d9_bridge.cpp',

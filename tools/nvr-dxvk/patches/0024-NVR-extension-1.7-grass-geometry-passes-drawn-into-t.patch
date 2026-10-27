@@ -1,4 +1,4 @@
-From 016885f6623de58f789541664dbd7c1456d9335f Mon Sep 17 00:00:00 2001
+From 32b36af208b1eab4f2deda6ab1e0febfa24623a2 Mon Sep 17 00:00:00 2001
 From: adeesababa <263047020+adeesababa@users.noreply.github.com>
 Date: Mon, 26 Oct 2026 23:14:25 -0400
 Subject: [PATCH] NVR extension 1.7-grass: geometry passes drawn into the scene
@@ -263,7 +263,7 @@ index 3bd1ec8..0df885b 100644
      /** Validates a binding list and resolves it for the CS thread (shared by Dispatch and Draw). */
      HRESULT ResolveBindings(
 diff --git a/src/d3d9/d3d9_nvr_ext_api.h b/src/d3d9/d3d9_nvr_ext_api.h
-index f0b0b1a..a5ed863 100644
+index 470ef21..f6f14eb 100644
 --- a/src/d3d9/d3d9_nvr_ext_api.h
 +++ b/src/d3d9/d3d9_nvr_ext_api.h
 @@ -73,6 +73,7 @@ enum NVR_EXT_BUFFER_FLAGS {
