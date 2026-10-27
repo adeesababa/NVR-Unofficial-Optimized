@@ -31,6 +31,7 @@
 #include "../../core/PassFamilyView.h"	// UNOFFICIAL 2026-10-21, diagnostic: which pass family draws each lit object
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
+#include "../../core/GrassShadows.h"	// UNOFFICIAL 2026-10-27 grass sun shadows: the early grass drawn again into the near sun shadow map (GrassFirst)
 #include "../../effects/GpuGrass.h"	// UNOFFICIAL 2026-10-27 GPU grass (NVR DXVK 1.7-grass): strands placed and culled on the GPU from the early grass draws
 #include "../../core/HdrOutput.h"	// UNOFFICIAL 2026-10-26 HDR output (needs NVR DXVK 1.5-hdr)
 #include "../../core/ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections
@@ -2378,6 +2379,7 @@ namespace GrassFirst {
 			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
 			if (ok) {
 				Records.clear();
+				GrassShadows::Records.clear();
 				// The draws after this early part see the device state they saw before it (Save / Restore above).
 				RestoreMask = (unsigned)TheShaderManager->Shaders.Grass->DrawFirstRestore;
 				CullDraws = TheShaderManager->Shaders.Grass->DrawFirstCull;
@@ -2391,6 +2393,23 @@ namespace GrassFirst {
 				if (!gpuGrass) NewGrass::EndEarly(TheRenderManager->device, StatEarly);
 				GpuGrass::EndEarly(TheRenderManager->device);	// the strands: one cull pass + two indirect draws, before the land
 				Recording = false;
+				// UNOFFICIAL 2026-10-27 grass sun shadows (core/GrassShadows.h): the early grass passes drawn with NVR's grass VS, drawn again
+				// into the near sun cascade (every tuft, c19.w = 0), before the land and everything after it read the shadow atlas.
+				if (GrassShadows::Begin(TheRenderManager->device)) {
+					static GpuTimer grassShadowTimer("Grass shadows");
+					GpuProfileScope gpu(grassShadowTimer, TheRenderManager->device);
+					GrassShaders::DrawPart = 0;
+					((void(__cdecl*)())kEndPass)();	// the first pass binds again (SetShadersHook: c19 with w = 0)
+					for (const GrassShadows::Record& r : GrassShadows::Records) {
+						if (!GrassShadows::InNear(r.pass)) { GrassShadows::StatOutside++; continue; }
+						RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
+						GrassShadows::StatPasses++;
+					}
+					((void(__cdecl*)(char, int))0x00B98540)(0, 0);	// BSRenderState::SetAlphaToCoverageEnable(0, 0), as after a bucket
+					((void(__cdecl*)())kEndPass)();
+					GrassShadows::End(TheRenderManager->device);
+				}
+				GrassShadows::Records.clear();
 				GrassShaders::DrawPart = 0;
 				((void(__cdecl*)())kEndPass)();
 				Restore();
@@ -2473,6 +2492,7 @@ namespace GrassFirst {
 				TheRenderManager->device->SetVertexShaderConstantF(19, nearOnly, 1);
 			}
 			if (GrassShaders::LastBindNVR) {
+				GrassShadows::Note(pass, passId, a3, a4, a5);	// UNOFFICIAL 2026-10-27 grass sun shadows: drawn again into the near cascade (MainListHook)
 				float alpha[4] = {};	// AlphaParam (c5) of NVR's grass VS: z = fade start, for the next draws' Classify
 				if (SUCCEEDED(TheRenderManager->device->GetVertexShaderConstantF(5, alpha, 1)) && alpha[2] > 0.0f) {
 					FadeStart = alpha[2];
@@ -2594,6 +2614,26 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 			announced = true;
 			Logger::Log("UNOFFICIAL skin outside the world scene (%s + %s, e.g. the character creation menu): drawn with the game's own skin shaders",
 				VertexShader && VertexShader->Name ? VertexShader->Name : "?", PixelShader->Name);
+		}
+	}
+	// UNOFFICIAL 2026-10-27 [Shaders.PBR.Main] GameShaderEyes (user: "pbr seems to apply to eyeballs and can darken them in some areas. it
+	// looks a bit odd. can we skip eyeballs?"): an eyeball is a small sphere, and NVR's object shaders light it as one -- the sun's and the
+	// lamps' falloff across it, its own sun shadow and the eyelids' -- so half of each eye went dark, where the game's own shader keeps it
+	// evenly bright with its environment map. The game marks its eye meshes (Eye_Environment_Mapping, BSSP flag 17): those draw with the
+	// game's own shaders, as the race menu's face above (the next bind picks NVR's again). Off: NVR's shaders, as before.
+	if (GameShaderEyes && Geometry) {
+		const BSShaderProperty* eyeProp = static_cast<const BSShaderProperty*>(Geometry->GetProperty(NiProperty::kType_Shade));
+		if (eyeProp && eyeProp->GetFlag(BSSP_EYE_ENVIRONMENT_MAPPING)) {
+			const bool nvrPixel = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
+			const bool nvrVertex = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
+			if (nvrPixel) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
+			if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
+			static bool announced = false;
+			if ((nvrPixel || nvrVertex) && !announced) {
+				announced = true;
+				Logger::Log("UNOFFICIAL GameShaderEyes: eyeballs drawn with the game's own shaders (first: %s, %s + %s)", Geometry->m_pcName ? Geometry->m_pcName : "?",
+					VertexShader && VertexShader->Name ? VertexShader->Name : "?", PixelShader && PixelShader->Name ? PixelShader->Name : "?");
+			}
 		}
 	}
 	// UNOFFICIAL lit particles (Shaders.Particles): the NOLIGHT replacements are shader model 3, and D3D9 cannot pair a

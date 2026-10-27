@@ -244,7 +244,11 @@ float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float geometricNdotL, fl
     float selfShadowed = saturate((0.05f - geometricNdotL) / 0.15f);
     selfShadowed = selfShadowed * selfShadowed * (3.0f - 2.0f * selfShadowed) * saturate(TESR_SkinLook.z) * saturate(selfLit);
     selfShadowed *= SKIN_LEGACY ? 1.0f : saturate((geometricNdotL + 0.45f) * 3.333f);
-    const float3 shadowColor = SkinShadow(shadow, shadowEdge);
+    // 2026-10-27 (user: "still get weird red lines w/ the new skin shader under heavy shadow"): where the surface turns edge-on to the
+    // light (geometric N.L under 0.25) a shadow map breaks into thin stripes (a lookup grazing the surface, the map's texels stretched
+    // across it), and each stripe's edges took the red of a penumbra: red lines over a face turned from the sun. The light is fading
+    // there anyway (N.L): those edges stay grey (the plain shadow); the red stays on the edges over skin that faces the light.
+    const float3 shadowColor = lerp(saturate(shadow).xxx, SkinShadow(shadow, shadowEdge), SKIN_LEGACY ? 1.0f : saturate(geometricNdotL * 4.0f));
     float3 diffuse = albedo * (direct * shadowColor + wrapped * lerp(shadowColor, 1.0f, selfShadowed));
     // The light the highlight reflects does not also enter the skin (as PBR.hlsl's diffuse: 1 - F at L.H).
     diffuse *= 1.0f - Fresnel(SKIN_F0.xxx, (1.0f).xxx, saturate(dot(L, normalize(V + L)))).x;

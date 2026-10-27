@@ -3519,8 +3519,16 @@ static bool LeadsToSelected(const std::string& path) {
 		if (SelectedSection == std::string("Shaders.") + m.name + ".Main" && (path == "Shaders" || path == std::string("Shaders.") + m.under)) return true;
 	return false;
 }
+// UNOFFICIAL 2026-10-27 (user: "why does sun far have its own ticker box in the list of shaders?" / "put sun far under shadows ext"):
+// whole shader entries, their own on/off box included, shown inside another entry instead of at the top of the list. SunFar has no
+// settings page (only [Shaders.SunFar.Status] Enabled): it is the pass that draws the mountain and flat-cloud shadows.
+struct MenuNest { const char* name; const char* under; };
+static const MenuNest kMenuNests[] = {
+	{ "SunFar", "ShadowsExteriors" },
+};
 static bool IsMovedShaderEntry(const std::string& name) {
 	for (const MenuMove& m : kMenuMoves) if (name == m.name) return true;
+	for (const MenuNest& n : kMenuNests) if (name == n.name) return true;
 	return false;
 }
 
@@ -3529,6 +3537,7 @@ static bool IsMovedShaderEntry(const std::string& name) {
 // settings files) says less than it does (user: "change the taa menu to say taa / fsr / dlss"). The ## part keeps ImGui's ID the name.
 static std::string MenuEntryLabel(const std::string& name) {
 	if (name == "TAA") return "TAA / FSR / DLSS##TAA";
+	if (name == "SunFar") return "SunFar (mountain and flat-cloud shadow pass)##SunFar";
 	return name;
 }
 // The same for a page in the sidebar (by its full path; the section keeps its name in the settings files).
@@ -3635,6 +3644,9 @@ static void RenderSectionNode(const std::string& path, const std::string& name, 
 			if (!selected) ImGui::PopStyleColor();
 			ImGui::PopID();
 		}
+		// UNOFFICIAL 2026-10-27: the shader entries nested under this one (kMenuNests), each with its own on/off box
+		for (const MenuNest& n : kMenuNests)
+			if (path == std::string("Shaders.") + n.under) RenderSectionNode(std::string("Shaders.") + n.name, n.name, true);
 		ImGui::TreePop();
 	}
 

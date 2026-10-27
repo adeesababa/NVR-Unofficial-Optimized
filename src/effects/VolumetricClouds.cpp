@@ -579,22 +579,13 @@ static bool PrefilterOn(VolumetricCloudsEffect* clouds) {
 
 void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget,
 	IDirect3DSurface9* RenderedSurface, IDirect3DSurface9* SourceSurface) {
-	// UNOFFICIAL 2026-10-27 RenderScale v2: Resolution 3-5 targets are larger than the screen, so the rect viewport leaves them whole
-	// and their uv would not be rect uv: no clouds in a rect frame rather than wrong ones.
-	if (RenderRect::Active() && !RenderRect::ScreenShaped(lowWidth, lowHeight)) {
-		static bool told = false;
-		if (!told) { told = true; Logger::Log("UNOFFICIAL VolumetricClouds: Resolution 3-5 (larger than the screen) is not drawn while NVR's effects run at the RenderScale resolution"); }
-		lastRenderTime = -1.0;	// the history starts over when they are drawn again
-		return;
-	}
 	// The history is kept only across consecutive frames in the same place: after a cell change (a door, fast travel)
 	// or a pause in the clouds (indoors, a menu), it starts over from this frame's march.
+	// (UNOFFICIAL 2026-10-27: the march and its history are full size in every frame now -- see below -- so another RenderScale, or
+	// FSR / DLSS on or off, no longer starts it over.)
 	const D3DXMATRIX viewProj = TheRenderManager->ViewProjMatrix;
 	const double now = TheFrameRateManager->Time;
-	// UNOFFICIAL 2026-10-27 RenderScale v2: and when the drawn part of the history changes (another scale, rect <-> native)
-	const bool rectChanged = RenderRect::ScaleChanged() || RenderRect::Active() != lastRect;
-	lastRect = RenderRect::Active();
-	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCameraCut && !rectChanged;
+	const bool continuous = lastRenderTime >= 0.0 && now - lastRenderTime < 0.25 && !TheShaderManager->GameState.isCameraCut;
 	static const float order[4][2] = { {0, 0}, {1, 1}, {1, 0}, {0, 1} };
 	Constants.PrevViewProj = continuous ? lastViewProj : viewProj;
 	Constants.Layout.z = continuous ? Settings.History : 0.0f;
@@ -611,14 +602,26 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	static CachedHandle fixedExitCache;
 	const bool fixedExit = Settings.FixedMarchExit && Effect && TechniqueHandle(fixedExitCache, "MarchFixedExit") != NULL &&
 		Effect->GetTechnique(6) == TechniqueHandle(fixedExitCache, "MarchFixedExit");
-	{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false,
-		TowersOn(this) ? (fixedExit ? 8 : 7) : (fixedExit ? 6 : 1)); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit; 2026-10-25: 7, 8 = with Towering)
-	{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
-	RenderShadowMap(Device);	// UNOFFICIAL: cloud shadow map (already drawn this frame when SunFar asked first)
+	{
+		// UNOFFICIAL 2026-10-27 (user, with FSR: "changing cloud steps seems to do nothing", towering clouds "a bit noisy with 256
+		// steps"): in a RenderScale frame the march and its history drew into the drawn part of their targets, a quarter of the LOWER
+		// resolution, and through the D3D9 shader, which stops at 64 steps (NVR DXVK's Vulkan passes are off in those frames). They
+		// work on the clouds' own targets in screen directions and never read the scene, so they now run as in a native frame (whole
+		// targets, TESR_RenderScale 1, the Vulkan march with the full Steps): the clouds are as sharp and steady as without FSR / DLSS.
+		// Only the composite, which reads the scene, runs at the lower resolution (it reads the history at the screen position).
+		RenderRect::Suspend full;
+		const D3DXVECTOR4 scale = TAAEffect::RenderScaleConstant;
+		TAAEffect::RenderScaleConstant = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		{ GpuProfileScope gpu(marchTimer, Device); TheShaderManager->RenderEffectToRT(Textures.CurrentSurface, this, false,
+			TowersOn(this) ? (fixedExit ? 8 : 7) : (fixedExit ? 6 : 1)); }	// march (UNOFFICIAL 2026-10-17: 6 = FixedMarchExit; 2026-10-25: 7, 8 = with Towering)
+		{ GpuProfileScope gpu(temporalTimer, Device); TheShaderManager->RenderEffectToRT(Textures.HistorySurface[1 - read], this, false, 2); }	// temporal
+		RenderShadowMap(Device);	// UNOFFICIAL: cloud shadow map (already drawn this frame when SunFar asked first)
+		TAAEffect::RenderScaleConstant = scale;
+	}
 	read = 1 - read;
 	Textures.HistoryRead = Textures.HistoryTexture[read];
-	Constants.HistoryScale.x = RenderRect::ScaleX;	// (1 outside rect frames) for the next water reflection's history lookup
-	Constants.HistoryScale.y = RenderRect::ScaleY;
+	Constants.HistoryScale.x = 1.0f;	// the whole history is drawn (the next water reflection's history lookup)
+	Constants.HistoryScale.y = 1.0f;
 	Device->SetRenderTarget(0, RenderTarget);
 	{
 		// UNOFFICIAL 2026-10-21: when SunFar took the shadows to the land this frame, the composite only draws the sky (strength 0

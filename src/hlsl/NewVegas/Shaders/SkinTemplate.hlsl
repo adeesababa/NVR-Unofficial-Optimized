@@ -489,7 +489,12 @@ PS_OUTPUT main(PS_INPUT IN) {
             // The surface's own far side (geometric N.L under 0.05), in shadow, with ShadowScatter on: is it the skin's
             // own shadow? One coarse look SKIN_SELF_SHADOW_REACH toward the sun (SkinLight uses it only there).
             [branch] if (sunShadow < 1.0f && sunTS.z < 0.05f && TESR_SkinLook.z > 0.0f)
-                selfLit = SunShadowCoarse(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH);
+                // 2026-10-27 (user: red lines on a face in heavy shadow): and half as far. One look alone was fooled by a caster close to
+                // the skin (the hair, a collar, a helmet's rim): the point 16 units off lay past it, in the sun, so the red light carried
+                // past the terminator showed inside that caster's shadow, in bands along the face's contours. A head's own far side is
+                // lit at both distances (8 units clears a head's chord there); a close caster's shadow covers the nearer one.
+                selfLit = min(SunShadowCoarse(worldPos + TESR_SmoothedSunDir.xyz * (0.5f * SKIN_SELF_SHADOW_REACH)),
+                    SunShadowCoarse(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH));
         #endif
         float3 projShadow = 1.0f;
         #ifdef PROJ_SHADOW

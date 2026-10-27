@@ -266,7 +266,9 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 	// different in each pixel. The storm techniques march with all 64 steps the loop allows (Steps 48: a third shorter). (A search
 	// for the edge between two steps, three extra density reads, took the game's compiler past five minutes: dropped.) Unchanged
 	// with Towering off.
-	if (towers) steps = max(64.0 * stepScale, 4.0);
+	// (UNOFFICIAL 2026-10-27: at least 64; more where Steps says so, which only the Vulkan march can: VolumetricCloudsMarch.frag. Here Steps
+	// is at most 64, so this is 64 as before.)
+	if (towers) steps = max(max(Steps, 64.0) * stepScale, 4.0);
 	float3 camera = TESR_CameraPosition.xyz * MetresPerUnit;
 	float baseAbove = max(Base - camera.z, 50.0);
 	float tStart = ShellDistance(dir.z, baseAbove);
@@ -424,8 +426,6 @@ float4 CatmullRom(float2 uv) {
 	float2 w12 = w1 + w2;
 	float2 offset12 = w2 / w12;
 	float2 t0 = (centre - 1.0) * LowTexel, t3 = (centre + 2.0) * LowTexel, t12 = (centre + offset12) * LowTexel;
-	// UNOFFICIAL 2026-10-27 RenderScale v2: the outer taps kept inside the drawn part (no-op at native)
-	t0 = clampToRectIfOn(t0, LowTexel); t3 = clampToRectIfOn(t3, LowTexel);
 	float4 result = 0.0;
 	result += tex2Dlod(TESR_CloudHistory, float4(t0.x, t0.y, 0, 0)) * w0.x * w0.y;
 	result += tex2Dlod(TESR_CloudHistory, float4(t12.x, t0.y, 0, 0)) * w12.x * w0.y;
@@ -569,6 +569,9 @@ float CloudShadowAt(float3 world) {
 // ---- 0: Composite, full resolution ----
 float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
+	// UNOFFICIAL 2026-10-27: the clouds' history is drawn whole in every frame (RenderClouds runs the march as in a native frame), so in
+	// a RenderScale frame it is read at the screen position of this (lower resolution) pixel. At native: the same uv.
+	float2 huv = rectToScreen(uv);
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
 	float depth = readDepthLod(uv);
 	[branch] if (depth < farZ * 0.996) {
@@ -606,18 +609,18 @@ float4 CompositePS(VSOUT IN) : COLOR0 {
 	// bilinear reads a quarter of a pixel out); Catmull-Rom would read only the few nearest.
 	float4 clouds;
 	[branch] if (LowTexel.x < TESR_ReciprocalResolution.x * 0.99) {
-		float2 q = 0.25 * TESR_ReciprocalResolution.xy;
-		clouds = 0.25 * (tex2Dlod(TESR_CloudHistory, float4(uv + float2(-q.x, -q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(uv + float2(q.x, -q.y), 0, 0)) +
-			tex2Dlod(TESR_CloudHistory, float4(uv + float2(-q.x, q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(uv + q, 0, 0)));
+		float2 q = 0.25 * TESR_ReciprocalResolution.xy * TESR_RenderScale.zw;	// a quarter of this pixel (larger in a RenderScale frame)
+		clouds = 0.25 * (tex2Dlod(TESR_CloudHistory, float4(huv + float2(-q.x, -q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(huv + float2(q.x, -q.y), 0, 0)) +
+			tex2Dlod(TESR_CloudHistory, float4(huv + float2(-q.x, q.y), 0, 0)) + tex2Dlod(TESR_CloudHistory, float4(huv + q, 0, 0)));
 	}
-	else clouds = CatmullRom(uv);
+	else clouds = CatmullRom(huv);
 	[branch] if (Sharpness > 0.0) {
 		// UNOFFICIAL 2026-10-15 Sharpness: contrast-adaptive sharpening of the clouds against their four neighbours a march texel
 		// away, held within what those show (crisper edges and inner detail, no dark or bright halos).
-		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(LowTexel.x, 0.0), 0, 0));
-		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(LowTexel.x, 0.0), 0, 0));
-		float4 n2 = tex2Dlod(TESR_CloudHistory, float4(uv + float2(0.0, LowTexel.y), 0, 0));
-		float4 n3 = tex2Dlod(TESR_CloudHistory, float4(uv - float2(0.0, LowTexel.y), 0, 0));
+		float4 n0 = tex2Dlod(TESR_CloudHistory, float4(huv + float2(LowTexel.x, 0.0), 0, 0));
+		float4 n1 = tex2Dlod(TESR_CloudHistory, float4(huv - float2(LowTexel.x, 0.0), 0, 0));
+		float4 n2 = tex2Dlod(TESR_CloudHistory, float4(huv + float2(0.0, LowTexel.y), 0, 0));
+		float4 n3 = tex2Dlod(TESR_CloudHistory, float4(huv - float2(0.0, LowTexel.y), 0, 0));
 		float4 lo = min(min(min(n0, n1), min(n2, n3)), clouds), hi = max(max(max(n0, n1), max(n2, n3)), clouds);
 		float4 sharpened = clouds + (clouds - 0.25 * (n0 + n1 + n2 + n3)) * (1.5 * Sharpness);
 		clouds = clamp(sharpened, lo, hi);

@@ -368,6 +368,7 @@ void ShaderManager::UpdateConstants() {
 	MarkShadersVanilla = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVanilla");
 	MarkShadersVsFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsFrom");
 	MarkShadersVsTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsTo");
+	GameShaderEyes = TheSettingManager->GetSettingI("Shaders.PBR.Main", "GameShaderEyes") != 0;	// UNOFFICIAL 2026-10-27 (Render.cpp SetShadersHook)
 	// MarkShadersVanilla 2 (test only, once): the game's lamp falloff textures (BSShaderManager::spAttenuationXY 0x011F9534 / Z 0x011F9538)
 	// saved next to the log as PNG, to compare their shape with the shaders' 1 - (d / r)^2.
 	if (MarkShadersVanilla == 2) {

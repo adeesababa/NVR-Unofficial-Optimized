@@ -22,8 +22,10 @@ float Phase(float cosT, float g) {
 
 vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit, bool towers) {
     float steps = max(Steps * stepScale, 4.0);
-    // (2026-10-25 Towering, as the .fx) the storm techniques march with all 64 steps the D3D9 loop allows.
-    if (towers) steps = max(64.0 * stepScale, 4.0);
+    // (2026-10-25 Towering, as the .fx) the storm techniques march with at least the 64 steps the D3D9 loop allows. UNOFFICIAL 2026-10-27
+    // (user: towering clouds noisy at Steps 256, "changing cloud steps seems to do nothing"): it was ALWAYS 64, whatever Steps said; here
+    // (no loop limit) Steps counts (the CPU's count, already a quarter more for each extra layer depth).
+    if (towers) steps = max(max(Steps, 64.0) * stepScale, 4.0);
     vec3 camera = cb.cameraPosition.xyz * MetresPerUnit;
     float baseAbove = max(Base - camera.z, 50.0);
     float tStart = ShellDistance(dir.z, baseAbove);

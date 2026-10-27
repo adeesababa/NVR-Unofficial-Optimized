@@ -142,6 +142,8 @@ public:
 
 // UNOFFICIAL 2026-10-22 MarkShaders (test only, ShaderRecord.cpp NiD3DPixelShaderEx::SetupShader): SLS pixel shader range drawn magenta; 0 = off.
 inline int MarkShadersFrom = 0, MarkShadersTo = 0, MarkShadersFamily = 0, MarkShadersVanilla = 0, MarkShadersVsFrom = 0, MarkShadersVsTo = 0;
+// UNOFFICIAL 2026-10-27 [Shaders.PBR.Main] GameShaderEyes (SetShadersHook, Render.cpp): eyeballs drawn with the game's own shaders.
+inline bool GameShaderEyes = true;
 
 class NiD3DPixelShaderEx : public NiD3DPixelShader {
 public:

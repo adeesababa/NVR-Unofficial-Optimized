@@ -161,6 +161,20 @@ VS_OUTPUT main(VS_INPUT IN) {
     float4 worldPos = float4(pos + inst.xyz, 1.0f);
     OUT.position = mul(ModelViewProj, worldPos);
 
+#ifdef GRASS_SHADOW_CASTER
+    // UNOFFICIAL 2026-10-27 grass sun shadows ([Shaders.Grass.Main] CastShadows, core/GrassShadows.h; user: "billboard bushes have
+    // shadows as they should", the grass tufts threw none): this file compiled a second time as the caster that draws the tufts into
+    // the near sun shadow map. For those draws GrassShadows puts the camera's view -> the cascade's shadow map space into the xyz of
+    // c252-c255 (the grass wind lanes in their w are kept), so the shadow-position transform below lands on the tuft's place in the
+    // map, the same transform the shadow lookups use. No lighting, fog or collision push here (the push reads those registers too).
+    float casterFade = OUT.sun.w;
+    float3 casterLight = GetShadowWorldPos(OUT.position);
+    OUT = (VS_OUTPUT)0;
+    OUT.position = float4(casterLight, 1.0f);
+    OUT.uv = IN.uv;
+    OUT.shadowWorldPos = float4(casterLight, 1.0f);   // the caster PS writes z, as ShadowMap.pso does
+    OUT.sun.w = casterFade;
+#else
     // UNOFFICIAL 2026-10-19 grass collision ([Shaders.Grass.Collision]; after Community Shaders' Grass Collision, GPL-3.0): the player
     // and the people and creatures near them push the grass aside, and it springs back as they pass (GrassCollision.cpp). The push
     // at a blade's tip is read at the TUFT'S ROOT (its clip position, instClip, carried back to the camera-relative world), so the whole
@@ -224,5 +238,6 @@ VS_OUTPUT main(VS_INPUT IN) {
     if (GrassPairing.x < 0.5f) OUT.shadowWorldPos = OUT.att;
 #endif
 
+#endif   // GRASS_SHADOW_CASTER
     return OUT;
 };

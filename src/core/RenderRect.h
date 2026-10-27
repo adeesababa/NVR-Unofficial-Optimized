@@ -33,6 +33,15 @@ namespace RenderRect {
 	inline void Begin(float sx, float sy) { On = true; ScaleX = sx; ScaleY = sy; }
 	inline void End() { if (On) { LastScaleX = ScaleX; LastScaleY = ScaleY; } On = false; ScaleX = ScaleY = 1.0f; }
 
+	// Suspend (2026-10-27, VolumetricClouds): passes inside a rect frame that work on their own full-size targets in screen space,
+	// independent of the scene's resolution, run as in a native frame while it lasts (whole viewports, NVR DXVK's Vulkan passes on):
+	// On false, back when it ends. The shader constant TESR_RenderScale is the caller's to set to 1 for them.
+	struct Suspend {
+		bool was;
+		Suspend() : was(On) { On = false; }
+		~Suspend() { On = was; }
+	};
+
 	// Defined in ShaderManager.cpp (they need the render manager and the shared quads; no new .cpp in the project).
 	// ScreenShaped: w x h is not larger than the screen and has its aspect (within 1 %): shadow maps, sky / LUT textures, 1x1 and
 	// small square reduction targets are not. ApplyViewport: call right before a full-screen quad's DrawPrimitive (after
