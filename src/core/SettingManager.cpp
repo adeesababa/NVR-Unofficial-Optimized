@@ -374,7 +374,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 69;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 70;  // 53 was an enhanced-water step, since removed
 extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -533,6 +533,11 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 			changed += changed.empty() ? "Shaders.PBR.Main.LampSums false -> true" : ", Shaders.PBR.Main.LampSums false -> true";
 		}
 	}
+	// 70 (2026-10-27): the sun shadow maps' Mode 2 (EVSM4, the old default) -> 3 (PCF, the default since 2026-10-14). A tester's config
+	// (Doc, saved by an earlier build) still held 2: every character-shadow fix since (the smooth lookup normals' offset, the receiver-plane
+	// slack, CharacterShadowReach's cap) is compiled for PCF only, and EVSM has no normal offset at all, so faces and clothing shaded their
+	// own triangles: the facets that tester still saw with MSAA off. A saved 2 is the old default, moved once like the others.
+	if (version < 70) replace("Shaders.ShadowsExteriors.ShadowMaps", "Mode", 2, 3, true);
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
 			"Change them in the menu and press Save if you want the old values back.", changed.c_str());
