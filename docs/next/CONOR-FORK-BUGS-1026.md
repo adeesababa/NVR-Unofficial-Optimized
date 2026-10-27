@@ -10,6 +10,14 @@ blending has the white line near where two terrain surfaces meet again".
   AmbientLight's occlusion and bounce in his game.
 
 ## Result: the flicker is AmbientLight's Vulkan path (fork only), indoors
+ROOT CAUSE + FIX (21:00, the DXVK-fork session, mine/nvr-dxvk-compute c4ee6341): DXVK uploads a D3DPOOL_MANAGED texture to the GPU
+only when a D3D9 draw binds it, and the NVR extension reads the GPU image as it is. AmbientLight's blue noise (read only by the Vulkan
+Estimate) stayed all zeros, so every pixel used the same slice angle and the per-frame rotation brightened/darkened the whole
+occlusion at once; a few D3D9 frames uploaded it (the 'cure'). Fix: DxvkCompute::PreLoad on every sampled image before each
+extension Draw/Dispatch (NVR side only). Confirmed here with MSAA 4x + Conor's toml (run cf-msaa4-vk-preload): floor range 0.03
+(was ~12) over 48 pictures. Left over: the fixed Vulkan floor is ~1.1/255 darker than AmbientLight on D3D9 (29.2 vs 30.3).
+Any Vulkan pass reading a file texture had the same exposure; A/B lists that start on D3D9 hid it.
+
 CORRECTION (20:05, after more runs): MSAA is NOT needed (the same toggle with iMultiSample=0, run 20261026-200204-slotC), and it is
 NOT the light grid (Conor has GridBounce = 0.0, so RenderGrid never runs): the every-4th-frame cadence comes from something else.
 A ring of uniform buffers per effect (mine/nvr-dxvk-compute 26cbc681) did not change it. Reproduce in a normal slot: lucky22,
