@@ -23,6 +23,7 @@
 #include "../../core/PassSums.h"
 #include "../../core/LampsInOnePass.h"
 #include "../../core/OnePassDepth.h"	// UNOFFICIAL 2026-10-26 LampsDepthFirst: the one many-lamp passes drawn depth first
+#include "../../core/DrawSkipCensus.h"	// UNOFFICIAL 2026-10-27 DrawSkipCensus (test aid): how much world-scene work goes to hidden draws
 #include "../../core/ClothWind.h"
 #include "../../core/PlantWind.h"	// UNOFFICIAL 2026-10-20 plant wind ([Shaders.Plants.Wind])
 #include "../../core/EffectSelfTest.h"
@@ -639,6 +640,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	FrameWorldArgsKnown = false;
 	ConstantFilter::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: SkipRedundantConstants
 	HiddenObjectCulling::BeginFrame(TheRenderManager->device);	// UNOFFICIAL: HiddenObjectCulling
+	DrawSkipCensus::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-27 DrawSkipCensus (test aid)
 	LampScissor::BeginFrame();	// UNOFFICIAL: LampScissor
 	OnePassDepth::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-26 LampsDepthFirst
 	PassSums::BeginFrame(PassSums::ModeFromSettings());	// UNOFFICIAL ExactPassSums, and 2026-10-21 LampSums (the extra lamp passes summed in linear light)
@@ -2770,6 +2772,7 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
 	PlantWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL 2026-10-20 plant wind (cleaned by ClothWind::AfterDraw)
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
+	if (DrawSkipCensus::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, false)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL DrawSkipCensus (test aid)
 	ReflectionProbe::OnObject(Pass, false);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
@@ -2794,7 +2797,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	const bool countOpt = OnePassDepth::Count && GpuTimer::Enabled && ShaderSplit::CurrentContext == ShaderSplit::World &&
 		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
+	DrawSkipCensus::BeginDraw();	// UNOFFICIAL DrawSkipCensus (test aid): the pass inside its occlusion query
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	DrawSkipCensus::EndDraw();
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
@@ -2824,6 +2829,7 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	PassSums::BeforePass(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, TheRenderManager->device);	// UNOFFICIAL ExactPassSums
 	ClothWind::ForGeometry(TheRenderManager->device, ((const PointShadowForward::RenderPassView*)Pass)->geometry, false, ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);	// UNOFFICIAL cloth wind
 	if (HiddenObjectCulling::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL HiddenObjectCulling
+	if (DrawSkipCensus::Before(Pass, ShaderSplit::CurrentContext == ShaderSplit::World, true)) { ClothWind::AfterDraw(TheRenderManager->device); return; }	// UNOFFICIAL DrawSkipCensus (test aid)
 	ReflectionProbe::OnObject(Pass, true);
 	MaterialRulesDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL material rules
 	RmaosDraw::ForObject((const PointShadowForward::RenderPassView*)Pass);	// UNOFFICIAL _rmaos maps
@@ -2843,7 +2849,9 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	const bool countOpt = OnePassDepth::Count && GpuTimer::Enabled && ShaderSplit::CurrentContext == ShaderSplit::World &&
 		OnePassDepth::IsOpt(((const PointShadowForward::RenderPassView*)Pass)->passEnum);	// UNOFFICIAL LampsDepthFirstCount (test aid)
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
+	DrawSkipCensus::BeginDraw();	// UNOFFICIAL DrawSkipCensus (test aid)
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	DrawSkipCensus::EndDraw();
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
@@ -3022,6 +3030,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		GpuProfileScope gpu(worldTimer, TheRenderManager->device);
 		ShaderSplit::BeginContext(ShaderSplit::World);
 		HiddenObjectCulling::BeginWorld();
+		DrawSkipCensus::BeginWorld(TheRenderManager->device);	// UNOFFICIAL DrawSkipCensus (test aid)
 		GunFXSwitches::Update();
 		HandBlood::Update();	// UNOFFICIAL: blood on the first-person weapon and gloves (once a frame)
 		HudRain::Update();	// UNOFFICIAL: rain drops on the first-person weapon (once a frame)
@@ -3048,6 +3057,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 		HiddenObjectCulling::EndWorld();
 		ShaderSplit::EndContext();
 	}
+	DrawSkipCensus::EndWorld();	// UNOFFICIAL DrawSkipCensus (test aid): bound tests against the finished depth (outside the world timer), debug view
 
 	// Re-light nearby statics inside the flashlight cone. This has to happen here, before
 	// the viewmodel depth handling below clears the Z buffer: the pass draws with depth
