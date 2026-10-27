@@ -149,6 +149,9 @@ static void PointShadowCasterState(ShadowSceneLight* light, UInt64& hash, bool& 
 	if (!forwardSettings.LampModelShadows)
 		hash = (hash ^ 0x9E3779B97F4A7C15ULL ^ ((UInt64)LampFixtures::Generation << 32) ^ (UInt64)(forwardSettings.LampModelDistance * 16.0f) ^
 			((UInt64)(SInt64)(LampFixtures::OwnLightDistance * 16.0f) << 16)) * 1099511628211ULL;
+	if (!LampFixtures::NoShadowWords.empty())	// UNOFFICIAL NoShadowLampModels (2026-10-27): its words and the cell's lamp list redraw too
+		hash = (hash ^ (UInt64)std::hash<std::string>{}(LampFixtures::NoShadowFrom) ^ ((UInt64)LampFixtures::Generation << 40) ^
+			(UInt64)(forwardSettings.LampModelDistance * 16.0f)) * 1099511628211ULL;
 	staticCasters = light && light->kGeometryList.start;
 	if (!staticCasters) return;
 	// FastCasterHash switched (live): its hashes differ from the old ones, so every caster's motion starts again from 'first sight'
@@ -1357,6 +1360,7 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	const bool useGeometryList = Lights[LightIndex]->kGeometryList.start != nullptr;
 	cubeCasters.clear();
 	std::unordered_map<int, int> lampModelCache;	// UNOFFICIAL LampModelShadows: this light's answer per lamp model (LampFixtures::NearLampModel)
+	std::unordered_map<int, int> noShadowCache;		// UNOFFICIAL NoShadowLampModels (2026-10-27): the same for LampFixtures::NoShadowLampModel
 	if (useGeometryList) {
 		// Since this is pure geometry, getting reference data will be difficult (read: slow)
 		for (auto iter = Lights[LightIndex]->kGeometryList.start; iter; iter = iter->next) {
@@ -1393,6 +1397,11 @@ bool ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			// there a lamp threw its whole outline, hard and room-sized; every other shadow of the light stays (LampFixtures::NearLampModel).
 			if (!Settings->Forward.LampModelShadows && !TheShaderManager->GameState.isExterior &&
 				LampFixtures::NearLampModel(geo, pNiLight, LightPos, Settings->Forward.LampModelDistance, lampModelCache))
+				continue;
+			// UNOFFICIAL NoShadowLampModels (2026-10-27): lamp models named there (default: lanterns) cast no shadow for the lights in or
+			// near them, their own included (a lantern's frame threw a moving cage of shadows round the room). Other lamps keep theirs.
+			if (!TheShaderManager->GameState.isExterior &&
+				LampFixtures::NoShadowLampModel(geo, LightPos, Settings->Forward.LampModelDistance, noShadowCache))
 				continue;
 
 			bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson);

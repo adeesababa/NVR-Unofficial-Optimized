@@ -2578,6 +2578,23 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		if (VertexShader && VertexShader->ShaderHandleBackup) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
 		if (PixelShader && PixelShader->ShaderHandleBackup) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
 	}
+	// UNOFFICIAL 2026-10-27 race menu face (tester report): skin drawn outside the world scene, first person and reflections --
+	// the character creation menu's head (its own camera, lights and picture; no world scene is drawn while it is open) and
+	// other 3D menu views -- gets the game's own skin shaders. NVR's skin shaders take the world camera's shadow, sky and lamp
+	// data, which do not belong to that picture: the face came out invisible outdoors (Novac) and yellow indoors (Doc Mitchell's).
+	if (ShaderSplit::CurrentContext == ShaderSplit::Outside && PixelShader && PixelShader->Name && !strncmp(PixelShader->Name, "SKIN", 4)) {
+		static bool announced = false;
+		const bool nvrPixel = PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
+		const bool nvrVertex = VertexShader && VertexShader->Name && !strncmp(VertexShader->Name, "SKIN", 4) &&
+			VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
+		if (nvrPixel) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
+		if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
+		if ((nvrPixel || nvrVertex) && !announced) {
+			announced = true;
+			Logger::Log("UNOFFICIAL skin outside the world scene (%s + %s, e.g. the character creation menu): drawn with the game's own skin shaders",
+				VertexShader && VertexShader->Name ? VertexShader->Name : "?", PixelShader->Name);
+		}
+	}
 	// UNOFFICIAL lit particles (Shaders.Particles): the NOLIGHT replacements are shader model 3, and D3D9 cannot pair a
 	// 3.0 shader with the game's 2.x one. Where only one side of a NOLIGHT draw has a replacement -- NOLIGHTTEXVC.pso
 	// behind the game's glow/muzzle-flash vertex shaders, or NOLIGHT016/017.vso in front of the flame/spark pixel

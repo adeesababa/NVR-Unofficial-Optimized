@@ -809,7 +809,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	const bool indoorsForward = viewTest && !GameState.isExterior;
 	const float invisibleStrength = indoorsForward ? Settings->Forward.InvisibleLightShadowStrength : 1.0f;
 	const bool classifyLamps = indoorsForward && (invisibleStrength < 1.0f || Settings->Forward.InvisibleLightSize > 0.0f ||
-		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || logLamps);	// (they need the cell's lamps listed)
+		!Settings->Forward.LampModelShadows || Settings->Forward.InvisibleShadowFromLamp > 0.0f || !LampFixtures::NoShadowWords.empty() || logLamps);	// (they need the cell's lamps listed)
 	if (classifyLamps) LampFixtures::Update(Player->parentCell, logLamps);
 	LampFixtures::LogModels = logLamps;
 
