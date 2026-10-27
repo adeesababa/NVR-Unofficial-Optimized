@@ -66,12 +66,7 @@ public:
 	// UNOFFICIAL 2026-10-25: constants over the 240 push bytes (big kernels, matrices): Data uploaded into a uniform buffer the
 	// effect keeps (made on first use, remade when Size changes; recorded in order with the draws, no waits). Bind the returned
 	// buffer as NVR_EXT_BIND_UNIFORM_BUFFER (GLSL: layout(set = 2, binding = 0, std140) uniform ...). Null: no extension or failed.
-	// UNOFFICIAL 2026-10-26 (MSAA flicker, AmbientLight): a ring of buffers, each call filling the next. DXVK may move a buffer
-	// update to the start of its command buffer (ahead of the draws) when it thinks the buffer is not in use there; one buffer
-	// refilled for several passes of a frame then gave the earlier passes a later pass's constants (AmbientLight's occlusion on the
-	// light grid's frames, with 4x MSAA). Buffer: the one the last call filled (what its draws bind).
-	static constexpr UINT ExtUniformRing = 32;
-	struct ExtUniformBuffer { ID3D9NvrExtBuffer* Buffer = nullptr; UINT Size = 0; bool Tried = false; ID3D9NvrExtBuffer* Ring[ExtUniformRing] = {}; UINT Next = 0; };
+	struct ExtUniformBuffer { ID3D9NvrExtBuffer* Buffer = nullptr; UINT Size = 0; bool Tried = false; };
 	ID3D9NvrExtBuffer*		ExtUniforms(ExtUniformBuffer& Uniforms, const void* Data, UINT Size);
 	// The loaded file texture behind one of the effect's samplers (e.g. "TESR_BloodLensSampler"), null if none.
 	IDirect3DBaseTexture9*	ExtFileTexture(const char* SamplerName);
