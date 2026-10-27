@@ -1331,7 +1331,13 @@ namespace ClothWind {
 	// 2026-10-19 (user: 'cloth is causing unintended meshes to flicker and distort violently'): right after each hooked draw. Before,
 	// a cloth draw's values stayed in c248 until the next hooked object; anything drawn in between by another path with an NVR object
 	// vertex shader moved as that cloth did -- harmless while cloth moved 5 cm, violent with the walking offset.
-	inline void AfterDraw(IDirect3DDevice9* device) { if (device) Zero(device); }
+	// 2026-10-27 (Conor: grass sun shadows matched nothing): not when c248 holds a non-cloth shader's own data (GrassInC248: the grass
+	// shaders' inverse projection, the particles' lamp colours). Zeroed after the first grass draw, the rest of the batch (the game sends
+	// the constants once) rebuilt its positions from a broken matrix. NoteVertexShader clears it before the next cloth-carrying bind.
+	inline void AfterDraw(IDirect3DDevice9* device) {
+		if (GrassInC248) { ActiveWeights = nullptr; ActiveWalk = nullptr; ActiveSkin = nullptr; ActiveStill = nullptr; return; }
+		if (device) Zero(device);
+	}
 
 	// 2026-10-19 (user: 'make it more dramatic for our armor so we see the trench coat moving around when we walk'): worn clothing
 	// follows its wearer -- the hem trails behind as they walk or run and swings past and settles when they stop (a damped spring),
