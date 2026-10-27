@@ -765,6 +765,9 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
     vec4 fogVolume = vec4(0.0);
     // (ClassicLook: master's noise instead; the HLSL compiles the rest out of the *Classic techniques, here it is skipped.)
     if (classic) noiseVal = fbm3((worldPos + windOffset) / (1500.0 * NoiseScale));
+#ifdef FOG_TEST_NO_NOISE
+    else if (true) noiseVal = 0.5;   // TEST variant (variants.txt, NvrDxvkTestSuffix): no noise reads
+#endif
     else {
         if (pc.gridFlags.x > 0.5 && cb.vlGridData.x > 0.5) {
             fogVolume = FogGridSum(coord, depth);
@@ -791,7 +794,11 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
     float strength = max(0.0, nvrDensity + WeatherImpact * vanillaStrength);
 
     float shadowVisibility = 1.0;
+#ifdef FOG_TEST_NO_SHADOW
+    if (false) {   // TEST variant: no shadow visibility
+#else
     if (isExterior > 0.5 && ShadowStrength > 0.0 && cb.shadowFade.y > 0.5) {
+#endif
         if (!classic && fogVolume.g > 1.0e-6) {
             shadowVisibility = mix(1.0, saturate(fogVolume.a / fogVolume.g), ShadowStrength);
         }
@@ -817,10 +824,12 @@ void ModernFogTerms(vec2 coord, out vec3 fogMul, out vec3 fogAdd, out float nigh
         vec4 sunColorV = vec4(GetSunColor(sunHeight, 1.0, cb.sunAmount.x, cb.sunDiskColor.rgb, cb.sunsetColor.rgb), 1.0);
         sunColorV *= isDayTime * isExterior;
 
+#ifndef FOG_TEST_NO_SKY   // (TEST variant: no sky colour, GetSkyColor and PhysicalFogSky)
         skyColor.rgb = GetSkyColor(0.5, 1.0, sunHeight, sunInfluence, cb.skyData.z, cb.skyColor.rgb, cb.skyLowColor.rgb, cb.horizonColor.rgb, vec3(0.0)) * cb.sunsetColor.w;
         if (FOG_PHYSICAL_ON && !classic) {
             if (cb.physSky.x > 0.0) skyColor.rgb = PhysicalFogSky(eyeDirection, skyColor.rgb);
         }
+#endif
 
         float sunStrength = cb.fogData.z / (1.0 + 2.0 * strength);
         sunStrength = mix(sunStrength, max(sunStrength * 2.0, 10.0), normalizedDepth);
