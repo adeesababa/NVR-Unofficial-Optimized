@@ -366,9 +366,13 @@ in-run D3D9-vs-Vulkan diffs of those runs still hold, their absolute frame total
   -0.018, AmbientLight estimate +0.023 (whole AL +0.020). Desert 6.479 / 6.465 (-0.01): sun contact shadows -0.056, their
   blurs -0.025 each, exposure/bloom -0.03, fog composite -0.022, fog estimate +0.022. The Vulkan passes are at or under their
   D3D9 cost everywhere now; what is left (+0.02 each, AL and fog estimates) is within a pass's noise.
-Next (session-hours): the same upload in the fork itself (patch 0011: D3D9NvrExt's resource resolve uploads a managed
-texture and runs a pending mip generation, so a future caller cannot miss it; 0.5 h + a CI run); AmbientLight estimate's
-last +0.03 ms and the fog estimate's +0.02 ms (small).
+- DONE: the same upload in the fork itself, patch 0011 (959e9d72, CI run 40433728246, v3.0.1-11, G:\_NVR-build-scratch\
+  nvr-dxvk-0011): D3D9NvrExt::ResolveBindings uploads a pending managed texture and runs a pending AUTOGENMIPMAP mip
+  generation before a pass samples it, as a D3D9 draw would, so no future caller can miss it. Extension version unchanged
+  (1.6, no API change); NVR keeps its own PreLoad for older builds. RESULT with NVR's PreLoad switched off (test DLL),
+  dxvkfork-26-vkfirst: vk-first vs d3d9-1 10.2 % (Lucky 38) / 13.2 % (desert), the noise floor (20261026-214938 / 215113).
+  Use nvr-dxvk-0011 for fork tests from now on.
+Next (session-hours): nothing open on the port line's speed or picture; the AL and fog estimates' +0.02 ms are noise.
 
 ## Next steps, in order (session-hours)
 1. In-game smoke test in a test slot copy, never the user's game (1-2 h): the slot gets the fork's d3d9.dll + dxvk.conf
