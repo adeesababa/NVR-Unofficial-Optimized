@@ -25,7 +25,8 @@
 //       before what covers them). On a still scene the picture cannot change (the finished depth does not need them).
 //   4 = every pass that drew nothing the last time it was drawn is not drawn: the upper bound of any per-draw skip.
 // Skips are made only while the camera stands still (8 frames, < 1 unit, < 0.2 degrees), from answers at most 48 frames old, never
-// for skinned objects (their world bound does not follow the bones), and not while HiddenObjectCulling or LampsDepthFirst is on (they
+// for skinned objects (their world bound does not follow the bones) or objects with a pass drawn without the usual depth test (it
+// could draw over what hides them), and not while HiddenObjectCulling or LampsDepthFirst is on (they
 // change the same draws). In mode 4 every object is drawn in full in one counting frame of eight, so its answers stay fresh (that
 // costs a few percent of the measured saving). Test aid only: a moving NPC can uncover a skipped object for a few frames.
 // [Main.Main.Performance] DrawSkipCensusDebugView = true: red rectangles over objects hidden in the finished depth (H2), yellow over
@@ -50,6 +51,7 @@ namespace DrawSkipCensus {
 		UInt16 passes = 0;			// passes met this frame
 		int record = -1;			// its entry in this counting frame's object list
 		bool skinned = false;
+		bool noSkip = false;		// a pass of it was drawn without a normal depth test (z off, ALWAYS, ...): never left out
 		UInt32 h1Frame = 0, h2Frame = 0, zeroFrame = 0;	// frame each answer describes (0 = none)
 		bool h1 = false, h2 = false;
 		UInt32 zeroMask = 0;		// pass ordinals (< 32) that drew nothing the last time they were drawn
@@ -68,7 +70,7 @@ namespace DrawSkipCensus {
 		double frames, objects, passes, prims, samples, zeroPasses, zeroPrims, h1Objects, h1Passes, h1Prims, h1Later, h1LaterPrims,
 			tested, offscreen, untestable, h2Objects, h2Passes, h2Prims, h2Samples, h2Seen, h2SeenSamples, h1NotH2,
 			worldFrames, worldDips, worldPrims, objectDips, objectPrims, skipFrames, skippedPasses, skippedPrims, skippedObjects,
-			late, stillFrames, queryFails;
+			late, stillFrames, queryFails, unsafePasses;
 	};
 
 	inline int Mode = 0;
@@ -352,10 +354,10 @@ namespace DrawSkipCensus {
 				W.samples ? 100.0 * W.h2Samples / W.samples : 0.0, W.h2Seen / f, W.h1NotH2 / f);
 		}
 		if (Mode >= 2) {
-			Logger::Log("DRAW SKIP CENSUS skips (mode %d: %s): %.0f%% of %u frames with the camera still; per skipping frame %.0f passes left out (triangles %.0fk; %.0f objects)%s",
+			Logger::Log("DRAW SKIP CENSUS skips (mode %d: %s): %.0f%% of %u frames with the camera still; per skipping frame %.0f passes left out (triangles %.0fk; %.0f objects) | passes without a normal depth test %.0f per counting frame (their objects are never left out)%s",
 				Mode, Mode == 2 ? "later passes of objects hidden when drawn" : Mode == 3 ? "objects hidden in the finished depth" : "passes that drew nothing last time",
 				100.0 * W.stillFrames / (std::max)(1.0, wf), (unsigned)wf, sf ? W.skippedPasses / sf : 0.0, sf ? W.skippedPrims / sf / 1000.0 : 0.0,
-				sf ? W.skippedObjects / sf : 0.0, W.queryFails ? " | query creation failed" : "");
+				sf ? W.skippedObjects / sf : 0.0, f > 0 ? W.unsafePasses / f : 0.0, W.queryFails ? " | query creation failed" : "");
 		}
 		W = {};
 	}
@@ -471,6 +473,7 @@ namespace DrawSkipCensus {
 				o.h1Frame = o.h2Frame = o.zeroFrame = 0;
 				o.h1 = o.h2 = false;
 				o.zeroMask = 0;
+				o.noSkip = false;
 			}
 			o.parent = parent; o.pos[0] = pos[0]; o.pos[1] = pos[1]; o.pos[2] = pos[2]; o.scale = scale;
 			o.seenFrame = FrameNo;
@@ -486,7 +489,7 @@ namespace DrawSkipCensus {
 		if (skinned) o.skinned = true;
 		const UInt16 ordinal = o.passes < 0xFFFF ? o.passes++ : o.passes;
 		bool skip = false;
-		if (SkipAllowed && !o.skinned) {
+		if (SkipAllowed && !o.skinned && !o.noSkip) {
 			// Mode 4 only: a pass left out gets no new answer, so each object is drawn in full in one counting frame of eight. Modes 2
 			// and 3 need no refresh (first passes are always drawn; the bound test runs whether the object was drawn or not).
 			const bool refresh = Mode == 4 && Counting && ((FrameNo / kEvery + o.hash) % kRefreshCycles) == 0;
@@ -526,8 +529,15 @@ namespace DrawSkipCensus {
 		if (PendingOrdinal < kPassSlots) o->prims[PendingOrdinal] = PassPrims;
 		if (OpenQuery < 0 || !Cur) return;
 		Cur->pool[OpenQuery]->Issue(D3DISSUE_END);
-		DWORD zwrite = 0;
+		DWORD zwrite = 0, zenable = 0, zfunc = 0;
 		Device->GetRenderState(D3DRS_ZWRITEENABLE, &zwrite);	// the pass's own state is still on the device
+		Device->GetRenderState(D3DRS_ZENABLE, &zenable);
+		Device->GetRenderState(D3DRS_ZFUNC, &zfunc);
+		// A pass that does not test depth the usual way can draw over what hides its object: that object is never left out.
+		const bool reversed = TheRenderManager && TheRenderManager->IsReversedDepth();
+		const bool normalTest = zenable && (zfunc == D3DCMP_EQUAL || (reversed ? (zfunc == D3DCMP_GREATER || zfunc == D3DCMP_GREATEREQUAL)
+			: (zfunc == D3DCMP_LESS || zfunc == D3DCMP_LESSEQUAL)));
+		if (!normalTest) { o->noSkip = true; W.unsafePasses += 1; }
 		Cur->passes.push_back({ PendingObject, PendingOrdinal, (UInt8)(zwrite ? 1 : 0), OpenQuery, PassPrims });
 		OpenQuery = -1;
 	}

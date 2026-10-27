@@ -33,9 +33,12 @@ z EQUAL (ENGINE-ANSWERS.md D1). The graphics card tests depth before it runs the
 
 A captured Lucky 38 frame (RenderDoc, lucky22-d3d9_frame1850.rdc, replay timings, the world scene = render passes 12-16 on the
 main colour + depth targets): 3,026 draws, 9.6 ms in replay (replay times each draw on its own, so small draws are inflated);
-305 draws of 5 us or more make 79 % of that time, while 2,574 draws (85 % of the count) take 0-1 us each (16 %). Hidden draws are
-mostly in the cheap group, so even skipping ALL of them could not save more than a small share. (Per-draw samples-passed counts
-of that capture: see "RenderDoc census" below if it ran.)
+305 draws of 5 us or more make 79 % of that time, while 2,574 draws (85 % of the count) take 0-1 us each (16 %) (from the
+2026-10-26 barrier report G:\_NVR-build-scratch\rdc\report-d3d9.txt). A draw that is hidden when drawn has no pixel work, so it
+should sit in the cheap group: skipping ALL such draws is bounded by roughly that 16 % of replay time, and much less in the real
+pipelined frame. Not checked per draw: the samples-passed count per draw of that capture needs a RenderDoc replay (script
+G:\_NVR-build-scratch\rdc\rdc_drawskip.py, run `qrenderdoc.exe --python <script>` with RDC_IN = the .rdc, RDC_OUT = a report),
+which was not run here: about 2-3 GB of RAM, and the low-memory watchdog was already closing the coordinator's slot games.
 
 ## The census (built): settings, what it logs, how to read it
 `[Main.Main.Performance]` (both live, off by default; DrawSkipCensus is in the developer-only list, the DebugView key is hidden by
@@ -62,7 +65,8 @@ FINISHED DEPTH (bound test): objects, passes, triangles, the samples they shaded
 later) and how many of them were seen when drawn | hidden when drawn but not proven by the bound test. Modes 2-4 add a
 `DRAW SKIP CENSUS skips` line (camera-still share, passes and triangles left out per frame).
 
-Skip modes (test only; only while the camera stands still 8 frames, answers <= 48 frames old, never skinned objects, not while
+Skip modes (test only; only while the camera stands still 8 frames, answers <= 48 frames old, never skinned objects or objects
+with a pass drawn without the usual depth test (z off / ALWAYS: it could draw over what hides them), not while
 HiddenObjectCulling or LampsDepthFirst is on; in mode 4 every object is drawn in full in one counting frame of eight to
 refresh its answers, so mode 4's saving reads a few percent low):
 - 2: later passes of objects hidden when drawn are left out = what an EXACT same-frame GPU skip could save (they would draw
@@ -118,3 +122,5 @@ extra render-pass break per frame.
 - Bulk list: `C:\Users\foot\Documents\Codex\2026-10-03\this\work\bench\foundations\lists\fork2-drawskip-bulk.txt`.
 - Install (test slot only): `NewVegasReloaded.dll` -> `<game>\Data\nvse\Plugins\`. No shader files, no fork d3d9.dll needed
   (the census runs on any runtime; the coordinator's fork setup is fine).
+- Build (2026-10-27, MSBuild Release Win32, clean): `G:\_NVR-build-scratch\fork2-drawskip-out\NewVegasReloaded.dll`, sha256
+  2071c8184bf31beb...
