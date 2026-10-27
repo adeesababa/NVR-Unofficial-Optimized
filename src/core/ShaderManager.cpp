@@ -5,6 +5,7 @@
 #include "PointShadowForward.h"
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
+#include "SunDepthFit.h"	// UNOFFICIAL 2026-10-27 FitToDepth
 
 #define RESZ_CODE 0x7FA05000
 
@@ -1473,6 +1474,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.Normals->RenderSmooth(Device);
 		Device->SetRenderTarget(0, RenderTarget);
 	}
+	// UNOFFICIAL 2026-10-27 FitToDepth ([Shaders.ShadowsExteriors.Main], core\SunDepthFit.h): how far the visible surfaces reach,
+	// counted on a grid of 8 x 8 pixel blocks by occlusion queries read back frames later (no wait). Off: nothing runs.
+	if (SunDepthFit::Wanted()) {
+		static GpuTimer depthFitTimer("Sun depth fit");
+		GpuProfileScope gpu(depthFitTimer, Device);
+		SunDepthFit::Measure(Device);
+		Device->SetRenderTarget(0, RenderTarget);
+	}
 #if NVR_TEST_TOOLS
 	OrthoProbe::AfterCombine(Device);	// UNOFFICIAL 2026-10-17 test tools: the depth the effects read, after an ortho dump
 #endif
@@ -2346,6 +2355,9 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 		GpuProfileScope gpu(skyDitherTimer, Device);
 		if (!cinemaDither) Effects.SkyDither->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);
 	}
+	// UNOFFICIAL 2026-10-27 FitToDepthDebug ([Shaders.ShadowsExteriors.Main], core\SunDepthFit.h): the sun cascades coloured, or the
+	// measured blocks, over the finished picture. 0 (the default): nothing runs.
+	if (SunDepthFit::DebugView > 0) SunDepthFit::RenderView(Device, RenderTarget);
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface);

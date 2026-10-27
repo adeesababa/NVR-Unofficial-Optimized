@@ -2,6 +2,7 @@
 #include "../core/TestTools.h"	// UNOFFICIAL: NVR_TEST_TOOLS (SkipWhenFadedCheck)
 #include "../core/LampFixtures.h"	// UNOFFICIAL 2026-10-20: LampModelOwnDistance
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
+#include "../core/SunDepthFit.h"	// UNOFFICIAL 2026-10-27 FitToDepth
 
 // UNOFFICIAL 2026-10-16 lamp contact shadows (PointShadows.fx LampContactPS, technique 2; drawn by ShaderManager after the lamp
 // pass): every number the shader needs (see the constants' comments there). Kept out of ShadowsExterior.h (widely included).
@@ -60,6 +61,8 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		Constants.ShadowFade.z = usePointLights;
 		Constants.ShadowFade.y = Settings.Exteriors.Enabled && Enabled;
 		Constants.ShadowFade.w = Constants.ShadowMapRadius.w; //furthest distance for point lights shadows
+		// UNOFFICIAL 2026-10-27 FitToDepth: the lamp shadows' reach stays the unfitted one (the fit may end the cascades sooner).
+		if (SunDepthFit::Enabled && SunDepthFit::UnfittedRadiusW > 0.0f) Constants.ShadowFade.w = SunDepthFit::UnfittedRadiusW;
 
 		// Update constants used by shadow shaders: x=quality, y=darkness
 		Constants.Data.x = Settings.Exteriors.Quality;
@@ -456,6 +459,11 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// grows (GetCascadeViewProj) to hold the player's head while the camera is within this many world units of it (420 = 6 m). 0 = off.
 	Settings.ShadowMaps.PlayerInNear = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNear"), 0.0f, 1400.0f);
 	Settings.ShadowMaps.PlayerInNearLog = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "PlayerInNearLog") != 0;	// diagnostic: Near's radius once a second
+	// UNOFFICIAL 2026-10-27 FitToDepth (core\SunDepthFit.h, docs/next/FORK2-SDSM.md): the sun cascades fitted to the depth on screen,
+	// its debug view and log. Live; every Quality level. Off (the default): nothing is measured or changed.
+	SunDepthFit::Enabled = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "FitToDepth") != 0;
+	SunDepthFit::DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "FitToDepthDebug"), 0, 2);
+	SunDepthFit::Log = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "FitToDepthLog") != 0;
 	// UNOFFICIAL 2026-10-23 CharacterShadowMap (docs/next/CHARACTER-SHADOW-MAP-DESIGN.md): the player's own small sun shadow map, read by the
 	// skin and object shaders and the deferred sun pass (ShadowManager::RenderCharacterShadowMap). The switch is compiled into the shaders at
 	// startup (CHARACTER_SHADOW_MAP, ShaderRecord::BuildDefines); the rest is live. Every Quality level.
@@ -831,6 +839,11 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_LampContactBias", &LampContactBias);
 	TheShaderManager->RegisterConstant("TESR_LampContactNoise", &LampContactNoise);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
+	// UNOFFICIAL 2026-10-27 FitToDepth: Effects\SunDepthFit.fx's (core\SunDepthFit.h)
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitData", &SunDepthFit::Data);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitInfo", &SunDepthFit::Info);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitSplits", &SunDepthFit::Splits);
+	TheShaderManager->RegisterConstant("TESR_SunDepthFitOriginal", &SunDepthFit::Original);
 	TheShaderManager->RegisterConstant("TESR_ShadowViewProjTransform", (D3DXVECTOR4*)&Constants.ShadowViewProj);
 	TheShaderManager->RegisterConstant("TESR_ShadowNearCenter", &ShadowMaps[MapNear].ShadowMapCascadeCenterRadius);
 	TheShaderManager->RegisterConstant("TESR_ShadowCameraToLightTransformNear", (D3DXVECTOR4*)&ShadowMaps[MapNear].ShadowCameraToLight);
@@ -1383,6 +1396,7 @@ void ShadowsExteriorEffect::GetCascadeDepths() {
 	float ratio = maxZ / minZ;
 
 	int cascadeCount = 4;
+	float splitDepth[4];	// UNOFFICIAL 2026-10-27 FitToDepth: the same splits as view depths
 
 	for (int i = 0; i < cascadeCount; ++i) {
 		float p = (i + 1) / static_cast<float>(cascadeCount);
@@ -1390,10 +1404,27 @@ void ShadowsExteriorEffect::GetCascadeDepths() {
 		float uniform = minZ + range * p;
 		float d = Settings.ShadowMaps.CascadeLambda * (log - uniform) + uniform;
 		ShadowMaps[i].ShadowMapRadius = (d - nearClip) / clipRange;
+		splitDepth[i] = d;
+	}
+
+	// UNOFFICIAL 2026-10-27 FitToDepth ([Shaders.ShadowsExteriors.Main], core\SunDepthFit.h): the splits refitted to the depth on
+	// screen (measured a few frames ago), only where no visible depth gets a coarser cascade; the normal ones otherwise. Off: unchanged.
+	SunDepthFit::UnfittedRadiusW = ShadowMaps[MapLod].ShadowMapRadius * clipRange;
+	float nearStart = minZ;
+	{
+		bool airReaders = false;	// something reads the cascades through the air along the view (sky pixels included)
+		if (SunDepthFit::Enabled) {
+			auto draws = [](EffectRecord* effect) { return effect && effect->Enabled && effect->Effect && effect->ShouldRender(); };
+			airReaders = draws(TheShaderManager->Effects.VolumetricLight) || draws(TheShaderManager->Effects.Sandstorm);
+		}
+		float fitted[4];
+		if (SunDepthFit::Choose(minZ, maxZ, Settings.ShadowMaps.CascadeLambda, splitDepth, fitted, nearStart, airReaders))
+			for (int i = 0; i < cascadeCount; ++i) ShadowMaps[i].ShadowMapRadius = (fitted[i] - nearClip) / clipRange;
+		else nearStart = minZ;
 	}
 
 	// Get Near distance for each cascade
-	ShadowMaps[MapNear].ShadowMapNear = 10.0f / clipRange;
+	ShadowMaps[MapNear].ShadowMapNear = nearStart > minZ ? (nearStart - nearClip) / clipRange : 10.0f / clipRange;
 	ShadowMaps[MapMiddle].ShadowMapNear = ShadowMaps[MapNear].ShadowMapRadius;
 	ShadowMaps[MapFar].ShadowMapNear = ShadowMaps[MapMiddle].ShadowMapRadius;
 	ShadowMaps[MapLod].ShadowMapNear = ShadowMaps[MapFar].ShadowMapRadius;
