@@ -17,6 +17,7 @@
 #endif
 #include "includes/Terrain.hlsl"
 #include "includes/Shadow.hlsl"
+#include "includes/TerrainErosion.hlsl"
 
 
 struct VS_INPUT {
@@ -140,6 +141,18 @@ PS_OUTPUT main(PS_INPUT IN) {
     // land's colour by a gamma and a brightness, to match the near land. Skipped while off.
     [branch] if (TESR_LODBlendData.w > 0.0f) baseColor = pow(abs(baseColor), TESR_LODBlendData.y) * TESR_LODBlendData.x;
     
+    // UNOFFICIAL erosion relief ([Shaders.Terrain.Erosion], after Physically-Based-Reloaded): the LOD normal map's slopes
+    // carved with branching gullies; their floors darker. The pixel's footprint (top level: derivatives) fades the layers
+    // too fine to show. Skipped while off.
+    float3 footprintX = ddx(IN.shadowWorldPos);
+    float3 footprintY = ddy(IN.shadowWorldPos);
+    float footprint = max(1.0f, max(length(footprintX.xy), length(footprintY.xy)));
+    [branch] if (TESR_TerrainErosionData.x > 0.0f) {
+        float cavity;
+        normal.xyz = GetErodedNormal(normal.xyz, IN.shadowWorldPos, footprint, cavity);
+        baseColor *= 1.0f - cavity * TESR_TerrainErosionData.z;
+    }
+
     float3 eyeDir = normalize(IN.eyePosition.xyz - IN.lPosition.xyz);
     
     // Forward sun shadows. Passed as parallaxMultiplier, which getSunLighting applies to

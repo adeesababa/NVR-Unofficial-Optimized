@@ -114,6 +114,7 @@
     <ClCompile Include="..\src\base\PluginVersion.cpp" />
     <ClCompile Include="..\src\base\SafeWrite.cpp" />
     <ClCompile Include="..\src\core\BinkManager.cpp" />
+    <ClCompile Include="..\src\core\TerrainErosion.cpp" />
     <ClCompile Include="..\src\core\CameraManager.cpp" />
     <ClCompile Include="..\src\core\CommandManager.cpp" />
     <ClCompile Include="..\src\core\Device\Device.cpp" />
