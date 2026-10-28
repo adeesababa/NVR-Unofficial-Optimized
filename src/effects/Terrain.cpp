@@ -1,6 +1,7 @@
 #include "Terrain.h"
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace): DisplaceTick
+#include "../core/DisplaceShadows.h"	// UNOFFICIAL 2026-10-27 displacement shadows: the land's draws taken, the depth copy's camera
 
 // Set by SettingManager::Configuration::UpdateOldDefaults (settings version 65) when a saved config already had ParallaxLite
 // on, from builds that forced its distance cap every frame; UpdateSettings then writes the suggested distance once.
@@ -25,6 +26,7 @@ void TerrainShaders::RegisterConstants() {
 // Shaders' Terrain Blending). The world's depth surface is noted as the scene starts, so the land shaders know the main
 // scene from anything with its own depth buffer. Only the pointer is kept, for comparing; the reference goes at once.
 void TerrainShaders::BeginWorldScene() {
+	DisplaceShadows::BeginWorld(TheRenderManager->device);	// UNOFFICIAL 2026-10-27: the land's draws noted for its shadow draws
 	BlendDepthState = 0;
 	BlendWorldDepth = nullptr;
 	BindsBeforeCopy = 0;
@@ -41,6 +43,7 @@ void TerrainShaders::BeginWorldScene() {
 }
 
 void TerrainShaders::EndWorldScene() {
+	DisplaceShadows::EndWorld(TheRenderManager->device);
 	BlendDepthState = 0;
 	BlendWorldDepth = nullptr;
 }
@@ -64,6 +67,7 @@ bool TerrainShaders::CopySceneDepth() {
 		GpuProfileScope gpu(copyTimer, TheRenderManager->device);
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->TerrainBlendDepthTexture);
 		BlendDepthState = 2;
+		DisplaceShadows::NoteDepthCopy();	// UNOFFICIAL 2026-10-27: its camera, for the next frame's displaced land shadows (ObjectBlend)
 		// The first few scenes, then every 3600th (about a minute): the blend needs objects drawn before the land.
 		static unsigned copies = 0;
 		if (copies < 3 || copies % 3600 == 0)

@@ -30,7 +30,8 @@ public:
 	// UNOFFICIAL 2026-10-21 (sunshadow) SunCascadeOneWalk: one walk of the LOD roots and loaded cells for every sun cascade drawn in a
 	// frame, each object tested against each cascade (bit c of a mask = cascade c), each cascade's casters kept in the order its own
 	// walk would have found them, then handed to the passes cascade by cascade (PushSunCasters).
-	enum SunPass : UInt8 { kSunOpaque, kSunLodLand, kSunAlpha, kSunSkinned, kSunTree };
+	// kSunDisplaceLand (UNOFFICIAL 2026-10-27, core/DisplaceShadows.h): cell land drawn with its tessellation bumps
+	enum SunPass : UInt8 { kSunOpaque, kSunLodLand, kSunAlpha, kSunSkinned, kSunTree, kSunDisplaceLand };
 	struct SunCaster { NiGeometry* geometry; UInt8 pass; };
 	std::vector<SunCaster>	SunCasters[4];
 	std::vector<std::pair<NiAVObject*, unsigned>> SunContainers;

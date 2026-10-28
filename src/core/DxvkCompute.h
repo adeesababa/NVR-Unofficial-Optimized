@@ -100,6 +100,23 @@ public:
 	// PrepareDisplaceDepth); Valid = this draw is in the world scene and the copy holds it, Scale = its viewport's share of the copy.
 	static bool					DisplaceDepthWanted();
 	static void					DisplaceSceneDepth(bool Valid, float ScaleX, float ScaleY);
+	// 2026-10-27 CastShadows ([Shaders.Terrain.Displacement] CastShadows; core/DisplaceShadows.h, plan step 2): the land drawn into the
+	// sun's shadow cascades through the same tessellation. RegisterDisplace also registers Shadows\ShadowMapLand.vso (with the TCS) and
+	// ShadowMapLand-t<N>.pso (with TerrainDisplace-t<N>-s[d].tes) as family 2. NoteLandPixelShader / LandLayersOf: which bound pixel
+	// shader is a land one, and its layer count (ShaderRecord::LoadShader notes every TerrainTemplate pixel shader it creates).
+	// DisplaceShadowsWanted: the setting on and displacement on; DisplaceShadowLayers: bit N - 1 set when ShadowMapLand-tN.pso is
+	// registered (0 until the shadow vertex shader is). DisplaceShadowBegin / End: the tessellation state for the land's shadow draws
+	// (ObjectBlend from last frame's depth copy, Scale its viewport share, no wireframe), and back. DisplaceShadowsDrawn: land pieces
+	// drawn displaced into the cascades this frame; while there are any, the main view's projectionPosition follows the displaced land
+	// all the way (TerrainDisplace.tese ShadowsHold).
+	static void					NoteLandPixelShader(IDirect3DPixelShader9* Shader, const D3DXMACRO* Defines);
+	static int					LandLayersOf(IDirect3DPixelShader9* Shader);
+	static bool					DisplaceShadowsWanted();
+	static unsigned				DisplaceShadowLayers();
+	static float				DisplaceReach();	// FadeEnd: no bumps past it
+	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
+	static void					DisplaceShadowEnd();
+	static void					DisplaceShadowsDrawn(unsigned Pieces);
 
 	// Marks every compute path off for the session (logged once with the reason).
 	static void					Fail(const char* Reason);

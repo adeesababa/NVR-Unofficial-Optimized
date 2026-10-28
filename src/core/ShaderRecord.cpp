@@ -486,6 +486,10 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				
 				if (SUCCEEDED(createResult)) {
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
+					// UNOFFICIAL 2026-10-27 displacement shadows (core/DisplaceShadows.h): the land pixel shaders and their layer counts, so the
+					// land's own draws can be told apart (their per-layer height flags are taken there for the land's shadow draws).
+					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "TerrainTemplate"))
+						DxvkCompute::NoteLandPixelShader(((ShaderRecordPixel*)ShaderProg)->ShaderHandle, Template.Defines);
 					// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): ObjectTemplate pixel shaders compiled with linear lighting
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
