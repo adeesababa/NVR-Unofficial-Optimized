@@ -89,6 +89,22 @@ Bulk run 2026-10-28 (branch 46850ddf, NVR DXVK fork, RUN_TOML `bench\deep-roadma
 | 20261028-155019-slotA | lucky22 (960x540) | PASS, merge + self-check ok. AO view: small, even change, no blotches. Neon flicker between shots shifts the whole frame (not the merge). |
 Not shown by these scenes: characters' facets in lamp-lit interiors (10-24 report) and rock crust under cloud shadows: check in game.
 
+## Land and parallax forward shaders (2026-10-28, same switch, compiled: CAPTURED_NORMALS_FORWARD)
+
+With `[Main.Main.Quality] CapturedNormals` on at startup, TerrainTemplate and ParallaxTemplate also take their smooth vertex normal for
+the sun-shadow lookup (normal offset, slope slack) and the sky ambient, instead of each triangle's flat derivative normal
+(`GetShadowGeometricNormal`), as SmoothObjectNormals did for objects on 10-24. The land's normal is the tessellation's bent normal
+with BendNormals; parallax takes the vertex normal its vertex shader now sends in uv.zw (not the displacement layout: flat as before).
+Off: byte-identical (offline check, 222 shaders on / off, exterior, interior, displacement).
+A/B (two launches, `lists\capnormals-6-forward.txt`, runs 20261028-160851-slotC off / 20261028-161228-slotC on, og-desert with
+tessellated land, 18.2 h and 13 h): no breakage; the road slab and land keep their brightness (slab 20.0 / 19.8, land 75.9 / 76.0
+at low sun); differences are launch-to-launch grain. This spot shows no acne to fix: check in game (bumps' and rocks' shadow edges).
+
+Looked at and left alone: AmbientLight's NormalSmoothing (smoothing an already smooth normal changes little; three code paths), the AO
+sky pass's own depth normal (chosen on purpose: Goodsprings' road meshes and ground stains carry vertex normals pointing away from
+the sky, which is also what the slab-edge pieces in the first snow run were), decals (SM3005/7), leaves, hair, LOD land (no smooth
+normal there).
+
 ## Opting a single effect in (its own A/B setting instead of the shared merge)
 
 1. Declare the sampler in the effect, in declaration order (samplers bind by order, not by register):
