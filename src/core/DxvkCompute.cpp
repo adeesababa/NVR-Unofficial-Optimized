@@ -822,6 +822,9 @@ void DxvkCompute::DisplaceTick() {
 		state.EvalParams[1] = floorf(std::clamp(DisplaceFloatOr("Contrast", 10.0f), 0.0f, 32.0f) * 16.0f + 0.5f)
 			+ 0.99f * std::clamp(DisplaceFloatOr("Center", 0.5f), 0.0f, 1.0f);
 		viewParams = 16.0f * (float)debugView + std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f) + 4.0f;
+		// 2026-10-28 BendNormals (plan step 3): the lighting frame tilted by the bumps' slope, on by default; off = + 128 (FlatNormals),
+		// so shaders from before it (which never bend) are unchanged unless it is switched off
+		if (!DisplaceSettingOr("BendNormals", true)) viewParams += 128.0f;
 		state.EvalParams[3] = DisplacePackScale(1.0f, 1.0f);
 		// ObjectBlend: the width in whole game units, the share kept at the object as the fraction
 		const bool blend = DisplaceSettingOr("ObjectBlend", false);	// off by default (user's test: it also flattens round grass)

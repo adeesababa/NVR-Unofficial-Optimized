@@ -141,6 +141,27 @@ the device's c34/c35). Code: `src/core/DisplaceShadows.h`, `DxvkCompute::Registe
   default EdgeLength 12 / EdgeGrowth 0.01, strips as three patch lists) plus a few device reads per land draw in the world scene;
   F10 "Sun cascade: displaced land". Land farther than FadeEnd is drawn as before.
 
+## The bumps are lit as slopes (BendNormals, plan step 3; 2026-10-28, on claude/play-fork 04714ffb)
+`[Shaders.Terrain.Displacement] BendNormals = true` (live; a missing key = on). Before, the TES passed the vertex shader's flat tangent,
+binormal and normal on, so a bump's sun side and shaded side were lit alike (Conor, after a spiky Goodsprings shot at Strength 33 /
+Contrast 10: can the tessellation "use normals"?).
+- The camera's TES variants (not the `-s` / `-sd` shadow casters) read each layer's height twice more at the same detail level, one
+  texel of it along u and along v (forward differences; the spacing of the generated points wherever that level is above 0). The blended
+  slope goes through the same Contrast easing (its derivative), Strength, weight and ObjectBlend share as the displacement.
+- Into game units through the triangle's own uv-over-x/y map (from its three corners: land uv is a plane over the land's x / y, so the
+  map is the same for every triangle of a quadrant whatever its slope, so no seams along the game's edges, and no assumption about the
+  tangent's sign). Normal = n minus the slope along the surface (exact for a height moved along a constant normal); tangent and
+  binormal re-orthogonalised to it, each keeping its length and its w (the main vertex shader writes only their xyz).
+- The fades' own slope (weight: distance and quadrant border; ObjectBlend) is left out: small, and per game triangle, so it would show
+  their edges in the light. Inside the 128-unit strip along a quadrant border the bumps fade out a little faster than the light says.
+- Push data: `viewParams + 128` = BendNormals OFF (the free bit between DebugView x 16 and ShadowsHold x 256). Set = off, so an older DLL
+  with these shaders bends, and this DLL with older shaders is unchanged unless it is switched off. DebugView 6 shows the bent normal.
+- Cost (not measured): 2 more filtered lookups per blended layer (weight > 0.0005, usually 1-3) per generated point of the camera's land,
+  and a 2 x 2 inverse; nothing in the shadow passes. Expected well under 0.1 ms on the 1070.
+- Not done: rocks (ObjectDisplace.tese). Their pixel shaders light in tangent space with light and view vectors the vertex shader
+  already turned (TEXCOORD1/3/5/7, which slots hold them differs per variant) and the TES has no object-space position for the uv map: a
+  per-variant rotation of those vectors, about 1-2 h.
+
 ## Objects: rocks, cliffs, walls (plan step 5; 2026-10-28, branch claude/intelligent-lalande-6e0cf0 on claude/tess-blend-4078c1 0a51be43)
 `[Shaders.POM.Displacement]` (the POM page of the menu, "Tessellation (displacement)"): `Enabled = false` (live), `Strength = 8`,
 `Center = 0.5`, `Contrast = 2`, `EdgePixels = 12`, `EdgeFade = 1.5`, `MaxFactor = 16`, `FadeStart = 1024`, `FadeEnd = 2048`, `LodBias = 0`,
@@ -267,7 +288,7 @@ in the list's header.
 ## Known limits of this first step
 - (Done 2026-10-27: CastShadows, above.) The sun's cascades hold the bumps; the ortho map, light grid map and lamp cube maps do not.
 - Grass, decals (blood) and feet keep to the flat land (with 16 units = 23 cm, a few cm either way).
-- The lighting normal is the flat land's (the normal maps carry the fine detail): large displaced shapes are not shaded as slopes.
+- (Done 2026-10-28: BendNormals, above.) The lighting normal was the flat land's: large displaced shapes were not shaded as slopes.
 - Parallax still runs on top (the depth is a little doubled close up).
 - First sight of each land variant compiles a tessellation pipeline (a hitch, once per session; DXVK's state cache does not keep
   SPIR-V shaders).
@@ -278,7 +299,7 @@ in the list's header.
 1. Fixes from the bulk test (winding, a missed interface, cost) (1-2 h).
 2. Shadows: DONE for the sun cascades (CastShadows, above; no d3d9 change). Left: the lamps' cube maps outdoors (1-2 h, the same
    pass with the cube shaders), only needed for Center > 0.
-3. Lighting: bend the normal / tangent frame by the height's slope in the TES (finite differences, 2 extra lookups per layer) (1-2 h).
+3. Lighting: DONE for the land (BendNormals, above; not yet seen in game). Left: the rocks (1-2 h).
 4. Parallax hand-off: lower the land parallax's height by the displacement weight (1 h, NVR shader + a constant).
 5. Objects (rocks, walls): DONE 2026-10-28 ("Objects" above; not yet seen in game). Left: their shadows (2-3 h).
 6. Speed: screen-space edge factors, patch culling off screen / back-facing (tess level 0), measure (2 h).
