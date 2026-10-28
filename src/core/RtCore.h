@@ -34,8 +34,12 @@ public:
 	};
 
 	static void			AddUser(const User& user);
+	// Optional: the cull mask of each instance (default 0x01 land, 0x02 objects); one hook, the last set wins. 0 = never hit.
+	static void			SetMaskHook(UInt32 (*Hook)(NiGeometry* Geometry, bool Land));
 
-	// Setup only: a shared image (a pass's input or output); returns its index (or -1). Index 0 is the core's arena.
+	// Setup only: a shared image (a pass's input or output); returns its index (or -1). Index 0 is the core's arena. The image is made
+	// with both sides rounded up to 256 texels (the game's and the helper's drivers agree on the layout only then): the content is the
+	// top-left Width x Height; give the logical size to the pass in its constants. CopyOut copies only that rectangle.
 	static int			AddImage(const char* Name, UINT Width, UINT Height, NVR_EXT_SHARED_FORMAT Format);
 	// A trace shader, Data\Shaders\NewVegasReloaded\Compute\Rt\<Name>.spv (the helper compiles it once); any time; -1 if full.
 	static int			AddShader(const char* Name);

@@ -12,6 +12,7 @@
 #include <d3d9.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -38,15 +39,16 @@ static uint16_t toHalf(float f) {
 static const uint32_t N = 16;
 
 struct PassConstants { uint32_t size[4]; float area[4], origin[4], direction[4]; };
-struct Rect { float x0, y0, x1, y1, z; int id; };
+struct Rect { float x0, y0, x1, y1, z; int id; int geometry = 0; float objectZ = 0.f; };
 
-static void expect(const std::vector<Rect>& rects, float x, float y, float oz, float dz, int& id, float& t) {
-  id = -1; t = -1.f; float best = 1e30f;
+static const Rect* expect(const std::vector<Rect>& rects, float x, float y, float oz, float dz, int& id, float& t) {
+  id = -1; t = -1.f; float best = 1e30f; const Rect* hit = nullptr;
   for (const Rect& r : rects) {
     if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) continue;
     float d = (r.z - oz) * dz;
-    if (d >= 0.f && d < best) { best = d; t = d; id = r.id; }
+    if (d >= 0.f && d < best) { best = d; t = d; id = r.id; hit = &r; }
   }
+  return hit;
 }
 
 struct Ctx {
@@ -55,6 +57,12 @@ struct Ctx {
   ID3D9NvrExtRt* rt;
   ID3D9NvrExtSharedImage* arena;
   ID3D9NvrExtSharedImage* output;
+  ID3D9NvrExtSharedImage* fetched;
+  ID3D9NvrExtSharedImage* probe;
+  IDirect3DSurface9* probeRt;
+  IDirect3DSurface9* probeSys;
+  IDirect3DSurface9* fetchRt;
+  IDirect3DSurface9* fetchSys;
   ID3D9NvrExtSharedFence* inputsReady;
   ID3D9NvrExtSharedFence* outputReady;
   IDirect3DTexture9* readTex;
@@ -83,7 +91,7 @@ static int runFrame(Ctx& c, const std::vector<NvrRtGeometryOp>& ops, uint32_t ar
   NvrRtPass& p = f.passes[0];
   std::memset(&p, 0, sizeof(p));
   p.shader = 0; p.groupsX = N / 8; p.groupsY = N / 8; p.groupsZ = 1;
-  p.imageCount = 1; p.images[0] = 1; p.writeMask = 1;
+  p.imageCount = 4; p.images[0] = 1; p.images[1] = 2; p.images[2] = 3; p.images[3] = 6; p.writeMask = 0xB;
   PassConstants pc = {};
   pc.size[0] = N;
   pc.area[0] = -8.f; pc.area[1] = -8.f; pc.area[2] = 8.f; pc.area[3] = 8.f;
@@ -102,20 +110,41 @@ static int runFrame(Ctx& c, const std::vector<NvrRtGeometryOp>& ops, uint32_t ar
     return 0;
   }
   CHECK(c.share->CopyFromShared(c.readRt, 0, 0, c.output, nullptr), "CopyFromShared");
+  CHECK(c.share->CopyFromShared(c.fetchRt, 0, 0, c.fetched, nullptr), "CopyFromShared (fetched)");
   CHECK(c.dev->GetRenderTargetData(c.readRt, c.readSys), "GetRenderTargetData");
-  D3DLOCKED_RECT lr;
+  CHECK(c.dev->GetRenderTargetData(c.fetchRt, c.fetchSys), "GetRenderTargetData (fetched)");
+  D3DLOCKED_RECT lr, lf;
   CHECK(c.readSys->LockRect(&lr, nullptr, D3DLOCK_READONLY), "LockRect");
+  CHECK(c.fetchSys->LockRect(&lf, nullptr, D3DLOCK_READONLY), "LockRect (fetched)");
   int bad = 0, hits = 0;
   for (uint32_t j = 0; j < N; j++) for (uint32_t i = 0; i < N; i++) {
     const float* g = (const float*)((const char*)lr.pBits + j * lr.Pitch) + i * 2;
     float x = -8.f + 16.f * (i + 0.5f) / N, y = -8.f + 16.f * (j + 0.5f) / N;
-    int eid; float et; expect(rects, x, y, oz, dz, eid, et);
+    int eid; float et; const Rect* hit = expect(rects, x, y, oz, dz, eid, et);
     const int gid = g[0] < -0.5f ? -1 : int(g[0] + 0.5f);
+    const float* h = (const float*)((const char*)lf.pBits + j * lf.Pitch) + i * 2;
     hits += gid >= 0;
     bool ok = gid == eid && (eid < 0 || std::fabs(g[1] - et) < 1e-3f);
-    if (!ok && bad++ < 6) std::printf("  %s mismatch at (%.1f, %.1f): got id %d t %.4f, expected id %d t %.4f\n", label, x, y, gid, g[1], eid, et);
+    // v2: the record (geometry id) and the hit triangle's vertex fetched from the helper's geometry data (object-space z)
+    if (ok && hit && hit->geometry) ok = int(h[0] + 0.5f) == hit->geometry && std::fabs(h[1] - hit->objectZ) < 1e-3f;
+    if (!ok && bad++ < 6) std::printf("  %s mismatch at (%.1f, %.1f): got id %d t %.4f (record geometry %.0f, vertex z %.3f), expected id %d t %.4f\n",
+      label, x, y, gid, g[1], h[0], h[1], eid, et);
   }
   c.readSys->UnlockRect();
+  c.fetchSys->UnlockRect();
+  // The screen-size image's texels as the helper read them (the layouts of the two drivers agree)
+  CHECK(c.share->CopyFromShared(c.probeRt, 0, 0, c.probe, nullptr), "CopyFromShared (probe)");
+  CHECK(c.dev->GetRenderTargetData(c.probeRt, c.probeSys), "GetRenderTargetData (probe)");
+  D3DLOCKED_RECT lp;
+  CHECK(c.probeSys->LockRect(&lp, nullptr, D3DLOCK_READONLY), "LockRect (probe)");
+  int badProbe = 0;
+  for (uint32_t j = 0; j < N; j++) for (uint32_t i = 0; i < N; i++) {
+    const float got = ((const float*)((const char*)lp.pBits + j * lp.Pitch))[i * 2];
+    const float want = float(i * 79) + 4096.f * float(j * 45);
+    if (got != want && badProbe++ < 3) std::printf("  %s: screen image texel (%u, %u) read %.0f, written %.0f\n", label, i * 79, j * 45, got, want);
+  }
+  c.probeSys->UnlockRect();
+  if (badProbe) { std::printf("%s: screen-size image read back wrong at %d of %u texels -> FAIL\n", label, badProbe, N * N); bad++; }
   std::printf("%s (frame %llu): %u rays, %d hits, %d mismatches -> %s\n", label, (unsigned long long)n, N * N, hits, bad, bad ? "FAIL" : "PASS");
   c.dev->Present(nullptr, nullptr, nullptr, nullptr);
   return bad ? 1 : 0;
@@ -168,6 +197,11 @@ int main(int argc, char** argv) {
   NVR_EXT_SHARED_IMAGE_DESC od = { N, N, NVR_EXT_SHARED_RG32F, "rt test output" };
   CHECK(c.share->CreateSharedImage(&ad, &c.arena), "arena");
   CHECK(c.share->CreateSharedImage(&od, &c.output), "output");
+  NVR_EXT_SHARED_IMAGE_DESC fd = { N, N, NVR_EXT_SHARED_RG32F, "rt test fetched" };
+  CHECK(c.share->CreateSharedImage(&fd, &c.fetched), "fetched");
+  { IDirect3DTexture9* t; CHECK(c.dev->CreateTexture(N, N, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F, D3DPOOL_DEFAULT, &t, nullptr), "fetch tex");
+    t->GetSurfaceLevel(0, &c.fetchRt); }
+  CHECK(c.dev->CreateOffscreenPlainSurface(N, N, D3DFMT_G32R32F, D3DPOOL_SYSTEMMEM, &c.fetchSys, nullptr), "fetch sys");
   CHECK(c.share->CreateSharedFence(0, &c.inputsReady), "inputsReady");
   CHECK(c.share->CreateSharedFence(0, &c.outputReady), "outputReady");
   CHECK(c.dev->CreateTexture(N, N, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F, D3DPOOL_DEFAULT, &c.readTex, nullptr), "read tex");
@@ -199,9 +233,38 @@ int main(int argc, char** argv) {
   if (!CreateProcessW(exe, &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &su, &pi)) {
     std::printf("FAIL: could not start the helper (%lu)\n", GetLastError()); return 1;
   }
-  ID3D9NvrExtSharedImage* images[2] = { c.arena, c.output };
-  c.shared->imageCount = 2;
-  for (int i = 0; i < 2; i++) {
+  // Screen-size images as the RT sun shadows make them (1280x720 R32F / RGBA16F / R16F): the 2026-10-28 in-game run found the helper's
+  // driver (64-bit) wanting another size for them than the game's (32-bit); they must import (unused by the pass)
+  ID3D9NvrExtSharedImage* screen[3] = {};
+  const NVR_EXT_SHARED_FORMAT screenFormats[3] = { NVR_EXT_SHARED_R32F, NVR_EXT_SHARED_RGBA16F, NVR_EXT_SHARED_R16F };
+  for (int i = 0; i < 3; i++) {
+    UINT sw = 1280, sh = 720;
+    if (const char* size = getenv("RT_TEST_SCREEN")) sscanf(size, "%ux%u", &sw, &sh);	// the import-size experiments (FORK-RT-CORE.md)
+    NVR_EXT_SHARED_IMAGE_DESC sd = { sw, sh, screenFormats[i], "rt test screen" };
+    CHECK(c.share->CreateSharedImage(&sd, &screen[i]), "screen-size image");
+  }
+  NVR_EXT_SHARED_IMAGE_DESC pd2 = { N, N, NVR_EXT_SHARED_RG32F, "rt test probe" };
+  CHECK(c.share->CreateSharedImage(&pd2, &c.probe), "probe");
+  { IDirect3DTexture9* t; CHECK(c.dev->CreateTexture(N, N, 1, D3DUSAGE_RENDERTARGET, D3DFMT_G32R32F, D3DPOOL_DEFAULT, &t, nullptr), "probe tex");
+    t->GetSurfaceLevel(0, &c.probeRt); }
+  CHECK(c.dev->CreateOffscreenPlainSurface(N, N, D3DFMT_G32R32F, D3DPOOL_SYSTEMMEM, &c.probeSys, nullptr), "probe sys");
+  // The pattern x + 4096 y, at the game's screen size (RT_TEST_GAME, else 1280x720), copied into the top left of the shared screen image
+  {
+    UINT gw = 1280, gh = 720;
+    if (const char* size = getenv("RT_TEST_GAME")) sscanf(size, "%ux%u", &gw, &gh);
+    IDirect3DTexture9 *sys, *gpu;
+    CHECK(c.dev->CreateTexture(gw, gh, 1, 0, D3DFMT_R32F, D3DPOOL_SYSTEMMEM, &sys, nullptr), "pattern sys");
+    CHECK(c.dev->CreateTexture(gw, gh, 1, 0, D3DFMT_R32F, D3DPOOL_DEFAULT, &gpu, nullptr), "pattern gpu");
+    D3DLOCKED_RECT lr;
+    CHECK(sys->LockRect(0, &lr, nullptr, 0), "pattern lock");
+    for (UINT y = 0; y < gh; y++) for (UINT x = 0; x < gw; x++) ((float*)((char*)lr.pBits + y * lr.Pitch))[x] = float(x) + 4096.f * float(y);
+    sys->UnlockRect(0);
+    CHECK(c.dev->UpdateTexture(sys, gpu), "pattern upload");
+    CHECK(c.share->CopyToShared(screen[0], 0, 0, gpu, nullptr), "pattern CopyToShared");
+  }
+  ID3D9NvrExtSharedImage* images[7] = { c.arena, c.output, c.fetched, screen[0], screen[1], screen[2], c.probe };
+  c.shared->imageCount = 7;
+  for (int i = 0; i < 7; i++) {
     describe(images[i], c.shared->images[i]);
     HANDLE h = nullptr;
     CHECK(images[i]->CreateHandle(&h), "image CreateHandle");
@@ -266,14 +329,14 @@ int main(int argc, char** argv) {
 
   int failures = 0;
   std::vector<NvrRtInstance> inst = { instance(1, 0, 7), instance(2, 1.f, 9), instance(999, 0, 99), instance(3, 0, 11) };
-  std::vector<Rect> rects = { { -10, -10, 10, 10, 0, 7 }, { -1, -2, 3, 2, 5, 9 }, { 6, 6, 7, 7, 2, 11 } };
+  std::vector<Rect> rects = { { -10, -10, 10, 10, 0, 7, 1, 0.f }, { -1, -2, 3, 2, 5, 9, 2, 5.f }, { 6, 6, 7, 7, 2, 11, 3, 2.f } };
   failures += runFrame(c, ops, texel, inst, rects, 0.01f, 1.f, "scene 1, rays up", true);
   failures += runFrame(c, {}, 0, inst, rects, 20.f, -1.f, "scene 1, rays down", true);
 
   // The roof moved, the ground released
   NvrRtGeometryOp release = {}; release.op = NVR_RT_OP_RELEASE; release.id = 1;
   inst = { instance(2, -1.f, 9), instance(3, 0, 11), instance(1, 0, 7) };	// a stale reference to the released ground: skipped
-  rects = { { -3, -2, 1, 2, 5, 9 }, { 6, 6, 7, 7, 2, 11 } };
+  rects = { { -3, -2, 1, 2, 5, 9, 2, 5.f }, { 6, 6, 7, 7, 2, 11, 3, 2.f } };
   failures += runFrame(c, { release }, 0, inst, rects, 20.f, -1.f, "scene 2 (roof moved, ground released), rays down", true);
 
   // 300 frames of instance churn, then a check
@@ -282,7 +345,7 @@ int main(int argc, char** argv) {
     if (runFrame(c, {}, 0, inst, rects, 20.f, -1.f, "churn", false)) { failures++; break; }
   }
   inst[0] = instance(2, 1.f, 9);
-  rects[0] = { -1, -2, 3, 2, 5, 9 };
+  rects[0] = { -1, -2, 3, 2, 5, 9, 2, 5.f };
   failures += runFrame(c, {}, 0, inst, rects, 20.f, -1.f, "after 300 frames", true);
 
   // The post rebuilt in place under its id from a moved copy (half4 again), staged at texel 0
@@ -291,7 +354,7 @@ int main(int argc, char** argv) {
   CHECK(c.rt->StageGeometry(&g3, c.arena, 0, &gi), "StageGeometry (rebuild)");
   CHECK(c.rt->FlushStagedGeometry(c.arena), "FlushStagedGeometry (rebuild)");
   NvrRtGeometryOp rebuild = {}; rebuild.op = NVR_RT_OP_BUILD; rebuild.id = 3; rebuild.vertexCount = gi.VertexCount; rebuild.triangleCount = gi.TriangleCount;
-  rects[1] = { 6, 6, 7, 7, 3, 11 };
+  rects[1] = { 6, 6, 7, 7, 3, 11, 3, 3.f };
   failures += runFrame(c, { rebuild }, gi.Texels, inst, rects, 20.f, -1.f, "post rebuilt at z 3", true);
 
   std::printf("helper: %u geometries, %llu triangles, %llu KB structures, last %u instances, %u failed ops, shader failures 0x%x; "

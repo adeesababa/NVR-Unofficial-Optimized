@@ -25,7 +25,7 @@
 #include <stdint.h>
 
 #define NVR_RT_MAGIC            0x54525256u   // 'VRRT'
-#define NVR_RT_PROTOCOL_VERSION 1u
+#define NVR_RT_PROTOCOL_VERSION 2u            // 2 (2026-10-28): instance records + the geometry data (bindings 10, 11)
 #define NVR_RT_FRAME_RING       4u            // frame records; NVR waits for consumedFrame before reusing one
 #define NVR_RT_MAX_IMAGES       16u           // shared images, registered at setup (index 0 is the geometry arena)
 #define NVR_RT_MAX_SHADERS      16u           // trace shaders (.spv paths), registered any time
@@ -35,6 +35,16 @@
 #define NVR_RT_PASS_IMAGES      8u            // images bound to one pass (bindings 2..9)
 #define NVR_RT_PASS_CONSTANTS   512u          // bytes of a pass's uniform block (binding 1)
 #define NVR_RT_ARENA_IMAGE      0u
+#define NVR_RT_BINDING_RECORDS  10u           // readonly std430 SSBO: NvrRtInstanceRecord per instance, by rayQueryGetIntersectionInstanceIdEXT
+#define NVR_RT_BINDING_GEOMETRY 11u           // readonly std430 SSBO: uint words; a record's vertexOffset / indexOffset point into it
+#define NVR_RT_NO_DATA          0xFFFFFFFFu   // vertexOffset / indexOffset when the helper had no room for the geometry's data
+
+// NvrRtInstanceRecord::flags (NVR sets them; bits 8.. are free for the effects)
+#define NVR_RT_RECORD_LAND          0x01u
+#define NVR_RT_RECORD_WATER         0x02u
+#define NVR_RT_RECORD_GLOW          0x04u     // the draw has a glow / emissive map
+#define NVR_RT_RECORD_METAL         0x08u
+#define NVR_RT_RECORD_ALBEDO_KNOWN  0x10u     // albedo is the diffuse texture's average (else a neutral grey)
 
 // <base> is passed as "--shm <base>"; events <base>-frame (auto-reset, NVR -> helper) and <base>-status (helper -> NVR).
 #define NVR_RT_EVENT_FRAME_SUFFIX  L"-frame"
@@ -86,6 +96,22 @@ struct NvrRtInstance {               // 64 bytes
 	uint32_t	flags;               // VkGeometryInstanceFlagBitsKHR (1 = cull disable, 2 = flip facing, 4 = force opaque)
 };
 
+// One per instance, in the instance list's order (the helper keeps the pairs together when it skips an instance). In the shader:
+//   struct Record { vec4 albedo; uint flags; uint geometryId; uint vertexOffset; uint indexOffset; };
+//   layout(set = 0, binding = 10, std430) readonly buffer Records { Record records[]; };
+//   layout(set = 0, binding = 11, std430) readonly buffer Geometry { uint words[]; };
+//   Record r = records[rayQueryGetIntersectionInstanceIdEXT(q, true)];
+//   uint p = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
+//   uvec3 i = uvec3(words[r.indexOffset + 3 * p], words[r.indexOffset + 3 * p + 1], words[r.indexOffset + 3 * p + 2]);
+//   vec3 v0 = vec3(uintBitsToFloat(words[r.vertexOffset + 3 * i.x]), ...);   // object space: rayQueryGetIntersectionObjectToWorldEXT
+struct NvrRtInstanceRecord {         // 32 bytes
+	float		albedo[4];           // linear rgb of the draw's diffuse texture (its smallest mip), a = 1
+	uint32_t	flags;               // NVR_RT_RECORD_*
+	uint32_t	geometryId;          // = the instance's
+	uint32_t	vertexOffset;        // filled by the helper: word offset of the geometry's float3 positions in binding 11
+	uint32_t	indexOffset;         // filled by the helper: word offset of its uint triangle list (indices from its vertex 0)
+};
+
 struct NvrRtPass {                   // 576 bytes
 	uint32_t	shader;              // index into shaderPaths
 	uint32_t	groupsX, groupsY, groupsZ;
@@ -106,6 +132,7 @@ struct NvrRtFrame {
 	uint32_t	arenaTexels;         // texels of the arena this frame's builds read (0 = none)
 	NvrRtGeometryOp	ops[NVR_RT_MAX_OPS];
 	NvrRtInstance	instances[NVR_RT_MAX_INSTANCES];
+	NvrRtInstanceRecord records[NVR_RT_MAX_INSTANCES];	// v2: records[i] belongs to instances[i]
 	NvrRtPass		passes[NVR_RT_MAX_PASSES];
 };
 
@@ -169,6 +196,7 @@ static_assert(sizeof(NvrRtImageDesc) == 56, "NvrRtImageDesc layout");
 static_assert(sizeof(NvrRtGeometryOp) == 32, "NvrRtGeometryOp layout");
 static_assert(sizeof(NvrRtInstance) == 64, "NvrRtInstance layout");
 static_assert(sizeof(NvrRtPass) == 576, "NvrRtPass layout");
+static_assert(sizeof(NvrRtInstanceRecord) == 32, "NvrRtInstanceRecord layout");
 static_assert(sizeof(NvrRtFrame) % 8 == 0, "NvrRtFrame layout");
 static_assert(sizeof(NvrRtShared) % 8 == 0, "NvrRtShared layout");
 #endif

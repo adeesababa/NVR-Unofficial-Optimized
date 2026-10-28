@@ -63,7 +63,7 @@ namespace RtLampShadows {
 	inline UINT TextureWidth = 0, TextureHeight = 0;
 	inline UInt32 FramesTraced = 0;
 
-	// The game-to-scene instance mask for the RT core's mask hook: lamp glass and glow meshes (LampFixtures::LampPart), the rest of a
+	// Our part of the instance mask (MaskHook below): lamp glass and glow meshes (LampFixtures::LampPart), the rest of a
 	// lamp model listed in the cell (fixtures, shades, chandeliers, fans); 0 = the core's own (land / object).
 	inline UInt32 InstanceMask(NiGeometry* geometry, bool actor) {
 		if (actor || !geometry || TheShaderManager->GameState.isExterior) return 0;
@@ -246,9 +246,18 @@ namespace RtLampShadows {
 			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);
 	}
 
+	// RtCore's mask hook (the FULL mask, replacing the core's land 0x01 / objects 0x02): a lamp's glass or model gets ONLY its own bit,
+	// so the lamp rays' cull masks (no 0x04, near the lamp no 0x08) skip it while every other ray (the sun's 0xFF) still hits it.
+	inline UInt32 MaskHook(NiGeometry* geometry, bool land) {
+		if (land) return 0x01;
+		const UInt32 own = InstanceMask(geometry, false);
+		return own ? own : 0x02;
+	}
+
 	// ShaderManager, once before the first RtCore::Frame (next to RtSunShadows::Register)
 	inline void Register() {
 		if (!CompiledIn) return;
+		RtCore::SetMaskHook(MaskHook);
 		shader = RtCore::AddShader("RtLampTrace");
 		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
 	}
