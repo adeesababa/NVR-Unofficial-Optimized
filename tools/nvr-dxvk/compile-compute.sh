@@ -14,10 +14,17 @@ for f in *.frag *.comp; do
   b="${f%.*}"
   [ ${#NAMES[@]} -eq 0 ] || want "$b" || continue
   # (glslang prints its errors on stdout: shown, and the run stops, when a shader does not compile)
-  # UNOFFICIAL 2026-10-28 (RT): ray-query shaders (GL_EXT_ray_query) need SPIR-V 1.4+: Vulkan 1.2 for them only.
-  env=vulkan1.1; grep -q "GL_EXT_ray_query\|ReflectionsRT.glsl" "$f" && env=vulkan1.2
-  if ! log=$(glslangValidator -V --target-env $env -o "$b.spv" "$f" 2>&1); then echo "$log" >&2; echo "FAILED: $f" >&2; exit 1; fi
-  spirv-val --target-env $env "$b.spv"
+  if ! log=$(glslangValidator -V --target-env vulkan1.1 -o "$b.spv" "$f" 2>&1); then echo "$log" >&2; echo "FAILED: $f" >&2; exit 1; fi
+  spirv-val --target-env vulkan1.1 "$b.spv"
+  n=$((n+1))
+done
+# UNOFFICIAL 2026-10-28 (RT): RT/*.comp are the RT helper's passes (NvrRtHelper.exe, 64-bit; GL_EXT_ray_query needs SPIR-V 1.4+): Vulkan 1.2.
+for f in RT/*.comp; do
+  [ -e "$f" ] || continue
+  b="${f%.*}"
+  [ ${#NAMES[@]} -eq 0 ] || want "$(basename "$b")" || continue
+  if ! log=$(glslangValidator -V --target-env vulkan1.2 -o "$b.spv" "$f" 2>&1); then echo "$log" >&2; echo "FAILED: $f" >&2; exit 1; fi
+  spirv-val --target-env vulkan1.2 "$b.spv"
   n=$((n+1))
 done
 v=0

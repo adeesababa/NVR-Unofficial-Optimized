@@ -1,123 +1,142 @@
 # RT reflections (NVR DXVK fork, hybrid ray tracing item 4 of 4)
 
 Session rt-reflections, branch `claude/rt-reflections-499161` (from `claude/p84v3-tessring` 03b62a5a). No push, no install.
-The shared acceleration structures and ray-query entry point come from session rt-sun-core (`docs/next/FORK-RT-CORE.md`).
-This pass only reads them.
+The shared scene (BLAS/TLAS) and the place rays run come from session rt-sun-core (`docs/next/FORK-RT-CORE.md`, `src/core/RtCore.*`).
+This pass only uses them.
 
 ## Status
 
 | Item | State |
 |---|---|
-| Shader `Compute/ReflectionsTraceRT.frag` + `Compute/ReflectionsRT.glsl` | written, compiles (glslang, Vulkan 1.2, spirv-val OK) |
-| C++ (`effects/Reflections.cpp`, `core/RtCoreClient.h`), settings `[Shaders.Reflections.RT]` | written; see the build line below |
-| RT core API (TLAS binding, offset, per-instance records) | **waiting on rt-sun-core**; `RtCoreClient.h` answers "no RT" until then |
-| iGPU bench (list `bench/foundations/lists/rtrefl-1.txt`, scenes water / rain / luxe / lucky22) | not run (needs the core) |
+| In-game passes `Compute/ReflectionsRayGen.frag`, `ReflectionsRTResolve.frag`, `ReflectionsRT.glsl` | written, compile (Vulkan 1.1, spirv-val OK) |
+| Helper pass `Compute/RT/ReflectionsRT.comp` (ray queries) | written, compiles (Vulkan 1.2, spirv-val OK); bindings to be matched with FORK-RT-CORE.md |
+| C++ (`effects/Reflections.cpp`, `core/RtCoreClient.h`), settings `[Shaders.Reflections.RT]` | builds; RT answers "no" until the core is merged |
+| SplitTest (RayGen + Resolve without rays, any GPU) | list `rtrefl-split`, not run yet |
+| RT core | **waiting on rt-sun-core** (helper process, first end-to-end test pending) |
+| iGPU bench (`rtrefl-1`, scenes water / rain / luxe / lucky22) | not run (needs the core) |
 
-## What it does
+## Where the rays run: a 64-bit helper, not the game
 
-The existing Reflections trace (half resolution, a fixed-step screen-space march plus 5 bisection steps) runs first.
-`ReflectionsTraceRT.frag` is `ReflectionsTrace.frag` line for line, plus one RT block.
+rt-sun-core measured on this PC (note `RT-CORE-HELPER-2026-10-28.md` in the session notes): AMD's **32-bit** Windows Vulkan driver
+offers no `VK_KHR_acceleration_structure` / `VK_KHR_ray_query`. The 64-bit driver on the same iGPU does. FNV and the fork's
+d3d9.dll are 32-bit, so **no ray query can run inside the game's own Vulkan passes on Windows**. The GTX 1070 has no RT at all.
+RTX Remix also uses a 64-bit bridge. The RT core is therefore a helper process (NvrRtHelper.exe, modelled on the DLSS helper) that
+builds the scene and runs NVR-named compute shaders. Images are shared both ways through fork patch 0026 (shared images and
+timeline semaphores).
 
-1. **When a ray is cast.** Only where the screen march left part of the answer missing (confidence below 1: no hit, a hit near the
-   screen edge, or past the far end of the ray). The surface must be no rougher than `MaxRoughness`; RT fades in from 75 % of it.
-   Where the march answered fully, nothing is cast: SSR first, a ray only where SSR misses.
-2. **The ray.** It starts at the surface, lifted along the normal by 1 + 0.15 % of the depth (the depth buffer's own error far
-   away), in the same GGX-jittered direction as the march (a new jitter every frame). One closest-hit `rayQueryEXT`, opaque, up
-   to `Distance`.
-3. **A hit** fills the whole missing share, and the first source that can show it is used:
-   - **visible on screen** (the hit, projected, matches the depth buffer there within `ScreenTolerance` of its distance, and is not
-     the weapon): the lit picture at that pixel. This is exact. It is what the march would have found if its steps or its
-     thickness guess had not hidden it (thin poles, stepped-over edges, the far end of the ray);
-   - **out of view** (behind the camera, off the sides): the surroundings cube, looked up toward the hit from the camera. The cube
-     is captured from about there, so it shows what was seen in that direction. Its `a` channel is how much of it was ever seen,
-     and the rest goes to the estimate;
-   - **in view but hidden behind something**, or never seen: the **estimate** (below). The cube toward a hidden hit would show
-     whatever hides it, i.e. a wrong colour.
-4. **No hit within Distance**: the old fallbacks (cube along the ray, light grid, sky). A ray that went the whole Distance open
-   also takes the sky without the sky-visibility guess (`Skylighting` reflection term): RT has shown the sky is not hidden there.
-5. **Leaks fixed by construction.** Today a ray the march loses takes the cube or the sky, even under a roof or through a wall
-   (the sky in the floor of a covered porch, the cube's bright window in a floor facing a wall). With RT, a ray that hits
-   anything never reaches those fallbacks.
+This changed this pass's first design (a ray query inside the trace shader, commit cf4a0d9b) into three steps per frame:
 
-Everything after the trace is unchanged: temporal history (Temporal 0.85), the edge-aware blur (wider on rough surfaces), the
-firefly cap, the composite (Fresnel, MaterialAware metal colour, SpecularOcclusion). That chain is the denoiser for rough
-surfaces: one ray per half-resolution pixel per frame, jittered by GGX, then accumulated and blurred. Rougher than MaxRoughness
-gets no rays (blurred reflections gain little from exact hits and cost the same per ray).
+1. **RayGen** (in game, `ReflectionsRayGen.frag`, half resolution, technique 8). It is `ReflectionsTrace.frag` line for line up
+   to the end of the screen-space march. It then writes three targets instead of shading the fallbacks:
+   - `March` (RGBA16F): what the march found (linear colour, confidence);
+   - `Dir` (RGBA32F): the reflected direction (world) and the roughness (-1 = nothing reflects here);
+   - `Origin` (RGBA32F): the surface point (camera-relative world); a = 1 where a ray is wanted. That is where the march
+     left a share missing (confidence below 1) on a surface no rougher than `MaxRoughness` (RT fades in from 75 % of it).
+     SSR comes first, and a ray is cast only where SSR misses.
+2. **The helper** (`RT/ReflectionsRT.comp`, one thread per half-resolution pixel) reads `Dir` and `Origin`. Where a ray is wanted it
+   runs one closest-hit query from the surface, starting 1 + 0.15 % of the distance along it (past the depth buffer's own error).
+   From the hit it sends one shadow ray toward the sun (outdoors, by day). It writes `Hit` (RGBA32F): the distance (-1 no ray
+   asked, 0 nothing within `Distance`), the instance index, sun visibility, the primitive index.
+3. **Resolve** (in game, `ReflectionsRTResolve.frag`, technique 9) writes what the trace writes, so temporal, blur and composite
+   are untouched. A hit fills the whole missing share, from the first source that can show it:
+   - **visible on screen** (the projected hit matches the depth buffer within `ScreenTolerance` of its distance, and is not
+     the weapon): the lit picture at that pixel. This is exact. It is what the march misses through its step size or its
+     thickness guess (thin poles, stepped-over edges, the far end of the ray);
+   - **out of view** (behind the camera, off the sides): the surroundings cube toward the hit. It was captured from about here;
+     its `a` channel says how much of it was ever seen, and the rest goes to the estimate;
+   - **in view but hidden behind something**, or never seen: the **estimate**, a grey surface facing the ray. It is lit by the
+     cube's blurriest mip and by the sun as the helper's shadow ray saw it. The cube toward a hidden hit would show whatever hides
+     it, i.e. a wrong colour.
 
-Roughness comes from what the trace already uses: MaterialAware's `_rmaos` material buffer where a surface has one, else the
+   A ray that met nothing within Distance keeps the old fallbacks (cube along the ray, light grid, sky). It takes the sky without
+   the sky-visibility guess, because RT has shown nothing blocks it. From the fallbacks on, Resolve is `ReflectionsTrace.frag`
+   line for line.
+
+**Leaks fixed by construction.** A ray the march loses today takes the cube or the sky even under a roof or into a wall: the sky
+in the floor of a covered porch, the cube's bright window in a floor facing a wall. With RT, a ray that hits anything never reaches
+those fallbacks.
+
+**No helper this frame** (the setting off, no RT GPU, the helper late or dead, a pipeline refused): the plain trace runs. The picture
+and cost are then exactly today's. The one exception is a frame where the helper fails after RayGen: that frame pays the
+RayGen pass on top. The 1070 never gets that far: `RtCoreClient::Ready()` is false, so not even RayGen runs.
+
+**Denoising** for rough surfaces is the existing chain: one GGX-jittered ray per half-resolution pixel per frame (the same
+direction the march used), then temporal history (Temporal 0.85) and the edge-aware blur (wider when rough), then the firefly cap.
+Rougher than MaxRoughness gets no rays: blurred reflections gain little from exact hits and cost the same.
+
+**Roughness** comes from what the trace already uses: MaterialAware's `_rmaos` buffer where a surface has a map, else the
 Dry/WetRoughness of the floor guess.
 
-### Settings `[Shaders.Reflections.RT]` (all off / safe by default)
+### Settings `[Shaders.Reflections.RT]` (off by default)
 
 | Key | Default | |
 |---|---|---|
-| Enabled | false | needs the NVR DXVK fork, the Vulkan passes and the RT core up on a GPU with `VK_KHR_ray_query` |
+| Enabled | false | needs the NVR DXVK fork, its Vulkan passes and the RT core's helper on a GPU with ray tracing |
 | MaxRoughness | 0.5 | rougher: old fallbacks only |
 | Distance | 6000 | game units |
 | ScreenTolerance | 0.02 | share of the distance for "the hit is the pixel the screen shows" |
 | EstimateBrightness | 1.0 | |
-| SunShadows | true | the estimate's sun through a shadow ray |
-| DebugView | 0 | 1 sources (green march, cyan RT on screen, blue RT via cube, magenta estimate, orange known material, grey old fallbacks); 2 hit distance (red: open); 3 RT without the march; 4 colour per hit instance |
+| SunShadows | true | the helper's shadow ray from each hit |
+| SplitTest | false | test only: RayGen + Resolve without rays and without the helper; must be the normal trace's picture exactly |
+| DebugView | 0 | 1 sources (green march, cyan RT on screen, blue RT via the cube, magenta estimate, grey old fallbacks); 2 hit distance (red: open); 3 RT without the march; 4 a colour per hit instance |
 
-SSR and the cube remain the fallback and the A/B path (Enabled false = the exact old trace, the old `.spv`).
-
-### Detected off
-
-`ReflectionsEffect::RtWanted()` = Enabled, the Vulkan passes not failed, the RT pipeline not refused, and `RtCoreClient::Ready()`
-(the core's TLAS built this frame). On the GTX 1070 (no `VK_KHR_ray_query`) the core never reports ready. The trace then picks
-the same pipeline as before (the plain trace or the Hi-Z walk) with the same bindings and constants, so the picture and the cost are
-unchanged. RT DebugViews only change the effect's DebugView while RT runs.
+SSR and the cube stay as the fallback and the A/B path: Enabled false runs the old trace pipeline untouched.
 
 ## Hit shading: how far it can go here
 
-What a ray query gives at the hit is geometry only: distance, instance custom index, primitive index, barycentrics, front face.
-NVR is D3D9 through Vulkan. The material at the hit point (which texture, which UVs, which shader constants, which lamps) was
-bound by the game for **that draw**, possibly in a pass that has long finished, and DXVK only sees it as a draw's descriptor
-state. That is the hard part, and it decides the tiers:
+What a ray query gives at the hit is geometry only: distance, instance custom index, primitive, barycentrics, front face. NVR is
+D3D9 through Vulkan, and now the rays even run in another process. The material at the hit point is the hard part:
+the texture, its UVs, the shader constants and the lamps were bound by the game for **that draw**, in a pass that has long finished.
+DXVK sees them only as that draw's descriptors. So the tiers are:
 
 | Tier | What it needs | State |
 |---|---|---|
-| 0 Screen at the hit | nothing more (depth + the lit picture) | **done**: exact where the hit is visible, the common case for SSR's misses on screen |
-| 1 Cube toward the hit | the existing surroundings cube | **done** for out-of-view hits; parallax-free (cube centred near the camera), low-resolution, a little behind in time |
-| 2 Estimate | sun direction/colour, the cube's blurriest mip as ambient, one shadow ray | **done** as a grey 0.4-albedo surface; its normal is guessed as facing the ray. Correct brightness order, wrong colour |
-| 3 Per-draw albedo | the core keeps, per BLAS instance, the average colour of the draw's stage-0 texture (its 1x1 mip, read once when the BLAS is made) | **requested** from rt-sun-core (`rtHitAlbedo`); the shader already reads it when `rt3.x` = 1 |
-| 4 Hit normal | the triangle's vertices: `VK_KHR_ray_tracing_position_fetch`, or vertex/index buffer addresses per instance | **requested** (`rtHitNormal`); RDNA2 drivers may lack position fetch, buffer addresses work everywhere |
-| 5 Textured albedo | bindless index of the diffuse texture + the UV stream (format, offset, stride) per instance; DXVK knows both at draw time | later; most of the "full shading" gap |
-| 6 Lamps at the hit | NVR's light lists (tiled lamps / ShadowsInteriors lamp array) readable from the pass + shadow rays per lamp | later; indoors the estimate's ambient (cube) carries the lamps' light roughly until then |
-| 7 The game's own shading | the draw's pixel shader and constants re-run at the hit: not possible from a ray query in D3D9-through-Vulkan without recompiling every game shader as a callable | **no** |
+| 0 Screen at the hit | the depth buffer + the lit picture (in game) | **done**: exact where the hit is visible; the common case of SSR misses on screen |
+| 1 Cube toward the hit | the existing surroundings cube | **done** for out-of-view hits; parallax-free (centred near the camera), 64 px, a little behind in time |
+| 2 Estimate | sun direction/colour, cube's blurriest mip, the helper's shadow ray | **done**: grey 0.4 albedo, normal guessed as facing the ray. Right brightness order, wrong colour |
+| 3 Per-draw albedo | the core keeps per BLAS instance the average colour of the draw's stage-0 texture (its 1x1 mip, read once when the BLAS is made), a buffer the helper pass reads by custom index | **requested**; the helper would write it into a second output, Resolve already has the switch (`rt2.w`) |
+| 4 Hit normal | the triangle's three positions: the helper owns the vertex buffers it built the BLAS from, so the normal is a buffer lookup (or `VK_KHR_ray_tracing_position_fetch`) | **requested**; easy in the helper, since it has the geometry |
+| 5 Textured albedo | per instance the diffuse texture and the UV stream, shared into the helper (or a per-draw texture atlas) | later; most of the "full shading" gap, and costly in shared memory |
+| 6 Lamps at the hit | NVR's lamp lists (tiled lamps / ShadowsInteriors' lamp array) passed to the helper + a shadow ray per lamp | later; indoors the estimate's ambient (cube) carries the lamps' light roughly until then |
+| 7 The game's own shading at the hit | the draw's pixel shader re-run with its constants at a ray hit | **no**: not from a ray query in D3D9-through-Vulkan, and not across a process boundary, without replacing every game material (what RTX Remix does) |
 
 So: on-screen hits are exact; off-screen hits are as good as the cube; hidden hits are a plausibly lit grey until tiers 3-4 land,
-and approximate (no texture detail, no lamps beyond the ambient) until tiers 5-6. A reflection that gets full-quality shading
-everywhere would need the game's materials re-expressed per draw (what RTX Remix does by replacing the game's materials). That is out of scope.
+and approximate (no texture detail, no lamps beyond the ambient) until tiers 5-6.
 
 ## Water
 
-The game's water already reflects through its own planar reflection render (WATER*.pso, `ReflectionMap`). That map is exact
-for what the game draws into it, and NVR's `ReflectionClipFix` fixed its clipping. The Reflections trace skips water pixels
-on purpose ("water reflects on its own"). RT can only add here by replacing the water shader's reflection sample, which is in the
-game's D3D9 pixel shader (phase-2 SPIR-V replacement territory), or by a second layer over water pixels that would double the
-planar image. Not done in this pass. The water scene stays in the bench list to check that nothing changes on water (no leaks
-onto it) and to measure shore and dock surfaces next to it.
+The game's water already reflects through its own planar reflection (WATER*.pso, `ReflectionMap`). That is exact for what the game
+draws into it, and NVR's `ReflectionClipFix` fixed its clipping. The trace skips water pixels on purpose ("water reflects on its
+own"). RT can add here only in two ways. One is to replace the water shader's reflection sample, which is in the game's D3D9 pixel
+shader (SPIR-V replacement territory). The other is a second layer over water pixels, which would double the planar image.
+Neither is done in this pass. The water scene stays in the bench list to check that nothing changes on water and to measure the
+shore and docks next to it.
 
-## Requests sent to rt-sun-core (2026-10-28 ~12:00)
+## Requests to rt-sun-core
 
-1. TLAS binding for an NVR fragment pass (bind type, set/binding; my pass is the existing `ExtDrawTo` graphics trace).
-2. TLAS space vs NVR's camera-relative world (`RtCoreClient::Offset`).
-3. What a hit returns; position fetch or vertex buffer addresses for the hit normal.
-4. Per-instance record buffer indexed by `instanceCustomIndex`: average albedo per draw first, later a bindless diffuse index + UV
-   stream; flag bits for alpha-tested / foliage / skinned / water / sky. The sky dome and water must not be in the TLAS, or
-   must be maskable: a reflected ray must not stop at the sky sphere.
-5. Its shadow-ray include (this pass does its own one-line shadow query meanwhile).
-6. The harness: `SLOT_DXVK_DEVICE` (found in `run_slot.sh`, added by rt-sun-core) and `SLOT_RES=1280x720`, plus its fork build folder.
+Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open points are:
+
+1. The helper pass binding layout (`set 0`: 0 the scene, 1 the pass constants, 2.. the shared images in order). `ReflectionsRT.comp`
+   assumes `Dir`, `Origin` sampled at 2-3 and `Hit` as a storage image at 4, plus its own 48-byte constant block.
+2. Shared image formats: RGBA32F for `Dir`/`Origin`/`Hit` (RGBA16F would do for `Dir`).
+3. Scene space vs NVR's camera-relative world (`RtCoreClient::Offset`).
+4. Per-instance records by `instanceCustomIndex`: average albedo per draw, the hit normal (tiers 3-4); flag bits for alpha-tested /
+   foliage / skinned / water / sky. The sky dome and water must be left out of the scene or masked, or a reflected ray stops at the
+   sky sphere.
+5. Same-frame sync: Resolve reads `Hit` right after RayGen in the same frame. The core waits GPU-side on its timeline semaphore,
+   so the cost lands as GPU time ("Reflections RT (helper wait)" F10 line), not a CPU stall.
 
 ## Build / files
 
-- `src/hlsl/NewVegas/Compute/ReflectionsTraceRT.frag`, `ReflectionsRT.glsl` -> `ReflectionsTraceRT.spv`
-  (`tools/nvr-dxvk/compile-compute.sh` now builds ray-query shaders for Vulkan 1.2, the rest as before for 1.1).
-- `src/core/RtCoreClient.h`: the only place written against the core's API.
-- `src/effects/Reflections.{h,cpp}`: settings, `RtWanted`, the RT pipeline and bindings (uniform slot 2, TLAS slot 0).
+- `src/hlsl/NewVegas/Compute/ReflectionsRayGen.frag`, `ReflectionsRTResolve.frag`, `ReflectionsRT.glsl` (in game),
+  `RT/ReflectionsRT.comp` (helper). `tools/nvr-dxvk/compile-compute.sh` now builds `RT/*.comp` for Vulkan 1.2, the rest as before.
+- `src/core/RtCoreClient.h`: the only code written against the core's API (`Ready`, `Trace`, `Offset`, `HasMaterials`).
+- `src/effects/Reflections.{h,cpp}`: settings, `RtWanted`, `RtImages` (made on first use), `RtTrace`, techniques 8/9 in
+  `ExtRender` (RT uniform on buffer slot 2, the four RT images on image slots 16-19).
 - `resource/NewVegasReloaded.dll.defaults.toml`: `[_Shaders.Reflections.RT]`.
+- Bench: `bench/foundations/lists/rtrefl-split.txt` (any GPU), `rtrefl-1.txt` (iGPU, with the helper);
+  run toml `bench/deep-roadmap/evidence/rtrefl/rtrefl.toml`.
 
 ## Results
 
-(not yet: needs the RT core; see Status)
+(none yet)

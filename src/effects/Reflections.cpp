@@ -57,12 +57,73 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.RtScreenTolerance = std::clamp(TheSettingManager->GetSettingF(rt, "ScreenTolerance"), 0.002f, 0.2f);
 	Settings.RtEstimate = std::clamp(TheSettingManager->GetSettingF(rt, "EstimateBrightness"), 0.0f, 4.0f);
 	Settings.RtSunShadows = TheSettingManager->GetSettingI(rt, "SunShadows") != 0;
+	Settings.RtSplitTest = TheSettingManager->GetSettingI(rt, "SplitTest") != 0;	// test only
 }
 
 // UNOFFICIAL 2026-10-28 RT reflections: only on the Vulkan trace (ExtRender), with the RT core's TLAS built this frame. Everything else
 // (the setting off, D3D9 passes, a GPU without RT, the pipeline refused) leaves the trace as it was.
 bool ReflectionsEffect::RtWanted() const {
-	return Settings.RtEnabled && !ExtFailed && !rtTraceFailed && RtCoreClient::Ready();
+	return Settings.RtEnabled && !ExtFailed && !rtTraceFailed && DxvkCompute::PassesOn() && (RtCoreClient::Ready() || Settings.RtSplitTest);
+}
+
+float ReflectionsEffect::RtSunAmount() const {
+	const ShaderConstants& sc = TheShaderManager->ShaderConst;
+	return TheShaderManager->GameState.isExterior && sc.SunDir.z > 0.0f ? std::clamp(sc.SunAmount.x, 0.0f, 1.0f) : 0.0f;
+}
+
+// The four half-resolution RT images, made the first time RT runs (no memory spent when it never does). Any failure: RT off for the session.
+bool ReflectionsEffect::RtImages() {
+	if (Rt.Hit) return true;
+	const UINT w = MaxQuality::Reduced(TheRenderManager->width, 2), h = MaxQuality::Reduced(TheRenderManager->height, 2);
+	IDirect3DDevice9* device = TheRenderManager->device;
+	struct { IDirect3DTexture9** texture; IDirect3DSurface9** surface; D3DFORMAT format; } images[4] = {
+		{ &Rt.March, &Rt.MarchSurface, D3DFMT_A16B16G16R16F }, { &Rt.Dir, &Rt.DirSurface, D3DFMT_A32B32G32R32F },
+		{ &Rt.Origin, &Rt.OriginSurface, D3DFMT_A32B32G32R32F }, { &Rt.Hit, &Rt.HitSurface, D3DFMT_A32B32G32R32F } };
+	for (auto& i : images)
+		if (FAILED(device->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, i.format, D3DPOOL_DEFAULT, i.texture, NULL)) ||
+			FAILED((*i.texture)->GetSurfaceLevel(0, i.surface))) {
+			Logger::Log("UNOFFICIAL Reflections: the RT images could not be created; RT reflections are off.");
+			rtTraceFailed = true;
+			for (auto& j : images) {
+				if (*j.surface) { (*j.surface)->Release(); *j.surface = nullptr; }
+				if (*j.texture) { (*j.texture)->Release(); *j.texture = nullptr; }
+			}
+			return false;
+		}
+	return true;
+}
+
+// UNOFFICIAL 2026-10-28 RT reflections (Compute\ReflectionsRT.glsl has the whole frame): RayGen (the march + the rays) into the three RT
+// images, the helper traces them into the hit image, Resolve shades into the trace's target. False before anything is drawn into
+// target: the caller draws the normal trace. (A helper that has nothing this frame costs the RayGen pass, then the normal trace.)
+bool ReflectionsEffect::RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* target) {
+	if (!RtWanted() || !RtImages()) return false;
+	// SplitTest (no helper): RayGen casts no ray, so Resolve must give the normal trace's picture exactly (the split checked on any GPU).
+	rtRays = RtCoreClient::Ready();
+	if (!ExtRender(Device, Rt.MarchSurface, Rt.MarchSurface, 8, false, Rt.MarchSurface)) return false;
+	D3DSURFACE_DESC desc = {};
+	Rt.HitSurface->GetDesc(&desc);
+	const D3DXVECTOR3 offset = RtCoreClient::Offset();
+	struct { D3DXVECTOR4 size, sunDir, offset; } helper = {};	// RT/ReflectionsRT.comp's Pass block (std140)
+	helper.size = D3DXVECTOR4((float)desc.Width, (float)desc.Height, Settings.RtDistance, Settings.RtSunShadows ? 1.0f : 0.0f);
+	helper.sunDir = TheShaderManager->ShaderConst.SunDir;
+	helper.sunDir.w = RtSunAmount();
+	helper.offset = D3DXVECTOR4(offset.x, offset.y, offset.z, 0.0f);
+	const RtCoreClient::Image images[3] = { { Rt.Dir, false }, { Rt.Origin, false }, { Rt.Hit, true } };
+	static GpuTimer helperTimer("  Reflections RT (helper wait)");
+	bool traced = !rtRays;	// SplitTest: nothing to trace
+	if (rtRays) {
+		GpuProfileScope gpu(helperTimer, Device);
+		traced = RtCoreClient::Trace("ReflectionsRT", images, 3, (desc.Width + 7) / 8, (desc.Height + 7) / 8, &helper, sizeof(helper));
+	}
+	if (!traced) {
+		if (++rtFallbackFrames == 1) Logger::Log("UNOFFICIAL Reflections: RT is on but the RT helper traced nothing this frame; the normal trace is drawn (logged once).");
+		return false;
+	}
+	Device->SetRenderTarget(0, target);
+	if (!ExtRender(Device, target, target, 9, false, target)) return false;
+	if (++rtTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs with RT ([Shaders.Reflections.RT]).");
+	return true;
 }
 
 // UNOFFICIAL 2026-10-26 (deep/fork-hiz): outdoors only for now. Indoors (Lucky 38, a 3rd-person view looking down) the walk found no
@@ -300,7 +361,8 @@ void ReflectionsEffect::RenderBuffers(IDirect3DDevice9* Device) {
 		// UNOFFICIAL 2026-10-26 (deep/fork-hiz): the trace on its own F10 line (inside "Reflections (SSR)"), for the HiZ A/B.
 		static GpuTimer traceTimer("  Reflections trace (half)");
 		GpuProfileScope gpu(traceTimer, Device);
-		pass(temporal ? Textures.TraceSurface : Textures.TempSurface, 1);
+		IDirect3DSurface9* traceTarget = temporal ? Textures.TraceSurface : Textures.TempSurface;
+		if (!RtTrace(Device, traceTarget)) pass(traceTarget, 1);	// UNOFFICIAL 2026-10-28: RT reflections, or the trace as before
 	}
 	if (temporal) {
 		pass(Textures.TempSurface, 3);
@@ -438,11 +500,12 @@ namespace {
 		{ "endRule/cells/hitT/confidence", "facing/plane/thick/roughness", "hit.xy/depth/amount" });
 
 	// UNOFFICIAL 2026-10-28 RT reflections: ReflectionsTraceRT.frag = the same bindings + its RtConstants block (set 2, binding 1, uniform
-	// buffer slot 2: slot 1 is the Hi-Z storage buffer, and a uniform and a storage buffer on one slot number are one resource) + the TLAS
-	// (set 3, binding 0; the declaration is the RT core's, RtCoreClient::Binding).
-	const UINT RtUniformSlot = 2, RtTlasSlot = 0;
+	// buffer slot 2: slot 1 is the Hi-Z storage buffer, and a uniform and a storage buffer on one slot number are one resource) + RayGen's
+	// three outputs and the helper's hits (set 1, bindings 17-20, image slots 16-19).
+	const UINT RtUniformSlot = 2;
 	const NVR_EXT_BINDING_DESC ReflRtUniformBinding = { 2, 1, NVR_EXT_BIND_UNIFORM_BUFFER, RtUniformSlot, NVR_EXT_VIEW_2D, FALSE, 0 };
-	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, rt3, sunDir, sunColor; };	// ReflectionsRT.glsl RtConstants (std140)
+	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, sunDir, sunColor; };	// ReflectionsRT.glsl RtConstants (std140)
+	ReflRtUniforms RtUploaded;
 
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
 		std::string slotName = name;
@@ -457,11 +520,13 @@ namespace {
 }
 
 bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, UINT techniqueIndex, bool ClearRenderTarget, IDirect3DSurface9* SourceBuffer) {
-	if (techniqueIndex > 7 || ClearRenderTarget || (techniqueIndex == 7 && !ReflMaterial::CompiledIn())) return false;
+	// (8, 9: UNOFFICIAL 2026-10-28 RT reflections, RayGen and Resolve, drawn only from RtTrace: no D3D9 technique behind them.)
+	if (techniqueIndex > 9 || ClearRenderTarget || (techniqueIndex == 7 && !ReflMaterial::CompiledIn())) return false;
+	const bool rtPass = techniqueIndex >= 8;
 	static const char* const spvNames[8] = { "ReflectionsComposite", "ReflectionsTrace", "ReflectionsBlur", "ReflectionsTemporal", "ReflectionsBlur",
 		"ReflectionsCapture", "ReflectionsFilter", "ReflectionsMaterial" };
 	// UNOFFICIAL 2026-10-26 (deep/fork-hiz) HiZ: the trace as the hierarchical march when this frame's pyramid is there (core/HiZ.h).
-	ID3D9NvrExtBuffer* hiz = techniqueIndex == 1 && HiZWanted() ? HiZ::Current() : nullptr;
+	ID3D9NvrExtBuffer* hiz = techniqueIndex == 1 && HiZWanted() ? HiZ::Current() : nullptr;	// (the RT passes use the fixed-step march)
 	if (hiz && !extTraceHiZ.Tried) {
 		extTraceHiZ.Tried = true;
 		NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 1];
@@ -476,26 +541,6 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		}
 	}
 	if (!extTraceHiZ.Pipeline) hiz = nullptr;
-	// UNOFFICIAL 2026-10-28 RT reflections ([Shaders.Reflections.RT]): the trace with ray queries where the march misses. It is
-	// ReflectionsTrace's march (not the Hi-Z walk), so it takes the place of HiZ while it runs.
-	NVR_EXT_BINDING_DESC rtTlasBinding = {};
-	NVR_EXT_RESOURCE_BINDING rtTlas = {};	// this frame's TLAS (none: the plain trace this frame)
-	const bool rt = techniqueIndex == 1 && RtWanted() && RtCoreClient::Binding(3, 0, RtTlasSlot, rtTlasBinding) && RtCoreClient::Resource(RtTlasSlot, rtTlas);
-	if (rt && !extTraceRT.Tried) {
-		extTraceRT.Tried = true;
-		NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 2];
-		memcpy(bindings, ReflBindings, sizeof(ReflBindings));
-		bindings[_countof(ReflBindings)] = ReflRtUniformBinding;
-		bindings[_countof(ReflBindings) + 1] = rtTlasBinding;
-		if (DxvkCompute::HasSpirv("ReflectionsTraceRT"))
-			extTraceRT.Pipeline = DxvkCompute::CreateGraphicsPipeline("ReflectionsTraceRT", bindings, _countof(bindings), sizeof(ReflPush), true);
-		if (!extTraceRT.Pipeline) {
-			rtTraceFailed = true;
-			Logger::Log("UNOFFICIAL Reflections: the RT trace could not be set up (Compute\\ReflectionsTraceRT.spv missing or refused); the normal trace is used.");
-		}
-	}
-	const bool rtNow = rt && extTraceRT.Pipeline;
-	if (rtNow) hiz = nullptr;
 	// UNOFFICIAL 2026-10-26 debugging tool ([Main.Develop.ShaderCounters] ReflectionsHiZ, needs NVR DXVK 1.5-debug): the Hi-Z trace's
 	// counting build, with the counter block bound; its probe pixel is the pixel inspector's, in this half-resolution target. Any
 	// problem (file missing, pipeline refused, no 1.5-debug readback): the normal Hi-Z trace, as with the setting off.
@@ -518,10 +563,25 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 			counters = HiZCounters.Begin(px, py);
 		}
 	}
-	ExtPass& pass = rtNow ? extTraceRT : counters ? extTraceHiZCount : hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	ExtPass& pass = rtPass ? extRtPasses[techniqueIndex - 8] : counters ? extTraceHiZCount : hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
 	if (!pass.Tried) {
 		pass.Tried = true;
-		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
+		if (rtPass) {
+			// UNOFFICIAL 2026-10-28: the same bindings + RtConstants + RayGen's outputs and the helper's hits (both passes declare all).
+			static const char* const rtNames[2] = { "ReflectionsRayGen", "ReflectionsRTResolve" };
+			NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 5];
+			memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+			bindings[_countof(ReflBindings)] = ReflRtUniformBinding;
+			for (UINT i = 0; i < 4; i++) bindings[_countof(ReflBindings) + 1 + i] = { 1, 17 + i, NVR_EXT_BIND_SAMPLED_IMAGE, ReflTextureCount + i, NVR_EXT_VIEW_2D, FALSE, 0 };
+			if (DxvkCompute::HasSpirv(rtNames[techniqueIndex - 8]))
+				pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(rtNames[techniqueIndex - 8], bindings, _countof(bindings), sizeof(ReflPush), true,
+					techniqueIndex == 8 ? 3 : 1, NVR_EXT_BLEND_NONE, false);	// a refusal must not turn the other Vulkan passes off
+			if (!pass.Pipeline) {
+				rtTraceFailed = true;
+				Logger::Log("UNOFFICIAL Reflections: the RT pass %s could not be set up; the normal trace is used.", rtNames[techniqueIndex - 8]);
+			}
+		}
+		else pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
 	}
 	ID3D9NvrExtSampler* linear = DxvkCompute::LinearClamp();
 	ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
@@ -559,7 +619,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		extSkyTexture ? extSkyTexture : depth, materialBound ? Textures.MaterialTexture : depth };
 	// A pass never reads its own target.
 	switch (techniqueIndex) {
-		case 1: textures[4] = textures[6] = depth; break;	// Trace -> Trace (Temporal on) or Temp
+		case 1: case 8: case 9: textures[4] = textures[6] = depth; break;	// Trace (RT: RayGen, Resolve) -> Trace (Temporal on) or Temp
 		case 2: textures[4] = depth; break;					// Blur X -> Trace
 		case 3: textures[6] = depth; break;					// Temporal -> Temp
 		case 4: textures[5] = depth; break;					// Blur Y -> Buffer
@@ -601,7 +661,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		ReflUploaded = uniforms;
 	}
 
-	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 2] = {};
+	NVR_EXT_RESOURCE_BINDING resources[_countof(ReflBindings) + 5] = {};
 	for (UINT i = 0; i < ReflTextureCount; i++) {
 		resources[i].Slot = i; resources[i].Type = NVR_EXT_BIND_SAMPLED_IMAGE; resources[i].pResource = textures[i];
 	}
@@ -616,24 +676,29 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
 	}
 	if (counters) resources[resourceCount++] = ShaderCounters::Bind(ReflCounterSlot, counters);	// UNOFFICIAL 2026-10-26 debugging tool
-	if (rtNow) {
-		// UNOFFICIAL 2026-10-28 RT reflections: the RtConstants block (ReflectionsRT.glsl) and the TLAS.
-		const D3DXVECTOR3 offset = RtCoreClient::Offset();
+	if (rtPass) {
+		// UNOFFICIAL 2026-10-28 RT reflections: the RtConstants block (ReflectionsRT.glsl) and the RT images (RayGen: placeholders).
 		const ShaderConstants& sc = TheShaderManager->ShaderConst;
-		const bool day = TheShaderManager->GameState.isExterior && sc.SunDir.z > 0.0f;
 		ReflRtUniforms rtu = {};
-		rtu.rt = D3DXVECTOR4(1.0f, Settings.RtMaxRoughness, Settings.RtDistance, (float)Settings.RtDebugView);
-		rtu.rt2 = D3DXVECTOR4(offset.x, offset.y, offset.z, Settings.RtScreenTolerance);
-		rtu.rt3 = D3DXVECTOR4(RtCoreClient::HasMaterials() ? 1.0f : 0.0f, Settings.RtEstimate, Settings.RtSunShadows ? 1.0f : 0.0f,
-			day ? std::clamp(sc.SunAmount.x, 0.0f, 1.0f) : 0.0f);
+		rtu.rt = D3DXVECTOR4(rtRays ? 1.0f : 0.0f, Settings.RtMaxRoughness, Settings.RtDistance, (float)Settings.RtDebugView);
+		rtu.rt2 = D3DXVECTOR4(Settings.RtScreenTolerance, Settings.RtEstimate, RtSunAmount(), RtCoreClient::HasMaterials() ? 1.0f : 0.0f);
 		rtu.sunDir = sc.SunDir;
 		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
-		ID3D9NvrExtBuffer* rtBuffer = ExtUniforms(extRtUniforms, &rtu, sizeof(rtu));
-		if (!rtBuffer) return false;
+		ID3D9NvrExtBuffer* rtBuffer = extRtUniforms.Buffer;
+		if (!rtBuffer || memcmp(&rtu, &RtUploaded, sizeof(rtu))) {
+			rtBuffer = ExtUniforms(extRtUniforms, &rtu, sizeof(rtu));
+			if (!rtBuffer) return false;
+			RtUploaded = rtu;
+		}
 		resources[resourceCount].Slot = RtUniformSlot; resources[resourceCount].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[resourceCount].pResource = rtBuffer;
 		resourceCount++;
-		resources[resourceCount++] = rtTlas;
-		if (++rtTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs with RT ray queries ([Shaders.Reflections.RT]).");
+		IDirect3DBaseTexture9* rtImages[4] = { Rt.March, Rt.Dir, Rt.Origin, Rt.Hit };
+		for (UINT i = 0; i < 4; i++) {
+			if (!rtImages[i]) return false;
+			resources[resourceCount].Slot = ReflTextureCount + i; resources[resourceCount].Type = NVR_EXT_BIND_SAMPLED_IMAGE;
+			resources[resourceCount].pResource = techniqueIndex == 8 ? depth : rtImages[i];
+			resourceCount++;
+		}
 	}
 	ReflPush push = {};
 	push.cube = Constants.Cube;
@@ -641,7 +706,10 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 
 	if (techniqueIndex == 0)
 		return ExtFullScreen(Device, RenderTarget, RenderedSurface, SourceBuffer, pass.Pipeline, resources, resourceCount, &push, sizeof(push));
-	const bool drawn = ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
+	// (RayGen: its three targets, RtTrace's own; RenderTarget is the first.)
+	IDirect3DSurface9* rayGenTargets[3] = { Rt.MarchSurface, Rt.DirSurface, Rt.OriginSurface };
+	const bool drawn = techniqueIndex == 8 ? ExtDrawTo(pass.Pipeline, rayGenTargets, 3, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad) :
+		ExtDrawTo(pass.Pipeline, &RenderTarget, 1, resources, resourceCount, &push, sizeof(push), nullptr, ExtUv::ScreenQuad);	// FrameVS into a smaller target
 	if (counters) HiZCounters.End();	// UNOFFICIAL 2026-10-26: queued for the non-waiting readback
 	return drawn;
 }

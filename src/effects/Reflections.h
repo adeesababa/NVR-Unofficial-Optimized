@@ -48,6 +48,7 @@ public:
 		float	RtScreenTolerance;	// a hit counts as the screen's pixel when their depths differ by less than this share
 		float	RtEstimate;			// brightness of the estimate for hits neither the screen nor the cube can show
 		bool	RtSunShadows;		// the estimate's sun goes through a shadow ray
+		bool	RtSplitTest;		// test only: RayGen + Resolve without rays (no helper needed): must be the normal trace's picture
 	};
 	SettingsStruct	Settings;
 
@@ -121,11 +122,24 @@ private:
 	UINT				hizTraceFrames = 0;
 	ExtPass				extTraceHiZCount;	// UNOFFICIAL 2026-10-26 debugging tool: Compute\ReflectionsTraceHiZCount.spv (the trace + shader counters,
 											// [Main.Develop.ShaderCounters] ReflectionsHiZ; core/ShaderCounters.h). Failed: the normal Hi-Z trace.
-	ExtPass				extTraceRT;			// UNOFFICIAL 2026-10-28: Compute\ReflectionsTraceRT.spv ([Shaders.Reflections.RT])
-	bool				rtTraceFailed = false;	// its pipeline could not be made: the normal trace for the session
-	UINT				rtTraceFrames = 0;
-	ExtUniformBuffer	extRtUniforms;		// its RtConstants block (ReflectionsRT.glsl)
-	bool				RtWanted() const;	// RT on, its pipeline usable, the RT core's TLAS there this frame
+	// UNOFFICIAL 2026-10-28 RT reflections ([Shaders.Reflections.RT], Compute\ReflectionsRT.glsl): the trace as RayGen (technique 8,
+	// Compute\ReflectionsRayGen.spv) -> the RT core's helper (Compute\RT\ReflectionsRT.spv) -> Resolve (technique 9, ReflectionsRTResolve.spv).
+	ExtPass				extRtPasses[2];		// RayGen, Resolve
+	bool				rtTraceFailed = false;	// a pipeline or an image could not be made: the normal trace for the session
+	UINT				rtTraceFrames = 0, rtFallbackFrames = 0;	// for the log: frames traced with RT / RT wanted but the helper had nothing
+	ExtUniformBuffer	extRtUniforms;		// the RtConstants block
+	struct RtImagesStruct {					// half resolution, made on first use: march A16B16G16R16F, the rest A32B32G32R32F
+		IDirect3DTexture9* March = nullptr;	IDirect3DSurface9* MarchSurface = nullptr;
+		IDirect3DTexture9* Dir = nullptr;	IDirect3DSurface9* DirSurface = nullptr;
+		IDirect3DTexture9* Origin = nullptr;	IDirect3DSurface9* OriginSurface = nullptr;
+		IDirect3DTexture9* Hit = nullptr;	IDirect3DSurface9* HitSurface = nullptr;	// written by the helper (shared back by the RT core)
+	};
+	RtImagesStruct		Rt;
+	bool				rtRays = false;		// this frame's RayGen casts rays (the helper is up; false in SplitTest)
+	bool				RtWanted() const;	// RT on, nothing failed, the RT core up (its helper alive, RT on that GPU)
+	bool				RtImages();			// makes Rt on first use
+	float				RtSunAmount() const;	// the sun's share for the hits (0 at night and indoors)
+	bool				RtTrace(IDirect3DDevice9* Device, IDirect3DSurface9* target);	// RayGen, the helper, Resolve into target; false: draw the normal trace
 	ExtUniformBuffer	extUniforms;
 	D3DXVECTOR4			extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// NVR_ReflectionsSky as RenderBuffers set it
 	IDirect3DTexture9*	extSkyTexture = nullptr;	// the sky visibility it bound on stage 14 (null: none)
