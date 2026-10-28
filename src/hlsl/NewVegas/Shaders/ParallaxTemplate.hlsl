@@ -368,7 +368,15 @@ VS_OUTPUT main(VS_INPUT IN)
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
     #if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
         // UNOFFICIAL 2026-10-28 CapturedNormals: the vertex normal in camera-relative world space, in uv.zw (no interpolator is spare)
-        OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, IN.position.xyz, IN.normal.xyz, OUT.shadowWorldPos.xyz).xyz);
+        // 2026-10-28 (user: snow on rocks in shards, "shift around in multiple layers" up close): a PLAIN vector, not octahedral. The
+        // octahedral map folds at the horizon, where a rock's side faces' normals are, and a triangle with corners on both sides of the
+        // fold interpolated to garbage (as Includes/Shadow.hlsl ShadowPlainNormal found for objects on 10-26). x y in uv.zw, z in
+        // shadowWorldPos.w as 2 + z / 2 (1.5 .. 2.5: told apart from SHADOW_VS_SENTINEL, which it replaces here; PAR_WP_PRESENT below).
+        {
+            const float3 smoothN = GetShadowSmoothNormal(ModelViewProj, IN.position.xyz, IN.normal.xyz, OUT.shadowWorldPos.xyz).xyz;
+            OUT.uv.zw = smoothN.xy;
+            OUT.shadowWorldPos.w = 2.0f + 0.5f * smoothN.z;
+        }
     #endif
 
     #ifdef DISPLACE_LAYOUT
@@ -446,6 +454,15 @@ struct PS_INPUT
     float4 viewDir : TEXCOORD7_centroid;
     float4 shadowWorldPos : SEM_SHADOW_POS;
 };
+
+// UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal as a plain vector (x y in uv.zw, z in shadowWorldPos.w = 2 + z / 2, see the
+// vertex shader), and the vertex shader's marker on shadowWorldPos.w: the sentinel, or that range.
+#if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+    #define PAR_SMOOTH_NORMAL float3(IN.uv.zw, (IN.shadowWorldPos.w - 2.0f) * 2.0f)
+    #define PAR_WP_PRESENT(w) (SHADOW_VS_PRESENT(w) || ((w) > 1.499f && (w) < 2.501f))
+#else
+    #define PAR_WP_PRESENT(w) SHADOW_VS_PRESENT(w)
+#endif
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
@@ -603,11 +620,11 @@ PS_OUTPUT main(PS_INPUT IN)
     // UNOFFICIAL 2026-10-28 [Main.Main.Quality] CapturedNormals: the smooth vertex normal the vertex shader now sends in uv.zw, instead of
     // each triangle's flat one (rocks, cliffs and walls: sun-shadow steps and ambient facets per triangle). The displacement layout has
     // no channel for it and keeps the flat one.
-    float3 sunShadowNormal = ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+    float3 sunShadowNormal = ShadowFacingNormal(PAR_SMOOTH_NORMAL, IN.shadowWorldPos.xyz);
 #else
     float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
 #endif
-    float shadowWorldPosValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+    float shadowWorldPosValid = PAR_WP_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
 
     #if !defined(NO_LIGHT) && !defined(DIFFUSE) && !defined(POINT)
         #if FORWARD_SHADOWS
@@ -747,7 +764,7 @@ PS_OUTPUT main(PS_INPUT IN)
     #if defined(DISPLACE_LAYOUT) || defined(DIFFUSE) || defined(ONLY_SPECULAR)
         OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
     #else
-        OUT.capturedNormal = CapturedNormalOut(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+        OUT.capturedNormal = CapturedNormalOut(PAR_SMOOTH_NORMAL, IN.shadowWorldPos.xyz);
     #endif
 #endif
 
