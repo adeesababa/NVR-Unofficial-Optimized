@@ -2087,6 +2087,12 @@ namespace GrassFirst {
 	static void* ActiveAccumulator = nullptr;	// set by the early part, consumed by the late part of the same accumulator call
 	static std::vector<Record> Records;
 	static bool GameVertexShader[kGrassLastId - kGrassFirstId + 1] = {};	// learned: this grass pass binds the game's VS (no split)
+	// UNOFFICIAL 2026-10-28 (tester: "i think grass shadows go away after fast traveling"): frames in a row a learned pass bound NVR's VS
+	// again in the late part; at UnlearnFrames it is split (and so drawn early, with its sun shadows) again. See GrassListHook.
+	static unsigned short NvrAgainFrames[kGrassLastId - kGrassFirstId + 1] = {};
+	static unsigned NvrAgainLastFrame[kGrassLastId - kGrassFirstId + 1] = {};
+	static const unsigned short UnlearnFrames = 30;
+	static unsigned StatLearned = 0, StatUnlearned = 0;	// whole session (the first few are logged)
 	static unsigned Frames = 0, StatEarly = 0, StatLate = 0, StatWhole = 0, StatUnsplit = 0;
 	static unsigned RecordedFrame = ~0u;	// TheFrameRateManager->FrameNumber when Records was filled
 	// UNOFFICIAL 2026-10-28 grass shadows with terrain blending on (ShadowOnlyEarly): the early call records the grass passes without
@@ -2544,6 +2550,25 @@ namespace GrassFirst {
 				// TMS flag (0x011F9421) is set (Ghidra dump of the exe, psycho-master graphics_fnv_atmosphere_alpha_coverage_state_followup).
 				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
 				if (r.drawnEarly) StatLate++; else StatWhole++;
+				// UNOFFICIAL 2026-10-28 (tester: grass shadows gone after a fast travel; log: from then on every grass draw "whole after
+				// it", none early): right after the load a grass pass was drawn with the game's vertex shader, which was learned for the
+				// session, so the grass was never split again and never cast its shadows. A learned pass that binds NVR's VS here for
+				// UnlearnFrames frames running (SetForDraw sets LastBindNVR as it binds) is split again from the next frame.
+				if (!r.drawnEarly && r.passId <= kSplitLastId && GameVertexShader[r.passId - kGrassFirstId]) {
+					const unsigned i = r.passId - kGrassFirstId;
+					const unsigned frame = TheFrameRateManager->FrameNumber;
+					if (!GrassShaders::LastBindNVR) NvrAgainFrames[i] = 0;
+					else if (NvrAgainLastFrame[i] != frame) {
+						NvrAgainLastFrame[i] = frame;
+						if (++NvrAgainFrames[i] >= UnlearnFrames) {
+							GameVertexShader[i] = false;
+							NvrAgainFrames[i] = 0;
+							if (++StatUnlearned <= 10)
+								Logger::Log("UNOFFICIAL GrassFirst: grass pass %03X binds NVR's vertex shader again (%u frames running): split and drawn before the land again (with its sun shadows)",
+									r.passId, (unsigned)UnlearnFrames);
+						}
+					}
+				}
 			}
 			((void(__cdecl*)(char, int))0x00B98540)(0, 0);	// BSRenderState::SetAlphaToCoverageEnable(0, 0), as RenderNextRenderPass after a bucket
 			((void(__cdecl*)())kEndPass)();
@@ -2612,6 +2637,7 @@ namespace GrassFirst {
 			else {	// drawn whole with the game's VS (first time only): not again (until ForgetIfStale)
 				gameVS = true;
 				StatUnsplit++;
+				NvrAgainFrames[passId - kGrassFirstId] = 0;	// UNOFFICIAL 2026-10-28: until it binds NVR's VS again (GrassListHook)
 				if (LearnLogs < 40) {
 					LearnLogs++;
 					Logger::Log("UNOFFICIAL GrassFirst: grass pass %03X draws with the game's vertex shader %s: drawn whole after the land from now on (no grass shadows from it) until the next loading screen",
