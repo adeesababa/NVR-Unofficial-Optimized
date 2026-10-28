@@ -550,6 +550,23 @@ namespace {
 			op.arenaTexel = arenaUsed;
 			arenaUsed += info.Texels;
 			entry.sent = true;
+			static int probes = 0;
+			if (probes < 3) {	// compared with the helper's readback of the same ids (NvrRtHelper.log "probe")
+				probes++;
+				NiGeometryData* gd = geo->geomData;
+				NiGeometryBufferData* bd = gd->m_pkBuffData;
+				const NiVBChip* chip = bd->VBChip[0];
+				const NiPoint3* v = gd->m_pkVertex;
+				D3DMATRIX pm;
+				TheRenderManager->CreateD3DMatrix(&pm, &geo->m_worldTransform);
+				Logger::Log("RT CORE probe: geometry %u '%s' land %d: %u vertices (VertCount %u, BaseVertexIndex %u, chip offset %u, stride %u, "
+					"position offset %u, format %d, FVF %X), %u triangles (%s, %u ranges), model bound %.1f %.1f %.1f r %.1f, CPU vertex 0 %s%.1f %.1f %.1f, "
+					"translation (camera relative) %.1f %.1f %.1f, arena texel %u", entry.id, geo->m_pcName ? geo->m_pcName : "", land ? 1 : 0, info.VertexCount,
+					bd->VertCount, bd->BaseVertexIndex, chip ? chip->Offset : 0u, desc.VertexStride, desc.PositionOffset, (int)desc.PositionFormat, bd->FVF,
+					info.TriangleCount, bd->PrimitiveType == D3DPT_TRIANGLESTRIP ? "strips" : "list", desc.RangeCount, gd->m_kBound.Center.x,
+					gd->m_kBound.Center.y, gd->m_kBound.Center.z, gd->m_kBound.Radius, v ? "" : "(none) ", v ? v[0].x : 0.0f, v ? v[0].y : 0.0f,
+					v ? v[0].z : 0.0f, pm.m[3][0], pm.m[3][1], pm.m[3][2], arenaUsed - info.Texels);
+			}
 		}
 		if (record->instanceCount >= NVR_RT_MAX_INSTANCES) return;
 		NvrRtInstanceRecord& extra = record->records[record->instanceCount];

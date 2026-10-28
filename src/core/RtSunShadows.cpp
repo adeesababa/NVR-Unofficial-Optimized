@@ -18,7 +18,7 @@ namespace {
 		float	normalBiasPerUnit = 0.0005f;
 		float	startBias = 1.0f;
 		float	rayLength = 30000.0f;
-		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture
+		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture, 5 state codes, 6 primary rays (4-6: grey over the picture)
 	} S;
 
 	// The trace pass's uniform block (RtSunShadow.comp, std140)
@@ -105,7 +105,7 @@ namespace {
 		c.sun[0] = sun.x; c.sun[1] = sun.y; c.sun[2] = sun.z;
 		c.sun[3] = shadows->Constants.ShadowFade.x < 1.0f ? 1.0f : 0.0f;
 		c.bias[0] = S.normalBias; c.bias[1] = S.normalBiasPerUnit; c.bias[2] = S.startBias; c.bias[3] = S.rayLength;
-		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : 0.0f;
+		c.range[0] = S.range; c.range[1] = 0.15f * S.range; c.range[2] = 255.0f; c.range[3] = S.debugView == 3 ? 1.0f : S.debugView == 5 ? 2.0f : S.debugView == 6 ? 3.0f : 0.0f;
 
 		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
 		const int images[3] = { imageDepth, imageNormals, imageVisibility };
@@ -114,6 +114,11 @@ namespace {
 		if (tracedThisFrame && frames++ == 0)
 			Logger::Log("UNOFFICIAL NVR DXVK: RT sun shadows traced (%ux%u, Mode %d: %s, range %.0f, DebugView %d).", w, h, S.mode,
 				S.mode == 1 ? "replace the cascades inside the range" : "combine with the cascades", S.range, S.debugView);
+		if (tracedThisFrame && frames == 31)
+			Logger::Log("UNOFFICIAL NVR DXVK: RT sun constants: forward %.3f %.3f %.3f (farZ %.0f), right %.3f %.3f %.3f, up %.3f %.3f %.3f, origin %.2f %.2f %.2f, "
+				"sun %.3f %.3f %.3f (up %.0f), camera position %.0f %.0f %.0f", c.forward[0], c.forward[1], c.forward[2], c.forward[3], c.right[0], c.right[1],
+				c.right[2], c.up[0], c.up[1], c.up[2], c.origin[0], c.origin[1], c.origin[2], c.sun[0], c.sun[1], c.sun[2], c.sun[3],
+				TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
 	}
 
 	ID3D9NvrExtPipeline* CombinePipeline(int which) {
@@ -157,7 +162,7 @@ namespace RtSunShadows {
 		const bool traced = tracedThisFrame;
 		tracedThisFrame = false;
 		tracedForDebug = traced;
-		if (!traced || S.debugView == 2 || S.debugView == 4 || !visibilityTexture) return;
+		if (!traced || S.debugView == 2 || S.debugView >= 4 || !visibilityTexture) return;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		IDirect3DSurface9* target = shadows->Textures.ShadowPassSurface;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(S.debugView == 1 || S.debugView == 3 ? 1 : 0);
@@ -194,7 +199,7 @@ namespace RtSunShadows {
 	void RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
 		const bool traced = tracedForDebug;
 		tracedForDebug = false;
-		if (!traced || S.debugView != 4 || !visibilityTexture || !RenderTarget) return;
+		if (!traced || S.debugView < 4 || !visibilityTexture || !RenderTarget) return;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(2);
 		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
 		SunShadowsEffect* sunShadows = TheShaderManager->Effects.SunShadows;
@@ -219,7 +224,7 @@ namespace RtSunShadows {
 		if (current) current->Release();
 	}
 
-	bool Replacing() { return S.enabled && S.mode == 1 && S.debugView != 2 && S.debugView != 4 && RtCore::Running() && TheShaderManager->GameState.isExterior; }
+	bool Replacing() { return S.enabled && S.mode == 1 && S.debugView != 2 && S.debugView < 4 && RtCore::Running() && TheShaderManager->GameState.isExterior; }
 
 	float ReplaceRange() {
 		replaceConstant.x = Replacing() ? S.range : 0.0f;
