@@ -83,8 +83,8 @@ layout(push_constant) uniform Push {
   uint  samplerIndex[4];  // heap index of the pixel shader's sampler i: bits 16 * (i & 1) of [i / 2]
   uint  vsIndex;          // byte k: where ModelViewProj row k (c0-c3) sits in VsConsts (0xFF: missing)
   uint  psBits;           // bit i: layer i has a height map (the land pixel shader's LandHeight c34 / c35 > 0, read per draw)
-  float strength;         // Strength: game units between the lowest and the highest point of a height map
-  float center;           // Center: the height (0-1) that stays where the flat land is
+  float strength;         // Strength: game units between the lowest and the highest point the bumps can reach
+  float center;           // 16 x Contrast (whole) + 0.99 x Center: contrast() and centerValue() below
   float viewParams;       // DebugView x 16 + (LodBias + 4). DebugView: 2 the height as grey, 3 the split count (blue 1 -> red 16)
                           // and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer weights (COLOR0 xyz), 6 the
                           // normal (TEXCOORD5), 7 the object blend (white: all the bumps, black: none). LodBias: added to the height
@@ -103,20 +103,36 @@ float lodBias() {
   return pc.viewParams - debugView() * 16.0 - 4.0;
 }
 
+// Contrast (2026-10-27): how strongly a texture's height differences are stretched (1: as the texture has them)
+float contrast() {
+  return floor(pc.center) / 16.0;
+}
+
+// Center: 0.5 = the bumps go up and down round the flat land; lower raises the whole ground by (0.5 - Center) x Strength
+float centerValue() {
+  return clamp(fract(pc.center) / 0.99, 0.0, 1.0);
+}
+
 float g_hsum = 0.0;
 float g_wsum = 0.0;
 
-// One layer's height, blended as the pixel shader blends the colours (getTerrainHeight in Parallax.hlsl: 0.5 where a layer has no
-// height map). The detail level follows the spacing of the generated points, so the bumps are the height map's broad shapes
+// One layer's height, blended as the pixel shader blends the colours (getTerrainHeight in Parallax.hlsl: no relief where a layer has
+// no height map). The detail level follows the spacing of the generated points, so the bumps are the height map's broad shapes
 // rather than texel noise.
+// 2026-10-27 (user: "seems like all tessellation is doing visually is moving the ground up and down"): measured on the user's
+// desert and scrub textures, the height (diffuse alpha) only varies by about +-2.5 % round a mean near 0.41, so the bumps were a
+// quarter of a game unit while the whole ground rose by Strength x (0.5 - mean). Each layer's height now counts from that texture's
+// own average (its smallest mip), so the land stays where it was on average, and landHeight stretches the differences by Contrast.
 #define LAYER(i, T, w) \
   if ((w) > 0.0005) { \
-    float h = 0.5; \
+    float r = 0.0; \
     if ((pc.psBits & (1u << (i))) != 0u) { \
       float lod = lodUv + log2(float(textureSize(sampler2D(T, SMP(i)), 0).x)) + lodBias(); \
-      h = textureLod(sampler2D(T, SMP(i)), uv, max(lod, 0.0)).a; \
+      int levels = textureQueryLevels(sampler2D(T, SMP(i))); \
+      float mean = levels > 1 ? texelFetch(sampler2D(T, SMP(i)), ivec2(0), levels - 1).a : 0.5; \
+      r = textureLod(sampler2D(T, SMP(i)), uv, max(lod, 0.0)).a - mean; \
     } \
-    g_hsum += (w) * h; \
+    g_hsum += (w) * r; \
     g_wsum += (w); \
   }
 
@@ -140,7 +156,11 @@ float landHeight(vec2 uv, vec4 b0, vec4 b1, float lodUv) {
 #if TEX_COUNT > 6
   LAYER(6, t_base6, b1.z)
 #endif
-  return g_wsum > 0.0 ? g_hsum / g_wsum : 0.5;
+  // The blended difference from the textures' averages, stretched by Contrast and eased into the Strength range (-0.5 .. 0.5 round
+  // the 0.5 that main() takes as the flat land): low-contrast ground gets visible bumps, high-contrast ground rounds off instead of
+  // overshooting. Contrast 1 is the texture's own height for small differences.
+  float x = 2.0 * contrast() * (g_wsum > 0.0 ? g_hsum / g_wsum : 0.0);
+  return 0.5 + 0.5 * x * inversesqrt(1.0 + x * x);
 }
 
 #ifdef HAVE_OBJECT_DEPTH
@@ -218,7 +238,7 @@ void main() {
   float h = 0.5;
   if (haveMvp && weight > 0.0 && pc.strength != 0.0 && keepShare > 0.0)
     h = landHeight(v1.xy, v9, v10, nvr.y);
-  float disp = haveMvp ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - pc.center)) : 0.0;
+  float disp = haveMvp ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - centerValue())) : 0.0;
 
   // The vertex shader's clip position (interpolated), moved by the displacement through ModelViewProj (row k = c[k] . (v, 1))
   vec4 clipN = vec4(0.0);

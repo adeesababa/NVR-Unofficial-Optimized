@@ -444,6 +444,11 @@ static bool DisplaceSettingOr(const char* Key, bool Missing) {
 	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.IntValue != 0 : Missing;
 }
 
+static float DisplaceFloatOr(const char* Key, float Missing) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.FloatValue : Missing;
+}
+
 static ID3D9NvrExtTess* DisplaceTess() {
 	if (!DisplaceQueried) {
 		DisplaceQueried = true;
@@ -589,7 +594,10 @@ void DxvkCompute::DisplaceTick() {
 		// TerrainDisplace.tese push data. 2026-10-27: DebugView and LodBias share [2], so [3] can carry the viewport's share of the
 		// depth copy (ObjectBlend, per draw; 1 x 1 here).
 		state.EvalParams[0] = std::clamp(TheSettingManager->GetSettingF(s, "Strength"), 0.0f, 64.0f);
-		state.EvalParams[1] = std::clamp(TheSettingManager->GetSettingF(s, "Center"), 0.0f, 1.0f);
+		// 2026-10-27 (user: the bumps only moved the ground up and down): Contrast shares [1] with Center, 16 x Contrast in the whole
+		// part. A missing key (an older defaults toml) reads as the shipped default, not 0 (flat).
+		state.EvalParams[1] = floorf(std::clamp(DisplaceFloatOr("Contrast", 10.0f), 0.0f, 32.0f) * 16.0f + 0.5f)
+			+ 0.99f * std::clamp(DisplaceFloatOr("Center", 0.5f), 0.0f, 1.0f);
 		state.EvalParams[2] = 16.0f * (float)debugView + std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f) + 4.0f;
 		state.EvalParams[3] = DisplacePackScale(1.0f, 1.0f);
 		// ObjectBlend: the width in whole game units, the share kept at the object as the fraction

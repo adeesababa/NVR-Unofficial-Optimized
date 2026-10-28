@@ -91,6 +91,15 @@ blending was off the whole time and switching it changes nothing.
   nearer than FadeStart.
 - Live on/off in the Tessellation panel: `[Shaders.Terrain.Displacement] Enabled` (missing key = on); NvrDxvkDisplacement still
   installs it at startup (now listed as a restart-to-turn-on setting in the menu).
+- User: "seems like all tessellation is doing visually is moving the ground up and down". Measured (DXT5 alpha of the loose
+  landscape textures): scrubdirtstripnv01 / scrubdirtcanyon01 alpha 74-132 (mean 105/255, std 6.2), dirtwastes01 std 5.6,
+  crackeddirtwastes01 8.2, pebblesdirtwasteland01 21.9, dirtwasteland01 18.7; 50-80 % of that variance is in shapes of 32-64
+  texels and more. At Strength 10 the scrub bumps were (h - 0.5) x 10 = about +-0.25 units, while Center 0 lifted the whole ground
+  by 10 x (0.5 - 0.41) + 10 x 0.5 = ~4-5 units near the camera, fading out between FadeStart and FadeEnd (the ground rising ahead).
+  Now each layer's height counts from that texture's own average (texelFetch of its smallest mip), the blended difference is
+  stretched by `Contrast` (default 10) and eased into the Strength range (0.5 x Strength x x / sqrt(1 + x^2), x = 2 x Contrast x
+  difference), and `Center` defaults to 0.5 (no lift; the forward shadow lookup still never goes below the flat land). Contrast
+  shares EvalParams[1] with Center (16 x Contrast + 0.99 x Center).
 
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
