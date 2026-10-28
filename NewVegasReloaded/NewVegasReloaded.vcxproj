@@ -182,6 +182,7 @@
     <ClCompile Include="..\src\effects\TAAUpscale.cpp" />
     <ClCompile Include="..\src\core\Upscaler.cpp" />
     <ClCompile Include="..\src\core\UpscalerDlss.cpp" />
+    <ClCompile Include="..\src\core\UpscalerFsr31.cpp" />
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp" />
     <ClCompile Include="..\src\effects\ShadowsInteriors.cpp" />
     <ClCompile Include="..\src\effects\Sharpening.cpp" />
