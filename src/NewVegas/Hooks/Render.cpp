@@ -665,9 +665,10 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	CharacterObjectReach::BeginFrame();	// UNOFFICIAL 2026-10-23 CharacterObjectReach
 	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
 	LinearScene::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-28 LinearScene
-	{	// UNOFFICIAL 2026-10-28 CapturedNormals: captured while a reader will use them this frame (SnowAccumulation's CapturedNormals)
+	{	// UNOFFICIAL 2026-10-28 CapturedNormals: captured while a reader will use them this frame (SnowAccumulation's CapturedNormals, or
+		// [Main.Main.Quality] CapturedNormals: merged into the normals buffer every effect reads)
 		SnowAccumulationEffect* snow = TheShaderManager->Effects.SnowAccumulation;
-		CapturedNormals::BeginFrame(TheRenderManager->device, snow && snow->Enabled && snow->CapturedNormals && snow->ShouldRender());
+		CapturedNormals::BeginFrame(TheRenderManager->device, (snow && snow->Enabled && snow->CapturedNormals && snow->ShouldRender()) || CapturedNormals::MergeWanted());
 	}
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS

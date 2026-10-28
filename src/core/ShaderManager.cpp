@@ -1651,6 +1651,10 @@ void ShaderManager::RenderDepthAndNormals(IDirect3DSurface9* RenderTarget) {
 			RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 		// UNOFFICIAL 2026-10-23 (sharednormals; [Main.Main.Quality] SmoothNormals): the buffer smoothed in place, once, for every reader.
 		Effects.Normals->RenderSmooth(Device);
+		// UNOFFICIAL 2026-10-28 [Main.Main.Quality] CapturedNormals (core/CapturedNormals.h): the surfaces' own smooth normals written into
+		// the buffer, for every reader. Not after an upscale to the screen (the normals were drawn at the internal resolution).
+		if (CapturedNormals::MergeWanted() && !TAAEffect::UpscaledBeforeEffects())
+			CapturedNormals::MergeIntoNormals(Device, Effects.Normals->Textures.NormalsSurface, Effects.CombineDepth->Textures.CombinedDepthTexture);
 		Device->SetRenderTarget(0, RenderTarget);
 	}
 	if (RenderRect::Active()) Device->SetStreamSource(0, FrameVertex, 0, sizeof(FrameVS));	// the rect quad (ApplyViewport) does not outlive this
