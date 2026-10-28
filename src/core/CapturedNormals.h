@@ -41,6 +41,45 @@ namespace CapturedNormals {
 
 	inline void NoteWriter(IDirect3DPixelShader9* handle) { if (handle) Writers.insert(handle); }
 
+	// The self-check (main session, 2026-10-28: P31's MergedDepthNormals wrote two targets in one draw, and on native D3D9 the GTX 1070
+	// driver silently dropped that draw: the buffers stopped updating and every effect read stale data). On a few frames (the 60th, 300th
+	// and 1200th captured frame, then every 18,000th) the target is read back, shrunk to 64 x 64 texels: right after the clear it must hold
+	// no written texel (the clear really happened), after the list at least one (the draws really wrote it) when templates drew. A
+	// failure switches the capture off for the session (logged): the readers keep the depth-rebuilt normal. A read-back waits for the GPU
+	// once, on those frames only. One failure switches it off (a dropped draw also drops the scene there: no waiting).
+	inline IDirect3DSurface9* CheckTarget = nullptr;  inline IDirect3DSurface9* CheckCopy = nullptr;
+	inline UInt32 LiveFrames = 0, CheckFailures = 0;
+	inline bool CheckThisFrame = false, CheckReported = false;
+
+	inline bool IsCheckFrame(UInt32 f) { return f == 60 || f == 300 || f == 1200 || (f > 1200 && f % 18000 == 0); }
+
+	// Texels written (alpha 1) in a 64 x 64 point-sampled copy of the target; -1 if it could not be read.
+	inline int CountWritten(IDirect3DDevice9* d) {
+		if (!CheckTarget && (FAILED(d->CreateRenderTarget(64, 64, D3DFMT_A16B16G16R16F, D3DMULTISAMPLE_NONE, 0, FALSE, &CheckTarget, NULL)) ||
+			FAILED(d->CreateOffscreenPlainSurface(64, 64, D3DFMT_A16B16G16R16F, D3DPOOL_SYSTEMMEM, &CheckCopy, NULL)))) {
+			if (CheckTarget) { CheckTarget->Release(); CheckTarget = nullptr; }
+			return -1;
+		}
+		if (FAILED(d->StretchRect(TextureSurface, NULL, CheckTarget, NULL, D3DTEXF_POINT)) || FAILED(d->GetRenderTargetData(CheckTarget, CheckCopy))) return -1;
+		D3DLOCKED_RECT r = {};
+		if (FAILED(CheckCopy->LockRect(&r, NULL, D3DLOCK_READONLY))) return -1;
+		int written = 0;
+		for (int y = 0; y < 64; y++) {
+			const UInt16* row = (const UInt16*)((const char*)r.pBits + y * r.Pitch);
+			for (int x = 0; x < 64; x++) if (row[x * 4 + 3] == 0x3C00) written++;	// alpha exactly 1.0 (half float)
+		}
+		CheckCopy->UnlockRect();
+		return written;
+	}
+
+	inline void CheckResult(bool ok, const char* what, int count) {
+		Logger::Log("CapturedNormals: self-check at captured frame %u, %s: %d of 4096 texels written -> %s", LiveFrames, what, count, ok ? "ok" : "WRONG");
+		if (ok) return;
+		CheckFailures++;
+		Logger::Log("[WARNING] CapturedNormals: the normal target does not update (the driver drops the draws or the clear?): off for the session; the effects keep the depth-rebuilt normals");
+		Failed = true;
+	}
+
 	// Read once (the shaders are compiled with it): any reader's switch at startup.
 	inline bool CompiledIn() {
 		if (!Checked) {
@@ -218,6 +257,14 @@ namespace CapturedNormals {
 		if (!Ensure(d, t)) { rt0->Release(); return; }
 		SpanTarget = rt0;	// (holds the reference until EndSpan)
 		d->ColorFill(DrawSurface(), NULL, D3DCOLOR_ARGB(0, 0, 0, 0));	// "nothing here": readers keep the depth-rebuilt normal
+		CheckThisFrame = IsCheckFrame(++LiveFrames);
+		if (CheckThisFrame) {	// the self-check's first half: the clear must have emptied it
+			if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);
+			const int n = CountWritten(d);
+			if (n < 0) { CheckThisFrame = false; if (!CheckReported) { CheckReported = true; Logger::Log("CapturedNormals: self-check could not read the target back (skipped)"); } }
+			else CheckResult(n == 0, "after the clear", n);
+			if (Failed) { SpanTarget = nullptr; rt0->Release(); return; }
+		}
 		InSpan = true;
 		Bound = false;
 		Drawn = false;
@@ -232,6 +279,11 @@ namespace CapturedNormals {
 		InSpan = false;
 		if (SpanTarget) { SpanTarget->Release(); SpanTarget = nullptr; }
 		if (MsaaSurface) d->StretchRect(MsaaSurface, NULL, TextureSurface, NULL, D3DTEXF_NONE);	// the game's MSAA: resolved for the readers
-		Data.x = Drawn ? 1.0f : 0.0f;
+		if (CheckThisFrame && Drawn) {	// the self-check's second half: templates drew, so something must be written
+			const int n = CountWritten(d);
+			if (n >= 0) CheckResult(n > 0, "after the main list", n);
+		}
+		CheckThisFrame = false;
+		Data.x = Drawn && !Failed ? 1.0f : 0.0f;
 	}
 }
