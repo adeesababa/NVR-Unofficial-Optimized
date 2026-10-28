@@ -16,6 +16,7 @@ float4 TESR_ShadowScreenSpaceData; // x: Enabled, y: blurRadius, z: renderDistan
 // brow and collar block it as sharp triangles. There the near sun cascade and the character shadow map already give the real, soft
 // shadows, so the contact shadows fade in with distance: none nearer than x, full from y (view depth, game units; y 0 = no fade).
 float4 TESR_ShadowScreenSpaceFade;
+float4 TESR_RtSunReplace; // UNOFFICIAL 2026-10-28 RT sun shadows Mode 1 (replace): x = the RT range (view distance), 0 = off
 float ContactNearFade(float z) { return TESR_ShadowScreenSpaceFade.y > 0.0f ? smoothstep(TESR_ShadowScreenSpaceFade.x, TESR_ShadowScreenSpaceFade.y, z) : 1.0f; }
 float4 TESR_SunAmbient;
 float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: point lights shadows active
@@ -443,7 +444,11 @@ float4 Shadow(VSOUT IN) : COLOR0
 	float viewDepth;
 	float4 worldPos = reconstructWorldPositionLod(uv, viewDepth);
 	float3 normal = GetWorldNormalLod(uv);
-	Shadow.r = min(Shadow.r, GetLightAmount(worldPos, normal)); // darkest of screenspace & sun
+	float cascades = GetLightAmount(worldPos, normal);
+	// UNOFFICIAL 2026-10-28 RT sun shadows, Mode 1 (replace): the cascades only from where the traced shadows fade out (the last 15% of
+	// the RT range) on; the traced visibility is multiplied in afterwards (core/RtSunShadows.cpp, RtSunCombine).
+	if (TESR_RtSunReplace.x > 0.0f) cascades = lerp(1.0f, cascades, saturate((viewDepth - 0.85f * TESR_RtSunReplace.x) / (0.15f * TESR_RtSunReplace.x)));
+	Shadow.r = min(Shadow.r, cascades); // darkest of screenspace & sun
 
 	return Shadow;
 }

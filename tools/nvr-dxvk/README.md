@@ -40,6 +40,12 @@ Only d3d9.dll is built and shipped; NVR's own DLL, menu, settings and presets st
                             external memory/semaphores, no NVIDIA code; the d3d9_nvr_ext* files, plus `src/dxvk/dxvk_memory.*`,
                             `dxvk_fence.*` and `dxvk_image.cpp`: an NT handle is exported ONCE per object and kept (NVIDIA returns
                             the same handle value on a second export), callers get duplicates.
+                 0027       RESZ resolves a multisampled depth buffer to its nearest sample (nvr.depthResolve)
+                 0028       (claude/rt-sun-core) "1.8-rt": ID3D9NvrExtRt, the ray tracing core. Geometry staging for the
+                            64-bit ray tracing helper (`tools/nvr-rt-helper`; Windows' 32-bit drivers have no ray tracing)
+                            on every GPU, plus opt-in in-process acceleration structures (dxvk.conf nvr.rayTracing = True,
+                            default off = device created as before). docs/next/FORK-RT-CORE.md. Test: `test/nvr_rt_test.cpp`
+                            (in-process) and `tools/nvr-rt-helper/test/rt_helper_test.cpp` (the helper path, end to end).
                GetInfo reports 1.6. The "1.5-<feature>" parts are separate interfaces found with QueryInterface (or, for sm6,
                by MaxSlots), not by the minor version: NVR checks each one itself and keeps its D3D9 path without it.
 - `debug/`     dxvk.conf templates for debugging (`dxvk.conf.pipelinelog`: the 0017 measurement): `dxvk.conf.markers` (RenderDoc captures with NVR's named groups),

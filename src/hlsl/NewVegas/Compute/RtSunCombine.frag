@@ -1,0 +1,22 @@
+// UNOFFICIAL 2026-10-28 RT sun shadows: the traced sun visibility (TESR_RtSunShadow, from the RT helper) into the sun shadow buffer's
+// red channel (core\RtSunShadows.cpp Apply). Drawn with blend MULTIPLY and only red written (combine: red x visibility), or blend
+// NONE and only red written (DebugView 1: red = visibility, the cascades and contact shadows left out). The point shadows (green)
+// are never touched. Compile: glslangValidator -V --target-env vulkan1.1 -o RtSunCombine.spv RtSunCombine.frag
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(set = 1, binding = 0) uniform texture2D t_visibility;   // TESR_RtSunShadow
+
+layout(push_constant) uniform Push {
+    float strength;      // 0: no effect .. 1: full
+    uint samplerIndex;   // 4: POINT, CLAMP
+} pc;
+
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 o_color;
+
+void main() {
+    float visibility = textureLod(sampler2D(t_visibility, NVR_SAMPLER(pc.samplerIndex)), uv, 0.0).r;
+    o_color = vec4(mix(1.0, visibility, pc.strength), 1.0, 1.0, 1.0);
+}

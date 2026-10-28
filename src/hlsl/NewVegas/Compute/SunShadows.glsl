@@ -37,7 +37,7 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 farCenter;             // TESR_ShadowFarCenter
     vec4 lodCenter;             // TESR_ShadowLodCenter
     vec4 cameraData;            // TESR_CameraData (x nearZ, y farZ)
-    vec4 flags;                 // x: FORWARD_SHADOWS as the effect was compiled (1 or 0); y, z: NearFade's start and end (TESR_ShadowScreenSpaceFade, 2026-10-27)
+    vec4 flags;                 // x: FORWARD_SHADOWS as the effect was compiled (1 or 0); y, z: NearFade's start and end (TESR_ShadowScreenSpaceFade, 2026-10-27); w: the RT range in RT sun shadows Mode 1 (2026-10-28), 0 = off
     mat4 charShadowCameraToLight; // TESR_CharShadowCameraToLight (2026-10-26, CharacterShadowMap)
     vec4 charShadowCenter;      // TESR_CharShadowCenter
     vec4 charShadowData;        // TESR_CharShadowData
