@@ -19,6 +19,7 @@ namespace {
 		float	sunDir[4], sunColor[4], sunAmbient[4], horizon[4];
 		float	lightPos[12][4], shadowLightPos[12][4], lightColor[24][4];
 		float	look3[4], rework[4];	// UNOFFICIAL 2026-10-27: TESR_BloodFlowLook; the 2026-10-27 throws and drops (BloodFluid.glsl)
+		float	look4[4];				// UNOFFICIAL 2026-10-27 evening: x 1 the fluid's own colour (BloodFluidDraw.frag), 0 OldColour
 	};
 	struct SimPush { UInt32 mode, total, pad0, pad1; float shift[4]; };
 
@@ -84,6 +85,7 @@ void BloodFluid::ReadSettings() {
 	Settings.Drops = std::clamp(TheSettingManager->GetSettingF(s, "Drops"), 0.0f, 1.0f);
 	Settings.DropSize = std::clamp(TheSettingManager->GetSettingF(s, "DropSize"), 0.2f, 1.5f);
 	Settings.OldThrow = TheSettingManager->GetSettingI(s, "OldThrow") != 0;
+	Settings.OldColour = TheSettingManager->GetSettingI(s, "OldColour") != 0;
 	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 3);
 	Settings.TestThrow = std::clamp(TheSettingManager->GetSettingF(s, "TestThrow"), 0.0f, 60.0f);
 	const bool pour = TheSettingManager->GetSettingI(s, "TestPour") != 0;
@@ -134,8 +136,10 @@ void BloodFluid::Queue(const D3DXVECTOR3& Origin, float GroundZ, const D3DXVECTO
 	AliveUntil = (std::max)(AliveUntil, TheFrameRateManager->Time + Window + Settings.Lifetime + 1.0);
 	if (LoggedEmits < 24) {
 		LoggedEmits++;
-		Logger::Log("UNOFFICIAL BloodFluid: %s, %d particles at (%.1f %.1f %.1f), thrown (%.2f %.2f %.2f) at %.0f, ground %.1f",
-			Kind == 1 ? "a body bleeds" : Kind == 2 ? "test throw" : "a splat throws", Count, Origin.x, Origin.y, Origin.z, Dir.x, Dir.y, Dir.z, Speed, GroundZ);
+		if (Kind == 1) Logger::Log("UNOFFICIAL BloodFluid: a body bleeds, %d particles at (%.1f %.1f %.1f), ground %.1f sloping (%.2f %.2f), spreading at %.0f",
+			Count, Origin.x, Origin.y, Origin.z, GroundZ, Dir.x, Dir.y, Speed);
+		else Logger::Log("UNOFFICIAL BloodFluid: %s, %d particles at (%.1f %.1f %.1f), thrown (%.2f %.2f %.2f) at %.0f, ground %.1f",
+			Kind == 2 ? "test throw" : "a splat throws", Count, Origin.x, Origin.y, Origin.z, Dir.x, Dir.y, Dir.z, Speed, GroundZ);
 	}
 }
 
@@ -154,7 +158,10 @@ bool BloodFluid::Offer(UInt64 Key, const BloodFlowBoxes::Item& Item) {
 		const float R = std::clamp(Item.Radius, 4.0f, 60.0f);
 		const int count = (int)std::clamp(Settings.Amount * 700.0f * (R / 25.0f) * (R / 25.0f), 60.0f, 2400.0f);
 		const D3DXVECTOR3 at(Item.Center.x, Item.Center.y, Item.Center.z + Radius + 0.5f);
-		Queue(at, Item.Center.z, D3DXVECTOR3(0.0f, 0.0f, 1.0f), 18.0f, 0.22f * R, 0.0f, 0.0f, Settings.BleedTime, count, Hash(Key), (UInt32)Item.Tint, 1);
+		// (UNOFFICIAL 2026-10-27, user: half circles: the pool's ground slopes as the body's bones say (Item.SlopeX/Y, BloodFlow.cpp
+		// GroundUnderBones); a pool's emitter carries that slope in dir.xy (BloodFluidSim.comp Emit, kind 1). OldThrow: level, as before.)
+		const D3DXVECTOR3 slope = Settings.OldThrow ? D3DXVECTOR3(0.0f, 0.0f, 1.0f) : D3DXVECTOR3(Item.SlopeX, Item.SlopeY, 1.0f);
+		Queue(at, Item.Center.z, slope, 18.0f, 0.22f * R, 0.0f, 0.0f, Settings.BleedTime, count, Hash(Key), (UInt32)Item.Tint, 1);
 		PoolsTaken[Key] = now + Settings.BleedTime + Settings.Lifetime;
 		return true;
 	}
@@ -406,6 +413,8 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	Copy4(f.look3, Constant("TESR_BloodFlowLook"));
 	if (!Constant("TESR_BloodFlowLook")) { f.look3[0] = 1.0f; f.look3[1] = 1.0f; }
 	f.rework[0] = old ? 0.0f : 1.0f; f.rework[1] = old ? 1.0f : Settings.Drops; f.rework[2] = old ? 0.0f : 1.0f; f.rework[3] = old ? 1.0f : 0.35f;
+	// UNOFFICIAL 2026-10-27 evening (user: "almost looks like ketchup", "full bright"): the fluid's own colour (BloodFluidDraw.frag).
+	f.look4[0] = Settings.OldColour ? 0.0f : 1.0f;
 	// BloodFlow's look: its colours and times (its clock runs at TunedClockRate x real time).
 	const BloodFlowEffect::BloodFlowStruct& c = Owner->Constants;
 	f.look2[0] = (float)TunedClockRate; f.look2[1] = c.Dry.w; f.look2[2] = c.Info.z; f.look2[3] = c.Fresh.w;
