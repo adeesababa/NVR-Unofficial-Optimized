@@ -73,7 +73,24 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   chip offset, stride, position offset, model bound, the CPU copy of vertex 0 when kept, the camera-relative translation);
   the helper logs "probe geometry" with the same ids read back from its staging buffer (first vertices, bounds, indices, the
   instance transform). Matching the two says whether the arena holds the game's positions.
-- (results below when the run is in)
+- Not run: the ticket (1028-150751-bd86) was cancelled while waiting, when RT work was paused (below).
+
+## Paused here (2026-10-28 15:20, on the user's word: the normals session finishes first)
+- **Works:** the RT core end to end on the iGPU (9800X3D, RDNA2) through the 64-bit NvrRtHelper.exe: feature detection, the
+  helper starts and is ready in ~1 s, BLAS from the game's D3D9 buffers (fork patch 0028 StageGeometry -> arena -> helper),
+  a per-frame camera-relative TLAS (649 instances / 197 geometries / 779k triangles at Goodsprings), the trace pass, the
+  visibility back into NVR, DebugViews 1-6, Mode 0 / Mode 1. Cost: ~1.35 ms a frame at 720p on the iGPU (exchange + waits).
+  Off by default; off = the old path exactly.
+- **Bug:** every ray misses (DebugView 4 all white at four headings), and the RT reflections / AO sessions see the same: a
+  shared fault in the core, not the sun pass. Ruled out by reading: masks, the instance transform (= CreateD3DMatrix),
+  ShadowFade, buffer device addresses (DXVK enables BDA on every buffer), the order (depth and normals are rendered before
+  RtCore::Frame), the flush-before-signal order.
+- **Best lead:** the fork's StageGeometry conversion (game VB/IB -> arena) is the one untested link; second, the pass inputs
+  (the trace pass takes only 0.33 ms for 921k pixels, so most pixels may not trace at all).
+- **Next step:** run bench list foundations\liststsun-4.txt as is (the diagnostics are committed, 435889eb; DLL and helper
+  built; the helper copy is in bench\deep-roadmaptsun\extra). DebugView 6 white -> the scene: compare "RT CORE probe" (NVR log)
+  with "probe geometry" (NvrRtHelper.log); DebugView 6 depth-like -> the inputs: read DebugView 5's codes and "RT sun constants".
+  The proper normals buffer (real-surface-normals session) can replace TESR_NormalsBuffer afterwards; it does not cause the bug.
 
 ## Open problems / next
 - Alpha-tested casters (foliage, fences, chain link) and actors are not traced: Mode 0 keeps them through the cascades.
