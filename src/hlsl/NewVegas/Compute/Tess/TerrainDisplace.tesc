@@ -26,22 +26,32 @@ PASS(1) PASS(2) PASS(3) PASS(4) PASS(5) PASS(6) PASS(7) PASS(8) PASS(9) PASS(10)
 
 // Per control point, for TerrainDisplace.tese: x the relief weight (distance fade x quadrant border), y log2 of the spacing between
 // generated points in uv units (the height lookup's detail level before the texture's size), z the distance fade alone (for the
-// constant part of the displacement, Center: the same on both sides of a quadrant border, so it needs no border rule).
-layout(location = 30) out vec3 o_nvr[];
+// constant part of the displacement, Center: the same on both sides of a quadrant border, so it needs no border rule), w the object
+// blend as NVR sends it (objectBlend below: the same for every point of a draw; the TES has no push room left for it).
+layout(location = 30) out vec4 o_nvr[];
 
 // The block starts at offset 32: 0-31 are D3D9's shared push data (fog, alpha ref) that every stage sees (bulk round 2: from offset
 // 0 the first four values were D3D9's fog data, so nothing was split).
 layout(push_constant) uniform Push {
   layout(offset = 32)
-  float maxFactor;    // [1-64] most splits of one triangle edge (MaxFactor)
+  float factors;      // MaxFactor [1-64] + 128 x FixedFactor [0-64] (> 0: every edge split that many times, a test)
   float edgeUnits;    // the spacing aimed for next to the camera, game units (EdgeLength)
   float edgeGrowth;   // spacing added per game unit of distance (EdgeGrowth)
   float fadeStart;    // the displacement fades out from here ... (FadeStart)
   float fadeEnd;      // ... to nothing here, game units from the camera; the splitting ends there too (FadeEnd)
   float borderGrid;   // land quadrant size, 2048: no displacement on quadrant borders (each quadrant is its own draw); 0 off
-  float fixedFactor;  // > 0: every edge split this many times (FixedFactor, a test)
+  float objectBlend;  // 2026-10-27 ObjectBlend: floor = ObjectBlendWidth (game units), fraction / 0.99 = ObjectBlendKeep; 0 = off
+                      // (the setting, or a draw outside the world scene, whose depth copy is not this view's)
   float stripWindow;  // DXVK's: -1 a triangle list, 0 / 1 / 2 the index window of a strip (see above)
 } pc;
+
+float maxFactor() {
+  return mod(pc.factors, 128.0);
+}
+
+float fixedFactor() {
+  return floor(pc.factors / 128.0);
+}
 
 float fadeAt(float d) {
   return 1.0 - smoothstep(pc.fadeStart, max(pc.fadeEnd, pc.fadeStart + 1.0), d);
@@ -54,9 +64,9 @@ float spacingAt(float d) {
 float edgeLevel(vec3 a, vec3 b, vec3 eye) {
   float len = distance(a, b);
   float d = distance((a + b) * 0.5, eye);
-  float f = pc.fixedFactor > 0.0 ? pc.fixedFactor : len / spacingAt(d);
+  float f = fixedFactor() > 0.0 ? fixedFactor() : len / spacingAt(d);
   f = mix(1.0, f, fadeAt(d));   // full detail up to FadeStart, back to the plain triangle by FadeEnd
-  return clamp(f, 1.0, max(pc.maxFactor, 1.0));
+  return clamp(f, 1.0, max(maxFactor(), 1.0));
 }
 
 void main() {
@@ -91,8 +101,8 @@ void main() {
   vec2 u0 = i_v1[s0].xy, u1 = i_v1[s1].xy, u2 = i_v1[s2].xy;
   float l01 = distance(p0, p1), l12 = distance(p1, p2), l20 = distance(p2, p0);
   float uvPerUnit = max(max(distance(u0, u1) / max(l01, 1e-3), distance(u1, u2) / max(l12, 1e-3)), distance(u2, u0) / max(l20, 1e-3));
-  float spacing = max(spacingAt(d), max(max(l01, l12), l20) / max(pc.maxFactor, 1.0));
-  o_nvr[gl_InvocationID] = vec3(weight, log2(max(spacing * uvPerUnit, 1e-8)), fade);
+  float spacing = max(spacingAt(d), max(max(l01, l12), l20) / max(maxFactor(), 1.0));
+  o_nvr[gl_InvocationID] = vec4(weight, log2(max(spacing * uvPerUnit, 1e-8)), fade, pc.objectBlend);
 
   if (i == 0u) {
     // Vulkan triangle domain: outer level 0 is the edge opposite point 0, 1 opposite point 1, 2 opposite point 2.

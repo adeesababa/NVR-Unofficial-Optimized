@@ -27,14 +27,17 @@ void TextureManager::Initialize() {
 
 	// UNOFFICIAL terrain blending ([Shaders.Terrain.Blending]): its depth copy exists only when the feature was on at startup,
 	// which is also when the land shaders are compiled with it (TERRAIN_BLEND, ShaderRecord::LoadShader).
-	if (TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled")) {
+	// UNOFFICIAL 2026-10-27: also with [Main.Main.Performance] NvrDxvkDisplacement on at startup: displacement's ObjectBlend reads the
+	// same copy (TESR_DisplaceDepth, the land pixel shaders' s6 for their tessellation shaders; NVR_DISPLACE_DEPTH).
+	if (TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled") || TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement")) {
 		if (SUCCEEDED(Device->CreateTexture(Width, Height, 1, D3DUSAGE_DEPTHSTENCIL, (D3DFORMAT)MAKEFOURCC('I', 'N', 'T', 'Z'), D3DPOOL_DEFAULT, &TheTextureManager->TerrainBlendDepthTexture, NULL))) {
 			TheTextureManager->RegisterTexture("TESR_TerrainBlendDepth", (IDirect3DBaseTexture9**)&TheTextureManager->TerrainBlendDepthTexture);
+			TheTextureManager->RegisterTexture("TESR_DisplaceDepth", (IDirect3DBaseTexture9**)&TheTextureManager->TerrainBlendDepthTexture);
 			NvAPI_D3D9_RegisterResource(TheTextureManager->TerrainBlendDepthTexture);
 		}
 		else {
 			TheTextureManager->TerrainBlendDepthTexture = nullptr;
-			Logger::Log("[ERROR] Terrain blending: could not create its depth texture; blending stays off");
+			Logger::Log("[ERROR] Terrain blending: could not create its depth texture; blending (and displacement's ObjectBlend) stays off");
 		}
 	}
 

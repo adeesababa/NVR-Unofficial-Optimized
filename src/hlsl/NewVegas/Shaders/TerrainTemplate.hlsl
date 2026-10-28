@@ -178,6 +178,19 @@ float4 PointLightPosition[NUM_PT_LIGHTS] : register(c63);
 float PointLightCount : register(c88);
 #endif
 
+// UNOFFICIAL 2026-10-27 displacement ObjectBlend ([Shaders.Terrain.Displacement], Compute/Tess/TerrainDisplace.tese): the world's
+// depth as the land starts (terrain blending's copy, TerrainShaders::PrepareDisplaceDepth), for the land's tessellation evaluation
+// shader, which may only read textures this pixel shader uses, in s0-s7 (NVR DXVK 1.7-displace). s6 is BaseMap[6]'s, free below 7
+// layers (the compiler gives BaseMap only the layers it reads). Compiled in only with [Main.Main.Performance] NvrDxvkDisplacement on
+// at startup (NVR_DISPLACE_DEPTH from ShaderRecord::BuildDefines); this shader never reads it (see the end of main).
+#if defined(NVR_DISPLACE_DEPTH) && TEX_COUNT < 7
+    #define DISPLACE_DEPTH_IN 1
+// One line (ShaderTextureValue::GetSamplerStateString). Linear: the TES's blend must not jump between texels (cracks).
+sampler2D TESR_DisplaceDepth : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#else
+    #define DISPLACE_DEPTH_IN 0
+#endif
+
 #if TERRAIN_BLEND_ACTIVE
 // The world's depth as the first land draw of the scene started (TerrainShaders::PrepareBlending) holds the objects
 // drawn before the land: rocks, walls, props. Where the land covers one of them by less than the blend distance, the
@@ -494,6 +507,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     OUT.color_0.a = 1;
 #if TERRAIN_BLEND_ACTIVE
     if (TESR_TerrainBlendExtra.w > 0.5f && TESR_TerrainBlendData.w <= 0.0f && terrainKeep >= 0.0f) OUT.color_0.a = terrainKeep;
+#endif
+#if DISPLACE_DEPTH_IN
+    // Never taken (the fog's power is never below zero), but it keeps TESR_DisplaceDepth in this shader's samplers, which is what
+    // lets the tessellation stage read it (DXVK checks the sampler against this shader's declarations).
+    [branch] if (FogParam.z < -1.0e30f) finalColor += tex2Dlod(TESR_DisplaceDepth, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
 #endif
     OUT.color_0.rgb = finalColor;
 

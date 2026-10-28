@@ -309,6 +309,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-24 SmoothObjectNormals ([Shaders.PBR.Main], restart): the object and skin shaders' shadow lookups and sky ambient take
 	// the vertex normal instead of the per-triangle one (Includes/Shadow.hlsl ShadowFacingNormal). 0: the shaders exactly as before.
 	AppendDefine("OBJECT_SMOOTH_NORMALS", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmoothObjectNormals") ? "1" : "0");
+	// UNOFFICIAL 2026-10-27 displacement ObjectBlend (TerrainTemplate.hlsl TESR_DisplaceDepth): with [Main.Main.Performance]
+	// NvrDxvkDisplacement on at startup the land pixel shaders below 7 layers declare the scene's depth copy at s6, so the land's
+	// tessellation shaders may read it (core/DxvkCompute.cpp RegisterDisplace). Defined only when on, and last, as above.
+	if (TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement"))
+		AppendDefine("NVR_DISPLACE_DEPTH", "1");
 
 }
 
@@ -594,6 +599,7 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 			if (!memcmp(ConstantDesc.Name, "TESR_DepthBuffer", 17)) HasDepthBuffer = true;
 			if (!memcmp(ConstantDesc.Name, "TESR_RenderedBuffer", 20)) HasRenderedBuffer = true;
 			if (!strcmp(ConstantDesc.Name, "TESR_TerrainBlendDepth")) HasTerrainBlendDepth = true;	// UNOFFICIAL terrain blending
+			if (!strcmp(ConstantDesc.Name, "TESR_DisplaceDepth")) HasDisplaceDepth = true;	// UNOFFICIAL 2026-10-27 displacement ObjectBlend
 	
 			TextureIndex++;
 			break;
@@ -722,6 +728,8 @@ void ShaderRecord::SetCT() {
 	// UNOFFICIAL terrain blending: before the constants below are uploaded (it sets whether this draw blends), and the
 	// first land bind of the world scene copies the depth drawn so far.
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	// UNOFFICIAL 2026-10-27 displacement ObjectBlend: the same copy, and whether this draw's tessellation may use it (Terrain.cpp).
+	if (HasDisplaceDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareDisplaceDepth();
 	// UNOFFICIAL 2026-10-25 (LandLight.h): the light vector the last land draw lit with, then this bind's own turn.
 	if (LandLight::Pending) LandLight::Read();
 	if (IsLandLight) LandLight::Pending = true;

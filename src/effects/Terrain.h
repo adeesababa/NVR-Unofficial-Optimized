@@ -133,6 +133,14 @@ public:
 	static void	BeginWorldScene();
 	static void	EndWorldScene();
 	void	PrepareBlending();
+	// UNOFFICIAL 2026-10-27 displacement ObjectBlend: the same copy for the land's tessellation (TerrainTemplate.hlsl TESR_DisplaceDepth),
+	// from ShaderRecord::SetCT for the land shaders that carry it; it tells core/DxvkCompute whether this draw may use it.
+	void	PrepareDisplaceDepth();
+
+private:
+	bool	CopySceneDepth();	// the copy at the first land bind of the world scene; true when this draw is in that scene
+
+public:
 	// Diagnostic: game passes bound in the world scene before its first land draw (SetShadersHook). The blend only sees the
 	// objects drawn before the land, so the log line at the first copy says whether there were any.
 	static void	NoteWorldBind() { if (BlendDepthState == 1) BindsBeforeCopy++; }

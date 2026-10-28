@@ -94,6 +94,12 @@ public:
 	static bool					DisplaceOn();
 	static void					RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size);
 	static void					DisplaceTick();
+	// 2026-10-27 ObjectBlend ([Shaders.Terrain.Displacement] ObjectBlend / ObjectBlendWidth / ObjectBlendKeep): the bumps fade out
+	// where the land meets anything drawn before it. DisplaceDepthWanted: the world scene should take terrain blending's depth copy
+	// for it (Terrain.cpp BeginWorldScene). DisplaceSceneDepth: a land pixel shader carrying that copy at s6 binds (Terrain.cpp
+	// PrepareDisplaceDepth); Valid = this draw is in the world scene and the copy holds it, Scale = its viewport's share of the copy.
+	static bool					DisplaceDepthWanted();
+	static void					DisplaceSceneDepth(bool Valid, float ScaleX, float ScaleY);
 
 	// Marks every compute path off for the session (logged once with the reason).
 	static void					Fail(const char* Reason);

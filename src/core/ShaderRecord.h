@@ -98,6 +98,7 @@ public:
 	bool					HasRenderedBuffer;
 	bool					HasDepthBuffer;
 	bool					HasTerrainBlendDepth = false;	// UNOFFICIAL: the land shaders with terrain blending compiled in (Terrain.h)
+	bool					HasDisplaceDepth = false;		// UNOFFICIAL 2026-10-27: land pixel shaders with displacement ObjectBlend's s6 (Terrain.h)
 	bool					ClearSamplers;
 	bool					PointShadowForward = false;	// UNOFFICIAL: compiled with INTERIOR_SHADOWS (PointShadowForward.h)
 	bool					UsedOnce = false;			// UNOFFICIAL: SetCT ran once this session (ShaderWarmUp.h)

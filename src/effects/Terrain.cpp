@@ -29,7 +29,9 @@ void TerrainShaders::BeginWorldScene() {
 	BlendWorldDepth = nullptr;
 	BindsBeforeCopy = 0;
 	TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
-	if (!terrain || !terrain->BlendingSettings.Enabled || !TheTextureManager->TerrainBlendDepthTexture || !TheShaderManager->GameState.isExterior) return;
+	// UNOFFICIAL 2026-10-27: displacement's ObjectBlend (PrepareDisplaceDepth) takes the same copy, with or without blending.
+	const bool wanted = terrain && (terrain->BlendingSettings.Enabled || DxvkCompute::DisplaceDepthWanted());
+	if (!wanted || !TheTextureManager->TerrainBlendDepthTexture || !TheShaderManager->GameState.isExterior) return;
 	IDirect3DSurface9* depth = nullptr;
 	TheRenderManager->device->GetDepthStencilSurface(&depth);
 	if (!depth) return;
@@ -46,15 +48,16 @@ void TerrainShaders::EndWorldScene() {
 // Runs as a land shader binds (ShaderRecord::SetCT), before its constants upload. In the world scene the first bind copies
 // the depth drawn so far (one depth copy a frame, the same resolve NVR's depth buffer uses) and every land draw of that
 // scene compares against it. Anywhere else (another depth buffer bound, outside the world scene) blending is off.
-void TerrainShaders::PrepareBlending() {
-	BlendingConstants.Data.x = 0.0f;
-	if (BlendDepthState == 0 || !BlendWorldDepth) return;
+// UNOFFICIAL 2026-10-27: the copy itself is CopySceneDepth's, shared with displacement's ObjectBlend (PrepareDisplaceDepth); true when
+// this draw is in the world scene and the copy holds it.
+bool TerrainShaders::CopySceneDepth() {
+	if (BlendDepthState == 0 || !BlendWorldDepth) return false;
 
 	IDirect3DSurface9* current = nullptr;
 	TheRenderManager->device->GetDepthStencilSurface(&current);
 	const bool mainScene = current && current == BlendWorldDepth;
 	if (current) current->Release();
-	if (!mainScene) return;
+	if (!mainScene) return false;
 
 	if (BlendDepthState == 1) {
 		static GpuTimer copyTimer("Terrain blend depth copy");	// F10
@@ -64,10 +67,34 @@ void TerrainShaders::PrepareBlending() {
 		// The first few scenes, then every 3600th (about a minute): the blend needs objects drawn before the land.
 		static unsigned copies = 0;
 		if (copies < 3 || copies % 3600 == 0)
-			Logger::Log("Terrain blending: depth copied at the first land draw of the world scene, after %u other passes%s", BindsBeforeCopy,
+			Logger::Log("Terrain blending / displacement ObjectBlend: depth copied at the first land draw of the world scene, after %u other passes%s", BindsBeforeCopy,
 				BindsBeforeCopy ? "" : " (nothing drawn before the land: nothing to blend with)");
 		copies++;
 	}
+	return true;
+}
+
+// UNOFFICIAL 2026-10-27 displacement ObjectBlend (core/DxvkCompute.cpp DisplaceSceneDepth): a land pixel shader that carries the copy at
+// s6 for its tessellation shader binds. In the world scene its tessellation fades the bumps near what the copy holds; anywhere else
+// (the water's reflection, another depth buffer) the copy is not this view's, and the bumps stay as they are. The viewport goes too:
+// RenderScale draws the world into the top-left part of the full-size targets, and so of the copy.
+void TerrainShaders::PrepareDisplaceDepth() {
+	const bool valid = CopySceneDepth();
+	float scaleX = 1.0f, scaleY = 1.0f;
+	if (valid) {
+		D3DVIEWPORT9 port = {};
+		if (SUCCEEDED(TheRenderManager->device->GetViewport(&port)) && TheRenderManager->width && TheRenderManager->height) {
+			scaleX = std::clamp((float)(port.X + port.Width) / (float)TheRenderManager->width, 0.0f, 1.0f);
+			scaleY = std::clamp((float)(port.Y + port.Height) / (float)TheRenderManager->height, 0.0f, 1.0f);
+		}
+	}
+	DxvkCompute::DisplaceSceneDepth(valid, scaleX, scaleY);
+}
+
+void TerrainShaders::PrepareBlending() {
+	BlendingConstants.Data.x = 0.0f;
+	// (BlendDepthState may be set for displacement's ObjectBlend alone: blending itself switched off in the menu.)
+	if (!BlendingSettings.Enabled || !CopySceneDepth()) return;
 	BlendingConstants.Data.x = 1.0f;
 	// UNOFFICIAL 2026-10-13 Smooth: the land's see-through part (its alpha, TerrainTemplate.hlsl) blended over the objects drawn
 	// before it, for the opaque pass only (a pass that already blends, e.g. adding a lamp's light, keeps its own blending). Set

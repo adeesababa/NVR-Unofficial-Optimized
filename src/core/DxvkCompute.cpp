@@ -411,6 +411,27 @@ ID3D9NvrExtSampler* DxvkCompute::PointWrap() {
 static ID3D9NvrExtTess*	DisplaceInterface = nullptr;
 static bool				DisplaceQueried = false;
 static UINT				DisplaceRegistered[2] = {};	// vertex, pixel shaders registered this session
+static UINT				DisplaceDepthShaders = 0;	// 2026-10-27: land pixel shaders registered with ObjectBlend's TES (-d: the depth at s6)
+
+// 2026-10-27 ObjectBlend: the state DisplaceTick read (ObjectBlend's per-draw fields off), the packed ObjectBlend value, and what
+// SetTessState last got (DisplaceSceneDepth sends the base with ObjectBlend on for the world scene's land draws only).
+static NVR_EXT_TESS_STATE	DisplaceBase = {};
+static NVR_EXT_TESS_STATE	DisplaceSent = {};
+static bool					DisplaceSentOnce = false;
+static float				DisplaceObjectBlend = 0.0f;	// floor = ObjectBlendWidth, fraction / 0.99 = ObjectBlendKeep; 0 = off
+
+static void DisplaceSend(const NVR_EXT_TESS_STATE& State) {
+	if (DisplaceSentOnce && !memcmp(&State, &DisplaceSent, sizeof(State))) return;
+	DisplaceSent = State;
+	DisplaceSentOnce = true;
+	DisplaceInterface->SetTessState(&State);
+}
+
+// TerrainDisplace.tese's sceneScale: the viewport's share of the depth copy, x and y to 1/2048
+static float DisplacePackScale(float X, float Y) {
+	const float qx = floorf(std::clamp(X, 0.0f, 1.0f) * 2048.0f + 0.5f), qy = floorf(std::clamp(Y, 0.0f, 1.0f) * 2048.0f + 0.5f);
+	return qx * 4096.0f + qy;
+}
 
 // [Main.Main.Performance] NvrDxvkDisplacement (read here, not kept in SettingsMain: at shader load, then every 8 frames)
 static bool DisplaceSwitch() {
@@ -465,12 +486,37 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 		if (!strcmp(m->Name, "TEX_COUNT") && m->Definition) layers = atoi(m->Definition);
 	if (layers < 1 || layers > 7) return;	// not one of the land's lit pixel shaders
 
+	// 2026-10-27 ObjectBlend: a land pixel shader compiled with the scene's depth copy at s6 (TESR_DisplaceDepth, below 7 layers with
+	// NVR_DISPLACE_DEPTH) gets the TES that reads it (-d); any other (7 layers, or a .spv missing) the plain one, which keeps its bumps.
+	// Checked on the bytecode itself: DXVK refuses a TextureMask bit the pixel shader does not use, and the land would stay flat.
+	bool depthAtS6 = false;
+	{
+		ID3DXConstantTable* table = nullptr;
+		if (SUCCEEDED(D3DXGetShaderConstantTableEx((const DWORD*)Bytecode, D3DXCONSTTABLE_LARGEADDRESSAWARE, &table)) && table) {	// as ShaderRecord does
+			D3DXHANDLE handle = table->GetConstantByName(NULL, "TESR_DisplaceDepth");
+			depthAtS6 = handle && table->GetSamplerIndex(handle) == 6;
+			table->Release();
+		}
+	}
+
 	char cw[64], ccw[64];
-	_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d.tes", layers);
-	_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-ccw.tes", layers);
 	std::vector<char> tes, tesCcw;
-	if (!LoadSpirv(cw, tes)) return;
-	const bool haveCcw = LoadSpirv(ccw, tesCcw);
+	bool haveCcw = false;
+	if (depthAtS6) {
+		_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-d.tes", layers);
+		_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-d-ccw.tes", layers);
+		if (LoadSpirv(cw, tes)) haveCcw = LoadSpirv(ccw, tesCcw);
+		else {
+			depthAtS6 = false;
+			Logger::Log("UNOFFICIAL NVR DXVK: displacement: %s: no %s.spv (copy the new Compute\\Tess shaders): ObjectBlend off for this land", Name, cw);
+		}
+	}
+	if (!depthAtS6) {
+		_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d.tes", layers);
+		_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-ccw.tes", layers);
+		if (!LoadSpirv(cw, tes)) return;
+		haveCcw = LoadSpirv(ccw, tesCcw);
+	}
 
 	NVR_EXT_TESS_PS_DESC desc = {};
 	desc.pBytecode = Bytecode;
@@ -481,53 +527,82 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 	desc.pEvalSpirv[1] = haveCcw ? tesCcw.data() : nullptr;
 	desc.EvalSpirvSize[1] = haveCcw ? (UINT)tesCcw.size() : 0;
 	desc.TextureMask = (1u << layers) - 1u;	// BaseMap[0..layers-1] (s0..)
+	if (depthAtS6) desc.TextureMask |= 1u << 6;	// TESR_DisplaceDepth (ObjectBlend)
 	desc.PsFloatRegisters[0] = 34;			// LandHeight[0] (layers 0-3)
 	desc.PsFloatRegisters[1] = 35;			// LandHeight[1] (layers 4-6)
 	desc.pDebugName = Name;
 	const HRESULT result = tess->RegisterTessPixelShader(&desc);
-	if (SUCCEEDED(result)) DisplaceRegistered[1]++;
+	if (SUCCEEDED(result)) {
+		DisplaceRegistered[1]++;
+		if (depthAtS6) DisplaceDepthShaders++;
+	}
 	else Logger::Log("UNOFFICIAL NVR DXVK: displacement: land pixel shader %s refused (%08lX; DXVK's log says why): its land stays flat", Name, result);
+}
+
+bool DxvkCompute::DisplaceDepthWanted() {
+	return DisplaceInterface && DisplaceRegistered[0] && DisplaceDepthShaders && DisplaceBase.Enable && DisplaceObjectBlend > 0.0f;
+}
+
+void DxvkCompute::DisplaceSceneDepth(bool Valid, float ScaleX, float ScaleY) {
+	if (!DisplaceInterface || !DisplaceRegistered[0] || !DisplaceRegistered[1]) return;
+	NVR_EXT_TESS_STATE state = DisplaceBase;
+	if (Valid && DisplaceObjectBlend > 0.0f) {
+		state.ControlParams[6] = DisplaceObjectBlend;
+		state.EvalParams[3] = DisplacePackScale(ScaleX, ScaleY);
+	}
+	DisplaceSend(state);
 }
 
 void DxvkCompute::DisplaceTick() {
 	if (!DisplaceInterface || !DisplaceRegistered[0] || !DisplaceRegistered[1]) return;
 
 	// The settings, re-read every 8 frames (menu and test-list changes apply within that)
-	static NVR_EXT_TESS_STATE state = {};
+	NVR_EXT_TESS_STATE& state = DisplaceBase;
 	static unsigned frame = 0;
 	static NVR_EXT_TESS_STATS last = {};
 	if ((frame++ % 8) == 0) {
 		const char* s = "Shaders.Terrain.Displacement";
 		state.Enable = DisplaceSwitch() ? TRUE : FALSE;
-		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 6);
+		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 7);
 		state.Winding = TheSettingManager->GetSettingI(s, "Winding") == 1 ? 1 : 0;
 		state.Wireframe = debugView == 1 ? 1 : 0;
 		const float fadeStart = (std::max)(TheSettingManager->GetSettingF(s, "FadeStart"), 0.0f);
-		// TerrainDisplace.tesc push data
-		state.ControlParams[0] = (float)std::clamp(TheSettingManager->GetSettingI(s, "MaxFactor"), 1, 64);
+		// TerrainDisplace.tesc push data. 2026-10-27: MaxFactor and FixedFactor share [0] (small whole numbers), so [6] can carry
+		// ObjectBlend (on for the world scene's land draws only: DisplaceSceneDepth; 0 here).
+		state.ControlParams[0] = (float)std::clamp(TheSettingManager->GetSettingI(s, "MaxFactor"), 1, 64)
+			+ 128.0f * (float)std::clamp(TheSettingManager->GetSettingI(s, "FixedFactor"), 0, 64);
 		state.ControlParams[1] = std::clamp(TheSettingManager->GetSettingF(s, "EdgeLength"), 2.0f, 64.0f);
 		state.ControlParams[2] = std::clamp(TheSettingManager->GetSettingF(s, "EdgeGrowth"), 0.0f, 0.1f);
 		state.ControlParams[3] = fadeStart;
 		state.ControlParams[4] = (std::max)(TheSettingManager->GetSettingF(s, "FadeEnd"), fadeStart + 1.0f);
 		state.ControlParams[5] = (std::max)(TheSettingManager->GetSettingF(s, "BorderGrid"), 0.0f);
-		state.ControlParams[6] = (float)std::clamp(TheSettingManager->GetSettingI(s, "FixedFactor"), 0, 64);
+		state.ControlParams[6] = 0.0f;
 		state.ControlParams[7] = 0.0f;
-		// TerrainDisplace.tese push data
+		// TerrainDisplace.tese push data. 2026-10-27: DebugView and LodBias share [2], so [3] can carry the viewport's share of the
+		// depth copy (ObjectBlend, per draw; 1 x 1 here).
 		state.EvalParams[0] = std::clamp(TheSettingManager->GetSettingF(s, "Strength"), 0.0f, 64.0f);
 		state.EvalParams[1] = std::clamp(TheSettingManager->GetSettingF(s, "Center"), 0.0f, 1.0f);
-		state.EvalParams[2] = (float)debugView;
-		state.EvalParams[3] = std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f);
+		state.EvalParams[2] = 16.0f * (float)debugView + std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f) + 4.0f;
+		state.EvalParams[3] = DisplacePackScale(1.0f, 1.0f);
+		// ObjectBlend: the width in whole game units, the share kept at the object as the fraction
+		const bool blend = TheSettingManager->GetSettingI(s, "ObjectBlend") != 0;
+		const float width = floorf(std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendWidth"), 4.0f, 512.0f) + 0.5f);
+		const float keep = std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendKeep"), 0.0f, 1.0f);
+		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
 	}
-	DisplaceInterface->SetTessState(&state);
+	// Once a frame the base (ObjectBlend off: the first land draws of a frame are the water's reflection, whose view the copy is not);
+	// the world scene's land binds then switch it on (DisplaceSceneDepth). SetTessState only when it changes.
+	DisplaceSend(state);
 
 	// Proof in the log that it runs: every 600 frames, per frame, how many land draws ran tessellated
 	if ((frame % 600) == 1) {
 		NVR_EXT_TESS_STATS now = {};
 		if (SUCCEEDED(DisplaceInterface->GetTessStats(&now))) {
 			const double f = 600.0;
-			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | shaders %u VS, %u PS, %u refused by the interface check",
+			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | shaders %u VS, %u PS, %u refused by the interface check | ObjectBlend %s (%u of the %u land pixel shaders can: below 7 layers)",
 				state.Enable ? "on" : "off", (double)(now.TessellatedDraws - last.TessellatedDraws) / f, (double)(now.OtherTopologyDraws - last.OtherTopologyDraws) / f,
-				(double)(now.Bindings - last.Bindings) / f, now.VertexShaders, now.PixelShaders, now.RefusedPairs);
+				(double)(now.Bindings - last.Bindings) / f, now.VertexShaders, now.PixelShaders, now.RefusedPairs,
+				DisplaceObjectBlend > 0.0f ? "on" : "off", DisplaceDepthShaders, DisplaceRegistered[1]);
 			last = now;
 		}
 	}

@@ -45,6 +45,42 @@ vertex colour) prove the pixel shader's inputs arrive interpolated. Displacement
 the relief (height - 0.5) goes to 0 on quadrant borders, the offset (0.5 - Center) only fades with distance, so with Center 0 a
 border keeps the average raised level of the land on both sides (no groove along it). Test list: fork2-displace3-bulk.txt.
 
+## Black outlines round rocks, and ObjectBlend (2026-10-27, branch claude/tess-blend-4078c1, on claude/play-fork ac5f5de6)
+User: "some tessellation strength settings ... break terrain blending leaving black outlines between rocks and terrain"; terrain
+blending was off the whole time and switching it changes nothing.
+- Cause (from the code; not yet seen in a picture): the land pixel shader's FORWARD sun shadows (ForwardShadows, the user's setting)
+  look up `projectionPosition` (TEXCOORD6), which the TES left at the FLAT land. With Center 0 the land only rises. Where it rises
+  against a rock whose side slopes outward towards its foot (most rocks and mounds), the flat point under the raised land lies
+  INSIDE the rock, so the shadow map (which holds the rock) shadows it: a dark band round every rock, about rise / tan(slope) wide,
+  so wider with more Strength. Not AO / AmbientLight / fog: those read the scene depth, which is displaced and consistent; no gap
+  opens (Center 0 never sinks the land). The deferred sun shadows (ForwardShadows off) read the depth too, so they never had it.
+- Fix: the TES writes `projectionPosition = v7 + max(disp, 0) x clipN`: it rises with the land, never below the flat land (the
+  shadow maps still hold the flat land; a point under it would shadow itself, round 2's dark land). Fog reads it too (a few units).
+- ObjectBlend (`[Shaders.Terrain.Displacement] ObjectBlend = true`, `ObjectBlendWidth = 32`, `ObjectBlendKeep = 0`, all live;
+  `DebugView 7` shows it): the displacement (relief and the Center offset) is scaled by mix(Keep, 1, smoothstep(0, 1, dist / Width)),
+  dist = the distance from the land point to the nearest surface drawn before the land (rocks, buildings, feet, the near grass that
+  GrassFirst draws first), so those meet the ground as on flat land instead of sinking in. The TES projects 9 flat-land points
+  (the point, 4 at Width/2, 4 at Width) with ModelViewProj and reads terrain blending's depth copy (made at the first land bind of
+  the world scene; now also with blending off when ObjectBlend wants it) at each: gap = land view depth - scene view depth
+  (scene view depth = B / (depth - A), A and B from MVP rows 2 and 3: row 2 = A x row 3 + (0, 0, 0, B) for any perspective camera),
+  dist = min sqrt(offset^2 + gap^2). Linear filtering + clamping the uv keep it continuous (shared patch edges agree: no cracks).
+- How the TES gets the depth without a d3d9 change: the fork lets a TES read only textures its pixel shader uses, s0-s7. With
+  NvrDxvkDisplacement on at startup (`NVR_DISPLACE_DEPTH`), TerrainTemplate's pixel shaders below 7 layers declare
+  `TESR_DisplaceDepth` at s6, BaseMap[6]'s slot (fxc and d3dx9_43 give BaseMap only the layers read; checked), used in a branch never
+  taken; RegisterDisplace checks the bytecode's constant table and registers those with `TerrainDisplace-t<N>-d[-ccw].tes`
+  (OBJECT_DEPTH) and TextureMask bit 6. 7-layer land has no free slot: plain TES, keeps its bumps. Moving the slot to s15 for all
+  layer counts would need patch 0021 to accept TextureMask bits 8-15 (one more push dword of sampler indices).
+- Per draw: the copy is this view's only in the world scene (not the water reflection), so Terrain.cpp PrepareDisplaceDepth
+  (ShaderRecord::SetCT of those land shaders) calls DxvkCompute::DisplaceSceneDepth, which sends SetTessState with ObjectBlend on
+  (ControlParams[6], forwarded by the TCS in o_nvr.w) and the viewport's share of the copy (EvalParams[3]: RenderScale draws the
+  world into the top-left part) for world-scene land, the base state (ObjectBlend off) elsewhere; SetTessState only on change.
+  Push room: MaxFactor and FixedFactor now share ControlParams[0] (MaxFactor + 128 x FixedFactor), DebugView and LodBias share
+  EvalParams[2] (16 x DebugView + LodBias + 4). The DLL and the .spv files must be updated together.
+- Cost (not measured): one depth copy a frame (~0.1 ms at 1440p, F10 "Terrain blend depth copy"), 9 depth taps per generated
+  vertex within FadeEnd. GrassFirst stays on (its grass is in the copy, so the bumps also fade round grass tufts: they sit on the
+  ground). The land pixel shaders recompile once (new define).
+- Not done: the bumps still cast no shadows of their own (plan step 2 below).
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land
