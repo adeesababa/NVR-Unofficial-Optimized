@@ -30,6 +30,7 @@
 #include "../../core/PbrPop.h"	// UNOFFICIAL 2026-10-18 PBR pop-in: SpecularFade, SpecularLODPasses (+ test diagnostic)
 #include "../../core/PassFamilyView.h"	// UNOFFICIAL 2026-10-21, diagnostic: which pass family draws each lit object
 #include "../../core/LinearSceneCensus.h"	// UNOFFICIAL 2026-10-28, diagnostic: what draws into the world and how (linear-scene plan)
+#include "../../core/LinearScene.h"	// UNOFFICIAL 2026-10-28 LinearScene: the world's main list kept in linear light
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 #include "../../core/GrassShadows.h"	// UNOFFICIAL 2026-10-27 grass sun shadows: the early grass drawn again into the near sun shadow map (GrassFirst)
@@ -659,6 +660,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	PbrPop::SpecDistance::BeginFrame();	// UNOFFICIAL 2026-10-27 SpecularDistance (before the scene walk builds the objects' passes)
 	CharacterObjectReach::BeginFrame();	// UNOFFICIAL 2026-10-23 CharacterObjectReach
 	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
+	LinearScene::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-28 LinearScene
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
@@ -2450,6 +2452,9 @@ namespace GrassFirst {
 #if NVR_TEST_TOOLS
 		struct CensusMain { bool was; CensusMain() : was(LinearSceneCensus::InMain) { LinearSceneCensus::InMain = true; } ~CensusMain() { LinearSceneCensus::InMain = was; } } censusMain;	// UNOFFICIAL 2026-10-28, diagnostic
 #endif
+		// UNOFFICIAL 2026-10-28 LinearScene: the world's main list in linear light, left encoded at its end (core/LinearScene.h).
+		struct LinearSpan { bool on; LinearSpan() : on(ShaderSplit::CurrentContext == ShaderSplit::World) { if (on) LinearScene::BeginSpan(TheRenderManager->device); }
+			~LinearSpan() { if (on) LinearScene::EndSpan(TheRenderManager->device); } } linearSpan;
 		ActiveAccumulator = nullptr;
 		if (first == 1 && last == 0x25B && group < 0) DepthFirst(accumulator, arg3, group);	// UNOFFICIAL 2026-10-26 LampsDepthFirst
 		if (first == 1 && last == 0x25B && group < 0 && Allowed(accumulator)) {
@@ -2634,7 +2639,9 @@ namespace GameEyes {
 
 	static void Before(const PointShadowForward::RenderPassView* pass) {
 		Active = false;
-		if (!GameShaderEyes || !pass || !pass->geometry) return;
+		// UNOFFICIAL 2026-10-28: with LinearScene on, the eyes keep NVR's shader (a game shader there would turn the whole frame back to the
+		// stored curve and forth again for every eye).
+		if (!GameShaderEyes || LinearScene::Live || !pass || !pass->geometry) return;
 		const BSShaderProperty* prop = static_cast<const BSShaderProperty*>(((NiGeometry*)pass->geometry)->GetProperty(NiProperty::kType_Shade));
 		if (!prop || !prop->GetFlag(BSSP_EYE_ENVIRONMENT_MAPPING)) return;
 		Active = true;

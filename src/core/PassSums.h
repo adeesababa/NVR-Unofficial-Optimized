@@ -16,6 +16,7 @@
 // their anti-aliasing (exact inside surfaces; at an object's edge the difference of the pixel's average is used).
 #include <d3dx9.h>
 #include "GpuProfiler.h"
+#include "LinearScene.h"	// UNOFFICIAL 2026-10-28: with LinearScene live the sums are exact already (every mode off)
 
 namespace PassSums {
 
@@ -327,6 +328,7 @@ namespace PassSums {
 			Logger::Log("UNOFFICIAL HighlightSums: %s", HighlightSumsCompiled ? "compiled in (the highlight passes FoldHighlights leaves to the game add their light in linear light)" :
 				"off (not compiled into the shaders)");
 		}
+		if (LinearScene::Live) return 0;	// UNOFFICIAL 2026-10-28 LinearScene: the game's blends already add in linear light
 		const int exact = TheSettingManager->GetSettingI("Shaders.PBR.Linear", "ExactPassSums");
 		int mode = 0;
 		if (LampSumsCompiled && Gamma > 1.0f && TheSettingManager->GetSettingI("Shaders.PBR.Main", "LampSums")) mode |= kIncrements | Lamps;

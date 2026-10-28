@@ -1542,6 +1542,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if defined(ONLY_SPECULAR)
         OUT.highlightCopy = OUT.color;   // UNOFFICIAL NewSkin: alpha too, so any blend the pass uses adds alike to both targets
     #endif
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 
     return OUT;
 }
@@ -1851,6 +1852,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
     #endif
     OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 
     return OUT;
 }
