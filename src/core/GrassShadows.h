@@ -5,10 +5,15 @@
 #include <vector>
 #include "NewGrass.h"
 
+extern unsigned SunCascadesDrawnMask;
+
 namespace GrassShadows {
 	struct Record { void* pass; UInt32 passId, a3, a4, a5; };
 
 	inline bool Enabled = true;
+	inline float Reach = 1050.0f;
+	inline int Cascade = 0;
+	inline const char* const CascadeNames[3] = { "near", "middle", "far" };
 	inline std::vector<Record> Records;
 	inline bool Active = false;
 	inline bool Hooked = false;
@@ -40,6 +45,7 @@ namespace GrassShadows {
 	inline void ReadSettings() {
 		Enabled = TheSettingManager->GetSettingI("Shaders.Grass.Main", "CastShadows") != 0;
 		Black = TheSettingManager->GetSettingI("Shaders.Grass.Main", "CastShadowsBlack") != 0;
+		Reach = max(0.0f, TheSettingManager->GetSettingF("Shaders.Grass.Main", "CastShadowsReach"));
 	}
 
 	inline void Note(void* pass, UInt32 passId, UInt32 a3, UInt32 a4, UInt32 a5) {
@@ -48,10 +54,15 @@ namespace GrassShadows {
 
 	inline bool InNear(void* pass) {
 		NiAVObject* geometry = *(NiAVObject**)pass;
-		if (!geometry) return true;
+		if (!geometry) return Cascade == 0;
 		const NiBound* bound = geometry->GetWorldBound();
-		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return true;
+		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return Cascade == 0;
 		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		if (Cascade > 0) {
+			const float cx = bound->Center.x - cam.x, cy = bound->Center.y - cam.y, cz = bound->Center.z - cam.z;
+			const float limit = Reach + bound->Radius;
+			if (cx * cx + cy * cy + cz * cz > limit * limit) return false;
+		}
 		const float dx = bound->Center.x - cam.x - NearSphere.x, dy = bound->Center.y - cam.y - NearSphere.y, dz = bound->Center.z - cam.z - NearSphere.z;
 		const float reach = bound->Radius + NearSphere.w;
 		const bool inside = dx * dx + dy * dy + dz * dz <= reach * reach;
@@ -173,9 +184,11 @@ namespace GrassShadows {
 		Hooked = false;
 	}
 
-	inline bool Begin(IDirect3DDevice9* device) {
+	inline bool Begin(IDirect3DDevice9* device, int cascade = ShadowsExteriorEffect::MapNear) {
 		Active = false;
 		if (!Enabled || Records.empty() || !device || !TheShaderManager->GameState.isExterior) return false;
+		if (cascade < ShadowsExteriorEffect::MapNear || cascade > ShadowsExteriorEffect::MapFar) return false;
+		if (cascade > ShadowsExteriorEffect::MapNear && (!(Reach > 0.0f) || !(SunCascadesDrawnMask & (1u << cascade)))) return false;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		if (!shadows || !shadows->Enabled || !shadows->ShadowAtlasSurface || !shadows->ShadowAtlasDepthSurface) return false;
 		if (shadows->Settings.ShadowMaps.Mode != 3 || shadows->ShadowAtlasSurfaceMSAA) {
@@ -187,7 +200,13 @@ namespace GrassShadows {
 		if (!(shadows->Constants.ShadowFade.y > 0.0f) || shadows->Constants.ShadowFade.x >= 1.0f) return false;
 		if (!LoadShaders()) return false;
 
-		const ShadowsExteriorEffect::ShadowMapSettings& map = shadows->ShadowMaps[ShadowsExteriorEffect::MapNear];
+		const ShadowsExteriorEffect::ShadowMapSettings& map = shadows->ShadowMaps[cascade];
+		if (cascade > ShadowsExteriorEffect::MapNear) {
+			const D3DXVECTOR4& inner = shadows->ShadowMaps[cascade - 1].ShadowMapCascadeCenterRadius;
+			const float innerReach = sqrtf(inner.x * inner.x + inner.y * inner.y + inner.z * inner.z) + inner.w;
+			if (innerReach >= Reach) return false;
+		}
+		Cascade = cascade;
 		CameraToLight = &map.ShadowCameraToLight;
 		NearSphere = map.ShadowMapCascadeCenterRadius;
 		ProbeSet = false;
@@ -248,13 +267,14 @@ namespace GrassShadows {
 		device->SetViewport(&SavedViewport);
 		for (DWORD i = 0; i < 4; i++) if (SavedTarget[i]) { SavedTarget[i]->Release(); SavedTarget[i] = nullptr; }
 		if (SavedDepth) { SavedDepth->Release(); SavedDepth = nullptr; }
-		Frames++;
+		if (Cascade == ShadowsExteriorEffect::MapNear) Frames++;
 		if (Frames <= 3 || Frames == 60 || Frames == 600 || Frames % 3600 == 0) {
 			char pixels[32] = "not known yet";
 			if (PixelsKnown) sprintf_s(pixels, "%lu", (unsigned long)LastPixels);
-			Logger::Log("UNOFFICIAL grass shadows: frame %u: %u early grass passes drawn into the near sun shadow map (%u draws; %u skipped: not NVR's grass VS; %u put back on the map: a pass had changed the target or viewport), %u outside the near cascade; map pixels written (last read) %s; first near piece at %.3f %.3f %.3f in the map (x, y -1..1, z 0..1 to be on it)%s",
-				Frames, StatPasses, StatDraws, StatSkipped, StatRetarget, StatOutside, pixels, ProbeLight.x, ProbeLight.y, ProbeLight.z, Black ? "; CastShadowsBlack on" : "");
+			Logger::Log("UNOFFICIAL grass shadows: frame %u: %u early grass passes drawn into the %s sun shadow map (%u draws; %u skipped: not NVR's grass VS; %u put back on the map: a pass had changed the target or viewport), %u outside it%s; map pixels written (last read, near map) %s; first piece at %.3f %.3f %.3f in the map (x, y -1..1, z 0..1 to be on it)%s",
+				Frames, StatPasses, CascadeNames[Cascade], StatDraws, StatSkipped, StatRetarget, StatOutside, Cascade ? " or past CastShadowsReach" : "", pixels, ProbeLight.x, ProbeLight.y, ProbeLight.z, Black ? "; CastShadowsBlack on" : "");
 		}
+		Cascade = ShadowsExteriorEffect::MapNear;
 		StatPasses = StatOutside = StatDraws = StatSkipped = StatRetarget = 0;
 	}
 }

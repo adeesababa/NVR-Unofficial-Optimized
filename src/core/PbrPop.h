@@ -269,6 +269,11 @@ namespace PbrPop {
 		inline void NewFrame() {
 			Enabled = (unsigned)(std::max)(TheSettingManager->GetSettingI("Main.Main.Misc", "PbrPopLog"), 0);
 			if (!Enabled || !Table) { FrameId++; return; }
+			if (TheShaderManager->GameState.isCellChanged || (InterfaceManager && InterfaceManager->currentMode != 1)) {
+				for (unsigned i = 0; i < kSlots; i++) Table[i] = Slot();
+				FrameId++;
+				return;
+			}
 			const unsigned done = FrameId;
 			unsigned count = 0, oneToMulti = 0, multiToOne = 0, toPlain = 0, toShiny = 0, other = 0, detail = 0;
 			const int shot = SettingShots::Running ? (int)SettingShots::Index : -1;

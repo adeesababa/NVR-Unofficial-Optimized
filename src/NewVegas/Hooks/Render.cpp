@@ -2124,8 +2124,12 @@ namespace GrassFirst {
 	}
 
 	static void DrawGrassShadows() {
-		if (GrassShadows::Begin(TheRenderManager->device)) {
-			static GpuTimer grassShadowTimer("Grass shadows");
+		static GpuTimer grassShadowTimer("Grass shadows");
+		for (int cascade = ShadowsExteriorEffect::MapNear; cascade <= ShadowsExteriorEffect::MapFar; cascade++) {
+			if (!GrassShadows::Begin(TheRenderManager->device, cascade)) {
+				if (cascade == ShadowsExteriorEffect::MapNear) break;
+				continue;
+			}
 			GpuProfileScope gpu(grassShadowTimer, TheRenderManager->device);
 			GrassShaders::DrawPart = 0;
 			((void(__cdecl*)())kEndPass)();
@@ -2313,6 +2317,49 @@ void AttachGrassFirstRenderPassHook() {
 		GrassFirst::Installed = DetourAttach(&(PVOID&)GrassFirst::RenderPassImmediately, &GrassFirst::RenderPassImmediatelyHook) == NO_ERROR;
 }
 
+namespace GameEyes {
+	static bool Active = false;
+	static NiD3DPixelShaderEx* PS = nullptr;
+	static NiD3DVertexShaderEx* VS = nullptr;
+
+	static void Apply(NiD3DPixelShaderEx* ps, NiD3DVertexShaderEx* vs) {
+		IDirect3DDevice9* device = TheRenderManager->device;
+		const bool nvrPixel = ps && ps->ShaderHandleBackup && ps->ShaderHandle != ps->ShaderHandleBackup;
+		const bool nvrVertex = vs && vs->ShaderHandleBackup && vs->ShaderHandle != vs->ShaderHandleBackup;
+		PS = nvrPixel ? ps : nullptr;
+		VS = nvrVertex ? vs : nullptr;
+		if (PS) device->SetPixelShader((IDirect3DPixelShader9*)PS->ShaderHandleBackup);
+		if (VS) device->SetVertexShader((IDirect3DVertexShader9*)VS->ShaderHandleBackup);
+		static bool announced = false;
+		if ((PS || VS) && !announced) {
+			announced = true;
+			Logger::Log("UNOFFICIAL GameShaderEyes: eyeballs drawn with the game's own shaders, per draw (first: %s + %s)",
+				vs && vs->Name ? vs->Name : "?", ps && ps->Name ? ps->Name : "?");
+		}
+	}
+
+	static void Before(const PointShadowForward::RenderPassView* pass) {
+		Active = false;
+		if (!GameShaderEyes || !pass || !pass->geometry) return;
+		const BSShaderProperty* prop = static_cast<const BSShaderProperty*>(((NiGeometry*)pass->geometry)->GetProperty(NiProperty::kType_Shade));
+		if (!prop || !prop->GetFlag(BSSP_EYE_ENVIRONMENT_MAPPING)) return;
+		Active = true;
+		NiD3DPass* bound = *(NiD3DPass**)0x0126F74C;
+		if (bound) Apply((NiD3DPixelShaderEx*)bound->PixelShader, (NiD3DVertexShaderEx*)bound->VertexShader);
+	}
+
+	static void OnBind(NiD3DPixelShaderEx* ps, NiD3DVertexShaderEx* vs) { if (Active) Apply(ps, vs); }
+
+	static void After() {
+		if (!Active) return;
+		Active = false;
+		IDirect3DDevice9* device = TheRenderManager->device;
+		if (PS) device->SetPixelShader(PS->ShaderHandle);
+		if (VS) device->SetVertexShader(VS->ShaderHandle);
+		PS = nullptr; VS = nullptr;
+	}
+}
+
 void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 	BarrelHeat::Clear();
 	const bool profiling = ShaderSplit::FrameProfiled;
@@ -2379,21 +2426,6 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 				VertexShader && VertexShader->Name ? VertexShader->Name : "?", PixelShader->Name);
 		}
 	}
-	if (GameShaderEyes && Geometry) {
-		const BSShaderProperty* eyeProp = static_cast<const BSShaderProperty*>(Geometry->GetProperty(NiProperty::kType_Shade));
-		if (eyeProp && eyeProp->GetFlag(BSSP_EYE_ENVIRONMENT_MAPPING)) {
-			const bool nvrPixel = PixelShader && PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
-			const bool nvrVertex = VertexShader && VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
-			if (nvrPixel) PixelShader->ShaderHandle = (IDirect3DPixelShader9*)PixelShader->ShaderHandleBackup;
-			if (nvrVertex) VertexShader->ShaderHandle = (IDirect3DVertexShader9*)VertexShader->ShaderHandleBackup;
-			static bool announced = false;
-			if ((nvrPixel || nvrVertex) && !announced) {
-				announced = true;
-				Logger::Log("UNOFFICIAL GameShaderEyes: eyeballs drawn with the game's own shaders (first: %s, %s + %s)", Geometry->m_pcName ? Geometry->m_pcName : "?",
-					VertexShader && VertexShader->Name ? VertexShader->Name : "?", PixelShader && PixelShader->Name ? PixelShader->Name : "?");
-			}
-		}
-	}
 	if (VertexShader && PixelShader && TheShaderManager->Shaders.Particles && TheShaderManager->Shaders.Particles->Enabled) {
 		const bool nvrVertex = VertexShader->ShaderHandleBackup && VertexShader->ShaderHandle != VertexShader->ShaderHandleBackup;
 		const bool nvrPixel = PixelShader->ShaderHandleBackup && PixelShader->ShaderHandle != PixelShader->ShaderHandleBackup;
@@ -2423,6 +2455,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+	GameEyes::OnBind(PixelShader, VertexShader);
 	MaterialRulesDraw::AfterBind();
 	ReflectionProbe::AfterBind();
 	BarrelHeat::SetForDraw(Geometry, VertexShader, PixelShader);
@@ -2597,7 +2630,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);
+	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
+	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS
@@ -2648,7 +2683,9 @@ void __cdecl RenderPassSkinnedHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32 
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);
+	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);
 	RenderPassSkinned(Pass, Arg2, Arg3, Arg4);
+	GameEyes::After();
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
 #if NVR_TEST_TOOLS

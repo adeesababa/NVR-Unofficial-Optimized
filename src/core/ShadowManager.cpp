@@ -284,6 +284,8 @@ static void CubeFaceSkipSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* l
 */
 #include "GpuProfiler.h"
 
+unsigned SunCascadesDrawnMask = 0;
+
 constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, int nearInterval = 1, bool staggered = false) {
 	if (cascade == ShadowManager::MapNear) return nearInterval == 2 ? 2 : 1;
 	if (staggered) {
@@ -1775,6 +1777,7 @@ void ShadowManager::RenderShadowMaps() {
 				"drawn (read this frame: the volumetric fog's sun glow, the volumetric light or the deferred lookup; or no full draw yet)" : "drawn");
 			loggedSkip = skipState;
 		}
+		SunCascadesDrawnMask = 0;
 		if (ExteriorEnabled && SunDir.z > 0.0f && !skipCascades) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);
@@ -1955,6 +1958,7 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			SunCascadesDrawnMask = updatedCascades;
 			if (oneWalk && updatedCascades) {
 				for (int c = 0; c < 4; c++) { SunForms[c] = &Shadows->ShadowMaps[c].Forms; SunPlanes[c] = &Shadows->ShadowMaps[c].ShadowMapFrustumPlanes; }
 				SunLandDropScale = min(1.0f, 2.0f * max(SunDir.z, 0.0f));
