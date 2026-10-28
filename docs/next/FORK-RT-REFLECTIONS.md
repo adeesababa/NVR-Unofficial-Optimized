@@ -9,7 +9,9 @@ This pass only uses them.
 | Item | State |
 |---|---|
 | In-game passes `Compute/ReflectionsRayGen.frag`, `ReflectionsRTResolve.frag`, `ReflectionsRT.glsl` | written, compile (Vulkan 1.1, spirv-val OK) |
-| Helper pass `Compute/RT/ReflectionsRT.comp` (ray queries) | written, compiles (Vulkan 1.2, spirv-val OK); bindings to be matched with FORK-RT-CORE.md |
+| Helper pass `Compute/Rt/ReflectionsRT.comp` (ray queries) | written on the core's layout (FORK-RT-CORE.md), compiles (Vulkan 1.2, spirv-val OK) |
+| RT core user (`RtRegister`: images, shader, Record) | written, builds, on the core's API (rebased onto 3093064f) |
+| Late exchange `RtCore::Exchange` (between RayGen and Resolve) | **requested from rt-sun-core**; `RtCoreClient::Exchange` answers false until `NVR_RTCORE_EXCHANGE` |
 | C++ (`effects/Reflections.cpp`, `core/RtCoreClient.h`), settings `[Shaders.Reflections.RT]` | builds; RT answers "no" until the core is merged |
 | SplitTest (RayGen + Resolve without rays, any GPU) | **PASS** on the 1070 (luxe): same picture, +0.045 ms (Results) |
 | RT core | **waiting on rt-sun-core** (helper process, first end-to-end test pending) |
@@ -29,13 +31,14 @@ This changed this pass's first design (a ray query inside the trace shader, comm
 1. **RayGen** (in game, `ReflectionsRayGen.frag`, half resolution, technique 8). It is `ReflectionsTrace.frag` line for line up
    to the end of the screen-space march. It then writes three targets instead of shading the fallbacks:
    - `March` (RGBA16F): what the march found (linear colour, confidence);
-   - `Dir` (RGBA32F): the reflected direction (world) and the roughness (-1 = nothing reflects here);
-   - `Origin` (RGBA32F): the surface point (camera-relative world); a = 1 where a ray is wanted. That is where the march
+   - `Dir` (RG32F, shared): the reflected direction (world axes), octahedral-encoded;
+   - `Ray` (RG32F, shared): x the surface's view z (0 = nothing reflects here), y the roughness, + 2 where a ray is wanted. That is where the march
      left a share missing (confidence below 1) on a surface no rougher than `MaxRoughness` (RT fades in from 75 % of it).
      SSR comes first, and a ray is cast only where SSR misses.
-2. **The helper** (`RT/ReflectionsRT.comp`, one thread per half-resolution pixel) reads `Dir` and `Origin`. Where a ray is wanted it
+2. **The helper** (`Rt/ReflectionsRT.comp`, one thread per half-resolution pixel) reads `Dir` and `Ray`. It rebuilds the surface from
+   the view z the way `RtSunShadows` does (scene space = world minus `CameraPosition`). Where a ray is wanted it
    runs one closest-hit query from the surface, starting 1 + 0.15 % of the distance along it (past the depth buffer's own error).
-   From the hit it sends one shadow ray toward the sun (outdoors, by day). It writes `Hit` (RGBA32F): the distance (-1 no ray
+   From the hit it sends one shadow ray toward the sun (outdoors, by day). It writes `Hit` (RGBA16F): the distance (-1 no ray
    asked, 0 nothing within `Distance`), the instance index, sun visibility, the primitive index.
 3. **Resolve** (in game, `ReflectionsRTResolve.frag`, technique 9) writes what the trace writes, so temporal, blur and composite
    are untouched. A hit fills the whole missing share, from the first source that can show it:
@@ -117,10 +120,17 @@ shore and docks next to it.
 Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open points are:
 
 1. The helper pass binding layout: **settled** by `NvrRtProtocol.h` (253a5c32). Set 0: binding 0 the scene, 1 the pass constants
-   (up to 512 B), 2..9 the pass's shared images as storage images. `ReflectionsRT.comp` uses `Dir` and `Origin` at 2-3 (readonly)
+   (up to 512 B), 2..9 the pass's shared images as storage images. `ReflectionsRT.comp` uses `Dir` and `Ray` at 2-3 (readonly)
    and `Hit` at 4 (written), plus a 48-byte constant block. The scene is in camera-relative world space, so the offset is 0.
-   Still open: the NVR-side `RtCore` class (registering shared images at setup, CopyToShared / CopyFromShared per pass).
-2. Shared image formats: RGBA32F for `Dir`/`Origin`/`Hit` (RGBA16F would do for `Dir`).
+   The NVR side is `RtCore` (AddUser / AddImage / AddShader / CopyIn / AddPass / CopyOut); this effect is a user (`RtRegister`).
+2. Shared image formats: only RGBA16F, RG16F, R32F, RG32F, RGBA8 and R16F, so the rays are two RG32F images (an octahedral direction;
+   view z + roughness) and the hits are RGBA16F.
+2b. **The late exchange (blocker).** The core exchanges once a frame, at `RtCore::Frame` before the sun shadows. Reflections makes
+   its rays much later: the material buffer is captured after that point, and the rays depend on the screen march. It also needs the
+   hits before Resolve in the same frame. Requested: `RtCore::Exchange(Device, user)`, a second exchange for one user at the moment
+   it calls it, reusing the frame's scene. The alternatives are worse: rays made at the core's point lose MaterialAware and the
+   SSR-first rule, and last frame's rays give one frame of lag (ghosting). Also requested: run `RtCore::Frame` indoors outside the
+   shadow branch.
 3. Scene space vs NVR's camera-relative world (`RtCoreClient::Offset`).
 4. Per-instance records by `instanceCustomIndex`: average albedo per draw, the hit normal (tiers 3-4); flag bits for alpha-tested /
    foliage / skinned / water / sky. The sky dome and water must be left out of the scene or masked, or a reflected ray stops at the
@@ -131,7 +141,7 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 ## Build / files
 
 - `src/hlsl/NewVegas/Compute/ReflectionsRayGen.frag`, `ReflectionsRTResolve.frag`, `ReflectionsRT.glsl` (in game),
-  `RT/ReflectionsRT.comp` (helper). `tools/nvr-dxvk/compile-compute.sh` now builds `RT/*.comp` for Vulkan 1.2, the rest as before.
+  `Rt/ReflectionsRT.comp` (helper). `tools/nvr-dxvk/compile-compute.sh` now builds `Rt/*.comp` for Vulkan 1.2, the rest as before.
 - `src/core/RtCoreClient.h`: the only code written against the core's API (`Ready`, `Trace`, `Offset`, `HasMaterials`).
 - `src/effects/Reflections.{h,cpp}`: settings, `RtWanted`, `RtImages` (made on first use), `RtTrace`, techniques 8/9 in
   `ExtRender` (RT uniform on buffer slot 2, the four RT images on image slots 16-19).
@@ -157,6 +167,6 @@ Run `bench/autotest/20261028-124747-slotA`, shots `H:\_NVR-autotest-shots\202610
 
 **Same picture**: the split differs from the old trace no more than the old trace differs from itself.
 **Cost of the split** (F10 `Reflections trace (half)`, p50 over 120 frames per shot): old 0.140-0.142 ms, split 0.185-0.186 ms, i.e.
-**+0.045 ms** for RayGen's two extra RGBA32F targets and the Resolve pass. Rays come on top of that. The whole effect is
+**+0.045 ms** for RayGen's two extra targets (then RGBA32F; now G32R32F) and the Resolve pass. Rays come on top of that. The whole effect is
 0.64 -> 0.69 ms p50.
 The rain scene (wet road) was refused: slim slot A has no save NVRAutoTest7. It goes into the iGPU run on a full slot.
