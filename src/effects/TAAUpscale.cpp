@@ -262,8 +262,14 @@ bool TAAEffect::UpscaleBegin(bool firstWorld) {
 	if (problem >= 0) { target->Release(); depth->Release(); return skip(problem); }
 
 	const float scale = FSRSettings.RenderScale;
-	const UINT renderWidth = (std::clamp)((UINT)floorf((float)width * scale + 0.5f), 16u, width);
-	const UINT renderHeight = (std::clamp)((UINT)floorf((float)height * scale + 0.5f), 16u, height);
+	// UNOFFICIAL 2026-10-27 (user: "the half screen ambient light darkening specifically on balanced fsr not the other settings"): the
+	// internal size is a multiple of 8. At 2560 x 1440, Balanced (0.588) gave 1505 x 847, the only preset odd both ways: the effects'
+	// half / quarter / eighth buffers then drew a part half a texel off the frame's (753 for 752.5), an offset growing across the
+	// picture, and AmbientLight's depth-aware upsampling tipped over to the wrong texels past a line (the split). A multiple of 8 keeps
+	// every one of them whole (at most 0.3 % off the chosen scale). The native size (scale 1) stays exact.
+	auto snap = [](UINT full, float s) { const UINT r = (UINT)floorf((float)full * s / 8.0f + 0.5f) * 8u; return s >= 1.0f ? full : (std::clamp)(r, 16u, full); };
+	const UINT renderWidth = snap(width, scale);
+	const UINT renderHeight = snap(height, scale);
 
 	Up.Width = width;
 	Up.Height = height;
