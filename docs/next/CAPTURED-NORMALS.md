@@ -90,10 +90,28 @@ Candidates:
 | AmbientOcclusion / AmbientLight | GTAO and bounce from the real normal (no facets on low-poly rocks, characters); replaces NormalSmoothing taps where valid | `AmbientOcclusion.fx`, `AmbientLight.fx` |
 | PointShadows darkening, Specular, Reflections | smooth facing terms | their `.fx` |
 
-## Cost (measured: see "Run" below)
+## Self-check and the agreement guard
 
-Per frame with it on: one fp16 screen-target clear, one 8-byte write per template pixel (the main list's opaque pixels), a few render
-state sets per draw, and with MSAA a resolve. Off: nothing.
+- **Self-check** (main session's warning: P31 MergedDepthNormals' two-target draw was silently dropped by native D3D9 on a GTX 1070):
+  on the 60th, 300th and 1200th captured frame (then every 18,000th) the target is read back at 64 x 64: empty right after the clear,
+  some texels written after the list. Any failure turns the capture off for the session with a log line; the readers fall back.
+- **Agreement guard** (`CapturedNormalAgrees`): a captured normal is taken only within ~60 degrees of the depth-rebuilt one
+  (`TESR_CapturedNormalsData.w` = 0.5). The first run showed a few thin pieces at a slab's edge (og-desert) whose captured normal was
+  90+ degrees off, which turned to black diamonds in the snow. Which shader draws them is not known yet (follow-up); DebugView 2 shows
+  them red.
+
+## Cost
+
+Per frame with it on: one fp16 screen-target clear, one 8-byte write per template pixel, a few render-state sets per draw, with MSAA a
+resolve. F10 profile per shot (og-desert, GTX 1070, NVR DXVK; 2-3 samples each, noisy):
+
+| | world scene (game), capture off -> on | Snow accumulation, depth normals -> captured |
+|---|---|---|
+| FSR 0.667 | 1.430 -> 1.429 ms | 1.497 -> 1.205 ms |
+| native res | 2.400 -> 2.200 ms | 1.543 -> 1.518 ms |
+| looking down | 2.583 -> 2.347 ms | 2.140 -> 1.702 ms |
+
+The capture is below the noise (well under 0.1 ms); snow gets cheaper (the depth smoothing taps are skipped where the normal is captured).
 
 ## Run
 
@@ -103,7 +121,16 @@ Lists `bench\foundations\lists\capnormals-1-desert.txt` (FSR on and off, Look 0 
 Note: older snow lists set `ForceSnow` under `[Shaders.Precipitations.Main]`; the code reads `[Shaders.Snow.Main]`, and
 SnowAccumulation is off by default, which is why those runs showed no snow cover.
 
-Results: (filled in below after the run)
+Results (2026-10-28, branch c1684e95):
+
+| run | where | result |
+|---|---|---|
+| 20261028-152942-slotC | NVR DXVK fork, FSR 0.667 on / off, Look 0 / 1 | PASS. Self-check ok (0 / ~1,015 of 4,096 texels). ~160-370 draws per frame write normals, 7-94 masked. Snow on the jagged rock slab: depth normals put translucent triangle patches of snow over the steep sides; captured: sides bare, snow on the tops only, clean edges; no triangles. FSR: same. LowResEffects off: the guard (falls back). |
+| 20261028-153748-slotC | NVR DXVK fork, game MSAA 4x | PASS. Scene draws normally with the multisampled target bound; self-check ok; view as without MSAA. |
+| 20261028-153413-slotC | native D3D9 | PASS, but the capture never runs: 0.5 draws per frame reach the hook. **LinearScene's draw hook also sees ~0 draws on native** (2.4 vs ~1,400 on the fork): the device vtable hooks do not see the game's draws there. Snow = as before (fallback). Pre-existing for LinearScene; needs its own look. |
+| 20261028-152222-slotC | (first try, before the guard) | all my shots taken; the game crashed in the queue's hand-over moveto to a second, batched list (game code 0x008F644F), not in NVR; reruns were solo. |
+
+Pictures: `H:\_NVR-autotest-shots61028-152942-slotC-capnormals1` (and the other run folders).
 
 ## Files to copy (manual install)
 
@@ -113,6 +140,6 @@ Results: (filled in below after the run)
     `Shaders\SkinTemplate.hlsl`, `Shaders\TerrainTemplate.hlsl`
   - `Effects\Includes\CapturedNormals.hlsl` (new), `Effects\SnowAccumulation.fx.hlsl`
   - `Compute\SnowAccumulation.frag`, `Compute\SnowAccumulation.spv`
-- `Textures\Effects\Snownoise256.dds` -> `<game>\Data\Textures\Effects\` (Look 1 only)
+- `Textures\Effects\Snownoise256.dds` -> `<game>\Data\Textures\Effects\` (Look 1 only; already in the user's install, same file)
 - To try it: `[Shaders.SnowAccumulation.Main] CapturedNormals = true` and restart. If a shader change does not seem to take effect,
   clear `Shaders\NewVegasReloaded\Shaders\Cache\`.
