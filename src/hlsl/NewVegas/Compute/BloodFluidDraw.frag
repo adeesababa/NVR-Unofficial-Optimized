@@ -166,20 +166,34 @@ void main() {
 
     float th = F.look.z;
     float slope = length(grad);
-    float cover = saturate((T - th) / max(slope * aa * 1.5, 0.02) + 0.5);
-    // UNOFFICIAL 2026-10-27 evening (user: "almost looks like ketchup", "full bright as though it does not respond to ... lighting";
-    // look4.x, OldColour 0): the fluid's own colour. BloodPS's look (below, line for line) was tuned for its painted pools, which are
-    // thick in the middle; the fluid is mostly a film just over the threshold, which that look takes for a thin stain: the ground
-    // shows through it, bright and tinted pure red (sunlit sand came out salmon to ketchup red, sRGB about 0.66 0.31 0.24 at the
-    // edges, 0.55 0.11 0.09 a little in), and the light is at least the open sky's (the ambient and the sun) wherever the image is
-    // darker, so in shade, under a body or in a dark room it was lit as in the open ("full bright"). Now: a film over the threshold
-    // is a real layer of blood (thick at 1.2 over it, not 2.5; at least 0.6 deep for the light passing it, not 0.25), so only its
-    // very edge lets the ground through; thick blood goes darker (0.45, not 0.6: deep red to near black); the light is at most 3x
-    // what the image shows here (the open sky's light still helps dark ground such as asphalt, but no longer lights a dark spot);
-    // the sky's sheen fades where the image says the spot is shut in; a little of every channel in its colour (less saturated).
-    // Offline (work/bench/deep-roadmap/evidence/bloodhalf/look_model.py), the matched colour on sunlit sand: edge 0.54 0.12 0.09, a little
-    // in 0.36 0.03 0.03, thick 0.23 0.01 0.01; in a dark room whose floor is 0.13: 0.03-0.09 (0.05-0.11 before).
+    // UNOFFICIAL 2026-10-27 night (user: "almost looks like ketchup", "full bright as though it does not respond to shaders or lighting
+    // conditions", then a screenshot: "the color doesn't match the vanilla blood on the right, we need it to match"; look4.x, OldColour
+    // 0): the fluid's own look. BloodPS's (kept below for OldColour) lights the blood's colour by its own estimate of the light: the
+    // image's brightest channel over 0.3, but never under the open sky's light (the sun and ambient constants). That floor knows
+    // nothing of NVR's shadows, ambient occlusion and exposure, so the fluid, mostly a film the old look took for thin, came out lit
+    // as in the open sun: in the user's shot sRGB (140 1 1), twice the ground's red (70 64 55) and no green at all. The game's own
+    // blood in the same shot is a dark film over the ground: (38 14 14) on (40 33 27), (30 8 10) on (35 30 27): in linear about 0.6-0.9
+    // of the ground's red kept and 0.2-0.4 of its green and blue. The fluid now does the same: a filter over the pixel under it, in
+    // the blood's own hue (the game splat's colour, drying browner), keeping 0.85 of the image in that hue and 0.32 of the rest at a
+    // film's edge, down to 0.45 and 0.12 where thick (thick at 1.2 over the threshold), a little darker as it dries. So it is lit
+    // exactly as the ground under it is (sun, shade, lamps, AO, exposure) and matches the decals by construction.
+    // look4.y (TextureRelief): the ground's own detail. NVR's normals come from depth, without the textures' normal maps, so it is
+    // read from the picture under the blood: its brightness, as a height (darker = lower, a crack or dip). A film's edge creeps into
+    // the dips first and breaks up on raised bits, and a thin film's highlights follow the bumps (a thick pool is flat).
     bool deep = F.look4.x > 0.5;
+    float relief = 0.0;           // > 0: the ground here is darker than round it (a crack, a dip); log brightness
+    vec2 reliefGrad = vec2(0.0);  // the ground's slope in that height, per 2 pixels: screen x, screen y (down)
+    if (deep && F.look4.y > 0.0 && T > 0.5 * th) {
+        float lc = log(max(luma(linearize(max(Texel(t_scene, px).rgb, vec3(0.0)))), 1e-5));
+        float lr = log(max(luma(linearize(max(Texel(t_scene, px + ivec2(2, 0)).rgb, vec3(0.0)))), 1e-5));
+        float ll = log(max(luma(linearize(max(Texel(t_scene, px - ivec2(2, 0)).rgb, vec3(0.0)))), 1e-5));
+        float ld = log(max(luma(linearize(max(Texel(t_scene, px + ivec2(0, 2)).rgb, vec3(0.0)))), 1e-5));
+        float lu = log(max(luma(linearize(max(Texel(t_scene, px - ivec2(0, 2)).rgb, vec3(0.0)))), 1e-5));
+        // (Steps far bigger than a texture's, an object's edge or a shadow's, are left out.)
+        reliefGrad = clamp(vec2(lr - ll, ld - lu) * 0.5, vec2(-0.6), vec2(0.6));
+        relief = clamp((lr + ll + ld + lu) * 0.25 - lc, -0.5, 0.5);
+    }
+    float cover = saturate((T + relief * F.look4.y * th * 1.2 - th) / max(slope * aa * 1.5, 0.02) + 0.5);
     float thick = saturate((T - th) / (deep ? 1.2 : 2.5));
     float coverA = saturate(A / (0.6 + aa));
     float amountAll = max(cover, coverA);
@@ -220,14 +234,26 @@ void main() {
     }
     vec3 albedo = mix(freshColour, dryColour, dry);
     vec3 at = rel + F.eyeRel.xyz;   // fixed to the surface (anchor space)
-    albedo *= mix(1.0, 0.8 + 0.4 * valueNoise((at.xy + at.z) * 0.35), dry);
-    if (deep) albedo = max(albedo, vec3(0.04 * max(albedo.r, max(albedo.g, albedo.b))));   // (2026-10-27 evening: less saturated)
+    float mottle = mix(1.0, 0.8 + 0.4 * valueNoise((at.xy + at.z) * 0.35), dry);
+    albedo *= mottle;
     float rim = saturate(1.0 - (T - th) / 0.6) * cover;
-    // (BloodPS 2026-10-25: light passes the blood in its own colour, measured from its strongest channel, not from red: matched
-    // green or yellow blood no longer glows or goes red; red blood unchanged.)
-    vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (deep ? 0.6 + 2.4 * thick : 0.25 + 2.0 * thick));
-    vec3 blood = (sceneLin * through + light * albedo * mix(1.0, deep ? 0.45 : 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
-    blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
+    vec3 blood;
+    if (deep) {
+        // (2026-10-27 night: a filter over the image, in the blood's hue, as the game's decal looks; see above.)
+        vec3 bloodHue = albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-4);
+        float keepHue = mix(0.85, 0.45, thick) * mix(1.0, 0.7, dry);
+        float keepRest = mix(0.32, 0.12, thick) * mix(1.0, 0.8, dry);
+        blood = sceneLin * mix(vec3(keepRest), vec3(keepHue), bloodHue) * mottle * (1.0 - 0.35 * dry * rim);
+        // (Toward the sun, thin fresh blood lets it through: a red glow, from what is under it.)
+        blood += sceneLin * bloodHue * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.5);
+    }
+    else {
+        // (BloodPS 2026-10-25: light passes the blood in its own colour, measured from its strongest channel, not from red: matched
+        // green or yellow blood no longer glows or goes red; red blood unchanged.)
+        vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (0.25 + 2.0 * thick));
+        blood = (sceneLin * through + light * albedo * mix(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
+        blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
+    }
     vec3 colour = mix(sceneLin, blood, cover);
 
     // Wet blood shines (BloodPS): small highlights, at most about the light here; the edge's slope bends the normal.
@@ -246,6 +272,14 @@ void main() {
             if (bl > 0.5) bend *= 0.5 / bl;
         }
         vec3 Nb = normalize(Ns - bend);
+        if (deep && F.look4.y > 0.0) {
+            // (2026-10-27 night, TextureRelief: a thin film's surface follows the ground's bumps, brighter taken as higher.)
+            vec3 bump = (reliefGrad.x * F.right.xyz - reliefGrad.y * F.up.xyz) * (0.6 * F.look4.y * (1.0 - thick));
+            bump -= Ns * dot(bump, Ns);
+            float bumpLength = length(bump);
+            if (bumpLength > 0.4) bump *= 0.4 / bumpLength;
+            Nb = normalize(Nb - bump);
+        }
         float rough = mix(0.12, 0.45, dry);
         float a2 = rough * rough * rough * rough;
         float glints = Highlights(Nb, V, rel, a2, lit);
@@ -265,6 +299,11 @@ void main() {
             dropTintRgb = 0.004 + 0.016 * dropColour / max(max(dropColour.r, max(dropColour.g, dropColour.b)), 1e-4);
         }
         vec3 drop = light * (dropColour * 0.7 + dropTintRgb * F.look2.w);
+        if (deep) {
+            // (2026-10-27 night: a drop as dark as thick blood over what is behind it, in its hue: lit as the scene there is.)
+            vec3 dropHue = dropColour / max(max(dropColour.r, max(dropColour.g, dropColour.b)), 1e-4);
+            drop = max(sceneLin.r, max(sceneLin.g, sceneLin.b)) * mix(vec3(0.12), vec3(0.45), dropHue);
+        }
         float a2 = 0.12 * 0.12 * 0.12 * 0.12;
         // (2026-10-27, rework.w: the drops' white glints made each one a shiny orb; weaker, and part in the blood's hue.)
         vec3 dropGlint = mix(vec3(1.0), saturate((dropTintRgb - 0.004) / 0.016), F.look3.z) * F.rework.w;

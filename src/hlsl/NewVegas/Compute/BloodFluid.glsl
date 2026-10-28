@@ -94,7 +94,8 @@ layout(set = 2, binding = 0, std140) uniform Frame {
                          // w: the drops' glints x (OldThrow: 0, 1, 0, 1)
     // UNOFFICIAL 2026-10-27 evening (user: "the color of the fluid simulation ones seems pretty off, almost looks like ketchup";
     // "full bright as though it does not respond to ... lighting"):
-    vec4  look4;         // x: 1 the fluid's own colour (BloodFluidDraw.frag: a real layer, lit as the image says), 0 as before (OldColour)
+    vec4  look4;         // x: 1 the fluid's own look (BloodFluidDraw.frag: a film over the image, as the game's decals), 0 as before
+                         // (OldColour); y: how much thin blood follows the ground's texture (TextureRelief)
 } F;
 
 // Integer hashes (the same everywhere: the simulation must not depend on the order threads run in).

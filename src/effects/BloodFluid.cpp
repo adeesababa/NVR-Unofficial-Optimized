@@ -19,7 +19,7 @@ namespace {
 		float	sunDir[4], sunColor[4], sunAmbient[4], horizon[4];
 		float	lightPos[12][4], shadowLightPos[12][4], lightColor[24][4];
 		float	look3[4], rework[4];	// UNOFFICIAL 2026-10-27: TESR_BloodFlowLook; the 2026-10-27 throws and drops (BloodFluid.glsl)
-		float	look4[4];				// UNOFFICIAL 2026-10-27 evening: x 1 the fluid's own colour (BloodFluidDraw.frag), 0 OldColour
+		float	look4[4];				// UNOFFICIAL 2026-10-27 evening: x 1 the fluid's own look (BloodFluidDraw.frag), 0 OldColour; y TextureRelief
 	};
 	struct SimPush { UInt32 mode, total, pad0, pad1; float shift[4]; };
 
@@ -86,6 +86,7 @@ void BloodFluid::ReadSettings() {
 	Settings.DropSize = std::clamp(TheSettingManager->GetSettingF(s, "DropSize"), 0.2f, 1.5f);
 	Settings.OldThrow = TheSettingManager->GetSettingI(s, "OldThrow") != 0;
 	Settings.OldColour = TheSettingManager->GetSettingI(s, "OldColour") != 0;
+	Settings.TextureRelief = std::clamp(TheSettingManager->GetSettingF(s, "TextureRelief"), 0.0f, 2.0f);
 	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 3);
 	Settings.TestThrow = std::clamp(TheSettingManager->GetSettingF(s, "TestThrow"), 0.0f, 60.0f);
 	const bool pour = TheSettingManager->GetSettingI(s, "TestPour") != 0;
@@ -413,8 +414,10 @@ bool BloodFluid::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Image, IDir
 	Copy4(f.look3, Constant("TESR_BloodFlowLook"));
 	if (!Constant("TESR_BloodFlowLook")) { f.look3[0] = 1.0f; f.look3[1] = 1.0f; }
 	f.rework[0] = old ? 0.0f : 1.0f; f.rework[1] = old ? 1.0f : Settings.Drops; f.rework[2] = old ? 0.0f : 1.0f; f.rework[3] = old ? 1.0f : 0.35f;
-	// UNOFFICIAL 2026-10-27 evening (user: "almost looks like ketchup", "full bright"): the fluid's own colour (BloodFluidDraw.frag).
+	// UNOFFICIAL 2026-10-27 evening (user: "almost looks like ketchup", "full bright", "match the vanilla blood"): the fluid's own look
+	// (BloodFluidDraw.frag): a film over the image as the game's decals are; y how much a thin film follows the ground's texture.
 	f.look4[0] = Settings.OldColour ? 0.0f : 1.0f;
+	f.look4[1] = Settings.OldColour ? 0.0f : Settings.TextureRelief;
 	// BloodFlow's look: its colours and times (its clock runs at TunedClockRate x real time).
 	const BloodFlowEffect::BloodFlowStruct& c = Owner->Constants;
 	f.look2[0] = (float)TunedClockRate; f.look2[1] = c.Dry.w; f.look2[2] = c.Info.z; f.look2[3] = c.Fresh.w;
