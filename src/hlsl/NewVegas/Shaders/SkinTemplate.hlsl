@@ -90,6 +90,7 @@
     #endif
 #endif
 #include "includes/Shadow.hlsl"
+#define CAPTURED_ACTOR	// UNOFFICIAL 2026-10-28: every skin draw is an actor's (CapturedNormals alpha 2)
 #include "includes/CapturedNormals.hlsl"	// UNOFFICIAL 2026-10-28 CapturedNormals (COLOR3, see there)
 
 // How far toward the sun the pixel shader looks a second time into the shadow map, in game units (16 = 23 cm: past the far

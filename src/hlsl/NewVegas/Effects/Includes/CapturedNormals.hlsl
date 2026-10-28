@@ -29,6 +29,14 @@ bool CapturedNormal(float2 uv, float distance, out float3 n)
 	return c.a > 0.99f && abs(c.b - distance) <= distance * TESR_CapturedNormalsData.y + TESR_CapturedNormalsData.z;
 }
 
+// True where this pixel is an actor's (the skin, skinned armour and clothes: they write alpha 2) and the distance matches.
+bool CapturedActor(float2 uv, float distance)
+{
+	[branch] if (TESR_CapturedNormalsData.x <= 0.0f) return false;
+	float4 c = tex2Dlod(TESR_CapturedNormalsBuffer, float4(uv, 0.0f, 0.0f));
+	return c.a > 1.5f && abs(c.b - distance) <= distance * TESR_CapturedNormalsData.y + TESR_CapturedNormalsData.z;
+}
+
 // As CapturedNormal, and only where the captured normal is within about 60 degrees of the depth-rebuilt one (rebuilt: world space, unit;
 // cosine TESR_CapturedNormalsData.w). A smooth normal differs from its triangle's flat one by far less on any real mesh; the first bench
 // run (2026-10-28, og-desert) showed a few thin pieces at a slab's edge whose captured normal was 90+ degrees off (not found yet which

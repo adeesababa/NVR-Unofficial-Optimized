@@ -295,6 +295,13 @@ bool capturedNormalRaw(vec2 coord, float dist, out vec3 n) {
     n = capturedDecode(v.rg);
     return v.a > 0.99 && abs(v.b - dist) <= dist * c.capturedData.y + c.capturedData.z;
 }
+bool capturedActor(vec2 coord, float dist) {	// Effects/Includes/CapturedNormals.hlsl CapturedActor
+    if (c.capturedData.x <= 0.0) return false;
+    ivec2 size = textureSize(sampler2D(t_captured, NVR_SAMPLER(pc.sClamp)), 0);
+    ivec2 texel = clamp(ivec2(coord * vec2(size)), ivec2(0), size - 1);
+    vec4 v = texelFetch(sampler2D(t_captured, NVR_SAMPLER(pc.sClamp)), texel, 0);
+    return v.a > 1.5 && abs(v.b - dist) <= dist * c.capturedData.y + c.capturedData.z;
+}
 bool snowCapturedNormal(vec2 coord, float dist, vec3 rebuilt, out vec3 n) {
     n = vec3(0.0, 0.0, 1.0);
     if (c.snowExtra.x <= 0.0) return false;
@@ -320,6 +327,7 @@ vec4 snowPass(vec2 coordIn) {
     vec4 worldPos = vec4(c.cameraPosition.xyz + cameraVector, 1.0);
 
     if (c.snowExtra.y > 0.5) return snowCapturedView(coordIn, length(cameraVector));	// UNOFFICIAL 2026-10-28
+    if (capturedActor(coordIn, length(cameraVector))) return color;	// UNOFFICIAL 2026-10-28: no snow on actors (SnowAccumulation.fx.hlsl)
 
     float ortho = texture(SAMP_CLAMP(t_rendered), coordIn).x;
     vec3 norm = getWorldNormal(coordIn);

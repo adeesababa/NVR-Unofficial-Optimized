@@ -317,6 +317,10 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	float4 worldPos = float4(TESR_CameraPosition.xyz + camera_vector, 1.0f);
 
 	[branch] if (TESR_SnowAccumulationExtra.y > 0.5f) return SnowCapturedView(IN.UVCoord, length(camera_vector));	// UNOFFICIAL 2026-10-28
+	// UNOFFICIAL 2026-10-28 (user: "standing next to a rock the snow seems to become visible through my character"; much more with Look 1):
+	// the coverage is found at a quarter of the resolution and blurred, so beside a snowy rock it spread onto the character in front of it.
+	// Actors' pixels (CapturedNormals: the skin and skinned armour and clothes write alpha 2) get no snow, as the ortho test meant.
+	[branch] if (CapturedActor(IN.UVCoord, length(camera_vector))) return color;
 
 	float ortho = tex2D(TESR_RenderedBuffer, IN.UVCoord).x;
 	float3 norm = GetWorldNormal(IN.UVCoord);
@@ -835,6 +839,7 @@ float4 SA5_Snow(VSOUT IN, uniform bool persist) : COLOR0 {
     // Persistent data uses the same camera-relative coordinates as version (4).
     float3 camera_vector = world * depth;
     [branch] if (TESR_SnowAccumulationExtra.y > 0.5f) return SnowCapturedView(IN.UVCoord, length(camera_vector));	// UNOFFICIAL 2026-10-28
+    [branch] if (CapturedActor(IN.UVCoord, length(camera_vector))) return color;	// UNOFFICIAL 2026-10-28: no snow on actors (see Look 0)
     float4 cover = float4(0, 0, 0, 0);
     float trodden = 0.0f;
     float2 footprintRelief = float2(0, 0);

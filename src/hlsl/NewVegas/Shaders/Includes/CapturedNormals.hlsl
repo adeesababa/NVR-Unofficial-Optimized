@@ -3,7 +3,8 @@
 // smooth interpolated vertex normal (world space, after skinning, BEFORE the normal map) to a fourth render target, COLOR3:
 //   rg  the normal, octahedral (Includes/Shadow.hlsl ShadowEncodeNormal), facing the camera
 //   b   the camera distance (length of the camera-relative world position), which readers compare against the depth buffer
-//   a   1 = written by a template (0 = cleared, or a variant with no smooth normal)
+//   a   1 = written by a template, 2 = by an actor's (bone-skinned draws: SKIN, or the skin template; 2026-10-28: snow keeps off actors)
+//       (0 = cleared, or a variant with no smooth normal)
 // The target is bound only inside that list and only for those templates' opaque draws (anything else masks it off, COLORWRITEENABLE3);
 // anywhere else COLOR3 is discarded. Compiled in only with [Shaders.SnowAccumulation.Main] CapturedNormals on at startup
 // (CAPTURED_NORMALS_ON, ShaderRecord::BuildDefines): off, the templates are exactly as before. Needs Includes/Shadow.hlsl first.
@@ -22,7 +23,11 @@
         [flatten] if (len2 < 1.0e-6f) return CAPTURED_NORMAL_INVALID;
         n *= rsqrt(len2);
         n *= dot(n, worldPos) > 0.0f ? -1.0f : 1.0f;	// the side the camera sees (two-sided cards, cloth)
-        return float4(ShadowEncodeNormal(n), length(worldPos), 1.0f);
+        #if defined(SKIN) || defined(CAPTURED_ACTOR)
+            return float4(ShadowEncodeNormal(n), length(worldPos), 2.0f);
+        #else
+            return float4(ShadowEncodeNormal(n), length(worldPos), 1.0f);
+        #endif
     }
 #endif
 
