@@ -1,0 +1,67 @@
+#version 460
+// UNOFFICIAL 2026-10-28 RT reflections ([Shaders.Reflections.RT], core\RtReflections.cpp; docs\next\FORK-RT-REFLECTIONS.md): the RT
+// helper's pass (runs in NvrRtHelper.exe, the RT core's 64-bit process; binding layout FORK-RT-CORE.md). One thread per
+// half-resolution pixel: where Reflections' RayGen asked for a ray, one closest-hit query from the surface along the reflected
+// direction, then from the hit one shadow ray toward the sun (outdoors by day). Output (ReflectionsRTResolve.frag reads it):
+// x hit distance (-1 no ray asked, 0 nothing within Distance), y the hit's custom index (1 land, 0 object), z sun visible at the hit,
+// w 1 front face.
+// Compile: glslangValidator -V --target-env vulkan1.2 -o ReflectionsRT.spv ReflectionsRT.comp (tools/nvr-dxvk/compile-compute.sh)
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std140) uniform Pass {
+	vec4 size;          // x width, y height (of the images), z Distance, w 1 = sun shadow rays
+	vec4 forward;       // xyz camera forward (scene space)
+	vec4 right;         // xyz camera right / projection[0][0]
+	vec4 up;            // xyz camera up / projection[1][1]
+	vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition)
+	vec4 sun;           // xyz toward the sun (scene space, normalized), w 1: the sun is up (outdoors, by day)
+	vec4 layout_;       // xy one half-resolution texel in screen uv, zw one full-resolution texel (RayGen's pixel centre rule)
+} p;
+layout(set = 0, binding = 2, rg32f) uniform readonly image2D dirImage;      // RayGen: the reflected direction, octahedral (world = scene axes)
+layout(set = 0, binding = 3, rg32f) uniform readonly image2D rayImage;      // RayGen: x the surface's view z (0: nothing), y roughness (+2: cast)
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D hitImage;
+
+vec3 OctDecode(vec2 e) {
+	vec3 v = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+	if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
+	return normalize(v);
+}
+
+void main() {
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (pixel.x >= int(p.size.x) || pixel.y >= int(p.size.y)) return;
+	vec2 ray = imageLoad(rayImage, pixel).xy;
+	if (ray.x <= 0.0 || ray.y < 1.5) { imageStore(hitImage, pixel, vec4(-1.0, 0.0, 1.0, 0.0)); return; }
+
+	// The surface as RayGen read it: ReflectionsTrace's pixel centre in the block, ViewPosition() in scene axes.
+	vec2 uv = (vec2(pixel) + 0.5) * p.layout_.xy - 0.5 * (p.layout_.xy - p.layout_.zw);
+	vec3 surface = p.origin.xyz + (p.forward.xyz + p.right.xyz * (2.0 * uv.x - 1.0) - p.up.xyz * (2.0 * uv.y - 1.0)) * ray.x;
+	vec3 dir = OctDecode(imageLoad(dirImage, pixel).xy);
+	// Start a little way along the ray: past the depth buffer's own error far away (no hit on the surface itself).
+	float tMin = 1.0 + ray.x * 0.0015;
+
+	rayQueryEXT q;
+	rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, surface, tMin, dir, p.size.z);
+	while (rayQueryProceedEXT(q)) { }
+	if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+		imageStore(hitImage, pixel, vec4(0.0, 0.0, 1.0, 0.0));
+		return;
+	}
+	float t = rayQueryGetIntersectionTEXT(q, true);
+	float custom = float(rayQueryGetIntersectionInstanceCustomIndexEXT(q, true));
+	float front = rayQueryGetIntersectionFrontFaceEXT(q, true) ? 1.0 : 0.0;
+
+	// The sun at the hit: one shadow ray, starting back off the hit along the incoming ray (no hit normal in the helper yet).
+	float sun = 1.0;
+	if (p.size.w > 0.5 && p.sun.w > 0.5) {
+		vec3 h = surface + dir * (t - max(2.0, t * 0.002));
+		rayQueryEXT s;
+		rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, h, 0.5, p.sun.xyz, 30000.0);
+		while (rayQueryProceedEXT(s)) { }
+		sun = rayQueryGetIntersectionTypeEXT(s, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+	}
+	imageStore(hitImage, pixel, vec4(t, custom, sun, front));
+}

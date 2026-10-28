@@ -7,8 +7,8 @@
 #include "Reflections.glsl"
 #include "ReflectionsRT.glsl"
 
-layout(location = 1) out vec4 o_dir;
-layout(location = 2) out vec4 o_origin;
+layout(location = 1) out vec4 o_dir;   // G32R32F: xy octahedral direction
+layout(location = 2) out vec4 o_ray;   // G32R32F: x view z, y roughness (+2: a ray)
 
 void main() {
     vec2 vpos = floor(gl_FragCoord.xy);
@@ -18,7 +18,7 @@ void main() {
     vec3 N = ViewNormal(pixelUV);
     float roughness;
     float amount = Reflectivity(pixelUV, depth, N, roughness);
-    if (amount <= 0.0) { o_color = vec4(0.0); o_dir = vec4(0.0, 0.0, 0.0, -1.0); o_origin = vec4(0.0); return; }
+    if (amount <= 0.0) { o_color = vec4(0.0); o_dir = vec4(0.0); o_ray = vec4(0.0); return; }
 
     vec3 position = ViewPosition(pixelUV, depth);
     vec3 V = normalize(position);   // eye -> surface
@@ -75,9 +75,9 @@ void main() {
         }
     }
     // RT: the ray for the helper where the screen did not fully answer (RT DebugView 3 drops the screen's answer: a ray everywhere).
-    // The start is the surface itself (camera-relative); the helper begins the ray a little way along it (RT/ReflectionsRT.comp).
+    // The helper rebuilds the surface from its view z as ViewPosition does, and begins the ray a little way along it (Rt/ReflectionsRT.comp).
     bool wantRay = RtOn && RtFade(roughness) > 0.0 && (confidence < 0.999 || abs(RtDebugView - 3.0) < 0.5);
     o_color = vec4(colour, confidence);
-    o_dir = vec4(ViewToWorldDir(R), roughness);
-    o_origin = vec4(ViewToWorldDir(position), wantRay ? 1.0 : 0.0);
+    o_dir = vec4(OctEncode(ViewToWorldDir(R)), 0.0, 0.0);
+    o_ray = vec4(depth, roughness + (wantRay ? 2.0 : 0.0), 0.0, 0.0);
 }

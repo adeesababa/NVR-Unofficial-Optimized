@@ -1,26 +1,22 @@
 #pragma once
-// UNOFFICIAL 2026-10-28 (NVR DXVK, RT reflections; docs/next/FORK-RT-REFLECTIONS.md): what the RT reflections need from the shared RT
-// core (session rt-sun-core, docs/next/FORK-RT-CORE.md, src/core/RtCore.*). The rays run in the core's 64-bit helper process
-// (NvrRtHelper.exe: AMD's 32-bit Vulkan driver has no ray tracing); NVR shares images in and out through fork patch 0026.
-// One small header so that the effect's code does not change when the core's API is settled: only these bodies do.
-// Until the core is on this branch every answer is "no", so the RT path is off everywhere (on the GTX 1070, which has no Vulkan RT
-// at all, the core itself must answer no) and Reflections draws exactly as before.
-#include "NvrDxvkExt.h"
+// UNOFFICIAL 2026-10-28 (NVR DXVK, RT reflections; docs/next/FORK-RT-REFLECTIONS.md): the two things the RT reflections need from the
+// shared RT core (core/RtCore.h, docs/next/FORK-RT-CORE.md) beyond its user API, in one place:
+// - Ready(): the helper is up (RT on this GPU for 64-bit programs; never on a GTX 10xx: the core says so and stays off);
+// - Exchange(): a second exchange of the frame for one user, at the point that user calls it. Reflections makes its rays in the post
+//   chain (RayGen, after the material buffer and the screen march) and reads the hits right after (Resolve); the core's own exchange
+//   (RtCore::Frame) is earlier, before the sun shadows. Requested from rt-sun-core 2026-10-28 (RtCore::Exchange); until RtCore.h
+//   defines NVR_RTCORE_EXCHANGE it answers false, and Reflections draws its normal trace.
+#include "RtCore.h"
 
 namespace RtCoreClient {
-	struct Image {
-		IDirect3DTexture9*	Texture;
-		bool				Output;		// false: NVR wrote it this frame, the helper reads it; true: the helper writes it, NVR reads it after
-	};
-	// The helper is alive, its GPU traces rays, and this frame's scene is being built.
-	inline bool Ready() { return false; }
-	// One helper pass: Compute\RT\<Name>.spv as a compute shader, DispatchX x DispatchY groups, with the RT core's fixed bindings (set 0:
-	// 0 the scene, 1 Constants, 2.. Images in this order). True: the outputs are in their D3D9 textures for the next NVR pass to read.
-	inline bool Trace(const char* Name, const Image* Images, UINT Count, UINT DispatchX, UINT DispatchY, const void* Constants, UINT Size) {
-		(void)Name; (void)Images; (void)Count; (void)DispatchX; (void)DispatchY; (void)Constants; (void)Size; return false;
+	inline bool Ready() { return RtCore::Running(); }
+	inline bool Exchange(IDirect3DDevice9* Device, const RtCore::User& user) {
+#ifdef NVR_RTCORE_EXCHANGE
+		return RtCore::Exchange(Device, user);
+#else
+		(void)Device; (void)user; return false;
+#endif
 	}
-	// Camera-relative world (NVR's effect space) -> the scene's space: the offset to add (0 if the scene is camera-relative too).
-	inline D3DXVECTOR3 Offset() { return D3DXVECTOR3(0.0f, 0.0f, 0.0f); }
-	// Per-instance materials (albedo) readable through the scene's custom index. Requested, not there.
+	// Per-instance materials (albedo) readable in the helper's pass (protocol v2, requested): not there yet.
 	inline bool HasMaterials() { return false; }
 }

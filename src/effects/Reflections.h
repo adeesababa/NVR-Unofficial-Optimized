@@ -123,18 +123,21 @@ private:
 	ExtPass				extTraceHiZCount;	// UNOFFICIAL 2026-10-26 debugging tool: Compute\ReflectionsTraceHiZCount.spv (the trace + shader counters,
 											// [Main.Develop.ShaderCounters] ReflectionsHiZ; core/ShaderCounters.h). Failed: the normal Hi-Z trace.
 	// UNOFFICIAL 2026-10-28 RT reflections ([Shaders.Reflections.RT], Compute\ReflectionsRT.glsl): the trace as RayGen (technique 8,
-	// Compute\ReflectionsRayGen.spv) -> the RT core's helper (Compute\RT\ReflectionsRT.spv) -> Resolve (technique 9, ReflectionsRTResolve.spv).
+	// Compute\ReflectionsRayGen.spv) -> the RT core's helper (Compute\Rt\ReflectionsRT.spv) -> Resolve (technique 9, ReflectionsRTResolve.spv).
 	ExtPass				extRtPasses[2];		// RayGen, Resolve
 	bool				rtTraceFailed = false;	// a pipeline or an image could not be made: the normal trace for the session
 	UINT				rtTraceFrames = 0, rtFallbackFrames = 0;	// for the log: frames traced with RT / RT wanted but the helper had nothing
 	ExtUniformBuffer	extRtUniforms;		// the RtConstants block
-	struct RtImagesStruct {					// half resolution, made on first use: march A16B16G16R16F, the rest A32B32G32R32F
+public:	// (the RT core user in Reflections.cpp reads the images)
+	struct RtImagesStruct {					// half resolution, made on first use: march, hit A16B16G16R16F; dir, ray G32R32F
 		IDirect3DTexture9* March = nullptr;	IDirect3DSurface9* MarchSurface = nullptr;
 		IDirect3DTexture9* Dir = nullptr;	IDirect3DSurface9* DirSurface = nullptr;
-		IDirect3DTexture9* Origin = nullptr;	IDirect3DSurface9* OriginSurface = nullptr;
+		IDirect3DTexture9* Ray = nullptr;	IDirect3DSurface9* RaySurface = nullptr;
 		IDirect3DTexture9* Hit = nullptr;	IDirect3DSurface9* HitSurface = nullptr;	// written by the helper (shared back by the RT core)
 	};
 	RtImagesStruct		Rt;
+	void				RtRegister();		// its RT core user (ShaderManager, once, before the core's first frame)
+private:
 	bool				rtRays = false;		// this frame's RayGen casts rays (the helper is up; false in SplitTest)
 	bool				RtWanted() const;	// RT on, nothing failed, the RT core up (its helper alive, RT on that GPU)
 	bool				RtImages();			// makes Rt on first use

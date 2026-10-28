@@ -15,13 +15,15 @@ void main() {
     ivec2 texel = ivec2(gl_FragCoord.xy);
     vec2 vpos = floor(gl_FragCoord.xy);
     vec2 uv = (vpos + 0.5) * LowTexel;
-    vec4 dirRough = texelFetch(sampler2D(t_rtDir, POINT_S), texel, 0);
-    if (dirRough.a < 0.0) { o_color = vec4(0.0); return; }   // RayGen: nothing reflects here
+    vec2 ray = texelFetch(sampler2D(t_rtRay, POINT_S), texel, 0).xy;
+    if (ray.x <= 0.0) { o_color = vec4(0.0); return; }   // RayGen: nothing reflects here
     vec4 march = texelFetch(sampler2D(t_rtMarch, POINT_S), texel, 0);
-    vec4 origin = texelFetch(sampler2D(t_rtOrigin, POINT_S), texel, 0);
     vec4 hitData = texelFetch(sampler2D(t_rtHit, POINT_S), texel, 0);
-    vec3 worldR = dirRough.xyz;
-    float roughness = dirRough.a;
+    vec3 worldR = OctDecode(texelFetch(sampler2D(t_rtDir, POINT_S), texel, 0).xy);
+    bool rayCast = ray.y > 1.5;
+    float roughness = ray.y - (rayCast ? 2.0 : 0.0);
+    vec2 pixelUV = uv - 0.5 * (LowTexel - cb.reciprocalResolution.xy);   // RayGen's pixel centre in the block
+    vec3 surfaceW = ViewToWorldDir(ViewPosition(pixelUV, ray.x));       // camera-relative
     vec3 colour = march.rgb;
     float confidence = march.a;
 
@@ -32,12 +34,12 @@ void main() {
     bool rtOpen = false;   // a ray went the whole Distance without a hit
     if (abs(RtDebugView - 3.0) < 0.5) { sum = vec3(0.0); confidence = 0.0; }   // RT DebugView 3: the screen march's answer dropped
     float rtFade = RtFade(roughness);
-    if (origin.a > 0.5 && hitData.x >= 0.0) {
+    if (rayCast && hitData.x >= 0.0) {
         float missing = (1.0 - confidence) * rtFade;
         if (hitData.x > 0.0) {
             rtT = hitData.x;
-            rtInstance = hitData.y;
-            vec3 hitW = origin.xyz + worldR * hitData.x;
+            rtInstance = hitData.y;   // the custom index: 1 land, 0 object
+            vec3 hitW = surfaceW + worldR * hitData.x;
             vec3 hitV = WorldToViewDir(hitW);   // camera-relative: a direction transform is the whole move
             vec2 at = ToScreen(hitV);
             bool inView = hitV.z > nearZ && all(greaterThan(at, vec2(0.0))) && all(lessThan(at, vec2(1.0)));
@@ -61,7 +63,7 @@ void main() {
     if (CubeOn > 0.0 && confidence < 1.0) env = EnvAlong(worldR, roughness);
     float gridFirst = smoothstep(0.15, 0.35, roughness);
     bool gridUseful = (gridFirst > 0.0 || env.a < 1.0) && !(SkyFallback > 0.0 && RoofMaskOn < 0.5 && worldR.z >= 0.15);
-    if (GridOn > 0.0 && ((confidence < 1.0 && gridUseful) || abs(DebugView - 5.0) < 0.5)) grid = GridAlong(origin.xyz, worldR);
+    if (GridOn > 0.0 && ((confidence < 1.0 && gridUseful) || abs(DebugView - 5.0) < 0.5)) grid = GridAlong(surfaceW, worldR);
     if (confidence < 1.0 && (CubeOn > 0.0 || GridOn > 0.0)) {
         float missing = 1.0 - confidence;
         float cubeA = missing * env.a, gridA = (missing - cubeA) * grid.a;   // the cube first

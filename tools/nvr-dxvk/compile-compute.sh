@@ -18,8 +18,8 @@ for f in *.frag *.comp; do
   spirv-val --target-env vulkan1.1 "$b.spv"
   n=$((n+1))
 done
-# UNOFFICIAL 2026-10-28 (RT): RT/*.comp are the RT helper's passes (NvrRtHelper.exe, 64-bit; GL_EXT_ray_query needs SPIR-V 1.4+): Vulkan 1.2.
-for f in RT/*.comp; do
+# UNOFFICIAL 2026-10-28 (RT): Rt/*.comp are the RT helper's passes (NvrRtHelper.exe, 64-bit; GL_EXT_ray_query needs SPIR-V 1.4+): Vulkan 1.2.
+for f in Rt/*.comp; do
   [ -e "$f" ] || continue
   b="${f%.*}"
   [ ${#NAMES[@]} -eq 0 ] || want "$(basename "$b")" || continue
