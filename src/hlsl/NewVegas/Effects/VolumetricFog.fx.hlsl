@@ -6,6 +6,13 @@
 // (horizon Z-fighting/sky-seam matte) is kept as its own separate blend, since it solves a
 // different problem (hiding a depth-buffer artifact, not modelling participating media).
 
+// UNOFFICIAL 2026-10-27 (user: "tint horizon still seems to do nothing"): the sky colours below are the fog's own copies, with the
+// sky's tint, horizon tint and saturation already in them (Sky.cpp UpdateFogSky): near the horizon the fog lies over the sky and
+// coloured itself with the weather's untinted sky, painting the horizon tint over. The same three registers as before.
+#define TESR_HorizonColor TESR_FogHorizonColor
+#define TESR_SkyLowColor TESR_FogSkyLowColor
+#define TESR_SkyColor TESR_FogSkyColor
+
 float4 TESR_FogColor;
 float4 TESR_FogData;  // weather values : x: fogNear, y:fogFar, z: sunglare, w:fogpower
 float4 TESR_ReciprocalResolution;
@@ -34,9 +41,9 @@ float4 TESR_SkyIrradianceGame[9];
 // horizon (Includes/Sky.hlsl SkyLook): TESR_FogSkyLook.rgb = SkyTint x SkyTintHorizon (Sky.cpp), TESR_SkyLook.x = saturation.
 // The ps_3_0 build (native D3D9, stock DXVK) cannot take it: with the physical sky the composite pass is at 224 constants and even
 // one more register failed to compile (X4507, cfe15f2b reverted by 595a7c22), so there the fog stays as it was.
-float4 TESR_FogSkyLook;
-float4 TESR_SkyLook;
-#define NVR_FOG_SKY_LOOK(c) c = SkyLook(c, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_SkyLook.x, 1, 0, 0))
+// 2026-10-27: no longer applied here: the sky colours come in with it (TESR_FogSkyColor and its two siblings, top of this file),
+// in every build. Kept as an empty macro so the call sites need no #if.
+#define NVR_FOG_SKY_LOOK(c)
 #else
 #define NVR_FOG_SKY_LOOK(c)
 #endif

@@ -38,6 +38,9 @@ namespace BloodFlowBoxes {
 		int			DecalCode = 0;
 		float		Tint = 0.0f;
 		bool		Visible = true;	// UNOFFICIAL 2026-10-16: its box touches the screen (OnScreen); off-screen items are not probed
+		// UNOFFICIAL 2026-10-27 (user: half circles): pools only, the ground's slope round Center (dz/dx, dz/dy), from the body's bones
+		// (BloodFlow.cpp GroundUnderBones); 0 for splats. BloodFluid lays a pool's blood on that plane where the camera cannot see the floor.
+		float		SlopeX = 0.0f, SlopeY = 0.0f;
 	};
 
 	inline float Length(const D3DXVECTOR3& v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }

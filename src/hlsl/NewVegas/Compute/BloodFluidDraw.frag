@@ -167,7 +167,20 @@ void main() {
     float th = F.look.z;
     float slope = length(grad);
     float cover = saturate((T - th) / max(slope * aa * 1.5, 0.02) + 0.5);
-    float thick = saturate((T - th) / 2.5);
+    // UNOFFICIAL 2026-10-27 evening (user: "almost looks like ketchup", "full bright as though it does not respond to ... lighting";
+    // look4.x, OldColour 0): the fluid's own colour. BloodPS's look (below, line for line) was tuned for its painted pools, which are
+    // thick in the middle; the fluid is mostly a film just over the threshold, which that look takes for a thin stain: the ground
+    // shows through it, bright and tinted pure red (sunlit sand came out salmon to ketchup red, sRGB about 0.66 0.31 0.24 at the
+    // edges, 0.55 0.11 0.09 a little in), and the light is at least the open sky's (the ambient and the sun) wherever the image is
+    // darker, so in shade, under a body or in a dark room it was lit as in the open ("full bright"). Now: a film over the threshold
+    // is a real layer of blood (thick at 1.2 over it, not 2.5; at least 0.6 deep for the light passing it, not 0.25), so only its
+    // very edge lets the ground through; thick blood goes darker (0.45, not 0.6: deep red to near black); the light is at most 3x
+    // what the image shows here (the open sky's light still helps dark ground such as asphalt, but no longer lights a dark spot);
+    // the sky's sheen fades where the image says the spot is shut in; a little of every channel in its colour (less saturated).
+    // Offline (work/bench/deep-roadmap/evidence/bloodhalf/look_model.py), the matched colour on sunlit sand: edge 0.54 0.12 0.09, a little
+    // in 0.36 0.03 0.03, thick 0.23 0.01 0.01; in a dark room whose floor is 0.13: 0.03-0.09 (0.05-0.11 before).
+    bool deep = F.look4.x > 0.5;
+    float thick = saturate((T - th) / (deep ? 1.2 : 2.5));
     float coverA = saturate(A / (0.6 + aa));
     float amountAll = max(cover, coverA);
     if (debug == 1u) {
@@ -188,7 +201,9 @@ void main() {
         lit = saturate(pow(abs((shadows.r + shadows.g) / sunAmbient), 5.0));
     }
     float irradiance = luma(linearize(saturate(F.sunAmbient.rgb))) + lit * luma(linearize(saturate(F.sunColor.rgb))) * saturate(dot(Ns, normalize(F.sunDir.xyz)));
-    float light = min(max(max(sceneLin.r, max(sceneLin.g, sceneLin.b)) / 0.3, irradiance), 2.5);
+    float sceneLight = max(sceneLin.r, max(sceneLin.g, sceneLin.b)) / 0.3;
+    float light = min(max(sceneLight, irradiance), 2.5);
+    if (deep) light = min(light, 3.0 * sceneLight);   // (2026-10-27 evening: no brighter than 3x what the image shows here)
 
     float age = T > 1e-4 ? ageSum / T : dropAge;
     float pool = T > 1e-4 ? poolSum / T : 0.0;
@@ -206,11 +221,12 @@ void main() {
     vec3 albedo = mix(freshColour, dryColour, dry);
     vec3 at = rel + F.eyeRel.xyz;   // fixed to the surface (anchor space)
     albedo *= mix(1.0, 0.8 + 0.4 * valueNoise((at.xy + at.z) * 0.35), dry);
+    if (deep) albedo = max(albedo, vec3(0.04 * max(albedo.r, max(albedo.g, albedo.b))));   // (2026-10-27 evening: less saturated)
     float rim = saturate(1.0 - (T - th) / 0.6) * cover;
     // (BloodPS 2026-10-25: light passes the blood in its own colour, measured from its strongest channel, not from red: matched
     // green or yellow blood no longer glows or goes red; red blood unchanged.)
-    vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (0.25 + 2.0 * thick));
-    vec3 blood = (sceneLin * through + light * albedo * mix(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
+    vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (deep ? 0.6 + 2.4 * thick : 0.25 + 2.0 * thick));
+    vec3 blood = (sceneLin * through + light * albedo * mix(1.0, deep ? 0.45 : 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
     blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
     vec3 colour = mix(sceneLin, blood, cover);
 
@@ -235,6 +251,7 @@ void main() {
         float glints = Highlights(Nb, V, rel, a2, lit);
         float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(Nb, V)), 5.0);
         vec3 surroundings = F.match.w > 0.5 ? linearize(saturate(F.horizon.rgb)) : vec3(light * 0.1);
+        if (deep) surroundings *= saturate(sceneLight / max(irradiance, 0.05));   // (2026-10-27 evening: less where the spot is shut in)
         vec3 sheenTint = mix(vec3(1.0), hue, F.look3.z);
         colour += (min(glints, 1.0) * 0.4 * min(light, 1.2) + min(fresnel, F.look3.y) * surroundings * sheenTint * (1.0 - rough) * 0.5 * F.look3.x) * gloss;
     }

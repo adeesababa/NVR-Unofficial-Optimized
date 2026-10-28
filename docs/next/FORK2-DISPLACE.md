@@ -79,7 +79,7 @@ blending was off the whole time and switching it changes nothing.
 - Cost (not measured): one depth copy a frame (~0.1 ms at 1440p, F10 "Terrain blend depth copy"), 9 depth taps per generated
   vertex within FadeEnd. GrassFirst stays on (its grass is in the copy, so the bumps also fade round grass tufts: they sit on the
   ground). The land pixel shaders recompile once (new define).
-- Not done: the bumps still cast no shadows of their own (plan step 2 below).
+- Not done here: the bumps casting shadows of their own (done next: "The bumps cast sun shadows" below).
 - First in-game test (user videos H:\2026-10-27 21-41-55.mp4, 21-44-17.mp4, Goodsprings scrub at night): ObjectBlend distorted the
   ground round every grass tuft. GrassFirst draws the near grass (and GPU grass) before the land, so it is in the copy, and the fade
   follows the blades, the wind and the view (gap measured along view rays). ObjectBlend is now OFF by default (experimental). A
@@ -100,6 +100,46 @@ blending was off the whole time and switching it changes nothing.
   stretched by `Contrast` (default 10) and eased into the Strength range (0.5 x Strength x x / sqrt(1 + x^2), x = 2 x Contrast x
   difference), and `Center` defaults to 0.5 (no lift; the forward shadow lookup still never goes below the flat land). Contrast
   shares EvalParams[1] with Center (16 x Contrast + 0.99 x Center).
+
+## The bumps cast sun shadows (CastShadows, plan step 2; 2026-10-27, branch claude/optimistic-kepler-4b182d on cca252c8)
+`[Shaders.Terrain.Displacement] CastShadows = true` (live; missing key = on). No d3d9 change: the fork's 1.7-displace (patch 0021)
+already allows a second family, a TES that writes a single output, and pixel shader registers the shader never declares (psBits read
+the device's c34/c35). Code: `src/core/DisplaceShadows.h`, `DxvkCompute::RegisterDisplace` (family 2), `Shadows/ShadowMapLand.vso`,
+`Shadows/ShadowMapLand.pso.hlsl` (loaded as -t1..-t7), the `SHADOW_CASTER` variants of TerrainDisplace.tese (-s / -sd [-ccw]).
+- How the land reached the cascades before: cell land went through the opaque caster pass (ShadowManager geometryPass:
+  ShadowMap.vso + ShadowMapOpaque.pso), the same shaders as every opaque object, with only the position stream used and no land
+  texture bound. Now cell land whose bound reaches FadeEnd of the camera is sorted (AccumObject / WalkSunObject, sun cascades only:
+  DisplaceShadows::BeginCascades .. EndCascades) into its own pass, drawn first in RenderAccums; anything it cannot draw goes back
+  to the opaque pass.
+- The land's own vertex layout and the land TCS, unchanged: ShadowMapLand.vso writes TerrainTemplate's outputs at their places, but
+  TEXCOORD6 / the position = the cascade's clip position (pancaked as ShadowMap.vso), TEXCOORD7 = the MAIN camera's eye in object
+  space (so the TCS's split levels, distance fade and BorderGrid are the camera's, point for point, not the light's), the free w of
+  TEXCOORD3/4/5/7 = the cascade's ModelViewProj x normal (the TES moves the clip position by it; interpolated like the normal, so
+  exact after the same division by its length), c0-c3 = last frame's main-camera ModelViewProj (ObjectBlend). The TES (-s) runs the
+  same height blend and displacement and writes only TEXCOORD6; the pixel shader writes its depth (PCF maps), and declares the base
+  maps (and the depth copy at s6) in a branch never taken, so the TES may read them.
+- Which layers have a height map (LandHeight c34/c35) is set per land draw by Vanilla Plus Terrain through the game's constant map
+  (VanillaPlusTerrain.dll registers LandSpec/LandHeight/...; closed source), nowhere NVR could read it. So the land's own draws are
+  taken: for the world scene's span only (TerrainShaders::BeginWorldScene .. EndWorldScene) the device's DrawIndexedPrimitive is
+  hooked (vtable 82, GrassFirst's own hooks nest inside it and put it back), and a draw with a land pixel shader bound (the ones
+  ShaderRecord::LoadShader made from TerrainTemplate, noted with their TEX_COUNT) records, keyed by stream 0's vertex buffer and the
+  base vertex, the base map addresses, c34-c35 and s0's sampler states. The shadow pass looks a piece up by its buffer data
+  (VBChip[0]->VB, BaseVertexIndex) and uses it only if the piece's own landscape textures (ppTextures[0][0..N-1]) are those
+  addresses. A piece the camera has never drawn (or whose buffer was reused) keeps the flat caster. Log: "NVR TESS shadows" every
+  600 cascade frames (pieces drawn with bumps / flat and why) and the first few keys on both sides.
+- ObjectBlend in the shadow draws: the cascades are drawn before the world scene, so this frame's depth copy does not exist yet;
+  they read last frame's copy with last frame's camera (NoteDepthCopy keeps ViewProj and the camera position at the copy), valid
+  only if the copy was made after the previous cascades. A frame late: the same for anything standing still, a frame behind for a
+  moving one. (ObjectBlend is off by default since cca252c8.)
+- The main view: while land was drawn displaced into the cascades in the last 16 frames, the TES gets ShadowsHold (viewParams +
+  256) and writes projectionPosition = the displaced clip position, below the flat land too (Center > 0); else as before (never below
+  the flat land).
+- Left as they were: the ortho map (rain, skylighting), the light grid's sun map, the character map and the lamps' cube maps keep
+  the flat land (with Center 0 the displaced land is above it: no self-shadow; with Center > 0 the lamps may darken sunk dips). The
+  far / cached cascades keep the bumps as they were when drawn (CachedDistantShadows: up to a few frames).
+- Cost (not measured): the land within FadeEnd tessellated once more per cascade it reaches (~23k quads within 2048 units at the
+  default EdgeLength 12 / EdgeGrowth 0.01, strips as three patch lists) plus a few device reads per land draw in the world scene;
+  F10 "Sun cascade: displaced land". Land farther than FadeEnd is drawn as before.
 
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
@@ -165,9 +205,7 @@ Needs a fork d3d9.dll with patch 0021 (this branch's CI build) and NvrDxvkDispla
 in the list's header.
 
 ## Known limits of this first step
-- The bumps cast no shadows of their own and receive the flat land's: the sun's shadow maps are drawn with NVR's shadow shaders,
-  which are not displaced. With Center 0.5 the lower half of the bumps lies below the flat land's shadow depth (may darken dips under
-  a low sun); Center 0 avoids that but raises the ground by Strength/2 on average.
+- (Done 2026-10-27: CastShadows, above.) The sun's cascades hold the bumps; the ortho map, light grid map and lamp cube maps do not.
 - Grass, decals (blood) and feet keep to the flat land (with 16 units = 23 cm, a few cm either way).
 - The lighting normal is the flat land's (the normal maps carry the fine detail): large displaced shapes are not shaded as slopes.
 - Parallax still runs on top (the depth is a little doubled close up).
@@ -178,9 +216,8 @@ in the list's header.
 
 ## Plan for the rest (session-hours, after the first in-game look)
 1. Fixes from the bulk test (winding, a missed interface, cost) (1-2 h).
-2. Shadows: register NVR's land shadow-map shaders as members of the family with a depth-only TES, NVR binding the land's base maps
-   for those draws, so the sun's cascades see the same bumps; same for the point-light cubes outdoors if any (3-5 h). Until then
-   Center 0 is the safe choice for shadows.
+2. Shadows: DONE for the sun cascades (CastShadows, above; no d3d9 change). Left: the lamps' cube maps outdoors (1-2 h, the same
+   pass with the cube shaders), only needed for Center > 0.
 3. Lighting: bend the normal / tangent frame by the height's slope in the TES (finite differences, 2 extra lookups per layer) (1-2 h).
 4. Parallax hand-off: lower the land parallax's height by the displacement weight (1 h, NVR shader + a constant).
 5. Objects (rocks, walls): the PAR family (ParallaxTemplate.hlsl, height map in s2) needs the object-space position and normal as VS

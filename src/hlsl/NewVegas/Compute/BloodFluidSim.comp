@@ -151,6 +151,7 @@ void Emit(uint i) {
     uint flags0 = 0u;
     vec3 nrm0 = vec3(0.0);
     bool rework = F.rework.x > 0.5;
+    float groundZ = e.origin.w;
     if (kind == 1u) {
         // A body bleeding: on the ground round the pool's centre, sliding outward slowly; most of it early.
         vec2 off = vec2(cos(ang), sin(ang)) * rad * e.shape.x;
@@ -160,7 +161,16 @@ void Emit(uint i) {
         // (2026-10-27: born lying on the ground. Born in the air, a little above it, under the body, the collision took the body
         // the camera sees in front for the surface and put the blood on its front, where it ran off as drops: the "orbs".)
         // (On the fallback ground, not yet on anything the camera sees: Integrate lets its first step find a floor only.)
-        if (rework) { pos.z = e.origin.w + F.sim.z; flags0 = FlagTouched | FlagGround; nrm0 = vec3(0.0, 0.0, 1.0); }
+        // (2026-10-27 evening, user: half circles: the fallback ground slopes as the ground under the body (dir.xy, BloodFluid.cpp
+        // Offer). It was level at the body's lowest bone: on a slope the uphill half of the pool lay that far under the ground,
+        // hidden, and was never drawn.)
+        if (rework) {
+            vec2 slope = e.dir.xy;
+            groundZ = e.origin.w + dot(slope, off);
+            pos.z = groundZ + F.sim.z;
+            flags0 = FlagTouched | FlagGround | PackSlope(slope);
+            nrm0 = normalize(vec3(-slope, 1.0));
+        }
     }
     else if (kind == 0u && rework) {
         // A fresh splat (2026-10-27): born on the surface the game put its decal on, a film round the decal spreading out a little,
@@ -203,7 +213,7 @@ void Emit(uint i) {
     Particle q;
     q.pos = vec4(pos, -delay - 1e-4);
     q.vel = vec4(vel, float(flags0));
-    q.info = vec4(e.origin.w, hash01(seed * 11u + 3u), float(e.data.w & 0xFFFFFFu), float(kind));
+    q.info = vec4(groundZ, hash01(seed * 11u + 3u), float(e.data.w & 0xFFFFFFu), float(kind));
     q.nrm = vec4(nrm0, 1.0);
     P[slot] = q;
 }
@@ -235,6 +245,8 @@ void Integrate(uint i) {
     const float r = F.sim.z;
     vec3 p = q.pos.xyz, v = q.vel.xyz;
     float ground = q.info.x;
+    vec2 slope = SlopeOf(flags);   // (2026-10-27: a pool's sloping fallback ground; level for the rest)
+    bool rework = F.rework.x > 0.5;
     float h1 = q.info.y, h2 = fract(q.info.y * 97.31), h3 = fract(q.info.y * 13.17);
 
     // Where the camera sees it. Unknown (off screen, behind the camera, the first-person weapon) or hidden behind
@@ -252,7 +264,10 @@ void Integrate(uint i) {
         ivec2 px = ivec2(s0.xy);
         if (!IsViewModel(ViewModelAt(px))) hidden = s0.z > SceneDepthAt(px) + behind;
     }
-    bool onGround = p.z <= ground + r + 0.25;
+    // (2026-10-27 evening, rework: lying ON the fallback ground, not anywhere below it. Blood that ran down a slope the camera saw,
+    // below the fallback height, was counted as on it when it went out of sight, and the fallback lifted it back up there: it
+    // floated over the slope and its stain was cut off along a line.)
+    bool onGround = rework ? abs(p.z - (ground + r)) <= 0.25 : p.z <= ground + r + 0.25;
     if (hidden && !onGround && (flags & FlagTouched) != 0u) {
         P[i].pos.w = age;
         P[i].vel.w = float(flags | FlagFrozen);
@@ -285,12 +300,14 @@ void Integrate(uint i) {
     vec3 rel = p - F.eyeRel.xyz;
     vec3 s = ProjectRel(rel);
     bool seenInAir = false;   // on screen with the surface it shows behind it: it is falling through the air there
+    bool seenFloor = false;   // (2026-10-27 evening) on screen, on or just above a floor the camera sees there
     if (!hidden && s.z > 1.0 && s.x >= 1.0 && s.y >= 1.0 && s.x < F.screen.x - 1.0 && s.y < F.screen.y - 1.0) {
         ivec2 px = ivec2(s.xy);
         float sz = SceneDepthAt(px);
         seenInAir = s.z <= sz - 4.0 * r - F.wall.z && !IsViewModel(ViewModelAt(px));
         if (sz < F.eyeRel.w * 0.979 && s.z > sz - 4.0 * r - F.wall.z && s.z < sz + behind && !IsViewModel(ViewModelAt(px))) {
             vec3 surf = SurfaceAt(px, sz), n = NormalAt(px, sz);
+            seenFloor = n.z > 0.6;
             float d = (groundBorn && n.z < 0.6) ? 1e9 : dot(rel - surf, n);
             if (d < r) {
                 p += n * (r - d);
@@ -310,13 +327,19 @@ void Integrate(uint i) {
             if (d < r + F.wall.z) v -= n * F.wall.y * dt;   // cling: undersides drip once enough gathers
         }
     }
+    // (2026-10-27 evening: a pool's sloping fallback ground, under where the particle is now.)
+    ground += dot(slope, p.xy - q.pos.xy);
     // The fallback ground: only where the camera cannot tell (hidden or off screen). Where it sees the surface below, the drop
     // falls on to it (the fallback height, the player's floor, can be above a lower floor in view).
-    if (p.z < ground + r && !seenInAir) {
+    // (2026-10-27 evening, rework, user: "weird half circles": nor where the camera sees the floor it lies on or is just above.
+    // That was only left out when the drop was well in front of the floor (seenInAir); blood running down a slope the camera saw,
+    // once below the fallback height (a splat's: the player's floor or the splat's own height less a unit), was lifted back up to
+    // it every step, a level sheet over the slope, and its stain was cut off along a line across the splat: a half circle.)
+    if (p.z < ground + r && !seenInAir && !(rework && seenFloor)) {
         p.z = ground + r;
         v.z = max(v.z, 0.0);
         v.xy -= v.xy * clamp(friction * dt, 0.0, 1.0);
-        if ((flags & FlagContact) == 0u) nrm = vec3(0.0, 0.0, 1.0);   // (on what the camera sees, its normal stays)
+        if ((flags & FlagContact) == 0u) nrm = rework ? normalize(vec3(-slope, 1.0)) : vec3(0.0, 0.0, 1.0);   // (on what the camera sees, its normal stays)
         flags |= FlagContact | FlagTouched | FlagGround;
     }
     if (settle >= 1.0 && (flags & FlagContact) != 0u) { v = vec3(0.0); flags |= FlagSettled; }
@@ -327,6 +350,7 @@ void Integrate(uint i) {
     P[i].pos = vec4(p, age);
     P[i].vel = vec4(v, float(flags));
     P[i].nrm.xyz = nrm;
+    P[i].info.x = ground;
 }
 
 void Tiles(uint i) {

@@ -152,6 +152,9 @@ namespace {
 		bool HasBody;			// the fields below are set
 		float BoundCenter[3], BoundRadius;
 		float MinZ;
+		// UNOFFICIAL 2026-10-27 (user: "weird half circles"): the ground under the body, from its bones (GroundUnderBones): its height
+		// under BoundCenter and its slope (dz/dx, dz/dy).
+		float GroundZ, GroundSlope[2];
 		// UNOFFICIAL 2026-10-13 (user: a pool where a limb is cut off): ExtraDismemberedLimbs (0x5F) +0x0C, one bit per body
 		// part (ExtraDismemberedLimbs::Dismember 0x430410), and where each cut part's joint is on the body (its node's origin:
 		// the elbow for a forearm, the neck for a head); PartFound false: not a skeleton with those names (most creatures).
@@ -166,14 +169,71 @@ namespace {
 		"Bip01 R Forearm", "Bip01 L Thigh", "Bip01 L Calf", "Bip01 L Foot", "Bip01 R Thigh", "Bip01 R Calf", "Bip01 R Foot", "Bip01 Head",
 		nullptr, nullptr };
 
+	// UNOFFICIAL 2026-10-27 (user: "we still get the weird half circles with bloodflow"): the ground under a body, from the points of
+	// its skeleton (count of them, xyz; bone[i]: a bone, not a mesh's origin), as a plane through `centre`: ground[0] its height there,
+	// ground[1..2] its slope (dz/dx, dz/dy).
+	// A pool's height used to be the lowest bone's less 1.5 units. On a slope the lowest bone is the body's downhill end, so the
+	// ground under the body's middle lies well above that (25 degrees, a body 70 units long: about 15 units), and every test that
+	// keeps a pool on its ground cut it there: BloodPS showed only the downhill half (a half disc, cut straight across near the
+	// body), and BloodFluid's pool, spread on a level floor that far under the slope, stayed hidden under the uphill ground. Now: the
+	// slope of the plane through the body's lower bones (a least-squares plane through all bones, then again through those on or
+	// below it, so a raised head or chest does not tilt it; a weak pull toward level, so a body lying along one line says nothing
+	// about the slope across it; at most 0.6, about 31 degrees), moved down to 1.5 units under the lowest bone measured along it.
+	// On level ground that is the old height; the plane never rises above any point (the meshes' origins count there, as for the
+	// lowest node before, not in the slope).
+	void GroundUnderBones(const float (*bones)[3], const bool* bone, int count, const float* centre, float minZ, float* ground) {
+		ground[0] = minZ - 1.5f; ground[1] = ground[2] = 0.0f;
+		int boneCount = 0;
+		for (int i = 0; i < count; i++) boneCount += bone[i] ? 1 : 0;
+		if (boneCount < 6) return;
+		float slope[2] = { 0.0f, 0.0f };
+		bool use[160];
+		for (int i = 0; i < count; i++) use[i] = bone[i];
+		for (int pass = 0; pass < 2; pass++) {
+			double n = 0.0, mx = 0.0, my = 0.0, mz = 0.0;
+			for (int i = 0; i < count; i++) if (use[i]) { n += 1.0; mx += bones[i][0] - centre[0]; my += bones[i][1] - centre[1]; mz += bones[i][2]; }
+			if (n < 4.0) break;
+			mx /= n; my /= n; mz /= n;
+			double sxx = 0.0, sxy = 0.0, syy = 0.0, sxz = 0.0, syz = 0.0;
+			for (int i = 0; i < count; i++) {
+				if (!use[i]) continue;
+				const double x = bones[i][0] - centre[0] - mx, y = bones[i][1] - centre[1] - my, z = bones[i][2] - mz;
+				sxx += x * x; sxy += x * y; syy += y * y; sxz += x * z; syz += y * z;
+			}
+			// (The pull toward level: as if every bone were also 10 units either way at the mean height.)
+			const double ridge = n * 100.0;
+			sxx += ridge; syy += ridge;
+			const double det = sxx * syy - sxy * sxy;
+			if (!(det > 1e-6)) break;
+			slope[0] = (float)((sxz * syy - syz * sxy) / det);
+			slope[1] = (float)((syz * sxx - sxz * sxy) / det);
+			const float steep = sqrtf(slope[0] * slope[0] + slope[1] * slope[1]);
+			if (steep > 0.6f) { slope[0] *= 0.6f / steep; slope[1] *= 0.6f / steep; }
+			if (pass > 0) break;
+			// The second fit: only the bones on or below the first plane.
+			const float level = (float)mz - slope[0] * (float)mx - slope[1] * (float)my;	// the first plane's height at the centre
+			for (int i = 0; i < count; i++)
+				use[i] = bone[i] && bones[i][2] - (level + slope[0] * (bones[i][0] - centre[0]) + slope[1] * (bones[i][1] - centre[1])) <= 0.0f;
+		}
+		float lowest = 1e30f;
+		for (int i = 0; i < count; i++)
+			lowest = min(lowest, bones[i][2] - slope[0] * (bones[i][0] - centre[0]) - slope[1] * (bones[i][1] - centre[1]));
+		if (!(lowest < 1e29f)) return;
+		ground[0] = lowest - 1.5f; ground[1] = slope[0]; ground[2] = slope[1];
+	}
+
 	// The world position of every node under root (up to 256 nodes): the lowest z, the middle of the skeleton (a spine
 	// bone if there is one, else the average of the nodes below the root) and how many were seen. Nodes further than
 	// `reach` from `bound` are left out: some sit at the world's origin (not placed yet), which once put a pool at z -1.5.
-	int WalkNodes(NiAVObject* root, float& minZ, float* centre, const float* bound, float reach, RawActor* parts = nullptr) {
+	// (2026-10-27: and the ground under it, from its bones: GroundUnderBones.)
+	int WalkNodes(NiAVObject* root, float& minZ, float* centre, float* ground, const float* bound, float reach, RawActor* parts = nullptr) {
 		NiAVObject* stack[64];
 		int top = 0, seen = 0, nodes = 0;
 		float sum[3] = {}, spine[3] = {};
 		bool haveSpine = false;
+		float points[160][3];
+		bool bone[160];
+		int pointCount = 0;
 		stack[top++] = root;
 		while (top && seen < 256) {
 			NiAVObject* object = stack[--top];
@@ -184,6 +244,10 @@ namespace {
 			const bool inReach = dx * dx + dy * dy + dz * dz <= reach * reach;
 			if (inReach) minZ = min(minZ, at.z);
 			NiNode* node = object->IsNiNode();
+			if (inReach && pointCount < 160) {
+				points[pointCount][0] = at.x; points[pointCount][1] = at.y; points[pointCount][2] = at.z;
+				bone[pointCount++] = node && object != root;
+			}
 			if (!node) continue;
 			if (object != root && inReach) {
 				sum[0] += at.x; sum[1] += at.y; sum[2] += at.z;
@@ -203,6 +267,7 @@ namespace {
 		}
 		if (haveSpine) { centre[0] = spine[0]; centre[1] = spine[1]; centre[2] = spine[2]; }
 		else if (nodes) { centre[0] = sum[0] / nodes; centre[1] = sum[1] / nodes; centre[2] = sum[2] / nodes; }
+		GroundUnderBones(points, bone, pointCount, centre, minZ, ground);
 		return nodes ? seen : 0;
 	}
 
@@ -270,8 +335,10 @@ namespace {
 								a.RefID = refID; a.LifeState = lifeState;
 							}
 							else {
-								a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
+								float ground[3];
+								a.HasBody = WalkNodes(root, a.MinZ, a.BoundCenter, ground, boundAt, bound->Radius * 1.5f + 16.0f, a.Dismembered ? &a : nullptr) > 4 && a.BoundRadius > 1.0f &&
 									a.MinZ < 1e29f && a.MinZ > bound->Center.z - bound->Radius * 1.5f - 16.0f;
+								a.GroundZ = ground[0]; a.GroundSlope[0] = ground[1]; a.GroundSlope[1] = ground[2];
 								WalkCache& w = Walks[a.RefID];
 								w.Center[0] = boundAt[0]; w.Center[1] = boundAt[1]; w.Center[2] = boundAt[2];
 								w.Radius = bound->Radius; w.Dismembered = a.Dismembered; w.Time = now; w.Result = a;
@@ -319,6 +386,7 @@ namespace {
 		double StillSince = -1.0;
 		D3DXVECTOR3 Last = D3DXVECTOR3(0, 0, 0);	// body centre last frame
 		D3DXVECTOR3 Pool = D3DXVECTOR3(0, 0, 0);	// the pool's centre on the ground
+		float PoolSlope[2] = { 0.0f, 0.0f };		// UNOFFICIAL 2026-10-27: the ground's slope there (dz/dx, dz/dy; GroundUnderBones)
 		float MaxRadius = 0.0f;
 		float Tint = 0.0f;			// UNOFFICIAL 2026-10-25: its own blood's colour (Item::Tint packing), from a splat next to it; 0: none yet
 		// UNOFFICIAL 2026-10-13: a pool of its own under each cut-off part (GibPools), from when the cut is first seen; its place
@@ -673,6 +741,7 @@ void BloodFlowEffect::GatherSplats() {
 		if (!(radius > 0.5f && radius < 200.0f)) radius = 8.0f;
 		item.Center = center;
 		item.Normal = normal;
+		item.SlopeX = item.SlopeY = 0.0f;
 		item.Radius = max(std::clamp(radius, 1.0f, 60.0f), grownRadius[c]);
 		item.Age = std::clamp(fabsf(s.Direction[2]) > 0.99f ? s.Age - Settings.GibHold : s.Age, 0.0f, 1e6f);	// (a held gib's: from its release)
 		item.Seed = Hash01(HashFloats(s.Origin, 3));
@@ -764,12 +833,15 @@ void BloodFlowEffect::GatherPools() {
 				// each time. Now it keeps the age it had: it moves with the body, already spread.
 				if (!body.EverLocked) body.LockAt = old ? Clock - 1e5 : Clock;
 				body.EverLocked = true;
-				body.Pool = D3DXVECTOR3(now.x, now.y, a.MinZ - 1.5f);
+				// (2026-10-27: on the ground under the body's middle, from its bones; it was the lowest bone less 1.5, far below the
+				// ground there on a slope: GroundUnderBones.)
+				body.Pool = D3DXVECTOR3(now.x, now.y, a.GroundZ);
+				body.PoolSlope[0] = a.GroundSlope[0]; body.PoolSlope[1] = a.GroundSlope[1];
 				body.MaxRadius = maxRadius;
 				if (LoggedPools < 12) {
 					LoggedPools++;
-					Logger::Log("BloodFlow: pool under %08X at (%.1f %.1f %.1f), body radius %.1f, lowest node %.1f, pool radius %.1f, %s",
-						a.RefID, now.x, now.y, body.Pool.z, a.BoundRadius, a.MinZ, maxRadius, old ? "old body" : "fresh");
+					Logger::Log("BloodFlow: pool under %08X at (%.1f %.1f %.1f), body radius %.1f, lowest node %.1f, ground slope (%.2f %.2f), pool radius %.1f, %s",
+						a.RefID, now.x, now.y, body.Pool.z, a.BoundRadius, a.MinZ, a.GroundSlope[0], a.GroundSlope[1], maxRadius, old ? "old body" : "fresh");
 				}
 			}
 		}
@@ -782,7 +854,8 @@ void BloodFlowEffect::GatherPools() {
 				// The stump's joint, on the ground under it; a part with no such node: beside the body's middle.
 				const float* at = a.PartFound[k] ? a.PartPos[k] : a.BoundCenter;
 				const float spread = a.PartFound[k] ? 0.0f : a.BoundRadius * 0.3f;
-				body.GibPool[k] = D3DXVECTOR3(at[0] + spread * cosf(k * 1.7f), at[1] + spread * sinf(k * 1.7f), a.MinZ - 1.5f);
+				const float gx = at[0] + spread * cosf(k * 1.7f), gy = at[1] + spread * sinf(k * 1.7f);
+				body.GibPool[k] = D3DXVECTOR3(gx, gy, a.GroundZ + a.GroundSlope[0] * (gx - now.x) + a.GroundSlope[1] * (gy - now.y));	// (2026-10-27: on the bones' ground plane)
 			}
 			if (fresh && LoggedGibs < 20) {
 				LoggedGibs++;
@@ -824,6 +897,7 @@ void BloodFlowEffect::GatherPools() {
 		item.Fresh = false;
 		item.Center = body.Pool;
 		item.Normal = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+		item.SlopeX = body.PoolSlope[0]; item.SlopeY = body.PoolSlope[1];
 		item.Radius = body.MaxRadius;
 		item.Age = (float)min(Clock - body.LockAt, 1e5);
 		item.Seed = Hash01(candidates[c].RefID);
@@ -869,6 +943,7 @@ void BloodFlowEffect::GatherPools() {
 			item.Fresh = false;
 			item.Center = body.GibPool[k];
 			item.Normal = D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+			item.SlopeX = body.PoolSlope[0]; item.SlopeY = body.PoolSlope[1];
 			item.Radius = std::clamp(body.MaxRadius * Settings.GibPools, 4.0f, 60.0f);
 			item.Age = (float)min(Clock - max(body.GibAt[k], body.LockAt), 1e5);
 			item.Seed = Hash01(candidates[c].RefID * 31u + (UInt32)k * 977u);

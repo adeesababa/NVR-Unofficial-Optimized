@@ -12,7 +12,8 @@
 //                                                  (counts up to 0, then it starts where it was spawned); <= -1e29: empty
 //  vel.xyz  velocity (units/s)             vel.w  flags (below, as a whole number)
 //  info.x   fallback ground height         info.y seed 0-1, info.z colour (0xRRGGBB of the game splat's decal colour as a
-//           (z, anchor space)              whole number, 0 none), info.w kind (0 thrown, 1 pool, 2 test throw)
+//           (z, anchor space, under        whole number, 0 none), info.w kind (0 thrown, 1 pool, 2 test throw)
+//           the particle: SlopeOf)
 //  nrm.xyz  the surface it last lay on     nrm.w  amount (1 = one particle's worth)
 struct Particle {
     vec4 pos;
@@ -32,6 +33,20 @@ const float DeadAge = -1e30;
 // Flags, kinds and colours are kept as whole numbers in float fields (exact below 2^24; raw bit casts of small integers
 // would be denormals, which a GPU may flush to zero).
 uint Flags(float w) { return uint(w + 0.5); }
+
+// UNOFFICIAL 2026-10-27 (user: "the weird half circles"): a pool's fallback ground follows the slope of the ground under the body
+// (BloodFlow.cpp GroundUnderBones; BloodFluid.cpp Offer). The slope rides in the flags word above the flag bits: dz/dx in bits
+// 8-15 and dz/dy in bits 16-23, each a signed byte in 1/64 steps (no bits: level; the word stays below 2^24, exact in the float).
+// info.x is then the plane's height under the particle where it is now (Integrate moves it along with the particle).
+uint PackSlope(vec2 g) {
+    ivec2 q = ivec2(round(clamp(g, -1.0, 1.0) * 64.0));
+    return ((uint(q.x) & 255u) << 8) | ((uint(q.y) & 255u) << 16);
+}
+vec2 SlopeOf(uint flags) {
+    ivec2 q = ivec2(int((flags >> 8) & 255u), int((flags >> 16) & 255u));
+    q -= ivec2(greaterThan(q, ivec2(127))) * 256;
+    return vec2(q) / 64.0;
+}
 
 // What the draw pass gets per particle on screen (48 bytes, written by the tiles pass).
 //  a.xyz eye-relative position, a.w radius (> 0: a stain lying on the surface nrm; < 0: a drop in the air, a sphere)
@@ -77,6 +92,9 @@ layout(set = 2, binding = 0, std140) uniform Frame {
     vec4  rework;        // x: 1 splat blood born on its surface, pools lying on the ground (0: thrown at it / born in the air, before);
                          // y: share of the drops in the air drawn; z: 1 the field's slope bends the normal mostly at its edges;
                          // w: the drops' glints x (OldThrow: 0, 1, 0, 1)
+    // UNOFFICIAL 2026-10-27 evening (user: "the color of the fluid simulation ones seems pretty off, almost looks like ketchup";
+    // "full bright as though it does not respond to ... lighting"):
+    vec4  look4;         // x: 1 the fluid's own colour (BloodFluidDraw.frag: a real layer, lit as the image says), 0 as before (OldColour)
 } F;
 
 // Integer hashes (the same everywhere: the simulation must not depend on the order threads run in).
