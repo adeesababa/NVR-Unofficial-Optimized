@@ -39,6 +39,15 @@ public:
 		bool	HiZInteriorsTest;	// test only: HiZ indoors too (the interior picture is not yet the old trace's; DebugView 9 / 10 to find why)
 		float	ReflectivityExterior;	// UNOFFICIAL 2026-10-25 [Shaders.PBR.Main] ReflectivityExterior / Interior: times the dry sheen and
 		float	ReflectivityInterior;	// MaterialReflect (not the rain's wetness); 1 = as before
+		// UNOFFICIAL 2026-10-28 [Shaders.Reflections.RT] (NVR DXVK + the RT core; docs/next/FORK-RT-REFLECTIONS.md): ray queries where the
+		// screen-space march misses (Compute\ReflectionsTraceRT.frag). Off, or no RT on this GPU: the trace as before.
+		bool	RtEnabled;
+		float	RtMaxRoughness;		// rougher surfaces keep the old fallbacks (cube, grid, sky)
+		float	RtDistance;			// ray length, game units
+		int		RtDebugView;		// 1 sources, 2 hit distance, 3 RT without the screen march, 4 hit instance
+		float	RtScreenTolerance;	// a hit counts as the screen's pixel when their depths differ by less than this share
+		float	RtEstimate;			// brightness of the estimate for hits neither the screen nor the cube can show
+		bool	RtSunShadows;		// the estimate's sun goes through a shadow ray
 	};
 	SettingsStruct	Settings;
 
@@ -112,6 +121,11 @@ private:
 	UINT				hizTraceFrames = 0;
 	ExtPass				extTraceHiZCount;	// UNOFFICIAL 2026-10-26 debugging tool: Compute\ReflectionsTraceHiZCount.spv (the trace + shader counters,
 											// [Main.Develop.ShaderCounters] ReflectionsHiZ; core/ShaderCounters.h). Failed: the normal Hi-Z trace.
+	ExtPass				extTraceRT;			// UNOFFICIAL 2026-10-28: Compute\ReflectionsTraceRT.spv ([Shaders.Reflections.RT])
+	bool				rtTraceFailed = false;	// its pipeline could not be made: the normal trace for the session
+	UINT				rtTraceFrames = 0;
+	ExtUniformBuffer	extRtUniforms;		// its RtConstants block (ReflectionsRT.glsl)
+	bool				RtWanted() const;	// RT on, its pipeline usable, the RT core's TLAS there this frame
 	ExtUniformBuffer	extUniforms;
 	D3DXVECTOR4			extSky = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// NVR_ReflectionsSky as RenderBuffers set it
 	IDirect3DTexture9*	extSkyTexture = nullptr;	// the sky visibility it bound on stage 14 (null: none)

@@ -6,6 +6,7 @@
 #include "../core/HiZ.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK, deep/fork-hiz)
 #include "../core/ShaderCounters.h"	// UNOFFICIAL 2026-10-26 debugging tools (the Hi-Z trace's counters)
 #include "../core/PixelInspector.h"
+#include "../core/RtCoreClient.h"	// UNOFFICIAL 2026-10-28 (RT reflections)
 
 void ReflectionsEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-18: the frames drawn with the settings that are about to be replaced. 2026-10-19: only while the F10
@@ -47,6 +48,21 @@ void ReflectionsEffect::UpdateSettings() {
 	Settings.HiZInteriorsTest = TheSettingManager->GetSettingI(section, "HiZInteriorsTest") != 0;	// test only: HiZ indoors too
 	Settings.HiZSafeCells = TheSettingManager->GetSettingI(section, "HiZSafeCells") != 0;	// test only: the pyramid-channel fix
 	HiZ::CheckEvery = std::clamp(TheSettingManager->GetSettingI(section, "HiZCheck"), 0, 100000);	// test only: pyramid readback check
+	// UNOFFICIAL 2026-10-28 RT reflections (docs/next/FORK-RT-REFLECTIONS.md); a missing key reads 0 / false (off).
+	const char* rt = "Shaders.Reflections.RT";
+	Settings.RtEnabled = TheSettingManager->GetSettingI(rt, "Enabled") != 0;
+	Settings.RtMaxRoughness = std::clamp(TheSettingManager->GetSettingF(rt, "MaxRoughness"), 0.02f, 1.0f);
+	Settings.RtDistance = std::clamp(TheSettingManager->GetSettingF(rt, "Distance"), 200.0f, 30000.0f);
+	Settings.RtDebugView = std::clamp(TheSettingManager->GetSettingI(rt, "DebugView"), 0, 4);
+	Settings.RtScreenTolerance = std::clamp(TheSettingManager->GetSettingF(rt, "ScreenTolerance"), 0.002f, 0.2f);
+	Settings.RtEstimate = std::clamp(TheSettingManager->GetSettingF(rt, "EstimateBrightness"), 0.0f, 4.0f);
+	Settings.RtSunShadows = TheSettingManager->GetSettingI(rt, "SunShadows") != 0;
+}
+
+// UNOFFICIAL 2026-10-28 RT reflections: only on the Vulkan trace (ExtRender), with the RT core's TLAS built this frame. Everything else
+// (the setting off, D3D9 passes, a GPU without RT, the pipeline refused) leaves the trace as it was.
+bool ReflectionsEffect::RtWanted() const {
+	return Settings.RtEnabled && !ExtFailed && !rtTraceFailed && RtCoreClient::Ready();
 }
 
 // UNOFFICIAL 2026-10-26 (deep/fork-hiz): outdoors only for now. Indoors (Lucky 38, a 3rd-person view looking down) the walk found no
@@ -169,6 +185,8 @@ void ReflectionsEffect::UpdateConstants() {
 	Constants.Data2.z = Settings.Thickness;
 	Constants.Data3.y = Settings.BlurRadius;
 	Constants.Data3.z = (float)Settings.DebugView;
+	// UNOFFICIAL 2026-10-28: RT DebugView 1, 2, 4 are trace colours, shown as the composite shows DebugView 6's (as they are).
+	if (Settings.RtDebugView > 0 && Settings.RtDebugView != 3 && RtWanted()) Constants.Data3.z = 6.0f;
 	Constants.Data3.w = exterior && Settings.SkyFallback ? 1.0f : 0.0f;
 	Constants.Data4.x = Settings.DrawDistance;
 	Constants.Data4.z = Settings.ReflectAdd;
@@ -419,6 +437,13 @@ namespace {
 		  "not started", "cells walked", "skipped facing", "skipped own plane", "skipped behind (thickness)", "no reflection" },
 		{ "endRule/cells/hitT/confidence", "facing/plane/thick/roughness", "hit.xy/depth/amount" });
 
+	// UNOFFICIAL 2026-10-28 RT reflections: ReflectionsTraceRT.frag = the same bindings + its RtConstants block (set 2, binding 1, uniform
+	// buffer slot 2: slot 1 is the Hi-Z storage buffer, and a uniform and a storage buffer on one slot number are one resource) + the TLAS
+	// (set 3, binding 0; the declaration is the RT core's, RtCoreClient::Binding).
+	const UINT RtUniformSlot = 2, RtTlasSlot = 0;
+	const NVR_EXT_BINDING_DESC ReflRtUniformBinding = { 2, 1, NVR_EXT_BIND_UNIFORM_BUFFER, RtUniformSlot, NVR_EXT_VIEW_2D, FALSE, 0 };
+	struct ReflRtUniforms { D3DXVECTOR4 rt, rt2, rt3, sunDir, sunColor; };	// ReflectionsRT.glsl RtConstants (std140)
+
 	IDirect3DBaseTexture9* SlotTexture(const char* name) {
 		std::string slotName = name;
 		IDirect3DBaseTexture9** slot = TheTextureManager->GetTextureSlotByName(slotName);
@@ -451,6 +476,26 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		}
 	}
 	if (!extTraceHiZ.Pipeline) hiz = nullptr;
+	// UNOFFICIAL 2026-10-28 RT reflections ([Shaders.Reflections.RT]): the trace with ray queries where the march misses. It is
+	// ReflectionsTrace's march (not the Hi-Z walk), so it takes the place of HiZ while it runs.
+	NVR_EXT_BINDING_DESC rtTlasBinding = {};
+	NVR_EXT_RESOURCE_BINDING rtTlas = {};	// this frame's TLAS (none: the plain trace this frame)
+	const bool rt = techniqueIndex == 1 && RtWanted() && RtCoreClient::Binding(3, 0, RtTlasSlot, rtTlasBinding) && RtCoreClient::Resource(RtTlasSlot, rtTlas);
+	if (rt && !extTraceRT.Tried) {
+		extTraceRT.Tried = true;
+		NVR_EXT_BINDING_DESC bindings[_countof(ReflBindings) + 2];
+		memcpy(bindings, ReflBindings, sizeof(ReflBindings));
+		bindings[_countof(ReflBindings)] = ReflRtUniformBinding;
+		bindings[_countof(ReflBindings) + 1] = rtTlasBinding;
+		if (DxvkCompute::HasSpirv("ReflectionsTraceRT"))
+			extTraceRT.Pipeline = DxvkCompute::CreateGraphicsPipeline("ReflectionsTraceRT", bindings, _countof(bindings), sizeof(ReflPush), true);
+		if (!extTraceRT.Pipeline) {
+			rtTraceFailed = true;
+			Logger::Log("UNOFFICIAL Reflections: the RT trace could not be set up (Compute\\ReflectionsTraceRT.spv missing or refused); the normal trace is used.");
+		}
+	}
+	const bool rtNow = rt && extTraceRT.Pipeline;
+	if (rtNow) hiz = nullptr;
 	// UNOFFICIAL 2026-10-26 debugging tool ([Main.Develop.ShaderCounters] ReflectionsHiZ, needs NVR DXVK 1.5-debug): the Hi-Z trace's
 	// counting build, with the counter block bound; its probe pixel is the pixel inspector's, in this half-resolution target. Any
 	// problem (file missing, pipeline refused, no 1.5-debug readback): the normal Hi-Z trace, as with the setting off.
@@ -473,7 +518,7 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 			counters = HiZCounters.Begin(px, py);
 		}
 	}
-	ExtPass& pass = counters ? extTraceHiZCount : hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
+	ExtPass& pass = rtNow ? extTraceRT : counters ? extTraceHiZCount : hiz ? extTraceHiZ : extPasses[techniqueIndex == 4 ? 2 : techniqueIndex];
 	if (!pass.Tried) {
 		pass.Tried = true;
 		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvNames[techniqueIndex], ReflBindings, _countof(ReflBindings), sizeof(ReflPush), true);
@@ -571,6 +616,25 @@ bool ReflectionsEffect::ExtRender(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		if (++hizTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs as the Hi-Z march (HiZ).");
 	}
 	if (counters) resources[resourceCount++] = ShaderCounters::Bind(ReflCounterSlot, counters);	// UNOFFICIAL 2026-10-26 debugging tool
+	if (rtNow) {
+		// UNOFFICIAL 2026-10-28 RT reflections: the RtConstants block (ReflectionsRT.glsl) and the TLAS.
+		const D3DXVECTOR3 offset = RtCoreClient::Offset();
+		const ShaderConstants& sc = TheShaderManager->ShaderConst;
+		const bool day = TheShaderManager->GameState.isExterior && sc.SunDir.z > 0.0f;
+		ReflRtUniforms rtu = {};
+		rtu.rt = D3DXVECTOR4(1.0f, Settings.RtMaxRoughness, Settings.RtDistance, (float)Settings.RtDebugView);
+		rtu.rt2 = D3DXVECTOR4(offset.x, offset.y, offset.z, Settings.RtScreenTolerance);
+		rtu.rt3 = D3DXVECTOR4(RtCoreClient::HasMaterials() ? 1.0f : 0.0f, Settings.RtEstimate, Settings.RtSunShadows ? 1.0f : 0.0f,
+			day ? std::clamp(sc.SunAmount.x, 0.0f, 1.0f) : 0.0f);
+		rtu.sunDir = sc.SunDir;
+		rtu.sunColor = sc.sunColor;	// as the game gives it (gamma); ReflectionsRT.glsl linearizes
+		ID3D9NvrExtBuffer* rtBuffer = ExtUniforms(extRtUniforms, &rtu, sizeof(rtu));
+		if (!rtBuffer) return false;
+		resources[resourceCount].Slot = RtUniformSlot; resources[resourceCount].Type = NVR_EXT_BIND_UNIFORM_BUFFER; resources[resourceCount].pResource = rtBuffer;
+		resourceCount++;
+		resources[resourceCount++] = rtTlas;
+		if (++rtTraceFrames == 1) Logger::Log("UNOFFICIAL Reflections: the trace runs with RT ray queries ([Shaders.Reflections.RT]).");
+	}
 	ReflPush push = {};
 	push.cube = Constants.Cube;
 	push.pass = techniqueIndex == 4 ? 1 : (techniqueIndex == 0 && Cubes.EnvSlot) ? 1 : 0;	// Blur Y; the composite: the cube is bound

@@ -1605,6 +1605,15 @@ HiZSafeCells = false                   # UNOFFICIAL (2026-10-26) test only: the 
 HiZCheck = 0                           # UNOFFICIAL (2026-10-26) test only: every N frames the Hi-Z pyramid is read back and compared with the depth buffer (one log line 'Hi-Z check'; that frame stalls). 0 = off.
 HiZInteriorsTest = false               # UNOFFICIAL (2026-10-26) test only: HiZ indoors too (its interior picture is not yet the old trace's). With DebugView 9 / 10 shows why. Leave off.
 
+[_Shaders.Reflections.RT]
+Enabled = false                        # UNOFFICIAL, EXPERIMENTAL (2026-10-28, NVR DXVK fork on a GPU with Vulkan ray tracing only; does nothing elsewhere, e.g. on a GTX 10xx): reflected rays the screen cannot answer (off the screen, behind something, a gap the march stepped over) are traced through the scene in 3D. A hit that is visible on screen takes the picture there; one out of view takes the surroundings cube toward it, or a plain lit estimate. Rays that hit something no longer take the sky or the cube by mistake (no sky in the floor under a roof). Needs the Vulkan passes on. Off: the screen-space reflections as before.
+MaxRoughness = 0.5                     # [0.02-1.0] With RT: surfaces rougher than this keep the old fallbacks (the cube, the light grid, the sky); fades in from 75% of it. Blurred reflections gain little from rays and cost the same.
+Distance = 6000.0                      # [200-30000] With RT: how far each ray looks, in game units (4096 to a cell). Farther than this counts as open (the cube, then the sky).
+ScreenTolerance = 0.02                 # [0.002-0.2] With RT: a hit counts as the pixel the screen shows there when their depths differ by less than this share of the distance. Too low: hits on screen fall back to the estimate; too high: what hides the hit is reflected instead.
+EstimateBrightness = 1.0               # [0.0-4.0] With RT: brightness of the plain estimate used for hits neither the screen nor the cube can show (a grey surface lit by the place's light and, outdoors by day, the sun).
+SunShadows = true                      # With RT: the estimate's sun goes through one more ray (is the hit in the sun's shadow). Off: every estimated hit gets the sun (cheaper).
+DebugView = 0                          # [0-4] UNOFFICIAL (2026-10-28) diagnostic, with RT: 1 where each reflection came from (green the screen march, cyan RT visible on screen, blue RT through the cube, magenta RT estimate, orange RT with the hit's own material, grey the old fallbacks); 2 the RT hit distance (white near, dark far, red nothing within Distance, black no ray); 3 the normal picture with RT alone (the screen march dropped); 4 a colour per hit instance (checks the scene). 0: normal picture.
+
 [_Shaders.Reflections.Status]
 Enabled = false                        # Screen-space reflections on the ground: wet streets mirror the neon and lamps in the rain; optional dry sheen and interior floors. Needs the normals buffer.
 
