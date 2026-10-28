@@ -1,0 +1,110 @@
+#version 460
+// UNOFFICIAL 2026-10-28 RT lamp shadows, the trace pass (docs/next/FORK-RT-LAMPS.md). Runs in the 64-bit RT helper (NvrRtHelper.exe,
+// docs/next/FORK-RT-CORE.md): AMD's (and probably every) 32-bit Windows Vulkan driver has no ray queries, so the game cannot trace.
+// Per pixel of the frame's depth, for each of up to 18 shadowed lamps (NVR's cube slots 0-17): how much of the lamp the point sees,
+// in 16 steps, packed 6 lamps to a float channel (exact integers below 2^24), and the point's view depth in alpha so the object shaders
+// of a later frame can reproject into this result and tell a point that was traced from one that was hidden here
+// (PointShadowForward.hlsl, POINT_SHADOW_RT).
+// Each lamp: Rays rays aimed over a disc of the lamp's radius facing the point (golden-angle spiral turned per pixel and frame),
+// each in two segments: the whole ray with the far mask (everything but lamp glass), the last LampModelDistance next to the lamp with
+// the near mask (lamp models skipped too), stopping LampStop short of the lamp. Positions in camera-relative world space (the scene's).
+// Compile: glslangValidator -V --target-env vulkan1.2 -o RtLampTrace.spv RtLampTrace.comp
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The helper's fixed layout: set 0 binding 0 the scene, binding 1 the pass constants, 2.. the pass's images (in the order NVR shares them)
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+
+layout(set = 0, binding = 1, std140) uniform Pass {
+    mat4 viewTransform;          // TESR_ViewTransform as PointShadows2.frag takes it (cb.viewTransform[i][j] = the HLSL's [i][j])
+    mat4 projectionTransform;    // TESR_ProjectionTransform
+    vec4 cameraData;             // y: far (the depth texture holds linear depth / far)
+    vec4 size;                   // xy: the output's size in pixels, zw: 1 / that
+    vec4 params;                 // x: rays per lamp (1-8), y: StartOffset (world units), z: LampStop, w: noise offset (0..1)
+    vec4 params2;                // x: LampModelDistance (0 = one segment), y: far cull mask, z: near cull mask, w: lamp count (0-18)
+    vec4 lamps[18];              // xyz: the lamp (camera-relative), w: its reach (world units; 0 = no lamp in this slot)
+    vec4 lampSize[18];           // x: the radius the rays aim over (LampRadius, or InvisibleLightRadius for the game's invisible lights)
+} pass;
+
+layout(set = 0, binding = 2) uniform sampler2D depthTexture;    // NVR's TESR_DepthBuffer: linear depth / far
+layout(set = 0, binding = 3) uniform sampler2D normalsTexture;  // TESR_NormalsBuffer: view-space normal * 0.5 + 0.5
+layout(set = 0, binding = 4, rgba32f) uniform writeonly image2D result;
+
+vec3 toWorld(vec2 tex) {  // Includes/Depth.hlsl toWorld (camera-relative direction at unit view depth)
+    vec3 v = vec3(pass.viewTransform[0][2], pass.viewTransform[1][2], pass.viewTransform[2][2]);
+    v += (1.0 / pass.projectionTransform[0][0] * (2.0 * tex.x - 1.0)) * vec3(pass.viewTransform[0][0], pass.viewTransform[1][0], pass.viewTransform[2][0]);
+    v += (-1.0 / pass.projectionTransform[1][1] * (2.0 * tex.y - 1.0)) * vec3(pass.viewTransform[0][1], pass.viewTransform[1][1], pass.viewTransform[2][1]);
+    return v;
+}
+
+float hash12(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * 0.1031);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
+bool blocked(vec3 origin, vec3 segment, float tMin, float tMax, uint mask) {
+    if (!(tMax > tMin)) return false;
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, mask, origin, tMin, segment, tMax);
+    while (rayQueryProceedEXT(q)) { }
+    return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(pass.size.x) || pixel.y >= int(pass.size.y)) return;
+    vec2 uv = (vec2(pixel) + 0.5) * pass.size.zw;
+
+    float depth = textureLod(depthTexture, uv, 0.0).x * pass.cameraData.y;    // view depth (world units)
+    vec4 packed = vec4(0.0, 0.0, 0.0, depth);
+    if (!(depth > 0.0) || depth >= pass.cameraData.y * 0.999) {               // sky / nothing: every lamp lit
+        imageStore(result, pixel, vec4(16777215.0, 16777215.0, 16777215.0, 0.0));
+        return;
+    }
+    vec3 position = toWorld(uv) * depth;
+    vec4 n = vec4(textureLod(normalsTexture, uv, 0.0).xyz * 2.0 - 1.0, 1.0);
+    vec3 normal = normalize((n * pass.viewTransform).xyz);                     // Normals.hlsl GetWorldNormal
+    if (dot(normal, position) > 0.0) normal = -normal;                         // facing the camera
+
+    uint rays = uint(clamp(pass.params.x, 1.0, 8.0));
+    float offset = pass.params.y, stop = pass.params.z;
+    float spin = 6.2831853 * fract(hash12(vec2(pixel)) + pass.params.w);
+    uint farMask = uint(pass.params2.y), nearMask = uint(pass.params2.z);
+    vec3 origin = position + normal * offset;
+    int count = min(int(pass.params2.w), 18);
+
+    for (int s = 0; s < count; s++) {
+        vec4 lamp = pass.lamps[s];
+        float steps = 15.0;                                                    // lit (also: no lamp, out of reach, at the lamp)
+        vec3 toLamp = lamp.xyz - origin;
+        float dist = length(toLamp);
+        if (lamp.w > 0.0 && dist < lamp.w && dist > stop + offset && dot(toLamp, normal) > 0.0) {
+            vec3 dir = toLamp / dist;
+            vec3 t = normalize(cross(dir, abs(dir.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+            vec3 b = cross(dir, t);
+            float radius = pass.lampSize[s].x;
+            uint lit = 0u;
+            for (uint i = 0u; i < rays; i++) {
+                float r = radius * sqrt((float(i) + 0.5) / float(rays));
+                float a = float(i) * 2.3999632 + spin;
+                vec3 segment = toLamp + (t * cos(a) + b * sin(a)) * r;
+                float invLen = inversesqrt(dot(segment, segment));
+                float tEnd = clamp(1.0 - stop * invLen, 0.0, 1.0);
+                float tMin = min(offset * invLen, tEnd);
+                float tSplit = clamp(1.0 - pass.params2.x * invLen, tMin, tEnd);
+                if (!blocked(origin, segment, tMin, tSplit, farMask) && !blocked(origin, segment, tSplit, tEnd, nearMask))
+                    lit++;
+            }
+            steps = floor(15.0 * float(lit) / float(rays) + 0.5);
+        }   // (facing away from the lamp: lit here; the object shader's own lighting takes it to 0 with its finer normal)
+        int channel = s / 6, nibble = s - 6 * channel;
+        packed[channel] += steps * exp2(4.0 * float(nibble));
+    }
+    for (int s = count; s < 18; s++) {                                         // unused slots: lit
+        int channel = s / 6, nibble = s - 6 * channel;
+        packed[channel] += 15.0 * exp2(4.0 * float(nibble));
+    }
+    imageStore(result, pixel, packed);
+}

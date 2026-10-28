@@ -324,6 +324,8 @@ namespace PointShadowForward {
 		Active = false;
 		SlotCount = 0;
 		Focus = -1;
+		RtLampShadows::Mode = 0.0f;	// UNOFFICIAL 2026-10-28 RT lamp shadows: off until Submit below finds a result
+		RtLampShadows::Result = nullptr;
 		if (!CompiledIn) { lastCount = 0; return; }
 		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
 		LogObjectLamps = forward.LogLamps;
@@ -407,7 +409,6 @@ namespace PointShadowForward {
 				capped & 2 ? " no contact hardening or LampSize" : "");
 		}
 		DebugView = (float)forward.DebugView;
-		RtLampShadows::Update();	// UNOFFICIAL 2026-10-28 RT lamp shadows: this frame's c215-c217
 		NearFade = TheShaderManager->Effects.ShadowsExteriors->Constants.PointShadowNear.x;	// [Shaders.ShadowsInteriors.Main] NearFade, already clamped
 		ScopeFix = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward.ScopeFix;
 		if (ScopeInView != ScopeWasInView && ScopeLogs < 20) {
@@ -476,6 +477,12 @@ namespace PointShadowForward {
 		}
 		lastCount = SlotCount;
 		Active = SlotCount > 0;
+		// UNOFFICIAL 2026-10-28 RT lamp shadows: this frame's trace request and the newest traced result (RtLampShadows.h)
+		if (RtLampShadows::CompiledIn) {
+			RtLampShadows::SlotLamp traced[ShadowCubeMapsMax];
+			for (int s = 0; s < SlotCount; s++) traced[s] = { Slots[s].slot, Slots[s].position, Slots[s].radius, Slots[s].fade };
+			RtLampShadows::Submit(traced, SlotCount);
+		}
 		for (int s = 0; s < SlotCount; s++) if (Slots[s].slot == 0) { Focus = s; break; }
 		// DebugView 3: the focus lamp and what its cube maps hold, every 2 seconds (with the draws of the period before).
 		static double lastTrace = 0.0;
@@ -517,11 +524,13 @@ namespace PointShadowForward {
 	// maps on s8/s11/s12, ours): the next frame's objects then sampled ANOTHER lamp's cube map until something else was
 	// bound there -- a per-object shadow that came and went with the draw order (the TOPSCasino floor flicker). Done on
 	// every shader bind; between objects the cache is right again.
-	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture, bool device = false) {
+	// point: POINT filtering (UNOFFICIAL 2026-10-28: the RT lamp shadows' packed result on s15 must never be blended).
+	inline void Bind(DWORD stage, IDirect3DBaseTexture9* texture, bool device = false, bool point = false) {
 		TheRenderManager->renderState->SetTexture(stage, texture);
 		if (device) TheRenderManager->device->SetTexture(stage, texture);
-		static const DWORD states[][2] = { { D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP }, { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP },
-			{ D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP }, { D3DSAMP_MAGFILTER, D3DTEXF_LINEAR }, { D3DSAMP_MINFILTER, D3DTEXF_LINEAR },
+		const DWORD filter = point ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+		const DWORD states[][2] = { { D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP }, { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP },
+			{ D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP }, { D3DSAMP_MAGFILTER, filter }, { D3DSAMP_MINFILTER, filter },
 			{ D3DSAMP_MIPFILTER, D3DTEXF_NONE }, { D3DSAMP_SRGBTEXTURE, FALSE } };
 		for (const auto& s : states)
 			if (TheRenderManager->renderState->GetSamplerState(stage, (D3DSAMPLERSTATETYPE)s[0]) != s[1])
@@ -543,7 +552,7 @@ namespace PointShadowForward {
 		IDirect3DCubeTexture9* neutral = NeutralCube();
 		for (int k = 0; k < 6; k++) bound[k] = neutral;
 		int matched = 0;
-		unsigned rayBits = 0;					// UNOFFICIAL 2026-10-28 RT lamp shadows: the draw's lights that take rays (MaxLamps by cube slot)
+		float tracedSlots[6] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };	// UNOFFICIAL 2026-10-28 RT lamp shadows: per light, -1 = cube map
 		const bool trace = DebugView > 2.5f;	// DebugView 3: PointShadowTrace (PointShadowForward.hlsl)
 		int focusIndex = -1;					// view 3: which light of the draw the focus lamp is
 		bool wanted = false;
@@ -569,7 +578,7 @@ namespace PointShadowForward {
 					// red for cube slot 0 alone (DebugView 3's lamp); the other slots share the other ten colours
 					memcpy(constants[8 + k], palette[Slots[s].slot == 0 ? 0 : 1 + (Slots[s].slot - 1) % 10], 3 * sizeof(float));
 					constants[8 + k][3] = Slots[s].fade;	// FadeIn
-					if (Slots[s].slot < RtLampShadows::MaxLamps) rayBits |= 1u << k;
+					tracedSlots[k] = RtLampShadows::TracedSlot(Slots[s].slot);
 					matched++;
 					break;
 				}
@@ -600,13 +609,16 @@ namespace PointShadowForward {
 		}
 		// Every declared cube stage gets a cube texture, matched or not: a 2D texture left there by another shader would be
 		// the wrong type for the sampler. Between objects only what changed (the game's texture cache tells).
+		// UNOFFICIAL 2026-10-28 RT lamp shadows: in POINT_SHADOW_RT shaders s15 is the traced result (a 2D texture, point sampled)
+		const bool rtStage = RtLampShadows::CompiledIn;
+		if (rtStage) bound[5] = RtLampShadows::Stage15Texture();
 		for (int k = 0; k < 6; k++)
-			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force);
+			if (force || TheRenderManager->renderState->GetTexture(Stage[k]) != bound[k]) Bind(Stage[k], bound[k], force, rtStage && k == 5);
 		if (force || memcmp(constants, Uploaded, sizeof(constants))) {
 			TheRenderManager->device->SetPixelShaderConstantF(174, &constants[0][0], 16);
 			memcpy(Uploaded, constants, sizeof(constants));
 		}
-		RtLampShadows::SetForPass(trace ? 0u : rayBits, force);	// c215-c217 (nothing without POINT_SHADOW_RT)
+		RtLampShadows::SetForPass(tracedSlots, force);	// c206-c209, c215-c217 (nothing without POINT_SHADOW_RT)
 		if (GpuTimer::Enabled && !force) { StatDraws++; if (matched) { StatMatchedDraws++; StatMatchedLights += matched; } }
 	}
 
