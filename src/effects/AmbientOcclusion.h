@@ -47,6 +47,9 @@ public:
 	// constants are kept up (UpdateSkyConstants, also called by ShaderManager while this effect is off), this effect's sky pass runs just
 	// before AmbientLight (ShaderManager) and AmbientLight's Apply takes the sky target's factor.
 	void UpdateSkyConstants();
+	// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): this frame's traced AO / sky values (made once a
+	// frame by the first caller; AmbientLight's RT estimate reads them too), or null.
+	IDirect3DTexture9* RtRaw(IDirect3DDevice9* Device);
 	static bool SkyHostedByAmbientLight();
 	static D3DXVECTOR2 SkyTakeComposite();	// LightCap for VolumetricFog's composites (Includes/SkyTake.hlsl): x the cap's scale, y no limit
 
@@ -83,7 +86,12 @@ private:
 	// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): the RT estimate (into the AO target 1), its
 	// temporal pass (target 1 + last frame's history -> target 0 + this frame's history) and the RT sky pass. The history pair is made
 	// at the AO target's size the first time it is needed (again when that size changes).
-	ExtPass				extEstimateRT, extTemporalRT, extSkyRT;
+	ExtPass				extEstimateRT, extTemporalRT, extSkyRT, extInputRT;
+	ExtUniformBuffer	extRtUniforms;
+	IDirect3DTexture9*	rtInputTexture = nullptr;	// NVR_RTAOInput (half, G32R32F): what the helper's trace starts from
+	IDirect3DSurface9*	rtInputSurface = nullptr;
+	IDirect3DTexture9*	rtRawTexture = nullptr;		// NVR_RTAORaw (half, A16B16G16R16F): the trace's result
+	IDirect3DSurface9*	rtRawSurface = nullptr;
 	IDirect3DTexture9*	rtHistoryTexture[2] = {};
 	IDirect3DSurface9*	rtHistorySurface[2] = {};
 	UINT				rtHistoryWidth = 0, rtHistoryHeight = 0;

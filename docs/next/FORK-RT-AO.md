@@ -1,16 +1,24 @@
 # Fork RT item 2: ray-traced ambient occlusion and sky visibility (2026-10-28)
 
 Branch `claude/rt-ao-sky-9f04fd` (cut from `claude/p84v3-tessring` 03b62a5a, the installed build). Part of the hybrid ray-tracing
-plan: item 1 (rt-sun-core) builds the shared acceleration structures and the ray-query entry point (`docs/next/FORK-RT-CORE.md`);
-this branch only adds the AO/sky passes, their settings, the bench list and this note, written against that core.
+plan: item 1 (rt-sun-core) builds the shared RT core (`docs/next/FORK-RT-CORE.md`); this branch adds only the AO/sky trace shader,
+NVR's passes around it, the settings, the bench list and this note, written against that core.
 
 ## Status
-- DONE: settings, four shaders (compiled and validated as SPIR-V 1.5), the NVR wiring into AmbientLight and AmbientOcclusion, the bench
-  list, this note. The DLL builds (see "Build / files").
-- WAITING: the RT core. Until its branch is merged, `RtAmbient::CoreReady()` (src/core/RtAmbient.h) answers false, so the feature is
-  detected off everywhere and every pass is exactly the old one. The core-dependent part is three small functions in that header
-  (CoreReady, TlasBinding/TlasResource, Origin): the rebase onto the core replaces those bodies and nothing else.
-- NOT DONE: the iGPU bench run (correctness shots and cost per ray count). It needs the core.
+- DONE: settings; the helper trace shader `RtAOTrace.comp` (SPIR-V 1.5, validated); NVR's input pass and the three passes that turn
+  the traced values into AmbientLight's / AmbientOcclusion's estimate and Skylighting's sky factor (validated); the AmbientOcclusion
+  temporal pass; the wiring in AmbientLight.cpp / AmbientOcclusion.cpp; the bench list. The DLL builds.
+- WAITING: the RT core. Until its branch is merged, `RtAmbient::CoreReady()` / `Trace()` (src/core/RtAmbient.h) answer false, so the
+  feature is detected off everywhere and every pass is exactly the old one. Those two functions (and `Origin()`) are the only code that
+  depends on the core: the rebase replaces their bodies with calls to its `RtCore` class.
+- NOT DONE: the iGPU bench run (correctness shots, cost per ray count). It needs the core.
+
+## Why a helper process (rt-sun-core's finding, 2026-10-28)
+AMD's 32-bit Windows Vulkan driver (the iGPU, driver 25.10.36) offers no VK_KHR_acceleration_structure / ray_query to a 32-bit process;
+the 64-bit driver does. FNV and the fork's d3d9.dll are 32-bit, so no NVR Vulkan pass can trace. The core moves the BLAS/TLAS and the
+trace passes into a 64-bit helper (NvrRtHelper.exe, like NvrDlssHelper) that shares images and timeline semaphores with the game (fork
+patch 0026). My first version (2d7787dc) traced inside NVR's fragment passes; it was reworked into one helper compute pass + NVR passes
+that only read its output (this commit). Notes: side-session-notes `RT-CORE-HELPER-2026-10-28.md`.
 
 ## What it does (plain)
 - AO: a few short rays per pixel (half resolution), cosine-weighted round the surface's normal, Distance long, traced against the real
@@ -25,75 +33,74 @@ this branch only adds the AO/sky passes, their settings, the bench list and this
 ## Settings `[Shaders.AmbientOcclusion.RT]` (all live; defaults in resource/NewVegasReloaded.dll.defaults.toml)
 | key | default | meaning |
 |---|---|---|
-| Enabled | false | on: needs the NVR DXVK with the RT core, NvrDxvkPasses on, a GPU with ray queries; else logged once and nothing changes |
+| Enabled | false | on: needs the NVR DXVK, NvrDxvkPasses on, the RT core's helper and a GPU with ray queries; else logged once and nothing changes |
 | RayCount | 4 | [1-16] AO rays per half-resolution pixel and frame |
 | Distance | 120 | [8-1000] AO ray length, game units (~70 = 1 m) |
 | Sky | true | the sky visibility from rays too (Skylighting must be on, as for the ortho version) |
 | SkyRays | 16 | 8 (one ring at 60 degrees + straight up) or 16 (+ a ring at 30 degrees: the ortho version's two rings) |
 | SkyDistance | 800 | [64-8000] sky ray length (Skylighting's Distance) |
 | DebugView | 0 | 1 the raw RT visibility (AmbientLight's occlusion view is switched on for it); 2 the RT sky visibility (through Skylighting's view 1); 3 black where rays began inside something, else grey by the mean hit distance |
-The strength, darkest value, brightness fade, draw distance (AmbientLight) and StrengthMultiplier / ClampStrength / fog and far fade
-(AmbientOcclusion), and every Skylighting setting (Strength, OpenThreshold, ShareApply, AmbientScale, LightCap, OpenSides is not used:
-rays see the open sides themselves) stay theirs, mapped the same way as for the screen estimate, so A/B is one switch.
+The strength, darkest value, brightness fade, draw distance (AmbientLight), StrengthMultiplier / ClampStrength / fog and far fade
+(AmbientOcclusion), and Skylighting's Strength, OpenThreshold, ShareApply, AmbientScale, LightCap stay theirs, mapped the same way as for
+the screen estimate, so A/B is one switch. (Skylighting's OpenSides is not used: rays see the open sides themselves.)
 
-## How (passes; F10 lines)
+## How (per frame; F10 lines)
+`AmbientOcclusionEffect::RtRaw`, once per frame for whichever pass asks first (the sky pass runs first, then AO or AmbientLight):
+1. NEW `RtAOInput.frag` (`  AO RT input (half)`): per half-resolution texel the view distance (0 past 8000: no rays) and the world
+   normal (camera-relative world, octahedral + Pack2 as AmbientLight's prep) -> NVR_RTAOInput (G32R32F).
+2. The core: NVR_RTAOInput shared to the helper, which runs NEW `RtAOTrace.comp` (`  AO RT trace (helper, wait + copy)` times NVR's
+   side) -> NVR_RTAORaw (A16B16G16R16F): x AO visibility (cosine-weighted, raw), y sky visibility, z 'covered' (straight up blocked),
+   w DebugView 3's value. Constants (`RtAmbient::TraceConstants`): view->world rotation, 1/P00, 1/P11, grid size, TLAS origin + frame
+   number, AO distance/rays, sky distance/rays (sky rays 0 while Skylighting is off).
+   - AO rays: Malley cosine-weighted directions, R2-stratified, rotated per texel by interleaved gradient noise (no noise texture in the
+     helper) and moved each frame by the golden ratio (both consumers keep a history). Closest hit; a hit counts fully to Distance/2 and
+     fades to nothing at Distance. Start lifted by 0.75 + 0.003 x view distance units along the normal; a back face within 4 x that is
+     a ray that began inside something (half-resolution depth error, tessellated bumps the TLAS does not have): open, and DebugView 3.
+   - Sky rays: straight up ('covered') + one or two fixed rings of 8 (60 / 30 degrees up) weighted by their cosine to the normal, any hit
+     within SkyDistance blocks; turned by a 4x4 per-texel interleave that never changes with the frame (no flicker standing still).
 AmbientLight (the user's AO; AmbientOcclusion is off while AmbientLight renders):
-1. Prepare, NormalSmoothing: unchanged.
-2. NEW `AmbientLightEstimateRT.frag` in Estimate's place (`  Ambient light RT rays (half)`): per half-resolution texel the prep's view
-   depth and smoothed normal, to camera-relative world (the view's rotation), RayCount rays (`RtCommon.glsl RtOcclusion`: Malley
-   cosine-weighted directions, R2-stratified, rotated by the blue noise, moved each frame by the golden ratio while Accumulate keeps a
-   history), closest hit, a hit counts fully up to Distance/2 and fades to nothing at Distance. Output as Estimate's: rgb 0, a =
-   pow(visibility, 1.5 x OcclusionStrength) faded by the near/far fade.
-3. Blur X / Y (edge-aware, depth-weighted): unchanged = the spatial denoiser.
-4. Accumulate (reprojection with the double-precision camera move, 4-texel depth test, neighbour clamp, 0.9 history share less the
-   motion): unchanged = the temporal denoiser. With 4 rays and a 0.9 share the history averages ~10 frames = ~40 rays per texel.
-5. Apply: unchanged.
-ComputeGI keeps the screen search (its bounce light comes from it); with ComputeGI on, the RT estimate is not used.
-
+3. NEW `AmbientLightEstimateRT.frag` in Estimate's place (`  Ambient light RT estimate (half)`): a = pow(raw visibility, 1.5 x
+   OcclusionStrength) with Estimate's near/far fade, rgb 0, exactly Estimate's output.
+4. Blur X / Y (edge-aware) = the spatial denoiser; Accumulate (reprojection, depth test, neighbour clamp, 0.9 history) = the temporal
+   one: with 4 rays a texel averages ~40 rays over ~10 frames. Apply unchanged. With ComputeGI on, the screen search stays (its light).
 AmbientOcclusion (when AmbientLight is off):
-1. NEW `AmbientOcclusionEstimateRT.frag` (`  AO RT rays (half)`) into AO target 1: the same rays; output (ao, depth) with GTAOValue's tail
-   (StrengthMultiplier, fog, far fade).
-2. NEW `AmbientOcclusionTemporalRT.frag` (`  AO RT temporal (half)`): AmbientLight's Accumulate rule on AO's targets: AO 1 + last
-   frame's NVR_AORTHistory -> AO 0 + this frame's history (two targets, G16R16F, made at the AO target's size on first use).
-3. Blur X / Y and Combine: unchanged.
-
-Sky (Skylighting v2, hosted by AmbientLight or AmbientOcclusion as today):
-- NEW `AmbientOcclusionSkyRT.frag` in SkyVisibilityV2's place, same target and output (factor, depth, visibility). Directions fixed per
-  texel (straight up for 'covered', then one or two rings of 8 weighted by their cosine to the normal, as the ortho version), turned
-  by a 4x4 per-texel interleave that does not change over time: no grain that moves, so no temporal pass; the composites' depth-aware
-  upsampling averages the interleave. While the RT sky runs the ortho map is not requested (ShadowManager skips its amortised redraws).
-Failure rule: any RT pipeline or draw failure is logged once and turns the RT path off for the session; the other Vulkan passes are
-untouched (ExtFailed is put back), NVR's own estimate/sky pass runs.
+3. NEW `AmbientOcclusionEstimateRT.frag` (`  AO RT estimate (half)`) into AO target 1: GTAOValue's tail (StrengthMultiplier, fog, fade).
+4. NEW `AmbientOcclusionTemporalRT.frag` (`  AO RT temporal (half)`): Accumulate's rule on AO's (ao, depth) targets: AO 1 + last
+   frame's NVR_AORTHistory -> AO 0 + this frame's history (G16R16F pair at the AO target's size, made on first use).
+5. Blur X / Y and Combine unchanged.
+Sky (Skylighting v2, hosted as today): NEW `AmbientOcclusionSkyRT.frag` in SkyVisibilityV2's place, same target and output (SkyFactor of
+the traced visibility and 'covered', depth, visibility). While the RT sky runs the ortho map is not requested.
+Failure rule: a missing .spv or a failed RT pass is logged once and ends the RT path for the session; the other Vulkan passes are
+untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No result from the helper in a frame = NVR's passes that frame.
 
 ## Choices (why)
-- Rays from the depth buffer, not a primary ray: the G-buffer's position and normal are what the screen AO uses, so the A/B differs only
-  in the occlusion test. Ray start = position + normal x (0.75 + 0.003 x view distance) units; back-face hits within 4 x that bias are
-  rays that began inside something (depth error at half resolution, or tessellated land bumps the TLAS does not have): they count as
-  open (no false black) and DebugView 3 shows where.
-- Closest hit (not first-found) for AO: the distance fade needs the real distance; the sky only needs any hit (TerminateOnFirstHit).
-- Everything opaque (`gl_RayFlagsOpaqueEXT`): alpha-tested foliage counts as its whole cards until the core offers alpha (a request to
-  it, not a local copy). Expect leaves to occlude a little too much.
-- Denoise = NVR's existing passes (blur + Accumulate) instead of a new denoiser (SVGF/A-trous): the RT estimate is one more Estimate, so
-  every view, fade and history rule the user knows stays the same. If 4 rays + history is too grainy on motion, the next step is a
-  variance-guided blur width (cheap), not a new pipeline.
-- Sky with fixed directions: the ortho version's look (its two rings) with real occluders, no noise to filter.
+- One trace pass for AO and sky: one input, one output, one round trip to the helper per frame; the AO path and the sky path read the
+  same texture. The helper only traces raw values; every NVR setting is applied in NVR's passes, so tuning needs no helper change.
+- Rays from the depth buffer (not primary rays): the A/B against the screen AO then differs only in the occlusion test.
+- Everything opaque (`gl_RayFlagsOpaqueEXT`): alpha-tested foliage counts as whole cards until the core offers alpha (a request to it).
+- Denoise = NVR's existing passes, not a new denoiser (SVGF/A-trous): every view, fade and history rule the user knows stays the same.
+  If 4 rays + history are too grainy in motion, next step is a variance-guided blur width.
+- Latency: if the core returns the helper's result one frame late, the occlusion lags a frame; Accumulate's reprojection hides most of
+  it (to check in the bench: fast turns, DebugView 1).
 
 ## Build / files
-- DLL: VS2019 (v142) Release Win32 builds clean, no new warnings (2026-10-28, SHA256 5F60CB2A...). With the core missing it behaves exactly
+- DLL: VS2019 (v142) Release Win32, `/m:2` (the machine ran out of RAM with full parallelism), no new warnings, SHA256 077BD420...
+  With the core missing it behaves exactly
   as 03b62a5a (the RT setting off or on).
-- New SPIR-V (compile: `glslangValidator -V --target-env vulkan1.2`; tools/nvr-dxvk/compile-compute.sh now picks Vulkan 1.2 for files
-  that use GL_EXT_ray_query): AmbientLightEstimateRT.spv, AmbientOcclusionEstimateRT.spv, AmbientOcclusionTemporalRT.spv,
-  AmbientOcclusionSkyRT.spv -> `Data\Shaders\NewVegasReloaded\Compute\`. RtCommon.glsl is their shared include.
+- SPIR-V -> `Data\Shaders\NewVegasReloaded\Compute\`: RtAOInput, AmbientLightEstimateRT, AmbientOcclusionEstimateRT,
+  AmbientOcclusionTemporalRT, AmbientOcclusionSkyRT (.spv, Vulkan 1.1, NVR's passes) and RtAOTrace.spv (Vulkan 1.2, ray query: the
+  helper loads it by name). tools/nvr-dxvk/compile-compute.sh picks Vulkan 1.2 for files that use GL_EXT_ray_query.
 - Bench list: `work\bench\foundations\lists\rt-ao-1.txt` (2026-10-03 work root): AL GTAO vs RT occlusion views, raw/inside views,
-  RayCount 1/2/4/8/16, Distance 250, ortho vs RT sky, AmbientOcclusion path.
+  RayCount 1/2/4/8/16, Distance 250, ortho vs RT sky, the AmbientOcclusion path. Harness: SLOT_DXVK_DEVICE / SLOT_D3DDEVICE =
+  "AMD Radeon(TM) Graphics", SLOT_RES=1280x720, BENCHQ_SOLO=1, FSR off in the run toml.
 
 ## Results
 Not run yet (needs the RT core). To fill: per scene (lucky22 interior, og-desert, a porch / overhang exterior) the occlusion views side by
-side, the inside view (should be nearly empty), the sky views, and the F10 cost per ray count on the iGPU at 1280x720.
+side, the inside view (should be nearly empty), the sky views, and the cost per ray count on the iGPU at 1280x720 (NVR's F10 lines + the
+helper's own timing).
 
 ## Open / next (session-hours)
-- Rebase onto the core, fill the three RtAmbient functions, rebuild (0.5-1 h once the core's API is fixed).
+- Rebase onto the core, fill CoreReady / Trace / Origin from its RtCore API, rebuild (0.5-1 h once the API is fixed).
 - iGPU bulk run of rt-ao-1 in lucky22 + og-desert + a porch spot, read the shots, cost table (1-2 h incl. queue).
-- Tune Distance / the strength mapping against AmbientLight's look (RT occlusion is physically larger: AL's GTAO under-darkens wide
-  creases) (1 h).
-- Requests for the core if the shots show them: skinned actors in the TLAS (contact darkening under NPCs), alpha-tested foliage.
+- Tune Distance / the strength mapping against AmbientLight's look (RT occlusion is wider than AL's GTAO in creases) (1 h).
+- Requests for the core if the shots need them: skinned actors in the TLAS (darkening under NPCs), alpha-tested foliage.

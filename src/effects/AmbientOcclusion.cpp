@@ -37,7 +37,8 @@ static float SkyOpenSides = 0.0f;	// UNOFFICIAL 2026-10-20 (skyamb) OpenSides (S
 static int SkyVersion = 2;
 // UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT] (core/RtAmbient.h): the RT AO's temporal pass (AmbientOcclusionTemporalRT.frag),
 // AmbientLight's Accumulate rule: RtReproject this frame's view space -> last frame's clip (BounceLightMath.h); RtTemporal x last frame's
-// share (0.9, 0 without a usable history), y the motion in AO pixels that halves it, z the frame number (the rays' noise moves with it).
+// share (0.9, 0 without a usable history), y the motion in AO pixels that halves it, z the frame number, w the RT DebugView (the RT
+// passes read it).
 static D3DXMATRIX RtReproject;
 static D3DXVECTOR4 RtTemporal(0.0f, 4.0f, 0.0f, 0.0f);
 static D3DXMATRIX RtLastView, RtLastInvView, RtLastProj;
@@ -185,12 +186,7 @@ namespace {
 		D3DXMATRIX rtReproject;			// UNOFFICIAL 2026-10-28 (fork RT): read only by the RT passes (AmbientOcclusion.glsl)
 		D3DXVECTOR4 rtTemporal;
 	};
-	struct AOPushRT {	// AmbientOcclusion.glsl's push block with NVR_RT (the RT estimate and sky passes): AOPush + RtCommon.glsl's fields at 32
-		AOPush base;
-		UInt32 pad[2];
-		RtAmbient::Push rt;
-	};
-	static_assert(sizeof(AOPushRT) == 64, "AmbientOcclusion.glsl push block (NVR_RT)");
+
 
 	// The constants from the same registered memory the D3D9 path uploads (SetCT); null when not registered.
 	const D3DXVECTOR4* RegisteredConstant(const char* name) {
@@ -232,21 +228,20 @@ namespace {
 		return true;
 	}
 
-	// UNOFFICIAL 2026-10-28 (fork RT): MakePipeline's layout for the RT passes: Rt adds the TLAS (RtCommon.glsl, set 3 binding 0) and the
-	// 64-byte push block (AOPushRT); Targets for the temporal pass's two. Never fails the other Vulkan passes (FailAll false): the RT
-	// pass is then simply not drawn and NVR's own estimate runs.
-	void MakePipelineRT(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount, bool rt, UINT targets) {
+	// UNOFFICIAL 2026-10-28 (fork RT): MakePipeline with Targets (the temporal pass writes two) that never fails the other Vulkan passes
+	// (FailAll false; a missing .spv is checked first): the RT pass is then simply not drawn and NVR's own pass runs.
+	void MakePipelineRT(EffectRecord::ExtPass& pass, const char* spvName, UINT textureCount, UINT targets) {
 		if (pass.Tried) return;
 		pass.Tried = true;
-		NVR_EXT_BINDING_DESC bindings[10] = {};
+		if (!DxvkCompute::HasSpirv(spvName)) { Logger::Log("UNOFFICIAL RT AO: Compute\\%s.spv is missing; NVR's own pass runs.", spvName); return; }
+		NVR_EXT_BINDING_DESC bindings[9] = {};
 		UINT count = 0;
 		for (UINT i = 0; i < textureCount; i++, count++) {
 			bindings[count].Set = 1; bindings[count].Binding = i; bindings[count].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[count].Slot = i; bindings[count].ViewType = NVR_EXT_VIEW_2D;
 		}
 		bindings[count].Set = 2; bindings[count].Binding = 0; bindings[count].Type = NVR_EXT_BIND_UNIFORM_BUFFER; bindings[count].Slot = 0; count++;
 		for (UINT s = 0; s < 3; s++, count++) { bindings[count].Type = NVR_EXT_BIND_SAMPLER; bindings[count].Slot = s; bindings[count].PushOffset = 12 + 4 * s; }
-		if (rt && !RtAmbient::TlasBinding(bindings[count++])) return;
-		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, rt ? sizeof(AOPushRT) : sizeof(AOPush), true, targets, NVR_EXT_BLEND_NONE, false);
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(spvName, bindings, count, sizeof(AOPush), true, targets, NVR_EXT_BLEND_NONE, false);
 		if (!pass.Pipeline) Logger::Log("UNOFFICIAL RT AO: Compute\\%s.spv could not be made into a pass; NVR's own pass runs.", spvName);
 	}
 
@@ -298,6 +293,7 @@ bool AmbientOcclusionEffect::ExtConstants(ExtUniformBuffer& Uniforms, const D3DX
 	uniforms.skyLayout = SkyLayout;
 	uniforms.rtReproject = RtReproject;
 	uniforms.rtTemporal = RtTemporal;
+	uniforms.rtTemporal.w = (float)RtAmbient::Current.DebugView;
 	return ExtUniforms(Uniforms, &uniforms, sizeof(uniforms)) != nullptr;
 }
 
@@ -377,17 +373,65 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 	return Resources(resources, count, inputs, 5, extSkyUniforms.Buffer) && ExtDrawTo(extSky.Pipeline, &Target, 1, resources, count, &push, sizeof(push));
 }
 
-// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): Estimate's place in ExtDedicated. The rays into AO 1
-// (AmbientOcclusionEstimateRT.frag), then the temporal pass (AmbientOcclusionTemporalRT.frag) AO 1 + last frame's history -> AO 0 (what
+// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): this frame's traced values, made once per frame for
+// whichever pass asks first (the sky pass, this effect's estimate or AmbientLight's): RtAOInput.frag (view distance + world normal per
+// half-resolution texel) into NVR_RTAOInput, then the RT core's helper runs RtAOTrace.comp on it into NVR_RTAORaw (AO visibility, sky
+// visibility, covered, DebugView 3's value). Null: nothing traced this frame (the callers keep NVR's own passes).
+IDirect3DTexture9* AmbientOcclusionEffect::RtRaw(IDirect3DDevice9* Device) {
+	static UInt32 frame = 0xFFFFFFFF;
+	static bool result = false, failed = false;
+	if (frame == TheFrameRateManager->FrameNumber) return result ? rtRawTexture : nullptr;
+	frame = TheFrameRateManager->FrameNumber;
+	result = false;
+	if (failed || !Effect || !RtAmbient::Ready()) return nullptr;
+	const UINT width = MaxQuality::Reduced(TheRenderManager->width, 2), height = MaxQuality::Reduced(TheRenderManager->height, 2);
+	if (!rtInputTexture) {
+		TheTextureManager->InitTexture("NVR_RTAOInput", &rtInputTexture, &rtInputSurface, width, height, D3DFMT_G32R32F);
+		TheTextureManager->InitTexture("NVR_RTAORaw", &rtRawTexture, &rtRawSurface, width, height, D3DFMT_A16B16G16R16F);
+	}
+	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
+	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
+	MakePipelineRT(extInputRT, "RtAOInput", 2, 1);
+	if (!rtInputTexture || !rtRawTexture || !depth || !normals || !extInputRT.Pipeline) return nullptr;
+	const D3DXVECTOR4 layout(1.0f, 1.0f, 1.0f / width, 1.0f / height);
+	static GpuTimer timers[2] = { GpuTimer("  AO RT input (half)"), GpuTimer("  AO RT trace (helper, wait + copy)") };
+	{
+		GpuProfileScope gpu(timers[0], Device);
+		IDirect3DBaseTexture9* inputs[2] = { depth, normals };
+		NVR_EXT_RESOURCE_BINDING resources[6] = {};
+		UINT count = 0;
+		AOPush push = {};
+		const bool wasFailed = ExtFailed;
+		if (!ExtConstants(extRtUniforms, layout, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f)) || !Resources(resources, count, inputs, 2, extRtUniforms.Buffer) ||
+			!ExtDrawTo(extInputRT.Pipeline, &rtInputSurface, 1, resources, count, &push, sizeof(push))) {
+			ExtFailed = wasFailed;
+			failed = true;
+			Logger::Log("UNOFFICIAL RT AO: the RT input pass failed to draw; NVR's own AO runs from now on.");
+			return nullptr;
+		}
+	}
+	const RtAmbient::Settings& rt = RtAmbient::Current;
+	RtAmbient::TraceConstants constants = {};
+	constants.viewToWorld = TheRenderManager->InvViewMatrix;
+	constants.projection = D3DXVECTOR4(1.0f / TheRenderManager->projMatrix._11, 1.0f / TheRenderManager->projMatrix._22, (float)width, (float)height);
+	const D3DXVECTOR3 origin = RtAmbient::Origin();
+	constants.origin = D3DXVECTOR4(origin.x, origin.y, origin.z, (float)(TheFrameRateManager->FrameNumber % 1024));
+	constants.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, 0.0f);	// (both consumers keep a history: the noise moves)
+	constants.sky = D3DXVECTOR4(rt.SkyDistance, rt.Sky && SkyData2.x > 0.0f ? (float)rt.SkyRays : 0.0f, 0.0f, 0.0f);
+	GpuProfileScope gpu(timers[1], Device);
+	result = RtAmbient::Trace("RtAOTrace", rtInputTexture, rtRawTexture, &constants, sizeof(constants), width, height);
+	return result ? rtRawTexture : nullptr;
+}
+
+// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): Estimate's place in ExtDedicated. The traced
+// visibility (RtRaw) as Estimate's result into AO 1 (AmbientOcclusionEstimateRT.frag), then the temporal pass (AmbientOcclusionTemporalRT.frag) AO 1 + last frame's history -> AO 0 (what
 // the blurs read, as Estimate's) + this frame's history. False: nothing usable was drawn (Estimate runs); a failed draw does not take the
 // other Vulkan passes down (ExtFailed is put back) but ends the RT AO for the session.
 bool AmbientOcclusionEffect::ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTexture9* const* Textures, IDirect3DSurface9* const* Surfaces, const D3DSURFACE_DESC& Target) {
 	static bool rtFailed = false;
 	if (rtFailed) return false;
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
-	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
-	IDirect3DBaseTexture9* noise = ExtFileTexture("TESR_BlueNoiseSampler");
-	if (!depth || !normals || !noise || !Textures[1] || !Surfaces[0] || !Surfaces[1]) return false;
+	if (!depth || !Textures[1] || !Surfaces[0] || !Surfaces[1]) return false;
 	if (rtHistoryWidth != Target.Width || rtHistoryHeight != Target.Height) {
 		for (int i = 0; i < 2; i++) { DxvkCompute::Drop(rtHistorySurface[i]); DxvkCompute::Drop(rtHistoryTexture[i]); }
 		TheTextureManager->InitTexture("NVR_AORTHistory0", &rtHistoryTexture[0], &rtHistorySurface[0], Target.Width, Target.Height, D3DFMT_G16R16F);
@@ -398,26 +442,25 @@ bool AmbientOcclusionEffect::ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTe
 		RtTemporal.x = 0.0f;
 	}
 	if (!rtHistoryTexture[0] || !rtHistoryTexture[1] || !rtHistorySurface[0] || !rtHistorySurface[1]) return false;
-	MakePipelineRT(extEstimateRT, "AmbientOcclusionEstimateRT", 3, true, 1);
-	MakePipelineRT(extTemporalRT, "AmbientOcclusionTemporalRT", 3, false, 2);
+	IDirect3DTexture9* raw = RtRaw(Device);
+	if (!raw) return false;
+	MakePipelineRT(extEstimateRT, "AmbientOcclusionEstimateRT", 2, 1);
+	MakePipelineRT(extTemporalRT, "AmbientOcclusionTemporalRT", 3, 2);
 	if (!extEstimateRT.Pipeline || !extTemporalRT.Pipeline) return false;
-	static GpuTimer rtTimers[2] = { GpuTimer("  AO RT rays (half)"), GpuTimer("  AO RT temporal (half)") };
+	static GpuTimer rtTimers[2] = { GpuTimer("  AO RT estimate (half)"), GpuTimer("  AO RT temporal (half)") };
 	const bool wasFailed = ExtFailed;
 	const int read = rtHistoryIndex, write = rtHistoryIndex ^ 1;
-	NVR_EXT_RESOURCE_BINDING resources[10] = {};
+	NVR_EXT_RESOURCE_BINDING resources[8] = {};
 	UINT count = 0;
+	AOPush push = {};
 	bool drawn;
 	{
 		GpuProfileScope gpu(rtTimers[0], Device);
-		AOPushRT push = {};
-		push.rt = RtAmbient::MakePush();
-		IDirect3DBaseTexture9* inputs[3] = { depth, normals, noise };
-		drawn = Resources(resources, count, inputs, 3, extUniforms.Buffer) && RtAmbient::TlasResource(resources[count++]) &&
-			ExtDrawTo(extEstimateRT.Pipeline, &Surfaces[1], 1, resources, count, &push, sizeof(push));
+		IDirect3DBaseTexture9* inputs[2] = { depth, raw };
+		drawn = Resources(resources, count, inputs, 2, extUniforms.Buffer) && ExtDrawTo(extEstimateRT.Pipeline, &Surfaces[1], 1, resources, count, &push, sizeof(push));
 	}
 	if (drawn) {
 		GpuProfileScope gpu(rtTimers[1], Device);
-		AOPush push = {};
 		IDirect3DBaseTexture9* inputs[3] = { Textures[1], rtHistoryTexture[read], depth };
 		IDirect3DSurface9* targets[2] = { Surfaces[0], rtHistorySurface[write] };
 		drawn = Resources(resources, count, inputs, 3, extUniforms.Buffer) && ExtDrawTo(extTemporalRT.Pipeline, targets, 2, resources, count, &push, sizeof(push));
@@ -446,17 +489,18 @@ bool AmbientOcclusionEffect::ExtSkyVisibilityRT(IDirect3DSurface9* Target, IDire
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
 	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
 	if (rtFailed || !depth || !normals || !Target || FAILED(Target->GetDesc(&desc)) || !desc.Width || !desc.Height) return false;
-	MakePipelineRT(extSkyRT, "AmbientOcclusionSkyRT", 4, true, 1);
+	IDirect3DTexture9* raw = RtRaw(TheRenderManager->device);
+	if (!raw) return false;
+	MakePipelineRT(extSkyRT, "AmbientOcclusionSkyRT", 5, 1);
 	const D3DXVECTOR4 skyLayout(1.0f / desc.Width, 1.0f / desc.Height, SmoothedNormals ? 1.0f : 0.0f, 0.0f);
 	if (!extSkyRT.Pipeline || !ExtConstants(extSkyUniforms, D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f), skyLayout)) return false;
-	IDirect3DBaseTexture9* inputs[4] = { depth, normals, SunMask ? (IDirect3DBaseTexture9*)SunMask : depth, SmoothedNormals ? (IDirect3DBaseTexture9*)SmoothedNormals : depth };
-	NVR_EXT_RESOURCE_BINDING resources[10] = {};
+	IDirect3DBaseTexture9* inputs[5] = { depth, normals, SunMask ? (IDirect3DBaseTexture9*)SunMask : depth,
+		SmoothedNormals ? (IDirect3DBaseTexture9*)SmoothedNormals : depth, raw };
+	NVR_EXT_RESOURCE_BINDING resources[9] = {};
 	UINT count = 0;
-	AOPushRT push = {};
-	push.rt = RtAmbient::MakePush();
+	AOPush push = {};
 	const bool wasFailed = ExtFailed;
-	if (Resources(resources, count, inputs, 4, extSkyUniforms.Buffer) && RtAmbient::TlasResource(resources[count++]) &&
-		ExtDrawTo(extSkyRT.Pipeline, &Target, 1, resources, count, &push, sizeof(push))) return true;
+	if (Resources(resources, count, inputs, 5, extSkyUniforms.Buffer) && ExtDrawTo(extSkyRT.Pipeline, &Target, 1, resources, count, &push, sizeof(push))) return true;
 	ExtFailed = wasFailed;
 	rtFailed = true;
 	Logger::Log("UNOFFICIAL RT AO: the RT sky pass failed to draw; Skylighting's ortho map pass runs from now on.");

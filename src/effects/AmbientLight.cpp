@@ -716,8 +716,7 @@ bool AmbientLightEffect::RenderBlurCompute(const D3DXVECTOR4& layout, UINT width
 namespace {
 	// Each pass's fragment shader and its textures (set 1, binding = slot = index); Optional: the ones the shader reads only behind a
 	// constant that is off whenever the D3D9 pass leaves that stage unbound (a stand-in texture is bound there then).
-	// Gi (UNOFFICIAL 2026-10-27, ComputeGI): 1 = the 48-byte push block (ALExtPushGI); 2 (UNOFFICIAL 2026-10-28, fork RT) = the RT
-	// estimate's 64-byte block (ALExtPushRT) and the TLAS (core/RtAmbient.h, RtCommon.glsl set 3 binding 0).
+	// Gi (UNOFFICIAL 2026-10-27, ComputeGI): 1 = the 48-byte push block (ALExtPushGI).
 	struct ALExtShader { const char* Spv; UINT Textures; UINT Optional; UINT Gi; };
 	const ALExtShader ALExtShaders[AmbientLightEffect::ExtShaderCount] = {
 		{ "AmbientLightPrepare",    3,  0 },		// depth, normals, view model
@@ -742,7 +741,7 @@ namespace {
 		{ "AmbientLightEstimate-gi2", 3,  0, 1 },
 		{ "AmbientLightGIAccumulate", 4,  0, 0 },
 		{ "AmbientLightApply-gi",     14, (1u << 1) | (1u << 5) | (1u << 8) | (1u << 9) | (1u << 10) | (1u << 11), 0 },
-		{ "AmbientLightEstimateRT",   2,  0, 2 },	// UNOFFICIAL 2026-10-28 (fork RT): Estimate's prep and blue noise + the TLAS
+		{ "AmbientLightEstimateRT",   2,  0, 0 },	// UNOFFICIAL 2026-10-28 (fork RT): prep, the traced values (AmbientOcclusionEffect::RtRaw)
 	};
 	struct ALExtPush {	// AmbientLight.glsl's push block, 32 bytes
 		D3DXVECTOR4	frame;
@@ -754,12 +753,6 @@ namespace {
 		D3DXVECTOR4	gi;		// x thickness, y unused, z strength, w 1 = ThinOcclusion
 	};
 	static_assert(sizeof(ALExtPushGI) == 48, "AmbientLight.glsl push block (NVR_GI)");
-	struct ALExtPushRT {	// UNOFFICIAL 2026-10-28 (fork RT): the same with NVR_RT defined (AmbientLight.glsl), 64 bytes: the RT estimate
-		ALExtPush		base;
-		RtAmbient::Push	rt;
-	};
-	static_assert(sizeof(ALExtPushRT) == 64, "AmbientLight.glsl push block (NVR_RT)");
-	UINT ALExtPushSize(UINT Gi) { return Gi == 2 ? sizeof(ALExtPushRT) : Gi == 1 ? sizeof(ALExtPushGI) : sizeof(ALExtPush); }
 	// AmbientLight.glsl's constants block (std140: matrices then float4s, as stored).
 	const char* const ALExtMatrices[] = { "TESR_ProjectionTransform", "TESR_InvProjectionTransform", "TESR_ViewTransform", "NVR_ALReproject",
 		"NVR_GridSunToGrid", "NVR_GridToSun" };
@@ -790,22 +783,16 @@ bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Tar
 	ExtPass& pass = extPasses[Shader][TargetCount - 1];
 	if (!pass.Tried) {
 		pass.Tried = true;
-		NVR_EXT_BINDING_DESC bindings[16 + 5] = {};
+		NVR_EXT_BINDING_DESC bindings[16 + 4] = {};
 		for (UINT i = 0; i < info.Textures; i++) bindings[i] = { 1, i, NVR_EXT_BIND_SAMPLED_IMAGE, i, NVR_EXT_VIEW_2D, FALSE, 0 };
 		bindings[info.Textures] = { 2, 0, NVR_EXT_BIND_UNIFORM_BUFFER, 0, NVR_EXT_VIEW_2D, FALSE, 0 };
 		for (UINT s = 0; s < 3; s++) bindings[info.Textures + 1 + s] = { 0, 0, NVR_EXT_BIND_SAMPLER, s, NVR_EXT_VIEW_2D, FALSE, 16 + 4 * s };
-		// UNOFFICIAL 2026-10-28 (fork RT): the RT estimate adds the TLAS and never fails the other passes (FailAll false: Estimate runs).
-		if (info.Gi == 2) {
-			if (RtAmbient::TlasBinding(bindings[info.Textures + 4]))
-				pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 5, ALExtPushSize(info.Gi), true, TargetCount, NVR_EXT_BLEND_NONE, false);
-			if (!pass.Pipeline) Logger::Log("UNOFFICIAL RT AO: Compute\\%s.spv could not be made into a pass; AmbientLight's Estimate runs.", info.Spv);
-		}
-		else pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 4, ALExtPushSize(info.Gi), true, TargetCount);
+		pass.Pipeline = DxvkCompute::CreateGraphicsPipeline(info.Spv, bindings, info.Textures + 4, info.Gi ? sizeof(ALExtPushGI) : sizeof(ALExtPush), true, TargetCount);
 	}
 	ID3D9NvrExtSampler* samplers[3] = { DxvkCompute::PointClamp(), DxvkCompute::LinearClamp(), DxvkCompute::PointWrap() };
 	if (!pass.Pipeline || !samplers[0] || !samplers[1] || !samplers[2]) return false;
 
-	NVR_EXT_RESOURCE_BINDING resources[16 + 5] = {};
+	NVR_EXT_RESOURCE_BINDING resources[16 + 4] = {};
 	IDirect3DBaseTexture9* standIn = ExtFileTexture("TESR_DepthBuffer");	// never a target of these passes
 	for (UINT i = 0; i < info.Textures; i++) {
 		IDirect3DBaseTexture9* texture = Textures[i];
@@ -827,27 +814,14 @@ bool AmbientLightEffect::ExtDraw(ExtShader Shader, IDirect3DSurface9* const* Tar
 	UINT count = info.Textures;
 	resources[count++] = { 0, NVR_EXT_BIND_UNIFORM_BUFFER, uniforms, 0, 0, 0, FALSE };
 	for (UINT s = 0; s < 3; s++) resources[count++] = { s, NVR_EXT_BIND_SAMPLER, samplers[s], 0, 0, 0, FALSE };
-	if (info.Gi == 2 && !RtAmbient::TlasResource(resources[count++])) return false;	// UNOFFICIAL 2026-10-28 (fork RT)
 
-	ALExtPushRT pushRT = {};	// UNOFFICIAL 2026-10-28 (fork RT): the 64-byte block (ALExtPushGI's first 48 bytes are its first 48)
-	ALExtPushGI& push = *reinterpret_cast<ALExtPushGI*>(&pushRT);
-	static_assert(offsetof(ALExtPushGI, gi) == offsetof(ALExtPushRT, rt), "the GI and RT push fields share offset 32");
+	ALExtPushGI push = {};
 	push.base.frame = D3DXVECTOR4(1.0f / Viewport.Width, 1.0f / Viewport.Height,
 		(1.0f / (float)TheRenderManager->width) * 0.5f, (1.0f / (float)TheRenderManager->height) * 0.5f);	// ShaderManager::CreateFrameVertex's offset
 	push.base.variant = Variant;
-	if (info.Gi == 1) push.gi = D3DXVECTOR4(giThickness, 0.0f, giStrength, giThinOcclusion ? 1.0f : 0.0f);	// UNOFFICIAL 2026-10-27 ComputeGI (NVR_GI)
-	if (info.Gi == 2) pushRT.rt = RtAmbient::MakePush();	// UNOFFICIAL 2026-10-28 (fork RT)
+	if (info.Gi) push.gi = D3DXVECTOR4(giThickness, 0.0f, giStrength, giThinOcclusion ? 1.0f : 0.0f);	// UNOFFICIAL 2026-10-27 ComputeGI (NVR_GI)
 	RECT viewport = { 0, 0, (LONG)Viewport.Width, (LONG)Viewport.Height };
-	if (info.Gi == 2) {	// UNOFFICIAL 2026-10-28 (fork RT): a failed RT draw ends the RT estimate only (Estimate runs), not the other passes
-		static bool rtFailed = false;
-		const bool wasFailed = ExtFailed;
-		if (!rtFailed && ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &pushRT, sizeof(pushRT), &viewport, ExtUv::TexelCentre)) return true;
-		if (!rtFailed) Logger::Log("UNOFFICIAL RT AO: the RT estimate failed to draw; AmbientLight's Estimate runs from now on.");
-		ExtFailed = wasFailed;
-		rtFailed = true;
-		return false;
-	}
-	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, ALExtPushSize(info.Gi), &viewport, ExtUv::TexelCentre)) return false;	// frameUV() adds the offset
+	if (!ExtDrawTo(pass.Pipeline, Targets, TargetCount, resources, count, &push, info.Gi ? sizeof(ALExtPushGI) : sizeof(ALExtPush), &viewport, ExtUv::TexelCentre)) return false;	// frameUV() adds the offset
 	if (++ExtFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: %s runs as Vulkan passes.", Name);
 	return true;
 }
@@ -1176,12 +1150,18 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 					}
 					else {
 						IDirect3DBaseTexture9* textures[] = { prepTexture, ExtFileTexture("TESR_BlueNoiseSampler"), giLightTexture };	// (the 3rd: ComputeGI's)
-						// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]: the occlusion from rays (AmbientLightEstimateRT.frag), its
-						// own F10 line; the blurs and Accumulate after it as after Estimate. ComputeGI keeps the screen search (its light needs it).
-						if (!giLightReady && RtAmbient::Ready()) {
-							static GpuTimer rtTimer("  Ambient light RT rays (half)");
+						// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]: the occlusion from the RT helper's rays
+						// (AmbientLightEstimateRT.frag; core/RtAmbient.h), the blurs and Accumulate after it as after Estimate (the denoiser).
+						// ComputeGI keeps the screen search (its light needs it). Variant = the RT DebugView.
+						static bool rtChecked = false, rtFile = false;
+						if (!rtChecked) { rtChecked = true; rtFile = DxvkCompute::HasSpirv("AmbientLightEstimateRT"); }
+						AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+						IDirect3DTexture9* rtRaw = !giLightReady && rtFile && ao && RtAmbient::Ready() ? ao->RtRaw(Device) : nullptr;
+						if (rtRaw) {
+							static GpuTimer rtTimer("  Ambient light RT estimate (half)");
 							GpuProfileScope rtGpu(rtTimer, Device);
-							drawn = ExtDraw(ExtEstimateRT, targets, 1, textures, 0, reduced);
+							IDirect3DBaseTexture9* rtTextures[] = { prepTexture, rtRaw };
+							drawn = ExtDraw(ExtEstimateRT, targets, 1, rtTextures, (UINT)RtAmbient::Current.DebugView, reduced);
 						}
 						if (!drawn && giLightReady) drawn = giDrawn = ExtDraw((ExtShader)(ExtGIEstimate0 + giQuality), targets, 1, textures, 0, reduced);	// (ComputeGI)
 						if (!drawn) drawn = ExtDraw(ExtEstimate, targets, 1, textures, 0, reduced);	// the first 2
