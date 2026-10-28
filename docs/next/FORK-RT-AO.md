@@ -95,7 +95,30 @@ untouched (ExtFailed is put back) and NVR's own estimate / sky pass runs. No res
   "AMD Radeon(TM) Graphics", SLOT_RES=1280x720, BENCHQ_SOLO=1, FSR off in the run toml.
 
 ## Results
-Not run yet (needs the RT core). To fill: per scene (lucky22 interior, og-desert, a porch / overhang exterior) the occlusion views side by
+### Run 1 (2026-10-28 13:37 lucky22 slot A, 13:44 og-desert slot C; list rt-ao-1, DLL 0AABEA2D, fork-0028, helper protocol 2)
+- The chain works end to end on the iGPU: helper ready in 0.9-1.4 s, "RT AO: traced (640x360, 4 AO rays of 120 units)", the shared
+  images 640x360 padded to 768x512 (RG32F in, RGBA16F out), no errors, no fallback. Lucky 38: 265 geometries (279k triangles, 43 MB),
+  2677 instances; helper GPU time for the AO pass alone 0.30 ms (frames to 600) / 0.59 ms (to 1200, RayCount 8-16 shots) at 640x360,
+  response (NVR's signal -> the helper's result) 1.9 ms. Structure builds 45 ms once at load.
+- NOT a valid comparison: (1) the run toml (a copy of rt-sun's) has AmbientLight OFF, so the AmbientOcclusion path ran; (2) the list
+  put each shot's settings before its `shot` line, but the harness applies the lines AFTER a shot to it: every label is one off;
+  (3) lucky22's camera changes after shot 07 (third person, other view), og-desert's light changes between every shot (mean -20/255
+  settle -> base): only lucky22 shots 00-07 compare.
+- What 00-07 show: with RT on, the frame differs from the SSAO base only by the SSAO's darkening going away (+0.5/255, 15 % of pixels
+  > 2/255); the raw view (DebugView 1) and the hit-distance view (3) equal it: the traced values read "open, nothing hit" everywhere,
+  RayCount 1/2/4 alike. Suspect: the input (view distance / normal) or the ray origin. Run 2 checks the input directly.
+
+## Paused here (2026-10-28 ~15:15, on the user's word via the main session)
+- State: branch claude/rt-ao-sky-9f04fd, built on the RT core (rt-sun-core d71ecf96); last DLL 669534FA (VS2019, clean). Off by
+  default; with the core not running every pass is the old one.
+- Open problem: run 1 traced but every AO ray reported "nothing hit" (lucky22, AO path). rt-reflections sees the same "no hit"
+  with the same kind of input (640x360 RG32F padded to 768x512, depth-rebuilt positions + CameraLocation - CameraPosition), so it
+  is probably shared (scene space or how small RG32F inputs arrive in the helper); rt-sun's working pass uses full-size R32F/RGBA16F.
+- Next on resume: run list rt-ao-2 (lucky22; AmbientLight on; RT DebugView 4 = the view distance the helper got, 5 = the normal's
+  up component) to tell an empty/garbled input from a ray-space mismatch; then rt-ao-1 again with AmbientLight on in the run toml
+  and the shot lines fixed (settings FOLLOW their `shot` line). Queue with a retry on `RESULT: WAIT` (a low-memory WAIT drops the
+  ticket). Bench files: workenchoundations\listst-ao-1.txt / rt-ao-2.txt, run toml workench\deep-roadmaptao\.
+- Nothing queued, no loop, no monitor running. To fill: per scene (lucky22 interior, og-desert, a porch / overhang exterior) the occlusion views side by
 side, the inside view (should be nearly empty), the sky views, and the cost per ray count on the iGPU at 1280x720 (NVR's F10 lines + the
 helper's own timing).
 
