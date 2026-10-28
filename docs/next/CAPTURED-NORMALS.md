@@ -130,7 +130,7 @@ Results (2026-10-28, branch c1684e95):
 | 20261028-153413-slotC | native D3D9 | PASS, but the capture never runs: 0.5 draws per frame reach the hook. **LinearScene's draw hook also sees ~0 draws on native** (2.4 vs ~1,400 on the fork): the device vtable hooks do not see the game's draws there. Snow = as before (fallback). Pre-existing for LinearScene; needs its own look. |
 | 20261028-152222-slotC | (first try, before the guard) | all my shots taken; the game crashed in the queue's hand-over moveto to a second, batched list (game code 0x008F644F), not in NVR; reruns were solo. |
 
-Pictures: `H:\_NVR-autotest-shots61028-152942-slotC-capnormals1` (and the other run folders).
+Pictures: `H:\_NVR-autotest-shots\20261028-152942-slotC\1-capnormals1` (and the other run folders).
 
 ## Files to copy (manual install)
 
