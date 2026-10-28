@@ -36,6 +36,8 @@ public:
 		float		CookieStrength;
 		bool		softEdges;
 		int			edgeFix;	// UNOFFICIAL: depth-aware edges, 0 off, 1 the lit surfaces, 2 also the beam's shaft ([Shaders.Flashlight.Main] EdgeFix)
+		bool		hidePipBoyLight;	// UNOFFICIAL 2026-10-28 [Shaders.Flashlight.Main] HidePipBoyLight: the hidden Pip-Boy light also gets no brightness or reach
+		bool		testForceOn;		// UNOFFICIAL 2026-10-28 [Shaders.Flashlight.Main] TestForceOn (test only): the flashlight on as if the Pip-Boy light were
 
 		// Forward re-light of nearby static geometry, drawn by MaterialPass
 		struct MaterialLightStruct {
@@ -49,6 +51,9 @@ public:
 		MaterialLightStruct	MaterialLight;
 	};
 	FlashlightSettingsStruct	Settings;
+	NiPointLight*	hiddenPipBoyLight = nullptr;	// UNOFFICIAL 2026-10-28 HidePipBoyLight: the light we darkened, and its own values
+	float			hiddenPipBoyDimmer = 0.0f;
+	NiColor			hiddenPipBoySpec = NiColor(0, 0, 0);
 
 	struct FlashlightStruct {
 		D3DXMATRIX	FlashlightViewProj;

@@ -40,6 +40,8 @@ void FlashlightEffect::UpdateSettings() {
 		look.CookieStrength = TheSettingManager->GetSettingF(lookSections[i], "CookieStrength");
 	}
 	Settings.softEdges = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "SoftEdges");
+	Settings.hidePipBoyLight = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "HidePipBoyLight") != 0;
+	Settings.testForceOn = TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "TestForceOn") != 0;
 	// UNOFFICIAL: depth-aware edges, 0 off, 1 the lit surfaces, 2 also the beam's shaft
 	Settings.edgeFix = (std::max)(0, (std::min)(2, (int)TheSettingManager->GetSettingI("Shaders.Flashlight.Main", "EdgeFix")));
 
@@ -117,8 +119,21 @@ void FlashlightEffect::UpdateConstants() {
 
 	// based on JIP https://github.com/jazzisparis/JIP-LN-NVSE/blob/5a30ac4356ea0e93b9ff357b5031b1e420240a4d/functions_jip/jip_fn_ui.h#L1469
 	UInt32 lightIsOn = ThisStdCall<bool>(0x822B90, &Player->magicTarget, (void*)&(*(MagicItem**)(ThisStdCall<uint8_t*>(0x93CCD0, NULL) + 0x18)), 1);
+	if (Settings.testForceOn) lightIsOn = 1;	// UNOFFICIAL 2026-10-28 TestForceOn (auto tests)
 
 	spotLightActive = Enabled && lightIsOn;
+	// UNOFFICIAL 2026-10-28 HidePipBoyLight: the Pip-Boy light's own values back once the flashlight is off (see below).
+	if (!spotLightActive && hiddenPipBoyLight) {
+		NiNode* playerNode = Player->GetNode();	// only if it is still the player's (the game may have let it go since)
+		for (UINT32 i = 0; playerNode && i < playerNode->m_children.capacity; i++) {
+			if (playerNode->m_children.data[i] == hiddenPipBoyLight) {
+				hiddenPipBoyLight->Dimmer = hiddenPipBoyDimmer;
+				hiddenPipBoyLight->Spec = hiddenPipBoySpec;
+				break;
+			}
+		}
+		hiddenPipBoyLight = nullptr;
+	}
 	if (!spotLightActive) {
 		// disable light by setting it to 0 dimmer & radius
 		SpotLight->Dimmer = 0;
@@ -214,6 +229,22 @@ void FlashlightEffect::UpdateConstants() {
 			if (childNode) {
 				if (childNode->GetRTTI() == (void*)0x11F4A98) {
 					childNode->m_flags |= childNode->APP_CULLED;
+					// UNOFFICIAL 2026-10-28 HidePipBoyLight (Doctor Abyss: "turning on the flashlight in an interior causes the shadows to
+					// disappear after a weird short delay"): culling hid the light's own node, but its brightness and reach stayed, so the
+					// game could still hand it to the objects round the player as one of their few lamps (the Pip-Boy light fades in, hence
+					// the delay). A room lamp pushed out of an object's list lights it no more, and a lamp's shadow only takes its own light
+					// away: the shadows went. Now it also gets no brightness and no reach while the flashlight is on (put back when off).
+					if (Settings.hidePipBoyLight) {
+						NiPointLight* pipLight = (NiPointLight*)childNode;
+						if (hiddenPipBoyLight != pipLight || pipLight->Dimmer != 0.0f || pipLight->Spec.r != 0.0f) {
+							if (pipLight->Dimmer != 0.0f || pipLight->Spec.r != 0.0f) { hiddenPipBoyDimmer = pipLight->Dimmer; hiddenPipBoySpec = pipLight->Spec; }
+							static bool told = false;
+							if (!told) { told = true; Logger::Log("UNOFFICIAL HidePipBoyLight: the Pip-Boy light (dimmer %.2f, reach %.0f) gets no light while the flashlight is on", hiddenPipBoyDimmer, hiddenPipBoySpec.r); }
+							hiddenPipBoyLight = pipLight;
+							pipLight->Dimmer = 0.0f;
+							pipLight->Spec = NiColor(0, 0, 0);
+						}
+					}
 				}
 			}
 		}
