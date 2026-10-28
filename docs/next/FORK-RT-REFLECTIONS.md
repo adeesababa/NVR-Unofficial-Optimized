@@ -27,8 +27,10 @@ This pass only uses them.
   (Ultra-Luxe: 263 geometries, 1130 instances).
 - **Blocker:** every ray reports no hit (Ultra-Luxe run 20261028-142402-slotA, DebugView 2 all red). rt-ao-sky and rt-sun see the same,
   so it is the in-game scene the core builds, not this pass. RT DebugView 5 (camera -> surface alignment check, commit 38b96b26) was
-  made to tell scene errors from input errors. Its Ultra-Luxe run (rtrefl-2) was running at the pause, and the result went to
-  rt-sun-core.
+  made to tell scene errors from input errors. Its Ultra-Luxe run (rtrefl-2, bench/autotest/20261028-150909-slotA, shot 02 align)
+  is **100 % red**: camera rays toward visible surfaces hit nothing either, even with 2 x their distance + 500 units of reach. So the
+  scene in the helper does not contain the room where the screen sees it (transforms / positions / space). It is a core bug, not
+  this pass's inputs, and has been sent to rt-sun-core.
 - **To resume:** once rt-sun-core fixes the no-hit bug, rebase onto its branch and rebuild. Then run `rtrefl-2` in luxe, lucky22, og-lake
   and og-goodsprings (rain toml), as the slots lack the water/rain saves. Compare ssr-N vs rt-N and the DebugViews, fill the Results with
   cost, then use the v2 records (albedo, binding 10) in `Rt/ReflectionsRT.comp` for the hits the screen cannot show.
