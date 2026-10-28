@@ -41,8 +41,56 @@ Per frame, in AMD's order: prepare inputs, luma pyramid (SPD), shading-change py
 luma instability, accumulate (or accumulate + RCAS when Sharpness > 0). F10 timers `  FSR3.1 ...` inside "FSR upscale (RenderScale)"
 or "TAA" (native AA).
 
-## Results
-(filled in below after the slot runs)
+## Results (2026-10-28, slot C 1920x1080, GTX 1070, installed zresolve fork d3d9, copy of the user's toml)
+Runs: `20261028-145940-slotC` (lists `fsr31-still` at og-desert + og-goodsprings, one launch) and `20261028-150446-slotC`
+(`fsr31-pan`, og-goodsprings, camera turning 20 deg/s). Pictures `H:\_NVR-autotest-shots\<run>\`, crops + scripts
+`bench\deep-roadmap\evidence\fsr31\`. Jitter forced on in every shot (see "Note" below).
+
+**It works**: all 11 pipelines made, `FSR 3.1 resources made (... about 146 MB)` at 1080p, every 3.1 shot ran 3.1 (no
+`[ERROR]`, no fallback, RenderScale stayed on), at native AA, Quality (0.667, HDR input), Performance (0.5), with RCAS.
+Pictures whole, same colours (3.1 is 0.3/255 darker on average; within FSR-vs-FSR noise, not visible).
+
+| GPU ms (F10 medians) | FSR 2.2.1 | FSR 3.1 | difference |
+|---|---|---|---|
+| desert, Quality 0.667 (whole "FSR upscale (RenderScale v2)") | 2.19 | 2.62 | +0.43 |
+| Goodsprings, Quality | 2.20 | 2.66 | +0.46 |
+| desert / Goodsprings, Performance 0.5 | 1.95 / 1.92 | 2.20 / 2.21 | +0.25 / +0.28 |
+| desert / Goodsprings, native AA ("TAA") | 2.77 / 2.62 | 4.11 / 3.34 | +1.3 / +0.7 |
+| Quality + Sharpness 0.5 (RCAS 0.17-0.19 in both) | 2.83 / 2.50 | 3.28 / 2.83 | +0.45 / +0.33 |
+| Goodsprings pan, Quality / native | 2.39 / 2.86 | 2.76 / 3.51 | +0.37 / +0.65 |
+| game frame total, Quality (desert / Goodsprings) | 6.67 / 10.51 | 7.20 / 11.31 | +0.5 / +0.8 |
+
+FSR 3.1 passes at Quality (1280x720 -> 1920x1080): prepare inputs 0.18, luma pyramid 0.05, shading-change pyramid 0.27,
+shading change 0.01, prepare reactivity 0.21, luma instability 0.15, accumulate 1.08 (FSR 2's accumulate is the same 1.04; the extra
+cost is the new reactivity / instability / pyramid passes). Both share the RenderScale copy, prep and composite.
+
+Picture:
+- **Still camera, frozen world (shimmer)**: pixels that change between two repeats of the same setting (the jitter moving):
+  FSR 2 9.1-10.9 %, **FSR 3.1 7.5-7.9 %** (desert and Goodsprings alike): about a quarter less flicker on a still picture.
+- Still detail (pylon lattice, fences, grass, `desert-pylon.png`, `desert-fence.png`): the same sharpness; 3.1 a touch smoother
+  on the pylon lattice. Nothing lost.
+- **Motion (turning)**: no trails or ghosting with either on poles, fences, roofs, the truck. Thin hanging wires: FSR 2 breaks them
+  into dashes while turning (`pan-2-pole.png`), FSR 3.1 keeps them as continuous lines (`pan-31-wires.png`), the main visible gain.
+- Not covered: NPCs and the first-person weapon were not in frame in these spots (no NPC walked past, the save has no weapon
+  out), so NPC/weapon ghosting is unproven; both upscalers get the same camera-only motion and the same weapon reactive mask.
+
+Verdict: FSR 3.1 is a little steadier and holds thin wires in motion, for about +0.4 ms at Quality on the GTX 1070 (+0.7 to +1.3 ms
+as native AA). Worth offering as a choice; FSR 2 stays the default.
+
+Note (the user's own settings): the user's toml has `[Shaders.TAA.Main] Jitter = false` with FSR on. Without jitter neither FSR
+gets sub-pixel samples (it then only smooths in motion). The `userjitter` shots (jitter off, as the user plays) are in the run for
+a look; they were not measured separately.
 
 ## Files to copy (install)
-(below)
+Built on the installed build (claude/p84v3-tessring 5c547109); nothing else in the DLL changes. Game folder = `<FNV>`:
+
+| from the repo / build | to |
+|---|---|
+| `NewVegasReloaded\Release\NewVegasReloaded.dll` (+ `.pdb`) | `<FNV>\Data\NVSE\Plugins\` |
+| `resource\NewVegasReloaded.dll.defaults.toml` (adds `[Shaders.TAA.FSR] Version`, so the menu shows it) | `<FNV>\Data\NVSE\Plugins\` |
+| `src\hlsl\NewVegas\Compute\FSR31*.spv` (11 files: PrepareInputs, LumaPyramid, ShadingChangePyramid, ShadingChange, PrepareReactivity, LumaInstability, RCAS, Accumulate, AccumulateSharpen, AccumulateHdr, AccumulateSharpenHdr) | `<FNV>\Data\Shaders\NewVegasReloaded\Compute\` |
+| `src\hlsl\NewVegas\Compute\FSR31\LICENSE-FidelityFX-SDK.txt` (AMD's MIT notice, must ship with it) | `<FNV>\Data\Shaders\NewVegasReloaded\Compute\FSR31\` |
+
+No d3d9.dll / dxvk.conf change (any NVR DXVK fork with extension 1.3+; the installed zresolve fork is fine). No .hlsl changes, so
+the shader Cache does not need clearing. Then in the menu: TAA / FSR / DLSS -> FSR -> Version -> "1 - FSR 3.1" (live). Without
+the .spv files the log says "FSR 3.1: Compute\FSR31*.spv is missing" once and FSR 2 runs.
