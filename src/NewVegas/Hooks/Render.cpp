@@ -2093,6 +2093,33 @@ namespace GrassFirst {
 	// drawing them; GrassShadows draws them into the near sun cascade, and the late part draws them whole at the game's place.
 	static bool ShadowOnly = false;
 	static unsigned ShadowOnlyFrames = 0;
+	// UNOFFICIAL 2026-10-28 (tester: "i think grass shadows go away after fast traveling"; his log: after a trip every grass pass
+	// went "whole after the land", none early, for the rest of the session, and grass shadows with them, since only the passes drawn
+	// early go into the sun's shadow maps). A pass was learned as the game's VS from GrassShaders::LastBindNVR after its draw, which is
+	// the LAST grass bind seen anywhere: a pass that bound nothing (skipped, or met mid-load) took a stale value, e.g. from last frame's
+	// lamp-lit grass (GRASS23x004-007, the game's own VS), and what was learned stayed for the session. Now a pass is learned only
+	// from a grass bind of this early run (EarlySerial), and everything learned is forgotten whenever the world was not drawn for a
+	// while (a loading screen: fast travel, doors; a menu) or NVR's shaders were switched (RenderEffects, the grass set).
+	static unsigned EarlySerial = 0;		// GrassShaders::BindSerial as this frame's early run began
+	static unsigned LastEarlyFrame = 0;		// TheFrameRateManager->FrameNumber of the last early run
+	static bool LastShadersOn = true;
+	static unsigned StatUnknown = 0, LearnLogs = 0, ForgetLogs = 0;
+	static void ForgetIfStale(GrassShaders* grass) {
+		const unsigned frame = TheFrameRateManager->FrameNumber;
+		const bool shadersOn = TheSettingManager->SettingsMain.Main.RenderEffects && grass->Enabled;
+		const bool gap = LastEarlyFrame && frame - LastEarlyFrame > 30;	// half a second or more without the world's early grass
+		if (gap || shadersOn != LastShadersOn) {
+			unsigned learned = 0;
+			for (bool& g : GameVertexShader) { if (g) learned++; g = false; }
+			if (learned && ForgetLogs < 20) {
+				ForgetLogs++;
+				Logger::Log("UNOFFICIAL GrassFirst: %u grass passes learned as the game's VS are tried again (%s)", learned,
+					gap ? "the world was not drawn for a while: a loading screen or a menu" : "NVR's shaders were switched");
+			}
+		}
+		LastEarlyFrame = frame;
+		LastShadersOn = shadersOn;
+	}
 
 	static void(__cdecl* RenderPassImmediately)(void*, UInt32, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32, UInt32))kRenderPassImmediately;
 
@@ -2461,6 +2488,7 @@ namespace GrassFirst {
 			if (ok && !AnyGrass(lists, count)) { ThisCall(kRenderBatches, accumulator, first, last, arg3, group); return; }
 			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
 			if (ok) {
+				ForgetIfStale(TheShaderManager->Shaders.Grass);	// UNOFFICIAL 2026-10-28
 				Records.clear();
 				GrassShadows::Records.clear();
 				// The draws after this early part see the device state they saw before it (Save / Restore above).
@@ -2472,6 +2500,7 @@ namespace GrassFirst {
 				// UNOFFICIAL 2026-10-27 GPU grass (effects/GpuGrass.h): when it takes this call, NewGrass stays out of it (both hook the same draw call)
 				const bool gpuGrass = GpuGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);
 				if (!gpuGrass) NewGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);	// UNOFFICIAL 2026-10-18 NewGrass (core/NewGrass.h)
+				EarlySerial = GrassShaders::BindSerial;	// UNOFFICIAL 2026-10-28: only this run's grass binds teach RenderPassImmediatelyHook
 				ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
 				if (!gpuGrass) NewGrass::EndEarly(TheRenderManager->device, StatEarly);
 				GpuGrass::EndEarly(TheRenderManager->device);	// the strands: one cull pass + two indirect draws, before the land
@@ -2526,9 +2555,9 @@ namespace GrassFirst {
 			}
 			Records.clear();
 			if (++Frames <= 3 || (Frames % 3600 == 0 && Frames <= 3600 * 17))	// UNOFFICIAL fixes-b #53: at most 20 lines per session
-				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned); fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
-					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
-			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = 0;
+				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned), %u met before any grass bind of the run; fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
+					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, StatUnknown, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
+			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = StatUnknown = 0;
 			FadeSeenMin = FadeSeenMax = 0.0f;
 		}
 		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
@@ -2562,7 +2591,13 @@ namespace GrassFirst {
 				const float nearOnly[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 1.0f };
 				TheRenderManager->device->SetVertexShaderConstantF(19, nearOnly, 1);
 			}
-			if (GrassShaders::LastBindNVR) {
+			if (GrassShaders::BindSerial == EarlySerial) {
+				// UNOFFICIAL 2026-10-28: no grass bind in this run yet (nothing drawn: a pass skipped, or met mid-load): nothing is
+				// learned or noted from a stale bind; the pass is drawn whole after the land, as the game draws it.
+				StatUnknown++;
+				r.drawnEarly = false;
+			}
+			else if (GrassShaders::LastBindNVR) {
 				GrassShadows::Note(pass, passId, a3, a4, a5);	// UNOFFICIAL 2026-10-27 grass sun shadows: drawn again into the near cascade (MainListHook)
 				float alpha[4] = {};	// AlphaParam (c5) of NVR's grass VS: z = fade start, for the next draws' Classify
 				if (SUCCEEDED(TheRenderManager->device->GetVertexShaderConstantF(5, alpha, 1)) && alpha[2] > 0.0f) {
@@ -2574,9 +2609,14 @@ namespace GrassFirst {
 				if (kind == kAllNear) { StatAllNear++; return; }	// every tuft drawn now: no late part
 				r.drawnEarly = true;
 			}
-			else {	// drawn whole with the game's VS (first time only): not again
+			else {	// drawn whole with the game's VS (first time only): not again (until ForgetIfStale)
 				gameVS = true;
 				StatUnsplit++;
+				if (LearnLogs < 40) {
+					LearnLogs++;
+					Logger::Log("UNOFFICIAL GrassFirst: grass pass %03X draws with the game's vertex shader %s: drawn whole after the land from now on (no grass shadows from it) until the next loading screen",
+						passId, GrassShaders::LastBindName ? GrassShaders::LastBindName : "?");
+				}
 				return;
 			}
 		}
