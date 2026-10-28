@@ -413,7 +413,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     // and clip position is affine in object space, so it interpolates exactly.
     // ddx/ddy must stay at top level, outside dynamic flow control.
     float3 shadowWorldPos = GetShadowWorldPos(IN.projectionPosition);
+#if defined(CAPTURED_NORMALS_FORWARD) && CAPTURED_NORMALS_FORWARD
+    // UNOFFICIAL 2026-10-28 [Main.Main.Quality] CapturedNormals: the sun lookup's normal offset / slope slack and the sky ambient take the
+    // land's smooth vertex normal (with tessellation the bent one) instead of each triangle's flat one (shadow steps and ambient facets
+    // triangle by triangle), as SmoothObjectNormals did for objects (2026-10-24).
+    float3 shadowNormal = ShadowFacingNormal(IN.normal.xyz, shadowWorldPos);
+#else
     float3 shadowNormal = GetShadowGeometricNormal(shadowWorldPos);
+#endif
 
     // [Main.Main.ReducedQuality] CheapUnderwaterTerrain: ground below TESR_TerrainParallaxExtraData.w (camera-relative
     // height of the water line; -FLT_MAX when off) skips parallax and its shadows, exactly as with parallax switched off.

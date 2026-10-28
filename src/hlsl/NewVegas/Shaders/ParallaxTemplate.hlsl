@@ -599,7 +599,14 @@ PS_OUTPUT main(PS_INPUT IN)
     // ddx/ddy must stay at top level, outside dynamic flow control.
     // Hoisted out of the shadow block below: the ambient term also needs it, and that runs for
     // DIFFUSE/POINT passes which the shadow block skips. ddx/ddy must stay at top level.
+#if defined(CAPTURED_NORMALS_FORWARD) && CAPTURED_NORMALS_FORWARD && CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+    // UNOFFICIAL 2026-10-28 [Main.Main.Quality] CapturedNormals: the smooth vertex normal the vertex shader now sends in uv.zw, instead of
+    // each triangle's flat one (rocks, cliffs and walls: sun-shadow steps and ambient facets per triangle). The displacement layout has
+    // no channel for it and keeps the flat one.
+    float3 sunShadowNormal = ShadowFacingNormal(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+#else
     float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+#endif
     float shadowWorldPosValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
 
     #if !defined(NO_LIGHT) && !defined(DIFFUSE) && !defined(POINT)

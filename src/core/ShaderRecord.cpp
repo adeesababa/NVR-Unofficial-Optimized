@@ -200,6 +200,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// smooth vertex normal to COLOR3; compiled in only when a reader's switch is on at startup, so that otherwise they are exactly as before
 	// (defined only then: the define list, and so the shader cache's keys, stay as they were with it off).
 	if (CapturedNormals::CompiledIn()) AppendDefine("CAPTURED_NORMALS_ON", "1");
+	// UNOFFICIAL 2026-10-28 [Main.Main.Quality] CapturedNormals also gives the land and parallax templates their smooth vertex normal for
+	// the sun lookup and the sky ambient (TerrainTemplate / ParallaxTemplate CAPTURED_NORMALS_FORWARD), as SmoothObjectNormals did for objects.
+	if (CapturedNormals::MergeWanted()) AppendDefine("CAPTURED_NORMALS_FORWARD", "1");
 
 	// UNOFFICIAL physical sky (Includes/Atmosphere.hlsl, SKY.pso): compiled in only when on at startup, so that otherwise the
 	// sky shader is exactly what it was. Its other settings are live (SkyShaders::UpdateSettings).
