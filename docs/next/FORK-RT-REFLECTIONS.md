@@ -11,7 +11,7 @@ This pass only uses them.
 | In-game passes `Compute/ReflectionsRayGen.frag`, `ReflectionsRTResolve.frag`, `ReflectionsRT.glsl` | written, compile (Vulkan 1.1, spirv-val OK) |
 | Helper pass `Compute/RT/ReflectionsRT.comp` (ray queries) | written, compiles (Vulkan 1.2, spirv-val OK); bindings to be matched with FORK-RT-CORE.md |
 | C++ (`effects/Reflections.cpp`, `core/RtCoreClient.h`), settings `[Shaders.Reflections.RT]` | builds; RT answers "no" until the core is merged |
-| SplitTest (RayGen + Resolve without rays, any GPU) | list `rtrefl-split`, not run yet |
+| SplitTest (RayGen + Resolve without rays, any GPU) | **PASS** on the 1070 (luxe): same picture, +0.045 ms (Results) |
 | RT core | **waiting on rt-sun-core** (helper process, first end-to-end test pending) |
 | iGPU bench (`rtrefl-1`, scenes water / rain / luxe / lucky22) | not run (needs the core) |
 
@@ -139,4 +139,22 @@ Sent 2026-10-28 ~12:00. Its reply (12:45) moved RT into the helper; the open poi
 
 ## Results
 
-(none yet)
+### 2026-10-28 12:47 SplitTest, GTX 1070, scene luxe (Ultra-Luxe floor), fork d3d9 nvr-dxvk-zresolve, slot A
+
+Run `bench/autotest/20261028-124747-slotA`, shots `H:\_NVR-autotest-shots\20261028-124747-slotA`; list `rtrefl-split`, toml
+`evidence/rtrefl/rtrefl.toml` (InteriorFloors 0.6, MaterialAware 1, FSR off), DLL a91b819b. The log shows
+`pass ReflectionsRayGen ready (25 bindings, 3 targets)` and `pass ReflectionsRTResolve ready`, with no fallback line.
+
+| Pair (2 shots apart, same noise frame) | pixels > 2/255 | mean |
+|---|---|---|
+| old-1 vs old-2 (noise floor) | 1.57 % | 0.587 |
+| old-1 vs split-1 | 1.33 % | 0.556 |
+| old-2 vs split-2 | 1.43 % | 0.568 |
+| reflection alone (DebugView 1) old vs split | 0.07 % | 0.146 |
+| sources (DebugView 6) old vs split | 0.59 % | 0.202 |
+
+**Same picture**: the split differs from the old trace no more than the old trace differs from itself.
+**Cost of the split** (F10 `Reflections trace (half)`, p50 over 120 frames per shot): old 0.140-0.142 ms, split 0.185-0.186 ms, i.e.
+**+0.045 ms** for RayGen's two extra RGBA32F targets and the Resolve pass. Rays come on top of that. The whole effect is
+0.64 -> 0.69 ms p50.
+The rain scene (wet road) was refused: slim slot A has no save NVRAutoTest7. It goes into the iGPU run on a full slot.
