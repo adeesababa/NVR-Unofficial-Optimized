@@ -175,6 +175,67 @@ float4 SnowCoverage( VSOUT IN ) : COLOR0
 }
 
 
+// UNOFFICIAL 2026-10-28 NormalSmoothing ([Shaders.SnowAccumulation.Main], TESR_SnowAccumulationColor.w: game units, 0 = off). User:
+// "snow + tessellation ... we get these facets": the snow takes its slope (where it may lie) and its shading from the normal rebuilt
+// from depth, one flat normal per triangle, so on displaced land the snow came and went triangle by triangle. Here the normal is the
+// average over a disc of that radius on the surface (12 points round the pixel, projected at its depth, each weighed by its distance
+// in the world, so a wall or a rock a few units away hardly counts): snow lies on the ground's overall shape, as real snow does.
+static const float2 SnowSmoothTaps[12] = {
+	float2(0.35f, 0.0f), float2(-0.35f, 0.0f), float2(0.0f, 0.35f), float2(0.0f, -0.35f),
+	float2(0.5f, 0.5f), float2(-0.5f, 0.5f), float2(0.5f, -0.5f), float2(-0.5f, -0.5f),
+	float2(1.0f, 0.0f), float2(-1.0f, 0.0f), float2(0.0f, 1.0f), float2(0.0f, -1.0f) };
+
+// UNOFFICIAL 2026-10-28 footprints (effects/CoverMap.h MaxPrints; user: "snow foot steps just kinda leaves a line behind when we walk
+// like we're riding a bicycle"): the player's last prints, one per step, left and right in turn. The cover map keeps each print as a
+// dot (8 units a texel), so near these prints this draws them instead, per pixel, as boot prints: the ball and toes and the heel, two
+// ellipses along the step's heading, the big-toe side towards the path. -1: no print near (the map's trodden snow applies).
+float4 TESR_CoverMapFeet[24];	// xyz: centre (relative to the camera), w: side (+ left foot) x (heading in whole degrees + 0.99 x depth); 0: none
+float4 TESR_CoverMapFeetData;	// xy, z: a circle round all of them (relative to the camera; z <= 0: none), w: a print's half length
+
+float SnowFootprint(float3 rel)
+{
+	float half = TESR_CoverMapFeetData.w;
+	float2 fromAll = rel.xy - TESR_CoverMapFeetData.xy;
+	[branch] if (TESR_CoverMapFeetData.z <= 0.0f || dot(fromAll, fromAll) > TESR_CoverMapFeetData.z * TESR_CoverMapFeetData.z) return -1.0f;
+	float best = 0.0f;
+	float nearAny = 0.0f;
+	[loop] for (int i = 0; i < 24; i++) {
+		float4 foot = TESR_CoverMapFeet[i];
+		float2 d = rel.xy - foot.xy;
+		[branch] if (foot.w != 0.0f && dot(d, d) < 4.0f * half * half && abs(rel.z - foot.z) < 40.0f) {
+			float packed = abs(foot.w);
+			float heading = floor(packed) * (3.14159265f / 180.0f);
+			float depth = frac(packed) / 0.99f;
+			float2 ahead;
+			sincos(heading, ahead.y, ahead.x);
+			// along the heading, and sideways away from the path (mirrored for the right foot)
+			float2 q = float2(dot(d, ahead), dot(d, float2(-ahead.y, ahead.x)) * sign(foot.w));
+			float toes = length((q - float2(0.26f * half, -0.05f * half)) / float2(0.66f * half, 0.40f * half));
+			float heel = length((q - float2(-0.58f * half, 0.0f)) / float2(0.36f * half, 0.31f * half));
+			best = max(best, depth * (1.0f - smoothstep(0.8f, 1.05f, min(toes, heel))));
+			nearAny = 1.0f;
+		}
+	}
+	return nearAny > 0.0f ? best : -1.0f;
+}
+
+float3 SnowSmoothNormal(float2 uv, float3 center, float3 norm, float depth)
+{
+	float radius = TESR_SnowAccumulationColor.w;
+	[branch] if (radius <= 0.0f || depth >= farZ * 0.99f) return norm;
+	float2 perUnit = 0.5f * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / max(depth, 1.0f);	// screen share per game unit
+	float2 s01 = rectToScreen(uv);
+	float3 sum = norm;
+	[unroll] for (int i = 0; i < 12; i++) {
+		float2 tapUV = screenToRect(saturate(s01 + SnowSmoothTaps[i] * radius * perUnit));
+		float tapDepth = readDepthLod(tapUV);
+		float3 tapPos = toWorld(tapUV) * tapDepth;
+		float weight = saturate(1.0f - length(tapPos - center) / (2.0f * radius)) * (tapDepth < farZ * 0.99f ? 1.0f : 0.0f);
+		sum += GetWorldNormalLod(tapUV) * weight;
+	}
+	return normalize(sum);
+}
+
 // UNOFFICIAL 2026-10-27 persist (technique 1, [Shaders.SnowAccumulation.Main] Persistent): the snow's amount comes from the cover map
 // per spot (built up where the snow reached, melted by the sun, drifts) instead of the one amount for the whole world, and trodden
 // snow (footprints) is drawn compacted; a spot with no snow left gets none (the noise pattern alone would leave flecks). With
@@ -196,7 +257,8 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 	float waterTreshold = (depth/farZ) * 200;
 	float isWaterSurface = (dot(norm, float3(0, 0, 1)) > 0.9) && (worldPos.z > TESR_WaterSettings.x - waterTreshold) && (worldPos.z < TESR_WaterSettings.x + waterTreshold);
 	if (isWaterSurface || !(ortho > 0)) return color;
-	
+	norm = SnowSmoothNormal(IN.UVCoord, camera_vector, norm, depth);	// UNOFFICIAL 2026-10-28 NormalSmoothing (after the water test)
+
     color = linearize(color);
 	float3 sunColor = linearize(TESR_SunColor).rgb;
 
@@ -211,6 +273,9 @@ float4 Snow( VSOUT IN, uniform bool persist ) : COLOR0
 		float coverInside;
 		cover = CoverMapReadAll(camera_vector.xy, coverInside);
 		trodden = saturate(CoverMapTrodden(cover.w));
+		// UNOFFICIAL 2026-10-28 footprints: near the last prints, the boot prints themselves instead of the map's dots (no snow: none)
+		float print = SnowFootprint(camera_vector);
+		if (print >= 0.0f) trodden = print * TESR_CoverMapTrail.y * saturate(cover.z * 20.0f) * TESR_CoverMapGlobal.w;
 	}
 	float3 localNorm = expand(tex2D(TESR_SnowNormSampler, uv).xyz);
 	if (persist) localNorm.xy *= 1.0f - 0.75f * trodden;

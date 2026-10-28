@@ -1954,11 +1954,12 @@ SunPower = 1.0                      # Multiplier for the lighting strength
 SnowColorR = 0.9                    # Red chanel for the color of snow coverage
 SnowColorG = 0.9                    # Green chanel for the color of snow coverage
 SnowColorB = 0.8                    # Blue chanel for the color of snow coverage
+NormalSmoothing = 32.0              # UNOFFICIAL (2026-10-28) [0-256] Where snow may lie, and how it is lit, follow the ground's shape over this many game units instead of each small triangle (70 = 1 m). On tessellated (bumpy) land each triangle's own slope made the snow come and go triangle by triangle: hard facets. 0 = per triangle, as before. Applies immediately.
 Persistent = false                  # UNOFFICIAL (2026-10-27): snow is kept spot by spot in a map round you (shared with WetWorld's Persistent; its size in [Shaders.WetWorld.Main] PersistentMapSize), instead of one amount for the whole world. It builds up only where the snow reaches, gathers in hollows and against walls, melts faster in the sun than in the shade, stays where it lies when you look away, and your feet tread a trail into it. Increase and Decrease above set how fast (for open, sunlit ground). Off = as before. Costs about 0.05 ms a frame on average for the map. Applies immediately (the map starts from the current snow).
 PersistentShade = 0.35              # [0.02-1] (Persistent) How fast snow melts in the shade (and at night) compared with full sun: 0.35 = about three times slower; 1 = no difference.
 PersistentDrifts = 0.5              # [0-1] (Persistent) How much more snow gathers in hollows and against walls, and how much less on ridges and edges. 0: the same everywhere.
-PersistentFootprints = 0.7          # [0-1] (Persistent) How hard your steps tread the snow: a trail of compacted snow where you walked (greyer, flatter, the ground showing through only in its middle at high values; fresh snow fills it again). 0: no trail.
-PersistentFootprintSize = 10        # [2-200] (Persistent) Half the width of that trail, in game units (10 = a trail about 30 cm wide, soft at its edges).
+PersistentFootprints = 0.7          # [0-1] (Persistent) How hard your steps tread the snow: footprints of compacted snow, left and right in turn, one per step (greyer and flatter; the ground shows through in their middle at high values; fresh snow fills them again). 0: none. (2026-10-28: footprints, was one continuous trail.)
+PersistentFootprintSize = 10        # [2-200] (Persistent) Half the length of one footprint, in game units (10 = a print about 28 cm long and 11 cm wide). The step between prints follows your speed (about 40 cm sneaking to 1.4 m running).
 
 [_Shaders.SnowAccumulation.Status]
 Enabled = false                      # Snow accumulation on the floor during snowstorms.

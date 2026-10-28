@@ -33,6 +33,9 @@ void SnowAccumulationEffect::UpdateSettings(){
 	Constants.Color.x = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorR");
 	Constants.Color.y = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorG");
 	Constants.Color.z = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorB");
+	// UNOFFICIAL 2026-10-28 NormalSmoothing (game units, 0 = off): the snow's slope and shading from the ground's shape over that
+	// radius instead of each triangle's flat normal (SnowAccumulation.fx.hlsl SnowSmoothNormal, SnowAccumulation.frag). Live.
+	Constants.Color.w = std::clamp(TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "NormalSmoothing"), 0.0f, 256.0f);
 }
 
 void SnowAccumulationEffect::RegisterConstants() {

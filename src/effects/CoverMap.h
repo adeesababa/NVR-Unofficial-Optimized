@@ -54,10 +54,18 @@ public:
 	};
 	SettingsStruct	Settings;
 
+	// UNOFFICIAL 2026-10-28 footprints (user: "snow foot steps just kinda leaves a line behind when we walk like we're riding a
+	// bicycle. we want it to be foot steps"): one print per step, left and right in turn, a step apart (the stride follows the walking
+	// speed). Each print is stamped into the map as a dot (8 units a texel: too coarse for a foot), and the last MaxPrints are also
+	// sent to SnowAccumulation (TESR_CoverMapFeet), which draws them as boot prints per pixel instead of the map's dots near them.
+	static const int MaxPrints = 24;
+
 	struct ConstantsStruct {
 		D3DXVECTOR4	Update, Origin, Shift, Rates, SnowRates, Sun, Shade, Start, FootA, FootB, Debug;	// the update pass (CoverMap.fx.hlsl)
 		D3DXVECTOR4	Data, Window, Global, Trail;	// the readers (Includes/CoverMap.hlsl)
 		D3DXMATRIX	OrthoInverse;
+		D3DXVECTOR4	Feet[MaxPrints];	// 2026-10-28: xyz the print's centre (relative to the camera), w side x (heading in whole degrees + 0.99 x depth); 0 none
+		D3DXVECTOR4	FeetData;			// xy, z: a circle round every print (relative to the camera; z <= 0: none), w: a print's half length
 	};
 	ConstantsStruct	Constants;
 
@@ -98,8 +106,18 @@ private:
 	bool				resyncWet = true, resyncSnow = true;
 	unsigned int		tickFrame = ~0u;
 	unsigned int		framesSinceUpdate = 0;
-	double				feetX = 0.0, feetY = 0.0, feetZ = 0.0;	// the player's feet at the last update (world)
+	double				feetX = 0.0, feetY = 0.0, feetZ = 0.0;	// the player's feet at the last print (world; the path, not the print)
 	bool				feetSet = false;
+	// 2026-10-28 footprints: the last MaxPrints (world), the next foot, and the walking speed the stride follows
+	struct Print { double x, y, z; float dirX, dirY, side, depth; };
+	Print				prints[MaxPrints] = {};
+	int					printNext = 0;
+	float				printSide = 1.0f;			// +1 the left foot, -1 the right
+	double				speedX = 0.0, speedY = 0.0, speedClock = -1.0;
+	bool				speedSet = false;
+	float				walkSpeed = 0.0f;			// game units a second, smoothed
+	void				ClearPrints();
+	void				SetFeetConstants();
 	unsigned int		updates = 0;
 	CachedHandle		updateHandle;
 };

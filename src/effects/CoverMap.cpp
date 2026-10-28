@@ -1,5 +1,6 @@
 #include "CoverMap.h"
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
+#include "../core/FrameClock.h"	// UNOFFICIAL 2026-10-28 footprints: the walking speed
 
 // UNOFFICIAL 2026-10-27 Persistent wetness and snow cover: see CoverMap.h (design) and Effects\CoverMap.fx.hlsl (the update pass).
 
@@ -69,6 +70,8 @@ void CoverMapEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_CoverMapWindow", &Constants.Window);
 	TheShaderManager->RegisterConstant("TESR_CoverMapGlobal", &Constants.Global);
 	TheShaderManager->RegisterConstant("TESR_CoverMapTrail", &Constants.Trail);
+	TheShaderManager->RegisterConstant("TESR_CoverMapFeet", Constants.Feet);	// UNOFFICIAL 2026-10-28 footprints (MaxPrints)
+	TheShaderManager->RegisterConstant("TESR_CoverMapFeetData", &Constants.FeetData);
 	TheShaderManager->RegisterConstant("TESR_CoverMapOrthoInverse", (D3DXVECTOR4*)&Constants.OrthoInverse);
 }
 
@@ -262,6 +265,37 @@ void CoverMapEffect::SetReaderConstants() {
 	Constants.Global.w = mapValid && currentTexture ? 1.0f : 0.0f;
 	Constants.Debug = D3DXVECTOR4((float)Settings.debug, InsetShare, 0.0f, 0.0f);
 	Constants.Trail = D3DXVECTOR4(Settings.footSize, Settings.footprints, TrailRange(texelSize), 0.0f);
+	SetFeetConstants();
+}
+
+// UNOFFICIAL 2026-10-28 footprints: the prints for SnowAccumulation, relative to the camera now, and a circle round them all.
+void CoverMapEffect::SetFeetConstants() {
+	const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+	double minX = 0.0, minY = 0.0, maxX = 0.0, maxY = 0.0;
+	bool any = false;
+	for (int i = 0; i < MaxPrints; i++) {
+		const Print& p = prints[i];
+		if (!(p.depth > 0.001f) || !mapValid) { Constants.Feet[i] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f); continue; }
+		double heading = atan2((double)p.dirY, (double)p.dirX) * (180.0 / D3DX_PI);
+		if (heading < 0.0) heading += 360.0;
+		const float degrees = (float)floor(heading + 0.5) >= 360.0f ? 0.0f : (float)floor(heading + 0.5);
+		Constants.Feet[i] = D3DXVECTOR4((float)(p.x - camera.x), (float)(p.y - camera.y), (float)(p.z - camera.z),
+			p.side * (degrees + 0.99f * Saturate(p.depth)));
+		if (!any) { minX = maxX = p.x; minY = maxY = p.y; any = true; }
+		else { minX = (std::min)(minX, p.x); maxX = (std::max)(maxX, p.x); minY = (std::min)(minY, p.y); maxY = (std::max)(maxY, p.y); }
+	}
+	const float half = Settings.footSize;
+	if (any) {
+		const double cx = 0.5 * (minX + maxX), cy = 0.5 * (minY + maxY);
+		const double r = 0.5 * sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY)) + 2.0 * half;
+		Constants.FeetData = D3DXVECTOR4((float)(cx - camera.x), (float)(cy - camera.y), (float)r, half);
+	}
+	else Constants.FeetData = D3DXVECTOR4(0.0f, 0.0f, -1.0f, half);
+}
+
+void CoverMapEffect::ClearPrints() {
+	for (int i = 0; i < MaxPrints; i++) prints[i].depth = 0.0f;
+	printNext = 0;
 }
 
 // The footprint trail's distance field reaches this far from the path: the brush radius plus two texels, so that every texel a
@@ -281,6 +315,7 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		if (worldSpace && mapValid) Logger::Log("UNOFFICIAL Persistent wetness/snow: another worldspace, the cover map starts again");
 		worldSpace = space;
 		mapValid = false;
+		ClearPrints();	// 2026-10-28 footprints: they belong to the old worldspace
 	}
 	const bool wanted = WetActive() || SnowActive();
 	if (wanted && !EnsureMap(Device)) return;
@@ -299,9 +334,28 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 		const bool pendingWork = pendWetGain > 0.0f || pendWetDry > 0.0f || pendPuddleGain > 0.0f || pendPuddleDry > 0.0f ||
 			pendSnowGain > 0.0f || pendSnowMelt > 0.0f;
 		const double fx = Player->pos.x, fy = Player->pos.y, fz = Player->pos.z;
+		// UNOFFICIAL 2026-10-28 footprints: the walking speed (smoothed over a few frames) sets the stride, 30-100 units (a step of
+		// about 0.4-1.4 m: sneaking and walking to running), and a print falls each time the feet have gone that far.
+		const double dt = ElapsedOncePerFrame(speedClock);
+		if (speedSet && dt > 0.0) {
+			const double step = sqrt((fx - speedX) * (fx - speedX) + (fy - speedY) * (fy - speedY));
+			if (step < MaxTrail) walkSpeed += 0.15f * ((float)(step / dt) - walkSpeed);
+		}
+		speedX = fx; speedY = fy; speedSet = true;
+		const float stride = std::clamp(walkSpeed * 0.36f, 30.0f, 100.0f);
 		const double moved = feetSet ? sqrt((fx - feetX) * (fx - feetX) + (fy - feetY) * (fy - feetY)) : 0.0;
 		const bool teleported = !feetSet || moved > MaxTrail;
-		const bool footStep = Settings.snow && Settings.footprints > 0.0f && snowBound > 0.0f && !teleported && moved >= 4.0;
+		if (teleported) ClearPrints();
+		const bool footStep = Settings.snow && Settings.footprints > 0.0f && snowBound > 0.0f && !teleported && moved >= stride;
+		// The print: beside the path, on this foot's side (half a print's length out: the feet's gait), heading along the last step
+		double printX = fx, printY = fy;
+		float dirX = 1.0f, dirY = 0.0f;
+		if (footStep) {
+			dirX = (float)((fx - feetX) / moved); dirY = (float)((fy - feetY) / moved);
+			const double out = 0.5 * Settings.footSize * printSide;
+			printX = fx - dirY * out;	// left of the heading is (-dirY, dirX)
+			printY = fy + dirX * out;
+		}
 		if (!mapValid || pendingWork || footStep || (orthoFresh && framesSinceUpdate >= RefreshFrames)) {
 			if (!mapValid) {
 				// every texel starts from the open-ground values as they are now
@@ -324,9 +378,9 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 			const bool inverted = D3DXMatrixInverse(&Constants.OrthoInverse, NULL, &toLight) != NULL;
 			Constants.Shade = D3DXVECTOR4(Settings.wetShade, Settings.snowShade, (float)(camera.z - referenceZ), orthoFresh && inverted ? 1.0f : 0.0f);
 			Constants.Start = D3DXVECTOR4(startGlobal.x, startGlobal.y, startGlobal.z, 0.0f);
-			const double ax = teleported ? fx : feetX, ay = teleported ? fy : feetY, az = teleported ? fz : feetZ;
-			Constants.FootA = D3DXVECTOR4((float)(ax - camera.x), (float)(ay - camera.y), (float)(az - camera.z), Settings.footSize);
-			Constants.FootB = D3DXVECTOR4((float)(fx - camera.x), (float)(fy - camera.y), (float)(fz - camera.z), TrailRange(texelSize));
+			// 2026-10-28: the step's print as a dot (a stroke of no length; was the path since the last update: the bicycle line)
+			Constants.FootA = D3DXVECTOR4((float)(printX - camera.x), (float)(printY - camera.y), (float)(fz - camera.z), Settings.footSize);
+			Constants.FootB = D3DXVECTOR4((float)(printX - camera.x), (float)(printY - camera.y), (float)(fz - camera.z), TrailRange(texelSize));
 
 			// One pass into the other pair of maps (it reads the current pair), then they swap.
 			bool drawn = false;
@@ -374,8 +428,16 @@ void CoverMapEffect::RenderUpdate(IDirect3DDevice9* Device, IDirect3DSurface9* R
 				originX = ox;
 				originY = oy;
 				startGlobal = Constants.Global;
+				// 2026-10-28 footprints: fresh snow fills the prints as the update pass fills the map's trail (3 x the snow gained)
+				const float fill = 3.0f * Constants.SnowRates.x;
+				if (fill > 0.0f) for (int i = 0; i < MaxPrints; i++) prints[i].depth = (std::max)(0.0f, prints[i].depth - fill);
 				pendWetGain = pendWetDry = pendPuddleGain = pendPuddleDry = pendSnowGain = pendSnowMelt = 0.0f;
 				framesSinceUpdate = 0;
+				if (footStep) {
+					prints[printNext] = { printX, printY, fz, dirX, dirY, printSide, 1.0f };	// 1 = as deep as the map's trail (x PersistentFootprints in the reader)
+					printNext = (printNext + 1) % MaxPrints;
+					printSide = -printSide;
+				}
 				if (footStep || teleported) { feetX = fx; feetY = fy; feetZ = fz; feetSet = true; }
 				if (++updates == 1) Logger::Log("UNOFFICIAL Persistent wetness/snow: first cover map update (wet %d, snow %d, ortho map %s)",
 					(int)Settings.wet, (int)Settings.snow, orthoFresh ? "in" : "not drawn this frame");

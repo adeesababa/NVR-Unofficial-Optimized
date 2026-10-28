@@ -248,6 +248,28 @@ vec4 depthBlur(vec2 coordIn, vec2 offsetMaskIn) {
     return vec4(color1.rgb, 1.0);
 }
 
+// SnowAccumulation.fx.hlsl SnowSmoothNormal (UNOFFICIAL 2026-10-28 NormalSmoothing, snowAccColor.w: game units, 0 = off): the normal
+// averaged over a disc of that radius on the surface, so on displaced land the snow does not come and go triangle by triangle.
+const vec2 snowSmoothTaps[12] = vec2[12](vec2(0.35, 0.0), vec2(-0.35, 0.0), vec2(0.0, 0.35), vec2(0.0, -0.35),
+    vec2(0.5, 0.5), vec2(-0.5, 0.5), vec2(0.5, -0.5), vec2(-0.5, -0.5),
+    vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
+
+vec3 snowSmoothNormal(vec2 coord, vec3 center, vec3 norm, float depth) {
+    float radius = c.snowAccColor.w;
+    if (radius <= 0.0 || depth >= farZ * 0.99) return norm;
+    vec2 perUnit = 0.5 * vec2(c.projection[0][0], c.projection[1][1]) / max(depth, 1.0);
+    vec3 sum = norm;
+    for (int i = 0; i < 12; i++) {
+        vec2 tap = clamp(coord + snowSmoothTaps[i] * radius * perUnit, 0.0, 1.0);
+        float tapDepth = textureLod(SAMP_CLAMP(t_depth), tap, 0.0).x * farZ;
+        vec3 tapPos = toWorld(tap) * tapDepth;
+        float weight = saturate(1.0 - length(tapPos - center) / (2.0 * radius)) * (tapDepth < farZ * 0.99 ? 1.0 : 0.0);
+        vec4 tapNormal = vec4(textureLod(SAMP_CLAMP(t_normals), tap, 0.0).xyz * 2.0 - 1.0, 1.0);
+        sum += (tapNormal * c.view).xyz * weight;
+    }
+    return normalize(sum);
+}
+
 // Snow (the last pass)
 vec4 snowPass(vec2 coordIn) {
     vec4 color = texture(SAMP_CLAMP(t_source), coordIn);
@@ -265,6 +287,7 @@ vec4 snowPass(vec2 coordIn) {
     float waterTreshold = (depth / farZ) * 200.0;
     bool isWaterSurface = (dot(norm, vec3(0.0, 0.0, 1.0)) > 0.9) && (worldPos.z > c.waterSettings.x - waterTreshold) && (worldPos.z < c.waterSettings.x + waterTreshold);
     if (isWaterSurface || !(ortho > 0.0)) return color;
+    norm = snowSmoothNormal(coordIn, cameraVector, norm, depth);	// UNOFFICIAL 2026-10-28 NormalSmoothing (after the water test)
 
     color = linearize(color);
     vec3 sunColor = linearize(c.sunColor).rgb;
