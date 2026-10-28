@@ -11,6 +11,8 @@
 #include "../effects/GpuParticles.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK 1.5-particles)
 #include "SunDepthFit.h"	// UNOFFICIAL 2026-10-27 FitToDepth
 #include "../effects/CoverMap.h"	// UNOFFICIAL 2026-10-27 Persistent wetness and snow
+#include "RtCore.h"	// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core
+#include "RtSunShadows.h"	// UNOFFICIAL 2026-10-28 RT sun shadows
 #include <unordered_map>	// UNOFFICIAL 2026-10-27 RenderScale v2 (RenderRect::RescaleRegistered)
 #include <vector>
 
@@ -1835,12 +1837,20 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, false, 2);
 			}
 		}
+		// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core's point of the frame (RtCore.h): the depth and normals exist, the sun
+		// shadows come next. Nothing happens unless an RT effect is on (and the fork, a GPU with ray tracing and the helper are there).
+		{
+			static bool rtRegistered = false;
+			if (!rtRegistered) { RtSunShadows::Register(); rtRegistered = true; }
+			RtCore::Frame(Device);
+		}
 		if (GameState.isExterior) {
 			GpuProfileScope gpu(sunContactTimer, Device);
 			static EffectRecord::CachedHandle fusedCache;	// UNOFFICIAL: looked up once per loaded effect
 			D3DXHANDLE fusedTechnique = Effects.SunShadows->TechniqueHandle(fusedCache, "ForwardContactShadows");
 			const bool fusedForwardContact = Effects.ShadowsExteriors->Settings.Exteriors.ForwardShadows &&
-				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique;
+				fusedTechnique != NULL && Effects.SunShadows->Effect->GetTechnique(1) == fusedTechnique &&
+				!RtSunShadows::Replacing();	// UNOFFICIAL 2026-10-28 RT sun shadows Mode 1: the deferred technique (its apply fades the cascades out near)
 			// UNOFFICIAL Sharp ([Shaders.ShadowsExteriors.ScreenSpace]): the one-march technique (third in SunShadows.fx.hlsl).
 			static EffectRecord::CachedHandle sharpCache;
 			D3DXHANDLE sharpTechnique = Effects.SunShadows->TechniqueHandle(sharpCache, "ForwardContactSharp");
@@ -1863,6 +1873,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				if (sunShadows->SunFaded && sunShadows->Settings.Exteriors.ForwardShadows) sunShadows->Constants.ForwardData.x = 0.0f;
 				RenderEffectToRT(sunShadows->Textures.ShadowPassSurface, Effects.SunShadows, false, sharpContact ? 2 : fusedForwardContact ? 1 : 0);
 				sunShadows->Constants.ForwardData.x = forwardWas;
+				RtSunShadows::Apply(Device);	// UNOFFICIAL 2026-10-28: the traced sun visibility into the red channel (nothing when not traced)
 			}
 #if NVR_TEST_TOOLS
 			else if (sunShadows->Settings.Exteriors.SkipWhenFadedCheck) {

@@ -254,6 +254,7 @@ bool SunShadowsEffect::ExtPingPong(IDirect3DDevice9* Device, UINT techniqueIndex
 	uniforms.cameraData = *cameraData;
 	uniforms.flags = D3DXVECTOR4(extForwardCompiled ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 	if (const D3DXVECTOR4* nearFade = SunConstant("TESR_ShadowScreenSpaceFade")) { uniforms.flags.y = nearFade->x; uniforms.flags.z = nearFade->y; }	// UNOFFICIAL 2026-10-27 NearFade
+	if (const D3DXVECTOR4* rtReplace = SunConstant("TESR_RtSunReplace")) uniforms.flags.w = rtReplace->x;	// UNOFFICIAL 2026-10-28 RT sun shadows Mode 1
 	if (const D3DXVECTOR4* charToLight = SunConstant("TESR_CharShadowCameraToLight")) memcpy(&uniforms.charToLight, charToLight, sizeof(D3DXMATRIX));
 	if (const D3DXVECTOR4* charCenter = SunConstant("TESR_CharShadowCenter")) uniforms.charCenter = *charCenter;
 	if (const D3DXVECTOR4* charData = SunConstant("TESR_CharShadowData")) uniforms.charData = *charData;
