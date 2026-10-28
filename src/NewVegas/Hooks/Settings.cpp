@@ -42,6 +42,14 @@ bool __fastcall ReadSettingHook(INISettingCollection* This, UInt32 edx, GameSett
 				"Antialiasing off in the game's launcher (Options); NVR's TAA / FSR / DLSS smooth the edges instead.", Setting->iValue);
 		GameMSAAWarned = Setting->iValue;
 	}
+	// UNOFFICIAL 2026-10-27 (user: "still no grass shadows"): NVR's grass shaders replace the game's shader model 3 grass (GRASS23x000-007);
+	// with b30GrassVS 0 the game takes its older GRASS2000-2023 set, which NVR leaves alone: no NVR lighting, shadow or wind on grass at all.
+	// The launcher writes 0 whenever it sees DXVK's adapter name (it rewrote the user's FalloutPrefs.ini that way the same day), so it is
+	// read as 1 here. (Read once, at start, for the grass shader set; unlike iMultiSample nothing else reads it.)
+	else if (!strcmp(Setting->Name, "b30GrassVS:Grass") && !Setting->iValue) {
+		Logger::Log("UNOFFICIAL b30GrassVS was 0 in the game's INI (the launcher writes 0 under DXVK): read as 1, so NVR's grass shaders are used");
+		Setting->iValue = 1;
+	}
 	else if (!strcmp(Setting->Name, "bDoHighDynamicRange:BlurShaderHDR"))
 		Setting->iValue = 1;
 	else if (!strcmp(Setting->Name, "bUseBlurShader:BlurShader"))
