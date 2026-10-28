@@ -324,8 +324,7 @@ namespace PointShadowForward {
 		Active = false;
 		SlotCount = 0;
 		Focus = -1;
-		RtLampShadows::Mode = 0.0f;	// UNOFFICIAL 2026-10-28 RT lamp shadows: off until Submit below finds a result
-		RtLampShadows::Result = nullptr;
+		RtLampShadows::Submit(nullptr, 0);	// UNOFFICIAL 2026-10-28 RT lamp shadows: none this frame until Submit below
 		if (!CompiledIn) { lastCount = 0; return; }
 		const ShadowsExteriorEffect::InteriorsStruct::ForwardStruct& forward = TheShaderManager->Effects.ShadowsExteriors->Settings.Interiors.Forward;
 		LogObjectLamps = forward.LogLamps;

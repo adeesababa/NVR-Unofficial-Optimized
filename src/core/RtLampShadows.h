@@ -1,178 +1,152 @@
 #pragma once
 
 // UNOFFICIAL 2026-10-28 RT lamp shadows ([Shaders.ShadowsInteriors.RT], docs/next/FORK-RT-LAMPS.md). Indoors, each lamp's forward
-// shadow (PointShadowForward.hlsl) is read from a traced result instead of its cube map. The tracing runs in the RT core's 64-bit
-// helper (32-bit Windows Vulkan drivers have no ray tracing, so the game cannot trace): every frame NVR sends it the frame's depth
-// and normals and this table of up to 18 shadowed lamps, the helper runs Compute/Rt/RtLampTrace.comp against its scene, and the
-// result (4-bit visibility per lamp per pixel + the view depth) comes back as a D3D9 texture, a frame or more later. The object
-// shaders (POINT_SHADOW_RT) reproject into the frame that result was traced for and use it where that frame saw the same surface;
-// elsewhere the cube map, as before. The lamps are still picked, ranked and given cube slots as before; cube slots 0-17 are the
-// traced slots.
+// shadow (PointShadowForward.hlsl) is read from a traced result instead of its cube map. The tracing is an RT core user (RtCore.h,
+// FORK-RT-CORE.md): at the core's point of the frame (after the depth and normals) the helper runs Compute/Rt/RtLampTrace.spv for the
+// up to 9 shadowed lamps of this frame (cube slots 0-8) and the result lands in TESR_RtLampShadow (G32R32F). The object shaders draw
+// earlier in the frame, so they use the PREVIOUS frame's result: they reproject into the frame it was traced for and use it where that
+// frame saw the same surface; elsewhere the cube map, as before. The lamps are still picked, ranked and given cube slots as before.
 //
-// POINT_SHADOW_RT is defined at startup only with the setting on and the RT helper available (RtCoreStandIn.h until the RT core
-// lands). Without it (the GTX 1070 has no RT anywhere; native D3D9; stock DXVK) every shader is exactly what it was.
+// POINT_SHADOW_RT is defined at startup only with the setting and the per-object lamp shadows on and a d3d9.dll with the RT core's
+// interface (NVR DXVK patch 0028). Without it every shader is exactly what it was. With it, but no ray tracing for the helper (the
+// GTX 1070), the core stays off, Mode stays 0 and every lamp keeps its cube map (same picture, the RT shaders' extra branch only).
 //
-// Per draw (PointShadowForward::SetForPass): c206-c209 the reprojection, c215 mode + depth tolerance, c216-c217 the draw's lights'
-// traced slots, the result on s15 (the sixth lamp's cube stage: see the shader).
+// Per draw (PointShadowForward::SetForPass): c206-c209 the reprojection, c215 mode / tolerance / depth unit / people-from-cube, c216-c217
+// the draw's lights' traced slots, the result on s15 (the sixth lamp's cube stage: see the shader).
 
 #include "LampFixtures.h"
-#include "RtCoreStandIn.h"	// the RT core's helper (session rt-sun-core); a stand-in until it lands
+#include "DxvkCompute.h"
+#include "RtCore.h"
 
 namespace RtLampShadows {
 
-	inline constexpr int TracedSlots = 18;		// RtLampTrace.comp: 6 lamps x 4 bits in each of r, g, b (exact floats), depth in a
+	inline constexpr int TracedSlots = 9;		// RtLampTrace.comp: 6 lamps in r, 3 + the depth code in g (exact floats)
+	inline constexpr const char* kSection = "Shaders.ShadowsInteriors.RT";
+
+	// Instance mask bits the RT core gives the scene (FORK-RT-CORE.md: 0x01 land, 0x02 objects); ours for the lamps' own parts,
+	// through the core's mask hook (InstanceMask below): 0x04 lamp glass and glow meshes, 0x08 the rest of a lamp model.
+	inline constexpr UINT MaskGlass = 0x04, MaskLampModel = 0x08;
 
 	inline bool CompiledIn = false;			// POINT_SHADOW_RT in the object shaders (fixed at startup)
 	inline char Status[200] = "not checked yet";
 
-	// The trace pass's constants: RtLampTrace.comp's Pass block (std140: matrices 64 bytes, every vec4 16)
-	struct TracePass {
-		D3DXMATRIX	view, projection;			// TESR_ViewTransform, TESR_ProjectionTransform as their SetMatrix uploads them
-		float		cameraData[4];				// TESR_CameraData (y far)
-		float		size[4];					// the output's size, 1 / size
-		float		params[4];					// rays, StartOffset, LampStop, noise offset
-		float		params2[4];					// LampModelDistance, far mask, near mask, lamp count
-		float		lamps[TracedSlots][4];		// camera-relative position, reach (0 = none)
-		float		lampSize[TracedSlots][4];	// x: radius the rays aim over
+	// The trace pass's uniform block (RtLampTrace.comp, std140, 304 bytes; the core allows 512)
+	struct PassConstants {
+		float size[4], forward[4], right[4], up[4], origin[4], params[4], params2[4];
+		float lamps[TracedSlots][4];
+		float radius[3][4];
 	};
-	static_assert(sizeof(TracePass) == 64 * 2 + 16 * 4 + 16 * TracedSlots * 2, "std140 layout of RtLampTrace.comp's Pass");
+	static_assert(sizeof(PassConstants) <= 512, "RtCore: 512 bytes of constants a pass");
 
-	// The camera each submitted frame was traced with, by the helper's frame number (the result names its frame)
-	struct TracedCamera { UInt64 frame; D3DXMATRIX view; D3DXVECTOR4 position; float p11, p22; };
-	inline TracedCamera Cameras[8] = {};
+	// This frame's lamps (Submit, from PointShadowForward::Publish) for Record
+	struct SlotLamp { int slot; D3DXVECTOR3 position; float reach; float fade; };
+	inline SlotLamp Lamps[TracedSlots] = {};
+	inline int LampCount = 0;
+	inline bool LampsThisFrame = false;
 
-	// This frame's per-draw values
+	// The camera of the frame the newest result was traced for (Record) and whether it exists
+	struct TracedCamera { D3DXMATRIX view; D3DXVECTOR3 location; float p11, p22, farZ; bool valid; };
+	inline TracedCamera Traced = {};
+	inline TracedCamera Pending = {};
+
+	// Per draw
 	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view
-	inline int MaxLamps = 8;				// cube slots below min(this, 18) use the traced result
+	inline int MaxLamps = 8;				// cube slots below min(this, 9) use the traced result
 	inline float Reproject[4][4] = {};		// c206-c209
-	inline float DepthTolerance = 0.02f;	// c215.y
-	inline IDirect3DTexture9* Result = nullptr;
+	inline float RtConstant[4] = {};		// c215
 	inline float Uploaded[7][4] = {};
 	inline bool UploadedValid = false;
 
-	inline const D3DXVECTOR4* Registered(const char* name) {
-		auto found = TheShaderManager->ConstantsTable.find(name);
-		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	inline int imageDepth = -1, imageNormals = -1, imageResult = -1, shader = -1;
+	inline IDirect3DTexture9* ResultTexture = nullptr;
+	inline IDirect3DSurface9* ResultSurface = nullptr;
+	inline UINT TextureWidth = 0, TextureHeight = 0;
+	inline UInt32 FramesTraced = 0;
+
+	// The game-to-scene instance mask for the RT core's mask hook: lamp glass and glow meshes (LampFixtures::LampPart), the rest of a
+	// lamp model listed in the cell (fixtures, shades, chandeliers, fans); 0 = the core's own (land / object).
+	inline UInt32 InstanceMask(NiGeometry* geometry, bool actor) {
+		if (actor || !geometry || TheShaderManager->GameState.isExterior) return 0;
+		if (LampFixtures::LampPart(geometry)) return MaskGlass;
+		if (LampFixtures::ModelIndexOf(geometry) >= 0) return MaskLampModel;
+		return 0;
 	}
 
 	// RenderManager, right after DxvkCompute::Initialize and before any shader is loaded: decides POINT_SHADOW_RT for the session.
 	inline void Initialize() {
 		CompiledIn = false;
-		if (!TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.RT", "Enabled")) {
+		ID3D9NvrExtRt* rt = nullptr;
+		ID3D9NvrExt* ext = DxvkCompute::Extension();
+		if (!TheSettingManager->GetSettingI(kSection, "Enabled"))
 			strcpy_s(Status, "off ([Shaders.ShadowsInteriors.RT] Enabled false at startup)");
-			return;
-		}
-		if (!TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled"))
+		else if (!TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Forward", "Enabled"))
 			strcpy_s(Status, "off: needs the per-object lamp shadows ([Shaders.ShadowsInteriors.Forward] Enabled)");
-		else if (!RtCoreStandIn::Available())
-			_snprintf_s(Status, sizeof(Status), _TRUNCATE, "off: no ray tracing (%s)", RtCoreStandIn::Status());
+		else if (!ext || FAILED(ext->QueryInterface(__uuidof(ID3D9NvrExtRt), (void**)&rt)) || !rt)
+			strcpy_s(Status, "off: needs NVR DXVK with the RT core (patch 0028)");
 		else {
+			rt->Release();
 			CompiledIn = true;
-			strcpy_s(Status, "on: lamp shaders compiled to read the traced lamp shadows");
+			strcpy_s(Status, "lamp shaders compiled to read traced lamp shadows (used once the RT helper runs)");
 		}
-		Logger::Log("UNOFFICIAL RT lamp shadows: %s", Status);
+		if (TheSettingManager->GetSettingI(kSection, "Enabled")) Logger::Log("UNOFFICIAL RT lamp shadows: %s", Status);
 	}
 
-	// The game-to-scene instance mask the RT core gives each piece of the scene (the trace pass's cull masks below): lamp glass and glow
-	// meshes (LampFixtures::LampPart), the rest of a lamp model listed in the cell (fixtures, shades, chandeliers, fans), actors,
-	// everything else. A lamp part inside a lamp model counts as glass.
-	inline UINT InstanceMask(NiGeometry* geometry, bool actor) {
-		if (actor) return 0x08;
-		if (!geometry) return 0x01;
-		if (LampFixtures::LampPart(geometry)) return 0x02;
-		if (LampFixtures::ModelIndexOf(geometry) >= 0) return 0x04;
-		return 0x01;
+	inline const D3DXVECTOR4* Constant(const char* name) {
+		auto found = TheShaderManager->ConstantsTable.find(name);
+		return found == TheShaderManager->ConstantsTable.end() ? nullptr : found->second;
+	}
+	inline IDirect3DBaseTexture9* Texture(const char* name) {
+		auto found = TheTextureManager->TextureNames.find(name);
+		return found == TheTextureManager->TextureNames.end() || !found->second ? nullptr : *found->second;
 	}
 
-	// PointShadowForward::Publish, once a frame indoors after the slots are known: the trace request for this frame's depth, and the
-	// reprojection into the newest result. slotLights: the published lamps' cube slot, position (world), reach and fade.
-	struct SlotLamp { int slot; D3DXVECTOR3 position; float reach; float fade; };
+	// PointShadowForward::Publish, once a frame indoors after the slots are known (before the world draws): this frame's lamps for
+	// the trace, and the reprojection into the newest result for this frame's draws.
 	inline void Submit(const SlotLamp* lamps, int count) {
 		Mode = 0.0f;
-		Result = nullptr;
+		LampCount = 0;
+		LampsThisFrame = false;
 		if (!CompiledIn) return;
-		const char* section = "Shaders.ShadowsInteriors.RT";
-		MaxLamps = (std::min)((std::max)(TheSettingManager->GetSettingI(section, "MaxLamps"), 0), TracedSlots);
-		DepthTolerance = (std::max)(TheSettingManager->GetSettingF(section, "DepthTolerance"), 0.0f);
-		const bool live = TheSettingManager->GetSettingI(section, "Live") != 0;
-		const int debugView = TheSettingManager->GetSettingI(section, "DebugView");
+		MaxLamps = (std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "MaxLamps"), 0), TracedSlots);
+		for (int i = 0; i < count; i++)
+			if (lamps[i].slot >= 0 && lamps[i].slot < MaxLamps) Lamps[LampCount++] = lamps[i];
+		LampsThisFrame = TheSettingManager->GetSettingI(kSection, "Live") != 0;
 
-		// This frame's request
-		static UInt64 frame = 0;
-		frame++;
-		const D3DXVECTOR4* view = Registered("TESR_ViewTransform");
-		const D3DXVECTOR4* projection = Registered("TESR_ProjectionTransform");
-		const D3DXVECTOR4* cameraData = Registered("TESR_CameraData");
-		if (!view || !projection || !cameraData || !MaxLamps) return;
-		TracePass pass = {};
-		memcpy(&pass.view, view, sizeof(D3DXMATRIX));
-		memcpy(&pass.projection, projection, sizeof(D3DXMATRIX));
-		memcpy(pass.cameraData, cameraData, sizeof(pass.cameraData));
-		const float width = (float)TheRenderManager->width, height = (float)TheRenderManager->height;
-		pass.size[0] = width; pass.size[1] = height; pass.size[2] = 1.0f / width; pass.size[3] = 1.0f / height;
-		pass.params[0] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(section, "Rays"), 1), 8);
-		pass.params[1] = (std::max)(TheSettingManager->GetSettingF(section, "StartOffset"), 0.0f);
-		pass.params[2] = (std::max)(TheSettingManager->GetSettingF(section, "LampStop"), 0.0f);
-		pass.params[3] = TheSettingManager->GetSettingI(section, "Jitter") ? fmodf((float)frame * 0.61803399f, 1.0f) : 0.0f;
-		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
-		const bool skipModels = TheSettingManager->GetSettingI(section, "SkipLampModels") != 0;
-		pass.params2[0] = skipModels ? (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampModelDistance"), 0.0f) : 0.0f;
-		int farMask = 0x01 | 0x04;
-		if (!TheSettingManager->GetSettingI(section, "SkipLampGlass")) farMask |= 0x02;
-		if (TheSettingManager->GetSettingI(section, "Actors")) farMask |= 0x08;
-		pass.params2[1] = (float)farMask;
-		pass.params2[2] = (float)(skipModels ? (farMask & ~0x04) : farMask);
-		pass.params2[3] = (float)MaxLamps;
-		const float radius = (std::max)(TheSettingManager->GetSettingF(section, "LampRadius"), 0.0f);
-		const float invisible = TheSettingManager->GetSettingF(section, "InvisibleLightRadius");
-		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
-		for (int i = 0; i < count; i++) {
-			const int s = lamps[i].slot;
-			if (s < 0 || s >= MaxLamps) continue;
-			pass.lamps[s][0] = lamps[i].position.x - camera.x;
-			pass.lamps[s][1] = lamps[i].position.y - camera.y;
-			pass.lamps[s][2] = lamps[i].position.z - camera.z;
-			pass.lamps[s][3] = lamps[i].reach;
-			pass.lampSize[s][0] = lamps[i].fade < 0.0f && invisible >= 0.0f ? invisible : radius;	// negative fade: an invisible light
-		}
-		TracedCamera& mine = Cameras[frame & 7];
-		mine = { frame, TheRenderManager->viewMatrix, camera, TheRenderManager->projMatrix._11, TheRenderManager->projMatrix._22 };
-		RtCoreStandIn::SubmitLampTrace(frame, &pass, sizeof(pass));
-
-		// The newest result and the camera it was traced with
-		UInt64 resultFrame = 0;
-		IDirect3DTexture9* texture = RtCoreStandIn::LampTraceResult(&resultFrame);
-		const TracedCamera* traced = nullptr;
-		for (const TracedCamera& c : Cameras) if (c.frame == resultFrame && resultFrame) traced = &c;
-		if (!texture || !traced || !live) return;
-		const D3DXMATRIX& v = traced->view;
+		// The newest result: traced last frame (Record moves Pending to Traced once its copy-out is recorded)
+		if (!Traced.valid || !ResultTexture || !LampsThisFrame || !RtCore::Running()) return;
+		const D3DXMATRIX& v = Traced.view;
 		const D3DXVECTOR3 right(v._11, v._21, v._31), up(v._12, v._22, v._32), forward(v._13, v._23, v._33);
-		const D3DXVECTOR3 d(camera.x - traced->position.x, camera.y - traced->position.y, camera.z - traced->position.z);
+		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+		// A camera-relative point of this frame, seen from the traced frame's eye (its CameraLocation)
+		const D3DXVECTOR3 d(camera.x - Traced.location.x, camera.y - Traced.location.y, camera.z - Traced.location.z);
 		const float rows[3][3] = { { right.x, up.x, forward.x }, { right.y, up.y, forward.y }, { right.z, up.z, forward.z } };
 		for (int i = 0; i < 3; i++) {
-			Reproject[i][0] = rows[i][0] * traced->p11;
-			Reproject[i][1] = rows[i][1] * traced->p22;
+			Reproject[i][0] = rows[i][0] * Traced.p11;
+			Reproject[i][1] = rows[i][1] * Traced.p22;
 			Reproject[i][2] = 0.0f;
 			Reproject[i][3] = rows[i][2];
 		}
-		Reproject[3][0] = D3DXVec3Dot(&d, &right) * traced->p11;
-		Reproject[3][1] = D3DXVec3Dot(&d, &up) * traced->p22;
+		Reproject[3][0] = D3DXVec3Dot(&d, &right) * Traced.p11;
+		Reproject[3][1] = D3DXVec3Dot(&d, &up) * Traced.p22;
 		Reproject[3][2] = 0.0f;
 		Reproject[3][3] = D3DXVec3Dot(&d, &forward);
-		Result = texture;
-		Mode = debugView == 1 ? 2.0f : 1.0f;
+		RtConstant[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "DepthTolerance"), 0.004f);	// at least the depth code's step
+		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
+		RtConstant[3] = TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps") ? 1.0f : 0.0f;
+		Mode = TheSettingManager->GetSettingI(kSection, "DebugView") == 1 ? 2.0f : 1.0f;
+		RtConstant[0] = Mode;
 	}
 
 	// The slot a draw's light reads in the traced result, -1 for its cube map.
 	inline float TracedSlot(int cubeSlot) { return Mode > 0.0f && cubeSlot >= 0 && cubeSlot < MaxLamps ? (float)cubeSlot : -1.0f; }
 
-	// PointShadowForward::SetForPass: slots = the draw's lights' TracedSlot (-1 none). Binds the result on s15 (or the neutral 2D
-	// texture: s15 is a 2D sampler in these shaders).
+	// PointShadowForward::SetForPass: slots = the draw's lights' TracedSlot (-1 none).
 	inline void SetForPass(const float slots[6], bool force) {
 		if (!CompiledIn) return;
 		float c[7][4] = {};
 		memcpy(c, Reproject, sizeof(Reproject));
-		c[4][0] = Mode; c[4][1] = DepthTolerance;
+		memcpy(c[4], RtConstant, sizeof(RtConstant));
+		c[4][0] = Mode;
 		memcpy(c[5], slots, 4 * sizeof(float));
 		c[6][0] = slots[4]; c[6][1] = slots[5]; c[6][2] = c[6][3] = -1.0f;
 		if (force || !UploadedValid || memcmp(c, Uploaded, sizeof(c))) {
@@ -183,6 +157,100 @@ namespace RtLampShadows {
 		}
 	}
 
-	inline IDirect3DBaseTexture9* Stage15Texture() { return Result ? Result : RtCoreStandIn::Neutral2D(); }
+	// s15 in POINT_SHADOW_RT shaders: the result, or a 1x1 "nothing traced" (depth code 0 never matches) before there is one
+	inline IDirect3DBaseTexture9* Stage15Texture() {
+		if (Mode > 0.0f && ResultTexture) return ResultTexture;
+		static IDirect3DTexture9* neutral = nullptr;
+		if (!neutral && SUCCEEDED(TheRenderManager->device->CreateTexture(1, 1, 1, 0, D3DFMT_G32R32F, D3DPOOL_MANAGED, &neutral, NULL))) {
+			D3DLOCKED_RECT lock;
+			if (SUCCEEDED(neutral->LockRect(0, &lock, NULL, 0))) {
+				float* texel = (float*)lock.pBits;
+				texel[0] = 16777215.0f; texel[1] = 4095.0f;
+				neutral->UnlockRect(0);
+			}
+		}
+		return neutral;
+	}
+
+	// --- The RT core user -----------------------------------------------------------------------------------------------------------
+	inline bool Wants() {
+		return CompiledIn && LampsThisFrame && LampCount > 0 && !TheShaderManager->GameState.isExterior;
+	}
+
+	inline void Setup() {
+		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
+		imageDepth = RtCore::AddImage("NVR RT lamps depth", w, h, NVR_EXT_SHARED_R32F);
+		imageNormals = RtCore::AddImage("NVR RT lamps normals", w, h, NVR_EXT_SHARED_RGBA16F);
+		imageResult = RtCore::AddImage("NVR RT lamps", w, h, NVR_EXT_SHARED_RG32F);
+	}
+
+	inline void Record(IDirect3DDevice9* Device) {
+		if (imageDepth < 0 || imageNormals < 0 || imageResult < 0 || shader < 0) return;
+		const UINT w = TheRenderManager->width, h = TheRenderManager->height;
+		if (!ResultTexture || TextureWidth != w || TextureHeight != h) {
+			if (ResultSurface) { ResultSurface->Release(); ResultSurface = nullptr; }
+			if (ResultTexture) { ResultTexture->Release(); ResultTexture = nullptr; }
+			Traced.valid = false;
+			TheTextureManager->InitTexture("TESR_RtLampShadow", &ResultTexture, &ResultSurface, w, h, D3DFMT_G32R32F);
+			TextureWidth = w;
+			TextureHeight = h;
+			if (!ResultTexture) return;
+		}
+		IDirect3DBaseTexture9* depth = Texture("TESR_DepthBuffer");
+		IDirect3DBaseTexture9* normals = Texture("TESR_NormalsBuffer");
+		const D3DXVECTOR4* cameraData = Constant("TESR_CameraData");
+		if (!depth || !normals || !cameraData) return;
+
+		const D3DXMATRIX& view = TheRenderManager->viewMatrix;
+		const D3DXMATRIX& proj = TheRenderManager->projMatrix;
+		PassConstants c = {};
+		c.size[0] = (float)w; c.size[1] = (float)h; c.size[2] = 1.0f / w; c.size[3] = 1.0f / h;
+		c.forward[0] = view._13; c.forward[1] = view._23; c.forward[2] = view._33; c.forward[3] = cameraData->y;
+		c.right[0] = view._11 / proj._11; c.right[1] = view._21 / proj._11; c.right[2] = view._31 / proj._11;
+		c.up[0] = view._12 / proj._22; c.up[1] = view._22 / proj._22; c.up[2] = view._32 / proj._22;
+		const NiPoint3* location = Pointers::Generic::CameraLocation;
+		const D3DXVECTOR4& camera = TheRenderManager->CameraPosition;
+		c.origin[0] = location->x - camera.x; c.origin[1] = location->y - camera.y; c.origin[2] = location->z - camera.z;
+		c.origin[3] = 4095.0f / log2f((std::max)(cameraData->y, 2.0f));
+		static UInt32 frame = 0;
+		frame++;
+		c.params[0] = (float)(std::min)((std::max)(TheSettingManager->GetSettingI(kSection, "Rays"), 1), 8);
+		c.params[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "StartOffset"), 0.0f);
+		c.params[2] = (std::max)(TheSettingManager->GetSettingF(kSection, "LampStop"), 0.0f);
+		c.params[3] = TheSettingManager->GetSettingI(kSection, "Jitter") ? fmodf((float)frame * 0.61803399f, 1.0f) : 0.0f;
+		// Lamp models skip their own light over the last LampModelDistance of each ray, as LampModelShadows false does for the cube maps
+		const bool skipModels = TheSettingManager->GetSettingI(kSection, "SkipLampModels") != 0;
+		c.params2[0] = skipModels ? (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Forward", "LampModelDistance"), 0.0f) : 0.0f;
+		UINT farMask = 0xFF;
+		if (TheSettingManager->GetSettingI(kSection, "SkipLampGlass")) farMask &= ~MaskGlass;
+		c.params2[1] = (float)farMask;
+		c.params2[2] = (float)(skipModels ? (farMask & ~MaskLampModel) : farMask);
+		c.params2[3] = (float)TracedSlots;
+		const float radius = (std::max)(TheSettingManager->GetSettingF(kSection, "LampRadius"), 0.0f);
+		const float invisible = TheSettingManager->GetSettingF(kSection, "InvisibleLightRadius");
+		for (int i = 0; i < LampCount; i++) {
+			const SlotLamp& l = Lamps[i];
+			float* lamp = c.lamps[l.slot];
+			lamp[0] = l.position.x - camera.x; lamp[1] = l.position.y - camera.y; lamp[2] = l.position.z - camera.z;
+			lamp[3] = l.reach;
+			c.radius[l.slot / 4][l.slot % 4] = l.fade < 0.0f && invisible >= 0.0f ? invisible : radius;	// negative fade: an invisible light
+		}
+
+		if (!RtCore::CopyIn(imageDepth, depth) || !RtCore::CopyIn(imageNormals, normals)) return;
+		const int images[3] = { imageDepth, imageNormals, imageResult };
+		if (!RtCore::AddPass(shader, images, 3, 0x4, &c, sizeof(c), (w + 7) / 8, (h + 7) / 8)) return;
+		if (!RtCore::CopyOut(imageResult, ResultSurface)) return;
+		// The next frame's draws reproject into this frame
+		Traced = { view, D3DXVECTOR3(location->x, location->y, location->z), proj._11, proj._22, cameraData->y, true };
+		if (FramesTraced++ == 0)
+			Logger::Log("UNOFFICIAL NVR DXVK: RT lamp shadows traced (%ux%u, %d lamps, %d rays).", w, h, LampCount, (int)c.params[0]);
+	}
+
+	// ShaderManager, once before the first RtCore::Frame (next to RtSunShadows::Register)
+	inline void Register() {
+		if (!CompiledIn) return;
+		shader = RtCore::AddShader("RtLampTrace");
+		RtCore::AddUser({ "RT lamp shadows", Wants, Setup, Record });
+	}
 
 }
