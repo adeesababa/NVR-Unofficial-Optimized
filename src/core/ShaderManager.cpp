@@ -1723,6 +1723,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// UNOFFICIAL (2026-10-07 review): the "no shadow" clear of the buffer is done once, not on every frame that draws no
 	// shadow pass (a full-screen clear and two target switches for a buffer that already held the clear value).
 	static bool shadowBufferClear = false;
+	// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core's point of the frame (RtCore.h): the depth and normals exist, the sun
+	// shadows come next; indoors and outdoors, with or without the shadow passes. Nothing happens unless an RT effect is on (and the
+	// fork, a GPU with ray tracing and the helper are there).
+	{
+		static bool rtRegistered = false;
+		if (!rtRegistered) { RtSunShadows::Register(); rtRegistered = true; }
+		RtCore::Frame(Device);
+	}
 	// render a shadow pass for point lights
 	if (forwardInterior && !keepDarkening) {
 		if (!shadowBufferClear) { Effects.ShadowsExteriors->clearShadowsBuffer(); shadowBufferClear = true; }
@@ -1836,13 +1844,6 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 				GpuProfileScope gpu(lampContactTimer, Device);
 				RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, false, 2);
 			}
-		}
-		// UNOFFICIAL 2026-10-28 (NVR DXVK) the ray tracing core's point of the frame (RtCore.h): the depth and normals exist, the sun
-		// shadows come next. Nothing happens unless an RT effect is on (and the fork, a GPU with ray tracing and the helper are there).
-		{
-			static bool rtRegistered = false;
-			if (!rtRegistered) { RtSunShadows::Register(); rtRegistered = true; }
-			RtCore::Frame(Device);
 		}
 		if (GameState.isExterior) {
 			GpuProfileScope gpu(sunContactTimer, Device);

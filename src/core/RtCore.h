@@ -34,6 +34,8 @@ public:
 	};
 
 	static void			AddUser(const User& user);
+	// Optional: the cull mask of each instance (default 0x01 land, 0x02 objects); one hook, the last set wins. 0 = never hit.
+	static void			SetMaskHook(UInt32 (*Hook)(NiGeometry* Geometry, bool Land));
 
 	// Setup only: a shared image (a pass's input or output); returns its index (or -1). Index 0 is the core's arena.
 	static int			AddImage(const char* Name, UINT Width, UINT Height, NVR_EXT_SHARED_FORMAT Format);

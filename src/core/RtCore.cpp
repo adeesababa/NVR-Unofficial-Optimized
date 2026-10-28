@@ -126,6 +126,7 @@ namespace {
 	};
 
 	Core TheCore;
+	UInt32 (*MaskHook)(NiGeometry*, bool) = nullptr;
 
 	void Core::TurnOff(const char* why) {
 		Logger::Log("UNOFFICIAL NVR DXVK: ray tracing core off for this session: %s. The RT effects keep their usual paths.", why);
@@ -487,7 +488,7 @@ namespace {
 		}
 		instance.geometryId = entry.id;
 		instance.customIndex = land ? 1u : 0u;
-		instance.mask = land ? 0x01u : 0x02u;	// cull mask bit 0 land, bit 1 objects
+		instance.mask = MaskHook ? (MaskHook(geo, land) & 0xFFu) : (land ? 0x01u : 0x02u);	// default: bit 0 land, bit 1 objects
 		instance.flags = 0x1u;	// both faces (the game's two-sided and one-sided meshes alike: shadows need the back faces too)
 	}
 
@@ -567,6 +568,7 @@ namespace {
 }
 
 void RtCore::AddUser(const User& user) { TheCore.users.push_back(user); }
+void RtCore::SetMaskHook(UInt32 (*Hook)(NiGeometry*, bool)) { MaskHook = Hook; }
 
 int RtCore::AddImage(const char* Name, UINT Width, UINT Height, NVR_EXT_SHARED_FORMAT Format) {
 	if (!TheCore.inSetup || !Width || !Height) return -1;
