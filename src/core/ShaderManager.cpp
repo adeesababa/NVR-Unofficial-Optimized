@@ -19,6 +19,8 @@
 * Initializes the Shader Manager Singleton.
 * The Shader Manager creates and holds onto the Effects activated in the Settings Manager, and sets the constants.
 */
+static void LoadEarlyShaders(ShaderManager* Manager);	// UNOFFICIAL 2026-10-27 (below LoadShader)
+
 void ShaderManager::Initialize() {
 
 	auto timer = TimeLogger();
@@ -126,6 +128,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterShaderCollection<GrassShaders>(&TheShaderManager->Shaders.Grass);
 	TheShaderManager->RegisterShaderCollection<ParticleShaders>(&TheShaderManager->Shaders.Particles);
 	TheShaderManager->RegisterShaderCollection<TerrainShaders>(&TheShaderManager->Shaders.Terrain);
+	LoadEarlyShaders(TheShaderManager);	// UNOFFICIAL 2026-10-27: shaders the game made while the sets above did not exist yet
 	
 	//setup map of constant names
 	TheShaderManager->RegisterConstant("TESR_WorldTransform", (D3DXVECTOR4*)&TheRenderManager->worldMatrix);
@@ -735,6 +738,24 @@ void ShaderManager::ReloadEffects() {
 	}
 }
 
+// UNOFFICIAL 2026-10-27 (user: still no grass shadows; from the 20:10 launch on, NVR's grass shaders were never loaded and the log said
+// nothing): a shader the game creates while ShaderManager::Initialize is still registering the shader sets found its set missing and
+// was silently left to the game. Those are kept here and loaded right after the sets exist (LoadEarlyShaders), before anything draws.
+static bool ShaderSetsReady = false;
+static std::vector<NiD3DVertexShader*> EarlyVertexShaders;
+static std::vector<NiD3DPixelShader*> EarlyPixelShaders;
+
+static void LoadEarlyShaders(ShaderManager* Manager) {
+	ShaderSetsReady = true;
+	if (EarlyVertexShaders.empty() && EarlyPixelShaders.empty()) return;
+	Logger::Log("UNOFFICIAL shader sets ready: loading %u vertex and %u pixel shaders the game made before them",
+		(unsigned)EarlyVertexShaders.size(), (unsigned)EarlyPixelShaders.size());
+	for (NiD3DVertexShader* s : EarlyVertexShaders) Manager->LoadShader(s);
+	for (NiD3DPixelShader* s : EarlyPixelShaders) Manager->LoadShader(s);
+	EarlyVertexShaders.clear();
+	EarlyPixelShaders.clear();
+}
+
 /*
 * Load generic Vertex Shaders as well as the ones for interiors and exteriors if the exist. 
 * Returns false if generic one isn't found (as other ones are optional)
@@ -742,6 +763,15 @@ void ShaderManager::ReloadEffects() {
 bool ShaderManager::LoadShader(NiD3DVertexShader* Shader) {
 	
 	NiD3DVertexShaderEx* VertexShader = (NiD3DVertexShaderEx*)Shader;
+	if (!ShaderSetsReady) {	// (UNOFFICIAL 2026-10-27, see LoadEarlyShaders)
+		VertexShader->ShaderProg[ShaderRecordType::Default] = NULL;
+		VertexShader->ShaderProg[ShaderRecordType::Exterior] = NULL;
+		VertexShader->ShaderProg[ShaderRecordType::Interior] = NULL;
+		VertexShader->Enabled = false;
+		EarlyVertexShaders.push_back(Shader);
+		Logger::Log("UNOFFICIAL shader %s made before NVR's shader sets: loaded once they exist", VertexShader->Name ? VertexShader->Name : "?");
+		return false;
+	}
 	ShaderCollection* Collection = GetShaderCollection(VertexShader->Name);
 
 	if (!Collection) {
@@ -778,6 +808,15 @@ bool ShaderManager::LoadShader(NiD3DVertexShader* Shader) {
 bool ShaderManager::LoadShader(NiD3DPixelShader* Shader) {
 
 	NiD3DPixelShaderEx* PixelShader = (NiD3DPixelShaderEx*)Shader;
+	if (!ShaderSetsReady) {	// (UNOFFICIAL 2026-10-27, see LoadEarlyShaders)
+		PixelShader->ShaderProg[ShaderRecordType::Default] = NULL;
+		PixelShader->ShaderProg[ShaderRecordType::Exterior] = NULL;
+		PixelShader->ShaderProg[ShaderRecordType::Interior] = NULL;
+		PixelShader->Enabled = false;
+		EarlyPixelShaders.push_back(Shader);
+		Logger::Log("UNOFFICIAL shader %s made before NVR's shader sets: loaded once they exist", PixelShader->Name ? PixelShader->Name : "?");
+		return false;
+	}
 	ShaderCollection* Collection = GetShaderCollection(PixelShader->Name);
 
 	if (!Collection) {
