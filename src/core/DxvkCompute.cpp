@@ -570,7 +570,7 @@ void DxvkCompute::DisplaceTick() {
 		const char* s = "Shaders.Terrain.Displacement";
 		// 2026-10-27 (user: "we also need our toggle for tessellation in the menu"): [Shaders.Terrain.Displacement] Enabled switches the
 		// bumps at once, in the Tessellation panel; NvrDxvkDisplacement still sets it up at startup.
-		state.Enable = DisplaceSwitch() && DisplaceSettingOr("Enabled", true) ? TRUE : FALSE;
+		state.Enable = DisplaceSwitch() && DisplaceSettingOr("Enabled", false) ? TRUE : FALSE;	// off unless switched on (2026-10-27: not ready to be used)
 		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 7);
 		state.Winding = TheSettingManager->GetSettingI(s, "Winding") == 1 ? 1 : 0;
 		state.Wireframe = debugView == 1 ? 1 : 0;
