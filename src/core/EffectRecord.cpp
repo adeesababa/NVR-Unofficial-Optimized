@@ -6,6 +6,7 @@
 #include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
 #include "EffectPrecompile.h"	// UNOFFICIAL 2026-10-28 the effects compiled in parallel at startup
+#include "EffectCompiler47.h"	// UNOFFICIAL 2026-10-29 NewEffectCompiler (d3dcompiler_47 for the effects)
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
 */
@@ -89,10 +90,11 @@ bool EffectRecord::LoadEffect() {
 	D3DXMACRO EffectMacros[8];	// UNOFFICIAL 2026-10-23: 8 (CHARACTER_SHADOW_MAP)
 	BuildMacros(EffectMacros);
 	EffectPrecompile::Wait(EffectCompiledPath);	// UNOFFICIAL 2026-10-28 ParallelShaderCompile: a worker may be making this cache now
+	EffectCompiler47::ReadSetting();	// UNOFFICIAL 2026-10-29 NewEffectCompiler: also part of the cache check (CacheText)
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);
 	if (prepass == D3D_OK) {
-		bool Compile = !CheckPreprocessResult(EffectPreprocessedPath, EffectSource);
+		bool Compile = !EffectCompiler47::CacheFresh(EffectPreprocessedPath, EffectSource);	// UNOFFICIAL 2026-10-29 (was CheckPreprocessResult)
 		bool CompiledExists = FileExists(EffectCompiledPath);
 
 		if (!Compile && CompiledExists) {
@@ -111,8 +113,18 @@ bool EffectRecord::LoadEffect() {
 		}
 
 		if (Compile || !CompiledExists || !Effect) {
-			// compile if option was enabled or compiled version not found
-			HRESULT compiled = D3DXCreateEffectCompiler(
+			// UNOFFICIAL 2026-10-29 NewEffectCompiler (core/EffectCompiler47.h): d3dcompiler_47 first; D3DX below when it is off, missing
+			// or refuses this effect.
+			bool viaNew = false;
+			{
+				ID3DXBuffer* newErrors = NULL;
+				viaNew = EffectCompiler47::Compile(EffectSource, Name, &EffectBuffer, &newErrors);
+				if (!viaNew && EffectCompiler47::Use)
+					Logger::Log("UNOFFICIAL NewEffectCompiler: %s refused by d3dcompiler_47, compiled with D3DX as before: %s", Name,
+						newErrors ? (const char*)newErrors->GetBufferPointer() : "(no message)");
+				if (newErrors) newErrors->Release();
+			}
+			HRESULT compiled = viaNew ? D3D_OK : D3DXCreateEffectCompiler(
 				(const char*)EffectSource->GetBufferPointer(), 
 				EffectSource->GetBufferSize(), 
 				NULL, 
@@ -133,7 +145,7 @@ bool EffectRecord::LoadEffect() {
 			}
 			if (Errors) { Logger::Log((char*)Errors->GetBufferPointer()); Errors->Release(); Errors = NULL; }	// UNOFFICIAL 2026-10-22: freed before the next call reuses it
 
-			compiled = Compiler->CompileEffect(NULL, &EffectBuffer, &Errors);
+			if (!viaNew) compiled = Compiler->CompileEffect(NULL, &EffectBuffer, &Errors);
 			if (FAILED(compiled)) {
 				ReportError(compiled);
 				if (Errors) Logger::Log((char*)Errors->GetBufferPointer());
@@ -153,12 +165,12 @@ bool EffectRecord::LoadEffect() {
 				FileBinary.close();
 
 				std::ofstream FilePreprocess(EffectPreprocessedPath, std::ios::out | std::ios::binary);
-				const std::string Portable = ShaderProgram::PortableSource(EffectSource);	// UNOFFICIAL: see PortableSource
+				const std::string Portable = EffectCompiler47::CacheText(EffectSource);	// UNOFFICIAL: see PortableSource (2026-10-29: + the compiler)
 				FilePreprocess.write(Portable.data(), Portable.size());
 				FilePreprocess.flush();
 				FilePreprocess.close();
 
-				Logger::Log("Effect compiled: %s", EffectPreprocessedPath);
+				Logger::Log("Effect compiled: %s%s", EffectPreprocessedPath, viaNew ? " (d3dcompiler_47)" : "");
 			}
 
 			HRESULT loaded = D3DXCreateEffectFromFileA(TheRenderManager->device, EffectCompiledPath, NULL, NULL, D3DXFX_LARGEADDRESSAWARE, NULL, &Effect, &Errors);
