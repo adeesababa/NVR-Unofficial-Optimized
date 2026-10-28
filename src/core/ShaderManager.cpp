@@ -1841,7 +1841,7 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// shadows come next. Nothing happens unless an RT effect is on (and the fork, a GPU with ray tracing and the helper are there).
 		{
 			static bool rtRegistered = false;
-			if (!rtRegistered) { RtSunShadows::Register(); rtRegistered = true; }
+			if (!rtRegistered) { RtSunShadows::Register(); AmbientOcclusionEffect::RtRegister(); rtRegistered = true; }	// (2026-10-28: + RT AO, rt-ao-sky)
 			RtCore::Frame(Device);
 		}
 		if (GameState.isExterior) {

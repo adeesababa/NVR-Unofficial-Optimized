@@ -1,21 +1,21 @@
 #pragma once
 #include "DxvkCompute.h"
+#include "RtCore.h"
 
 /*
 * UNOFFICIAL 2026-10-28 (NVR DXVK fork, hybrid RT item 2 of 4; docs/next/FORK-RT-AO.md) [Shaders.AmbientOcclusion.RT]: ambient
 * occlusion and sky visibility from rays traced against the scene instead of the screen (GTAO / SSAO) and the top-down ortho map
 * (Skylighting v2).
-* Where the rays run: in the shared RT core's 64-bit helper (NvrRtHelper.exe; docs/next/FORK-RT-CORE.md), because AMD's 32-bit Vulkan
-* driver offers no ray queries to the game. Per frame (AmbientOcclusionEffect::RtRaw, once, for whichever pass asks first):
+* Where the rays run: in the shared RT core's 64-bit helper (NvrRtHelper.exe; docs/next/FORK-RT-CORE.md), because Windows' 32-bit
+* Vulkan drivers offer no ray queries to the game. AmbientOcclusionEffect is the core's user "RT ambient occlusion"; at the core's point
+* of the frame (RtCore::Frame, before the sky, AO and AmbientLight passes) its RtRecord:
 *   1. RtAOInput.frag: per half-resolution texel the view distance and the world normal -> NVR_RTAOInput (G32R32F);
-*   2. Trace(): the core shares it with the helper, which runs RtAOTrace.comp (RayCount AO rays, SkyRays sky rays) and returns
-*      NVR_RTAORaw (A16B16G16R16F: AO visibility, sky visibility, covered, DebugView 3's value);
+*   2. RtCore CopyIn / AddPass / CopyOut: the helper runs Compute\Rt\RtAOTrace.comp (RayCount AO rays, SkyRays sky rays) and the
+*      result comes back as NVR_RTAORaw (A16B16G16R16F: AO visibility, sky visibility, covered, DebugView 3's value);
 *   3. NVR's own passes read it: AmbientLightEstimateRT.frag / AmbientOcclusionEstimateRT.frag in the screen estimate's place (the blurs
 *      and Accumulate / AmbientOcclusionTemporalRT.frag after them are the denoiser) and AmbientOcclusionSkyRT.frag in SkyVisibilityV2's.
 * Off by default. Whenever the core cannot trace (native D3D9, stock DXVK, no helper, a GPU without ray queries such as the GTX 1070)
 * Ready() is false and every pass is exactly the old one: the current AO is the fallback and the A/B. Header only.
-*
-* The core-dependent part is CoreReady() and Trace() below (the core's RtCore API); the rest only uses NVR's own Vulkan passes.
 */
 namespace RtAmbient {
 	struct Settings {
@@ -42,29 +42,15 @@ namespace RtAmbient {
 
 	// RtAOTrace.comp's uniform block (set 0, binding 1 in the helper), std140.
 	struct TraceConstants {
-		D3DXMATRIX	viewToWorld;	// NVR's view -> camera-relative world (TESR_InvViewTransform as stored; its translation is not used)
+		D3DXMATRIX	viewToWorld;	// NVR's view -> scene directions: rows right, up, forward of the view (row-vector matrix)
 		D3DXVECTOR4	projection;		// x 1 / P00, y 1 / P11, zw the trace grid's size
-		D3DXVECTOR4	origin;			// xyz camera-relative world -> the TLAS's space, w the frame number (0-1023)
+		D3DXVECTOR4	origin;			// xyz the view origin in scene space (CameraLocation - CameraPosition), w the frame number (0-1023)
 		D3DXVECTOR4	ao;				// x distance, y rays (0 none), z 1 = move the noise each frame
 		D3DXVECTOR4	sky;			// x distance, y rays (0 none)
 	};
 
-	// ---- RT core (the only part that depends on the shared core's API; see docs/next/FORK-RT-CORE.md) ----
-	// The helper runs and traces for this device. Until the core's branch is merged there is nothing to ask: false, nothing changes.
-	inline bool CoreReady() {
-		return false;
-	}
-	// Runs the trace pass Compute\<Shader>.spv in the helper over Width x Height: Input shared in (set 0 binding 2), Constants as its
-	// uniform block (binding 1), the result (binding 3) copied back into Output. False: no result this frame (NVR's own passes run).
-	inline bool Trace(const char* Shader, IDirect3DTexture9* Input, IDirect3DTexture9* Output, const void* Constants, UINT Size, UINT Width, UINT Height) {
-		(void)Shader; (void)Input; (void)Output; (void)Constants; (void)Size; (void)Width; (void)Height;
-		return false;
-	}
-	// Camera-relative world + Origin() = the TLAS's space (the camera's world position if the TLAS is in world units; 0 if camera-relative).
-	inline D3DXVECTOR3 Origin() {
-		return D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-	}
-	// ---- end of the RT core part ----
+	// The RT core (RtCore.h) runs: the helper is ready on a GPU with ray tracing. Off = NVR's own passes.
+	inline bool CoreReady() { return RtCore::Running(); }
 
 	// The RT AO / sky passes run this frame (logged once per change of state).
 	inline bool Ready() {
@@ -72,7 +58,7 @@ namespace RtAmbient {
 		const int state = !Current.Enabled ? 0 : !DxvkCompute::PassesOn() ? 1 : !CoreReady() ? 2 : 3;
 		if (state != reported && (state != 0 || reported > 0)) {
 			const char* text[] = { "off", "on but the NVR DXVK passes are off ([Main.Main.Performance] NvrDxvkPasses): NVR's AO runs",
-				"on but the RT core cannot trace (no NvrRtHelper, or a GPU without ray queries): NVR's AO runs",
+				"on but the RT core is not running (see its log line: no NvrRtHelper, no fork 0028, or a GPU without ray tracing): NVR's AO runs",
 				"running (ray-traced occlusion in place of the screen estimate)" };
 			Logger::Log("UNOFFICIAL RT AO: %s.", text[state]);
 		}

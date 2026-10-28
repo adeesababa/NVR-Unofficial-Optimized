@@ -1156,7 +1156,7 @@ void AmbientLightEffect::Render(IDirect3DDevice9* Device, IDirect3DSurface9* Ren
 						static bool rtChecked = false, rtFile = false;
 						if (!rtChecked) { rtChecked = true; rtFile = DxvkCompute::HasSpirv("AmbientLightEstimateRT"); }
 						AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
-						IDirect3DTexture9* rtRaw = !giLightReady && rtFile && ao && RtAmbient::Ready() ? ao->RtRaw(Device) : nullptr;
+						IDirect3DTexture9* rtRaw = !giLightReady && rtFile && ao && RtAmbient::Ready() ? ao->RtRaw() : nullptr;
 						if (rtRaw) {
 							static GpuTimer rtTimer("  Ambient light RT estimate (half)");
 							GpuProfileScope rtGpu(rtTimer, Device);

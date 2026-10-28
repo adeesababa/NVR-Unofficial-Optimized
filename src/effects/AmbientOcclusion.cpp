@@ -2,7 +2,8 @@
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"	// UNOFFICIAL 2026-10-25 (NVR DXVK)
 #include "../core/RenderRect.h"	// UNOFFICIAL 2026-10-27 RenderScale v2
-#include "../core/RtAmbient.h"	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
+#include "../core/RtAmbient.h"
+#include "../core/RtCore.h"	// (the RT core: AddUser / CopyIn / AddPass / CopyOut)	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
 #include "BounceLightMath.h"	// (the RT AO's temporal pass)
 
 // UNOFFICIAL 2026-10-16 GTAO ([Shaders.AmbientOcclusion.GTAO]; AmbientOcclusion.fx.hlsl GTAOValue): x 1 on (the DedicatedGTAO
@@ -373,30 +374,60 @@ bool AmbientOcclusionEffect::ExtSkyVisibility(IDirect3DSurface9* Target, const D
 	return Resources(resources, count, inputs, 5, extSkyUniforms.Buffer) && ExtDrawTo(extSky.Pipeline, &Target, 1, resources, count, &push, sizeof(push));
 }
 
-// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): this frame's traced values, made once per frame for
-// whichever pass asks first (the sky pass, this effect's estimate or AmbientLight's): RtAOInput.frag (view distance + world normal per
-// half-resolution texel) into NVR_RTAOInput, then the RT core's helper runs RtAOTrace.comp on it into NVR_RTAORaw (AO visibility, sky
-// visibility, covered, DebugView 3's value). Null: nothing traced this frame (the callers keep NVR's own passes).
-IDirect3DTexture9* AmbientOcclusionEffect::RtRaw(IDirect3DDevice9* Device) {
-	static UInt32 frame = 0xFFFFFFFF;
-	static bool result = false, failed = false;
-	if (frame == TheFrameRateManager->FrameNumber) return result ? rtRawTexture : nullptr;
-	frame = TheFrameRateManager->FrameNumber;
-	result = false;
-	if (failed || !Effect || !RtAmbient::Ready()) return nullptr;
-	const UINT width = MaxQuality::Reduced(TheRenderManager->width, 2), height = MaxQuality::Reduced(TheRenderManager->height, 2);
-	if (!rtInputTexture) {
+// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h, docs/next/FORK-RT-CORE.md): this effect is the RT
+// core's user "RT ambient occlusion". At the core's point of the frame (RtCore::Frame: depth and normals exist; the sky, AO and
+// AmbientLight passes come later in the frame) RtRecord draws RtAOInput.frag (view distance + world normal per half-resolution texel)
+// into NVR_RTAOInput, copies it into the shared input image, adds the helper's RtAOTrace.comp pass and copies its output back into
+// NVR_RTAORaw (AO visibility, sky visibility, covered, DebugView 3's value). RtRaw: that texture if it was traced this frame, else null
+// (the callers keep NVR's own passes).
+namespace {
+	int RtImageIn = -1, RtImageOut = -1, RtShader = -1;
+	UInt32 RtTracedFrame = 0xFFFFFFFF;
+	UInt32 RtReduced(UInt32 size) { return MaxQuality::Reduced(size, 2); }
+
+	bool RtWants() {
+		AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion;
+		return RtAmbient::Current.Enabled && DxvkCompute::PassesOn() && ao && ao->Effect;
+	}
+	void RtSetup() {
+		const UINT w = RtReduced(TheRenderManager->width), h = RtReduced(TheRenderManager->height);
+		RtImageIn = RtCore::AddImage("NVR RT ao input", w, h, NVR_EXT_SHARED_RG32F);
+		RtImageOut = RtCore::AddImage("NVR RT ao", w, h, NVR_EXT_SHARED_RGBA16F);
+	}
+	void RtRecordUser(IDirect3DDevice9* Device) {
+		if (AmbientOcclusionEffect* ao = TheShaderManager->Effects.AmbientOcclusion) ao->RtRecord(Device);
+	}
+}
+
+void AmbientOcclusionEffect::RtRegister() {
+	RtShader = RtCore::AddShader("RtAOTrace");
+	RtCore::AddUser({ "RT ambient occlusion", RtWants, RtSetup, RtRecordUser });
+}
+
+IDirect3DTexture9* AmbientOcclusionEffect::RtRaw() {
+	return RtTracedFrame == TheFrameRateManager->FrameNumber && RtAmbient::Ready() ? rtRawTexture : nullptr;
+}
+
+void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
+	static bool failed = false;
+	static UInt32 traced = 0;
+	if (failed || !Effect || RtImageIn < 0 || RtImageOut < 0 || RtShader < 0) return;
+	const UINT width = RtReduced(TheRenderManager->width), height = RtReduced(TheRenderManager->height);
+	if (!rtInputTexture || rtWidth != width || rtHeight != height) {
+		DxvkCompute::Drop(rtInputSurface); DxvkCompute::Drop(rtInputTexture); DxvkCompute::Drop(rtRawSurface); DxvkCompute::Drop(rtRawTexture);
 		TheTextureManager->InitTexture("NVR_RTAOInput", &rtInputTexture, &rtInputSurface, width, height, D3DFMT_G32R32F);
 		TheTextureManager->InitTexture("NVR_RTAORaw", &rtRawTexture, &rtRawSurface, width, height, D3DFMT_A16B16G16R16F);
+		rtWidth = width;
+		rtHeight = height;
 	}
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
 	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
 	MakePipelineRT(extInputRT, "RtAOInput", 2, 1);
-	if (!rtInputTexture || !rtRawTexture || !depth || !normals || !extInputRT.Pipeline) return nullptr;
+	if (!rtInputTexture || !rtRawTexture || !depth || !normals || !extInputRT.Pipeline) return;
 	const D3DXVECTOR4 layout(1.0f, 1.0f, 1.0f / width, 1.0f / height);
-	static GpuTimer timers[2] = { GpuTimer("  AO RT input (half)"), GpuTimer("  AO RT trace (helper, wait + copy)") };
+	static GpuTimer inputTimer("  AO RT input (half)");
 	{
-		GpuProfileScope gpu(timers[0], Device);
+		GpuProfileScope gpu(inputTimer, Device);
 		IDirect3DBaseTexture9* inputs[2] = { depth, normals };
 		NVR_EXT_RESOURCE_BINDING resources[6] = {};
 		UINT count = 0;
@@ -407,20 +438,33 @@ IDirect3DTexture9* AmbientOcclusionEffect::RtRaw(IDirect3DDevice9* Device) {
 			ExtFailed = wasFailed;
 			failed = true;
 			Logger::Log("UNOFFICIAL RT AO: the RT input pass failed to draw; NVR's own AO runs from now on.");
-			return nullptr;
+			return;
 		}
 	}
+	// The trace's constants (RtAOTrace.comp). View -> scene directions as RtSunShadows does it: the view matrix's columns are right (0),
+	// up (1) and forward (2); as rows of a row-vector matrix (cb.M * v in the GLSL = v x M).
 	const RtAmbient::Settings& rt = RtAmbient::Current;
-	RtAmbient::TraceConstants constants = {};
-	constants.viewToWorld = TheRenderManager->InvViewMatrix;
-	constants.projection = D3DXVECTOR4(1.0f / TheRenderManager->projMatrix._11, 1.0f / TheRenderManager->projMatrix._22, (float)width, (float)height);
-	const D3DXVECTOR3 origin = RtAmbient::Origin();
-	constants.origin = D3DXVECTOR4(origin.x, origin.y, origin.z, (float)(TheFrameRateManager->FrameNumber % 1024));
-	constants.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, 0.0f);	// (both consumers keep a history: the noise moves)
-	constants.sky = D3DXVECTOR4(rt.SkyDistance, rt.Sky && SkyData2.x > 0.0f ? (float)rt.SkyRays : 0.0f, 0.0f, 0.0f);
-	GpuProfileScope gpu(timers[1], Device);
-	result = RtAmbient::Trace("RtAOTrace", rtInputTexture, rtRawTexture, &constants, sizeof(constants), width, height);
-	return result ? rtRawTexture : nullptr;
+	const D3DXMATRIX& view = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& proj = TheRenderManager->projMatrix;
+	RtAmbient::TraceConstants c = {};
+	c.viewToWorld._11 = view._11; c.viewToWorld._12 = view._21; c.viewToWorld._13 = view._31;
+	c.viewToWorld._21 = view._12; c.viewToWorld._22 = view._22; c.viewToWorld._23 = view._32;
+	c.viewToWorld._31 = view._13; c.viewToWorld._32 = view._23; c.viewToWorld._33 = view._33;
+	c.viewToWorld._44 = 1.0f;
+	c.projection = D3DXVECTOR4(1.0f / proj._11, 1.0f / proj._22, (float)width, (float)height);
+	const NiPoint3* location = Pointers::Generic::CameraLocation;
+	c.origin = D3DXVECTOR4(location->x - TheRenderManager->CameraPosition.x, location->y - TheRenderManager->CameraPosition.y,
+		location->z - TheRenderManager->CameraPosition.z, (float)(TheFrameRateManager->FrameNumber % 1024));
+	c.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, 0.0f);	// (both consumers keep a history: the noise moves)
+	c.sky = D3DXVECTOR4(rt.SkyDistance, rt.Sky && SkyData2.x > 0.0f ? (float)rt.SkyRays : 0.0f, 0.0f, 0.0f);
+	const int images[2] = { RtImageIn, RtImageOut };
+	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) ||
+		!RtCore::AddPass(RtShader, images, 2, 0x2, &c, sizeof(c), (width + 7) / 8, (height + 7) / 8) ||
+		!RtCore::CopyOut(RtImageOut, rtRawSurface)) return;
+	RtTracedFrame = TheFrameRateManager->FrameNumber;
+	if (traced++ == 0)
+		Logger::Log("UNOFFICIAL RT AO: traced (%ux%u, %d AO rays of %.0f units, sky %s).", width, height, rt.RayCount, rt.Distance,
+			c.sky.y > 0.0f ? "on" : "off (Skylighting off or RT Sky off)");
 }
 
 // UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): Estimate's place in ExtDedicated. The traced
@@ -442,7 +486,7 @@ bool AmbientOcclusionEffect::ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTe
 		RtTemporal.x = 0.0f;
 	}
 	if (!rtHistoryTexture[0] || !rtHistoryTexture[1] || !rtHistorySurface[0] || !rtHistorySurface[1]) return false;
-	IDirect3DTexture9* raw = RtRaw(Device);
+	IDirect3DTexture9* raw = RtRaw();
 	if (!raw) return false;
 	MakePipelineRT(extEstimateRT, "AmbientOcclusionEstimateRT", 2, 1);
 	MakePipelineRT(extTemporalRT, "AmbientOcclusionTemporalRT", 3, 2);
@@ -489,7 +533,7 @@ bool AmbientOcclusionEffect::ExtSkyVisibilityRT(IDirect3DSurface9* Target, IDire
 	IDirect3DBaseTexture9* depth = SlotTexture("TESR_DepthBuffer");
 	IDirect3DBaseTexture9* normals = SlotTexture("TESR_NormalsBuffer");
 	if (rtFailed || !depth || !normals || !Target || FAILED(Target->GetDesc(&desc)) || !desc.Width || !desc.Height) return false;
-	IDirect3DTexture9* raw = RtRaw(TheRenderManager->device);
+	IDirect3DTexture9* raw = RtRaw();
 	if (!raw) return false;
 	MakePipelineRT(extSkyRT, "AmbientOcclusionSkyRT", 5, 1);
 	const D3DXVECTOR4 skyLayout(1.0f / desc.Width, 1.0f / desc.Height, SmoothedNormals ? 1.0f : 0.0f, 0.0f);
