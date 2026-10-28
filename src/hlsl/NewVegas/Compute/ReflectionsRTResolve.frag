@@ -34,7 +34,7 @@ void main() {
     bool rtOpen = false;   // a ray went the whole Distance without a hit
     if (abs(RtDebugView - 3.0) < 0.5) { sum = vec3(0.0); confidence = 0.0; }   // RT DebugView 3: the screen march's answer dropped
     float rtFade = RtFade(roughness);
-    if (rayCast && hitData.x >= 0.0) {
+    if (rayCast && hitData.x >= 0.0 && RtDebugView < 4.5) {
         float missing = (1.0 - confidence) * rtFade;
         if (hitData.x > 0.0) {
             rtT = hitData.x;
@@ -86,6 +86,8 @@ void main() {
     //   grey the old fallbacks (cube, grid, sky), black nothing;
     // 2 the RT hit distance (white near .. dark at Distance), red a ray that met nothing, black no ray (screen enough / too rough);
     // 4 the hit instance (a colour per instance index: checks the scene), black no hit.
+    // 5 the scene alignment check (the helper traced from the camera toward each reflecting pixel's surface): green the hit is that
+    //   surface (within 1 % or 4 units), blue something nearer, yellow only something farther, red nothing; black no ray.
     if (RtDebugView > 0.5 && abs(RtDebugView - 3.0) > 0.5) {
         if (RtDebugView < 1.5) {
             float marchShare = confidence - rtScreenShare - rtCubeShare - rtGuessShare - cubeShare - gridShare - skyShare;
@@ -93,6 +95,11 @@ void main() {
                 vec3(1.0, 0.0, 1.0) * rtGuessShare + vec3(0.5) * (cubeShare + gridShare + skyShare);
         }
         else if (RtDebugView < 2.5) colour = rtT < 0.0 ? vec3(0.0) : rtT == 0.0 ? vec3(1.0, 0.0, 0.0) : vec3(1.0 - saturate(rtT / RtDistance) * 0.9);
+        else if (RtDebugView > 4.5) {
+            float expected = length(surfaceW), t = hitData.x;
+            colour = !rayCast || t < 0.0 ? vec3(0.0) : t == 0.0 ? vec3(1.0, 0.0, 0.0) :
+                abs(t - expected) < max(4.0, expected * 0.01) ? vec3(0.0, 1.0, 0.0) : t < expected ? vec3(0.0, 0.3, 1.0) : vec3(1.0, 1.0, 0.0);
+        }
         else {
             uint k = uint(max(rtInstance, 0.0)) * 2654435761u;
             colour = rtInstance < 0.0 ? vec3(0.0) : vec3(float(k & 255u), float((k >> 8) & 255u), float((k >> 16) & 255u)) / 255.0;

@@ -16,7 +16,7 @@ layout(set = 0, binding = 1, std140) uniform Pass {
 	vec4 forward;       // xyz camera forward (scene space)
 	vec4 right;         // xyz camera right / projection[0][0]
 	vec4 up;            // xyz camera up / projection[1][1]
-	vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition)
+	vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition), w 1 = the alignment check (RT DebugView 5)
 	vec4 sun;           // xyz toward the sun (scene space, normalized), w 1: the sun is up (outdoors, by day)
 	vec4 layout_;       // xy one half-resolution texel in screen uv, zw one full-resolution texel (RayGen's pixel centre rule)
 } p;
@@ -42,9 +42,19 @@ void main() {
 	vec3 dir = OctDecode(imageLoad(dirImage, pixel).xy);
 	// Start a little way along the ray: past the depth buffer's own error far away (no hit on the surface itself).
 	float tMin = 1.0 + ray.x * 0.0015;
+	vec3 start = surface;
+	float tMax = p.size.z;
+	if (p.origin.w > 0.5) {
+		// The alignment check: from the camera toward the surface the screen shows there. Its hit should be that surface (t = its
+		// distance from the camera); ReflectionsRTResolve compares.
+		start = p.origin.xyz;
+		dir = normalize(surface - p.origin.xyz);
+		tMin = 1.0;
+		tMax = length(surface - p.origin.xyz) * 2.0 + 500.0;
+	}
 
 	rayQueryEXT q;
-	rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, surface, tMin, dir, p.size.z);
+	rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFFu, start, tMin, dir, tMax);
 	while (rayQueryProceedEXT(q)) { }
 	if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
 		imageStore(hitImage, pixel, vec4(0.0, 0.0, 1.0, 0.0));
@@ -56,7 +66,7 @@ void main() {
 
 	// The sun at the hit: one shadow ray, starting back off the hit along the incoming ray (no hit normal in the helper yet).
 	float sun = 1.0;
-	if (p.size.w > 0.5 && p.sun.w > 0.5) {
+	if (p.size.w > 0.5 && p.sun.w > 0.5 && p.origin.w < 0.5) {
 		vec3 h = surface + dir * (t - max(2.0, t * 0.002));
 		rayQueryEXT s;
 		rayQueryInitializeEXT(s, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu, h, 0.5, p.sun.xyz, 30000.0);

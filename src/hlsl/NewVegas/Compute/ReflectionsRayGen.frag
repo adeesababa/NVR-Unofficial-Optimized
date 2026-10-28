@@ -76,7 +76,8 @@ void main() {
     }
     // RT: the ray for the helper where the screen did not fully answer (RT DebugView 3 drops the screen's answer: a ray everywhere).
     // The helper rebuilds the surface from its view z as ViewPosition does, and begins the ray a little way along it (Rt/ReflectionsRT.comp).
-    bool wantRay = RtOn && RtFade(roughness) > 0.0 && (confidence < 0.999 || abs(RtDebugView - 3.0) < 0.5);
+    // (RT DebugView 5, the scene alignment check: a ray for every reflecting pixel; the helper then traces from the camera to it.)
+    bool wantRay = RtOn && ((RtFade(roughness) > 0.0 && (confidence < 0.999 || abs(RtDebugView - 3.0) < 0.5)) || abs(RtDebugView - 5.0) < 0.5);
     o_color = vec4(colour, confidence);
     o_dir = vec4(OctEncode(ViewToWorldDir(R)), 0.0, 0.0);
     o_ray = vec4(depth, roughness + (wantRay ? 2.0 : 0.0), 0.0, 0.0);
