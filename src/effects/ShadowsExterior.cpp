@@ -212,6 +212,9 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 
 	// Read for every quality level: it removes doubled and ghost shadows, it does not trade quality.
 	Settings.ShadowMaps.LodSkipLoaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "LodSkipLoaded");
+	// UNOFFICIAL 2026-10-28 CasterFadeMin (CasterView: distant trees' leaves under a fade node at 0.00, drawn on screen yet never casting;
+	// their shadow snapped on at 0.75 as they came nearer). Every quality.
+	Settings.ShadowMaps.CasterFadeMin = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "CasterFadeMin"), 0.0f, 1.0f);
 	
 	// Custom settings.
 	if (quality < 0 || quality > 3) {

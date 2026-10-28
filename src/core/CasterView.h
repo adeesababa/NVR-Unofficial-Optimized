@@ -96,7 +96,7 @@ namespace CasterView {
 		const NiNode* lodRoot = BGSTerrainManager::GetRootObjectLODNode();
 		for (const NiAVObject* p = (const NiAVObject*)g->m_parent; p; p = (const NiAVObject*)p->m_parent) {
 			if (p == lodRoot) lod = true;
-			if (fade >= 0.75f && const_cast<NiAVObject*>(p)->IsFadeNode()) fade = static_cast<const BSFadeNode*>(p)->FadeAlpha;
+			if (fade >= 1.0f && const_cast<NiAVObject*>(p)->IsFadeNode()) fade = static_cast<const BSFadeNode*>(p)->FadeAlpha;
 		}
 		const NiBound* b = const_cast<NiGeometry*>(g)->GetWorldBound();
 		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
@@ -112,7 +112,7 @@ namespace CasterView {
 		bool elsewhere = false;
 		for (int c = 0; c < 4 && !here; c++) if (Casts[c].count(g)) elsewhere = true;
 		if (lod) return here || elsewhere ? KLodCasts : KLodNone;
-		if (fade < 0.75f) return KFading;
+		if (fade < TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.CasterFadeMin) return KFading;
 		if (cascade < 0) return KBeyond;
 		return here ? KCasts : elsewhere ? KOther : KNone;
 	}
@@ -137,16 +137,25 @@ namespace CasterView {
 		Current = Classify(Geometry, cascade, distance, fade, lod);
 		HaveCurrent = true;
 		Apply(device);
-		if (Logged.insert(Geometry).second) {
+		if (OnFrames >= 6 && Logged.insert(Geometry).second) {	// (from frame 6: the cascades' lists are this view's)
 			Counts[Current]++;
-			if (OnFrames >= 6 && LogLines < 1500 && Current != KCasts && Current != KBeyond) {
+			if (LogLines < 1500 && Current != KCasts && Current != KBeyond) {
 				LogLines++;
 				const NiBound* b = const_cast<NiGeometry*>(Geometry)->GetWorldBound();
 				const ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 				const NiAVObject* parent = (const NiAVObject*)Geometry->m_parent;
-				Logger::Log("CASTER VIEW %s '%s' (in '%s') dist %.0f radius %.1f cascade %d MinRadius %.1f fade %.2f%s", kName[Current],
+				// For object LOD: the cascades' Lod form flags (bit per cascade) and whether the piece lies inside the loaded cells' box.
+				unsigned lodForms = 0;
+				for (int c = 0; c < 4 && shadows; c++) if (shadows->ShadowMaps[c].Forms.Lod) lodForms |= 1u << c;
+				bool inLoaded = false;
+				if (lod && b) {
+					const NiPoint4* range = BSShaderManager::kLoadedRange;
+					inLoaded = fabsf(b->Center.x - range->x) < range->z && fabsf(b->Center.y - range->y) < range->w;
+				}
+				Logger::Log("CASTER VIEW %s '%s' (in '%s') dist %.0f radius %.1f cascade %d MinRadius %.1f fade %.2f%s lodForms %X%s", kName[Current],
 					Geometry->m_pcName ? Geometry->m_pcName : "", parent && parent->m_pcName ? parent->m_pcName : "", distance, b ? b->Radius : -1.0f,
-					cascade, cascade >= 0 && shadows ? shadows->ShadowMaps[cascade].Forms.MinRadius : -1.0f, fade, lod ? " LOD" : "");
+					cascade, cascade >= 0 && shadows ? shadows->ShadowMaps[cascade].Forms.MinRadius : -1.0f, fade, lod ? " LOD" : "", lodForms,
+					lod ? (inLoaded ? " in-loaded-cells" : " outside-loaded-cells") : "");
 			}
 		}
 	}

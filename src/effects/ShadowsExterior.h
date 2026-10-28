@@ -120,6 +120,7 @@ public:
 		bool				Mipmaps;
 		bool				LimitFrequency;
 		bool				LodSkipLoaded;	// UNOFFICIAL (Fable): object LOD inside the loaded cells casts no shadow (the full models do)
+		float				CasterFadeMin = 0.75f;	// UNOFFICIAL 2026-10-28 [Shaders.ShadowsExteriors.ShadowMaps] CasterFadeMin: a fade node casts from this fade on
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;
