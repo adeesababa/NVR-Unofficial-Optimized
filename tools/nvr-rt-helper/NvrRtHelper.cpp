@@ -1037,7 +1037,7 @@ namespace {
 			return fail(nullptr);
 
 		// The shaders NVR registered at setup are compiled now (a first use mid-game would hold the game's GPU ~2 s on the iGPU)
-		for (uint32_t i = 0; i < std::min<uint32_t>(shared->shaderCount, NVR_RT_MAX_SHADERS); i++) Pipeline(h, i);
+		for (uint32_t i = 0; i < std::min<uint32_t>((uint32_t)shared->shaderCount, NVR_RT_MAX_SHADERS); i++) Pipeline(h, i);
 
 		Status("ready: ray tracing on %s (%u shared images, arena %ux%u)", h.vk.properties.deviceName, h.imageCount, arena.width, arena.height);
 		SetState(NVR_RT_STATE_READY);
@@ -1060,7 +1060,7 @@ namespace {
 				}
 				break;
 			}
-			for (uint32_t i = 0; i < std::min<uint32_t>(shared->shaderCount, NVR_RT_MAX_SHADERS); i++) Pipeline(h, i);	// shaders registered later
+			for (uint32_t i = 0; i < std::min<uint32_t>((uint32_t)shared->shaderCount, NVR_RT_MAX_SHADERS); i++) Pipeline(h, i);	// shaders registered later
 			const int64_t latest = InterlockedCompareExchange64((volatile LONG64*)&shared->latestFrame, 0, 0);
 			MemoryBarrier();
 			while ((int64_t)next <= latest) {
