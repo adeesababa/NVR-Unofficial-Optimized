@@ -162,9 +162,14 @@ namespace {
 		bool		loggedOff = false;
 
 		// this frame
-		NvrRtFrame*	record = nullptr;			// the ring slot being written (null outside Frame)
+		NvrRtFrame*	record = nullptr;			// the ring slot being written (null outside an exchange)
 		bool		recording = false;
 		std::vector<PendingCopy> copiesOut;
+		// UNOFFICIAL 2026-10-28 (RT reflections) the second exchange (RtCore::Exchange): the scene is gathered once per game frame; a
+		// later exchange of the same frame sends this frame's instance list again (no geometry ops: those went with the first record).
+		UInt32		gatheredFrame = 0;			// TheFrameRateManager->FrameNumber of the last Gather (+1, 0 = never)
+		std::vector<NvrRtInstance> frameInstances;
+		std::vector<NvrRtInstanceRecord> frameRecords;	// (protocol v2) the instances' records, resent with them
 
 		// the scene
 		std::unordered_map<GeometryKey, GeometryEntry, GeometryKeyHash> geometries;
@@ -186,6 +191,8 @@ namespace {
 		void		AddGeometry(NiGeometry* geo, bool land);
 		bool		Describe(NiGeometry* geo, NVR_EXT_RT_GEOMETRY_DESC& desc, std::vector<NVR_EXT_RT_RANGE>& ranges, GeometryKey& key);
 		void		LogHelperMessage();
+		bool		Ready();					// Frame's checks before any exchange (start, poll, screen size): true = may exchange now
+		bool		Exchange(IDirect3DDevice9* Device, const RtCore::User* only);	// one frame record: Point-0 users (only = null) or one user
 		static DWORD WINAPI WatchdogMain(void* self);
 	};
 
@@ -700,73 +707,114 @@ bool RtCore::CopyOut(int Image, IUnknown* Target) {
 	return true;
 }
 
+namespace {
+	bool Core::Ready() {
+		if (state == Core::Off) return false;
+		bool wanted = false;
+		for (const RtCore::User& user : users) wanted = wanted || (user.Wants && user.Wants());
+		if (!wanted) return false;	// a running helper stays up (idle); it exits with the game
+		if (state == Core::Idle) { Start(); return false; }
+		Poll();
+		if (state != Core::Running) return false;
+		if (TheRenderManager->width != width || TheRenderManager->height != height) {
+			Stop("the screen size changed (the shared images are made again)");
+			state = Core::Idle;
+			return false;
+		}
+		return true;
+	}
+
+	// One frame record = one exchange with the helper. The record counter (frame) counts exchanges, so each exchange has its own
+	// inputsReady / outputReady values. The geometry staging of an exchange is recorded after the previous exchange's WaitShared
+	// (exchanges are recorded one after the other on the render thread), so the arena rule holds with two exchanges a frame.
+	bool Core::Exchange(IDirect3DDevice9* Device, const RtCore::User* only) {
+		Core& c = *this;
+		// The ring slot: the helper must have copied out the record that used it last (normally long ago; a few ms at worst)
+		const UInt64 n = c.frame + 1;
+		for (int i = 0; i < 100 && c.shared->consumedFrame + (int64_t)NVR_RT_FRAME_RING < (int64_t)n; i++) Sleep(1);
+		if (c.shared->consumedFrame + (int64_t)NVR_RT_FRAME_RING < (int64_t)n) {
+			static UInt32 skipped = 0;
+			if ((skipped++ % 300) == 0) Logger::Log("UNOFFICIAL NVR DXVK: RT helper behind (frame %llu, read up to %lld): this frame not traced (%u so far).",
+				(unsigned long long)n, (long long)c.shared->consumedFrame, skipped);
+			return false;
+		}
+		c.frame = n;
+		NvrRtFrame& f = c.shared->frames[n % NVR_RT_FRAME_RING];
+		f.frame = 0;
+		MemoryBarrier();
+		f.opCount = f.instanceCount = f.passCount = f.arenaTexels = 0;
+		c.record = &f;
+		c.recording = true;
+		c.copiesOut.clear();
+
+		const UInt32 now = TheFrameRateManager->FrameNumber + 1;
+		if (c.gatheredFrame != now) {
+			c.Gather();
+			c.rt->FlushStagedGeometry(c.images[0]);
+			c.frameInstances.assign(f.instances, f.instances + f.instanceCount);
+			c.frameRecords.assign(f.records, f.records + f.instanceCount);
+			c.gatheredFrame = now;
+		}
+		else {
+			// The frame's second exchange: the same scene, no geometry ops (they went with the first record), no arena rows.
+			memcpy(f.instances, c.frameInstances.data(), c.frameInstances.size() * sizeof(NvrRtInstance));
+			memcpy(f.records, c.frameRecords.data(), c.frameRecords.size() * sizeof(NvrRtInstanceRecord));
+			f.instanceCount = (uint32_t)c.frameInstances.size();
+		}
+		if (only) { if (only->Record) only->Record(Device); }
+		else for (const RtCore::User& user : c.users) if (user.Point == 0 && user.Wants && user.Wants() && user.Record) user.Record(Device);
+		const bool recorded = f.passCount > 0;
+
+		LARGE_INTEGER written;
+		QueryPerformanceCounter(&written);
+		f.writtenQpc = written.QuadPart;
+		MemoryBarrier();
+		f.frame = n;
+		MemoryBarrier();
+		InterlockedExchange64((volatile LONG64*)&c.shared->latestFrame, (LONG64)n);
+		SetEvent(c.frameEvent);
+		InterlockedExchange64(&c.lastRecorded, (LONG64)n);
+		c.share->SignalShared(c.inputsReady, n);
+		c.share->WaitShared(c.outputReady, n);
+		for (const PendingCopy& copy : c.copiesOut) {
+			const RECT used = { 0, 0, (LONG)c.imageSizes[copy.image].first, (LONG)c.imageSizes[copy.image].second };
+			c.share->CopyFromShared(copy.target, 0, 0, c.images[copy.image], &used);
+		}
+		c.copiesOut.clear();
+		c.recording = false;
+		c.record = nullptr;
+
+		if ((n % 600) == 0) {
+			const NvrRtShared* s = c.shared;
+			Logger::Log("RT CORE: frame %llu, %u instances, %u geometries known (%u waiting for arena space, %u released); helper: %u geometries, %llu triangles, "
+				"%llu MB; GPU %.3f ms avg (builds %.3f, scene %.3f, passes %.3f), response %.3f ms avg (max %.3f)",
+				(unsigned long long)n, c.instances, (unsigned)c.geometries.size(), c.waiting, c.released, s->geometries, (unsigned long long)s->triangles,
+				(unsigned long long)(s->geometryBytes >> 20), s->gpuTimeUsAvg / 1000.0, s->buildUsAvg / 1000.0, s->sceneUsAvg / 1000.0, s->traceUsAvg / 1000.0,
+				s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
+			c.shared->responseUsMax = 0;
+		}
+		return recorded;
+	}
+}
+
 void RtCore::Frame(IDirect3DDevice9* Device) {
 	Core& c = TheCore;
-	if (c.state == Core::Off) return;
-	bool wanted = false;
-	for (const User& user : c.users) wanted = wanted || (user.Wants && user.Wants());
-	if (!wanted) return;	// a running helper stays up (idle); it exits with the game
-	if (c.state == Core::Idle) { c.Start(); return; }
-	c.Poll();
-	if (c.state != Core::Running) return;
-	if (TheRenderManager->width != c.width || TheRenderManager->height != c.height) {
-		c.Stop("the screen size changed (the shared images are made again)");
-		c.state = Core::Idle;
-		return;
-	}
-
-	// The ring slot: the helper must have copied out the record that used it last (normally long ago; a few ms at worst)
-	const UInt64 n = c.frame + 1;
-	for (int i = 0; i < 100 && c.shared->consumedFrame + (int64_t)NVR_RT_FRAME_RING < (int64_t)n; i++) Sleep(1);
-	if (c.shared->consumedFrame + (int64_t)NVR_RT_FRAME_RING < (int64_t)n) {
-		static UInt32 skipped = 0;
-		if ((skipped++ % 300) == 0) Logger::Log("UNOFFICIAL NVR DXVK: RT helper behind (frame %llu, read up to %lld): this frame not traced (%u so far).",
-			(unsigned long long)n, (long long)c.shared->consumedFrame, skipped);
-		return;
-	}
+	if (!c.Ready()) return;
+	// UNOFFICIAL 2026-10-28: only the Point-0 users exchange here; with none on, a Point-1 user's Exchange gathers the scene itself.
+	bool pointZero = false;
+	for (const User& user : c.users) pointZero = pointZero || (user.Point == 0 && user.Wants && user.Wants());
+	if (!pointZero) return;
 	static GpuTimer timer("Ray tracing (copies + helper + waits)");
 	GpuProfileScope gpu(timer, Device);
-	c.frame = n;
-	NvrRtFrame& f = c.shared->frames[n % NVR_RT_FRAME_RING];
-	f.frame = 0;
-	MemoryBarrier();
-	f.opCount = f.instanceCount = f.passCount = f.arenaTexels = 0;
-	c.record = &f;
-	c.recording = true;
-	c.copiesOut.clear();
+	c.Exchange(Device, nullptr);
+}
 
-	c.Gather();
-	c.rt->FlushStagedGeometry(c.images[0]);
-	for (const User& user : c.users) if (user.Wants && user.Wants() && user.Record) user.Record(Device);
-
-	LARGE_INTEGER written;
-	QueryPerformanceCounter(&written);
-	f.writtenQpc = written.QuadPart;
-	MemoryBarrier();
-	f.frame = n;
-	MemoryBarrier();
-	InterlockedExchange64((volatile LONG64*)&c.shared->latestFrame, (LONG64)n);
-	SetEvent(c.frameEvent);
-	InterlockedExchange64(&c.lastRecorded, (LONG64)n);
-	c.share->SignalShared(c.inputsReady, n);
-	c.share->WaitShared(c.outputReady, n);
-	for (const PendingCopy& copy : c.copiesOut) {
-		const RECT used = { 0, 0, (LONG)c.imageSizes[copy.image].first, (LONG)c.imageSizes[copy.image].second };
-		c.share->CopyFromShared(copy.target, 0, 0, c.images[copy.image], &used);
-	}
-	c.copiesOut.clear();
-	c.recording = false;
-	c.record = nullptr;
-
-	if ((n % 600) == 0) {
-		const NvrRtShared* s = c.shared;
-		Logger::Log("RT CORE: frame %llu, %u instances, %u geometries known (%u waiting for arena space, %u released); helper: %u geometries, %llu triangles, "
-			"%llu MB; GPU %.3f ms avg (builds %.3f, scene %.3f, passes %.3f), response %.3f ms avg (max %.3f)",
-			(unsigned long long)n, c.instances, (unsigned)c.geometries.size(), c.waiting, c.released, s->geometries, (unsigned long long)s->triangles,
-			(unsigned long long)(s->geometryBytes >> 20), s->gpuTimeUsAvg / 1000.0, s->buildUsAvg / 1000.0, s->sceneUsAvg / 1000.0, s->traceUsAvg / 1000.0,
-			s->responseUsAvg / 1000.0, s->responseUsMax / 1000.0);
-		c.shared->responseUsMax = 0;
-	}
+// UNOFFICIAL 2026-10-28 (RT reflections): RtCore.h. Frame (earlier in the frame) has already started the helper and checked the screen.
+bool RtCore::Exchange(IDirect3DDevice9* Device, const User& user) {
+	Core& c = TheCore;
+	if (c.state != Core::Running || !c.shared || TheRenderManager->width != c.width || TheRenderManager->height != c.height) return false;
+	if (!user.Wants || !user.Wants()) return false;
+	return c.Exchange(Device, &user);
 }
 
 bool RtCore::Running() { return TheCore.state == Core::Running; }

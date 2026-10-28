@@ -31,6 +31,7 @@ public:
 		bool		(*Wants)();							// it traces this frame
 		void		(*Setup)();							// registers its images (AddImage) before each helper start
 		void		(*Record)(IDirect3DDevice9* Device);	// this frame's CopyIn / AddPass / CopyOut
+		UINT		Point = 0;							// (2026-10-28 RT reflections) 0: recorded in Frame; 1: only through Exchange
 	};
 
 	static void			AddUser(const User& user);
@@ -51,6 +52,13 @@ public:
 	static bool			CopyOut(int Image, IUnknown* Target);
 
 	static void			Frame(IDirect3DDevice9* Device);	// the RT point of the frame
+	// UNOFFICIAL 2026-10-28 (RT reflections) a second exchange of the frame, for one Point-1 user, where that user calls it (Reflections:
+	// between its ray generation and its resolve pass, in the post chain). It records only that user's Record as its own frame record
+	// (its own semaphore values: the record counter counts exchanges), with this frame's scene: the instance list Frame gathered, or a
+	// gather of its own when Frame did not exchange this frame. A second GPU bubble, only while such a user is on. True: the user's
+	// outputs are recorded (ready for any pass recorded after this call).
+	static bool			Exchange(IDirect3DDevice9* Device, const User& user);
+#define NVR_RTCORE_EXCHANGE 1
 	static bool			Running();							// the helper is ready (users trace from the frame after it got ready)
 	static const char*	StatusText();
 	static const NvrRtShared* Helper();						// the helper's counters (null when not running)
