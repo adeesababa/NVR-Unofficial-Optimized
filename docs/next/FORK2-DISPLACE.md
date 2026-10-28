@@ -80,6 +80,17 @@ blending was off the whole time and switching it changes nothing.
   vertex within FadeEnd. GrassFirst stays on (its grass is in the copy, so the bumps also fade round grass tufts: they sit on the
   ground). The land pixel shaders recompile once (new define).
 - Not done: the bumps still cast no shadows of their own (plan step 2 below).
+- First in-game test (user videos H:\2026-10-27 21-41-55.mp4, 21-44-17.mp4, Goodsprings scrub at night): ObjectBlend distorted the
+  ground round every grass tuft. GrassFirst draws the near grass (and GPU grass) before the land, so it is in the copy, and the fade
+  follows the blades, the wind and the view (gap measured along view rays). ObjectBlend is now OFF by default (experimental). A
+  grass-free copy needs a second copy right after GrassFirst's early grass and a combine pass (object = depth at the land where it is
+  nearer than the grass-only depth), or GrassFirst drawing the grass after the objects; still view-dependent near rocks.
+- "Vertices shaking" in the wireframe while moving (still camera: nothing moves, frame differences ~0): distance-based levels with
+  fractional_odd_spacing make the generated points slide as the camera moves, and the height lookup's detail level follows the
+  spacing. The user's EdgeGrowth was 1.0 (clamped to 0.1, ten times the default): the levels change ten times faster. 0 = no sliding
+  nearer than FadeStart.
+- Live on/off in the Tessellation panel: `[Shaders.Terrain.Displacement] Enabled` (missing key = on); NvrDxvkDisplacement still
+  installs it at startup (now listed as a restart-to-turn-on setting in the menu).
 
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)

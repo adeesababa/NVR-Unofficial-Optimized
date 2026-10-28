@@ -2013,6 +2013,7 @@ static const RestartSetting kRestartSettings[] = {
 	{ "Main.Main.Performance",                "ShaderWarmUp",       RestartRule::Changed },	// runs once, at the main menu
 	{ "Main.Main.Performance",                "SlimDepthBuffer",    RestartRule::Changed },	// depth texture format (CombineDepth)
 	{ "Shaders.ShadowsExteriors.Main",        "ForwardShadows",     RestartRule::TurnOn },
+	{ "Main.Main.Performance",                "NvrDxvkDisplacement", RestartRule::TurnOn },	// land shaders registered as they load ([Shaders.Terrain.Displacement] Enabled is live)
 	{ "Shaders.ShadowsExteriors.SunSmoothing","CrossFade",          RestartRule::Changed },
 	{ "Shaders.ContactHardening.Status",      "Enabled",            RestartRule::TurnOn },
 	{ "Shaders.ShadowsInteriors.Forward",     "Enabled",            RestartRule::TurnOn },	// hooks + shader overrides at start

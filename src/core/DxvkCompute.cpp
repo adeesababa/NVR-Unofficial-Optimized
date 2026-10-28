@@ -438,6 +438,12 @@ static bool DisplaceSwitch() {
 	return TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement") != 0;
 }
 
+// A [Shaders.Terrain.Displacement] switch, Missing when the key is in neither file (a DLL used with an older defaults toml)
+static bool DisplaceSettingOr(const char* Key, bool Missing) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.IntValue != 0 : Missing;
+}
+
 static ID3D9NvrExtTess* DisplaceTess() {
 	if (!DisplaceQueried) {
 		DisplaceQueried = true;
@@ -562,7 +568,9 @@ void DxvkCompute::DisplaceTick() {
 	static NVR_EXT_TESS_STATS last = {};
 	if ((frame++ % 8) == 0) {
 		const char* s = "Shaders.Terrain.Displacement";
-		state.Enable = DisplaceSwitch() ? TRUE : FALSE;
+		// 2026-10-27 (user: "we also need our toggle for tessellation in the menu"): [Shaders.Terrain.Displacement] Enabled switches the
+		// bumps at once, in the Tessellation panel; NvrDxvkDisplacement still sets it up at startup.
+		state.Enable = DisplaceSwitch() && DisplaceSettingOr("Enabled", true) ? TRUE : FALSE;
 		const int debugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 7);
 		state.Winding = TheSettingManager->GetSettingI(s, "Winding") == 1 ? 1 : 0;
 		state.Wireframe = debugView == 1 ? 1 : 0;
@@ -585,7 +593,7 @@ void DxvkCompute::DisplaceTick() {
 		state.EvalParams[2] = 16.0f * (float)debugView + std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f) + 4.0f;
 		state.EvalParams[3] = DisplacePackScale(1.0f, 1.0f);
 		// ObjectBlend: the width in whole game units, the share kept at the object as the fraction
-		const bool blend = TheSettingManager->GetSettingI(s, "ObjectBlend") != 0;
+		const bool blend = DisplaceSettingOr("ObjectBlend", false);	// off by default (user's test: it also flattens round grass)
 		const float width = floorf(std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendWidth"), 4.0f, 512.0f) + 0.5f);
 		const float keep = std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendKeep"), 0.0f, 1.0f);
 		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
