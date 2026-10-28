@@ -70,7 +70,26 @@ striped facing terms, and probably the FSR circle's cascade acne. The surfaces' 
 
 Both the D3D9 technique and the NVR DXVK pass (`Compute/SnowAccumulation.frag/.spv`, binding 8 + two uniforms) read it.
 
-## Opting other effects in (later; each with its own A/B setting, off by default)
+## Every effect at once: `[Main.Main.Quality] CapturedNormals` (2026-10-28, user: "start work on wiring this into other effects")
+
+Instead of editing each reader, one D3D9 pass writes the captured normals INTO `TESR_NormalsBuffer` (the depth-rebuilt normal every
+effect reads), right after `Normals.fx` and SmoothNormals (`ShaderManager::RenderDepthAndNormals` ->
+`CapturedNormals::MergeIntoNormals`): where the captured normal is valid, its distance matches and it is within ~60 degrees of the
+depth buffer's own facet there, the buffer takes it (converted to view space, as Normals.fx writes it); every other pixel is clipped
+and keeps the old normal. AmbientOcclusion, AmbientLight (GTAO + bounce), the sun / cloud / far shadows (ShadowsExteriors, SunFar),
+Specular, point-shadow darkening and snow all read it, on D3D9 and NVR DXVK passes alike, with no shader change. Live once compiled
+in (restart to compile the templates); skipped after an upscale to the screen (RenderScale with LowResEffects off).
+Trade-off: one switch for all readers (an A/B of the whole set, not per effect); a per-effect switch would mean reading the captured
+buffer in each effect instead (the recipe below).
+
+Bulk run 2026-10-28 (branch 46850ddf, NVR DXVK fork, RUN_TOML `bench\deep-roadmap\tools\run-toml-capmerge-20261028.toml`):
+| run | scene | result |
+|---|---|---|
+| 20261028-154557-slotC | og-desert, FSR on/off, AmbientLight DebugView 1 | PASS, merge logged, self-check ok. Mean picture change ~1/255, only along edges and foliage (8x diff); flat sunlit desert had little faceting to fix; nothing broken. |
+| 20261028-155019-slotA | lucky22 (960x540) | PASS, merge + self-check ok. AO view: small, even change, no blotches. Neon flicker between shots shifts the whole frame (not the merge). |
+Not shown by these scenes: characters' facets in lamp-lit interiors (10-24 report) and rock crust under cloud shadows: check in game.
+
+## Opting a single effect in (its own A/B setting instead of the shared merge)
 
 1. Declare the sampler in the effect, in declaration order (samplers bind by order, not by register):
    `sampler2D TESR_CapturedNormalsBuffer : register(sN) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };`
@@ -141,5 +160,5 @@ Pictures: `H:\_NVR-autotest-shots\20261028-152942-slotC\1-capnormals1` (and the 
   - `Effects\Includes\CapturedNormals.hlsl` (new), `Effects\SnowAccumulation.fx.hlsl`
   - `Compute\SnowAccumulation.frag`, `Compute\SnowAccumulation.spv`
 - `Textures\Effects\Snownoise256.dds` -> `<game>\Data\Textures\Effects\` (Look 1 only; already in the user's install, same file)
-- To try it: `[Shaders.SnowAccumulation.Main] CapturedNormals = true` and restart. If a shader change does not seem to take effect,
+- To try it: `[Main.Main.Quality] CapturedNormals = true` (every effect) and/or `[Shaders.SnowAccumulation.Main] CapturedNormals = true` (snow only), then restart. If a shader change does not seem to take effect,
   clear `Shaders\NewVegasReloaded\Shaders\Cache\`.
