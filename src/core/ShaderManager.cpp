@@ -357,6 +357,8 @@ void ShaderManager::InitializeConstants() {
 /*
 Updates the values of the constants that can be accessed from shader code, with values representing the state of the game's elements.
 */
+void NvrMsaaWarningTick();	// Hooks/Settings.cpp (UNOFFICIAL 2026-10-27): the game's MSAA is on: said once on screen
+
 void ShaderManager::UpdateConstants() {
 
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // Main toggle
@@ -369,6 +371,7 @@ void ShaderManager::UpdateConstants() {
 	MarkShadersVsFrom = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsFrom");
 	MarkShadersVsTo = TheSettingManager->GetSettingI("Shaders.PBR.Main", "MarkShadersVsTo");
 	GameShaderEyes = TheSettingManager->GetSettingI("Shaders.PBR.Main", "GameShaderEyes") != 0;	// UNOFFICIAL 2026-10-27 (Render.cpp SetShadersHook)
+	NvrMsaaWarningTick();
 	// MarkShadersVanilla 2 (test only, once): the game's lamp falloff textures (BSShaderManager::spAttenuationXY 0x011F9534 / Z 0x011F9538)
 	// saved next to the log as PNG, to compare their shape with the shaders' 1 - (d / r)^2.
 	if (MarkShadersVanilla == 2) {

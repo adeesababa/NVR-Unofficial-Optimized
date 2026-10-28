@@ -9,7 +9,6 @@ struct SettingsMainStruct {
 	struct MainStruct {
 		bool	RemoveUnderwater;
 		bool	ForceMSAA;
-		bool	AllowGameMSAA;	// UNOFFICIAL 2026-10-27 [Main.Main.Misc]: false = the game's own MSAA (iMultiSample) is switched off for the session (Hooks/Settings.cpp)
 		bool	ForceReflections;
 		bool	GameShadersInReflections; // [Main.Main.Water] diagnostic: the reflection pass uses the game's own shaders
 		bool	ReflectionClipFix; // [Main.Main.Water] UNOFFICIAL: the water reflection's clip plane rebuilt by NVR at every draw of the reflection pass
