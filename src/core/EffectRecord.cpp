@@ -5,6 +5,7 @@
 #include "GpuDebug.h"	// UNOFFICIAL 2026-10-26: GpuDebugLabels (each effect is a named group in a capture)
 #include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "ReflMaterial.h"	// UNOFFICIAL 2026-10-20 MaterialAware reflections (REFL_MATERIAL_ON)
+#include "EffectPrecompile.h"	// UNOFFICIAL 2026-10-28 the effects compiled in parallel at startup
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
 */
@@ -87,6 +88,7 @@ bool EffectRecord::LoadEffect() {
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
 	D3DXMACRO EffectMacros[8];	// UNOFFICIAL 2026-10-23: 8 (CHARACTER_SHADOW_MAP)
 	BuildMacros(EffectMacros);
+	EffectPrecompile::Wait(EffectCompiledPath);	// UNOFFICIAL 2026-10-28 ParallelShaderCompile: a worker may be making this cache now
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);
 	if (prepass == D3D_OK) {

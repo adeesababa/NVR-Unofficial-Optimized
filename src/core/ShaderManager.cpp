@@ -5,6 +5,7 @@
 #include "PixelInspector.h"	// UNOFFICIAL 2026-10-26 (debugging tool)
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "EffectPrecompile.h"	// UNOFFICIAL 2026-10-28 the effects compiled in parallel at startup
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
 #include "../effects/GpuParticles.h"	// UNOFFICIAL 2026-10-26 (NVR DXVK 1.5-particles)
@@ -60,6 +61,7 @@ void ShaderManager::Initialize() {
 	}
 
 	// initializing the list of effect names
+	EffectPrecompile::Start();	// UNOFFICIAL 2026-10-28 ParallelShaderCompile: every effect prepared on worker threads; each LoadEffect waits for its own
 	TheShaderManager->RegisterEffect<AvgLumaEffect>(&TheShaderManager->Effects.AvgLuma);
 	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
 	TheShaderManager->RegisterEffect<AmbientLightEffect>(&TheShaderManager->Effects.AmbientLight);
