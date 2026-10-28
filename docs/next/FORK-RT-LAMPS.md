@@ -82,6 +82,13 @@ shadows sharp where things touch and softer with distance (LampRadius). The cube
   samples, one ordinary cube textureLod, one inside a branch) -> 2 samples replaced, the ordinary one untouched, `spirv-val
   --target-env vulkan1.2` valid (`tools/nvr-dxvk/test/rtlamp/`: rtpatch_test.cpp + marker.frag; MSVC build line in the file's
   header). Not yet run on real DXVK-converted SPIR-V: check with `DXVK_SHADER_DUMP_PATH` on the first run.
+- How dxbc-spirv (6da3ed38, the fork's) lowers texldd, read from its source (`sm3/sm3_resources.cpp` emitSample /
+  emitSampleImageFunction): every (sampler, kind) pair gets its own function, so the markers live in `sampleTexture_<s>_..._grad`
+  and never share code with the cube path's texldl (`..._explicit`); inside it the Grad sample follows a null-texture check
+  (unbound stage: returns (0,0,0,1) and the patched ray never runs = "blocked") and a depth-compare branch (Dref ops, not matched).
+  NVR binds a cube (the lamp's or the neutral one) on every lamp stage of the Interior records each draw, so the check passes.
+  The coordinate/derivatives arrive as vec4 params and are cut to the cube's vec3 before the sample; the pass shuffles to vec3
+  either way.
 - HLSL: every ObjectTemplate variant tried compiles with RT (1318-2387 slots; the 6-lamp shaders grow ~400-600 slots, fine on
   DXVK which has no driver slot limit: RT shaders are only ever made on the fork); SM3002/3003/3005/3007 compile with RT (8-9 texldd
   each, the cube ones 2 per lamp). RT off: identical to HEAD (above).
