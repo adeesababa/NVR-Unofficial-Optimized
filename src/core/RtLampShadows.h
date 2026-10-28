@@ -50,7 +50,7 @@ namespace RtLampShadows {
 	inline TracedCamera Pending = {};
 
 	// Per draw
-	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view
+	inline float Mode = 0.0f;				// c215.x: 0 cube maps, 1 traced, 2 compare view, 3 coverage view
 	inline int MaxLamps = 8;				// cube slots below min(this, 9) use the traced result
 	inline float Reproject[4][4] = {};		// c206-c209
 	inline float RtConstant[4] = {};		// c215
@@ -133,7 +133,8 @@ namespace RtLampShadows {
 		RtConstant[1] = (std::max)(TheSettingManager->GetSettingF(kSection, "DepthTolerance"), 0.004f);	// at least the depth code's step
 		RtConstant[2] = log2f((std::max)(Traced.farZ, 2.0f)) / 4095.0f;
 		RtConstant[3] = TheSettingManager->GetSettingI(kSection, "ActorsFromCubeMaps") ? 1.0f : 0.0f;
-		Mode = TheSettingManager->GetSettingI(kSection, "DebugView") == 1 ? 2.0f : 1.0f;
+		const int debugView = TheSettingManager->GetSettingI(kSection, "DebugView");
+		Mode = debugView == 1 ? 2.0f : debugView == 2 ? 3.0f : 1.0f;
 		RtConstant[0] = Mode;
 	}
 
