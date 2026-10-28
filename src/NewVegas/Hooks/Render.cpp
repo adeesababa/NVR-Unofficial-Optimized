@@ -2383,10 +2383,15 @@ namespace GrassFirst {
 		OnePassDepth::Records.push_back(r);
 	}
 
-	// GrassShadows::Records (the passes noted for this frame) into the near sun cascade, every tuft (c19.w = 0).
+	// GrassShadows::Records (the passes noted for this frame) into the near sun cascade, every tuft (c19.w = 0); 2026-10-28 also into
+	// the middle and far cascades for the tufts within CastShadowsReach (GrassShadows::Begin decides which cascades need them).
 	static void DrawGrassShadows() {
-		if (GrassShadows::Begin(TheRenderManager->device)) {
-			static GpuTimer grassShadowTimer("Grass shadows");
+		static GpuTimer grassShadowTimer("Grass shadows");
+		for (int cascade = ShadowsExteriorEffect::MapNear; cascade <= ShadowsExteriorEffect::MapFar; cascade++) {
+			if (!GrassShadows::Begin(TheRenderManager->device, cascade)) {
+				if (cascade == ShadowsExteriorEffect::MapNear) break;	// off, indoors, no sun maps, not PCF: none of them
+				continue;
+			}
 			GpuProfileScope gpu(grassShadowTimer, TheRenderManager->device);
 			GrassShaders::DrawPart = 0;
 			((void(__cdecl*)())kEndPass)();	// the first pass binds again (SetShadersHook: c19 with w = 0)

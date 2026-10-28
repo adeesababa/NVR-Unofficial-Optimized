@@ -16,17 +16,27 @@
 // 2026-10-28: with terrain blending on GrassFirst stands aside (its depth copy would hold the grass); then Render.cpp ShadowOnlyEarly
 // takes the grass passes out before the land without drawing them, they come here, and the late part draws them whole on screen.
 //
-// Limits: the PCF shadow maps (Mode 3, the default) only -- the variance modes filter their maps after drawing; the near cascade only;
+// Limits: the PCF shadow maps (Mode 3, the default) only -- the variance modes filter their maps after drawing;
 // the grass drawn early does not take these shadows itself (it is drawn before them), the ground and everything after it does.
+//
+// 2026-10-28 (Conor: "grass shadows fade out like 5 feet in front me, needs a slider"): the near cascade ends about 2-3 m out at
+// CascadeLambda 0.9, so the grass shadows faded there. [Shaders.Grass.Main] CastShadowsReach: the tufts within this many world units
+// of the camera are also drawn into the middle and far cascades (only those redrawn this frame: a cached cascade keeps what it
+// has, so swaying tufts never pile up in it). 0 = the near cascade only, as before.
 
 #include <d3dx9.h>
 #include <vector>
 #include "NewGrass.h"	// LastVariant: the grass VS bound last
 
+extern unsigned SunCascadesDrawnMask;	// ShadowManager.cpp: the sun cascades (bit per ShadowMapTypeEnum) drawn this frame
+
 namespace GrassShadows {
 	struct Record { void* pass; UInt32 passId, a3, a4, a5; };
 
 	inline bool Enabled = true;			// [Shaders.Grass.Main] CastShadows (live)
+	inline float Reach = 1050.0f;		// [Shaders.Grass.Main] CastShadowsReach (live): past the near cascade, tufts this close also go into the middle and far ones
+	inline int Cascade = 0;				// Begin .. End: the cascade drawn into (ShadowsExteriorEffect::MapNear .. MapFar)
+	inline const char* const CascadeNames[3] = { "near", "middle", "far" };
 	inline std::vector<Record> Records;	// this frame's early grass passes drawn with NVR's grass VS (GrassFirst)
 	inline bool Active = false;			// between Begin and End: the grass draws go into the shadow map
 	inline bool Hooked = false;
@@ -38,7 +48,7 @@ namespace GrassShadows {
 	inline IDirect3DSurface9* SavedTarget[4] = {};
 	inline IDirect3DSurface9* SavedDepth = nullptr;
 	inline D3DVIEWPORT9 SavedViewport = {};
-	inline D3DXVECTOR4 NearSphere;		// the near cascade's sphere (centre camera-relative, w radius)
+	inline D3DXVECTOR4 NearSphere;		// the cascade's sphere (centre camera-relative, w radius); the near one's unless Cascade > 0
 	inline unsigned Frames = 0, StatPasses = 0, StatOutside = 0, StatDraws = 0, StatSkipped = 0, StatRetarget = 0;
 	// 2026-10-27 (user, at a low sun: "there are still no shadows", the log saying the passes were drawn): the draws no longer depend
 	// on the atlas's depth buffer (its contents after the cascades are not something to count on: it is created discardable, and
@@ -63,6 +73,7 @@ namespace GrassShadows {
 	inline void ReadSettings() {
 		Enabled = TheSettingManager->GetSettingI("Shaders.Grass.Main", "CastShadows") != 0;
 		Black = TheSettingManager->GetSettingI("Shaders.Grass.Main", "CastShadowsBlack") != 0;
+		Reach = max(0.0f, TheSettingManager->GetSettingF("Shaders.Grass.Main", "CastShadowsReach"));
 	}
 
 	// GrassFirst: an early grass pass just drawn with NVR's grass VS.
@@ -70,13 +81,19 @@ namespace GrassShadows {
 		if (Enabled) Records.push_back({ pass, passId, a3, a4, a5 });
 	}
 
-	// Does a grass pass's world bound reach the near cascade's sphere? (Unknown bounds: yes.)
+	// Does a grass pass's world bound reach the cascade's sphere (and, past the near cascade, come within Reach of the camera)?
+	// (Unknown bounds: yes in the near cascade, no in the others.)
 	inline bool InNear(void* pass) {
 		NiAVObject* geometry = *(NiAVObject**)pass;
-		if (!geometry) return true;
+		if (!geometry) return Cascade == 0;
 		const NiBound* bound = geometry->GetWorldBound();
-		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return true;
+		if (!bound || bound == NiBound::GetGlobalWorldBound() || !(bound->Radius > 0.0f)) return Cascade == 0;
 		const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+		if (Cascade > 0) {
+			const float cx = bound->Center.x - cam.x, cy = bound->Center.y - cam.y, cz = bound->Center.z - cam.z;
+			const float limit = Reach + bound->Radius;
+			if (cx * cx + cy * cy + cz * cz > limit * limit) return false;
+		}
 		const float dx = bound->Center.x - cam.x - NearSphere.x, dy = bound->Center.y - cam.y - NearSphere.y, dz = bound->Center.z - cam.z - NearSphere.z;
 		const float reach = bound->Radius + NearSphere.w;
 		const bool inside = dx * dx + dy * dy + dz * dz <= reach * reach;
@@ -207,11 +224,14 @@ namespace GrassShadows {
 		Hooked = false;
 	}
 
-	// After GrassFirst's early grass: the near cascade of the shadow atlas becomes the target and the draws are ours. False: nothing to do
-	// (off, no early grass, indoors, no sun shadow maps this frame, not PCF), and nothing was changed.
-	inline bool Begin(IDirect3DDevice9* device) {
+	// After GrassFirst's early grass: a cascade of the shadow atlas (near, middle or far) becomes the target and the draws are ours.
+	// False: nothing to do (off, no early grass, indoors, no sun shadow maps this frame, not PCF; past the near cascade also Reach 0,
+	// the cascade starting past Reach or not redrawn this frame), and nothing was changed.
+	inline bool Begin(IDirect3DDevice9* device, int cascade = ShadowsExteriorEffect::MapNear) {
 		Active = false;
 		if (!Enabled || Records.empty() || !device || !TheShaderManager->GameState.isExterior) return false;
+		if (cascade < ShadowsExteriorEffect::MapNear || cascade > ShadowsExteriorEffect::MapFar) return false;
+		if (cascade > ShadowsExteriorEffect::MapNear && (!(Reach > 0.0f) || !(SunCascadesDrawnMask & (1u << cascade)))) return false;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		if (!shadows || !shadows->Enabled || !shadows->ShadowAtlasSurface || !shadows->ShadowAtlasDepthSurface) return false;
 		if (shadows->Settings.ShadowMaps.Mode != 3 || shadows->ShadowAtlasSurfaceMSAA) {
@@ -223,7 +243,14 @@ namespace GrassShadows {
 		if (!(shadows->Constants.ShadowFade.y > 0.0f) || shadows->Constants.ShadowFade.x >= 1.0f) return false;	// no sun shadow maps this frame
 		if (!LoadShaders()) return false;
 
-		const ShadowsExteriorEffect::ShadowMapSettings& map = shadows->ShadowMaps[ShadowsExteriorEffect::MapNear];
+		const ShadowsExteriorEffect::ShadowMapSettings& map = shadows->ShadowMaps[cascade];
+		if (cascade > ShadowsExteriorEffect::MapNear) {
+			// The cascade only shades past the one before it: nothing to do when that one already reaches past Reach.
+			const D3DXVECTOR4& inner = shadows->ShadowMaps[cascade - 1].ShadowMapCascadeCenterRadius;
+			const float innerReach = sqrtf(inner.x * inner.x + inner.y * inner.y + inner.z * inner.z) + inner.w;
+			if (innerReach >= Reach) return false;
+		}
+		Cascade = cascade;
 		CameraToLight = &map.ShadowCameraToLight;
 		NearSphere = map.ShadowMapCascadeCenterRadius;
 		ProbeSet = false;
@@ -286,13 +313,14 @@ namespace GrassShadows {
 		device->SetViewport(&SavedViewport);
 		for (DWORD i = 0; i < 4; i++) if (SavedTarget[i]) { SavedTarget[i]->Release(); SavedTarget[i] = nullptr; }
 		if (SavedDepth) { SavedDepth->Release(); SavedDepth = nullptr; }
-		Frames++;
+		if (Cascade == ShadowsExteriorEffect::MapNear) Frames++;
 		if (Frames <= 3 || Frames == 60 || Frames == 600 || Frames % 3600 == 0) {
 			char pixels[32] = "not known yet";
 			if (PixelsKnown) sprintf_s(pixels, "%lu", (unsigned long)LastPixels);
-			Logger::Log("UNOFFICIAL grass shadows: frame %u: %u early grass passes drawn into the near sun shadow map (%u draws; %u skipped: not NVR's grass VS; %u put back on the map: a pass had changed the target or viewport), %u outside the near cascade; map pixels written (last read) %s; first near piece at %.3f %.3f %.3f in the map (x, y -1..1, z 0..1 to be on it)%s",
-				Frames, StatPasses, StatDraws, StatSkipped, StatRetarget, StatOutside, pixels, ProbeLight.x, ProbeLight.y, ProbeLight.z, Black ? "; CastShadowsBlack on" : "");
+			Logger::Log("UNOFFICIAL grass shadows: frame %u: %u early grass passes drawn into the %s sun shadow map (%u draws; %u skipped: not NVR's grass VS; %u put back on the map: a pass had changed the target or viewport), %u outside it%s; map pixels written (last read, near map) %s; first piece at %.3f %.3f %.3f in the map (x, y -1..1, z 0..1 to be on it)%s",
+				Frames, StatPasses, CascadeNames[Cascade], StatDraws, StatSkipped, StatRetarget, StatOutside, Cascade ? " or past CastShadowsReach" : "", pixels, ProbeLight.x, ProbeLight.y, ProbeLight.z, Black ? "; CastShadowsBlack on" : "");
 		}
+		Cascade = ShadowsExteriorEffect::MapNear;
 		StatPasses = StatOutside = StatDraws = StatSkipped = StatRetarget = 0;
 	}
 }

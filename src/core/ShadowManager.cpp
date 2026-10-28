@@ -358,6 +358,10 @@ static void CubeFaceSkipSelfCheck(IDirect3DDevice9* Device, IDirect3DSurface9* l
 // Resolve and blur run only on cascades updated that frame (BlurShadowAtlas mask), so cached
 // cascades stay untouched either way.
 // nearInterval is the ReducedQuality NearCascadeInterval switch (1 = every frame, the original).
+// UNOFFICIAL 2026-10-28: the sun cascades (bit per ShadowMapTypeEnum) drawn this frame, for GrassShadows (CastShadowsReach): grass
+// goes into a middle or far cascade only on the frames that cascade is redrawn.
+unsigned SunCascadesDrawnMask = 0;
+
 constexpr unsigned SunCascadeUpdatePeriod(int cascade, bool limitFrequency, int nearInterval = 1, bool staggered = false) {
 	if (cascade == ShadowManager::MapNear) return nearInterval == 2 ? 2 : 1;
 	if (staggered) {
@@ -1988,6 +1992,7 @@ void ShadowManager::RenderShadowMaps() {
 				"drawn (read this frame: the volumetric fog's sun glow, the volumetric light or the deferred lookup; or no full draw yet)" : "drawn");
 			loggedSkip = skipState;
 		}
+		SunCascadesDrawnMask = 0;	// set again below on the frames the sun cascades are drawn
 		if (ExteriorEnabled && SunDir.z > 0.0f && !skipCascades) {
 			// Recalculate billboard vectors for speedtree leaves shader.
 			RecalculateBillboardVectors(&SunDir);
@@ -2185,6 +2190,7 @@ void ShadowManager::RenderShadowMaps() {
 				message += std::to_string(i);
 				shadowMapTimer.LogTime(message.c_str());
 			}
+			SunCascadesDrawnMask = updatedCascades;	// UNOFFICIAL 2026-10-28 grass shadows past the near cascade (GrassShadows.h)
 			if (oneWalk && updatedCascades) {
 				// The one walk, for the cascades that redraw and are not flat; then each draws its share, in the usual order.
 				for (int c = 0; c < 4; c++) { SunForms[c] = &Shadows->ShadowMaps[c].Forms; SunPlanes[c] = &Shadows->ShadowMaps[c].ShadowMapFrustumPlanes; }
