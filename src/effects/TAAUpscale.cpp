@@ -526,7 +526,14 @@ bool TAAEffect::UpscaleRun(IDirect3DDevice9* Device, bool resolveDepth) {
 	in.Hdr = Up.Hdr;
 	in.Reset = reset || lastPathFSR;	// after FSR at native resolution the shared history is that path's
 	Upscaler::IUpscaler* upscaler = Upscaler::Choose(FSRSettings.Upscaler);
-	if (!upscaler->Evaluate(Device, in)) { fail("the upscaler failed"); return false; }
+	bool evaluated = upscaler->Evaluate(Device, in);
+	if (!evaluated && upscaler == Upscaler::Fsr31() && upscaler->Failed()) {
+		// UNOFFICIAL 2026-10-28: FSR 3.1 failing (logged by it) hands this frame and the rest of the session to FSR 2.
+		upscaler = Upscaler::Choose(FSRSettings.Upscaler);
+		in.Reset = true;
+		evaluated = upscaler->Evaluate(Device, in);
+	}
+	if (!evaluated) { fail("the upscaler failed"); return false; }
 
 	// 5. Into the world's targets.
 	{

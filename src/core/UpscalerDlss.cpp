@@ -488,8 +488,21 @@ namespace Upscaler {
 	void DlssOptions(bool PassThroughTest, int JitterFlip) { TheDlss.SetOptions(PassThroughTest, JitterFlip); }
 
 	IUpscaler* Choose(int setting) {
-		if (setting == 1 && !TheDlss.IsOff()) return &TheDlss;	// it runs FSR 2 itself while the helper starts or when it fails
-		TheDlss.MarkUnused();
-		return Fsr2();
+		// UNOFFICIAL 2026-10-28 ([Shaders.TAA.FSR] Version 1): FSR 3.1, or FSR 2 once it has failed (logged by it). A switch to or
+		// from FSR 3.1 restarts the history of the one that runs now (the other's frames went by meanwhile) and frees the textures of
+		// the FSR that stopped (both sets would otherwise stay in video memory); FSR 2 / DLSS switches are as before.
+		static IUpscaler* last = nullptr;
+		IUpscaler* chosen;
+		if (setting == 1 && !TheDlss.IsOff()) chosen = &TheDlss;	// it runs FSR 2 itself while the helper starts or when it fails
+		else {
+			TheDlss.MarkUnused();
+			chosen = (setting == 2 && !Fsr31()->Failed()) ? Fsr31() : Fsr2();
+		}
+		if (last && chosen != last && (chosen == Fsr31() || last == Fsr31())) {
+			chosen->RequestReset();
+			if (last == Fsr2() || last == Fsr31()) last->ReleaseResources();
+		}
+		last = chosen;
+		return chosen;
 	}
 }

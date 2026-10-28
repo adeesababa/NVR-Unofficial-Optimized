@@ -72,7 +72,11 @@ void TAAEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-27 (user: "0.1 should look pretty compressed, yet it does not"): down to 0.33, FSR 2's and DLSS's lowest
 	// ("Ultra Performance", 3x per axis); below that neither is made to work. Was 0.5.
 	FSRSettings.RenderScale = scale > 0.0f ? std::clamp(scale, 0.33f, 1.0f) : 1.0f;
-	FSRSettings.Upscaler = dlss ? 1 : 0;
+	// UNOFFICIAL 2026-10-28 ([Shaders.TAA.FSR] Version, 0 when missing): 0 AMD FSR 2.2.1 (as before), 1 AMD FSR 3.1 (core/UpscalerFsr31.cpp).
+	// Not the key "Upscaler": until 2026-10-27 "Upscaler = 1" meant DLSS, and old settings files still have it.
+	// DLSS keeps its own switch above and wins over both.
+	const bool fsr31 = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "Version") == 1;
+	FSRSettings.Upscaler = dlss ? 1 : (fsr31 ? 2 : 0);
 	FSRSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.TAA.FSR", "DebugView"), 0, 3);
 	// UNOFFICIAL 2026-10-27 RenderScale v2 (TAAUpscale.cpp): also for DLSS (the same path).
 	FSRSettings.LowResEffects = TheSettingManager->GetSettingI("Shaders.TAA.FSR", "LowResEffects") != 0;

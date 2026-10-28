@@ -45,11 +45,18 @@ namespace Upscaler {
 		virtual IDirect3DTexture9*	Output() const = 0;
 		virtual bool				Failed() const = 0;
 		virtual void				ReleaseResources() = 0;
+		// UNOFFICIAL 2026-10-28: the next Evaluate starts without history (Choose() calls it when the chosen upscaler changes:
+		// the other one's frames went by meanwhile).
+		virtual void				RequestReset() {}
 	};
 
 	// AMD FSR 2.2.1 (core\Upscaler.cpp). One shared instance: TAA's native AA and RenderScale use it in turn (each switch
 	// between them is a Reset), so its textures (about 190 MB at 1080p, made on first use) exist once.
 	IUpscaler*	Fsr2();
+
+	// UNOFFICIAL 2026-10-28 ([Shaders.TAA.FSR] Version 1): AMD FSR 3.1's upscaler (core\UpscalerFsr31.cpp; FidelityFX SDK 1.1.4,
+	// MIT), the same inputs as FSR 2. Upscaling only. Its own textures (made on first use); FSR 2's are not made while it runs.
+	IUpscaler*	Fsr31();
 
 	// NVIDIA DLSS through NvrDlssHelper.exe (64-bit; core\UpscalerDlss.cpp, tools\nvr-dlss-helper). No NVIDIA code in NVR's DLL.
 	// It runs FSR 2 itself while the helper starts, and from the first problem on (logged once with the reason).
@@ -59,6 +66,7 @@ namespace Upscaler {
 	// flips the jitter's x, bit 1 its y, for checks with NVIDIA's development DLL). Set by TAAEffect::UpdateSettings.
 	void		DlssOptions(bool PassThroughTest, int JitterFlip);
 
-	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run).
+	// 0 FSR 2 ([Shaders.TAA.FSR] Enabled), 1 DLSS ([Shaders.TAA.DLSS] Enabled) (Dlss(), which falls back to FSR 2 whenever DLSS cannot run),
+	// 2 FSR 3.1 ([Shaders.TAA.FSR] Enabled + Version 1; FSR 2 from its first failure on, logged once).
 	IUpscaler*	Choose(int setting);
 }

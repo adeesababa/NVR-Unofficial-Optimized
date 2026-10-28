@@ -2526,6 +2526,9 @@ static const char* kEdgeDetectionNames[] = {
 static const char* kOffOnRestartNames[] = {	// fixes-a #11
 	"0 - Off", "1 - On (needs a restart)",
 };
+static const char* kFsrVersionNames[] = {	// UNOFFICIAL 2026-10-28 (core/UpscalerFsr31.cpp)
+	"0 - FSR 2.2.1", "1 - FSR 3.1",
+};
 static const char* kSmokeTestNames[] = {
 	"0 - Normal", "1 - Smoke in green", "2 - No muzzle flash light", "3 - Smoke not drawn", "4 - Nothing drawn at all",
 };
@@ -2547,6 +2550,7 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.SMAA.Main.EdgeDetection",                       ENUM_OPT(kEdgeDetectionNames) },
 	{ "Main.GunFX.Main.VolumetricSmokeTest",                   ENUM_OPT(kSmokeTestNames) },
 	{ "Shaders.PBR.Main.SmithCorrelated",                      ENUM_OPT(kOffOnRestartNames) },
+	{ "Shaders.TAA.FSR.Version",                               ENUM_OPT(kFsrVersionNames) },
 };
 
 #undef ENUM_OPT

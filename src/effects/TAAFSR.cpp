@@ -208,7 +208,14 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 	in.Hdr = false;							// the tonemapped frame
 	in.Reset = reset || !lastPathFSR;		// the upscaler's history is RenderScale's after an upscaled frame
 	Upscaler::IUpscaler* upscaler = Upscaler::Choose(FSRSettings.Upscaler);	// FSR 2 (DLSS is not built: core/Upscaler.h)
-	if (!upscaler->Evaluate(Device, in)) return fail(upscaler->Failed() ? "the upscaler failed" : "the upscaler could not run this frame");
+	bool evaluated = upscaler->Evaluate(Device, in);
+	if (!evaluated && upscaler == Upscaler::Fsr31() && upscaler->Failed()) {
+		// UNOFFICIAL 2026-10-28: FSR 3.1 failing (logged by it) hands this frame and the rest of the session to FSR 2.
+		upscaler = Upscaler::Choose(FSRSettings.Upscaler);
+		in.Reset = true;
+		evaluated = upscaler->Evaluate(Device, in);
+	}
+	if (!evaluated) return fail(upscaler->Failed() ? "the upscaler failed" : "the upscaler could not run this frame");
 
 	// 3. Into the game target, the weapon as rendered (DebugView 1 / 5: NVR's motion / depth inputs instead).
 	{
@@ -220,6 +227,6 @@ bool TAAEffect::FSRDraw(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarge
 		if (!ExtDrawTo(fsrComposite.Pipeline, &RenderTarget, 1, b, _countof(b), &compositePush, sizeof(compositePush))) return fail("the composite pass failed");
 	}
 
-	if (++fsrFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: TAA runs FSR 2 (AMD FidelityFX Super Resolution 2.2.1) as its resolve, %ix%i native, sharpness %.2f.", width, height, FSRSettings.Sharpness);
+	if (++fsrFrames == 1) Logger::Log("UNOFFICIAL NVR DXVK: TAA runs %s (AMD FidelityFX Super Resolution) as its resolve, %ix%i native, sharpness %.2f.", upscaler->Name(), width, height, FSRSettings.Sharpness);
 	return true;
 }
