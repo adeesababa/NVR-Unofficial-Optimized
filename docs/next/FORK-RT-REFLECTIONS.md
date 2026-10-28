@@ -17,6 +17,22 @@ This pass only uses them.
 | RT core | **waiting on rt-sun-core** (helper process, first end-to-end test pending) |
 | iGPU bench (`rtrefl-1`, scenes water / rain / luxe / lucky22) | not run (needs the core) |
 
+## PAUSED HERE (2026-10-28 ~15:15, on the user's word via the main session)
+
+- **State:** branch `claude/rt-reflections-499161`, on rt-sun-core's `d7fa5427` (its RtCore with `RtCore::Exchange`, written here, merged
+  there). Everything is off by default; nothing installed, nothing pushed. The test tree is `work\NVR-rtrefl`, a junction to this worktree.
+  The last DLL built is b2cf1518, in `build\optimized`.
+- **Works:** SplitTest (RayGen + Resolve without rays) gives the same picture as the old trace on the 1070, at +0.045 ms. On the iGPU
+  the whole chain runs: the helper comes up, my pass runs every frame, and the helper's GPU time is 0.42 ms
+  (Ultra-Luxe: 263 geometries, 1130 instances).
+- **Blocker:** every ray reports no hit (Ultra-Luxe run 20261028-142402-slotA, DebugView 2 all red). rt-ao-sky and rt-sun see the same,
+  so it is the in-game scene the core builds, not this pass. RT DebugView 5 (camera -> surface alignment check, commit 38b96b26) was
+  made to tell scene errors from input errors. Its Ultra-Luxe run (rtrefl-2) was running at the pause, and the result went to
+  rt-sun-core.
+- **To resume:** once rt-sun-core fixes the no-hit bug, rebase onto its branch and rebuild. Then run `rtrefl-2` in luxe, lucky22, og-lake
+  and og-goodsprings (rain toml), as the slots lack the water/rain saves. Compare ssr-N vs rt-N and the DebugViews, fill the Results with
+  cost, then use the v2 records (albedo, binding 10) in `Rt/ReflectionsRT.comp` for the hits the screen cannot show.
+
 ## Where the rays run: a 64-bit helper, not the game
 
 rt-sun-core measured on this PC (note `RT-CORE-HELPER-2026-10-28.md` in the session notes): AMD's **32-bit** Windows Vulkan driver
