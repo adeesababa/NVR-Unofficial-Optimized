@@ -578,6 +578,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     PS_OUTPUT OUT;
     OUT.color = color;
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
     OUT.scatter = float4(specularShare, length(worldPos));
     #if defined(DIFFUSE)
         OUT.albedo = 1.0f;   // never written: the added passes leave the albedo target alone (its writes are masked off)

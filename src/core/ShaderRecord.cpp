@@ -1,4 +1,5 @@
 #include "ShaderRecord.h"
+#include "LinearSceneShaders.h"	// UNOFFICIAL 2026-10-28 LinearScene
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2)
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
@@ -114,13 +115,13 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// Append a define to the template, keeping the array null-terminated.
 	auto AppendDefine = [&Template](const char* Name, const char* Definition) {
 		int i = 0;
-		while (i < 46 && Template.Defines[i].Name != NULL) {
+		while (i < 62 && Template.Defines[i].Name != NULL) {
 			if (!strcmp(Template.Defines[i].Name, Name)) return;	// an override already set it
 			i++;
 		}
-		if (i >= 46) {  // out of room (Defines[48]: 46 entries and the terminator); skip rather than overrun
+		if (i >= 62) {  // out of room (Defines[64]: 62 entries and the terminator); skip rather than overrun
 			static bool warned = false;	// fixes-a #12: say so once (a dropped define = the shader compiled without that option)
-			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 46 shader defines, '%s' and any after it are dropped", Name); }
+			if (!warned) { warned = true; Logger::Log("[ERROR] ShaderRecord: more than 62 shader defines, '%s' and any after it are dropped", Name); }
 			return;
 		}
 		Template.Defines[i] = { Name, Definition };
@@ -191,6 +192,9 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL linear lighting (Includes/LinearLight.hlsl: ObjectTemplate, TerrainTemplate): compiled in only when on at
 	// startup, so that otherwise those shaders are exactly what they were. Gamma stays live (PBRShaders::UpdateSettings).
 	AppendDefine("LINEAR_LIGHTING_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") ? "1" : "0");
+	// UNOFFICIAL 2026-10-28 LinearScene (Includes/LinearLight.hlsl LinearSceneOut, core/LinearScene.h): compiled in only when on at startup
+	// with linear lighting, so that otherwise the four lit templates are exactly what they were.
+	AppendDefine("LINEAR_SCENE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") && TheSettingManager->GetSettingI("Shaders.PBR.Linear", "LinearScene") ? "1" : "0");
 
 	// UNOFFICIAL physical sky (Includes/Atmosphere.hlsl, SKY.pso): compiled in only when on at startup, so that otherwise the
 	// sky shader is exactly what it was. Its other settings are live (SkyShaders::UpdateSettings).
@@ -495,6 +499,14 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					// land's own draws can be told apart (their per-layer height flags are taken there for the land's shadow draws).
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "TerrainTemplate"))
 						DxvkCompute::NoteLandPixelShader(((ShaderRecordPixel*)ShaderProg)->ShaderHandle, Template.Defines);
+					// UNOFFICIAL 2026-10-28 LinearScene (core/LinearScene.h): the pixel shaders that can give linear light (LinearSceneOut).
+					if (ShaderProfile[0] == 'p' && Template.Name && (!strcmp(Template.Name, "ObjectTemplate") || !strcmp(Template.Name, "ParallaxTemplate") ||
+						!strcmp(Template.Name, "SkinTemplate") || !strcmp(Template.Name, "TerrainTemplate"))) {
+						bool on = false;
+						for (int d = 0; d < 63 && Template.Defines[d].Name; d++)
+							if (!strcmp(Template.Defines[d].Name, "LINEAR_SCENE_ON")) on = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+						if (on) LinearScene::NoteCapable(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+					}
 					// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): ObjectTemplate pixel shaders compiled with linear lighting
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {

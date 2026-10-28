@@ -43,6 +43,15 @@ float LinScale(float s) { return s; }
 float LinFalloff(float a) { return a; }
 #endif
 
+// UNOFFICIAL 2026-10-28 LinearScene ([Shaders.PBR.Linear] LinearScene, core/LinearScene.h, docs/next/LINEAR-SCENE-PLAN.md): while NVR keeps
+// the world's frame in linear light (TESR_LinearLighting.w 1, set per draw), the pass's finished colour -- exactly what it gave before,
+// fog and all -- is decoded, so the game's own blends add the passes in linear light; one step encodes the frame again. w 0: unchanged.
+#if defined(LINEAR_LIGHTING) && defined(LINEAR_SCENE_ON) && LINEAR_SCENE_ON
+float3 LinearSceneOut(float3 c) { return TESR_LinearLighting.w > 0.5f ? pow(max(c, 0.0f), TESR_LinearLighting.x) : c; }
+#else
+float3 LinearSceneOut(float3 c) { return c; }
+#endif
+
 // UNOFFICIAL 2026-10-21 LampFalloff: LampAtt (objects) and LampAttOther (the ground, skin, hair), with or without linear lighting.
 #if defined(__INTELLISENSE__)
     #include "LampFalloff.hlsl"

@@ -714,6 +714,7 @@ PS_OUTPUT main(PS_INPUT IN)
     #else
         OUT.color.a = ReflMaterialAlpha(alpha * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
     #endif
+    OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 
     return OUT;
 };

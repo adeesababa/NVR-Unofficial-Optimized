@@ -514,6 +514,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     [branch] if (FogParam.z < -1.0e30f) finalColor += tex2Dlod(TESR_DisplaceDepth, float4(0.5f, 0.5f, 0.0f, 0.0f)).x;
 #endif
     OUT.color_0.rgb = finalColor;
+    OUT.color_0.rgb = LinearSceneOut(OUT.color_0.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 
     return OUT;
 };
