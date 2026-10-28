@@ -43,6 +43,7 @@ public:
 		float	DropSize = 0.55f;		// a drop's radius, x the particle's (1.2 units)
 		bool	OldThrow = false;		// TEST: the throws, pools and drops as before 2026-10-27 (to compare)
 		bool	OldColour = false;		// TEST: the fluid's colour as before 2026-10-27 evening (BloodFluidDraw.frag, look4)
+		float	TextureRelief = 1.0f;	// UNOFFICIAL 2026-10-27: how much thin blood follows the ground's texture (look4.y)
 		int		DebugView = 0;			// 1 stains red / drops white, 2 the particles as dots by state
 		float	TestThrow = 0.0f;		// TEST: a throw from the camera at the view centre every this many seconds (0 off)
 		bool	TestPour = false;		// TEST: a pool bleeding on the ground ahead (once, when turned on)
