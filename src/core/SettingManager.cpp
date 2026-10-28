@@ -184,6 +184,9 @@ bool SettingManager::Configuration::FillNode(ConfigNode* Node, const char* Secti
 			Node->BoolValue = (Node->IntValue != 0);
 		}
 		else if (defaultSetting.is_floating()) {
+			// UNOFFICIAL 2026-10-28 (user: LodBias "accept decimal numbers"): a whole number typed into a float setting ("LodBias = -1")
+			// is that number, not a wrong type put back to the default
+			if (setting.is_integer()) setting = toml::value((double)setting.as_integer());
 			if (!setting.is_floating()) {
 				Logger::Log("Setting %s.%s has wrong type in user config: Should be a float.", Section, Key);
 				setting = defaultSetting;
@@ -374,7 +377,7 @@ tomlValue* SettingManager::Configuration::UserSection(const char* Section) {
 // not in the defaults file, so the menu does not list it, and Save writes it with the rest. Configs without
 // it (anything saved before P50) count as version 0. Called at the start of every LoadSettings; after the
 // first call the version is current and it returns at once.
-static const int UnofficialSettingsVersion = 70;  // 53 was an enhanced-water step, since removed
+static const int UnofficialSettingsVersion = 71;  // 53 was an enhanced-water step, since removed
 extern bool ParallaxLiteDistanceMigrationPending;  // effects/Terrain.cpp (version 65)
 
 void SettingManager::Configuration::UpdateOldDefaults() {
@@ -538,6 +541,15 @@ void SettingManager::Configuration::UpdateOldDefaults() {
 	// slack, CharacterShadowReach's cap) is compiled for PCF only, and EVSM has no normal offset at all, so faces and clothing shaded their
 	// own triangles: the facets that tester still saw with MSAA off. A saved 2 is the old default, moved once like the others.
 	if (version < 70) replace("Shaders.ShadowsExteriors.ShadowMaps", "Mode", 2, 3, true);
+	// P84 (2026-10-28, user: LinearScene "seems to have completely resolved the pop in issue. that should be the default"): a saved
+	// LinearScene = false (the old default) goes on.
+	if (version < 71) {
+		tomlValue* saved = UserSection("Shaders.PBR.Linear");
+		if (saved && saved->contains("LinearScene") && saved->at("LinearScene").is_boolean() && !saved->at("LinearScene").as_boolean()) {
+			(*saved)["LinearScene"] = true;
+			changed += changed.empty() ? "Shaders.PBR.Linear.LinearScene false -> true" : ", Shaders.PBR.Linear.LinearScene false -> true";
+		}
+	}
 	if (!changed.empty())
 		Logger::Log("UNOFFICIAL settings: old defaults saved by an earlier build moved to the new defaults: %s. "
 			"Change them in the menu and press Save if you want the old values back.", changed.c_str());

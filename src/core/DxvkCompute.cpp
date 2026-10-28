@@ -421,6 +421,9 @@ static unsigned			DisplaceShadowAge = 1000;
 // 2026-10-28 (tester: crusty dark ring round the player, bumps changing size with TAA jitter): ContactShadowsOutside, IgnoreMipBias
 static bool				DisplaceContactOutside = true;
 static bool				DisplaceIgnoreMipBias = true;
+// 2026-10-28 (user: ObjectBlend "does cause heavy shimmering when other objects cast shadows onto the tessellated geometry"):
+// ObjectBlendShadows off (default) = the sun's maps hold the full bumps and the land's lookup stays at or above them (MapsFull)
+static bool				DisplaceBlendShadows = false;
 // The land pixel shaders NVR made (TerrainTemplate PS) and their layer counts, for DisplaceShadows' capture of the land's draws.
 static std::vector<std::pair<IDirect3DPixelShader9*, int>> LandPixelShaders;
 
@@ -715,6 +718,13 @@ unsigned DxvkCompute::DisplaceShadowLayers() {
 	return DisplaceShadowVs ? DisplaceShadowPs : 0;
 }
 
+// ObjectBlendShadows: the sun cascades flatten the land near objects too, from last frame's depth copy (as before 2026-10-28). Off: they
+// hold the full bumps, the same every frame (the copy is jittered and a frame late, and the far cascades a few frames old: near
+// objects the maps' land and the screen's differed by a different amount every frame, and the shadows on it shimmered).
+bool DxvkCompute::DisplaceBlendInShadows() {
+	return DisplaceBlendShadows;
+}
+
 float DxvkCompute::DisplaceReach() {
 	return DisplaceBase.ControlParams[4];
 }
@@ -917,6 +927,9 @@ void DxvkCompute::DisplaceTick() {
 		DisplaceFarOn = DisplaceSettingOr("FarUntessellated", true);	// 2026-10-28 (DisplaceLandPass); on by default
 		DisplaceContactOutside = DisplaceSettingOr("ContactShadowsOutside", true);	// 2026-10-28 (DisplaceContactFade)
 		DisplaceIgnoreMipBias = DisplaceSettingOr("IgnoreMipBias", true);			// 2026-10-28 (DisplaceMipCompensation)
+		DisplaceBlendShadows = DisplaceSettingOr("ObjectBlendShadows", false);		// 2026-10-28 (DisplaceBlendInShadows)
+		// MapsFull (TerrainDisplace.tese mapsFull): with ObjectBlend on and its shadows off, the maps hold the full bumps
+		if (DisplaceObjectBlend > 0.0f && !DisplaceBlendShadows) viewParams += 131072.0f;
 	}
 	// 2026-10-27 CastShadows: ShadowsHold (+ 256) while the sun's shadow maps hold displaced land (drawn into them within the last 16
 	// frames: the far cascades are redrawn only every few frames), so the land's forward shadow lookup follows the displaced surface,

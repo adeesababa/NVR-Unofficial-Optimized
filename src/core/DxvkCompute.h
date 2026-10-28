@@ -123,6 +123,7 @@ public:
 	static bool					DisplaceShadowsWanted();
 	static unsigned				DisplaceShadowLayers();
 	static float				DisplaceReach();	// FadeEnd: no bumps past it
+	static bool					DisplaceBlendInShadows();	// 2026-10-28 [Shaders.Terrain.Displacement] ObjectBlendShadows
 	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
 	static void					DisplaceShadowEnd();
 	static void					DisplaceShadowsDrawn(unsigned Pieces);

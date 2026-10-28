@@ -119,7 +119,7 @@ layout(push_constant) uniform Push {
   uint  psBits;           // bit i: layer i has a height map (the land pixel shader's LandHeight c34 / c35 > 0, read per draw)
   float strength;         // Strength: game units between the lowest and the highest point the bumps can reach
   float center;           // 16 x Contrast (whole) + 0.99 x Center: contrast() and centerValue() below
-  float viewParams;       // 512 x BumpSize + 256 x ShadowsHold + 128 x FlatNormals + DebugView x 16 + (LodBias + 4). BumpSize
+  float viewParams;       // 131072 x MapsFull (2026-10-28) + 512 x BumpSize + 256 x ShadowsHold + 128 x FlatNormals + DebugView x 16 + (LodBias + 4). BumpSize
                           // (2026-10-28): the finest bump the height lookup gives, game units (whole, 0: the point spacing alone; LodBias
                           // still adds on top). DebugView: 2 the height as grey,
                           // 3 the split count (blue 1 -> red 16) and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer
@@ -134,7 +134,16 @@ layout(push_constant) uniform Push {
 #define SMP(i) s_samplers[(pc.samplerIndex[(i) >> 1] >> (16u * uint((i) & 1))) & 0xFFFFu]
 
 float bumpSize() {
-  return floor(pc.viewParams / 512.0);
+  return mod(floor(pc.viewParams / 512.0), 256.0);
+}
+
+// 2026-10-28 (user: ObjectBlend "does cause heavy shimmering when other objects cast shadows onto the tessellated geometry"): the sun's
+// shadow maps hold the FULL bumps (+ 131072, [Shaders.Terrain.Displacement] ObjectBlendShadows off), not the ObjectBlend share: theirs
+// came from last frame's depth copy (jittered, and the far cascades a few frames old), the screen's from this frame's, so near
+// objects the two surfaces differed by a different amount every frame and the forward lookup flickered in and out of the land's own
+// shadow. The screen then looks its shadow up no lower than the full bumps (projectionPosition below).
+float mapsFull() {
+  return mod(floor(pc.viewParams / 131072.0), 2.0);
 }
 
 float shadowsHold() {
@@ -148,6 +157,12 @@ bool bendNormals() {
 float debugView() {
   return mod(floor(pc.viewParams / 16.0), 8.0);
 }
+
+// 2026-10-28 (user: "make lod bias accept decimal numbers"): a height read between two detail levels, blended by hand, so a fractional
+// level (LodBias 0.5, BumpSize, IgnoreMipBias's share) gives the in-between size whatever mip filter the game's sampler has (a nearest
+// mip filter snaps it to whole levels).
+#define HEIGHT_AT(T, i, uv, lod) mix(textureLod(sampler2D(T, SMP(i)), uv, floor(lod)).a, \
+  textureLod(sampler2D(T, SMP(i)), uv, floor(lod) + 1.0).a, fract(lod))
 
 float lodBias() {
   return mod(pc.viewParams, 16.0) - 4.0;
@@ -185,12 +200,12 @@ vec2 g_dsum = vec2(0.0);   // BendNormals: the blended slope of the same differe
       float lod = max(lodUv + log2(float(size.x)) + lodBias(), 0.0); \
       int levels = textureQueryLevels(sampler2D(T, SMP(i))); \
       float mean = levels > 1 ? texelFetch(sampler2D(T, SMP(i)), ivec2(0), levels - 1).a : 0.5; \
-      float a = textureLod(sampler2D(T, SMP(i)), uv, lod).a; \
+      float a = HEIGHT_AT(T, i, uv, lod); \
       r = a - mean; \
       if (slopes) { \
         vec2 e = exp2(lod) / vec2(size); \
-        dr = vec2(textureLod(sampler2D(T, SMP(i)), uv + vec2(e.x, 0.0), lod).a - a, \
-                  textureLod(sampler2D(T, SMP(i)), uv + vec2(0.0, e.y), lod).a - a) / e; \
+        dr = vec2(HEIGHT_AT(T, i, uv + vec2(e.x, 0.0), lod) - a, \
+                  HEIGHT_AT(T, i, uv + vec2(0.0, e.y), lod) - a) / e; \
       } \
     } \
     g_hsum += (w) * r; \
@@ -329,9 +344,10 @@ void main() {
 
   float h = 0.5;
   vec2 dh = vec2(0.0);
-  if (canDisplace && weight > 0.0 && pc.strength != 0.0 && keepShare > 0.0)
+  if (canDisplace && weight > 0.0 && pc.strength != 0.0 && (keepShare > 0.0 || mapsFull() > 0.5))
     h = landHeight(v1.xy, v9, v10, lodUv, slopes, dh);
-  float disp = canDisplace ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - centerValue())) : 0.0;
+  float dispFull = canDisplace ? pc.strength * (weight * (h - 0.5) + nvr.z * (0.5 - centerValue())) : 0.0;
+  float disp = keepShare * dispFull;
 
   // The vertex shader's clip position (interpolated), moved by the displacement through ModelViewProj (row k = c[k] . (v, 1))
   vec4 clipN = vec4(0.0);
@@ -390,7 +406,8 @@ void main() {
   // shadow itself (bulk round 2: land sunk below the flat land went dark). Until 2026-10-27 it stayed the flat land's everywhere, and
   // the flat point under land raised against a rock lay inside the rock: the black outlines round rocks (see the top). The rasterized
   // position, the depth and the object position (lighting, parallax) follow the bumps.
-  o_v7 = shadowsHold() > 0.5 ? clip : v7 + max(disp, 0.0) * clipN;
+  // 2026-10-28 mapsFull (see mapsFull): the maps hold the full bumps, so the lookup is never below them (above them is lit land).
+  o_v7 = shadowsHold() > 0.5 ? (mapsFull() > 0.5 ? v7 + max(disp, dispFull) * clipN : clip) : v7 + max(disp, 0.0) * clipN;
   o_v8 = v8;
   o_v9 = v9;
   o_v10 = v10;

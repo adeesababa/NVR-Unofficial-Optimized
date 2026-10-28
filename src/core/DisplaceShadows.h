@@ -192,7 +192,8 @@ namespace DisplaceShadows {
 		CascadeWalk = DxvkCompute::DisplaceShadowsWanted() && TheShaderManager->GameState.isExterior && LoadShaders();
 		Reach = DxvkCompute::DisplaceReach();
 		// The copy made in the world scene after the previous cascades, i.e. last frame's (else none for ObjectBlend this frame)
-		BlendFromCopy = CopyCascadeFrame + 1 == CascadeFrames && TheTextureManager->TerrainBlendDepthTexture;
+		// 2026-10-28: only with ObjectBlendShadows on (off: the maps hold the full bumps, DxvkCompute::DisplaceBlendInShadows)
+		BlendFromCopy = CopyCascadeFrame + 1 == CascadeFrames && TheTextureManager->TerrainBlendDepthTexture && DxvkCompute::DisplaceBlendInShadows();
 	}
 
 	inline void EndCascades() {
