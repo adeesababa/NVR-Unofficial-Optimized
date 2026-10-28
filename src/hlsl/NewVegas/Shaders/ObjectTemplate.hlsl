@@ -1665,7 +1665,8 @@ sampler2D BaseMap : register(s0);
 sampler2D NormalMap : register(s1);
 // UNOFFICIAL 2026-10-27 ManyLampsGlow (core/LampsInOnePass.h): glow-mapped objects in the one pass (BSSM_ADT10_G, ADT4_G, ADTS10_G and
 // their _SG; the game binds the glow map on stage 4 and the emittance colour in c2 for these passes but never picked them before).
-#if defined(SI) && !defined(OPT)
+// (2026-10-28 port: only with MANY_LAMPS_ON, the only time ManyLampsGlow can patch them in; off = the shaders exactly as before.)
+#if defined(SI) && !defined(OPT) && defined(MANY_LAMPS_ON) && MANY_LAMPS_ON
     sampler2D GlowMap : register(s4);
 #endif
 
@@ -1873,7 +1874,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     }
 
     // UNOFFICIAL ManyLampsGlow: self emittance, as the LIGHTS < 4 variant adds it.
-    #if defined(SI) && !defined(OPT)
+    #if defined(SI) && !defined(OPT) && defined(MANY_LAMPS_ON) && MANY_LAMPS_ON
         lighting += baseColor.rgb * LinColor(tex2D(GlowMap, IN.uv.xy).rgb * EmittanceColor.rgb);
     #endif
 
