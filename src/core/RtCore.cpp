@@ -3,6 +3,7 @@
 // block, the watchdog and the stop follow UpscalerDlss.cpp (the DLSS helper), which proved them.
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,12 @@ namespace {
 	const UINT64 kReleaseMargin = 1ull << 20;	// the watchdog / Stop release every wait that could still be recorded
 	const UINT kArenaWidth = 4096;
 	const UINT kReleaseAfterFrames = 120;		// a geometry not met for this many frames is released in the helper
+	// Shared images are made in sizes rounded up to this (the content in the top-left corner). Measured 2026-10-28 on AMD 25.10: the
+	// game's 32-bit driver and the helper's 64-bit driver lay out an optimal-tiling image the same way only when both sides are
+	// multiples of 256 texels (1280x720 R32F: 3686400 bytes in the game, 3957104 in the helper; 1280x768 and 1920x1080 -> 2048x1280
+	// etc. agree, texel for texel: tools\nvr-rt-helper\test\rt_helper_test.cpp RT_TEST_SCREEN / RT_TEST_GAME).
+	const UINT kImageAlign = 256;
+	UINT AlignImage(UINT v) { return (v + kImageAlign - 1) / kImageAlign * kImageAlign; }
 
 	bool FileExists(const std::wstring& path) {
 		const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -66,6 +73,62 @@ namespace {
 		bool	refused = false;	// the fork refused it (logged once): never again
 	};
 
+	// A diffuse texture's average colour (linear rgb), from its smallest mip, once per texture (protocol v2's instance records).
+	// Managed textures only (they keep a system-memory copy: LockRect is a plain read); DXT1/3/5 take their first block's two end
+	// colours, 32-bit formats their first texel. false: unknown (a neutral grey goes to the helper).
+	struct Albedo { float rgb[3]; bool known; };
+	std::unordered_map<const void*, Albedo> albedoCache;
+
+	float SrgbToLinear(float c) { return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
+
+	Albedo ReadAlbedo(IDirect3DBaseTexture9* base) {
+		Albedo a = { { 0.5f, 0.5f, 0.5f }, false };
+		IDirect3DTexture9* texture = nullptr;
+		if (!base || base->GetType() != D3DRTYPE_TEXTURE || FAILED(base->QueryInterface(__uuidof(IDirect3DTexture9), (void**)&texture)) || !texture) return a;
+		const DWORD level = texture->GetLevelCount() ? texture->GetLevelCount() - 1 : 0;
+		D3DSURFACE_DESC desc = {};
+		D3DLOCKED_RECT locked = {};
+		if (SUCCEEDED(texture->GetLevelDesc(level, &desc)) && desc.Pool == D3DPOOL_MANAGED &&
+			SUCCEEDED(texture->LockRect(level, &locked, nullptr, D3DLOCK_READONLY | D3DLOCK_NO_DIRTY_UPDATE))) {
+			const unsigned char* b = (const unsigned char*)locked.pBits;
+			auto from565 = [](unsigned short c, float* out) { out[0] = ((c >> 11) & 31) / 31.0f; out[1] = ((c >> 5) & 63) / 63.0f; out[2] = (c & 31) / 31.0f; };
+			float c0[3], c1[3];
+			switch (desc.Format) {
+			case D3DFMT_DXT1: case D3DFMT_DXT2: case D3DFMT_DXT3: case D3DFMT_DXT4: case D3DFMT_DXT5: {
+				const unsigned char* block = b + (desc.Format == D3DFMT_DXT1 ? 0 : 8);
+				from565(*(const unsigned short*)block, c0);
+				from565(*(const unsigned short*)(block + 2), c1);
+				for (int i = 0; i < 3; i++) a.rgb[i] = SrgbToLinear(0.5f * (c0[i] + c1[i]));
+				a.known = true;
+				break;
+			}
+			case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8:
+				a.rgb[0] = SrgbToLinear(b[2] / 255.0f); a.rgb[1] = SrgbToLinear(b[1] / 255.0f); a.rgb[2] = SrgbToLinear(b[0] / 255.0f);
+				a.known = true;
+				break;
+			default: break;
+			}
+			texture->UnlockRect(level);
+		}
+		texture->Release();
+		return a;
+	}
+
+	const Albedo& AlbedoOf(NiGeometry* geo, BSShaderProperty* shaderProperty) {
+		static const Albedo unknown = { { 0.5f, 0.5f, 0.5f }, false };
+		if (!shaderProperty->IsLightingProperty()) return unknown;
+		NiSourceTexture** textures = ((BSShaderPPLightingProperty*)shaderProperty)->ppTextures[0];
+		NiTexture* texture = textures ? *textures : nullptr;
+		if (!texture || !texture->rendererData || !texture->rendererData->dTexture) return unknown;
+		IDirect3DBaseTexture9* d3d = texture->rendererData->dTexture;
+		auto found = albedoCache.find(d3d);
+		if (found == albedoCache.end()) {
+			if (albedoCache.size() > 65536) albedoCache.clear();	// textures come and go with the cells: keep it bounded
+			found = albedoCache.emplace(d3d, ReadAlbedo(d3d)).first;
+		}
+		return found->second;
+	}
+
 	// Where a vertex declaration keeps the position (cached per declaration).
 	struct PositionElement { int stream = -1; UInt32 offset = 0; NVR_EXT_RT_POSITION_FORMAT format = NVR_EXT_RT_POSITION_FLOAT3; };
 
@@ -79,7 +142,8 @@ namespace {
 		ID3D9NvrExtRt*			rt = nullptr;
 		std::vector<ID3D9NvrExtSharedImage*> images;	// [0] = the arena
 		std::vector<std::string> imageNames;
-		std::vector<NVR_EXT_SHARED_IMAGE_DESC> imageDescs;
+		std::vector<NVR_EXT_SHARED_IMAGE_DESC> imageDescs;	// the sizes made (rounded up: kImageAlign)
+		std::vector<std::pair<UINT, UINT>> imageSizes;			// the sizes the users asked for (what CopyOut copies)
 		bool		inSetup = false;
 		ID3D9NvrExtSharedFence*	inputsReady = nullptr;
 		ID3D9NvrExtSharedFence*	outputReady = nullptr;
@@ -156,7 +220,7 @@ namespace {
 			const LONG64 recorded = InterlockedCompareExchange64(&c->lastRecorded, 0, 0);
 			const ULONGLONG now = GetTickCount64();
 			if (done != lastValue || (LONG64)done >= recorded) { lastValue = done; lastProgress = now; }
-			else if (now - lastProgress > 3000) { why = "no frame came back from the helper for 3 seconds"; break; }
+			else if (now - lastProgress > 10000) { why = "no frame came back from the helper for 10 seconds"; break; }
 		}
 		if (!why) return 0;
 		strncpy_s(c->tripReason, why, _TRUNCATE);
@@ -199,9 +263,11 @@ namespace {
 		height = TheRenderManager->height;
 		imageNames.clear();
 		imageDescs.clear();
+		imageSizes.clear();
 		const UINT arenaMB = (std::max)(4, (std::min)(256, TheSettingManager->GetSettingI("Main.Main.RayTracing", "ArenaMB")));
 		imageNames.push_back("NVR RT arena");
-		imageDescs.push_back({ kArenaWidth, arenaMB * 1024u * 1024u / 4u / kArenaWidth, NVR_EXT_SHARED_R32F, nullptr });
+		imageDescs.push_back({ kArenaWidth, AlignImage(arenaMB * 1024u * 1024u / 4u / kArenaWidth), NVR_EXT_SHARED_R32F, nullptr });
+		imageSizes.push_back({ imageDescs.back().Width, imageDescs.back().Height });
 		inSetup = true;
 		for (const RtCore::User& user : users) if (user.Setup) user.Setup();
 		inSetup = false;
@@ -479,6 +545,12 @@ namespace {
 			entry.sent = true;
 		}
 		if (record->instanceCount >= NVR_RT_MAX_INSTANCES) return;
+		NvrRtInstanceRecord& extra = record->records[record->instanceCount];
+		const Albedo& albedo = AlbedoOf(geo, shaderProperty);
+		extra.albedo[0] = albedo.rgb[0]; extra.albedo[1] = albedo.rgb[1]; extra.albedo[2] = albedo.rgb[2]; extra.albedo[3] = 1.0f;
+		extra.flags = (land ? NVR_RT_RECORD_LAND : 0u) | (albedo.known ? NVR_RT_RECORD_ALBEDO_KNOWN : 0u);
+		extra.geometryId = entry.id;
+		extra.vertexOffset = extra.indexOffset = 0;	// the helper's
 		NvrRtInstance& instance = record->instances[record->instanceCount++];
 		D3DMATRIX m;
 		TheRenderManager->CreateD3DMatrix(&m, &geo->m_worldTransform);	// camera relative, row vectors (p' = p M)
@@ -573,7 +645,8 @@ void RtCore::SetMaskHook(UInt32 (*Hook)(NiGeometry*, bool)) { MaskHook = Hook; }
 int RtCore::AddImage(const char* Name, UINT Width, UINT Height, NVR_EXT_SHARED_FORMAT Format) {
 	if (!TheCore.inSetup || !Width || !Height) return -1;
 	TheCore.imageNames.push_back(Name ? Name : "NVR RT image");
-	TheCore.imageDescs.push_back({ Width, Height, Format, nullptr });
+	TheCore.imageDescs.push_back({ AlignImage(Width), AlignImage(Height), Format, nullptr });
+	TheCore.imageSizes.push_back({ Width, Height });
 	return (int)TheCore.imageDescs.size() - 1;
 }
 
@@ -677,7 +750,10 @@ void RtCore::Frame(IDirect3DDevice9* Device) {
 	InterlockedExchange64(&c.lastRecorded, (LONG64)n);
 	c.share->SignalShared(c.inputsReady, n);
 	c.share->WaitShared(c.outputReady, n);
-	for (const PendingCopy& copy : c.copiesOut) c.share->CopyFromShared(copy.target, 0, 0, c.images[copy.image], nullptr);
+	for (const PendingCopy& copy : c.copiesOut) {
+		const RECT used = { 0, 0, (LONG)c.imageSizes[copy.image].first, (LONG)c.imageSizes[copy.image].second };
+		c.share->CopyFromShared(copy.target, 0, 0, c.images[copy.image], &used);
+	}
 	c.copiesOut.clear();
 	c.recording = false;
 	c.record = nullptr;
