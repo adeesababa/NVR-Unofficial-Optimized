@@ -18,7 +18,23 @@ bool LampMaskHalfRes() { return MaskHalfResOn && MaskHalfTexture && MaskHalfSurf
 IDirect3DTexture9* LampMaskHalfTexture() { return MaskHalfTexture; }
 IDirect3DSurface9* LampMaskHalfSurface() { return MaskHalfSurface; }
 
+// UNOFFICIAL 2026-10-27 [Shaders.ShadowsExteriors.ScreenSpace] NearFade: TESR_ShadowScreenSpaceFade (SunShadows.fx ContactNearFade; the
+// Vulkan passes take x, y in their flags.y, z): contact shadows none nearer than x, full from y (view depth). Here, not in Constants, so
+// the header (and everything that includes it) stays as it was.
+static D3DXVECTOR4 ScreenSpaceFade(0.0f, 0.0f, 0.0f, 0.0f);
+static float ScreenSpaceNearFade = 0.0f;	// the setting (UpdateSettings); ScreenSpaceFade is made from it each frame (UpdateConstants)
+
 void ShadowsExteriorEffect::UpdateConstants() {
+
+	// UNOFFICIAL 2026-10-28 [Shaders.Terrain.Displacement] ContactShadowsOutside (tester: a crusty, darker ring round the player on the
+	// tessellated land): while the land's bumps are on, the contact shadows start where the bumps end (DxvkCompute::DisplaceContactFade),
+	// or at NearFade if that is farther. Off, or no bumps: NearFade alone, as before.
+	ScreenSpaceFade = D3DXVECTOR4(ScreenSpaceNearFade * 0.5f, ScreenSpaceNearFade, 0.0f, 0.0f);
+	float contactStart = 0.0f, contactEnd = 0.0f;
+	if (DxvkCompute::DisplaceContactFade(contactStart, contactEnd)) {
+		ScreenSpaceFade.x = (std::max)(ScreenSpaceFade.x, contactStart);
+		ScreenSpaceFade.y = (std::max)(ScreenSpaceFade.y, contactEnd);
+	}
 
 	Constants.ShadowFade.x = 0; // Fade 1.0 == no shadows
 	if (TheShaderManager->GameState.isExterior) {
@@ -401,11 +417,6 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	return cascadeSettingsChanged;
 }
 
-// UNOFFICIAL 2026-10-27 [Shaders.ShadowsExteriors.ScreenSpace] NearFade: TESR_ShadowScreenSpaceFade (SunShadows.fx ContactNearFade; the
-// Vulkan passes take x, y in their flags.y, z): contact shadows none nearer than x, full from y (view depth). Here, not in Constants, so
-// the header (and everything that includes it) stays as it was.
-static D3DXVECTOR4 ScreenSpaceFade(0.0f, 0.0f, 0.0f, 0.0f);
-
 void ShadowsExteriorEffect::UpdateSettings() {
 
 	Constants.ScreenSpaceData.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Enabled") && Enabled;
@@ -413,6 +424,7 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ScreenSpaceData.z = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "RenderDistance");
 	Constants.ScreenSpaceData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "Intensity"), 0.0f);
 	const float nearFade = (std::max)(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "NearFade"), 0.0f);
+	ScreenSpaceNearFade = nearFade;
 	ScreenSpaceFade = D3DXVECTOR4(nearFade * 0.5f, nearFade, 0.0f, 0.0f);
 	Settings.ScreenSpace.Sharp = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Sharp") != 0;	// UNOFFICIAL
 

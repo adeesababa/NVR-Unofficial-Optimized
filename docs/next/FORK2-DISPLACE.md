@@ -201,6 +201,43 @@ the fork's 1.7-displace takes a third family as it is.
   as they are. A DIFFUSE vertex shader paired with a non-DIFFUSE pixel shader would leave the pixel shader's COLOR0 undefined (not seen in
   the template's pairings).
 
+## The ring round the player, and bumps that change size with jitter (2026-10-28, branch claude/tess-ring on claude/linear-scene 7663bed0)
+User (installed 7663bed0, Strength 33 / Contrast 10 / Center 0.5 / LodBias 1, CastShadows on, FSR RenderScale 0.667 + LowResEffects,
+TAA Jitter on, MipBias -0.5, screen-space shadows on with NearFade 400): "a crusty weird shadow circle around us with brokenish looking
+shadows on tessellated geometry", "a hard edge where things get shadowed / darkened just outside this circle and it follows us around",
+"turning off jitter seems to shrink tessellation". Found from the code (not seen in a picture, no game run).
+- The ring: the screen-space CONTACT shadows ([Shaders.ShadowsExteriors.ScreenSpace], SunShadows.fx ScreenSpaceShadow / Fast / Sharp and
+  the two Vulkan marches) march the depth buffer from each pixel toward the sun and count where the scene is in front of the ray. On flat
+  ground nothing is; on tessellated ground every bump is, so the bumps cast crusty little contact shadows on each other (on top of their
+  real ones from the sun's maps, CastShadows), choppy from the 4 random steps, the blur and LowResEffects' small buffer. NearFade
+  (3c5ebc8a, the user's 400) switches the contact shadows off nearer than 200-400 units of view depth: inside that circle the bumps look
+  clean (bright), outside it crusty and darker, a hard-ish ring that moves with the camera. The flat land past FadeEnd gets no such
+  darkening (nothing blocks the march there).
+- Jitter: TAA / FSR / DLSS set a texture mip bias on every sampler while the world draws (TAAEffect::SetMipBias: MipBias when jittering,
+  plus log2(RenderScale) with FSR / DLSS; the user: -0.585 - 0.5 = -1.09 with jitter, -0.585 without). The tessellation evaluation
+  shaders read the heights with textureLod and the PS's own samplers, and Vulkan adds the sampler's mipLodBias to an explicit level too:
+  with jitter on the heights came from a mip about one level sharper, so the bumps were sharper and taller (spikier at Contrast 10);
+  jitter off -> smoother, smaller bumps. The shadow casters copy the land's sampler states, so the maps followed the same change.
+- `[Shaders.Terrain.Displacement] ContactShadowsOutside = true` (live; missing key = on; off = as before): while the bumps are on
+  (displacement registered, Enabled, Strength > 0), TESR_ShadowScreenSpaceFade (D3D9 and the Vulkan passes' flags.y/z) is the farther of
+  NearFade's and FadeEnd -/+ a quarter of the fade band (the user: 1792 .. 2304), set every frame in ShadowsExteriorEffect::UpdateConstants
+  (DxvkCompute::DisplaceContactFade). So no bump is ever in a contact march, and the contact shadows come in where the bumps have gone.
+  Nearer than that, everything's sun shadows are the shadow maps' (with the user's cascades the near ones are 0.1-0.9 units a texel).
+  View depth, not distance: at the screen's edges the contact shadows come in a little farther still (never over bumps).
+- `IgnoreMipBias = true` (live; missing key = on; off = as before): TAAEffect::WorldMipBias (the bias the frame's first world scene got)
+  is added back to the TES's LodBias part (TerrainDisplace viewParams; ObjectDisplace's lodBias for the rocks too), at most 3 (stays
+  under DebugView's 16s). The heights are read at the detail level the point spacing asks for (+ LodBias), with or without jitter or
+  RenderScale. Last frame's bias (the same unless the TAA settings change). The water reflection's land is drawn without TAA's bias, so
+  there the bumps come out a level smoother (not visible).
+- No shader changed: only the DLL and the defaults toml.
+- Left as it was: the land pixel shader's shadow lookup and sky light take the normal rebuilt from screen derivatives of the displaced
+  position, one per tessellated triangle (GetShadowGeometricNormal). With the user's tiny near-cascade texels the normal offset it
+  drives is a fraction of a unit, so it is not the crust; the sky light per facet is a mild shading of the bumps. Strength 33 at
+  Contrast 10 makes real spikes (+-7-16 units over 12-unit spacing) that cast real, hard sun shadows (CastShadows): Strength 10-15, or
+  the smoother bumps of claude/funny-mclean-fde02c (BumpSize, not installed), would look calmer.
+- Also noticed (not changed): ContactNearFade is called with the march's END position (pos after the loop), not the pixel's: a few
+  units of view depth off, harmless here.
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land

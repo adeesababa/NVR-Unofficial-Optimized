@@ -418,6 +418,9 @@ static UINT				DisplaceShadowVs = 0;
 static unsigned			DisplaceShadowPs = 0;
 static bool				DisplaceCastShadows = false;
 static unsigned			DisplaceShadowAge = 1000;
+// 2026-10-28 (tester: crusty dark ring round the player, bumps changing size with TAA jitter): ContactShadowsOutside, IgnoreMipBias
+static bool				DisplaceContactOutside = true;
+static bool				DisplaceIgnoreMipBias = true;
 // The land pixel shaders NVR made (TerrainTemplate PS) and their layer counts, for DisplaceShadows' capture of the land's draws.
 static std::vector<std::pair<IDirect3DPixelShader9*, int>> LandPixelShaders;
 
@@ -715,6 +718,30 @@ void DxvkCompute::DisplaceShadowsDrawn(unsigned Pieces) {
 	if (Pieces) DisplaceShadowAge = 0;
 }
 
+// The screen-space contact shadows march the depth buffer toward the sun, and on tessellated land every bump blocks that march: crusty
+// little shadows on the bumps (they already cast their real ones through the sun's maps, CastShadows). With NearFade they started 3-6 m
+// from the camera, a dark ring that followed the player. Here they come in only where the bumps have gone, round FadeEnd (a quarter of
+// the fade band either side of it), so no bump casts one and no ring shows.
+bool DxvkCompute::DisplaceContactFade(float& Start, float& End) {
+	if (!DisplaceContactOutside || !DisplaceInterface || !DisplaceRegistered[0] || !DisplaceRegistered[1] || !DisplaceBase.Enable
+		|| !(DisplaceBase.EvalParams[0] > 0.0f)) return false;
+	const float fadeStart = DisplaceBase.ControlParams[3], fadeEnd = DisplaceBase.ControlParams[4];
+	const float quarter = 0.25f * (std::max)(fadeEnd - fadeStart, 1.0f);
+	Start = (std::max)(fadeEnd - quarter, 0.0f);
+	End = fadeEnd + quarter;
+	return true;
+}
+
+// IgnoreMipBias: TAA / FSR / DLSS put a texture mip bias on every sampler while the world draws (TAAEffect::SetMipBias: MipBias, and
+// log2 of RenderScale), and the tessellation's height lookups (explicit detail level) take the sampler's bias too: sharper bumps with
+// jitter on or a lower RenderScale (tester: "turning off jitter seems to shrink tessellation"). Added back here, so the lookups stay
+// at the detail level the point spacing asks for. Last frame's bias (the same unless the TAA settings changed).
+static float DisplaceMipCompensation() {
+	if (!DisplaceIgnoreMipBias) return 0.0f;
+	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
+	return taa ? std::clamp(-taa->WorldMipBias(), 0.0f, 3.0f) : 0.0f;
+}
+
 bool DxvkCompute::DisplaceDepthWanted() {
 	return DisplaceInterface && DisplaceRegistered[0] && DisplaceDepthShaders && DisplaceBase.Enable && DisplaceObjectBlend > 0.0f;
 }
@@ -766,7 +793,7 @@ static void DisplaceObjectSettings() {
 	state.EvalParams[0] = strength;
 	state.EvalParams[1] = floorf(std::clamp(DisplaceFloatOr("Contrast", 2.0f, s), 0.0f, 32.0f) * 16.0f + 0.5f)
 		+ 0.99f * std::clamp(DisplaceFloatOr("Center", 0.5f, s), 0.0f, 1.0f);
-	state.EvalParams[2] = std::clamp(DisplaceFloatOr("LodBias", 0.0f, s), -2.0f, 4.0f) + 4.0f;
+	state.EvalParams[2] = std::clamp(DisplaceFloatOr("LodBias", 0.0f, s), -2.0f, 4.0f) + 4.0f + DisplaceMipCompensation();	// (IgnoreMipBias, the land's setting)
 	state.EvalParams[3] = std::clamp(DisplaceFloatOr("EdgeFade", 1.5f, s), 0.0f, 8.0f);
 }
 
@@ -829,13 +856,17 @@ void DxvkCompute::DisplaceTick() {
 		const float keep = std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendKeep"), 0.0f, 1.0f);
 		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
 		DisplaceCastShadows = DisplaceSettingOr("CastShadows", true);	// 2026-10-27 (core/DisplaceShadows.h); on by default
+		DisplaceContactOutside = DisplaceSettingOr("ContactShadowsOutside", true);	// 2026-10-28 (DisplaceContactFade)
+		DisplaceIgnoreMipBias = DisplaceSettingOr("IgnoreMipBias", true);			// 2026-10-28 (DisplaceMipCompensation)
 	}
 	// 2026-10-27 CastShadows: ShadowsHold (+ 256) while the sun's shadow maps hold displaced land (drawn into them within the last 16
 	// frames: the far cascades are redrawn only every few frames), so the land's forward shadow lookup follows the displaced surface,
 	// below the flat land too. Otherwise it never goes below the flat land (those maps hold the flat land).
 	if (DisplaceShadowAge < 1000) DisplaceShadowAge++;
 	const bool shadowsHold = DisplaceCastShadows && DisplaceShadowVs && DisplaceShadowAge <= 16;
-	state.EvalParams[2] = viewParams + (shadowsHold ? 256.0f : 0.0f);
+	// 2026-10-28 IgnoreMipBias: the world's texture mip bias added to LodBias's part (at most 3 on top of LodBias + 4 <= 8: stays below
+	// DebugView's 16s)
+	state.EvalParams[2] = viewParams + DisplaceMipCompensation() + (shadowsHold ? 256.0f : 0.0f);
 	// Once a frame the base (ObjectBlend off: the first land draws of a frame are the water's reflection, whose view the copy is not);
 	// the world scene's land binds then switch it on (DisplaceSceneDepth). SetTessState only when it changes. 2026-10-28: not while the
 	// objects' state is the one in use (their shaders may still be bound); the next land bind sends this (DisplaceBind).

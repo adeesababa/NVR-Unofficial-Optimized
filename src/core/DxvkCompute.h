@@ -126,6 +126,10 @@ public:
 	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
 	static void					DisplaceShadowEnd();
 	static void					DisplaceShadowsDrawn(unsigned Pieces);
+	// 2026-10-28 ContactShadowsOutside ([Shaders.Terrain.Displacement], live, missing key = on; tester: a crusty, darker ring round the
+	// player on tessellated land): while the land's bumps are on, where the screen-space contact shadows should start and be full
+	// (view depth; ShadowsExterior.cpp takes the farther of this and NearFade). False: the bumps are off, or the option is.
+	static bool					DisplaceContactFade(float& Start, float& End);
 
 	// Marks every compute path off for the session (logged once with the reason).
 	static void					Fail(const char* Reason);
