@@ -436,12 +436,28 @@ static UINT					DisplaceObjSkipped = 0;
 static unsigned				DisplaceSentFamily = DxvkCompute::kDisplaceLand;
 static unsigned				DisplaceObjBinds = 0;	// object shader binds that sent the objects' state (the log's proof that they bind)
 
+// 2026-10-28 far land (DxvkCompute::DisplaceLandPass): the land piece about to be drawn lies wholly past FadeEnd, so the land's state
+// goes to the fork switched off. DisplaceWanted is the land state last asked for (sent as it is again when a near piece or any other
+// pass comes); the setting ([Shaders.Terrain.Displacement] FarUntessellated), and for the log: far land draws, near <-> far changes.
+static bool					DisplaceFar = false;
+static NVR_EXT_TESS_STATE	DisplaceWanted = {};
+static bool					DisplaceFarOn = true;
+static unsigned				DisplaceFarDraws = 0, DisplaceFarSwitches = 0;
+static const float			kDisplaceFarMargin = 256.0f;	// game units past FadeEnd (the eye the TCS gets is the game's, in object space)
+
 static void DisplaceSend(const NVR_EXT_TESS_STATE& State, unsigned Family = DxvkCompute::kDisplaceLand) {
+	// 2026-10-28 far land: one off state for every far piece, so a run of them sends nothing more
+	static const NVR_EXT_TESS_STATE off = {};
+	const NVR_EXT_TESS_STATE* send = &State;
+	if (Family == DxvkCompute::kDisplaceLand) {
+		if (&State != &DisplaceWanted) DisplaceWanted = State;
+		if (DisplaceFar) send = &off;
+	}
 	DisplaceSentFamily = Family;
-	if (DisplaceSentOnce && !memcmp(&State, &DisplaceSent, sizeof(State))) return;
-	DisplaceSent = State;
+	if (DisplaceSentOnce && !memcmp(send, &DisplaceSent, sizeof(*send))) return;
+	DisplaceSent = *send;
 	DisplaceSentOnce = true;
-	DisplaceInterface->SetTessState(&State);
+	DisplaceInterface->SetTessState(send);
 }
 
 // TerrainDisplace.tese's sceneScale: the viewport's share of the depth copy, x and y to 1/2048
@@ -700,6 +716,7 @@ float DxvkCompute::DisplaceReach() {
 
 void DxvkCompute::DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY) {
 	if (!DisplaceInterface) return;
+	DisplaceFar = false;	// 2026-10-28: the shadow pass takes only land within FadeEnd (DisplaceShadows::Takes)
 	NVR_EXT_TESS_STATE state = DisplaceBase;
 	state.Wireframe = 0;	// DebugView 1 is the camera's view of the land; the maps keep solid land
 	state.ControlParams[6] = ObjectBlend ? DisplaceObjectBlend : 0.0f;
@@ -739,6 +756,28 @@ void DxvkCompute::DisplaceBind(unsigned Family) {
 	else if (Family == kDisplaceLand && DisplaceSentFamily == kDisplaceObjects) DisplaceSend(DisplaceBase);
 }
 
+void DxvkCompute::DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, bool MainCamera) {
+	bool pieceFar = false;
+	if (DisplaceFarOn && DisplaceBase.Enable && MainCamera && Geometry && ((PassEnum >= 0x93 && PassEnum <= 0x94) || (PassEnum >= 0x1EF && PassEnum <= 0x230))) {
+		// The bound holds the piece, so each of its points is at least this far from the camera horizontally, and so from the eye the
+		// TCS measures from: the camera's in the world scene, the camera mirrored below the water (same x and y) in the reflection.
+		const NiBound* bound = Geometry->m_kWorldBound;
+		if (bound) {
+			const D3DXVECTOR4& cam = TheRenderManager->CameraPosition;
+			const float dx = bound->Center.x - cam.x, dy = bound->Center.y - cam.y;
+			const float reach = DisplaceBase.ControlParams[4] + kDisplaceFarMargin + bound->Radius;
+			pieceFar = dx * dx + dy * dy > reach * reach;
+		}
+		if (pieceFar) DisplaceFarDraws++;
+	}
+	if (pieceFar == DisplaceFar) return;
+	DisplaceFar = pieceFar;
+	DisplaceFarSwitches++;
+	// The land's state is the one in use: sent again, switched off or as it was asked for. After an object's state the land shader's
+	// bind sends it (DisplaceBind), and the shadow pass sends its own (DisplaceShadowBegin).
+	if (DisplaceInterface && DisplaceSentOnce && DisplaceSentFamily == kDisplaceLand) DisplaceSend(DisplaceWanted);
+}
+
 // 2026-10-28 objects: [Shaders.POM.Displacement] into their state (every 8 frames, from DisplaceTick). A missing key (a DLL used with an
 // older defaults toml) reads as the shipped default.
 static void DisplaceObjectSettings() {
@@ -772,6 +811,7 @@ static void DisplaceObjectSettings() {
 
 void DxvkCompute::DisplaceTick() {
 	if (!DisplaceInterface) return;
+	DisplaceFar = false;	// 2026-10-28 far land: each frame starts with the land's state as asked for (the land passes decide again)
 
 	// 2026-10-28 objects: their settings, and once a frame their state again if the objects were the last to bind (their shaders may stay
 	// bound into the next frame); proof in the log every 600 frames
@@ -829,6 +869,7 @@ void DxvkCompute::DisplaceTick() {
 		const float keep = std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendKeep"), 0.0f, 1.0f);
 		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
 		DisplaceCastShadows = DisplaceSettingOr("CastShadows", true);	// 2026-10-27 (core/DisplaceShadows.h); on by default
+		DisplaceFarOn = DisplaceSettingOr("FarUntessellated", true);	// 2026-10-28 (DisplaceLandPass); on by default
 	}
 	// 2026-10-27 CastShadows: ShadowsHold (+ 256) while the sun's shadow maps hold displaced land (drawn into them within the last 16
 	// frames: the far cascades are redrawn only every few frames), so the land's forward shadow lookup follows the displaced surface,
@@ -841,17 +882,20 @@ void DxvkCompute::DisplaceTick() {
 	// objects' state is the one in use (their shaders may still be bound); the next land bind sends this (DisplaceBind).
 	if (DisplaceSentFamily != kDisplaceObjects) DisplaceSend(state);
 
-	// Proof in the log that it runs: every 600 frames, per frame, how many land draws ran tessellated
+	// Proof in the log that it runs: every 600 frames, per frame, how many land draws ran tessellated. 2026-10-28: and how many land
+	// draws past FadeEnd went untessellated (DisplaceLandPass), with how often the state switched between near and far pieces.
 	if ((frame % 600) == 1) {
 		NVR_EXT_TESS_STATS now = {};
 		if (SUCCEEDED(DisplaceInterface->GetTessStats(&now))) {
 			const double f = 600.0;
-			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | shaders %u VS, %u PS, %u refused by the interface check | ObjectBlend %s (%u of the %u land pixel shaders can: below 7 layers)",
+			Logger::Log("NVR TESS %s: per frame %.1f land draws tessellated (lists and strips), %.1f left as they are (fans, UP draws: the DXVK log names the type), %.1f rebinds | far land %s: %.1f draws untessellated (wholly past FadeEnd + %.0f), %.1f near/far switches | shaders %u VS, %u PS, %u refused by the interface check | ObjectBlend %s (%u of the %u land pixel shaders can: below 7 layers)",
 				state.Enable ? "on" : "off", (double)(now.TessellatedDraws - last.TessellatedDraws) / f, (double)(now.OtherTopologyDraws - last.OtherTopologyDraws) / f,
-				(double)(now.Bindings - last.Bindings) / f, now.VertexShaders, now.PixelShaders, now.RefusedPairs,
+				(double)(now.Bindings - last.Bindings) / f, DisplaceFarOn ? "on" : "off", (double)DisplaceFarDraws / f, kDisplaceFarMargin,
+				(double)DisplaceFarSwitches / f, now.VertexShaders, now.PixelShaders, now.RefusedPairs,
 				DisplaceObjectBlend > 0.0f ? "on" : "off", DisplaceDepthShaders, DisplaceRegistered[1]);
 			last = now;
 		}
+		DisplaceFarDraws = DisplaceFarSwitches = 0;
 	}
 }
 

@@ -126,6 +126,13 @@ public:
 	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
 	static void					DisplaceShadowEnd();
 	static void					DisplaceShadowsDrawn(unsigned Pieces);
+	// 2026-10-28 far land ([Shaders.Terrain.Displacement] FarUntessellated, on by default, live; docs/next/FORK2-DISPLACE.md "Far land
+	// drawn untessellated"): RenderPassStandardHook, before every game pass. A land pass (pass IDs 0x93-0x94, 0x1EF-0x230) of the world
+	// scene or the water's reflection (MainCamera) whose piece lies wholly past FadeEnd + 256 units of the camera (horizontally, its
+	// world bound) is drawn with the land's tessellation state switched off: there TerrainDisplace.tesc sets level 1 and moves nothing,
+	// so these are the same triangles, now one strip draw without the TCS / TES instead of three patch lists. Any other pass puts the
+	// land's state back as it was (so no land draw is ever left switched off by the piece before it).
+	static void					DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, bool MainCamera);
 
 	// Marks every compute path off for the session (logged once with the reason).
 	static void					Fail(const char* Reason);

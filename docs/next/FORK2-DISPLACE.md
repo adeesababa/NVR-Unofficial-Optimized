@@ -201,6 +201,35 @@ the fork's 1.7-displace takes a third family as it is.
   as they are. A DIFFUSE vertex shader paired with a non-DIFFUSE pixel shader would leave the pixel shader's COLOR0 undefined (not seen in
   the template's pairings).
 
+## Far land drawn untessellated (2026-10-28, FarUntessellated)
+`[Shaders.Terrain.Displacement] FarUntessellated = true` (live; missing key = on). **No d3d9 change.**
+- Why: every land draw went through the fork's tessellation (VS -> TCS -> TES, a strip as three patch lists) at any distance, while
+  past FadeEnd TerrainDisplace.tesc only sets level 1 and nothing moves. A tester with a very high uGridsToLoad (about 670 land pieces
+  loaded) logged "per frame 350-980 land draws tessellated"; the user's Goodsprings view about 7.
+- Where: `RenderPassStandardHook` (Render.cpp, BSBatchRenderer::RenderPassImmediately_Standard), before each game pass and before its
+  shader bind, calls `DxvkCompute::DisplaceLandPass(geometry, pass ID, main camera)`. A land pass (IDs 0x93-0x94, 0x1EF-0x230, as
+  TerrainProbe) of the world scene or the water's reflection whose world bound lies wholly past FadeEnd + 256 units of the camera,
+  measured horizontally (the reflection camera is the camera mirrored below the water: same x and y; the horizontal distance never
+  exceeds the 3D distance the TCS measures), sets `DisplaceFar`. `DisplaceSend` then gives the fork one fixed "off" state for the land
+  family (Enable 0) instead of the land's state; the state asked for is kept (`DisplaceWanted`) and sent as it is again by the next near
+  land pass or ANY other pass (so a land draw is never left switched off by the piece before it). The binds' own sends (DisplaceBind,
+  DisplaceSceneDepth / ObjectBlend) go through DisplaceSend and so follow the flag; DisplaceShadowBegin (land within FadeEnd only) and
+  DisplaceTick (once a frame) clear it. The objects' state (family 3) is never touched.
+- Same picture: past FadeEnd every point and edge midpoint has fade 0, so the TCS gives level 1 (fractional_odd: no split), weight 0
+  and fade 0 (no relief, no Center offset), and the TES evaluates exactly the corners (1 x a + 0 x b + 0 x c, displacement 0,
+  projectionPosition = the VS's): the same triangles the VS gives. Only the debug views change out there (far land now plain, not
+  wireframe / coloured), which shows where the cut lies.
+- Cost of the switching: SetTessState is a lock + compare + copy in the fork; the work is one unbind / rebind in ApplyDraw at the next
+  draw after a near <-> far change (NVR TESS "rebinds" goes up by about that). Land passes come grouped by pass type, so changes are
+  few; the log counts them ("near/far switches").
+- Log: `NVR TESS on: ... | far land on: N draws untessellated (wholly past FadeEnd + 256), M near/far switches | ...` per frame.
+- Expected saving (not measured): per far land draw, two Vulkan draws fewer (one strip draw instead of three patch lists) and no
+  TCS / TES invocations (about 3 + 3 per strip triangle, ~1,500 per quadrant at level 1). With ~700 far draws a frame: ~1,400 draws
+  fewer on DXVK's CS thread (roughly 1-3 ms of that thread) and a few tenths of a ms of GPU; about nothing at the default uGridsToLoad.
+- Limits: the bound is a sphere (radius ~1,450 for a 2,048 quadrant), so pieces whose centre is within about FadeEnd + 256 + 1,450
+  stay tessellated (conservative). Other cameras (local map, anything outside the world scene and the water reflection) keep the
+  tessellation as before. A land pass with an ID outside the list stays tessellated as before.
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land
