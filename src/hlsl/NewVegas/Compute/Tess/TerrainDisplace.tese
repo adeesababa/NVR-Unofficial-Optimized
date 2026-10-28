@@ -43,6 +43,14 @@
 // height moved along a constant normal); tangent and binormal re-orthogonalised to it, each keeping its length and w (the main vertex
 // shader writes only their xyz; TerrainTemplate.hlsl). Off ([Shaders.Terrain.Displacement] BendNormals false: viewParams + 128): no extra
 // lookups, the flat frame as before. The shadow casters have no lighting and keep one lookup.
+//
+// 2026-10-28 (BumpSize; Conor, shipped defaults: "how would this work with smooth terrain?", a dense field of spikes): the height's
+// detail level followed the spacing of the generated points (12 units near the camera), and Contrast 10 stretched each texture's grain
+// to full ups and downs from one point to the next. Measured offline on the landscape textures: 2-5 game units between neighbouring
+// points on ordinary dirt and scrub at Strength 10, pure grain. The detail level is now never finer than BumpSize game units
+// (viewParams + 512 x BumpSize; uv per game unit from this triangle's own uv map, the same in every triangle of a quadrant, rounded to
+// 1/256 of a level so neighbours agree to the bit), for the camera and the shadow casters alike (the same landHeight). Contrast's
+// default is 4 (in the DLL).
 #ifndef TEX_COUNT
   #define TEX_COUNT 1
 #endif
@@ -111,7 +119,9 @@ layout(push_constant) uniform Push {
   uint  psBits;           // bit i: layer i has a height map (the land pixel shader's LandHeight c34 / c35 > 0, read per draw)
   float strength;         // Strength: game units between the lowest and the highest point the bumps can reach
   float center;           // 16 x Contrast (whole) + 0.99 x Center: contrast() and centerValue() below
-  float viewParams;       // 256 x ShadowsHold + 128 x FlatNormals + DebugView x 16 + (LodBias + 4). DebugView: 2 the height as grey,
+  float viewParams;       // 512 x BumpSize + 256 x ShadowsHold + 128 x FlatNormals + DebugView x 16 + (LodBias + 4). BumpSize
+                          // (2026-10-28): the finest bump the height lookup gives, game units (whole, 0: the point spacing alone; LodBias
+                          // still adds on top). DebugView: 2 the height as grey,
                           // 3 the split count (blue 1 -> red 16) and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer
                           // weights (COLOR0 xyz), 6 the normal (TEXCOORD5, bent), 7 the object blend (white: all the bumps, black: none).
                           // LodBias: added to the height lookup's detail level. ShadowsHold (2026-10-27): the sun's shadow maps hold the
@@ -123,8 +133,12 @@ layout(push_constant) uniform Push {
 
 #define SMP(i) s_samplers[(pc.samplerIndex[(i) >> 1] >> (16u * uint((i) & 1))) & 0xFFFFu]
 
+float bumpSize() {
+  return floor(pc.viewParams / 512.0);
+}
+
 float shadowsHold() {
-  return floor(pc.viewParams / 256.0);
+  return mod(floor(pc.viewParams / 256.0), 2.0);
 }
 
 bool bendNormals() {
@@ -299,10 +313,24 @@ void main() {
 #else
   bool slopes = bendNormals();
 #endif
+  // This triangle's uv over the land's x / y (uv = J (x, y) + c), from its corners (the shadow casters' vertex shader has the same
+  // uv and position slots). Land uv is a plane over x / y, so J is the same for every triangle of a quadrant whatever their slope.
+  vec2 e1 = i_v3[1].xy - i_v3[0].xy, e2 = i_v3[2].xy - i_v3[0].xy;
+  bool haveJ = abs(e1.x * e2.y - e1.y * e2.x) > 1e-3;
+  mat2 J = haveJ ? mat2(i_v1[1].xy - i_v1[0].xy, i_v1[2].xy - i_v1[0].xy) * inverse(mat2(e1, e2)) : mat2(0.0);
+
+  // The height's detail level (log2 of a texel of it in uv): the spacing of the generated points (the TCS), but never finer than
+  // BumpSize game units. Rounded to 1/256 of a level, so two triangles whose J differs in the last bit still read the same height
+  // along their shared edge.
+  float lodUv = nvr.y;
+  float uvPerUnit = sqrt(abs(determinant(J)));
+  if (bumpSize() > 0.0 && uvPerUnit > 0.0)
+    lodUv = max(lodUv, floor(log2(bumpSize() * uvPerUnit) * 256.0 + 0.5) / 256.0);
+
   float h = 0.5;
   vec2 dh = vec2(0.0);
   if (canDisplace && weight > 0.0 && pc.strength != 0.0 && keepShare > 0.0)
-    h = landHeight(v1.xy, v9, v10, nvr.y, slopes, dh);
+    h = landHeight(v1.xy, v9, v10, lodUv, slopes, dh);
   float disp = canDisplace ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - centerValue())) : 0.0;
 
   // The vertex shader's clip position (interpolated), moved by the displacement through ModelViewProj (row k = c[k] . (v, 1))
@@ -340,11 +368,8 @@ void main() {
   vec3 nb = n;
   vec4 t4 = v4, b5 = v5;
   if (dh != vec2(0.0)) {
-    // This triangle's uv over the land's x / y (uv = J (x, y) + c), from its corners: land uv is a plane over x / y, so J is the same
-    // for every triangle of a quadrant whatever their slope, and the tangent's sign convention does not matter.
-    vec2 e1 = i_v3[1].xy - i_v3[0].xy, e2 = i_v3[2].xy - i_v3[0].xy;
-    if (abs(e1.x * e2.y - e1.y * e2.x) > 1e-3) {
-      mat2 J = mat2(i_v1[1].xy - i_v1[0].xy, i_v1[2].xy - i_v1[0].xy) * inverse(mat2(e1, e2));
+    // Through J (above: no seams between the game's triangles, and the tangent's sign convention does not matter)
+    if (haveJ) {
       // The displacement's gradient over x / y (game units per game unit), then along the surface: n - that is the normal of the
       // surface moved along n
       vec3 g = vec3(pc.strength * keepShare * weight * (dh * J), 0.0);

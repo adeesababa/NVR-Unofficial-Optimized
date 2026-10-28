@@ -162,6 +162,35 @@ Contrast 10: can the tessellation "use normals"?).
   already turned (TEXCOORD1/3/5/7, which slots hold them differs per variant) and the TES has no object-space position for the uv map: a
   per-variant rotation of those vectors, about 1-2 h.
 
+## Smoother bumps by default: BumpSize 48, Contrast 4 (2026-10-28, on BendNormals dbf6cf1c)
+Conor (RTX 4070 Ti SUPER, settings never touched: Strength 10, Contrast 10, EdgeLength 12, LodBias 0) saw his Goodsprings ground as a
+dense field of sharp spikes and asked how it would work with smooth terrain. The height's detail level followed the point spacing
+(12 units near the camera) and Contrast 10 stretched every texture's grain, so neighbouring points went fully up and down.
+- `[Shaders.Terrain.Displacement] BumpSize = 48` (live, whole game units 0-255, 0 = the old behaviour): the height lookup is never
+  finer than that, whatever the point spacing. The uv per game unit comes from the triangle's own uv map J (the one BendNormals uses),
+  sqrt|det J|, and the level is rounded to 1/256 so two triangles agree to the bit along their shared edge. In landHeight, so the
+  shadow casters (CastShadows) and the BendNormals differences follow the same bumps. LodBias now adds on top of it. Push:
+  `viewParams + 512 x BumpSize` (ShadowsHold is now read as bit 256 only). With BumpSize above the spacing (everywhere within FadeEnd at
+  the defaults: EdgeGrowth 0.01 reaches 48 only at 3600 units) the detail level no longer changes with distance, so it cannot crawl as
+  you move either.
+- `Contrast` default 4 (was 10; also the DLL's value for a missing key).
+- Offline check (scratch script on the loose landscape textures, DXT5 alpha, box mips, trilinear like the TES, 400 random lines with points
+  every 12 units, one layer). The land's uv repeat in game units is not known offline, so both 683 (6 per cell) and 2048 (1 per quadrant)
+  were run; the averages of the two. Relief = std of the displacement, slope = 99th percentile of the step between neighbouring points,
+  spike = 99th percentile of a point's height against the mean of its two neighbours (single-point spikes), game units:
+
+  | Strength, BumpSize, Contrast | smooth (pavement, dirt01, muddirt) | scrub / dirt (6 textures) | rough (pebbles, loose rocks, dirtwasteland, riverbed, dirtpebbles) |
+  |---|---|---|---|
+  | 10, 0 (old), 10 (old)  | 0.93 / 8 deg / 0.96 | 1.54 / 15 deg / 2.01 | 3.09 / 27 deg / 3.67 |
+  | 10, 48, 10             | 0.59 / 3 deg / 0.19 | 0.84 / 4 deg / 0.34  | 2.29 / 10 deg / 0.84 |
+  | 10, 48, 4 (new)        | 0.25 / 1 deg / 0.08 | 0.36 / 2 deg / 0.15  | 1.23 / 5 deg / 0.39  |
+  | 33, 0, 10 (user's)     | 3.08 / 24 deg / 3.18 | 5.07 / 41 deg / 6.63 | 10.19 / 59 deg / 12.11 |
+  | 33, 48, 4              | 0.81 / 4 deg / 0.27 | 1.18 / 6 deg / 0.49  | 4.07 / 16 deg / 1.30 |
+
+  At the old defaults a single point stands out from its neighbours by about as much as the whole relief (noise: spikes); with
+  BumpSize 48 by a quarter or less (rounded mounds). Smooth ground ends up with a quarter of a unit, rough ground keeps clear mounds.
+- Not changed: the rocks (`[Shaders.POM.Displacement]`, Contrast 2, LodBias 0 per patch), on their own branch.
+
 ## Objects: rocks, cliffs, walls (plan step 5; 2026-10-28, branch claude/intelligent-lalande-6e0cf0 on claude/tess-blend-4078c1 0a51be43)
 `[Shaders.POM.Displacement]` (the POM page of the menu, "Tessellation (displacement)"): `Enabled = false` (live), `Strength = 8`,
 `Center = 0.5`, `Contrast = 2`, `EdgePixels = 12`, `EdgeFade = 1.5`, `MaxFactor = 16`, `FadeStart = 1024`, `FadeEnd = 2048`, `LodBias = 0`,
@@ -243,6 +272,8 @@ Rocks and walls (objects) are the next family (see the plan).
   (spacing added per unit of distance), `MaxFactor = 16`, `FadeStart = 1024`, `FadeEnd = 2048`, `BorderGrid = 2048` (bumps fade to 0
   on land quadrant borders: each quadrant is its own draw with its own textures, so a crack could open there), `LodBias = 0`,
   `FixedFactor = 0` (test), `DebugView = 0` (1 wireframe, 2 height as grey, 3 split count), `Winding = 0` (test).
+- (These are the first step's values. Shipped since 2026-10-28: Strength 10, Center 0.5, Contrast 4, BumpSize 48, EdgeLength 12, LodBias 0
+  on top of BumpSize, CastShadows and BendNormals on, ObjectBlend off; see the sections above.)
 
 ## How it works
 Fork (patch 0021, new files `src/d3d9/d3d9_nvr_tess.{h,cpp}`, small hooks in `d3d9_device.{h,cpp}`, `d3d9_shader.h`, `meson.build`,
