@@ -315,13 +315,21 @@ not run in game yet):
   own height less 1), was lifted back to it every step, a level sheet over the slope cut along a line by the draw's slab test. Now
   not where the camera sees a floor there (normal z > 0.6), and only blood lying ON the fallback counts as on it (hidden blood
   below it is held, not lifted). Old paths: OldThrow.
-- Ketchup / full bright (BloodFluidDraw.frag, look4.x; OldColour = the old look): BloodPS's look took the fluid's film (mostly just
-  over the threshold) for a thin stain: sunlit sand showed through it bright and pure red (sRGB ~0.66 0.31 0.24 at the edges,
-  0.55 0.11 0.09 a little in), and its light was at least the open sky's wherever the image was darker (shade, under a body, a
-  dark room lit as outdoors). Now: thick at 1.2 over the threshold (2.5), optical depth 0.6 + 2.4 thick (0.25 + 2), thick blood
-  x0.45 (0.6), light at most 3x the image's own estimate, the sky sheen x how open the spot is, a 4 % floor in every channel. Model:
-  work\bench\deep-roadmap\evidence\bloodhalf\look_model.py (sunlit sand: edge 0.54 0.12 0.09, in 0.36 0.03 0.03, thick 0.23 0.01
-  0.01). No colour-space bug found: every binding is a UNORM view, colours linearized as BloodPS does.
+- Ketchup / full bright (BloodFluidDraw.frag, look4.x; OldColour = the old look). The user's screenshot (evidence\bloodhalf\
+  user-shot-fluid-vs-vanilla.jpg, numbers in vanilla-match.txt): fluid sRGB (140 1 1) on ground (70 64 55), the game's own blood
+  (38 14 14) on (40 33 27). BloodPS's look lights the blood's colour by its own light estimate, never below the open sky's (the
+  sun/ambient constants): that floor ignores NVR's shadows, AO and exposure, so the fluid was lit as in the open sun, 4x the
+  ground's red. The game's blood is a dark film over the ground (linear: 0.6-0.9 of its red kept, 0.2-0.4 of green/blue). Now the
+  fluid is the same: a filter over the image under it in the blood's hue (the matched colour, drying browner): hue channel 0.85 at
+  a film's edge to 0.45 thick (thick at 1.2 over the threshold), the rest 0.32 to 0.12, darker dried. Lit exactly as the ground,
+  matching the decals by construction; drops: thick blood over what is behind them. Highlights: light capped at 3x the image's
+  estimate, sky sheen x how open the spot is. First try that evening (a deeper layer lit by the capped estimate, look_model.py)
+  replaced by this before install. No colour-space bug: every binding is a UNORM view, colours linearized as BloodPS does.
+- TextureRelief ([Shaders.BloodFlow.Fluid], 1, look4.y; user: "follows the normal map of the texture it's sitting on"): NVR's
+  normals come from depth (no normal maps), so the ground's detail is read from the picture under the blood (log brightness as a
+  height, 4 taps 2 px out): a film's edge creeps into darker dips first and breaks on raised bits; a thin film's highlights follow
+  the bumps (thick pools flat).
+- The user's shot also shows the third half-circle cut above: runs on a slope, each cut along a parallel straight line (contour).
 FINDING (affects every depth effect tested on the fork): DXVK 3.0.1 offers AMD's RESZ depth resolve only when the adapter
 reports AMD. On the GTX 1070 NVR fell back to NVAPI, which initializes but cannot copy depth on a DXVK device, so NVR's
 world depth (TESR_DepthBuffer) was EMPTY in every fork slot run (the Depth Resolve plugin, which normally covers this, is
