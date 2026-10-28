@@ -1160,10 +1160,12 @@ namespace ClothWind {
 		device->SetVertexShaderConstantF(248, zero, 1);
 		NonZeroSent = false; GrassInC248 = false;
 	}
-	inline void AfterDraw(IDirect3DDevice9* device) {
+	inline void ZeroCloth(IDirect3DDevice9* device) {
 		if (GrassInC248) { ActiveWeights = nullptr; ActiveWalk = nullptr; ActiveSkin = nullptr; ActiveStill = nullptr; return; }
 		if (device) Zero(device);
 	}
+	inline void AfterDraw(IDirect3DDevice9* device) { ZeroCloth(device); }
+	inline void ZeroFor(IDirect3DDevice9* device, bool shadowPass) { if (shadowPass) Zero(device); else ZeroCloth(device); }
 
 	inline const float* MotionOf(const NiAVObject* root) {
 		Motion& m = Motions[root];
@@ -1222,7 +1224,7 @@ namespace ClothWind {
 	inline void ForGeometry(IDirect3DDevice9* device, NiGeometry* geometry, bool shadowPass = false, bool firstPerson = false) {
 		if (!device) return;
 		ActiveWeights = nullptr;
-		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { Zero(device); return; }
+		if (!S.On || !geometry || firstPerson || (!Exterior && !S.MotionIndoors)) { ZeroFor(device, shadowPass); return; }
 		bool boundAnswer = false;
 		if (!shadowPass) {
 			auto t = TentativeNow.find(geometry);
@@ -1236,17 +1238,17 @@ namespace ClothWind {
 				auto c = ClothPassCounts.find(geometry);
 				if (c != ClothPassCounts.end()) { if (!SeenLast.count(geometry)) c->second.notSeen++; else c->second.vanilla++; }
 			}
-			Zero(device); return;
+			ZeroFor(device, shadowPass); return;
 		}
-		if (shadowPass && VanillaLast.count(geometry)) { Zero(device); return; }
+		if (shadowPass && VanillaLast.count(geometry)) { ZeroFor(device, shadowPass); return; }
 		BSShaderProperty* property = (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade);
 		const UInt32 vtable = property ? *(UInt32*)property : 0;
-		if (vtable != 0x10AE0D0 && vtable != 0x10B9910) { Zero(device); return; }
+		if (vtable != 0x10AE0D0 && vtable != 0x10B9910) { ZeroFor(device, shadowPass); return; }
 		BSShaderPPLightingProperty* lighting = (BSShaderPPLightingProperty*)property;
 		const NiSourceTexture* diffuse = lighting->ppTextures[0] ? lighting->ppTextures[0][0] : nullptr;
-		if (!diffuse || !diffuse->ddsPath1) { Zero(device); return; }
+		if (!diffuse || !diffuse->ddsPath1) { ZeroFor(device, shadowPass); return; }
 		const bool skinned = geometry->skinInstance != nullptr;
-		if (!Exterior && !skinned) { Zero(device); return; }
+		if (!Exterior && !skinned) { ZeroFor(device, shadowPass); return; }
 		bool cloth;
 		auto known = ByTexture.find(diffuse);
 		if (known != ByTexture.end() && known->second.first == diffuse->ddsPath1) cloth = known->second.second;
@@ -1264,7 +1266,7 @@ namespace ClothWind {
 			autoVerdict = AutoVerdictOf(geometry, diffuse);
 			if (autoVerdict && autoVerdict->state == 2) cloth = true; else autoVerdict = nullptr;
 		}
-		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { Zero(device); return; }
+		if (!cloth || (S.MaskMode == 0 && (!geometry->geomData || !geometry->geomData->m_pkColor))) { ZeroFor(device, shadowPass); return; }
 		float dir[3] = { WorldDir[0], WorldDir[1], WorldDir[2] };
 		float scale = 1.0f;
 		float mode = (float)S.MaskMode;
@@ -1281,7 +1283,7 @@ namespace ClothWind {
 			}
 			if (S.MaskMode == 2 && S.StillWeights && StillHookOn) {
 				StillMesh* sm = StillOf(geometry, diffuse->ddsPath1);
-				if (!sm) { Zero(device); return; }
+				if (!sm) { ZeroFor(device, shadowPass); return; }
 				mode = 6.0f; ActiveStill = sm;
 			}
 		}
@@ -1294,7 +1296,7 @@ namespace ClothWind {
 				if (shadowPass) c.shadow++; else c.lit++;
 			}
 			const Skeleton* skeleton = S.MaskMode == 2 && S.UseSkeleton ? &SkeletonOf(geometry) : nullptr;
-			if (skeleton && !skeleton->ok && skeleton->actor) { Zero(device); return; }
+			if (skeleton && !skeleton->ok && skeleton->actor) { ZeroFor(device, shadowPass); return; }
 			if (S.MaskMode != 2) {}
 			else if (skeleton && skeleton->ok) {
 				mode = 4.0f;

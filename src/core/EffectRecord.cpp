@@ -5,6 +5,7 @@
 #include "GpuDebug.h"
 #include "PixelInspector.h"
 #include "ReflMaterial.h"
+#include "EffectPrecompile.h"
 /*
 * Class that wraps an effect shader, in order to load it/render it/set constants.
 */
@@ -87,6 +88,7 @@ bool EffectRecord::LoadEffect() {
 	// Toggling any of these changes that source, so CheckPreprocessResult forces a recompile.
 	D3DXMACRO EffectMacros[8];
 	BuildMacros(EffectMacros);
+	EffectPrecompile::Wait(EffectCompiledPath);
 
 	HRESULT prepass = D3DXPreprocessShaderFromFileA(EffectSourcePath, EffectMacros, NULL, &EffectSource, &Errors);
 	if (prepass == D3D_OK) {

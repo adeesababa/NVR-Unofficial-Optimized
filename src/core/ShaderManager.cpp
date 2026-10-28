@@ -5,6 +5,7 @@
 #include "PixelInspector.h"
 #include "PointShadowSlots.h"
 #include "PointShadowForward.h"
+#include "EffectPrecompile.h"
 #include "LampFixtures.h"
 #include "EffectSelfTest.h"
 #include "../effects/GpuParticles.h"
@@ -60,6 +61,7 @@ void ShaderManager::Initialize() {
 	}
 
 	// initializing the list of effect names
+	EffectPrecompile::Start();
 	TheShaderManager->RegisterEffect<AvgLumaEffect>(&TheShaderManager->Effects.AvgLuma);
 	TheShaderManager->RegisterEffect<SkyViewEffect>(&TheShaderManager->Effects.SkyView);
 	TheShaderManager->RegisterEffect<AmbientLightEffect>(&TheShaderManager->Effects.AmbientLight);
@@ -596,6 +598,7 @@ void ShaderManager::UpdateConstants() {
 	ShaderConst.skyColor.y = WorldSky->skyUpper.g;
 	ShaderConst.skyColor.z = WorldSky->skyUpper.b;
 	ShaderConst.skyColor.w = 1.0f;
+	Shaders.Sky->UpdateFogSky();
 
 	// replicate vanilla behavior of enforcing max fog distance in interiors
 	ShaderConst.fogData.y = WorldSky->fogFarPlane;

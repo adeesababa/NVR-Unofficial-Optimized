@@ -146,8 +146,19 @@ void main() {
 
     float th = F.look.z;
     float slope = length(grad);
-    float cover = saturate((T - th) / max(slope * aa * 1.5, 0.02) + 0.5);
     bool deep = F.look4.x > 0.5;
+    float relief = 0.0;
+    vec2 reliefGrad = vec2(0.0);
+    if (deep && F.look4.y > 0.0 && T > 0.5 * th) {
+        float lc = log(max(luma(linearize(max(Texel(t_scene, px).rgb, vec3(0.0)))), 1e-5));
+        float lr = log(max(luma(linearize(max(Texel(t_scene, px + ivec2(2, 0)).rgb, vec3(0.0)))), 1e-5));
+        float ll = log(max(luma(linearize(max(Texel(t_scene, px - ivec2(2, 0)).rgb, vec3(0.0)))), 1e-5));
+        float ld = log(max(luma(linearize(max(Texel(t_scene, px + ivec2(0, 2)).rgb, vec3(0.0)))), 1e-5));
+        float lu = log(max(luma(linearize(max(Texel(t_scene, px - ivec2(0, 2)).rgb, vec3(0.0)))), 1e-5));
+        reliefGrad = clamp(vec2(lr - ll, ld - lu) * 0.5, vec2(-0.6), vec2(0.6));
+        relief = clamp((lr + ll + ld + lu) * 0.25 - lc, -0.5, 0.5);
+    }
+    float cover = saturate((T + relief * F.look4.y * th * 1.2 - th) / max(slope * aa * 1.5, 0.02) + 0.5);
     float thick = saturate((T - th) / (deep ? 1.2 : 2.5));
     float coverA = saturate(A / (0.6 + aa));
     float amountAll = max(cover, coverA);
@@ -186,12 +197,22 @@ void main() {
     }
     vec3 albedo = mix(freshColour, dryColour, dry);
     vec3 at = rel + F.eyeRel.xyz;
-    albedo *= mix(1.0, 0.8 + 0.4 * valueNoise((at.xy + at.z) * 0.35), dry);
-    if (deep) albedo = max(albedo, vec3(0.04 * max(albedo.r, max(albedo.g, albedo.b))));
+    float mottle = mix(1.0, 0.8 + 0.4 * valueNoise((at.xy + at.z) * 0.35), dry);
+    albedo *= mottle;
     float rim = saturate(1.0 - (T - th) / 0.6) * cover;
-    vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (deep ? 0.6 + 2.4 * thick : 0.25 + 2.0 * thick));
-    vec3 blood = (sceneLin * through + light * albedo * mix(1.0, deep ? 0.45 : 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
-    blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
+    vec3 blood;
+    if (deep) {
+        vec3 bloodHue = albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-4);
+        float keepHue = mix(0.85, 0.45, thick) * mix(1.0, 0.7, dry);
+        float keepRest = mix(0.32, 0.12, thick) * mix(1.0, 0.8, dry);
+        blood = sceneLin * mix(vec3(keepRest), vec3(keepHue), bloodHue) * mottle * (1.0 - 0.35 * dry * rim);
+        blood += sceneLin * bloodHue * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.5);
+    }
+    else {
+        vec3 through = exp(-(1.2 + log(max(max(albedo.r, max(albedo.g, albedo.b)), 0.001) / max(albedo, vec3(0.001)))) * (0.25 + 2.0 * thick));
+        blood = (sceneLin * through + light * albedo * mix(1.0, 0.6, saturate(thick * 1.3 - 0.3)) * (1.0 - through)) * (1.0 - 0.35 * dry * rim);
+        blood += light * albedo * (pow(saturate(dot(rd, normalize(F.sunDir.xyz))), 4.0) * lit * (1.0 - dry) * (1.0 - thick) * 0.8);
+    }
     vec3 colour = mix(sceneLin, blood, cover);
 
     vec3 hue = saturate((glintTint - 0.004) / 0.016);
@@ -205,6 +226,13 @@ void main() {
             if (bl > 0.5) bend *= 0.5 / bl;
         }
         vec3 Nb = normalize(Ns - bend);
+        if (deep && F.look4.y > 0.0) {
+            vec3 bump = (reliefGrad.x * F.right.xyz - reliefGrad.y * F.up.xyz) * (0.6 * F.look4.y * (1.0 - thick));
+            bump -= Ns * dot(bump, Ns);
+            float bumpLength = length(bump);
+            if (bumpLength > 0.4) bump *= 0.4 / bumpLength;
+            Nb = normalize(Nb - bump);
+        }
         float rough = mix(0.12, 0.45, dry);
         float a2 = rough * rough * rough * rough;
         float glints = Highlights(Nb, V, rel, a2, lit);
@@ -222,6 +250,10 @@ void main() {
             dropTintRgb = 0.004 + 0.016 * dropColour / max(max(dropColour.r, max(dropColour.g, dropColour.b)), 1e-4);
         }
         vec3 drop = light * (dropColour * 0.7 + dropTintRgb * F.look2.w);
+        if (deep) {
+            vec3 dropHue = dropColour / max(max(dropColour.r, max(dropColour.g, dropColour.b)), 1e-4);
+            drop = max(sceneLin.r, max(sceneLin.g, sceneLin.b)) * mix(vec3(0.12), vec3(0.45), dropHue);
+        }
         float a2 = 0.12 * 0.12 * 0.12 * 0.12;
         vec3 dropGlint = mix(vec3(1.0), saturate((dropTintRgb - 0.004) / 0.016), F.look3.z) * F.rework.w;
         drop += min(Highlights(dropN, V, rd * nearT, a2, lit), 1.0) * 0.4 * min(light, 1.2) * F.look2.w * dropGlint;

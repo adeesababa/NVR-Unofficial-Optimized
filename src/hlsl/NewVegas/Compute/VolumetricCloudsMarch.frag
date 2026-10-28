@@ -59,7 +59,7 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit, bool towe
     float transmittance = 1.0;
     float depthSum = 0.0, depthWeight = 0.0;
     float loopEnd = max(64.0, steps);
-    for (float i = 0.0; i < loopEnd && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+    for (float i = 0.0; i < loopEnd && (!(fixedExit || towers) || !(i >= steps || transmittance < 0.01)); i += 1.0) {
         float t = tStart + (i + jitter) * dt;
         float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
         float h = (altitude - Base) / Thickness;
@@ -126,6 +126,7 @@ void main() {
     vec2 vpos = floor(gl_FragCoord.xy);
     vec2 pixel = vpos * 2.0 + cb.blocks.zw;
     vec2 coord = (pixel + 0.5) * LowTexel;
-    float jitter = fract(textureLod(sampler2D(t_blueNoise, NVR_SAMPLER(pc.pointWrapIndex)), pixel / 256.0, 0.0).r + cb.march.z * 0.61803398875);
+    float frameStep = pc.towers != 0u ? floor(cb.march.z * 0.25) : cb.march.z;
+    float jitter = fract(textureLod(sampler2D(t_blueNoise, NVR_SAMPLER(pc.pointWrapIndex)), pixel / 256.0, 0.0).r + frameStep * 0.61803398875);
     o_color = MarchRay(normalize(toWorld(coord)), jitter, 1.0, pc.fixedExit != 0u, pc.towers != 0u);
 }

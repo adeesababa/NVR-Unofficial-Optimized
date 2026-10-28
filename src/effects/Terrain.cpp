@@ -1,6 +1,7 @@
 #include "Terrain.h"
 #include "../core/GpuProfiler.h"
 #include "../core/DxvkCompute.h"
+#include "../core/DisplaceShadows.h"
 
 bool ParallaxLiteDistanceMigrationPending = false;
 
@@ -20,6 +21,7 @@ void TerrainShaders::RegisterConstants() {
 }
 
 void TerrainShaders::BeginWorldScene() {
+	DisplaceShadows::BeginWorld(TheRenderManager->device);
 	BlendDepthState = 0;
 	BlendWorldDepth = nullptr;
 	BindsBeforeCopy = 0;
@@ -35,6 +37,7 @@ void TerrainShaders::BeginWorldScene() {
 }
 
 void TerrainShaders::EndWorldScene() {
+	DisplaceShadows::EndWorld(TheRenderManager->device);
 	BlendDepthState = 0;
 	BlendWorldDepth = nullptr;
 }
@@ -53,6 +56,7 @@ bool TerrainShaders::CopySceneDepth() {
 		GpuProfileScope gpu(copyTimer, TheRenderManager->device);
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->TerrainBlendDepthTexture);
 		BlendDepthState = 2;
+		DisplaceShadows::NoteDepthCopy();
 		static unsigned copies = 0;
 		if (copies < 3 || copies % 3600 == 0)
 			Logger::Log("Terrain blending / displacement ObjectBlend: depth copied at the first land draw of the world scene, after %u other passes%s", BindsBeforeCopy,

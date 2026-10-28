@@ -6,6 +6,10 @@
 // (horizon Z-fighting/sky-seam matte) is kept as its own separate blend, since it solves a
 // different problem (hiding a depth-buffer artifact, not modelling participating media).
 
+#define TESR_HorizonColor TESR_FogHorizonColor
+#define TESR_SkyLowColor TESR_FogSkyLowColor
+#define TESR_SkyColor TESR_FogSkyColor
+
 float4 TESR_FogColor;
 float4 TESR_FogData;  // weather values : x: fogNear, y:fogFar, z: sunglare, w:fogpower
 float4 TESR_ReciprocalResolution;
@@ -25,9 +29,7 @@ float4 TESR_PBRData; // z: direct light scale, w: ambient scale -- shared with o
 float4 TESR_SkyIrradiance[9]; // order-2 SH sky irradiance, linear radiance (Sky.cpp, only fresh while Shaders.Sky is enabled)
 float4 TESR_SkyIrradianceGame[9];
 #if NVR_SM6
-float4 TESR_FogSkyLook;
-float4 TESR_SkyLook;
-#define NVR_FOG_SKY_LOOK(c) c = SkyLook(c, 0.0f, TESR_FogSkyLook.rgb, 1.0f, float4(TESR_SkyLook.x, 1, 0, 0))
+#define NVR_FOG_SKY_LOOK(c)
 #else
 #define NVR_FOG_SKY_LOOK(c)
 #endif

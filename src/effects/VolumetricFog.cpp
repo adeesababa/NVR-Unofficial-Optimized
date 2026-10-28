@@ -752,7 +752,7 @@ namespace {
 	const char* const FogExtMatrixNames[] = { "TESR_ShadowCameraToLightTransformNear", "TESR_ShadowCameraToLightTransformMiddle",
 		"TESR_ShadowCameraToLightTransformFar", "TESR_ShadowCameraToLightTransformLod", "TESR_ViewTransform", "TESR_ProjectionTransform" };
 	const char* const FogExtVectorNames[] = { "TESR_FogColor", "TESR_FogData", "TESR_ReciprocalResolution", "TESR_GameTime", "TESR_SmoothedSunDir",
-		"TESR_SunPosition", "TESR_SunColor", "TESR_SunDiskColor", "TESR_SunAmbient", "TESR_HorizonColor", "TESR_SkyLowColor", "TESR_SkyColor",
+		"TESR_SunPosition", "TESR_SunColor", "TESR_SunDiskColor", "TESR_SunAmbient", "TESR_FogHorizonColor", "TESR_FogSkyLowColor", "TESR_FogSkyColor",
 		"TESR_SkyData", "TESR_SunsetColor", "TESR_SunAmount", "TESR_PBRData",
 		"TESR_ShadowNearCenter", "TESR_ShadowMiddleCenter", "TESR_ShadowFarCenter", "TESR_ShadowLodCenter", "TESR_ShadowFormatData", "TESR_ShadowBlur",
 		"TESR_ShadowFade",
@@ -772,7 +772,7 @@ namespace {
 		D3DXVECTOR4	SkyIrradianceGame[9];
 		D3DXVECTOR4	Linear[9];
 	};
-	const char* const FogExtLinearNames[] = { "TESR_FogColor", "TESR_SkyColor", "TESR_SkyLowColor", "TESR_HorizonColor", "TESR_SunDiskColor",
+	const char* const FogExtLinearNames[] = { "TESR_FogColor", "TESR_FogSkyColor", "TESR_FogSkyLowColor", "TESR_FogHorizonColor", "TESR_SunDiskColor",
 		"TESR_SunsetColor", "TESR_SunAmbient", "TESR_VolumetricFogAerialTint", "TESR_SunColor" };
 
 	float FogLinear(float c) { return c <= 0.04045f ? c / 12.92f : powf(fabsf((c + 0.055f) / 1.055f), 2.4f); }

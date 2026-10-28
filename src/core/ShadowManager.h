@@ -24,7 +24,7 @@ public:
 	void					BeginShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, D3DXMATRIX* ViewProj, bool keepLandSet = false);
 	void					WalkShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap);
 	void					DrawShadowMap(ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, bool keepLandSet = false);
-	enum SunPass : UInt8 { kSunOpaque, kSunLodLand, kSunAlpha, kSunSkinned, kSunTree };
+	enum SunPass : UInt8 { kSunOpaque, kSunLodLand, kSunAlpha, kSunSkinned, kSunTree, kSunDisplaceLand };
 	struct SunCaster { NiGeometry* geometry; UInt8 pass; };
 	std::vector<SunCaster>	SunCasters[4];
 	std::vector<std::pair<NiAVObject*, unsigned>> SunContainers;

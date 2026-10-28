@@ -6,6 +6,7 @@
 #include "OrthoProbe.h"
 #include "SunShadowStats.h"
 #include "../effects/CoverMap.h"
+#include "DisplaceShadows.h"
 
 struct SkinnedBoundEntry { UInt32 frame; bool ok; NiBound bound; };
 static std::unordered_map<NiGeometry*, SkinnedBoundEntry> SkinnedBounds;
@@ -516,6 +517,10 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 	else if (speedTreePass->AccumObject(geo)) {}
 	else if (Forms->Lod && isLODLand && terrainLODPass->AccumObject(geo)) {}
 	else if (Forms->AlphaEnabled && alphaPass->AccumObject(geo)) {}
+	else if (AccumulatingLand && DisplaceShadows::Takes(geo) && geometryPass->TestObject(geo) == 1) {
+		DisplaceShadows::Pass.GeometryList.push(geo);
+		if (RenderPass::LandDrop > 0.0f) RenderPass::LandSet.insert(geo);
+	}
 	else if (geometryPass->AccumObject(geo) && AccumulatingLand && RenderPass::LandDrop > 0.0f) RenderPass::LandSet.insert(geo);
 }
 
@@ -622,6 +627,7 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 
 // Go through accumulations and render found objects
 void ShadowManager::RenderAccums() {
+	DisplaceShadows::Pass.Draw(geometryPass);
 #if NVR_TEST_TOOLS
 	if (SunShadowStats::Current) {
 		SunShadowStats::BeginPass(SunShadowStats::kOpaque); geometryPass->RenderAccum();
@@ -951,12 +957,13 @@ void ShadowManager::WalkSunObject(NiAVObject* NiObject, unsigned mask, bool isLO
 		if (opaque < 0) opaque = geometryPass->TestObject(geo);
 		if (opaque) opaqueMask |= 1u << c;
 	}
+	const UInt8 opaquePass = opaqueMask && AccumulatingLand && DisplaceShadows::Takes(geo) ? kSunDisplaceLand : kSunOpaque;
 	for (unsigned m = mask, c; m; ) {
 		m = ForEachSunCascade(m, c);
 		const unsigned bit = 1u << c;
 		if (lodMask & bit) SunCasters[c].push_back({ geo, kSunLodLand });
 		else if (alphaMask & bit) SunCasters[c].push_back({ geo, kSunAlpha });
-		else if (opaqueMask & bit) SunCasters[c].push_back({ geo, kSunOpaque });
+		else if (opaqueMask & bit) SunCasters[c].push_back({ geo, opaquePass });
 	}
 	if (opaqueMask && AccumulatingLand && RenderPass::LandDrop > 0.0f) RenderPass::LandSet.insert(geo);
 }
@@ -967,6 +974,7 @@ RenderPass* ShadowManager::SunPassOf(UInt8 pass) {
 	case kSunLodLand: return terrainLODPass;
 	case kSunAlpha: return alphaPass;
 	case kSunSkinned: return skinnedGeoPass;
+	case kSunDisplaceLand: return &DisplaceShadows::Pass;
 	default: return speedTreePass;
 	}
 }
@@ -1811,6 +1819,7 @@ void ShadowManager::RenderShadowMaps() {
 #if NVR_TEST_TOOLS
 			const int verify = Shadows->Settings.Exteriors.SunVerify;
 #endif
+			DisplaceShadows::BeginCascades();
 			D3DXMATRIX cascadeViewProj[4];
 			bool cascadeCached[4] = {};
 			float cascadeInner[4] = {};
@@ -1857,7 +1866,7 @@ void ShadowManager::RenderShadowMaps() {
 					sharedLand.swap(RenderPass::LandSet);
 					WalkShadowMap(ShadowMap);
 					std::vector<std::pair<NiGeometry*, UInt8>> oldOrder, newOrder;
-					for (UInt8 pass = kSunOpaque; pass <= kSunTree; pass++) {
+					for (UInt8 pass = kSunOpaque; pass <= kSunDisplaceLand; pass++) {
 						std::stack<NiGeometry*>& list = SunPassOf(pass)->GeometryList;
 						while (!list.empty()) { oldOrder.emplace_back(list.top(), pass); list.pop(); }
 						for (auto c = SunCasters[i].rbegin(); c != SunCasters[i].rend(); ++c) if (c->pass == pass) newOrder.emplace_back(c->geometry, pass);
@@ -1975,6 +1984,7 @@ void ShadowManager::RenderShadowMaps() {
 #endif
 			if (ForceAllCascades) SunAtlasDrawn = true;
 			ForceAllCascades = false;
+			DisplaceShadows::EndCascades();
 			LogSunShadowStats(cachedDistant);
 #if NVR_TEST_TOOLS
 			if (SunShadowStats::Mode) SunShadowStats::EndFrame(SunShadowStats::Now() - statsLoopStart);

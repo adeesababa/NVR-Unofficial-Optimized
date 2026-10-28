@@ -28,6 +28,7 @@ public:
 		float	DropSize = 0.55f;
 		bool	OldThrow = false;
 		bool	OldColour = false;
+		float	TextureRelief = 1.0f;
 		int		DebugView = 0;
 		float	TestThrow = 0.0f;
 		bool	TestPour = false;

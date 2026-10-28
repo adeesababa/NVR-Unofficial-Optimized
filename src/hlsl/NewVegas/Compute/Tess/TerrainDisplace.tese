@@ -24,6 +24,15 @@
 //    sinking into it. The scene's depth as the land starts (terrain blending's copy, Terrain.cpp) is read at the pixel shader's s6,
 //    BaseMap[6]'s slot, which is free below 7 layers (the TES can only read textures that pixel shader uses, s0-s7: NVR DXVK
 //    1.7-displace); 7-layer land has no free slot and keeps its bumps (the plain variant).
+//
+// 2026-10-27 (plan step 2: the bumps cast their own sun shadows): SHADOW_CASTER variants (TerrainDisplace-t<N>-s / -sd [-ccw]) run the
+// same displacement for the land drawn into the sun's shadow cascades (core/DisplaceShadows.h, Shadows/ShadowMapLand.vso/.pso). The
+// vertex shader there gives the TCS the main camera's eye (so the splitting, the distance fade and the quadrant borders are the main
+// view's, point for point), the shadow map's clip position at TEXCOORD6, the shadow map's ModelViewProj times the normal in the w of
+// TEXCOORD3/4/5/7, and last frame's main-camera ModelViewProj in c0-c3 (ObjectBlend: last frame's depth copy, the newest there is when
+// the shadow maps are drawn). It writes only TEXCOORD6, the shadow map's clip position, which the shadow pixel shader turns into depth.
+// With the bumps in the shadow maps, the main view's projectionPosition follows the displaced land again, below the flat land too
+// (Center > 0): the push data says so (viewParams + 256) while the land is drawn into the cascades.
 #ifndef TEX_COUNT
   #define TEX_COUNT 1
 #endif
@@ -34,9 +43,16 @@ layout(triangles, fractional_odd_spacing, ccw) in;
 layout(triangles, fractional_odd_spacing, cw) in;
 #endif
 
-#define PASS(n) layout(location = n) in vec4 i_v##n[]; layout(location = n) out vec4 o_v##n;
-PASS(1) PASS(2) PASS(3) PASS(4) PASS(5) PASS(6) PASS(7) PASS(8) PASS(9) PASS(10)
-#undef PASS
+#define PASS_IN(n) layout(location = n) in vec4 i_v##n[];
+PASS_IN(1) PASS_IN(2) PASS_IN(3) PASS_IN(4) PASS_IN(5) PASS_IN(6) PASS_IN(7) PASS_IN(8) PASS_IN(9) PASS_IN(10)
+#undef PASS_IN
+#ifdef SHADOW_CASTER
+layout(location = 7) out vec4 o_v7;   // the shadow map's clip position (ShadowMapLand.pso reads only this)
+#else
+#define PASS_OUT(n) layout(location = n) out vec4 o_v##n;
+PASS_OUT(1) PASS_OUT(2) PASS_OUT(3) PASS_OUT(4) PASS_OUT(5) PASS_OUT(6) PASS_OUT(7) PASS_OUT(8) PASS_OUT(9) PASS_OUT(10)
+#undef PASS_OUT
+#endif
 
 layout(location = 30) in vec4 i_nvr[];   // TerrainDisplace.tesc: x relief weight, y log2 uv spacing, z distance fade, w object blend
 
@@ -83,40 +99,61 @@ layout(push_constant) uniform Push {
   uint  samplerIndex[4];  // heap index of the pixel shader's sampler i: bits 16 * (i & 1) of [i / 2]
   uint  vsIndex;          // byte k: where ModelViewProj row k (c0-c3) sits in VsConsts (0xFF: missing)
   uint  psBits;           // bit i: layer i has a height map (the land pixel shader's LandHeight c34 / c35 > 0, read per draw)
-  float strength;         // Strength: game units between the lowest and the highest point of a height map
-  float center;           // Center: the height (0-1) that stays where the flat land is
-  float viewParams;       // DebugView x 16 + (LodBias + 4). DebugView: 2 the height as grey, 3 the split count (blue 1 -> red 16)
-                          // and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer weights (COLOR0 xyz), 6 the
-                          // normal (TEXCOORD5), 7 the object blend (white: all the bumps, black: none). LodBias: added to the height
-                          // lookup's detail level.
+  float strength;         // Strength: game units between the lowest and the highest point the bumps can reach
+  float center;           // 16 x Contrast (whole) + 0.99 x Center: contrast() and centerValue() below
+  float viewParams;       // 256 x ShadowsHold + DebugView x 16 + (LodBias + 4). DebugView: 2 the height as grey, 3 the split count
+                          // (blue 1 -> red 16) and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer weights (COLOR0
+                          // xyz), 6 the normal (TEXCOORD5), 7 the object blend (white: all the bumps, black: none). LodBias: added to the
+                          // height lookup's detail level. ShadowsHold (2026-10-27): the sun's shadow maps hold the displaced land, so
+                          // projectionPosition follows it all the way (else never below the flat land).
   float sceneScale;       // ObjectBlend: the draw's viewport as a share of the depth copy (RenderScale draws the world into its
                           // top-left part): round(x * 2048) * 4096 + round(y * 2048)
 } pc;
 
 #define SMP(i) s_samplers[(pc.samplerIndex[(i) >> 1] >> (16u * uint((i) & 1))) & 0xFFFFu]
 
+float shadowsHold() {
+  return floor(pc.viewParams / 256.0);
+}
+
 float debugView() {
-  return floor(pc.viewParams / 16.0);
+  return floor((pc.viewParams - shadowsHold() * 256.0) / 16.0);
 }
 
 float lodBias() {
-  return pc.viewParams - debugView() * 16.0 - 4.0;
+  return pc.viewParams - shadowsHold() * 256.0 - debugView() * 16.0 - 4.0;
+}
+
+// Contrast (2026-10-27): how strongly a texture's height differences are stretched (1: as the texture has them)
+float contrast() {
+  return floor(pc.center) / 16.0;
+}
+
+// Center: 0.5 = the bumps go up and down round the flat land; lower raises the whole ground by (0.5 - Center) x Strength
+float centerValue() {
+  return clamp(fract(pc.center) / 0.99, 0.0, 1.0);
 }
 
 float g_hsum = 0.0;
 float g_wsum = 0.0;
 
-// One layer's height, blended as the pixel shader blends the colours (getTerrainHeight in Parallax.hlsl: 0.5 where a layer has no
-// height map). The detail level follows the spacing of the generated points, so the bumps are the height map's broad shapes
+// One layer's height, blended as the pixel shader blends the colours (getTerrainHeight in Parallax.hlsl: no relief where a layer has
+// no height map). The detail level follows the spacing of the generated points, so the bumps are the height map's broad shapes
 // rather than texel noise.
+// 2026-10-27 (user: "seems like all tessellation is doing visually is moving the ground up and down"): measured on the user's
+// desert and scrub textures, the height (diffuse alpha) only varies by about +-2.5 % round a mean near 0.41, so the bumps were a
+// quarter of a game unit while the whole ground rose by Strength x (0.5 - mean). Each layer's height now counts from that texture's
+// own average (its smallest mip), so the land stays where it was on average, and landHeight stretches the differences by Contrast.
 #define LAYER(i, T, w) \
   if ((w) > 0.0005) { \
-    float h = 0.5; \
+    float r = 0.0; \
     if ((pc.psBits & (1u << (i))) != 0u) { \
       float lod = lodUv + log2(float(textureSize(sampler2D(T, SMP(i)), 0).x)) + lodBias(); \
-      h = textureLod(sampler2D(T, SMP(i)), uv, max(lod, 0.0)).a; \
+      int levels = textureQueryLevels(sampler2D(T, SMP(i))); \
+      float mean = levels > 1 ? texelFetch(sampler2D(T, SMP(i)), ivec2(0), levels - 1).a : 0.5; \
+      r = textureLod(sampler2D(T, SMP(i)), uv, max(lod, 0.0)).a - mean; \
     } \
-    g_hsum += (w) * h; \
+    g_hsum += (w) * r; \
     g_wsum += (w); \
   }
 
@@ -140,7 +177,11 @@ float landHeight(vec2 uv, vec4 b0, vec4 b1, float lodUv) {
 #if TEX_COUNT > 6
   LAYER(6, t_base6, b1.z)
 #endif
-  return g_wsum > 0.0 ? g_hsum / g_wsum : 0.5;
+  // The blended difference from the textures' averages, stretched by Contrast and eased into the Strength range (-0.5 .. 0.5 round
+  // the 0.5 that main() takes as the flat land): low-contrast ground gets visible bumps, high-contrast ground rounds off instead of
+  // overshooting. Contrast 1 is the texture's own height for small differences.
+  float x = 2.0 * contrast() * (g_wsum > 0.0 ? g_hsum / g_wsum : 0.0);
+  return 0.5 + 0.5 * x * inversesqrt(1.0 + x * x);
 }
 
 #ifdef HAVE_OBJECT_DEPTH
@@ -215,37 +256,57 @@ void main() {
   // quadrant is its own draw with its own textures); the offset (0.5 - Center, how far the average height rises) only fades with
   // distance, so a border keeps the same average level as the land on both sides of it (no groove along it). Both fade near objects
   // (ObjectBlend), so there the land is the flat land again.
+#ifdef SHADOW_CASTER
+  // The shadow map's clip position needs no ModelViewProj from the constants (it comes in TEXCOORD6 and the w of TEXCOORD3/4/5/7);
+  // c0-c3 (last frame's main camera) only serve ObjectBlend above.
+  const bool canDisplace = true;
+#else
+  const bool canDisplace = haveMvp;
+#endif
   float h = 0.5;
-  if (haveMvp && weight > 0.0 && pc.strength != 0.0 && keepShare > 0.0)
+  if (canDisplace && weight > 0.0 && pc.strength != 0.0 && keepShare > 0.0)
     h = landHeight(v1.xy, v9, v10, nvr.y);
-  float disp = haveMvp ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - pc.center)) : 0.0;
+  float disp = canDisplace ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - centerValue())) : 0.0;
 
   // The vertex shader's clip position (interpolated), moved by the displacement through ModelViewProj (row k = c[k] . (v, 1))
   vec4 clipN = vec4(0.0);
+#ifdef SHADOW_CASTER
+  // The shadow map's ModelViewProj times each corner's normal, interpolated like the normal itself (linear: exact for the normal
+  // before it is normalized, hence the same division by its length as n above).
+  clipN = vec4(v4.w, v5.w, v6.w, v8.w) / max(nl, 1e-6);
+#else
   if (haveMvp) {
     clipN.x = dot(vsc.c[pc.vsIndex & 0xFFu].xyz, n);
     clipN.y = dot(vsc.c[(pc.vsIndex >> 8u) & 0xFFu].xyz, n);
     clipN.z = dot(vsc.c[(pc.vsIndex >> 16u) & 0xFFu].xyz, n);
     clipN.w = dot(vsc.c[pc.vsIndex >> 24u].xyz, n);
   }
+#endif
   precise vec4 clip = v7 + disp * clipN;
+#ifdef SHADOW_CASTER
+  clip.z = max(clip.z, 0.0);   // pancaking, as ShadowMap.vso: casters nearer than the map's near plane are kept, at its depth
+#endif
 
   gl_Position = clip;
   for (int k = 0; k < 6; k++)
     gl_ClipDistance[k] = dot(clip, clipPlanes.plane[k]);
 
+#ifdef SHADOW_CASTER
+  o_v7 = clip;
+#else
   o_v1 = v1;
   o_v2 = v2;
   o_v3 = vec4(v3.xyz + n * disp, clip.w);   // the object-space position and the view depth, as the vertex shader writes them
   o_v4 = v4;
   o_v5 = v5;
   o_v6 = v6;
-  // projectionPosition (the pixel shader's forward sun shadows and fog) rises with the land, but never sinks below the flat land:
-  // the sun's shadow maps hold the flat land (not displaced yet), so a point under it would shadow itself (bulk round 2: land sunk
-  // below the flat land went dark). Until 2026-10-27 it stayed the flat land's everywhere, and the flat point under land raised
-  // against a rock lay inside the rock: the black outlines round rocks (see the top). The rasterized position, the depth and the
-  // object position (lighting, parallax) follow the bumps.
-  o_v7 = v7 + max(disp, 0.0) * clipN;
+  // projectionPosition (the pixel shader's forward sun shadows and fog). While the sun's shadow maps hold the displaced land
+  // (ShadowsHold: [Shaders.Terrain.Displacement] CastShadows) it is the displaced position itself, below the flat land too.
+  // Otherwise it rises with the land but never sinks below the flat land: those maps hold the flat land, so a point under it would
+  // shadow itself (bulk round 2: land sunk below the flat land went dark). Until 2026-10-27 it stayed the flat land's everywhere, and
+  // the flat point under land raised against a rock lay inside the rock: the black outlines round rocks (see the top). The rasterized
+  // position, the depth and the object position (lighting, parallax) follow the bumps.
+  o_v7 = shadowsHold() > 0.5 ? clip : v7 + max(disp, 0.0) * clipN;
   o_v8 = v8;
   o_v9 = v9;
   o_v10 = v10;
@@ -267,4 +328,5 @@ void main() {
   } else if (dv > 6.5) {
     o_v2 = vec4(vec3(keepShare), 1.0);   // white: all the bumps; black: none (ObjectBlend); 7-layer land always white
   }
+#endif
 }

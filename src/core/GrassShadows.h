@@ -95,6 +95,9 @@ namespace GrassShadows {
 		float light[4][4];
 		for (int r = 0; r < 4; r++) { for (int c = 0; c < 3; c++) light[r][c] = viewToLight.m[r][c]; light[r][3] = view[r][3]; }
 		device->SetVertexShaderConstantF(252, &light[0][0], 4);
+		float proj[4][4];
+		const bool projSaved = SUCCEEDED(device->GetVertexShaderConstantF(248, &proj[0][0], 4));
+		device->SetVertexShaderConstantF(248, (const float*)&TheRenderManager->InvProjMatrix, 4);
 
 		static const D3DRENDERSTATETYPE kStates[] = { D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ZFUNC, D3DRS_CULLMODE, D3DRS_ALPHATESTENABLE,
 			D3DRS_ALPHABLENDENABLE, D3DRS_BLENDOP, D3DRS_SRCBLEND, D3DRS_DESTBLEND, D3DRS_SEPARATEALPHABLENDENABLE,
@@ -153,6 +156,7 @@ namespace GrassShadows {
 		if (oldPS) oldPS->Release();
 		for (unsigned i = 0; i < sizeof(kStates) / sizeof(kStates[0]); i++) if (saved[i] != want[i]) device->SetRenderState(kStates[i], saved[i]);
 		device->SetVertexShaderConstantF(252, &view[0][0], 4);
+		if (projSaved) device->SetVertexShaderConstantF(248, &proj[0][0], 4);
 		return hr;
 	}
 

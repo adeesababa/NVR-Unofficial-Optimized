@@ -20,6 +20,9 @@ void SkyShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_SkyTintHorizon", &Constants.SkyTintHorizon);
 	TheShaderManager->RegisterConstant("TESR_SkyLook", &Constants.SkyLook);
 	TheShaderManager->RegisterConstant("TESR_FogSkyLook", &Constants.FogSkyLook);
+	TheShaderManager->RegisterConstant("TESR_FogSkyColor", &Constants.FogSkyColor);
+	TheShaderManager->RegisterConstant("TESR_FogSkyLowColor", &Constants.FogSkyLowColor);
+	TheShaderManager->RegisterConstant("TESR_FogHorizonColor", &Constants.FogHorizonColor);
 }
 
 namespace PhysAtmosphere {
@@ -111,6 +114,24 @@ static D3DXVECTOR3 SkyLook(D3DXVECTOR3 c, float up, const D3DXVECTOR4& tint, con
 	overhead = overhead * overhead * (3.0f - 2.0f * overhead);
 	for (int k = 0; k < 3; k++) c[k] *= tint[k] * (horizonTint[k] + (1.0f - horizonTint[k]) * overhead);
 	return c;
+}
+
+static float LinearToSrgb(float c) {
+	c = (std::max)(c, 0.0f);
+	return (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+}
+
+void SkyShaders::UpdateFogSky() {
+	const D3DXVECTOR4* from[3] = { &TheShaderManager->ShaderConst.skyColor, &TheShaderManager->ShaderConst.skyLowColor, &TheShaderManager->ShaderConst.horizonColor };
+	D3DXVECTOR4* to[3] = { &Constants.FogSkyColor, &Constants.FogSkyLowColor, &Constants.FogHorizonColor };
+	const D3DXVECTOR4& f = Constants.FogSkyLook;
+	const bool look = Enabled && (f.x != 1.0f || f.y != 1.0f || f.z != 1.0f || f.w != 1.0f);
+	static const D3DXVECTOR4 white(1.0f, 1.0f, 1.0f, 1.0f);
+	for (int i = 0; i < 3; i++) {
+		if (!look) { *to[i] = *from[i]; continue; }
+		const D3DXVECTOR3 c = SkyLook(Linearize(*from[i]), 0.0f, D3DXVECTOR4(f.x, f.y, f.z, 1.0f), white, D3DXVECTOR4(f.w, 1.0f, 0.0f, 0.0f));
+		*to[i] = D3DXVECTOR4(LinearToSrgb(c.x), LinearToSrgb(c.y), LinearToSrgb(c.z), from[i]->w);
+	}
 }
 
 static D3DXVECTOR3 EvalSky(const D3DXVECTOR3& dir, const D3DXVECTOR4& sunPos, const D3DXVECTOR4& skyData,

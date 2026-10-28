@@ -1863,6 +1863,8 @@ namespace GrassFirst {
 	static bool GameVertexShader[kGrassLastId - kGrassFirstId + 1] = {};
 	static unsigned Frames = 0, StatEarly = 0, StatLate = 0, StatWhole = 0, StatUnsplit = 0;
 	static unsigned RecordedFrame = ~0u;
+	static bool ShadowOnly = false;
+	static unsigned ShadowOnlyFrames = 0;
 
 	static void(__cdecl* RenderPassImmediately)(void*, UInt32, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32, UInt32))kRenderPassImmediately;
 
@@ -2008,10 +2010,20 @@ namespace GrassFirst {
 		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
 		if (terrain && terrain->BlendingSettings.Enabled) {
 			static bool told = false;
-			if (!told) { told = true; Logger::Log("UNOFFICIAL GrassFirst: off while terrain blending is on (its depth copy would contain the grass)"); }
+			if (!told) { told = true; Logger::Log("UNOFFICIAL GrassFirst: off while terrain blending is on (its depth copy would contain the grass); the grass still casts its sun shadows (drawn into the shadow map only, before the land)"); }
 			return false;
 		}
 		return true;
+	}
+
+	static bool ShadowOnlyAllowed(void* accumulator) {
+		GrassShaders* grass = TheShaderManager->Shaders.Grass;
+		if (!Installed || !grass || !grass->Enabled || !grass->DrawFirst || !GrassShadows::Enabled) return false;
+		if (ShaderSplit::CurrentContext != ShaderSplit::World || !TheShaderManager->GameState.isExterior) return false;
+		const UInt8* a = (const UInt8*)accumulator;
+		if (*(const UInt32*)(a + 0x19C) != 0 || a[0x164] || a[0x165]) return false;
+		TerrainShaders* terrain = TheShaderManager->Shaders.Terrain;
+		return terrain && terrain->BlendingSettings.Enabled;
 	}
 
 	static bool RewriteOptFirst(PassIdNode* head) {
@@ -2111,6 +2123,54 @@ namespace GrassFirst {
 		OnePassDepth::Records.push_back(r);
 	}
 
+	static void DrawGrassShadows() {
+		if (GrassShadows::Begin(TheRenderManager->device)) {
+			static GpuTimer grassShadowTimer("Grass shadows");
+			GpuProfileScope gpu(grassShadowTimer, TheRenderManager->device);
+			GrassShaders::DrawPart = 0;
+			((void(__cdecl*)())kEndPass)();
+			for (const GrassShadows::Record& r : GrassShadows::Records) {
+				if (!GrassShadows::InNear(r.pass)) { GrassShadows::StatOutside++; continue; }
+				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
+				GrassShadows::StatPasses++;
+			}
+			((void(__cdecl*)(char, int))0x00B98540)(0, 0);
+			((void(__cdecl*)())kEndPass)();
+			GrassShadows::End(TheRenderManager->device);
+		}
+		GrassShadows::Records.clear();
+	}
+
+	static void ShadowOnlyEarly(void* accumulator, UInt32 arg3, SInt32 group) {
+		PassIdNode* lists[2] = {};
+		unsigned count = 0;
+		bool ok = Lists(accumulator, lists, count);
+		if (!ok || !AnyGrass(lists, count)) return;
+		for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
+		if (ok) {
+			Records.clear();
+			GrassShadows::Records.clear();
+			RestoreMask = (unsigned)TheShaderManager->Shaders.Grass->DrawFirstRestore;
+			Save();
+			GrassShaders::DrawPart = 0;
+			Recording = ShadowOnly = true;
+			ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
+			Recording = ShadowOnly = false;
+			for (const Record& r : Records) GrassShadows::Note(r.pass, r.passId, r.a3, r.a4, r.a5);
+			const size_t recorded = Records.size();
+			DrawGrassShadows();
+			GrassShaders::DrawPart = 0;
+			((void(__cdecl*)())kEndPass)();
+			Restore();
+			ActiveAccumulator = accumulator;
+			RecordedFrame = TheFrameRateManager->FrameNumber;
+			if (++ShadowOnlyFrames <= 3 || ShadowOnlyFrames % 3600 == 0)
+				Logger::Log("UNOFFICIAL grass shadows (terrain blending on): frame %u: %u grass passes taken before the land into the sun shadow map only, drawn on screen after the land as the game does",
+					ShadowOnlyFrames, (unsigned)recorded);
+		}
+		for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);
+	}
+
 	static void __fastcall MainListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
 		ActiveAccumulator = nullptr;
 		if (first == 1 && last == 0x25B && group < 0) DepthFirst(accumulator, arg3, group);
@@ -2134,21 +2194,7 @@ namespace GrassFirst {
 				if (!gpuGrass) NewGrass::EndEarly(TheRenderManager->device, StatEarly);
 				GpuGrass::EndEarly(TheRenderManager->device);
 				Recording = false;
-				if (GrassShadows::Begin(TheRenderManager->device)) {
-					static GpuTimer grassShadowTimer("Grass shadows");
-					GpuProfileScope gpu(grassShadowTimer, TheRenderManager->device);
-					GrassShaders::DrawPart = 0;
-					((void(__cdecl*)())kEndPass)();
-					for (const GrassShadows::Record& r : GrassShadows::Records) {
-						if (!GrassShadows::InNear(r.pass)) { GrassShadows::StatOutside++; continue; }
-						RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
-						GrassShadows::StatPasses++;
-					}
-					((void(__cdecl*)(char, int))0x00B98540)(0, 0);
-					((void(__cdecl*)())kEndPass)();
-					GrassShadows::End(TheRenderManager->device);
-				}
-				GrassShadows::Records.clear();
+				DrawGrassShadows();
 				GrassShaders::DrawPart = 0;
 				((void(__cdecl*)())kEndPass)();
 				Restore();
@@ -2157,6 +2203,7 @@ namespace GrassFirst {
 			}
 			for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);
 		}
+		else if (first == 1 && last == 0x25B && group < 0 && ShadowOnlyAllowed(accumulator)) ShadowOnlyEarly(accumulator, arg3, group);
 		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
 	}
 
@@ -2201,6 +2248,7 @@ namespace GrassFirst {
 		if (!Recording || !IsGrass(passId)) { RenderPassImmediately(pass, passId, a3, a4, a5); return; }
 		NiDX9RenderState* state = TheRenderManager->renderState;
 		Record r = { pass, passId, a3, a4, a5, state->GetRenderState(D3DRS_CULLMODE), state->GetRenderState(D3DRS_ALPHATESTENABLE), false };
+		if (ShadowOnly) { Records.push_back(r); return; }
 		bool& gameVS = GameVertexShader[passId - kGrassFirstId];
 		if (passId <= kSplitLastId && !gameVS) {
 			const int kind = Classify(pass);

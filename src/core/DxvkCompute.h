@@ -40,6 +40,14 @@ public:
 	static void					DisplaceTick();
 	static bool					DisplaceDepthWanted();
 	static void					DisplaceSceneDepth(bool Valid, float ScaleX, float ScaleY);
+	static void					NoteLandPixelShader(IDirect3DPixelShader9* Shader, const D3DXMACRO* Defines);
+	static int					LandLayersOf(IDirect3DPixelShader9* Shader);
+	static bool					DisplaceShadowsWanted();
+	static unsigned				DisplaceShadowLayers();
+	static float				DisplaceReach();
+	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
+	static void					DisplaceShadowEnd();
+	static void					DisplaceShadowsDrawn(unsigned Pieces);
 
 	static void					Fail(const char* Reason);
 

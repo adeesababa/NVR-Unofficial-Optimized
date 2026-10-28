@@ -387,6 +387,8 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				
 				if (SUCCEEDED(createResult)) {
 					ShaderProg->CreateCT(ShaderSource, ConstantTable);
+					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "TerrainTemplate"))
+						DxvkCompute::NoteLandPixelShader(((ShaderRecordPixel*)ShaderProg)->ShaderHandle, Template.Defines);
 					if (ShaderProfile[0] == 'p' && Template.Name && !strcmp(Template.Name, "ObjectTemplate")) {
 						bool linear = false, predecode = false;
 						for (int d = 0; d < 44 && Template.Defines[d].Name; d++) {

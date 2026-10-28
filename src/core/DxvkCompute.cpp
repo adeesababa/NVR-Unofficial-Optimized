@@ -394,6 +394,11 @@ static ID3D9NvrExtTess*	DisplaceInterface = nullptr;
 static bool				DisplaceQueried = false;
 static UINT				DisplaceRegistered[2] = {};
 static UINT				DisplaceDepthShaders = 0;
+static UINT				DisplaceShadowVs = 0;
+static unsigned			DisplaceShadowPs = 0;
+static bool				DisplaceCastShadows = false;
+static unsigned			DisplaceShadowAge = 1000;
+static std::vector<std::pair<IDirect3DPixelShader9*, int>> LandPixelShaders;
 
 static NVR_EXT_TESS_STATE	DisplaceBase = {};
 static NVR_EXT_TESS_STATE	DisplaceSent = {};
@@ -421,6 +426,11 @@ static bool DisplaceSettingOr(const char* Key, bool Missing) {
 	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.IntValue != 0 : Missing;
 }
 
+static float DisplaceFloatOr(const char* Key, float Missing) {
+	SettingManager::Configuration::ConfigNode node;
+	return TheSettingManager->Config.FillNode(&node, "Shaders.Terrain.Displacement", Key) ? node.FloatValue : Missing;
+}
+
 static ID3D9NvrExtTess* DisplaceTess() {
 	if (!DisplaceQueried) {
 		DisplaceQueried = true;
@@ -441,12 +451,14 @@ bool DxvkCompute::DisplaceOn() {
 }
 
 void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size) {
-	if (!Name || !TemplateName || strcmp(TemplateName, "TerrainTemplate") || !Bytecode || !Size) return;
+	if (!Name || !Bytecode || !Size) return;
+	const bool shadow = Vertex ? !strcmp(Name, "ShadowMapLand.vso") : TemplateName && !strcmp(TemplateName, "ShadowMapLand.pso");
+	if (!shadow && (!TemplateName || strcmp(TemplateName, "TerrainTemplate"))) return;
 	if (!DisplaceSwitch() || !Ext) return;
 	ID3D9NvrExtTess* tess = DisplaceTess();
 	if (!tess) return;
 
-	const UINT family = 1;
+	const UINT family = shadow ? 2 : 1;
 	if (Vertex) {
 		std::vector<char> tcs;
 		if (!LoadSpirv("Tess\\TerrainDisplace.tcs", tcs)) return;
@@ -459,8 +471,9 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 		for (UINT k = 0; k < 4; k++) desc.VsFloatRegisters[k] = k;
 		desc.pDebugName = Name;
 		const HRESULT result = tess->RegisterTessVertexShader(&desc);
-		if (SUCCEEDED(result)) DisplaceRegistered[0]++;
-		Logger::Log("UNOFFICIAL NVR DXVK: displacement: land vertex shader %s %s (%08lX)", Name, SUCCEEDED(result) ? "registered" : "refused (DXVK's log says why)", result);
+		if (SUCCEEDED(result)) { if (shadow) DisplaceShadowVs++; else DisplaceRegistered[0]++; }
+		Logger::Log("UNOFFICIAL NVR DXVK: displacement: land %svertex shader %s %s (%08lX)", shadow ? "shadow caster " : "", Name,
+			SUCCEEDED(result) ? "registered" : "refused (DXVK's log says why)", result);
 		return;
 	}
 
@@ -473,7 +486,7 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 	{
 		ID3DXConstantTable* table = nullptr;
 		if (SUCCEEDED(D3DXGetShaderConstantTableEx((const DWORD*)Bytecode, D3DXCONSTTABLE_LARGEADDRESSAWARE, &table)) && table) {
-			D3DXHANDLE handle = table->GetConstantByName(NULL, "TESR_DisplaceDepth");
+			D3DXHANDLE handle = table->GetConstantByName(NULL, shadow ? "DisplaceDepth" : "TESR_DisplaceDepth");
 			depthAtS6 = handle && table->GetSamplerIndex(handle) == 6;
 			table->Release();
 		}
@@ -482,9 +495,10 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 	char cw[64], ccw[64];
 	std::vector<char> tes, tesCcw;
 	bool haveCcw = false;
+	const char* kind = shadow ? "s" : "";
 	if (depthAtS6) {
-		_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-d.tes", layers);
-		_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-d-ccw.tes", layers);
+		_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-%sd.tes", layers, kind);
+		_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-%sd-ccw.tes", layers, kind);
 		if (LoadSpirv(cw, tes)) haveCcw = LoadSpirv(ccw, tesCcw);
 		else {
 			depthAtS6 = false;
@@ -492,9 +506,18 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 		}
 	}
 	if (!depthAtS6) {
-		_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d.tes", layers);
-		_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-ccw.tes", layers);
-		if (!LoadSpirv(cw, tes)) return;
+		if (shadow) {
+			_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-s.tes", layers);
+			_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-s-ccw.tes", layers);
+		}
+		else {
+			_snprintf_s(cw, sizeof(cw), _TRUNCATE, "Tess\\TerrainDisplace-t%d.tes", layers);
+			_snprintf_s(ccw, sizeof(ccw), _TRUNCATE, "Tess\\TerrainDisplace-t%d-ccw.tes", layers);
+		}
+		if (!LoadSpirv(cw, tes)) {
+			if (shadow) Logger::Log("UNOFFICIAL NVR DXVK: displacement: %s: no %s.spv (copy the new Compute\\Tess shaders): %d-layer land casts flat shadows", Name, cw, layers);
+			return;
+		}
 		haveCcw = LoadSpirv(ccw, tesCcw);
 	}
 
@@ -513,10 +536,60 @@ void DxvkCompute::RegisterDisplace(const char* Name, const char* TemplateName, c
 	desc.pDebugName = Name;
 	const HRESULT result = tess->RegisterTessPixelShader(&desc);
 	if (SUCCEEDED(result)) {
-		DisplaceRegistered[1]++;
-		if (depthAtS6) DisplaceDepthShaders++;
+		if (shadow) DisplaceShadowPs |= 1u << (layers - 1);
+		else {
+			DisplaceRegistered[1]++;
+			if (depthAtS6) DisplaceDepthShaders++;
+		}
 	}
-	else Logger::Log("UNOFFICIAL NVR DXVK: displacement: land pixel shader %s refused (%08lX; DXVK's log says why): its land stays flat", Name, result);
+	else Logger::Log("UNOFFICIAL NVR DXVK: displacement: land %spixel shader %s refused (%08lX; DXVK's log says why): its land stays flat%s", shadow ? "shadow caster " : "",
+		Name, result, shadow ? " in the sun's shadow maps" : "");
+}
+
+void DxvkCompute::NoteLandPixelShader(IDirect3DPixelShader9* Shader, const D3DXMACRO* Defines) {
+	int layers = 0;
+	for (const D3DXMACRO* m = Defines; m && m->Name; m++)
+		if (!strcmp(m->Name, "TEX_COUNT") && m->Definition) layers = atoi(m->Definition);
+	if (Shader && layers >= 1 && layers <= 7) LandPixelShaders.emplace_back(Shader, layers);
+}
+
+int DxvkCompute::LandLayersOf(IDirect3DPixelShader9* Shader) {
+	static IDirect3DPixelShader9* last = nullptr;
+	static int lastLayers = 0;
+	if (Shader == last) return lastLayers;
+	last = Shader;
+	lastLayers = 0;
+	for (const auto& entry : LandPixelShaders) if (entry.first == Shader) { lastLayers = entry.second; break; }
+	return lastLayers;
+}
+
+bool DxvkCompute::DisplaceShadowsWanted() {
+	return DisplaceCastShadows && DisplaceOn() && DisplaceBase.Enable;
+}
+
+unsigned DxvkCompute::DisplaceShadowLayers() {
+	return DisplaceShadowVs ? DisplaceShadowPs : 0;
+}
+
+float DxvkCompute::DisplaceReach() {
+	return DisplaceBase.ControlParams[4];
+}
+
+void DxvkCompute::DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY) {
+	if (!DisplaceInterface) return;
+	NVR_EXT_TESS_STATE state = DisplaceBase;
+	state.Wireframe = 0;
+	state.ControlParams[6] = ObjectBlend ? DisplaceObjectBlend : 0.0f;
+	state.EvalParams[3] = ObjectBlend ? DisplacePackScale(ScaleX, ScaleY) : DisplacePackScale(1.0f, 1.0f);
+	DisplaceSend(state);
+}
+
+void DxvkCompute::DisplaceShadowEnd() {
+	if (DisplaceInterface) DisplaceSend(DisplaceBase);
+}
+
+void DxvkCompute::DisplaceShadowsDrawn(unsigned Pieces) {
+	if (Pieces) DisplaceShadowAge = 0;
 }
 
 bool DxvkCompute::DisplaceDepthWanted() {
@@ -539,6 +612,7 @@ void DxvkCompute::DisplaceTick() {
 	NVR_EXT_TESS_STATE& state = DisplaceBase;
 	static unsigned frame = 0;
 	static NVR_EXT_TESS_STATS last = {};
+	static float viewParams = 4.0f;
 	if ((frame++ % 8) == 0) {
 		const char* s = "Shaders.Terrain.Displacement";
 		state.Enable = DisplaceSwitch() && DisplaceSettingOr("Enabled", false) ? TRUE : FALSE;
@@ -556,14 +630,19 @@ void DxvkCompute::DisplaceTick() {
 		state.ControlParams[6] = 0.0f;
 		state.ControlParams[7] = 0.0f;
 		state.EvalParams[0] = std::clamp(TheSettingManager->GetSettingF(s, "Strength"), 0.0f, 64.0f);
-		state.EvalParams[1] = std::clamp(TheSettingManager->GetSettingF(s, "Center"), 0.0f, 1.0f);
-		state.EvalParams[2] = 16.0f * (float)debugView + std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f) + 4.0f;
+		state.EvalParams[1] = floorf(std::clamp(DisplaceFloatOr("Contrast", 10.0f), 0.0f, 32.0f) * 16.0f + 0.5f)
+			+ 0.99f * std::clamp(DisplaceFloatOr("Center", 0.5f), 0.0f, 1.0f);
+		viewParams = 16.0f * (float)debugView + std::clamp(TheSettingManager->GetSettingF(s, "LodBias"), -2.0f, 4.0f) + 4.0f;
 		state.EvalParams[3] = DisplacePackScale(1.0f, 1.0f);
 		const bool blend = DisplaceSettingOr("ObjectBlend", false);
 		const float width = floorf(std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendWidth"), 4.0f, 512.0f) + 0.5f);
 		const float keep = std::clamp(TheSettingManager->GetSettingF(s, "ObjectBlendKeep"), 0.0f, 1.0f);
 		DisplaceObjectBlend = blend && keep < 1.0f ? width + keep * 0.99f : 0.0f;
+		DisplaceCastShadows = DisplaceSettingOr("CastShadows", true);
 	}
+	if (DisplaceShadowAge < 1000) DisplaceShadowAge++;
+	const bool shadowsHold = DisplaceCastShadows && DisplaceShadowVs && DisplaceShadowAge <= 16;
+	state.EvalParams[2] = viewParams + (shadowsHold ? 256.0f : 0.0f);
 	DisplaceSend(state);
 
 	if ((frame % 600) == 1) {

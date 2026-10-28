@@ -33,6 +33,7 @@ public:
 		D3DXVECTOR4		SkyTintHorizon = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 		D3DXVECTOR4		SkyLook = D3DXVECTOR4(1.0f, 0.3f, 0.0f, 0.0f);
 		D3DXVECTOR4		FogSkyLook = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		D3DXVECTOR4		FogSkyColor, FogSkyLowColor, FogHorizonColor;
 	};
 	struct PhysicalSettingsStruct { bool Enabled; float Brightness, WeatherTint, Haze; bool ExactSunlight, MultipleScattering; float GroundAlbedo; bool LightsObjects; };
 	PhysicalSettingsStruct PhysicalSettings = { false, 1.0f, 0.35f, 1.0f, false, false, 0.3f, true };
@@ -44,6 +45,7 @@ public:
 	bool lastProjectionValid = false;
 
 	void	UpdateConstants();
+	void	UpdateFogSky();
 	void	UpdateMoonlight();
 	void	RegisterConstants();
 	void	UpdateSettings();

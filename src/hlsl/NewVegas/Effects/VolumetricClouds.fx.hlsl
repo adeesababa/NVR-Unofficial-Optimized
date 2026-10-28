@@ -219,8 +219,8 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 	float3 scattered = 0.0;
 	float transmittance = 1.0;
 	float depthSum = 0.0, depthWeight = 0.0;
-	[loop] for (float i = 0.0; i < 64.0 && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
-		if (!fixedExit && (i >= steps || transmittance < 0.01)) break;
+	[loop] for (float i = 0.0; i < 64.0 && (!(fixedExit || towers) || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+		if (!(fixedExit || towers) && (i >= steps || transmittance < 0.01)) break;
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
@@ -286,7 +286,8 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 float4 MarchPS(VSOUT IN, float2 vpos : VPOS, uniform bool fixedExit, uniform bool towers) : COLOR0 {
 	float2 pixel = vpos * 2.0 + TESR_CloudsBlocks.zw;
 	float2 uv = (pixel + 0.5) * LowTexel;
-	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
+	float frameStep = towers ? floor(TESR_CloudsMarch.z * 0.25) : TESR_CloudsMarch.z;
+	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + frameStep * 0.61803398875);
 	return MarchRay(normalize(toWorld(uv)), jitter, 1.0, fixedExit, towers);
 }
 
