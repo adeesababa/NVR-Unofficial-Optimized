@@ -17,6 +17,7 @@ layout(set = 1, binding = 4) uniform texture2D t_normals;      // TESR_NormalsBu
 layout(set = 1, binding = 5) uniform texture2D t_pointShadow;  // TESR_PointShadowBuffer (LINEAR, CLAMP)
 layout(set = 1, binding = 6) uniform texture2D t_snowNorm;     // Precipitations\snow_NRM.dds (LINEAR mips, WRAP)
 layout(set = 1, binding = 7) uniform texture2D t_blueNoise;    // Effects\bluenoise256.dds (LINEAR mips, WRAP)
+layout(set = 1, binding = 8) uniform texture2D t_captured;     // UNOFFICIAL 2026-10-28 TESR_CapturedNormalsBuffer (read texel by texel)
 
 layout(set = 2, binding = 0, std140) uniform Consts {
     mat4 shadowToLight;             // TESR_ShadowCameraToLightTransformOrtho
@@ -39,6 +40,8 @@ layout(set = 2, binding = 0, std140) uniform Consts {
     vec4 shadowLightPosition[12];   // TESR_ShadowLightPosition
     vec4 lightPosition[12];         // TESR_LightPosition
     vec4 lightColor[24];            // TESR_LightColor
+    vec4 capturedData;              // UNOFFICIAL 2026-10-28 TESR_CapturedNormalsData (x 1 = this frame's, y z the distance match)
+    vec4 snowExtra;                 // TESR_SnowAccumulationExtra (x CapturedNormals, y CapturedNormalsDebugView)
 } c;
 
 layout(push_constant) uniform Push {
@@ -275,6 +278,36 @@ vec3 snowSmoothNormal(vec2 coord, vec3 center, vec3 norm, float depth) {
     return normalize(sum);
 }
 
+// UNOFFICIAL 2026-10-28 CapturedNormals (SnowAccumulation.fx.hlsl SnowCapturedNormal, Effects/Includes/CapturedNormals.hlsl CapturedNormal):
+// the surface's own smooth normal where it wrote one and its distance matches the depth buffer's.
+vec3 capturedDecode(vec2 e) {
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = saturate(-n.z);
+    n.xy += vec2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+bool capturedNormalRaw(vec2 coord, float dist, out vec3 n) {
+    n = vec3(0.0, 0.0, 1.0);
+    if (c.capturedData.x <= 0.0) return false;
+    ivec2 size = textureSize(sampler2D(t_captured, NVR_SAMPLER(pc.sClamp)), 0);
+    ivec2 texel = clamp(ivec2(coord * vec2(size)), ivec2(0), size - 1);
+    vec4 v = texelFetch(sampler2D(t_captured, NVR_SAMPLER(pc.sClamp)), texel, 0);
+    n = capturedDecode(v.rg);
+    return v.a > 0.99 && abs(v.b - dist) <= dist * c.capturedData.y + c.capturedData.z;
+}
+bool snowCapturedNormal(vec2 coord, float dist, out vec3 n) {
+    n = vec3(0.0, 0.0, 1.0);
+    if (c.snowExtra.x <= 0.0) return false;
+    return capturedNormalRaw(coord, dist, n);
+}
+vec4 snowCapturedView(vec2 coord, float dist) {
+    vec3 rebuilt = getWorldNormal(coord);
+    vec3 n;
+    bool captured = capturedNormalRaw(coord, dist, n);
+    if (c.snowExtra.y > 1.5) return vec4(vec3(captured ? saturate(1.0 - dot(n, rebuilt)) : 0.0), 1.0);
+    return vec4(captured ? n * 0.5 + 0.5 : (rebuilt * 0.5 + 0.5) * 0.3, 1.0);
+}
+
 // Snow (the last pass)
 vec4 snowPass(vec2 coordIn) {
     vec4 color = texture(SAMP_CLAMP(t_source), coordIn);
@@ -285,14 +318,19 @@ vec4 snowPass(vec2 coordIn) {
     vec3 eyeDirection = -1.0 * normalize(world);
     vec4 worldPos = vec4(c.cameraPosition.xyz + cameraVector, 1.0);
 
+    if (c.snowExtra.y > 0.5) return snowCapturedView(coordIn, length(cameraVector));	// UNOFFICIAL 2026-10-28
+
     float ortho = texture(SAMP_CLAMP(t_rendered), coordIn).x;
     vec3 norm = getWorldNormal(coordIn);
+    vec3 capturedNorm;	// UNOFFICIAL 2026-10-28 CapturedNormals
+    bool captured = snowCapturedNormal(coordIn, length(cameraVector), capturedNorm);
+    if (captured) norm = capturedNorm;
 
     // early out for the character gun, water surfaces/areas and surfaces above the ortho map (such as actors)
     float waterTreshold = (depth / farZ) * 200.0;
     bool isWaterSurface = (dot(norm, vec3(0.0, 0.0, 1.0)) > 0.9) && (worldPos.z > c.waterSettings.x - waterTreshold) && (worldPos.z < c.waterSettings.x + waterTreshold);
     if (isWaterSurface || !(ortho > 0.0)) return color;
-    norm = snowSmoothNormal(coordIn, cameraVector, norm, depth);	// UNOFFICIAL 2026-10-28 NormalSmoothing (after the water test)
+    if (!captured) norm = snowSmoothNormal(coordIn, cameraVector, norm, depth);	// UNOFFICIAL 2026-10-28 NormalSmoothing (after the water test; captured: smooth already)
 
     color = linearize(color);
     vec3 sunColor = linearize(c.sunColor).rgb;

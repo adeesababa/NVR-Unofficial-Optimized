@@ -1,4 +1,5 @@
 #include "OrthoProbe.h"	// UNOFFICIAL 2026-10-17 test tools (AfterCombine)
+#include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals (TESR_CapturedNormalsData)
 #include "FlickerWatch.h"	// UNOFFICIAL 2026-10-23 test only
 #include "GpuProfiler.h"
 #include "HiZ.h"	// UNOFFICIAL 2026-10-26 (deep/fork-hiz)
@@ -165,6 +166,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_SunTiming", &TheShaderManager->ShaderConst.SunTiming);
 	TheShaderManager->RegisterConstant("TESR_SunAmount", &TheShaderManager->ShaderConst.SunAmount);
 	TheShaderManager->RegisterConstant("TESR_GameTime", &TheShaderManager->ShaderConst.GameTime);
+	TheShaderManager->RegisterConstant("TESR_CapturedNormalsData", &CapturedNormals::Data);	// UNOFFICIAL 2026-10-28 CapturedNormals
 	TheShaderManager->RegisterConstant("TESR_FogData", &TheShaderManager->ShaderConst.fogData);
 	TheShaderManager->RegisterConstant("TESR_FogDistance", &TheShaderManager->ShaderConst.fogDistance);
 	TheShaderManager->RegisterConstant("TESR_FogColor", &TheShaderManager->ShaderConst.fogColor);
@@ -2046,9 +2048,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 	{
 		GpuProfileScope gpu(snowAccumulationTimer, Device);
+		// UNOFFICIAL 2026-10-28 CapturedNormals: a frame already upscaled to the screen before the effects (RenderScale with LowResEffects
+		// off) no longer matches the normals drawn at the internal resolution: the readers keep the depth-rebuilt normal then. (With
+		// LowResEffects on the effects run in the drawn rect before the upscale, as the normals were drawn: they match.)
+		if (TAAEffect::UpscaledBeforeEffects()) CapturedNormals::Data.x = 0.0f;
 		{
 			Effects.SnowAccumulation->Render(Device, RenderTarget, TheTextureManager->RenderedSurface,
-				TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0, false, SourceSurface);
+				Effects.SnowAccumulation->Technique(TheCoverMap ? TheCoverMap->SnowTechnique(Effects.SnowAccumulation) : 0), false, SourceSurface);	// UNOFFICIAL 2026-10-28 Look
 			PixelInspector::AfterFrame(Effects.SnowAccumulation);
 		}
 	}

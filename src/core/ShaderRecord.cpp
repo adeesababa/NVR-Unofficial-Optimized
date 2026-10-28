@@ -1,5 +1,6 @@
 #include "ShaderRecord.h"
 #include "LinearSceneShaders.h"	// UNOFFICIAL 2026-10-28 LinearScene
+#include "CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals
 #include "DxvkCompute.h"	// UNOFFICIAL 2026-10-24 (NVR DXVK phase 2)
 #include "ShaderWarmUp.h"
 #include "PointShadowForward.h"
@@ -195,6 +196,10 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// UNOFFICIAL 2026-10-28 LinearScene (Includes/LinearLight.hlsl LinearSceneOut, core/LinearScene.h): compiled in only when on at startup
 	// with linear lighting, so that otherwise the four lit templates are exactly what they were.
 	AppendDefine("LINEAR_SCENE_ON", TheSettingManager->GetSettingI("Shaders.PBR.Linear", "Enabled") && TheSettingManager->GetSettingI("Shaders.PBR.Linear", "LinearScene") ? "1" : "0");
+	// UNOFFICIAL 2026-10-28 CapturedNormals (Shaders/Includes/CapturedNormals.hlsl, core/CapturedNormals.h): the four lit templates write their
+	// smooth vertex normal to COLOR3; compiled in only when a reader's switch is on at startup, so that otherwise they are exactly as before
+	// (defined only then: the define list, and so the shader cache's keys, stay as they were with it off).
+	if (CapturedNormals::CompiledIn()) AppendDefine("CAPTURED_NORMALS_ON", "1");
 
 	// UNOFFICIAL physical sky (Includes/Atmosphere.hlsl, SKY.pso): compiled in only when on at startup, so that otherwise the
 	// sky shader is exactly what it was. Its other settings are live (SkyShaders::UpdateSettings).
@@ -506,6 +511,11 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 						for (int d = 0; d < 63 && Template.Defines[d].Name; d++)
 							if (!strcmp(Template.Defines[d].Name, "LINEAR_SCENE_ON")) on = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
 						if (on) LinearScene::NoteCapable(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
+						// UNOFFICIAL 2026-10-28 CapturedNormals (core/CapturedNormals.h): the pixel shaders that write the normal target (COLOR3).
+						bool writes = false;
+						for (int d = 0; d < 63 && Template.Defines[d].Name; d++)
+							if (!strcmp(Template.Defines[d].Name, "CAPTURED_NORMALS_ON")) writes = Template.Defines[d].Definition && !strcmp(Template.Defines[d].Definition, "1");
+						if (writes) CapturedNormals::NoteWriter(((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 					}
 					// UNOFFICIAL 2026-10-17 LinearPreDecode (core/LinearPreDecode.h): ObjectTemplate pixel shaders compiled with linear lighting
 					// and LIN_PREDECODE_ON read their colour constants already decoded; the constant hook decodes them while one is bound.

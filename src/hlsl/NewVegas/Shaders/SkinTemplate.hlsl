@@ -90,6 +90,7 @@
     #endif
 #endif
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"	// UNOFFICIAL 2026-10-28 CapturedNormals (COLOR3, see there)
 
 // How far toward the sun the pixel shader looks a second time into the shadow map, in game units (16 = 23 cm: past the far
 // side of a hand or a head): lit there, a shadow here is the skin's own (Includes/Skin.hlsl SkinLight, selfLit).
@@ -399,6 +400,9 @@ struct PS_OUTPUT {
     float4 color : COLOR0;
     float4 scatter : COLOR1;
     float4 albedo : COLOR2;
+#if CAPTURED_NORMALS_ON
+    float4 capturedNormal : COLOR3;	// UNOFFICIAL 2026-10-28 CapturedNormals (Includes/CapturedNormals.hlsl; bound only in the world's main list)
+#endif
 };
 
 PS_OUTPUT main(PS_INPUT IN) {
@@ -579,6 +583,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
     OUT.color = color;
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
+#if CAPTURED_NORMALS_ON
+    // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal after skinning, before the normal map (the added lamp passes: none)
+    #if defined(DIFFUSE)
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #else
+        OUT.capturedNormal = CapturedNormalOut(IN.normal.xyz, worldPos);
+    #endif
+#endif
     OUT.scatter = float4(specularShare, length(worldPos));
     #if defined(DIFFUSE)
         OUT.albedo = 1.0f;   // never written: the added passes leave the albedo target alone (its writes are masked off)

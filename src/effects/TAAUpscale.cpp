@@ -165,6 +165,11 @@ bool TAAEffect::IsWorldViewport(const D3DVIEWPORT9& port) {
 	return taa && (taa->Up.Active || taa->Up.Deferred) && port.Width == taa->Up.RenderWidth && port.Height == taa->Up.RenderHeight;
 }
 
+bool TAAEffect::UpscaledBeforeEffects() {
+	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
+	return taa && taa->Up.Upscaled;
+}
+
 bool TAAEffect::UpscaledThisFrame() {
 	TAAEffect* taa = TheShaderManager ? TheShaderManager->Effects.TAA : nullptr;
 	return taa && (taa->Up.Upscaled || taa->Up.Deferred);	// UNOFFICIAL 2026-10-27 v2: also while the frame waits for its upscale

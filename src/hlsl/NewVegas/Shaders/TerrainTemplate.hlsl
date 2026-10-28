@@ -45,6 +45,7 @@
 #define SHADOW_ATLAS_SAMPLER_REG s14
 #define SHADOW_OLD_ATLAS_SAMPLER_REG s15 // the sun cross-fade's kept atlas (SUN_CROSSFADE only)
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"	// UNOFFICIAL 2026-10-28 CapturedNormals (COLOR3, see there)
 
 // UNOFFICIAL terrain blending ([Shaders.Terrain.Blending]), ported from Balebandro's Physically-Based-Reloaded fork
 // (Alejandro Martinez, fork commit a23a624b), which follows the idea of Community Shaders' Terrain Blending (Skyrim).
@@ -156,6 +157,12 @@ struct PS_INPUT
 
 struct PS_OUTPUT {
     float4 color_0 : COLOR0;
+#if CAPTURED_NORMALS_ON
+    // (ps_3_0 needs COLOR0..COLOR3 contiguous: COLOR1 / COLOR2 written as 0, discarded where nothing is bound there)
+    float4 capturedPad1 : COLOR1;
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;	// UNOFFICIAL 2026-10-28 CapturedNormals (Includes/CapturedNormals.hlsl; bound only in the world's main list)
+#endif
 };
 
 #ifdef PS
@@ -515,6 +522,14 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     OUT.color_0.rgb = finalColor;
     OUT.color_0.rgb = LinearSceneOut(OUT.color_0.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
+#if CAPTURED_NORMALS_ON
+    OUT.capturedPad1 = 0.0f;
+    OUT.capturedPad2 = 0.0f;
+    // UNOFFICIAL 2026-10-28 CapturedNormals: the land's interpolated vertex normal (the land is not rotated: object space is world space;
+    // with tessellation the normal its evaluation shader passes on), before the layers' normal maps. Alpha 1 also with terrain blending's
+    // Smooth fade (the land drawn blended over objects): the land's normal replaces what is there, with its depth.
+    OUT.capturedNormal = CapturedNormalOut(IN.normal.xyz, shadowWorldPos);
+#endif
 
     return OUT;
 };

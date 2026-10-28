@@ -52,6 +52,7 @@ public:
 	// the viewport of world draws (lamp scissor, forward lamp shadows, the scope fix): while the world scene is drawn at the lower
 	// internal resolution its viewport is the top-left RenderWidth x RenderHeight of the screen, which these accept like the full one.
 	static bool			IsWorldViewport(const D3DVIEWPORT9& port);
+	static bool			UpscaledBeforeEffects();	// UNOFFICIAL 2026-10-28: upscaled already (LowResEffects off): the effects see the screen, not the rect
 	static bool			UpscaledThisFrame();		// this frame's world was drawn at the lower resolution and upscaled (TAA's resolve skips)
 	static void			NoteWorldDraw(bool firstPerson = false);	// RenderPassStandard/SkinnedHook, world (and v2: first-person) passes: counts which viewport they drew with (a check)
 	static D3DXVECTOR4	RenderScaleConstant;		// TESR_RenderScale: xy = render size / screen size while the low-resolution world draws, else 1

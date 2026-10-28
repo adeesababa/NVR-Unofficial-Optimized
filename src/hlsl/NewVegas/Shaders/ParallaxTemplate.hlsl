@@ -153,6 +153,7 @@
 #endif
 #include "includes/Object.hlsl"
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"	// UNOFFICIAL 2026-10-28 CapturedNormals (COLOR3, see there)
 
 // Forward sun shadows -- see ObjectTemplate.hlsl. PAR shaders do full sun lighting but had
 // no shadow term at all, so every parallax-material object rendered fully sunlit once the
@@ -234,6 +235,8 @@ struct VS_OUTPUT
     #if defined(NO_FOG) && defined(DISPLACE_COLORS)
         float4 displaceFill10 : COLOR1;
     #endif
+#elif CAPTURED_NORMALS_ON
+    float4 uv : TEXCOORD0;              // UNOFFICIAL 2026-10-28 CapturedNormals: zw the vertex normal, camera-relative world (octahedral)
 #else
     float2 uv : TEXCOORD0;
 #endif
@@ -363,6 +366,10 @@ VS_OUTPUT main(VS_INPUT IN)
     #endif
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.sPosition), SHADOW_VS_SENTINEL);
+    #if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+        // UNOFFICIAL 2026-10-28 CapturedNormals: the vertex normal in camera-relative world space, in uv.zw (no interpolator is spare)
+        OUT.uv.zw = ShadowEncodeNormal(GetShadowSmoothNormal(ModelViewProj, IN.position.xyz, IN.normal.xyz, OUT.shadowWorldPos.xyz).xyz);
+    #endif
 
     #ifdef DISPLACE_LAYOUT
         // UNOFFICIAL 2026-10-28 object displacement (see the top): what the tessellation reads, and 0 in the unused slots.
@@ -408,7 +415,11 @@ struct PS_INPUT
 #ifndef NO_FOG
     float4 fogColor : COLOR1;
 #endif
+#if CAPTURED_NORMALS_ON && !defined(DISPLACE_LAYOUT)
+    float4 uv : TEXCOORD0;	// UNOFFICIAL 2026-10-28 CapturedNormals: zw the vertex normal (see the vertex shader)
+#else
     float2 uv : TEXCOORD0;
+#endif
 #ifndef NO_LIGHT
     float4 lightDir : TEXCOORD1_centroid;
 #endif
@@ -438,6 +449,12 @@ struct PS_INPUT
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
+#if CAPTURED_NORMALS_ON
+    // (ps_3_0 needs COLOR0..COLOR3 contiguous: COLOR1 / COLOR2 written as 0, discarded where nothing is bound there)
+    float4 capturedPad1 : COLOR1;
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;	// UNOFFICIAL 2026-10-28 CapturedNormals (Includes/CapturedNormals.hlsl; bound only in the world's main list)
+#endif
 };
 
 #ifdef PS
@@ -715,6 +732,17 @@ PS_OUTPUT main(PS_INPUT IN)
         OUT.color.a = ReflMaterialAlpha(alpha * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
     #endif
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
+#if CAPTURED_NORMALS_ON
+    OUT.capturedPad1 = 0.0f;
+    OUT.capturedPad2 = 0.0f;
+    // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map and the parallax offset. The displacement
+    // layout (NVR DXVK object tessellation) has no channel for it (uv.zw is the object normal there): none, the depth-rebuilt normal stays.
+    #if defined(DISPLACE_LAYOUT) || defined(DIFFUSE) || defined(ONLY_SPECULAR)
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #else
+        OUT.capturedNormal = CapturedNormalOut(ShadowDecodeNormal(IN.uv.zw), IN.shadowWorldPos.xyz);
+    #endif
+#endif
 
     return OUT;
 };

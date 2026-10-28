@@ -316,6 +316,7 @@
     #define SHADOW_CHARACTER_MAP_IN 1
 #endif
 #include "includes/Shadow.hlsl"
+#include "includes/CapturedNormals.hlsl"	// UNOFFICIAL 2026-10-28 CapturedNormals (COLOR3, see there)
 // UNOFFICIAL 2026-10-24 SmoothObjectNormals (Includes/Shadow.hlsl, OBJECT_SMOOTH_NORMALS): the vertex normal in camera-relative world space
 // for the shadow lookups and the sky ambient, in place of the per-triangle derivative normal. The LIGHTS < 4 family carries it in its own
 // interpolator (TEXCOORD8; vs_3_0 has 12 outputs and ps_3_0 10 inputs: with PROJ_SHADOW every one is taken, so those variants keep the flat
@@ -997,6 +998,14 @@ struct PS_OUTPUT {
     // back after, as it does the skin shader's own (Effects/SkinScattering.fx.hlsl). Anywhere else it is discarded.
     float4 highlightCopy : COLOR1;
 #endif
+#if CAPTURED_NORMALS_ON
+    // (ps_3_0 needs COLOR0..COLOR3 contiguous: COLOR2 written as 0, discarded where nothing is bound there; COLOR1 is highlightCopy)
+    #if !defined(ONLY_SPECULAR)
+    float4 capturedPad1 : COLOR1;
+    #endif
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;	// UNOFFICIAL 2026-10-28 CapturedNormals (Includes/CapturedNormals.hlsl; bound only in the world's main list)
+#endif
 };
 
 #if defined(DIFFUSE) || defined(ONLY_SPECULAR)
@@ -1542,6 +1551,23 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if defined(ONLY_SPECULAR)
         OUT.highlightCopy = OUT.color;   // UNOFFICIAL NewSkin: alpha too, so any blend the pass uses adds alike to both targets
     #endif
+#if CAPTURED_NORMALS_ON
+    #if !defined(ONLY_SPECULAR)
+        OUT.capturedPad1 = 0.0f;
+    #endif
+    OUT.capturedPad2 = 0.0f;
+    // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map. The added lamp and highlight passes write
+    // none (they are masked off anyway); nor does the slot-tight six-lamp shader (the depth-rebuilt normal stays in use there).
+    #if defined(DIFFUSE) || defined(ONLY_SPECULAR) || defined(NVR_SLOT_TIGHT)
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #elif defined(OBJ_SMOOTH_NORMAL_INTERP)
+        OUT.capturedNormal = CapturedNormalOut(IN.smoothNormal.xyz, IN.shadowWorldPos.xyz);
+    #elif defined(OBJ_SMOOTH_NORMAL_W)
+        OUT.capturedNormal = CapturedNormalOut(ShadowPlainNormal(float2(IN.lightDistSq.w, IN.lightDir.w), IN.vertexColor.a), IN.shadowWorldPos.xyz);
+    #else
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;	// SmoothObjectNormals off: no vertex normal here
+    #endif
+#endif
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 
     return OUT;
@@ -1617,6 +1643,12 @@ struct PS_INPUT {
 
 struct PS_OUTPUT {
     float4 color : COLOR0;
+#if CAPTURED_NORMALS_ON
+    // (ps_3_0 needs COLOR0..COLOR3 contiguous: COLOR1 / COLOR2 written as 0, discarded where nothing is bound there)
+    float4 capturedPad1 : COLOR1;
+    float4 capturedPad2 : COLOR2;
+    float4 capturedNormal : COLOR3;	// UNOFFICIAL 2026-10-28 CapturedNormals (Includes/CapturedNormals.hlsl; bound only in the world's main list)
+#endif
 };
 
 sampler2D BaseMap : register(s0);
@@ -1852,6 +1884,16 @@ PS_OUTPUT main(PS_INPUT IN) {
         [branch] if (NVR_PointShadowDebug.x > 2.5f) OUT.color.rgb = PointShadowTrace(ptWorldPos, ptNormal, ptValid);
     #endif
     OUT.color.a = ReflMaterialAlpha(baseColor.a * AmbientColor.a);	// UNOFFICIAL MaterialAware reflections (Object.hlsl)
+#if CAPTURED_NORMALS_ON
+    OUT.capturedPad1 = 0.0f;
+    OUT.capturedPad2 = 0.0f;
+    // UNOFFICIAL 2026-10-28 CapturedNormals: the smooth vertex normal, before the normal map (as in the LIGHTS < 4 variant)
+    #if OBJECT_SMOOTH_NORMALS && !defined(NVR_SLOT_TIGHT)
+        OUT.capturedNormal = CapturedNormalOut(ShadowPlainNormal(IN.uv.zw, IN.vertexColor.a), SHADOW_WP_LOAD(IN));
+    #else
+        OUT.capturedNormal = CAPTURED_NORMAL_INVALID;
+    #endif
+#endif
     OUT.color.rgb = LinearSceneOut(OUT.color.rgb);	// UNOFFICIAL 2026-10-28 LinearScene (includes/LinearLight.hlsl)
 
     return OUT;

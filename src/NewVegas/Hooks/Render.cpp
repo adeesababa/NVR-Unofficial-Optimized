@@ -32,6 +32,7 @@
 #include "../../core/CasterView.h"	// UNOFFICIAL 2026-10-28, diagnostic: which objects cast into the sun cascade that covers them
 #include "../../core/LinearSceneCensus.h"	// UNOFFICIAL 2026-10-28, diagnostic: what draws into the world and how (linear-scene plan)
 #include "../../core/LinearScene.h"	// UNOFFICIAL 2026-10-28 LinearScene: the world's main list kept in linear light
+#include "../../core/CapturedNormals.h"	// UNOFFICIAL 2026-10-28 CapturedNormals: the main list's surfaces write their smooth normals
 #include "../../core/FoldHighlights.h"	// UNOFFICIAL 2026-10-21 FoldHighlights: several-pass objects draw their highlights with their lamps' light
 #include "../../core/NewGrass.h"	// UNOFFICIAL 2026-10-18 NewGrass: blade geometry in place of the early grass card draws (GrassFirst)
 #include "../../core/GrassShadows.h"	// UNOFFICIAL 2026-10-27 grass sun shadows: the early grass drawn again into the near sun shadow map (GrassFirst)
@@ -664,6 +665,10 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	CharacterObjectReach::BeginFrame();	// UNOFFICIAL 2026-10-23 CharacterObjectReach
 	FoldHighlights::BeginFrame();	// UNOFFICIAL 2026-10-21 FoldHighlights
 	LinearScene::BeginFrame(TheRenderManager->device);	// UNOFFICIAL 2026-10-28 LinearScene
+	{	// UNOFFICIAL 2026-10-28 CapturedNormals: captured while a reader will use them this frame (SnowAccumulation's CapturedNormals)
+		SnowAccumulationEffect* snow = TheShaderManager->Effects.SnowAccumulation;
+		CapturedNormals::BeginFrame(TheRenderManager->device, snow && snow->Enabled && snow->CapturedNormals && snow->ShouldRender());
+	}
 	PbrPop::ActorPasses::BeginFrame();	// UNOFFICIAL 2026-10-18 ActorsInOnePass (before the scene walk)
 #if NVR_TEST_TOOLS
 	LampsInOnePass::Census::NewFrame();	// UNOFFICIAL, diagnostic (F10 only)
@@ -2494,6 +2499,10 @@ namespace GrassFirst {
 		struct LinearSpan { bool on; LinearSpan() : on(ShaderSplit::CurrentContext == ShaderSplit::World) { if (on) LinearScene::BeginSpan(TheRenderManager->device); }
 			~LinearSpan() { if (on) LinearScene::EndSpan(TheRenderManager->device); } } linearSpan;
 		ActiveAccumulator = nullptr;
+		// UNOFFICIAL 2026-10-28 CapturedNormals (core/CapturedNormals.h): the normal target bound around the game's own call only (the early
+		// grass part above it draws grass and the grass shadows, which write none).
+		struct CaptureSpan { bool on; CaptureSpan() : on(ShaderSplit::CurrentContext == ShaderSplit::World) { if (on) CapturedNormals::BeginSpan(TheRenderManager->device); }
+			~CaptureSpan() { if (on) CapturedNormals::EndSpan(TheRenderManager->device); } };
 		if (first == 1 && last == 0x25B && group < 0) DepthFirst(accumulator, arg3, group);	// UNOFFICIAL 2026-10-26 LampsDepthFirst
 		if (first == 1 && last == 0x25B && group < 0 && Allowed(accumulator)) {
 			PassIdNode* lists[2] = {};
@@ -2501,7 +2510,7 @@ namespace GrassFirst {
 			bool ok = Lists(accumulator, lists, count);
 			// fixes-b #29: no grass pass queued in this accumulator (interiors, bare land): nothing to draw first, so no device
 			// work at all (the state save / restore reads back ~500 constants and ~250 states) -- the game's own calls run as is.
-			if (ok && !AnyGrass(lists, count)) { ThisCall(kRenderBatches, accumulator, first, last, arg3, group); return; }
+			if (ok && !AnyGrass(lists, count)) { CaptureSpan capture; ThisCall(kRenderBatches, accumulator, first, last, arg3, group); return; }
 			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
 			if (ok) {
 				ForgetIfStale(TheShaderManager->Shaders.Grass);	// UNOFFICIAL 2026-10-28
@@ -2533,6 +2542,7 @@ namespace GrassFirst {
 			for (unsigned i = 0; i < count; i++) Rewrite(lists[i], false);	// ascending again, whatever happened
 		}
 		else if (first == 1 && last == 0x25B && group < 0 && ShadowOnlyAllowed(accumulator)) ShadowOnlyEarly(accumulator, arg3, group);	// UNOFFICIAL 2026-10-28
+		CaptureSpan capture;
 		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
 	}
 
