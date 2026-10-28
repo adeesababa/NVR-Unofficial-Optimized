@@ -518,9 +518,13 @@ void VolumetricCloudsEffect::RenderClouds(IDirect3DDevice9* Device, IDirect3DSur
 	{
 		const float strength = Constants.Extra.x;
 		if (shadowsViaSunFar) Constants.Extra.x = 0.0f;
+		const D3DXVECTOR2 jitterUV = TheShaderManager->Effects.TAA ? TheShaderManager->Effects.TAA->LowResJitterUV() : D3DXVECTOR2(0.0f, 0.0f);
+		Constants.HistoryScale.z = jitterUV.x;
+		Constants.HistoryScale.w = jitterUV.y;
 		GpuProfileScope gpu(compositeTimer, Device);
 		Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 		Constants.Extra.x = strength;
+		Constants.HistoryScale.z = Constants.HistoryScale.w = 0.0f;
 	}
 
 	lastViewProj = viewProj;

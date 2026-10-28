@@ -42,6 +42,8 @@ void GrassShaders::UpdateConstants() {
 void GrassShaders::SetForDraw(NiD3DVertexShaderEx* VertexShader, NiD3DPixelShaderEx* PixelShader) {
 	if (!Enabled || !VertexShader || !VertexShader->Name || memcmp(VertexShader->Name, "GRASS", 5)) return;
 	NewGrass::LastVariant = strlen(VertexShader->Name) >= 11 ? VertexShader->Name[10] : 0;
+	BindSerial++;
+	LastBindName = VertexShader->Name;
 	LastBindNVR = false;
 	if (!VertexShader->ShaderHandleBackup || VertexShader->ShaderHandle == VertexShader->ShaderHandleBackup) return;
 	LastBindNVR = true;

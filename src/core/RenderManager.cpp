@@ -222,6 +222,14 @@ void RenderManager::SetupSceneCamera() {
 }
 
 // detect if dxvk is present
+static bool NvrDepthMissingUnderDXVK = false;
+void NvrDepthWarningTick() {
+	static bool shown = false;
+	if (!NvrDepthMissingUnderDXVK || shown || !Player || !Player->parentCell || !InterfaceManager) return;
+	shown = true;
+	InterfaceManager->ShowMessage("NVR: no depth under this DXVK on NVIDIA. Add d3d9.customVendorId = 1002 to dxvk.conf (see the NVR log).");
+}
+
 bool getDXVKPresent() {
 	DWORD  verHandle = 0;
 	LPBYTE lpBuffer = NULL;
@@ -327,8 +335,15 @@ void RenderManager::Initialize() {
 		Logger::Log("Depth resolve: RESZ (%s).", DXVK ? "DXVK, any GPU brand" : "AMD/Intel driver");
 		if (DXVK) Logger::Log("DXVK found");
 	}
-	else if (NvAPI_Initialize() == NVAPI_OK)
+	else if (NvAPI_Initialize() == NVAPI_OK) {
 		Logger::Log("Depth resolve: NVAPI (NVIDIA driver).");
+		if (getDXVKPresent()) {
+			NvrDepthMissingUnderDXVK = true;
+			Logger::Log("WARNING: this d3d9.dll is DXVK without RESZ on an NVIDIA card: NVR gets NO world depth (ambient occlusion, fog, "
+				"shadows, reflections and other depth effects will look wrong). Fix: add the line  d3d9.customVendorId = 1002  to dxvk.conf "
+				"next to d3d9.dll (DXVK then offers RESZ), or use NVR DXVK, which offers it on every GPU.");
+		}
+	}
 	else
 		Logger::Log("ERROR: Cannot initialize the render manager. Graphics device not supported.");
 	Logger::Log("D3D9 runtime: %s", D3D9RuntimeDescription());

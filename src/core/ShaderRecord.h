@@ -101,6 +101,7 @@ public:
 	bool					PointShadowForward = false;
 	bool					UsedOnce = false;
 	bool					IsLandLight = false;
+	unsigned char			DisplaceFamily = 0;
 };
 
 class ShaderRecordVertex : public ShaderRecord {

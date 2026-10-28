@@ -29,6 +29,7 @@
 #include "../../core/MaterialRules.h"
 #include "../../core/PbrPop.h"
 #include "../../core/PassFamilyView.h"
+#include "../../core/LinearSceneCensus.h"
 #include "../../core/FoldHighlights.h"
 #include "../../core/NewGrass.h"
 #include "../../core/GrassShadows.h"
@@ -528,6 +529,7 @@ namespace FrameSplit {
 	}
 }
 
+void NvrDepthWarningTick();
 void (__thiscall* Render)(Main*, BSRenderedTexture*, int, int) = (void (__thiscall*)(Main*, BSRenderedTexture*, int, int))Hooks::Render;
 void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTexture, int Arg2, int Arg3) {
 	static CpuTimer gameRenderCpuTimer("Game render (CPU)"), presentCpuTimer("Present (CPU)"), gameUpdateCpuTimer("Game update (CPU)");
@@ -544,6 +546,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	FrameSplit::PresentMs = 0.0;
 	CpuSplit::MarkNow(CpuSplit::kRenderBegin);
 	DxvkCompute::ProfileTick(GpuTimer::Enabled);
+	NvrDepthWarningTick();
 #if NVR_TEST_TOOLS
 	ShaderWarmUp2::FrameTick(SettingShots::Running ? (int)SettingShots::Index : -1);
 #else
@@ -602,6 +605,9 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	PbrPop::SpecLodTest::BeginFrame();
 	PbrPop::PopLog::NewFrame();
 	PassFamilyView::BeginFrame();
+	if (!LinearSceneCensus::ContextOf) LinearSceneCensus::ContextOf = []() -> int {
+		return ShaderSplit::CurrentContext == ShaderSplit::World ? 1 : ShaderSplit::CurrentContext == ShaderSplit::FirstPerson ? 2 : 0; };
+	LinearSceneCensus::BeginFrame(TheRenderManager->device);
 #endif
 	if (TheShaderManager->Effects.SkinScattering && TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Active())
 		TheShaderManager->Effects.SkinScattering->BeginFrame();
@@ -1861,10 +1867,34 @@ namespace GrassFirst {
 	static void* ActiveAccumulator = nullptr;
 	static std::vector<Record> Records;
 	static bool GameVertexShader[kGrassLastId - kGrassFirstId + 1] = {};
+	static unsigned short NvrAgainFrames[kGrassLastId - kGrassFirstId + 1] = {};
+	static unsigned NvrAgainLastFrame[kGrassLastId - kGrassFirstId + 1] = {};
+	static const unsigned short UnlearnFrames = 30;
+	static unsigned StatLearned = 0, StatUnlearned = 0;
 	static unsigned Frames = 0, StatEarly = 0, StatLate = 0, StatWhole = 0, StatUnsplit = 0;
 	static unsigned RecordedFrame = ~0u;
 	static bool ShadowOnly = false;
 	static unsigned ShadowOnlyFrames = 0;
+	static unsigned EarlySerial = 0;
+	static unsigned LastEarlyFrame = 0;
+	static bool LastShadersOn = true;
+	static unsigned StatUnknown = 0, LearnLogs = 0, ForgetLogs = 0;
+	static void ForgetIfStale(GrassShaders* grass) {
+		const unsigned frame = TheFrameRateManager->FrameNumber;
+		const bool shadersOn = TheSettingManager->SettingsMain.Main.RenderEffects && grass->Enabled;
+		const bool gap = LastEarlyFrame && frame - LastEarlyFrame > 30;
+		if (gap || shadersOn != LastShadersOn) {
+			unsigned learned = 0;
+			for (bool& g : GameVertexShader) { if (g) learned++; g = false; }
+			if (learned && ForgetLogs < 20) {
+				ForgetLogs++;
+				Logger::Log("UNOFFICIAL GrassFirst: %u grass passes learned as the game's VS are tried again (%s)", learned,
+					gap ? "the world was not drawn for a while: a loading screen or a menu" : "NVR's shaders were switched");
+			}
+		}
+		LastEarlyFrame = frame;
+		LastShadersOn = shadersOn;
+	}
 
 	static void(__cdecl* RenderPassImmediately)(void*, UInt32, UInt32, UInt32, UInt32) = (void(__cdecl*)(void*, UInt32, UInt32, UInt32, UInt32))kRenderPassImmediately;
 
@@ -2176,6 +2206,9 @@ namespace GrassFirst {
 	}
 
 	static void __fastcall MainListHook(void* accumulator, void* edx, UInt32 first, UInt32 last, UInt32 arg3, SInt32 group) {
+#if NVR_TEST_TOOLS
+		struct CensusMain { bool was; CensusMain() : was(LinearSceneCensus::InMain) { LinearSceneCensus::InMain = true; } ~CensusMain() { LinearSceneCensus::InMain = was; } } censusMain;
+#endif
 		ActiveAccumulator = nullptr;
 		if (first == 1 && last == 0x25B && group < 0) DepthFirst(accumulator, arg3, group);
 		if (first == 1 && last == 0x25B && group < 0 && Allowed(accumulator)) {
@@ -2185,6 +2218,7 @@ namespace GrassFirst {
 			if (ok && !AnyGrass(lists, count)) { ThisCall(kRenderBatches, accumulator, first, last, arg3, group); return; }
 			for (unsigned i = 0; ok && i < count; i++) ok = Rewrite(lists[i], true);
 			if (ok) {
+				ForgetIfStale(TheShaderManager->Shaders.Grass);
 				Records.clear();
 				GrassShadows::Records.clear();
 				RestoreMask = (unsigned)TheShaderManager->Shaders.Grass->DrawFirstRestore;
@@ -2194,6 +2228,7 @@ namespace GrassFirst {
 				Recording = true;
 				const bool gpuGrass = GpuGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);
 				if (!gpuGrass) NewGrass::BeginEarly(TheRenderManager->device, TheShaderManager->Shaders.Grass->Enabled);
+				EarlySerial = GrassShaders::BindSerial;
 				ThisCall(kRenderBatches, accumulator, (UInt32)kGrassFirstId, (UInt32)kGrassLastId, arg3, group);
 				if (!gpuGrass) NewGrass::EndEarly(TheRenderManager->device, StatEarly);
 				GpuGrass::EndEarly(TheRenderManager->device);
@@ -2229,6 +2264,21 @@ namespace GrassFirst {
 				state->SetRenderState(D3DRS_ALPHATESTENABLE, r.alphaTest, RenderStateArgs);
 				RenderPassImmediately(r.pass, r.passId, r.a3, r.a4, r.a5);
 				if (r.drawnEarly) StatLate++; else StatWhole++;
+				if (!r.drawnEarly && r.passId <= kSplitLastId && GameVertexShader[r.passId - kGrassFirstId]) {
+					const unsigned i = r.passId - kGrassFirstId;
+					const unsigned frame = TheFrameRateManager->FrameNumber;
+					if (!GrassShaders::LastBindNVR) NvrAgainFrames[i] = 0;
+					else if (NvrAgainLastFrame[i] != frame) {
+						NvrAgainLastFrame[i] = frame;
+						if (++NvrAgainFrames[i] >= UnlearnFrames) {
+							GameVertexShader[i] = false;
+							NvrAgainFrames[i] = 0;
+							if (++StatUnlearned <= 10)
+								Logger::Log("UNOFFICIAL GrassFirst: grass pass %03X binds NVR's vertex shader again (%u frames running): split and drawn before the land again (with its sun shadows)",
+									r.passId, (unsigned)UnlearnFrames);
+						}
+					}
+				}
 			}
 			((void(__cdecl*)(char, int))0x00B98540)(0, 0);
 			((void(__cdecl*)())kEndPass)();
@@ -2239,9 +2289,9 @@ namespace GrassFirst {
 			}
 			Records.clear();
 			if (++Frames <= 3 || (Frames % 3600 == 0 && Frames <= 3600 * 17))
-				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned); fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
-					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
-			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = 0;
+				Logger::Log("UNOFFICIAL GrassFirst: frame %u: %u grass draws before the land (%u of them all near: not again), %u after it (fading tufts), %u whole after it (%u all fading, the rest no split), %u drawn whole early (game VS, learned), %u met before any grass bind of the run; fade start %.1f (seen %.1f-%.1f); %u states put back (mask %u)",
+					Frames, StatEarly, StatAllNear, StatLate, StatWhole, StatAllFading, StatUnsplit, StatUnknown, FadeStart, FadeSeenMin, FadeSeenMax, StatRestored, RestoreMask);
+			StatEarly = StatLate = StatWhole = StatUnsplit = StatAllNear = StatAllFading = StatRestored = StatUnknown = 0;
 			FadeSeenMin = FadeSeenMax = 0.0f;
 		}
 		ThisCall(kRenderBatches, accumulator, first, last, arg3, group);
@@ -2272,7 +2322,11 @@ namespace GrassFirst {
 				const float nearOnly[4] = { GrassShaders::LastPairing[0], GrassShaders::LastPairing[1], GrassShaders::LastPairing[2], 1.0f };
 				TheRenderManager->device->SetVertexShaderConstantF(19, nearOnly, 1);
 			}
-			if (GrassShaders::LastBindNVR) {
+			if (GrassShaders::BindSerial == EarlySerial) {
+				StatUnknown++;
+				r.drawnEarly = false;
+			}
+			else if (GrassShaders::LastBindNVR) {
 				GrassShadows::Note(pass, passId, a3, a4, a5);
 				float alpha[4] = {};
 				if (SUCCEEDED(TheRenderManager->device->GetVertexShaderConstantF(5, alpha, 1)) && alpha[2] > 0.0f) {
@@ -2287,6 +2341,12 @@ namespace GrassFirst {
 			else {
 				gameVS = true;
 				StatUnsplit++;
+				NvrAgainFrames[passId - kGrassFirstId] = 0;
+				if (LearnLogs < 40) {
+					LearnLogs++;
+					Logger::Log("UNOFFICIAL GrassFirst: grass pass %03X draws with the game's vertex shader %s: drawn whole after the land from now on (no grass shadows from it) until the next loading screen",
+						passId, GrassShaders::LastBindName ? GrassShaders::LastBindName : "?");
+				}
 				return;
 			}
 		}
@@ -2470,6 +2530,7 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 #if NVR_TEST_TOOLS
 	PassFamilyView::OnBind(TheRenderManager->device, PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr,
 		ShaderSplit::CurrentContext == ShaderSplit::World, PassIndex);
+	LinearSceneCensus::OnBind(PixelShader ? PixelShader->ShaderHandle : nullptr, PixelShader ? PixelShader->Name : nullptr, PointShadowForward::LastPixelShaderNvr, PassIndex);
 #endif
 	PointShadowForward::SetForDraw(PixelShader, ShaderSplit::CurrentContext == ShaderSplit::World,
 		ShaderSplit::CurrentContext == ShaderSplit::FirstPerson);
@@ -2630,6 +2691,9 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	if (countOpt) OnePassDepth::Counts::Before(TheRenderManager->device);
 	if (ShaderSplit::CurrentContext == ShaderSplit::World) TAAEffect::NoteWorldDraw();
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);
+	DxvkCompute::DisplaceLandPass(((const PointShadowForward::RenderPassView*)Pass)->geometry, ((const PointShadowForward::RenderPassView*)Pass)->passEnum,
+		ShaderSplit::CurrentContext == ShaderSplit::World ? DxvkCompute::kDisplaceWorld :
+		ShaderSplit::CurrentContext == ShaderSplit::Reflections ? DxvkCompute::kDisplaceReflection : DxvkCompute::kDisplaceOther);
 	GameEyes::Before((const PointShadowForward::RenderPassView*)Pass);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 	GameEyes::After();

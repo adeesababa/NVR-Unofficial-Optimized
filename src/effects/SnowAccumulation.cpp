@@ -32,6 +32,7 @@ void SnowAccumulationEffect::UpdateSettings(){
 	Constants.Color.x = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorR");
 	Constants.Color.y = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorG");
 	Constants.Color.z = TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "SnowColorB");
+	Constants.Color.w = std::clamp(TheSettingManager->GetSettingF("Shaders.SnowAccumulation.Main", "NormalSmoothing"), 0.0f, 256.0f);
 }
 
 void SnowAccumulationEffect::RegisterConstants() {

@@ -3413,6 +3413,7 @@ static std::string MenuEntryLabel(const std::string& name) {
 }
 static std::string MenuSectionLabel(const std::string& path, const std::string& name) {
 	if (path == "Shaders.Terrain.Displacement") return "Tessellation (displacement)##" + name;
+	if (path == "Shaders.POM.Displacement") return "Tessellation (displacement)##" + name;
 	return name;
 }
 

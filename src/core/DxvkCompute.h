@@ -36,8 +36,11 @@ public:
 	static ID3D9NvrExtSampler*	CreateSampler(NVR_EXT_FILTER Filter, NVR_EXT_ADDRESS Address);
 
 	static bool					DisplaceOn();
-	static void					RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size);
+	static unsigned				RegisterDisplace(const char* Name, const char* TemplateName, const D3DXMACRO* Defines, bool Vertex, const void* Bytecode, UINT Size);
 	static void					DisplaceTick();
+	enum : unsigned { kDisplaceLand = 1, kDisplaceLandShadow = 2, kDisplaceObjects = 3 };
+	static void					DisplaceBind(unsigned Family);
+	static bool					DisplaceObjectsLayout();
 	static bool					DisplaceDepthWanted();
 	static void					DisplaceSceneDepth(bool Valid, float ScaleX, float ScaleY);
 	static void					NoteLandPixelShader(IDirect3DPixelShader9* Shader, const D3DXMACRO* Defines);
@@ -48,6 +51,8 @@ public:
 	static void					DisplaceShadowBegin(bool ObjectBlend, float ScaleX, float ScaleY);
 	static void					DisplaceShadowEnd();
 	static void					DisplaceShadowsDrawn(unsigned Pieces);
+	enum : int { kDisplaceWorld = 0, kDisplaceReflection = 1, kDisplaceOther = 2 };
+	static void					DisplaceLandPass(NiGeometry* Geometry, UInt16 PassEnum, int Context);
 
 	static void					Fail(const char* Reason);
 

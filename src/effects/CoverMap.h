@@ -29,10 +29,14 @@ public:
 	};
 	SettingsStruct	Settings;
 
+	static const int MaxPrints = 24;
+
 	struct ConstantsStruct {
 		D3DXVECTOR4	Update, Origin, Shift, Rates, SnowRates, Sun, Shade, Start, FootA, FootB, Debug;
 		D3DXVECTOR4	Data, Window, Global, Trail;
 		D3DXMATRIX	OrthoInverse;
+		D3DXVECTOR4	Feet[MaxPrints];
+		D3DXVECTOR4	FeetData;
 	};
 	ConstantsStruct	Constants;
 
@@ -72,6 +76,15 @@ private:
 	unsigned int		framesSinceUpdate = 0;
 	double				feetX = 0.0, feetY = 0.0, feetZ = 0.0;
 	bool				feetSet = false;
+	struct Print { double x, y, z; float dirX, dirY, side, depth; };
+	Print				prints[MaxPrints] = {};
+	int					printNext = 0;
+	float				printSide = 1.0f;
+	double				speedX = 0.0, speedY = 0.0, speedClock = -1.0;
+	bool				speedSet = false;
+	float				walkSpeed = 0.0f;
+	void				ClearPrints();
+	void				SetFeetConstants();
 	unsigned int		updates = 0;
 	CachedHandle		updateHandle;
 };

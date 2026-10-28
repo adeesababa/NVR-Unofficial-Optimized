@@ -33,6 +33,24 @@
 // the shadow maps are drawn). It writes only TEXCOORD6, the shadow map's clip position, which the shadow pixel shader turns into depth.
 // With the bumps in the shadow maps, the main view's projectionPosition follows the displaced land again, below the flat land too
 // (Center > 0): the push data says so (viewParams + 256) while the land is drawn into the cascades.
+//
+// 2026-10-28 (plan step 3, BendNormals; Conor: can the tessellation "use normals"?): the camera's variants tilt the lighting frame by
+// the bumps' slope. Until then the tangent, binormal and normal stayed the flat land's, so a bump's sun side and shaded side were lit
+// alike and only the cast shadows and AO showed its shape. Each layer's height is read twice more at the same detail level, one texel
+// of that level along u and along v; the blended slope goes through the same Contrast easing, Strength, weight and ObjectBlend share as
+// the displacement, and into game units through this triangle's own uv-per-position map (land uv is a plane over the land's x / y, so
+// every triangle of a quadrant has the same one: no seam along the game's edges). Normal = n - the slope along the surface (exact for a
+// height moved along a constant normal); tangent and binormal re-orthogonalised to it, each keeping its length and w (the main vertex
+// shader writes only their xyz; TerrainTemplate.hlsl). Off ([Shaders.Terrain.Displacement] BendNormals false: viewParams + 128): no extra
+// lookups, the flat frame as before. The shadow casters have no lighting and keep one lookup.
+//
+// 2026-10-28 (BumpSize; Conor, shipped defaults: "how would this work with smooth terrain?", a dense field of spikes): the height's
+// detail level followed the spacing of the generated points (12 units near the camera), and Contrast 10 stretched each texture's grain
+// to full ups and downs from one point to the next. Measured offline on the landscape textures: 2-5 game units between neighbouring
+// points on ordinary dirt and scrub at Strength 10, pure grain. The detail level is now never finer than BumpSize game units
+// (viewParams + 512 x BumpSize; uv per game unit from this triangle's own uv map, the same in every triangle of a quadrant, rounded to
+// 1/256 of a level so neighbours agree to the bit), for the camera and the shadow casters alike (the same landHeight). Contrast's
+// default is 4 (in the DLL).
 #ifndef TEX_COUNT
   #define TEX_COUNT 1
 #endif
@@ -101,27 +119,38 @@ layout(push_constant) uniform Push {
   uint  psBits;           // bit i: layer i has a height map (the land pixel shader's LandHeight c34 / c35 > 0, read per draw)
   float strength;         // Strength: game units between the lowest and the highest point the bumps can reach
   float center;           // 16 x Contrast (whole) + 0.99 x Center: contrast() and centerValue() below
-  float viewParams;       // 256 x ShadowsHold + DebugView x 16 + (LodBias + 4). DebugView: 2 the height as grey, 3 the split count
-                          // (blue 1 -> red 16) and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer weights (COLOR0
-                          // xyz), 6 the normal (TEXCOORD5), 7 the object blend (white: all the bumps, black: none). LodBias: added to the
-                          // height lookup's detail level. ShadowsHold (2026-10-27): the sun's shadow maps hold the displaced land, so
-                          // projectionPosition follows it all the way (else never below the flat land).
+  float viewParams;       // 512 x BumpSize + 256 x ShadowsHold + 128 x FlatNormals + DebugView x 16 + (LodBias + 4). BumpSize
+                          // (2026-10-28): the finest bump the height lookup gives, game units (whole, 0: the point spacing alone; LodBias
+                          // still adds on top). DebugView: 2 the height as grey,
+                          // 3 the split count (blue 1 -> red 16) and the weight (green), 4 the uv (TEXCOORD0) as red / green, 5 the layer
+                          // weights (COLOR0 xyz), 6 the normal (TEXCOORD5, bent), 7 the object blend (white: all the bumps, black: none).
+                          // LodBias: added to the height lookup's detail level. ShadowsHold (2026-10-27): the sun's shadow maps hold the
+                          // displaced land, so projectionPosition follows it all the way (else never below the flat land). FlatNormals
+                          // (2026-10-28): BendNormals off (set = off, so an older DLL that never sets it gets the bent frame).
   float sceneScale;       // ObjectBlend: the draw's viewport as a share of the depth copy (RenderScale draws the world into its
                           // top-left part): round(x * 2048) * 4096 + round(y * 2048)
 } pc;
 
 #define SMP(i) s_samplers[(pc.samplerIndex[(i) >> 1] >> (16u * uint((i) & 1))) & 0xFFFFu]
 
+float bumpSize() {
+  return floor(pc.viewParams / 512.0);
+}
+
 float shadowsHold() {
-  return floor(pc.viewParams / 256.0);
+  return mod(floor(pc.viewParams / 256.0), 2.0);
+}
+
+bool bendNormals() {
+  return mod(floor(pc.viewParams / 128.0), 2.0) < 0.5;
 }
 
 float debugView() {
-  return floor((pc.viewParams - shadowsHold() * 256.0) / 16.0);
+  return mod(floor(pc.viewParams / 16.0), 8.0);
 }
 
 float lodBias() {
-  return pc.viewParams - shadowsHold() * 256.0 - debugView() * 16.0 - 4.0;
+  return mod(pc.viewParams, 16.0) - 4.0;
 }
 
 // Contrast (2026-10-27): how strongly a texture's height differences are stretched (1: as the texture has them)
@@ -136,6 +165,7 @@ float centerValue() {
 
 float g_hsum = 0.0;
 float g_wsum = 0.0;
+vec2 g_dsum = vec2(0.0);   // BendNormals: the blended slope of the same differences, per uv unit (d/du, d/dv)
 
 // One layer's height, blended as the pixel shader blends the colours (getTerrainHeight in Parallax.hlsl: no relief where a layer has
 // no height map). The detail level follows the spacing of the generated points, so the bumps are the height map's broad shapes
@@ -144,20 +174,32 @@ float g_wsum = 0.0;
 // desert and scrub textures, the height (diffuse alpha) only varies by about +-2.5 % round a mean near 0.41, so the bumps were a
 // quarter of a game unit while the whole ground rose by Strength x (0.5 - mean). Each layer's height now counts from that texture's
 // own average (its smallest mip), so the land stays where it was on average, and landHeight stretches the differences by Contrast.
+// 2026-10-28 BendNormals (slopes): also the layer's slope, forward differences one texel of the same detail level along u and along v
+// (two more lookups; the spacing of the generated points where that level is above 0).
 #define LAYER(i, T, w) \
   if ((w) > 0.0005) { \
     float r = 0.0; \
+    vec2 dr = vec2(0.0); \
     if ((pc.psBits & (1u << (i))) != 0u) { \
-      float lod = lodUv + log2(float(textureSize(sampler2D(T, SMP(i)), 0).x)) + lodBias(); \
+      ivec2 size = max(textureSize(sampler2D(T, SMP(i)), 0), ivec2(1)); \
+      float lod = max(lodUv + log2(float(size.x)) + lodBias(), 0.0); \
       int levels = textureQueryLevels(sampler2D(T, SMP(i))); \
       float mean = levels > 1 ? texelFetch(sampler2D(T, SMP(i)), ivec2(0), levels - 1).a : 0.5; \
-      r = textureLod(sampler2D(T, SMP(i)), uv, max(lod, 0.0)).a - mean; \
+      float a = textureLod(sampler2D(T, SMP(i)), uv, lod).a; \
+      r = a - mean; \
+      if (slopes) { \
+        vec2 e = exp2(lod) / vec2(size); \
+        dr = vec2(textureLod(sampler2D(T, SMP(i)), uv + vec2(e.x, 0.0), lod).a - a, \
+                  textureLod(sampler2D(T, SMP(i)), uv + vec2(0.0, e.y), lod).a - a) / e; \
+      } \
     } \
     g_hsum += (w) * r; \
+    g_dsum += (w) * dr; \
     g_wsum += (w); \
   }
 
-float landHeight(vec2 uv, vec4 b0, vec4 b1, float lodUv) {
+// dh: with slopes, the returned height's slope per uv unit (d/du, d/dv); else 0
+float landHeight(vec2 uv, vec4 b0, vec4 b1, float lodUv, bool slopes, out vec2 dh) {
   LAYER(0, t_base0, b0.x)
 #if TEX_COUNT > 1
   LAYER(1, t_base1, b0.y)
@@ -181,7 +223,10 @@ float landHeight(vec2 uv, vec4 b0, vec4 b1, float lodUv) {
   // the 0.5 that main() takes as the flat land): low-contrast ground gets visible bumps, high-contrast ground rounds off instead of
   // overshooting. Contrast 1 is the texture's own height for small differences.
   float x = 2.0 * contrast() * (g_wsum > 0.0 ? g_hsum / g_wsum : 0.0);
-  return 0.5 + 0.5 * x * inversesqrt(1.0 + x * x);
+  float s = inversesqrt(1.0 + x * x);
+  // The easing's slope, 0.5 / (1 + x^2)^1.5, times the blended slope through the same stretch
+  dh = 0.5 * s * s * s * 2.0 * contrast() * (g_wsum > 0.0 ? g_dsum / g_wsum : vec2(0.0));
+  return 0.5 + 0.5 * x * s;
 }
 
 #ifdef HAVE_OBJECT_DEPTH
@@ -263,9 +308,29 @@ void main() {
 #else
   const bool canDisplace = haveMvp;
 #endif
+#ifdef SHADOW_CASTER
+  const bool slopes = false;   // no lighting there
+#else
+  bool slopes = bendNormals();
+#endif
+  // This triangle's uv over the land's x / y (uv = J (x, y) + c), from its corners (the shadow casters' vertex shader has the same
+  // uv and position slots). Land uv is a plane over x / y, so J is the same for every triangle of a quadrant whatever their slope.
+  vec2 e1 = i_v3[1].xy - i_v3[0].xy, e2 = i_v3[2].xy - i_v3[0].xy;
+  bool haveJ = abs(e1.x * e2.y - e1.y * e2.x) > 1e-3;
+  mat2 J = haveJ ? mat2(i_v1[1].xy - i_v1[0].xy, i_v1[2].xy - i_v1[0].xy) * inverse(mat2(e1, e2)) : mat2(0.0);
+
+  // The height's detail level (log2 of a texel of it in uv): the spacing of the generated points (the TCS), but never finer than
+  // BumpSize game units. Rounded to 1/256 of a level, so two triangles whose J differs in the last bit still read the same height
+  // along their shared edge.
+  float lodUv = nvr.y;
+  float uvPerUnit = sqrt(abs(determinant(J)));
+  if (bumpSize() > 0.0 && uvPerUnit > 0.0)
+    lodUv = max(lodUv, floor(log2(bumpSize() * uvPerUnit) * 256.0 + 0.5) / 256.0);
+
   float h = 0.5;
+  vec2 dh = vec2(0.0);
   if (canDisplace && weight > 0.0 && pc.strength != 0.0 && keepShare > 0.0)
-    h = landHeight(v1.xy, v9, v10, nvr.y);
+    h = landHeight(v1.xy, v9, v10, lodUv, slopes, dh);
   float disp = canDisplace ? pc.strength * keepShare * (weight * (h - 0.5) + nvr.z * (0.5 - centerValue())) : 0.0;
 
   // The vertex shader's clip position (interpolated), moved by the displacement through ModelViewProj (row k = c[k] . (v, 1))
@@ -297,9 +362,28 @@ void main() {
   o_v1 = v1;
   o_v2 = v2;
   o_v3 = vec4(v3.xyz + n * disp, clip.w);   // the object-space position and the view depth, as the vertex shader writes them
-  o_v4 = v4;
-  o_v5 = v5;
-  o_v6 = v6;
+
+  // BendNormals (see the top): the lighting frame of the displaced surface. The slope of the weight and of ObjectBlend's share (the
+  // fades) is left out: it is small but differs from one game triangle to the next, and would show their edges in the light.
+  vec3 nb = n;
+  vec4 t4 = v4, b5 = v5;
+  if (dh != vec2(0.0)) {
+    // Through J (above: no seams between the game's triangles, and the tangent's sign convention does not matter)
+    if (haveJ) {
+      // The displacement's gradient over x / y (game units per game unit), then along the surface: n - that is the normal of the
+      // surface moved along n
+      vec3 g = vec3(pc.strength * keepShare * weight * (dh * J), 0.0);
+      g -= n * dot(n, g);
+      nb = normalize(n - g);
+      vec3 t = v4.xyz - nb * dot(v4.xyz, nb);
+      vec3 bt = v5.xyz - nb * dot(v5.xyz, nb);
+      if (dot(t, t) > 1e-12) t4.xyz = t * (length(v4.xyz) * inversesqrt(dot(t, t)));
+      if (dot(bt, bt) > 1e-12) b5.xyz = bt * (length(v5.xyz) * inversesqrt(dot(bt, bt)));
+    }
+  }
+  o_v4 = t4;
+  o_v5 = b5;
+  o_v6 = nl > 1e-6 ? vec4(nb * nl, v6.w) : v6;
   // projectionPosition (the pixel shader's forward sun shadows and fog). While the sun's shadow maps hold the displaced land
   // (ShadowsHold: [Shaders.Terrain.Displacement] CastShadows) it is the displaced position itself, below the flat land too.
   // Otherwise it rises with the land but never sinks below the flat land: those maps hold the flat land, so a point under it would
@@ -324,7 +408,7 @@ void main() {
   } else if (dv > 4.5 && dv < 5.5) {
     o_v2 = vec4(clamp(v9.xyz, 0.0, 1.0), 1.0);
   } else if (dv > 5.5 && dv < 6.5) {
-    o_v2 = vec4(n * 0.5 + 0.5, 1.0);
+    o_v2 = vec4(nb * 0.5 + 0.5, 1.0);   // the bent normal (BendNormals; the flat one when off)
   } else if (dv > 6.5) {
     o_v2 = vec4(vec3(keepShare), 1.0);   // white: all the bumps; black: none (ObjectBlend); 7-layer land always white
   }

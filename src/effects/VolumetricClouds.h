@@ -63,7 +63,7 @@ public:
 		D3DXVECTOR4	Motion;
 		D3DXVECTOR4	Tint;
 		D3DXVECTOR4	Tower;
-		D3DXVECTOR4	HistoryScale = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
+		D3DXVECTOR4	HistoryScale = D3DXVECTOR4(1.0f, 1.0f, 0.0f, 0.0f);
 	};
 	ConstantsStruct	Constants = {};
 

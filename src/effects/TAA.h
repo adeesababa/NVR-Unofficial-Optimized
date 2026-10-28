@@ -32,6 +32,7 @@ public:
 	static bool			UpscaledThisFrame();
 	static void			NoteWorldDraw(bool firstPerson = false);
 	static D3DXVECTOR4	RenderScaleConstant;
+	D3DXVECTOR2	LowResJitterUV() const;
 
 	struct TAAStruct {
 		D3DXVECTOR4	Data;

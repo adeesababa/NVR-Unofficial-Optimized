@@ -16,6 +16,8 @@ public:
 	static inline int	DrawPart = 0;
 	static inline float	LastPairing[4] = {};
 	static inline bool	LastBindNVR = false;
+	static inline unsigned	BindSerial = 0;
+	static inline const char*	LastBindName = nullptr;
 
 	void	UpdateConstants();
 	void	RegisterConstants();

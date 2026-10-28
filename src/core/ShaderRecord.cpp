@@ -224,6 +224,8 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	AppendDefine("OBJECT_SMOOTH_NORMALS", TheSettingManager->GetSettingI("Shaders.PBR.Main", "SmoothObjectNormals") ? "1" : "0");
 	if (TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement"))
 		AppendDefine("NVR_DISPLACE_DEPTH", "1");
+	if (DxvkCompute::DisplaceObjectsLayout())
+		AppendDefine("NVR_DISPLACE_OBJECTS", "1");
 
 }
 
@@ -375,13 +377,13 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 				HRESULT createResult = E_FAIL;
 				if (ShaderProfile[0] == 'v') {
 					ShaderProg = new ShaderRecordVertex(Name);
-					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, true, Function, D3DXGetShaderSize((const DWORD*)Function));
+					ShaderProg->DisplaceFamily = (unsigned char)DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, true, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreateVertexShader((const DWORD*)Function, &((ShaderRecordVertex*)ShaderProg)->ShaderHandle);
 				}
 				else {
 					ShaderProg = new ShaderRecordPixel(Name);
 					DxvkCompute::RegisterReplacement(Name, Function, D3DXGetShaderSize((const DWORD*)Function), Template.Name ? Template.Name : Name, Macros);
-					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, false, Function, D3DXGetShaderSize((const DWORD*)Function));
+					ShaderProg->DisplaceFamily = (unsigned char)DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, false, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreatePixelShader((const DWORD*)Function, &((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 				}
 				
@@ -619,6 +621,7 @@ void ShaderRecord::SetCT() {
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 	}
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	if (DisplaceFamily) DxvkCompute::DisplaceBind(DisplaceFamily);
 	if (HasDisplaceDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareDisplaceDepth();
 	if (LandLight::Pending) LandLight::Read();
 	if (IsLandLight) LandLight::Pending = true;

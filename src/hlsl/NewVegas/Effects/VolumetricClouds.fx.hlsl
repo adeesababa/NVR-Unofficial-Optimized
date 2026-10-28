@@ -423,7 +423,7 @@ float CloudShadowAt(float3 world) {
 
 float4 CompositePS(VSOUT IN) : COLOR0 {
 	float2 uv = IN.UVCoord;
-	float2 huv = rectToScreen(uv);
+	float2 huv = rectToScreen(uv) + TESR_CloudsHistoryScale.zw;
 	float4 color = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0, 0));
 	float depth = readDepthLod(uv);
 	[branch] if (depth < farZ * 0.996) {
