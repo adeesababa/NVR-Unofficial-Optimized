@@ -204,11 +204,26 @@ the fork's 1.7-displace takes a third family as it is.
 ## Far land drawn untessellated (2026-10-28, FarUntessellated)
 `[Shaders.Terrain.Displacement] FarUntessellated = true` (live; missing key = on). **No d3d9 change.**
 - Why: every land draw went through the fork's tessellation (VS -> TCS -> TES, a strip as three patch lists) at any distance, while
-  past FadeEnd TerrainDisplace.tesc only sets level 1 and nothing moves. A tester with a very high uGridsToLoad (about 670 land pieces
-  loaded) logged "per frame 350-980 land draws tessellated"; the user's Goodsprings view about 7.
+  past FadeEnd TerrainDisplace.tesc only sets level 1 and nothing moves. A tester (Conor, uGridsToLoad 5) logged "per frame 350-980
+  land draws tessellated"; the user's Goodsprings bench view 7.
+- Where his count comes from (his log NewVegasReloaded_2026-10-28_17-15-12.log, the code and the decompile; not yet confirmed by the
+  new log line):
+  - "670 land pieces known" is the shadow capture's map, which only grows: 100 at the start (5 x 5 cells x 4 quadrants), 116, 120 ...
+    673 as he travelled. Not the loaded land.
+  - DisplaceTick runs TWICE a rendered frame (ShaderManager::UpdateConstants is called from RenderHook and again from
+    ProcessImageSpaceShadersHook), so the old line's "per frame" was per half frame: his real count is about 700-1,960 a frame. (Side
+    effects of the double tick, left as they are: settings re-read every 4 frames, ShadowsHold lasts 8 frames, not 16.)
+  - The game draws a strips geometry with ONE DrawIndexedPrimitive PER STRIP (NiDX9Renderer::Do_OnlyRenderTristrips 0xE74840:
+    NumArrays draws, each ArrayLengths[i] - 2 triangles), and the fork counts each. The TERRAIN PROBE (2026-10-17 bench) saw ~22-31
+    land pieces in view, each with 2 passes: BSSM_LANDLO_A (SLS2080.vso, not tessellated) and one BSSM_LAND<n>O (SLS2100.vso,
+    tessellated). So about 30 tessellated land passes in the world scene, as many again in the water reflection, plus the shadow
+    pass's near pieces: ~1,200 draws a frame means about 16 strips a land quadrant (one per row of a 17 x 17 grid), the user's ~14 a
+    frame about 1. Why his land is in many strips and the bench's is not is open (a land or engine-fix mod?); the new log line says.
+  - The log line now gives, per rendered frame: land passes and their strip draws for the world scene, the water reflection and
+    anything else, and the far ones.
 - Where: `RenderPassStandardHook` (Render.cpp, BSBatchRenderer::RenderPassImmediately_Standard), before each game pass and before its
-  shader bind, calls `DxvkCompute::DisplaceLandPass(geometry, pass ID, main camera)`. A land pass (IDs 0x93-0x94, 0x1EF-0x230, as
-  TerrainProbe) of the world scene or the water's reflection whose world bound lies wholly past FadeEnd + 256 units of the camera,
+  shader bind, calls `DxvkCompute::DisplaceLandPass(geometry, pass ID, context)`. A land pass drawn with the tessellated shaders (IDs
+  0x1EF-0x230, BSSM_LAND<n>O...) of the world scene or the water's reflection whose world bound lies wholly past FadeEnd + 256 units of the camera,
   measured horizontally (the reflection camera is the camera mirrored below the water: same x and y; the horizontal distance never
   exceeds the 3D distance the TCS measures), sets `DisplaceFar`. `DisplaceSend` then gives the fork one fixed "off" state for the land
   family (Enable 0) instead of the land's state; the state asked for is kept (`DisplaceWanted`) and sent as it is again by the next near
@@ -222,10 +237,14 @@ the fork's 1.7-displace takes a third family as it is.
 - Cost of the switching: SetTessState is a lock + compare + copy in the fork; the work is one unbind / rebind in ApplyDraw at the next
   draw after a near <-> far change (NVR TESS "rebinds" goes up by about that). Land passes come grouped by pass type, so changes are
   few; the log counts them ("near/far switches").
-- Log: `NVR TESS on: ... | far land on: N draws untessellated (wholly past FadeEnd + 256), M near/far switches | ...` per frame.
-- Expected saving (not measured): per far land draw, two Vulkan draws fewer (one strip draw instead of three patch lists) and no
-  TCS / TES invocations (about 3 + 3 per strip triangle, ~1,500 per quadrant at level 1). With ~700 far draws a frame: ~1,400 draws
-  fewer on DXVK's CS thread (roughly 1-3 ms of that thread) and a few tenths of a ms of GPU; about nothing at the default uGridsToLoad.
+- Log (per rendered frame): `NVR TESS on: ... | land passes (strip draws): world W (w), water reflection R (r), other O (o) | far
+  land on: F passes (f strip draws) untessellated (wholly past FadeEnd + 256), M near/far switches | ...`. One flag before a pass
+  covers all its strip draws.
+- Expected saving (not measured): per far strip draw, two Vulkan draws fewer (one strip draw instead of three patch lists) and no
+  TCS / TES invocations (about 3 + 3 per strip triangle at level 1). With uGridsToLoad 5 most land in view is past FadeEnd (pieces
+  within ~3,750 units of the camera stay tessellated): for a setup like Conor's (~1,200 strip draws a frame) roughly 80-90 % go plain,
+  ~2,000 Vulkan draws a frame fewer on DXVK's CS thread (a few ms of that thread) and some GPU; little where the land is one strip a
+  quadrant (the user's bench view: ~14 draws a frame).
 - Limits: the bound is a sphere (radius ~1,450 for a 2,048 quadrant), so pieces whose centre is within about FadeEnd + 256 + 1,450
   stay tessellated (conservative). Other cameras (local map, anything outside the world scene and the water reflection) keep the
   tessellation as before. A land pass with an ID outside the list stays tessellated as before.

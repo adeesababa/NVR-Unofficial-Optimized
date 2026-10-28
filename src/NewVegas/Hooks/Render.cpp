@@ -2928,7 +2928,8 @@ void __cdecl RenderPassStandardHook(void* Pass, UInt32 Arg2, UInt32 Arg3, UInt32
 	else if (ShaderSplit::CurrentContext == ShaderSplit::FirstPerson) TAAEffect::NoteWorldDraw(true);	// v2: the weapon into the world's rect
 	// UNOFFICIAL 2026-10-28 far land: a land piece wholly past the tessellation's FadeEnd is drawn untessellated (before its bind)
 	DxvkCompute::DisplaceLandPass(((const PointShadowForward::RenderPassView*)Pass)->geometry, ((const PointShadowForward::RenderPassView*)Pass)->passEnum,
-		ShaderSplit::CurrentContext == ShaderSplit::World || ShaderSplit::CurrentContext == ShaderSplit::Reflections);
+		ShaderSplit::CurrentContext == ShaderSplit::World ? DxvkCompute::kDisplaceWorld :
+		ShaderSplit::CurrentContext == ShaderSplit::Reflections ? DxvkCompute::kDisplaceReflection : DxvkCompute::kDisplaceOther);
 	RenderPassStandard(Pass, Arg2, Arg3, Arg4);
 	if (countOpt) OnePassDepth::Counts::After();
 	ReflMaterial::AfterPass(TheRenderManager->device);
