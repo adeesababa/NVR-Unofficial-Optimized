@@ -119,7 +119,7 @@ before FoldFog).
 
 - **FoldFog and ManyLampsGlow: within noise.**
 - **ManyLampsOnePass: not identical.** The difference is small and local: mean luma -0.9 % (Lucky 38) and -0.6 % (Vault 21). The
-  diff maps (`benchdeep-roadmapevidencemanylamps38-onoff.png`, `v21-onoff.png`: top off / on, bottom red = on darker, green = on brighter) put it only on shiny trims: stair rails, window and
+  diff maps (`bench\deep-roadmap\evidence\manylamps\l38-onoff.png`, `v21-onoff.png`: top off / on, bottom red = on darker, green = on brighter) put it only on shiny trims: stair rails, window and
   door frames, a chandelier rim, one ledge. Most of these come out darker with it on, a few brighter; no whole wall or floor piece
   changes. Cause: with it off, those objects are multi-pass and FoldHighlights folds their highlight passes into the lamp passes
   (census: all ~909 highlight passes a frame in Lucky 38 were skipped by FoldHighlights). With it on they get the one-pass shader,
