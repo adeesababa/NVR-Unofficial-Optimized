@@ -179,7 +179,8 @@ public:
 	// the effect's own parameter values, read back right before each draw. ExtDraw false (off, no extension, a texture missing, a failure:
 	// ExtFailed, logged once) = that pass's D3D9 draw. AmbientLightBlurCompute / AmbientLightSmoothCompute keep their passes when on.
 	enum ExtShader { ExtPrepare, ExtSmooth, ExtEstimate, ExtBlur, ExtAccumulate, ExtStats, ExtReduce, ExtApply, ExtScreen, ExtInject, ExtPropagate, ExtEstimateHiZ,
-		ExtGILight, ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply, ExtShaderCount };	// ExtGI*: ComputeGI (below)
+		ExtGILight, ExtGIEstimate0, ExtGIEstimate1, ExtGIEstimate2, ExtGIAccumulate, ExtGIApply,
+		ExtEstimateRT, ExtShaderCount };	// ExtGI*: ComputeGI (below); ExtEstimateRT: UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT]
 	ExtPass				extPasses[ExtShaderCount][NVR_EXT_MAX_TARGETS];	// per target count
 	ExtUniformBuffer	extUniforms;
 	CachedHandle		extHandles[38];

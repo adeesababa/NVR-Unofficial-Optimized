@@ -59,6 +59,12 @@ layout(push_constant) uniform Push {
     // ALExtPushGI, 48 bytes). Every other pass is compiled without it (its 32-byte block).
     vec4 gi;             // 32: x thickness (world units), y unused, z strength, w 1 = ComputeGIThinOcclusion
 #endif
+#ifdef NVR_RT
+    // UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]) the RT estimate only (AmbientLightEstimateRT.frag; core/RtAmbient.h
+    // Push, effects/AmbientLight.cpp ALExtPushRT, 64 bytes): RtCommon.glsl's fields.
+    vec4 rt;             // 32: x AO distance, y AO rays, z sky distance, w sky rays
+    vec4 rtOrigin;       // 48: xyz camera-relative world -> the TLAS's space, w DebugView
+#endif
 } pc;
 
 #define POINT_S  NVR_SAMPLER(pc.pointClamp)

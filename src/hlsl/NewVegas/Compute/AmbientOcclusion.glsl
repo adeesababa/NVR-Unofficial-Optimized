@@ -28,6 +28,9 @@ layout(set = 2, binding = 0, std140) uniform Constants {
     vec4 cameraData;               // TESR_CameraData: x near, y far
     vec4 aoLayout;                 // NVR_AOLayout: xy the AO extent / full extent, zw 1 / the AO target's dimensions
     vec4 skyLayout;                // the sky pass: xy 1 / its target's dimensions (FrameVS's uv there), z NVR_SkySmooth.x
+    // UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; read only by the RT passes, the others end above)
+    mat4 rtReproject;              // this frame's view space -> last frame's clip space (BounceLightMath.h), as stored
+    vec4 rtTemporal;               // x last frame's share (0: no history), y pixels of motion that halve it, z frame number (0-1023)
 } cb;
 
 // Per pass (24 bytes).
@@ -37,6 +40,12 @@ layout(push_constant) uniform Push {
     uint linearSampler;            // 12: LINEAR, CLAMP
     uint pointSampler;             // 16: POINT, CLAMP
     uint pointWrapSampler;         // 20: POINT, WRAP (TESR_BlueNoiseSampler: MIN/MAG/MIP NONE)
+#ifdef NVR_RT
+    // UNOFFICIAL 2026-10-28 (fork RT) the RT passes only (core/RtAmbient.h Push; effects/AmbientOcclusion.cpp AOPushRT, 64 bytes)
+    uint rtPad0, rtPad1;           // 24
+    vec4 rt;                       // 32: x AO distance, y AO rays, z sky distance, w sky rays
+    vec4 rtOrigin;                 // 48: xyz camera-relative world -> the TLAS's space, w DebugView
+#endif
 } pc;
 
 // UNOFFICIAL 2026-10-26: the variant .spv fixes this (-DAO_GTAO, Compute/variants.txt, EffectRecord::ExtVariant), as the D3D9

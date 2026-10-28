@@ -80,4 +80,14 @@ private:
 	bool	ExtDedicated(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget, IDirect3DSurface9* RenderedSurface, IDirect3DTexture9* const* Textures,
 				IDirect3DSurface9* const* Surfaces, const D3DXVECTOR4& Layout, bool GTAOEstimate, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SkyVis);
 	bool	ExtSkyVisibility(IDirect3DSurface9* Target, const D3DSURFACE_DESC& Desc, IDirect3DTexture9* OrthoMap, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals);
+	// UNOFFICIAL 2026-10-28 (fork RT, [Shaders.AmbientOcclusion.RT]; core/RtAmbient.h): the RT estimate (into the AO target 1), its
+	// temporal pass (target 1 + last frame's history -> target 0 + this frame's history) and the RT sky pass. The history pair is made
+	// at the AO target's size the first time it is needed (again when that size changes).
+	ExtPass				extEstimateRT, extTemporalRT, extSkyRT;
+	IDirect3DTexture9*	rtHistoryTexture[2] = {};
+	IDirect3DSurface9*	rtHistorySurface[2] = {};
+	UINT				rtHistoryWidth = 0, rtHistoryHeight = 0;
+	int					rtHistoryIndex = 0;
+	bool	ExtEstimateRT(IDirect3DDevice9* Device, IDirect3DTexture9* const* Textures, IDirect3DSurface9* const* Surfaces, const D3DSURFACE_DESC& Target);
+	bool	ExtSkyVisibilityRT(IDirect3DSurface9* Target, IDirect3DTexture9* SunMask, IDirect3DTexture9* SmoothedNormals);
 };
