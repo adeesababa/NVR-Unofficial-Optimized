@@ -320,8 +320,12 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 	// this 'break' as 'break_ne -c, -c' (the same value on both sides: never taken), so every ray ran all 64 steps (16 past
 	// Steps = 48, i.e. past the end of the layer or the horizon cap) and kept integrating after it was opaque. The same test as
 	// the loop's condition compiles to a real exit. Changes the look slightly (flat rays stop at the cap), so it is an option.
-	[loop] for (float i = 0.0; i < 64.0 && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
-		if (!fixedExit && (i >= steps || transmittance < 0.01)) break;
+	// UNOFFICIAL 2026-10-27 Towering: the storm techniques always take this exit (as FixedMarchExit). In the main view their steps
+	// fill the loop, so what changes is that a ray stops once the cloud is opaque (what is left to see is under 1 %) instead of
+	// marching, and lighting, the hundreds of metres of storm behind its surface (with Steps 256 on the Vulkan march, most of a
+	// storm's cost). (The water reflection's shorter march also stops at its own steps.) The ordinary techniques: as before.
+	[loop] for (float i = 0.0; i < 64.0 && (!(fixedExit || towers) || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+		if (!(fixedExit || towers) && (i >= steps || transmittance < 0.01)) break;
 		float t = tStart + (i + jitter) * dt;
 		float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
 		float h = (altitude - Base) / Thickness;
@@ -408,7 +412,15 @@ float4 MarchRay(float3 dir, float jitter, float stepScale, bool fixedExit = fals
 float4 MarchPS(VSOUT IN, float2 vpos : VPOS, uniform bool fixedExit, uniform bool towers) : COLOR0 {
 	float2 pixel = vpos * 2.0 + TESR_CloudsBlocks.zw;          // this frame's quarter-resolution pixel of the block
 	float2 uv = (pixel + 0.5) * LowTexel;
-	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + TESR_CloudsMarch.z * 0.61803398875);
+	// UNOFFICIAL 2026-10-27 Towering (user: "really big clouds being noisy even at higher resolutions"): a storm's edges are lumps of
+	// dense cloud a few tens of metres across, the size of a march step, so where a pixel's samples fall decides what it shows (grain
+	// that halves with each doubling of Steps). The history averages it over a pixel's last few marches, but each pixel is marched
+	// only every fourth frame, so its offset moved on 4 x 0.618 = 2.47 of a step each time: two clumps of offsets, about half a step
+	// apart, and the average of the last few had large gaps. The storm techniques move each pixel's offset on by the golden ratio
+	// once per march (per four frames), which spreads any run of them evenly over the step: about a third less grain left after the
+	// history (the same picture on average), at no cost. The ordinary techniques: as before.
+	float frameStep = towers ? floor(TESR_CloudsMarch.z * 0.25) : TESR_CloudsMarch.z;
+	float jitter = frac(tex2Dlod(TESR_BlueNoiseSampler, float4(pixel / 256.0, 0, 0)).r + frameStep * 0.61803398875);
 	return MarchRay(normalize(toWorld(uv)), jitter, 1.0, fixedExit, towers);
 }
 

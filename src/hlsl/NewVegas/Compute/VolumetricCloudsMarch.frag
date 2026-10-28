@@ -66,10 +66,12 @@ vec4 MarchRay(vec3 dir, float jitter, float stepScale, bool fixedExit, bool towe
     float transmittance = 1.0;
     float depthSum = 0.0, depthWeight = 0.0;
     // The D3D9 technique March never leaves this loop early: the compiler writes its 'break' as 'break_ne -c, -c' (the same value
-    // on both sides, never taken; checked with fxc), so every ray runs all 64 steps. That is kept here (no exit unless fixedExit).
+    // on both sides, never taken; checked with fxc), so every ray runs all 64 steps. That is kept here (no exit unless fixedExit;
+    // or towers, since 2026-10-27).
     // UNOFFICIAL 2026-10-26: Steps above 64 (Vulkan only: no unrolled loop here) march that many; up to 64 this is the D3D9 loop.
+    // (2026-10-27 Towering, as the .fx) the storm techniques always take the exit: a ray stops once the cloud is opaque.
     float loopEnd = max(64.0, steps);
-    for (float i = 0.0; i < loopEnd && (!fixedExit || !(i >= steps || transmittance < 0.01)); i += 1.0) {
+    for (float i = 0.0; i < loopEnd && (!(fixedExit || towers) || !(i >= steps || transmittance < 0.01)); i += 1.0) {
         float t = tStart + (i + jitter) * dt;
         float altitude = camera.z + t * dir.z + t * t / (2.0 * EarthRadius);
         float h = (altitude - Base) / Thickness;
@@ -140,6 +142,9 @@ void main() {
     vec2 vpos = floor(gl_FragCoord.xy);
     vec2 pixel = vpos * 2.0 + cb.blocks.zw;
     vec2 coord = (pixel + 0.5) * LowTexel;
-    float jitter = fract(textureLod(sampler2D(t_blueNoise, NVR_SAMPLER(pc.pointWrapIndex)), pixel / 256.0, 0.0).r + cb.march.z * 0.61803398875);
+    // (2026-10-27 Towering, as the .fx) the storm techniques move each pixel's offset on by the golden ratio once per march (each pixel
+    // is marched every fourth frame), spread evenly over the step: about a third less grain after the history.
+    float frameStep = pc.towers != 0u ? floor(cb.march.z * 0.25) : cb.march.z;
+    float jitter = fract(textureLod(sampler2D(t_blueNoise, NVR_SAMPLER(pc.pointWrapIndex)), pixel / 256.0, 0.0).r + frameStep * 0.61803398875);
     o_color = MarchRay(normalize(toWorld(coord)), jitter, 1.0, pc.fixedExit != 0u, pc.towers != 0u);
 }
