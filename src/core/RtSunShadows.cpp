@@ -18,7 +18,7 @@ namespace {
 		float	normalBiasPerUnit = 0.0005f;
 		float	startBias = 1.0f;
 		float	rayLength = 30000.0f;
-		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance
+		int		debugView = 0;			// 1 RT only, 2 traced not applied, 3 hit distance, 4 the raw visibility over the picture
 	} S;
 
 	// The trace pass's uniform block (RtSunShadow.comp, std140)
@@ -33,8 +33,9 @@ namespace {
 	bool		tracedThisFrame = false;
 	UInt32		frames = 0;
 	D3DXVECTOR4	replaceConstant = { 0.0f, 0.0f, 0.0f, 0.0f };
-	ID3D9NvrExtPipeline* combine[2] = {};	// [0] multiply, [1] write (DebugView 1 / 3)
-	bool		combineTried[2] = {};
+	ID3D9NvrExtPipeline* combine[3] = {};	// [0] multiply, [1] write red (DebugView 1 / 3), [2] write all (DebugView 4, grey)
+	bool		combineTried[3] = {};
+	bool		tracedForDebug = false;		// this frame's visibility is there for RenderDebug
 
 	void ReadSettings() {
 		S.enabled = TheSettingManager->GetSettingI(kSection, "Enabled") != 0;
@@ -130,14 +131,14 @@ namespace {
 		desc.FragmentSpirvSize = (UINT)spirv.size();
 		desc.BindingCount = 2;
 		desc.pBindings = bindings;
-		desc.PushConstantSize = 8;
+		desc.PushConstantSize = 16;
 		desc.UsesSamplerHeap = TRUE;
 		desc.SamplerHeapSet = 0;
 		desc.SamplerHeapBinding = 0;
 		desc.ColorTargetCount = 1;
 		desc.Blend = which == 0 ? NVR_EXT_BLEND_MULTIPLY : NVR_EXT_BLEND_NONE;
-		desc.ColorWriteMask = 0x1;	// red only: the sun's shadow; green (the lamps) untouched
-		desc.pDebugName = which == 0 ? "RtSunCombine (multiply)" : "RtSunCombine (write)";
+		desc.ColorWriteMask = which == 2 ? 0u : 0x1u;	// red only: the sun's shadow; green (the lamps) untouched. DebugView 4: all
+		desc.pDebugName = which == 0 ? "RtSunCombine (multiply)" : which == 1 ? "RtSunCombine (write)" : "RtSunCombine (debug grey)";
 		if (FAILED(ext->CreateGraphicsPipeline(&desc, &combine[which]))) {
 			combine[which] = nullptr;
 			Logger::Log("UNOFFICIAL NVR DXVK: RT sun shadows: the combine pass could not be made (the DXVK log says why)");
@@ -155,7 +156,8 @@ namespace RtSunShadows {
 	void Apply(IDirect3DDevice9* Device) {
 		const bool traced = tracedThisFrame;
 		tracedThisFrame = false;
-		if (!traced || S.debugView == 2 || !visibilityTexture) return;
+		tracedForDebug = traced;
+		if (!traced || S.debugView == 2 || S.debugView == 4 || !visibilityTexture) return;
 		ShadowsExteriorEffect* shadows = TheShaderManager->Effects.ShadowsExteriors;
 		IDirect3DSurface9* target = shadows->Textures.ShadowPassSurface;
 		ID3D9NvrExtPipeline* pipeline = CombinePipeline(S.debugView == 1 || S.debugView == 3 ? 1 : 0);
@@ -171,7 +173,7 @@ namespace RtSunShadows {
 		const bool park = current == target && sunShadows && sunShadows->scratchSurface[0];
 		if (park) Device->SetRenderTarget(0, sunShadows->scratchSurface[0]);
 
-		struct { float strength; UInt32 samplerIndex; } push = { S.debugView ? 1.0f : (std::min)((std::max)(S.strength, 0.0f), 1.0f), 0 };
+		struct { float strength; UInt32 samplerIndex, grey, pad; } push = { S.debugView ? 1.0f : (std::min)((std::max)(S.strength, 0.0f), 1.0f), 0, 0, 0 };
 		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
 		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = visibilityTexture;
 		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
@@ -189,7 +191,35 @@ namespace RtSunShadows {
 		if (current) current->Release();
 	}
 
-	bool Replacing() { return S.enabled && S.mode == 1 && S.debugView != 2 && RtCore::Running() && TheShaderManager->GameState.isExterior; }
+	void RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget) {
+		const bool traced = tracedForDebug;
+		tracedForDebug = false;
+		if (!traced || S.debugView != 4 || !visibilityTexture || !RenderTarget) return;
+		ID3D9NvrExtPipeline* pipeline = CombinePipeline(2);
+		ID3D9NvrExtSampler* point = DxvkCompute::PointClamp();
+		SunShadowsEffect* sunShadows = TheShaderManager->Effects.SunShadows;
+		if (!pipeline || !point || !sunShadows || !sunShadows->scratchSurface[0]) return;
+		IDirect3DSurface9* current = nullptr;
+		Device->GetRenderTarget(0, &current);
+		Device->SetRenderTarget(0, sunShadows->scratchSurface[0]);	// a pass may not draw into the device's current target
+		struct { float strength; UInt32 samplerIndex, grey, pad; } push = { 1.0f, 0, 1, 0 };
+		NVR_EXT_RESOURCE_BINDING bindings[2] = {};
+		bindings[0].Slot = 0; bindings[0].Type = NVR_EXT_BIND_SAMPLED_IMAGE; bindings[0].pResource = visibilityTexture;
+		bindings[1].Slot = 0; bindings[1].Type = NVR_EXT_BIND_SAMPLER; bindings[1].pResource = point;
+		NVR_EXT_DRAW_DESC draw = {};
+		draw.pPipeline = pipeline;
+		draw.TargetCount = 1;
+		draw.Targets[0].pResource = RenderTarget;
+		draw.BindingCount = 2;
+		draw.pBindings = bindings;
+		draw.pPushData = &push;
+		draw.PushDataSize = sizeof(push);
+		DxvkCompute::Extension()->Draw(&draw);
+		Device->SetRenderTarget(0, current);
+		if (current) current->Release();
+	}
+
+	bool Replacing() { return S.enabled && S.mode == 1 && S.debugView != 2 && S.debugView != 4 && RtCore::Running() && TheShaderManager->GameState.isExterior; }
 
 	float ReplaceRange() {
 		replaceConstant.x = Replacing() ? S.range : 0.0f;

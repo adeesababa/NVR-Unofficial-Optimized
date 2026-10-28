@@ -2628,6 +2628,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	// UNOFFICIAL 2026-10-27 FitToDepthDebug ([Shaders.ShadowsExteriors.Main], core\SunDepthFit.h): the sun cascades coloured, or the
 	// measured blocks, over the finished picture. 0 (the default): nothing runs.
 	if (SunDepthFit::DebugView > 0) SunDepthFit::RenderView(Device, RenderTarget);
+	RtSunShadows::RenderDebug(Device, RenderTarget);	// UNOFFICIAL 2026-10-28 [Shaders.ShadowsExteriors.RT] DebugView 4 (nothing otherwise)
 	{
 		GpuProfileScope gpu(imageAdjustTimer, Device);
 		{ Effects.Debug->Render(Device, RenderTarget, TheTextureManager->RenderedSurface, 0, false, SourceSurface); PixelInspector::AfterFrame(Effects.Debug); }

@@ -784,7 +784,7 @@ namespace {
 		c.recording = false;
 		c.record = nullptr;
 
-		if ((n % 600) == 0) {
+		if (n == 60 || (n % 600) == 0) {
 			const NvrRtShared* s = c.shared;
 			Logger::Log("RT CORE: frame %llu, %u instances, %u geometries known (%u waiting for arena space, %u released); helper: %u geometries, %llu triangles, "
 				"%llu MB; GPU %.3f ms avg (builds %.3f, scene %.3f, passes %.3f), response %.3f ms avg (max %.3f)",

@@ -1205,7 +1205,7 @@ NormalBias = 2.0                     # UNOFFICIAL (2026-10-28): how far (units) 
 NormalBiasPerUnit = 0.0005           # UNOFFICIAL (2026-10-28): extra normal offset per unit of view distance (the depth and normals are coarser far away). Live.
 StartBias = 1.0                      # UNOFFICIAL (2026-10-28): how far (units) each ray also starts toward the sun. Live.
 RayLength = 30000                    # UNOFFICIAL (2026-10-28): how far (units) a ray looks for a caster (a caster beyond the scene's SceneRadius is not there anyway). Live.
-DebugView = 0                        # UNOFFICIAL (2026-10-28), diagnostic: 1 = the traced shadow alone (the cascades and contact shadows left out of the sun shadow), 2 = traced but not applied (the cascades alone; the cost of the rays stays, for A/B), 3 = the distance to the caster (white = free or 4096+ units). Live.
+DebugView = 0                        # UNOFFICIAL (2026-10-28), diagnostic: 1 = the traced shadow alone (the cascades and contact shadows left out of the sun shadow), 2 = traced but not applied (the cascades alone; the cost of the rays stays, for A/B), 3 = the distance to the caster (white = free or 4096+ units), 4 = the traced visibility alone as grey over the whole finished picture (white = sun reaches the pixel, black = a traced caster blocks it). Live.
 
 [_Shaders.ShadowsExteriors.SunSmoothing]
 SmoothSun = 1						 # Smooth the sun rotation by interpolating between positions.
