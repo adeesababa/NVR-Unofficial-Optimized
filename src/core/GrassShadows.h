@@ -13,6 +13,9 @@
 // c252-c255 (xyz; the grass wind lanes in w are kept), all put back after it.
 // The tufts sway, fade and stand exactly where they are drawn (same VS code, same constants); the collision push is left out.
 //
+// 2026-10-28: with terrain blending on GrassFirst stands aside (its depth copy would hold the grass); then Render.cpp ShadowOnlyEarly
+// takes the grass passes out before the land without drawing them, they come here, and the late part draws them whole on screen.
+//
 // Limits: the PCF shadow maps (Mode 3, the default) only -- the variance modes filter their maps after drawing; the near cascade only;
 // the grass drawn early does not take these shadows itself (it is drawn before them), the ground and everything after it does.
 
