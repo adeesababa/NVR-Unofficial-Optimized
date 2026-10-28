@@ -25,7 +25,8 @@ namespace RtAmbient {
 		bool	Sky = true;			// also the sky visibility (needs Skylighting on, as the ortho version)
 		int		SkyRays = 16;		// 8 or 16 (one or two rings round the normal + straight up)
 		float	SkyDistance = 800.0f;	// [64-8000] sky ray length (Skylighting's Distance: 800)
-		int		DebugView = 0;		// 1 RT visibility (before strength), 2 RT sky visibility, 3 rays that started inside something / hit distance
+		int		DebugView = 0;		// 1 RT visibility (before strength), 2 RT sky visibility, 3 rays that started inside something / hit distance,
+									// 4 / 5 the helper's input (view distance / 2000, normal up), test only
 	};
 	inline Settings Current;
 
@@ -37,7 +38,7 @@ namespace RtAmbient {
 		Current.Sky = TheSettingManager->GetSettingI(s, "Sky") != 0;
 		Current.SkyRays = TheSettingManager->GetSettingI(s, "SkyRays") <= 8 ? 8 : 16;
 		Current.SkyDistance = std::clamp(TheSettingManager->GetSettingF(s, "SkyDistance"), 64.0f, 8000.0f);
-		Current.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 3);
+		Current.DebugView = std::clamp(TheSettingManager->GetSettingI(s, "DebugView"), 0, 5);
 	}
 
 	// RtAOTrace.comp's uniform block (set 0, binding 1 in the helper), std140.

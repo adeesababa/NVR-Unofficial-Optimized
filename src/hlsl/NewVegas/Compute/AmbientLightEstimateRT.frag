@@ -19,7 +19,7 @@ vec4 EstimateRT(vec2 uv) {
     float fade = smoothstep(NearFade, NearFade * 2.0, origin.z) * (1.0 - smoothstep(DrawDistance * 0.7, DrawDistance, origin.z));
     if (fade <= 0.0) return vec4(0.0, 0.0, 0.0, 1.0);
     vec4 rt = linearLod(t_rt, uv);
-    if (pc.variant == 1u) return vec4(0.0, 0.0, 0.0, rt.x);    // the raw RT visibility (AmbientLight's view 1 shows it)
+    if (pc.variant == 1u || pc.variant >= 4u) return vec4(0.0, 0.0, 0.0, rt.x);    // the raw RT visibility (AmbientLight's view 1 shows it); 4, 5: the input checks
     if (pc.variant == 3u) return vec4(0.0, 0.0, 0.0, rt.w);    // black: rays began inside something; grey: mean hit / Distance
     float visibility = pow(saturate(rt.x), 1.5 * OcclusionStrength);   // Estimate's mapping: OcclusionStrength means the same on both
     return vec4(0.0, 0.0, 0.0, saturate(mix(1.0, visibility, fade)));

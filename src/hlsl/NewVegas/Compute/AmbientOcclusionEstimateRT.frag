@@ -30,8 +30,8 @@ void main() {
     if (P.z > endFade) { o_color = vec4(1.0, depth, 0.0, 1.0); return; }
     vec4 rt = LINEAR_LOD(t_rt, uv);
     float view = cb.rtTemporal.w;
-    if (view > 0.5 && view < 1.5) { o_color = vec4(rt.x, depth, 0.0, 1.0); return; }
-    if (view > 2.5) { o_color = vec4(rt.w, depth, 0.0, 1.0); return; }
+    if ((view > 0.5 && view < 1.5) || view > 3.5) { o_color = vec4(rt.x, depth, 0.0, 1.0); return; }   // 4, 5: the input checks
+    if (view > 2.5 && view < 3.5) { o_color = vec4(rt.w, depth, 0.0, 1.0); return; }
     // GTAOValue's tail: the same strength, fog and fade, so the settings mean what they mean for the screen AO.
     float darkness = saturate(1.0 - (1.0 - rt.x) * AOstrength);
     float fogColor = luma(cb.fogColor.rgb);

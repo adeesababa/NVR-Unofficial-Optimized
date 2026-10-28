@@ -18,7 +18,8 @@ layout(set = 0, binding = 1, std140) uniform Constants {
     mat4 viewToWorld;   // NVR's view space -> scene directions (rows right, up, forward of the view; as stored, cb.M * v)
     vec4 projection;    // x 1 / P00, y 1 / P11, zw the trace grid's size in texels
     vec4 origin;        // xyz the view origin in scene space (CameraLocation - CameraPosition), w the frame number (0-1023)
-    vec4 ao;            // x distance, y rays (0: no AO rays), z 1 = move the noise each frame (a history averages it), w unused
+    vec4 ao;            // x distance, y rays (0: no AO rays), z 1 = move the noise each frame (a history averages it), w the input check
+                        // (DebugView 4: x = view distance / 2000; 5: x = the normal's up component * 0.5 + 0.5; 0 = off)
     vec4 sky;           // x distance, y rays (0, 8 or 16; 0: no sky rays), zw unused
 } cb;
 layout(set = 0, binding = 2, rg32f) uniform readonly image2D inputImage;
@@ -66,7 +67,7 @@ void main() {
     if (any(greaterThanEqual(texel, ivec2(cb.projection.zw)))) return;
     vec4 input_ = imageLoad(inputImage, texel);
     float viewZ = input_.x;
-    if (!(viewZ > 0.0)) { imageStore(outputImage, texel, vec4(1.0, 1.0, 0.0, 1.0)); return; }
+    if (!(viewZ > 0.0)) { imageStore(outputImage, texel, vec4(cb.ao.w > 3.5 ? 0.0 : 1.0, 1.0, 0.0, 1.0)); return; }
     vec2 uv = (vec2(texel) + 0.5) / cb.projection.zw;
     vec3 view = vec3((uv.x * 2.0 - 1.0) * cb.projection.x, (1.0 - uv.y * 2.0) * cb.projection.y, 1.0) * viewZ;
     vec3 p = (cb.viewToWorld * vec4(view, 0.0)).xyz;
@@ -124,5 +125,7 @@ void main() {
         }
         skyVisibility = total > 1.0e-5 ? open / total : 1.0;
     }
+    if (cb.ao.w > 3.5 && cb.ao.w < 4.5) aoVisibility = clamp(viewZ / 2000.0, 0.0, 1.0);
+    if (cb.ao.w > 4.5) aoVisibility = n.z * 0.5 + 0.5;
     imageStore(outputImage, texel, vec4(aoVisibility, skyVisibility, covered, debugValue));
 }

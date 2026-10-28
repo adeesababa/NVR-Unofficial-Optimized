@@ -48,7 +48,7 @@ void AmbientLightEffect::UpdateSettings() {
 	// UNOFFICIAL 2026-10-28 (fork RT) [Shaders.AmbientOcclusion.RT] (core/RtAmbient.h): its DebugView 1 (the raw RT visibility) and 3 (rays
 	// that began inside something) come out through Estimate's occlusion, so they show through this effect's view 1 (the occlusion alone).
 	RtAmbient::UpdateSettings();
-	if (RtAmbient::Current.Enabled && (RtAmbient::Current.DebugView == 1 || RtAmbient::Current.DebugView == 3)) Constants.Data2.w = 1.0f;
+	if (RtAmbient::Current.Enabled && RtAmbient::Current.DebugView != 0 && RtAmbient::Current.DebugView != 2) Constants.Data2.w = 1.0f;
 }
 
 // Half resolution, made the first time it runs (about 29 MB at 1440p: one A32B32G32R32F, four A16B16G16R16F).

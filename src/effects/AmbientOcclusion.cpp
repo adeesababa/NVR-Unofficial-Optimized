@@ -455,7 +455,7 @@ void AmbientOcclusionEffect::RtRecord(IDirect3DDevice9* Device) {
 	const NiPoint3* location = Pointers::Generic::CameraLocation;
 	c.origin = D3DXVECTOR4(location->x - TheRenderManager->CameraPosition.x, location->y - TheRenderManager->CameraPosition.y,
 		location->z - TheRenderManager->CameraPosition.z, (float)(TheFrameRateManager->FrameNumber % 1024));
-	c.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, 0.0f);	// (both consumers keep a history: the noise moves)
+	c.ao = D3DXVECTOR4(rt.Distance, (float)rt.RayCount, 1.0f, rt.DebugView >= 4 ? (float)rt.DebugView : 0.0f);	// (both consumers keep a history: the noise moves)
 	c.sky = D3DXVECTOR4(rt.SkyDistance, rt.Sky && SkyData2.x > 0.0f ? (float)rt.SkyRays : 0.0f, 0.0f, 0.0f);
 	const int images[2] = { RtImageIn, RtImageOut };
 	if (!RtCore::CopyIn(RtImageIn, rtInputTexture) ||
