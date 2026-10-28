@@ -167,6 +167,23 @@ Results (2026-10-28, branch c1684e95):
 
 Pictures: `H:\_NVR-autotest-shots\20261028-152942-slotC\1-capnormals1` (and the other run folders).
 
+## Native D3D9 (fixed 2026-10-28, commit 4686dfd5)
+
+Cause: the native D3D9 runtime writes its own entries back into the device's function table (VolumetricClouds had seen it for
+StretchRect), so draw hooks put in once (CapturedNormals, and LinearScene) were gone for nearly the whole session: 0.5 and 2.4 draws a
+frame seen against ~370 / ~1,400 under NVR DXVK. Both were silently off on native, LinearScene since it went on by default (5c547109).
+Fix: `EnsureHooked` (CapturedNormals.h, LinearScene.h) at the start of the main list and at every main-list pass
+(GrassFirst::RenderPassImmediatelyHook, an engine detour the runtime leaves alone): a slot holding exactly what the hook calls on to gets
+the hook back; another program's hook on top is left alone. LinearScene first, then the capture (their install order).
+
+| run | result |
+|---|---|
+| 20261028-163138-slotC, native D3D9, snow list | PASS. Slots 43/81/82 found put back and re-hooked (20 times in ~10 s, not every pass). Capture 368 draws / frame, self-check ok (2,426 texels). LinearScene 1,384 linear + 830 stored draws / frame, 3.98 conversions (as under DXVK). The world draws normally with the extra target bound; snow on the rock slab as on the fork. |
+| 20261028-163541-slotC, NVR DXVK fork, merge list | PASS, unchanged (no re-hook needed there). |
+
+Native note: LinearScene now really runs on native for the first time (its look and its few full-screen conversions per frame), as
+intended since 5c547109 but never seen there. The game's MSAA on native still skips the capture (driver limit).
+
 ## Files to copy (manual install)
 
 - `NewVegasReloaded.dll` (+ `.pdb`), `NewVegasReloaded.dll.defaults.toml` -> `<game>\Data\NVSE\Plugins\`
