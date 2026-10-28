@@ -47,8 +47,33 @@ DebugView 0. The scene: `[Main.Main.RayTracing]` SceneRadius 8192, ArenaMB 16.
   (FORK-RT-CORE.md), verified texel for texel offline for 720p .. 4K.
 - The run hit the autotest plugin's 600 s limit at shot 13 of 15 (the iGPU is slow): the list was shortened for rtsun-2.
 
-### rtsun-2
-(pending)
+### rtsun-2 (run 20261028-132822-slotC)
+- The helper is ready ~1 s after RT is switched on; the first frame with all builds took 1.19 s (later: preallocation, ~10 ms).
+- GPU PROFILE "Ray tracing (copies + helper + waits)": p50 ~1.4 ms at 720p on the iGPU (the exchange: depth + normals in,
+  the trace, visibility out, the game waiting for the helper).
+- No visible difference between Mode 0 and the cascades: ForwardShadows (the user's setting) samples the cascades in the object
+  shaders, so DebugView 1 cannot show the rays alone. DebugView 4 was added for that.
+
+### rtsun-3 (run 20261028-145222-slotC; the first try 20261028-144215 hit the 600 s limit at shot 1)
+- RT CORE at exchange 60: 649 instances, 197 geometries, 778909 triangles, 120 MB; helper GPU 2.67 ms avg incl. the first
+  frame's builds (118 ms), scene 0.13 ms, passes 0.38 ms. Later frames: helper GPU 0.47 ms (passes 0.33 ms).
+- "Ray tracing" p50 1.34-1.37 ms per frame (p90 1.40-1.44), the same at every heading.
+- **DebugView 4 is white everywhere at all four headings: no ray hits anything**, while the cascades show long shadows (16:00).
+  The other RT users see the same in their runs (rt-reflections: 1130 instances, every ray misses; rt-ao-sky: the same).
+  The offline end-to-end test (synthetic geometry through the helper) passes, so the fault is in what the game gives the
+  scene or the pass: the fork's StageGeometry conversion (game vertex buffers -> arena) is the one link no test covers on this
+  machine (the in-process test only takes the unsupported branch on the iGPU), or the pass inputs (depth, normals, sun).
+  0.33 ms for 921k pixels on the iGPU also suggests most pixels never trace.
+
+### rtsun-4 (the no-hit hunt)
+- DebugView 5: per-pixel state codes (0.1 no depth / sky, 0.2 sun down, 0.3 beyond the range, 0.45 facing away, 0.6 traced hit,
+  0.8 traced free). DebugView 6: a primary ray from the camera through each pixel, hit distance / 8192 (white = no hit): the
+  scene alone, independent of depth, normals and the sun.
+- One-time probes: NVR logs "RT CORE probe" for the first three geometries it stages (vertex counts, BaseVertexIndex, the VB
+  chip offset, stride, position offset, model bound, the CPU copy of vertex 0 when kept, the camera-relative translation);
+  the helper logs "probe geometry" with the same ids read back from its staging buffer (first vertices, bounds, indices, the
+  instance transform). Matching the two says whether the arena holds the game's positions.
+- (results below when the run is in)
 
 ## Open problems / next
 - Alpha-tested casters (foliage, fences, chain link) and actors are not traced: Mode 0 keeps them through the cascades.
