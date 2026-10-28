@@ -141,6 +141,66 @@ the device's c34/c35). Code: `src/core/DisplaceShadows.h`, `DxvkCompute::Registe
   default EdgeLength 12 / EdgeGrowth 0.01, strips as three patch lists) plus a few device reads per land draw in the world scene;
   F10 "Sun cascade: displaced land". Land farther than FadeEnd is drawn as before.
 
+## Objects: rocks, cliffs, walls (plan step 5; 2026-10-28, branch claude/intelligent-lalande-6e0cf0 on claude/tess-blend-4078c1 0a51be43)
+`[Shaders.POM.Displacement]` (the POM page of the menu, "Tessellation (displacement)"): `Enabled = false` (live), `Strength = 8`,
+`Center = 0.5`, `Contrast = 2`, `EdgePixels = 12`, `EdgeFade = 1.5`, `MaxFactor = 16`, `FadeStart = 1024`, `FadeEnd = 2048`, `LodBias = 0`,
+`FixedFactor = 0`, `DebugView = 0` (1 wireframe), `Winding = 0`. Needs NvrDxvkDisplacement at startup like the land. **No d3d9 change**:
+the fork's 1.7-displace takes a third family as it is.
+- Which shaders: every object with a parallax height map is drawn by ParallaxTemplate.hlsl (PAR2000-2019.vso, PAR2000-2032.pso: the
+  main lit pass, the AD / DIFFUSE lamp passes, the ONLY_SPECULAR highlight passes, the NO_LIGHT texture pass). HeightMap (height in red,
+  as Parallax.hlsl reads it) is at s3 in the main pass and s2 in all the others (read from each pixel shader's constant table).
+  ModelViewProj is c0-c3 as on the land. The vertex shaders have the object-space position and normal (inputs), but sent neither on.
+- The IO problem: the fork's TCS / TES pass the vertex shader's outputs on by location, and DXVK (dxbc-spirv's sm3 IoMap) gives fixed
+  locations only to NORMAL0 (0), TEXCOORD0-7 (1-8), COLOR0-1 (9, 10) and FOG (11); anything else (this template's TEXCOORD8 shadowUVs and
+  TEXCOORD9 shadowWorldPos) gets 12, 13 ... in the order each shader declares it, and VS and PS are matched by semantic name, which a
+  glslang TES does not carry. So with `NVR_DISPLACE_OBJECTS` (ShaderRecord::BuildDefines: NvrDxvkDisplacement on and the NVR DXVK
+  extension present) the template uses a fixed layout: shadowUVs / shadowWorldPos go to TEXCOORD5 / 6 in the variants with a vertex
+  colour or fog (at most 2 lights there), else to COLOR0 / COLOR1 (the ONLY_LIGHT passes have neither; dxbc-spirv does not clamp shader
+  model 3 colours; under native D3D9 the layout is never compiled); NORMAL0 carries the clip position again and TEXCOORD0's zw the object
+  normal (octahedral). vs_3_0 allows 10 outputs besides the position (fxc X5622), so every vertex shader writes exactly 10 of the 11
+  fixed slots, unused ones as 0: all but TEXCOORD2, or in the DIFFUSE lamp passes (TEXCOORD2 = their light's attenuation) all but COLOR0.
+  Checked offline with fxc for all 49 variants, both ways (the scratch script: every VS writes exactly its set, every PS reads only fixed
+  slots). Off, the shaders are exactly as before.
+- Shaders (`Compute/Tess`): `ObjectDisplace.tcs` / `-c.tcs` (the two output sets), `ObjectDisplace-h3`, `-h2`, `-h2-c` `.tes` (+ `-ccw`).
+  Registered as family 3 (`DxvkCompute::RegisterDisplace` -> RegisterDisplaceObject), VsFloatRegisters c0-c3, TextureMask = the height
+  map's sampler.
+- One tessellation state for every family (the fork's SetTessState): the land and the objects need different push data, so each
+  registered shader's ShaderRecord keeps its family (`DisplaceFamily`) and `ShaderRecord::SetCT` (runs whenever the pixel shader changes)
+  calls `DxvkCompute::DisplaceBind`, which sends the objects' state for an object shader and the land's base back for a land shader
+  after the objects'. DisplaceTick re-sends whichever family was last bound (an object shader can stay bound into the next frame). The
+  land's own sends (ObjectBlend, shadow pass) are unchanged.
+- The split: in screen space (`EdgePixels`, from the clip positions alone; the push data has half the screen size), so every pass of an
+  object gets the same split (the lamp and highlight passes redraw the same triangles and must land on the same depth) and an edge's
+  level depends only on its two ends. Patches wholly outside one side of the view (margin 16 x Strength + 1 in clip units: enough for a 10 degree scope) or behind the
+  camera get level 0. Distance fade by view depth (clip w), FadeStart .. FadeEnd.
+- The height: as the land's (each texture's own mean = its smallest mip, stretched by Contrast, eased into 0..1, Center the level that
+  stays put), but read with texelFetch and a manual bilinear / trilinear filter (wrapping) so the passes' different sampler states (s3
+  vs s2) cannot change the depth. Detail level per patch: the largest uv distance between generated points. Strength is in game units on
+  scaled objects too: ModelViewProj row 3's length is the object's scale. Position `precise`, gl_Position `invariant`.
+- **Seams: pinned edges.** A mesh's vertices are split where its uv or normals jump (uv seams, hard edges). The two triangles on either
+  side then read different heights or move along different normals, and a crack opens. A TCS / TES sees only its own triangle, so it
+  cannot tell such an edge from a smooth one: "fade where the endpoints' normals differ" cannot work (on a smooth rock every vertex has
+  its own normal), and "displace along an averaged normal" needs the other side's normal, which no stage has without an adjacency
+  buffer (a CPU pass over every mesh). Chosen: the displacement is 0 on every edge of the game's own triangles and fades in over
+  `EdgeFade` generated steps (outer level k x gl_TessCoord[k]). No original edge ever moves, so no crack can open anywhere, whatever the
+  mesh. Cost: the bumps sit inside the game's triangles, with a flat seam along each original edge (rock formations have big triangles,
+  so most of the surface gets them). `EdgeFade 0` = no pinning (test: shows where the seams are).
+- Not moved, on purpose: the lighting vectors (light directions, view vector: a few units against lights hundreds away), the forward
+  sun shadow lookup (shadowWorldPos stays at the flat surface, which is what the sun's shadow maps hold: a point below it would shadow
+  itself), the projected shadow uvs, the fog.
+- Shadows (task item 4): NOT done. The rocks reach the sun's cascades through NVR's opaque caster pass (ShadowMap.vso /
+  ShadowMapOpaque.pso) with no height map bound. Doing it like the land's CastShadows = a family 4 (a shadow vertex shader writing this
+  layout with the cascade's clip position and the MAIN camera's clip position for the split, the object's height map bound from its
+  BSShaderPPLightingProperty, PAR objects sorted into their own pass): about 2-3 h. Easier than the land (no Vanilla Plus Terrain
+  capture), but not "cheap". Until then: with ForwardShadows on (the user's setting) no acne (the lookup stays flat); with the deferred
+  sun shadows (ForwardShadows off) the dips below the flat surface (Center 0.5) can self-shadow; the bumps cast no shadow.
+- Cost (not measured): every parallax object within FadeEnd is tessellated in each of its passes (lit + lamp + highlight + water
+  reflection). With the switch on and Enabled off: the 49 parallax shaders recompile once (new define) and the vertex shaders write a
+  few more outputs; nothing is tessellated.
+- Limits: parallax still runs on top (as on the land). Objects without a height map (most architecture) are not parallax objects and stay
+  as they are. A DIFFUSE vertex shader paired with a non-DIFFUSE pixel shader would leave the pixel shader's COLOR0 undefined (not seen in
+  the template's pairings).
+
 ## What it does (plain English)
 Parallax only makes the ground LOOK bumpy: the surface is still flat, so its outline, its depth (fog, AO, reflections, shadows on it)
 and its edges against the sky stay flat. With `[Main.Main.Performance] NvrDxvkDisplacement` on, the NVR-built DXVK splits every land
@@ -220,9 +280,7 @@ in the list's header.
    pass with the cube shaders), only needed for Center > 0.
 3. Lighting: bend the normal / tangent frame by the height's slope in the TES (finite differences, 2 extra lookups per layer) (1-2 h).
 4. Parallax hand-off: lower the land parallax's height by the displacement weight (1 h, NVR shader + a constant).
-5. Objects (rocks, walls): the PAR family (ParallaxTemplate.hlsl, height map in s2) needs the object-space position and normal as VS
-   outputs (a compile-time define, only with the switch on) plus its own TCS/TES; walls with straight edges need the same border rule
-   as the land quadrants at mesh seams (3-5 h).
+5. Objects (rocks, walls): DONE 2026-10-28 ("Objects" above; not yet seen in game). Left: their shadows (2-3 h).
 6. Speed: screen-space edge factors, patch culling off screen / back-facing (tess level 0), measure (2 h).
 7. (Done in v2: strips, without any index conversion.)
 Total about 10-16 session-hours left; the main risk is the shadow pass (step 2: NVR has to supply textures the shadow draws do not bind).

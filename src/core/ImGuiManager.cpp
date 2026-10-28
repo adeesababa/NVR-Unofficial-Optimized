@@ -3508,6 +3508,7 @@ static std::string MenuEntryLabel(const std::string& name) {
 // The same for a page in the sidebar (by its full path; the section keeps its name in the settings files).
 static std::string MenuSectionLabel(const std::string& path, const std::string& name) {
 	if (path == "Shaders.Terrain.Displacement") return "Tessellation (displacement)##" + name;	// UNOFFICIAL 2026-10-27 (user)
+	if (path == "Shaders.POM.Displacement") return "Tessellation (displacement)##" + name;	// UNOFFICIAL 2026-10-28 rocks and cliffs
 	return name;
 }
 

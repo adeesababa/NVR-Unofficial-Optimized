@@ -314,6 +314,11 @@ void ShaderRecord::BuildDefines(ShaderTemplate& Template, const D3DXMACRO* Overr
 	// tessellation shaders may read it (core/DxvkCompute.cpp RegisterDisplace). Defined only when on, and last, as above.
 	if (TheSettingManager->GetSettingI("Main.Main.Performance", "NvrDxvkDisplacement"))
 		AppendDefine("NVR_DISPLACE_DEPTH", "1");
+	// UNOFFICIAL 2026-10-28 object displacement (ParallaxTemplate.hlsl NVR_DISPLACE_OBJECTS, [Shaders.POM.Displacement]): the parallax
+	// objects' vertex and pixel shaders in the layout the object tessellation shaders read (fixed IO slots), under NVR DXVK only (the layout
+	// carries a shadow position in COLOR1, which DXVK does not clamp). Defined only when on, and last, as above.
+	if (DxvkCompute::DisplaceObjectsLayout())
+		AppendDefine("NVR_DISPLACE_OBJECTS", "1");
 
 }
 
@@ -471,7 +476,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					ShaderProg = new ShaderRecordVertex(Name);
 					// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace, core\DxvkCompute.h): with NvrDxvkDisplacement on at load, the land's
 					// vertex shader is registered with its tessellation control shader. Off, or no NVR DXVK: nothing happens.
-					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, true, Function, D3DXGetShaderSize((const DWORD*)Function));
+					ShaderProg->DisplaceFamily = (unsigned char)DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, true, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreateVertexShader((const DWORD*)Function, &((ShaderRecordVertex*)ShaderProg)->ShaderHandle);
 				}
 				else {
@@ -480,7 +485,7 @@ ShaderRecord* ShaderRecord::LoadShader(const char* Name, const char* SubPath, Sh
 					// device sees the bytecode, so DXVK binds it in this shader's place. No file, no extension: nothing happens.
 					DxvkCompute::RegisterReplacement(Name, Function, D3DXGetShaderSize((const DWORD*)Function), Template.Name ? Template.Name : Name, Macros);
 					// UNOFFICIAL 2026-10-27 (NVR DXVK 1.7-displace): the land's pixel shaders with their tessellation evaluation shaders.
-					DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, false, Function, D3DXGetShaderSize((const DWORD*)Function));
+					ShaderProg->DisplaceFamily = (unsigned char)DxvkCompute::RegisterDisplace(Name, Template.Name, Template.Defines, false, Function, D3DXGetShaderSize((const DWORD*)Function));
 					createResult = TheRenderManager->device->CreatePixelShader((const DWORD*)Function, &((ShaderRecordPixel*)ShaderProg)->ShaderHandle);
 				}
 				
@@ -732,6 +737,10 @@ void ShaderRecord::SetCT() {
 	// UNOFFICIAL terrain blending: before the constants below are uploaded (it sets whether this draw blends), and the
 	// first land bind of the world scene copies the depth drawn so far.
 	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
+	// UNOFFICIAL 2026-10-28 (object displacement): the fork has one tessellation state for every family, so a land or parallax-object shader
+	// registered for it sends its family's state when the other's was the last sent (core/DxvkCompute.cpp DisplaceBind). The land and the
+	// objects never share a pixel shader, and SetCT runs whenever the pixel shader changes.
+	if (DisplaceFamily) DxvkCompute::DisplaceBind(DisplaceFamily);
 	// UNOFFICIAL 2026-10-27 displacement ObjectBlend: the same copy, and whether this draw's tessellation may use it (Terrain.cpp).
 	if (HasDisplaceDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareDisplaceDepth();
 	// UNOFFICIAL 2026-10-25 (LandLight.h): the light vector the last land draw lit with, then this bind's own turn.
