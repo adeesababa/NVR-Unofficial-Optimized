@@ -1020,6 +1020,7 @@ DebugView = false                    # Shows each class in its own colour (guns 
 LogMatches = false                   # Writes each texture's class to the log the first time it is drawn ("[MaterialRules] <texture> -> <class>").
 
 [_Shaders.PBR.Rmaos]
+MetalFromMap = false                 # UNOFFICIAL (2026-10-28), live: metal from the maps' green channel. Off (default) = metal from [Shaders.PBR.Metal] (World, FirstPerson, GreyMetal, ...) as on objects without a map; the maps still give roughness and occlusion. NVR's generated maps carry that same metal guess baked at World 0.5, so with them on the Metal sliders did nothing. On = for hand-made PBR maps whose metal is authored.
 Enabled = true                       # UNOFFICIAL: PBR material maps. Where a texture has a <name>_rmaos.dds beside it (or under textures\pbr\ at the same path; the Community Shaders "True PBR" layout: red roughness, green metal, blue ambient occlusion, alpha specular level), objects take their roughness, metal and occlusion from it instead of the guesses. Loose files only. Restart to switch (it is compiled into the object shaders).
 On = true                            # With Enabled: use the maps (live switch, for comparing). Off: objects as without them.
 Occlusion = 1.0                      # [0.0-1.0] How much the maps' ambient occlusion darkens the ambient light.
@@ -1922,6 +1923,7 @@ SunsetR = 0.5                       # Color boost for sunset/sunrise sun color (
 SunsetG = 0.0                       # Color boost for sunset/sunrise sun color (Green)
 SunsetB = 0.03                      # Color boost for sunset/sunrise sun color (Blue)
 StarTwinkle = 1.0                   # Speed of the star twinkling
+ColorLook = true                    # UNOFFICIAL (2026-10-28), live: the master switch for NVR's sky colour settings below (TintDay / TintNight, the horizon tints, SaturationDay / SaturationNight) and the sunset colour boost (SunsetR / G / B). Off = all of them stand aside (on the sky, the sky light on objects and the fog's sky colours) and the sky is the weather's own (or the physical sky's). For checking whether a colour on the sky comes from these settings. true = as before.
 TintDayR = 1.0                      # UNOFFICIAL (2026-10-25), live: colour of the sky by day (a colour wheel in the menu). The sky, the sky the clouds blend into, and the sky light on objects are multiplied by it. White = no change. Fades into TintNight over dusk on the same curve as SkyMultiplier.
 TintDayG = 1.0
 TintDayB = 1.0
@@ -1982,6 +1984,7 @@ Persistent = false                  # UNOFFICIAL (2026-10-27): snow is kept spot
 PersistentShade = 0.35              # [0.02-1] (Persistent) How fast snow melts in the shade (and at night) compared with full sun: 0.35 = about three times slower; 1 = no difference.
 PersistentDrifts = 0.5              # [0-1] (Persistent) How much more snow gathers in hollows and against walls, and how much less on ridges and edges. 0: the same everywhere.
 PersistentFootprints = 0.7          # [0-1] (Persistent) How hard your steps tread the snow: footprints of compacted snow, left and right in turn, one per step (greyer and flatter; the ground shows through in their middle at high values; fresh snow fills them again). 0: none. (2026-10-28: footprints, was one continuous trail.)
+PersistentFootprintShape = 0         # UNOFFICIAL (2026-10-28) [0-1] (Persistent) 0 = each footprint one soft oval (default), 1 = a boot print (sole and heel, as on 10-28). Live.
 PersistentFootprintSize = 10        # [2-200] (Persistent) Half the length of one footprint, in game units (10 = a print about 28 cm long and 11 cm wide). The step between prints follows your speed (about 40 cm sneaking to 1.4 m running).
 
 [_Shaders.SnowAccumulation.Status]

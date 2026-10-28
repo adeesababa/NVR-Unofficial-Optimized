@@ -1861,7 +1861,8 @@ namespace RmaosDraw {
 		}
 		if (!Compiled) return;
 		PBRShaders* pbr = TheShaderManager->Shaders.PBR;
-		float values[4] = { 0.0f, pbr ? pbr->RmaosSettings.OcclusionNow : 1.0f, pbr ? (float)pbr->RmaosSettings.DebugView : 0.0f, 0.0f };	// UNOFFICIAL 2026-10-18: Occlusion x the weather's AOScale
+		float values[4] = { 0.0f, pbr ? pbr->RmaosSettings.OcclusionNow : 1.0f, pbr ? (float)pbr->RmaosSettings.DebugView : 0.0f,
+			pbr && pbr->RmaosSettings.MetalFromMap ? 1.0f : 0.0f };	// UNOFFICIAL 2026-10-28 w: MetalFromMap (Object.hlsl getDerivedMetallic)	// UNOFFICIAL 2026-10-18: Occlusion x the weather's AOScale
 		Map* map = nullptr;
 		NiGeometry* geometry = pass ? pass->geometry : nullptr;
 		BSShaderProperty* property = geometry ? (BSShaderProperty*)geometry->GetProperty(NiProperty::PropertyType::kType_Shade) : nullptr;

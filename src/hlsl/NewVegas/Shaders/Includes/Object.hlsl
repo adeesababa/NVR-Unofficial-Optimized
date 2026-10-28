@@ -55,7 +55,7 @@ float4 TESR_MaterialTint  : register(c199); // rgb: the class's DebugView colour
 // in ObjectTemplate's pixel shaders, and only when on at startup (RMAOS_ON); while NVR_Rmaos.x is 0 every function returns
 // exactly what it did before.
 #ifdef RMAOS
-float4 NVR_Rmaos : register(c220); // x: 1 = this draw has an _rmaos map on s2, y: occlusion strength, z: DebugView (1 roughness, 2 metal, 3 occlusion, 4 which objects have one)
+float4 NVR_Rmaos : register(c220); // x: 1 = this draw has an _rmaos map on s2, y: occlusion strength, z: DebugView (1 roughness, 2 metal, 3 occlusion, 4 which objects have one), w: 1 = metal from the map (MetalFromMap)
 sampler2D NVR_RmaosMap : register(s2);
 static float4 RmaosValue = float4(1.0f, 0.0f, 1.0f, 1.0f);
 // UNOFFICIAL 2026-10-18 FadeIn (pbrpop, [Shaders.PBR.Rmaos] FadeIn): x below 1 = the map arrived a moment ago: its values blend in
@@ -342,7 +342,9 @@ float getDerivedMetallic(float specMask, float3 albedo) {
     float chroma = (peak - min(min(albedo.r, albedo.g), albedo.b)) / max(peak, 0.001f);
     float greyness = 1.0f - smoothstep(TESR_PBRMetal.z, max(TESR_PBRMetal.w, TESR_PBRMetal.z + 0.001f), chroma);
     #ifdef RMAOS
-        [branch] if (RMAOS_ACTIVE) return RMAOS_FADING ? lerp(getDerivedMetallicGuess(specMask, greyness), RmaosValue.g, NVR_Rmaos.x) : RmaosValue.g;
+        // UNOFFICIAL 2026-10-28 MetalFromMap (c220 w): only then the map's metal. TheClauder: "metal in pbr doesn't seem to do anything anymore" --
+        // NVR's generated maps carry the metal guess baked at World 0.5, so on every object with a map the Metal sliders did nothing.
+        [branch] if (RMAOS_ACTIVE && NVR_Rmaos.w > 0.5f) return RMAOS_FADING ? lerp(getDerivedMetallicGuess(specMask, greyness), RmaosValue.g, NVR_Rmaos.x) : RmaosValue.g;
     #endif
     return getDerivedMetallicGuess(specMask, greyness);
 }

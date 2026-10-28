@@ -194,7 +194,10 @@ float4 TESR_CoverMapFeetData;	// xy, z: a circle round all of them (relative to 
 
 float SnowFootprint(float3 rel)
 {
-	float half = TESR_CoverMapFeetData.w;
+	// UNOFFICIAL 2026-10-28 (macintroll: "footsteps are a nice addition but shape is weird, should be a single blob"): one soft oval per
+	// step by default; a negative half length (PersistentFootprintShape 1) = the boot shape below (sole and heel).
+	float half = abs(TESR_CoverMapFeetData.w);
+	bool boot = TESR_CoverMapFeetData.w < 0.0f;
 	float2 fromAll = rel.xy - TESR_CoverMapFeetData.xy;
 	[branch] if (TESR_CoverMapFeetData.z <= 0.0f || dot(fromAll, fromAll) > TESR_CoverMapFeetData.z * TESR_CoverMapFeetData.z) return -1.0f;
 	float best = 0.0f;
@@ -210,9 +213,14 @@ float SnowFootprint(float3 rel)
 			sincos(heading, ahead.y, ahead.x);
 			// along the heading, and sideways away from the path (mirrored for the right foot)
 			float2 q = float2(dot(d, ahead), dot(d, float2(-ahead.y, ahead.x)) * sign(foot.w));
-			float toes = length((q - float2(0.26f * half, -0.05f * half)) / float2(0.66f * half, 0.40f * half));
-			float heel = length((q - float2(-0.58f * half, 0.0f)) / float2(0.36f * half, 0.31f * half));
-			best = max(best, depth * (1.0f - smoothstep(0.8f, 1.05f, min(toes, heel))));
+			float shape;
+			[branch] if (boot) {
+				float toes = length((q - float2(0.26f * half, -0.05f * half)) / float2(0.66f * half, 0.40f * half));
+				float heel = length((q - float2(-0.58f * half, 0.0f)) / float2(0.36f * half, 0.31f * half));
+				shape = 1.0f - smoothstep(0.8f, 1.05f, min(toes, heel));
+			}
+			else shape = 1.0f - smoothstep(0.55f, 1.05f, length(q / float2(0.95f * half, 0.45f * half)));	// one soft oval along the step
+			best = max(best, depth * shape);
 			nearAny = 1.0f;
 		}
 	}
@@ -226,12 +234,20 @@ float3 SnowSmoothNormal(float2 uv, float3 center, float3 norm, float depth)
 	float2 perUnit = 0.5f * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) / max(depth, 1.0f);	// screen share per game unit
 	float2 s01 = rectToScreen(uv);
 	float3 sum = norm;
+	// UNOFFICIAL 2026-10-28 (macintroll: white sheets over cars and rocks, streaks across the ground and ferns): a tap counts only where
+	// its own normal is near this pixel's (the land's facets differ by a few tens of degrees; a car's side and the ground under it, or a
+	// fern and the ground, by far more: their normals no longer tilt each other), and only on screen (a tap clamped to the edge read the
+	// same border column for a whole band of pixels: streaks along the rows).
 	[unroll] for (int i = 0; i < 12; i++) {
-		float2 tapUV = screenToRect(saturate(s01 + SnowSmoothTaps[i] * radius * perUnit));
+		float2 raw = s01 + SnowSmoothTaps[i] * radius * perUnit;
+		float2 tapUV = screenToRect(saturate(raw));
+		float onScreen = all(raw == saturate(raw)) ? 1.0f : 0.0f;
 		float tapDepth = readDepthLod(tapUV);
 		float3 tapPos = toWorld(tapUV) * tapDepth;
-		float weight = saturate(1.0f - length(tapPos - center) / (2.0f * radius)) * (tapDepth < farZ * 0.99f ? 1.0f : 0.0f);
-		sum += GetWorldNormalLod(tapUV) * weight;
+		float3 tapNormal = GetWorldNormalLod(tapUV);
+		float weight = saturate(1.0f - length(tapPos - center) / (2.0f * radius)) * (tapDepth < farZ * 0.99f ? 1.0f : 0.0f) * onScreen *
+			smoothstep(0.5f, 0.85f, dot(tapNormal, norm));
+		sum += tapNormal * weight;
 	}
 	return normalize(sum);
 }

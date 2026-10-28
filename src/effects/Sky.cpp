@@ -192,6 +192,15 @@ void SkyShaders::UpdateConstants() {
 	}
 	Constants.SkyLook.x = TheShaderManager->GetTransitionValue(Settings.SaturationDay, Settings.SaturationNight, 1.0f);
 	Constants.SkyLook.y = Settings.TintGradientHeight;
+	// UNOFFICIAL 2026-10-28 ColorLook (user: "maybe a hard toggle for all of the sky color settings"; macintroll: a pink horizon that the
+	// colour wheels did not change): off, the tints and the saturation are left out everywhere they go -- the sky, the sky light on objects
+	// below, the fog's sky colours (FogSkyLook) -- and the sunset colour boost too (UpdateSettings), so the sky is the weather's / the
+	// physical sky's own. On: as before.
+	if (!Settings.ColorLook) {
+		Constants.SkyTint = D3DXVECTOR4(1.0f, 1.0f, 1.0f, Constants.SkyTint.w);
+		Constants.SkyTintHorizon = D3DXVECTOR4(1.0f, 1.0f, 1.0f, Constants.SkyTintHorizon.w);
+		Constants.SkyLook.x = 1.0f;
+	}
 	// the fog lies over the sky near the horizon and takes the sky's colour there: VolumetricFog.fx.hlsl, one register
 	Constants.FogSkyLook = D3DXVECTOR4(Constants.SkyTint.x * Constants.SkyTintHorizon.x, Constants.SkyTint.y * Constants.SkyTintHorizon.y,
 		Constants.SkyTint.z * Constants.SkyTintHorizon.z, Constants.SkyLook.x);
@@ -439,6 +448,7 @@ void SkyShaders::UpdateSettings() {
 	Settings.SaturationDay = std::clamp(SettingOr("Shaders.Sky.Main", "SaturationDay", 1.0f), 0.0f, 2.0f);
 	Settings.SaturationNight = std::clamp(SettingOr("Shaders.Sky.Main", "SaturationNight", 1.0f), 0.0f, 2.0f);
 	Settings.TintKeepsBrightness = SettingOr("Shaders.Sky.Main", "TintKeepsBrightness", 1.0f) != 0.0f;
+	Settings.ColorLook = SettingOr("Shaders.Sky.Main", "ColorLook", 1.0f) != 0.0f;	// UNOFFICIAL 2026-10-28 (missing key = on)
 
 	// UNOFFICIAL physical sky (Effects/Includes/Atmosphere.hlsl). Enabled is read at startup too (ShaderRecord compiles it in).
 	PhysicalSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Sky.Physical", "Enabled") != 0;
@@ -452,8 +462,8 @@ void SkyShaders::UpdateSettings() {
 	lastProjectionValid = false;
 
 
-	// only add sunset color boost in exteriors
-	if (TheShaderManager->GameState.isExterior) {
+	// only add sunset color boost in exteriors (UNOFFICIAL 2026-10-28: and only with ColorLook on)
+	if (TheShaderManager->GameState.isExterior && Settings.ColorLook) {
 		Constants.SunsetColor.x = TheSettingManager->GetSettingF("Shaders.Sky.Main", "SunsetR");
 		Constants.SunsetColor.y = TheSettingManager->GetSettingF("Shaders.Sky.Main", "SunsetG");
 		Constants.SunsetColor.z = TheSettingManager->GetSettingF("Shaders.Sky.Main", "SunsetB");

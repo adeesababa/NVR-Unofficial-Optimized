@@ -196,6 +196,7 @@ public:
 		float OcclusionNow = 1.0f;	// UNOFFICIAL 2026-10-18: Occlusion x the weather's AOScale, this frame (PBRShaders::UpdateConstants; RmaosDraw sends it in c220.y)
 		int DebugView = 0;		// 1 roughness, 2 metal, 3 occlusion, 4 which objects have a map
 		bool LogMatches = false;
+		bool MetalFromMap = false;	// UNOFFICIAL 2026-10-28 [Shaders.PBR.Rmaos] MetalFromMap: the map's metal (green) instead of the Metal sliders' look
 	};
 	RmaosSettingsStruct	RmaosSettings;
 	D3DXVECTOR4	MaterialRule = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);		// TESR_MaterialRule (c197): x 0 = no rule

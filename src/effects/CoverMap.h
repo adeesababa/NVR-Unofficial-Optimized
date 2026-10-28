@@ -50,6 +50,7 @@ public:
 		int		resolution = 0;					// texels across
 		float	wetTime = 0.0f, dryTime = 0.0f, puddleFill = 0.0f, puddleDry = 0.0f, wetShade = 1.0f;	// game hours; shade factor
 		float	snowIncrease = 0.0f, snowDecrease = 0.0f, snowShade = 1.0f, drifts = 0.0f, footprints = 0.0f, footSize = 0.0f;
+		int		footShape = 0;	// UNOFFICIAL 2026-10-28 PersistentFootprintShape: 0 one soft blob per step, 1 a boot (sole and heel)
 		int		debug = 0;
 	};
 	SettingsStruct	Settings;

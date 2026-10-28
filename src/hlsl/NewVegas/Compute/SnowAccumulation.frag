@@ -260,12 +260,17 @@ vec3 snowSmoothNormal(vec2 coord, vec3 center, vec3 norm, float depth) {
     vec2 perUnit = 0.5 * vec2(c.projection[0][0], c.projection[1][1]) / max(depth, 1.0);
     vec3 sum = norm;
     for (int i = 0; i < 12; i++) {
-        vec2 tap = clamp(coord + snowSmoothTaps[i] * radius * perUnit, 0.0, 1.0);
+        // 2026-10-28 (as the .fx): only taps on screen whose normal is near this pixel's (no sheets on cars, no edge streaks)
+        vec2 raw = coord + snowSmoothTaps[i] * radius * perUnit;
+        vec2 tap = clamp(raw, 0.0, 1.0);
+        float onScreen = (raw == tap) ? 1.0 : 0.0;
         float tapDepth = textureLod(SAMP_CLAMP(t_depth), tap, 0.0).x * farZ;
         vec3 tapPos = toWorld(tap) * tapDepth;
-        float weight = saturate(1.0 - length(tapPos - center) / (2.0 * radius)) * (tapDepth < farZ * 0.99 ? 1.0 : 0.0);
         vec4 tapNormal = vec4(textureLod(SAMP_CLAMP(t_normals), tap, 0.0).xyz * 2.0 - 1.0, 1.0);
-        sum += (tapNormal * c.view).xyz * weight;
+        vec3 tapWorldNormal = (tapNormal * c.view).xyz;
+        float weight = saturate(1.0 - length(tapPos - center) / (2.0 * radius)) * (tapDepth < farZ * 0.99 ? 1.0 : 0.0) * onScreen *
+            smoothstep(0.5, 0.85, dot(tapWorldNormal, norm));
+        sum += tapWorldNormal * weight;
     }
     return normalize(sum);
 }

@@ -17,6 +17,7 @@ public:
 		D3DXVECTOR4 TintHorizonDay = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f), TintHorizonNight = D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f);
 		float TintGradientHeight = 0.3f, SaturationDay = 1.0f, SaturationNight = 1.0f;
 		bool TintKeepsBrightness = true;
+		bool ColorLook = true;	// UNOFFICIAL 2026-10-28 [Shaders.Sky.Main] ColorLook: false = every sky colour setting above stands aside
 	};
 	SettingsStruct Settings;
 

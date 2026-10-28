@@ -133,6 +133,7 @@ void PBRShaders::UpdateSettings() {
 	RmaosSettings.Occlusion = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Rmaos", "Occlusion"), 0.0f, 1.0f);
 	RmaosSettings.DebugView = std::clamp(TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "DebugView"), 0, 4);
 	RmaosSettings.LogMatches = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "LogMatches") != 0;
+	RmaosSettings.MetalFromMap = TheSettingManager->GetSettingI("Shaders.PBR.Rmaos", "MetalFromMap") != 0;	// UNOFFICIAL 2026-10-28 (missing = off)
 
 	// UNOFFICIAL foliage translucency (grass and leaf vertex shaders, FoliageTranslucency in Grass23x000.vso.hlsl). Power stays
 	// at 0.5 or more so pow() is well behaved near zero.
