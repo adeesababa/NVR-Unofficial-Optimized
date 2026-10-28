@@ -694,20 +694,23 @@ float GetOrthoAverage(float4 worldPos, float orthoRadius) {
 }
 
 // Optimisation 5a: point light helper - normalize() removed, invLen reused.
+// UNOFFICIAL 2026-10-29 (P84 v4 did not start: Conor; a bench run with no frame in 180 s): no early returns. Inlined for 24 lamps (ps_3_0
+// cannot index the lamp constants in a loop, so the loop is unrolled), the three returns plus the callers' ifs made ~100 nested branches
+// and D3DX9_43 took 2+ minutes for this one pass (twice per effect: 5-10 minutes at startup, the main thread waiting on it). Same result:
+// out of reach, (1 - s) / (1 + s) is already <= 0 (s = (distance / radius)^2 >= 1); an unused slot (radius 0) is multiplied by 0; the
+// 0.001 cut is a select.
 float SA5_PointLight(float4 worldPos, float4 LightPos, float3 normal, float3 eyeDir) {
-    float radius = LightPos.w;
-    if (radius <= 0.0f) return 0.0f;
+    float used    = LightPos.w > 0.0f ? 1.0f : 0.0f;
+    float radius  = max(LightPos.w, 1e-4f);
 
     float3 L      = LightPos.xyz - worldPos.xyz;
     float distSq  = dot(L, L);
-    float radiusSq = radius * radius;
-    if (distSq >= radiusSq) return 0.0f;
 
     float invLen  = rsqrt(max(distSq, 1e-6f));
     float distNorm = (distSq * invLen) / radius;
     float s       = distNorm * distNorm;
     float atten   = saturate((1.0f - s) / (1.0f + s));
-    if (atten <= 0.001f) return 0.0f;
+    atten         = atten > 0.001f ? atten * used : 0.0f;
 
     // invLen already computed - reuse instead of calling normalize()
     float3 lightDir = L * invLen;
@@ -982,13 +985,11 @@ float4 SA5_Snow(VSOUT IN, uniform bool persist) : COLOR0 {
     // Point lights: linearize() inlined per-light (local arrays not allowed in ps_3_0)
     shadow.g = 1.0f;
     for (int i = 0; i < 12; i++) {
-        if (TESR_ShadowLightPosition[i].w > 0.0f)
-            snowColor.rgb += SA5_PointLight(worldPos, TESR_ShadowLightPosition[i], surfaceNormal, eyeDirection)
+        snowColor.rgb += SA5_PointLight(worldPos, TESR_ShadowLightPosition[i], surfaceNormal, eyeDirection)
                            * linearize(float4(TESR_LightColor[i].rgb * TESR_LightColor[i].a, 1.0f)).rgb
                            * 0.5f * shadow.g;
 
-        if (TESR_LightPosition[i].w > 0.0f)
-            snowColor.rgb += SA5_PointLight(worldPos, TESR_LightPosition[i], surfaceNormal, eyeDirection)
+        snowColor.rgb += SA5_PointLight(worldPos, TESR_LightPosition[i], surfaceNormal, eyeDirection)
                            * linearize(float4(TESR_LightColor[12 + i].rgb * TESR_LightColor[12 + i].a, 1.0f)).rgb
                            * 0.5f * shadow.g;
     }
